@@ -13,7 +13,7 @@
 * Addresses are plain JS objects rather than classes. The `family` field
 * selects the address type:
 *   { family: 'ipv4', ip: '127.0.0.1', port: 8080 }
-*   { family: 'ipv6', ip: '::1',       port: 8080 }
+*   { family: 'ipv6', ip: '::1',       port: 8080, scopeId: 0 }
 *   { family: 'unix', path: '/tmp/app.sock' }
 *
 * `encodeAddr()` translates these to C `sockaddr_in` / `sockaddr_in6` /
@@ -166,7 +166,7 @@ export interface IPv4Address {
 * IPv6 socket address.
 *
 * `ip` must be a numeric IPv6 literal. Scope IDs are not represented in this
-* public shape and encode as zero.
+* public shape through optional `scopeId`.
 *
 * ```ts no_run
 * const addr: IPv6Address = { family: 'ipv6', ip: '::1', port: 8080 };
@@ -194,6 +194,13 @@ export interface IPv6Address {
   * ```
   */
   port: number;
+  /** IPv6 scope ID for link-local and interface-scoped addresses.
+  *
+  * ```ts no_run
+  * const addr: IPv6Address = { family: 'ipv6', ip: 'fe80::1', port: 5353, scopeId: 4 };
+  * ```
+  */
+  scopeId?: number;
 }
 /**
 * Unix domain socket address.
@@ -732,6 +739,16 @@ export const IPPROTO_TCP_LEVEL = 6;
 export const TCP_NODELAY = 1;
 /** IPv4 unicast TTL option. */
 export const IP_TTL = isDarwin ? 4 : 2;
+/** Join an IPv4 multicast group with `setsockopt(IPPROTO_IP, IP_ADD_MEMBERSHIP, ...)`. */
+export const IP_ADD_MEMBERSHIP = isDarwin ? 12 : 35;
+/** Leave an IPv4 multicast group. */
+export const IP_DROP_MEMBERSHIP = isDarwin ? 13 : 36;
+/** Select the IPv4 multicast outbound interface. */
+export const IP_MULTICAST_IF = isDarwin ? 9 : 32;
+/** Set IPv4 multicast packet TTL. */
+export const IP_MULTICAST_TTL = isDarwin ? 10 : 33;
+/** Enable or disable IPv4 multicast loopback. */
+export const IP_MULTICAST_LOOP = isDarwin ? 11 : 34;
 /** IPv4 type-of-service / traffic-class option. */
 export const IP_TOS = isDarwin ? 3 : 1;
 /** IPv4 receive type-of-service ancillary-data option. */
@@ -740,6 +757,16 @@ export const IP_RECVTOS = isDarwin ? 27 : 13;
 export const IPV6_V6ONLY = isDarwin ? 27 : 26;
 /** IPv6 unicast hop-limit option. */
 export const IPV6_UNICAST_HOPS = isDarwin ? 4 : 16;
+/** Join an IPv6 multicast group. */
+export const IPV6_JOIN_GROUP = isDarwin ? 12 : 20;
+/** Leave an IPv6 multicast group. */
+export const IPV6_LEAVE_GROUP = isDarwin ? 13 : 21;
+/** Select the IPv6 multicast outbound interface by index. */
+export const IPV6_MULTICAST_IF = isDarwin ? 9 : 17;
+/** Set IPv6 multicast hop limit. */
+export const IPV6_MULTICAST_HOPS = isDarwin ? 10 : 18;
+/** Enable or disable IPv6 multicast loopback. */
+export const IPV6_MULTICAST_LOOP = isDarwin ? 11 : 19;
 /** IPv6 receive traffic-class ancillary-data option. */
 export const IPV6_RECVTCLASS = isDarwin ? 35 : 66;
 /** IPv6 traffic-class option. */
@@ -850,7 +877,7 @@ export function encodeAddr(addr: Address): {
     const rc = lib.symbols.inet_pton(AF_INET6, encodeUtf8(addr.ip + '\0'), addrBuf);
     if (rc !== 1) throw new Error(`invalid IPv6 address: '${addr.ip}'`);
     new Uint8Array(buf, 8, 16).set(new Uint8Array(addrBuf));
-    // scope_id at offset 24 (zeroed)
+    view.setUint32(24, addr.scopeId ?? 0, true);
     return {
       buf,
       len: SOCKADDR_IN6_SIZE
@@ -917,7 +944,8 @@ export function decodeAddr(buf: ArrayBuffer): Address | UnknownAddress {
     return {
       family: 'ipv6',
       ip,
-      port
+      port,
+      scopeId: view.getUint32(24, true)
     };
   } else if (family === AF_UNIX) {
     const offset = isDarwin ? 2 : 2;
@@ -1017,6 +1045,82 @@ export function getsockopt(fd: number, level: number, optname: number, bufSize: 
   const rc = lib.symbols.getsockopt(fd, level, optname, buf, lenBuf);
   if (rc < 0) throw new Error(`getsockopt() failed: errno=${getErrno()}`);
   return buf;
+}
+function inetPtonBytes(family: number, ip: string, length: number): Uint8Array {
+  const buf = new ArrayBuffer(length);
+  const rc = lib.symbols.inet_pton(family, encodeUtf8(ip + '\0'), buf);
+  if (rc !== 1) throw new Error(`invalid ${family === AF_INET ? 'IPv4' : 'IPv6'} address: '${ip}'`);
+  return new Uint8Array(buf);
+}
+function ipv4MembershipBuffer(group: string, interfaceAddress?: string): ArrayBuffer {
+  const buf = new ArrayBuffer(8);
+  const bytes = new Uint8Array(buf);
+  bytes.set(inetPtonBytes(AF_INET, group, 4), 0);
+  bytes.set(inetPtonBytes(AF_INET, interfaceAddress ?? '0.0.0.0', 4), 4);
+  return buf;
+}
+function ipv6MembershipBuffer(group: string, interfaceIndex?: number): ArrayBuffer {
+  const buf = new ArrayBuffer(20);
+  const bytes = new Uint8Array(buf);
+  bytes.set(inetPtonBytes(AF_INET6, group, 16), 0);
+  new DataView(buf).setUint32(16, interfaceIndex ?? 0, true);
+  return buf;
+}
+/** Join an IPv4 or IPv6 multicast group on a datagram socket.
+*
+* IPv4 membership uses `interfaceAddress` when provided. IPv6 membership uses
+* `interfaceIndex`, which is required for many link-local multicast cases.
+*
+* ```ts no_run
+* joinMulticastGroup(fd, { group: '224.0.0.251' });
+* ```
+*/
+export function joinMulticastGroup(fd: number, options: {
+  group: string;
+  interfaceAddress?: string;
+  interfaceIndex?: number;
+}): void {
+  if (options.group.includes(':')) {
+    setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP, ipv6MembershipBuffer(options.group, options.interfaceIndex));
+  } else {
+    setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, ipv4MembershipBuffer(options.group, options.interfaceAddress));
+  }
+}
+/** Leave an IPv4 or IPv6 multicast group previously joined on a socket. */
+export function leaveMulticastGroup(fd: number, options: {
+  group: string;
+  interfaceAddress?: string;
+  interfaceIndex?: number;
+}): void {
+  if (options.group.includes(':')) {
+    setsockopt(fd, IPPROTO_IPV6, IPV6_LEAVE_GROUP, ipv6MembershipBuffer(options.group, options.interfaceIndex));
+  } else {
+    setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, ipv4MembershipBuffer(options.group, options.interfaceAddress));
+  }
+}
+/** Set common multicast send options on a datagram socket.
+*
+* `ttl` maps to IPv4 TTL or IPv6 hop limit. `loopback` controls whether local
+* multicast sends are looped back to local receivers. Interface selection uses
+* IPv4 `interfaceAddress` or IPv6 `interfaceIndex`.
+*/
+export function setMulticastOptions(fd: number, options: {
+  family?: 'ipv4' | 'ipv6';
+  ttl?: number;
+  loopback?: boolean;
+  interfaceAddress?: string;
+  interfaceIndex?: number;
+}): void {
+  const family = options.family ?? (options.interfaceIndex !== undefined ? 'ipv6' : 'ipv4');
+  if (family === 'ipv6') {
+    if (options.ttl !== undefined) setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, options.ttl);
+    if (options.loopback !== undefined) setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, options.loopback);
+    if (options.interfaceIndex !== undefined) setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, options.interfaceIndex);
+  } else {
+    if (options.ttl !== undefined) setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, options.ttl);
+    if (options.loopback !== undefined) setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, options.loopback);
+    if (options.interfaceAddress !== undefined) setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, inetPtonBytes(AF_INET, options.interfaceAddress, 4).buffer);
+  }
 }
 /**
 * Return the local address currently bound to a socket fd.

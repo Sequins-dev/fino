@@ -73,6 +73,9 @@ interface MinimalAbortSignal {
   }): void;
   removeEventListener(type: string, fn: () => void): void;
 }
+function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
+  return ca === undefined ? undefined : { file: ca };
+}
 /**
 * Options passed to `new HttpClient()`.
 */
@@ -87,6 +90,8 @@ export interface HttpClientOptions {
   tls?: {
     ca?: string;
     rejectUnauthorized?: boolean;
+    cert?: string;
+    key?: string;
   };
 }
 /**
@@ -502,8 +507,10 @@ export class HttpSession {
     const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
     const tls = init.tls ?? this.#client.tls;
     const quic = init.quic ?? {
-      ...tls?.ca !== undefined ? { ca: tls.ca } : {},
-      ...tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}
+      ...tls?.ca !== undefined ? { ca: _quicCaFromTls(tls.ca) } : {},
+      ...tls?.rejectUnauthorized === false ? { verifyPeer: false } : {},
+      ...tls?.cert !== undefined ? { certificateFile: tls.cert } : {},
+      ...tls?.key !== undefined ? { privateKeyFile: tls.key } : {}
     };
     try {
       const conn = await endpoint.connect({

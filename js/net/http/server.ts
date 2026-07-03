@@ -52,8 +52,9 @@
 * appropriate responses.
 */
 import { Socket } from '../socket.ts';
-import { TlsSocket } from '../tls.ts';
-import { sslCtxLoadCertKey, sslCtxFree, sslCtxSetAlpnServerProtos } from '../../internal/openssl.ts';
+import { TlsSocket, createTlsServerContext } from '../tls.ts';
+import { sslCtxFree } from '../../internal/openssl.ts';
+import type { TlsPeerInfo } from '../tls.ts';
 import { H1ServerDriver } from 'internal:net/http/h1';
 import { H2ServerDriver } from '../../internal/net/http/h2/server.ts';
 import { h2Available } from '../../internal/net/http/h2/bindings.ts';
@@ -118,6 +119,12 @@ export interface ServeOptions {
   tls?: {
     cert: string;
     key: string;
+    /** PEM CA bundle used to verify client certificates. */
+    ca?: string;
+    /** Client certificate policy. Defaults to not requesting a certificate. */
+    clientAuth?: 'none' | 'request' | 'require';
+    /** Whether client certificate verification failures abort the handshake. Defaults to true. */
+    rejectUnauthorized?: boolean;
     /** TLS ALPN protocols to offer. Defaults to ['h2', 'http/1.1'] when HTTP/2 is available. */
     protocols?: readonly Extract<HttpProtocol, 'http/1.1' | 'h2'>[];
   };
@@ -146,7 +153,7 @@ export interface ServeServer {
 }
 export type HttpTransport = 'tcp' | 'tls' | 'quic';
 export type HttpHandlerResult = Response | WebSocketConnection;
-export type HttpRequestHandler = (request: Request) => HttpHandlerResult | Promise<HttpHandlerResult>;
+export type HttpRequestHandler = (request: Request, session: HttpSession) => HttpHandlerResult | Promise<HttpHandlerResult>;
 export interface HttpSession {
   readonly id: string;
   readonly protocol: HttpProtocol;
@@ -154,13 +161,17 @@ export interface HttpSession {
   readonly secure: boolean;
   readonly localAddress: unknown | null;
   readonly remoteAddress: unknown | null;
+  /** TLS peer metadata for secure transports, or `null` for plain TCP. */
+  readonly tls: TlsPeerInfo | null;
   readonly closed: Promise<void>;
 }
+export type HttpTlsPeerInfo = TlsPeerInfo;
 interface IncomingBase<TKind extends string> {
   readonly kind: TKind;
   readonly request: Request;
   readonly protocol: HttpProtocol;
   readonly session: HttpSession;
+  readonly tls: TlsPeerInfo | null;
   reject(response?: Response): Promise<void>;
 }
 export interface IncomingHttpRequest extends IncomingBase<'request'> {
@@ -192,6 +203,7 @@ let _sessionSeq = 0;
 function _makeSession(protocol: HttpProtocol, transport: HttpTransport, addresses?: {
   localAddress?: unknown;
   remoteAddress?: unknown;
+  tls?: TlsPeerInfo | null;
 }): HttpSession {
   return {
     id: `http-session-${++_sessionSeq}`,
@@ -200,6 +212,7 @@ function _makeSession(protocol: HttpProtocol, transport: HttpTransport, addresse
     secure: transport !== 'tcp',
     localAddress: addresses?.localAddress ?? null,
     remoteAddress: addresses?.remoteAddress ?? null,
+    tls: addresses?.tls ?? null,
     closed: Promise.resolve()
   };
 }
@@ -228,6 +241,7 @@ function _makeAcceptAdapter(handler: ServerAcceptHandler, protocol: HttpProtocol
       request,
       protocol,
       session,
+      tls: session.tls,
       reject(response?: Response): Promise<void> {
         assertPending('reject');
         decision = 'rejected';
@@ -290,6 +304,7 @@ function _makeWebTransportAcceptAdapter(handler: ServerAcceptHandler, protocol: 
       request,
       protocol,
       session,
+      tls: session.tls,
       protocols: _headerTokenList(request.headers.get('sec-webtransport-protocol')),
       reject(response?: Response): Promise<void> {
         assertPending('reject');
@@ -328,6 +343,9 @@ function _listenOptions(options: ServeOptions): ListenOptions {
     reusePort: options.reusePort
   };
 }
+function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
+  return ca === undefined ? undefined : { file: ca };
+}
 /**
 * Start an accept-based HTTP server.
 *
@@ -356,17 +374,24 @@ function _listenOptions(options: ServeOptions): ListenOptions {
 export function serve(options: ServeOptions, handler: ServerAcceptHandler): ServeServer {
   if (options.h3 !== undefined && options.h3 !== false) {
     if (options.tls === undefined) throw new Error('serve: h3 requires tls certificate and key');
+    if (options.tls.clientAuth === 'request') throw new Error('serve: h3 does not support tls.clientAuth request; use require or none');
     requireH3();
   }
   const tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
-  let sslCtx = options.tls ? sslCtxLoadCertKey(options.tls.cert, options.tls.key) : null;
   const tlsProtocols = options.tls?.protocols ?? (h2Available ? ['h2', 'http/1.1'] : ['http/1.1']);
   const alpnProtocols = tlsProtocols.filter((protocol): protocol is 'h2' | 'http/1.1' => {
     return protocol === 'http/1.1' || protocol === 'h2' && h2Available;
   });
-  // Register ALPN select callback so TLS clients can negotiate h2.
-  // The returned FfiCallback is retained alongside sslCtx and closed on server.close().
-  let alpnCb: object | null = sslCtx !== null && alpnProtocols.includes('h2') ? sslCtxSetAlpnServerProtos(sslCtx, alpnProtocols) : null;
+  const tlsContext = options.tls ? createTlsServerContext({
+    cert: options.tls.cert,
+    key: options.tls.key,
+    ca: options.tls.ca,
+    clientAuth: options.tls.clientAuth,
+    rejectUnauthorized: options.tls.rejectUnauthorized,
+    alpn: alpnProtocols
+  }) : null;
+  let sslCtx = tlsContext?.ctx ?? null;
+  let tlsCallbacks = tlsContext?.callbacks ?? [];
   const inFlight = new Set<Promise<void>>();
   let acceptLoopDone = false;
   let finishResolve: (() => void) | null = null;
@@ -379,10 +404,12 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
   });
   const boundAddress = tcpServer.address;
   if (boundAddress.family !== 'ipv4' && boundAddress.family !== 'ipv6') {
-    if (alpnCb !== null) {
-      (alpnCb as any).close();
-      alpnCb = null;
+    for (const callback of tlsCallbacks) {
+      try {
+        (callback as { close?: () => void }).close?.();
+      } catch {}
     }
+    tlsCallbacks = [];
     if (sslCtx !== null) {
       sslCtxFree(sslCtx);
       sslCtx = null;
@@ -403,19 +430,27 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
   function _handlerFor(protocol: HttpProtocol, transport: HttpTransport, addresses?: {
     localAddress?: unknown;
     remoteAddress?: unknown;
+    tls?: TlsPeerInfo | null;
   }): ServerHandler {
     return _makeAcceptAdapter(handler, protocol, transport, addresses);
   }
   function _webTransportHandlerFor(protocol: HttpProtocol, transport: HttpTransport, addresses?: {
     localAddress?: unknown;
     remoteAddress?: unknown;
+    tls?: TlsPeerInfo | null;
   }): H3WebTransportHandler {
     return _makeWebTransportAcceptAdapter(handler, protocol, transport, addresses);
   }
   const h3Options = options.h3;
   let h3Server: H3Server | null = null;
+  const h3TlsOptions = options.tls?.clientAuth === 'require' ? {
+    verifyClient: true,
+    ca: _quicCaFromTls(options.tls.ca),
+    rejectUnauthorized: options.tls.rejectUnauthorized
+  } : {};
   const h3Ready: Promise<void> = h3Options !== undefined && h3Options !== false ? serveH3({
     ...(typeof h3Options === 'object' ? h3Options.quic : undefined) ?? {},
+    ...h3TlsOptions,
     port: boundAddress.port,
     hostname: boundAddress.ip,
     certificateFile: options.tls!.cert,
@@ -436,17 +471,24 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
         if (sslCtx !== null) {
           connPromise = TlsSocket.accept(tcpConn.fd, sslCtx).then(async function handleTlsConn(tlsConn) {
             const proto = tlsConn.negotiatedProtocol;
+            const tls = tlsConn.getPeerInfo();
+            if (options.tls?.clientAuth === 'require' && tls.peerCertificate === null) {
+              tlsConn.close();
+              return;
+            }
             const [reader, writer] = tlsConn.split();
             try {
               if (h2Available && proto === 'h2') {
                 await _h2Driver.run(reader, writer, _handlerFor('h2', 'tls', {
                   localAddress: tcpConn.localAddress,
-                  remoteAddress: tcpConn.remoteAddress
+                  remoteAddress: tcpConn.remoteAddress,
+                  tls
                 }), { maxConcurrent: 32 });
               } else {
                 await _h1Driver.run(reader, writer, _handlerFor('http/1.1', 'tls', {
                   localAddress: tcpConn.localAddress,
-                  remoteAddress: tcpConn.remoteAddress
+                  remoteAddress: tcpConn.remoteAddress,
+                  tls
                 }), _driverOptions());
               }
             } catch {
@@ -503,10 +545,12 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
     async close(): Promise<void> {
       if (closeSignalResolve) closeSignalResolve();
       tcpServer.close();
-      if (alpnCb !== null) {
-        (alpnCb as any).close();
-        alpnCb = null;
+      for (const callback of tlsCallbacks) {
+        try {
+          (callback as { close?: () => void }).close?.();
+        } catch {}
       }
+      tlsCallbacks = [];
       if (sslCtx !== null) {
         sslCtxFree(sslCtx);
         sslCtx = null;
@@ -527,6 +571,6 @@ export function serveHttp(options: ServeOptions, handler: HttpRequestHandler): S
       return;
     }
     const accepted = await incoming.accept();
-    await accepted.respond(await handler(accepted.request));
+    await accepted.respond(await handler(accepted.request, accepted.session));
   });
 }

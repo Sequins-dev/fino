@@ -347,7 +347,7 @@ describe('global fetch() — HTTPS H2 pool', () => {
         key: KEY_PATH
       }
     }, async () => new Response(`hit-${++requests}`));
-    const origin = httpsOrigin(server.port);
+    const origin = `https://localhost:${server.port}`;
     try {
       const first = await fetch(`${origin}/one`, { tls: { rejectUnauthorized: false } } as any);
       t.equal(await first.text(), 'hit-1', 'first pooled fetch response');
@@ -434,6 +434,45 @@ describe('global fetch() — HTTPS H2 pool', () => {
       await _resetFetchH2Pool();
       await serverA.close();
       await serverB.close();
+    }
+  });
+  it('does not reuse client-certificate-authenticated H2 sessions without the same TLS identity', { skip: skipHttps }, async (t) => {
+    await _resetFetchH2Pool();
+    const server = serveHttp({
+      port: 0,
+      tls: {
+        cert: CERT_PATH,
+        key: KEY_PATH,
+        ca: CERT_PATH,
+        clientAuth: 'require'
+      }
+    }, async (_req, session) => new Response(session.tls?.authorized ? 'authorized' : 'anonymous', {
+      status: session.tls?.authorized ? 200 : 401
+    }));
+    const origin = httpsOrigin(server.port);
+    try {
+      const first = await fetch(`${origin}/with-cert`, {
+        protocol: 'h2',
+        tls: { rejectUnauthorized: false, cert: CERT_PATH, key: KEY_PATH }
+      } as any);
+      t.equal(first.status, 200, 'cert-authenticated H2 request succeeds');
+      t.equal(await first.text(), 'authorized', 'server sees client certificate');
+
+      let secondStatus = 0;
+      let secondRejected = false;
+      try {
+        const second = await fetch(`${origin}/without-cert`, {
+          protocol: 'h2',
+          tls: { rejectUnauthorized: false }
+        } as any);
+        secondStatus = second.status;
+      } catch (_) {
+        secondRejected = true;
+      }
+      t.ok(secondRejected || secondStatus !== 200, 'request without client certificate does not reuse the authenticated H2 session');
+    } finally {
+      await _resetFetchH2Pool();
+      await server.close();
     }
   });
   it('evicts the pooled entry after server close tears down transport', { skip: skipHttps }, async (t) => {

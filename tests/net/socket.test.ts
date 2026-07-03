@@ -16,6 +16,16 @@ describe('Constants', () => {
   it('SOCK_DGRAM is 2', (t) => {
     t.equal(sock.SOCK_DGRAM, 2);
   });
+  it('exports multicast socket constants and helpers', (t) => {
+    t.equal(typeof sock.IP_ADD_MEMBERSHIP, 'number', 'IPv4 join constant is exported');
+    t.equal(typeof sock.IP_DROP_MEMBERSHIP, 'number', 'IPv4 leave constant is exported');
+    t.equal(typeof sock.IP_MULTICAST_TTL, 'number', 'IPv4 multicast TTL constant is exported');
+    t.equal(typeof sock.IPV6_JOIN_GROUP, 'number', 'IPv6 join constant is exported');
+    t.equal(typeof sock.IPV6_LEAVE_GROUP, 'number', 'IPv6 leave constant is exported');
+    t.equal(typeof sock.joinMulticastGroup, 'function', 'joinMulticastGroup helper is exported');
+    t.equal(typeof sock.leaveMulticastGroup, 'function', 'leaveMulticastGroup helper is exported');
+    t.equal(typeof sock.setMulticastOptions, 'function', 'setMulticastOptions helper is exported');
+  });
 });
 describe('Address encoding / decoding', () => {
   it('encodeAddr / decodeAddr — IPv4', (t) => {
@@ -41,6 +51,18 @@ describe('Address encoding / decoding', () => {
     if (a.family !== 'ipv6' || !('ip' in a) || !('port' in a)) throw new Error('expected ipv6');
     t.equal(a.ip, '::1');
     t.equal(a.port, 9901);
+  });
+  it('encodeAddr / decodeAddr — IPv6 scopeId', (t) => {
+    const { buf } = sock.encodeAddr({
+      family: 'ipv6',
+      ip: '::1',
+      port: 9902,
+      scopeId: 7
+    });
+    const a = sock.decodeAddr(buf);
+    t.equal(a.family, 'ipv6');
+    if (a.family !== 'ipv6') throw new Error('expected ipv6');
+    t.equal(a.scopeId, 7, 'scopeId round-trips through sockaddr_in6');
   });
   it('encodeAddr / decodeAddr — Unix', (t) => {
     const { buf } = sock.encodeAddr({

@@ -136,6 +136,8 @@ interface FetchInit {
   tls?: {
     ca?: string;
     rejectUnauthorized?: boolean;
+    cert?: string;
+    key?: string;
   };
   protocol?: 'auto' | 'http/1.1' | 'h2' | 'h3';
 }
@@ -533,8 +535,10 @@ class H3PoolEntry {
           alpnProtocols: ['h3'],
           serverName: target.serverName,
           ...this.#handshakeTimeoutMs !== null ? { connection: { handshakeTimeoutMs: this.#handshakeTimeoutMs } } : {},
-          ...this.#tls?.ca !== undefined ? { ca: this.#tls.ca as any } : {},
-          ...this.#tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}
+          ...this.#tls?.ca !== undefined ? { ca: _quicCaFromTls(this.#tls.ca) } : {},
+          ...this.#tls?.rejectUnauthorized === false ? { verifyPeer: false } : {},
+          ...this.#tls?.cert !== undefined ? { certificateFile: this.#tls.cert } : {},
+          ...this.#tls?.key !== undefined ? { privateKeyFile: this.#tls.key } : {}
         });
         this.#conn = conn;
         this.#stage = 'create h3 session';
@@ -607,6 +611,16 @@ function _parseHttpUrl(url: string, context = 'fetch'): URL {
 function _originKey(parsed: URL): string {
   const port = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80;
   return `${parsed.protocol}//${parsed.hostname}:${port}`;
+}
+function _tlsPoolKey(origin: string, tls: FetchInit['tls'] | undefined): string {
+  if (tls?.cert === undefined && tls?.key === undefined) return origin;
+  return `${origin}#tls:${JSON.stringify({
+    cert: tls.cert ?? null,
+    key: tls.key ?? null
+  })}`;
+}
+function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
+  return ca === undefined ? undefined : { file: ca };
 }
 function _urlHostname(url: URL): string {
   const hostname = url.hostname;
@@ -709,10 +723,11 @@ function _evictH3(origin: string): void {
 async function _singleFetchH3(url: string, method: string, headers: Headers, body: FetchBody, tls: FetchInit['tls'] | undefined, target: AltSvcEntry, trailers?: Headers | (() => Headers | Promise<Headers>)): Promise<Response> {
   const parsed = _parseHttpUrl(url);
   const origin = _originKey(parsed);
-  let entry = _h3Pool.get(origin);
+  const poolKey = _tlsPoolKey(origin, tls);
+  let entry = _h3Pool.get(poolKey);
   if (entry === undefined) {
-    entry = new H3PoolEntry(origin, target, tls, _h3HandshakeTimeoutMsForTest);
-    _h3Pool.set(origin, entry);
+    entry = new H3PoolEntry(poolKey, target, tls, _h3HandshakeTimeoutMsForTest);
+    _h3Pool.set(poolKey, entry);
   }
   try {
     const session = await entry.session();
@@ -858,6 +873,7 @@ async function _singleFetch(url: string, method: string, headers: Headers, body:
   const port = portStr ? parseInt(portStr, 10) : isHttps ? 443 : 80;
   const isDefaultPort = isHttps && port === 443 || !isHttps && port === 80;
   const origin = _originKey(parsed);
+  const poolKey = _tlsPoolKey(origin, tls);
   if (protocol === 'h3') {
     if (!isHttps) throw new TypeError('fetch: protocol h3 requires an HTTPS URL');
     if (!h3Available) throw new Error('fetch: protocol h3 requires libnghttp3');
@@ -889,7 +905,7 @@ async function _singleFetch(url: string, method: string, headers: Headers, body:
   }
   // ---- H2 pool fast-path (HTTPS only) --------------------------------------
   if (protocol !== 'http/1.1' && isHttps && h2Available) {
-    const poolEntry = _h2Pool.get(origin);
+    const poolEntry = _h2Pool.get(poolKey);
     if (poolEntry) {
       const outReq = new Request(url, {
         method,
@@ -975,7 +991,9 @@ async function _singleFetch(url: string, method: string, headers: Headers, body:
         hostname,
         alpn,
         ca: tls?.ca,
-        rejectUnauthorized: tls?.rejectUnauthorized
+        rejectUnauthorized: tls?.rejectUnauthorized,
+        cert: tls?.cert,
+        key: tls?.key
       });
       // If abort fires before the connect resolves, the socket still resolves
       // later — close it immediately to prevent a fd leak.
@@ -1058,7 +1076,7 @@ async function _singleFetch(url: string, method: string, headers: Headers, body:
     // ---- H2 via negotiated ALPN ----------------------------------------------
     if (isHttps && h2Available && (sock as TlsSocket).negotiatedProtocol === 'h2') {
       const entry = createPoolEntry(reader, writer);
-      _h2Pool.add(origin, entry);
+      _h2Pool.add(poolKey, entry);
       const outReq = new Request(url, {
         method,
         headers: new Headers(headers),

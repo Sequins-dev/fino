@@ -19,6 +19,8 @@
 *   {
 *     hostname: 'example.com',    // SNI + hostname verification
 *     ca: '/path/to/ca.pem',      // custom CA file (optional)
+*     cert: '/path/client.pem',   // client certificate (optional)
+*     key: '/path/client.key',    // client private key (optional)
 *     rejectUnauthorized: true,   // verify peer cert (default: true)
 *     alpn: ['h2', 'http/1.1'],   // client protocol preference (optional)
 *   }
@@ -38,11 +40,9 @@
 * stricter TLS policy, configure the OpenSSL installation or use a higher-level
 * server API that exposes a narrower audited knob.
 *
-* There is no public TLS session cache or session-ticket reuse API here, and
-* server-side client-certificate authentication is not exposed by this socket
-* layer today. mTLS support that exists elsewhere, such as QUIC/HTTP server
-* integrations, is documented and tested at those higher-level APIs rather
-* than through `TlsSocket`.
+* There is no public TLS session cache or session-ticket reuse API here.
+* Mutual TLS uses handshake-time client certificates only; post-handshake
+* client authentication is intentionally outside this module.
 *
 *
 * ## Close coordination
@@ -91,6 +91,15 @@ export interface TlsConnectOptions extends ConnectOptions {
   * ```
   */
   hostname?: string;
+  /** Alias for `hostname`, matching other TLS option surfaces.
+  *
+  * If both names are provided they must be identical.
+  *
+  * ```ts no_run
+  * await TlsSocket.connect(addr, { servername: 'example.com' });
+  * ```
+  */
+  servername?: string;
   /** Path to a PEM CA bundle or file loaded with OpenSSL verify locations.
   *
   * ```ts no_run
@@ -98,6 +107,23 @@ export interface TlsConnectOptions extends ConnectOptions {
   * ```
   */
   ca?: string;
+  /** Path to the PEM client certificate chain presented when requested.
+  *
+  * Must be paired with `key`; partial certificate configuration throws before
+  * the TCP connection is opened.
+  *
+  * ```ts no_run
+  * await TlsSocket.connect(addr, { cert: './client.pem', key: './client.key' });
+  * ```
+  */
+  cert?: string;
+  /** Path to the PEM private key matching `cert`.
+  *
+  * ```ts no_run
+  * await TlsSocket.connect(addr, { cert: './client.pem', key: './client.key' });
+  * ```
+  */
+  key?: string;
   /** Whether to verify the peer certificate; defaults to `true`.
   *
   * ```ts no_run
@@ -113,9 +139,105 @@ export interface TlsConnectOptions extends ConnectOptions {
   */
   alpn?: string[];
 }
+/** Client-certificate policy for server-side TLS handshakes. */
+export type TlsClientAuth = 'none' | 'request' | 'require';
+/** Options for creating a server-side TLS context.
+*
+* `clientAuth: 'request'` asks clients for a certificate but allows anonymous
+* handshakes. `clientAuth: 'require'` fails the handshake when no acceptable
+* client certificate is provided.
+*/
+export interface TlsServerContextOptions {
+  /** PEM certificate chain presented by the server. */
+  cert: string;
+  /** PEM private key matching `cert`. */
+  key: string;
+  /** PEM CA bundle used to verify client certificates. */
+  ca?: string;
+  /** Client certificate policy. Defaults to `'none'`. */
+  clientAuth?: TlsClientAuth;
+  /** Whether verification failures abort the handshake. Defaults to `true`. */
+  rejectUnauthorized?: boolean;
+  /** ALPN protocols offered by the server. */
+  alpn?: readonly string[];
+}
+/** Verification status reported by OpenSSL after a TLS handshake. */
+export interface TlsVerifyResult {
+  /** OpenSSL verification code. `0` means success. */
+  code: number;
+  /** Human-readable OpenSSL reason, or `null` when verification succeeded. */
+  reason: string | null;
+}
+/** Peer TLS identity metadata.
+*
+* The certificate is the DER-encoded leaf certificate when one was presented.
+* Treat it as authenticated identity only when `authorized` is true.
+*/
+export interface TlsPeerInfo {
+  /** Leaf peer certificate in DER form, or `null` when none was presented. */
+  peerCertificate: Uint8Array | null;
+  /** Verification status from OpenSSL. */
+  verify: TlsVerifyResult;
+  /** True when OpenSSL verification succeeded. */
+  authorized: boolean;
+}
+const _serverVerifyModes = new WeakMap<object, number>();
 function _checkTlsAvailable() {
   if (!openssl.tlsAvailable) {
     throw new Error('tls: OpenSSL (libssl) is not available on this system. ' + 'Install OpenSSL and ensure libssl is findable via the standard library paths.');
+  }
+}
+function _validateClientCertPair(opts: TlsConnectOptions): void {
+  const hasCert = opts.cert !== undefined;
+  const hasKey = opts.key !== undefined;
+  if (hasCert !== hasKey) throw new TypeError('TLS client certificate options require both cert and key');
+}
+function _resolveServername(opts: TlsConnectOptions, fallback: string | null): string | null {
+  if (opts.hostname !== undefined && opts.servername !== undefined && opts.hostname !== opts.servername) {
+    throw new TypeError('TLS options hostname and servername must match when both are provided');
+  }
+  return opts.servername ?? opts.hostname ?? fallback;
+}
+/** Create a server-side OpenSSL context for accepting TLS connections.
+*
+* The returned context owns OpenSSL state and must be freed with
+* `openssl.sslCtxFree()` by the caller. When ALPN or permissive verification
+* installs callbacks, they are returned in `callbacks` and must be retained for
+* the same lifetime as the context.
+*
+* @internal
+*/
+export function createTlsServerContext(opts: TlsServerContextOptions): {
+  ctx: object;
+  callbacks: object[];
+} {
+  _checkTlsAvailable();
+  const ctx = openssl.sslCtxLoadCertKey(opts.cert, opts.key);
+  const callbacks: object[] = [];
+  try {
+    const clientAuth = opts.clientAuth ?? 'none';
+    if (clientAuth !== 'none') {
+      const mode = openssl.SSL_VERIFY_PEER | (clientAuth === 'require' ? openssl.SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0);
+      if (opts.rejectUnauthorized === false) callbacks.push(openssl.sslCtxSetPermissiveVerify(ctx, mode));
+      else {
+        _serverVerifyModes.set(ctx, mode);
+        openssl.sslCtxSetVerify(ctx, mode);
+      }
+      if (opts.ca) openssl.sslCtxLoadVerifyLocations(ctx, opts.ca, null);
+      else openssl.sslCtxSetDefaultVerifyPaths(ctx);
+    }
+    if (opts.alpn && opts.alpn.length > 0) {
+      callbacks.push(openssl.sslCtxSetAlpnServerProtos(ctx, [...opts.alpn]));
+    }
+    return { ctx, callbacks };
+  } catch (e) {
+    for (const callback of callbacks) {
+      try {
+        (callback as { close?: () => void }).close?.();
+      } catch (_) {}
+    }
+    openssl.sslCtxFree(ctx);
+    throw e;
   }
 }
 // ---------------------------------------------------------------------------
@@ -591,6 +713,48 @@ export class TlsSocket extends Socket {
   get negotiatedProtocol(): string | null {
     return this.#negotiatedProtocol;
   }
+  /** Return the peer leaf certificate as DER bytes, or `null`.
+  *
+  * This is raw certificate material. Treat it as authenticated identity only
+  * when `getPeerInfo().authorized` is true.
+  *
+  * ```ts no_run
+  * const cert = tls.getPeerCertificate();
+  * if (cert) console.log(cert.byteLength);
+  * ```
+  */
+  getPeerCertificate(): Uint8Array | null {
+    return openssl.sslGetPeerCertificate(this.#ssl);
+  }
+  /** Return OpenSSL's peer verification result for this session.
+  *
+  * Code `0` means verification succeeded. When verification was disabled,
+  * OpenSSL may still report the peer certificate's validation state, but the
+  * result must not be treated as application authentication by itself.
+  *
+  * ```ts no_run
+  * const verify = tls.getVerifyResult();
+  * console.log(verify.code, verify.reason);
+  * ```
+  */
+  getVerifyResult(): TlsVerifyResult {
+    return openssl.sslGetVerifyResult(this.#ssl);
+  }
+  /** Return peer certificate and verification metadata together.
+  *
+  * ```ts no_run
+  * const info = tls.getPeerInfo();
+  * if (info.authorized) console.log(info.peerCertificate?.byteLength);
+  * ```
+  */
+  getPeerInfo(): TlsPeerInfo {
+    const verify = this.getVerifyResult();
+    return {
+      peerCertificate: this.getPeerCertificate(),
+      verify,
+      authorized: verify.code === 0
+    };
+  }
   /**
   * Split into a [TlsReader, TlsWriter] pair. SSL cleanup and fd close happen
   * automatically when both halves have been closed.
@@ -652,8 +816,9 @@ export class TlsSocket extends Socket {
   */
   static async connect(addr: Address, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
     _checkTlsAvailable();
+    _validateClientCertPair(opts);
+    const hostname = _resolveServername(opts, addr.family === 'ipv4' || addr.family === 'ipv6' ? addr.ip : null);
     const fd = await connectTcp(addr);
-    const hostname = opts.hostname ?? (addr.family === 'ipv4' || addr.family === 'ipv6' ? addr.ip : null);
     try {
       return await TlsSocket._handshakeClient(fd, addr, hostname, opts);
     } catch (e) {
@@ -675,7 +840,8 @@ export class TlsSocket extends Socket {
   */
   static async upgrade(socket: Socket, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
     _checkTlsAvailable();
-    const hostname = opts.hostname ?? null;
+    _validateClientCertPair(opts);
+    const hostname = _resolveServername(opts, null);
     try {
       return await TlsSocket._handshakeClient(socket.fd, null, hostname, opts);
     } catch (e) {
@@ -697,6 +863,8 @@ export class TlsSocket extends Socket {
   static async accept(fd: number, sslCtx: object): Promise<TlsSocket> {
     _checkTlsAvailable();
     const ssl = openssl.sslNew(sslCtx);
+    const verifyMode = _serverVerifyModes.get(sslCtx);
+    if (verifyMode !== undefined) openssl.sslSetVerify(ssl, verifyMode);
     openssl.sslSetFd(ssl, fd);
     try {
       await _doHandshake(ssl, fd, openssl.sslAccept);
@@ -743,6 +911,9 @@ export class TlsSocket extends Socket {
     }
     if (opts.alpn && opts.alpn.length > 0) {
       openssl.sslCtxSetAlpnProtos(sslCtx, opts.alpn);
+    }
+    if (opts.cert !== undefined && opts.key !== undefined) {
+      openssl.sslCtxUseCertKey(sslCtx, opts.cert, opts.key);
     }
     const ssl = openssl.sslNew(sslCtx);
     openssl.sslSetFd(ssl, fd);

@@ -34,13 +34,12 @@ async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   return decodeUtf8(all);
 }
 describe('TlsSocket', () => {
-  it('release baseline does not expose session reuse or mTLS socket helpers', (t) => {
+  it('release baseline does not expose session reuse or renegotiation helpers', (t) => {
     const surface = (TlsSocket.prototype as unknown) as Record<string, unknown>;
     for (const name of [
       'getSession',
       'setSession',
       'renegotiate',
-      'getPeerCertificate',
       'setKeyCert'
     ]) {
       t.equal(surface[name], undefined, `${name} is not a public TlsSocket helper`);
@@ -181,8 +180,9 @@ describe('TlsSocket', () => {
         key: KEY_PATH
       }
     }, () => new Response('trusted'));
+    let tls: TlsSocket | null = null;
     try {
-      const tls = await TlsSocket.connect({
+      tls = await TlsSocket.connect({
         family: 'ipv4',
         ip: '127.0.0.1',
         port: server.port
@@ -195,6 +195,55 @@ describe('TlsSocket', () => {
     } finally {
       await server.close();
     }
+  });
+  it('exposes peer certificate and verify metadata after handshake', { skip }, async (t) => {
+    const server = serveHttp({
+      port: 0,
+      hostname: '127.0.0.1',
+      tls: {
+        cert: CERT_PATH,
+        key: KEY_PATH
+      }
+    }, () => new Response('trusted'));
+    let tls: TlsSocket | null = null;
+    try {
+      tls = await TlsSocket.connect({
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: server.port
+      }, {
+        hostname: 'localhost',
+        ca: CERT_PATH
+      });
+      const certificate = tls.getPeerCertificate();
+      const verify = tls.getVerifyResult();
+      const info = tls.getPeerInfo();
+      t.ok(certificate instanceof Uint8Array, 'peer certificate is returned as DER bytes');
+      t.ok(certificate.byteLength > 0, 'peer certificate is non-empty');
+      t.equal(verify.code, 0, 'verify code is success');
+      t.equal(verify.reason, null, 'verify reason is null on success');
+      t.equal(info.authorized, true, 'peer info reports authorized');
+      t.equal(info.verify.code, 0, 'peer info carries verify result');
+    } finally {
+      tls?.close();
+      await server.close();
+    }
+  });
+  it('rejects partial client certificate options before connecting', { skip }, async (t) => {
+    await t.rejects(() => TlsSocket.connect({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 9
+    }, {
+      cert: CERT_PATH
+    }), /cert.*key|key.*cert/i, 'cert without key is rejected before TCP connect');
+    await t.rejects(() => TlsSocket.connect({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 9
+    }, {
+      key: KEY_PATH
+    }), /cert.*key|key.*cert/i, 'key without cert is rejected before TCP connect');
   });
   it('custom CA still rejects a hostname mismatch', { skip }, async (t) => {
     const server = serveHttp({

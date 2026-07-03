@@ -22,15 +22,15 @@ const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH = new URL('./fixtures/test.key', import.meta.url).pathname;
-async function tlsRoundtrip(port: number, rawRequest: string): Promise<string> {
+async function tlsRoundtrip(port: number, rawRequest: string, tlsOptions: Parameters<typeof TlsSocket.connect>[1] = {
+  hostname: '127.0.0.1',
+  rejectUnauthorized: false
+}): Promise<string> {
   const tls = await TlsSocket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
     port
-  }, {
-    hostname: '127.0.0.1',
-    rejectUnauthorized: false
-  });
+  }, tlsOptions);
   const [reader, writer] = tls.split();
   await writer.write(encodeUtf8(rawRequest));
   await writer.close();
@@ -66,6 +66,87 @@ describe('HTTPS server — basic TLS request/response', () => {
       t.equal(body, 'hello https', 'response body is exactly correct over TLS');
       // Verify TLS was actually used (connection object is a TlsSocket, not plain Socket).
       t.ok(response.includes('HTTP/1.1'), 'response is valid HTTP over TLS (not plain-text garble)');
+    } finally {
+      await server.close();
+    }
+  });
+  it('fetch sends client certificate options to an mTLS server', { skip }, async (t) => {
+    const server = serveHttp({
+      port: 0,
+      hostname: '127.0.0.1',
+      tls: {
+        cert: CERT_PATH,
+        key: KEY_PATH,
+        ca: CERT_PATH,
+        clientAuth: 'require'
+      }
+    }, async (_req, session) => {
+      return new Response(session.tls?.authorized ? 'fetch mtls ok' : 'unauthorized', {
+        status: session.tls?.authorized ? 200 : 401
+      });
+    });
+    try {
+      let unauthenticatedStatus = 0;
+      let unauthenticatedRejected = false;
+      try {
+        const response = await fetch(`https://localhost:${server.port}/`, {
+          protocol: 'http/1.1',
+          tls: { ca: CERT_PATH }
+        } as any);
+        unauthenticatedStatus = response.status;
+      } catch (_) {
+        unauthenticatedRejected = true;
+      }
+      t.ok(unauthenticatedRejected || unauthenticatedStatus !== 200, 'fetch without client certificate cannot complete successfully');
+      const response = await fetch(`https://localhost:${server.port}/`, {
+        protocol: 'http/1.1',
+        tls: {
+          ca: CERT_PATH,
+          cert: CERT_PATH,
+          key: KEY_PATH
+        }
+      } as any);
+      t.equal(response.status, 200, 'fetch with client certificate succeeds');
+      t.equal(await response.text(), 'fetch mtls ok', 'fetch receives authenticated response');
+    } finally {
+      await server.close();
+    }
+  });
+  it('requires a trusted client certificate when clientAuth is require', { skip }, async (t) => {
+    const server = serveHttp({
+      port: 0,
+      hostname: '127.0.0.1',
+      tls: {
+        cert: CERT_PATH,
+        key: KEY_PATH,
+        ca: CERT_PATH,
+        clientAuth: 'require'
+      }
+    }, async (_req, session) => {
+      t.ok(session.tls?.authorized, 'session TLS metadata reports authorized client');
+      t.ok(session.tls?.peerCertificate instanceof Uint8Array, 'session exposes client certificate bytes');
+      return new Response('mtls ok');
+    });
+    try {
+      let unauthenticated = '';
+      let unauthenticatedRejected = false;
+      try {
+        unauthenticated = await tlsRoundtrip(server.port, `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`, {
+          hostname: 'localhost',
+          ca: CERT_PATH
+        });
+      } catch (_) {
+        unauthenticatedRejected = true;
+      }
+      t.ok(unauthenticatedRejected || !unauthenticated.startsWith('HTTP/1.1 200'), 'client without certificate cannot complete an HTTP request');
+      const response = await tlsRoundtrip(server.port, `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`, {
+        hostname: 'localhost',
+        ca: CERT_PATH,
+        cert: CERT_PATH,
+        key: KEY_PATH
+      });
+      t.ok(response.startsWith('HTTP/1.1 200'), 'cert-authenticated request succeeds');
+      t.ok(response.endsWith('mtls ok'), 'mTLS handler response is delivered');
     } finally {
       await server.close();
     }

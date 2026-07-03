@@ -392,6 +392,10 @@ export class H3ServerDriver {
       cleanupStream(st);
     }
     try {
+      const connectionClosed = conn.state === 'closed' ? Promise.resolve() : new Promise<void>((resolve) => {
+        conn.addEventListener('close', () => resolve(), { once: true });
+        conn.addEventListener('error', () => resolve(), { once: true });
+      });
       // Install the incoming-stream hook early so bidirectional streams from the
       // client are captured even if they arrive during local setup. The hook
       // bypasses the QuicStreamEvent/EventTarget/#streamQueue path (the driver is
@@ -455,11 +459,13 @@ export class H3ServerDriver {
         })();
       };
       // Open the 3 mandatory local unidirectional streams.
-      const [controlStream, qencStream, qdecStream] = await Promise.all([
+      const openedStreams = await Promise.race([Promise.all([
         conn.openUnidirectionalStream(),
         conn.openUnidirectionalStream(),
         conn.openUnidirectionalStream()
-      ]);
+      ]), connectionClosed.then(() => null)]);
+      if (openedStreams === null) return;
+      const [controlStream, qencStream, qdecStream] = openedStreams;
       for (const s of [
         controlStream,
         qencStream,
@@ -471,10 +477,7 @@ export class H3ServerDriver {
       session.bindQpackStreams(BigInt(qencStream.id), BigInt(qdecStream.id));
       session.drainWrites();
       // Wait for connection close.
-      await new Promise<void>((resolve) => {
-        conn.addEventListener('close', () => resolve(), { once: true });
-        conn.addEventListener('error', () => resolve(), { once: true });
-      });
+      await connectionClosed;
       await Promise.all([...inFlight]);
     } finally {
       await session.closeWhenIdle();

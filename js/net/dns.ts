@@ -409,6 +409,15 @@ export interface DnsResourceRecord {
   * ```
   */
   ttl: number;
+  /** DNS class code with protocol-specific high bits masked off.
+  *
+  * For ordinary IN records this is `1`. mDNS responses may set the high
+  * cache-flush bit in the wire class field; this property stores only the
+  * actual class value.
+  */
+  classCode: number;
+  /** Whether the mDNS cache-flush bit was set in the RR class field. */
+  cacheFlush: boolean;
   /** Exact RDATA bytes from the packet. */
   rawData: Uint8Array;
   /** Parsed record payload, or raw bytes for unsupported record types.
@@ -942,7 +951,9 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
   scanner.jump(afterName);
   if (scanner.remainingBytes < 10) throw new Error('DNS: truncated resource record header');
   const type = scanner.readU16BEField('resource record type');
-  scanner.readU16BEField('resource record class');
+  const rawClass = scanner.readU16BEField('resource record class');
+  const classCode = rawClass & 0x7fff;
+  const cacheFlush = (rawClass & 0x8000) !== 0;
   const ttl = scanner.readU32BEField('resource record ttl');
   const rdlength = scanner.readU16BEField('resource record data length');
   const rdataStart = scanner.offset;
@@ -1130,6 +1141,8 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
     record: {
       name,
       type,
+      classCode,
+      cacheFlush,
       ttl,
       rawData,
       data

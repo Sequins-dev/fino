@@ -236,6 +236,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:net/socket", "net/socket"),
     source_builtin!("fino:net/tls", "net/tls"),
     source_builtin!("fino:net/dns", "net/dns"),
+    source_builtin!("fino:net/mdns", "net/mdns"),
     source_builtin!("fino:net/http", "net/http"),
     source_builtin!("internal:net/http/wire", "net/http/index"),
     source_builtin!("fino:net/http/app", "net/http/app"),

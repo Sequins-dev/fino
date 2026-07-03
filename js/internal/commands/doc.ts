@@ -208,7 +208,6 @@ interface CachedDocFile {
   includePrivate: boolean;
   mtimeMs: number;
   size: number;
-  json: string;
 }
 interface CurrentDocFile {
   path: string;
@@ -2440,9 +2439,9 @@ async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, include
     const fresh = cachedFile && cachedFile.kind === file.kind && cachedFile.mtimeMs === file.mtimeMs && cachedFile.size === file.size;
     let json: string | undefined;
     if (fresh) {
-      json = cachedFile!.json;
+      json = await readCachedDocFileJson(db, cachedFile.path, cachedFile.kind, includePrivate);
     } else if (options.shouldParseChanged && !await options.shouldParseChanged(file)) {
-      json = cachedFile?.json;
+      json = cachedFile ? await readCachedDocFileJson(db, cachedFile.path, cachedFile.kind, includePrivate) : undefined;
     } else {
       json = JSON.stringify(await parseCurrentDocFile(file, includePrivate));
       await writeCachedDocFile(db, file, includePrivate, json);
@@ -2506,7 +2505,7 @@ function applySourceOutputPaths(modules: ParsedModuleDoc[], file: CurrentDocFile
   }
 }
 async function readCachedDocFiles(db: DocsDatabase, includePrivate: boolean): Promise<Map<string, CachedDocFile>> {
-  const stmt = db.prepare('SELECT path, kind, include_private, mtime_ms, size, json FROM doc_files WHERE include_private = ?');
+  const stmt = db.prepare('SELECT path, kind, include_private, mtime_ms, size FROM doc_files WHERE include_private = ?');
   try {
     const rows = await stmt.all(includePrivate ? 1 : 0);
     return new Map(rows.map((row) => {
@@ -2515,11 +2514,19 @@ async function readCachedDocFiles(db: DocsDatabase, includePrivate: boolean): Pr
         kind: String(row.kind) as DocFileKind,
         includePrivate: Number(row.include_private) === 1,
         mtimeMs: Number(row.mtime_ms),
-        size: Number(row.size),
-        json: String(row.json)
+        size: Number(row.size)
       };
       return [cached.path, cached];
     }));
+  } finally {
+    stmt.finalize();
+  }
+}
+async function readCachedDocFileJson(db: DocsDatabase, path: string, kind: DocFileKind, includePrivate: boolean): Promise<string | undefined> {
+  const stmt = db.prepare('SELECT json FROM doc_files WHERE path = ? AND kind = ? AND include_private = ?');
+  try {
+    const rows = await stmt.all(path, kind, includePrivate ? 1 : 0);
+    return rows.length > 0 ? String(rows[0]!.json) : undefined;
   } finally {
     stmt.finalize();
   }
