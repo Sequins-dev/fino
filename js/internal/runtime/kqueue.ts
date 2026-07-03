@@ -469,6 +469,22 @@ export function create(): KqueueLoop {
   return { fd };
 }
 /**
+* The kqueue fd itself. A kqueue fd polls readable when it has pending
+* events, so a parent loop can watch it to wake on this loop's I/O and
+* timer activity.
+*
+* ```typescript no_run
+* import * as kqueue from 'internal:runtime/kqueue';
+* const loop = kqueue.create();
+* void kqueue.pollFd(loop);
+* ```
+*
+* @internal
+*/
+export function pollFd(loop: KqueueLoop): number {
+  return loop.fd;
+}
+/**
 * Queue a struct kevent into the pending-changes buffer.
 * If the buffer is full, flush it immediately to the kqueue.
 */

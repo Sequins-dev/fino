@@ -31,7 +31,7 @@
 * await realm.terminate();
 * ```
 */
-import { createContext, stepContext, terminateChild, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { MessagePort, MessageChannel, ThreadPort, BaseTransportPort, type MessageEvent } from '../globals/messaging.ts';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
@@ -174,6 +174,15 @@ function serialiseRules(rules: ImportRule[]): string {
     pattern: r.pattern,
     directive: normaliseDirective(r.directive)
   })));
+}
+/** Serialise `RealmOptions.data` to the JSON string the Rust bridge stores. */
+function serializeRealmData(data: unknown): string | undefined {
+  if (data === undefined) return undefined;
+  const json = JSON.stringify(data);
+  if (json === undefined) {
+    throw new Error('fino:realm — data must be JSON-serializable');
+  }
+  return json;
 }
 // ---------------------------------------------------------------------------
 // ImportMap - helper for building the child-specific rule list
@@ -1829,6 +1838,20 @@ export interface RealmOptions {
   */
   repl?: boolean;
   /**
+  * Arbitrary JSON-serializable configuration delivered to the child realm.
+  * The child reads it via `internal:realm-bridge.getRealmData()` before the
+  * entry module is imported, so it can shape bootstrap behavior (for example
+  * CLI OpenTelemetry setup or worker configuration). Not supported with
+  * `remote: true`.
+  *
+  * ```ts no_run
+  * import type { RealmOptions } from 'fino:realm';
+  *
+  * const options: RealmOptions = { entry: './worker.ts', data: { role: 'ingest' } };
+  * ```
+  */
+  data?: unknown;
+  /**
   * Parent-side MessagePort for communication with the child.
   * Ignored when `thread: true` or `process: true`.
   *
@@ -2143,8 +2166,41 @@ interface ActiveChild {
   /** Called when the child exits with reload_requested. Returns the new handle
   *  to keep running, or null to stop watching (after terminate()). */
   onReload?: () => number | null;
+  /** Pollable loop fd of an embedded child, once armed as a parent-loop wake
+  *  source. Undefined until the child records it via setLoopFd(). */
+  loopFd?: number;
 }
 const _activeChildren: ActiveChild[] = [];
+// Embedded children run their loop only when the parent steps them, so the
+// parent must wake whenever the child's kqueue/io_uring has pending events —
+// otherwise child I/O and timers are quantized to the parent's idle sleep.
+// The child's loop fd polls readable when it has pending events; keeping a
+// one-shot read watch armed on it makes the parent's tick() return the moment
+// the child has work, and also holds the parent's loop alive while the child
+// runs.
+function _armChildLoopWatch(child: ActiveChild): void {
+  const fd = getChildLoopFd(child.handle) as number;
+  if (fd < 0) return;
+  child.loopFd = fd;
+  void (async function _childLoopWatch() {
+    try {
+      while (child.loopFd === fd) {
+        await readable(fd);
+        if (child.loopFd !== fd) break;
+        // Yield one microtask so stepping (later in this host-loop iteration)
+        // can drain the child before the watch re-arms.
+        await Promise.resolve();
+      }
+    } catch {}
+  })();
+}
+function _disarmChildLoopWatch(child: ActiveChild): void {
+  if (child.loopFd === undefined) return;
+  try {
+    removeRead(child.loopFd);
+  } catch {}
+  child.loopFd = undefined;
+}
 /**
 * Step all active child realms by one event-loop iteration.
 *
@@ -2191,6 +2247,7 @@ export function _stepChildren(): void {
       }
     }
     if (stepResult !== true) {
+      _disarmChildLoopWatch(child);
       if (stepError !== undefined) {
         child.reject(stepError);
         _activeChildren.splice(i, 1);
@@ -2206,6 +2263,8 @@ export function _stepChildren(): void {
         child.resolve();
         _activeChildren.splice(i, 1);
       }
+    } else if (child.kind === 'embedded' && child.loopFd === undefined) {
+      _armChildLoopWatch(child);
     }
   }
 }
@@ -2583,6 +2642,10 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     }
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
+    const serializedData = serializeRealmData(opts.data);
+    if (opts.remote && serializedData !== undefined) {
+      throw new Error('fino:realm — data is not supported with remote: true');
+    }
     if (opts.watch) {
       this.#watchOpts = opts;
       this.#watchSerializedRules = serializedRules;
@@ -2608,13 +2671,13 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     } else if (opts.process) {
       this.#kind = 'process';
-      const handle = createProcessContext(opts.root ?? '', opts.entry, serializedRules, watch) as number;
+      const handle = createProcessContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData) as number;
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
     } else if (opts.thread) {
       this.#kind = 'thread';
-      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch) as number;
+      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData) as number;
       this.#handle = handle;
       const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
       this.port = new ThreadPort(wakeReadFd, handle);
@@ -2631,7 +2694,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         childPort = channel.port2;
       }
       this.port = parentPort;
-      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl) as number;
+      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl, serializedData) as number;
     }
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
@@ -2678,17 +2741,18 @@ export class Realm<F extends RealmFn = RealmFn> {
   #spawnChild(): number {
     const opts = this.#watchOpts!;
     const rules = this.#watchSerializedRules;
+    const data = serializeRealmData(opts.data);
     if (opts.process) {
-      const h = createProcessContext(opts.root ?? '', opts.entry, rules, true) as number;
+      const h = createProcessContext(opts.root ?? '', opts.entry, rules, true, data) as number;
       this.#activeChildPort = new ProcessPort(getProcessSocketFd(h) as number, h);
       return h;
     } else if (opts.thread) {
-      const h = createThreadContext(opts.root ?? '', opts.entry, rules, true) as number;
+      const h = createThreadContext(opts.root ?? '', opts.entry, rules, true, data) as number;
       this.#activeChildPort = new ThreadPort(getThreadPortWakeReadFd(h) as number, h);
       return h;
     } else {
       const { port2: childPort } = new MessageChannel();
-      return createContext(opts.root ?? '', opts.entry, rules, childPort, true) as number;
+      return createContext(opts.root ?? '', opts.entry, rules, childPort, true, false, data) as number;
     }
   }
   /**

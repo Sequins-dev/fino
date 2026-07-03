@@ -6,6 +6,16 @@
 * from exponential moving averages of submission rate, completion rate, and
 * per-task latency.
 *
+* ## Exclusive mode
+*
+* With `exclusive: true` the pool runs one task per worker *run*: each call
+* has sole occupancy of its worker, calls queue while all workers are busy
+* (`maxQueue` caps the queue), and the worker realm is recycled — terminated
+* and respawned fresh — after every task, so no state leaks between work
+* items. In this mode a timeout also recycles the worker, killing the
+* underlying task instead of leaking it. The default mode is unchanged:
+* fully concurrent workers, reused across calls.
+*
 * Correlation IDs are generated on the parent side and propagated via
 * fino:context so that all async operations inside a pool task inherit the
 * parent's trace context.
@@ -34,6 +44,8 @@ import { Context } from 'fino:context';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
 const _topicPoolCall = topic(otelRuntimeTopic('realm_pool', 'call', 'start'));
 const _topicPoolCallEnd = topic(otelRuntimeTopic('realm_pool', 'call', 'end'));
+const _topicPoolQueue = topic(otelRuntimeTopic('realm_pool', 'queue', 'start'));
+const _topicPoolQueueEnd = topic(otelRuntimeTopic('realm_pool', 'queue', 'end'));
 // ---------------------------------------------------------------------------
 // Correlation ID context slot
 // ---------------------------------------------------------------------------
@@ -65,6 +77,15 @@ interface PendingCall {
   submittedAt: number;
   /** Whether the call.start OTel event was published; gates call.end emission. */
   startPublished: boolean;
+}
+interface QueuedCall {
+  correlationId: number;
+  args: unknown[];
+  resolve: (value: unknown) => void;
+  reject: (err: unknown) => void;
+  enqueuedAt: number;
+  /** Whether the queue.start OTel event was published; gates queue.end emission. */
+  queueStartPublished: boolean;
 }
 interface PoolWorker {
   realm: Realm;
@@ -176,6 +197,32 @@ export interface PoolOptions {
   * ```
   */
   closeTimeout?: number;
+  /**
+  * Run one task per worker *run*: each call gets sole occupancy of a worker,
+  * calls wait in a queue while all workers are busy, and the worker realm is
+  * recycled (terminated and respawned fresh) after every task so no state
+  * carries between work items. A timeout in this mode recycles the worker,
+  * killing the underlying task rather than leaking it.
+  *
+  * ```ts no_run
+  * import { RealmPool } from 'fino:realm/pool';
+  *
+  * const pool = new RealmPool({ entry: './job.ts', exclusive: true });
+  * ```
+  */
+  exclusive?: boolean;
+  /**
+  * Maximum number of calls allowed to wait for a free worker in exclusive
+  * mode. Further calls reject immediately with a queue-full error. Only
+  * valid with `exclusive: true`. Default: unbounded.
+  *
+  * ```ts no_run
+  * import { RealmPool } from 'fino:realm/pool';
+  *
+  * const pool = new RealmPool({ entry: './job.ts', exclusive: true, maxQueue: 100 });
+  * ```
+  */
+  maxQueue?: number;
 }
 // ---------------------------------------------------------------------------
 // RealmPool
@@ -352,6 +399,24 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   */
   #baseRealm: Omit<RealmOptions, 'entry' | 'thread'>;
   /**
+  * Whether the pool runs in exclusive mode (one task per worker run).
+  *
+  * @internal
+  */
+  #exclusive: boolean;
+  /**
+  * Exclusive-mode queue capacity; `Infinity` when unbounded.
+  *
+  * @internal
+  */
+  #maxQueue: number;
+  /**
+  * Calls waiting for a free worker (exclusive mode only), FIFO.
+  *
+  * @internal
+  */
+  #queue: QueuedCall[] = [];
+  /**
   * Create a pool of `size` warm thread-realm workers.
   *
   * Workers are spawned immediately in the constructor.  The pool is ready as
@@ -377,6 +442,16 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     this.#closeTimeout = opts.closeTimeout ?? 5e3;
     this.#entry = opts.entry;
     this.#baseRealm = opts.realm ?? {};
+    this.#exclusive = opts.exclusive ?? false;
+    if (opts.maxQueue !== undefined) {
+      if (!this.#exclusive) {
+        throw new Error('RealmPool maxQueue requires exclusive: true');
+      }
+      if (!Number.isSafeInteger(opts.maxQueue) || opts.maxQueue < 0) {
+        throw new Error('RealmPool maxQueue must be a non-negative integer');
+      }
+    }
+    this.#maxQueue = opts.maxQueue ?? Infinity;
     this.#workers = Array.from({ length: size }, (_, i) => this.#spawnWorker(i));
   }
   /**
@@ -444,6 +519,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
         worker.completionRate = ema(worker.completionRate, 1 / latencyMs);
       }
       worker.completedCount++;
+      let settled = false;
       if (msg.__pool_result) {
         if (call.startPublished || _topicPoolCallEnd.hasSubscribers) {
           _topicPoolCallEnd.publish(otelRuntimeEvent('realm_pool', 'call', 'end', {
@@ -452,6 +528,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
           }));
         }
         call.resolve(msg.result);
+        settled = true;
       } else if (msg.__pool_error) {
         const err = new Error(msg.message ?? 'Pool worker error');
         if (msg.stack !== undefined) err.stack = msg.stack;
@@ -463,7 +540,9 @@ export class RealmPool<F extends RealmFn = RealmFn> {
           }));
         }
         call.reject(err);
+        settled = true;
       }
+      if (settled && this.#exclusive) this.#recycleWorker(worker);
     });
     realm.port.start();
     // Register realm for stepping so the parent event loop ticks it.
@@ -475,9 +554,12 @@ export class RealmPool<F extends RealmFn = RealmFn> {
       }
       worker.pending.clear();
       worker.activeTasks = 0;
-      // Respawn a replacement unless the pool is closed.
-      if (!this.#closed) {
+      // Respawn a replacement unless the pool is closed or the slot was
+      // already recycled (exclusive mode replaces slots eagerly; the old
+      // worker's run() settling must not respawn a second replacement).
+      if (!this.#closed && this.#workers[slotIndex] === worker) {
         this.#workers[slotIndex] = this.#spawnWorker(slotIndex);
+        this.#pumpQueue();
       }
     });
     return worker;
@@ -520,6 +602,21 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     return n;
   }
   /**
+  * Number of calls waiting for a free worker (exclusive mode).
+  *
+  * Always `0` in the default concurrent mode, which dispatches immediately.
+  *
+  * ```ts no_run
+  * import { RealmPool } from 'fino:realm/pool';
+  *
+  * const pool = new RealmPool({ entry: './job.ts', exclusive: true });
+  * console.log(pool.queued);
+  * ```
+  */
+  get queued(): number {
+    return this.#queue.length;
+  }
+  /**
   * Dispatch `args` to the least-loaded worker and return the result.
   *
   * The current `correlationIdContext` value is propagated as a new correlation
@@ -544,47 +641,140 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     const correlationStr = String(correlationId);
     return correlationIdContext.runWithValue(correlationStr, () => {
       return new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        const worker = this.#selectWorker();
-        const now = performance.now();
-        // Update submission-rate EMA.
-        if (worker.lastSubmitTime > 0) {
-          const dt = now - worker.lastSubmitTime;
-          if (dt > 0) worker.submissionRate = ema(worker.submissionRate, 1 / dt);
+        if (this.#exclusive) {
+          const idle = this.#idleWorker();
+          if (idle !== undefined) {
+            this.#dispatch(idle, correlationId, args, resolve as (v: unknown) => void, reject);
+          } else if (this.#queue.length >= this.#maxQueue) {
+            reject(new Error(`RealmPool queue is full (maxQueue=${this.#maxQueue})`));
+          } else {
+            const queueStartPublished = _topicPoolQueue.hasSubscribers;
+            if (queueStartPublished) {
+              _topicPoolQueue.publish(otelRuntimeEvent('realm_pool', 'queue', 'start', {
+                correlationId,
+                queueDepth: this.#queue.length + 1
+              }));
+            }
+            this.#queue.push({
+              correlationId,
+              args,
+              resolve: resolve as (v: unknown) => void,
+              reject,
+              enqueuedAt: performance.now(),
+              queueStartPublished
+            });
+          }
+          return;
         }
-        worker.lastSubmitTime = now;
-        worker.activeTasks++;
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        if (this.#timeout > 0) {
-          timer = setTimeout(() => {
-            if (!worker.pending.has(correlationId)) return;
-            worker.pending.delete(correlationId);
-            worker.activeTasks = Math.max(0, worker.activeTasks - 1);
-            reject(new Error(`RealmPool call timed out after ${this.#timeout}ms`));
-          }, this.#timeout);
-        }
-        // Capture whether start was published so end is always emitted when start was.
-        const startPublished = _topicPoolCall.hasSubscribers;
-        if (startPublished) {
-          _topicPoolCall.publish(otelRuntimeEvent('realm_pool', 'call', 'start', {
-            correlationId,
-            poolSize: this.size,
-            pendingTasks: this.#workers.reduce((n, w) => n + w.activeTasks, 0)
-          }));
-        }
-        worker.pending.set(correlationId, {
-          resolve: resolve as (v: unknown) => void,
-          reject,
-          timer,
-          submittedAt: now,
-          startPublished
-        });
-        worker.realm.port.postMessage({
-          __pool_call: true,
-          correlationId,
-          args
-        });
+        this.#dispatch(this.#selectWorker(), correlationId, args, resolve as (v: unknown) => void, reject);
       });
     });
+  }
+  /**
+  * Private method `#dispatch` used by `RealmPool`.
+  *
+  * Sends one call to a specific worker: updates submission EMAs, arms the
+  * per-task timeout (which in exclusive mode also recycles the worker),
+  * publishes the call.start event, and posts the `__pool_call` envelope.
+  *
+  * @internal
+  */
+  #dispatch(worker: PoolWorker, correlationId: number, args: unknown[], resolve: (v: unknown) => void, reject: (err: unknown) => void): void {
+    const now = performance.now();
+    // Update submission-rate EMA.
+    if (worker.lastSubmitTime > 0) {
+      const dt = now - worker.lastSubmitTime;
+      if (dt > 0) worker.submissionRate = ema(worker.submissionRate, 1 / dt);
+    }
+    worker.lastSubmitTime = now;
+    worker.activeTasks++;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (this.#timeout > 0) {
+      timer = setTimeout(() => {
+        if (!worker.pending.has(correlationId)) return;
+        worker.pending.delete(correlationId);
+        worker.activeTasks = Math.max(0, worker.activeTasks - 1);
+        reject(new Error(`RealmPool call timed out after ${this.#timeout}ms`));
+        // Exclusive workers are single-occupancy: a timed-out task would
+        // wedge its slot forever, so kill the run and recycle the worker.
+        if (this.#exclusive) this.#recycleWorker(worker);
+      }, this.#timeout);
+    }
+    // Capture whether start was published so end is always emitted when start was.
+    const startPublished = _topicPoolCall.hasSubscribers;
+    if (startPublished) {
+      _topicPoolCall.publish(otelRuntimeEvent('realm_pool', 'call', 'start', {
+        correlationId,
+        poolSize: this.size,
+        pendingTasks: this.#workers.reduce((n, w) => n + w.activeTasks, 0)
+      }));
+    }
+    worker.pending.set(correlationId, {
+      resolve,
+      reject,
+      timer,
+      submittedAt: now,
+      startPublished
+    });
+    worker.realm.port.postMessage({
+      __pool_call: true,
+      correlationId,
+      args
+    });
+  }
+  /**
+  * Private method `#idleWorker` used by `RealmPool`.
+  *
+  * First worker with no in-flight task, or undefined when all are busy.
+  *
+  * @internal
+  */
+  #idleWorker(): PoolWorker | undefined {
+    for (const w of this.#workers) {
+      if (w.activeTasks === 0) return w;
+    }
+    return undefined;
+  }
+  /**
+  * Private method `#recycleWorker` used by `RealmPool`.
+  *
+  * Replaces a worker's slot with a fresh realm, terminates the old one, and
+  * dispatches queued work. The slot is replaced before terminating so the
+  * old worker's crash handler observes the swap and does not double-respawn.
+  *
+  * @internal
+  */
+  #recycleWorker(worker: PoolWorker): void {
+    const slot = this.#workers.indexOf(worker);
+    if (slot === -1 || this.#closed) return;
+    this.#workers[slot] = this.#spawnWorker(slot);
+    worker.realm.terminate();
+    worker.realm.port.close();
+    this.#pumpQueue();
+  }
+  /**
+  * Private method `#pumpQueue` used by `RealmPool`.
+  *
+  * Dispatches queued calls onto idle workers (exclusive mode), restoring the
+  * call's correlation context around the dispatch.
+  *
+  * @internal
+  */
+  #pumpQueue(): void {
+    while (this.#queue.length > 0) {
+      const worker = this.#idleWorker();
+      if (worker === undefined) return;
+      const queued = this.#queue.shift()!;
+      if (queued.queueStartPublished || _topicPoolQueueEnd.hasSubscribers) {
+        _topicPoolQueueEnd.publish(otelRuntimeEvent('realm_pool', 'queue', 'end', {
+          correlationId: queued.correlationId,
+          waitedMs: performance.now() - queued.enqueuedAt
+        }));
+      }
+      correlationIdContext.runWithValue(String(queued.correlationId), () => {
+        this.#dispatch(worker, queued.correlationId, queued.args, queued.resolve, queued.reject);
+      });
+    }
   }
   /**
   * Stop dispatching new tasks, wait for all in-flight tasks to settle, then
@@ -603,6 +793,10 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   */
   async close(): Promise<void> {
     this.#closed = true;
+    // Reject queued (never-dispatched) calls first so their callers settle.
+    for (const queued of this.#queue.splice(0)) {
+      queued.reject(new Error('RealmPool is closed'));
+    }
     // Wait for all pending calls to settle (resolve or reject).
     const drains: Promise<unknown>[] = [];
     for (const w of this.#workers) {

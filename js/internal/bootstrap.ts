@@ -30,7 +30,7 @@
 *
 * @internal
 */
-import { tick, alive, registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
+import { tick, alive, loopFd, registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
 import { drainMicrotasks, runLoop } from 'internal:async-context';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
@@ -39,7 +39,8 @@ import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, setLoopFd } from 'internal:realm-bridge';
+import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import { setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, Performance, performance } from '../globals/time.ts';
@@ -347,8 +348,15 @@ if (_threadWakeReadFd < 0 && _childPort !== undefined) {
     }
   });
 }
+// Record this realm's pollable loop fd so an embedding parent can wake on
+// this realm's I/O and timer events instead of polling every ~25ms. Harmless
+// in the root realm (nothing reads it there).
+try {
+  (setLoopFd as (fd: number) => void)(loopFd());
+} catch {}
 if (_childEntry) {
   let _childDone = false;
+  let _entryFailed = false;
   // Set when the parent sends { __terminate: true } via the port.  Used in
   // watch mode (where _childDone is not checked) so thread/process realm
   // terminate() unblocks _childIsDone() the same way terminateChild() does
@@ -384,13 +392,51 @@ if (_childEntry) {
       }
     });
   }
-  import(_childEntry).then(function _onChildEntryDone(mod: {
+  // CLI OTel providers are context-scoped, so the spawner cannot install them
+  // across the realm boundary — the child must wrap its own entry import.
+  // `RealmOptions.data.cliOtel` carries the endpoint from `fino run`.
+  async function _loadChildEntry(): Promise<{
+    default?: unknown;
+  }> {
+    const raw = (getRealmData as () => string | undefined)();
+    if (raw !== undefined) {
+      let cliOtel: {
+        endpoint?: string;
+        script?: string;
+        debug?: boolean;
+      } | undefined;
+      try {
+        cliOtel = (JSON.parse(raw) as {
+          cliOtel?: typeof cliOtel;
+        }).cliOtel;
+      } catch {}
+      if (cliOtel && typeof cliOtel.endpoint === 'string' && cliOtel.endpoint) {
+        const { createCliOtelRuntime } = await import('internal:opentelemetry/bootstrap');
+        const { runWithTracerProvider, runWithLoggerProvider, runWithMeterProvider } = await import('fino:opentelemetry');
+        const rt = await createCliOtelRuntime(cliOtel.endpoint, cliOtel.script ?? _childEntry!, cliOtel.debug === true);
+        return runWithTracerProvider(rt.tracerProvider, () => runWithLoggerProvider(rt.loggerProvider, () => runWithMeterProvider(rt.meterProvider, () => import(_childEntry!))));
+      }
+    }
+    return import(_childEntry!);
+  }
+  _loadChildEntry().then(function _onChildEntryDone(mod: {
     default?: unknown;
   }) {
-    if (_childPort !== undefined && typeof mod.default === 'function') {
+    // A default-exported Task (branded via Symbol.for('fino.task')) is a
+    // worker definition: its .worker() dispatcher becomes the callable, so
+    // pools and jobs can run plain task files.
+    let _entryCallable: ((...args: unknown[]) => unknown) | undefined;
+    if (typeof mod.default === 'function') {
+      _entryCallable = mod.default as (...args: unknown[]) => unknown;
+    } else if (mod.default !== null && typeof mod.default === 'object' && (mod.default as Record<PropertyKey, unknown>)[Symbol.for('fino.task')] === true) {
+      _entryCallable = (mod.default as {
+        worker(): (...args: unknown[]) => unknown;
+      }).worker();
+    }
+    if (_childPort !== undefined && _entryCallable !== undefined) {
       // Call mode: wait for { __call, args }, invoke default export, post result.
       // _childDone is set after the function returns; do NOT set it here.
-      const _fn = mod.default as (...args: unknown[]) => unknown;
+      const _fn = _entryCallable;
       // Track which invocation mode this worker is in so the two modes cannot
       // interfere with each other.
       let _isPoolMode = false;
@@ -489,6 +535,7 @@ if (_childEntry) {
       _childDone = true;
     }
   }, function _onChildEntryError(err: unknown) {
+    _entryFailed = true;
     try {
       const msg = err instanceof Error ? err.stack ?? err.message : String(err);
       (setEntryError as (m: string) => void)(msg);
@@ -504,13 +551,37 @@ if (_childEntry) {
   } | null = null;
   let _watchPollRef: ReturnType<typeof setInterval> | null = null;
   let _portClosed = false;
+  // Mirror the root CLI's shutdown semantics (main.ts startShutdown): when the
+  // entry completes, run this realm's shutdown hooks so long-lived services
+  // (e.g. an OTel SDK's periodic readers) stop keeping the loop alive.
+  let _shutdownStarted = false;
+  let _shutdownDone = false;
+  function _startChildShutdown() {
+    if (_shutdownStarted) return;
+    _shutdownStarted = true;
+    Promise.resolve(runShutdownHooks()).then(function _childShutdownOk() {
+      _shutdownDone = true;
+    }, function _childShutdownErr(err: unknown) {
+      // Root-CLI parity: a shutdown-hook failure fails the run, but never
+      // displaces an earlier entry error.
+      if (!_entryFailed) {
+        try {
+          const msg = err instanceof Error ? err.stack ?? err.message : String(err);
+          (setEntryError as (m: string) => void)(msg);
+        } catch {}
+      }
+      _shutdownDone = true;
+    });
+  }
   driveLoop(function _childIsDone() {
     // In watch mode the realm stays alive after the entry completes so the
     // file-watcher loop can keep driving kqueue/inotify events.  Exit is
     // triggered by: requestReload() (sets state.terminated), terminateChild()
     // for embedded realms (same), or { __terminate: true } over the port for
     // thread/process realms (sets _externalTerminate).
-    const done = _watchMode ? _externalTerminate || isTerminated() as boolean : _childDone || isTerminated() as boolean;
+    const entryDone = _watchMode ? _externalTerminate || isTerminated() as boolean : _childDone || isTerminated() as boolean;
+    if (entryDone && !_shutdownStarted) _startChildShutdown();
+    const done = entryDone && _shutdownDone;
     if (done) {
       // Tear down the watcher and poll interval so alive() drains to false
       // and the child's step loop can exit cleanly.  This handles both the

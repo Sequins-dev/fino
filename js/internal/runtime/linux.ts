@@ -201,3 +201,13 @@ export function destroy(loop: SelectedLoop): void {
   if (loop.kind === 'io_uring') ioUring.destroy(loop.raw as any);
   else pollBackend.destroy(loop.raw as any);
 }
+/**
+* Pollable fd of the selected backend, or `-1` when the backend has none
+* (the poll(2) fallback has no single waitable fd).
+*
+* @internal
+*/
+export function pollFd(loop: SelectedLoop): number {
+  if (loop.kind === 'io_uring') return ioUring.pollFd(loop.raw as any);
+  return -1;
+}

@@ -47,6 +47,8 @@ pub struct ChildConfig {
     pub timing_label: &'static str,
     /// Whether the realm was started with watch mode enabled.
     pub watch_mode: bool,
+    /// JSON-serialized `RealmOptions.data` payload, if any.
+    pub realm_data: Option<String>,
     /// For thread realms: shared atomic that `requestReload()` writes so the
     /// parent can observe the reload intent without a V8 context-scope.
     /// `None` for embedded and process realms.
@@ -121,6 +123,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             config.wake_write_fd,
             config.watch_mode,
             false, // thread/process realms don't support repl mode
+            config.realm_data,
             config.reload_requested_signal,
         );
         context.set_slot(Rc::new(RefCell::new(state)));

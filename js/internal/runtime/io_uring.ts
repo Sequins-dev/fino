@@ -861,3 +861,17 @@ export function destroy(loop: IoUringLoop): void {
   lib.symbols.munmap(loop.sqes, loop.sqesSize);
   lib.symbols.close(loop.ringFd);
 }
+/**
+* The io_uring ring fd. It polls readable when completion-queue entries are
+* pending, so a parent loop can watch it to wake on this loop's activity.
+*
+* ```typescript no_run
+* import * as uring from 'internal:runtime/io_uring';
+* void uring.pollFd(loop);
+* ```
+*
+* @internal
+*/
+export function pollFd(loop: IoUringLoop): number {
+  return loop.ringFd;
+}

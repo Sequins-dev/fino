@@ -68,6 +68,7 @@ pub struct SpawnConfig {
     pub import_rules: Vec<ImportRule>,
     pub package_map_json: Option<String>,
     pub watch_mode: bool,
+    pub realm_data: Option<String>,
 }
 
 /// Returned to the parent after a thread realm is spawned.
@@ -127,6 +128,7 @@ struct IsolateConfig {
     /// Parent's wake-pipe write end — write here after each send.
     partner_wake_write_fd: RawFd,
     watch_mode: bool,
+    realm_data: Option<String>,
     /// Shared with `ThreadRealmHandle.reload_requested`; child writes it on reload.
     reload_requested: Arc<AtomicBool>,
 }
@@ -202,6 +204,7 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
         wake_read_fd: child_wake_read,
         partner_wake_write_fd: parent_wake_write,
         watch_mode: config.watch_mode,
+        realm_data: config.realm_data,
         reload_requested: reload_for_thread,
     };
 
@@ -261,6 +264,7 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
         wake_write_fd: Some(config.partner_wake_write_fd),
         timing_label: "thread-realm",
         watch_mode: config.watch_mode,
+        realm_data: config.realm_data,
         reload_requested_signal: Some(config.reload_requested),
     })
 }

@@ -14,6 +14,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "createContext",
         "stepContext",
         "terminateChild",
+        "getChildLoopFd",
         "createThreadContext",
         "stepThreadContext",
         "threadPortSend",
@@ -52,6 +53,7 @@ fn eval_steps<'a>(
     set_fn!("createContext", create_context);
     set_fn!("stepContext", step_context);
     set_fn!("terminateChild", terminate_child);
+    set_fn!("getChildLoopFd", get_child_loop_fd);
     set_fn!("createThreadContext", create_thread_context);
     set_fn!("stepThreadContext", step_thread_context);
     set_fn!("threadPortSend", thread_port_send);
@@ -206,6 +208,15 @@ fn parse_and_merge_rules(
 // Same-Isolate child realm callbacks
 // ---------------------------------------------------------------------------
 
+/// Read an optional string argument: `undefined`/`null` → `None`.
+fn optional_string_arg(scope: &mut v8::HandleScope, arg: v8::Local<v8::Value>) -> Option<String> {
+    if arg.is_undefined() || arg.is_null() {
+        None
+    } else {
+        arg.to_string(scope).map(|s| s.to_rust_string_lossy(scope))
+    }
+}
+
 /// JS: `createContext(root, entryPath, serializedRules[, port]) -> number`
 ///
 /// Queues a pending child-context creation and returns the pre-allocated
@@ -280,6 +291,9 @@ fn create_context(
     let watch_mode = args.get(4).boolean_value(scope);
     let repl_mode = args.get(5).boolean_value(scope);
 
+    // --- Parse optional realm data JSON (7th arg) ---
+    let realm_data = optional_string_arg(scope, args.get(6));
+
     // --- Queue the pending create; pre-allocate a Pending slot ---
     let handle_idx = {
         let state_rc = get_state(scope);
@@ -295,6 +309,7 @@ fn create_context(
             port: port_global,
             watch_mode,
             repl_mode,
+            realm_data,
         });
         idx
     };
@@ -402,6 +417,39 @@ fn terminate_child(
     child_state.borrow_mut().terminated = true;
 }
 
+/// JS: `getChildLoopFd(handle: number) -> number`
+///
+/// Returns the pollable event-loop fd an embedded child recorded via
+/// `internal:realm-bridge.setLoopFd()`, or `-1` when the child has not
+/// recorded one (still bootstrapping, non-embedded, or backend without a
+/// pollable fd). The parent registers this fd with its own loop so child I/O
+/// and timer events wake the parent immediately instead of being polled on a
+/// fixed interval.
+fn get_child_loop_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+
+    let child_context = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        match st.child_contexts.get(handle) {
+            Some(ChildRealmSlot::Active(c)) => v8::Local::new(scope, &c.context),
+            _ => {
+                rv.set(v8::Integer::new(scope, -1).into());
+                return;
+            }
+        }
+    };
+
+    let child_scope = &mut v8::ContextScope::new(scope, child_context);
+    let child_state = get_state(child_scope);
+    let fd = child_state.borrow().loop_fd.unwrap_or(-1);
+    rv.set(v8::Integer::new(child_scope, fd).into());
+}
+
 // ---------------------------------------------------------------------------
 // Thread realm callbacks
 // ---------------------------------------------------------------------------
@@ -450,8 +498,9 @@ fn create_thread_context(
 
     let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
-    // --- Parse optional watch flag (4th arg) ---
+    // --- Parse optional watch flag (4th arg) and realm data JSON (5th arg) ---
     let watch_mode = args.get(3).boolean_value(scope);
+    let realm_data = optional_string_arg(scope, args.get(4));
 
     // --- Spawn the thread realm ---
     let spawn_config = thread::SpawnConfig {
@@ -460,6 +509,7 @@ fn create_thread_context(
         import_rules,
         package_map_json,
         watch_mode,
+        realm_data,
     };
 
     let handle = match thread::spawn_thread_realm(spawn_config) {
@@ -731,8 +781,9 @@ fn create_process_context(
 
     let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
-    // Optional watch flag (4th arg)
+    // Optional watch flag (4th arg) and realm data JSON (5th arg)
     let watch_mode = args.get(3).boolean_value(scope);
+    let realm_data = optional_string_arg(scope, args.get(4));
 
     let spawn_args = process::SpawnArgs {
         process_env,
@@ -740,6 +791,7 @@ fn create_process_context(
         import_rules,
         package_map_json,
         watch_mode,
+        realm_data,
     };
     let handle = match process::spawn_process_realm(spawn_args) {
         Ok(h) => h,

@@ -127,6 +127,7 @@ const _addVnode = backend.addVnode as ((raw: object, fd: number, fflags: number,
 const _addSignal = backend.addSignal as ((raw: object, signo: number, ident?: number) => void) | undefined;
 const _addPersistentRead = backend.addPersistentRead as ((raw: object, fd: number, ident?: number) => void) | undefined;
 const _wait = backend.wait as (raw: object, timeoutMs: number) => LoopEvent[];
+const _pollFd = backend.pollFd as ((raw: object) => number) | undefined;
 // ---------------------------------------------------------------------------
 // Singleton state — created at module load, lives for the process lifetime
 // ---------------------------------------------------------------------------
@@ -225,6 +226,23 @@ export function tick(timeoutMs: number): number {
   const events = _wait(_raw, timeoutMs);
   for (const ev of events) _dispatch(ev);
   return events.length;
+}
+/**
+* The pollable fd of this loop's backend, or `-1` when the backend has none.
+*
+* A kqueue fd (macOS) or io_uring ring fd (Linux) polls readable when the
+* loop has pending events, so a parent realm can watch this fd to wake
+* immediately on an embedded child's I/O and timer activity.
+*
+* ```typescript no_run
+* import * as loop from 'internal:runtime/loop';
+* void loop.loopFd();
+* ```
+*
+* @internal
+*/
+export function loopFd(): number {
+  return _pollFd?.(_raw) ?? -1;
 }
 /**
 * Returns true if the loop has any pending I/O work.

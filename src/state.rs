@@ -238,6 +238,17 @@ pub fn default_import_rules() -> Vec<ImportRule> {
             pattern: ImportPattern::Prefix("internal:".to_string()),
             directive: ImportDirective::Inherit,
         },
+        // The child-realm bootstrap script is trusted runtime code, but its
+        // dynamic imports carry the raw resource name (not a builtin
+        // specifier), so without this rule its internal:* imports would be
+        // blocked where its static ones are not. Public (fino:*) dynamic
+        // imports from the bootstrap intentionally remain subject to realm
+        // rules.
+        ImportRule {
+            from: Some(ImportPattern::Exact("internal/bootstrap.mjs".to_string())),
+            pattern: ImportPattern::Prefix("internal:".to_string()),
+            directive: ImportDirective::Inherit,
+        },
     ]
 }
 
@@ -270,6 +281,10 @@ pub struct PendingRealm {
     /// `internal:realm-bridge.getReplMode()` so `internal/bootstrap.ts` can activate
     /// the REPL message loop instead of importing an entry module.
     pub repl_mode: bool,
+
+    /// JSON-serialized `RealmOptions.data` payload, exposed to the child via
+    /// `internal:realm-bridge.getRealmData()`.
+    pub realm_data: Option<String>,
 }
 
 /// Slot in the parent's `child_contexts` Vec.
@@ -428,6 +443,19 @@ pub struct FinoState {
     /// activate the REPL message loop instead of importing an entry module.
     pub repl_mode: bool,
 
+    /// JSON-serialized `RealmOptions.data` payload from the parent, exposed to
+    /// JS via `internal:realm-bridge.getRealmData()`. `None` for the root Realm
+    /// and for children spawned without `data`.
+    pub realm_data: Option<String>,
+
+    /// The pollable fd of this realm's event-loop backend (kqueue fd on macOS,
+    /// io_uring ring fd on Linux; -1 when the backend has none). Written by the
+    /// child via `internal:realm-bridge.setLoopFd()`; read by the parent via
+    /// `internal:realm-native.getChildLoopFd()` so the parent's loop can wake
+    /// on embedded-child I/O and timer events instead of polling on a fixed
+    /// interval.
+    pub loop_fd: Option<i32>,
+
     /// Shared atomic for thread realms: `requestReload()` writes `true` here
     /// so the parent's `ThreadRealmHandle` can observe the reload intent
     /// without entering the child's V8 context. `None` for embedded/process.
@@ -504,6 +532,8 @@ impl FinoState {
             reload_requested: false,
             watch_mode: false,
             repl_mode: false,
+            realm_data: None,
+            loop_fd: None,
             reload_requested_signal: None,
             entry_error: None,
             port: None,
@@ -534,6 +564,7 @@ impl FinoState {
         wake_write_fd: Option<std::os::unix::io::RawFd>,
         watch_mode: bool,
         repl_mode: bool,
+        realm_data: Option<String>,
         reload_requested_signal: Option<Arc<AtomicBool>>,
     ) -> Self {
         Self {
@@ -563,6 +594,8 @@ impl FinoState {
             reload_requested: false,
             watch_mode,
             repl_mode,
+            realm_data,
+            loop_fd: None,
             reload_requested_signal,
             entry_error: None,
             port,
@@ -757,6 +790,28 @@ mod tests {
         let rules = default_import_rules();
         // fino:* specifiers are not explicitly covered → fall through to BUILTINS
         assert!(resolve_directive(&rules, Some("/app/main.ts"), "fino:file").is_none());
+    }
+
+    #[test]
+    fn bootstrap_dynamic_internal_import_inherits_by_default() {
+        let rules = default_import_rules();
+        assert!(matches!(
+            resolve_directive(
+                &rules,
+                Some("internal/bootstrap.mjs"),
+                "internal:opentelemetry/bootstrap"
+            ),
+            Some(&ImportDirective::Inherit)
+        ));
+        // Other non-builtin referrers stay blocked.
+        assert!(matches!(
+            resolve_directive(
+                &rules,
+                Some("/app/main.ts"),
+                "internal:opentelemetry/bootstrap"
+            ),
+            Some(&ImportDirective::Block)
+        ));
     }
 
     #[test]

@@ -19,6 +19,8 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "requestReload",
         "getWatchMode",
         "getReplMode",
+        "getRealmData",
+        "setLoopFd",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -51,6 +53,8 @@ fn eval_steps<'a>(
     set_fn!("requestReload", request_reload);
     set_fn!("getWatchMode", get_watch_mode);
     set_fn!("getReplMode", get_repl_mode);
+    set_fn!("getRealmData", get_realm_data);
+    set_fn!("setLoopFd", set_loop_fd);
 
     Some(v8::undefined(scope).into())
 }
@@ -71,6 +75,37 @@ fn get_entry_path(
         }
         None => rv.set(v8::undefined(scope).into()),
     }
+}
+
+/// Returns the JSON-serialized `RealmOptions.data` string passed at creation
+/// time, or `undefined` when none was provided (or for the root Realm).
+fn get_realm_data(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let st = state_rc.borrow();
+    match &st.realm_data {
+        Some(d) => {
+            let s = v8::String::new(scope, d).unwrap();
+            rv.set(s.into());
+        }
+        None => rv.set(v8::undefined(scope).into()),
+    }
+}
+
+/// Record this realm's pollable event-loop fd so the parent's loop can wake
+/// on the child's I/O and timer events (read back through
+/// `internal:realm-native.getChildLoopFd`).
+fn set_loop_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let fd = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+    let state_rc = get_state(scope);
+    state_rc.borrow_mut().loop_fd = Some(fd);
 }
 
 /// Returns the MessagePort object passed to this child Realm at creation time,

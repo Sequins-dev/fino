@@ -533,7 +533,42 @@ export class Task<
       parameters: this.parameters
     };
   }
+  /**
+  * Turn this task (and its children) into a job-worker dispatcher — the
+  * default-export-function contract of `fino:realm/pool`.
+  *
+  * A module that default-exports a `Task` gets this applied automatically by
+  * the realm bootstrap, so `new RealmPool({ entry: './my-task.ts' })` and
+  * `fino:jobs` pool processors work on plain task files.
+  *
+  * ```ts no_run
+  * import { task } from 'fino:task';
+  *
+  * const compact = task({ name: 'compact', run: async () => 'ok' });
+  * export default compact.worker();
+  * ```
+  */
+  worker(): (call: unknown) => Promise<unknown> {
+    let dispatcher: Promise<(call: never) => Promise<unknown>> | undefined;
+    return async (call: unknown) => {
+      // Lazy so task.ts never statically depends on the jobs runner.
+      dispatcher ??= import('internal:jobs/runner').then((mod) => (mod as {
+        taskWorker(root: Task): (call: never) => Promise<unknown>;
+      }).taskWorker(this as unknown as Task));
+      return (await dispatcher)(call as never);
+    };
+  }
 }
+// Cross-module brand so the realm bootstrap can recognize a default-exported
+// Task without importing fino:task eagerly (instanceof does not survive
+// separate module caches; Symbol.for is per-isolate and the check always runs
+// in the same realm as the export).
+Object.defineProperty(Task.prototype, Symbol.for('fino.task'), {
+  value: true,
+  writable: false,
+  enumerable: false,
+  configurable: false
+});
 /**
 * Create a task from metadata and an executor.
 */

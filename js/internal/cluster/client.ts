@@ -846,7 +846,7 @@ export class ClusterClient {
 * Outbound messages are serialized and sent as `PORT_MSG` cluster messages;
 * inbound payloads are deserialized and dispatched through the shared
 * `BaseTransportPort` machinery. Messages posted before the child port ID is
-* assigned are dropped.
+* assigned are queued and flushed once `SPAWN_ACK` delivers the ID.
 *
 * ```ts no_run
 * import { ClusterClient, ClusterPort } from 'internal:cluster/client';
@@ -916,11 +916,19 @@ export class ClusterPort extends BaseTransportPort {
   */
   #childPortId: string | null = null;
   /**
+  * Outbound messages serialized before `_setChildPortId()` ran, flushed in
+  * order once the child port ID arrives. Spawn is asynchronous (SPAWN_ACK),
+  * so early sends — including a prompt `terminate()` — must not be lost.
+  *
+  * @internal
+  */
+  #preSpawnQueue: Uint8Array[][] = [];
+  /**
   * Create and register a cluster port with its owning client.
   *
   * The constructor immediately calls `client.registerPort()`. Close the port
   * to unregister it; until `_setChildPortId()` runs, outbound `postMessage()`
-  * calls are ignored.
+  * calls are queued and flushed on assignment.
   *
   * ```ts no_run
   * import { ClusterClient, ClusterPort } from 'internal:cluster/client';
@@ -952,6 +960,9 @@ export class ClusterPort extends BaseTransportPort {
   */
   _setChildPortId(childPortId: string): void {
     this.#childPortId = childPortId;
+    for (const parts of this.#preSpawnQueue.splice(0)) {
+      this.#client.sendPortMsg(this.portId, childPortId, parts);
+    }
   }
   /**
   * Serialize and send a message to the remote child realm.
@@ -970,11 +981,15 @@ export class ClusterPort extends BaseTransportPort {
   * ```
   */
   postMessage(message: unknown, transfer?: ArrayBuffer[]): void {
-    if (this._closed || this.#childPortId === null) return;
+    if (this._closed) return;
     if (transfer !== undefined && !transfer.every((item) => item instanceof ArrayBuffer)) {
       throw new TypeError('ClusterPort transfer list only supports ArrayBuffer values');
     }
     const parts = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(message, transfer && transfer.length > 0 ? transfer : undefined);
+    if (this.#childPortId === null) {
+      this.#preSpawnQueue.push(parts);
+      return;
+    }
     this.#client.sendPortMsg(this.portId, this.#childPortId, parts);
   }
   /**

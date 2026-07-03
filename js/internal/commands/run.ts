@@ -2,10 +2,12 @@
 * internal/commands/run — internal runtime module.
 *
 * Implements script execution for both `fino run <script>` and the root
-* shortcut `fino <script>`. The module handles path normalization, watch-mode
-* realm creation, and optional OpenTelemetry provider installation from either
-* `--otlp-endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` before importing the
-* target script.
+* shortcut `fino <script>`. The module handles path normalization and hands
+* the script to the orchestrator (`internal:orchestrator`), which runs it as
+* a supervised app-workload child realm. With `--otlp-endpoint` or
+* `OTEL_EXPORTER_OTLP_ENDPOINT`, the endpoint travels to the child via
+* `RealmOptions.data.cliOtel` so the child installs its own CLI OpenTelemetry
+* providers around the entry import. Watch mode keeps its own realm path.
 *
 * ```js
 * import { createRunCommand } from 'internal:commands/run';
@@ -18,8 +20,7 @@
 import { Task } from '../../task.ts';
 import { cwd, env } from '../../process.ts';
 import { Realm } from '../../realm/index.ts';
-import { LoggerProvider, MeterProvider, TracerProvider, runWithLoggerProvider, runWithMeterProvider, runWithTracerProvider } from '../../opentelemetry.ts';
-import { createCliOtelRuntime } from '../opentelemetry/bootstrap.ts';
+import { runApp } from '../orchestrator/index.ts';
 function fileUrlFromPath(path: string): string {
   const bytes = new TextEncoder().encode(path);
   let encoded = '';
@@ -38,13 +39,6 @@ function normalizeScriptSpecifier(script: string): string {
   if (script.startsWith('./') || script.startsWith('../')) return fileUrlFromPath(`${cwd()}/${script}`);
   if (script.includes(':')) return script;
   return fileUrlFromPath(`${cwd()}/./${script}`);
-}
-function runWithProviders<R>(providers: {
-  tracerProvider: TracerProvider;
-  loggerProvider: LoggerProvider;
-  meterProvider: MeterProvider;
-}, fn: () => R): R {
-  return runWithTracerProvider(providers.tracerProvider, () => runWithLoggerProvider(providers.loggerProvider, () => runWithMeterProvider(providers.meterProvider, fn)));
 }
 interface RunInput {
   script?: unknown;
@@ -87,14 +81,23 @@ export async function runScriptTask(input: RunInput): Promise<unknown> {
     (globalThis as Record<string, unknown>).addEventListener?.('beforeunload', () => realm.terminate());
     return realm.run();
   }
-  const load = () => import(normalizeScriptSpecifier(String(script)));
-  if (String(env.OTEL_SDK_DISABLED || '').trim().toLowerCase() === 'true') return load();
+  const entry = normalizeScriptSpecifier(String(script));
+  if (String(env.OTEL_SDK_DISABLED || '').trim().toLowerCase() === 'true') return runApp({ entry });
   const endpointOption = input['otlp-endpoint'];
   const flagEndpoint = typeof endpointOption === 'string' ? endpointOption.trim() : '';
   const envEndpoint = typeof env.OTEL_EXPORTER_OTLP_ENDPOINT === 'string' ? env.OTEL_EXPORTER_OTLP_ENDPOINT.trim() : '';
   const endpoint = flagEndpoint || envEndpoint;
-  if (!endpoint) return load();
-  return runWithProviders(await createCliOtelRuntime(endpoint, String(script), env.FINO_OTEL_DEBUG === '1'), load);
+  if (!endpoint) return runApp({ entry });
+  return runApp({
+    entry,
+    data: {
+      cliOtel: {
+        endpoint,
+        script: String(script),
+        debug: env.FINO_OTEL_DEBUG === '1'
+      }
+    }
+  });
 }
 /**
 * Create the explicit `run` subcommand.

@@ -43,9 +43,7 @@ use ::v8;
 
 use crate::{
     loader,
-    state::{
-        ChildRealm, ChildRealmSlot, FinoState, ImportRule, PendingRealm, get_state, root_queue_ptr,
-    },
+    state::{ChildRealm, ChildRealmSlot, FinoState, PendingRealm, get_state, root_queue_ptr},
 };
 
 // Public re-exports used by loader.rs (BUILTINS registry).
@@ -66,23 +64,15 @@ pub fn process_pending_creates(scope: &mut v8::HandleScope<()>, state_rc: &Rc<Re
     let pending: Vec<PendingRealm> = std::mem::take(&mut state_rc.borrow_mut().pending_creates);
 
     for pending_realm in pending {
-        let slot = match create_child_context(
-            scope,
-            pending_realm.process_env,
-            pending_realm.entry_path,
-            pending_realm.import_rules,
-            pending_realm.package_map_json,
-            pending_realm.port,
-            pending_realm.watch_mode,
-            pending_realm.repl_mode,
-        ) {
+        let handle_idx = pending_realm.handle_idx;
+        let slot = match create_child_context(scope, pending_realm) {
             Ok(child_realm) => ChildRealmSlot::Active(child_realm),
             Err(e) => {
                 eprintln!("fino: failed to create child realm: {e}");
                 ChildRealmSlot::Failed(Some(e))
             }
         };
-        state_rc.borrow_mut().child_contexts[pending_realm.handle_idx] = slot;
+        state_rc.borrow_mut().child_contexts[handle_idx] = slot;
     }
 }
 
@@ -233,14 +223,19 @@ fn realm_timing_enabled() -> bool {
 /// current iteration has already been dropped.
 fn create_child_context(
     scope: &mut v8::HandleScope<()>,
-    process_env: crate::state::ProcessEnv,
-    entry_path: String,
-    import_rules: Vec<ImportRule>,
-    package_map_json: Option<String>,
-    port: Option<v8::Global<v8::Value>>,
-    watch_mode: bool,
-    repl_mode: bool,
+    pending: PendingRealm,
 ) -> Result<ChildRealm, String> {
+    let PendingRealm {
+        handle_idx: _,
+        process_env,
+        entry_path,
+        import_rules,
+        package_map_json,
+        port,
+        watch_mode,
+        repl_mode,
+        realm_data,
+    } = pending;
     let total_start = if realm_timing_enabled() {
         Some(Instant::now())
     } else {
@@ -287,6 +282,7 @@ fn create_child_context(
             None,
             watch_mode,
             repl_mode,
+            realm_data,
             None, // embedded: parent reads reload_requested directly via context-scope
         );
 
