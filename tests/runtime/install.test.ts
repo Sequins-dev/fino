@@ -123,6 +123,15 @@ describe('fino install', () => {
       }, null, 2),
       'package/index.js': 'export default "dep-1.5.0";\n'
     });
+    await createPackageTarball(fs, registryDir + '/scoped-pkg-1.0.0.tgz', {
+      'package/package.json': JSON.stringify({
+        name: '@scope/pkg',
+        version: '1.0.0',
+        type: 'module',
+        exports: { '.': './index.js' }
+      }, null, 2),
+      'package/index.js': 'export default "scoped-value";\n'
+    });
     await createPackageTarball(fs, registryDir + '/pkg-1.0.0.tgz', {
       'package/package.json': JSON.stringify({
         name: 'pkg',
@@ -226,6 +235,15 @@ describe('fino install', () => {
             }
           }
         },
+        '/@scope%2fpkg': {
+          name: '@scope/pkg',
+          'dist-tags': { latest: '1.0.0' },
+          versions: { '1.0.0': {
+            name: '@scope/pkg',
+            version: '1.0.0',
+            dist: { tarball: `http://127.0.0.1:${port}/tarballs/scoped-pkg-1.0.0.tgz` }
+          } }
+        },
         '/optional-parent': {
           name: 'optional-parent',
           'dist-tags': { latest: '1.0.0' },
@@ -314,6 +332,14 @@ describe('fino install', () => {
               await file.close();
             }
           }
+          if (url.pathname === '/tarballs/scoped-pkg-1.0.0.tgz') {
+            const file = await fs.open(registryDir + '/scoped-pkg-1.0.0.tgz', 'r');
+            try {
+              return new Response(await file.bytes(), { headers: { 'content-type': 'application/octet-stream' } });
+            } finally {
+              await file.close();
+            }
+          }
           if (url.pathname === '/tarballs/optional-parent-1.0.0.tgz') {
             const file = await fs.open(registryDir + '/optional-parent-1.0.0.tgz', 'r');
             try {
@@ -395,6 +421,33 @@ describe('fino install', () => {
     t.equal(run.stderr, '', 'script import run has no stderr');
     t.ok(run.stdout.includes('dep-value+pkg'), 'package default export resolved');
     t.ok(run.stdout.includes('feature-ok'), 'package subpath export resolved');
+  });
+  it('supports latest, exact, caret, and scoped package specs from the command line', async (t) => {
+    const specDir = TEST_DIR + '/spec-forms';
+    await fs.mkdir(specDir);
+    await fs.writeFile(specDir + '/package.json', JSON.stringify({
+      name: 'spec-forms-app',
+      type: 'module'
+    }, null, 2));
+    const install = await runCli([
+      'install',
+      'dep@latest',
+      'fallback-pkg@1.0.0',
+      'pkg@^1.0.0',
+      '@scope/pkg@^1.0.0'
+    ], specDir, { FINO_NPM_REGISTRY: `http://127.0.0.1:${port}` });
+    t.equal(install.result.code, 0, 'install exits successfully');
+    t.equal(install.stderr, '', 'install has no stderr');
+    const packageJson = JSON.parse(await fs.readFile(specDir + '/package.json'));
+    t.equal(packageJson.dependencies.dep, 'latest', 'latest tag is preserved in package.json');
+    t.equal(packageJson.dependencies['fallback-pkg'], '1.0.0', 'exact version is preserved in package.json');
+    t.equal(packageJson.dependencies.pkg, '^1.0.0', 'caret range is preserved in package.json');
+    t.equal(packageJson.dependencies['@scope/pkg'], '^1.0.0', 'scoped package range is preserved in package.json');
+    const packageMap = JSON.parse(await fs.readFile(specDir + '/.fino/package-map.json')) as PackageMapShape;
+    t.equal(packageMap.rootDependencies.dep, 'dep@1.5.0', 'latest tag resolves through dist-tags');
+    t.equal(packageMap.rootDependencies['fallback-pkg'], 'fallback-pkg@1.0.0', 'exact version resolves');
+    t.equal(packageMap.rootDependencies.pkg, 'pkg@1.0.0', 'caret range resolves');
+    t.equal(packageMap.rootDependencies['@scope/pkg'], '@scope/pkg@1.0.0', 'scoped package range resolves');
   });
   it('supports comparator ranges when resolving transitive dependencies', async (t) => {
     await fs.writeFile(appDir + '/package.json', JSON.stringify({
