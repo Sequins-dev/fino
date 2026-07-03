@@ -1028,6 +1028,18 @@ export class App extends BuilderBase<App> {
         return new Response('Bad Request', { status: 400 });
       }
     }
+    if (this._state.stack.length > 0) {
+      const endpoint: Endpoint = {
+        method,
+        path,
+        pattern: new URLPattern({ pathname: path }),
+        stack: this._state.stack,
+        slots: [...this._state.slots],
+        handler: () => defaultNotFound()
+      };
+      const ctx = makeInitialContext(this, endpoint, req, {}, info);
+      return this.#requestContext.runWithValue(ctx, () => compose(ctx, endpoint.stack, endpoint.handler));
+    }
     return defaultNotFound();
   }
   async #handleWebSocket(incoming: IncomingWebSocketRequest): Promise<void> {

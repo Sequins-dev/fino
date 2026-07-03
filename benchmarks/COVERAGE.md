@@ -12,21 +12,31 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:realm/pool` | `benchmarks/realm/pool.bench.ts` |
 | `fino:realm/self` | `benchmarks/realm/self.bench.ts` |
 | `fino:realm/messaging` | `benchmarks/realm/messaging.bench.ts` |
+| `fino:database` | not yet benchmarked |
+| `fino:database/sql` | not yet benchmarked |
+| `fino:database/migrate` | not yet benchmarked |
+| `fino:database/postgres` | not yet benchmarked |
 | `fino:database/sqlite` | `benchmarks/database/sqlite.bench.ts` |
 | `fino:stream` | `benchmarks/stream.bench.ts` |
 | `fino:process` | `benchmarks/process.bench.ts` |
 | `fino:context` | `benchmarks/context/index.bench.ts` |
 | `fino:ui` | `benchmarks/ui.bench.ts` |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |
+| `fino:ui/html` | `benchmarks/ui.bench.ts` |
+| `fino:ui/web` | not yet benchmarked |
+| `fino:ui/web/flow` | not yet benchmarked |
+| `fino:ui/web/state` | not yet benchmarked |
 | `fino:tty` | `benchmarks/tty.bench.ts` |
 | `fino:tty/tui` | `benchmarks/tty/tui.bench.ts` |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
 | `fino:net/tls` | `benchmarks/net/tls.bench.ts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.ts` |
+| `fino:net/mdns` | not yet benchmarked |
 | `fino:net/http` | `benchmarks/net/http/index.bench.ts` |
 | `fino:net/http/app` | `benchmarks/net/http/app.bench.ts` |
 | `fino:net/http/client` | `benchmarks/net/http/client.bench.ts` |
 | `fino:net/http/server` | `benchmarks/net/http/server.bench.ts` |
+| `fino:net/http/transpile` | not yet benchmarked |
 | `fino:net/http/eventsource` | `benchmarks/net/http/eventsource.bench.ts` |
 | `fino:net/http/websocket` | `benchmarks/net/http/websocket.bench.ts` |
 | `fino:net/http/webtransport` | `benchmarks/net/http/h3.bench.ts` |
@@ -55,6 +65,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:validate` | `benchmarks/validate.bench.ts` |
 | `fino:config` | `benchmarks/config.bench.ts` |
 | `fino:security` | `benchmarks/security/index.bench.ts` |
+| `fino:security/oauth` | not yet benchmarked |
 | `fino:security/random` | `benchmarks/security/random.bench.ts` |
 | `fino:security/headers` | `benchmarks/security/headers.bench.ts` |
 | `fino:security/cors` | `benchmarks/security/cors.bench.ts` |
@@ -79,12 +90,17 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:bench` | `benchmarks/test/bench.bench.ts` |
 | `fino:test/mock` | `benchmarks/test/mock.bench.ts` |
 | `fino:compress` | `benchmarks/compress.bench.ts` |
+| `fino:cache` | not yet benchmarked |
+| `fino:email` | not yet benchmarked |
+| `fino:signals` | not yet benchmarked |
+| `fino:storage` | not yet benchmarked |
 | `fino:process/argv` | `benchmarks/process/argv.bench.ts` |
 | `fino:tty/prompt` | `benchmarks/tty/prompt.bench.ts` |
 | `fino:context/topic` | `benchmarks/context/topic.bench.ts` |
 | `fino:profiler` | `benchmarks/profiler.bench.ts` |
 | `fino:net/http/eventstream` | not yet benchmarked |
 | `fino:ai/context` | not yet benchmarked |
+| `fino:ai/cache` | not yet benchmarked |
 | `fino:ai` | not yet benchmarked |
 | `fino:ai/model` | not yet benchmarked |
 | `fino:ai/model/anthropic` | not yet benchmarked |

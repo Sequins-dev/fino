@@ -239,11 +239,11 @@ when that service lands.
   the framework derives `viewId = hash(sessionId, view.id, key)` and tabs
   converge on one snapshot, mediated by versioning plus topic pushes.
 - **Stale actions** (back button, stale tab): an action carrying
-  `_ver < head.version` follows the view's policy — `'rebase'` (default:
-  re-run the handler against head state; safe because handlers are
-  event-shaped mutations, not diffs) or `'reject'` (409 → the enhanced
-  client replaces the whole view with a fresh render; no-JS gets PRG to a
-  fresh GET).
+  `_ver < head.version` follows the action's policy — `'reject'` by
+  default (409 → the enhanced client replaces the whole view with a fresh
+  render; no-JS gets PRG to a fresh GET) or explicit `'rebase'` (re-run
+  the handler against head state; safe only for handlers that are
+  event-shaped mutations rather than diffs).
 - **Double-submit.** Each render embeds a per-render nonce; a replayed
   nonce found in the snapshot's idempotency ring short-circuits to the
   redirect or a no-op patch without re-running the handler.
@@ -487,10 +487,10 @@ the process mid-answer loses nothing.
    `view.action(...)` registration. Also: is `mount(ctx)` the right
    embedding surface, or should views be plain components with the
    framework discovering them?
-2. **Rebase semantics.** Default `'rebase'` re-runs the handler against
-   head state. Is that the right default for *all* actions, or should
-   destructive actions opt into `'reject'` — or should the policy be
-   per-action rather than per-view?
+2. **Rebase semantics.** Default `'reject'` is safer for stale actions;
+   actions that can safely re-run against head state opt into `'rebase'`.
+   The remaining question is whether higher-level helpers should make that
+   opt-in easier for commutative actions.
 3. **Embedded-signal custody.** Plain JSON default with per-key sealing —
    or sealed-by-default with plain opt-in for inspectability?
 4. **History retention.** Full history until TTL sweep is the current

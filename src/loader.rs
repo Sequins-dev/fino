@@ -170,6 +170,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "globals/broadcast-channel"
     ),
     source_builtin!("internal:globals/global", "globals/global"),
+    source_builtin!("internal:ui/web/client", "internal/ui/web/client"),
     // internal: compression
     source_builtin!("internal:compress/common", "internal/compress/common"),
     source_builtin!("internal:compress/zlib", "internal/compress/zlib"),
@@ -238,6 +239,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:signals", "signals"),
     source_builtin!("fino:ui", "ui"),
+    source_builtin!("fino:ui/html", "ui/html"),
+    source_builtin!("fino:ui/web", "ui/web"),
+    source_builtin!("fino:ui/web/flow", "ui/web/flow"),
+    source_builtin!("fino:ui/web/state", "ui/web/state"),
     source_builtin!("fino:ui/jsx-runtime", "ui/jsx-runtime"),
     source_builtin!("fino:tty", "tty"),
     source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
@@ -261,6 +266,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/http/h1", "net/http/h1"),
     source_builtin!("fino:net/http/client", "net/http/client"),
     source_builtin!("fino:net/http/server", "net/http/server"),
+    source_builtin!("fino:net/http/transpile", "net/http/transpile"),
     source_builtin!("internal:net/http/stream", "internal/net/http/stream"),
     source_builtin!(
         "internal:net/http/h2/bindings",
