@@ -317,6 +317,15 @@ pub fn promise_to_future(
     scope: &mut v8::HandleScope,
     promise: v8::Local<v8::Promise>,
 ) -> impl std::future::Future<Output = Result<JsValueRepr, BridgeError>> + 'static {
+    // Create the settle handlers inside the promise's own creation context:
+    // V8 enqueues reaction jobs on the handler context's microtask queue, and
+    // with per-realm explicit queues a handler from another realm would park
+    // the reaction on a queue that realm's promise never waits on (observed
+    // as trampolined FfiCallback promises from child realms never settling).
+    let target_ctx = promise
+        .get_creation_context(scope)
+        .unwrap_or_else(|| scope.get_current_context());
+    let scope = &mut v8::ContextScope::new(scope, target_ctx);
     let (tx, rx) = futures_channel::oneshot::channel::<Result<JsValueRepr, JsValueRepr>>();
 
     // Box the sender so we can store it as External data.

@@ -79,7 +79,7 @@
 */
 import { FfiCallback, Pointer } from 'fino:ffi';
 import type { FileSystem, FileHandle } from 'internal:file/provider';
-import { SQLITE_OK, SQLITE_IOERR, SQLITE_IOERR_READ, SQLITE_IOERR_SHORT_READ, SQLITE_IOERR_WRITE, SQLITE_IOERR_FSYNC, SQLITE_IOERR_TRUNCATE, SQLITE_IOERR_FSTAT, SQLITE_IOERR_CLOSE, SQLITE_NOTFOUND, SQLITE_LOCK_NONE, SQLITE_LOCK_RESERVED, SQLITE_IOCAP_POWERSAFE_OVERWRITE, SQLITE_FCNTL_BEGIN_ATOMIC_WRITE, SQLITE_FCNTL_BLOCK_ON_CONNECT, SQLITE_FCNTL_BUSYHANDLER, SQLITE_FCNTL_CHUNK_SIZE, SQLITE_FCNTL_CKPT_DONE, SQLITE_FCNTL_CKPT_START, SQLITE_FCNTL_COMMIT_ATOMIC_WRITE, SQLITE_FCNTL_COMMIT_PHASETWO, SQLITE_FCNTL_CKSM_FILE, SQLITE_FCNTL_DATA_VERSION, SQLITE_FCNTL_EXTERNAL_READER, SQLITE_FCNTL_FILE_POINTER, SQLITE_FCNTL_FILESTAT, SQLITE_FCNTL_GET_LOCKPROXYFILE, SQLITE_FCNTL_HAS_MOVED, SQLITE_FCNTL_JOURNAL_POINTER, SQLITE_FCNTL_LAST_ERRNO, SQLITE_FCNTL_LOCK_TIMEOUT, SQLITE_FCNTL_LOCKSTATE, SQLITE_FCNTL_MMAP_SIZE, SQLITE_FCNTL_NULL_IO, SQLITE_FCNTL_OVERWRITE, SQLITE_FCNTL_PDB, SQLITE_FCNTL_PERSIST_WAL, SQLITE_FCNTL_POWERSAFE_OVERWRITE, SQLITE_FCNTL_PRAGMA, SQLITE_FCNTL_RBU, SQLITE_FCNTL_RESERVE_BYTES, SQLITE_FCNTL_RESET_CACHE, SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE, SQLITE_FCNTL_SET_LOCKPROXYFILE, SQLITE_FCNTL_SIZE_HINT, SQLITE_FCNTL_SIZE_LIMIT, SQLITE_FCNTL_SYNC, SQLITE_FCNTL_SYNC_OMITTED, SQLITE_FCNTL_TEMPFILENAME, SQLITE_FCNTL_TRACE, SQLITE_FCNTL_VFSNAME, SQLITE_FCNTL_VFS_POINTER, SQLITE_FCNTL_WAL_BLOCK, SQLITE_FCNTL_WIN32_AV_RETRY, SQLITE_FCNTL_WIN32_GET_HANDLE, SQLITE_FCNTL_WIN32_SET_HANDLE, SQLITE_FCNTL_ZIPVFS, SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE, SQLITE_ACCESS_EXISTS, SQLITE_ACCESS_READWRITE, SQLITE_ACCESS_READ, cstr, readCStr, requireSqlite } from './bindings.ts';
+import { SQLITE_OK, SQLITE_BUSY, SQLITE_IOERR, SQLITE_IOERR_READ, SQLITE_IOERR_SHORT_READ, SQLITE_IOERR_WRITE, SQLITE_IOERR_FSYNC, SQLITE_IOERR_TRUNCATE, SQLITE_IOERR_FSTAT, SQLITE_IOERR_CLOSE, SQLITE_NOTFOUND, SQLITE_LOCK_NONE, SQLITE_LOCK_SHARED, SQLITE_LOCK_RESERVED, SQLITE_IOCAP_POWERSAFE_OVERWRITE, SQLITE_FCNTL_BEGIN_ATOMIC_WRITE, SQLITE_FCNTL_BLOCK_ON_CONNECT, SQLITE_FCNTL_BUSYHANDLER, SQLITE_FCNTL_CHUNK_SIZE, SQLITE_FCNTL_CKPT_DONE, SQLITE_FCNTL_CKPT_START, SQLITE_FCNTL_COMMIT_ATOMIC_WRITE, SQLITE_FCNTL_COMMIT_PHASETWO, SQLITE_FCNTL_CKSM_FILE, SQLITE_FCNTL_DATA_VERSION, SQLITE_FCNTL_EXTERNAL_READER, SQLITE_FCNTL_FILE_POINTER, SQLITE_FCNTL_FILESTAT, SQLITE_FCNTL_GET_LOCKPROXYFILE, SQLITE_FCNTL_HAS_MOVED, SQLITE_FCNTL_JOURNAL_POINTER, SQLITE_FCNTL_LAST_ERRNO, SQLITE_FCNTL_LOCK_TIMEOUT, SQLITE_FCNTL_LOCKSTATE, SQLITE_FCNTL_MMAP_SIZE, SQLITE_FCNTL_NULL_IO, SQLITE_FCNTL_OVERWRITE, SQLITE_FCNTL_PDB, SQLITE_FCNTL_PERSIST_WAL, SQLITE_FCNTL_POWERSAFE_OVERWRITE, SQLITE_FCNTL_PRAGMA, SQLITE_FCNTL_RBU, SQLITE_FCNTL_RESERVE_BYTES, SQLITE_FCNTL_RESET_CACHE, SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE, SQLITE_FCNTL_SET_LOCKPROXYFILE, SQLITE_FCNTL_SIZE_HINT, SQLITE_FCNTL_SIZE_LIMIT, SQLITE_FCNTL_SYNC, SQLITE_FCNTL_SYNC_OMITTED, SQLITE_FCNTL_TEMPFILENAME, SQLITE_FCNTL_TRACE, SQLITE_FCNTL_VFSNAME, SQLITE_FCNTL_VFS_POINTER, SQLITE_FCNTL_WAL_BLOCK, SQLITE_FCNTL_WIN32_AV_RETRY, SQLITE_FCNTL_WIN32_GET_HANDLE, SQLITE_FCNTL_WIN32_SET_HANDLE, SQLITE_FCNTL_ZIPVFS, SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE, SQLITE_ACCESS_EXISTS, SQLITE_ACCESS_READWRITE, SQLITE_ACCESS_READ, cstr, readCStr, requireSqlite } from './bindings.ts';
 const SZ_VFS = 168;
 const SZ_IOMETHODS = 152;
 const SZ_OS_FILE = 16;
@@ -96,6 +96,7 @@ type SyncFileHandle = FileHandle & {
   syncSync?: () => void;
   sizeSync?: () => bigint;
   closeSync?: () => void;
+  tryLockSync?: (mode: 'shared' | 'exclusive' | 'none') => boolean;
 };
 type VfsFileState = {
   handle: FileHandle;
@@ -510,12 +511,32 @@ export class FinoVFS {
         return SQLITE_IOERR_FSTAT;
       }
     });
+    // Locking maps SQLite's five levels onto flock(2) when the handle
+    // supports it: SHARED → LOCK_SH, RESERVED/PENDING/EXCLUSIVE → LOCK_EX.
+    // Coarser than SQLite's byte-range protocol (writers exclude readers for
+    // the whole write transaction) but correct across handles, realms, and
+    // processes. Handles without lock support (virtual providers) keep the
+    // single-connection assumption and always succeed.
     const xLock = new FfiCallback({
       parameters: ['pointer', 'i32'],
       result: 'i32'
     }, (pFile: ArrayBuffer, lockType: number) => {
       const state = stateFor(pFile);
-      if (state) state.lockLevel = Math.max(state.lockLevel, lockType);
+      if (!state) return SQLITE_IOERR;
+      if (lockType <= state.lockLevel) return SQLITE_OK;
+      const h = state.handle as SyncFileHandle;
+      if (typeof h.tryLockSync === 'function') {
+        try {
+          if (lockType === SQLITE_LOCK_SHARED) {
+            if (!h.tryLockSync('shared')) return SQLITE_BUSY;
+          } else if (state.lockLevel < SQLITE_LOCK_RESERVED) {
+            if (!h.tryLockSync('exclusive')) return SQLITE_BUSY;
+          }
+        } catch {
+          return SQLITE_IOERR;
+        }
+      }
+      state.lockLevel = lockType;
       return SQLITE_OK;
     });
     const xUnlock = new FfiCallback({
@@ -523,7 +544,23 @@ export class FinoVFS {
       result: 'i32'
     }, (pFile: ArrayBuffer, lockType: number) => {
       const state = stateFor(pFile);
-      if (state) state.lockLevel = lockType;
+      if (!state) return SQLITE_OK;
+      if (lockType >= state.lockLevel) return SQLITE_OK;
+      const h = state.handle as SyncFileHandle;
+      if (typeof h.tryLockSync === 'function') {
+        try {
+          if (lockType === SQLITE_LOCK_NONE) {
+            h.tryLockSync('none');
+          } else if (lockType === SQLITE_LOCK_SHARED && state.lockLevel >= SQLITE_LOCK_RESERVED) {
+            // flock downgrades are not atomic; retry once before surfacing an
+            // error rather than silently holding the wrong lock level.
+            if (!h.tryLockSync('shared') && !h.tryLockSync('shared')) return SQLITE_IOERR;
+          }
+        } catch {
+          return SQLITE_IOERR;
+        }
+      }
+      state.lockLevel = lockType;
       return SQLITE_OK;
     });
     const xCheckReservedLock = new FfiCallback({
@@ -531,7 +568,24 @@ export class FinoVFS {
       result: 'i32'
     }, (pFile: ArrayBuffer, pResOut: ArrayBuffer) => {
       const state = stateFor(pFile);
-      Pointer.writeI32(pResOut, 0, state && state.lockLevel >= SQLITE_LOCK_RESERVED ? 1 : 0);
+      if (!state) return SQLITE_IOERR;
+      let reserved = state.lockLevel >= SQLITE_LOCK_RESERVED;
+      const h = state.handle as SyncFileHandle;
+      if (!reserved && typeof h.tryLockSync === 'function') {
+        // Probe by attempting an exclusive upgrade: failure means some other
+        // handle holds a lock. Conservative (a concurrent reader also reports
+        // "reserved"), which only makes hot-journal checks more careful.
+        try {
+          if (h.tryLockSync('exclusive')) {
+            h.tryLockSync(state.lockLevel >= SQLITE_LOCK_SHARED ? 'shared' : 'none');
+          } else {
+            reserved = true;
+          }
+        } catch {
+          return SQLITE_IOERR;
+        }
+      }
+      Pointer.writeI32(pResOut, 0, reserved ? 1 : 0);
       return SQLITE_OK;
     });
     const xFileControl = new FfiCallback({
@@ -715,7 +769,7 @@ export class FinoVFS {
         'pointer'
       ],
       result: 'i32'
-    }, async (_pVfs: ArrayBuffer, zName: ArrayBuffer | null, pFile: ArrayBuffer, flags: number, pOutFlags: ArrayBuffer | null) => {
+    }, (_pVfs: ArrayBuffer, zName: ArrayBuffer | null, pFile: ArrayBuffer, flags: number, pOutFlags: ArrayBuffer | null) => {
       const path = zName ? readCStr(zName) : '';
       if (!path) return SQLITE_OK;
       const mode = _openMode(flags);

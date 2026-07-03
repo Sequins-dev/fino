@@ -53,7 +53,7 @@
 import { Pointer } from 'fino:ffi';
 import { DiskFileSystem } from 'fino:file';
 import type { FileSystem } from 'internal:file/provider';
-import { sqliteAvailable, requireSqlite, cstr, readCStr, dbErrMsg, SQLITE_OK, SQLITE_ROW, SQLITE_DONE, SQLITE_INTEGER, SQLITE_FLOAT, SQLITE3_TEXT, SQLITE_BLOB, SQLITE_NULL, SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE, SQLITE_OPEN_NOMUTEX } from 'internal:database/sqlite/bindings';
+import { sqliteAvailable, requireSqlite, cstr, readCStr, dbErrMsg, SQLITE_OK, SQLITE_ROW, SQLITE_DONE, SQLITE_INTEGER, SQLITE_FLOAT, SQLITE3_TEXT, SQLITE_BLOB, SQLITE_NULL, SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX } from 'internal:database/sqlite/bindings';
 import { FinoVFS } from 'internal:database/sqlite/vfs';
 /**
 * `true` when the SQLite native bindings are available in this runtime.
@@ -653,22 +653,24 @@ export class Statement {
   * await db.close();
   * ```
   */
-  async run(...params: SqlValue[]): Promise<{
+  run(...params: SqlValue[]): Promise<{
     changes: number;
     lastInsertRowid: bigint;
   }> {
-    const ptr = await this.#compile();
-    this.#resolveParams(ptr, params);
-    const s = requireSqlite().symbols;
-    const rc = await s.sqlite3_step(ptr) as number;
-    s.sqlite3_reset(ptr);
-    if (rc !== SQLITE_DONE && rc !== SQLITE_ROW) {
-      throw new Error(`sqlite3: step failed: ${dbErrMsg(this.#db.ptr)}`);
-    }
-    return {
-      changes: s.sqlite3_changes(this.#db.ptr) as number,
-      lastInsertRowid: s.sqlite3_last_insert_rowid(this.#db.ptr) as bigint
-    };
+    return this.#db._serialize(async () => {
+      const ptr = await this.#compile();
+      this.#resolveParams(ptr, params);
+      const s = requireSqlite().symbols;
+      const rc = await s.sqlite3_step(ptr) as number;
+      s.sqlite3_reset(ptr);
+      if (rc !== SQLITE_DONE && rc !== SQLITE_ROW) {
+        throw new Error(`sqlite3: step failed: ${dbErrMsg(this.#db.ptr)}`);
+      }
+      return {
+        changes: s.sqlite3_changes(this.#db.ptr) as number,
+        lastInsertRowid: s.sqlite3_last_insert_rowid(this.#db.ptr) as bigint
+      };
+    });
   }
   /**
   * Execute and return the first row.
@@ -689,21 +691,23 @@ export class Statement {
   * await db.close();
   * ```
   */
-  async get(...params: SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
-    const ptr = await this.#compile();
-    this.#resolveParams(ptr, params);
-    const s = requireSqlite().symbols;
-    const rc = await s.sqlite3_step(ptr) as number;
-    if (rc === SQLITE_ROW) {
-      const row = this.#readRow(ptr);
+  get(...params: SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
+    return this.#db._serialize(async () => {
+      const ptr = await this.#compile();
+      this.#resolveParams(ptr, params);
+      const s = requireSqlite().symbols;
+      const rc = await s.sqlite3_step(ptr) as number;
+      if (rc === SQLITE_ROW) {
+        const row = this.#readRow(ptr);
+        s.sqlite3_reset(ptr);
+        return row;
+      }
       s.sqlite3_reset(ptr);
-      return row;
-    }
-    s.sqlite3_reset(ptr);
-    if (rc !== SQLITE_DONE) {
-      throw new Error(`sqlite3: step failed: ${dbErrMsg(this.#db.ptr)}`);
-    }
-    return undefined;
+      if (rc !== SQLITE_DONE) {
+        throw new Error(`sqlite3: step failed: ${dbErrMsg(this.#db.ptr)}`);
+      }
+      return undefined;
+    });
   }
   /**
   * Execute and return all rows.
@@ -724,25 +728,27 @@ export class Statement {
   * await db.close();
   * ```
   */
-  async all(...params: SqlValue[]): Promise<Record<string, SqlValue>[]> {
-    const ptr = await this.#compile();
-    this.#resolveParams(ptr, params);
-    const s = requireSqlite().symbols;
-    const rows: Record<string, SqlValue>[] = [];
-    while (true) {
-      const rc = await s.sqlite3_step(ptr) as number;
-      if (rc === SQLITE_ROW) {
-        rows.push(this.#readRow(ptr));
-        continue;
-      }
-      if (rc === SQLITE_DONE) {
-        break;
+  all(...params: SqlValue[]): Promise<Record<string, SqlValue>[]> {
+    return this.#db._serialize(async () => {
+      const ptr = await this.#compile();
+      this.#resolveParams(ptr, params);
+      const s = requireSqlite().symbols;
+      const rows: Record<string, SqlValue>[] = [];
+      while (true) {
+        const rc = await s.sqlite3_step(ptr) as number;
+        if (rc === SQLITE_ROW) {
+          rows.push(this.#readRow(ptr));
+          continue;
+        }
+        if (rc === SQLITE_DONE) {
+          break;
+        }
+        s.sqlite3_reset(ptr);
+        throw new Error(`sqlite3: step failed: ${dbErrMsg(this.#db.ptr)}`);
       }
       s.sqlite3_reset(ptr);
-      throw new Error(`sqlite3: step failed: ${dbErrMsg(this.#db.ptr)}`);
-    }
-    s.sqlite3_reset(ptr);
-    return rows;
+      return rows;
+    });
   }
   /**
   * Async-iterate rows one at a time.
@@ -765,17 +771,32 @@ export class Statement {
   * ```
   */
   async *iterate(...params: SqlValue[]): AsyncGenerator<Record<string, SqlValue>> {
-    const ptr = await this.#compile();
-    this.#resolveParams(ptr, params);
+    // Serialize per step (not the whole iteration) so consumers may run other
+    // operations on this connection between rows; multiple active statements
+    // are legal as long as native calls never overlap.
+    const ptr = await this.#db._serialize(async () => {
+      const compiled = await this.#compile();
+      this.#resolveParams(compiled, params);
+      return compiled;
+    });
     const s = requireSqlite().symbols;
     try {
       while (true) {
-        const rc = await s.sqlite3_step(ptr) as number;
-        if (rc === SQLITE_ROW) {
-          yield this.#readRow(ptr);
+        const step = await this.#db._serialize(async () => {
+          const rc = await s.sqlite3_step(ptr) as number;
+          if (rc === SQLITE_ROW) {
+            return {
+              rc,
+              row: this.#readRow(ptr)
+            };
+          }
+          return { rc };
+        });
+        if (step.rc === SQLITE_ROW) {
+          yield step.row!;
           continue;
         }
-        if (rc === SQLITE_DONE) {
+        if (step.rc === SQLITE_DONE) {
           break;
         }
         throw new Error(`sqlite3: step failed: ${dbErrMsg(this.#db.ptr)}`);
@@ -941,6 +962,17 @@ export class Database {
   #vectorsAvailable: boolean | null = null;
   #statements = new Set<Statement>();
   /**
+  * Private property `#opQueue` — tail of the per-connection operation queue.
+  *
+  * Statement stepping is offloaded to the blocking thread pool, and a
+  * `sqlite3*` connection must never be entered from two threads at once (nor
+  * may its JS VFS callbacks trampoline concurrently), so every async native
+  * call on this connection runs strictly after the previous one.
+  *
+  * @internal
+  */
+  #opQueue: Promise<unknown> = Promise.resolve();
+  /**
   * Generated-doc-visible constructor `constructor`.
   *
   * This implementation detail is included when documentation is built with
@@ -1011,7 +1043,10 @@ export class Database {
     vfs.register(false);
     const pathBuf = cstr(path);
     const ppDb = new ArrayBuffer(8);
-    let flags = SQLITE_OPEN_NOMUTEX;
+    // FULLMUTEX (serialized) mode: connection calls hop across blocking-pool
+    // threads, and although the per-connection queue prevents overlap, the
+    // connection-internal mutex is cheap insurance against any unqueued path.
+    let flags = SQLITE_OPEN_FULLMUTEX;
     if (opts.readonly) {
       flags |= SQLITE_OPEN_READONLY;
     } else {
@@ -1049,15 +1084,17 @@ export class Database {
   * await db.close();
   * ```
   */
-  async exec(sql: string): Promise<void> {
+  exec(sql: string): Promise<void> {
     this.#checkOpen();
-    const s = requireSqlite().symbols;
-    const sqlBuf = cstr(sql);
-    const rc = await s.sqlite3_exec(this.#ptr, sqlBuf, null, null, null) as number;
-    void sqlBuf;
-    if (rc !== SQLITE_OK) {
-      throw new Error(`sqlite3_exec: ${dbErrMsg(this.#ptr)}`);
-    }
+    return this._serialize(async () => {
+      const s = requireSqlite().symbols;
+      const sqlBuf = cstr(sql);
+      const rc = await s.sqlite3_exec(this.#ptr, sqlBuf, null, null, null) as number;
+      void sqlBuf;
+      if (rc !== SQLITE_OK) {
+        throw new Error(`sqlite3_exec: ${dbErrMsg(this.#ptr)}`);
+      }
+    });
   }
   /**
   * Compile a SQL statement and return a reusable Statement.
@@ -1084,6 +1121,23 @@ export class Database {
     const stmt = new Statement(this, sql, this.#safeIntegers ?? true);
     this.#statements.add(stmt);
     return stmt;
+  }
+  /**
+  * Run `fn` strictly after every previously queued operation on this
+  * connection.
+  *
+  * Async native sqlite calls execute on blocking-pool threads, and a
+  * connection (and its JS VFS trampoline) must never be entered concurrently
+  * — statement wrappers route every step/compile through this queue.
+  *
+  * @param fn Operation to serialize onto the connection.
+  * @returns The operation's result.
+  * @internal
+  */
+  _serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.#opQueue.then(fn, fn);
+    this.#opQueue = next.then(() => undefined, () => undefined);
+    return next;
   }
   /**
   * Stop tracking a statement that has been explicitly finalized.
@@ -1318,10 +1372,12 @@ export class Database {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    for (const stmt of Array.from(this.#statements)) stmt.finalize();
-    this.#statements.clear();
-    await requireSqlite().symbols.sqlite3_close_v2(this.#ptr);
-    if (this.#vfs) this.#vfs.unregister();
+    await this._serialize(async () => {
+      for (const stmt of Array.from(this.#statements)) stmt.finalize();
+      this.#statements.clear();
+      await requireSqlite().symbols.sqlite3_close_v2(this.#ptr);
+      if (this.#vfs) this.#vfs.unregister();
+    });
   }
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();

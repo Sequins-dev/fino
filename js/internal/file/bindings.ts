@@ -302,6 +302,10 @@ export const lib = dlopen(LIBC, {
     parameters: ['i32', 'i64'],
     result: 'i32'
   },
+  flock: {
+    parameters: ['i32', 'i32'],
+    result: 'i32'
+  },
   [errnoFn]: {
     parameters: [],
     result: 'pointer'

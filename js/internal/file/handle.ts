@@ -446,6 +446,24 @@ export class File {
     return this.preadSync(pos, len);
   }
   /**
+  * Try to acquire, downgrade, or release an advisory lock on this file
+  * without blocking (`flock(2)` with `LOCK_NB`).
+  *
+  * `flock` locks attach to the open file description, so two handles on the
+  * same file conflict correctly both within one process (across realms and
+  * threads) and across processes. Returns `false` when the lock is held
+  * elsewhere; releasing (`'none'`) always succeeds.
+  *
+  * @internal
+  */
+  tryLockSync(mode: 'shared' | 'exclusive' | 'none'): boolean {
+    if (this.#closed) throw new Error('File is closed');
+    // LOCK_SH=1, LOCK_EX=2, LOCK_NB=4, LOCK_UN=8 (identical on macOS/Linux).
+    const op = mode === 'shared' ? 1 | 4 : mode === 'exclusive' ? 2 | 4 : 8;
+    const rc = lib.symbols.flock(this.#fd, op) as number;
+    return rc === 0;
+  }
+  /**
   * Synchronous `pread(2)` for native callback integrations.
   *
   * @internal
