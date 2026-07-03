@@ -86,3 +86,15 @@ export { SocketInstrumentation } from './socket.ts';
 * @internal
 */
 export { TlsInstrumentation } from './tls.ts';
+/**
+* Re-export the jobs runtime instrumentation.
+*
+* ```js
+* const { JobsInstrumentation } =
+*   import 'internal:opentelemetry/instrumentations/index';
+* console.log(typeof JobsInstrumentation);
+* ```
+*
+* @internal
+*/
+export { JobsInstrumentation } from './jobs.ts';

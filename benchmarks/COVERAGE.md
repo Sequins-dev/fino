@@ -103,6 +103,8 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:ai/mcp` | not yet benchmarked |
 | `fino:workflow` | not yet benchmarked |
 | `fino:task` | not yet benchmarked |
+| `fino:task/durable` | not yet benchmarked |
+| `fino:jobs` | not yet benchmarked |
 
 ## Release Stress And Failure Coverage
 

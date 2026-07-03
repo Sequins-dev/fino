@@ -374,6 +374,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:opentelemetry/instrumentations/tls",
         "internal/opentelemetry/instrumentations/tls"
     ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/jobs",
+        "internal/opentelemetry/instrumentations/jobs"
+    ),
     source_builtin!("internal:opentelemetry/sdk", "internal/opentelemetry/sdk"),
     source_builtin!("fino:opentelemetry", "opentelemetry"),
     source_builtin!("fino:opentelemetry/traces", "opentelemetry/traces"),
@@ -423,20 +427,41 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:data/parquet/levels", "data/parquet/levels"),
     source_builtin!("internal:data/parquet/encoding", "data/parquet/encoding"),
     source_builtin!("internal:data/parquet/delta", "data/parquet/delta"),
-    source_builtin!("internal:data/parquet/compression", "data/parquet/compression"),
-    source_builtin!("internal:data/parquet/column-reader", "data/parquet/column-reader"),
+    source_builtin!(
+        "internal:data/parquet/compression",
+        "data/parquet/compression"
+    ),
+    source_builtin!(
+        "internal:data/parquet/column-reader",
+        "data/parquet/column-reader"
+    ),
     source_builtin!("internal:data/parquet/reader", "data/parquet/reader"),
     source_builtin!("internal:data/parquet/writer", "data/parquet/writer"),
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("internal:format/thrift", "internal/format/thrift/index"),
-    source_builtin!("internal:format/thrift/types", "internal/format/thrift/types"),
+    source_builtin!(
+        "internal:format/thrift/types",
+        "internal/format/thrift/types"
+    ),
     source_builtin!("internal:format/thrift/io", "internal/format/thrift/io"),
-    source_builtin!("internal:format/thrift/protocol", "internal/format/thrift/protocol"),
-    source_builtin!("internal:format/thrift/binary", "internal/format/thrift/binary"),
-    source_builtin!("internal:format/thrift/compact", "internal/format/thrift/compact"),
+    source_builtin!(
+        "internal:format/thrift/protocol",
+        "internal/format/thrift/protocol"
+    ),
+    source_builtin!(
+        "internal:format/thrift/binary",
+        "internal/format/thrift/binary"
+    ),
+    source_builtin!(
+        "internal:format/thrift/compact",
+        "internal/format/thrift/compact"
+    ),
     source_builtin!("internal:format/thrift/json", "internal/format/thrift/json"),
-    source_builtin!("internal:format/thrift/value", "internal/format/thrift/value"),
+    source_builtin!(
+        "internal:format/thrift/value",
+        "internal/format/thrift/value"
+    ),
     source_builtin!("fino:format/typescript", "format/typescript"),
     source_builtin!("fino:format/toml", "format/toml"),
     source_builtin!("fino:format/xml", "format/xml"),
@@ -455,6 +480,15 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:jsonrpc", "jsonrpc"),
     source_builtin!("fino:workflow", "workflow"),
     source_builtin!("fino:task", "task"),
+    source_builtin!("fino:task/durable", "task/durable"),
+    // orchestrator + jobs
+    source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
+    source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
+    source_builtin!("internal:jobs/store", "internal/jobs/store"),
+    source_builtin!("internal:jobs/runner", "internal/jobs/runner"),
+    source_builtin!("internal:jobs/service", "internal/jobs/service"),
+    source_builtin!("internal:jobs/control", "internal/jobs/control"),
+    source_builtin!("fino:jobs", "jobs"),
     // ai
     source_builtin!("fino:ai", "ai"),
     source_builtin!("fino:ai/model", "ai/model"),

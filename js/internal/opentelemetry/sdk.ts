@@ -30,7 +30,7 @@ import { topic } from '../../context/topic.ts';
 import { Resource, TextMapPropagator, normalizeResource, nowUnixNano } from './common.ts';
 import type { Attributes, ExportResult, Instrumentation, LogRecord, MetricRecord, MetricTemporality, MetricView, ObservableMetricRegistration, OtelExporter, SamplingResult, SpanLimits, SpanRecord } from './common.ts';
 import { OTLPHttpJsonExporter } from './exporters.ts';
-import { HttpServerInstrumentation, TraceTopicInstrumentation, FetchInstrumentation, DnsInstrumentation, SocketInstrumentation, TlsInstrumentation } from './instrumentations/index.ts';
+import { HttpServerInstrumentation, TraceTopicInstrumentation, FetchInstrumentation, DnsInstrumentation, SocketInstrumentation, TlsInstrumentation, JobsInstrumentation } from './instrumentations/index.ts';
 import { applyLogLimits } from './logs.ts';
 import { accumulateMetric, applyMetricView, attributesKey, cloneMetric, metricInstrumentKey, metricSeriesKey, zeroMetric } from './metrics.ts';
 import { AlwaysOnSampler, Sampler, applySpanLimits } from './traces.ts';
@@ -1359,4 +1359,4 @@ export class OtelSDK {
     this.#started = false;
   }
 }
-export { OTLPHttpJsonExporter, HttpServerInstrumentation, TraceTopicInstrumentation, FetchInstrumentation, DnsInstrumentation, SocketInstrumentation, TlsInstrumentation };
+export { OTLPHttpJsonExporter, HttpServerInstrumentation, TraceTopicInstrumentation, FetchInstrumentation, DnsInstrumentation, SocketInstrumentation, TlsInstrumentation, JobsInstrumentation };

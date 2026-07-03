@@ -24,7 +24,7 @@
 */
 import { cwd, env } from '../../process.ts';
 import { DiskFileSystem } from '../../file/fs.ts';
-import { BatchLogRecordProcessor, BatchSpanProcessor, DnsInstrumentation, FetchInstrumentation, HttpServerInstrumentation, LoggerProvider, MeterProvider, OtelSDK, OTLPHttpJsonExporter, PeriodicMetricReader, Resource, SocketInstrumentation, TraceTopicInstrumentation, TlsInstrumentation, TracerProvider } from '../../opentelemetry.ts';
+import { BatchLogRecordProcessor, BatchSpanProcessor, DnsInstrumentation, FetchInstrumentation, HttpServerInstrumentation, JobsInstrumentation, LoggerProvider, MeterProvider, OtelSDK, OTLPHttpJsonExporter, PeriodicMetricReader, Resource, SocketInstrumentation, TraceTopicInstrumentation, TlsInstrumentation, TracerProvider } from '../../opentelemetry.ts';
 import { registerShutdownHook } from '../shutdown.ts';
 function logOtelDebug(prefix: string, value: unknown): void {
   const text = typeof value === 'string' ? value : JSON.stringify(value);
@@ -181,7 +181,8 @@ export async function createCliOtelRuntime(endpoint: string, script: string, deb
       new FetchInstrumentation(),
       new DnsInstrumentation(),
       new SocketInstrumentation(),
-      new TlsInstrumentation()
+      new TlsInstrumentation(),
+      new JobsInstrumentation()
     ]
   }).start();
   registerShutdownHook(async () => {
