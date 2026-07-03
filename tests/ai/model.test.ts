@@ -144,7 +144,9 @@ describe('assembleResult', () => {
         inputTokens: 100,
         outputTokens: 50,
         cacheReadInputTokens: 80,
-        cacheCreationInputTokens: 20
+        cacheCreationInputTokens: 20,
+        localCacheReadInputTokens: 100,
+        localCacheReadOutputTokens: 50
       }
     }, {
       type: 'stop',
@@ -152,6 +154,8 @@ describe('assembleResult', () => {
     }));
     t.equal(result.usage.cacheReadInputTokens, 80);
     t.equal(result.usage.cacheCreationInputTokens, 20);
+    t.equal(result.usage.localCacheReadInputTokens, 100);
+    t.equal(result.usage.localCacheReadOutputTokens, 50);
   });
   it('omits cache usage fields when absent', async (t) => {
     const result = await assembleResult(events({
@@ -166,6 +170,8 @@ describe('assembleResult', () => {
     }));
     t.equal('cacheReadInputTokens' in result.usage, false);
     t.equal('cacheCreationInputTokens' in result.usage, false);
+    t.equal('localCacheReadInputTokens' in result.usage, false);
+    t.equal('localCacheReadOutputTokens' in result.usage, false);
   });
   it('maps each StopReason variant through unmodified', async (t) => {
     const reasons = [

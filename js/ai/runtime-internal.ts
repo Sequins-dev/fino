@@ -382,7 +382,9 @@ function addUsage(a: Usage, b: Usage): Usage {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     ...a.cacheReadInputTokens != null || b.cacheReadInputTokens != null ? { cacheReadInputTokens: (a.cacheReadInputTokens ?? 0) + (b.cacheReadInputTokens ?? 0) } : {},
-    ...a.cacheCreationInputTokens != null || b.cacheCreationInputTokens != null ? { cacheCreationInputTokens: (a.cacheCreationInputTokens ?? 0) + (b.cacheCreationInputTokens ?? 0) } : {}
+    ...a.cacheCreationInputTokens != null || b.cacheCreationInputTokens != null ? { cacheCreationInputTokens: (a.cacheCreationInputTokens ?? 0) + (b.cacheCreationInputTokens ?? 0) } : {},
+    ...a.localCacheReadInputTokens != null || b.localCacheReadInputTokens != null ? { localCacheReadInputTokens: (a.localCacheReadInputTokens ?? 0) + (b.localCacheReadInputTokens ?? 0) } : {},
+    ...a.localCacheReadOutputTokens != null || b.localCacheReadOutputTokens != null ? { localCacheReadOutputTokens: (a.localCacheReadOutputTokens ?? 0) + (b.localCacheReadOutputTokens ?? 0) } : {}
   };
 }
 function subUsage(a: Usage, b: Usage): Usage {
@@ -390,7 +392,9 @@ function subUsage(a: Usage, b: Usage): Usage {
     inputTokens: a.inputTokens - b.inputTokens,
     outputTokens: a.outputTokens - b.outputTokens,
     ...a.cacheReadInputTokens != null || b.cacheReadInputTokens != null ? { cacheReadInputTokens: (a.cacheReadInputTokens ?? 0) - (b.cacheReadInputTokens ?? 0) } : {},
-    ...a.cacheCreationInputTokens != null || b.cacheCreationInputTokens != null ? { cacheCreationInputTokens: (a.cacheCreationInputTokens ?? 0) - (b.cacheCreationInputTokens ?? 0) } : {}
+    ...a.cacheCreationInputTokens != null || b.cacheCreationInputTokens != null ? { cacheCreationInputTokens: (a.cacheCreationInputTokens ?? 0) - (b.cacheCreationInputTokens ?? 0) } : {},
+    ...a.localCacheReadInputTokens != null || b.localCacheReadInputTokens != null ? { localCacheReadInputTokens: (a.localCacheReadInputTokens ?? 0) - (b.localCacheReadInputTokens ?? 0) } : {},
+    ...a.localCacheReadOutputTokens != null || b.localCacheReadOutputTokens != null ? { localCacheReadOutputTokens: (a.localCacheReadOutputTokens ?? 0) - (b.localCacheReadOutputTokens ?? 0) } : {}
   };
 }
 function defaultRetryable(err: unknown): boolean {
@@ -743,6 +747,12 @@ export class AgentRuntime {
         }
         if (turn.usage.cacheCreationInputTokens != null) {
           stepSpan.setAttribute('gen_ai.usage.cache_creation.input_tokens', turn.usage.cacheCreationInputTokens);
+        }
+        if (turn.usage.localCacheReadInputTokens != null) {
+          stepSpan.setAttribute('gen_ai.usage.local_cache_read.input_tokens', turn.usage.localCacheReadInputTokens);
+        }
+        if (turn.usage.localCacheReadOutputTokens != null) {
+          stepSpan.setAttribute('gen_ai.usage.local_cache_read.output_tokens', turn.usage.localCacheReadOutputTokens);
         }
         if (stopReason !== 'tool_use') {
           const nextState: AgentState = {
@@ -1177,6 +1187,12 @@ export class AgentRuntime {
           runSpan.setAttribute('gen_ai.response.finish_reasons', [finalStopReason]);
           runSpan.setAttribute('gen_ai.usage.input_tokens', state.usage.inputTokens);
           runSpan.setAttribute('gen_ai.usage.output_tokens', state.usage.outputTokens);
+          if (state.usage.localCacheReadInputTokens != null) {
+            runSpan.setAttribute('gen_ai.usage.local_cache_read.input_tokens', state.usage.localCacheReadInputTokens);
+          }
+          if (state.usage.localCacheReadOutputTokens != null) {
+            runSpan.setAttribute('gen_ai.usage.local_cache_read.output_tokens', state.usage.localCacheReadOutputTokens);
+          }
           runSpan.end({ status: { code: 'OK' } });
           const result: AgentResult = {
             text: finalText,

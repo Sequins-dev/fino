@@ -162,6 +162,8 @@ export async function assembleResult(events: AsyncIterable<StreamEvent>): Promis
   let outputTokens = 0;
   let cacheReadInputTokens: number | undefined;
   let cacheCreationInputTokens: number | undefined;
+  let localCacheReadInputTokens: number | undefined;
+  let localCacheReadOutputTokens: number | undefined;
   let stopReason: GenerateResult['stopReason'] = 'end_turn';
   for await (const event of events) {
     switch (event.type) {
@@ -185,6 +187,8 @@ export async function assembleResult(events: AsyncIterable<StreamEvent>): Promis
         outputTokens = event.usage.outputTokens;
         cacheReadInputTokens = event.usage.cacheReadInputTokens;
         cacheCreationInputTokens = event.usage.cacheCreationInputTokens;
+        localCacheReadInputTokens = event.usage.localCacheReadInputTokens;
+        localCacheReadOutputTokens = event.usage.localCacheReadOutputTokens;
         break;
       case 'stop':
         stopReason = event.reason;
@@ -212,7 +216,9 @@ export async function assembleResult(events: AsyncIterable<StreamEvent>): Promis
       inputTokens,
       outputTokens,
       ...cacheReadInputTokens != null ? { cacheReadInputTokens } : {},
-      ...cacheCreationInputTokens != null ? { cacheCreationInputTokens } : {}
+      ...cacheCreationInputTokens != null ? { cacheCreationInputTokens } : {},
+      ...localCacheReadInputTokens != null ? { localCacheReadInputTokens } : {},
+      ...localCacheReadOutputTokens != null ? { localCacheReadOutputTokens } : {}
     }
   };
 }

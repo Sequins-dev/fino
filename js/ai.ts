@@ -44,6 +44,8 @@ export { SuspendSignal, tool, Tool, toToolDefinition } from 'fino:ai/tool';
 export type { ToolOptions, ToolResult, ToolRunContext } from 'fino:ai/tool';
 export { GuardrailError, maxSteps, runContext } from 'fino:ai/runtime';
 export type { GuardrailResult, Guardrails, RetryOptions, StopCondition, StrategyMemorySink, ToolApprovalRequest } from 'fino:ai/runtime';
+export { cachedModel } from 'fino:ai/cache';
+export type { CachedModelOptions, SemanticCacheOptions } from 'fino:ai/cache';
 export { InMemorySessionStore, session, Session, SqliteSessionStore } from 'fino:ai/session';
 export type { RunResult, RunState, RunStatus, SessionOptions, SessionStore, SuspendReason, ThreadState, ToolApprovalDecision } from 'fino:ai/session';
 export { memory, retriever, SqliteMemory } from 'fino:ai/memory';

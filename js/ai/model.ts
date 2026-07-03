@@ -147,10 +147,18 @@ export interface GenerateRequest {
 * Token usage reported by a provider.
 */
 export interface Usage {
+  /** Provider-billed input tokens for the request. */
   inputTokens: number;
+  /** Provider-billed output tokens for the request. */
   outputTokens: number;
+  /** Provider-native cache-read input tokens, when reported by the provider. */
   cacheReadInputTokens?: number;
+  /** Provider-native cache-creation input tokens, when reported by the provider. */
   cacheCreationInputTokens?: number;
+  /** Input tokens avoided by a local Fino cache hit. */
+  localCacheReadInputTokens?: number;
+  /** Output tokens avoided by a local Fino cache hit. */
+  localCacheReadOutputTokens?: number;
 }
 /**
 * Reason a model stopped generating.

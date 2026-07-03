@@ -8,6 +8,7 @@ import 'fino:format/typescript';
 import 'fino:parsing/scanner';
 import 'fino:compress';
 import 'fino:database/sqlite';
+import 'fino:cache';
 import 'fino:context';
 import 'fino:context/topic';
 import 'fino:process';
@@ -28,6 +29,7 @@ import 'fino:net/http/eventstream';
 import 'fino:net/http/eventsource';
 import 'fino:net/http/websocket';
 import 'fino:net/http/webtransport';
+import 'fino:ai/cache';
 import { DiskFileSystem } from 'fino:file';
 describe('builtin module layout', () => {
   it('exposes the pre-release public module grouping', async (t) => {
