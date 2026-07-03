@@ -89,7 +89,7 @@ go tool pprof profile.pb
 - `js/`: built-in JS runtime modules and platform APIs
 - `tests/`: `.test.ts` integration tests
 - `benchmarks/`: `.bench.mjs` performance microbenchmarks
-- `docs/roadmap.md`: planned compatibility and runtime work
+- `research-docs/`: research and design notes
 
 ## Architecture Notes
 

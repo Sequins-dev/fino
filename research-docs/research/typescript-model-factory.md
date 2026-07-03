@@ -2,8 +2,8 @@
 
 > Status: research and direction-setting document.
 >
-> Scope: this document deliberately excludes Node.js/npm compatibility and
-> application-agent SDK comparisons. The question is whether Fino can become a
+> Scope: this document deliberately excludes application-agent SDK
+> comparisons. The question is whether Fino can become a
 > serious TypeScript runtime for building, training, adapting, packaging, and
 > executing models — and what, concretely, to build.
 

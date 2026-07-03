@@ -33,8 +33,8 @@ Existing strengths:
   of the platform story.
 - **Compression and archive support.** Backend file and transport workflows have
   local primitives available without immediately reaching for packages.
-- **Package install path.** The runtime has a path toward package acquisition and
-  compatibility, even if larger npm compatibility remains a separate track.
+- **Package install path.** The runtime has a package acquisition path
+  (`fino install`) for ES-module dependencies.
 
 ## 2. Product posture
 
@@ -153,11 +153,9 @@ A frontend build pipeline is outside the near-term posture. fino can eventually
 serve static assets or support frontend workflows, but the primary wedge should
 be backend services and tools first.
 
-### Larger npm compatibility work
-
-Node/npm compatibility matters for adoption, but the larger compatibility track
-should remain separate except where it directly supports backend adoption. Do
-not let broad compatibility work obscure the curated standard-library path.
+Compatibility with CommonJS code and with the Node.js API surface is a
+non-goal, not a deferred item: the curated standard-library path is the
+product, and packages are supported only as ES modules.
 
 ## 6. Ordering principle
 

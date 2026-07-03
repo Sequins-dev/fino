@@ -1,8 +1,8 @@
 # Fino — Vision & Niche Exploration
 
 > Status: exploratory. This document inventories fino's distinctive capabilities and maps
-> them onto product directions. It is a thinking document, not a commitment. Concrete,
-> sequenced work belongs in `roadmap.md`; cross-references are noted inline.
+> them onto product directions. It is a thinking document, not a commitment;
+> cross-references to other research docs are noted inline.
 
 ## 1. What fino actually is (the unfair advantages)
 
@@ -59,7 +59,7 @@ control planes and to safely running untrusted/AI-generated code at scale.*
 - **Networking data plane is HTTP/1.1-only.** No HTTP/2 or HTTP/3 (abstractions are
   pre-wired but no driver), **no outbound connection pooling** (every `fetch()` is a fresh
   connect), **no mTLS** (client-cert surface absent), **no UDP/datagram class** (only raw
-  FFI used by DNS), no SNI multi-cert. (See `roadmap.md` 4.1 for H2.)
+  FFI used by DNS), no SNI multi-cert.
 - **Cluster is single-seed.** Seed is a SPOF/bottleneck (all PORT_MSG routed through it),
   no P2P data plane yet, **no transport auth (mTLS/token)**, no seed election. (See
   `cluster.md`.)
@@ -69,8 +69,6 @@ control planes and to safely running untrusted/AI-generated code at scale.*
   via `transit.rs`). Limits ocap delegation in exactly the topologies a control plane wants.
 - **No persistence / durable state engine** beyond SQLite; no built-in distributed
   consensus/KV; realm identity-across-restart is unspecified.
-- **npm-ecosystem gaps** (`node:` aliases, `Buffer`, `process` shim) — adoption friction
-  for the OSS lens. (See `roadmap.md` Tier 2.)
 
 The pattern: *the substrate (realms, ocap, RPC) is mature; the data plane and operational
 HA layers are deliberately deferred.* Most niches below are gated by 2–4 of these gaps, and
@@ -325,10 +323,7 @@ breadth-of-unlock x leverage. Items already tracked elsewhere are cross-referenc
 7. **Durable state / journal primitive** (over `fino:database/sqlite`, optional distributed KV
    later). *Unlocks:* #6,#7,#10 — durable workflows and config planes.
 8. **HTTP/2 driver** then **UDP/QUIC**. *Unlocks:* #3,#13 (gRPC), then the H3/QUIC
-   future and mesh credibility. (See `roadmap.md` 4.1.) Largest effort; sequence last.
-9. **npm-compat basics** (`node:` aliases, `Buffer`, `process` shim — `roadmap.md`
-   Tier 2). Not a niche unlocker but the dominant *adoption* lever for the OSS lens;
-   cheap; do early.
+   future and mesh credibility. Largest effort; sequence last.
 
 **Dependency shape:** mTLS (5) is a prerequisite for cluster auth (3); distributed
 scheduling (4) depends on cluster auth (3); durable state (7) underpins workflows (#6)
@@ -343,7 +338,7 @@ The substrate is one thing; the three lenses are packaging:
 
 - **OSS framework (adoption engine):** ship `fino:agent` (§5) and a programmable-proxy
   toolkit (Pillar B) as open libraries. Lead with the unique wedge (capability-sandboxed
-  tools/plugins) + zero-dependency RAG. Lower npm-compat friction (§6.9). Goal: developer
+  tools/plugins) + zero-dependency RAG. Goal: developer
   mindshare and a reference workload.
 - **Self-host appliance (the credible single-binary product):** package the agent gateway
   and programmable API gateway as deployable binaries with capability-policy + OTel built
@@ -364,8 +359,7 @@ operational-maturity investments each requires.
 ## 8. Suggested sequencing (conviction-ordered, not a commitment)
 
 1. **Seed the OSS wedge cheaply:** `fino:agent/memory` + `/rag` (#11) and `/tool` + MCP
-   host (#12) — high fit, low new-infra, makes the agent story tangible. Land npm-compat
-   basics (§6.9) in parallel.
+   host (#12) — high fit, low new-infra, makes the agent story tangible.
 2. **Build the lead differentiator:** `runUntrusted` + per-realm resource limits (§4, §6.1)
    — unlocks #1/#2/#5 and is the headline nobody else has.
 3. **Fund the data plane:** connection pool (§6.2) then mTLS (§6.5) — unlocks the appliance
@@ -387,12 +381,11 @@ For readers verifying claims against the code:
   `src/loader.rs` (block/remap enforcement)
 - RPC / Facade / streaming / handles: `js/realm/index.ts`, `js/internal/.../parent-rpc.ts`,
   `src/realm/synthetic.rs`; cross-thread port transfer: `src/realm/transit.rs`
-- Cluster / remote realms / transport: `js/cluster/*`, `docs/research/cluster.md`
+- Cluster / remote realms / transport: `js/cluster/*`, `research-docs/research/cluster.md`
 - Networking: `js/net/{dns,socket,tls}.ts`, `js/net/http/*.ts`,
   `js/internal/openssl.ts`, `js/net/socket.ts`; gaps noted in §1
 - FFI / callbacks: `src/ffi/{mod,call,closure,pointer,fast}.rs`
 - Async / event loop: `src/async_rt/*`, `src/runtime.rs`, `js/internal/runtime/loop.ts`
 - SQLite / vector / VFS: `js/sqlite/*`, `js/sqlite.ts`
 - Observability: `fino:opentelemetry`, `internal:inspector` (`src/inspector_module.rs`)
-- Existing roadmap and research: `docs/roadmap.md`,
-  `docs/research/{cluster,distribution,virtual-io}.md`
+- Existing research: `research-docs/research/{cluster,distribution,virtual-io}.md`
