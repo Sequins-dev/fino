@@ -146,6 +146,13 @@ export interface TaskCliSpec {
   options?: TaskCliOption[];
   positionals?: TaskCliPositional[];
   allowUnknown?: boolean;
+  /**
+  * Whether `--help` should be handled by this task's CLI parser.
+  *
+  * Defaults to `true`. Dispatcher tasks can set this to `false` when they need
+  * to forward `--help` to another task tree through a passthrough positional.
+  */
+  allowHelp?: boolean;
 }
 /**
 * Runtime context passed to AI-tool-compatible task invocation.
@@ -468,6 +475,7 @@ export class Task<
       name: this.cli?.name ?? this.name,
       description: this.description,
       allowUnknown: this.cli?.allowUnknown,
+      allowHelp: this.cli?.allowHelp,
       options: commandOptions,
       positionals: cloneCliPositionals(this.cli?.positionals),
       commands: (this.#allChildren as Array<Task | ArgvCommand>).map((child) => child instanceof Task ? child.#toArgvCommand(options) : child),
@@ -554,7 +562,7 @@ export class Task<
       // Lazy so task.ts never statically depends on the jobs runner.
       dispatcher ??= import('internal:jobs/runner').then((mod) => (mod as {
         taskWorker(root: Task): (call: never) => Promise<unknown>;
-      }).taskWorker(this as unknown as Task));
+      }).taskWorker((this as unknown) as Task));
       return (await dispatcher)(call as never);
     };
   }

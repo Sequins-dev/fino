@@ -45,6 +45,47 @@ fino --otlp-endpoint http://127.0.0.1:4318 app.ts
 Script inputs are single module specifiers. The root shortcut and `run` command
 do not expand directories or glob patterns.
 
+## Project Tasks
+
+Run app-specific tasks from a project `tasks/` directory:
+
+```sh
+fino task build --name api
+```
+
+Each direct source file in `tasks/` is imported as one task module. Supported
+task file extensions are `.ts`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs`.
+Hidden files, declaration files, and subdirectories are ignored in this
+release.
+
+Task files default-export a `Task`:
+
+```ts
+import { task } from 'fino:task';
+
+export default task({
+  name: 'build',
+  cli: {
+    options: [{ flags: '--name', type: 'string', required: true }],
+  },
+  run: async (input: { name: string }, ctx) => {
+    await ctx.writer.writeText(`building ${input.name}\n`);
+  },
+});
+```
+
+Use `--dir` before the task name to load a different task directory:
+
+```sh
+fino task --dir scripts deploy
+```
+
+`fino task --help` imports the configured task directory and lists the loaded
+tasks. `fino task build --help` shows help for the selected project task.
+Duplicate task names, invalid default exports, missing directories, and empty
+task directories are reported as command errors. Importing task files executes
+project code, just like running an entry module.
+
 ## Test
 
 Run a test file:

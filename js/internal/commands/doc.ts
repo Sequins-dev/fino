@@ -460,7 +460,7 @@ async function withDocsWriteLock<T>(fn: () => Promise<T>): Promise<T> {
       acquired = true;
     } catch (err) {
       if (!await exists(lockPath)) throw err;
-      if (Date.now() - started > 10_000) throw new Error('fino doc: timed out waiting for docs index lock');
+      if (Date.now() - started > 1e4) throw new Error('fino doc: timed out waiting for docs index lock');
       await timeout(25);
     }
   }
@@ -562,8 +562,8 @@ async function expandDocInput(arg: string): Promise<string[]> {
   if (!isGlob && !dir) return [arg];
   const files: string[] = [];
   for await (const entry of fs.glob(arg, {
-      cwd: cwd(),
-      onlyFiles: true
+    cwd: cwd(),
+    onlyFiles: true
   })) {
     const path = entry.path.toString();
     files.push(path);
@@ -2586,8 +2586,7 @@ async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, include
       const modules = Array.isArray(parsed) ? parsed as ParsedModuleDoc[] : [parsed as ParsedModuleDoc];
       applySourceOutputPaths(modules, file);
       parsedModules.push(...modules);
-    }
-    else guides.push(parsed as GuideDoc);
+    } else guides.push(parsed as GuideDoc);
   }
   disambiguateModules(parsedModules);
   resolveReExports(parsedModules, includePrivate);
@@ -2970,6 +2969,7 @@ async function ensureApiJson(): Promise<ApiDoc> {
   const inputs = await discoverProjectDocInputs();
   if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no prior doc build found; run `fino doc build <files...>` first');
   const api = await extractDocsCached(inputs);
+  disambiguateGuideOutputPaths(api);
   const metadata = await readDocInputMetadata();
   if (metadata) api.input = metadata;
   await ensureDir(docsDir());
@@ -3170,6 +3170,7 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc: no source files specified');
   await ensureDir(outDir);
   const api = await extractDocsCached(inputs, includePrivate);
+  disambiguateGuideOutputPaths(api);
   api.input = {
     files: inputRoots,
     types: typeRoots
@@ -3287,6 +3288,23 @@ async function inferCargoPackageTitle(path: string): Promise<string | undefined>
     if (name && name[1]!.trim().length > 0) return name[1]!.trim();
   }
   return undefined;
+}
+function disambiguateGuideOutputPaths(api: ApiDoc): void {
+  const directoryModuleHrefs = new Set(api.modules.filter((moduleDoc) => moduleDoc.outputPath !== undefined).map((moduleDoc) => moduleHref(moduleDoc)));
+  if (directoryModuleHrefs.size === 0) return;
+  const claimedGuideHrefs = new Set<string>();
+  for (const guide of api.guides ?? []) {
+    if (directoryModuleHrefs.has(guide.href)) {
+      guide.href = nestedIndexHref(guide.href);
+    }
+    while (directoryModuleHrefs.has(guide.href) || claimedGuideHrefs.has(guide.href)) {
+      guide.href = nestedIndexHref(guide.href);
+    }
+    claimedGuideHrefs.add(guide.href);
+  }
+}
+function nestedIndexHref(href: string): string {
+  return href.replace(/\.html$/i, '/index.html');
 }
 function validateOutputPaths(api: ApiDoc, format: string): void {
   const claims = new Map<string, string>();

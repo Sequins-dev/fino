@@ -324,6 +324,27 @@ describe('Command execution', () => {
     ], 'unknown tokens remained positionals once unknown option was encountered');
     t.equal(result.options.verbose, false, 'known options after passthrough are not parsed');
   });
+  it('can pass --help through as a positional when configured', (t) => {
+    const root = new RecordingCommand({
+      allowHelp: false,
+      allowUnknown: true,
+      positionals: [{
+        name: 'args',
+        type: 'string',
+        multiple: true
+      }]
+    });
+    const result = root.parse([
+      '--help',
+      'build',
+      '--flag'
+    ]) as ParsedExecution;
+    t.deepEqual(result.args.args, [
+      '--help',
+      'build',
+      '--flag'
+    ], '--help was forwarded with the remaining delegated argv');
+  });
   it('renders command-local usage and help text', (t) => {
     const { root, serve, http } = makeParser();
     t.equal(root.usage('fino'), 'Usage: fino [options] [command]', 'root usage includes commands');

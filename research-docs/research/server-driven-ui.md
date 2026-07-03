@@ -228,8 +228,9 @@ column) with a head table plus a history table. **Full history is kept**:
 every version retained until the snapshot's TTL sweep, enabling
 time-travel debugging and rebase-against-any-version; a per-view
 `history: { max?: number }` caps growth for long-lived keyed views. The
-interface is deliberately KV-shaped so a `fino:cache`/`fino:kv` backend
-slots in when that module lands.
+interface is deliberately KV-shaped so local `fino:cache` can back single-node
+state, while distributed `fino:kv` can back replicated cross-node view state
+when that service lands.
 
 - **Multi-tab.** Every full GET mints a fresh `viewId`, so two tabs are
   two independent instances that never fight. A leaked viewId is useless

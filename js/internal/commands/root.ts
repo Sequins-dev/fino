@@ -23,6 +23,7 @@ import { createFmtCommand } from './fmt.ts';
 import { createLintCommand } from './lint.ts';
 import { createReplCommand, runReplCommand } from './repl.ts';
 import { createRunCommand, runScriptTask } from './run.ts';
+import { createTaskCommand } from './task.ts';
 /**
 * Create the root CLI command.
 *
@@ -77,6 +78,7 @@ export function createRootCommand(): Task {
       createDocCommand(),
       createFmtCommand(),
       createLintCommand(),
+      createTaskCommand(),
       createReplCommand()
     ]
   });

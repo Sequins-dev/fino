@@ -24,7 +24,7 @@ embryonic form:
 2. **The trust boundary is the module graph.** Import rules with
    Rust-enforced capability narrowing (`src/realm/native.rs`) mean a tenant's
    entire I/O surface is enumerable and substitutable at spawn time. This is
-   the same lever that enables syscall virtualization (§5).
+   the same lever that enables syscall virtualization (§6).
 3. **The runtime owns the event loop.** Because the loop is JS
    (`js/internal/runtime/loop.ts`), fino can observe a load signal no external
    orchestrator can: loop saturation. A node at 40% CPU whose tick latency is
@@ -32,8 +32,8 @@ embryonic form:
    fino can.
 
 What is missing, in order of severity: the scheduler's input is fake (§2), apps
-cannot be delivered to nodes (§4), there is no CLI or auth story (§3), and none
-of the isolation machinery meters resources (§2, §6).
+cannot be delivered to nodes (§5), there is no CLI or auth story (§3), and none
+of the isolation machinery meters resources (§2, §7).
 
 ## 2. Per-realm cost telemetry
 
@@ -150,6 +150,46 @@ All of this is thin: the commands infrastructure exists
 (`js/internal/commands/`), and each command wraps the existing `fino:cluster`
 API plus the seed's control protocol. Nothing goes in Rust.
 
+### DNS-oriented discovery records
+
+Explicit seed URLs and join strings should remain the portable baseline, but
+cluster discovery should be DNS-oriented by default. The cluster should define
+one DNS-shaped record model and let multiple carriers serve it: normal DNS in
+cloud/container environments, mDNS on local networks, static config for simple
+deploys, and an optional Fino-managed DNS service when platform DNS is too
+static or too coarse.
+
+The discovery record should use DNS-native concepts: SRV-style endpoint
+records plus TXT-style key/value metadata carrying only non-secret bootstrap
+data:
+
+- `clusterId` to ignore unrelated Fino clusters on the same LAN;
+- `nodeId` and role (`seed`, `worker`, `peer`);
+- WebTransport host, port, and path;
+- protocol/service-catalog version hints;
+- certificate hash or public identity fingerprint;
+- optional relay/rendezvous hints for restricted networks.
+
+mDNS can advertise the same record as a Fino cluster service such as
+`_fino-cluster._udp.local`. Standard DNS can expose the equivalent under an
+internal zone, for example `_fino-cluster._udp.cluster.internal` for seeds and
+per-node records under `_fino-node._udp.cluster.internal`. A joining node
+queries records, filters by `clusterId`, chooses a seed or peer candidate, and
+then opens the normal WebTransport join flow.
+
+Where platform DNS is insufficient, Fino can provide its own small DNS service
+backed by seed/orchestrator state. That service should publish the same SRV/TXT
+record shape with short TTLs and richer node/service metadata. It is still only
+discovery: authoritative membership, freshness, and trust are established after
+the node connects over authenticated WebTransport. Join secrets must not be
+advertised through DNS, mDNS, or any discovery record.
+
+Restricted-network traversal should be layered below this metadata model, not
+baked into mDNS. If two peers cannot connect directly, the same discovery
+record can point at relay candidates, rendezvous servers, or ICE-like endpoint
+candidates. The cluster still consumes the same peer identity and service
+metadata after the transport finds a viable path.
+
 ### Data plane: get PORT_MSG off the seed
 
 Today every inter-realm message relays through the seed — acceptable now,
@@ -160,7 +200,171 @@ introductions (peer address + cert hash), after which `PORT_MSG` flows over
 direct WebTransport connections. The seed stays control-plane only:
 membership, placement, desired state.
 
-## 4. Packaging and deploy
+Prefer one authenticated WebTransport session per peer pair, then multiplex
+isolated logical channels over streams:
+
+- membership and control-plane messages;
+- service RPC/event traffic for cluster-wide services such as KV, leases,
+  config, and jobs;
+- realm `PORT_MSG` data-plane traffic;
+- replication and watch streams.
+
+Separate WebTransport sessions are still useful when there is a real boundary:
+different tenant authority, different credentials, different QoS, or failure
+containment. The default should avoid one QUIC/WebTransport connection per
+service because streams already provide the isolation and routing handles the
+runtime needs.
+
+## 4. Distributed execution model
+
+The target is not just "remote realm spawn." It is a resilient execution engine
+where every node participates in the same base runtime, and deployed apps are
+active-active replica sets placed where they can serve traffic cheaply without
+collapsing when one machine disappears.
+
+### What every node runs
+
+Every joined node should run the same root-level substrate:
+
+- **Orchestrator main thread**: owns local service registry, workload registry,
+  node health, local reconciliation, and supervision.
+- **Base cluster services**: KV, service registry, virtual DNS/resolver,
+  package cache, telemetry, leases/locks when those land.
+- **Package/cask manager**: fetches content-addressed deployments assigned to
+  the node and keeps them warm for restart/rebalance.
+- **Local supervisor**: starts, drains, restarts, and reports app realms and
+  linked realm groups.
+- **Transport bus**: keeps authenticated WebTransport sessions to peers and
+  multiplexes service, replication, and realm traffic over streams.
+
+The seed/leader owns desired state and global scheduling. Nodes own observed
+local state. If the seed restarts, nodes re-announce base services, hosted
+replicas, route endpoints, package cache contents, and telemetry; the seed
+rebuilds soft state and reconciles against durable desired state.
+
+### Apps as active-active replica sets
+
+Deployments should default to active-active. A deployment describes one or more
+components, each with an entrypoint, resource profile, endpoints, grants,
+linked realm groups, and replica policy:
+
+```jsonc
+{
+  "name": "billing-api",
+  "version": "3.2.1",
+  "components": {
+    "api": {
+      "entry": "src/api.ts",
+      "replicas": { "min": 2, "max": 20, "minHealthy": 2 },
+      "profile": "latency",
+      "links": ["worker"],
+      "spread": { "failureDomains": ["node", "zone"] }
+    },
+    "worker": {
+      "entry": "src/worker.ts",
+      "replicas": { "min": 1, "max": 8 },
+      "profile": "throughput",
+      "colocateWith": ["api"]
+    }
+  }
+}
+```
+
+The scheduler should prefer one replica per failure domain until the app's
+resilience target is satisfied. After that, it may place multiple replicas of
+the same component on a node to use available threads and loop headroom. This
+matters for high-throughput apps: one process can be healthy but one realm can
+still saturate a thread or event loop, so same-node horizontal scaling is a
+legitimate placement outcome.
+
+Singletons and stateful primaries are explicit exceptions. They require a lease
+or fencing token and should advertise themselves as such in the manifest. The
+default application shape is active-active because it uses cluster capacity and
+fails over cleanly.
+
+### Placement groups and locality
+
+Apps are usually graphs, not single realms. Some realms are tightly linked:
+API realm to worker pool, workflow coordinator to activity workers, or agent
+session to memory/RAG helper. The manifest should let those declare a
+placement group with soft colocation preferences:
+
+1. same realm or embedded child when isolation allows;
+2. same process/thread node over local ports/facades;
+3. same locality/zone over direct WebTransport;
+4. any healthy replica over the cluster bus.
+
+Colocation is a score boost, not a hard requirement unless declared as one.
+The scheduler should split linked realms when a node would overload, when a
+failure-domain policy requires spread, or when another node gives materially
+better latency/headroom. This is the BEAM-style lesson to keep: locality is an
+optimization under supervision, not a correctness assumption.
+
+### Virtual DNS and in-cluster routing
+
+Application realms should not use public DNS or raw node addresses to find
+cluster peers. They should resolve virtual names through a capability-gated
+runtime resolver:
+
+```ts
+resolve("fino://billing-api/api");
+resolve("fino://billing-api/worker");
+resolve("fino://tenant/acme/billing-api/api");
+```
+
+Default resolution returns a logical service endpoint, not a physical realm ID.
+The route picker then chooses the cheapest healthy target for that caller:
+same realm, same node bus, same peer WebTransport session, relay path, or
+external network edge. This lets deployments move, drain, fail, or scale
+without changing application code.
+
+Topology can still be exposed, but only by capability. A trusted operator,
+diagnostic tool, or actor-style library may ask for node IDs, replica IDs,
+realm IDs, route costs, or placement metadata. Ordinary app code should not
+depend on those details because doing so makes failover and rebalancing harder.
+Trusting a caller with topology does not mean topology should be the default
+programming model.
+
+### Routing and overload behavior
+
+Every virtual endpoint should keep a live route table with:
+
+- healthy replicas and their node/locality;
+- current load, queue depth, loop idle, and recent latency;
+- route cost from the caller's node;
+- drain status and deadline;
+- capability and tenant boundary checks.
+
+Routing should prefer local and colocated replicas while respecting overload.
+If the local linked realm is saturated, the route picker should spill to a
+nearby replica instead of preserving locality at all costs. If every replica is
+overloaded, the runtime should apply backpressure before spawning unbounded
+work: reject, queue within policy, or trigger autoscaling.
+
+### Supervision and resilience
+
+Local supervisors handle local failures first. Realm crash, health-check
+failure, or drain timeout should restart or replace that realm on the same node
+when policy allows. Node failure is a cluster-level event: after heartbeat
+expiry, the seed marks observed replicas on that node gone and reconciles
+desired state by scheduling replacements elsewhere.
+
+The resilience contract should be explicit:
+
+- desired state is durable;
+- observed state is soft and re-announced;
+- active-active replicas maintain `minHealthy` when enough nodes exist;
+- spread policy prevents all replicas from landing on one node before the
+  resilience target is satisfied;
+- route tables remove draining or dead replicas before callers observe them;
+- base services such as KV run on every node and resync after reconnect.
+
+This gives fino the BEAM-like shape that fits its substrate: supervised
+processes, location-transparent names, cheap restart, and explicit message
+links. The difference is that fino's unit is a capability-scoped realm graph
+that can be placed across threads, processes, or machines.
+
+## 5. Packaging and deploy
 
 ### The gap
 
@@ -212,7 +416,7 @@ Two design points worth settling early:
   and advertise resolved libraries; the seed filters placement on manifest
   constraints. This turns the existing candidate-path machinery into a
   capability advertisement, and it composes with platform constraints
-  (io_uring vs kqueue, arch — until WASM erases arch, §6).
+  (io_uring vs kqueue, arch — until WASM erases arch, §7).
 
 Dependencies: v1 vendors `fino install` output into the archive (hermetic,
 larger); a later optimization is lockfile-in-manifest with install-on-unpack
@@ -240,7 +444,7 @@ are cheap to restart, so don't build live migration; build fast, graceful
 drain (child-initiated: node asks realm to finish in-flight work and exit
 with a "relocating" code).
 
-## 5. Syscall-level virtualization
+## 6. Syscall-level virtualization
 
 ### The insight: virtualize `dlopen`, not the call site
 
@@ -317,7 +521,7 @@ testing story (record/replay, FoundationDB-style fault injection) that falls
 out of the same two remap rules, and it is also what makes "run this tenant's
 I/O against cluster-remote storage" a config change rather than a feature.
 
-## 6. WASM realms and a WASI on the same substrate
+## 7. WASM realms and a WASI on the same substrate
 
 ### It already runs
 
@@ -341,7 +545,7 @@ With JSPI, a WASI preview1 shim is a pure-JS module: `fd_read` awaits
 `FileHandle.pread` on whatever `FileSystem` the realm has; `sock_*` maps to
 the network provider; the fd table is a JS Map. Which means WASI is not a new
 subsystem — it is *another consumer of the same virtual provider substrate*
-as the syscall shim in §5. The same import rules that decide what a JS tenant
+as the syscall shim in §6. The same import rules that decide what a JS tenant
 can touch decide what a WASM tenant can touch.
 
 And yes, the Facade mechanism composes directly: facade calls are async, JSPI
@@ -353,7 +557,7 @@ plus the JSPI shim, nothing more.
 ### Why WASM matters for the cluster specifically
 
 - **Arch-independent deployment.** A WASM cask runs on macOS-arm64 and
-  linux-x86 nodes identically, dissolving the arch constraint from §4 and
+  linux-x86 nodes identically, dissolving the arch constraint from §5 and
   making heterogeneous clusters (dev laptops + servers) real.
 - **Cheapest strong tenant isolation.** A WASM instance inside an *embedded*
   realm has its own linear memory and only the imports it was handed — strong
@@ -368,18 +572,19 @@ WASI preview2/component-model is the horizon (natively async, would delete
 the JSPI dependency) — watch it, but preview1 is what toolchains emit today
 and the shim is small. Don't build for preview2 yet.
 
-## 7. Convergence
+## 8. Convergence
 
 The three explorations end in the same place. The module graph is the one
 mechanism: import rules already decide *what exists* for a realm; the dlopen
 shim extends that to *what syscalls mean*; the WASI shim extends it to *what
 non-JS code sees*; the capability manifest extends it *across the network*.
-Telemetry prices each realm; the seed places by price; packages move the code.
-Multi-tenancy is then the composition — narrowing for trust, metering for
-cost, scheduling for placement — with no component that isn't also useful
-alone.
+Telemetry prices each realm; virtual names hide placement; the seed places by
+price, locality, and resilience; packages move the code. Multi-tenancy is then
+the composition — narrowing for trust, metering for cost, scheduling for
+placement, and supervision for recovery — with no component that isn't also
+useful alone.
 
-## 8. Sequencing sketch
+## 9. Sequencing sketch
 
 Ordered by unblocking power, each step independently shippable:
 
@@ -389,17 +594,26 @@ Ordered by unblocking power, each step independently shippable:
    working the day this lands. Smallest step, immediate payoff.
 2. **Cluster CLI** — `cluster start/join/status`, join-string auth with cert
    pinning. Thin JS over existing APIs; makes the cluster demoable.
-3. **Cask format + `fino deploy`** — archive + manifest + content-addressed
+3. **DNS discovery records** — define SRV/TXT-shaped cluster identity,
+   endpoint, certificate, and service metadata once; read it from platform DNS
+   first, use mDNS for LAN bootstrap, and add a Fino DNS service when
+   orchestrator-backed dynamic records are needed.
+4. **Cask format + `fino deploy`** — archive + manifest + content-addressed
    fetch/unpack + seed sqlite desired-state. Kills the shared-filesystem
    assumption; the reconcile loop makes deployments self-healing.
-4. **Scheduler v2** — filter/score, lib/platform advertisement, empirical
-   per-app cost model, drain-based rebalancing.
-5. **dlopen shim prototype** — interposition table + importer-scoped
+5. **Node participation + virtual routing model** — base services on every
+   node, local supervisor, virtual service names, route tables, and route
+   selection that prefers same-node/nearby replicas without exposing topology
+   by default.
+6. **Scheduler v2** — filter/score, lib/platform advertisement, empirical
+   per-app cost model, linked-realm colocation, failure-domain spread,
+   active-active scaling, and drain-based rebalancing.
+7. **dlopen shim prototype** — interposition table + importer-scoped
    passthrough; prove it on a virtual filesystem under `fino:file`-denied
    code, and audit OpenSSL's residual file access while there.
-6. **JSPI smoke test, then WASI preview1 shim** — gate on the smoke test;
+8. **JSPI smoke test, then WASI preview1 shim** — gate on the smoke test;
    the shim itself is small and pure JS.
-7. **Direct peer data plane + seed soft-state rebuild** — when tenant traffic
+9. **Direct peer data plane + seed soft-state rebuild** — when tenant traffic
    or seed restarts start to hurt, in that order.
 
 Naming, when things need names (offered, not assumed): fino is a sherry, and

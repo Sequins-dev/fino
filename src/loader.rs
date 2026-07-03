@@ -138,6 +138,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:commands/doc", "internal/commands/doc"),
     source_builtin!("internal:commands/fmt", "internal/commands/fmt"),
     source_builtin!("internal:commands/lint", "internal/commands/lint"),
+    source_builtin!("internal:commands/task", "internal/commands/task"),
     source_builtin!("internal:tooling/files", "internal/tooling/files"),
     source_builtin!("internal:tooling/format", "internal/tooling/format"),
     source_builtin!("internal:tooling/lint", "internal/tooling/lint"),

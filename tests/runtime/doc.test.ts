@@ -758,14 +758,12 @@ export function current(): number {
     const db = await Database.open(docsDir + '/docs.db');
     try {
       await db.exec('CREATE TABLE IF NOT EXISTS doc_files (path TEXT NOT NULL, kind TEXT NOT NULL, include_private INTEGER NOT NULL, mtime_ms REAL NOT NULL, size INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (path, kind, include_private))');
-      const staleJson = JSON.stringify({
-        modules: [{
-          path: 'target/stale.ts',
-          name: 'stale',
-          doc: { text: 'stale'.repeat(1024) },
-          exports: []
-        }]
-      });
+      const staleJson = JSON.stringify({ modules: [{
+        path: 'target/stale.ts',
+        name: 'stale',
+        doc: { text: 'stale'.repeat(1024) },
+        exports: []
+      }] });
       const stmt = db.prepare('INSERT OR REPLACE INTO doc_files VALUES (?, ?, ?, ?, ?, ?)');
       try {
         for (let index = 0; index < 128; index++) {
@@ -777,7 +775,13 @@ export function current(): number {
     } finally {
       await db.close();
     }
-    const run = await runCli(['doc', 'build', './current.ts', '--format', 'markdown'], staleDir);
+    const run = await runCli([
+      'doc',
+      'build',
+      './current.ts',
+      '--format',
+      'markdown'
+    ], staleDir);
     t.equal(run.result.code, 0, 'doc build exits successfully with stale cache rows');
     t.equal(run.stderr, '', 'doc build writes no stderr');
     const markdown = await fs.readFile(docsDir + '/current.md');
@@ -1078,7 +1082,6 @@ declare global {
     ], appDir);
     t.equal(found.result.code, 0, 'doc search exits successfully');
     t.ok(found.stdout.includes('ffi.dlopen'), 'sqlite search indexes ambient module symbols by canonical id');
-
     await removeTree(fs, docsDir);
     const privateRun = await runCli([
       'doc',
@@ -1132,7 +1135,6 @@ declare module 'fino:ffi' {
     let json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     t.ok(json.modules.some((moduleDoc) => moduleDoc.path === 'js/public.ts'), 'json includes js tree module without --types');
     t.equal(json.modules.some((moduleDoc) => moduleDoc.name === 'ffi'), false, 'json omits runtime declaration module without --types');
-
     await removeTree(fs, docsDir);
     const run = await runCli([
       'doc',
@@ -1280,13 +1282,24 @@ declare module 'fino:ffi' {
  */
 export const concurrentValue = 1;
 `);
-    const build = await runCli(['doc', 'build', 'api.ts', '--format', 'markdown'], project);
+    const build = await runCli([
+      'doc',
+      'build',
+      'api.ts',
+      '--format',
+      'markdown'
+    ], project);
     t.equal(build.result.code, 0, 'initial build exits successfully');
     await fs.unlink(project + '/docs/docs.db');
-    const [a, b] = await Promise.all([
-      runCliProcess(['doc', 'search', 'concurrentValue'], project),
-      runCliProcess(['doc', 'search', 'concurrentValue'], project)
-    ]);
+    const [a, b] = await Promise.all([runCliProcess([
+      'doc',
+      'search',
+      'concurrentValue'
+    ], project), runCliProcess([
+      'doc',
+      'search',
+      'concurrentValue'
+    ], project)]);
     t.equal(a.result.code, 0, 'first search exits successfully');
     t.equal(b.result.code, 0, 'second search exits successfully');
     t.equal(a.stderr, '', 'first search writes no stderr');
@@ -1315,13 +1328,27 @@ export const scopedValue = 1;
  */
 export const outsideValue = 1;
 `);
-    const build = await runCli(['doc', 'build', 'src', '--format', 'markdown'], project);
+    const build = await runCli([
+      'doc',
+      'build',
+      'src',
+      '--format',
+      'markdown'
+    ], project);
     t.equal(build.result.code, 0, 'scoped build exits successfully');
     await fs.unlink(project + '/docs/docs.db');
-    const scoped = await runCli(['doc', 'search', 'scopedValue'], project);
+    const scoped = await runCli([
+      'doc',
+      'search',
+      'scopedValue'
+    ], project);
     t.equal(scoped.result.code, 0, 'search regenerates missing db');
     t.ok(scoped.stdout.includes('public.scopedValue'), 'search finds scoped build input');
-    const outside = await runCli(['doc', 'search', 'outsideValue'], project);
+    const outside = await runCli([
+      'doc',
+      'search',
+      'outsideValue'
+    ], project);
     t.equal(outside.result.code, 0, 'outside search exits successfully');
     t.equal(outside.stdout, 'No results for outsideValue\n', 'search does not rediscover outside initial build roots');
   });
@@ -1736,6 +1763,29 @@ export const privateCacheValue = true;
     t.equal(found.result.code, 0, 'doc search exits successfully');
     t.ok(found.stdout.includes('guide:guides/start'), 'sqlite search finds guide pages');
     t.ok(found.stdout.includes('(guide)'), 'sqlite search reports guide kind');
+    const sameStemDir = appDir + '/same-stem';
+    await ensureDir(fs, sameStemDir);
+    await fs.writeFile(sameStemDir + '/jobs.ts', `/**
+ * Jobs API module.
+ */
+export function enqueue(): void {}
+`);
+    await fs.writeFile(sameStemDir + '/jobs.md', '# Jobs Guide\n\nUse this guide before calling the API.\n');
+    const sameStemRun = await runCli([
+      'doc',
+      'build',
+      './same-stem',
+      '--format',
+      'both',
+      '--title',
+      'Same Stem Docs'
+    ], appDir);
+    t.equal(sameStemRun.result.code, 0, 'doc build accepts sibling guide and API files with the same stem');
+    t.equal(sameStemRun.stderr, '', 'same-stem doc build does not report a collision');
+    t.equal(await exists(fs, docsDir + '/jobs.md'), true, 'same-stem module keeps the stem markdown output');
+    t.equal(await exists(fs, docsDir + '/jobs/index.md'), true, 'same-stem guide is moved under a nested index markdown output');
+    t.equal(await exists(fs, docsDir + '/jobs.html'), true, 'same-stem module keeps the stem html output');
+    t.equal(await exists(fs, docsDir + '/jobs/index.html'), true, 'same-stem guide is moved under a nested index html output');
     const collisionDir = appDir + '/collision';
     await ensureDir(fs, collisionDir);
     await fs.writeFile(collisionDir + '/index.ts', `/** Collision module. */

@@ -147,6 +147,19 @@ export interface CommandConfig {
   */
   allowUnknown?: boolean;
   /**
+  * Whether `--help` should be consumed by this command.
+  *
+  * Defaults to `true`. Set this to `false` for dispatcher commands that need
+  * to forward `--help` to another parser through a positional passthrough.
+  *
+  * ```ts no_run
+  * import type { CommandConfig } from 'fino:process/argv';
+  *
+  * const config: CommandConfig = { allowHelp: false, allowUnknown: true };
+  * ```
+  */
+  allowHelp?: boolean;
+  /**
   * Handler invoked after parsing and validation.
   *
   * If omitted, the command returns its help text. The handler may return any
@@ -847,6 +860,23 @@ export class Command {
   */
   #allowUnknown: boolean = false;
   /**
+  * Private property `#allowHelp` used by `Command`.
+  *
+  * This implementation detail is included when documentation is built with
+  * `--include-private`. It describes state or helper behavior used by the
+  * owning module rather than a stable application-facing contract. Prefer the
+  * public API around the owning type unless you are maintaining this runtime.
+  *
+  * ```ts no_run
+  * class IncludePrivateExample {
+  *   #allowHelp = true;
+  * }
+  * ```
+  *
+  * @internal
+  */
+  #allowHelp: boolean = true;
+  /**
   * Private property `#runHandler` used by `Command`.
   *
   * This implementation detail is included when documentation is built with
@@ -1041,6 +1071,7 @@ export class Command {
     this.#name = config.name ?? null;
     this.#description = config.description;
     this.#allowUnknown = config.allowUnknown ?? false;
+    this.#allowHelp = config.allowHelp ?? true;
     this.#runHandler = config.run;
     for (const option of config.options ?? []) this.#registerOption(option);
     for (const positional of config.positionals ?? []) this.#registerPositional(positional);
@@ -1400,7 +1431,7 @@ export class Command {
         state.index++;
         continue;
       }
-      if (!stopOptions && token === '--help') {
+      if (!stopOptions && token === '--help' && this.#allowHelp) {
         parsed.helpRequested = true;
         state.index++;
         continue;
