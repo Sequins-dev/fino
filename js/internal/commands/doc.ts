@@ -36,13 +36,31 @@ import { format as formatTypeScript, parse as parseTypeScript, type ParseComment
 import { parse as parseYaml } from '../../format/yaml.ts';
 import { Scanner } from '../../parsing/scanner.ts';
 import * as sqlite from '../../database/sqlite.ts';
+import { timeout } from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
 const DOCS_DIR_NAME = 'docs';
 const API_JSON_NAME = 'api.json';
 const DOCS_DB_NAME = 'docs.db';
 const DOCS_CSS_NAME = 'docs.css';
 const DOCS_JS_NAME = 'docs.js';
+const DOCS_LOCK_DIR_NAME = '.docs.lock';
 const SIGNATURE_WRAP_COLUMN = 100;
+const DOC_DISCOVERY_IGNORES = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.cache',
+  '.parcel-cache',
+  '.turbo',
+  '.next',
+  'coverage',
+  'dist',
+  'build',
+  'docs',
+  'node_modules',
+  'target',
+  'vendor'
+]);
 interface DocTag {
   name: string;
   value: string;
@@ -118,6 +136,7 @@ interface ParsedModuleDoc extends ModuleDoc {
 }
 interface ApiDoc {
   schemaVersion?: number;
+  input?: DocInputMetadata;
   modules: ModuleDoc[];
   guides?: GuideDoc[];
 }
@@ -423,7 +442,35 @@ async function ensureDir(path: string): Promise<void> {
   if (await exists(path)) return;
   const parent = dirname(path);
   if (parent !== path) await ensureDir(parent);
-  await fs.mkdir(path);
+  try {
+    await fs.mkdir(path);
+  } catch (err) {
+    if (await exists(path)) return;
+    throw err;
+  }
+}
+async function withDocsWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+  await ensureDir(docsDir());
+  const lockPath = docsLockPath();
+  let acquired = false;
+  const started = Date.now();
+  while (!acquired) {
+    try {
+      await fs.mkdir(lockPath);
+      acquired = true;
+    } catch (err) {
+      if (!await exists(lockPath)) throw err;
+      if (Date.now() - started > 10_000) throw new Error('fino doc: timed out waiting for docs index lock');
+      await timeout(25);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      await fs.rmdir(lockPath);
+    } catch {}
+  }
 }
 async function removeTree(path: string): Promise<void> {
   if (!await exists(path)) return;
@@ -444,6 +491,9 @@ function apiJsonPath(): string {
 }
 function docsDbPath(): string {
   return joinPath(docsDir(), DOCS_DB_NAME);
+}
+function docsLockPath(): string {
+  return joinPath(docsDir(), DOCS_LOCK_DIR_NAME);
 }
 function normalizePath(path: string): string {
   if (path.startsWith('/')) return path;
@@ -504,25 +554,35 @@ async function expandDocInput(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
   const absolute = normalizePath(arg);
   const dir = !isGlob && await isDirectory(absolute);
+  if (dir) {
+    const files: string[] = [];
+    await walkDocInputFiles(absolute, files);
+    return [...new Set(files)].sort();
+  }
   if (!isGlob && !dir) return [arg];
-  const patterns = dir ? [
-    '**/*.ts',
-    '**/*.ts',
-    '**/*.js',
-    '**/*.mjs',
-    '**/*.md'
-  ] : [arg];
   const files: string[] = [];
-  for (const pattern of patterns) {
-    for await (const entry of fs.glob(pattern, {
-      cwd: dir ? absolute : cwd(),
+  for await (const entry of fs.glob(arg, {
+      cwd: cwd(),
       onlyFiles: true
-    })) {
-      const path = entry.path.toString();
-      files.push(dir ? await normalizeDirectoryGlobEntry(path, absolute) : path);
-    }
+  })) {
+    const path = entry.path.toString();
+    files.push(path);
   }
   return [...new Set(files)].sort();
+}
+async function walkDocInputFiles(root: string, out: string[]): Promise<void> {
+  const dir = await fs.dir(root);
+  for await (const entry of dir) {
+    const path = entry.path.toString();
+    if (entry.isDirectory()) {
+      if (!isIgnoredDocDirectory(entry.name)) await walkDocInputFiles(path, out);
+    } else if (entry.isFile() && (isSourcePath(path) || isMarkdownPath(path))) {
+      out.push(path);
+    }
+  }
+}
+function isIgnoredDocDirectory(name: string): boolean {
+  return DOC_DISCOVERY_IGNORES.has(name) || name.startsWith('.') && name !== '.';
 }
 async function expandDocInputFiles(arg: string): Promise<ExpandedDocFile[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
@@ -2450,28 +2510,37 @@ async function openDocsDb(): Promise<DocsDatabase> {
   return sqlite.Database.open(docsDbPath()) as Promise<DocsDatabase>;
 }
 async function readDocInputMetadata(): Promise<DocInputMetadata | undefined> {
-  if (!sqlite.sqliteAvailable || !await exists(docsDbPath())) return undefined;
-  const db = await sqlite.Database.open(docsDbPath()) as DocsDatabase;
-  try {
-    await ensureDocsCacheSchema(db);
-    const stmt = db.prepare('SELECT key, value FROM doc_meta WHERE key IN (?, ?)');
+  if (sqlite.sqliteAvailable && await exists(docsDbPath())) {
+    const db = await sqlite.Database.open(docsDbPath()) as DocsDatabase;
     try {
-      const rows = await stmt.all('input_roots', 'type_roots');
-      const byKey = new Map(rows.map((row) => [String(row.key), String(row.value)]));
-      const files = JSON.parse(byKey.get('input_roots') ?? '[]') as unknown;
-      const types = JSON.parse(byKey.get('type_roots') ?? '[]') as unknown;
-      if (!Array.isArray(files)) return undefined;
-      if (!Array.isArray(types)) return undefined;
-      return {
-        files: files.map(String),
-        types: types.map(String)
-      };
+      await ensureDocsCacheSchema(db);
+      const stmt = db.prepare('SELECT key, value FROM doc_meta WHERE key IN (?, ?)');
+      try {
+        const rows = await stmt.all('input_roots', 'type_roots');
+        const byKey = new Map(rows.map((row) => [String(row.key), String(row.value)]));
+        const files = JSON.parse(byKey.get('input_roots') ?? '[]') as unknown;
+        const types = JSON.parse(byKey.get('type_roots') ?? '[]') as unknown;
+        if (Array.isArray(files) && Array.isArray(types) && (files.length > 0 || types.length > 0)) {
+          return {
+            files: files.map(String),
+            types: types.map(String)
+          };
+        }
+      } finally {
+        stmt.finalize();
+      }
     } finally {
-      stmt.finalize();
+      await db.close();
     }
-  } finally {
-    await db.close();
   }
+  const existingApi = await readExistingApiJson();
+  if (existingApi?.input && Array.isArray(existingApi.input.files) && Array.isArray(existingApi.input.types)) {
+    return {
+      files: existingApi.input.files.map(String),
+      types: existingApi.input.types.map(String)
+    };
+  }
+  return undefined;
 }
 async function writeDocInputMetadata(files: string[], types: string[]): Promise<void> {
   if (!sqlite.sqliteAvailable) return;
@@ -2886,7 +2955,7 @@ function rewriteSymbolIds(moduleDoc: ModuleDoc, oldName: string, newName: string
 }
 async function discoverProjectDocInputs(): Promise<DocInputs> {
   const metadata = await readDocInputMetadata();
-  const inputs = await expandDocInputs(metadata?.files ?? ['.']);
+  const inputs = await expandDocInputs(metadata?.files ?? []);
   const typeInputs = await expandDocInputs(metadata?.types ?? []);
   inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(compareAscii);
   inputs.guideFiles = [...new Set([...inputs.guideFiles, ...typeInputs.guideFiles])].sort(compareAscii);
@@ -2899,17 +2968,22 @@ async function discoverProjectDocInputs(): Promise<DocInputs> {
 async function ensureApiJson(): Promise<ApiDoc> {
   const path = apiJsonPath();
   const inputs = await discoverProjectDocInputs();
-  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no source files found to document');
+  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no prior doc build found; run `fino doc build <files...>` first');
   const api = await extractDocsCached(inputs);
+  const metadata = await readDocInputMetadata();
+  if (metadata) api.input = metadata;
   await ensureDir(docsDir());
   await fs.writeFile(path, JSON.stringify(api, null, 2) + '\n');
   return api;
 }
 async function ensureDocsDb(): Promise<string> {
-  const dbPath = docsDbPath();
-  const api = await ensureApiJson();
-  await writeSqliteIndex(api, dbPath);
-  return dbPath;
+  return withDocsWriteLock(async () => {
+    const dbPath = docsDbPath();
+    if (await exists(dbPath)) return dbPath;
+    const api = await ensureApiJson();
+    await writeSqliteIndex(api, dbPath);
+    return dbPath;
+  });
 }
 function flatten(api: ApiDoc): FlatSymbol[] {
   const symbols: FlatSymbol[] = [];
@@ -3096,6 +3170,10 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc: no source files specified');
   await ensureDir(outDir);
   const api = await extractDocsCached(inputs, includePrivate);
+  api.input = {
+    files: inputRoots,
+    types: typeRoots
+  };
   validateOutputPaths(api, format);
   const expectedOutputs = expectedDocOutputs(api, format);
   if (format === 'html' || format === 'both') {
@@ -3143,10 +3221,12 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   await ensureDir(dirname(jsonPath));
   await fs.writeFile(jsonPath, JSON.stringify(api, null, 2) + '\n');
   written.push(`Wrote ${jsonPath}`);
-  written.push(await writeSqliteIndex(api, docsDbPath()));
   await pruneGeneratedOutputs(expectedOutputs);
-  await writeOutputManifest(expectedOutputs);
-  await writeDocInputMetadata(inputRoots, typeRoots);
+  await withDocsWriteLock(async () => {
+    written.push(await writeSqliteIndex(api, docsDbPath()));
+    await writeOutputManifest(expectedOutputs);
+    await writeDocInputMetadata(inputRoots, typeRoots);
+  });
   const message = written.join('\n');
   if (ctx.writer.mode === 'json') {
     const result = {
@@ -3373,15 +3453,20 @@ function isNoResults(output: string, query: string): boolean {
   return output === `No results for ${query}\n`;
 }
 async function refreshDocsDbForQuery(query: string): Promise<string> {
-  const api = await refreshDocsForQuery(query);
-  await writeSqliteIndex(api, docsDbPath());
-  return docsDbPath();
+  return withDocsWriteLock(async () => {
+    const dbPath = docsDbPath();
+    const api = await refreshDocsForQuery(query);
+    await writeSqliteIndex(api, dbPath);
+    return dbPath;
+  });
 }
 async function refreshDocsForQuery(query: string): Promise<ApiDoc> {
   const inputs = await discoverProjectDocInputs();
-  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no source files found to document');
+  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no prior doc build found; run `fino doc build <files...>` first');
   const terms = docQueryTerms(query);
   const api = await extractDocsCached(inputs, false, { shouldParseChanged: (file) => docFileContainsAnyTerm(file.file, terms) });
+  const metadata = await readDocInputMetadata();
+  if (metadata) api.input = metadata;
   await ensureDir(docsDir());
   await fs.writeFile(apiJsonPath(), JSON.stringify(api, null, 2) + '\n');
   return api;

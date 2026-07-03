@@ -198,6 +198,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/database/postgres/scram"
     ),
     source_builtin!("fino:database", "database/index"),
+    source_builtin!("fino:database/sql", "database/sql"),
     source_builtin!("fino:database/migrate", "database/migrate"),
     source_builtin!("fino:database/postgres", "database/postgres"),
     source_builtin!("fino:database/sqlite", "database/sqlite"),
@@ -1595,7 +1596,7 @@ fn load_fs_module_uncached<'s>(
         let escaped = escape_js_string(&text);
         let src = format!("export default JSON.parse('{escaped}');");
         compile_source_module(scope, &src, &resource_name, None)
-    } else if is_typescript(path) {
+    } else if is_typescript(path) || is_sql(path) {
         let stripped = transpile_typescript(scope, path, &text)?;
         register_source_map_from_json(scope, &resource_name, &stripped.map);
         compile_source_module(
@@ -1808,6 +1809,10 @@ fn is_typescript(path: &Path) -> bool {
 
 fn is_json(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("json")
+}
+
+fn is_sql(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("sql")
 }
 
 fn escape_js_string(s: &str) -> String {

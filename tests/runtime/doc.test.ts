@@ -1167,18 +1167,37 @@ declare module 'fino:ffi' {
     const jsonPath = docsDir + '/api.json';
     const dbPath = docsDir + '/docs.db';
     await removeTree(fs, docsDir);
-    const coldSearch = await runCli([
+    const missingBuild = await runCli([
       'doc',
       'search',
       'display',
       'name'
     ], appDir);
-    t.equal(coldSearch.result.code, 0, 'doc search exits successfully without prebuilt artifacts');
-    t.equal(coldSearch.stderr, '', 'doc search writes no stderr');
-    t.ok(coldSearch.stdout.includes('advanced.ResourceBox.name'), 'search finds member docs');
-    t.equal(coldSearch.stdout.includes('Wrote '), false, 'search does not surface transparent build output');
-    t.equal(await exists(fs, jsonPath), true, 'search generates missing api.json in fixed docs dir');
-    t.equal(await exists(fs, dbPath), true, 'search generates missing docs.db in fixed docs dir');
+    t.notEqual(missingBuild.result.code, 0, 'doc search requires a prior build');
+    const build = await runCli([
+      'doc',
+      'build',
+      './advanced.ts',
+      '--format',
+      'both',
+      '--title',
+      'Advanced API'
+    ], appDir);
+    t.equal(build.result.code, 0, 'doc build exits successfully');
+    t.equal(await exists(fs, jsonPath), true, 'doc build writes api.json');
+    t.equal(await exists(fs, dbPath), true, 'doc build writes docs.db');
+    await fs.unlink(dbPath);
+    const search = await runCli([
+      'doc',
+      'search',
+      'display',
+      'name'
+    ], appDir);
+    t.equal(search.result.code, 0, 'doc search regenerates missing search db from prior build inputs');
+    t.equal(search.stderr, '', 'doc search writes no stderr');
+    t.ok(search.stdout.includes('advanced.ResourceBox.name'), 'search finds member docs');
+    t.equal(search.stdout.includes('Wrote '), false, 'search does not surface transparent build output');
+    t.equal(await exists(fs, dbPath), true, 'search regenerates missing docs.db in fixed docs dir');
     const shown = await runCli([
       'doc',
       'show',
@@ -1230,6 +1249,81 @@ declare module 'fino:ffi' {
     ], appDir);
     t.equal(ambiguous.result.code, 0, 'ambiguous show exits successfully');
     t.ok(ambiguous.stdout.includes('Multiple matches'), 'ambiguous show reports candidates');
+  });
+  it('ignores generated and dependency directories during directory discovery', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/target');
+    await ensureDir(fs, appDir + '/node_modules');
+    await fs.writeFile(appDir + '/target/broken.ts', 'export const = ;\n');
+    await fs.writeFile(appDir + '/node_modules/broken.ts', 'export const = ;\n');
+    const run = await runCli([
+      'doc',
+      'build',
+      '.',
+      '--format',
+      'markdown'
+    ], appDir);
+    t.equal(run.result.code, 0, 'doc build . exits successfully');
+    t.equal(run.stderr, '', 'doc build . writes no stderr');
+    t.ok(run.stdout.includes('/docs/advanced.md'), 'doc build still discovers project sources');
+  });
+  it('serializes concurrent search index regenerations', async (t) => {
+    const project = TEST_DIR + '/concurrent-search-' + Math.floor(Math.random() * 1e6);
+    await ensureDir(fs, project);
+    await fs.writeFile(project + '/api.ts', `/**
+ * Concurrent search module.
+ */
+
+/**
+ * Searchable concurrent value.
+ */
+export const concurrentValue = 1;
+`);
+    const build = await runCli(['doc', 'build', 'api.ts', '--format', 'markdown'], project);
+    t.equal(build.result.code, 0, 'initial build exits successfully');
+    await fs.unlink(project + '/docs/docs.db');
+    const [a, b] = await Promise.all([
+      runCliProcess(['doc', 'search', 'concurrentValue'], project),
+      runCliProcess(['doc', 'search', 'concurrentValue'], project)
+    ]);
+    t.equal(a.result.code, 0, 'first search exits successfully');
+    t.equal(b.result.code, 0, 'second search exits successfully');
+    t.equal(a.stderr, '', 'first search writes no stderr');
+    t.equal(b.stderr, '', 'second search writes no stderr');
+    t.ok(a.stdout.includes('api.concurrentValue'), 'first search finds symbol');
+    t.ok(b.stdout.includes('api.concurrentValue'), 'second search finds symbol');
+  });
+  it('uses initial build inputs when regenerating a missing search db', async (t) => {
+    const project = TEST_DIR + '/input-metadata-' + Math.floor(Math.random() * 1e6);
+    await ensureDir(fs, project + '/src');
+    await fs.writeFile(project + '/src/public.ts', `/**
+ * Scoped public module.
+ */
+
+/**
+ * Scoped value docs.
+ */
+export const scopedValue = 1;
+`);
+    await fs.writeFile(project + '/outside.ts', `/**
+ * Outside module docs.
+ */
+
+/**
+ * Outside value docs.
+ */
+export const outsideValue = 1;
+`);
+    const build = await runCli(['doc', 'build', 'src', '--format', 'markdown'], project);
+    t.equal(build.result.code, 0, 'scoped build exits successfully');
+    await fs.unlink(project + '/docs/docs.db');
+    const scoped = await runCli(['doc', 'search', 'scopedValue'], project);
+    t.equal(scoped.result.code, 0, 'search regenerates missing db');
+    t.ok(scoped.stdout.includes('public.scopedValue'), 'search finds scoped build input');
+    const outside = await runCli(['doc', 'search', 'outsideValue'], project);
+    t.equal(outside.result.code, 0, 'outside search exits successfully');
+    t.equal(outside.stdout, 'No results for outsideValue\n', 'search does not rediscover outside initial build roots');
   });
   it('refreshes stale search artifacts from new and changed inputs', async (t) => {
     const docsDir = appDir + '/docs';

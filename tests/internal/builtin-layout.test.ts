@@ -7,6 +7,8 @@ import 'fino:format/yaml';
 import 'fino:format/typescript';
 import 'fino:parsing/scanner';
 import 'fino:compress';
+import 'fino:database/sql';
+import 'fino:database/migrate';
 import 'fino:database/sqlite';
 import 'fino:cache';
 import 'fino:context';

@@ -24,6 +24,7 @@ import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from '../globals/encoding.ts';
 import { registerResolve, registerInitMeta, registerTranspile, getPackageMap } from 'internal:loader-hooks';
 import { transpile as transpileTypeScript } from 'fino:format/typescript';
+import { parseSqlModule, toSqlModuleSource } from 'fino:database/sql';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const lib = dlopen(LIBC, {
   realpath: {
@@ -259,6 +260,17 @@ function transpile(source: string, filename: string): {
   code: string;
   map: string;
 } {
+  if (filename.endsWith('.sql')) {
+    const generated = toSqlModuleSource(parseSqlModule(source, { source: filename }));
+    const result = transpileTypeScript(generated, { filename: filename + '.ts' });
+    if (!result.ok) {
+      throw new Error(result.errors.map((error) => error.message).join('\n') || `Unable to compile SQL module ${filename}`);
+    }
+    return {
+      code: result.code,
+      map: result.map
+    };
+  }
   const result = transpileTypeScript(source, { filename });
   if (!result.ok) {
     throw new Error(result.errors.map((error) => error.message).join('\n') || `Unable to transpile ${filename}`);
