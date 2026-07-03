@@ -302,10 +302,14 @@ This composes cleanly with the durable design rather than fighting it:
 
 ## 6. Sequencing sketch
 
-1. Extract the kernel to `fino:signal` (re-export from `fino:ui`), add
+No UI ships in any of these steps — this line of work ends at the signal
+surfaces themselves (observable via tests and plain `effect()`
+consumers). UI built on them waits for `fino:ui/web` to be polished.
+
+1. Extract the kernel to `fino:signals` (re-export from `fino:ui`), add
    `ReadonlySignal`, `computed`, `effect`, `lazy`, `fromIterable`.
-2. `Session.watch()` + `AgentStream`/`ModelStream` derived signals — the
-   flagship, and the direct dependency of the agent-chat demo in
+2. `Session.watch()` + `AgentStream.state`/`ModelStream.state` — the
+   flagship surfaces, and the direct dependency of the agent-chat demo in
    `server-driven-ui.md`.
 3. `watchRun()` unified with `observableWorkflowStore`.
 4. Jobs: stats query + `job(id)`/`stats()` signals (also deletes the
@@ -313,27 +317,32 @@ This composes cleanly with the durable design rather than fighting it:
 5. Pool/orchestrator stats signals (adds the missing restart emission).
 6. MCP client list signals; metrics bridges.
 
-## 7. Open questions
+## 7. Decisions and remaining questions
 
-1. **Module name and home for the kernel.** `fino:signal` as a standalone
-   public module vs. an `internal:signal` shared by producers with the
-   public surface staying on `fino:ui`. Standalone-public is cleaner
-   layering; internal-first matches the "internal until public-ready"
-   posture.
-2. **Decomposed vs. object signals.** `stream.text` / `stream.usage` as
-   separate signals (fine-grained regions re-render less) vs. one
-   `Signal<AgentViewState>` (simpler API, coarser invalidation).
-   Hash-diffing in `fino:ui/web` makes coarse signals *correct*, so this
-   is purely a render-cost question.
-3. **Backpressure on folds.** `fromIterable` consumes as fast as the
-   source produces; for token streams that is desired, but should the
-   kernel offer a throttled fold (`{ coalesce: '16ms' }`) so a hot signal
-   doesn't schedule a re-render per token?
-4. **Does `Session` grow `watch()` or does the signal live outside?**
-   Adding it to `Session` couples `fino:ai/session` to the signal kernel;
-   a free function `watchSession(session)` keeps the plane clean but is
-   less discoverable. Same question for `Jobs`/`RealmPool`.
-5. **How far to take the ops dashboard.** A batteries `fino:ui`
-   component kit for jobs/workloads/sessions is high-leverage but is a
-   product surface of its own; probably a separate doc once §4.3–4.4
-   exist.
+Resolved (2026-07-03):
+
+- **Kernel module is `fino:signals`**, standalone public, re-exported by
+  `fino:ui`.
+- **Coarse object signals, not decomposed** — one signal per live thing
+  (`AgentRunView`, `RunState`, `QueueStats`); consumers narrow with
+  `computed()`. Avoids excessive instance construction and management;
+  hash-diffing in `fino:ui/web` makes coarse invalidation costless.
+- **No kernel throttling** — folds `set()` freely; buffered writers on
+  the consumer side (the SSE patch path) provide the backpressure, so
+  hot signals coalesce between flushes naturally.
+- **`watch()` lives on the owner** — `Session.watch()` is a method, and
+  `Jobs`/`RealmPool` follow the same shape (discoverability wins; the
+  coupling is only to the small `fino:signals` kernel).
+- **No UI in this line of work** — the ops dashboard and any component
+  kits wait until the UI framework is polished; signals land as
+  infrastructure only.
+
+Still open:
+
+1. **`AgentRunView` field set.** Exactly which folded fields the agent
+   and model state signals carry (e.g. does `steps` belong, or is the
+   transcript better served by the `MessageHistory` signal alone?).
+2. **Reconcile cadence for store-backed signals.** `jobs.stats()` folds
+   topic events with periodic reconcile against the store — what
+   interval, and is reconcile skipped entirely while the store and
+   events agree?
