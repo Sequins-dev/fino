@@ -7,6 +7,7 @@ mod async_runtime_module;
 mod ffi;
 mod inspector_module;
 mod loader;
+mod net_native;
 mod platform;
 mod profiler;
 mod protobuf;

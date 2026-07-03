@@ -247,6 +247,7 @@ export interface QuicListenOptions {
   alpnProtocols?: string[];
   certificateFile?: string;
   privateKeyFile?: string;
+  clientAuth?: 'none' | 'request' | 'require';
   verifyClient?: boolean;
   rejectUnauthorized?: boolean;
   ca?: QuicCaOptions;
@@ -269,6 +270,7 @@ export type QuicSNIContextOptions = {
   privateKeyFile: string;
   alpnProtocols?: string[];
   tlsGroups?: string[];
+  clientAuth?: 'none' | 'request' | 'require';
   verifyClient?: boolean;
   rejectUnauthorized?: boolean;
   ca?: QuicCaOptions;
@@ -2198,6 +2200,7 @@ function appendKeylogLine(options: QuicKeylogOptions, line: string): void {
   }
 }
 function createServerTlsContext(certificateFile: string, privateKeyFile: string, alpnProtocols: string[], options: Pick<ResolvedQuicOptions, 'tlsCipherSuites' | 'tlsGroups' | 'keylog'>, tlsOptions: {
+  clientAuth?: 'none' | 'request' | 'require';
   verifyClient?: boolean;
   rejectUnauthorized?: boolean;
   ca?: QuicCaOptions;
@@ -3198,6 +3201,7 @@ export class QuicEndpoint extends EventTarget {
     const sniContexts = new Map<string, QuicTlsContext>();
     try {
       ctx = createServerTlsContext(options.certificateFile, options.privateKeyFile, protocols, listenerOptions, {
+        clientAuth: options.clientAuth,
         verifyClient: options.verifyClient === true,
         rejectUnauthorized: options.rejectUnauthorized,
         ca: options.ca,
@@ -3206,6 +3210,7 @@ export class QuicEndpoint extends EventTarget {
       if (options.sni !== undefined) {
         for (const [servername, sni] of Object.entries(options.sni)) {
           sniContexts.set(servername, createServerTlsContext(sni.certificateFile, sni.privateKeyFile, sni.alpnProtocols?.slice() ?? protocols, listenerOptions, {
+            clientAuth: sni.clientAuth ?? (sni.verifyClient === undefined ? options.clientAuth : undefined),
             verifyClient: sni.verifyClient ?? options.verifyClient,
             rejectUnauthorized: sni.rejectUnauthorized ?? options.rejectUnauthorized,
             ca: sni.ca ?? options.ca,
@@ -3946,6 +3951,7 @@ export class QuicListener {
     try {
       for (const [servername, sni] of Object.entries(entries)) {
         newContexts.set(servername, createServerTlsContext(sni.certificateFile, sni.privateKeyFile, sni.alpnProtocols?.slice() ?? this.alpnProtocols, this.options, {
+          clientAuth: sni.clientAuth,
           verifyClient: sni.verifyClient,
           rejectUnauthorized: sni.rejectUnauthorized,
           ca: sni.ca,
@@ -4225,7 +4231,7 @@ export class QuicConnection extends EventTarget {
     this.#fd = transport.id;
     this.#ctx = ctx;
     this.#tls = tls;
-    this.#requireClientCertificate = role === 'server' && (listener?._ctx.verifyMode ?? 0) !== 0;
+    this.#requireClientCertificate = role === 'server' && listener?._ctx.clientAuth === 'require';
     this.#serverName = serverName;
     this.#originalDcid = originalDcid;
     this.#options = options;

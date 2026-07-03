@@ -684,21 +684,29 @@ describe('HTTP/3 (h3 ALPN)', () => {
       await server.close();
     }
   });
-  it('unified HTTP serve() rejects unsupported H3 clientAuth request mode', async (t) => {
+  it('unified HTTP serve() allows H3 clientAuth request mode without a client certificate', async (t) => {
     if (!available) return;
-    t.throws(() => httpServe({
+    const server = httpServe({
       port: 0,
       hostname: '127.0.0.1',
       tls: {
         cert: TEST_CERT,
         key: TEST_KEY,
+        ca: TEST_CERT,
         clientAuth: 'request'
       },
       h3: true
     } as any, async (incoming: any) => {
       const accepted = await incoming.accept();
-      await accepted.respond(new Response('unexpected'));
-    }), /h3 does not support tls\.clientAuth request/, 'H3 request-mode client auth fails early');
+      await accepted.respond(new Response(`protocol:${accepted.protocol}`));
+    });
+    try {
+      await (server as any).ready;
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/optional-client-auth`, { quic: { verifyPeer: false } });
+      t.equal(await response.text(), 'protocol:h3', 'H3 request-mode client auth accepts anonymous clients');
+    } finally {
+      await server.close();
+    }
   });
   it('App.listen() exposes H3 protocol and session context', async (t) => {
     if (!available) return;

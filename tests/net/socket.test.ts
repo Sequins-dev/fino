@@ -25,6 +25,22 @@ describe('Constants', () => {
     t.equal(typeof sock.joinMulticastGroup, 'function', 'joinMulticastGroup helper is exported');
     t.equal(typeof sock.leaveMulticastGroup, 'function', 'leaveMulticastGroup helper is exported');
     t.equal(typeof sock.setMulticastOptions, 'function', 'setMulticastOptions helper is exported');
+    t.equal(typeof sock.networkInterfaces, 'function', 'networkInterfaces helper is exported');
+    t.equal(typeof sock.interfaceIndex, 'function', 'interfaceIndex helper is exported');
+    t.equal(typeof sock.networkInterfaceIndices, 'function', 'networkInterfaceIndices helper is exported');
+  });
+  it('enumerates network interface indexes', (t) => {
+    const interfaces = sock.networkInterfaces();
+    t.equal(Array.isArray(interfaces), true, 'networkInterfaces returns an array');
+    t.equal(interfaces.every((iface) => Number.isInteger(iface.index) && iface.index > 0 && typeof iface.name === 'string'), true, 'interfaces include positive indexes and names');
+    t.equal(interfaces.every((iface) => iface.addresses === undefined || Array.isArray(iface.addresses)), true, 'interfaces allow optional address arrays');
+    t.equal(interfaces.every((iface) => iface.up === undefined || typeof iface.up === 'boolean'), true, 'interfaces allow optional boolean up flags');
+    t.equal(interfaces.every((iface) => iface.multicast === undefined || typeof iface.multicast === 'boolean'), true, 'interfaces allow optional boolean multicast flags');
+    const indices = sock.networkInterfaceIndices();
+    t.deepEqual(indices, interfaces.map((iface) => iface.index), 'networkInterfaceIndices matches networkInterfaces indexes');
+    if (interfaces.length > 0 && interfaces[0]!.name.length > 0) {
+      t.equal(sock.interfaceIndex(interfaces[0]!.name), interfaces[0]!.index, 'interfaceIndex resolves an enumerated name');
+    }
   });
 });
 describe('Address encoding / decoding', () => {
@@ -274,6 +290,42 @@ describe('TCP / UDP loopback', () => {
       if (typeof packet === 'number') throw new Error(`recvmsgEcn failed with errno ${packet}`);
       t.equal(decodeUtf8(packet.data), 'ecn-ping', 'ECN receive payload matches');
       if (packet.ecn !== undefined) t.equal(packet.ecn, 3, 'ECN bits are parsed when ancillary data is returned');
+    } finally {
+      sock.close(server);
+      sock.close(client);
+    }
+  });
+  it('UDP recvmsgPacketInfo delivers payloads and parses packet info when provided by the OS', async (t) => {
+    const server = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
+    const client = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
+    try {
+      sock.bind(server, {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: 0
+      });
+      sock.setNonblocking(server);
+      sock.setsockopt(server, sock.IPPROTO_IP, sock.IP_RECVPKTINFO, true);
+      const bound = sock.getsockname(server);
+      if (bound.family !== 'ipv4') throw new Error('expected IPv4 socket address');
+      const sent = sock.sendto(client, encodeUtf8('pktinfo-ping'), {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: bound.port
+      });
+      t.equal(sent, 'pktinfo-ping'.length, 'sendto sends the payload');
+      await loop.readable(server);
+      const packet = sock.recvmsgPacketInfo(server, 64);
+      t.ok(typeof packet !== 'number', 'recvmsgPacketInfo returned a packet');
+      if (typeof packet === 'number') throw new Error(`recvmsgPacketInfo failed with errno ${packet}`);
+      t.equal(decodeUtf8(packet.data), 'pktinfo-ping', 'packet-info receive payload matches');
+      if (packet.destination !== undefined) {
+        t.equal(packet.destination.family, 'ipv4', 'packet-info destination is IPv4 when supplied');
+        t.equal(packet.destination.ip, '127.0.0.1', 'packet-info destination address is parsed');
+      }
+      if (packet.interfaceIndex !== undefined) {
+        t.equal(Number.isInteger(packet.interfaceIndex), true, 'packet-info interface index is numeric when supplied');
+      }
     } finally {
       sock.close(server);
       sock.close(client);

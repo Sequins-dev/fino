@@ -93,6 +93,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(realm::synthetic::create_install_module),
     ),
     (
+        "internal:net-native",
+        BuiltinKind::Synthetic(crate::net_native::create_module),
+    ),
+    (
         "internal:process",
         BuiltinKind::Synthetic(platform::create_module),
     ),
@@ -194,6 +198,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/database/postgres/scram"
     ),
     source_builtin!("fino:database", "database/index"),
+    source_builtin!("fino:database/migrate", "database/migrate"),
     source_builtin!("fino:database/postgres", "database/postgres"),
     source_builtin!("fino:database/sqlite", "database/sqlite"),
     // internal: file sub-modules

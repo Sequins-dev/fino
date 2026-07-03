@@ -1087,6 +1087,13 @@ const _sslSymbols = {
     ],
     result: 'i32'
   },
+  SSL_CTX_use_certificate_chain_file: {
+    parameters: [
+      'pointer',
+      'buffer'
+    ],
+    result: 'i32'
+  },
   SSL_CTX_use_PrivateKey_file: {
     parameters: [
       'pointer',
@@ -3371,8 +3378,8 @@ export function sslCtxNewQuicServer(): object {
 export function sslCtxUseCertKey(ctx: object, certPath: string, keyPath: string): void {
   const lib = _requireSsl();
   const certBuf = encodeUtf8(certPath + '\0');
-  if (lib.symbols.SSL_CTX_use_certificate_file(ctx, certBuf, 1) !== 1) {
-    throw new Error(`TLS: failed to load certificate "${certPath}": ` + getErrorString());
+  if (lib.symbols.SSL_CTX_use_certificate_chain_file(ctx, certBuf) !== 1) {
+    throw new Error(`TLS: failed to load certificate chain "${certPath}": ` + getErrorString());
   }
   const keyBuf = encodeUtf8(keyPath + '\0');
   if (lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1) !== 1) {
@@ -3401,10 +3408,10 @@ export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
   const lib = _requireSsl();
   const ctx = sslCtxNewServer();
   const certBuf = encodeUtf8(certPath + '\0');
-  const rc1 = lib.symbols.SSL_CTX_use_certificate_file(ctx, certBuf, 1);
+  const rc1 = lib.symbols.SSL_CTX_use_certificate_chain_file(ctx, certBuf);
   if (rc1 !== 1) {
     lib.symbols.SSL_CTX_free(ctx);
-    throw new Error(`TLS: failed to load certificate "${certPath}": ` + getErrorString());
+    throw new Error(`TLS: failed to load certificate chain "${certPath}": ` + getErrorString());
   }
   const keyBuf = encodeUtf8(keyPath + '\0');
   const rc2 = lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1);

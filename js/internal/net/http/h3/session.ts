@@ -124,6 +124,7 @@ export class Nghttp3Session {
   }>();
   #closed = false;
   #ready = false;
+  #qpackStreamsBound = false;
   #locked = false;
   #localSettings = new Map<number, number>();
   #peerSettings = new Map<number, number>();
@@ -474,6 +475,7 @@ export class Nghttp3Session {
   bindQpackStreams(qencId: bigint, qdecId: bigint): void {
     const rc = sym!.nghttp3_conn_bind_qpack_streams(this.#conn, qencId, qdecId) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_bind_qpack_streams failed: ${rc}`);
+    this.#qpackStreamsBound = true;
   }
   // Register a QUIC stream writer so drainWrites can write to it.
   addQuicStream(streamId: bigint, writer: {
@@ -489,6 +491,7 @@ export class Nghttp3Session {
   // -------------------------------------------------------------------------
   submitResponse(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
+    if (!this.#qpackStreamsBound) throw new Error('H3 session QPACK streams are not bound');
     const { buf: nvBuf, nv } = buildNvArray(headers);
     const effectiveBody = body === undefined && trailers !== undefined ? new Uint8Array(0) : body;
     const drPtr = effectiveBody !== undefined ? this.#ptrOf(this.#drBuf, _PTR_DR) : null;
@@ -500,6 +503,7 @@ export class Nghttp3Session {
   }
   submitRequest(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
+    if (!this.#qpackStreamsBound) throw new Error('H3 session QPACK streams are not bound');
     const { buf: nvBuf, nv } = buildNvArray(headers);
     const effectiveBody = body === undefined && trailers !== undefined ? new Uint8Array(0) : body;
     const drPtr = effectiveBody !== undefined ? this.#ptrOf(this.#drBuf, _PTR_DR) : null;

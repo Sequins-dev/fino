@@ -725,7 +725,7 @@ export type GnutlsCredentials = {
   handle: ArrayBuffer;
   ticketKey: ArrayBuffer | null;
   antiReplay: GnutlsAntiReplay | null;
-  verifyClient: boolean;
+  clientAuth: 'none' | 'request' | 'require';
   rejectUnauthorized: boolean;
 };
 function configureGnutlsCa(cred: ArrayBuffer, ca: GnutlsCaOptions | undefined, verifyPeer: boolean): void {
@@ -770,14 +770,14 @@ export function newGnutlsCredentials(role: 'client' | 'server', certFile?: strin
     handle: cred,
     ticketKey: role === 'server' ? newGnutlsTicketKey() : null,
     antiReplay: role === 'server' ? newGnutlsAntiReplay() : null,
-    verifyClient: false,
+    clientAuth: 'none',
     rejectUnauthorized: true
   };
 }
-export function configureGnutlsServerMtls(cred: GnutlsCredentials, verifyClient: boolean, ca?: GnutlsCaOptions, rejectUnauthorized = true): void {
-  if (verifyClient) {
+export function configureGnutlsServerMtls(cred: GnutlsCredentials, clientAuth: 'none' | 'request' | 'require', ca?: GnutlsCaOptions, rejectUnauthorized = true): void {
+  if (clientAuth !== 'none') {
     configureGnutlsCa(cred.handle, ca, true);
-    cred.verifyClient = true;
+    cred.clientAuth = clientAuth;
     cred.rejectUnauthorized = rejectUnauthorized;
   }
 }
@@ -838,8 +838,8 @@ export function newGnutlsSession(role: 'client' | 'server', credentials: GnutlsC
     check(gnutlsSym!.gnutls_priority_set_direct(session, cstr(priorityString(cipherSuites)), null) as number, 'gnutls_priority_set_direct');
     if (role === 'server') enableServerSessionTickets(session, credentials.ticketKey);
     check(gnutlsSym!.gnutls_credentials_set(session, GNUTLS_CRD_CERTIFICATE, credentials.handle) as number, 'gnutls_credentials_set');
-    if (role === 'server' && credentials.verifyClient) {
-      const requestMode = credentials.rejectUnauthorized ? GNUTLS_CERT_REQUIRE : GNUTLS_CERT_REQUEST;
+    if (role === 'server' && credentials.clientAuth !== 'none') {
+      const requestMode = credentials.clientAuth === 'require' ? GNUTLS_CERT_REQUIRE : GNUTLS_CERT_REQUEST;
       gnutlsSym!.gnutls_certificate_server_set_request(session, requestMode);
     }
     const alpn = makeAlpnDatums(protocols);

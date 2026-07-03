@@ -122,6 +122,7 @@
 * ```
 */
 import { dlopen, Pointer } from 'fino:ffi';
+import { networkInterfaces as nativeNetworkInterfaces } from 'internal:net-native';
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from '../globals/encoding.ts';
 import * as loop from '../internal/runtime/loop.ts';
@@ -359,6 +360,35 @@ export interface Server {
   */
   [Symbol.asyncIterator](): AsyncIterator<Socket>;
 }
+/**
+* Network interface metadata returned by `networkInterfaces()`.
+*
+* The `index` value is the kernel interface index used by IPv6 scoped
+* multicast APIs and link-local socket addresses.
+*
+* ```ts no_run
+* const interfaces = networkInterfaces();
+* console.log(interfaces[0]?.index, interfaces[0]?.name);
+* ```
+*/
+export interface NetworkInterface {
+  /** Kernel interface index. */
+  index: number;
+  /** Interface name such as `lo0` or `en0`. */
+  name: string;
+  /** Native interface flags, when supplied by callers or future platform helpers. */
+  flags?: number;
+  /** Whether the interface is marked up, when flags are available. */
+  up?: boolean;
+  /** Whether the interface is marked loopback, when flags are available. */
+  loopback?: boolean;
+  /** Whether the interface supports multicast, when flags are available. */
+  multicast?: boolean;
+  /** IPv4 and IPv6 addresses assigned to the interface, when supplied. */
+  addresses?: Address[];
+  /** Netmasks corresponding to `addresses`, when supplied. */
+  netmasks?: Address[];
+}
 const isDarwin = os === 'darwin';
 const isLinux = os === 'linux';
 const errnoFn = isDarwin ? '__error' : '__errno_location';
@@ -525,6 +555,18 @@ const _defs = {
     ],
     result: 'pointer'
   },
+  if_nameindex: {
+    parameters: [],
+    result: 'pointer'
+  },
+  if_freenameindex: {
+    parameters: ['pointer'],
+    result: 'void'
+  },
+  if_nametoindex: {
+    parameters: ['buffer'],
+    result: 'u32'
+  },
   [errnoFn]: {
     parameters: [],
     result: 'pointer'
@@ -603,6 +645,7 @@ const CMSG_LEVEL = isDarwin ? 4 : 8;
 const CMSG_TYPE = isDarwin ? 8 : 12;
 const CMSG_DATA = isDarwin ? 12 : 16;
 const CMSG_SPACE = 32;
+const CMSG_SPACE_PACKET_INFO = 128;
 const CMSG_DATA_LEN = 4;
 const MSGHDR_X_SIZE = 56;
 const MSGHDR_X_DATALEN = 48;
@@ -753,6 +796,10 @@ export const IP_MULTICAST_LOOP = isDarwin ? 11 : 34;
 export const IP_TOS = isDarwin ? 3 : 1;
 /** IPv4 receive type-of-service ancillary-data option. */
 export const IP_RECVTOS = isDarwin ? 27 : 13;
+/** IPv4 receive packet-info ancillary-data option. */
+export const IP_PKTINFO = isDarwin ? 26 : 8;
+/** IPv4 receive packet-info socket option. */
+export const IP_RECVPKTINFO = isDarwin ? IP_PKTINFO : IP_PKTINFO;
 /** IPv6-only bind option. */
 export const IPV6_V6ONLY = isDarwin ? 27 : 26;
 /** IPv6 unicast hop-limit option. */
@@ -771,6 +818,10 @@ export const IPV6_MULTICAST_LOOP = isDarwin ? 11 : 19;
 export const IPV6_RECVTCLASS = isDarwin ? 35 : 66;
 /** IPv6 traffic-class option. */
 export const IPV6_TCLASS = isDarwin ? 36 : 67;
+/** IPv6 receive packet-info socket option. */
+export const IPV6_RECVPKTINFO = isDarwin ? 61 : 49;
+/** IPv6 packet-info ancillary-data type. */
+export const IPV6_PKTINFO = isDarwin ? 46 : 50;
 /** Shut down the read side of a socket.
 *
 * ```ts no_run
@@ -803,6 +854,9 @@ const SOCKADDR_IN6_SIZE = 28;
 const SOCKADDR_UN_SIZE = isDarwin ? 106 : 110;
 const INET_ADDRSTRLEN = 16;
 const INET6_ADDRSTRLEN = 46;
+const IF_NAMEINDEX_SIZE = 16;
+const IF_NAMEINDEX_INDEX = 0;
+const IF_NAMEINDEX_NAME = 8;
 // ---------------------------------------------------------------------------
 // Address struct helpers
 // ---------------------------------------------------------------------------
@@ -968,6 +1022,31 @@ function nullTermIdx(buf: ArrayBuffer): number {
 function isKnownAddress(addr: Address | UnknownAddress): addr is Address {
   return addr.family === 'ipv4' || addr.family === 'ipv6' || addr.family === 'unix';
 }
+function nativeCString(ptr: ArrayBuffer | null, maxBytes = 64): string {
+  if (ptr === null) return '';
+  const bytes = Pointer.copyFrom(ptr, maxBytes) as Uint8Array;
+  const end = bytes.indexOf(0);
+  return decodeUtf8(end >= 0 ? bytes.subarray(0, end) : bytes);
+}
+function readInterfacesFromNameIndex(): NetworkInterface[] {
+  const ptr = lib.symbols.if_nameindex() as ArrayBuffer | null;
+  if (ptr === null) throw new Error(`if_nameindex() failed: errno=${getErrno()}`);
+  try {
+    const out: NetworkInterface[] = [];
+    for (let offset = 0; offset < IF_NAMEINDEX_SIZE * 4096; offset += IF_NAMEINDEX_SIZE) {
+      const entry = Pointer.offset(ptr, offset) as ArrayBuffer | null;
+      if (entry === null) break;
+      const index = Pointer.readU32(entry, IF_NAMEINDEX_INDEX) as number;
+      const namePtr = Pointer.readPointer(entry, IF_NAMEINDEX_NAME) as ArrayBuffer | null;
+      if (index === 0 && namePtr === null) break;
+      if (index === 0) continue;
+      out.push({ index, name: nativeCString(namePtr) });
+    }
+    return out;
+  } finally {
+    lib.symbols.if_freenameindex(ptr);
+  }
+}
 // ---------------------------------------------------------------------------
 // Core API
 // ---------------------------------------------------------------------------
@@ -1121,6 +1200,46 @@ export function setMulticastOptions(fd: number, options: {
     if (options.loopback !== undefined) setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, options.loopback);
     if (options.interfaceAddress !== undefined) setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, inetPtonBytes(AF_INET, options.interfaceAddress, 4).buffer);
   }
+}
+/**
+* Return kernel network interfaces that have an interface index.
+*
+* This wraps `if_nameindex(3)` and is intentionally small: it returns the
+* metadata needed for scoped IPv6 multicast sends and joins. Use
+* `interfaceIndex()` when resolving a known interface name.
+*
+* ```ts no_run
+* for (const iface of networkInterfaces()) console.log(iface.index, iface.name);
+* ```
+*/
+export function networkInterfaces(): NetworkInterface[] {
+  try {
+    const interfaces = nativeNetworkInterfaces() as NetworkInterface[];
+    if (Array.isArray(interfaces)) return interfaces;
+  } catch {}
+  return readInterfacesFromNameIndex();
+}
+/**
+* Return the kernel interface index for an interface name.
+*
+* ```ts no_run
+* const en0 = interfaceIndex('en0');
+* ```
+*/
+export function interfaceIndex(name: string): number {
+  const index = lib.symbols.if_nametoindex(encodeUtf8(name + '\0')) as number;
+  if (index === 0) throw new Error(`if_nametoindex() failed for '${name}': errno=${getErrno()}`);
+  return index;
+}
+/**
+* Return network interface indexes, omitting names for allocation-light callers.
+*
+* ```ts no_run
+* const indexes = networkInterfaceIndices();
+* ```
+*/
+export function networkInterfaceIndices(): number[] {
+  return networkInterfaces().map((iface) => iface.index);
 }
 /**
 * Return the local address currently bound to a socket fd.
@@ -1585,33 +1704,107 @@ export function recvmsgEcn(fd: number, maxBytes: number = 65536, flags: number =
   if (n < 0) return -getErrno();
   const addrLen = msg.getUint32(MSG_NAMELEN, true);
   const controlLen = readSize(msg, MSG_CONTROLLEN);
-  const control = new DataView(controlBuf);
-  let ecn: number | undefined;
-  if (controlLen >= CMSG_DATA) {
-    const cmsgLen = readSize(control, CMSG_LEN);
-    if (cmsgLen >= CMSG_DATA + 1 && cmsgLen <= controlLen) {
-      const level = control.getInt32(CMSG_LEVEL, true);
-      const type = control.getInt32(CMSG_TYPE, true);
-      if (level === IPPROTO_IP && type === IP_TOS || level === IPPROTO_IPV6 && type === IPV6_TCLASS) {
-        ecn = (cmsgLen >= CMSG_DATA + CMSG_DATA_LEN ? control.getInt32(CMSG_DATA, true) : control.getUint8(CMSG_DATA)) & 3;
-      }
-    }
-  }
+  const ecn = readCmsgEcn(controlBuf, controlLen);
   return {
     data: new Uint8Array(dataBuf, 0, n),
     addr: decodeAddr(addrBuf.slice(0, addrLen)),
     ...ecn === undefined ? {} : { ecn }
   };
 }
+/**
+* Receive one UDP datagram and parse packet-info ancillary data.
+*
+* Enable `IP_RECVPKTINFO` for IPv4 or `IPV6_RECVPKTINFO` for IPv6 before
+* calling this helper. Kernels may omit packet-info metadata for some local
+* paths; in that case `destination` and `interfaceIndex` are absent while the
+* datagram payload and source address are still returned.
+*
+* ```ts no_run
+* setsockopt(fd, IPPROTO_IP, IP_RECVPKTINFO, true);
+* const packet = recvmsgPacketInfo(fd, 4096);
+* ```
+*/
+export function recvmsgPacketInfo(fd: number, maxBytes: number = 65536, flags: number = 0): {
+  data: Uint8Array;
+  addr: Address | UnknownAddress;
+  destination?: Address;
+  interfaceIndex?: number;
+} | number {
+  const dataBuf = new ArrayBuffer(maxBytes);
+  const addrBuf = new ArrayBuffer(128);
+  const controlBuf = new ArrayBuffer(CMSG_SPACE_PACKET_INFO);
+  const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+  const msgBuf = new ArrayBuffer(MSGHDR_SIZE);
+  const iov = new DataView(iovBuf);
+  const msg = new DataView(msgBuf);
+  writePtrValue(iov, IOVEC_BASE, dataBuf);
+  iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
+  writePtrValue(msg, MSG_NAME, addrBuf);
+  msg.setUint32(MSG_NAMELEN, addrBuf.byteLength, true);
+  writePtrValue(msg, MSG_IOV, iovBuf);
+  writeSize(msg, MSG_IOVLEN, 1);
+  writePtrValue(msg, MSG_CONTROL, controlBuf);
+  writeSize(msg, MSG_CONTROLLEN, controlBuf.byteLength);
+  msg.setInt32(MSG_FLAGS, flags, true);
+  const n = Number(lib.symbols.recvmsg(fd, msgBuf, flags));
+  if (n < 0) return -getErrno();
+  const addrLen = msg.getUint32(MSG_NAMELEN, true);
+  const controlLen = readSize(msg, MSG_CONTROLLEN);
+  let destination: Address | undefined;
+  let interfaceIndex: number | undefined;
+  forEachCmsg(controlBuf, controlLen, (control, base, cmsgLen, level, type) => {
+    if (level === IPPROTO_IP && type === IP_PKTINFO && cmsgLen >= CMSG_DATA + 12) {
+      interfaceIndex = control.getUint32(base + CMSG_DATA, true);
+      destination = addressFromBytes('ipv4', new Uint8Array(controlBuf, base + CMSG_DATA + 8, 4));
+    } else if (level === IPPROTO_IPV6 && type === IPV6_PKTINFO && cmsgLen >= CMSG_DATA + 20) {
+      destination = addressFromBytes('ipv6', new Uint8Array(controlBuf, base + CMSG_DATA, 16));
+      interfaceIndex = control.getUint32(base + CMSG_DATA + 16, true);
+    }
+  });
+  return {
+    data: new Uint8Array(dataBuf, 0, n),
+    addr: decodeAddr(addrBuf.slice(0, addrLen)),
+    ...destination === undefined ? {} : { destination },
+    ...interfaceIndex === undefined ? {} : { interfaceIndex }
+  };
+}
 function readCmsgEcn(controlBuf: ArrayBuffer, controlLen: number): number | undefined {
-  if (controlLen < CMSG_DATA) return undefined;
+  let ecn: number | undefined;
+  forEachCmsg(controlBuf, controlLen, (control, base, cmsgLen, level, type) => {
+    if ((level !== IPPROTO_IP || type !== IP_TOS) && (level !== IPPROTO_IPV6 || type !== IPV6_TCLASS)) return;
+    ecn = (cmsgLen >= CMSG_DATA + CMSG_DATA_LEN ? control.getInt32(base + CMSG_DATA, true) : control.getUint8(base + CMSG_DATA)) & 3;
+  });
+  return ecn;
+}
+function cmsgAlign(length: number): number {
+  return (length + 7) & ~7;
+}
+function forEachCmsg(controlBuf: ArrayBuffer, controlLen: number, cb: (control: DataView, base: number, cmsgLen: number, level: number, type: number) => void): void {
   const control = new DataView(controlBuf);
-  const cmsgLen = readSize(control, CMSG_LEN);
-  if (cmsgLen < CMSG_DATA + 1 || cmsgLen > controlLen) return undefined;
-  const level = control.getInt32(CMSG_LEVEL, true);
-  const type = control.getInt32(CMSG_TYPE, true);
-  if ((level !== IPPROTO_IP || type !== IP_TOS) && (level !== IPPROTO_IPV6 || type !== IPV6_TCLASS)) return undefined;
-  return (cmsgLen >= CMSG_DATA + CMSG_DATA_LEN ? control.getInt32(CMSG_DATA, true) : control.getUint8(CMSG_DATA)) & 3;
+  for (let base = 0; base + CMSG_DATA <= controlLen;) {
+    const cmsgLen = readSize(control, base + CMSG_LEN);
+    if (cmsgLen < CMSG_DATA || base + cmsgLen > controlLen) break;
+    const level = control.getInt32(base + CMSG_LEVEL, true);
+    const type = control.getInt32(base + CMSG_TYPE, true);
+    cb(control, base, cmsgLen, level, type);
+    const next = base + cmsgAlign(cmsgLen);
+    if (next <= base) break;
+    base = next;
+  }
+}
+function addressFromBytes(family: 'ipv4' | 'ipv6', bytes: Uint8Array): Address {
+  if (family === 'ipv4') {
+    const buf = new ArrayBuffer(SOCKADDR_IN_SIZE);
+    const view = new DataView(buf);
+    writeFamily(view, AF_INET, SOCKADDR_IN_SIZE);
+    new Uint8Array(buf, 4, 4).set(bytes.subarray(0, 4));
+    return decodeAddr(buf) as Address;
+  }
+  const buf = new ArrayBuffer(SOCKADDR_IN6_SIZE);
+  const view = new DataView(buf);
+  writeFamily(view, AF_INET6, SOCKADDR_IN6_SIZE);
+  new Uint8Array(buf, 8, 16).set(bytes.subarray(0, 16));
+  return decodeAddr(buf) as Address;
 }
 /**
 * Receive multiple UDP datagrams with Linux `recvmmsg(2)`.

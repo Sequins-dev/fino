@@ -374,7 +374,6 @@ function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
 export function serve(options: ServeOptions, handler: ServerAcceptHandler): ServeServer {
   if (options.h3 !== undefined && options.h3 !== false) {
     if (options.tls === undefined) throw new Error('serve: h3 requires tls certificate and key');
-    if (options.tls.clientAuth === 'request') throw new Error('serve: h3 does not support tls.clientAuth request; use require or none');
     requireH3();
   }
   const tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
@@ -443,10 +442,11 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
   }
   const h3Options = options.h3;
   let h3Server: H3Server | null = null;
-  const h3TlsOptions = options.tls?.clientAuth === 'require' ? {
-    verifyClient: true,
-    ca: _quicCaFromTls(options.tls.ca),
-    rejectUnauthorized: options.tls.rejectUnauthorized
+  const h3ClientAuth = options.tls?.clientAuth ?? 'none';
+  const h3TlsOptions = h3ClientAuth !== 'none' ? {
+    clientAuth: h3ClientAuth,
+    ca: _quicCaFromTls(options.tls?.ca),
+    rejectUnauthorized: options.tls?.rejectUnauthorized
   } : {};
   const h3Ready: Promise<void> = h3Options !== undefined && h3Options !== false ? serveH3({
     ...(typeof h3Options === 'object' ? h3Options.quic : undefined) ?? {},

@@ -35,6 +35,13 @@ function testListenOptions<T extends Record<string, unknown>>(options: T): T & {
 function timeoutValue<T>(ms: number, value: T): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
 }
+async function waitForHandshakeComplete(connection: QuicConnection, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!connection.handshakeComplete) {
+    if (Date.now() >= deadline) throw new Error('timed out waiting for QUIC handshake completion');
+    await loop.timeout(5);
+  }
+}
 async function waitForStoredSessionTicket(sessions: Map<string, any>, key: string, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -1400,6 +1407,42 @@ describe('QUIC loopback object model', () => {
     } finally {
       await anonymousClient.close();
       await certifiedClient.close();
+      await server.close();
+    }
+  });
+  it('requests optional client certificates without rejecting anonymous clients', async (t) => {
+    if (!quicAvailable) return;
+    const server = new QuicEndpoint({ alpnProtocols: ['fino-hq'] });
+    const listener = await server.listen(testListenOptions({
+      address: {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: 0
+      },
+      clientAuth: 'request',
+      ca: { file: TEST_CERT }
+    }));
+    const anonymousClient = new QuicEndpoint({ alpnProtocols: ['fino-hq'] });
+    try {
+      const acceptedAnonymous = server.accept();
+      const anonymousConnection = await anonymousClient.connect({
+        address: listener.address,
+        serverName: 'localhost',
+        verifyPeer: false
+      });
+      const anonymousServerConnection = await acceptedAnonymous;
+      await waitForHandshakeComplete(anonymousServerConnection);
+      t.equal(anonymousConnection.handshakeComplete, true, 'anonymous client completes optional mTLS handshake');
+      t.equal(anonymousServerConnection.peerCertificate, null, 'server exposes no peer cert for anonymous optional mTLS client');
+      t.deepEqual(anonymousServerConnection.peerVerification, {
+        verified: true,
+        errorCode: 0,
+        reason: null
+      }, 'server verification remains successful when optional client cert is absent');
+      await anonymousConnection.close();
+      await anonymousServerConnection.close();
+    } finally {
+      await anonymousClient.close();
       await server.close();
     }
   });

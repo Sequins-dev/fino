@@ -31,6 +31,7 @@ export type QuicTlsContext = {
     close(): void;
   } | null;
   verifyMode?: number;
+  clientAuth?: 'none' | 'request' | 'require';
 };
 export type QuicTlsSession = {
   backend: QuicCryptoBackend;
@@ -55,6 +56,7 @@ export type QuicCaOptions = {
 };
 export type QuicTlsContextOptions = {
   verifyClient?: boolean;
+  clientAuth?: 'none' | 'request' | 'require';
   rejectUnauthorized?: boolean;
   ca?: QuicCaOptions;
   certificateFile?: string;
@@ -84,13 +86,14 @@ function configureOpenSslCa(ctx: object, ca: QuicCaOptions | undefined, verifyPe
   }
 }
 export function newServerContext(certFile: string, keyFile: string, alpnProtocols: string[], cipherSuites: readonly string[] | null = null, onKeylogLine?: (line: string) => void, tlsOptions: QuicTlsContextOptions = {}): QuicTlsContext {
+  const clientAuth = tlsOptions.clientAuth ?? (tlsOptions.verifyClient === true ? 'require' : 'none');
   if (cryptoBackend === 'ossl') {
     const ctx = sslCtxNewServer();
     try {
       if (cipherSuites !== null) sslCtxSetCipherSuites(ctx, cipherSuites);
       if (tlsOptions.groups !== undefined && tlsOptions.groups !== null) sslCtxSetGroups(ctx, tlsOptions.groups);
       sslCtxUseCertKey(ctx, certFile, keyFile);
-      const verifyMode = tlsOptions.verifyClient === true ? SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0;
+      const verifyMode = clientAuth === 'none' ? 0 : SSL_VERIFY_PEER | (clientAuth === 'require' ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0);
       const verifyCallback = verifyMode !== 0 && tlsOptions.rejectUnauthorized === false ? sslCtxSetPermissiveVerify(ctx, verifyMode) : null;
       if (verifyMode !== 0 && verifyCallback === null) sslCtxSetVerify(ctx, verifyMode);
       configureOpenSslCa(ctx, tlsOptions.ca, verifyMode !== 0);
@@ -106,7 +109,8 @@ export function newServerContext(certFile: string, keyFile: string, alpnProtocol
         keylogLine: null,
         sniCallback: null,
         verifyCallback,
-        verifyMode
+        verifyMode,
+        clientAuth
       };
     } catch (error) {
       sslCtxFree(ctx);
@@ -115,7 +119,7 @@ export function newServerContext(certFile: string, keyFile: string, alpnProtocol
   }
   if (tlsOptions.groups !== undefined && tlsOptions.groups !== null) throw new Error('QUIC TLS groups are only supported by the OpenSSL crypto backend');
   const cred = newGnutlsCredentials('server', certFile, keyFile);
-  if (tlsOptions.verifyClient === true) configureGnutlsServerMtls(cred, true, tlsOptions.ca, tlsOptions.rejectUnauthorized !== false);
+  configureGnutlsServerMtls(cred, clientAuth, tlsOptions.ca, tlsOptions.rejectUnauthorized !== false);
   return {
     backend: 'gnutls',
     handle: cred,
@@ -126,7 +130,8 @@ export function newServerContext(certFile: string, keyFile: string, alpnProtocol
     keylogLine: onKeylogLine ?? null,
     sniCallback: null,
     verifyCallback: null,
-    verifyMode: tlsOptions.verifyClient === true ? 1 : 0
+    verifyMode: clientAuth === 'none' ? 0 : 1,
+    clientAuth
   };
 }
 export function newClientContext(verifyPeer: boolean, cipherSuites: readonly string[] | null = null, onKeylogLine?: (line: string) => void, tlsOptions: QuicTlsContextOptions = {}): QuicTlsContext {
