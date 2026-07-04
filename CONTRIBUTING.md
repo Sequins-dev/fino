@@ -73,13 +73,9 @@ Use the generated docs command when changing public docs or API comments:
 ./target/release/fino doc build --format html --types runtime-builtins.d.ts js
 ```
 
-Useful guide entry points:
-
-- `js/getting-started.md`
-- `js/runtime-model.md`
-- `js/ai.md`
-- `js/realm.md`
-- `js/net.md`
+The map of all authored guides is [js/documentation.md](./js/documentation.md).
+A test (`tests/runtime/docs-map.test.ts`) keeps that map complete: adding or
+removing a guide requires updating it.
 
 ## Focused Checks
 
