@@ -1,7 +1,7 @@
 ---
 weight: 140
 ---
-# Data Guide
+# Data
 
 Fino includes pure TypeScript data tooling for columnar in-memory data and file
 interchange. The current public surface centers on Apache Arrow and Parquet.

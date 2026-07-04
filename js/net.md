@@ -1,14 +1,17 @@
 ---
 weight: 120
 ---
-# Networking Guide
+# Networking
 
 Fino networking ranges from high-level Fetch-style HTTP to low-level sockets,
 TLS, DNS, mDNS, QUIC, WebSockets, server-sent events, and WebTransport.
 
-Start with the highest-level API that matches the protocol:
+Start with the highest-level API that matches the protocol. For anything
+HTTP-shaped — servers, routing, clients, WebSockets, SSE, WebTransport — start
+with the [HTTP section](./net/http.md):
 
-- Use [`fino:net/http/server`](./net/http/serving.md) for HTTP servers.
+- Use [`fino:net/http/server`](./net/http/serving.md) for HTTP servers and
+  [`fino:net/http/app`](./net/http/routing.md) for routing and middleware.
 - Use [`fino:net/http/client`](./net/http/http-client.md) or global `fetch()` for
   HTTP clients.
 - Use [`fino:net/http/websocket`](./net/http/websockets.md) for WebSockets.

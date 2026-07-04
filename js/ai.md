@@ -1,86 +1,71 @@
 ---
 weight: 100
 ---
-# AI Guide
+# AI
 
-Use `fino:ai` first when an application needs model calls, tool use, durable
-multi-turn work, external tool exposure, evals, or reusable agent skills. The
-root module re-exports the stable application-facing APIs. Reach for subsystem
-imports when you want narrower type imports or are documenting an advanced
-boundary.
+`fino:ai` is the runtime's AI subsystem: provider-neutral model calls, validated
+tools, agents, durable sessions, memory, evals, skills, and MCP adapters, all
+designed to work with the rest of the runtime — HTTP routes, realms, sandboxed
+processes, and OpenTelemetry. The root module re-exports the stable
+application-facing APIs, so most applications only need
+`import { ... } from 'fino:ai'`.
 
-## Concept Map
+The subsystem is layered, and the layers map to how an application usually
+grows.
 
-- `fino:ai` is the happy-path application surface for agents, tools, models,
-  sessions, memory, evals, skills, and MCP adapters.
-- `fino:ai/model` is the stateless provider-neutral model contract.
-- `fino:ai/agent` runs a model loop with history policy, tools, structured
-  output, guardrails, retries, fallbacks, and streaming.
-- `fino:ai/tool` defines validated model-callable actions.
-- `fino:ai/context` owns message history strategies, token estimates, cost
-  helpers, and stop conditions.
-- `fino:ai/session` persists agent runs, threads, history revisions, and
-  suspend/resume state.
-- `fino:ai/mcp` exposes or consumes tools and resources through the Model
-  Context Protocol.
-- `fino:ai/eval` turns AI behavior into test-runner cases with scorers and
-  reporters.
-- `fino:ai/skill` keeps optional instructions, resources, and tools
-  discoverable but lazily loaded.
+**Model calls** are the base layer. A `Model` is a stateless,
+provider-neutral contract: the caller owns the messages, sends a request, and
+gets text, structured output, or a stream of normalized events back. Use a
+direct `Model.generate()` or `Model.stream()` call for single-turn
+summarization, classification, or extraction where no tools or durable state
+are needed. Provider adapters (`openai`, `anthropic`, `local`), streaming
+events, and response assembly are covered in
+[Model Requests](./ai/model-requests.md).
 
-## Choose the Right Layer
+**Tools** make behavior model-callable. A tool is an ordinary TypeScript
+function with a name, a description, and a `fino:validate` schema for its
+parameters; the runtime validates arguments before your code runs. Tools that
+wrap subprocesses, call other agents, require human approval, or execute
+untrusted code are covered in [Complex Tools](./ai/complex-tools.md) — and when
+a tool loads code it should not trust, run that code in a
+[realm](./realm.md) with narrowed imports rather than in the application
+context.
 
-Use `fino:ai/model` for one request where the caller owns all messages and
-parses the answer. Keep these calls stateless unless history, tools, durable
-sessions, or model-repair loops are needed.
+**Agents** run the model loop. An `Agent` sends curated history to a model,
+executes tool calls, applies guardrails, retries or falls back across models,
+and stops when the model finishes or a stop condition fires. Agents also
+produce validated structured output and stream text and events while the loop
+runs. Reach for an agent as soon as the model may call tools or the output
+must match a schema.
 
-Use `fino:ai/agent` when the model may call tools, produce validated structured
-output, stream through a loop, use guardrails, retry or fall back across models,
-or apply a custom history strategy.
+**Sessions** make multi-turn state durable. A `Session` persists agent runs,
+threads, and suspend/resume state through a `SessionStore`, so a conversation
+can survive process restarts or pause for human approval. The agent remains
+the behavior boundary; the session is the durability boundary.
 
-Use `fino:ai/session` when a run must survive process restarts, fork a thread,
-resume after human approval, or keep durable state across request boundaries.
-Sessions are the durable boundary; the agent remains the behavior boundary.
+Around that core:
 
-Use `fino:workflow` with `fino:ai/agent` when an application needs durable
-multi-step orchestration around one or more agent calls. Keep ordinary
-TypeScript branching, loops, `Promise.all`, and external waits in the workflow,
-and put agent calls inside checkpointed workflow steps when duplicate model or
-tool execution would be unsafe.
+- [Interactive CLI Harness](./ai/interactive-cli-harness.md) shows how to wire
+  agents, sessions, and tool approval into an interactive terminal app.
+- [Agent MCP Server](./ai/agent-mcp-server.md) exposes tools and resources to
+  external clients through the Model Context Protocol. MCP is a protocol
+  boundary — use it when another process or product should discover your
+  tools, not as an internal abstraction.
+- [Evals and OpenTelemetry](./ai/evals-opentelemetry.md) turns AI behavior
+  into test-runner cases with scorers and reporters. Keep evals close to the
+  behavior they protect, like ordinary tests, and pin or stub models in CI.
+- [Skills](./ai/skills.md) keeps optional expert instructions, resources, and
+  tools discoverable without loading every instruction block into every
+  prompt.
 
-Use `fino:ai/mcp` when the capabilities need to be available to external MCP
-clients. MCP is a protocol boundary, not an internal-only abstraction for code
-that already lives in the same process.
-
-Use `fino:ai/eval` as tests for prompt, tool, retrieval, and provider behavior.
-Pin or stub models in CI where possible, and add OpenTelemetry reporting when
-you need observability across eval runs.
-
-Use `fino:ai/skill` for optional expert guidance that should be discoverable
-without loading every instruction block into every prompt. Keep skills focused,
-named clearly, and loaded only when relevant.
-
-## Recommended Architecture
-
-A typical advanced application separates the pieces:
-
-1. Define narrow tools with `fino:ai/tool` and `fino:validate`.
-2. Configure an `Agent` with a provider model, instructions, tools, and any
-   output schema or guardrails.
-3. Add a `SessionStore` when threads need durability or suspend/resume.
-4. Wrap agent calls in `fino:workflow` when the surrounding process has multiple
-   durable steps, timers, or external signals.
-5. Expose the workflow through your application routes, or through
-   `fino:ai/mcp` when external MCP clients need protocol-level discovery.
-6. Cover important behavior with `fino:ai/eval`, using stubs or pinned models
-   for CI and OpenTelemetry for traceable reports.
-7. Move optional domain-specific prompting into `fino:ai/skill` once the base
-   agent would otherwise carry too much rarely used context.
+For durable multi-step orchestration around agent calls — checkpointed steps,
+timers, external signals — combine agents with `fino:workflow` (see the
+generated API reference).
 
 ## End-to-End Example
 
-This support assistant has one validated tool, durable session state, structured
-output, and an HTTP route that runs one session turn.
+This support assistant has one validated tool, durable session state,
+structured output, and an HTTP route that runs one session turn.
 
 ```ts
 import { agent, InMemorySessionStore, openai, session, tool } from 'fino:ai';

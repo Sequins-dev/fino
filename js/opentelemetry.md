@@ -1,7 +1,7 @@
 ---
 weight: 130
 ---
-# Introduction
+# OpenTelemetry
 
 Fino includes a full OpenTelemetry implementation covering traces, metrics, logs, OTLP/HTTP JSON export, W3C propagation, and runtime instrumentations for HTTP servers, outgoing fetch, DNS, socket, and TLS. The subsystem is built as ordinary JS modules on top of fino's async context and topic primitives.
 
@@ -24,12 +24,12 @@ Providers work whether or not an SDK is installed. Records published before an S
 
 ## Guide set
 
-The remaining guides in this directory cover specific areas in depth:
+The remaining guides in this section cover specific areas in depth:
 
-- `tracing.md` — manual span creation, active span context, nesting, and async propagation
-- `metrics.md` — synchronous and observable instruments, collection timing
-- `logs.md` — `LogRecordBuilder`, severity levels, trace correlation
-- `sdk-setup.md` — `OtelSDK` constructor, lifecycle, processors, readers, sampling
-- `exporters.md` — `OTLPHttpJsonExporter`, retry behavior, CLI bootstrap via `--otlp-endpoint`
-- `propagation.md` — W3C `traceparent` and `baggage`, inject/extract, cross-process context
-- `instrumentations.md` — runtime auto-instrumentation for HTTP server, fetch, DNS, socket, TLS
+- [Manual Tracing](./opentelemetry/tracing.md) — manual span creation, active span context, nesting, and async propagation
+- [Metrics](./opentelemetry/instruments.md) — synchronous and observable instruments, collection timing
+- [Structured Logs](./opentelemetry/logging.md) — `LogRecordBuilder`, severity levels, trace correlation
+- [SDK Setup](./opentelemetry/sdk-setup.md) — `OtelSDK` constructor, lifecycle, processors, readers, sampling
+- [Exporters and CLI Bootstrap](./opentelemetry/exporters.md) — `OTLPHttpJsonExporter`, retry behavior, CLI bootstrap via `--otlp-endpoint`
+- [Context Propagation](./opentelemetry/propagation.md) — W3C `traceparent` and `baggage`, inject/extract, cross-process context
+- [Runtime Instrumentations](./opentelemetry/instrumentations.md) — runtime auto-instrumentation for HTTP server, fetch, DNS, socket, TLS
