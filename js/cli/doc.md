@@ -33,13 +33,13 @@ fino doc build --format html --title "Fino Runtime" js
 fino doc build --include-private --types runtime-builtins.d.ts js
 ```
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `files...` | argument | strings | yes | Source files, directories, or glob patterns to document. |
-| `--format` | flag | `markdown`, `html`, or `both` | no | Output format. Defaults to `markdown`. |
-| `--title` | flag | string | no | Title used for generated HTML pages. |
-| `--include-private` | flag | boolean | no | Include private and internal declarations. |
-| `--types` | flag | string, repeatable | no | Additional declaration files, directories, or globs to merge into API docs. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `files...` | strings | Required. Source files, directories, or glob patterns to document. |
+| `--format` | `markdown`, `html`, or `both` | Output format. Defaults to `markdown`. |
+| `--title` | string | Title used for generated HTML pages. |
+| `--include-private` | boolean | Include private and internal declarations. |
+| `--types` | string, repeatable | Additional declaration files, directories, or globs to merge into API docs. |
 
 `--format=html` writes browsable HTML plus the search database. `--format=both`
 writes both markdown and HTML output. `--include-private` is useful for docs
@@ -55,9 +55,9 @@ site:
 fino doc show bench.Group.measure
 ```
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `symbol` | argument | string | yes | Symbol id or name to display. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `symbol` | string | Required. Symbol id or name to display. |
 
 `show` reads generated docs data, so run `fino doc build` first when source
 comments have changed.
@@ -72,9 +72,9 @@ fino doc search websocket
 fino doc search task parse
 ```
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `query...` | argument | strings | yes | Search terms. Multiple words are joined into one query. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `query...` | strings | Required. Search terms. Multiple words are joined into one query. |
 
 Search returns matching modules, symbols, guides, and sections from the
 generated docs database.
@@ -89,9 +89,9 @@ hand-written test file:
 fino doc test js
 ```
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `files...` | argument | strings | yes | Source files, directories, or glob patterns whose documentation examples should be tested. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `files...` | strings | Required. Source files, directories, or glob patterns whose documentation examples should be tested. |
 
 Runnable examples are imported into isolated realms. Examples marked with
 non-runnable metadata are ignored, and examples marked as throwing are expected

@@ -19,10 +19,10 @@ same discovery rules as the default scan.
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `files...` | argument | strings | no | Files, directories, or glob patterns to format. |
-| `--check` | flag | boolean | no | Report files that would change without writing them. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `files...` | strings | Files, directories, or glob patterns to format. |
+| `--check` | boolean | Report files that would change without writing them. |
 
 Source discovery accepts `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`,
 and `.tsx`. Hidden directories and common dependency, generated, cache, and

@@ -19,10 +19,10 @@ discovery rules as `fino fmt`.
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `files...` | argument | strings | no | Files, directories, or glob patterns to lint. |
-| `--fix` | flag | boolean | no | Apply supported safe lint fixes without running formatting. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `files...` | strings | Files, directories, or glob patterns to lint. |
+| `--fix` | boolean | Apply supported safe lint fixes without running formatting. |
 
 Source discovery accepts `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`,
 and `.tsx`. Hidden directories and common dependency, generated, cache, and

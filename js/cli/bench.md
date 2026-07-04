@@ -22,10 +22,10 @@ results.
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `files...` | argument | strings | yes | Benchmark files, directories, or glob patterns to import and run. |
-| `--filter` | flag | string | no | Run only benchmark groups whose full path contains the filter text. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `files...` | strings | Required. Benchmark files, directories, or glob patterns to import and run. |
+| `--filter` | string | Run only benchmark groups whose full path contains the filter text. |
 
 Keep machines, ports, input data, and release/debug builds stable when
 comparing numbers. The command does not emit JSON in normal text mode, provide

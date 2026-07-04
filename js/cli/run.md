@@ -21,12 +21,12 @@ program, not a collection of files.
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `script` | argument | string | yes | Module specifier or path to execute. |
-| `args...` | argument | strings | no | Arguments passed to the script after the script name. |
-| `--watch` | flag | boolean | no | Run the script in a watched realm and restart when imported files change. |
-| `--otlp-endpoint` | flag | string | no | Install CLI OpenTelemetry bootstrap with the given OTLP/HTTP collector endpoint. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `script` | string | Required. Module specifier or path to execute. |
+| `args...` | strings | Arguments passed to the script after the script name. |
+| `--watch` | boolean | Run the script in a watched realm and restart when imported files change. |
+| `--otlp-endpoint` | string | Install CLI OpenTelemetry bootstrap with the given OTLP/HTTP collector endpoint. |
 
 Arguments after the script name belong to the script. A `--` separator is not
 required:

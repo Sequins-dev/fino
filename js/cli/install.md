@@ -19,9 +19,9 @@ current package. The result is local runtime state under `.fino/`, not a
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `packages...` | argument | strings | no | Package names or specifiers to add before installing. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `packages...` | strings | Package names or specifiers to add before installing. |
 
 The installer fetches npm packuments and tarballs, places package contents under
 `.fino/packages`, and writes `.fino/package-map.json`. Bare package imports use

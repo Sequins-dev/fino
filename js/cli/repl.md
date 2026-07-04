@@ -19,9 +19,9 @@ the same runtime modules they would have in a script.
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| none | - | - | no | `repl` does not accept positional arguments or command-specific flags. |
+| Name | Value | Description |
+| --- | --- | --- |
+| none | - | `repl` does not accept positional arguments or command-specific flags. |
 
 ## Behavior
 

@@ -22,12 +22,12 @@ can be consumed by TAP tooling.
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `files...` | argument | strings | yes | Test files, directories, or glob patterns to import and run. |
-| `--filter` | flag | string | no | Run only registered tests whose full path contains the filter text. |
-| `--show-output` | flag | `failures`, `always`, or `never` | no | Control captured console output. Defaults to `failures`. |
-| `--durations` | flag | boolean | no | Add TAP duration metadata to result lines. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `files...` | strings | Required. Test files, directories, or glob patterns to import and run. |
+| `--filter` | string | Run only registered tests whose full path contains the filter text. |
+| `--show-output` | `failures`, `always`, or `never` | Control captured console output. Defaults to `failures`. |
+| `--durations` | boolean | Add TAP duration metadata to result lines. |
 
 Console output is captured by default and printed for failures. Use
 `--show-output=always` for live debugging output or `--show-output=never` to

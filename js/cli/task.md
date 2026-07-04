@@ -18,10 +18,10 @@ must default-export a `Task`. The loaded tasks become children of a generated
 
 ## Command Reference
 
-| Name | Kind | Value | Required | Description |
-| --- | --- | --- | --- | --- |
-| `args...` | argument | strings | no | Project task name and arguments delegated to the generated task tree. |
-| `--dir` | flag | string | no | Directory containing task modules. Defaults to `tasks`. |
+| Name | Value | Description |
+| --- | --- | --- |
+| `args...` | strings | Project task name and arguments delegated to the generated task tree. |
+| `--dir` | string | Directory containing task modules. Defaults to `tasks`. |
 
 Use `--dir` before the project task name:
 
