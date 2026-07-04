@@ -13,17 +13,12 @@ fino task build --name api
 By default it reads direct source files from `tasks/`. Each direct task file
 must default-export a `Task`.
 
-## Arguments
+## Command Reference
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| `args...` | no | Project task name and arguments delegated to the generated task tree. |
-
-## Flags
-
-| Flag | Value | Description |
-| --- | --- | --- |
-| `--dir` | string | Directory containing task modules. Defaults to `tasks`. |
+| Name | Kind | Value | Required | Description |
+| --- | --- | --- | --- | --- |
+| `args...` | argument | strings | no | Project task name and arguments delegated to the generated task tree. |
+| `--dir` | flag | string | no | Directory containing task modules. Defaults to `tasks`. |
 
 Use `--dir` before the project task name:
 
@@ -56,13 +51,3 @@ export default task({
 tasks. `fino task build --help` shows help for the selected project task.
 Importing task files executes project code, just like running an entry module.
 
-## Reuse
-
-Import the default task from `fino:commands/task` to mount the loader in another
-command tree:
-
-```ts no_run
-import taskCommand from 'fino:commands/task';
-
-await taskCommand.parse(['build']);
-```

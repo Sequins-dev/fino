@@ -13,17 +13,11 @@ The parent realm owns terminal input and output. Evaluation runs in a child
 realm through the inspector bridge, so user code executes in a normal runtime
 context instead of mutating the root CLI module.
 
-## Arguments
+## Command Reference
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| none | no | `repl` does not accept positional arguments. |
-
-## Flags
-
-| Flag | Value | Description |
-| --- | --- | --- |
-| none | no | `repl` has no command-specific flags. |
+| Name | Kind | Value | Required | Description |
+| --- | --- | --- | --- | --- |
+| none | - | - | no | `repl` does not accept positional arguments or command-specific flags. |
 
 ## Behavior
 
@@ -37,12 +31,3 @@ PTY-specific behavior guarantee yet. Embedded realm REPL mode is limited to
 same-process realms; `repl: true` is rejected with `thread`, `process`,
 `remote`, or `watch`.
 
-## Reuse
-
-Import the default task from `fino:commands/repl` to mount the REPL command:
-
-```ts no_run
-import repl from 'fino:commands/repl';
-
-await repl.parse([]);
-```

@@ -14,17 +14,12 @@ fino lint --fix 'src/**/*.ts'
 With no file inputs, the command recursively scans the current working
 directory. Explicit inputs can be files, directories, or glob patterns.
 
-## Arguments
+## Command Reference
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| `files...` | no | Files, directories, or glob patterns to lint. |
-
-## Flags
-
-| Flag | Value | Description |
-| --- | --- | --- |
-| `--fix` | boolean | Apply supported safe lint fixes without running formatting. |
+| Name | Kind | Value | Required | Description |
+| --- | --- | --- | --- | --- |
+| `files...` | argument | strings | no | Files, directories, or glob patterns to lint. |
+| `--fix` | flag | boolean | no | Apply supported safe lint fixes without running formatting. |
 
 Source discovery accepts `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`,
 and `.tsx`. Hidden directories and common dependency, generated, cache, and
@@ -36,12 +31,3 @@ per-project ignore file, or a configurable rule set. Missing explicit
 directories and explicit glob patterns that match no supported source files are
 command errors.
 
-## Reuse
-
-Import the default task from `fino:commands/lint` to reuse linting:
-
-```ts no_run
-import lint from 'fino:commands/lint';
-
-await lint.parse(['--fix', 'src']);
-```

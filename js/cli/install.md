@@ -15,29 +15,13 @@ With package arguments, the command adds them to `package.json` before
 installing. With no arguments, it installs dependencies already declared by the
 current package.
 
-## Arguments
+## Command Reference
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| `packages...` | no | Package names or specifiers to add before installing. |
-
-## Flags
-
-| Flag | Value | Description |
-| --- | --- | --- |
-| none | no | `install` has no command-specific flags. |
+| Name | Kind | Value | Required | Description |
+| --- | --- | --- | --- | --- |
+| `packages...` | argument | strings | no | Package names or specifiers to add before installing. |
 
 The installer fetches npm packuments and tarballs, places package contents under
 `.fino/packages`, and writes `.fino/package-map.json`. Bare package imports use
 that package map at runtime.
 
-## Reuse
-
-Import the default task from `fino:commands/install` to reuse installer
-behavior:
-
-```ts no_run
-import install from 'fino:commands/install';
-
-await install.parse(['@scope/pkg@^1.2.0']);
-```
