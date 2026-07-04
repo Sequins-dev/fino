@@ -1771,6 +1771,7 @@ export const privateCacheValue = true;
 export function enqueue(): void {}
 `);
     await fs.writeFile(sameStemDir + '/jobs.md', '# Jobs Guide\n\nUse this guide before calling the API.\n');
+    await fs.writeFile(sameStemDir + '/notes.md', '# Notes\n\nUnrelated sibling guide.\n');
     const sameStemRun = await runCli([
       'doc',
       'build',
@@ -1786,6 +1787,10 @@ export function enqueue(): void {}
     t.equal(await exists(fs, docsDir + '/jobs/index.md'), true, 'same-stem guide is moved under a nested index markdown output');
     t.equal(await exists(fs, docsDir + '/jobs.html'), true, 'same-stem module keeps the stem html output');
     t.equal(await exists(fs, docsDir + '/jobs/index.html'), true, 'same-stem guide is moved under a nested index html output');
+    const sameStemIndex = await fs.readFile(docsDir + '/index.html');
+    t.ok(sameStemIndex.includes('href="jobs/index.html"'), 'sidebar links the nested index guide');
+    t.ok(sameStemIndex.includes('<span>Jobs Guide</span>'), 'sidebar labels the nested index guide with its title');
+    t.equal(sameStemIndex.includes('docs-sidebar-directory">jobs<'), false, 'sidebar promotes the index guide instead of a bare directory header');
     const collisionDir = appDir + '/collision';
     await ensureDir(fs, collisionDir);
     await fs.writeFile(collisionDir + '/index.ts', `/** Collision module. */

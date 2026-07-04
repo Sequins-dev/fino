@@ -209,9 +209,9 @@ capability.
 Start with the authored guides in `js/`:
 
 - [Getting Started](./js/getting-started.md)
-- [AI Guide](./js/ai/guide.md)
+- [AI Guide](./js/ai.md)
 - [Runtime Model](./js/runtime-model.md)
-- [Realms](./js/realm/guide.md)
+- [Realms](./js/realm.md)
 - [Import Capabilities](./js/realm/capabilities.md)
 - [HTTP App Routing](./js/net/http/routing.md)
 - [CLI](./js/cli.md)

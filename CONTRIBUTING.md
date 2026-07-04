@@ -77,14 +77,9 @@ Useful guide entry points:
 
 - `js/getting-started.md`
 - `js/runtime-model.md`
-- `js/cli.md`
-- `js/modules-and-packages.md`
-- `js/net/guide.md`
-- `js/net/http/guide.md`
-- `js/process/guide.md`
-- `js/native-ffi.md`
-- `js/profiling.md`
-- `js/testing-and-benchmarking.md`
+- `js/ai.md`
+- `js/realm.md`
+- `js/net.md`
 
 ## Focused Checks
 

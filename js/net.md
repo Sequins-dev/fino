@@ -1,5 +1,5 @@
 ---
-weight: 12
+weight: 120
 ---
 # Networking Guide
 
@@ -8,11 +8,11 @@ TLS, DNS, mDNS, QUIC, WebSockets, server-sent events, and WebTransport.
 
 Start with the highest-level API that matches the protocol:
 
-- Use [`fino:net/http/server`](./http/serving.md) for HTTP servers.
-- Use [`fino:net/http/client`](./http/http-client.md) or global `fetch()` for
+- Use [`fino:net/http/server`](./net/http/serving.md) for HTTP servers.
+- Use [`fino:net/http/client`](./net/http/http-client.md) or global `fetch()` for
   HTTP clients.
-- Use [`fino:net/http/websocket`](./http/websockets.md) for WebSockets.
-- Use [`fino:net/http/webtransport`](./http/web-transport.md) for WebTransport.
+- Use [`fino:net/http/websocket`](./net/http/websockets.md) for WebSockets.
+- Use [`fino:net/http/webtransport`](./net/http/web-transport.md) for WebTransport.
 - Use `fino:net/socket`, `fino:net/tls`, `fino:net/dns`, `fino:net/mdns`, and
   `fino:net/quic` when building lower-level protocol tools.
 

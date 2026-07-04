@@ -107,7 +107,7 @@ const realm = new Realm({
 await realm.run();
 ```
 
-Use the [realms guide](./realm/guide.md) for import rules, message
+Use the [realms guide](./realm.md) for import rules, message
 ports, facades, threads, processes, and pools.
 
 ## Context and Topics

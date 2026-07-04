@@ -2370,6 +2370,7 @@ function sidebarTree(entries: SidebarEntry[], rootName?: string): SidebarNode[] 
       siblings = node.children;
     }
   }
+  promoteIndexGuideEntries(root);
   const sorted = collapseSidebarDirectories(sortSidebarNodes([...root.values()]));
   if (rootName === undefined) return sorted;
   return [{
@@ -2377,6 +2378,18 @@ function sidebarTree(entries: SidebarEntry[], rootName?: string): SidebarNode[] 
     path: rootName,
     children: new Map(sorted.map((node) => [node.name, node]))
   }];
+}
+function promoteIndexGuideEntries(siblings: Map<string, SidebarNode>): void {
+  for (const node of siblings.values()) {
+    promoteIndexGuideEntries(node.children);
+    const index = node.children.get('index');
+    // A guide disambiguated to <dir>/index.html is the directory's landing
+    // page, so the directory header should link to it instead of nesting it.
+    if (!node.entry && index?.entry?.kind === 'guide' && index.children.size === 0) {
+      node.entry = index.entry;
+      node.children.delete('index');
+    }
+  }
 }
 function sharedSidebarBase(entries: SidebarEntry[]): string | undefined {
   let first: string | undefined;

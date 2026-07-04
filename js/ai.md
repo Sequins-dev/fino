@@ -1,5 +1,5 @@
 ---
-weight: 30
+weight: 100
 ---
 # AI Guide
 

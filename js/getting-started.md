@@ -65,7 +65,7 @@ Run it:
 PORT=3000 fino ./server.ts
 ```
 
-The [HTTP guide](./net/http/guide.md) covers routing, request bodies, streaming
+The [HTTP guide](./net/http.md) covers routing, request bodies, streaming
 responses, server-sent events, WebSockets, and graceful shutdown.
 
 ## Add Tests
@@ -114,8 +114,6 @@ See [modules and packages](./modules-and-packages.md) for the import model.
 - [CLI](./cli.md) explains every command and the common development workflows.
 - [Runtime model](./runtime-model.md) explains the event loop, module system,
   realms, and the main concepts behind Fino applications.
-- [Files](./file/guide.md), [HTTP](./net/http/guide.md),
-  [formats](./format/guide.md), and [SQLite](./database/guide.md) cover common
-  application building blocks.
-- [Realms](./realm/guide.md) covers isolation, worker-style execution,
+- [HTTP](./net/http.md) covers common application building blocks.
+- [Realms](./realm.md) covers isolation, worker-style execution,
   import rules, and parent-child communication.
