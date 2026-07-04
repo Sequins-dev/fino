@@ -3,8 +3,9 @@ weight: 40
 ---
 # lint
 
-`fino lint` reports diagnostics for JavaScript and TypeScript-family source
-files:
+`fino lint` runs Fino's built-in lint diagnostics over JavaScript and
+TypeScript-family source files. Use it to catch supported style and correctness
+issues without wiring a separate linter into the project:
 
 ```sh
 fino lint src
@@ -12,7 +13,9 @@ fino lint --fix 'src/**/*.ts'
 ```
 
 With no file inputs, the command recursively scans the current working
-directory. Explicit inputs can be files, directories, or glob patterns.
+directory. Explicit inputs can be files, directories, or glob patterns. A
+directory input lints supported source files below that directory using the same
+discovery rules as `fino fmt`.
 
 ## Command Reference
 
@@ -31,3 +34,10 @@ per-project ignore file, or a configurable rule set. Missing explicit
 directories and explicit glob patterns that match no supported source files are
 command errors.
 
+Use `--fix` for fixes the linter can apply safely. It does not run formatting,
+so run `fino fmt` separately when you want formatting changes too:
+
+```sh
+fino lint --fix src
+fino fmt src
+```

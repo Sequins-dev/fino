@@ -3,17 +3,21 @@ weight: 31
 ---
 # run
 
-`fino run` executes one TypeScript or ESM entry module. The root shortcut
-`fino <script>` uses the same command path, so these forms are equivalent:
+`fino run` is the normal way to start an application, script, worker entry
+point, or one-off maintenance module with the Fino runtime. Use it when you
+want the runtime loader, built-in modules, OpenTelemetry bootstrap, and watch
+mode around a single entry module. The root shortcut `fino <script>` uses the
+same command path, so these forms are equivalent:
 
 ```sh
 fino run app.ts
 fino app.ts
 ```
 
-The command accepts a single module specifier. Relative and bare path-like
-inputs are resolved from the current working directory and imported through the
-runtime loader. Directories and glob patterns are not expanded.
+The command accepts one entry module. Relative and bare path-like inputs are
+resolved from the current working directory and imported through the runtime
+loader. Directories and glob patterns are not expanded because `run` starts one
+program, not a collection of files.
 
 ## Command Reference
 
@@ -37,9 +41,16 @@ For example, `fino run -- --flag-shaped-file.ts` treats
 
 The script can read the runtime argv through `fino:process`.
 
+Use `--watch` for local server or worker development. Watch mode runs the entry
+module in a watched child realm, tracks imported modules, and restarts the child
+when those modules change:
+
+```sh
+fino run --watch server.ts --port 3000
+```
+
 `--otlp-endpoint` wins over `OTEL_EXPORTER_OTLP_ENDPOINT`. Set
 `OTEL_SDK_DISABLED=true` to disable CLI OpenTelemetry bootstrap entirely. Realms
 constructed by the script inherit the CLI endpoint by default. Pass
 `otlpEndpoint` to `new Realm(...)` to override the collector for a child realm,
 or pass `false` to disable CLI OpenTelemetry bootstrap for that child.
-

@@ -3,8 +3,9 @@ weight: 37
 ---
 # install
 
-`fino install` resolves npm packages into `.fino/` and writes the package map
-used by the module loader:
+`fino install` prepares npm dependencies for Fino's package-map loader. Use it
+after editing dependencies in `package.json`, or pass packages on the command
+line to add them and install in one step:
 
 ```sh
 fino install
@@ -13,7 +14,8 @@ fino install semver
 
 With package arguments, the command adds them to `package.json` before
 installing. With no arguments, it installs dependencies already declared by the
-current package.
+current package. The result is local runtime state under `.fino/`, not a
+`node_modules` tree.
 
 ## Command Reference
 
@@ -25,3 +27,5 @@ The installer fetches npm packuments and tarballs, places package contents under
 `.fino/packages`, and writes `.fino/package-map.json`. Bare package imports use
 that package map at runtime.
 
+Run `fino install` again whenever declared dependencies change so the package
+map stays aligned with `package.json`.

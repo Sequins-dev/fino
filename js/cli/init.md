@@ -3,7 +3,9 @@ weight: 36
 ---
 # init
 
-`fino init` creates a `package.json` in the current working directory:
+`fino init` creates a minimal `package.json` for a Fino project. Use it when
+starting a new package or when turning a script directory into a package that
+can declare dependencies for `fino install` and bare package imports:
 
 ```sh
 fino init --yes
@@ -11,7 +13,8 @@ fino init --yes
 
 The command writes `name`, `version`, `type`, `description`, `license`,
 `author`, and `repository`. `type` is always `module`. Defaults come from the
-directory name and Git configuration when available.
+directory name and Git configuration when available. In an interactive context,
+unset fields can be prompted; `--yes` accepts defaults without prompting.
 
 ## Command Reference
 
@@ -30,3 +33,8 @@ Package names must be lowercase and may include numbers, dots, underscores,
 hyphens, and an optional npm scope. Existing package files are preserved unless
 `--force` is provided.
 
+Use explicit flags for repeatable project scaffolding:
+
+```sh
+fino init --yes --name api-service --license MIT
+```

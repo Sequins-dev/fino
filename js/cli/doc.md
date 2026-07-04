@@ -3,9 +3,11 @@ weight: 38
 ---
 # doc
 
-`fino doc` builds API references and guide pages from commented source files and
-markdown guides. The command also searches generated docs, displays individual
-symbols, and runs documentation examples.
+`fino doc` is the documentation workflow for Fino-style modules and guide
+pages. Use it to turn markdown guides and markdown-first TypeScript comments
+into generated API references, searchable HTML, and example tests. The same
+command also searches generated docs and displays individual symbols from the
+generated database.
 
 ```sh
 fino doc build --types runtime-builtins.d.ts js
@@ -13,7 +15,8 @@ fino doc build --types runtime-builtins.d.ts js
 
 Use `--types runtime-builtins.d.ts` when documenting this repository so
 synthetic public modules such as `fino:ffi` and `fino:profiler` are included.
-Generated output is written under `docs/`, which is ignored by git.
+Generated output is written under `docs/`, which is ignored by git. Build the
+docs before using `show`, `search`, or reviewing rendered guide structure.
 
 Invoking `fino doc` without a subcommand runs the same build path as
 `fino doc build`.
@@ -21,7 +24,8 @@ Invoking `fino doc` without a subcommand runs the same build path as
 ## build
 
 Build generated documentation from source files, source directories, glob
-patterns, and markdown guides:
+patterns, and markdown guides. This is the command to run after changing public
+comments, guide pages, or declaration files:
 
 ```sh
 fino doc build js
@@ -43,7 +47,9 @@ coverage audits but should not be used for public docs output.
 
 ## show
 
-Print one documented symbol as Markdown:
+Print one documented symbol as Markdown. Use this to inspect how a module,
+class, method, or generated symbol will read without opening the full HTML
+site:
 
 ```sh
 fino doc show bench.Group.measure
@@ -58,7 +64,8 @@ comments have changed.
 
 ## search
 
-Search generated docs from the command line:
+Search generated docs from the command line. Use this when checking whether a
+concept is discoverable by the words users are likely to type:
 
 ```sh
 fino doc search websocket
@@ -74,7 +81,9 @@ generated docs database.
 
 ## test
 
-Run runnable fenced examples from documentation comments:
+Run runnable fenced examples from documentation comments. This keeps examples
+in API comments honest without requiring each snippet to be duplicated in a
+hand-written test file:
 
 ```sh
 fino doc test js
@@ -87,4 +96,3 @@ fino doc test js
 Runnable examples are imported into isolated realms. Examples marked with
 non-runnable metadata are ignored, and examples marked as throwing are expected
 to reject.
-
