@@ -2,7 +2,7 @@
 * Tests for fino:net/http/app — middleware, routing, context, and OpenAPI.
 */
 import { describe, it } from 'fino:test/test';
-import { App, Router, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
+import { App, Router, RouteBuilder, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
 import { WebSocketConnection, MessageEvent } from 'fino:net/http/websocket';
 import { WebTransport } from 'fino:net/http/webtransport';
 import { parseEventStream } from 'fino:net/http/eventstream';
@@ -22,7 +22,7 @@ function request(path: string, init: {
 describe('HTTP app routing and middleware', () => {
   it('defaults direct handle() contexts to HTTP/1.1 protocol', async (t) => {
     const app = new App();
-    app.get('/proto', (ctx) => Response.json({
+    app.get('/proto').handle((ctx) => Response.json({
       protocol: ctx.protocol,
       hasIncoming: ctx.incoming !== undefined
     }));
@@ -35,6 +35,7 @@ describe('HTTP app routing and middleware', () => {
   it('runs middleware in Koa order and exposes async request context', async (t) => {
     const app = new App();
     const order: string[] = [];
+    app.value('emptySlot', async () => undefined);
     app.use(async (ctx, next) => {
       order.push('root:before');
       t.equal(app.context(), ctx, 'active context visible before await');
@@ -65,10 +66,64 @@ describe('HTTP app routing and middleware', () => {
   });
   it('supports short-circuit middleware and empty declared slots', async (t) => {
     const app = new App().value('emptySlot', async () => undefined).use((_ctx, _next) => new Response('blocked', { status: 403 }));
-    app.get('/never', () => new Response('never'));
+    app.get('/never').handle(() => new Response('never'));
     const res = await app.handle(request('/never'));
     t.equal(res.status, 403);
     t.equal(await res.text(), 'blocked');
+  });
+  it('treats enrichments as immutable tree nodes', async (t) => {
+    const app = new App();
+    const base = app.route('/branch');
+    const enriched = base.value('flavor', () => 'enriched');
+    t.ok(enriched !== base, 'value() returns a new builder');
+    base.get().handle((ctx) => Response.json({ flavor: ctx.flavor ?? null }));
+    const res = await app.handle(request('/branch'));
+    t.deepEqual(await res.json(), { flavor: null }, 'sibling branch does not see the enrichment');
+    t.ok(app.route('/other').use(async (_ctx, next) => next()) instanceof RouteBuilder, 'use() returns a builder');
+  });
+  it('applies app enrichments in registration order', async (t) => {
+    const app = new App();
+    app.value('seen', () => 'early');
+    app.get('/early').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
+    app.value('late', () => 'late');
+    app.get('/late').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
+    t.deepEqual(await (await app.handle(request('/early'))).json(), {
+      seen: 'early',
+      late: null
+    }, 'routes registered before an enrichment do not include it');
+    t.deepEqual(await (await app.handle(request('/late'))).json(), {
+      seen: 'early',
+      late: 'late'
+    }, 'routes registered after include the whole chain');
+  });
+  it('lets a later value shadow an earlier one along a branch', async (t) => {
+    const app = new App().value('who', () => 'app');
+    app.get('/app').handle((ctx) => Response.json({ who: ctx.who }));
+    app.route('/branch').value('who', () => 'branch').get().handle((ctx) => Response.json({ who: ctx.who }));
+    t.deepEqual(await (await app.handle(request('/app'))).json(), { who: 'app' });
+    t.deepEqual(await (await app.handle(request('/branch'))).json(), { who: 'branch' });
+  });
+  it('nests route builders for grouped REST routes', async (t) => {
+    const app = new App();
+    const users = app.route('/users').value('db', () => 'db-handle');
+    users.get().handle((ctx) => Response.json({ scope: 'list', db: ctx.db }));
+    const user = users.route('/:id').value('params', schema.params(v.object({ id: v.string() })));
+    user.get().handle((ctx) => Response.json({
+      scope: 'show',
+      id: ctx.params.id,
+      db: ctx.db
+    }));
+    user.delete().handle(() => new Response(null, { status: 204 }));
+    t.deepEqual(await (await app.handle(request('/users'))).json(), {
+      scope: 'list',
+      db: 'db-handle'
+    });
+    t.deepEqual(await (await app.handle(request('/users/7'))).json(), {
+      scope: 'show',
+      id: '7',
+      db: 'db-handle'
+    });
+    t.equal((await app.handle(request('/users/7', { method: 'DELETE' }))).status, 204);
   });
   it('mounts routers and keeps route method forks isolated', async (t) => {
     const router = new Router().value('tenant', () => 'acme');
@@ -82,7 +137,8 @@ describe('HTTP app routing and middleware', () => {
       id: ctx.params.id,
       name: ctx.body.name
     }));
-    const app = new App().mount('/api', router);
+    const app = new App();
+    app.route('/api').mount(router);
     const getRes = await app.handle(request('/api/items/7'));
     t.deepEqual(await getRes.json(), {
       tenant: 'acme',
@@ -100,11 +156,62 @@ describe('HTTP app routing and middleware', () => {
       name: 'desk'
     });
   });
-  it('rejects duplicate context values and duplicate routes', (t) => {
-    const app = new App().value('user', () => 'a');
-    t.throws(() => app.value('user', () => 'b'), null, 'duplicate app value throws');
-    app.get('/same', () => new Response('one'));
-    t.throws(() => app.get('/same', () => new Response('two')), null, 'duplicate method/path throws');
+  it('rejects changes to a mounted router', (t) => {
+    const router = new Router();
+    router.get('/a').handle(() => new Response('a'));
+    const app = new App();
+    app.route('/api').mount(router);
+    t.throws(() => router.get('/b'), /already mounted/, 'registering after mount throws');
+    t.throws(() => router.use(async (_ctx, next) => next()), /already mounted/, 'use after mount throws');
+    const again = new App();
+    t.throws(() => again.route('/v2').mount(router), /already mounted/, 'mounting twice throws');
+  });
+  it('mounts nested routers with params from all levels', async (t) => {
+    const inner = new Router();
+    inner.route('/:item').get().handle((ctx) => Response.json(ctx.params));
+    const outer = new Router();
+    outer.route('/:box').mount(inner);
+    const app = new App();
+    app.route('/warehouses/:warehouse').mount(outer);
+    const res = await app.handle(request('/warehouses/w1/b2/i3'));
+    t.deepEqual(await res.json(), {
+      warehouse: 'w1',
+      box: 'b2',
+      item: 'i3'
+    });
+  });
+  it('runs branch middleware before mounted routes', async (t) => {
+    const order: string[] = [];
+    const router = new Router();
+    router.get('/child').handle(() => {
+      order.push('handler');
+      return new Response('ok');
+    });
+    const app = new App();
+    app.route('/x').use(async (_ctx, next) => {
+      order.push('branch');
+      return next();
+    }).mount(router);
+    await app.handle(request('/x/child'));
+    t.deepEqual(order, ['branch', 'handler']);
+  });
+  it('rejects duplicate operations and stale inline handlers', (t) => {
+    const app = new App();
+    app.get('/same').handle(() => new Response('one'));
+    t.throws(() => app.get('/same').handle(() => new Response('two')), /Duplicate route GET \/same/, 'duplicate method/path throws');
+    t.throws(() => (app.get as (path: string, extra: unknown) => unknown)('/old', () => new Response('x')), /register the handler with .handle\(\)/, 'inline handlers are rejected loudly');
+  });
+  it('returns 405 with Allow for matched paths and 426 for upgrade-only paths', async (t) => {
+    const app = new App();
+    app.get('/thing').handle(() => new Response('get'));
+    app.route('/thing').post().handle(() => new Response('post'));
+    const miss = await app.handle(request('/thing', { method: 'DELETE' }));
+    t.equal(miss.status, 405);
+    t.equal(miss.headers.get('allow'), 'GET, POST', '405 lists allowed methods');
+    app.route('/socket-only').websocket(async () => {});
+    const upgrade = await app.handle(request('/socket-only'));
+    t.equal(upgrade.status, 426);
+    t.equal(upgrade.headers.get('upgrade'), 'websocket', '426 names the upgrade protocol');
   });
 });
 describe('HTTP app OpenAPI', () => {
@@ -133,18 +240,31 @@ describe('HTTP app OpenAPI', () => {
     t.equal(op.responses['200'].description, 'OK');
     t.deepEqual(doc.servers, [{ url: 'https://api.example.test' }]);
   });
-  it('generates operation IDs and rejects duplicate OpenAPI metadata', (t) => {
+  it('generates operation IDs and applies last-wins metadata', (t) => {
     const app = new App();
-    app.get('/users/:id', schema.response(v.object({ ok: v.boolean() })), () => Response.json({ ok: true }));
+    app.get('/users/:id').use(schema.response(v.object({ ok: v.boolean() }))).handle(() => Response.json({ ok: true }));
     const doc = app.openapi({ version: '1.0.0' }) as any;
     t.equal(doc.paths['/users/{id}'].get.operationId, 'getUsersById');
     const duplicate = new App();
-    duplicate.get('/a', defineMiddleware((_ctx, next) => next(), { operationId: 'same' }), () => new Response('a'));
-    duplicate.get('/b', defineMiddleware((_ctx, next) => next(), { operationId: 'same' }), () => new Response('b'));
-    t.throws(() => duplicate.openapi({ version: '1.0.0' }), null, 'duplicate operation IDs throw');
+    duplicate.get('/a').use(defineMiddleware((_ctx, next) => next(), { operationId: 'same' })).handle(() => new Response('a'));
+    duplicate.get('/b').use(defineMiddleware((_ctx, next) => next(), { operationId: 'same' })).handle(() => new Response('b'));
+    t.throws(() => duplicate.openapi({ version: '1.0.0' }), /Duplicate OpenAPI operationId/, 'duplicate operation IDs throw');
     const bodies = new App();
-    bodies.post('/body', defineProducer(async () => ({}), { requestBody: { content: { 'application/json': { schema: { type: 'object' } } } } }), defineProducer(async () => ({}), { requestBody: { content: { 'text/plain': { schema: { type: 'string' } } } } }), () => new Response('ok'));
-    t.throws(() => bodies.openapi({ version: '1.0.0' }), null, 'duplicate request bodies throw');
+    bodies.post('/body').value('first', defineProducer(async () => ({}), { requestBody: { content: { 'application/json': { schema: { type: 'object' } } } } })).value('second', defineProducer(async () => ({}), { requestBody: { content: { 'text/plain': { schema: { type: 'string' } } } } })).handle(() => new Response('ok'));
+    const bodyDoc = bodies.openapi({ version: '1.0.0' }) as any;
+    t.deepEqual(Object.keys(bodyDoc.paths['/body'].post.requestBody.content), ['text/plain'], 'later request body wins');
+  });
+  it('documents sse operations and mounted routes', (t) => {
+    const router = new Router();
+    router.get('/stats').handle(() => Response.json({}));
+    const app = new App();
+    app.route('/events').sse(async () => {});
+    app.route('/admin').mount(router);
+    const doc = app.openapi({ version: '1.0.0' }) as any;
+    t.equal(doc.paths['/events'].get.responses['200'].description, 'Server-sent event stream');
+    t.ok(doc.paths['/events'].get.responses['200'].content['text/event-stream'] !== undefined, 'sse documents an event-stream response');
+    t.ok(doc.paths['/events'].post !== undefined, 'sse documents the POST operation');
+    t.ok(doc.paths['/admin/stats'].get !== undefined, 'mounted routes appear in the document');
   });
 });
 describe('HTTP app built-ins', () => {
@@ -158,7 +278,7 @@ describe('HTTP app built-ins', () => {
       ctx.cookies.set('theme', 'dark', { path: '/' });
       return Response.json({ user: ctx.session.data.user });
     });
-    app.get('/me', (ctx) => Response.json({
+    app.get('/me').handle((ctx) => Response.json({
       user: ctx.session.data.user ?? null,
       theme: ctx.cookies.get('theme') ?? null
     }));
@@ -180,7 +300,7 @@ describe('HTTP app built-ins', () => {
   });
   it('serves OpenAPI over listen()', async (t) => {
     const app = new App({ name: 'Served API' });
-    app.get('/openapi.json', app.openapiHandler({ version: '2.0.0' }));
+    app.get('/openapi.json').handle(app.openapiHandler({ version: '2.0.0' }));
     const server = app.listen({
       port: 0,
       hostname: '127.0.0.1'
@@ -196,7 +316,7 @@ describe('HTTP app built-ins', () => {
   });
   it('accepts websocket routes over listen()', async (t) => {
     const app = new App();
-    app.websocket('/chat', async (socket, ctx) => {
+    app.route('/chat').websocket(async (socket, ctx) => {
       t.equal(ctx.incoming.kind, 'websocket', 'websocket context exposes incoming');
       socket.addEventListener('message', (event) => {
         void socket.send(`echo:${(event as MessageEvent).data}`);
@@ -222,14 +342,65 @@ describe('HTTP app built-ins', () => {
       t.equal((await message).data, 'echo:hello', 'websocket route echoes messages');
       await client.close();
       const invalid = await fetch(`http://127.0.0.1:${server.port}/chat`, { headers: { upgrade: 'websocket' } as any });
-      t.equal(invalid.status, 400, 'invalid websocket upgrade matching route gets 400');
+      t.equal(invalid.status, 426, 'incomplete websocket handshake gets 426');
+      const plain = await fetch(`http://127.0.0.1:${server.port}/chat`);
+      t.equal(plain.status, 426, 'plain http on a websocket-only route gets 426');
     } finally {
       await server.close();
     }
   });
+  it('runs middleware for websocket routes and rejects with responses', async (t) => {
+    const order: string[] = [];
+    const app = new App();
+    app.route('/guarded').use(async (ctx, next) => {
+      order.push('guard');
+      if (ctx.request.headers.get('x-key') !== 'secret') {
+        return Response.json({ error: 'Forbidden' }, { status: 403 });
+      }
+      return next();
+    }).websocket(async () => {
+      order.push('handler');
+    });
+    const rejected: Response[] = [];
+    let accepted = 0;
+    const incoming = (key: string | null) => ({
+      kind: 'websocket',
+      request: request('/guarded', key === null ? {} : { headers: { 'x-key': key } }),
+      protocol: 'http/1.1',
+      session: {
+        id: 'ws-test',
+        protocol: 'http/1.1',
+        transport: 'tcp',
+        secure: false,
+        localAddress: null,
+        remoteAddress: null,
+        closed: Promise.resolve()
+      },
+      reject(res?: Response) {
+        if (res !== undefined) rejected.push(res);
+        return Promise.resolve();
+      },
+      accept() {
+        accepted += 1;
+        return Promise.resolve(new EventTarget() as unknown);
+      }
+    }) as any;
+    await (app as any)._handleWebTransportForTest(incoming(null));
+    t.equal(accepted, 0, 'short-circuited upgrade is never accepted');
+    t.equal(rejected.length, 1, 'upgrade rejected with the middleware response');
+    t.equal(rejected[0]!.status, 403);
+    t.deepEqual(order, ['guard'], 'handler never ran');
+    await (app as any)._handleWebTransportForTest(incoming('secret'));
+    t.equal(accepted, 1, 'passing middleware accepts the upgrade');
+    t.deepEqual(order, [
+      'guard',
+      'guard',
+      'handler'
+    ]);
+  });
   it('streams sse routes through handle() for GET and POST', async (t) => {
     const app = new App();
-    app.sse('/events', async (events, ctx) => {
+    app.route('/events').sse(async (events, ctx) => {
       await events.write({ data: `method:${ctx.method}` });
       await events.write({ event: 'done', data: '{}', id: '1' });
     });
@@ -246,10 +417,13 @@ describe('HTTP app built-ins', () => {
     const post = await app.handle(request('/events', { method: 'POST', body: 'x' })) as Response;
     const first = await parseEventStream(post.body!).read();
     t.equal(first?.data, 'method:POST', 'sse route also matches POST');
+    const put = await app.handle(request('/events', { method: 'PUT', body: 'x' })) as Response;
+    t.equal(put.status, 405, 'sse route rejects other methods');
+    t.equal(put.headers.get('allow'), 'GET, POST');
   });
   it('terminates sse streams when the handler throws', async (t) => {
     const app = new App();
-    app.sse('/broken', async (events) => {
+    app.route('/broken').sse(async (events) => {
       await events.write({ data: 'first' });
       throw new Error('boom');
     });
@@ -262,7 +436,7 @@ describe('HTTP app built-ins', () => {
   });
   it('serves sse routes over listen()', async (t) => {
     const app = new App();
-    app.sse('/ticks', async (events) => {
+    app.route('/ticks').sse(async (events) => {
       await events.write({ data: 'tick' });
       await events.write({ event: 'done', data: 'bye' });
     });
@@ -282,13 +456,24 @@ describe('HTTP app built-ins', () => {
       await server.close();
     }
   });
+  it('mounts routers carrying protocol operations', async (t) => {
+    const router = new Router();
+    router.route('/jobs/:queue').sse(async (events, ctx) => {
+      await events.write({ data: `queue:${ctx.params?.queue}` });
+    });
+    const app = new App();
+    app.route('/admin').mount(router);
+    const res = await app.handle(request('/admin/jobs/mail')) as Response;
+    t.equal(res.headers.get('content-type'), 'text/event-stream');
+    const first = await parseEventStream(res.body!).read();
+    t.equal(first?.data, 'queue:mail', 'mounted sse route streams with prefix params');
+  });
   it('registers webtransport routes with inherited context values', async (t) => {
     const app = new App().value('tenant', () => 'acme');
     let sawContext = false;
-    app.webtransport('/wt/:room', async (session, ctx) => {
+    app.route('/wt/:room').webtransport(async (session, ctx) => {
       sawContext = session instanceof WebTransport && ctx.method === 'WEBTRANSPORT' && ctx.params?.room === 'lobby' && ctx.tenant === 'acme';
     });
-    t.equal(app.webtransport('/other', () => {}), app, 'webtransport() is chainable');
     const incoming = {
       kind: 'webtransport',
       request: request('/wt/lobby'),
@@ -312,8 +497,20 @@ describe('HTTP app built-ins', () => {
     await (app as any)._handleWebTransportForTest(incoming);
     t.equal(sawContext, true);
   });
+  it('dispatches rpc services as POST and 405s other methods', async (t) => {
+    const app = new App();
+    app.route('/rpc').rpc({
+      httpHandler: () => async (req: Request) => Response.json({ echoed: await req.text() })
+    });
+    const posted = await app.handle(request('/rpc', { method: 'POST', body: 'ping' }));
+    t.deepEqual(await posted.json(), { echoed: 'ping' });
+    const got = await app.handle(request('/rpc'));
+    t.equal(got.status, 405, 'non-POST on an rpc route is 405');
+    t.equal(got.headers.get('allow'), 'POST');
+  });
   it('converts errors with errorHandler', async (t) => {
-    const app = new App().use(errorHandler()).get('/boom', () => {
+    const app = new App().use(errorHandler());
+    app.get('/boom').handle(() => {
       throw new Error('boom');
     });
     const res = await app.handle(request('/boom'));

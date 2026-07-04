@@ -43,8 +43,8 @@ function makeApp() {
   const app = new App();
   app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() }));
   app.use(webUI({ store, secret: 'test-secret' }));
-  app.get('/', page((ctx) => h('main', null, todos.mount(ctx))));
-  app.post('/', page((ctx) => h('main', null, todos.mount(ctx))));
+  app.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
+  app.post('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
   return { app };
 }
 
@@ -76,8 +76,8 @@ function makeSecureApp() {
   const app = new App();
   app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() }));
   app.use(webUI({ store, secret: 'test-secret' }));
-  app.get('/secure', page((ctx) => h('main', null, secure.mount(ctx))));
-  app.post('/secure', page((ctx) => h('main', null, secure.mount(ctx))));
+  app.get('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
+  app.post('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
   return { app, runs: () => handlerRuns };
 }
 

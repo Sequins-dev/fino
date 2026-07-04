@@ -437,7 +437,7 @@ describe('fino:jsonrpc — JsonRpcServer', () => {
       name: string;
     }).name}`);
     const app = new App({ name: 'Test' });
-    app.rpc('/rpc', svc);
+    app.route('/rpc').rpc(svc);
     const server = app.listen({ port: 0 });
     await server.ready;
     const res = await fetch(`http://127.0.0.1:${server.port}/rpc`, {

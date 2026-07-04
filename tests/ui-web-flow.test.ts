@@ -16,7 +16,7 @@ describe('fino:ui/web/flow', () => {
   it('starts, renders, signals, resumes, and redirects a workflow-backed page', async (t) => {
     const store = new InMemoryWorkflowStore();
     const app = new App();
-    app.get('/flow', flowPage(approval, {
+    app.get('/flow').handle(flowPage(approval, {
       store,
       start: () => ({ label: 'deploy' }),
       render(_ctx, state) {
@@ -27,7 +27,7 @@ describe('fino:ui/web/flow', () => {
         );
       }
     }));
-    app.post('/flow', flowPage(approval, {
+    app.post('/flow').handle(flowPage(approval, {
       store,
       start: () => ({ label: 'deploy' }),
       render: (_ctx, state) => h('p', null, state.status)

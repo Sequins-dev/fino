@@ -17,7 +17,7 @@ describe('fino:net/http/transpile', () => {
     await fs.writeFile(`${root}/mod.ts`, 'export const value: number = 1;');
     const app = new App();
     app.use(transpileFiles(root, { prefix: '/src/' }));
-    app.get('/src/:file', () => new Response('fallback'));
+    app.get('/src/:file').handle(() => new Response('fallback'));
 
     const first = await app.handle(new Request('http://local/src/mod.ts')) as Response;
     t.equal(first.headers.get('content-type'), 'text/javascript; charset=utf-8');
@@ -33,7 +33,7 @@ describe('fino:net/http/transpile', () => {
     await fs.writeFile(`${root}/mod.js`, 'export const value = 1;');
     const app = new App();
     app.use(transpileFiles(root, { prefix: '/src/' }));
-    app.get('/src/:file', () => new Response('fallback'));
+    app.get('/src/:file').handle(() => new Response('fallback'));
 
     const js = await app.handle(new Request('http://local/src/mod.js')) as Response;
     t.equal(await js.text(), 'fallback', 'non-TypeScript files fall through');

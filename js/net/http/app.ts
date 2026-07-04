@@ -10,10 +10,13 @@
 * The middleware model is Koa-style: each middleware receives `(ctx, next)` and
 * may short-circuit by returning a `Response`, or may `await next()` and mutate
 * the downstream response. Builders (`App`, `Router`, `RouteBuilder`, and
-* `MethodBuilder`) share `.use()`, `.value()`, and `.meta()`. A value producer
-* declares a context slot and populates it only when that point in the
-* middleware stack is reached; duplicate slot declarations throw while the app
-* is being built.
+* `MethodBuilder`) share `.use()`, `.value()`, and `.meta()` as immutable
+* enrichments of a routing tree: each call records a node, terminals such as
+* `.handle()` resolve the branch they hang off, and a later `value()` with the
+* same name shadows an earlier one. Everything that binds a routing path goes
+* through `route()` — HTTP verbs fork method branches finished by `.handle()`,
+* while `websocket()`, `sse()`, `webtransport()`, `rpc()`, and `mount()` are
+* terminals that register directly.
 *
 * Routing uses the platform `URLPattern` implementation with pathname patterns
 * such as `/users/:id`. Path parameters are available through the built-in
@@ -39,7 +42,7 @@
 *   .value('body', body.json(v.object({ name: v.string() })))
 *   .handle((ctx) => Response.json({ id: ctx.params.id, name: ctx.body.name }));
 *
-* app.get('/openapi.json', app.openapiHandler({ version: '1.0.0' }));
+* app.get('/openapi.json').handle(app.openapiHandler({ version: '1.0.0' }));
 * app.listen({ port: 3000 });
 * ```
 *
@@ -193,8 +196,9 @@ export type Producer = (ctx: HttpContext) => unknown | Promise<unknown>;
 /**
 * OpenAPI metadata that can be attached to builders, middleware, or producers.
 *
-* Metadata is merged as routes are built. Duplicate parameters or request
-* bodies throw unless `replaceRequestBody` is set.
+* Metadata is merged as routes are built. Later metadata overrides earlier
+* metadata key by key: parameters replace by `(in, name)`, request bodies and
+* per-status responses replace outright.
 *
 * ```ts no_run
 * app.route('/users').meta({ tags: ['users'], summary: 'List users' });
@@ -257,13 +261,6 @@ export interface OperationMeta {
   * ```
   */
   responses?: Record<string, OpenApiResponse>;
-  /** Replace an inherited requestBody instead of throwing on duplication.
-  *
-  * ```ts no_run
-  * route.meta({ replaceRequestBody: true, requestBody });
-  * ```
-  */
-  replaceRequestBody?: boolean;
 }
 /**
 * Options passed to `App.openapi()`.
@@ -328,33 +325,43 @@ type StackItem = {
   fn: Producer;
   meta?: OperationMeta;
 };
-type Endpoint = {
-  method: HttpMethod;
+type OperationKind = 'http' | 'websocket' | 'webtransport' | 'sse';
+type Operation = {
+  kind: OperationKind;
+  method?: HttpMethod;
   path: string;
   pattern: URLPattern;
   stack: StackItem[];
   slots: string[];
+  meta: OperationMeta;
   handler: Handler;
+};
+type BuilderNode = {
+  kind: 'root';
+  owner: RouterBase<unknown>;
+} | {
+  kind: 'middleware';
+  fn: Middleware;
+  meta?: OperationMeta;
+  parent: BuilderNode;
+} | {
+  kind: 'value';
+  name: string;
+  fn: Producer;
+  meta?: OperationMeta;
+  parent: BuilderNode;
+} | {
+  kind: 'meta';
   meta: OperationMeta;
-};
-type WebSocketEndpoint = {
-  path: string;
-  pattern: URLPattern;
-  stack: StackItem[];
-  slots: string[];
-  handler: WebSocketHandler;
-};
-type WebTransportEndpoint = {
-  path: string;
-  pattern: URLPattern;
-  stack: StackItem[];
-  slots: string[];
-  handler: WebTransportHandler;
-};
-type BuildState = {
-  stack: StackItem[];
-  slots: Set<string>;
-  meta: OperationMeta;
+  parent: BuilderNode;
+} | {
+  kind: 'path';
+  fragment: string;
+  parent: BuilderNode;
+} | {
+  kind: 'op';
+  method: HttpMethod;
+  parent: BuilderNode;
 };
 const middlewareMeta = Symbol('fino.http.app.middlewareMeta');
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -417,18 +424,14 @@ function mergeMeta(base: OperationMeta, next: OperationMeta): OperationMeta {
   if (next.parameters !== undefined) {
     out.parameters ??= [];
     for (const parameter of next.parameters) {
-      const exists = out.parameters.some((current) => current.in === parameter.in && current.name === parameter.name);
-      if (exists) throw new Error(`Duplicate OpenAPI parameter ${parameter.in}:${parameter.name}`);
+      out.parameters = out.parameters.filter((current) => current.in !== parameter.in || current.name !== parameter.name);
       out.parameters.push({
         ...parameter,
         schema: cloneSchema(parameter.schema)
       });
     }
   }
-  if (next.requestBody !== undefined) {
-    if (out.requestBody !== undefined && next.replaceRequestBody !== true) throw new Error('Duplicate OpenAPI request body');
-    out.requestBody = cloneRequestBody(next.requestBody);
-  }
+  if (next.requestBody !== undefined) out.requestBody = cloneRequestBody(next.requestBody);
   if (next.responses !== undefined) {
     out.responses ??= {};
     for (const status of Object.keys(next.responses)) out.responses[status] = cloneResponses({ [status]: next.responses[status]! })[status]!;
@@ -441,12 +444,159 @@ function metadataOf(fn: unknown): OperationMeta | undefined {
 function methodName(method: string): HttpMethod {
   return method.toUpperCase() as HttpMethod;
 }
-function forkState(state: BuildState): BuildState {
+type ResolvedChain = {
+  owner: RouterBase<unknown>;
+  path: string;
+  method?: HttpMethod;
+  stack: StackItem[];
+  slots: string[];
+  meta: OperationMeta;
+};
+function resolveChain(node: BuilderNode): ResolvedChain {
+  const nodes: Array<Exclude<BuilderNode, { kind: 'root' }>> = [];
+  let current: BuilderNode = node;
+  while (current.kind !== 'root') {
+    nodes.push(current);
+    current = current.parent;
+  }
+  nodes.reverse();
+  let path = '';
+  let method: HttpMethod | undefined;
+  const stack: StackItem[] = [];
+  const slots: string[] = [];
+  let meta: OperationMeta = {};
+  for (const item of nodes) {
+    if (item.kind === 'middleware') {
+      stack.push({
+        type: 'middleware',
+        fn: item.fn,
+        meta: item.meta
+      });
+    } else if (item.kind === 'value') {
+      stack.push({
+        type: 'producer',
+        name: item.name,
+        fn: item.fn,
+        meta: item.meta
+      });
+      if (!slots.includes(item.name)) slots.push(item.name);
+    } else if (item.kind === 'meta') {
+      meta = mergeMeta(meta, item.meta);
+    } else if (item.kind === 'path') {
+      path = appendPath(path === '' ? '/' : path, item.fragment);
+    } else {
+      method = item.method;
+    }
+  }
   return {
-    stack: state.stack.slice(),
-    slots: new Set(state.slots),
-    meta: cloneMeta(state.meta)
+    owner: current.owner,
+    path: path === '' ? '/' : path,
+    method,
+    stack,
+    slots,
+    meta
   };
+}
+function registerOperation(node: BuilderNode, kind: OperationKind, handler: Handler): void {
+  const chain = resolveChain(node);
+  chain.owner._register({
+    kind,
+    method: kind === 'http' ? chain.method : undefined,
+    path: chain.path,
+    pattern: new URLPattern({ pathname: chain.path }),
+    stack: chain.stack,
+    slots: chain.slots,
+    meta: chain.meta,
+    handler
+  });
+}
+function assertPathOnly(verb: string, rest: readonly unknown[]): void {
+  if (rest.length > 0) {
+    throw new TypeError(`${verb}() takes only a path; register the handler with .handle()`);
+  }
+}
+function assertNoArgs(verb: string, rest: readonly unknown[]): void {
+  if (rest.length > 0) {
+    throw new TypeError(`${verb}() takes no arguments; register the handler with .handle()`);
+  }
+}
+function duplicateOperationMessage(op: Operation): string {
+  if (op.kind === 'websocket') return `Duplicate WebSocket route ${op.path}`;
+  if (op.kind === 'webtransport') return `Duplicate WebTransport route ${op.path}`;
+  if (op.kind === 'sse') return `Duplicate SSE route ${op.path}`;
+  return `Duplicate route ${op.method} ${op.path}`;
+}
+type NearMisses = {
+  allowed: Set<HttpMethod>;
+  upgrade?: 'websocket' | 'webtransport';
+};
+function fallbackResponse(near: NearMisses): Response {
+  if (near.allowed.size > 0) {
+    return Response.json({ error: 'Method Not Allowed' }, {
+      status: 405,
+      headers: { allow: [...near.allowed].sort().join(', ') }
+    });
+  }
+  if (near.upgrade !== undefined) {
+    return new Response('Upgrade Required', {
+      status: 426,
+      headers: {
+        upgrade: near.upgrade,
+        connection: 'Upgrade'
+      }
+    });
+  }
+  return defaultNotFound();
+}
+function wrapWebSocket(handler: WebSocketHandler): Handler {
+  return async (ctx) => {
+    const incoming = ctx.incoming as IncomingWebSocketRequest;
+    const socket = await incoming.accept();
+    ctx.__upgraded = socket;
+    await handler(socket, ctx as WebSocketContext);
+    return socket;
+  };
+}
+function wrapWebTransport(handler: WebTransportHandler): Handler {
+  return async (ctx) => {
+    const incoming = ctx.incoming as IncomingWebTransportRequest;
+    const session = await incoming.accept();
+    ctx.__upgraded = session;
+    await handler(session, ctx as WebTransportContext);
+    return session;
+  };
+}
+function wrapSse(handler: SseHandler): Handler {
+  return (ctx) => {
+    const channel = new Channel<Uint8Array>();
+    const events = new EventSourceWriter(channel.writer);
+    void (async () => {
+      try {
+        await handler(events, ctx);
+        await events.close();
+        await channel.writer.close();
+      } catch (err) {
+        channel.writer.fail(err);
+      }
+    })();
+    return new Response(channel.reader, {
+      headers: {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-store'
+      }
+    });
+  };
+}
+function closeUpgraded(upgraded: unknown): void {
+  try {
+    if (upgraded instanceof WebSocketConnection) {
+      void upgraded.close();
+    } else if (upgraded instanceof WebTransport) {
+      upgraded.close();
+    }
+  } catch {
+    // The connection is already closing; nothing to clean up.
+  }
 }
 function routePathToOpenApi(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
@@ -471,46 +621,49 @@ interface HandleInfo {
   session?: HttpSession;
   incoming?: IncomingHttp;
 }
-function makeInitialContext(app: App, endpoint: Endpoint, req: Request, params: Record<string, string>, info: HandleInfo): HttpContext {
+function seedSlots(ctx: HttpContext, slots: string[]): void {
+  for (const slot of slots) ctx[slot] = undefined;
+}
+function makeInitialContext(app: App, op: Operation, req: Request, params: Record<string, string>, info: HandleInfo, method: HttpMethod): HttpContext {
   const ctx: HttpContext = {
     request: req,
     app,
-    route: endpoint.path,
-    method: endpoint.method,
+    route: op.path,
+    method: op.method ?? method,
     protocol: info.protocol ?? 'http/1.1'
   };
   if (info.session !== undefined) ctx.session = info.session;
   if (info.incoming !== undefined) ctx.incoming = info.incoming;
-  for (const slot of endpoint.slots) ctx[slot] = undefined;
+  seedSlots(ctx, op.slots);
   ctx.params = params;
   return ctx;
 }
-function makeInitialWebSocketContext(app: App, endpoint: WebSocketEndpoint, incoming: IncomingWebSocketRequest, params: Record<string, string>): WebSocketContext {
-  const ctx = {
-    request: incoming.request,
+function makeFallbackContext(app: App, req: Request, path: string, method: HttpMethod, slots: string[], info: HandleInfo): HttpContext {
+  const ctx: HttpContext = {
+    request: req,
     app,
-    route: endpoint.path,
-    method: 'WEBSOCKET',
-    protocol: incoming.protocol,
-    session: incoming.session,
-    incoming,
-    params
-  } as WebSocketContext;
-  for (const slot of endpoint.slots) ctx[slot] = undefined;
+    route: path,
+    method,
+    protocol: info.protocol ?? 'http/1.1'
+  };
+  if (info.session !== undefined) ctx.session = info.session;
+  if (info.incoming !== undefined) ctx.incoming = info.incoming;
+  seedSlots(ctx, slots);
+  ctx.params = {};
   return ctx;
 }
-function makeInitialWebTransportContext(app: App, endpoint: WebTransportEndpoint, incoming: IncomingWebTransportRequest, params: Record<string, string>): WebTransportContext {
+function makeUpgradeContext(app: App, op: Operation, incoming: IncomingWebSocketRequest | IncomingWebTransportRequest, params: Record<string, string>): HttpContext {
   const ctx = {
     request: incoming.request,
     app,
-    route: endpoint.path,
-    method: 'WEBTRANSPORT',
+    route: op.path,
+    method: op.kind === 'websocket' ? 'WEBSOCKET' : 'WEBTRANSPORT',
     protocol: incoming.protocol,
     session: incoming.session,
     incoming,
     params
-  } as WebTransportContext;
-  for (const slot of endpoint.slots) ctx[slot] = undefined;
+  } as HttpContext;
+  seedSlots(ctx, op.slots);
   return ctx;
 }
 async function runStack(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<HttpHandlerResult> {
@@ -646,154 +799,208 @@ export function defineProducer<T extends Producer>(fn: T, meta: OperationMeta = 
   });
   return fn;
 }
-class BuilderBase<TSelf> {
-  protected _state: BuildState;
-  constructor(state?: BuildState) {
-    this._state = state ?? {
-      stack: [],
-      slots: new Set(),
-      meta: {}
+/**
+* Shared fluent surface for `App` and `Router`.
+*
+* `use()`, `value()`, and `meta()` are enrichments: each call records an
+* immutable node in the routing tree and advances this container's tail, so
+* later registrations include it and earlier registrations do not. `route()`
+* starts a branch from the current tail; terminals (`handle()`, `websocket()`,
+* `sse()`, `webtransport()`, `rpc()`, `mount()`) resolve a branch by walking
+* its nodes back to this container and freezing the result into an operation.
+*/
+abstract class RouterBase<TSelf> {
+  /**
+  * Tail node of this container's enrichment chain.
+  *
+  * @internal
+  */
+  _tail: BuilderNode;
+  /**
+  * Resolved operations registered on this container.
+  *
+  * @internal
+  */
+  _operations: Operation[] = [];
+  constructor() {
+    this._tail = {
+      kind: 'root',
+      owner: this as RouterBase<unknown>
     };
   }
-  /** Install middleware on this builder.
-  *
-  * Middleware is appended in call order and inherited by child route builders.
+  /** Install middleware for subsequently registered routes.
   *
   * ```ts no_run
   * app.use(errorHandler());
   * ```
   */
   use(...middleware: Middleware[]): TSelf {
-    for (const fn of middleware) this._state.stack.push({
-      type: 'middleware',
+    this._assertMutable();
+    for (const fn of middleware) this._tail = {
+      kind: 'middleware',
       fn,
-      meta: metadataOf(fn)
-    });
+      meta: metadataOf(fn),
+      parent: this._tail
+    };
     return (this as unknown) as TSelf;
   }
-  /** Declare and populate a request context value.
+  /** Declare a request context value for subsequently registered routes.
   *
-  * Duplicate value names in the same inherited stack throw during app build.
+  * A later `value()` with the same name shadows the earlier one for
+  * registrations that follow it.
   *
   * ```ts no_run
   * app.value('cookies', cookies());
   * ```
   */
   value(name: string, producer: Producer): TSelf {
-    if (this._state.slots.has(name)) throw new Error(`Duplicate context value "${name}"`);
-    this._state.slots.add(name);
-    this._state.stack.push({
-      type: 'producer',
+    this._assertMutable();
+    this._tail = {
+      kind: 'value',
       name,
       fn: producer,
-      meta: metadataOf(producer)
-    });
+      meta: metadataOf(producer),
+      parent: this._tail
+    };
     return (this as unknown) as TSelf;
   }
-  /** Attach OpenAPI operation metadata inherited by child builders.
+  /** Attach OpenAPI operation metadata for subsequently registered routes.
+  *
+  * Later metadata overrides earlier metadata key by key.
   *
   * ```ts no_run
-  * app.route('/users').meta({ tags: ['users'] });
+  * app.meta({ tags: ['api'] });
   * ```
   */
   meta(meta: OperationMeta): TSelf {
-    this._state.meta = mergeMeta(this._state.meta, meta);
+    this._assertMutable();
+    this._tail = {
+      kind: 'meta',
+      meta: cloneMeta(meta),
+      parent: this._tail
+    };
     return (this as unknown) as TSelf;
   }
+  /** Start a route branch for one URLPattern pathname.
+  *
+  * ```ts no_run
+  * app.route('/users/:id').get().handle((ctx) => Response.json(ctx.params));
+  * ```
+  */
+  route(path: string): RouteBuilder {
+    this._assertMutable();
+    return new RouteBuilder({
+      kind: 'path',
+      fragment: path,
+      parent: this._tail
+    });
+  }
+  /** Start a GET method branch; register the handler with `.handle()`.
+  *
+  * ```ts no_run
+  * app.get('/health').handle(() => Response.json({ ok: true }));
+  * ```
+  */
+  get(path: string, ...rest: never[]): MethodBuilder {
+    assertPathOnly('get', rest);
+    return this.route(path).get();
+  }
+  /** Start a POST method branch; register the handler with `.handle()`.
+  *
+  * ```ts no_run
+  * app.post('/users').handle((ctx) => Response.json({}, { status: 201 }));
+  * ```
+  */
+  post(path: string, ...rest: never[]): MethodBuilder {
+    assertPathOnly('post', rest);
+    return this.route(path).post();
+  }
+  /** Start a PUT method branch; register the handler with `.handle()`.
+  *
+  * ```ts no_run
+  * app.put('/users/:id').handle((ctx) => Response.json(ctx.params));
+  * ```
+  */
+  put(path: string, ...rest: never[]): MethodBuilder {
+    assertPathOnly('put', rest);
+    return this.route(path).put();
+  }
+  /** Start a PATCH method branch; register the handler with `.handle()`.
+  *
+  * ```ts no_run
+  * app.patch('/users/:id').handle((ctx) => Response.json(ctx.params));
+  * ```
+  */
+  patch(path: string, ...rest: never[]): MethodBuilder {
+    assertPathOnly('patch', rest);
+    return this.route(path).patch();
+  }
+  /** Start a DELETE method branch; register the handler with `.handle()`.
+  *
+  * ```ts no_run
+  * app.delete('/users/:id').handle(() => new Response(null, { status: 204 }));
+  * ```
+  */
+  delete(path: string, ...rest: never[]): MethodBuilder {
+    assertPathOnly('delete', rest);
+    return this.route(path).delete();
+  }
+  /** Start a HEAD method branch; register the handler with `.handle()`.
+  *
+  * ```ts no_run
+  * app.head('/health').handle(() => new Response(null, { status: 204 }));
+  * ```
+  */
+  head(path: string, ...rest: never[]): MethodBuilder {
+    assertPathOnly('head', rest);
+    return this.route(path).head();
+  }
+  /** Start an OPTIONS method branch; register the handler with `.handle()`.
+  *
+  * ```ts no_run
+  * app.options('/users').handle(() => new Response(null, { status: 204 }));
+  * ```
+  */
+  options(path: string, ...rest: never[]): MethodBuilder {
+    assertPathOnly('options', rest);
+    return this.route(path).options();
+  }
+  /**
+  * Register a resolved operation, rejecting duplicates.
+  *
+  * @internal
+  */
+  _register(op: Operation): void {
+    this._assertMutable();
+    const exists = this._operations.some((current) => current.kind === op.kind && current.method === op.method && current.path === op.path);
+    if (exists) throw new Error(duplicateOperationMessage(op));
+    this._operations.push(op);
+  }
+  /**
+  * Guard invoked before any mutation; mounted routers throw.
+  *
+  * @internal
+  */
+  _assertMutable(): void {}
 }
 /**
 * HTTP application with middleware, routes, async context, serving, and docs.
 *
 * ```ts no_run
 * const app = new App({ name: 'Example API' });
-* app.get('/', () => new Response('ok'));
+* app.get('/').handle(() => new Response('ok'));
 * ```
 */
-export class App extends BuilderBase<App> {
-  /**
-  * Private property `#name` used by `App`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #name = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#name;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
+export class App extends RouterBase<App> {
   #name: string;
-  /**
-  * Private property `#endpoints` used by `App`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #endpoints = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#endpoints;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #endpoints: Endpoint[] = [];
-  #webSocketEndpoints: WebSocketEndpoint[] = [];
-  #webTransportEndpoints: WebTransportEndpoint[] = [];
-  /**
-  * Private property `#requestContext` used by `App`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #requestContext = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#requestContext;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
   #requestContext = new Context<HttpContext>('fino:http:app');
-  /** Create an application. `name` becomes the default OpenAPI title.
-  *
-  * ```ts no_run
-  * const app = new App({ name: 'Billing API' });
-  * ```
-  */
   constructor(options: {
     name?: string;
   } = {}) {
     super();
     this.#name = options.name ?? 'Fino API';
   }
-  /** Return the current request context, or `undefined` outside app handling.
-  *
-  * This uses async context propagation, so it can be called from helpers
-  * invoked by a handler.
+  /** Return the active request context from anywhere in the async call chain.
   *
   * ```ts no_run
   * const ctx = app.context();
@@ -802,271 +1009,12 @@ export class App extends BuilderBase<App> {
   context(): HttpContext | undefined {
     return this.#requestContext.get();
   }
-  /** Create a route builder for one URLPattern pathname.
+  /** Dispatch one request through the matching operation chain.
   *
-  * ```ts no_run
-  * app.route('/users/:id').get((ctx) => Response.json(ctx.params));
-  * ```
-  */
-  route(path: string): RouteBuilder {
-    return new RouteBuilder(this, path, forkState(this._state));
-  }
-  /** Mount all routes from a router under a prefix.
-  *
-  * Router middleware is combined with current app middleware at mount time.
-  *
-  * ```ts no_run
-  * app.mount('/api', router);
-  * ```
-  */
-  mount(prefix: string, router: Router): this {
-    router._install(this, prefix, this._state);
-    return this;
-  }
-  /** Register a GET route directly or return a method builder.
-  *
-  * ```ts no_run
-  * app.get('/health', () => new Response('ok'));
-  * ```
-  */
-  get(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder {
-    return this.#direct('GET', path, stack);
-  }
-  /** Register a POST route directly or return a method builder.
-  *
-  * ```ts no_run
-  * app.post('/users', body.json(), (ctx) => Response.json(ctx.body));
-  * ```
-  */
-  post(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder {
-    return this.#direct('POST', path, stack);
-  }
-  /** Register a PUT route directly or return a method builder.
-  *
-  * ```ts no_run
-  * app.put('/users/:id', (ctx) => Response.json(ctx.params));
-  * ```
-  */
-  put(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder {
-    return this.#direct('PUT', path, stack);
-  }
-  /** Register a PATCH route directly or return a method builder.
-  *
-  * ```ts no_run
-  * app.patch('/users/:id', (ctx) => Response.json(ctx.params));
-  * ```
-  */
-  patch(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder {
-    return this.#direct('PATCH', path, stack);
-  }
-  /** Register a DELETE route directly or return a method builder.
-  *
-  * ```ts no_run
-  * app.delete('/users/:id', () => new Response(null, { status: 204 }));
-  * ```
-  */
-  delete(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder {
-    return this.#direct('DELETE', path, stack);
-  }
-  /** Register a HEAD route directly or return a method builder.
-  *
-  * ```ts no_run
-  * app.head('/health', () => new Response(null, { status: 204 }));
-  * ```
-  */
-  head(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder {
-    return this.#direct('HEAD', path, stack);
-  }
-  /** Register an OPTIONS route directly or return a method builder.
-  *
-  * ```ts no_run
-  * app.options('/users', () => new Response(null, { status: 204 }));
-  * ```
-  */
-  options(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder {
-    return this.#direct('OPTIONS', path, stack);
-  }
-  /** Mount a JSON-RPC service at `path`. All POST requests to `path` are
-  * dispatched as JSON-RPC 2.0 messages; other methods return 405. App
-  * middleware runs normally before the RPC handler.
-  *
-  * ```ts no_run
-  * import { JsonRpcService } from 'fino:jsonrpc';
-  * const svc = new JsonRpcService();
-  * svc.method('add').handle((p) => (p as { a: number; b: number }).a + (p as { a: number; b: number }).b);
-  * app.rpc('/rpc', svc);
-  * ```
-  */
-  rpc(path: string, service: {
-    httpHandler(): (req: Request) => Promise<Response>;
-  }): this {
-    const handler = service.httpHandler();
-    return this.post(path, (ctx) => handler(ctx.request)) as this;
-  }
-  /** Register a WebSocket route.
-  *
-  * ```ts no_run
-  * app.websocket('/chat', async (socket) => {
-  *   socket.addEventListener('message', (event) => socket.send(event.data));
-  * });
-  * ```
-  */
-  websocket(path: string, ...stack: Array<Middleware | WebSocketHandler>): this {
-    if (stack.length === 0) throw new Error('WebSocket route requires a handler');
-    const handler = stack[stack.length - 1] as WebSocketHandler;
-    const middleware = stack.slice(0, -1) as Middleware[];
-    const state = forkState(this._state);
-    for (const fn of middleware) state.stack.push({
-      type: 'middleware',
-      fn,
-      meta: metadataOf(fn)
-    });
-    const endpoint: WebSocketEndpoint = {
-      path,
-      pattern: new URLPattern({ pathname: path }),
-      stack: state.stack,
-      slots: [...state.slots],
-      handler
-    };
-    if (this.#webSocketEndpoints.some((current) => current.path === path)) {
-      throw new Error(`Duplicate WebSocket route ${path}`);
-    }
-    this.#webSocketEndpoints.push(endpoint);
-    return this;
-  }
-  /** Register a WebTransport route.
-  *
-  * ```ts no_run
-  * app.webtransport('/wt', async (session) => {
-  *   await session.ready;
-  * });
-  * ```
-  */
-  webtransport(path: string, ...stack: Array<Middleware | WebTransportHandler>): this {
-    if (stack.length === 0) throw new Error('WebTransport route requires a handler');
-    const handler = stack[stack.length - 1] as WebTransportHandler;
-    const middleware = stack.slice(0, -1) as Middleware[];
-    const state = forkState(this._state);
-    for (const fn of middleware) state.stack.push({
-      type: 'middleware',
-      fn,
-      meta: metadataOf(fn)
-    });
-    const endpoint: WebTransportEndpoint = {
-      path,
-      pattern: new URLPattern({ pathname: path }),
-      stack: state.stack,
-      slots: [...state.slots],
-      handler
-    };
-    if (this.#webTransportEndpoints.some((current) => current.path === path)) {
-      throw new Error(`Duplicate WebTransport route ${path}`);
-    }
-    this.#webTransportEndpoints.push(endpoint);
-    return this;
-  }
-  /** Register a server-sent events route.
-  *
-  * The handler receives an `EventSourceWriter` wired to the response body and
-  * the request context. The route responds with `text/event-stream`
-  * immediately, streams every event the handler writes, and ends the stream
-  * when the handler returns. A handler error terminates the stream.
-  *
-  * The route is registered for both GET (`EventSource` clients) and POST
-  * (fetch-based clients that send a request body).
-  *
-  * ```ts no_run
-  * app.sse('/events', async (events, ctx) => {
-  *   await events.write({ data: 'connected' });
-  *   await events.write({ event: 'done', data: '{}' });
-  * });
-  * ```
-  */
-  sse(path: string, ...stack: Array<Middleware | SseHandler>): this {
-    if (stack.length === 0) throw new Error('SSE route requires a handler');
-    const handler = stack[stack.length - 1] as SseHandler;
-    const middleware = stack.slice(0, -1) as Middleware[];
-    const wrapped: Handler = (ctx) => {
-      const channel = new Channel<Uint8Array>();
-      const events = new EventSourceWriter(channel.writer);
-      void (async () => {
-        try {
-          await handler(events, ctx);
-          await events.close();
-          await channel.writer.close();
-        } catch (err) {
-          channel.writer.fail(err);
-        }
-      })();
-      return new Response(channel.reader, {
-        headers: {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-store'
-        }
-      });
-    };
-    this.get(path, ...middleware, wrapped);
-    this.post(path, ...middleware, wrapped);
-    return this;
-  }
-  /**
-  * Private method `#direct` used by `App`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #direct() {
-  *     return 'direct';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#direct();
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #direct(method: HttpMethod, path: string, stack: Array<Middleware | Handler>): this | MethodBuilder {
-    const route = this.route(path);
-    const builder = route._method(method, stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /**
-  * Internal method `_addEndpoint` used by `App`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * const includePrivateExample = {
-  *   _addEndpoint() {
-  *     return '_addEndpoint';
-  *   },
-  * };
-  * includePrivateExample._addEndpoint();
-  * ```
-  *
-  * @internal
-  */
-  _addEndpoint(endpoint: Endpoint): void {
-    if (this.#endpoints.some((current) => current.method === endpoint.method && current.path === endpoint.path)) {
-      throw new Error(`Duplicate route ${endpoint.method} ${endpoint.path}`);
-    }
-    this.#endpoints.push(endpoint);
-  }
-  /** Dispatch one request through the matching route stack.
-  *
-  * Returns a JSON 404 response when no method/path pair matches. Matching is
-  * based on the URL pathname and the request method.
+  * A path that matches with no matching method returns 405 with an `Allow`
+  * header. A path served only by WebSocket or WebTransport operations returns
+  * 426 Upgrade Required. Otherwise unmatched requests return a JSON 404 after
+  * running the app-level middleware chain.
   *
   * ```ts no_run
   * const response = await app.handle(new Request('http://local/health'));
@@ -1075,85 +1023,70 @@ export class App extends BuilderBase<App> {
   async handle(req: Request, info: HandleInfo = {}): Promise<HttpHandlerResult> {
     const path = pathFromRequest(req);
     const method = methodName(req.method);
-    for (const endpoint of this.#endpoints) {
-      if (endpoint.method !== method) continue;
-      const match = endpoint.pattern.exec({ pathname: path });
+    const near: NearMisses = { allowed: new Set() };
+    for (const op of this._operations) {
+      const match = op.pattern.exec({ pathname: path });
       if (match === null) continue;
-      const ctx = makeInitialContext(this, endpoint, req, { ...match.pathname.groups }, info);
-      return this.#requestContext.runWithValue(ctx, () => compose(ctx, endpoint.stack, endpoint.handler));
-    }
-    for (const endpoint of this.#webSocketEndpoints) {
-      if (endpoint.pattern.exec({ pathname: path }) !== null) {
-        return new Response('Bad Request', { status: 400 });
+      if (op.kind === 'websocket' || op.kind === 'webtransport') {
+        near.upgrade ??= op.kind;
+        continue;
       }
+      if (op.kind === 'http' && op.method !== method) {
+        near.allowed.add(op.method!);
+        continue;
+      }
+      if (op.kind === 'sse' && method !== 'GET' && method !== 'POST') {
+        near.allowed.add('GET');
+        near.allowed.add('POST');
+        continue;
+      }
+      const ctx = makeInitialContext(this, op, req, { ...match.pathname.groups }, info, method);
+      return this.#requestContext.runWithValue(ctx, () => compose(ctx, op.stack, op.handler));
     }
-    if (this._state.stack.length > 0) {
-      const endpoint: Endpoint = {
-        method,
-        path,
-        pattern: new URLPattern({ pathname: path }),
-        stack: this._state.stack,
-        slots: [...this._state.slots],
-        handler: () => defaultNotFound()
-      };
-      const ctx = makeInitialContext(this, endpoint, req, {}, info);
-      return this.#requestContext.runWithValue(ctx, () => compose(ctx, endpoint.stack, endpoint.handler));
-    }
-    return defaultNotFound();
+    const chain = resolveChain(this._tail);
+    if (chain.stack.length === 0) return fallbackResponse(near);
+    const ctx = makeFallbackContext(this, req, path, method, chain.slots, info);
+    return this.#requestContext.runWithValue(ctx, () => compose(ctx, chain.stack, () => fallbackResponse(near)));
   }
-  async #handleWebSocket(incoming: IncomingWebSocketRequest): Promise<void> {
+  async #handleUpgrade(incoming: IncomingWebSocketRequest | IncomingWebTransportRequest): Promise<void> {
     const path = pathFromRequest(incoming.request);
-    for (const endpoint of this.#webSocketEndpoints) {
-      const match = endpoint.pattern.exec({ pathname: path });
+    for (const op of this._operations) {
+      if (op.kind !== incoming.kind) continue;
+      const match = op.pattern.exec({ pathname: path });
       if (match === null) continue;
-      const ctx = makeInitialWebSocketContext(this, endpoint, incoming, { ...match.pathname.groups });
+      const ctx = makeUpgradeContext(this, op, incoming, { ...match.pathname.groups });
       await this.#requestContext.runWithValue(ctx, async () => {
-        let socket: WebSocketConnection;
+        let res: HttpHandlerResult;
         try {
-          socket = await incoming.accept();
+          res = await runStack(ctx, op.stack, op.handler);
         } catch {
-          await incoming.reject(new Response('Bad Request', { status: 400 }));
+          if (ctx.__upgraded === undefined) {
+            await incoming.reject(new Response('Bad Request', { status: 400 }));
+          } else {
+            closeUpgraded(ctx.__upgraded);
+          }
           return;
         }
-        for (const item of endpoint.stack) {
-          if (item.type === 'producer') ctx[item.name] = await item.fn(ctx);
+        if (res instanceof Response) {
+          if (ctx.__upgraded === undefined) {
+            await finalize(ctx, res);
+            await incoming.reject(res);
+          } else {
+            closeUpgraded(ctx.__upgraded);
+          }
         }
-        await endpoint.handler(socket, ctx);
-      });
-      return;
-    }
-    await incoming.reject();
-  }
-  async #handleWebTransport(incoming: IncomingWebTransportRequest): Promise<void> {
-    const path = pathFromRequest(incoming.request);
-    for (const endpoint of this.#webTransportEndpoints) {
-      const match = endpoint.pattern.exec({ pathname: path });
-      if (match === null) continue;
-      const ctx = makeInitialWebTransportContext(this, endpoint, incoming, { ...match.pathname.groups });
-      await this.#requestContext.runWithValue(ctx, async () => {
-        let session: WebTransport;
-        try {
-          session = await incoming.accept();
-        } catch {
-          await incoming.reject(new Response('Bad Request', { status: 400 }));
-          return;
-        }
-        for (const item of endpoint.stack) {
-          if (item.type === 'producer') ctx[item.name] = await item.fn(ctx);
-        }
-        await endpoint.handler(session, ctx);
       });
       return;
     }
     await incoming.reject();
   }
   /**
-  * Dispatch a synthetic WebTransport incoming request for focused app tests.
+  * Dispatch a synthetic upgrade request for focused app tests.
   *
   * @internal
   */
   _handleWebTransportForTest(incoming: IncomingWebTransportRequest): Promise<void> {
-    return this.#handleWebTransport(incoming);
+    return this.#handleUpgrade(incoming);
   }
   /** Start an HTTP server that dispatches requests to this app.
   *
@@ -1165,12 +1098,8 @@ export class App extends BuilderBase<App> {
   */
   listen(options: Parameters<typeof serve>[0]): ReturnType<typeof serve> {
     return serve(options, async (incoming, session) => {
-      if (incoming.kind === 'websocket') {
-        await this.#handleWebSocket(incoming);
-        return;
-      }
-      if (incoming.kind === 'webtransport') {
-        await this.#handleWebTransport(incoming);
+      if (incoming.kind === 'websocket' || incoming.kind === 'webtransport') {
+        await this.#handleUpgrade(incoming);
         return;
       }
       const accepted: AcceptedHttpRequest = await incoming.accept();
@@ -1182,9 +1111,12 @@ export class App extends BuilderBase<App> {
       await accepted.respond(result);
     });
   }
-  /** Generate an OpenAPI 3.1 document from registered routes and metadata.
+  /** Generate an OpenAPI 3.1 document from registered operations and metadata.
   *
-  * Throws when generated or explicit operation IDs collide.
+  * HTTP and SSE operations are documented; SSE paths emit GET and POST
+  * operations with a `text/event-stream` response. WebSocket and WebTransport
+  * operations are not part of the OpenAPI surface. Throws when generated or
+  * explicit operation IDs collide.
   *
   * ```ts no_run
   * const doc = app.openapi({ version: '1.0.0' });
@@ -1193,15 +1125,17 @@ export class App extends BuilderBase<App> {
   openapi(options: OpenApiOptions): Record<string, unknown> {
     const paths: Record<string, Record<string, unknown>> = {};
     const operationIds = new Set<string>();
-    for (const endpoint of this.#endpoints) {
-      let meta = cloneMeta(endpoint.meta);
-      for (const item of endpoint.stack) {
+    const emit = (op: Operation, method: string, baseline?: OperationMeta): void => {
+      let meta = baseline === undefined ? {} : cloneMeta(baseline);
+      meta = mergeMeta(meta, op.meta);
+      for (const item of op.stack) {
         if (item.meta !== undefined) meta = mergeMeta(meta, item.meta);
       }
-      meta.operationId ??= generatedOperationId(endpoint.method, endpoint.path);
+      if (op.kind === 'sse') meta.operationId = generatedOperationId(method, op.path);
+      meta.operationId ??= generatedOperationId(method, op.path);
       if (operationIds.has(meta.operationId)) throw new Error(`Duplicate OpenAPI operationId "${meta.operationId}"`);
       operationIds.add(meta.operationId);
-      const openPath = routePathToOpenApi(endpoint.path);
+      const openPath = routePathToOpenApi(op.path);
       paths[openPath] ??= {};
       const operation: Record<string, unknown> = { operationId: meta.operationId };
       if (meta.summary !== undefined) operation.summary = meta.summary;
@@ -1211,7 +1145,21 @@ export class App extends BuilderBase<App> {
       if (meta.parameters !== undefined && meta.parameters.length > 0) operation.parameters = meta.parameters;
       if (meta.requestBody !== undefined) operation.requestBody = meta.requestBody;
       operation.responses = meta.responses ?? { '200': { description: 'OK' } };
-      paths[openPath]![endpoint.method.toLowerCase()] = operation;
+      paths[openPath]![method.toLowerCase()] = operation;
+    };
+    const sseBaseline: OperationMeta = {
+      responses: { '200': {
+        description: 'Server-sent event stream',
+        content: { 'text/event-stream': { schema: { type: 'string' } } }
+      } }
+    };
+    for (const op of this._operations) {
+      if (op.kind === 'http') {
+        emit(op, op.method!);
+      } else if (op.kind === 'sse') {
+        emit(op, 'GET', sseBaseline);
+        emit(op, 'POST', sseBaseline);
+      }
     }
     const doc: Record<string, unknown> = {
       openapi: '3.1.0',
@@ -1227,7 +1175,7 @@ export class App extends BuilderBase<App> {
   /** Return a handler that serves this app's OpenAPI document as JSON.
   *
   * ```ts no_run
-  * app.get('/openapi.json', app.openapiHandler({ version: '1.0.0' }));
+  * app.get('/openapi.json').handle(app.openapiHandler({ version: '1.0.0' }));
   * ```
   */
   openapiHandler(options: OpenApiOptions): Handler {
@@ -1235,546 +1183,371 @@ export class App extends BuilderBase<App> {
   }
 }
 /**
-* Reusable route collection mountable into an `App`.
+* Reusable route collection mountable under a route prefix.
+*
+* Mounting resolves the router's operations into the target; a router cannot
+* be changed after it has been mounted.
 *
 * ```ts no_run
 * const router = new Router();
-* router.get('/users', () => Response.json([]));
-* app.mount('/api', router);
+* router.get('/users').handle(() => Response.json([]));
+* app.route('/api').mount(router);
 * ```
 */
-export class Router extends BuilderBase<Router> {
+export class Router extends RouterBase<Router> {
   /**
-  * Private property `#routes` used by `Router`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #routes = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#routes;
-  *   }
-  * }
-  * ```
+  * Route prefix this router was mounted under, once mounted.
   *
   * @internal
   */
-  #routes: RouteBuilder[] = [];
-  /** Create a route builder inside this router.
+  _mountedAt: string | undefined;
+  override _assertMutable(): void {
+    if (this._mountedAt !== undefined) {
+      throw new Error(`Router already mounted under "${this._mountedAt}"; register routes before mounting`);
+    }
+  }
+}
+/**
+* Builder for one URLPattern pathname and its enrichment branch.
+*
+* Enrichment methods return a new builder; a held reference is a fixed point
+* in the routing tree, so chain or reassign to accumulate. Verb methods start
+* HTTP method branches finished by `.handle()`; `websocket()`, `sse()`,
+* `webtransport()`, `rpc()`, and `mount()` are terminals that register
+* directly.
+*
+* ```ts no_run
+* app.route('/users/:id').meta({ tags: ['users'] }).get().handle((ctx) => Response.json(ctx.params));
+* ```
+*/
+export class RouteBuilder {
+  #node: BuilderNode;
+  /**
+  * Create a route builder around a routing-tree node.
+  *
+  * This is normally created through `app.route()` or `router.route()`.
+  *
+  * @internal
+  */
+  constructor(node: BuilderNode) {
+    this.#node = node;
+  }
+  /** Return a new builder with middleware appended to this branch.
   *
   * ```ts no_run
-  * router.route('/users/:id').get((ctx) => Response.json(ctx.params));
+  * app.route('/admin').use(requireAdmin).get().handle(showAdmin);
+  * ```
+  */
+  use(...middleware: Middleware[]): RouteBuilder {
+    let node = this.#node;
+    for (const fn of middleware) node = {
+      kind: 'middleware',
+      fn,
+      meta: metadataOf(fn),
+      parent: node
+    };
+    return new RouteBuilder(node);
+  }
+  /** Return a new builder with a context value appended to this branch.
+  *
+  * ```ts no_run
+  * app.route('/users/:id').value('params', schema.params(idSchema));
+  * ```
+  */
+  value(name: string, producer: Producer): RouteBuilder {
+    return new RouteBuilder({
+      kind: 'value',
+      name,
+      fn: producer,
+      meta: metadataOf(producer),
+      parent: this.#node
+    });
+  }
+  /** Return a new builder with OpenAPI metadata appended to this branch.
+  *
+  * ```ts no_run
+  * app.route('/users').meta({ tags: ['users'] });
+  * ```
+  */
+  meta(meta: OperationMeta): RouteBuilder {
+    return new RouteBuilder({
+      kind: 'meta',
+      meta: cloneMeta(meta),
+      parent: this.#node
+    });
+  }
+  /** Start a nested route branch under this one.
+  *
+  * The nested path appends to this route's path and the nested branch
+  * inherits everything accumulated above it.
+  *
+  * ```ts no_run
+  * const users = app.route('/users');
+  * users.get().handle(listUsers);
+  * users.route('/:id').get().handle(showUser);
   * ```
   */
   route(path: string): RouteBuilder {
-    const route = new RouteBuilder(this, path, forkState(this._state));
-    this.#routes.push(route);
-    return route;
+    return new RouteBuilder({
+      kind: 'path',
+      fragment: path,
+      parent: this.#node
+    });
   }
-  /** Register a GET route directly.
+  /** Start a GET method branch on this route.
   *
   * ```ts no_run
-  * router.get('/items', () => Response.json([]));
+  * app.route('/items').get().handle(() => Response.json([]));
   * ```
   */
-  get(path: string, ...stack: Array<Middleware | Handler>): this {
-    this.route(path)._method('GET', stack);
-    return this;
+  get(...rest: never[]): MethodBuilder {
+    assertNoArgs('get', rest);
+    return this.#method('GET');
   }
-  /** Register a POST route directly.
+  /** Start a POST method branch on this route.
   *
   * ```ts no_run
-  * router.post('/items', (ctx) => Response.json(ctx.body));
+  * app.route('/items').post().value('body', body.json()).handle((ctx) => Response.json(ctx.body));
   * ```
   */
-  post(path: string, ...stack: Array<Middleware | Handler>): this {
-    this.route(path)._method('POST', stack);
-    return this;
+  post(...rest: never[]): MethodBuilder {
+    assertNoArgs('post', rest);
+    return this.#method('POST');
   }
-  /** Register a PUT route directly.
+  /** Start a PUT method branch on this route.
   *
   * ```ts no_run
-  * router.put('/items/:id', (ctx) => Response.json(ctx.params));
+  * app.route('/items/:id').put().handle((ctx) => Response.json(ctx.params));
   * ```
   */
-  put(path: string, ...stack: Array<Middleware | Handler>): this {
-    this.route(path)._method('PUT', stack);
-    return this;
+  put(...rest: never[]): MethodBuilder {
+    assertNoArgs('put', rest);
+    return this.#method('PUT');
   }
-  /** Register a PATCH route directly.
+  /** Start a PATCH method branch on this route.
   *
   * ```ts no_run
-  * router.patch('/items/:id', (ctx) => Response.json(ctx.params));
+  * app.route('/items/:id').patch().handle((ctx) => Response.json(ctx.params));
   * ```
   */
-  patch(path: string, ...stack: Array<Middleware | Handler>): this {
-    this.route(path)._method('PATCH', stack);
-    return this;
+  patch(...rest: never[]): MethodBuilder {
+    assertNoArgs('patch', rest);
+    return this.#method('PATCH');
   }
-  /** Register a DELETE route directly.
+  /** Start a DELETE method branch on this route.
   *
   * ```ts no_run
-  * router.delete('/items/:id', () => new Response(null, { status: 204 }));
+  * app.route('/items/:id').delete().handle(() => new Response(null, { status: 204 }));
   * ```
   */
-  delete(path: string, ...stack: Array<Middleware | Handler>): this {
-    this.route(path)._method('DELETE', stack);
-    return this;
+  delete(...rest: never[]): MethodBuilder {
+    assertNoArgs('delete', rest);
+    return this.#method('DELETE');
   }
-  /** Register a HEAD route directly.
+  /** Start a HEAD method branch on this route.
   *
   * ```ts no_run
-  * router.head('/items', () => new Response(null, { status: 204 }));
+  * app.route('/items').head().handle(() => new Response(null, { status: 204 }));
   * ```
   */
-  head(path: string, ...stack: Array<Middleware | Handler>): this {
-    this.route(path)._method('HEAD', stack);
-    return this;
+  head(...rest: never[]): MethodBuilder {
+    assertNoArgs('head', rest);
+    return this.#method('HEAD');
   }
-  /** Register an OPTIONS route directly.
+  /** Start an OPTIONS method branch on this route.
   *
   * ```ts no_run
-  * router.options('/items', () => new Response(null, { status: 204 }));
+  * app.route('/items').options().handle(() => new Response(null, { status: 204 }));
   * ```
   */
-  options(path: string, ...stack: Array<Middleware | Handler>): this {
-    this.route(path)._method('OPTIONS', stack);
+  options(...rest: never[]): MethodBuilder {
+    assertNoArgs('options', rest);
+    return this.#method('OPTIONS');
+  }
+  #method(method: HttpMethod): MethodBuilder {
+    return new MethodBuilder({
+      kind: 'op',
+      method,
+      parent: this.#node
+    }, this);
+  }
+  /** Register a WebSocket operation at this route. Terminal.
+  *
+  * Middleware on the branch runs before the upgrade is accepted and can
+  * reject it by returning a `Response`.
+  *
+  * ```ts no_run
+  * app.route('/chat').websocket(async (socket, ctx) => {
+  *   socket.addEventListener('message', (event) => socket.send(event.data));
+  * });
+  * ```
+  */
+  websocket(handler: WebSocketHandler): RouteBuilder {
+    registerOperation(this.#node, 'websocket', wrapWebSocket(handler));
     return this;
   }
-  /** Mount a JSON-RPC service at `path`. Delegates to `App.rpc()` semantics.
+  /** Register a WebTransport operation at this route. Terminal.
+  *
+  * ```ts no_run
+  * app.route('/wt').webtransport(async (session, ctx) => {
+  *   await session.ready;
+  * });
+  * ```
+  */
+  webtransport(handler: WebTransportHandler): RouteBuilder {
+    registerOperation(this.#node, 'webtransport', wrapWebTransport(handler));
+    return this;
+  }
+  /** Register a server-sent events operation at this route. Terminal.
+  *
+  * The handler receives an `EventSourceWriter` wired to the response body.
+  * The route responds with `text/event-stream` immediately, streams every
+  * event the handler writes, and ends the stream when the handler returns.
+  * The operation matches GET (for `EventSource` clients) and POST (for
+  * fetch-based clients that send a request body).
+  *
+  * ```ts no_run
+  * app.route('/events').sse(async (events, ctx) => {
+  *   await events.write({ data: 'connected' });
+  * });
+  * ```
+  */
+  sse(handler: SseHandler): RouteBuilder {
+    registerOperation(this.#node, 'sse', wrapSse(handler));
+    return this;
+  }
+  /** Mount a JSON-RPC service at this route. Terminal.
+  *
+  * POST requests dispatch as JSON-RPC 2.0 messages; other methods return 405
+  * with an `Allow` header.
   *
   * ```ts no_run
   * import { JsonRpcService } from 'fino:jsonrpc';
   * const svc = new JsonRpcService();
-  * svc.method('ping').handle(() => 'pong');
-  * router.rpc('/rpc', svc);
+  * svc.method('add').handle((p) => (p as { a: number; b: number }).a + (p as { a: number; b: number }).b);
+  * app.route('/rpc').rpc(svc);
   * ```
   */
-  rpc(path: string, service: {
+  rpc(service: {
     httpHandler(): (req: Request) => Promise<Response>;
-  }): this {
+  }): RouteBuilder {
     const handler = service.httpHandler();
-    this.route(path)._method('POST', [(ctx: HttpContext) => handler(ctx.request)]);
+    registerOperation({
+      kind: 'op',
+      method: 'POST',
+      parent: this.#node
+    }, 'http', (ctx) => handler(ctx.request));
     return this;
   }
-  /**
-  * Internal method `_install` used by `Router`.
+  /** Mount a router's operations under this route. Terminal.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * const includePrivateExample = {
-  *   _install() {
-  *     return '_install';
-  *   },
-  * };
-  * includePrivateExample._install();
-  * ```
-  *
-  * @internal
-  */
-  _install(app: App, prefix: string, parentState: BuildState): void {
-    for (const route of this.#routes) route._install(app, prefix, parentState);
-  }
-}
-/**
-* Builder for one URLPattern pathname and shared route-level metadata.
-*
-* ```ts no_run
-* app.route('/users/:id').meta({ tags: ['users'] }).get((ctx) => Response.json(ctx.params));
-* ```
-*/
-export class RouteBuilder extends BuilderBase<RouteBuilder> {
-  /**
-  * Private property `#owner` used by `RouteBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #owner = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#owner;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #owner: App | Router;
-  /**
-  * Private property `#path` used by `RouteBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #path = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#path;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #path: string;
-  /**
-  * Private property `#methods` used by `RouteBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #methods = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#methods;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #methods: MethodBuilder[] = [];
-  /**
-  * Create a route builder.
-  *
-  * This is normally created through `app.route()` or `router.route()`.
+  * The router's operations are resolved into the owning container with this
+  * route's path prefixed and this branch's chain prepended. The router cannot
+  * be changed afterwards.
   *
   * ```ts no_run
-  * const route = new RouteBuilder(app, '/items', state);
+  * const api = new Router();
+  * api.get('/users').handle(() => Response.json([]));
+  * app.route('/v1').mount(api);
   * ```
   */
-  constructor(owner: App | Router, path: string, state: BuildState) {
-    super(state);
-    this.#owner = owner;
-    this.#path = path;
-  }
-  /** Register or build GET endpoint.
-  *
-  * ```ts no_run
-  * app.route('/items').get((ctx) => Response.json([]));
-  * ```
-  */
-  get(...stack: Array<Middleware | Handler>): MethodBuilder | RouteBuilder {
-    const builder = this._method('GET', stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /** Register or build POST endpoint.
-  *
-  * ```ts no_run
-  * app.route('/items').post().handle((ctx) => Response.json(ctx.body));
-  * ```
-  */
-  post(...stack: Array<Middleware | Handler>): MethodBuilder | RouteBuilder {
-    const builder = this._method('POST', stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /** Register or build PUT endpoint.
-  *
-  * ```ts no_run
-  * app.route('/items/:id').put((ctx) => Response.json(ctx.params));
-  * ```
-  */
-  put(...stack: Array<Middleware | Handler>): MethodBuilder | RouteBuilder {
-    const builder = this._method('PUT', stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /** Register or build PATCH endpoint.
-  *
-  * ```ts no_run
-  * app.route('/items/:id').patch((ctx) => Response.json(ctx.params));
-  * ```
-  */
-  patch(...stack: Array<Middleware | Handler>): MethodBuilder | RouteBuilder {
-    const builder = this._method('PATCH', stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /** Register or build DELETE endpoint.
-  *
-  * ```ts no_run
-  * app.route('/items/:id').delete(() => new Response(null, { status: 204 }));
-  * ```
-  */
-  delete(...stack: Array<Middleware | Handler>): MethodBuilder | RouteBuilder {
-    const builder = this._method('DELETE', stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /** Register or build HEAD endpoint.
-  *
-  * ```ts no_run
-  * app.route('/items').head(() => new Response(null, { status: 204 }));
-  * ```
-  */
-  head(...stack: Array<Middleware | Handler>): MethodBuilder | RouteBuilder {
-    const builder = this._method('HEAD', stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /** Register or build OPTIONS endpoint.
-  *
-  * ```ts no_run
-  * app.route('/items').options(() => new Response(null, { status: 204 }));
-  * ```
-  */
-  options(...stack: Array<Middleware | Handler>): MethodBuilder | RouteBuilder {
-    const builder = this._method('OPTIONS', stack);
-    return stack.length > 0 ? this : builder;
-  }
-  /**
-  * Internal method `_method` used by `RouteBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * const includePrivateExample = {
-  *   _method() {
-  *     return '_method';
-  *   },
-  * };
-  * includePrivateExample._method();
-  * ```
-  *
-  * @internal
-  */
-  _method(method: HttpMethod, stack: Array<Middleware | Handler>): MethodBuilder {
-    const builder = new MethodBuilder(this, method, forkState(this._state));
-    this.#methods.push(builder);
-    if (stack.length > 0) {
-      const handler = stack[stack.length - 1] as Handler;
-      const middleware = stack.slice(0, -1) as Middleware[];
-      builder.use(...middleware).handle(handler);
-    }
-    return builder;
-  }
-  /**
-  * Internal method `_complete` used by `RouteBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * const includePrivateExample = {
-  *   _complete() {
-  *     return '_complete';
-  *   },
-  * };
-  * includePrivateExample._complete();
-  * ```
-  *
-  * @internal
-  */
-  _complete(builder: MethodBuilder, endpoint: Omit<Endpoint, 'path' | 'pattern'>): RouteBuilder {
-    if (this.#owner instanceof App) {
-      this.#owner._addEndpoint({
-        ...endpoint,
-        path: this.#path,
-        pattern: new URLPattern({ pathname: this.#path })
+  mount(router: Router): RouteBuilder {
+    router._assertMutable();
+    const chain = resolveChain(this.#node);
+    router._mountedAt = chain.path;
+    for (const op of router._operations) {
+      const path = appendPath(chain.path, op.path);
+      chain.owner._register({
+        kind: op.kind,
+        method: op.method,
+        path,
+        pattern: new URLPattern({ pathname: path }),
+        stack: [...chain.stack, ...op.stack],
+        slots: [...new Set([...chain.slots, ...op.slots])],
+        meta: mergeMeta(chain.meta, op.meta),
+        handler: op.handler
       });
     }
     return this;
   }
-  /**
-  * Internal method `_install` used by `RouteBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * const includePrivateExample = {
-  *   _install() {
-  *     return '_install';
-  *   },
-  * };
-  * includePrivateExample._install();
-  * ```
-  *
-  * @internal
-  */
-  _install(app: App, prefix: string, parentState: BuildState): void {
-    for (const method of this.#methods) method._install(app, appendPath(prefix, this.#path), parentState);
-  }
 }
 /**
-* Builder for one method endpoint. Call `.handle()` to finalize the endpoint.
+* Builder for one HTTP method branch. Call `.handle()` to register.
 *
 * ```ts no_run
 * app.route('/items').post().value('body', body.json()).handle((ctx) => Response.json(ctx.body));
 * ```
 */
-export class MethodBuilder extends BuilderBase<MethodBuilder> {
-  /**
-  * Private property `#route` used by `MethodBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #route = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#route;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
+export class MethodBuilder {
+  #node: BuilderNode;
   #route: RouteBuilder;
   /**
-  * Private property `#method` used by `MethodBuilder`.
+  * Create a method builder around a routing-tree node.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #method = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#method;
-  *   }
-  * }
-  * ```
+  * This is normally created by a `RouteBuilder` verb such as `.get()`.
   *
   * @internal
   */
-  #method: HttpMethod;
-  /**
-  * Private property `#handler` used by `MethodBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handler = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#handler;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #handler: Handler | null = null;
-  /**
-  * Create a method builder.
-  *
-  * This is normally created by a `RouteBuilder` method such as `.get()`.
-  *
-  * ```ts no_run
-  * const method = new MethodBuilder(route, 'GET', state);
-  * ```
-  */
-  constructor(route: RouteBuilder, method: HttpMethod, state: BuildState) {
-    super(state);
+  constructor(node: BuilderNode, route: RouteBuilder) {
+    this.#node = node;
     this.#route = route;
-    this.#method = method;
   }
-  /** Finalize the endpoint and return the parent route builder for chaining.
+  /** Return a new builder with middleware appended to this method branch.
   *
-  * Calling this registers the endpoint on the owning app or router.
+  * ```ts no_run
+  * app.route('/items').post().use(rateLimit).handle(createItem);
+  * ```
+  */
+  use(...middleware: Middleware[]): MethodBuilder {
+    let node = this.#node;
+    for (const fn of middleware) node = {
+      kind: 'middleware',
+      fn,
+      meta: metadataOf(fn),
+      parent: node
+    };
+    return new MethodBuilder(node, this.#route);
+  }
+  /** Return a new builder with a context value appended to this method branch.
+  *
+  * ```ts no_run
+  * app.route('/items').post().value('body', body.json());
+  * ```
+  */
+  value(name: string, producer: Producer): MethodBuilder {
+    return new MethodBuilder({
+      kind: 'value',
+      name,
+      fn: producer,
+      meta: metadataOf(producer),
+      parent: this.#node
+    }, this.#route);
+  }
+  /** Return a new builder with OpenAPI metadata appended to this method branch.
+  *
+  * ```ts no_run
+  * app.route('/items').get().meta({ summary: 'List items' });
+  * ```
+  */
+  meta(meta: OperationMeta): MethodBuilder {
+    return new MethodBuilder({
+      kind: 'meta',
+      meta: cloneMeta(meta),
+      parent: this.#node
+    }, this.#route);
+  }
+  /** Register the handler for this method branch. Terminal.
+  *
+  * Resolves the branch into a frozen operation and returns the parent route
+  * builder for further registrations on the same route.
   *
   * ```ts no_run
   * app.route('/items').get().handle(() => Response.json([]));
   * ```
   */
   handle(handler: Handler): RouteBuilder {
-    this.#handler = handler;
-    return this.#route._complete(this, {
-      method: this.#method,
-      stack: this._state.stack.slice(),
-      slots: [...this._state.slots],
-      handler,
-      meta: cloneMeta(this._state.meta)
-    });
-  }
-  /**
-  * Internal method `_install` used by `MethodBuilder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * const includePrivateExample = {
-  *   _install() {
-  *     return '_install';
-  *   },
-  * };
-  * includePrivateExample._install();
-  * ```
-  *
-  * @internal
-  */
-  _install(app: App, path: string, parentState: BuildState): void {
-    if (this.#handler === null) return;
-    const state = forkState(parentState);
-    for (const item of this._state.stack) {
-      if (item.type === 'producer') {
-        if (state.slots.has(item.name)) throw new Error(`Duplicate context value "${item.name}"`);
-        state.slots.add(item.name);
-      }
-      state.stack.push(item);
-    }
-    state.meta = mergeMeta(state.meta, this._state.meta);
-    app._addEndpoint({
-      method: this.#method,
-      path,
-      pattern: new URLPattern({ pathname: path }),
-      stack: state.stack.slice(),
-      slots: [...state.slots],
-      handler: this.#handler,
-      meta: state.meta
-    });
+    registerOperation(this.#node, 'http', handler);
+    return this.#route;
   }
 }
 /**
@@ -1785,7 +1558,7 @@ export class MethodBuilder extends BuilderBase<MethodBuilder> {
 * execution.
 *
 * ```ts no_run
-* app.get('/users', schema.query(v.object({ q: v.string() })), (ctx) => Response.json(ctx.query));
+* app.get('/users').use(schema.query(v.object({ q: v.string() }))).handle((ctx) => Response.json(ctx.query));
 * ```
 */
 export const schema = {

@@ -711,7 +711,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
   it('App.listen() exposes H3 protocol and session context', async (t) => {
     if (!available) return;
     const app = new App();
-    app.get('/proto', (ctx) => new Response(`${ctx.protocol}:${ctx.session?.protocol ?? 'none'}`));
+    app.get('/proto').handle((ctx) => new Response(`${ctx.protocol}:${ctx.session?.protocol ?? 'none'}`));
     const server = app.listen({
       port: 0,
       hostname: '127.0.0.1',
@@ -733,7 +733,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     const app = new App().value('tenant', () => 'acme');
     let accepted = false;
-    app.webtransport('/wt/:room', async (session, ctx) => {
+    app.route('/wt/:room').webtransport(async (session, ctx) => {
       accepted = session instanceof WebTransport && ctx.incoming.kind === 'webtransport' && ctx.protocol === 'h3' && ctx.session?.transport === 'quic' && ctx.params?.room === 'lobby' && ctx.tenant === 'acme';
     });
     const server = app.listen({
@@ -764,7 +764,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
   it('HttpClient WebTransport enforces serverCertificateHashes over real H3', async (t) => {
     if (!available) return;
     const app = new App();
-    app.webtransport('/wt', () => {});
+    app.route('/wt').webtransport(() => {});
     const server = app.listen({
       port: 0,
       hostname: '127.0.0.1',

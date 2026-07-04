@@ -462,21 +462,26 @@ export interface MCPServerOptions {
 */
 export interface MCPRouteTarget {
   /**
-  * Register a GET handler for the MCP endpoint.
+  * Start a GET method branch for the MCP endpoint.
   */
-  get(path: string, handler: (ctx: {
-    request: Request;
-  }) => Response | Promise<Response>): unknown;
+  get(path: string): MCPRouteMethod;
   /**
-  * Register a POST handler for the MCP endpoint.
+  * Start a POST method branch for the MCP endpoint.
   */
-  post(path: string, handler: (ctx: {
-    request: Request;
-  }) => Response | Promise<Response>): unknown;
+  post(path: string): MCPRouteMethod;
   /**
-  * Register a DELETE handler for the MCP endpoint.
+  * Start a DELETE method branch for the MCP endpoint.
   */
-  delete(path: string, handler: (ctx: {
+  delete(path: string): MCPRouteMethod;
+}
+/**
+* Method branch returned by an `MCPRouteTarget` verb; `handle()` registers.
+*/
+export interface MCPRouteMethod {
+  /**
+  * Register the MCP endpoint handler for this method.
+  */
+  handle(handler: (ctx: {
     request: Request;
   }) => Response | Promise<Response>): unknown;
 }
@@ -1026,9 +1031,9 @@ export function mcpServer(opts: MCPServerOptions = {}): MCPServer {
 */
 export function mountMcp(target: MCPRouteTarget, path: string, server: MCPServer): MCPRouteTarget {
   const handler = server.httpHandler();
-  target.get(path, (ctx) => handler(ctx.request));
-  target.post(path, (ctx) => handler(ctx.request));
-  target.delete(path, (ctx) => handler(ctx.request));
+  target.get(path).handle((ctx) => handler(ctx.request));
+  target.post(path).handle((ctx) => handler(ctx.request));
+  target.delete(path).handle((ctx) => handler(ctx.request));
   return target;
 }
 /**

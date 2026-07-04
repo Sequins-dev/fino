@@ -11,8 +11,8 @@
 * import { flowPage } from 'fino:ui/web/flow';
 * import { SqliteWorkflowStore } from 'fino:workflow';
 *
-* app.get('/checkout', flowPage(checkout, { store, start, render }));
-* app.post('/checkout', flowPage(checkout, { store, start, render }));
+* app.get('/checkout').handle(flowPage(checkout, { store, start, render }));
+* app.post('/checkout').handle(flowPage(checkout, { store, start, render }));
 * ```
 */
 import type { Handler, HttpContext } from 'fino:net/http/app';

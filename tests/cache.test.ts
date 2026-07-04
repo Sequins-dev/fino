@@ -77,7 +77,7 @@ describe('fino:cache', () => {
     const cache = memoryCache();
     const app = new App().use(responseCache(cache, { ttlMs: 1_000, vary: ['accept-language'] }));
     let calls = 0;
-    app.get('/hello', (ctx) => {
+    app.get('/hello').handle((ctx) => {
       calls++;
       return new Response(`hello ${ctx.request.headers.get('accept-language') ?? 'none'} ${calls}`, {
         headers: { 'content-type': 'text/plain' }
@@ -98,8 +98,8 @@ describe('fino:cache', () => {
     const cache = memoryCache();
     const app = new App().use(responseCache(cache, { ttlMs: 1_000 }));
     let calls = 0;
-    app.post('/mutate', () => new Response('mutated'));
-    app.get('/private', () => {
+    app.post('/mutate').handle(() => new Response('mutated'));
+    app.get('/private').handle(() => {
       calls++;
       return new Response(`private ${calls}`, {
         headers: { 'set-cookie': 'sid=1' }
