@@ -56,7 +56,7 @@ import { parseCookieHeader, serializeCookie, type CookieOptions } from '../../se
 import { compile } from '../../validate.ts';
 import { Headers, Request, Response } from './index.ts';
 import { serve } from './server.ts';
-import type { AcceptedHttpRequest, HttpSession, HttpProtocol, IncomingHttp, IncomingWebSocketRequest, IncomingWebTransportRequest } from './server.ts';
+import type { AcceptedHttpRequest, HttpHandlerResult, HttpSession, HttpProtocol, IncomingHttp, IncomingWebSocketRequest, IncomingWebTransportRequest } from './server.ts';
 import { WebSocketConnection } from '../../globals/websocket.ts';
 import { WebTransport } from './webtransport.ts';
 import { EventSourceWriter } from './eventstream.ts';
@@ -154,7 +154,7 @@ export interface WebTransportContext extends HttpContext {
 * };
 * ```
 */
-export type HttpHandlerResult = Response | WebSocketConnection | WebTransport;
+export type { HttpHandlerResult } from './server.ts';
 export type Middleware = (ctx: HttpContext, next: () => Promise<HttpHandlerResult>) => HttpHandlerResult | void | Promise<HttpHandlerResult | void>;
 /**
 * Terminal route handler.
@@ -513,7 +513,7 @@ function makeInitialWebTransportContext(app: App, endpoint: WebTransportEndpoint
   for (const slot of endpoint.slots) ctx[slot] = undefined;
   return ctx;
 }
-async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<HttpHandlerResult> {
+async function runStack(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<HttpHandlerResult> {
   let index = -1;
   async function dispatch(i: number): Promise<HttpHandlerResult> {
     if (i <= index) throw new Error('next() called multiple times');
@@ -532,12 +532,18 @@ async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): 
     if (result === undefined) return downstream ?? defaultNotFound();
     return result;
   }
-  const res = await dispatch(0);
+  return dispatch(0);
+}
+async function finalize(ctx: HttpContext, res: HttpHandlerResult): Promise<void> {
   if (res instanceof Response) {
     const applySession = ctx.__sessionApply as undefined | ((res: Response) => Promise<void>);
     await applySession?.(res);
     if (ctx.cookies instanceof CookieJar) ctx.cookies._apply(res);
   }
+}
+async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<HttpHandlerResult> {
+  const res = await runStack(ctx, stack, handler);
+  await finalize(ctx, res);
   return res;
 }
 function pathFromRequest(req: Request): string {

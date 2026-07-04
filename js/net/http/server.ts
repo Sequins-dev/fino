@@ -152,7 +152,7 @@ export interface ServeServer {
   [Symbol.asyncDispose](): Promise<void>;
 }
 export type HttpTransport = 'tcp' | 'tls' | 'quic';
-export type HttpHandlerResult = Response | WebSocketConnection;
+export type HttpHandlerResult = Response | WebSocketConnection | WebTransport;
 export type HttpRequestHandler = (request: Request, session: HttpSession) => HttpHandlerResult | Promise<HttpHandlerResult>;
 export interface HttpSession {
   readonly id: string;
