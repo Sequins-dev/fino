@@ -9,11 +9,9 @@ WebTransport requires HTTP/3 and QUIC, which in turn requires a valid TLS certif
 
 ## Client-side WebTransport
 
-`WebTransport` from `fino:net/http/webtransport` mirrors the W3C WebTransport interface. Construct it with an `https:` URL; `ready` resolves when the HTTP/3 extended CONNECT handshake completes:
+`WebTransport` is a global — no import is needed, matching the W3C WebTransport interface (it can also be imported explicitly from `fino:net/http/webtransport`). Construct it with an `https:` URL; `ready` resolves when the HTTP/3 extended CONNECT handshake completes:
 
 ```ts
-import { WebTransport } from 'fino:net/http/webtransport';
-
 const wt = new WebTransport('https://example.com/session');
 await wt.ready;
 ```

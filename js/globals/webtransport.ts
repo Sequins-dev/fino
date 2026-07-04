@@ -30,7 +30,7 @@
 * - HTTP Datagrams: https://www.rfc-editor.org/rfc/rfc9297
 * - QUIC DATAGRAM: https://www.rfc-editor.org/rfc/rfc9221
 */
-import { decodeHttpDatagram, decodeWebTransportStreamPrefix, encodeHttpDatagram, encodeWebTransportStreamPrefix } from '../../internal/net/http/h3/webtransport.ts';
+import { decodeHttpDatagram, decodeWebTransportStreamPrefix, encodeHttpDatagram, encodeWebTransportStreamPrefix } from '../internal/net/http/h3/webtransport.ts';
 /** Information reported when a WebTransport closes cleanly. */
 export interface WebTransportCloseInfo {
   /** Application close code. Defaults to `0`. */
@@ -320,7 +320,7 @@ export class WebTransport {
   }
   async #connect(options: WebTransportOptions): Promise<void> {
     try {
-      const { HttpClient } = await import('./client.ts');
+      const { HttpClient } = await import('../net/http/client.ts');
       const parsed = new URL(this.#url);
       const client = new HttpClient({
         baseUrl: parsed.origin,

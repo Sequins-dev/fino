@@ -55,6 +55,6 @@ export { Headers, Request, Response } from 'internal:net/http/wire';
 export { CompressionStream, DecompressionStream } from './compression-streams.ts';
 export { EventSource } from './eventsource.ts';
 export { WebSocket, WebSocketError, CloseEvent, ErrorEvent } from './websocket.ts';
-export { WebTransport } from 'fino:net/http/webtransport';
+export { WebTransport, WebTransportDatagramDuplexStream } from './webtransport.ts';
 export { MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts } from './messaging.ts';
 export { BroadcastChannel } from './broadcast-channel.ts';

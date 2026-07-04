@@ -3,7 +3,7 @@ weight: 10
 ---
 # HTTP
 
-fino's HTTP subsystem is built around the global Fetch-compatible `Request`, `Response`, and `Headers` objects. All server and client logic lives in `fino:` modules. `WebSocket` and `EventSource` are globals; no import is needed to use them in application code.
+fino's HTTP subsystem is built around the global Fetch-compatible `Request`, `Response`, and `Headers` objects. All server and client logic lives in `fino:` modules. `WebSocket`, `EventSource`, and `WebTransport` are globals; no import is needed to use them in application code.
 
 The subsystem has several focused surfaces that cover different concerns. Pick based on what you're building.
 
@@ -19,7 +19,7 @@ The subsystem has several focused surfaces that cover different concerns. Pick b
 
 **Server-sent events** — `route().sse()` registers a streaming operation whose handler writes events through an `EventSourceWriter`. The `EventSource` global covers client-side SSE, and `parseEventStream` from `fino:net/http/eventstream` parses streaming SSE bodies (POST-based APIs included). Streaming agent responses over SSE is shown in the [AI section](../ai.md). See the [server-sent events guide](./http/server-sent-events.md).
 
-**WebTransport** — `WebTransport` from `fino:net/http/webtransport` is the client entry point. The server side surfaces an `IncomingWebTransportRequest` through `serve()`. Requires HTTP/3 and QUIC. See the [WebTransport guide](./http/web-transport.md).
+**WebTransport** — the `WebTransport` global is the client entry point (also importable from `fino:net/http/webtransport`). The server side surfaces an `IncomingWebTransportRequest` through `serve()`. Requires HTTP/3 and QUIC. See the [WebTransport guide](./http/web-transport.md).
 
 **Protocol details** — HTTP/1.1 keep-alive, HTTP/2 ALPN negotiation and h2c, HTTP/3 activation, and TLS configuration are all handled by `serve()` and `HttpClient` without internal-module imports. See the [protocols guide](./http/protocols.md).
 

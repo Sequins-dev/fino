@@ -317,7 +317,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:net/http/eventstream", "net/http/eventstream"),
     source_builtin!("fino:net/http/eventsource", "globals/eventsource"),
     source_builtin!("fino:net/http/websocket", "globals/websocket"),
-    source_builtin!("fino:net/http/webtransport", "net/http/webtransport"),
+    source_builtin!("fino:net/http/webtransport", "globals/webtransport"),
     source_builtin!(
         "internal:net/quic/ngtcp2/bindings",
         "internal/net/quic/ngtcp2/bindings"

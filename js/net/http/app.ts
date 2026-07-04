@@ -61,7 +61,7 @@ import { Headers, Request, Response } from './index.ts';
 import { serve } from './server.ts';
 import type { AcceptedHttpRequest, HttpHandlerResult, HttpSession, HttpProtocol, IncomingHttp, IncomingWebSocketRequest, IncomingWebTransportRequest } from './server.ts';
 import { WebSocketConnection } from '../../globals/websocket.ts';
-import { WebTransport } from './webtransport.ts';
+import { WebTransport } from '../../globals/webtransport.ts';
 import { EventSourceWriter } from './eventstream.ts';
 import { Channel } from '../../internal/stream.ts';
 /**
@@ -809,7 +809,7 @@ export function defineProducer<T extends Producer>(fn: T, meta: OperationMeta = 
 * `sse()`, `webtransport()`, `rpc()`, `mount()`) resolve a branch by walking
 * its nodes back to this container and freezing the result into an operation.
 */
-abstract class RouterBase<TSelf> {
+export abstract class RouterBase<TSelf> {
   /**
   * Tail node of this container's enrichment chain.
   *

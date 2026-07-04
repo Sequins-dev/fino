@@ -15,8 +15,8 @@ import { H3BodyQueue } from './body-queue.ts';
 import { h3Available, NGHTTP3_ERR_CONN_CLOSING } from './bindings.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
-import { WebTransport } from '../../../../net/http/webtransport.ts';
-import type { WebTransportOptions } from '../../../../net/http/webtransport.ts';
+import { WebTransport } from '../../../../globals/webtransport.ts';
+import type { WebTransportOptions } from '../../../../globals/webtransport.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
 export interface H3RequestInit extends RequestInit {
   trailers?: Array<[string, string]>;

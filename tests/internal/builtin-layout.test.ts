@@ -69,6 +69,7 @@ describe('builtin module layout', () => {
       'MethodBuilder',
       'RouteBuilder',
       'Router',
+      'RouterBase',
       'WebSocket',
       'WebSocketConnection',
       'WebSocketError',

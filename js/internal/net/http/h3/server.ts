@@ -17,7 +17,7 @@ import { H3BodyQueue } from './body-queue.ts';
 import { h3Available } from './bindings.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
-import { WebTransport } from '../../../../net/http/webtransport.ts';
+import { WebTransport } from '../../../../globals/webtransport.ts';
 import { buildWireRequest } from '../../../../net/http/index.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
 export type H3Handler = (request: Request) => Response | Promise<Response>;

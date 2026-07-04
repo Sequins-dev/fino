@@ -19,5 +19,5 @@ export * from './http/client.ts';
 export * from '../globals/eventsource.ts';
 export * from './http/server.ts';
 export * from '../globals/websocket.ts';
-export * from './http/webtransport.ts';
+export * from '../globals/webtransport.ts';
 export { parseRequest, parseResponse, serializeRequest, serializeResponse } from './http/index.ts';
