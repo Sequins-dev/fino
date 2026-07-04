@@ -47,7 +47,6 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:net/http/app` | `benchmarks/net/http/app.bench.ts` |
 | `fino:net/http/client` | `benchmarks/net/http/client.bench.ts` |
 | `fino:net/http/server` | `benchmarks/net/http/server.bench.ts` |
-| `fino:net/http/transpile` | not yet benchmarked |
 | `fino:net/http/eventsource` | `benchmarks/net/http/eventsource.bench.ts` |
 | `fino:net/http/websocket` | `benchmarks/net/http/websocket.bench.ts` |
 | `fino:net/http/webtransport` | `benchmarks/net/http/h3.bench.ts` |

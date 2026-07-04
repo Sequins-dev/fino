@@ -1,6 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { App } from 'fino:net/http/app';
-import { transpileFiles } from 'fino:net/http/transpile';
+import { transpileFiles } from 'fino:format/typescript';
 import { DiskFileSystem } from 'fino:file';
 
 const fs = new DiskFileSystem();
@@ -11,7 +11,7 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 
-describe('fino:net/http/transpile', () => {
+describe('fino:format/typescript transpileFiles', () => {
   it('serves TypeScript modules as JavaScript and refreshes after mtime changes', async (t) => {
     const root = await tempDir();
     await fs.writeFile(`${root}/mod.ts`, 'export const value: number = 1;');
