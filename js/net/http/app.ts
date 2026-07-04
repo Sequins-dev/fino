@@ -59,6 +59,8 @@ import { serve } from './server.ts';
 import type { AcceptedHttpRequest, HttpSession, HttpProtocol, IncomingHttp, IncomingWebSocketRequest, IncomingWebTransportRequest } from './server.ts';
 import { WebSocketConnection } from '../../globals/websocket.ts';
 import { WebTransport } from './webtransport.ts';
+import { EventSourceWriter } from './eventstream.ts';
+import { Channel } from '../../internal/stream.ts';
 /**
 * Standard HTTP methods supported by route builders.
 *
@@ -170,6 +172,13 @@ export type WebSocketHandler = (socket: WebSocketConnection, ctx: WebSocketConte
 * Terminal handler for a WebTransport route.
 */
 export type WebTransportHandler = (session: WebTransport, ctx: WebTransportContext) => void | Promise<void>;
+/**
+* Terminal handler for a server-sent events route.
+*
+* The handler receives an `EventSourceWriter` connected to the response body;
+* the response streams while the handler runs and ends when it returns.
+*/
+export type SseHandler = (events: EventSourceWriter, ctx: HttpContext) => void | Promise<void>;
 /**
 * Context value producer used by `.value(name, producer)`.
 *
@@ -948,6 +957,50 @@ export class App extends BuilderBase<App> {
       throw new Error(`Duplicate WebTransport route ${path}`);
     }
     this.#webTransportEndpoints.push(endpoint);
+    return this;
+  }
+  /** Register a server-sent events route.
+  *
+  * The handler receives an `EventSourceWriter` wired to the response body and
+  * the request context. The route responds with `text/event-stream`
+  * immediately, streams every event the handler writes, and ends the stream
+  * when the handler returns. A handler error terminates the stream.
+  *
+  * The route is registered for both GET (`EventSource` clients) and POST
+  * (fetch-based clients that send a request body).
+  *
+  * ```ts no_run
+  * app.sse('/events', async (events, ctx) => {
+  *   await events.write({ data: 'connected' });
+  *   await events.write({ event: 'done', data: '{}' });
+  * });
+  * ```
+  */
+  sse(path: string, ...stack: Array<Middleware | SseHandler>): this {
+    if (stack.length === 0) throw new Error('SSE route requires a handler');
+    const handler = stack[stack.length - 1] as SseHandler;
+    const middleware = stack.slice(0, -1) as Middleware[];
+    const wrapped: Handler = (ctx) => {
+      const channel = new Channel<Uint8Array>();
+      const events = new EventSourceWriter(channel.writer);
+      void (async () => {
+        try {
+          await handler(events, ctx);
+          await events.close();
+          await channel.writer.close();
+        } catch (err) {
+          channel.writer.fail(err);
+        }
+      })();
+      return new Response(channel.reader, {
+        headers: {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-store'
+        }
+      });
+    };
+    this.get(path, ...middleware, wrapped);
+    this.post(path, ...middleware, wrapped);
     return this;
   }
   /**

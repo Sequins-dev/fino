@@ -227,15 +227,16 @@ export class EventSourceReader extends Reader<SseEvent> {
 * ```
 */
 export class EventSourceWriter extends Writer<SseEventOptions> {
-  #writer: BytesWriter;
+  #writer: Writer<Uint8Array>;
   /**
-  * Create an SSE writer around a byte writer.
+  * Create an SSE writer around any byte-accepting writer, such as a
+  * `BytesWriter` or the writer end of a `Channel<Uint8Array>`.
   *
   * ```ts no_run
   * const events = new EventSourceWriter(writer);
   * ```
   */
-  constructor(writer: BytesWriter) {
+  constructor(writer: Writer<Uint8Array> | BytesWriter) {
     super();
     this.#writer = writer;
   }

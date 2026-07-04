@@ -124,6 +124,12 @@ await fetch('http://127.0.0.1:3000/chat', {
 });
 ```
 
+To stream a reply token by token instead of waiting for the full turn, serve
+the agent from an `app.sse()` route and write `streamText()` deltas as events —
+the project README shows exactly that, and the
+[server-sent events guide](./net/http/server-sent-events.md) covers the route
+type.
+
 ## Common Decisions
 
 - Prefer a direct `Model.generate()` or `Model.stream()` call for single-turn

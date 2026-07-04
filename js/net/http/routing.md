@@ -187,7 +187,22 @@ const app = new App({ name: 'API' });
 app.mount('/v1', usersRouter);
 ```
 
-## WebSocket and WebTransport routes
+## WebSocket, SSE, and WebTransport routes
+
+`app.sse()` registers a server-sent events route. The handler receives an `EventSourceWriter` wired to the response body and the request context; the stream ends when the handler returns. The route matches GET and POST:
+
+```ts
+import { App } from 'fino:net/http/app';
+
+const app = new App();
+
+app.sse('/events', async (events, ctx) => {
+  await events.write({ data: 'connected' });
+  await events.write({ event: 'done', data: '{}' });
+});
+```
+
+See the [server-sent events guide](./server-sent-events.md) for the event format, heartbeats, and client-side parsing.
 
 `app.websocket()` registers a WebSocket route. The handler receives the `WebSocketConnection` and a context:
 

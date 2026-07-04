@@ -17,7 +17,7 @@ The subsystem has several focused surfaces that cover different concerns. Pick b
 
 **WebSockets** — the `WebSocket` global covers the client side. The server side goes through `serve()` or `app.websocket()`, which surface an `IncomingWebSocketRequest` whose `accept()` method returns a `WebSocketConnection` from `fino:net/http/websocket`. See the [WebSockets guide](./http/websockets.md).
 
-**Server-sent events** — the `EventSource` global covers client-side SSE. For server-side formatting use `EventSourceWriter` from `fino:net/http/eventstream`; for parsing a streaming SSE body use `parseEventStream` or `EventSourceReader` from the same module. Streaming agent responses over SSE is shown in the [AI section](../ai.md). See the [server-sent events guide](./http/server-sent-events.md).
+**Server-sent events** — `app.sse()` registers a streaming route whose handler writes events through an `EventSourceWriter`. The `EventSource` global covers client-side SSE, and `parseEventStream` from `fino:net/http/eventstream` parses streaming SSE bodies (POST-based APIs included). Streaming agent responses over SSE is shown in the [AI section](../ai.md). See the [server-sent events guide](./http/server-sent-events.md).
 
 **WebTransport** — `WebTransport` from `fino:net/http/webtransport` is the client entry point. The server side surfaces an `IncomingWebTransportRequest` through `serve()`. Requires HTTP/3 and QUIC. See the [WebTransport guide](./http/web-transport.md).
 

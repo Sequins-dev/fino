@@ -5,6 +5,7 @@ import { describe, it } from 'fino:test/test';
 import { App, Router, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
 import { WebSocketConnection, MessageEvent } from 'fino:net/http/websocket';
 import { WebTransport } from 'fino:net/http/webtransport';
+import { parseEventStream } from 'fino:net/http/eventstream';
 import { v } from 'fino:validate';
 import * as loop from 'internal:runtime/loop';
 function request(path: string, init: {
@@ -222,6 +223,61 @@ describe('HTTP app built-ins', () => {
       await client.close();
       const invalid = await fetch(`http://127.0.0.1:${server.port}/chat`, { headers: { upgrade: 'websocket' } as any });
       t.equal(invalid.status, 400, 'invalid websocket upgrade matching route gets 400');
+    } finally {
+      await server.close();
+    }
+  });
+  it('streams sse routes through handle() for GET and POST', async (t) => {
+    const app = new App();
+    app.sse('/events', async (events, ctx) => {
+      await events.write({ data: `method:${ctx.method}` });
+      await events.write({ event: 'done', data: '{}', id: '1' });
+    });
+    const res = await app.handle(request('/events')) as Response;
+    t.equal(res.headers.get('content-type'), 'text/event-stream', 'sse route sets event-stream content type');
+    const received: Array<{ type: string; data: string; id: string | null }> = [];
+    for await (const event of parseEventStream(res.body!)) {
+      received.push({ type: event.type, data: event.data, id: event.id });
+    }
+    t.deepEqual(received, [
+      { type: 'message', data: 'method:GET', id: null },
+      { type: 'done', data: '{}', id: '1' }
+    ], 'handler events arrive parsed in order');
+    const post = await app.handle(request('/events', { method: 'POST', body: 'x' })) as Response;
+    const first = await parseEventStream(post.body!).read();
+    t.equal(first?.data, 'method:POST', 'sse route also matches POST');
+  });
+  it('terminates sse streams when the handler throws', async (t) => {
+    const app = new App();
+    app.sse('/broken', async (events) => {
+      await events.write({ data: 'first' });
+      throw new Error('boom');
+    });
+    const res = await app.handle(request('/broken')) as Response;
+    const reader = parseEventStream(res.body!);
+    t.equal((await reader.read())?.data, 'first', 'events before the failure are delivered');
+    await t.rejects(async () => {
+      await reader.read();
+    }, /boom/, 'the stream fails with the handler error');
+  });
+  it('serves sse routes over listen()', async (t) => {
+    const app = new App();
+    app.sse('/ticks', async (events) => {
+      await events.write({ data: 'tick' });
+      await events.write({ event: 'done', data: 'bye' });
+    });
+    const server = app.listen({
+      port: 0,
+      hostname: '127.0.0.1'
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/ticks`);
+      t.equal(res.headers.get('content-type'), 'text/event-stream');
+      const events: string[] = [];
+      for await (const event of parseEventStream(res.body!)) {
+        events.push(`${event.type}:${event.data}`);
+      }
+      t.deepEqual(events, ['message:tick', 'done:bye'], 'sse events stream over a real server');
     } finally {
       await server.close();
     }

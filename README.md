@@ -39,20 +39,13 @@ const assistant = agent({
 
 const app = new App();
 
-app.post('/chat', async (ctx) => {
+app.sse('/chat', async (events, ctx) => {
   const { message } = await ctx.request.json();
-  const encoder = new TextEncoder();
 
-  async function* events() {
-    for await (const text of streamText(assistant.stream(message))) {
-      yield encoder.encode(`data: ${JSON.stringify(text)}\n\n`);
-    }
-    yield encoder.encode('event: done\ndata: {}\n\n');
+  for await (const text of streamText(assistant.stream(message))) {
+    await events.write({ data: JSON.stringify(text) });
   }
-
-  return new Response(events(), {
-    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' },
-  });
+  await events.write({ event: 'done', data: '{}' });
 });
 
 app.listen({ port: 3000 });
@@ -138,9 +131,9 @@ unavailable rather than pretending it was enforced. See the
 [runtime model](./js/runtime-model.md).
 
 **HTTP apps get a real router.** `fino:net/http/app` provides middleware,
-validated bodies and schemas, sessions, cookies, WebSocket and WebTransport
-routes, and OpenAPI generation while preserving plain `Request` and
-`Response`. See [HTTP](./js/net/http.md).
+validated bodies and schemas, sessions, cookies, WebSocket, SSE, and
+WebTransport routes, and OpenAPI generation while preserving plain `Request`
+and `Response`. See [HTTP](./js/net/http.md).
 
 **Observability is expected.** A full OpenTelemetry implementation — traces,
 metrics, logs, propagation, runtime instrumentations — plus benchmark, doc,
