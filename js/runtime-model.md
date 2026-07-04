@@ -84,14 +84,20 @@ return new Response(lines(), {
 When an API accepts or returns an async iterable body, consume it once. Bodies
 usually represent live I/O rather than reusable in-memory values.
 
-## Realms
+## Capabilities and Isolation
+
+Because runtime APIs arrive through imports rather than ambient globals, an
+import is effectively a capability: code can only use what it can import. For
+the main application that is a code-review property. For child realms it is an
+enforced boundary.
 
 A realm is an isolated JavaScript environment with its own global object, module
 graph, microtask queue, and event loop state. Realms are used for sandboxing,
 worker-style execution, reloadable application contexts, and stronger isolation
-when needed.
-
-The parent controls what a child can import:
+when needed. The parent decides exactly what a child may import — starting from
+a deny-all baseline for untrusted code, or inheriting most capabilities and
+blocking dangerous ones for trusted workers. Children cannot grant themselves
+modules the parent has denied:
 
 ```ts
 import { ImportMap, Realm } from 'fino:realm';
@@ -107,8 +113,17 @@ const realm = new Realm({
 await realm.run();
 ```
 
-Use the [realms guide](./realm.md) for import rules, message
-ports, facades, threads, processes, and pools.
+Realms run embedded in the current isolate, in their own thread, in a separate
+process, or on a remote cluster machine, with the same import-rule, messaging,
+and facade model in every mode. See the [Realms section](./realm.md), and
+[Import Capabilities](./realm/capabilities.md) for the rule system.
+
+Process execution adds an operating-system boundary on top. `fino:process` can
+request sandbox policies (filesystem, network, process, resource limits) for
+child processes and reports what the current platform can enforce: strict mode
+fails closed when a requested boundary is unavailable, and best-effort mode
+reports unsupported policy categories instead of pretending they were enforced.
+The process and sandbox APIs are documented in the generated API reference.
 
 ## Context and Topics
 
@@ -117,8 +132,30 @@ style coordination. They are used by runtime systems such as OpenTelemetry and
 realm pools, and they are useful when application code needs request-scoped
 state or decoupled event publishing.
 
-Use context for values that should flow through async work, such as request IDs.
-Use topics for named events that may have zero or more subscribers.
+Use context for values that should flow through async work, such as request
+IDs. A `Context` value follows the causal chain of async execution — `await`,
+`.then()`, `queueMicrotask()`, timers, and promise-based runtime APIs:
+
+```ts
+import { Context } from 'fino:context';
+
+const requestId = new Context<string>('requestId');
+
+await requestId.runWithValue('req-1', async () => {
+  await Promise.resolve();
+  console.log(requestId.get()); // 'req-1' — propagated through await
+});
+```
+
+Use topics for named events that may have zero or more subscribers:
+
+```ts
+import { topic } from 'fino:context/topic';
+
+const logins = topic<{ user: string }>('audit:login');
+logins.subscribe((event) => console.log('login:', event.user));
+logins.publish({ user: 'ana' });
+```
 
 ## API Shape
 

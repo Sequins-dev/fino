@@ -38,5 +38,4 @@ Use debug builds when native symbol quality matters, and release builds when
 measuring throughput. Use unique ports for benchmark and profile runs so stale
 servers do not contaminate measurements.
 
-Build generated API docs with `--types runtime-builtins.d.ts` to include the
-synthetic `fino:profiler` reference page.
+The `fino:profiler` surface is documented in the generated API reference.

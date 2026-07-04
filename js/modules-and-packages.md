@@ -23,7 +23,7 @@ Prefer explicit extensions in application code. Fino's own runtime modules use
 Local `file://` URLs are accepted for local filesystem paths, including
 percent-encoded path characters such as spaces. Malformed percent escapes and
 non-local `file://host/...` URLs are rejected. Directory imports are not
-expanded to `index` files in this baseline; import the file you want directly.
+expanded to `index` files; import the file you want directly.
 
 ## Built-In Modules
 
@@ -45,6 +45,30 @@ Examples:
 
 Only import documented public modules from applications. Other runtime
 specifier forms are not part of the supported application API.
+
+## Public API Boundaries
+
+Application code should depend on:
+
+- local project modules,
+- web-standard globals and objects provided by the runtime,
+- `fino:*` built-ins,
+- installed npm packages.
+
+Application code should avoid:
+
+- unsupported runtime module specifiers,
+- deep imports into `.fino/packages`,
+- generated files inside `docs/`,
+- relying on undocumented side effects of runtime startup.
+
+That boundary keeps code portable across runtime changes and lets generated docs
+represent the supported API surface.
+
+Because capabilities arrive through imports, this boundary is also a security
+surface: child realms can be restricted to a narrow set of importable modules
+through import rules. See the [runtime model](./runtime-model.md) and
+[Import Capabilities](./realm/capabilities.md).
 
 ## Installed Packages
 
@@ -74,85 +98,40 @@ console.log(semver.satisfies('1.4.2', '^1.0.0'));
 
 Run `fino install` again after changing dependencies in `package.json`.
 
-The package map is the current reproducibility artifact for installed packages.
-Fino does not write a separate lockfile yet, so dependency changes are applied
-by rerunning `fino install` and committing the resulting package map when your
-project expects reproducible bare-import resolution.
-
-`fino install` resolves packages from `FINO_NPM_REGISTRY` when it is set, or
-from the public npm registry by default. It keeps an in-memory packument cache
-for the current install run only; there is no persistent package cache, offline
-mode, proxy configuration, or registry authentication support yet. It does not
-run package lifecycle scripts such as `preinstall`, `install`, or `postinstall`.
-Optional dependencies that fail to resolve or install are skipped with a
-warning. Peer dependencies are reported as warnings and are not installed
-automatically.
-
-Downloaded tarballs are verified before extraction when registry metadata
-provides integrity data and the runtime has OpenSSL support. `dist.integrity`
-SRI metadata is preferred. If the SRI value is malformed or uses an unsupported
-algorithm and `dist.shasum` is present, Fino falls back to the legacy SHA-1
-shasum; otherwise the install fails with an integrity error. When OpenSSL is
-not available, integrity verification is skipped because the digest backend is
-unavailable.
-
-Package `exports` entries are expanded into concrete package-map entrypoints
-when packages are installed. Package `imports` entries and `#specifier`
-imports are not supported yet; use relative imports inside application code or
-published package export subpaths instead.
-
 The package map is the supported package-resolution surface. Fino does not walk
-`node_modules`, evaluate package `package.json` files at import time, implement
-package `imports`, or perform direct Node-style package `exports` resolution
-outside the generated `.fino/package-map.json` baseline. The installer expands
-a bounded subset of npm metadata into that map: package `exports` strings,
-arrays, `import`/`default` condition objects, simple `*` patterns, `module` /
-`main` fallback entrypoints, dependencies, optional dependency warnings, and
-peer dependency warnings. Full npm resolver parity remains outside this
-baseline.
+`node_modules` or evaluate `package.json` files at import time; the installer
+expands npm metadata into the map when packages are installed, and the loader
+resolves bare imports from the map alone. The package map is also the current
+reproducibility artifact: commit it when your project expects reproducible
+bare-import resolution.
 
 JSON files are imported as modules with a default export. Fino currently accepts
 JSON imports with or without Node-style import attributes; strict JSON
 import-attribute enforcement is not part of this release baseline.
 
-## Public API Boundaries
+### Current Installer Limits
 
-Application code should depend on:
+`fino install` resolves packages from `FINO_NPM_REGISTRY` when it is set, or
+from the public npm registry by default. Current limits to be aware of:
 
-- local project modules,
-- web-standard globals and objects provided by the runtime,
-- `fino:*` built-ins,
-- installed npm packages.
+- No separate lockfile yet; the committed package map plays that role.
+- No persistent package cache, offline mode, proxy configuration, or registry
+  authentication; packument caching is in-memory per install run.
+- Package lifecycle scripts (`preinstall`, `install`, `postinstall`) are not
+  run.
+- Optional dependencies that fail to resolve or install are skipped with a
+  warning; peer dependencies are reported as warnings and not installed.
+- Package `exports` entries are expanded into concrete package-map entrypoints
+  (strings, arrays, `import`/`default` condition objects, simple `*` patterns,
+  and `module`/`main` fallbacks). Package `imports` entries and `#specifier`
+  imports are not supported; use relative imports or published export subpaths.
+- Downloaded tarballs are verified when registry metadata provides integrity
+  data and the runtime has OpenSSL support: `dist.integrity` SRI is preferred,
+  with fallback to the legacy SHA-1 `dist.shasum`; a malformed SRI with no
+  shasum fails the install. Without OpenSSL, verification is skipped because
+  the digest backend is unavailable.
 
-Application code should avoid:
-
-- unsupported runtime module specifiers,
-- deep imports into `.fino/packages`,
-- generated files inside `docs/`,
-- relying on undocumented side effects of runtime startup.
-
-That boundary keeps code portable across runtime changes and lets generated docs
-represent the supported API surface.
-
-## Import Rules in Realms
-
-Child realms inherit or restrict imports through explicit import rules. This
-means package and built-in access can be controlled per child:
-
-```ts
-import { ImportMap, Realm } from 'fino:realm';
-
-const realm = new Realm({
-  entry: './worker.ts',
-  overrides: ImportMap.deny([
-    { pattern: './worker.ts', directive: 'inherit' },
-    { pattern: 'fino:format/*', directive: 'inherit' },
-  ]),
-});
-```
-
-Use this when untrusted or reloadable code should only see a narrow set of
-modules.
+Full npm resolver parity is outside this baseline.
 
 ## Synthetic Modules
 

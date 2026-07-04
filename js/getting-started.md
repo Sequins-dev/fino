@@ -3,12 +3,25 @@ weight: 10
 ---
 # Getting Started
 
-Fino is a JavaScript runtime for building scripts, services, tests, and tools
-with a focused set of built-in modules. Runtime APIs are imported through
-`fino:*` specifiers.
+Fino is a JavaScript runtime for building agentic applications: model calls,
+validated tools, isolated realms, HTTP services, and tests, all from one
+binary. Runtime APIs are imported through `fino:*` specifiers.
 
-This guide is the shortest path from an installed `fino` command to a useful
+This guide is the shortest path from a built `fino` command to a useful
 program.
+
+## Install
+
+Fino builds from source with a Rust toolchain:
+
+```sh
+git clone https://github.com/Qard/fino.git
+cd fino
+cargo build --release
+```
+
+The binary is `target/release/fino`. Put it on your `PATH`, or substitute
+`./target/release/fino` for `fino` in the commands below.
 
 ## Run a Script
 
@@ -41,8 +54,9 @@ model:
 
 ```ts
 import { serveHttp } from 'fino:net/http/server';
+import { env } from 'fino:process';
 
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(env.PORT ?? 3000);
 
 const server = serveHttp({ port }, async (request) => {
   const url = new URL(request.url);
@@ -65,15 +79,43 @@ Run it:
 PORT=3000 fino ./server.ts
 ```
 
-The [HTTP guide](./net/http.md) covers routing, request bodies, streaming
+The [HTTP section](./net/http.md) covers routing, request bodies, streaming
 responses, server-sent events, WebSockets, and graceful shutdown.
+
+## Call a Model
+
+`fino:ai` provides provider-neutral model calls, agents, and validated tools.
+This step needs a provider credential — the `openai` adapter reads
+`OPENAI_API_KEY` from the environment — and is safe to skip until you have one:
+
+```ts
+import { agent, openai, streamText } from 'fino:ai';
+import { stdout } from 'fino:process';
+
+const bot = agent({
+  model: openai({ model: 'gpt-4o' }),
+  instructions: 'Answer in one short paragraph.',
+});
+
+const encoder = new TextEncoder();
+for await (const text of streamText(bot.stream('What is a JavaScript realm?'))) {
+  await stdout().write(encoder.encode(text));
+}
+```
+
+```sh
+OPENAI_API_KEY=... fino ./ask.ts
+```
+
+Agents grow from here: validated tools, structured output, durable sessions,
+and MCP are covered in the [AI section](./ai.md).
 
 ## Add Tests
 
 Fino includes a TAP-producing test framework:
 
 ```ts
-import { test } from 'fino:test';
+import { test } from 'fino:test/test';
 
 test('math still works', (t) => {
   t.equal(1 + 1, 2);
@@ -111,9 +153,9 @@ See [modules and packages](./modules-and-packages.md) for the import model.
 
 ## Where to Go Next
 
-- [CLI](./cli.md) explains every command and the common development workflows.
-- [Runtime model](./runtime-model.md) explains the event loop, module system,
-  realms, and the main concepts behind Fino applications.
-- [HTTP](./net/http.md) covers common application building blocks.
-- [Realms](./realm.md) covers isolation, worker-style execution,
-  import rules, and parent-child communication.
+- The [AI section](./ai.md) covers models, tools, agents, sessions, evals,
+  skills, and MCP — the heart of an agentic application.
+- [Realms](./realm.md) covers isolated execution: run skills, plugins, and
+  untrusted code with only the imports you grant.
+- The [documentation map](./documentation.md) indexes every guide and explains
+  how to browse and search the generated API reference.

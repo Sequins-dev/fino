@@ -53,5 +53,5 @@ the function pointer is unsafe.
 Mark long-running symbols `async` or `nonblocking` so they run on the native
 blocking pool instead of stalling the JS event loop.
 
-Build generated API docs with `--types runtime-builtins.d.ts` to include the
-synthetic `fino:ffi` reference page.
+The full `fino:ffi` surface — types, struct layout, callbacks, and pointer
+helpers — is documented in the generated API reference.

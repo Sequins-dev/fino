@@ -12,7 +12,7 @@ Benchmarks use adaptive measurement loops and print throughput-oriented results.
 Use `test` for standalone cases or grouped `suite` tests:
 
 ```ts
-import { suite, test } from 'fino:test';
+import { suite, test } from 'fino:test/test';
 
 suite('math', () => {
   test('adds numbers', (t) => {
@@ -29,7 +29,7 @@ suite('math', () => {
 Use `describe` and `it` when lifecycle hooks make the test clearer:
 
 ```ts
-import { beforeEach, describe, it } from 'fino:test';
+import { beforeEach, describe, it } from 'fino:test/test';
 
 describe('cache', () => {
   let cache: Map<string, string>;
@@ -48,11 +48,11 @@ describe('cache', () => {
 Do not mix the two grouping styles in the same group. Use `suite` with `test`,
 or use `describe` with `it` and lifecycle hooks.
 
-The test runner release contract is TAP-13 output, `--filter` name matching,
-skip reasons, `before`/`after`/`beforeEach`/`afterEach` hooks, and captured
-stdout/stderr for failures. It is not a Node `node:test` compatibility layer:
-`only`, `todo`, per-test timeouts, concurrent test scheduling, assertion-object
-subtests, and pluggable reporters are outside this baseline.
+The runner provides TAP-13 output, `--filter` name matching, skip reasons,
+`before`/`after`/`beforeEach`/`afterEach` hooks, and captured stdout/stderr for
+failures. It is not a Node `node:test` compatibility layer, so `only`, `todo`,
+per-test timeouts, concurrent test scheduling, assertion-object subtests, and
+pluggable reporters are not included.
 
 ## Running Tests
 
@@ -102,7 +102,7 @@ APIs. Keep the mocked surface small. Scoped helpers restore the original
 behavior when the callback finishes.
 
 ```ts
-import { test } from 'fino:test';
+import { test } from 'fino:test/test';
 import { mockFetch } from 'fino:test/mock';
 
 test('fetches data', async (t) => {
@@ -161,10 +161,15 @@ fino bench benchmarks
 
 The benchmark harness prints human, benc.h-style text output. It uses an
 adaptive minimum-duration measurement loop and supports sync or async measured
-functions plus setup/teardown outside the timed body. `FINO_BENCH_MIN_NS` exists
-only as an internal test knob for shortening fixture runs. JSON output,
-machine-readable result objects, public warmup or fixed-iteration controls,
-fixed sample counts, variance thresholds, pluggable reporters, and CI
-regression gates are outside this baseline.
+functions plus setup/teardown outside the timed body. It does not currently
+provide JSON output, machine-readable result objects, public warmup or
+fixed-iteration controls, fixed sample counts, variance thresholds, pluggable
+reporters, or CI regression gates.
 
 Use stable machines for numbers you intend to keep or compare.
+
+## Testing AI Behavior
+
+Prompts, tool routing, and agent behavior are tested with evals, which run as
+ordinary test cases with scorers and reporters. See
+[Evals and OpenTelemetry](./ai/evals-opentelemetry.md).
