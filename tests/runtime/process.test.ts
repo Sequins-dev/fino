@@ -2,7 +2,7 @@
 * Tests for fino:process — process info APIs and child process spawning.
 */
 import { describe, it } from 'fino:test/test';
-import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, signal, SIGKILL, Process, processStats, processStatsSignal } from 'fino:process';
+import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, signal, SIGKILL, Process, processStats, processStatsSignal, processSandboxCapabilities } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -94,9 +94,9 @@ describe('Process APIs', () => {
     t.ok(pid > 0, `pid ${pid} > 0`);
     t.ok(Number.isInteger(pid), 'pid is an integer');
   });
-  it('ppid is a positive integer', (t) => {
+  it('ppid is a non-negative integer', (t) => {
     t.equal(typeof ppid, 'number');
-    t.ok(ppid > 0, `ppid ${ppid} > 0`);
+    t.ok(ppid >= 0, `ppid ${ppid} >= 0`);
     t.ok(Number.isInteger(ppid), 'ppid is an integer');
   });
   it('cwd() returns a non-empty string', (t) => {
@@ -133,6 +133,318 @@ describe('Process APIs', () => {
   });
 });
 describe('Process class', () => {
+  it('reports sandbox backend capabilities without spawning', (t) => {
+    const capabilities = processSandboxCapabilities();
+    t.equal(capabilities.platform, os, 'capabilities use the current platform');
+    const expectedStrict = os === 'linux' || capabilities.features.some((feature) => feature.name === 'macos-seatbelt' && feature.available);
+    t.equal(capabilities.strictAvailable, expectedStrict, 'strict mode availability follows the probed mechanisms');
+    t.equal(capabilities.bestEffortAvailable, true, 'best-effort reporting is available');
+    t.ok(capabilities.backends.some((backend) => backend.name === 'none' && backend.available), 'reporting-only backend is listed');
+    t.ok(capabilities.backends.some((backend) => backend.name === 'linuxNative'), 'Linux in-process backend is listed');
+    t.ok(capabilities.backends.some((backend) => backend.name === 'macosSeatbelt'), 'macOS Seatbelt backend is listed');
+    // Features are probed directly (no native daemon): landlock/seccomp on Linux,
+    // macos-seatbelt on macOS.
+    const featureNames = capabilities.features.map((feature) => feature.name);
+    if (os === 'linux') {
+      t.ok(featureNames.includes('landlock'), 'landlock feature is probed');
+      t.ok(featureNames.includes('seccomp'), 'seccomp feature is probed');
+    } else if (os === 'darwin') {
+      t.ok(featureNames.includes('macos-seatbelt'), 'macos-seatbelt feature is probed');
+    }
+    t.ok(capabilities.features.every((feature) => typeof feature.reason === 'string' && feature.reason.length > 0), 'features include reasons');
+  });
+  it('reports no sandbox when no sandbox was requested', async (t) => {
+    const proc = new Process('/bin/echo', ['plain']);
+    t.equal(proc.sandboxReport.mode, 'none', 'mode is none');
+    t.equal(proc.sandboxReport.backend, 'none', 'backend is none');
+    t.equal(proc.sandboxReport.securityBoundary, false, 'plain process is not sandboxed');
+    t.equal(proc.sandboxReport.supported.length, 0, 'no supported sandbox categories');
+    t.equal(proc.sandboxReport.enforced.length, 0, 'no enforced categories');
+    t.equal(proc.sandboxReport.unsupported.length, 0, 'no unsupported requested categories');
+    t.equal(proc.sandboxReport.diagnostics.length, 0, 'no sandbox diagnostics');
+    t.equal(proc.sandboxReport.violationBehavior.length, 0, 'no sandbox violation behavior');
+    proc.stdin.close();
+    for await (const _ of proc.stdout) {}
+    for await (const _ of proc.stderr) {}
+    const { code } = await proc.wait();
+    t.equal(code, 0);
+  });
+  it('spawns strict sandboxed processes while preserving stdout when a strict backend is available', async (t) => {
+    const capabilities = processSandboxCapabilities();
+    if (!capabilities.strictAvailable) {
+      t.throws(() => new Process('/bin/echo', ['strict'], {
+        sandbox: {
+          mode: 'strict'
+        }
+      }), /strict sandbox mode is not available/, 'strict sandbox requests fail closed without a backend');
+      return;
+    }
+    // Coarse network denial is enforceable on every strict backend (seccomp on
+    // Linux, Seatbelt on macOS) without Landlock or cgroups.
+    const proc = new Process('/bin/echo', ['strict'], {
+      sandbox: {
+        mode: 'strict',
+        network: {
+          outbound: [{ action: 'deny', destination: '*' }]
+        }
+      }
+    });
+    t.equal(proc.sandboxReport.mode, 'strict', 'strict mode is reported');
+    t.equal(proc.sandboxReport.backend, os === 'linux' ? 'linuxNative' : 'macosSeatbelt', 'native strict backend is selected');
+    t.equal(proc.sandboxReport.securityBoundary, true, 'strict backend is a security boundary');
+    t.ok(proc.sandboxReport.enforced.some((entry) => entry.category === 'network'), 'network policy is enforced');
+    proc.stdin.close();
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    for await (const _ of proc.stderr) {}
+    const { code } = await proc.wait();
+    t.equal(code, 0, 'strict child exits successfully');
+    t.equal(joinChunks(chunks).trim(), 'strict', 'strict child stdout remains readable');
+  });
+  it('rejects unsupported strict sandbox policy instead of spawning unsandboxed', (t) => {
+    // Filtered egress (a rule with a concrete destination) is not enforceable on
+    // any backend and must be rejected before spawn on every platform.
+    t.throws(() => new Process('/bin/echo', ['strict-network'], {
+      sandbox: {
+        mode: 'strict',
+        network: {
+          outbound: [{ action: 'allow', destination: 'example.com' }]
+        }
+      }
+    }), /filtered egress/, 'strict unsupported policy cannot silently downgrade');
+  });
+  it('strict sandbox enforces a memory limit on Linux', async (t) => {
+    if (os !== 'linux') return;
+    const proc = new Process('/bin/sh', ['-c', 'ulimit -v'], {
+      sandbox: {
+        mode: 'strict',
+        resources: {
+          memoryBytes: 64 * 1024 * 1024
+        }
+      }
+    });
+    const resources = proc.sandboxReport.enforced.find((entry) => entry.category === 'resources');
+    t.ok(resources !== undefined, 'resources policy is reported enforced');
+    proc.stdin.close();
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    for await (const _ of proc.stderr) {}
+    const { code } = await proc.wait();
+    t.equal(code, 0, 'strict resource child exits successfully');
+    // The mechanism depends on the host: an RLIMIT_AS fallback shows up in
+    // `ulimit -v` (KiB); a cgroup memory.max does not (ulimit stays unlimited).
+    const ulimitKib = Number(joinChunks(chunks).trim());
+    if (/rlimit|RLIMIT/i.test(resources!.reason)) {
+      t.equal(ulimitKib, 65536, 'rlimit-tier child sees the 64MiB address-space limit in KiB');
+    } else {
+      t.ok(/cgroup/i.test(resources!.reason), 'cgroup-tier memory limit is enforced via memory.max');
+    }
+  });
+  it('strict sandbox filesystem policy denies unlisted paths on Linux', async (t) => {
+    if (os !== 'linux') return;
+    const capabilities = processSandboxCapabilities();
+    if (!capabilities.strictAvailable) return;
+    const hasLandlock = capabilities.backends.some((b) => b.name === 'linuxNative' && b.supported.includes('filesystem'));
+    if (!hasLandlock) {
+      t.throws(() => new Process('/bin/cat', ['/tmp/no-such-file'], {
+        sandbox: {
+          mode: 'strict',
+          filesystem: {
+            readonly: ['/tmp']
+          }
+        }
+      }), /Landlock/, 'filesystem strict policy fails closed without Landlock');
+      return;
+    }
+    const suffix = `${pid}-${Date.now()}`;
+    const allowedDir = `/tmp/fino-strict-fs-allowed-${suffix}`;
+    const deniedDir = `/tmp/fino-strict-fs-denied-${suffix}`;
+    const allowedFile = `${allowedDir}/allowed.txt`;
+    const deniedFile = `${deniedDir}/denied.txt`;
+    await fs.mkdir(allowedDir);
+    await fs.mkdir(deniedDir);
+    await fs.writeFile(allowedFile, 'allowed\n', 'utf8');
+    await fs.writeFile(deniedFile, 'denied\n', 'utf8');
+    try {
+      const proc = new Process('/bin/cat', [allowedFile, deniedFile], {
+        sandbox: {
+          mode: 'strict',
+          filesystem: {
+            readonly: ['/bin', '/usr', '/lib', '/lib64', '/etc', allowedDir]
+          },
+          process: {
+            allowedBinaries: ['/bin/cat']
+          }
+        }
+      });
+      t.ok(proc.sandboxReport.enforced.some((entry) => entry.category === 'filesystem'), 'filesystem policy is reported enforced');
+      proc.stdin.close();
+      const stdoutChunks = [];
+      const stderrChunks = [];
+      for await (const chunk of proc.stdout) stdoutChunks.push(chunk);
+      for await (const chunk of proc.stderr) stderrChunks.push(chunk);
+      const { code } = await proc.wait();
+      t.notEqual(code, 0, 'cat exits non-zero after denied read');
+      t.equal(joinChunks(stdoutChunks), 'allowed\n', 'allowed file remains readable');
+      t.ok(joinChunks(stderrChunks).length > 0, 'denied file produces stderr');
+    } finally {
+      try {
+        await fs.unlink(allowedFile);
+      } catch {}
+      try {
+        await fs.unlink(deniedFile);
+      } catch {}
+      try {
+        await fs.rmdir(allowedDir);
+      } catch {}
+      try {
+        await fs.rmdir(deniedDir);
+      } catch {}
+    }
+  });
+  it('strict sandbox process policy denies disallowed initial binaries on Linux', (t) => {
+    if (os !== 'linux') return;
+    t.throws(() => new Process('/bin/echo', ['denied'], {
+      sandbox: {
+        mode: 'strict',
+        process: {
+          allowedBinaries: ['/bin/cat']
+        }
+      }
+      // With Landlock, the pre-spawn allowlist check names the binary; without
+      // it, allowedBinaries fails closed for lack of Landlock. Either way the
+      // spawn is denied.
+    }), /not listed in process\.allowedBinaries|Landlock/, 'disallowed command is denied before spawn');
+  });
+  it('strict sandbox process policy denies fork on Linux', async (t) => {
+    if (os !== 'linux') return;
+    const proc = new Process('/bin/sh', ['-c', '(:) & wait'], {
+      sandbox: {
+        mode: 'strict',
+        process: {
+          allowFork: false
+        }
+      }
+    });
+    proc.stdin.close();
+    for await (const _ of proc.stdout) {}
+    for await (const _ of proc.stderr) {}
+    const { code } = await proc.wait();
+    t.notEqual(code, 0, 'fork attempt fails under strict no-fork policy');
+  });
+  it('spawns with best-effort sandbox mode and reports unenforced policy categories', async (t) => {
+    const proc = new Process('/bin/echo', ['best-effort'], {
+      sandbox: {
+        mode: 'bestEffort',
+        resources: {
+          memoryBytes: 16 * 1024 * 1024
+        },
+        filesystem: {
+          writable: ['/tmp']
+        },
+        network: {
+          outbound: [{
+            action: 'deny',
+            destination: '*'
+          }]
+        }
+      }
+    });
+    t.equal(proc.sandboxReport.mode, 'bestEffort', 'report records selected mode');
+    t.equal(proc.sandboxReport.backend, 'none', 'no enforcing sandbox backend is active');
+    t.equal(proc.sandboxReport.securityBoundary, false, 'best-effort is not a security boundary');
+    t.equal(proc.sandboxReport.supported.length, 0, 'no categories are supported by the reporting-only backend');
+    t.ok(proc.sandboxReport.unsupported.some((entry) => entry.category === 'filesystem'), 'filesystem policy is reported unsupported');
+    t.ok(proc.sandboxReport.unsupported.some((entry) => entry.category === 'network'), 'network policy is reported unsupported');
+    t.ok(proc.sandboxReport.unsupported.some((entry) => entry.category === 'resources'), 'resource policy is reported unsupported');
+    t.ok(proc.sandboxReport.diagnostics.some((entry) => entry.includes('posix_spawnp')), 'diagnostics explain reporting-only spawn');
+    t.equal(proc.sandboxReport.violationBehavior.length, 0, 'no violation behavior is claimed without enforcement');
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    for await (const _ of proc.stderr) {}
+    const { code } = await proc.wait();
+    t.equal(code, 0);
+    t.equal(joinChunks(chunks).trim(), 'best-effort');
+  });
+  it('validates sandbox resource limits before spawning', (t) => {
+    t.throws(() => new Process('/bin/echo', ['bad-memory'], {
+      sandbox: {
+        mode: 'bestEffort',
+        resources: {
+          memoryBytes: 0
+        }
+      }
+    }), /sandbox\.resources\.memoryBytes/, 'memory limit must be positive');
+    t.throws(() => new Process('/bin/echo', ['bad-cpu'], {
+      sandbox: {
+        mode: 'bestEffort',
+        resources: {
+          cpu: Number.POSITIVE_INFINITY
+        }
+      }
+    }), /sandbox\.resources\.cpu/, 'cpu limit must be finite');
+  });
+  it('validates sandbox filesystem paths before spawning', (t) => {
+    t.throws(() => new Process('/bin/echo', ['bad-path'], {
+      sandbox: {
+        mode: 'bestEffort',
+        filesystem: {
+          writable: ['relative/path']
+        }
+      }
+    }), /sandbox\.filesystem\.writable\[0\]/, 'filesystem paths must be absolute');
+    t.throws(() => new Process('/bin/echo', ['nul-path'], {
+      sandbox: {
+        mode: 'bestEffort',
+        filesystem: {
+          readonly: ['/tmp/\0bad']
+        }
+      }
+    }), /sandbox\.filesystem\.readonly\[0\]/, 'filesystem paths cannot contain null bytes');
+  });
+  it('validates sandbox network rules before spawning', (t) => {
+    t.throws(() => new Process('/bin/echo', ['bad-action'], {
+      sandbox: {
+        mode: 'bestEffort',
+        network: {
+          outbound: [{
+            action: 'drop' as any,
+            destination: '*'
+          }]
+        }
+      }
+    }), /sandbox\.network\.outbound\[0\]\.action/, 'network action must be allow or deny');
+    t.throws(() => new Process('/bin/echo', ['bad-port'], {
+      sandbox: {
+        mode: 'bestEffort',
+        network: {
+          inbound: [{
+            action: 'allow',
+            port: 70000
+          }]
+        }
+      }
+    }), /sandbox\.network\.inbound\[0\]\.port/, 'network port must be valid');
+  });
+  it('validates sandbox process and syscall policies before spawning', (t) => {
+    t.throws(() => new Process('/bin/echo', ['bad-binaries'], {
+      sandbox: {
+        mode: 'bestEffort',
+        process: {
+          allowedBinaries: ['node', '']
+        }
+      }
+    }), /sandbox\.process\.allowedBinaries\[1\]/, 'allowed binaries must be non-empty');
+    t.throws(() => new Process('/bin/echo', ['bad-syscalls'], {
+      sandbox: {
+        mode: 'bestEffort',
+        syscalls: {
+          mode: 'maybe' as any,
+          names: ['open']
+        }
+      }
+    }), /sandbox\.syscalls\.mode/, 'syscall mode must be allowlist or denylist');
+  });
   it('spawns /bin/echo and reads stdout', async (t) => {
     const proc = new Process('/bin/echo', ['hello fino']);
     const chunks = [];

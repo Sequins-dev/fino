@@ -17,6 +17,20 @@
 */
 import { argv, exit } from '../process.ts';
 import { driveLoop } from 'internal:bootstrap';
+import { runLauncher } from './security/sandbox/launcher.ts';
+// Self-sandboxing launcher mode: `fino --sandbox-launcher <fd>`. This process
+// applies OS policy to itself over FFI and execve()s the target. It must run
+// before any CLI parsing or event-loop setup. runLauncher never returns on
+// success (the image is replaced) and hard-exits on failure, so control never
+// reaches the CLI code below.
+if (argv[1] === '--sandbox-launcher') {
+  const fd = Number(argv[2]);
+  if (!Number.isInteger(fd) || fd < 0) {
+    console.error('fino: --sandbox-launcher requires a valid file descriptor');
+    exit(1);
+  }
+  runLauncher(fd);
+}
 import root from '../commands/root.ts';
 import { runShutdownHooks } from './shutdown.ts';
 // Imported lazily to avoid a hard dependency that breaks when fino:realm is

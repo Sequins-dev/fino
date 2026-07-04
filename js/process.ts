@@ -92,6 +92,12 @@
 */
 import { os, arch, args, env, execPath } from 'internal:process';
 import { dlopen, Pointer } from 'fino:ffi';
+import { spawnStrictSandboxed } from './internal/security/sandbox/spawn.ts';
+import { killAndRemoveCgroup, cgroupCpuAvailable } from './internal/security/sandbox/cgroup.ts';
+import { landlockAvailable } from './internal/security/sandbox/landlock.ts';
+import { seccompAvailable } from './internal/security/sandbox/seccomp.ts';
+import { seatbeltAvailable } from './internal/security/sandbox/seatbelt.ts';
+import type { SandboxPolicy } from './internal/security/sandbox/plan.ts';
 import { encodeUtf8, decodeUtf8 } from './globals/encoding.ts';
 import { FdReader, FdWriter } from './internal/stream.ts';
 import * as loop from './internal/runtime/loop.ts';
@@ -139,6 +145,299 @@ export interface ProcessOptions {
   * ```
   */
   env?: Record<string, string>;
+  /**
+  * Optional sandbox request for this child process.
+  *
+  * The sandbox API is capability-reported. `strict` mode requests an
+  * OS-enforced security boundary installed before the child runs and fails
+  * closed when the platform cannot enforce every requested category.
+  * `bestEffort` mode may spawn the child without enforcing requested policy
+  * categories, but the returned `Process.sandboxReport` records exactly what
+  * happened.
+  *
+  * ```ts no_run
+  * import { Process, type ProcessOptions } from 'fino:process';
+  *
+  * const opts: ProcessOptions = {
+  *   sandbox: {
+  *     mode: 'bestEffort',
+  *     resources: { memoryBytes: 64 * 1024 * 1024 }
+  *   }
+  * };
+  * const proc = new Process('/bin/echo', ['hello'], opts);
+  * console.log(proc.sandboxReport.enforced.length);
+  * ```
+  */
+  sandbox?: ProcessSandboxOptions;
+}
+/**
+* Sandbox options for a child process.
+*
+* This type describes the requested policy. It is not the same thing as the
+* enforced policy. Always inspect `Process.sandboxReport` after construction to
+* see which categories were actually enforced by the selected backend.
+*/
+export interface ProcessSandboxOptions {
+  /**
+  * Requested sandbox mode.
+  *
+  * `strict` is a security-boundary request and fails closed unless a strict
+  * backend can enforce the policy before child code runs. `bestEffort` is not a
+  * security boundary; it only reports the platform/backend subsets that were
+  * enforced.
+  */
+  mode: 'strict' | 'bestEffort';
+  /**
+  * Resource limits requested for the child and descendants.
+  */
+  resources?: ProcessSandboxResources;
+  /**
+  * Filesystem access policy requested for the child.
+  */
+  filesystem?: ProcessSandboxFilesystem;
+  /**
+  * Network access policy requested for the child.
+  */
+  network?: ProcessSandboxNetwork;
+  /**
+  * Process creation and execution policy requested for the child.
+  */
+  process?: ProcessSandboxProcessPolicy;
+  /**
+  * Syscall policy requested for the child.
+  */
+  syscalls?: ProcessSandboxSyscalls;
+}
+/**
+* Resource limits requested for a sandboxed process.
+*/
+export interface ProcessSandboxResources {
+  /**
+  * Maximum resident or cgroup memory in bytes when the backend supports an
+  * enforcing memory limit.
+  */
+  memoryBytes?: number;
+  /**
+  * Maximum process count when the backend supports PID-count limits.
+  */
+  pids?: number;
+  /**
+  * CPU quota as a fraction where `1` means one full CPU.
+  */
+  cpu?: number;
+}
+/**
+* Filesystem policy requested for a sandboxed process.
+*/
+export interface ProcessSandboxFilesystem {
+  /**
+  * Writable absolute paths requested inside the sandbox view.
+  */
+  writable?: string[];
+  /**
+  * Readonly absolute paths requested inside the sandbox view.
+  */
+  readonly?: string[];
+}
+/**
+* Network policy requested for a sandboxed process.
+*/
+export interface ProcessSandboxNetwork {
+  /**
+  * Outbound connect rules.
+  */
+  outbound?: ProcessSandboxNetworkRule[];
+  /**
+  * Inbound bind/listen rules.
+  */
+  inbound?: ProcessSandboxNetworkRule[];
+}
+/**
+* A single network policy rule.
+*/
+export interface ProcessSandboxNetworkRule {
+  /**
+  * Whether matching traffic should be allowed or denied.
+  */
+  action: 'allow' | 'deny';
+  /**
+  * Destination host, IP, CIDR, or `*`, depending on backend support.
+  */
+  destination?: string;
+  /**
+  * TCP or UDP port.
+  */
+  port?: number;
+  /**
+  * Network protocol covered by the rule.
+  */
+  protocol?: 'tcp' | 'udp';
+}
+/**
+* Process creation policy requested for a sandboxed process.
+*/
+export interface ProcessSandboxProcessPolicy {
+  /**
+  * Whether the child may fork or clone additional processes.
+  */
+  allowFork?: boolean;
+  /**
+  * Whether the child may exec a different binary after startup.
+  */
+  allowExec?: boolean;
+  /**
+  * Executable basenames or paths allowed by an enforcing backend.
+  */
+  allowedBinaries?: string[];
+}
+/**
+* Syscall policy requested for a sandboxed process.
+*/
+export interface ProcessSandboxSyscalls {
+  /**
+  * Syscall policy mode.
+  */
+  mode: 'allowlist' | 'denylist';
+  /**
+  * Syscall names in the selected policy mode.
+  */
+  names: string[];
+}
+/**
+* Effective sandbox report attached to each `Process`.
+*
+* A report is intentionally separate from the requested `sandbox` options so
+* callers can distinguish intent from enforcement. Best-effort mode is never a
+* security boundary.
+*/
+export interface ProcessSandboxReport {
+  /**
+  * Requested mode, or `none` when no sandbox was requested.
+  */
+  mode: 'none' | 'strict' | 'bestEffort';
+  /**
+  * Backend selected for the spawn.
+  */
+  backend: 'none' | 'linuxNative' | 'macosSeatbelt';
+  /**
+  * Whether the process is protected by a security boundary.
+  */
+  securityBoundary: boolean;
+  /**
+  * Policy categories supported by the selected backend.
+  */
+  supported: ProcessSandboxCapability[];
+  /**
+  * Policy categories that were enforced.
+  */
+  enforced: ProcessSandboxCapability[];
+  /**
+  * Requested categories that were not enforced.
+  */
+  unsupported: ProcessSandboxCapability[];
+  /**
+  * Backend and platform diagnostics that explain capability decisions.
+  */
+  diagnostics: string[];
+  /**
+  * Claimed behavior for denied operations.
+  */
+  violationBehavior: ProcessSandboxViolationBehavior[];
+}
+/**
+* Per-category sandbox capability status.
+*/
+export interface ProcessSandboxCapability {
+  /**
+  * Policy category covered by this report entry.
+  */
+  category: 'resources' | 'filesystem' | 'network' | 'process' | 'syscalls';
+  /**
+  * Human-readable explanation suitable for diagnostics.
+  */
+  reason: string;
+}
+/**
+* Denial behavior reported for an enforced sandbox category.
+*/
+export interface ProcessSandboxViolationBehavior {
+  /**
+  * Policy category covered by this behavior.
+  */
+  category: ProcessSandboxCapability['category'];
+  /**
+  * Observable behavior when the backend denies an operation.
+  */
+  behavior: 'kill' | 'eperm' | 'denySpawn' | 'auditOnly';
+  /**
+  * Human-readable explanation suitable for diagnostics.
+  */
+  reason: string;
+}
+/**
+* Sandbox capability summary for the current runtime process.
+*/
+export interface ProcessSandboxCapabilities {
+  /**
+  * Platform identifier used by the current runtime.
+  */
+  platform: string;
+  /**
+  * Whether `ProcessOptions.sandbox.mode = 'strict'` can currently enforce a
+  * security boundary.
+  */
+  strictAvailable: boolean;
+  /**
+  * Whether reporting-only best-effort sandbox metadata can be attached to a
+  * spawned process.
+  */
+  bestEffortAvailable: boolean;
+  /**
+  * Backends known to this runtime and their current availability.
+  */
+  backends: ProcessSandboxBackendCapability[];
+  /**
+  * Native platform features probed by the host runtime before JS startup.
+  */
+  features: ProcessSandboxNativeFeature[];
+}
+/**
+* Native sandbox-related host capability.
+*/
+export interface ProcessSandboxNativeFeature {
+  /**
+  * Stable feature name.
+  */
+  name: string;
+  /**
+  * Whether the feature appeared available at startup.
+  */
+  available: boolean;
+  /**
+  * Human-readable explanation for the feature state.
+  */
+  reason: string;
+}
+/**
+* Availability details for a sandbox backend.
+*/
+export interface ProcessSandboxBackendCapability {
+  /**
+  * Backend name used by `ProcessSandboxReport.backend`.
+  */
+  name: ProcessSandboxReport['backend'];
+  /**
+  * Whether the backend can currently be selected.
+  */
+  available: boolean;
+  /**
+  * Human-readable reason for the current availability state.
+  */
+  reason: string;
+  /**
+  * Policy categories this backend can enforce when available.
+  */
+  supported: ProcessSandboxCapability['category'][];
 }
 /**
 * Exit status returned by `Process.wait`.
@@ -799,6 +1098,275 @@ const _signalNumbers: Record<string, number> = {
 const _childDefaultSignals = Object.values(_signalNumbers).filter((signo) => signo !== SIGKILL);
 /** Set of signal names already registered with the event loop. */
 const _registeredSignals = new Set<string>();
+const _emptySandboxReport: ProcessSandboxReport = {
+  mode: 'none',
+  backend: 'none',
+  securityBoundary: false,
+  supported: [],
+  enforced: [],
+  unsupported: [],
+  diagnostics: [],
+  violationBehavior: []
+};
+// Sandbox mechanism availability is probed directly through the enforcement
+// modules — no native daemon probe. Each feature reflects a real syscall/tool
+// check on the current host.
+function probeSandboxFeatures(): ProcessSandboxNativeFeature[] {
+  if (isLinux) {
+    return [
+      { name: 'landlock', available: landlockAvailable(), reason: landlockAvailable() ? 'Landlock LSM is enabled' : 'Landlock LSM is not enabled on this kernel' },
+      { name: 'seccomp', available: seccompAvailable(), reason: seccompAvailable() ? 'seccomp filtering is available' : 'seccomp is not available on this kernel' },
+      { name: 'cgroup-cpu', available: cgroupCpuAvailable(), reason: cgroupCpuAvailable() ? 'a delegated cgroup v2 cpu controller is available' : 'no delegated cgroup v2 cpu controller' }
+    ];
+  }
+  const seatbelt = seatbeltAvailable();
+  return [{ name: 'macos-seatbelt', available: seatbelt, reason: seatbelt ? 'sandbox-exec can apply Seatbelt profiles' : 'sandbox-exec is unavailable' }];
+}
+// Probing touches syscalls and TextEncoder, which are not available at module
+// evaluation, so features and capabilities are computed lazily on first use and
+// cached.
+let _sandboxFeaturesCache: ProcessSandboxNativeFeature[] | undefined;
+function sandboxFeatures(): ProcessSandboxNativeFeature[] {
+  if (_sandboxFeaturesCache === undefined) _sandboxFeaturesCache = probeSandboxFeatures();
+  return _sandboxFeaturesCache;
+}
+function nativeSandboxFeatureAvailable(name: string): boolean {
+  return sandboxFeatures().some((feature) => feature.name === name && feature.available);
+}
+function linuxStrictSupportedCategories(): ProcessSandboxCapability['category'][] {
+  return [
+    'resources',
+    ...isLinux && landlockAvailable() ? ['filesystem' as const] : [],
+    'network',
+    'process',
+    'syscalls'
+  ];
+}
+function macosStrictSupportedCategories(): ProcessSandboxCapability['category'][] {
+  return nativeSandboxFeatureAvailable('macos-seatbelt') ? ['resources', 'filesystem', 'network', 'process'] : [];
+}
+function buildSandboxCapabilities(): ProcessSandboxCapabilities {
+  const macos = macosStrictSupportedCategories();
+  return {
+    platform: os,
+    strictAvailable: isLinux || macos.length > 0,
+    bestEffortAvailable: true,
+    backends: [{
+      name: 'none',
+      available: true,
+      reason: 'reporting-only backend; no sandbox policy is enforced',
+      supported: []
+    }, {
+      name: 'linuxNative',
+      available: isLinux,
+      reason: isLinux ? 'in-process Linux strict sandbox spawn path is available for probed Linux enforcement features' : 'linuxNative requires Linux',
+      supported: linuxStrictSupportedCategories()
+    }, {
+      name: 'macosSeatbelt',
+      available: macos.length > 0,
+      reason: os === 'darwin' ? nativeSandboxFeatureAvailable('macos-seatbelt') ? 'sandbox-exec can apply Seatbelt profiles' : 'macOS Seatbelt probe failed; strict sandbox fails closed' : 'macosSeatbelt requires macOS',
+      supported: macos
+    }],
+    features: sandboxFeatures()
+  };
+}
+/**
+* Report sandbox backend capabilities for the current runtime.
+*
+* This function does not spawn a process and does not imply enforcement. It is
+* intended for feature detection and diagnostics before choosing
+* `ProcessOptions.sandbox`. `strictAvailable` reflects whether an enforcing
+* backend can be selected on this host; `bestEffort` is always available as
+* reporting metadata only.
+*
+* ```ts no_run
+* import { processSandboxCapabilities } from 'fino:process';
+*
+* const caps = processSandboxCapabilities();
+* if (!caps.strictAvailable) console.log(caps.backends);
+* ```
+*/
+export function processSandboxCapabilities(): ProcessSandboxCapabilities {
+  return buildSandboxCapabilities();
+}
+function requestedSandboxCategories(sandbox: ProcessSandboxOptions): ProcessSandboxCapability[] {
+  const unsupported: ProcessSandboxCapability[] = [];
+  if (sandbox.resources !== undefined) {
+    unsupported.push({
+      category: 'resources',
+      reason: 'resource limits require a sandbox backend; this spawn used posix_spawnp'
+    });
+  }
+  if (sandbox.filesystem !== undefined) {
+    unsupported.push({
+      category: 'filesystem',
+      reason: 'filesystem policy requires an enforcing sandbox backend'
+    });
+  }
+  if (sandbox.network !== undefined) {
+    unsupported.push({
+      category: 'network',
+      reason: 'network policy requires an enforcing sandbox backend'
+    });
+  }
+  if (sandbox.process !== undefined) {
+    unsupported.push({
+      category: 'process',
+      reason: 'process policy requires an enforcing sandbox backend'
+    });
+  }
+  if (sandbox.syscalls !== undefined) {
+    unsupported.push({
+      category: 'syscalls',
+      reason: 'syscall policy requires an enforcing sandbox backend'
+    });
+  }
+  return unsupported;
+}
+function assertSandboxNumber(value: unknown, path: string, integer = false): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value))) {
+    throw new Error(`${path} must be a positive ${integer ? 'integer' : 'finite number'}`);
+  }
+}
+function assertSandboxString(value: unknown, path: string): void {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${path} must be a non-empty string`);
+  }
+  if (value.includes('\0') || value.includes('\n')) {
+    throw new Error(`${path} must not contain null bytes or newlines`);
+  }
+}
+function assertSandboxAbsolutePath(value: unknown, path: string): void {
+  assertSandboxString(value, path);
+  if (!(value as string).startsWith('/')) {
+    throw new Error(`${path} must be an absolute path`);
+  }
+}
+function assertSandboxStringArray(value: unknown, path: string, validate: (entry: unknown, entryPath: string) => void): void {
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+  for (let i = 0; i < value.length; i++) validate(value[i], `${path}[${i}]`);
+}
+function validateSandboxNetworkRules(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+  for (let i = 0; i < value.length; i++) {
+    const rulePath = `${path}[${i}]`;
+    const rule = value[i] as ProcessSandboxNetworkRule;
+    if (rule == null || typeof rule !== 'object') throw new Error(`${rulePath} must be an object`);
+    if (rule.action !== 'allow' && rule.action !== 'deny') throw new Error(`${rulePath}.action must be 'allow' or 'deny'`);
+    if (rule.destination !== undefined) assertSandboxString(rule.destination, `${rulePath}.destination`);
+    if (rule.port !== undefined) {
+      if (typeof rule.port !== 'number' || !Number.isInteger(rule.port) || rule.port < 1 || rule.port > 65535) {
+        throw new Error(`${rulePath}.port must be an integer from 1 to 65535`);
+      }
+    }
+    if (rule.protocol !== undefined && rule.protocol !== 'tcp' && rule.protocol !== 'udp') {
+      throw new Error(`${rulePath}.protocol must be 'tcp' or 'udp'`);
+    }
+  }
+}
+function assertCoarseNetworkRules(rules: ProcessSandboxNetworkRule[] | undefined, path: string): void {
+  if (rules === undefined) return;
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i];
+    const rulePath = `${path}[${i}]`;
+    if (rule.destination !== undefined && rule.destination !== '*') {
+      throw new Error(`${rulePath}.destination '${rule.destination}' requires filtered egress, which is not yet supported; strict mode only enforces coarse allow/deny of all network access`);
+    }
+    if (rule.port !== undefined) {
+      throw new Error(`${rulePath}.port requires filtered egress, which is not yet supported; strict mode only enforces coarse allow/deny of all network access`);
+    }
+    if (rule.protocol !== undefined) {
+      throw new Error(`${rulePath}.protocol requires filtered egress, which is not yet supported; strict mode only enforces coarse allow/deny of all network access`);
+    }
+  }
+}
+function validateSandboxOptions(sandbox: ProcessSandboxOptions): void {
+  if (sandbox.resources !== undefined) {
+    const resources = sandbox.resources;
+    if (resources.memoryBytes !== undefined) assertSandboxNumber(resources.memoryBytes, 'sandbox.resources.memoryBytes', true);
+    if (resources.pids !== undefined) assertSandboxNumber(resources.pids, 'sandbox.resources.pids', true);
+    if (resources.cpu !== undefined) assertSandboxNumber(resources.cpu, 'sandbox.resources.cpu');
+  }
+  if (sandbox.filesystem !== undefined) {
+    const filesystem = sandbox.filesystem;
+    if (filesystem.writable !== undefined) assertSandboxStringArray(filesystem.writable, 'sandbox.filesystem.writable', assertSandboxAbsolutePath);
+    if (filesystem.readonly !== undefined) assertSandboxStringArray(filesystem.readonly, 'sandbox.filesystem.readonly', assertSandboxAbsolutePath);
+  }
+  if (sandbox.network !== undefined) {
+    validateSandboxNetworkRules(sandbox.network.outbound, 'sandbox.network.outbound');
+    validateSandboxNetworkRules(sandbox.network.inbound, 'sandbox.network.inbound');
+  }
+  if (sandbox.process !== undefined) {
+    const process = sandbox.process;
+    if (process.allowFork !== undefined && typeof process.allowFork !== 'boolean') throw new Error('sandbox.process.allowFork must be a boolean');
+    if (process.allowExec !== undefined && typeof process.allowExec !== 'boolean') throw new Error('sandbox.process.allowExec must be a boolean');
+    if (process.allowedBinaries !== undefined) assertSandboxStringArray(process.allowedBinaries, 'sandbox.process.allowedBinaries', assertSandboxString);
+  }
+  if (sandbox.syscalls !== undefined) {
+    const syscalls = sandbox.syscalls;
+    if (syscalls.mode !== 'allowlist' && syscalls.mode !== 'denylist') throw new Error("sandbox.syscalls.mode must be 'allowlist' or 'denylist'");
+    assertSandboxStringArray(syscalls.names, 'sandbox.syscalls.names', assertSandboxString);
+  }
+}
+function resolveSandboxReport(sandbox: ProcessSandboxOptions | undefined): ProcessSandboxReport {
+  if (sandbox === undefined) return _emptySandboxReport;
+  if (sandbox.mode !== 'strict' && sandbox.mode !== 'bestEffort') {
+    throw new Error(`Unsupported sandbox mode: ${String(sandbox.mode)}`);
+  }
+  validateSandboxOptions(sandbox);
+  if (sandbox.mode === 'strict') {
+    validateStrictSandboxSupported(sandbox);
+    throw new Error('strict sandbox mode must use native sandbox spawn');
+  }
+  return {
+    mode: 'bestEffort',
+    backend: 'none',
+    securityBoundary: false,
+    supported: [],
+    enforced: [],
+    unsupported: requestedSandboxCategories(sandbox),
+    diagnostics: ['No sandbox backend is active; child spawned through posix_spawnp with reporting-only best-effort sandbox metadata'],
+    violationBehavior: []
+  };
+}
+function validateStrictSandboxSupported(sandbox: ProcessSandboxOptions): void {
+  // Strict mode is fail-closed: if a requested category has no enforcement
+  // mechanism on this host, reject before spawn rather than run a child that
+  // believes it is sandboxed when it is not.
+  assertCoarseNetworkRules(sandbox.network?.outbound, 'sandbox.network.outbound');
+  assertCoarseNetworkRules(sandbox.network?.inbound, 'sandbox.network.inbound');
+  const wantsExecScope = sandbox.process?.allowExec === false
+    || (sandbox.process?.allowedBinaries?.length ?? 0) > 0;
+  const wantsSeccomp = sandbox.syscalls !== undefined
+    || sandbox.process?.allowFork === false
+    || sandbox.network !== undefined;
+  if (!isLinux) {
+    if (os !== 'darwin' || !nativeSandboxFeatureAvailable('macos-seatbelt')) {
+      throw new Error('strict sandbox mode is not available on this platform');
+    }
+    // macOS enforces filesystem, process-exec scoping, and coarse network via
+    // Seatbelt. Syscall filtering and fork denial have no Seatbelt equivalent
+    // mapped to this API, so they remain Linux-only and fail closed here.
+    if (sandbox.syscalls !== undefined) {
+      throw new Error('strict sandbox syscalls policy requires Linux seccomp support');
+    }
+    if (sandbox.process?.allowFork === false) {
+      throw new Error('strict sandbox process.allowFork policy requires Linux seccomp support');
+    }
+    return;
+  }
+  // Linux: probe each mechanism the policy needs and fail loudly if absent.
+  if ((sandbox.filesystem !== undefined || wantsExecScope) && !landlockAvailable()) {
+    throw new Error('strict sandbox filesystem/process-exec policy requires the Landlock LSM, which is not enabled on this kernel');
+  }
+  if (wantsSeccomp && !seccompAvailable()) {
+    throw new Error('strict sandbox syscalls/process/network policy requires seccomp, which is not enabled on this kernel');
+  }
+  if (sandbox.resources?.cpu !== undefined && !cgroupCpuAvailable()) {
+    throw new Error('strict sandbox resources.cpu requires a delegated cgroup v2 cpu controller (set FINO_SANDBOX_CGROUP_ROOT to a subtree with cpu enabled in cgroup.subtree_control); there is no rlimit equivalent for a fractional CPU quota');
+  }
+}
 /**
 * Subscribe to a POSIX signal via a Topic.
 *
@@ -955,6 +1523,27 @@ export class Process {
   */
   #stderr: FdReader;
   /**
+  * Effective sandbox report for this process.
+  *
+  * @internal
+  */
+  #sandboxReport: ProcessSandboxReport;
+  /**
+  * Per-spawn cgroup path to tear down once the child is reaped, if the strict
+  * sandbox created one. Undefined for non-cgroup spawns.
+  *
+  * @internal
+  */
+  #cgroupPath: string | undefined;
+  /**
+  * How to reap descendants of a strict-sandboxed child on teardown: via the
+  * spawn cgroup's `cgroup.kill`, or by killing the child's process group.
+  * Undefined for non-strict spawns.
+  *
+  * @internal
+  */
+  #descendantCleanup: 'cgroup' | 'processGroup' | undefined;
+  /**
   * True after `wait()` has been called once.
   *
   * @internal
@@ -986,6 +1575,57 @@ export class Process {
   constructor(command: string, cmdArgs: string[], opts?: ProcessOptions) {
     if (opts == null) opts = {};
     if (cmdArgs == null) cmdArgs = [];
+    if (opts.sandbox?.mode === 'strict') {
+      validateSandboxOptions(opts.sandbox);
+      validateStrictSandboxSupported(opts.sandbox);
+      const spawned = spawnStrictSandboxed(
+        command,
+        cmdArgs,
+        { cwd: opts.cwd, env: opts.env },
+        opts.sandbox as unknown as SandboxPolicy,
+        env as Record<string, string>,
+        (launcherArgs, inheritFds) => this.#spawnWithPipes(execPath, [execPath, ...launcherArgs], {}, inheritFds),
+        isLinux && landlockAvailable()
+      );
+      this.#pid = spawned.pid;
+      this.#stdin = new FdWriter(spawned.stdinFd, function closeStdin() {
+        lib.symbols.close(spawned.stdinFd);
+      });
+      this.#stdout = new FdReader(spawned.stdoutFd, function closeStdout() {
+        lib.symbols.close(spawned.stdoutFd);
+      });
+      this.#stderr = new FdReader(spawned.stderrFd, function closeStderr() {
+        lib.symbols.close(spawned.stderrFd);
+      });
+      this.#sandboxReport = spawned.report as unknown as ProcessSandboxReport;
+      this.#cgroupPath = spawned.cgroupPath;
+      this.#descendantCleanup = spawned.descendantCleanup;
+      this.#waitStarted = false;
+      return;
+    }
+    const sandboxReport = resolveSandboxReport(opts.sandbox);
+    const spawned = this.#spawnWithPipes(command, [command, ...cmdArgs], opts);
+    this.#pid = spawned.pid;
+    this.#stdin = new FdWriter(spawned.stdinFd, function closeStdin() {
+      lib.symbols.close(spawned.stdinFd);
+    });
+    this.#stdout = new FdReader(spawned.stdoutFd, function closeStdout() {
+      lib.symbols.close(spawned.stdoutFd);
+    });
+    this.#stderr = new FdReader(spawned.stderrFd, function closeStderr() {
+      lib.symbols.close(spawned.stderrFd);
+    });
+    this.#sandboxReport = sandboxReport;
+    this.#cgroupPath = undefined;
+    this.#descendantCleanup = undefined;
+    this.#waitStarted = false;
+  }
+  #spawnWithPipes(command: string, execArgv: string[], opts: ProcessOptions, _inheritFds?: number[]): {
+    pid: number;
+    stdinFd: number;
+    stdoutFd: number;
+    stderrFd: number;
+  } {
     // Create three pipes: each pipe(buf) fills buf with [readFd, writeFd].
     const stdinBuf = new ArrayBuffer(8);
     const stdoutBuf = new ArrayBuffer(8);
@@ -1010,7 +1650,6 @@ export class Process {
     const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
     const [stderrR, stderrW] = readPipeFds(stderrBuf);
     // Build posix_spawnp argv / envp while the backing buffers are still local.
-    const execArgv = [command, ...cmdArgs];
     const envVars = opts.env ?? env;
     const envStrings = Object.entries(envVars).map(([k, v]) => `${k}=${v}`);
     const { ptrBuf: argvBuf, bufs: argvBufs } = buildCStringArray(execArgv);
@@ -1077,20 +1716,11 @@ export class Process {
     setNonblocking(stdinW);
     setNonblocking(stdoutR);
     setNonblocking(stderrR);
-    this.#pid = childPid;
-    this.#stdin = new FdWriter(stdinW, function closeStdin() {
-      lib.symbols.close(stdinW);
-    });
-    this.#stdout = new FdReader(stdoutR, function closeStdout() {
-      lib.symbols.close(stdoutR);
-    });
-    this.#stderr = new FdReader(stderrR, function closeStderr() {
-      lib.symbols.close(stderrR);
-    });
-    this.#waitStarted = false;
     // Keep CString buffers definitely live until after posix_spawnp returns.
     void argvBufs;
     void envpBufs;
+    void _inheritFds;
+    return { pid: childPid, stdinFd: stdinW, stdoutFd: stdoutR, stderrFd: stderrR };
   }
   /**
   * Writer connected to the child's stdin.
@@ -1158,6 +1788,26 @@ export class Process {
     return this.#pid;
   }
   /**
+  * Effective sandbox report for this child process.
+  *
+  * The report describes what was actually enforced, not just what was
+  * requested in `ProcessOptions.sandbox`. When no sandbox was requested the
+  * report uses `mode: 'none'`. `bestEffort` reports are diagnostic only and do
+  * not indicate a security boundary.
+  *
+  * ```ts no_run
+  * import { Process } from 'fino:process';
+  *
+  * const proc = new Process('/bin/echo', ['hello'], {
+  *   sandbox: { mode: 'bestEffort' }
+  * });
+  * console.log(proc.sandboxReport.securityBoundary);
+  * ```
+  */
+  get sandboxReport(): ProcessSandboxReport {
+    return this.#sandboxReport;
+  }
+  /**
   * Wait for the child process to exit using kernel notifications.
   *
   * - macOS: registers EVFILT_PROC via kqueue - zero-latency, zero-CPU wait.
@@ -1197,6 +1847,18 @@ export class Process {
     const statusBuf = new ArrayBuffer(4);
     const statusView = new DataView(statusBuf);
     lib.symbols.waitpid(this.#pid, statusBuf, 0);
+    // Reap descendants the direct child left behind. A per-spawn cgroup takes
+    // down its whole tree via cgroup.kill; otherwise the child was made a
+    // process-group leader and kill(-pgid) reaps any orphans in that group.
+    if (this.#descendantCleanup === 'cgroup' && this.#cgroupPath !== undefined) {
+      killAndRemoveCgroup(this.#cgroupPath);
+    } else if (this.#descendantCleanup === 'processGroup') {
+      // Negative pid targets the process group; ESRCH (no members) is expected
+      // for a child that spawned nothing and is harmless.
+      lib.symbols.kill(-this.#pid, SIGKILL);
+    }
+    this.#cgroupPath = undefined;
+    this.#descendantCleanup = undefined;
     const s = statusView.getInt32(0, true);
     // WIFEXITED: low 7 bits are zero
     if ((s & 127) === 0) return {
