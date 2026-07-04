@@ -75,14 +75,14 @@ If neither `protocol` nor `selectProtocol` is provided, no subprotocol is negoti
 
 ## Server-side WebSocket with App
 
-`app.websocket()` from `fino:net/http/app` is a higher-level alternative when you already use the router:
+`route().websocket()` from `fino:net/http/app` is a higher-level alternative when you already use the router. It is a terminal: middleware and values enriched on the branch run before the upgrade is accepted, and middleware can reject the upgrade by returning a `Response`. A plain HTTP request to a WebSocket-only path gets 426 Upgrade Required:
 
 ```ts
 import { App } from 'fino:net/http/app';
 
 const app = new App();
 
-app.websocket('/chat/:room', async (socket, ctx) => {
+app.route('/chat/:room').websocket(async (socket, ctx) => {
   const room = ctx.params?.room;
   socket.addEventListener('message', (e) => {
     socket.send(`[${room}] ${(e as MessageEvent).data}`);

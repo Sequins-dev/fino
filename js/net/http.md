@@ -15,9 +15,9 @@ The subsystem has several focused surfaces that cover different concerns. Pick b
 
 **Making outbound HTTP requests** — either use the global `fetch()` for one-shot requests, or `HttpClient` from `fino:net/http/client` for reusable policy, protocol control, rich response metadata, persistent logical sessions, and built-in SSE and WebSocket helpers. See the [client guide](./http/http-client.md).
 
-**WebSockets** — the `WebSocket` global covers the client side. The server side goes through `serve()` or `app.websocket()`, which surface an `IncomingWebSocketRequest` whose `accept()` method returns a `WebSocketConnection` from `fino:net/http/websocket`. See the [WebSockets guide](./http/websockets.md).
+**WebSockets** — the `WebSocket` global covers the client side. The server side goes through `serve()` or a `route().websocket()` operation, which surface an `IncomingWebSocketRequest` whose `accept()` method returns a `WebSocketConnection` from `fino:net/http/websocket`. See the [WebSockets guide](./http/websockets.md).
 
-**Server-sent events** — `app.sse()` registers a streaming route whose handler writes events through an `EventSourceWriter`. The `EventSource` global covers client-side SSE, and `parseEventStream` from `fino:net/http/eventstream` parses streaming SSE bodies (POST-based APIs included). Streaming agent responses over SSE is shown in the [AI section](../ai.md). See the [server-sent events guide](./http/server-sent-events.md).
+**Server-sent events** — `route().sse()` registers a streaming operation whose handler writes events through an `EventSourceWriter`. The `EventSource` global covers client-side SSE, and `parseEventStream` from `fino:net/http/eventstream` parses streaming SSE bodies (POST-based APIs included). Streaming agent responses over SSE is shown in the [AI section](../ai.md). See the [server-sent events guide](./http/server-sent-events.md).
 
 **WebTransport** — `WebTransport` from `fino:net/http/webtransport` is the client entry point. The server side surfaces an `IncomingWebTransportRequest` through `serve()`. Requires HTTP/3 and QUIC. See the [WebTransport guide](./http/web-transport.md).
 

@@ -96,7 +96,7 @@ const bot = agent({
 const store = new InMemorySessionStore();
 
 const app = new App();
-app.post('/chat', async (ctx) => {
+app.post('/chat').handle(async (ctx) => {
   const body = await ctx.request.json() as { threadId?: string; text: string };
   const result = await session({
     store,
@@ -125,7 +125,7 @@ await fetch('http://127.0.0.1:3000/chat', {
 ```
 
 To stream a reply token by token instead of waiting for the full turn, serve
-the agent from an `app.sse()` route and write `streamText()` deltas as events —
+the agent from a `route().sse()` operation and write `streamText()` deltas as events —
 the project README shows exactly that, and the
 [server-sent events guide](./net/http/server-sent-events.md) covers the route
 type.

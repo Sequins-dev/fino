@@ -5,16 +5,16 @@ weight: 15
 
 Server-sent events (SSE) are a one-way push channel from server to client carried inside a regular HTTP response. The server sets `Content-Type: text/event-stream` and writes a sequence of text frames; the client reads them and fires events. SSE reconnects automatically when the connection drops and resumes from the last received event ID.
 
-## SSE routes with app.sse()
+## SSE routes with route().sse()
 
-The primary way to serve SSE is an `app.sse()` route. The handler receives an `EventSourceWriter` wired to the response body: the route responds with `text/event-stream` immediately, streams every event the handler writes, and ends the stream when the handler returns. The route matches both GET (for `EventSource` clients) and POST (for fetch-based clients that send a request body):
+The primary way to serve SSE is the `sse()` terminal on a route builder. The handler receives an `EventSourceWriter` wired to the response body: the route responds with `text/event-stream` immediately, streams every event the handler writes, and ends the stream when the handler returns. One operation matches both GET (for `EventSource` clients) and POST (for fetch-based clients that send a request body); other methods return 405:
 
 ```ts
 import { App } from 'fino:net/http/app';
 
 const app = new App();
 
-app.sse('/ticks', async (events, ctx) => {
+app.route('/ticks').sse(async (events, ctx) => {
   await events.write({ data: 'connected' });
 
   for (let i = 0; i < 5; i++) {
@@ -27,11 +27,20 @@ app.sse('/ticks', async (events, ctx) => {
 app.listen({ port: 3000 });
 ```
 
-A handler error terminates the stream. Middleware and context values compose the same way as other routes: `app.sse(path, ...middleware, handler)`.
+A handler error terminates the stream. Middleware and context values enrich the branch before the terminal, like any other route:
+
+```ts
+app.route('/feed')
+  .use(requireSession)
+  .value('user', currentUser)
+  .sse(async (events, ctx) => {
+    await events.write({ data: `hello ${ctx.user}` });
+  });
+```
 
 ## Sending SSE from a raw server handler
 
-Under `serveHttp()` — or when a route needs response headers `app.sse()` does not set — use an async generator as the response body and format the event frames manually:
+Under `serveHttp()` — or when a route needs response headers the SSE terminal does not set — use an async generator as the response body and format the event frames manually:
 
 ```ts
 import { serveHttp } from 'fino:net/http/server';
@@ -62,7 +71,7 @@ The event wire format is straightforward: each event is one or more field lines 
 
 ## EventSourceWriter
 
-`EventSourceWriter` from `fino:net/http/eventstream` handles the formatting so you don't have to write SSE frame syntax manually. It is the writer that `app.sse()` hands to route handlers; to use it directly, wrap any byte writer — the writer end of a `Channel` pairs naturally with a streaming response body:
+`EventSourceWriter` from `fino:net/http/eventstream` handles the formatting so you don't have to write SSE frame syntax manually. It is the writer that SSE route operations hand to their handlers; to use it directly, wrap any byte writer — the writer end of a `Channel` pairs naturally with a streaming response body:
 
 ```ts
 import { EventSourceWriter } from 'fino:net/http/eventstream';

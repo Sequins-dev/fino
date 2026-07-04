@@ -58,7 +58,7 @@ surface for what you are building:
   policies, sessions, and metadata.
 - [WebSockets](./net/http/websockets.md) — client global and server-side
   connections.
-- [Server-Sent Events](./net/http/server-sent-events.md) — `app.sse()` routes,
+- [Server-Sent Events](./net/http/server-sent-events.md) — `route().sse()` operations,
   `EventSourceWriter`, and SSE parsing.
 - [WebTransport](./net/http/web-transport.md) — bidirectional transport over
   HTTP/3.

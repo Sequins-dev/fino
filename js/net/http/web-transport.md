@@ -155,14 +155,14 @@ serve({
 
 ## Using App for WebTransport routes
 
-`app.webtransport()` from `fino:net/http/app` registers a WebTransport route. The session is already accepted when the handler is called:
+`route().webtransport()` from `fino:net/http/app` registers a WebTransport operation. It is a terminal: branch middleware runs before the session is accepted. The session is already accepted when the handler is called:
 
 ```ts
 import { App } from 'fino:net/http/app';
 
 const app = new App();
 
-app.webtransport('/game', async (session, ctx) => {
+app.route('/game').webtransport(async (session, ctx) => {
   await session.ready;
   const rdr = session.incomingBidirectionalStreams.getReader();
   // handle streams

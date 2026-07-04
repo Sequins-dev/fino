@@ -39,7 +39,7 @@ const assistant = agent({
 
 const app = new App();
 
-app.sse('/chat', async (events, ctx) => {
+app.route('/chat').sse(async (events, ctx) => {
   const { message } = await ctx.request.json();
 
   for await (const text of streamText(assistant.stream(message))) {

@@ -7,6 +7,17 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | Builtin specifier | Benchmark coverage |
 | --- | --- |
 | `fino:ffi` | `benchmarks/ffi.bench.ts` |
+| `fino:commands/root` | not yet benchmarked |
+| `fino:commands/run` | not yet benchmarked |
+| `fino:commands/repl` | not yet benchmarked |
+| `fino:commands/test` | not yet benchmarked |
+| `fino:commands/bench` | not yet benchmarked |
+| `fino:commands/task` | not yet benchmarked |
+| `fino:commands/init` | not yet benchmarked |
+| `fino:commands/install` | not yet benchmarked |
+| `fino:commands/doc` | not yet benchmarked |
+| `fino:commands/fmt` | not yet benchmarked |
+| `fino:commands/lint` | not yet benchmarked |
 | `fino:realm` | `benchmarks/realm/index.bench.ts` |
 | `fino:module` | `benchmarks/module.bench.ts` |
 | `fino:realm/pool` | `benchmarks/realm/pool.bench.ts` |

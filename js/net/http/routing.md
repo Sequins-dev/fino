@@ -5,9 +5,20 @@ weight: 12
 
 `fino:net/http/app` provides `App` and `Router` — a composable routing and middleware framework built on top of `fino:net/http/server`. It targets APIs that need URLPattern routing, request-scoped values, middleware composition, and a machine-readable OpenAPI document without abandoning direct access to `Request` and `Response`.
 
+## The routing tree
+
+Route configuration is an **immutable enrichment tree**. Every non-terminal call — `use()`, `value()`, `meta()`, `route()`, and the verb methods — records a node pointing at its parent and returns a new builder around that node. A terminal — `.handle()` for HTTP methods, or `websocket()`, `sse()`, `webtransport()`, `rpc()`, and `mount()` on a route — resolves the branch it hangs off by walking back to the root and freezing the result into an operation.
+
+Two properties follow:
+
+- **A held builder reference is a fixed point in the tree.** `const r = app.route('/x'); r.value('a', p)` does not change `r` — the enriched builder is the *return value*. Chain calls, or reassign, to accumulate.
+- **Registration order is meaningful.** Middleware and values installed on the app apply to routes registered *after* them, Express-style. Unmatched requests always run the app's current chain before the fallback response.
+
+A later `value()` with the same name shadows an earlier one along a branch, and later `meta()` overrides earlier metadata key by key — last wins.
+
 ## The middleware model
 
-Middleware is Koa-style: each function receives `(ctx, next)` and can short-circuit by returning a `Response`, or call `await next()` and optionally mutate the downstream response. The order is: app-level middleware runs first, then route-level middleware, then the terminal handler.
+Middleware is Koa-style: each function receives `(ctx, next)` and can short-circuit by returning a `Response`, or call `await next()` and optionally mutate the downstream response. The order is: app-level middleware runs first, then route-level, then method-level, then the terminal handler.
 
 ```ts
 import { App, defineMiddleware } from 'fino:net/http/app';
@@ -22,27 +33,27 @@ const timing = defineMiddleware(async (ctx, next) => {
 });
 
 app.use(timing);
-app.get('/health', () => Response.json({ ok: true }));
+app.get('/health').handle(() => Response.json({ ok: true }));
 
 const server = app.listen({ port: 3000 });
 await server.close();
 ```
 
-`use()` accepts one or more middleware functions and appends them in call order. Middleware installed on `app` runs before any route. Middleware installed on a `router` or `route` builder runs only for requests matched by that scope.
+`use()` accepts one or more middleware functions and appends them in call order. Middleware is never passed inline to a verb — it always attaches through `.use()` on the branch it should cover.
 
 ## Registering routes
 
-The verb methods `get`, `post`, `put`, `patch`, `delete`, `head`, and `options` accept a path and an optional inline handler. When a handler is provided the route is registered immediately and the method returns the `App` for chaining:
+The verb methods `get`, `post`, `put`, `patch`, `delete`, `head`, and `options` take only a path and return a `MethodBuilder`; the handler always registers through the explicit `.handle()` terminal:
 
 ```ts
-app.get('/users', (ctx) => Response.json([]));
-app.post('/users', async (ctx) => {
+app.get('/users').handle((ctx) => Response.json([]));
+app.post('/users').handle(async (ctx) => {
   const body = await ctx.request.json();
   return Response.json(body, { status: 201 });
 });
 ```
 
-When no handler is provided, the verb method returns a `MethodBuilder` that lets you attach middleware and producers before calling `.handle()`:
+For fluent configuration, start from `route()` and enrich the branch before the terminal:
 
 ```ts
 import { App, body, schema } from 'fino:net/http/app';
@@ -58,9 +69,34 @@ app.route('/users/:id')
   });
 ```
 
+`.handle()` returns the parent route builder, so sibling methods chain on the same route:
+
+```ts
+app.route('/items')
+  .get().handle(() => Response.json([]))
+  .post().handle((ctx) => Response.json({}, { status: 201 }));
+```
+
+A request that matches a route's path with no matching method returns **405 Method Not Allowed** with an `Allow` header listing the methods that would have matched.
+
+## Nested routes
+
+`route()` on a route builder nests: the child path appends to the parent's, and the child branch inherits everything accumulated above it. This is the natural shape for REST controllers:
+
+```ts
+const users = app.route('/users').value('db', openDatabase);
+users.get().handle(listUsers);                       // GET /users
+users.post().handle(createUser);                     // POST /users
+
+const user = users.route('/:id')
+  .value('params', schema.params(v.object({ id: v.string() })));
+user.get().handle(showUser);                         // GET /users/:id
+user.delete().handle(removeUser);                    // DELETE /users/:id
+```
+
 ## Context values and producers
 
-A producer is an async function that runs at its position in the middleware stack and stores its result under a named slot in `HttpContext`. Duplicate slot names in the same inherited stack throw at build time, not at request time.
+A producer is an async function that runs at its position in the middleware chain and stores its result under a named slot in `HttpContext`:
 
 ```ts
 import { defineProducer } from 'fino:net/http/app';
@@ -142,7 +178,7 @@ const store = memorySessionStore();
 app.value('cookies', cookies())
    .value('session', sessions({ store }));
 
-app.get('/me', (ctx) => {
+app.get('/me').handle((ctx) => {
   const session = ctx.session as { id: string; data: Record<string, unknown>; isNew: boolean };
   session.data.visits = Number(session.data.visits ?? 0) + 1;
   return Response.json({ visits: session.data.visits });
@@ -173,30 +209,44 @@ app.use(staticFiles('/var/www', { index: 'index.html', prefix: '/static/' }));
 
 ## Routers and mounting
 
-`Router` is a reusable route collection that mounts under a path prefix. Router middleware combines with app-level middleware at mount time:
+`Router` is a reusable route collection. `mount()` is a terminal on a route builder: it resolves the router's operations into the target under the route's path, with anything accumulated on the branch prepended. A mounted router carries all of its operations — protocol routes included — and cannot be changed afterwards; registering on an already-mounted router throws.
 
 ```ts
-import { App, Router, body } from 'fino:net/http/app';
+import { App, Router } from 'fino:net/http/app';
 
 const usersRouter = new Router()
   .value('tenant', () => 'default');
 
-usersRouter.route('/users').get(() => Response.json([]));
+usersRouter.route('/users').get().handle(() => Response.json([]));
 
 const app = new App({ name: 'API' });
-app.mount('/v1', usersRouter);
+app.route('/v1').mount(usersRouter);
+```
+
+Routers mount into other routers the same way, so route trees compose:
+
+```ts
+const admin = new Router();
+admin.route('/stats').get().handle(showStats);
+
+const api = new Router();
+api.route('/admin').mount(admin);
+
+app.route('/v2').mount(api);                         // GET /v2/admin/stats
 ```
 
 ## WebSocket, SSE, and WebTransport routes
 
-`app.sse()` registers a server-sent events route. The handler receives an `EventSourceWriter` wired to the response body and the request context; the stream ends when the handler returns. The route matches GET and POST:
+The protocol methods are terminals on a route builder — they take the handler directly, and everything enriched on the branch (middleware, values) runs before the connection is established. Middleware can reject an upgrade by returning a `Response` instead of calling `next()`.
+
+`sse()` registers a server-sent events operation. The handler receives an `EventSourceWriter` wired to the response body; the stream ends when the handler returns. One operation matches both GET and POST:
 
 ```ts
 import { App } from 'fino:net/http/app';
 
 const app = new App();
 
-app.sse('/events', async (events, ctx) => {
+app.route('/events').sse(async (events, ctx) => {
   await events.write({ data: 'connected' });
   await events.write({ event: 'done', data: '{}' });
 });
@@ -204,30 +254,30 @@ app.sse('/events', async (events, ctx) => {
 
 See the [server-sent events guide](./server-sent-events.md) for the event format, heartbeats, and client-side parsing.
 
-`app.websocket()` registers a WebSocket route. The handler receives the `WebSocketConnection` and a context:
+`websocket()` registers a WebSocket operation. The handler receives the `WebSocketConnection` and the context:
 
 ```ts
-import { App } from 'fino:net/http/app';
-
-const app = new App();
-
-app.websocket('/chat', async (socket) => {
-  socket.addEventListener('message', (e) => socket.send((e as MessageEvent).data));
-});
+app.route('/chat')
+  .use(requireSession)
+  .websocket(async (socket, ctx) => {
+    socket.addEventListener('message', (e) => socket.send((e as MessageEvent).data));
+  });
 ```
 
-`app.webtransport()` registers a WebTransport route. The session is already accepted when the handler is called:
+`webtransport()` registers a WebTransport operation. The session is already accepted when the handler is called:
 
 ```ts
-app.webtransport('/session', async (session) => {
+app.route('/session').webtransport(async (session, ctx) => {
   const stream = await session.createBidirectionalStream();
   // ... use stream.readable and stream.writable
 });
 ```
 
+A plain HTTP request to a path served only by WebSocket or WebTransport operations returns **426 Upgrade Required** with an `Upgrade` header.
+
 ## JSON-RPC
 
-`rpc()` mounts a `JsonRpcService` as a POST endpoint. HTTP GET requests to the same path return 405:
+`rpc()` is a terminal that mounts a `JsonRpcService` as a POST operation. Other methods on the same path return 405 with `Allow: POST`:
 
 ```ts
 import { App } from 'fino:net/http/app';
@@ -236,7 +286,7 @@ import { JsonRpcService } from 'fino:jsonrpc';
 const svc = new JsonRpcService();
 svc.method('ping').handle(() => 'pong');
 
-app.rpc('/rpc', svc);
+app.route('/rpc').rpc(svc);
 ```
 
 ## Dispatching manually
@@ -250,7 +300,7 @@ console.log(res.status);
 
 ## OpenAPI
 
-`app.openapi()` generates an OpenAPI 3.1 document from all registered routes and accumulated metadata. Metadata from `defineMiddleware` and `defineProducer` is merged automatically:
+`app.openapi()` generates an OpenAPI 3.1 document from all registered operations and accumulated metadata. Metadata from `defineMiddleware` and `defineProducer` is merged automatically; HTTP, SSE, and RPC operations are documented (SSE paths emit GET and POST operations with a `text/event-stream` response), while WebSocket and WebTransport operations are not part of the OpenAPI surface.
 
 ```ts
 const doc = app.openapi({ version: '1.0.0', title: 'My API' });
@@ -259,7 +309,7 @@ const doc = app.openapi({ version: '1.0.0', title: 'My API' });
 `app.openapiHandler()` returns a `Handler` that serves the document as JSON:
 
 ```ts
-app.get('/openapi.json', app.openapiHandler({ version: '1.0.0' }));
+app.get('/openapi.json').handle(app.openapiHandler({ version: '1.0.0' }));
 ```
 
 Route-level metadata is added with `.meta()`:
@@ -274,7 +324,8 @@ app.route('/users/:id')
       '404': { description: 'Not found' },
     },
   })
-  .get((ctx) => Response.json({ id: ctx.params?.id }));
+  .get()
+  .handle((ctx) => Response.json({ id: ctx.params?.id }));
 ```
 
 ## Starting the server
