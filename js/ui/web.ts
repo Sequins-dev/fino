@@ -105,7 +105,10 @@ let currentRender: RenderEnv | null = null;
 const locks = new Map<string, Promise<void>>();
 
 function randomId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  let hex = '';
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, '0');
+  return `${prefix}_${hex}`;
 }
 
 function pageUrl(ctx: HttpContext): URL {
@@ -426,7 +429,7 @@ function handleLive(ctx: HttpContext, options: WebUIOptions): Response {
   const pagePath = new URL(ctx.request.url).pathname || '/';
   const sendSnapshot = async (controller: ReadableStreamDefaultController<Uint8Array>, viewId: string, force = false) => {
     const snapshot = await options.store.load(viewId);
-    if (snapshot === null) {
+    if (snapshot === null || (snapshot.sessionId !== undefined && snapshot.sessionId !== sessionId(ctx))) {
       writeSse(controller, { event: 'navigate', data: { url: pagePath, replace: true } });
       return;
     }
