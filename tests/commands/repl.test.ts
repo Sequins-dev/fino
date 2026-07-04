@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import { Process, env, execPath } from 'fino:process';
+import { _formatRawTerminalOutput } from 'fino:commands/repl';
 const encodeUtf8 = (value: string): Uint8Array => new TextEncoder().encode(value);
 const decodeUtf8 = (value: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(value);
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
@@ -135,6 +136,10 @@ describe('REPL realm', () => {
   });
 });
 describe('REPL CLI', () => {
+  it('formats raw terminal output with carriage-return line endings', (t) => {
+    t.equal(_formatRawTerminalOutput('Fino REPL\nType .exit to quit.\n\n> '), 'Fino REPL\r\nType .exit to quit.\r\n\r\n> ', 'raw terminal newlines return to column zero');
+    t.equal(_formatRawTerminalOutput('already\r\nok\n'), 'already\r\nok\r\n', 'existing CRLF line endings are preserved');
+  });
   it('evaluates stdin expressions and exits on .exit', async (t) => {
     const { stdout, stderr, result } = await runRepl('1 + 2\n.exit\n');
     t.equal(result.code, 0, 'repl exits successfully');
@@ -162,6 +167,23 @@ describe('REPL CLI', () => {
     t.equal(stderr, '', 'error repl does not write stderr');
     t.ok(stdout.includes('boom'), 'thrown error message is printed');
     t.ok(stdout.includes('> 42\n'), 'repl continues after thrown errors');
+  });
+  it('edits input at the cursor with left and right arrows', async (t) => {
+    const { stdout, stderr, result } = await runRepl('12\x1B[D+\x1B[C*10\n.exit\n');
+    t.equal(result.code, 0, 'cursor-edit repl exits successfully');
+    t.equal(stderr, '', 'cursor-edit repl does not write stderr');
+    t.ok(stdout.includes('> 21\n'), 'left and right arrows edit the submitted expression at the cursor');
+  });
+  it('navigates submitted input history with up and down arrows', async (t) => {
+    const { stdout, stderr, result } = await runRepl('1 + 2\n4 + 5\n\x1B[A\x1B[A\x1B[B\n.exit\n');
+    t.equal(result.code, 0, 'history repl exits successfully');
+    t.equal(stderr, '', 'history repl does not write stderr');
+    const results = [...stdout.matchAll(/^> (\d+)$/gm)].map((match) => match[1]);
+    t.deepEqual(results, [
+      '3',
+      '9',
+      '9'
+    ], 'up and down arrows recall previous submitted expressions');
   });
   it('falls back when a result cannot be JSON stringified', async (t) => {
     const { stdout, stderr, result } = await runRepl('const a = {}; a.self = a; a\n.exit\n');

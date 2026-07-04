@@ -23,9 +23,6 @@ async function print(text: string): Promise<void> {
   await stdout().write(enc.encode(text));
   await stdout().flush();
 }
-async function prompt(text: string): Promise<void> {
-  await print(text);
-}
 /**
 * Normalize text for terminals while raw mode is active.
 *
