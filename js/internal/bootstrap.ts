@@ -44,7 +44,7 @@ import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, r
 import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
-import { setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, Performance, performance } from '../globals/time.ts';
+import { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask, Performance, performance } from '../globals/time.ts';
 import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, crypto, cryptoAvailable, tlsAvailable, fetch, FetchLaterResult, fetchLater, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebSocketError, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts, BroadcastChannel } from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
 import { getWakeReadFd } from 'internal:thread-port';
@@ -162,6 +162,8 @@ for (const [name, value] of Object.entries({
   clearTimeout,
   setInterval,
   clearInterval,
+  setImmediate,
+  clearImmediate,
   queueMicrotask,
   Performance
 })) {

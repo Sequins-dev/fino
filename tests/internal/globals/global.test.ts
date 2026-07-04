@@ -64,6 +64,8 @@ describe('internal:globals/global registry', () => {
       'clearTimeout',
       'setInterval',
       'clearInterval',
+      'setImmediate',
+      'clearImmediate',
       'queueMicrotask',
       'performance'
     ]) {

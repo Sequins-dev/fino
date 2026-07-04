@@ -6,6 +6,8 @@
 *   - `clearTimeout(id)`
 *   - `setInterval(fn, ms, ...args)` → integer id
 *   - `clearInterval(id)`
+*   - `setImmediate(fn, ...args)`    → integer id
+*   - `clearImmediate(id)`
 *   - `queueMicrotask(fn)`
 *   - `performance.now()`            → milliseconds (float, monotonic)
 *
@@ -18,6 +20,7 @@
 *
 * ```ts no_run
 *   setTimeout(() => console.log('hi'), 500);
+*   setImmediate(() => console.log('after this turn'));
 * ```
 *
 *
@@ -309,6 +312,34 @@ export function setInterval(fn: (...args: any[]) => void, ms: number = 0, ...arg
 * @param {number} id
 */
 export function clearInterval(id: number): void {
+  clearTimeout(id);
+}
+// ---------------------------------------------------------------------------
+// setImmediate / clearImmediate
+// ---------------------------------------------------------------------------
+/**
+* Schedule `fn(...args)` to run after the current synchronous turn completes.
+*
+* Immediate callbacks use the same runtime loop and numeric id space as timers.
+* The returned id can be passed to `clearImmediate()` before the callback runs.
+*
+* ```typescript no_run
+* const id = setImmediate((name) => console.log(name), 'immediate');
+* clearImmediate(id);
+* ```
+*/
+export function setImmediate(fn: (...args: any[]) => void, ...args: any[]): number {
+  return setTimeout(fn, 0, ...args);
+}
+/**
+* Cancel a pending `setImmediate`. No-op if `id` is unknown or already fired.
+*
+* ```typescript no_run
+* const id = setImmediate(() => console.log('later'));
+* clearImmediate(id);
+* ```
+*/
+export function clearImmediate(id: number): void {
   clearTimeout(id);
 }
 // ---------------------------------------------------------------------------

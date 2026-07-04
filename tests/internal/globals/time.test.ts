@@ -1,6 +1,7 @@
 /**
-* Tests for timer globals: setTimeout, setInterval, clearTimeout, clearInterval,
-* queueMicrotask, and performance.now().
+* Tests for timer globals: setTimeout, setInterval, setImmediate,
+* clearTimeout, clearInterval, clearImmediate, queueMicrotask, and
+* performance.now().
 *
 * Also tests atob/btoa, structuredClone, console.count, and
 * console.countReset as globals.
@@ -10,6 +11,10 @@ type CloneMapValue = number | {
   x: number;
 };
 const { setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, performance } = globalThis;
+const { setImmediate, clearImmediate } = globalThis as typeof globalThis & {
+  setImmediate: (fn: (...args: any[]) => void, ...args: any[]) => number;
+  clearImmediate: (id: number) => void;
+};
 const { atob, btoa, structuredClone } = globalThis;
 const { console } = globalThis;
 describe('setTimeout', () => {
@@ -91,6 +96,52 @@ describe('setInterval / clearInterval', () => {
     const countAtCancel = count;
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
     t.equal(count, countAtCancel, 'no more calls after clearInterval');
+  });
+});
+describe('setImmediate / clearImmediate', () => {
+  it('is installed on globalThis', (t) => {
+    t.equal(typeof setImmediate, 'function', 'setImmediate is available');
+    t.equal(typeof clearImmediate, 'function', 'clearImmediate is available');
+  });
+  it('fires after synchronous code', async (t) => {
+    const order: string[] = [];
+    await new Promise<void>((resolve) => {
+      order.push('sync');
+      setImmediate(() => {
+        order.push('immediate');
+        resolve();
+      });
+      order.push('sync2');
+    });
+    t.deepEqual(order, ['sync', 'sync2', 'immediate'], 'immediate fires after sync code');
+  });
+  it('passes extra args to fn', async (t) => {
+    let received: [string, number] | undefined;
+    await new Promise<void>((resolve) => {
+      setImmediate((a: string, b: number) => {
+        received = [a, b];
+        resolve();
+      }, 'x', 42);
+    });
+    t.deepEqual(received, ['x', 42], 'args forwarded');
+  });
+  it('returns integer id', (t) => {
+    const id = setImmediate(() => {});
+    t.ok(typeof id === 'number' && id > 0, 'returns positive integer');
+    clearImmediate(id);
+  });
+  it('clearImmediate prevents callback', async (t) => {
+    let fired = false;
+    const id = setImmediate(() => {
+      fired = true;
+    });
+    clearImmediate(id);
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    t.equal(fired, false, 'callback was not called');
+  });
+  it('clearImmediate no-op on unknown id', (t) => {
+    clearImmediate(99999);
+    t.ok(true, 'still alive after no-op clearImmediate');
   });
 });
 describe('queueMicrotask', () => {
