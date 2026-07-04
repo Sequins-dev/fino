@@ -2937,6 +2937,7 @@ function disambiguateModules(modules: ModuleDoc[]): void {
   const counts = new Map<string, number>();
   for (const moduleDoc of modules) counts.set(moduleDoc.name, (counts.get(moduleDoc.name) ?? 0) + 1);
   for (const moduleDoc of modules) {
+    if (isAmbientSourceModule(moduleDoc)) continue;
     if ((counts.get(moduleDoc.name) ?? 0) <= 1 && moduleDoc.name !== 'index') continue;
     const oldName = moduleDoc.name;
     const newName = moduleNameFromPath(moduleDoc.path);
@@ -2946,6 +2947,9 @@ function disambiguateModules(modules: ModuleDoc[]): void {
     moduleDoc.sourceModule = newName;
     rewriteSymbolIds(moduleDoc, oldName, newName);
   }
+}
+function isAmbientSourceModule(moduleDoc: ModuleDoc): boolean {
+  return typeof moduleDoc.sourceModule === 'string' && moduleDoc.sourceModule.includes(':');
 }
 function moduleNameFromPath(path: string): string {
   let rel = path;

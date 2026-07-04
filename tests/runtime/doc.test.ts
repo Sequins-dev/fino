@@ -1164,6 +1164,51 @@ declare module 'fino:ffi' {
     t.equal(found.result.code, 0, 'doc search exits successfully');
     t.ok(found.stdout.includes('ffi.dlopen'), 'search finds runtime declaration symbols after js build');
   });
+  it('keeps ambient module names when a source file shares the basename', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/js/internal');
+    await fs.writeFile(appDir + '/js/internal/ffi.ts', `/**
+ * Internal ffi helpers.
+ *
+ * @internal
+ */
+
+/**
+ * Internal helper value.
+ */
+export const helper = 1;
+`);
+    await fs.writeFile(appDir + '/runtime-builtins.d.ts', `/**
+ * fino:ffi — Rust-backed native library loading.
+ */
+declare module 'fino:ffi' {
+  /**
+   * Open a dynamic library.
+   */
+  export function dlopen(path: string | null, symbols: Record<string, unknown>): unknown;
+}
+`);
+    const run = await runCli([
+      'doc',
+      'build',
+      '--format',
+      'markdown',
+      '--types',
+      'runtime-builtins.d.ts',
+      'js'
+    ], appDir);
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const ffi = json.modules.find((moduleDoc) => moduleDoc.sourceModule === 'fino:ffi');
+    t.ok(ffi, 'json keeps the ambient source module specifier');
+    t.equal(ffi?.name, 'ffi', 'ambient module keeps its specifier-derived name');
+    t.equal(json.modules.some((moduleDoc) => moduleDoc.name.includes('runtime-builtins')), false, 'no module is renamed after the declaration file');
+    const markdown = await fs.readFile(docsDir + '/ffi.md');
+    t.ok(markdown.includes('# ffi'), 'markdown titles the ambient module by its canonical name');
+    await removeTree(fs, appDir + '/js/internal');
+  });
   it('shows and searches fixed project docs artifacts', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
