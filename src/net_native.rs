@@ -81,13 +81,15 @@ fn collect_interfaces() -> Result<Vec<NativeInterface>, String> {
                 .to_string_lossy()
                 .into_owned();
             let index = unsafe { libc::if_nametoindex(ifa.ifa_name) };
-            let entry = by_name.entry(name.clone()).or_insert_with(|| NativeInterface {
-                index,
-                name,
-                flags: ifa.ifa_flags,
-                addresses: Vec::new(),
-                netmasks: Vec::new(),
-            });
+            let entry = by_name
+                .entry(name.clone())
+                .or_insert_with(|| NativeInterface {
+                    index,
+                    name,
+                    flags: ifa.ifa_flags,
+                    addresses: Vec::new(),
+                    netmasks: Vec::new(),
+                });
             entry.flags = ifa.ifa_flags;
             if let Some(addr) = sockaddr_to_native(ifa.ifa_addr) {
                 entry.addresses.push(addr);
@@ -100,7 +102,10 @@ fn collect_interfaces() -> Result<Vec<NativeInterface>, String> {
     }
 
     unsafe { libc::freeifaddrs(head) };
-    Ok(by_name.into_values().filter(|iface| iface.index > 0).collect())
+    Ok(by_name
+        .into_values()
+        .filter(|iface| iface.index > 0)
+        .collect())
 }
 
 #[cfg(not(unix))]
@@ -145,8 +150,18 @@ fn interfaces_to_js<'s>(
         set_string(scope, obj, "name", &iface.name);
         set_u32(scope, obj, "flags", iface.flags);
         set_bool(scope, obj, "up", iface.flags & libc::IFF_UP as u32 != 0);
-        set_bool(scope, obj, "loopback", iface.flags & libc::IFF_LOOPBACK as u32 != 0);
-        set_bool(scope, obj, "multicast", iface.flags & libc::IFF_MULTICAST as u32 != 0);
+        set_bool(
+            scope,
+            obj,
+            "loopback",
+            iface.flags & libc::IFF_LOOPBACK as u32 != 0,
+        );
+        set_bool(
+            scope,
+            obj,
+            "multicast",
+            iface.flags & libc::IFF_MULTICAST as u32 != 0,
+        );
         let addresses = addresses_to_js(scope, iface.addresses);
         set_value(scope, obj, "addresses", addresses.into());
         let netmasks = addresses_to_js(scope, iface.netmasks);

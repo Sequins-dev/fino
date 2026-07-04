@@ -1,11 +1,10 @@
-use ::v8;
+use v8;
 
 use crate::state::get_state;
 
 /// Build the `internal:process` synthetic module.
 ///
-/// Exports: `os`, `arch`, `args`, `env`, `execPath` — identical to the Boa
-/// implementation, but using V8's synthetic-module API.
+/// Exports: `os`, `arch`, `args`, `env`, `execPath`.
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["os", "arch", "args", "env", "execPath"]
         .iter()
