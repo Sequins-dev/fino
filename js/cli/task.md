@@ -1,7 +1,7 @@
 ---
 weight: 35
 ---
-# Project Tasks
+# task
 
 `fino task` loads project-local task modules and delegates the remaining argv to
 that task tree:
@@ -10,14 +10,33 @@ that task tree:
 fino task build --name api
 ```
 
-By default it reads direct source files from `tasks/`. Use `--dir` before the
-task name to load another directory:
+By default it reads direct source files from `tasks/`. Each direct task file
+must default-export a `Task`.
+
+## Arguments
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `args...` | no | Project task name and arguments delegated to the generated task tree. |
+
+## Flags
+
+| Flag | Value | Description |
+| --- | --- | --- |
+| `--dir` | string | Directory containing task modules. Defaults to `tasks`. |
+
+Use `--dir` before the project task name:
 
 ```sh
 fino task --dir scripts deploy
 ```
 
-Each direct task file must default-export a `Task`:
+## Task Files
+
+Supported extensions are `.ts`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs`.
+Hidden files, declaration files, and subdirectories are ignored. Files are
+sorted before import. Duplicate task names, invalid default exports, missing
+directories, and empty task directories are command errors.
 
 ```ts no_run
 import { task } from 'fino:task';
@@ -33,10 +52,17 @@ export default task({
 });
 ```
 
-Supported extensions are `.ts`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs`.
-Hidden files, declaration files, and subdirectories are ignored. Duplicate task
-names, invalid default exports, missing directories, and empty task directories
-are command errors.
+`fino task --help` imports the configured task directory and lists the loaded
+tasks. `fino task build --help` shows help for the selected project task.
+Importing task files executes project code, just like running an entry module.
+
+## Reuse
 
 Import the default task from `fino:commands/task` to mount the loader in another
-command tree.
+command tree:
+
+```ts no_run
+import taskCommand from 'fino:commands/task';
+
+await taskCommand.parse(['build']);
+```

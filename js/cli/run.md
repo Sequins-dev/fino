@@ -1,47 +1,60 @@
 ---
 weight: 31
 ---
-# Run Scripts
+# run
 
-Use `fino run` when you want the explicit script command, or use the root
-shortcut `fino <script>` for the same execution path.
+`fino run` executes one TypeScript or ESM entry module. The root shortcut
+`fino <script>` uses the same command path, so these forms are equivalent:
 
 ```sh
 fino run app.ts
 fino app.ts
 ```
 
-Scripts can be TypeScript or ESM modules. The command accepts one module
-specifier; it does not expand directories or globs.
+The command accepts a single module specifier. Relative and bare path-like
+inputs are resolved from the current working directory and imported through the
+runtime loader. Directories and glob patterns are not expanded.
 
-## Script Arguments
+## Arguments
 
-Arguments after the script name belong to the script:
+| Argument | Required | Description |
+| --- | --- | --- |
+| `script` | yes | Module specifier or path to execute. |
+| `args...` | no | Arguments passed to the script after the script name. |
+
+Arguments after the script name belong to the script. A `--` separator is not
+required:
 
 ```sh
 fino run app.ts --config ./config.toml
 ```
 
-The script can read the full runtime argv through `fino:process`.
+Use `--` only when you need to stop Fino option parsing before the entrypoint.
+For example, `fino run -- --flag-shaped-file.ts` treats
+`--flag-shaped-file.ts` as the script path instead of a Fino option.
 
-## Watch And Telemetry
+The script can read the runtime argv through `fino:process`.
 
-`--watch` runs the script in a watched realm and restarts when imported files
-change:
+## Flags
 
-```sh
-fino run --watch server.ts
-```
+| Flag | Value | Description |
+| --- | --- | --- |
+| `--watch` | boolean | Run the script in a watched realm and restart when imported files change. |
+| `--otlp-endpoint` | string | Install CLI OpenTelemetry bootstrap with the given OTLP/HTTP collector endpoint. |
 
-`--otlp-endpoint` installs CLI OpenTelemetry bootstrap around the child entry
-module:
-
-```sh
-fino --otlp-endpoint http://127.0.0.1:4318 app.ts
-```
-
-Realms constructed by the script inherit the CLI endpoint by default. Pass
+`--otlp-endpoint` wins over `OTEL_EXPORTER_OTLP_ENDPOINT`. Set
+`OTEL_SDK_DISABLED=true` to disable CLI OpenTelemetry bootstrap entirely. Realms
+constructed by the script inherit the CLI endpoint by default. Pass
 `otlpEndpoint` to `new Realm(...)` to override the collector for a child realm,
 or pass `false` to disable CLI OpenTelemetry bootstrap for that child.
 
-Import the default task from `fino:commands/run` to reuse this command.
+## Reuse
+
+Import the default task from `fino:commands/run` to mount or invoke this command
+from another task tree:
+
+```ts no_run
+import run from 'fino:commands/run';
+
+await run.parse(['server.ts', '--port', '3000']);
+```
