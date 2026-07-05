@@ -16,7 +16,7 @@
 import { ImportMap, Realm } from '../../realm/index.ts';
 import { NodeIsolateCollection, type NodeWorkloadSpec, type ReleaseReason } from './node.ts';
 import { BudgetWatchdog } from './budget-watchdog.ts';
-import type { SchedulerControlMessage, SchedulerReport, SchedulerShardSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
+import type { PendingMessage, SchedulerControlMessage, SchedulerReport, SchedulerShardSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
 
 const SCHEDULER_ENTRY = `
   import { runSchedulerShard } from 'internal:scheduler/shard';
@@ -78,6 +78,7 @@ export class SchedulerNode {
   #watchdog = new BudgetWatchdog();
   #started = false;
   #released = new Map<WorkloadId, (reason: string) => void>();
+  #pendingHandoff = new Map<WorkloadId, string | undefined>();
 
   constructor(options: SchedulerNodeOptions = {}) {
     const shardCount = options.shardCount ?? 2;
@@ -144,6 +145,10 @@ export class SchedulerNode {
       if (handle !== undefined) handle.summary = message.summary;
       return;
     }
+    if (message.report === 'drained') {
+      this.#completeHandoff(message.workloadId, message.pending);
+      return;
+    }
     if (message.report === 'released') {
       const leaseId = this.#collection.leaseOf(message.workloadId);
       if (leaseId !== null) this.#collection.release(leaseId, message.reason as ReleaseReason);
@@ -153,6 +158,31 @@ export class SchedulerNode {
         resolve(message.reason);
       }
     }
+  }
+
+  /**
+  * Begin handing a workload off to another thread: mark it draining and push a
+  * `drain` to its current holder, which quiesces it and reports a snapshot. The
+  * move completes in {@link #completeHandoff} when that report arrives.
+  */
+  handoff(workloadId: WorkloadId, toShardId?: string): void {
+    const shardId = this.#collection.placementOf(workloadId);
+    if (shardId === null) return;
+    this.#collection.drainForHandoff(workloadId);
+    this.#pendingHandoff.set(workloadId, toShardId);
+    this.#push(shardId, { control: 'drain', workloadId });
+  }
+
+  #completeHandoff(workloadId: WorkloadId, pending: { mailbox: PendingMessage[] }): void {
+    if (this.#collection.record(workloadId)?.state !== 'draining') return;
+    this.#collection.completeHandoff(workloadId, { mailbox: pending.mailbox }, Date.now() * 1_000_000);
+    const toShardId = this.#pendingHandoff.get(workloadId);
+    this.#pendingHandoff.delete(workloadId);
+    this.#collection.placeHandoff(workloadId, toShardId);
+    // Push the reconstructed workload to its destination and wake it so it
+    // rebuilds from the snapshot the claim attached to its lease.
+    this.#activate();
+    this.wake(workloadId, { workloadId, reason: 'control', sourceId: 'handoff-resume' });
   }
 
   /**

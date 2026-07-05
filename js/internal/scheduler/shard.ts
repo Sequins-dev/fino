@@ -36,6 +36,8 @@ interface HeldWorkload {
   blocked: boolean;
   /** True while an fd watch is armed, so it is never double-armed. */
   watching: boolean;
+  /** A drain was requested mid-activation; capture + hand off once it settles. */
+  drainRequested: boolean;
 }
 
 const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
@@ -330,8 +332,7 @@ class ShardScheduler {
         this.#release(message.workloadId, message.reason);
         break;
       case 'drain':
-        // Phase 3 — quiesce + snapshot. For now, treat as a graceful revoke.
-        this.#release(message.workloadId, 'drained');
+        this.#drain(message.workloadId);
         break;
       case 'shutdown':
         this.#running = false;
@@ -352,6 +353,7 @@ class ShardScheduler {
       currentWake: null,
       blocked: false,
       watching: false,
+      drainRequested: false,
       ...lease.entryPath !== undefined ? { isolate: new Isolate(lease.entryPath) } : {}
     });
   }
@@ -380,6 +382,42 @@ class ShardScheduler {
     if (!this.#held.has(workloadId)) return;
     this.#runnable.add(workloadId);
     this.#ready.notify();
+  }
+
+  /**
+  * Drain a workload for handoff: quiesce it, capture its pending state, report a
+  * `drained` snapshot to the orchestrator, and dispose the isolate. If the
+  * workload is mid-activation, defer until it settles so we capture a consistent
+  * point.
+  */
+  #drain(workloadId: string): void {
+    const workload = this.#held.get(workloadId);
+    if (workload === undefined) return;
+    if (workload.mid) {
+      workload.drainRequested = true;
+      return;
+    }
+    this.#captureAndHandoff(workload);
+  }
+
+  #captureAndHandoff(workload: HeldWorkload): void {
+    // Ask the workload to serialize its pending state by pumping a drain request;
+    // a cooperating worker returns `{ result: 'drained', mailbox: [...] }`. Drain
+    // handlers are expected to be synchronous.
+    let mailbox: { sequence: number; data: unknown }[] = [];
+    const isolate = workload.isolate;
+    if (isolate !== undefined) {
+      const outcome = isolate.pump(JSON.stringify({ drain: true }), this.#hardBudgetMicros);
+      if (outcome.kind === 'settled') {
+        const value = outcome.value as { mailbox?: { sequence: number; data: unknown }[] };
+        if (Array.isArray(value.mailbox)) mailbox = value.mailbox;
+      }
+    }
+    const workloadId = workload.lease.workloadId;
+    this.#held.delete(workloadId);
+    this.#runnable.delete(workloadId);
+    isolate?.terminate();
+    this.#port.postMessage({ report: 'drained', shardId: this.#shardId, workloadId, pending: { mailbox } });
   }
 
   /** Highest-priority runnable workload: lowest priority weight, then debt, then age. */
@@ -475,6 +513,13 @@ class ShardScheduler {
     }
     applyDispatchResult(workload, result, workload.currentWake);
     workload.currentWake = null;
+    // A drain requested while this activation was in flight runs now that it has
+    // settled to a consistent point.
+    if (workload.drainRequested) {
+      workload.drainRequested = false;
+      this.#captureAndHandoff(workload);
+      return;
+    }
     if (workload.wakes.length > 0) this.#markRunnable(workload.lease.workloadId);
   }
 

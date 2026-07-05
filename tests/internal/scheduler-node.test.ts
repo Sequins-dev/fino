@@ -12,6 +12,7 @@ import type { WorkloadId } from 'internal:scheduler/types';
 
 const runOnce = new URL('./fixtures/deploy-worker.ts', import.meta.url).pathname;
 const longlived = new URL('./fixtures/scheduler-longlived-worker.ts', import.meta.url).pathname;
+const handoffWorker = new URL('./fixtures/scheduler-handoff-worker.ts', import.meta.url).pathname;
 
 function tmpRoot(tag: string): string {
   return `/tmp/fino-node-${tag}-${Math.floor(Math.random() * 1e9)}`;
@@ -119,4 +120,36 @@ describe('scheduler node', () => {
     }
   });
 
+  it('hands a live workload off to another thread, preserving its pending state', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('handoff');
+    await fs.mkdir(root);
+    const out = `${root}/reconstructed.json`;
+    const seed = `${root}/seed.json`;
+    const node = new SchedulerNode({ shardCount: 2, capacity: 4 });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'acme', entryPath: handoffWorker, affinity: 'shard-0', data: { outputPath: out, seedPath: seed } });
+      const released = node.whenReleased(id);
+      // Two wakes accumulate a mailbox in the live isolate on shard-0.
+      wakeFor(node, id, 'seed-1');
+      wakeFor(node, id, 'seed-2');
+      // Wait (robust to thread-boot time) until both seeds have been processed.
+      for (let i = 0; i < 100; i++) {
+        const seen = await fs.readFile(seed).then((b) => new TextDecoder().decode(b)).catch(() => '');
+        if (seen === '["seed-1","seed-2"]') break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      // Now hand the live workload to shard-1.
+      node.handoff(id, 'shard-1');
+      await released;
+      // The destination isolate reconstructed the mailbox from the snapshot.
+      t.deepEqual(JSON.parse(new TextDecoder().decode(await fs.readFile(out))), ['seed-1', 'seed-2', 'reconstructed'], 'pending mailbox survived the cross-thread handoff');
+    } finally {
+      await node.shutdown();
+      await fs.unlink(out).catch(() => undefined);
+      await fs.unlink(seed).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
 });

@@ -184,6 +184,7 @@ export type SchedulerControlMessage =
 */
 export type SchedulerReport =
   | { report: 'released'; shardId: ShardId; workloadId: WorkloadId; reason: string }
+  | { report: 'drained'; shardId: ShardId; workloadId: WorkloadId; pending: { mailbox: PendingMessage[] } }
   | { report: 'load'; summary: ShardLoadSummary }
   | { report: 'summary'; summary: SchedulerShardSummary };
 
