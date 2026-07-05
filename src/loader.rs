@@ -608,7 +608,6 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:scheduler/selection",
         "internal/scheduler/selection"
     ),
-    source_builtin!("internal:scheduler/host", "internal/scheduler/host"),
     source_builtin!("internal:scheduler/workload", "internal/scheduler/workload"),
     source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
     source_builtin!(

@@ -3,17 +3,17 @@
 *
 * This is the orchestrator's authoritative registry of every tenant workload on
 * the node, the leases that bind each workload to a scheduler thread, and the
-* load each thread is carrying. It is the single source of truth behind the
-* `internal:scheduler/host` contract: scheduler threads pull work from it
-* (`claim`), keep their leases alive against it (`renew`), give work back to it
-* (`release`), and report their load to it (`recordLoad`). Placement — deciding
-* which scheduler thread hosts a workload — lives here too, because app code
-* never chooses placement; it deploys a workload and the orchestrator places it.
+* load each thread is carrying. The orchestrator claims workloads from it and
+* pushes them to their scheduler threads; threads report releases and load back,
+* which the orchestrator folds in here via `release` and `recordLoad`. Placement
+* — deciding which scheduler thread hosts a workload — lives here too, because
+* app code never chooses placement; it deploys a workload and the orchestrator
+* places it.
 *
-* The collection is pure main-thread state: the host facade marshals every
-* scheduler-thread call onto the orchestrator's loop, so there is one writer and
-* no shared mutable state across threads. Records are the same
-* `TenantWorkloadRecord`s the scheduler reasons about, driven through the same
+* The collection is pure main-thread state driven only by the orchestrator loop,
+* so there is one writer and no shared mutable state across threads. Records are
+* the same `TenantWorkloadRecord`s the scheduler reasons about, driven through
+* the same
 * {@link transition} state machine, so the orchestrator's coarse view and the
 * scheduler's fine view can never disagree about a workload's lifecycle.
 *

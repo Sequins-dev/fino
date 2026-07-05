@@ -43,7 +43,7 @@ import type { PriorityClass, SchedulerShardSummary, ShardId } from '../scheduler
 export { NodeIsolateCollection } from './node.ts';
 export type { NodeWorkloadSpec, ReleaseReason } from './node.ts';
 export { SchedulerNode } from './scheduler-node.ts';
-export type { SchedulerNodeOptions, NodeRoundConfig } from './scheduler-node.ts';
+export type { SchedulerNodeOptions } from './scheduler-node.ts';
 export { BudgetWatchdog } from './budget-watchdog.ts';
 export type { BudgetWatchdogOptions } from './budget-watchdog.ts';
 
@@ -328,10 +328,6 @@ export interface DeployNodeOptions {
   shardCount?: number;
   /** Per-thread workload capacity. Defaults to the {@link SchedulerNode} default. */
   capacity?: number;
-  /** Dispatch budget per deployed workload for the run. Defaults to 1 (run-once workloads). */
-  maxDispatchesPerWorkload?: number;
-  /** How many poll rounds the scheduler threads run. Defaults to 1. */
-  maxPolls?: number;
 }
 
 /**
@@ -383,32 +379,32 @@ export async function deployNode(deployments: TenantDeployment[], options: Deplo
     ...options.shardCount !== undefined ? { shardCount: options.shardCount } : {},
     ...options.capacity !== undefined ? { capacity: options.capacity } : {}
   });
+  node.start();
   const collection = node.collection();
   const placements: PlacedTenant[] = [];
   const supervised: string[] = [];
-  for (const deployment of deployments) {
-    const workloadId = node.deploy({
-      tenantId: deployment.tenantId,
-      entryPath: deployment.entry,
-      ...deployment.data !== undefined ? { data: deployment.data } : {},
-      ...deployment.priority !== undefined ? { priority: deployment.priority } : {},
-      ...deployment.affinity !== undefined ? { affinity: deployment.affinity } : {}
-    });
-    const workload = registerWorkload('tenant', { tenantId: deployment.tenantId, workloadId });
-    supervised.push(workload.id);
-    // Bring the workload in on the first poll of its scheduler thread.
-    collection.enqueueWake(workloadId, { workloadId, reason: 'control', sourceId: `deploy:${deployment.tenantId}` });
-    placements.push({ tenantId: deployment.tenantId, workloadId, thread: collection.placementOf(workloadId) });
-  }
+  let summaries: SchedulerShardSummary[] = [];
   try {
-    const perWorkload = Math.max(1, options.maxDispatchesPerWorkload ?? 1);
-    const summaries = await node.run({
-      maxDispatches: Math.max(1, deployments.length * perWorkload),
-      maxPolls: options.maxPolls ?? 1,
-      releaseOnShutdown: true
-    });
-    return { placements, summaries };
+    const done: Array<Promise<string>> = [];
+    for (const deployment of deployments) {
+      const workloadId = node.deploy({
+        tenantId: deployment.tenantId,
+        entryPath: deployment.entry,
+        ...deployment.data !== undefined ? { data: deployment.data } : {},
+        ...deployment.priority !== undefined ? { priority: deployment.priority } : {},
+        ...deployment.affinity !== undefined ? { affinity: deployment.affinity } : {}
+      });
+      const workload = registerWorkload('tenant', { tenantId: deployment.tenantId, workloadId });
+      supervised.push(workload.id);
+      placements.push({ tenantId: deployment.tenantId, workloadId, thread: collection.placementOf(workloadId) });
+      done.push(node.whenReleased(workloadId));
+      // Bring the workload in; its thread pumps it on the next loop wake.
+      node.wake(workloadId, { workloadId, reason: 'control', sourceId: `deploy:${deployment.tenantId}` });
+    }
+    await Promise.all(done);
   } finally {
+    summaries = await node.shutdown();
     for (const id of supervised) releaseWorkload(id, 'done');
   }
+  return { placements, summaries };
 }

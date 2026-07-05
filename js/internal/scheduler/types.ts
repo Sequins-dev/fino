@@ -157,15 +157,35 @@ export interface ShardLoadSummary {
 export interface SchedulerShardConfig {
   shardId: ShardId;
   capacity: number;
-  maxDispatches?: number;
-  maxPolls?: number;
-  pollTimeoutMs?: number;
   budgetMicros?: number;
   /** Hard per-pump-slice limit (µs) for runaway containment; overruns are terminated. */
   hardBudgetMicros?: number;
-  renewEvery?: number;
-  releaseOnShutdown?: boolean;
+  /** Interval (ms) between load-summary reports to the orchestrator. Default 50. */
+  loadReportMs?: number;
 }
+
+/**
+* Control messages the orchestrator pushes to a scheduler thread over its realm
+* port (`realm.port.postMessage`). The scheduler receives them as `message`
+* events on `globalThis.realmPort` and applies them to its held set — replacing
+* the per-tick `pollWakes` RPC. Revocation is immediate (no renewal window), and
+* draining is a distinct signal from revoking.
+*/
+export type SchedulerControlMessage =
+  | { control: 'place'; lease: LeaseRecord }
+  | { control: 'wake'; wake: TenantWake }
+  | { control: 'revoke'; workloadId: WorkloadId; reason: string }
+  | { control: 'drain'; workloadId: WorkloadId }
+  | { control: 'shutdown' };
+
+/**
+* Messages a scheduler thread pushes back to the orchestrator over the same
+* channel: terminal releases, periodic load, and (Phase 3) handoff reports.
+*/
+export type SchedulerReport =
+  | { report: 'released'; shardId: ShardId; workloadId: WorkloadId; reason: string }
+  | { report: 'load'; summary: ShardLoadSummary }
+  | { report: 'summary'; summary: SchedulerShardSummary };
 
 export interface SchedulerShardSummary {
   shardId: ShardId;

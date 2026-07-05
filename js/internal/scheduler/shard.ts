@@ -1,23 +1,26 @@
 /**
 * Real TypeScript thread-local scheduler loop.
 *
-* The scheduler owns one OS thread's readiness and powers the event loops of the
-* tenant isolates assigned to it. It is deliberately tiny: it selects runnable
-* workloads, pumps them, performs their facade-owned I/O on its own loop, and
-* reports coarse load to the orchestrator. It never blocks the thread on any one
-* workload — runnable workloads settle concurrently, so a workload awaiting I/O
-* cannot starve an I/O-ready sibling, and a workload parked on an outstanding
-* operation waits on its wake fd rather than spinning.
+* The scheduler owns one OS thread and powers the event loops of the tenant
+* isolates assigned to it. It is long-lived and event-driven: it runs on the
+* thread realm's own host loop, pumps an isolate for one budget-bounded slice
+* only when that isolate is runnable (a wake queued, a background completion, or
+* a host op it performed), and otherwise suspends — a workload parked on I/O
+* costs no CPU and blocks nothing. There is no bounded round and no per-tick
+* poll: the orchestrator pushes placement/wake/revoke/drain/shutdown control
+* messages over the realm port, which wake the loop; the scheduler reports
+* releases and load back over the same channel. Long-lived connection workloads
+* stay parked on their wake fd indefinitely without holding the thread.
 *
 * @internal
 */
-import { claimWorkloads, dispatchWorkload, pollWakes, recordShardLoad, releaseLease, renewLease } from 'internal:scheduler/host';
-import { readable } from 'internal:runtime/loop';
+import { readable, timeout } from 'internal:runtime/loop';
+import { getRealmData } from 'internal:realm-bridge';
 import { DiskFileSystem, DT_DIR, DT_REG, DT_UNKNOWN, type File, type Entry, type Stat } from 'fino:file';
 import { encodeBinary, decodeBinary } from './facade-ops.ts';
 import { Isolate } from './isolate.ts';
-import { coalesceWake, firstWake, removeWake, selectNextWorkload } from './selection.ts';
-import type { DispatchResult, LeaseRecord, RunnableWorkload, SchedulerShardConfig, SchedulerShardSummary, ShardLoadSummary, TenantWake } from './types.ts';
+import { coalesceWake, firstWake, removeWake } from './selection.ts';
+import type { DispatchResult, LeaseRecord, PriorityClass, RunnableWorkload, SchedulerControlMessage, SchedulerShardConfig, SchedulerShardSummary, ShardLoadSummary, TenantWake } from './types.ts';
 
 interface HeldWorkload {
   lease: LeaseRecord;
@@ -25,8 +28,23 @@ interface HeldWorkload {
   debtMicros: number;
   sequence: number;
   isolate?: Isolate;
+  /** True while an activation is in flight (parked on I/O or awaiting a host op). */
+  mid: boolean;
+  /** The wake this activation is servicing, consumed when the activation settles. */
+  currentWake: TenantWake | null;
+  /** True while parked on the wake fd or a host op, so a new wake won't double-pump. */
+  blocked: boolean;
+  /** True while an fd watch is armed, so it is never double-armed. */
+  watching: boolean;
 }
 
+const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
+  interactive: 0,
+  service: 1,
+  background: 2
+};
+
+const DEFAULT_LOAD_REPORT_MS = 50;
 const DEFAULT_BUDGET_MICROS = 1_000;
 // Generous per-pump-slice hard limit for runaway containment. Legitimate
 // synchronous work — including a workload's first module-loading pump — stays
@@ -65,27 +83,6 @@ function summarize(shardId: string, held: Map<string, HeldWorkload>, dispatches:
     dispatches,
     debtMicros
   };
-}
-
-async function releaseHeld(held: Map<string, HeldWorkload>, workloadId: string, reason: string): Promise<boolean> {
-  const workload = held.get(workloadId);
-  if (workload === undefined) return false;
-  held.delete(workloadId);
-  workload.isolate?.terminate();
-  await releaseLease(workload.lease.leaseId, reason);
-  return true;
-}
-
-function applyWakes(held: Map<string, HeldWorkload>, wakes: TenantWake[]): void {
-  for (const rawWake of wakes) {
-    const workload = held.get(rawWake.workloadId);
-    if (workload === undefined) continue;
-    const wake = {
-      ...rawWake,
-      sequence: rawWake.sequence ?? ++globalSequence
-    };
-    workload.wakes = coalesceWake(workload.wakes, wake);
-  }
 }
 
 function applyDispatchResult(workload: HeldWorkload, result: DispatchResult, dispatched: TenantWake | null): void {
@@ -249,175 +246,289 @@ async function runHostOperation(operation: { operation: string; args?: Record<st
   }
 }
 
-/**
-* Settle one native (scheduled-isolate) workload. Pumps the isolate, performing
-* any facade-owned host operations on the scheduler's own loop and parking on
-* the isolate's wake fd if it yields with an outstanding operation. Runs to a
-* terminal `DispatchResult`.
-*/
-async function settleNative(isolate: Isolate, request: unknown, hardBudgetMicros: number): Promise<DispatchResult> {
-  let requestJson = JSON.stringify(request);
-  for (;;) {
-    const outcome = isolate.pump(requestJson, hardBudgetMicros);
-    requestJson = '{}';
-    if (outcome.kind === 'hostOperation') {
-      try {
-        const result = await runHostOperation(outcome.operation);
-        isolate.complete(outcome.operation.id, true, JSON.stringify(result));
-      } catch (error) {
-        isolate.complete(outcome.operation.id, false, JSON.stringify({
-          message: error instanceof Error ? error.message : String(error)
-        }));
-      }
-      continue;
-    }
-    if (outcome.kind === 'pending') {
-      // Parked on a background completion; wait on the isolate's wake fd rather
-      // than spinning. Re-pump when a completion is written.
-      await readable(isolate.wakeFd);
-      continue;
-    }
-    if (outcome.kind === 'budgetTerminated') {
-      // The workload overran its hard sync budget and was forcibly unwound.
-      return { result: 'terminated' };
-    }
-    return outcome.value as DispatchResult;
+/** A resettable one-shot notifier: `wait()` resolves the next time `notify()` fires. */
+class Signal {
+  #promise!: Promise<void>;
+  #resolve!: () => void;
+  constructor() {
+    this.#reset();
+  }
+  #reset(): void {
+    this.#promise = new Promise<void>((resolve) => {
+      this.#resolve = resolve;
+    });
+  }
+  wait(): Promise<void> {
+    return this.#promise;
+  }
+  notify(): void {
+    const resolve = this.#resolve;
+    this.#reset();
+    resolve();
   }
 }
 
-async function settleWorkload(workload: HeldWorkload, request: unknown, hardBudgetMicros: number): Promise<DispatchResult> {
-  if (workload.isolate !== undefined) return settleNative(workload.isolate, request, hardBudgetMicros);
-  return dispatchWorkload(workload.lease.leaseId, request as never);
+/** The port the orchestrator pushes control over and the scheduler reports back on. */
+interface RealmPort {
+  postMessage(value: unknown): void;
+  addEventListener(type: 'message', handler: (event: { data: unknown }) => void): void;
+  start?(): void;
 }
 
 /**
-* Select up to `limit` distinct runnable workloads in scheduler priority order.
+* The long-lived, event-driven scheduler for one thread. Holds a set of tenant
+* isolates, pumps a runnable one for a single budget-bounded slice at a time in
+* priority order, parks isolates on their wake fd (or an in-flight host op) with
+* zero CPU cost, and suspends entirely when nothing is runnable. Driven by
+* control messages pushed over the realm port; it never polls.
 */
-function selectBatch(held: Map<string, HeldWorkload>, limit: number): HeldWorkload[] {
-  const batch: HeldWorkload[] = [];
-  const chosen = new Set<string>();
-  while (batch.length < limit) {
-    const candidates: RunnableWorkload[] = [];
-    for (const workload of held.values()) {
-      if (chosen.has(workload.lease.workloadId)) continue;
-      candidates.push(runnableFromHeld(workload));
-    }
-    const runnable = selectNextWorkload(candidates);
-    if (runnable === null) break;
-    const workload = held.get(runnable.workloadId);
-    if (workload === undefined) break;
-    batch.push(workload);
-    chosen.add(workload.lease.workloadId);
+class ShardScheduler {
+  #shardId: string;
+  #budgetMicros: number;
+  #hardBudgetMicros: number;
+  #loadReportMs: number;
+  #port: RealmPort;
+  #held = new Map<string, HeldWorkload>();
+  #runnable = new Set<string>();
+  #ready = new Signal();
+  #running = true;
+  #claimed = 0;
+  #dispatches = 0;
+  #released = 0;
+
+  constructor(config: SchedulerShardConfig, port: RealmPort) {
+    this.#shardId = config.shardId;
+    this.#budgetMicros = config.budgetMicros ?? DEFAULT_BUDGET_MICROS;
+    this.#hardBudgetMicros = config.hardBudgetMicros ?? DEFAULT_HARD_BUDGET_MICROS;
+    this.#loadReportMs = config.loadReportMs ?? DEFAULT_LOAD_REPORT_MS;
+    this.#port = port;
   }
-  return batch;
-}
 
-export async function runSchedulerShard(config: SchedulerShardConfig): Promise<SchedulerShardSummary> {
-  const capacity = normalizeCapacity(config.capacity);
-  const maxDispatches = config.maxDispatches ?? Number.POSITIVE_INFINITY;
-  const maxPolls = config.maxPolls ?? Number.POSITIVE_INFINITY;
-  const pollTimeoutMs = config.pollTimeoutMs ?? 0;
-  const budgetMicros = config.budgetMicros ?? DEFAULT_BUDGET_MICROS;
-  const hardBudgetMicros = config.hardBudgetMicros ?? DEFAULT_HARD_BUDGET_MICROS;
-  const renewEvery = config.renewEvery ?? 16;
-  const held = new Map<string, HeldWorkload>();
-  let dispatches = 0;
-  let released = 0;
-  let polls = 0;
+  async run(): Promise<SchedulerShardSummary> {
+    this.#port.addEventListener('message', (event) => this.#onControl(event.data as SchedulerControlMessage));
+    this.#port.start?.();
+    const load = this.#reportLoadLoop();
+    await this.#dispatchLoop();
+    await load;
+    for (const workload of this.#held.values()) workload.isolate?.terminate();
+    const heldLeases = this.#held.size;
+    this.#held.clear();
+    const summary: SchedulerShardSummary = { shardId: this.#shardId, claimed: this.#claimed, dispatches: this.#dispatches, released: this.#released, heldLeases };
+    this.#port.postMessage({ report: 'summary', summary });
+    return summary;
+  }
 
-  const leases = await claimWorkloads(config.shardId, capacity);
-  for (const lease of leases.slice(0, capacity)) {
-    if (held.has(lease.workloadId)) continue;
-    held.set(lease.workloadId, {
+  #onControl(message: SchedulerControlMessage): void {
+    switch (message.control) {
+      case 'place':
+        this.#place(message.lease);
+        break;
+      case 'wake':
+        this.#applyWake(message.wake);
+        break;
+      case 'revoke':
+        this.#release(message.workloadId, message.reason);
+        break;
+      case 'drain':
+        // Phase 3 — quiesce + snapshot. For now, treat as a graceful revoke.
+        this.#release(message.workloadId, 'drained');
+        break;
+      case 'shutdown':
+        this.#running = false;
+        this.#ready.notify();
+        break;
+    }
+  }
+
+  #place(lease: LeaseRecord): void {
+    if (this.#held.has(lease.workloadId)) return;
+    this.#claimed++;
+    this.#held.set(lease.workloadId, {
       lease,
       wakes: [],
       debtMicros: 0,
       sequence: ++globalSequence,
+      mid: false,
+      currentWake: null,
+      blocked: false,
+      watching: false,
       ...lease.entryPath !== undefined ? { isolate: new Isolate(lease.entryPath) } : {}
     });
   }
 
-  // If an orchestrator-side coordination RPC rejects mid-run, dispose held
-  // isolates locally (no further RPC) before propagating, so terminated V8
-  // isolates aren't leaked when the round aborts abnormally.
-  try {
-  while (dispatches < maxDispatches && polls < maxPolls) {
-    const wakes = await pollWakes(config.shardId, pollTimeoutMs);
-    polls++;
-    applyWakes(held, wakes);
+  #applyWake(rawWake: TenantWake): void {
+    const workload = this.#held.get(rawWake.workloadId);
+    if (workload === undefined) return;
+    const wake = { ...rawWake, sequence: rawWake.sequence ?? ++globalSequence };
+    workload.wakes = coalesceWake(workload.wakes, wake);
+    // A wake only starts a new activation when the isolate is idle; if it is
+    // mid-activation the wake stays queued and is serviced when it settles.
+    if (!workload.mid && !workload.blocked) this.#markRunnable(rawWake.workloadId);
+  }
 
-    const remaining = maxDispatches - dispatches;
-    const batch = selectBatch(held, remaining);
-    if (batch.length === 0) {
-      await recordShardLoad(config.shardId, summarize(config.shardId, held, dispatches));
-      continue;
-    }
+  #release(workloadId: string, reason: string): void {
+    const workload = this.#held.get(workloadId);
+    if (workload === undefined) return;
+    this.#held.delete(workloadId);
+    this.#runnable.delete(workloadId);
+    workload.isolate?.terminate();
+    this.#released++;
+    this.#port.postMessage({ report: 'released', shardId: this.#shardId, workloadId, reason });
+  }
 
-    // Renew leases for the batch; drop any that fail renewal before dispatch.
-    const dispatchable: HeldWorkload[] = [];
-    for (const workload of batch) {
-      if (renewEvery > 0 && (dispatches + dispatchable.length + 1) % renewEvery === 0) {
-        const renewed = await renewLease(workload.lease.leaseId, workload.lease.epoch);
-        if (!renewed) {
-          if (await releaseHeld(held, workload.lease.workloadId, 'renew_failed')) released++;
-          continue;
-        }
+  #markRunnable(workloadId: string): void {
+    if (!this.#held.has(workloadId)) return;
+    this.#runnable.add(workloadId);
+    this.#ready.notify();
+  }
+
+  /** Highest-priority runnable workload: lowest priority weight, then debt, then age. */
+  #pickRunnable(): HeldWorkload | null {
+    let best: HeldWorkload | null = null;
+    for (const workloadId of this.#runnable) {
+      const workload = this.#held.get(workloadId);
+      if (workload === undefined) continue;
+      if (best === null) {
+        best = workload;
+        continue;
       }
-      dispatchable.push(workload);
+      const dw = PRIORITY_WEIGHT[workload.lease.priority] - PRIORITY_WEIGHT[best.lease.priority];
+      if (dw < 0 || (dw === 0 && (workload.debtMicros < best.debtMicros || (workload.debtMicros === best.debtMicros && workload.sequence < best.sequence)))) {
+        best = workload;
+      }
     }
+    return best;
+  }
 
-    if (dispatchable.length === 0) {
-      await recordShardLoad(config.shardId, summarize(config.shardId, held, dispatches));
-      continue;
+  async #dispatchLoop(): Promise<void> {
+    while (this.#running) {
+      if (this.#runnable.size === 0) {
+        await this.#ready.wait();
+        continue;
+      }
+      // Pump every currently-runnable workload once, highest priority first,
+      // then yield to the host loop (a macrotask) so background completions and
+      // fd fires land and the microtask queue drains before the next batch —
+      // this guarantees I/O progress even under a workload that stays runnable.
+      const batch: HeldWorkload[] = [];
+      for (;;) {
+        const next = this.#pickRunnable();
+        if (next === null) break;
+        this.#runnable.delete(next.lease.workloadId);
+        batch.push(next);
+      }
+      for (const workload of batch) {
+        if (!this.#running) break;
+        this.#pumpOnce(workload);
+      }
+      await timeout(0);
     }
+  }
 
-    // Settle the batch concurrently so no workload's I/O starves another.
-    const settlements = dispatchable.map((workload) => {
+  /** Pump one budget-bounded slice; schedule the follow-up rather than blocking. */
+  #pumpOnce(workload: HeldWorkload): void {
+    const isolate = workload.isolate;
+    if (isolate === undefined || !this.#held.has(workload.lease.workloadId)) return;
+
+    let requestJson: string;
+    if (workload.mid) {
+      requestJson = '{}';
+    } else {
       const wake = firstWake(runnableFromHeld(workload));
-      const request = {
+      workload.currentWake = wake;
+      workload.mid = true;
+      requestJson = JSON.stringify({
         workloadId: workload.lease.workloadId,
         wake,
-        budgetMicros,
+        budgetMicros: this.#budgetMicros,
         debtMicros: workload.debtMicros,
         data: workload.lease.data,
         ...workload.lease.handoff !== undefined ? { handoff: workload.lease.handoff } : {}
-      };
-      return settleWorkload(workload, request, hardBudgetMicros).then(
-        (result) => ({ workload, result, wake }),
-        () => ({ workload, result: { result: 'failed' } as DispatchResult, wake })
-      );
-    });
-    const results = await Promise.all(settlements);
-    dispatches += dispatchable.length;
+      });
+    }
 
-    for (const { workload, result, wake } of results) {
-      if (result.result === 'failed' || result.result === 'terminated') {
-        if (await releaseHeld(held, workload.lease.workloadId, result.result)) released++;
-      } else {
-        applyDispatchResult(workload, result, wake);
+    const outcome = isolate.pump(requestJson, this.#hardBudgetMicros);
+    if (outcome.kind === 'hostOperation') {
+      workload.blocked = true;
+      void this.#performHostOp(workload, outcome.operation);
+      return;
+    }
+    if (outcome.kind === 'pending') {
+      workload.blocked = true;
+      this.#armWatch(workload);
+      return;
+    }
+    if (outcome.kind === 'budgetTerminated') {
+      this.#dispatches++;
+      this.#release(workload.lease.workloadId, 'terminated');
+      return;
+    }
+
+    // Activation settled.
+    this.#dispatches++;
+    workload.mid = false;
+    workload.blocked = false;
+    const result = outcome.value as DispatchResult;
+    if (result.result === 'terminated' || result.result === 'failed') {
+      this.#release(workload.lease.workloadId, result.result);
+      return;
+    }
+    applyDispatchResult(workload, result, workload.currentWake);
+    workload.currentWake = null;
+    if (workload.wakes.length > 0) this.#markRunnable(workload.lease.workloadId);
+  }
+
+  async #performHostOp(workload: HeldWorkload, operation: { id: number; operation: string; args?: Record<string, unknown> }): Promise<void> {
+    try {
+      const result = await runHostOperation(operation);
+      workload.isolate?.complete(operation.id, true, JSON.stringify(result));
+    } catch (error) {
+      workload.isolate?.complete(operation.id, false, JSON.stringify({
+        message: error instanceof Error ? error.message : String(error)
+      }));
+    }
+    workload.blocked = false;
+    this.#markRunnable(workload.lease.workloadId);
+  }
+
+  #armWatch(workload: HeldWorkload): void {
+    const isolate = workload.isolate;
+    if (isolate === undefined || workload.watching) return;
+    workload.watching = true;
+    const fd = isolate.wakeFd;
+    readable(fd).then(
+      () => {
+        workload.watching = false;
+        workload.blocked = false;
+        this.#markRunnable(workload.lease.workloadId);
+      },
+      () => {
+        workload.watching = false;
       }
+    );
+  }
+
+  async #reportLoadLoop(): Promise<void> {
+    while (this.#running) {
+      await timeout(this.#loadReportMs);
+      if (!this.#running) break;
+      this.#port.postMessage({ report: 'load', summary: summarize(this.#shardId, this.#held, this.#dispatches) });
     }
-
-    await recordShardLoad(config.shardId, summarize(config.shardId, held, dispatches));
   }
+}
 
-  if (config.releaseOnShutdown) {
-    for (const workload of [...held.values()]) {
-      if (await releaseHeld(held, workload.lease.workloadId, 'shutdown')) released++;
-    }
-  }
-
-  await recordShardLoad(config.shardId, summarize(config.shardId, held, dispatches));
-
-  return {
-    shardId: config.shardId,
-    claimed: leases.length,
-    dispatches,
-    released,
-    heldLeases: held.size
-  };
-  } catch (error) {
-    for (const workload of held.values()) workload.isolate?.terminate();
-    throw error;
-  }
+/**
+* Run a scheduler shard until it receives a `shutdown` control message. The
+* thread realm's own host loop drives it; this promise stays pending (keeping
+* the thread alive) for the shard's lifetime and resolves with a final summary
+* on shutdown.
+*/
+export async function runSchedulerShard(config?: SchedulerShardConfig): Promise<SchedulerShardSummary> {
+  // Config is passed as realm data when booted as a thread entry; callers may
+  // also pass it directly (tests).
+  const resolved = config ?? (JSON.parse((getRealmData as () => string)()) as SchedulerShardConfig);
+  normalizeCapacity(resolved.capacity);
+  const port = (globalThis as { realmPort?: RealmPort }).realmPort;
+  if (port === undefined) throw new Error('scheduler shard must run in a thread realm with a realm port');
+  return new ShardScheduler(resolved, port).run();
 }

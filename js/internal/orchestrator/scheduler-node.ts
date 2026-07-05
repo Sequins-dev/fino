@@ -1,36 +1,29 @@
 /**
 * internal:orchestrator/scheduler-node — boots a node's scheduler threads and
-* binds them to the node isolate collection.
+* drives them over a push control channel.
 *
-* A `SchedulerNode` is the concrete multi-thread orchestrator: it registers N
-* scheduler threads with a {@link NodeIsolateCollection}, exposes `deploy()` so
-* app placement flows through the orchestrator, and `run()` spins each scheduler
-* thread up as an explicit-thread realm running `internal:scheduler/shard`. Each
-* thread is handed the `internal:scheduler/host` contract as a facade backed by
-* the collection, so every claim / renew / release / load report marshals onto
-* the orchestrator's loop and mutates the one authoritative collection — no
-* shared mutable state crosses a thread boundary.
-*
-* Threads are booted with the same explicit-thread `Realm({ thread: true })`
-* path core services already use; app code never reaches this — it deploys a
-* workload and the orchestrator decides which thread hosts it.
+* A `SchedulerNode` registers N scheduler threads with a {@link
+* NodeIsolateCollection}, boots each as a long-lived explicit-thread realm
+* running `internal:scheduler/shard`, and coordinates them entirely by pushing
+* control messages (`place` / `wake` / `revoke` / `drain` / `shutdown`) over each
+* realm's port — no per-tick polling. Scheduler threads push `released` and
+* `load` reports back over the same channel, which the node folds into the one
+* authoritative collection. App code never reaches this: it deploys a workload
+* and the orchestrator decides which thread hosts it.
 *
 * @internal
 */
-import { Facade, ImportMap, Realm } from '../../realm/index.ts';
-import { NodeIsolateCollection, type NodeWorkloadSpec } from './node.ts';
-import type { ReleaseReason } from './node.ts';
+import { ImportMap, Realm } from '../../realm/index.ts';
+import { NodeIsolateCollection, type NodeWorkloadSpec, type ReleaseReason } from './node.ts';
 import { BudgetWatchdog } from './budget-watchdog.ts';
-import type { SchedulerShardSummary, ShardLoadSummary, WorkloadId } from '../scheduler/types.ts';
+import type { SchedulerControlMessage, SchedulerReport, SchedulerShardSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
 
 const SCHEDULER_ENTRY = `
   import { runSchedulerShard } from 'internal:scheduler/shard';
-  export default async function(config) {
-    return runSchedulerShard(config);
-  }
+  await runSchedulerShard();
 `;
 
-const HOST_INHERIT: string[] = [
+const SHARD_INHERIT: string[] = [
   'fino:*',
   'internal:*',
   'internal:scheduler/shard',
@@ -40,8 +33,21 @@ const HOST_INHERIT: string[] = [
   'internal:scheduler/facade-ops',
   'internal:scheduler/file-provider',
   'internal:scheduler-native',
-  'internal:runtime/loop'
+  'internal:runtime/loop',
+  'internal:realm-bridge'
 ];
+
+interface RealmPort {
+  postMessage(value: unknown): void;
+  addEventListener(type: 'message', handler: (event: { data: unknown }) => void): void;
+  start?(): void;
+}
+
+interface ShardHandle {
+  port: RealmPort;
+  done: Promise<void>;
+  summary: SchedulerShardSummary;
+}
 
 /** How many scheduler threads to boot and how much each may hold. */
 export interface SchedulerNodeOptions {
@@ -49,27 +55,29 @@ export interface SchedulerNodeOptions {
   shardCount?: number;
   /** Per-thread workload capacity. Defaults to 8. */
   capacity?: number;
-}
-
-/** Bounds for a single scheduling round across the node's threads. */
-export interface NodeRoundConfig {
-  maxDispatches?: number;
-  maxPolls?: number;
+  /** Cooperative accounting budget (µs) passed to each shard. */
   budgetMicros?: number;
+  /** Hard per-pump-slice runaway budget (µs) passed to each shard. */
   hardBudgetMicros?: number;
-  renewEvery?: number;
-  pollTimeoutMs?: number;
-  releaseOnShutdown?: boolean;
+  /** Load-report cadence (ms) for each shard. */
+  loadReportMs?: number;
 }
 
 /**
-* A running scheduler node: N scheduler threads over one node isolate
-* collection.
+* A running scheduler node: N long-lived scheduler threads over one node isolate
+* collection, coordinated by push.
 */
 export class SchedulerNode {
   #collection = new NodeIsolateCollection();
   #shardIds: string[];
   #capacity: number;
+  #budgetMicros?: number;
+  #hardBudgetMicros?: number;
+  #loadReportMs?: number;
+  #shards = new Map<string, ShardHandle>();
+  #watchdog = new BudgetWatchdog();
+  #started = false;
+  #released = new Map<WorkloadId, (reason: string) => void>();
 
   constructor(options: SchedulerNodeOptions = {}) {
     const shardCount = options.shardCount ?? 2;
@@ -77,6 +85,9 @@ export class SchedulerNode {
       throw new TypeError('shardCount must be a positive integer');
     }
     this.#capacity = options.capacity ?? 8;
+    this.#budgetMicros = options.budgetMicros;
+    this.#hardBudgetMicros = options.hardBudgetMicros;
+    this.#loadReportMs = options.loadReportMs;
     this.#shardIds = [];
     for (let i = 0; i < shardCount; i++) {
       const shardId = `shard-${i}`;
@@ -95,76 +106,108 @@ export class SchedulerNode {
     return [...this.#shardIds];
   }
 
-  /** Place a workload on the node through the orchestrator. */
-  deploy(spec: NodeWorkloadSpec): WorkloadId {
-    return this.#collection.deploy(spec);
-  }
-
-  #hostFacade(): Facade {
-    const collection = this.#collection;
-    return new Facade('internal:scheduler/host', [
-      'claimWorkloads',
-      'pollWakes',
-      'dispatchWorkload',
-      'renewLease',
-      'releaseLease',
-      'recordShardLoad'
-    ])
-      .handle('claimWorkloads', async (shardId, capacity) => collection.claim(String(shardId), Number(capacity)))
-      .handle('pollWakes', async (shardId) => collection.pollWakes(String(shardId)))
-      .handle('dispatchWorkload', async () => {
-        throw new Error('scheduler node hosts isolate workloads; facade dispatch is unavailable');
-      })
-      .handle('renewLease', async (leaseId, epoch) => collection.renew(String(leaseId), Number(epoch)))
-      .handle('releaseLease', async (leaseId, reason) => {
-        collection.release(String(leaseId), String(reason) as ReleaseReason);
-      })
-      .handle('recordShardLoad', async (shardId, summary) => {
-        collection.recordLoad(String(shardId), summary as ShardLoadSummary);
+  /** Boot the scheduler threads and start runaway containment. Idempotent. */
+  start(): void {
+    if (this.#started) return;
+    this.#started = true;
+    this.#watchdog.start();
+    for (const shardId of this.#shardIds) {
+      const config = {
+        shardId,
+        capacity: this.#capacity,
+        ...this.#budgetMicros !== undefined ? { budgetMicros: this.#budgetMicros } : {},
+        ...this.#hardBudgetMicros !== undefined ? { hardBudgetMicros: this.#hardBudgetMicros } : {},
+        ...this.#loadReportMs !== undefined ? { loadReportMs: this.#loadReportMs } : {}
+      };
+      // Run (not call) the shard entry, so the shard's port reports never
+      // collide with a call response; config is handed over as realm data.
+      const realm = Realm.fromSource(SCHEDULER_ENTRY, {
+        thread: true,
+        data: config,
+        overrides: ImportMap.deny(SHARD_INHERIT.map((pattern) => ({ pattern, directive: 'inherit' as const })))
       });
-  }
-
-  /**
-  * Run one scheduling round on every thread concurrently and return their
-  * summaries. Each thread claims its placed workloads from the collection,
-  * pumps them, and reports load — all through the shared host facade.
-  */
-  async run(config: NodeRoundConfig = {}): Promise<SchedulerShardSummary[]> {
-    // Runaway containment runs on this (the orchestrator) thread for the whole
-    // round: it terminates any tenant that overruns its hard pump budget on a
-    // scheduler thread, which that scheduler thread cannot do for itself while
-    // blocked in the runaway.
-    const watchdog = new BudgetWatchdog();
-    watchdog.start();
-    try {
-      return await this.#runRound(config);
-    } finally {
-      await watchdog.stop();
+      const port = (realm as unknown as { port: RealmPort }).port;
+      port.addEventListener('message', (event) => this.#onReport(shardId, event.data as SchedulerReport));
+      port.start?.();
+      this.#shards.set(shardId, { port, done: realm.run(), summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 } });
     }
   }
 
-  async #runRound(config: NodeRoundConfig): Promise<SchedulerShardSummary[]> {
-    const host = this.#hostFacade();
-    const rounds = this.#shardIds.map((shardId) => {
-      const realm = Realm.fromSource<(config: unknown) => Promise<SchedulerShardSummary>>(SCHEDULER_ENTRY, {
-        thread: true,
-        overrides: ImportMap.deny([
-          ...HOST_INHERIT.map((pattern) => ({ pattern, directive: 'inherit' as const })),
-          { pattern: 'internal:scheduler/host', directive: host }
-        ])
-      });
-      return realm.call({
-        shardId,
-        capacity: this.#capacity,
-        maxPolls: config.maxPolls ?? 1,
-        ...config.maxDispatches !== undefined ? { maxDispatches: config.maxDispatches } : {},
-        ...config.budgetMicros !== undefined ? { budgetMicros: config.budgetMicros } : {},
-        ...config.hardBudgetMicros !== undefined ? { hardBudgetMicros: config.hardBudgetMicros } : {},
-        ...config.renewEvery !== undefined ? { renewEvery: config.renewEvery } : {},
-        ...config.pollTimeoutMs !== undefined ? { pollTimeoutMs: config.pollTimeoutMs } : {},
-        releaseOnShutdown: config.releaseOnShutdown ?? true
-      });
-    });
-    return Promise.all(rounds);
+  #onReport(shardId: string, message: SchedulerReport): void {
+    if (message === null || typeof message !== 'object') return;
+    if (message.report === 'load') {
+      this.#collection.recordLoad(shardId, message.summary);
+      return;
+    }
+    if (message.report === 'summary') {
+      const handle = this.#shards.get(shardId);
+      if (handle !== undefined) handle.summary = message.summary;
+      return;
+    }
+    if (message.report === 'released') {
+      const leaseId = this.#collection.leaseOf(message.workloadId);
+      if (leaseId !== null) this.#collection.release(leaseId, message.reason as ReleaseReason);
+      const resolve = this.#released.get(message.workloadId);
+      if (resolve !== undefined) {
+        this.#released.delete(message.workloadId);
+        resolve(message.reason);
+      }
+    }
+  }
+
+  /**
+  * Place a workload on the node and push it to its scheduler thread. Returns the
+  * workload id. The workload runs once it receives a {@link wake}.
+  */
+  deploy(spec: NodeWorkloadSpec): WorkloadId {
+    const workloadId = this.#collection.deploy(spec);
+    this.#activate();
+    return workloadId;
+  }
+
+  /** Claim every newly-placed workload for its thread and push it there. */
+  #activate(): void {
+    for (const shardId of this.#shardIds) {
+      for (const lease of this.#collection.claim(shardId, this.#capacity)) {
+        this.#push(shardId, { control: 'place', lease });
+      }
+    }
+  }
+
+  /** Push a wake for a workload to its hosting thread. */
+  wake(workloadId: WorkloadId, wake: TenantWake): void {
+    const shardId = this.#collection.placementOf(workloadId);
+    if (shardId !== null) this.#push(shardId, { control: 'wake', wake });
+  }
+
+  /** Push an immediate revocation for a workload to its hosting thread. */
+  revoke(workloadId: WorkloadId, reason: string): void {
+    const shardId = this.#collection.placementOf(workloadId);
+    if (shardId !== null) this.#push(shardId, { control: 'revoke', workloadId, reason });
+  }
+
+  #push(shardId: string, message: SchedulerControlMessage): void {
+    this.#shards.get(shardId)?.port.postMessage(message);
+  }
+
+  /** Resolve with the release reason when a workload reaches a terminal state. */
+  whenReleased(workloadId: WorkloadId): Promise<string> {
+    if (this.#collection.leaseOf(workloadId) === null && this.#collection.record(workloadId) === undefined) {
+      return Promise.resolve('released');
+    }
+    return new Promise<string>((resolve) => this.#released.set(workloadId, resolve));
+  }
+
+  /** Shut every thread down, stop containment, and return their final summaries. */
+  async shutdown(): Promise<SchedulerShardSummary[]> {
+    for (const shardId of this.#shardIds) this.#push(shardId, { control: 'shutdown' });
+    const handles = [...this.#shards.values()];
+    await Promise.all(handles.map((shard) => shard.done));
+    await this.#watchdog.stop();
+    const summaries = handles.map((shard) => shard.summary);
+    this.#shards.clear();
+    this.#released.clear();
+    this.#started = false;
+    return summaries;
   }
 }
