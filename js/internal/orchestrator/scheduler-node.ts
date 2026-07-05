@@ -43,11 +43,24 @@ interface RealmPort {
   start?(): void;
 }
 
+interface SchedulerRealm {
+  port: RealmPort;
+  run(): Promise<void>;
+  terminate(): void;
+}
+
 interface ShardHandle {
+  realm: SchedulerRealm;
   port: RealmPort;
   done: Promise<void>;
   summary: SchedulerShardSummary;
+  /** Wall-clock (ms) of this shard's last report; a stale value means it hung. */
+  lastReport: number;
+  /** True once the shard has been declared dead and its workloads recovered. */
+  dead: boolean;
 }
+
+const DEFAULT_HEARTBEAT_MS = 250;
 
 /** How many scheduler threads to boot and how much each may hold. */
 export interface SchedulerNodeOptions {
@@ -77,8 +90,10 @@ export class SchedulerNode {
   #shards = new Map<string, ShardHandle>();
   #watchdog = new BudgetWatchdog();
   #started = false;
+  #shuttingDown = false;
   #released = new Map<WorkloadId, (reason: string) => void>();
   #pendingHandoff = new Map<WorkloadId, string | undefined>();
+  #supervisor: { cancel(): void } | null = null;
 
   constructor(options: SchedulerNodeOptions = {}) {
     const shardCount = options.shardCount ?? 2;
@@ -127,21 +142,77 @@ export class SchedulerNode {
         data: config,
         overrides: ImportMap.deny(SHARD_INHERIT.map((pattern) => ({ pattern, directive: 'inherit' as const })))
       });
-      const port = (realm as unknown as { port: RealmPort }).port;
+      const schedulerRealm = realm as unknown as SchedulerRealm;
+      const port = schedulerRealm.port;
       port.addEventListener('message', (event) => this.#onReport(shardId, event.data as SchedulerReport));
       port.start?.();
-      this.#shards.set(shardId, { port, done: realm.run(), summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 } });
+      const done = schedulerRealm.run();
+      // A shard's run() settling while the node is up means its thread died —
+      // recover its workloads onto the survivors.
+      void done.then(() => this.#onShardExit(shardId), () => this.#onShardExit(shardId));
+      this.#shards.set(shardId, { realm: schedulerRealm, port, done, summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 }, lastReport: Date.now(), dead: false });
     }
+    this.#supervisor = this.#superviseHeartbeats();
+  }
+
+  /**
+  * A dead scheduler thread (crash, or its run() settling unexpectedly) — recover
+  * its workloads onto the surviving threads. A no-op during shutdown or if the
+  * shard was already recovered.
+  */
+  #onShardExit(shardId: string): void {
+    if (this.#shuttingDown) return;
+    this.#recover(shardId);
+  }
+
+  #recover(shardId: string): void {
+    const handle = this.#shards.get(shardId);
+    if (handle === undefined || handle.dead) return;
+    handle.dead = true;
+    this.#shards.delete(shardId);
+    // Stop placing new work on the dead thread, then re-place the workloads it
+    // was holding on survivors (from checkpoint if one exists, else respawned
+    // from the entry) and push + wake them.
+    this.#collection.unregisterShard(shardId);
+    const recovered = this.#collection.recoverShard(shardId);
+    this.#activate();
+    for (const workloadId of recovered) {
+      this.wake(workloadId, { workloadId, reason: 'control', sourceId: 'recovery-resume' });
+    }
+  }
+
+  /**
+  * Backstop for a thread that hangs rather than crashing cleanly: if a shard
+  * stops reporting for far longer than its report cadence, treat it as dead.
+  * The threshold is deliberately generous so transient load or GC pauses never
+  * trigger a spurious recovery — the reliable signal is the `run()`-settle
+  * watcher; this only catches genuine multi-second hangs.
+  */
+  #superviseHeartbeats(): { cancel(): void } {
+    let cancelled = false;
+    const period = Math.max(DEFAULT_HEARTBEAT_MS, this.#loadReportMs ?? 50);
+    const stale = Math.max(2_000, (this.#loadReportMs ?? 50) * 40);
+    const tick = (): void => {
+      if (cancelled || this.#shuttingDown) return;
+      const now = Date.now();
+      for (const [shardId, handle] of [...this.#shards]) {
+        if (!handle.dead && now - handle.lastReport > stale) this.#recover(shardId);
+      }
+      if (!cancelled) timer = setTimeout(tick, period);
+    };
+    let timer = setTimeout(tick, period);
+    return { cancel(): void { cancelled = true; clearTimeout(timer); } };
   }
 
   #onReport(shardId: string, message: SchedulerReport): void {
     if (message === null || typeof message !== 'object') return;
+    const handle = this.#shards.get(shardId);
+    if (handle !== undefined) handle.lastReport = Date.now();
     if (message.report === 'load') {
       this.#collection.recordLoad(shardId, message.summary);
       return;
     }
     if (message.report === 'summary') {
-      const handle = this.#shards.get(shardId);
       if (handle !== undefined) handle.summary = message.summary;
       return;
     }
@@ -230,14 +301,26 @@ export class SchedulerNode {
 
   /** Shut every thread down, stop containment, and return their final summaries. */
   async shutdown(): Promise<SchedulerShardSummary[]> {
-    for (const shardId of this.#shardIds) this.#push(shardId, { control: 'shutdown' });
+    this.#shuttingDown = true;
+    this.#supervisor?.cancel();
+    this.#supervisor = null;
     const handles = [...this.#shards.values()];
+    for (const handle of handles) handle.port.postMessage({ control: 'shutdown' });
     await Promise.all(handles.map((shard) => shard.done));
     await this.#watchdog.stop();
     const summaries = handles.map((shard) => shard.summary);
     this.#shards.clear();
     this.#released.clear();
     this.#started = false;
+    this.#shuttingDown = false;
     return summaries;
+  }
+
+  /**
+  * Test hook: forcibly kill a scheduler thread to exercise recovery. Its
+  * `run()` settles, which the node observes and recovers from.
+  */
+  _killShard(shardId: string): void {
+    this.#shards.get(shardId)?.realm.terminate();
   }
 }

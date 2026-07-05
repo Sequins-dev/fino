@@ -120,6 +120,32 @@ describe('scheduler node', () => {
     }
   });
 
+  it('recovers a dead thread\'s workloads onto a surviving thread', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('recover');
+    await fs.mkdir(root);
+    const out = `${root}/recovered.txt`;
+    const node = new SchedulerNode({ shardCount: 2, capacity: 4 });
+    node.start();
+    try {
+      // Placed and leased on shard-0 but not yet woken, so it hasn't run there.
+      const id = node.deploy({ tenantId: 'acme', entryPath: runOnce, affinity: 'shard-0', data: { outputPath: out, message: 'recovered' } });
+      t.equal(node.collection().placementOf(id), 'shard-0', 'initially on shard-0');
+      const released = node.whenReleased(id);
+      // Kill shard-0; the supervisor observes its run() settle and re-places the
+      // workload on the survivor, which wakes and runs it.
+      node._killShard('shard-0');
+      await released;
+      // The workload never ran on shard-0 (it was never woken there), so the
+      // output file existing proves it was recovered and ran on the survivor.
+      t.equal(new TextDecoder().decode(await fs.readFile(out)), 'recovered', 'the recovered workload ran on the surviving thread');
+    } finally {
+      await node.shutdown();
+      await fs.unlink(out).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
   it('hands a live workload off to another thread, preserving its pending state', async (t) => {
     const fs = new DiskFileSystem();
     const root = tmpRoot('handoff');

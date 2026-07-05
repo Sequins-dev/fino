@@ -111,6 +111,16 @@ export class NodeIsolateCollection {
     }
   }
 
+  /**
+  * Remove a scheduler thread from placement consideration (e.g. after it dies).
+  * Existing leases are cleaned up separately by {@link recoverShard}; this just
+  * stops new work being placed on it.
+  */
+  unregisterShard(shardId: ShardId): void {
+    this.#shards.delete(shardId);
+    this.#load.delete(shardId);
+  }
+
   /** Every registered scheduler thread. */
   shards(): ShardId[] {
     return [...this.#shards.keys()];
