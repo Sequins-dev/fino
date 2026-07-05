@@ -300,6 +300,7 @@ class ShardScheduler {
   #hardBudgetMicros: number;
   #loadReportMs: number;
   #syncSliceMicros: number;
+  #heapLimitBytes: number;
   #port: RealmPort;
   #held = new Map<string, HeldWorkload>();
   #runnable = new Set<string>();
@@ -315,6 +316,7 @@ class ShardScheduler {
     this.#hardBudgetMicros = config.hardBudgetMicros ?? DEFAULT_HARD_BUDGET_MICROS;
     this.#loadReportMs = config.loadReportMs ?? DEFAULT_LOAD_REPORT_MS;
     this.#syncSliceMicros = config.syncSliceThresholdMicros ?? DEFAULT_SYNC_SLICE_MICROS;
+    this.#heapLimitBytes = config.heapLimitBytes ?? 0;
     this.#port = port;
   }
 
@@ -368,7 +370,7 @@ class ShardScheduler {
       drainRequested: false,
       cpuMicros: 0,
       syncHeavyReported: false,
-      ...lease.entryPath !== undefined ? { isolate: new Isolate(lease.entryPath) } : {}
+      ...lease.entryPath !== undefined ? { isolate: new Isolate(lease.entryPath, this.#heapLimitBytes) } : {}
     });
   }
 

@@ -65,8 +65,8 @@ function isBudgetTerminated(value: unknown): boolean {
 export class Isolate {
   #handle: number;
 
-  constructor(entryPath: string) {
-    this.#handle = createWorkload(entryPath);
+  constructor(entryPath: string, heapLimitBytes = 0) {
+    this.#handle = createWorkload(entryPath, heapLimitBytes);
   }
 
   /**

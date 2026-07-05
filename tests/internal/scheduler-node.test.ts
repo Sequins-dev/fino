@@ -15,6 +15,7 @@ const longlived = new URL('./fixtures/scheduler-longlived-worker.ts', import.met
 const handoffWorker = new URL('./fixtures/scheduler-handoff-worker.ts', import.meta.url).pathname;
 const syncHeavy = new URL('./fixtures/scheduler-syncheavy-worker.ts', import.meta.url).pathname;
 const parallelOps = new URL('./fixtures/scheduler-parallel-ops-worker.ts', import.meta.url).pathname;
+const heapHog = new URL('./fixtures/scheduler-heaphog-worker.ts', import.meta.url).pathname;
 
 function tmpRoot(tag: string): string {
   return `/tmp/fino-node-${tag}-${Math.floor(Math.random() * 1e9)}`;
@@ -118,6 +119,33 @@ describe('scheduler node', () => {
     } finally {
       await node.shutdown();
       await fs.unlink(`${root}/pinned.txt`).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('terminates a workload that exceeds its heap cap without OOMing the node', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('heap');
+    await fs.mkdir(root);
+    const out = `${root}/survivor.txt`;
+    // A generous hard budget so the runaway watchdog can't be what stops the hog
+    // — only the heap-limit callback can. One thread hosts both.
+    const node = new SchedulerNode({ shardCount: 1, capacity: 2, heapLimitBytes: 32 * 1024 * 1024, hardBudgetMicros: 60_000_000 });
+    node.start();
+    try {
+      const hog = node.deploy({ tenantId: 'hog', entryPath: heapHog, data: {} });
+      const ok = node.deploy({ tenantId: 'ok', entryPath: runOnce, data: { outputPath: out, message: 'survived' } });
+      const hogReleased = node.whenReleased(hog);
+      const okReleased = node.whenReleased(ok);
+      wakeFor(node, hog, 'go');
+      wakeFor(node, ok, 'go');
+      const hogReason = await hogReleased;
+      await okReleased;
+      t.equal(hogReason, 'terminated', 'the heap hog was contained, not left to OOM the process');
+      t.equal(new TextDecoder().decode(await fs.readFile(out)), 'survived', 'the sibling survived the heap hog');
+    } finally {
+      await node.shutdown();
+      await fs.unlink(out).catch(() => undefined);
       await fs.rmdir(root).catch(() => undefined);
     }
   });

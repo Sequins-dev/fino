@@ -275,15 +275,40 @@ fn scheduler_workload_import_rules() -> Vec<ImportRule> {
     rules
 }
 
+/// Default per-workload old-generation heap cap when the caller does not set one.
+const DEFAULT_HEAP_LIMIT_BYTES: usize = 1 << 30;
+
+/// Fired by V8 when a workload's heap nears its cap. Terminates the offending
+/// isolate (contained the same way a runaway is) and bumps the limit just enough
+/// that the current GC can finish before the termination lands at the next
+/// safepoint — returning `current` unchanged would OOM the whole process.
+unsafe extern "C" fn heap_limit_callback(
+    data: *mut std::ffi::c_void,
+    current: usize,
+    _initial: usize,
+) -> usize {
+    let token = data as usize as u64;
+    if let Some(target) = lock_registry().get(&token) {
+        target.handle.terminate_execution();
+    }
+    current + (current / 2).max(16 * 1024 * 1024)
+}
+
 fn setup_workload(
     entry_path: String,
     process_env: ProcessEnv,
     package_map_json: Option<String>,
+    heap_limit_bytes: usize,
 ) -> Result<ParkedWorkload, String> {
     crate::runtime::init_v8();
 
+    let heap_limit = if heap_limit_bytes == 0 {
+        DEFAULT_HEAP_LIMIT_BYTES
+    } else {
+        heap_limit_bytes
+    };
     let mut params = v8::CreateParams::default();
-    params = params.heap_limits(0, 1 << 30);
+    params = params.heap_limits(0, heap_limit);
     params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
 
     let mut isolate = v8::Isolate::new(params);
@@ -402,6 +427,11 @@ fn setup_workload(
 
     let thread_handle = isolate.thread_safe_handle();
     let budget_token = register_budget_target(thread_handle.clone());
+    // Contain per-tenant heap growth: when this isolate nears its cap, the
+    // callback terminates it (keyed by its budget token) rather than OOMing the
+    // process.
+    isolate
+        .add_near_heap_limit_callback(heap_limit_callback, budget_token as *mut std::ffi::c_void);
     let mut workload = ParkedWorkload {
         isolate,
         context: context_global,
@@ -433,12 +463,14 @@ fn create_workload(
         throw_error(scope, "createWorkload: entry path is required");
         return;
     }
+    let heap_limit_bytes = args.get(1).integer_value(scope).unwrap_or(0).max(0) as usize;
 
     let parent_state = get_state(scope);
     let process_env = parent_state.borrow().process_env.clone();
     let package_map_json = parent_state.borrow().package_map_json.clone();
 
-    let workload = match setup_workload(entry_path, process_env, package_map_json) {
+    let workload = match setup_workload(entry_path, process_env, package_map_json, heap_limit_bytes)
+    {
         Ok(workload) => workload,
         Err(err) => {
             throw_error(scope, &format!("createWorkload: {err}"));

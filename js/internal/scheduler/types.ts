@@ -164,6 +164,8 @@ export interface SchedulerShardConfig {
   loadReportMs?: number;
   /** Soft on-CPU limit (µs) for one sync pump slice; overrunning flags the workload sync-heavy. Default 50ms. */
   syncSliceThresholdMicros?: number;
+  /** Per-workload heap cap (bytes); nearing it terminates the workload rather than OOMing the process. */
+  heapLimitBytes?: number;
 }
 
 /**

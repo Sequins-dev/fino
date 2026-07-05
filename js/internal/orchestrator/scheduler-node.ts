@@ -78,6 +78,8 @@ export interface SchedulerNodeOptions {
   loadReportMs?: number;
   /** Soft on-CPU limit (µs) per sync slice; overrunning migrates the workload to a batch thread. */
   syncSliceThresholdMicros?: number;
+  /** Per-workload heap cap (bytes); nearing it terminates the workload rather than OOMing the process. */
+  heapLimitBytes?: number;
 }
 
 /**
@@ -92,6 +94,7 @@ export class SchedulerNode {
   #hardBudgetMicros?: number;
   #loadReportMs?: number;
   #syncSliceThresholdMicros?: number;
+  #heapLimitBytes?: number;
   #shards = new Map<string, ShardHandle>();
   #watchdog = new BudgetWatchdog();
   #started = false;
@@ -110,6 +113,7 @@ export class SchedulerNode {
     this.#hardBudgetMicros = options.hardBudgetMicros;
     this.#loadReportMs = options.loadReportMs;
     this.#syncSliceThresholdMicros = options.syncSliceThresholdMicros;
+    this.#heapLimitBytes = options.heapLimitBytes;
     const batchThreads = options.batchThreads ?? 0;
     if (!Number.isInteger(batchThreads) || batchThreads < 0) {
       throw new TypeError('batchThreads must be a non-negative integer');
@@ -149,7 +153,8 @@ export class SchedulerNode {
         ...this.#budgetMicros !== undefined ? { budgetMicros: this.#budgetMicros } : {},
         ...this.#hardBudgetMicros !== undefined ? { hardBudgetMicros: this.#hardBudgetMicros } : {},
         ...this.#loadReportMs !== undefined ? { loadReportMs: this.#loadReportMs } : {},
-        ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceThresholdMicros: this.#syncSliceThresholdMicros } : {}
+        ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceThresholdMicros: this.#syncSliceThresholdMicros } : {},
+        ...this.#heapLimitBytes !== undefined ? { heapLimitBytes: this.#heapLimitBytes } : {}
       };
       // Run (not call) the shard entry, so the shard's port reports never
       // collide with a call response; config is handed over as realm data.

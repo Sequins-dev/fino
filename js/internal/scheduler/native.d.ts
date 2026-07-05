@@ -1,4 +1,4 @@
-export function createWorkload(entryPath: string): number;
+export function createWorkload(entryPath: string, heapLimitBytes?: number): number;
 export function dispatchWorkload(handle: number, requestJson: string, hardBudgetMicros?: number): string;
 export function completeHostOperation(handle: number, operationId: number, ok: boolean, payloadJson: string): void;
 export function terminateWorkload(handle: number): void;
