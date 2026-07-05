@@ -14,6 +14,7 @@ const runOnce = new URL('./fixtures/deploy-worker.ts', import.meta.url).pathname
 const longlived = new URL('./fixtures/scheduler-longlived-worker.ts', import.meta.url).pathname;
 const handoffWorker = new URL('./fixtures/scheduler-handoff-worker.ts', import.meta.url).pathname;
 const syncHeavy = new URL('./fixtures/scheduler-syncheavy-worker.ts', import.meta.url).pathname;
+const parallelOps = new URL('./fixtures/scheduler-parallel-ops-worker.ts', import.meta.url).pathname;
 
 function tmpRoot(tag: string): string {
   return `/tmp/fino-node-${tag}-${Math.floor(Math.random() * 1e9)}`;
@@ -117,6 +118,28 @@ describe('scheduler node', () => {
     } finally {
       await node.shutdown();
       await fs.unlink(`${root}/pinned.txt`).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('performs a workload\'s concurrent operations in parallel', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('parallel');
+    await fs.mkdir(root);
+    const out = `${root}/elapsed.txt`;
+    const node = new SchedulerNode({ shardCount: 1, capacity: 2 });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'io', entryPath: parallelOps, data: { outputPath: out } });
+      const released = node.whenReleased(id);
+      wakeFor(node, id, 'go');
+      await released;
+      const elapsed = Number(new TextDecoder().decode(await fs.readFile(out)));
+      // Two 200ms delays run concurrently (~200ms), not serially (~400ms).
+      t.equal(elapsed < 350, true, `two 200ms ops overlapped (took ${elapsed}ms, serial would be ~400ms)`);
+    } finally {
+      await node.shutdown();
+      await fs.unlink(out).catch(() => undefined);
       await fs.rmdir(root).catch(() => undefined);
     }
   });

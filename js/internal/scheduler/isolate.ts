@@ -27,22 +27,27 @@ export const PUMP_PENDING = 'pumpPending';
 *   must perform on its behalf, then feed back via {@link Isolate.complete}.
 * - `settled` — the dispatch resolved; `value` is the raw JSON result string.
 */
+/** One privileged operation the scheduler performs on a workload's behalf. */
+export interface HostOperation {
+  id: number;
+  operation: string;
+  args?: Record<string, unknown>;
+}
+
 export type PumpOutcome =
   | { kind: 'pending' }
-  | { kind: 'hostOperation'; operation: { id: number; operation: string; args?: Record<string, unknown> } }
+  | { kind: 'hostOperations'; operations: HostOperation[] }
   | { kind: 'budgetTerminated' }
   | { kind: 'settled'; value: unknown };
 
-interface HostOperationEnvelope {
-  hostOperation: { id: number; operation: string; args?: Record<string, unknown> };
+interface HostOperationsEnvelope {
+  hostOperations: HostOperation[];
 }
 
-function isHostOperationEnvelope(value: unknown): value is HostOperationEnvelope {
+function isHostOperationsEnvelope(value: unknown): value is HostOperationsEnvelope {
   return typeof value === 'object'
     && value !== null
-    && typeof (value as { hostOperation?: unknown }).hostOperation === 'object'
-    && (value as { hostOperation: { id?: unknown } }).hostOperation !== null
-    && typeof (value as { hostOperation: { id?: unknown } }).hostOperation.id === 'number';
+    && Array.isArray((value as { hostOperations?: unknown }).hostOperations);
 }
 
 function isPumpPending(value: unknown): boolean {
@@ -85,7 +90,7 @@ export class Isolate {
   */
   pump(requestJson: string, hardBudgetMicros = 0): PumpOutcome {
     const raw = JSON.parse(dispatchWorkload(this.#handle, requestJson, hardBudgetMicros));
-    if (isHostOperationEnvelope(raw)) return { kind: 'hostOperation', operation: raw.hostOperation };
+    if (isHostOperationsEnvelope(raw)) return { kind: 'hostOperations', operations: raw.hostOperations };
     if (isPumpPending(raw)) return { kind: 'pending' };
     if (isBudgetTerminated(raw)) return { kind: 'budgetTerminated' };
     return { kind: 'settled', value: raw };

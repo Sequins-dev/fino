@@ -18,7 +18,7 @@ import { readable, timeout } from 'internal:runtime/loop';
 import { getRealmData } from 'internal:realm-bridge';
 import { DiskFileSystem, DT_DIR, DT_REG, DT_UNKNOWN, type File, type Entry, type Stat } from 'fino:file';
 import { encodeBinary, decodeBinary } from './facade-ops.ts';
-import { Isolate } from './isolate.ts';
+import { Isolate, type HostOperation } from './isolate.ts';
 import { coalesceWake, firstWake, removeWake } from './selection.ts';
 import type { DispatchResult, LeaseRecord, PriorityClass, RunnableWorkload, SchedulerControlMessage, SchedulerShardConfig, SchedulerShardSummary, ShardLoadSummary, TenantWake } from './types.ts';
 
@@ -511,9 +511,11 @@ class ShardScheduler {
       workload.syncHeavyReported = true;
       this.#port.postMessage({ report: 'syncHeavy', shardId: this.#shardId, workloadId: workload.lease.workloadId, cpuMicros: workload.cpuMicros });
     }
-    if (outcome.kind === 'hostOperation') {
+    if (outcome.kind === 'hostOperations') {
+      // Perform every operation the workload queued this pump concurrently; the
+      // isolate is re-pumped as each completion lands and resumes once all have.
       workload.blocked = true;
-      void this.#performHostOp(workload, outcome.operation);
+      for (const operation of outcome.operations) void this.#performHostOp(workload, operation);
       return;
     }
     if (outcome.kind === 'pending') {
@@ -548,7 +550,7 @@ class ShardScheduler {
     if (workload.wakes.length > 0) this.#markRunnable(workload.lease.workloadId);
   }
 
-  async #performHostOp(workload: HeldWorkload, operation: { id: number; operation: string; args?: Record<string, unknown> }): Promise<void> {
+  async #performHostOp(workload: HeldWorkload, operation: HostOperation): Promise<void> {
     try {
       const result = await runHostOperation(operation);
       workload.isolate?.complete(operation.id, true, JSON.stringify(result));

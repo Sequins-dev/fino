@@ -624,6 +624,9 @@ fn dispatch_entered_parked(
     }
 }
 
+/// Drain every operation a workload queued this pump and clear the queue, so a
+/// tenant's concurrent facade calls (e.g. `Promise.all([read(a), read(b)])`) are
+/// performed in parallel by the scheduler rather than one per pump cycle.
 fn take_host_operation(
     scope: &mut v8::HandleScope,
     context: v8::Local<v8::Context>,
@@ -634,14 +637,14 @@ fn take_host_operation(
     if ops.length() == 0 {
         return None;
     }
-    let shift_key = v8::String::new(scope, "shift")?;
-    let shift_value = ops.get(scope, shift_key.into())?;
-    let shift = v8::Local::<v8::Function>::try_from(shift_value).ok()?;
-    let op = shift.call(scope, ops.into(), &[])?;
-    let op_json = v8::json::stringify(scope, op)?;
+    let ops_json = v8::json::stringify(scope, ops.into())?;
+    // Truncate the queue in place now that we've captured its contents.
+    let length_key = v8::String::new(scope, "length")?;
+    let zero = v8::Integer::new(scope, 0);
+    ops.set(scope, length_key.into(), zero.into())?;
     Some(format!(
-        "{{\"hostOperation\":{}}}",
-        op_json.to_rust_string_lossy(scope)
+        "{{\"hostOperations\":{}}}",
+        ops_json.to_rust_string_lossy(scope)
     ))
 }
 
