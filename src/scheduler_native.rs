@@ -506,10 +506,13 @@ fn dispatch_parked(
     // workload waiting on facade I/O is never charged for it.
     let budgeted = hard_budget_micros > 0;
     if budgeted {
-        arm_budget(
-            workload.budget_token,
-            Instant::now() + Duration::from_micros(hard_budget_micros),
-        );
+        // Guard against an absurd budget overflowing the platform `Instant`
+        // (which would panic); a deadline that far out is effectively "never".
+        let now = Instant::now();
+        let deadline = now
+            .checked_add(Duration::from_micros(hard_budget_micros))
+            .unwrap_or_else(|| now + Duration::from_secs(24 * 60 * 60));
+        arm_budget(workload.budget_token, deadline);
     }
     // Swap this isolate's async state into the thread-local so any FFI
     // completions, executor tasks, and wake-pipe traffic during the pump belong
@@ -644,7 +647,7 @@ fn take_host_operation(
 
 fn complete_entered_host_operation(
     workload: &mut ParkedWorkload,
-    operation_id: i32,
+    operation_id: i64,
     ok: bool,
     payload_json: &str,
 ) -> Result<(), String> {
@@ -658,7 +661,9 @@ fn complete_entered_host_operation(
         .ok_or_else(|| "scheduler host operation completion function missing".to_string())?;
     let func = v8::Local::<v8::Function>::try_from(value)
         .map_err(|_| "scheduler host operation completion is not a function".to_string())?;
-    let id = v8::Integer::new(scope, operation_id);
+    // Host-op ids can exceed i32 over a long-lived isolate; JS uses f64 keys, so
+    // pass a Number rather than truncating to a 32-bit Integer.
+    let id = v8::Number::new(scope, operation_id as f64);
     let ok_value = v8::Boolean::new(scope, ok);
     let payload = v8::String::new(scope, payload_json)
         .ok_or_else(|| "failed to allocate host operation payload".to_string())?;
@@ -679,7 +684,7 @@ fn complete_entered_host_operation(
 
 fn complete_parked_host_operation(
     workload: &mut ParkedWorkload,
-    operation_id: i32,
+    operation_id: i64,
     ok: bool,
     payload_json: &str,
 ) -> Result<(), String> {
@@ -701,7 +706,7 @@ fn complete_host_operation(
     _rv: v8::ReturnValue,
 ) {
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let operation_id = args.get(1).integer_value(scope).unwrap_or(-1) as i32;
+    let operation_id = args.get(1).integer_value(scope).unwrap_or(-1);
     let ok = args.get(2).boolean_value(scope);
     let payload_json = args
         .get(3)

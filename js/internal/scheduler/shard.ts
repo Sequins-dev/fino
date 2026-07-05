@@ -98,17 +98,18 @@ function summarize(shardId: string, held: Map<string, HeldWorkload>, dispatches:
 
 function applyDispatchResult(workload: HeldWorkload, result: DispatchResult, dispatched: TenantWake | null): void {
   const costMicros = Math.max(0, result.costMicros ?? 0);
-  if (result.result === 'budget_yield') {
+  // Both `budget_yield` (yielded its slice) and `runnable` (has more to do)
+  // consumed CPU without finishing, so both accrue fairness debt — otherwise a
+  // workload that keeps returning `runnable` would monopolize at near-zero debt.
+  if (result.result === 'budget_yield' || result.result === 'runnable') {
     workload.debtMicros += costMicros;
     return;
   }
+  // `idle` finished servicing its wake: pay down debt and consume the wake that
+  // was actually serviced (the earliest-deadline one `firstWake` selected), not
+  // `wakes[0]` — otherwise an out-of-order wake is silently lost.
   workload.debtMicros = Math.max(0, workload.debtMicros - costMicros);
-  if (result.result === 'idle') {
-    // Consume the wake that was actually serviced (the earliest-deadline one
-    // `firstWake` selected), not `wakes[0]` — otherwise an out-of-order wake is
-    // silently lost and the serviced one is re-dispatched.
-    workload.wakes = removeWake(workload.wakes, dispatched);
-  }
+  workload.wakes = removeWake(workload.wakes, dispatched);
 }
 
 function requireString(value: unknown, name: string): string {

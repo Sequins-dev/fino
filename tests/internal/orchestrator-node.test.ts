@@ -108,6 +108,17 @@ describe('node isolate collection release', () => {
     t.equal(c.leaseOf(id), null, 'lease removed');
   });
 
+  it('reaps a workload\'s snapshot and wakes on terminal release', (t) => {
+    const c = twoShards(4);
+    const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
+    const [lease] = c.claim('shard-0', 4);
+    c.checkpoint(id, { mailbox: [{ sequence: 1, data: 'x' }] }, 0);
+    c.enqueueWake(id, { workloadId: id, reason: 'io', sourceId: 's' });
+    t.equal(c.snapshotOf(id) !== undefined, true, 'snapshot present before release');
+    c.release(lease!.leaseId, 'terminated');
+    t.equal(c.snapshotOf(id), undefined, 'snapshot reaped on terminal release');
+  });
+
   it('keeps a failed workload observable as failed', (t) => {
     const c = twoShards(4);
     const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0' });

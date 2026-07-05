@@ -359,10 +359,13 @@ export class NodeIsolateCollection {
         this.#workloads.delete(workloadId);
         this.#entries.delete(workloadId);
         this.#placement.delete(workloadId);
+        this.#snapshots.delete(workloadId);
         break;
       }
       case 'failed': {
         if (record.state !== 'failed') transition(record, 'failed');
+        // No reconstruction from a failed workload; drop its snapshot.
+        this.#snapshots.delete(workloadId);
         break;
       }
       case 'renew_failed':
