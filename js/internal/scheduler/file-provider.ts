@@ -16,7 +16,7 @@ import { FileSystem } from '../file/provider.ts';
 import { Stat } from '../file/stat.ts';
 import { Entry, FileEntry, DirEntry } from '../file/entry.ts';
 import type { Path } from 'fino:file/path';
-import { facadeOp, encodeBinary, decodeBinary } from './facade-ops.ts';
+import { facadeOp, encodeBinary } from './facade-ops.ts';
 
 export { FileSystem } from '../file/provider.ts';
 export { Stat } from '../file/stat.ts';
@@ -57,7 +57,7 @@ class SchedulerFile {
   }
 
   async pread(pos: number | bigint, len: number): Promise<Uint8Array> {
-    return decodeBinary(await facadeOp('file-handle', 'pread', { id: this.#id, pos: Number(pos), len }));
+    return await facadeOp('file-handle', 'pread', { id: this.#id, pos: Number(pos), len }) as Uint8Array;
   }
 
   async pwrite(pos: number | bigint, data: Uint8Array): Promise<number> {
@@ -78,7 +78,7 @@ class SchedulerFile {
   }
 
   async bytes(): Promise<Uint8Array> {
-    return decodeBinary(await facadeOp('file-handle', 'bytes', { id: this.#id }));
+    return await facadeOp('file-handle', 'bytes', { id: this.#id }) as Uint8Array;
   }
 
   async text(): Promise<string> {
@@ -213,7 +213,7 @@ export class SchedulerFileSystem extends FileSystem {
   // Whole-file transfers are performed in a single facade op rather than through
   // an open handle, so a tenant read/write is one scheduler round trip.
   override async readFile(path: Path | string): Promise<Uint8Array> {
-    return decodeBinary(await facadeOp('file', 'readFile', { path: pathString(path) }));
+    return await facadeOp('file', 'readFile', { path: pathString(path) }) as Uint8Array;
   }
 
   override async writeFile(path: Path | string, data: Uint8Array | ArrayBuffer | ArrayBufferView): Promise<void> {

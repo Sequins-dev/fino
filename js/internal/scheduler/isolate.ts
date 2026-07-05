@@ -96,9 +96,12 @@ export class Isolate {
     return { kind: 'settled', value: raw };
   }
 
-  /** Inject the result of a scheduler-performed operation and let the isolate resume. */
-  complete(operationId: number, ok: boolean, payloadJson: string): void {
-    completeHostOperation(this.#handle, operationId, ok, payloadJson);
+  /**
+  * Inject the result of a scheduler-performed operation (as internal:serializer
+  * bytes, so binary crosses without base64) and let the isolate resume.
+  */
+  complete(operationId: number, ok: boolean, payload: Uint8Array): void {
+    completeHostOperation(this.#handle, operationId, ok, payload);
   }
 
   /** Dispose the isolate and free its resources. */

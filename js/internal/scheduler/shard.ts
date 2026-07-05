@@ -17,7 +17,8 @@
 import { readable, timeout } from 'internal:runtime/loop';
 import { getRealmData } from 'internal:realm-bridge';
 import { DiskFileSystem, DT_DIR, DT_REG, DT_UNKNOWN, type File, type Entry, type Stat } from 'fino:file';
-import { encodeBinary, decodeBinary } from './facade-ops.ts';
+import { decodeBinary } from './facade-ops.ts';
+import { serialize } from 'internal:serializer';
 import { Isolate, type HostOperation } from './isolate.ts';
 import { coalesceWake, firstWake, removeWake } from './selection.ts';
 import type { DispatchResult, LeaseRecord, PriorityClass, RunnableWorkload, SchedulerControlMessage, SchedulerShardConfig, SchedulerShardSummary, ShardLoadSummary, TenantWake } from './types.ts';
@@ -153,7 +154,7 @@ function requireHandle(args: Record<string, unknown>): File {
 async function runFileOp(method: string, args: Record<string, unknown>): Promise<unknown> {
   switch (method) {
     case 'readFile':
-      return encodeBinary(await hostFileSystem.readFile(requireString(args.path, 'path')));
+      return await hostFileSystem.readFile(requireString(args.path, 'path'));
     case 'writeFile':
       await hostFileSystem.writeFile(requireString(args.path, 'path'), decodeBinary(args.data));
       return null;
@@ -206,11 +207,11 @@ async function runFileHandleOp(method: string, args: Record<string, unknown>): P
     case 'stat':
       return statFields(await handle.stat());
     case 'pread':
-      return encodeBinary(await handle.pread(requireNumber(args.pos, 'pos'), requireNumber(args.len, 'len')));
+      return await handle.pread(requireNumber(args.pos, 'pos'), requireNumber(args.len, 'len'));
     case 'pwrite':
       return await handle.pwrite(requireNumber(args.pos, 'pos'), decodeBinary(args.data));
     case 'bytes':
-      return encodeBinary(await handle.bytes());
+      return await handle.bytes();
     case 'size':
       return Number(await handle.size());
     case 'truncate':
@@ -553,13 +554,15 @@ class ShardScheduler {
   }
 
   async #performHostOp(workload: HeldWorkload, operation: HostOperation): Promise<void> {
+    // Results cross back as internal:serializer bytes, so binary payloads (file
+    // reads) never touch base64.
     try {
       const result = await runHostOperation(operation);
-      workload.isolate?.complete(operation.id, true, JSON.stringify(result));
+      workload.isolate?.complete(operation.id, true, serialize(result)[0] as Uint8Array);
     } catch (error) {
-      workload.isolate?.complete(operation.id, false, JSON.stringify({
+      workload.isolate?.complete(operation.id, false, serialize({
         message: error instanceof Error ? error.message : String(error)
-      }));
+      })[0] as Uint8Array);
     }
     workload.blocked = false;
     this.#markRunnable(workload.lease.workloadId);

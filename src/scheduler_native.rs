@@ -336,6 +336,7 @@ fn setup_workload(
 
         let runner = format!(
             "import 'internal:bootstrap';\n\
+             import {{ deserialize as __finoDeserialize }} from 'internal:serializer';\n\
              const __entryPromise = import({});\n\
              globalThis.__finoSchedulerHostOps = [];\n\
              globalThis.__finoSchedulerHostResolvers = new Map();\n\
@@ -353,15 +354,13 @@ fn setup_workload(
                  globalThis.__finoSchedulerHostResolvers.set(id, {{ resolve, reject }});\n\
                }});\n\
              }};\n\
-             globalThis.__finoSchedulerCompleteHostOp = function __finoSchedulerCompleteHostOp(id, ok, json) {{\n\
+             globalThis.__finoSchedulerCompleteHostOp = function __finoSchedulerCompleteHostOp(id, ok, bytes) {{\n\
                const entry = globalThis.__finoSchedulerHostResolvers.get(id);\n\
                if (entry === undefined) return;\n\
                globalThis.__finoSchedulerHostResolvers.delete(id);\n\
-               if (ok) entry.resolve(JSON.parse(json));\n\
-               else {{\n\
-                 const error = JSON.parse(json);\n\
-                 entry.reject(new Error(error?.message ?? String(error)));\n\
-               }}\n\
+               const value = __finoDeserialize(bytes);\n\
+               if (ok) entry.resolve(value);\n\
+               else entry.reject(new Error(value?.message ?? String(value)));\n\
              }};\n\
              globalThis.__finoSchedulerDispatch = async function __finoSchedulerDispatch(json) {{\n\
                const __entry = await __entryPromise;\n\
@@ -684,7 +683,7 @@ fn complete_entered_host_operation(
     workload: &mut ParkedWorkload,
     operation_id: i64,
     ok: bool,
-    payload_json: &str,
+    payload_bytes: &[u8],
 ) -> Result<(), String> {
     let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
     let context = v8::Local::new(isolate_scope, &workload.context);
@@ -700,7 +699,12 @@ fn complete_entered_host_operation(
     // pass a Number rather than truncating to a 32-bit Integer.
     let id = v8::Number::new(scope, operation_id as f64);
     let ok_value = v8::Boolean::new(scope, ok);
-    let payload = v8::String::new(scope, payload_json)
+    // The result is structured-clone bytes (internal:serializer) rather than a
+    // JSON string, so binary payloads (file bytes) cross without base64. Copy the
+    // bytes into a fresh Uint8Array in the workload isolate.
+    let backing = v8::ArrayBuffer::new_backing_store_from_vec(payload_bytes.to_vec()).make_shared();
+    let array_buffer = v8::ArrayBuffer::with_backing_store(scope, &backing);
+    let payload = v8::Uint8Array::new(scope, array_buffer, 0, payload_bytes.len())
         .ok_or_else(|| "failed to allocate host operation payload".to_string())?;
     let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
     {
@@ -721,13 +725,13 @@ fn complete_parked_host_operation(
     workload: &mut ParkedWorkload,
     operation_id: i64,
     ok: bool,
-    payload_json: &str,
+    payload_bytes: &[u8],
 ) -> Result<(), String> {
     let saved = crate::async_rt::swap_state(workload.async_state.take());
     unsafe {
         workload.isolate.enter();
     }
-    let result = complete_entered_host_operation(workload, operation_id, ok, payload_json);
+    let result = complete_entered_host_operation(workload, operation_id, ok, payload_bytes);
     unsafe {
         workload.isolate.exit();
     }
@@ -743,17 +747,22 @@ fn complete_host_operation(
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let operation_id = args.get(1).integer_value(scope).unwrap_or(-1);
     let ok = args.get(2).boolean_value(scope);
-    let payload_json = args
-        .get(3)
-        .to_string(scope)
-        .map(|s| s.to_rust_string_lossy(scope))
-        .unwrap_or_else(|| "null".to_string());
+    // The payload is internal:serializer bytes (a Uint8Array) rather than a JSON
+    // string; capture its contents to hand to the workload isolate.
+    let payload_bytes = match v8::Local::<v8::ArrayBufferView>::try_from(args.get(3)) {
+        Ok(view) => {
+            let mut buf = vec![0u8; view.byte_length()];
+            view.copy_contents(&mut buf);
+            buf
+        }
+        Err(_) => Vec::new(),
+    };
 
     let result = WORKLOADS.with(|cell| {
         let mut workloads = cell.borrow_mut();
         match workloads.0.get_mut(handle).and_then(Option::as_mut) {
             Some(workload) => {
-                complete_parked_host_operation(workload, operation_id, ok, &payload_json)
+                complete_parked_host_operation(workload, operation_id, ok, &payload_bytes)
             }
             None => Err("completeHostOperation: invalid workload handle".to_string()),
         }

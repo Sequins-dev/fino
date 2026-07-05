@@ -16,6 +16,7 @@ const handoffWorker = new URL('./fixtures/scheduler-handoff-worker.ts', import.m
 const syncHeavy = new URL('./fixtures/scheduler-syncheavy-worker.ts', import.meta.url).pathname;
 const parallelOps = new URL('./fixtures/scheduler-parallel-ops-worker.ts', import.meta.url).pathname;
 const heapHog = new URL('./fixtures/scheduler-heaphog-worker.ts', import.meta.url).pathname;
+const readWorker = new URL('./fixtures/scheduler-read-worker.ts', import.meta.url).pathname;
 
 function tmpRoot(tag: string): string {
   return `/tmp/fino-node-${tag}-${Math.floor(Math.random() * 1e9)}`;
@@ -146,6 +147,35 @@ describe('scheduler node', () => {
     } finally {
       await node.shutdown();
       await fs.unlink(out).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('round-trips binary through facade-owned file I/O via the serializer', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('binary');
+    await fs.mkdir(root);
+    const input = `${root}/in.bin`;
+    const output = `${root}/out.bin`;
+    // Bytes spanning the full 0..255 range, including values base64/UTF-8 would
+    // have mangled if the transport were wrong.
+    const payload = new Uint8Array(512);
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 7 + 13) % 256;
+    await fs.writeFile(input, payload);
+    const node = new SchedulerNode({ shardCount: 1, capacity: 2 });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'io', entryPath: readWorker, data: { inputPath: input, outputPath: output } });
+      const released = node.whenReleased(id);
+      wakeFor(node, id, 'go');
+      await released;
+      const got = await fs.readFile(output);
+      t.equal(got.length, payload.length, 'byte length preserved');
+      t.equal([...got].every((b, i) => b === payload[i]), true, 'every byte survived the facade read');
+    } finally {
+      await node.shutdown();
+      await fs.unlink(input).catch(() => undefined);
+      await fs.unlink(output).catch(() => undefined);
       await fs.rmdir(root).catch(() => undefined);
     }
   });

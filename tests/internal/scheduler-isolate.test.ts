@@ -8,6 +8,12 @@
 */
 import { describe, it } from 'fino:test/test';
 import { createWorkload, dispatchWorkload, completeHostOperation, terminateWorkload, workloadWakeFd } from 'internal:scheduler-native';
+import { serialize } from 'internal:serializer';
+
+/** Completion payloads cross as internal:serializer bytes. */
+function bytes(value: unknown): Uint8Array {
+  return serialize(value)[0] as Uint8Array;
+}
 
 const parkWorker = new URL('./fixtures/scheduler-park-worker.ts', import.meta.url).pathname;
 
@@ -18,7 +24,7 @@ describe('scheduled isolate pump', () => {
       const first = JSON.parse(dispatchWorkload(handle, JSON.stringify({ data: { awaitId: 7 } })));
       t.equal(first.pumpPending, true, 'first pump parks rather than blocking');
 
-      completeHostOperation(handle, 7, true, JSON.stringify(41));
+      completeHostOperation(handle, 7, true, bytes(41));
 
       const second = JSON.parse(dispatchWorkload(handle, '{}'));
       t.deepEqual(second, { result: 'idle', costMicros: 41 }, 're-pump settles the injected completion');
@@ -45,11 +51,11 @@ describe('scheduled isolate pump', () => {
       t.equal(JSON.parse(dispatchWorkload(b, JSON.stringify({ data: { awaitId: 1 } }))).pumpPending, true);
 
       // Completing A's operation must not settle B.
-      completeHostOperation(a, 1, true, JSON.stringify(10));
+      completeHostOperation(a, 1, true, bytes(10));
       t.deepEqual(JSON.parse(dispatchWorkload(a, '{}')), { result: 'idle', costMicros: 10 });
       t.equal(JSON.parse(dispatchWorkload(b, '{}')).pumpPending, true, 'B stays parked');
 
-      completeHostOperation(b, 1, true, JSON.stringify(20));
+      completeHostOperation(b, 1, true, bytes(20));
       t.deepEqual(JSON.parse(dispatchWorkload(b, '{}')), { result: 'idle', costMicros: 20 });
     } finally {
       terminateWorkload(a);

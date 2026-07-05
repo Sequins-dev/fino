@@ -1,6 +1,6 @@
 export function createWorkload(entryPath: string, heapLimitBytes?: number): number;
 export function dispatchWorkload(handle: number, requestJson: string, hardBudgetMicros?: number): string;
-export function completeHostOperation(handle: number, operationId: number, ok: boolean, payloadJson: string): void;
+export function completeHostOperation(handle: number, operationId: number, ok: boolean, payload: Uint8Array): void;
 export function terminateWorkload(handle: number): void;
 /**
  * Read end of the workload isolate's wake pipe. Register it on the scheduler
