@@ -38,6 +38,10 @@ interface HeldWorkload {
   watching: boolean;
   /** A drain was requested mid-activation; capture + hand off once it settles. */
   drainRequested: boolean;
+  /** Accumulated on-CPU time (µs) measured across this workload's sync pump slices. */
+  cpuMicros: number;
+  /** True once this workload has been reported sync-heavy, so it reports at most once. */
+  syncHeavyReported: boolean;
 }
 
 const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
@@ -47,6 +51,11 @@ const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
 };
 
 const DEFAULT_LOAD_REPORT_MS = 50;
+// Soft on-CPU limit for one synchronous pump slice. A workload whose slice
+// exceeds this is flagged sync-heavy so the orchestrator can migrate it to a
+// batch thread, keeping latency-sensitive threads responsive. Well below the
+// hard runaway budget — this is a scheduling hint, not a kill.
+const DEFAULT_SYNC_SLICE_MICROS = 50_000;
 const DEFAULT_BUDGET_MICROS = 1_000;
 // Generous per-pump-slice hard limit for runaway containment. Legitimate
 // synchronous work — including a workload's first module-loading pump — stays
@@ -289,6 +298,7 @@ class ShardScheduler {
   #budgetMicros: number;
   #hardBudgetMicros: number;
   #loadReportMs: number;
+  #syncSliceMicros: number;
   #port: RealmPort;
   #held = new Map<string, HeldWorkload>();
   #runnable = new Set<string>();
@@ -303,6 +313,7 @@ class ShardScheduler {
     this.#budgetMicros = config.budgetMicros ?? DEFAULT_BUDGET_MICROS;
     this.#hardBudgetMicros = config.hardBudgetMicros ?? DEFAULT_HARD_BUDGET_MICROS;
     this.#loadReportMs = config.loadReportMs ?? DEFAULT_LOAD_REPORT_MS;
+    this.#syncSliceMicros = config.syncSliceThresholdMicros ?? DEFAULT_SYNC_SLICE_MICROS;
     this.#port = port;
   }
 
@@ -354,6 +365,8 @@ class ShardScheduler {
       blocked: false,
       watching: false,
       drainRequested: false,
+      cpuMicros: 0,
+      syncHeavyReported: false,
       ...lease.entryPath !== undefined ? { isolate: new Isolate(lease.entryPath) } : {}
     });
   }
@@ -485,7 +498,18 @@ class ShardScheduler {
       });
     }
 
+    // Measure the on-CPU cost of this synchronous slice (a pump does no awaiting,
+    // so its wall-clock is its on-CPU time). Report the workload sync-heavy the
+    // first time a slice overruns the soft threshold, so the orchestrator can
+    // migrate it to a batch thread.
+    const startMs = Date.now();
     const outcome = isolate.pump(requestJson, this.#hardBudgetMicros);
+    const sliceMicros = (Date.now() - startMs) * 1_000;
+    workload.cpuMicros += sliceMicros;
+    if (!workload.syncHeavyReported && sliceMicros > this.#syncSliceMicros) {
+      workload.syncHeavyReported = true;
+      this.#port.postMessage({ report: 'syncHeavy', shardId: this.#shardId, workloadId: workload.lease.workloadId, cpuMicros: workload.cpuMicros });
+    }
     if (outcome.kind === 'hostOperation') {
       workload.blocked = true;
       void this.#performHostOp(workload, outcome.operation);

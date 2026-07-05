@@ -13,6 +13,7 @@ import type { WorkloadId } from 'internal:scheduler/types';
 const runOnce = new URL('./fixtures/deploy-worker.ts', import.meta.url).pathname;
 const longlived = new URL('./fixtures/scheduler-longlived-worker.ts', import.meta.url).pathname;
 const handoffWorker = new URL('./fixtures/scheduler-handoff-worker.ts', import.meta.url).pathname;
+const syncHeavy = new URL('./fixtures/scheduler-syncheavy-worker.ts', import.meta.url).pathname;
 
 function tmpRoot(tag: string): string {
   return `/tmp/fino-node-${tag}-${Math.floor(Math.random() * 1e9)}`;
@@ -117,6 +118,30 @@ describe('scheduler node', () => {
       await node.shutdown();
       await fs.unlink(`${root}/pinned.txt`).catch(() => undefined);
       await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('migrates a sync-heavy workload off a latency thread onto a batch thread', async (t) => {
+    const node = new SchedulerNode({ shardCount: 1, batchThreads: 1, capacity: 4, syncSliceThresholdMicros: 30_000 });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'compute', entryPath: syncHeavy, data: { busyMs: 80 } });
+      const first = node.collection().placementOf(id);
+      t.equal(node.collection().shardClassOf(first ?? ''), 'latency', 'starts on a latency thread');
+      // The heavy sync slice trips the on-CPU threshold and triggers migration.
+      wakeFor(node, id, 'go');
+      let landed: string | null = null;
+      for (let i = 0; i < 200; i++) {
+        landed = node.collection().placementOf(id);
+        if (landed !== null && node.collection().shardClassOf(landed) === 'batch') break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      t.equal(node.collection().shardClassOf(landed ?? ''), 'batch', 'migrated to a batch thread');
+      const released = node.whenReleased(id);
+      node.revoke(id, 'test-done');
+      await released;
+    } finally {
+      await node.shutdown();
     }
   });
 

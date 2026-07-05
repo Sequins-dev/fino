@@ -76,9 +76,17 @@ interface StoredLease {
   data?: unknown;
 }
 
+/**
+* The class of a scheduler thread. `latency` threads host normal work and stay
+* responsive; `batch` threads exist to absorb sync-heavy workloads migrated off
+* the latency threads, so they never receive fresh placement.
+*/
+export type ShardClass = 'latency' | 'batch';
+
 interface ShardHandle {
   shardId: ShardId;
   capacity: number;
+  shardClass: ShardClass;
 }
 
 /**
@@ -100,15 +108,27 @@ export class NodeIsolateCollection {
   #nextLease = 0;
   #nextEpoch = 0;
 
-  /** Register a scheduler thread and its capacity so placement can target it. */
-  registerShard(shardId: ShardId, capacity: number): void {
+  /** Register a scheduler thread, its capacity, and its class so placement can target it. */
+  registerShard(shardId: ShardId, capacity: number, shardClass: ShardClass = 'latency'): void {
     if (!Number.isFinite(capacity) || capacity < 0) {
       throw new TypeError('shard capacity must be a non-negative finite number');
     }
-    this.#shards.set(shardId, { shardId, capacity: Math.floor(capacity) });
+    this.#shards.set(shardId, { shardId, capacity: Math.floor(capacity), shardClass });
     if (!this.#load.has(shardId)) {
       this.#load.set(shardId, { shardId, heldLeases: 0, runnableWorkloads: 0, dispatches: 0, debtMicros: 0 });
     }
+  }
+
+  /** The class of a registered thread, or null if unknown. */
+  shardClassOf(shardId: ShardId): ShardClass | null {
+    return this.#shards.get(shardId)?.shardClass ?? null;
+  }
+
+  /** The least-loaded registered thread of a given class, or null if none. */
+  leastLoadedOfClass(shardClass: ShardClass, exclude?: ShardId): ShardId | null {
+    const pool = [...this.#shards.values()].filter((shard) => shard.shardClass === shardClass && shard.shardId !== exclude);
+    if (pool.length === 0) return null;
+    return this.#leastLoaded(exclude ?? null, shardClass);
   }
 
   /**
@@ -163,7 +183,9 @@ export class NodeIsolateCollection {
       const sibling = this.#shardOf(spec.colocateWith);
       if (sibling !== null && this.#hasRoom(sibling)) return sibling;
     }
-    const target = this.#leastLoaded(null);
+    // Fresh work goes to latency threads; batch threads only receive sync-heavy
+    // workloads migrated off them.
+    const target = this.#leastLoaded(null, 'latency');
     // Every thread is full: refuse rather than pile onto a shard that cannot
     // claim the workload.
     if (!this.#hasRoom(target)) throw new Error('cannot place workload: all scheduler threads at capacity');
@@ -195,9 +217,12 @@ export class NodeIsolateCollection {
   * cold start still spreads. `exclude` skips a thread (used when re-placing a
   * revoked workload off its old thread).
   */
-  #leastLoaded(exclude: ShardId | null): ShardId {
-    const ids = [...this.#shards.keys()].filter((id) => id !== exclude);
-    const pool = ids.length > 0 ? ids : [...this.#shards.keys()];
+  #leastLoaded(exclude: ShardId | null, shardClass?: ShardClass): ShardId {
+    const all = [...this.#shards.values()];
+    const classed = shardClass === undefined ? all : all.filter((shard) => shard.shardClass === shardClass);
+    const source = classed.length > 0 ? classed : all;
+    const ids = source.map((shard) => shard.shardId).filter((id) => id !== exclude);
+    const pool = ids.length > 0 ? ids : source.map((shard) => shard.shardId);
     let best: ShardId | null = null;
     let bestKey = Number.POSITIVE_INFINITY;
     for (let i = 0; i < pool.length; i++) {

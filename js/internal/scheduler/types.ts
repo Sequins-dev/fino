@@ -162,6 +162,8 @@ export interface SchedulerShardConfig {
   hardBudgetMicros?: number;
   /** Interval (ms) between load-summary reports to the orchestrator. Default 50. */
   loadReportMs?: number;
+  /** Soft on-CPU limit (µs) for one sync pump slice; overrunning flags the workload sync-heavy. Default 50ms. */
+  syncSliceThresholdMicros?: number;
 }
 
 /**
@@ -185,6 +187,7 @@ export type SchedulerControlMessage =
 export type SchedulerReport =
   | { report: 'released'; shardId: ShardId; workloadId: WorkloadId; reason: string }
   | { report: 'drained'; shardId: ShardId; workloadId: WorkloadId; pending: { mailbox: PendingMessage[] } }
+  | { report: 'syncHeavy'; shardId: ShardId; workloadId: WorkloadId; cpuMicros: number }
   | { report: 'load'; summary: ShardLoadSummary }
   | { report: 'summary'; summary: SchedulerShardSummary };
 

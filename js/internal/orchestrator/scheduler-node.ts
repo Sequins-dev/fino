@@ -64,8 +64,10 @@ const DEFAULT_HEARTBEAT_MS = 250;
 
 /** How many scheduler threads to boot and how much each may hold. */
 export interface SchedulerNodeOptions {
-  /** Number of scheduler threads. Defaults to 2. */
+  /** Number of latency-sensitive scheduler threads. Defaults to 2. */
   shardCount?: number;
+  /** Number of lower-priority batch threads that absorb sync-heavy workloads. Defaults to 0. */
+  batchThreads?: number;
   /** Per-thread workload capacity. Defaults to 8. */
   capacity?: number;
   /** Cooperative accounting budget (µs) passed to each shard. */
@@ -74,6 +76,8 @@ export interface SchedulerNodeOptions {
   hardBudgetMicros?: number;
   /** Load-report cadence (ms) for each shard. */
   loadReportMs?: number;
+  /** Soft on-CPU limit (µs) per sync slice; overrunning migrates the workload to a batch thread. */
+  syncSliceThresholdMicros?: number;
 }
 
 /**
@@ -87,6 +91,7 @@ export class SchedulerNode {
   #budgetMicros?: number;
   #hardBudgetMicros?: number;
   #loadReportMs?: number;
+  #syncSliceThresholdMicros?: number;
   #shards = new Map<string, ShardHandle>();
   #watchdog = new BudgetWatchdog();
   #started = false;
@@ -104,11 +109,21 @@ export class SchedulerNode {
     this.#budgetMicros = options.budgetMicros;
     this.#hardBudgetMicros = options.hardBudgetMicros;
     this.#loadReportMs = options.loadReportMs;
+    this.#syncSliceThresholdMicros = options.syncSliceThresholdMicros;
+    const batchThreads = options.batchThreads ?? 0;
+    if (!Number.isInteger(batchThreads) || batchThreads < 0) {
+      throw new TypeError('batchThreads must be a non-negative integer');
+    }
     this.#shardIds = [];
     for (let i = 0; i < shardCount; i++) {
       const shardId = `shard-${i}`;
       this.#shardIds.push(shardId);
-      this.#collection.registerShard(shardId, this.#capacity);
+      this.#collection.registerShard(shardId, this.#capacity, 'latency');
+    }
+    for (let i = 0; i < batchThreads; i++) {
+      const shardId = `batch-${i}`;
+      this.#shardIds.push(shardId);
+      this.#collection.registerShard(shardId, this.#capacity, 'batch');
     }
   }
 
@@ -133,7 +148,8 @@ export class SchedulerNode {
         capacity: this.#capacity,
         ...this.#budgetMicros !== undefined ? { budgetMicros: this.#budgetMicros } : {},
         ...this.#hardBudgetMicros !== undefined ? { hardBudgetMicros: this.#hardBudgetMicros } : {},
-        ...this.#loadReportMs !== undefined ? { loadReportMs: this.#loadReportMs } : {}
+        ...this.#loadReportMs !== undefined ? { loadReportMs: this.#loadReportMs } : {},
+        ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceThresholdMicros: this.#syncSliceThresholdMicros } : {}
       };
       // Run (not call) the shard entry, so the shard's port reports never
       // collide with a call response; config is handed over as realm data.
@@ -214,6 +230,16 @@ export class SchedulerNode {
     }
     if (message.report === 'summary') {
       if (handle !== undefined) handle.summary = message.summary;
+      return;
+    }
+    if (message.report === 'syncHeavy') {
+      // A workload burned too much on-CPU time in one sync slice on a latency
+      // thread — migrate it to a batch thread so it stops janking its neighbors.
+      const current = this.#collection.placementOf(message.workloadId);
+      if (current !== null && this.#collection.shardClassOf(current) === 'latency') {
+        const batch = this.#collection.leastLoadedOfClass('batch');
+        if (batch !== null) this.handoff(message.workloadId, batch);
+      }
       return;
     }
     if (message.report === 'drained') {
