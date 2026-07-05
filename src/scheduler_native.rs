@@ -59,6 +59,15 @@ fn budget_registry() -> &'static Mutex<HashMap<u64, BudgetTarget>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Lock the process-global budget registry, tolerating poisoning. The registry
+/// holds only plain data (`IsolateHandle` + deadline), so a panic that poisoned
+/// it while held cannot have left a torn invariant worth propagating — recover
+/// the guard instead of unwrapping, so a single failure on one scheduler thread
+/// cannot cascade into every `arm`/`clear`/`sweep` on all threads panicking.
+fn lock_registry() -> std::sync::MutexGuard<'static, HashMap<u64, BudgetTarget>> {
+    budget_registry().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn next_budget_token() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
@@ -67,7 +76,7 @@ fn next_budget_token() -> u64 {
 /// Register a workload's isolate as a budget target and return its token.
 fn register_budget_target(handle: v8::IsolateHandle) -> u64 {
     let token = next_budget_token();
-    budget_registry().lock().unwrap().insert(
+    lock_registry().insert(
         token,
         BudgetTarget {
             handle,
@@ -78,17 +87,17 @@ fn register_budget_target(handle: v8::IsolateHandle) -> u64 {
 }
 
 fn unregister_budget_target(token: u64) {
-    budget_registry().lock().unwrap().remove(&token);
+    lock_registry().remove(&token);
 }
 
 fn arm_budget(token: u64, deadline: Instant) {
-    if let Some(target) = budget_registry().lock().unwrap().get_mut(&token) {
+    if let Some(target) = lock_registry().get_mut(&token) {
         target.deadline = Some(deadline);
     }
 }
 
 fn clear_budget(token: u64) {
-    if let Some(target) = budget_registry().lock().unwrap().get_mut(&token) {
+    if let Some(target) = lock_registry().get_mut(&token) {
         target.deadline = None;
     }
 }
@@ -100,7 +109,7 @@ fn clear_budget(token: u64) {
 fn sweep_budgets() -> u32 {
     let now = Instant::now();
     let mut fired = 0;
-    let mut registry = budget_registry().lock().unwrap();
+    let mut registry = lock_registry();
     for target in registry.values_mut() {
         if let Some(deadline) = target.deadline
             && deadline <= now
@@ -515,14 +524,17 @@ fn dispatch_parked(
     }
     workload.async_state = crate::async_rt::swap_state(saved);
     if budgeted {
-        // Clear the deadline first so no further sweep can fire, then clear any
-        // termination flag a sweep already set (detected mid-pump, or in the
-        // race window between the pump finishing and this clear) so the isolate
-        // is left in a clean, disposable state.
+        // Clear the deadline first so no further sweep can fire, then
+        // unconditionally cancel any pending termination. `terminate_execution`
+        // posts a stack-guard interrupt bit that persists until execution
+        // consumes it or it is cancelled; a sweep that fires in the race window
+        // *after* the pump has exited terminates an idle isolate, for which
+        // `is_execution_terminating()` reads false (no JS frames on the stack) —
+        // so gating the cancel on it would leak the interrupt onto the next
+        // dispatch and spuriously kill an innocent workload. `cancel` is a safe
+        // no-op when nothing is pending, so always call it.
         clear_budget(workload.budget_token);
-        if workload.thread_handle.is_execution_terminating() {
-            workload.thread_handle.cancel_terminate_execution();
-        }
+        workload.thread_handle.cancel_terminate_execution();
     }
     result
 }

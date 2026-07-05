@@ -38,6 +38,24 @@ describe('node isolate collection placement', () => {
     t.throws(() => c.deploy({ tenantId: 'acme' }), /no scheduler threads/);
   });
 
+  it('rejects affinity that would over-subscribe a thread instead of stranding it', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('shard-0', 2);
+    c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
+    c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
+    // Third pin exceeds capacity 2 — must throw rather than place-but-never-claim.
+    t.throws(() => c.deploy({ tenantId: 'acme', affinity: 'shard-0' }), /at capacity/);
+  });
+
+  it('rejects deploy when every thread is at capacity', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('shard-0', 1);
+    c.registerShard('shard-1', 1);
+    c.deploy({ tenantId: 'acme' });
+    c.deploy({ tenantId: 'acme' });
+    t.throws(() => c.deploy({ tenantId: 'acme' }), /all scheduler threads at capacity/);
+  });
+
   it('places new work on the least-loaded thread', (t) => {
     const c = twoShards();
     c.recordLoad('shard-0', { shardId: 'shard-0', heldLeases: 4, runnableWorkloads: 5, dispatches: 20, debtMicros: 500 });
@@ -63,9 +81,10 @@ describe('node isolate collection leases', () => {
 
   it('never claims more than the thread capacity', (t) => {
     const c = twoShards(2);
-    for (let i = 0; i < 4; i++) c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
+    c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
+    c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
     const leases = c.claim('shard-0', 10);
-    t.equal(leases.length, 2, 'capped at the thread capacity');
+    t.equal(leases.length, 2, 'capped at the thread capacity even when more is requested');
   });
 
   it('renews only while the epoch matches, and stops after revoke', (t) => {

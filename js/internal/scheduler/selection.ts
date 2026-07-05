@@ -77,3 +77,19 @@ export function coalesceWake(existing: TenantWake[], wake: TenantWake): TenantWa
 export function firstWake(workload: RunnableWorkload): TenantWake | null {
   return earliestWake(workload) ?? null;
 }
+
+/**
+* Remove the specific wake that was dispatched, matched by `reason`+`sourceId`
+* (the same identity `coalesceWake` dedups on). The dispatched wake is the
+* earliest-deadline one `firstWake` selects, which is not necessarily `wakes[0]`
+* — so consuming it by identity avoids silently dropping an out-of-order wake
+* and re-running the one that was serviced.
+*/
+export function removeWake(wakes: TenantWake[], dispatched: TenantWake | null): TenantWake[] {
+  if (dispatched === null) return wakes;
+  const index = wakes.findIndex((wake) => wake.reason === dispatched.reason && wake.sourceId === dispatched.sourceId);
+  if (index === -1) return wakes;
+  const next = wakes.slice();
+  next.splice(index, 1);
+  return next;
+}

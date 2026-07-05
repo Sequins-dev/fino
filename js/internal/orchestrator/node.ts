@@ -143,13 +143,21 @@ export class NodeIsolateCollection {
   #choosePlacement(spec: NodeWorkloadSpec): ShardId {
     if (spec.affinity !== undefined) {
       if (!this.#shards.has(spec.affinity)) throw new Error(`unknown affinity thread: ${spec.affinity}`);
+      // A hard pin must honor capacity: over-subscribing a thread would leave the
+      // workload placed-but-never-claimable (claim caps at capacity), silently
+      // stranding it. Reject loudly instead.
+      if (!this.#hasRoom(spec.affinity)) throw new Error(`affinity thread at capacity: ${spec.affinity}`);
       return spec.affinity;
     }
     if (spec.colocateWith !== undefined) {
       const sibling = this.#shardOf(spec.colocateWith);
       if (sibling !== null && this.#hasRoom(sibling)) return sibling;
     }
-    return this.#leastLoaded(null);
+    const target = this.#leastLoaded(null);
+    // Every thread is full: refuse rather than pile onto a shard that cannot
+    // claim the workload.
+    if (!this.#hasRoom(target)) throw new Error('cannot place workload: all scheduler threads at capacity');
+    return target;
   }
 
   #shardOf(workloadId: WorkloadId): ShardId | null {

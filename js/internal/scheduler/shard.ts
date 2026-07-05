@@ -16,7 +16,7 @@ import { readable } from 'internal:runtime/loop';
 import { DiskFileSystem, DT_DIR, DT_REG, DT_UNKNOWN, type File, type Entry, type Stat } from 'fino:file';
 import { encodeBinary, decodeBinary } from './facade-ops.ts';
 import { Isolate } from './isolate.ts';
-import { coalesceWake, firstWake, selectNextWorkload } from './selection.ts';
+import { coalesceWake, firstWake, removeWake, selectNextWorkload } from './selection.ts';
 import type { DispatchResult, LeaseRecord, RunnableWorkload, SchedulerShardConfig, SchedulerShardSummary, ShardLoadSummary, TenantWake } from './types.ts';
 
 interface HeldWorkload {
@@ -88,7 +88,7 @@ function applyWakes(held: Map<string, HeldWorkload>, wakes: TenantWake[]): void 
   }
 }
 
-function applyDispatchResult(workload: HeldWorkload, result: DispatchResult): void {
+function applyDispatchResult(workload: HeldWorkload, result: DispatchResult, dispatched: TenantWake | null): void {
   const costMicros = Math.max(0, result.costMicros ?? 0);
   if (result.result === 'budget_yield') {
     workload.debtMicros += costMicros;
@@ -96,7 +96,10 @@ function applyDispatchResult(workload: HeldWorkload, result: DispatchResult): vo
   }
   workload.debtMicros = Math.max(0, workload.debtMicros - costMicros);
   if (result.result === 'idle') {
-    workload.wakes.shift();
+    // Consume the wake that was actually serviced (the earliest-deadline one
+    // `firstWake` selected), not `wakes[0]` — otherwise an out-of-order wake is
+    // silently lost and the serviced one is re-dispatched.
+    workload.wakes = removeWake(workload.wakes, dispatched);
   }
 }
 
@@ -334,6 +337,10 @@ export async function runSchedulerShard(config: SchedulerShardConfig): Promise<S
     });
   }
 
+  // If an orchestrator-side coordination RPC rejects mid-run, dispose held
+  // isolates locally (no further RPC) before propagating, so terminated V8
+  // isolates aren't leaked when the round aborts abnormally.
+  try {
   while (dispatches < maxDispatches && polls < maxPolls) {
     const wakes = await pollWakes(config.shardId, pollTimeoutMs);
     polls++;
@@ -376,18 +383,18 @@ export async function runSchedulerShard(config: SchedulerShardConfig): Promise<S
         ...workload.lease.handoff !== undefined ? { handoff: workload.lease.handoff } : {}
       };
       return settleWorkload(workload, request, hardBudgetMicros).then(
-        (result) => ({ workload, result }),
-        () => ({ workload, result: { result: 'failed' } as DispatchResult })
+        (result) => ({ workload, result, wake }),
+        () => ({ workload, result: { result: 'failed' } as DispatchResult, wake })
       );
     });
     const results = await Promise.all(settlements);
     dispatches += dispatchable.length;
 
-    for (const { workload, result } of results) {
+    for (const { workload, result, wake } of results) {
       if (result.result === 'failed' || result.result === 'terminated') {
         if (await releaseHeld(held, workload.lease.workloadId, result.result)) released++;
       } else {
-        applyDispatchResult(workload, result);
+        applyDispatchResult(workload, result, wake);
       }
     }
 
@@ -409,4 +416,8 @@ export async function runSchedulerShard(config: SchedulerShardConfig): Promise<S
     released,
     heldLeases: held.size
   };
+  } catch (error) {
+    for (const workload of held.values()) workload.isolate?.terminate();
+    throw error;
+  }
 }

@@ -4,7 +4,7 @@
 import { describe, it } from 'fino:test/test';
 import { Facade, ImportMap, Realm } from 'fino:realm';
 import { DiskFileSystem } from 'fino:file';
-import { selectNextWorkload } from 'internal:scheduler/selection';
+import { firstWake, removeWake, selectNextWorkload } from 'internal:scheduler/selection';
 
 type Lease = {
   leaseId: string;
@@ -169,6 +169,24 @@ describe('scheduler selection', () => {
       sequence: 2
     }]);
     t.equal(selected?.workloadId, 'debt-light');
+  });
+
+  it('consumes the dispatched (earliest-deadline) wake, not the queue head', (t) => {
+    // wakes[0] has a later deadline than wakes[1]; the scheduler dispatches the
+    // earliest-deadline wake, and must consume exactly that one.
+    const wakes = [
+      { workloadId: 'w', reason: 'io' as const, sourceId: 'io', deadlineNanos: 100, sequence: 1 },
+      { workloadId: 'w', reason: 'timer' as const, sourceId: 'timer', deadlineNanos: 10, sequence: 2 }
+    ];
+    const dispatched = firstWake({ workloadId: 'w', priority: 'service', wakes, debtMicros: 0, sequence: 0 });
+    t.equal(dispatched?.sourceId, 'timer', 'earliest-deadline wake is dispatched');
+    const remaining = removeWake(wakes, dispatched);
+    t.deepEqual(remaining.map((w) => w.sourceId), ['io'], 'the out-of-order io wake survives, the serviced timer wake is gone');
+  });
+
+  it('removeWake leaves the queue unchanged when nothing was dispatched', (t) => {
+    const wakes = [{ workloadId: 'w', reason: 'message' as const, sourceId: 'm', sequence: 1 }];
+    t.equal(removeWake(wakes, null), wakes, 'no dispatched wake is a no-op');
   });
 });
 
