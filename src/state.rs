@@ -249,6 +249,11 @@ pub fn default_import_rules() -> Vec<ImportRule> {
             pattern: ImportPattern::Prefix("internal:".to_string()),
             directive: ImportDirective::Inherit,
         },
+        ImportRule {
+            from: Some(ImportPattern::Exact("internal:bootstrap".to_string())),
+            pattern: ImportPattern::Prefix("internal:".to_string()),
+            directive: ImportDirective::Inherit,
+        },
     ]
 }
 

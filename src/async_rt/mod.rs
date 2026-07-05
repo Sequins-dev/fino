@@ -131,9 +131,15 @@ thread_local! {
     static STATE: RefCell<Option<IsolateAsyncState>> = const { RefCell::new(None) };
 }
 
-/// Initialize the per-isolate async state. Call once per isolate, before the
-/// event loop starts. Returns the wake-pipe read fd to expose to JS.
-pub fn init() -> RawFd {
+/// Build a fresh, detached `IsolateAsyncState` (its own self-pipe + executor +
+/// queues) without installing it as the current thread-local state.
+///
+/// Used to give a scheduler-hosted tenant isolate its *own* async state, stored
+/// alongside its isolate handle. The scheduler swaps it into the thread-local
+/// (via [`swap_state`]) around each pump so the isolate's FFI completions,
+/// executor, and wake pipe stay with that isolate — never shared with the
+/// scheduler's own isolate or sibling tenant isolates on the same thread.
+pub fn new_state() -> IsolateAsyncState {
     let mut fds = [0i32; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
     assert_eq!(ret, 0, "pipe(2) failed");
@@ -144,20 +150,32 @@ pub fn init() -> RawFd {
         libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
-    let wake_read = fds[0];
-    let wake_write = fds[1];
+    IsolateAsyncState {
+        executor: async_executor::LocalExecutor::new(),
+        completions: Arc::new(Mutex::new(Vec::new())),
+        js_call_requests: Arc::new(Mutex::new(Vec::new())),
+        view_releases: Arc::new(Mutex::new(Vec::new())),
+        wake_read: fds[0],
+        wake_write: fds[1],
+    }
+}
 
-    STATE.with(|s| {
-        *s.borrow_mut() = Some(IsolateAsyncState {
-            executor: async_executor::LocalExecutor::new(),
-            completions: Arc::new(Mutex::new(Vec::new())),
-            js_call_requests: Arc::new(Mutex::new(Vec::new())),
-            view_releases: Arc::new(Mutex::new(Vec::new())),
-            wake_read,
-            wake_write,
-        });
-    });
+/// Swap the current thread-local async state, returning the previous one.
+///
+/// The scheduler pumps a tenant isolate by entering it and swapping in that
+/// isolate's state (`swap_state(Some(tenant))`), pumping, then restoring its own
+/// (`swap_state(saved)`). Every `STATE.with(...)` accessor below then transparently
+/// resolves to whichever isolate is currently active.
+pub fn swap_state(new: Option<IsolateAsyncState>) -> Option<IsolateAsyncState> {
+    STATE.with(|s| std::mem::replace(&mut *s.borrow_mut(), new))
+}
 
+/// Initialize the per-isolate async state. Call once per isolate, before the
+/// event loop starts. Returns the wake-pipe read fd to expose to JS.
+pub fn init() -> RawFd {
+    let state = new_state();
+    let wake_read = state.wake_read;
+    STATE.with(|s| *s.borrow_mut() = Some(state));
     wake_read
 }
 

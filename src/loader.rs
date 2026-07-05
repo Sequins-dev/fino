@@ -120,6 +120,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:loader-hooks",
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
+    (
+        "internal:scheduler-native",
+        BuiltinKind::Synthetic(crate::scheduler_native::create_module),
+    ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
     source_builtin!("fino:realm", "realm/index"),
@@ -587,8 +591,35 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:workflow", "workflow"),
     source_builtin!("fino:task", "task"),
     source_builtin!("fino:task/durable", "task/durable"),
-    // orchestrator + jobs
+    // orchestrator, scheduler + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
+    source_builtin!("internal:orchestrator/node", "internal/orchestrator/node"),
+    source_builtin!(
+        "internal:orchestrator/scheduler-node",
+        "internal/orchestrator/scheduler-node"
+    ),
+    source_builtin!(
+        "internal:orchestrator/budget-watchdog",
+        "internal/orchestrator/budget-watchdog"
+    ),
+    source_builtin!("internal:scheduler", "internal/scheduler/index"),
+    source_builtin!("internal:scheduler/types", "internal/scheduler/types"),
+    source_builtin!(
+        "internal:scheduler/selection",
+        "internal/scheduler/selection"
+    ),
+    source_builtin!("internal:scheduler/host", "internal/scheduler/host"),
+    source_builtin!("internal:scheduler/workload", "internal/scheduler/workload"),
+    source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
+    source_builtin!(
+        "internal:scheduler/facade-ops",
+        "internal/scheduler/facade-ops"
+    ),
+    source_builtin!(
+        "internal:scheduler/file-provider",
+        "internal/scheduler/file-provider"
+    ),
+    source_builtin!("internal:scheduler/shard", "internal/scheduler/shard"),
     source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
     source_builtin!("internal:jobs/store", "internal/jobs/store"),
     source_builtin!("internal:jobs/runner", "internal/jobs/runner"),
@@ -968,6 +999,39 @@ pub fn resolve_module_callback<'s>(
     });
 
     if spec.starts_with("fino:") || spec.starts_with("internal:") {
+        // This pre-check enforces Block rules even for builtins already present
+        // in the realm's cache (get_or_load_builtin returns cached modules
+        // before re-checking rules). It must apply the same builtin-referrer
+        // exemption as get_or_load_builtin and the dynamic-import path:
+        // builtins may always import other builtins, regardless of
+        // user-specified realm restrictions — otherwise a child realm's own
+        // bootstrap chain (e.g. internal:bootstrap -> internal:async-context)
+        // would be denied under a catch-all Block.
+        let blocked = {
+            let st = state_rc.borrow();
+            if matches!(
+                crate::state::resolve_directive(&st.import_rules, from_spec.as_deref(), &spec),
+                Some(ImportDirective::Block)
+            ) {
+                let is_builtin_from = from_spec.as_deref().is_some_and(|f| {
+                    f.starts_with("fino:")
+                        || f.starts_with("internal:")
+                        || st.builtin_specifiers.values().any(|v| v.as_str() == f)
+                });
+                !is_builtin_from
+            } else {
+                false
+            }
+        };
+        if blocked {
+            let msg = v8::String::new(
+                scope,
+                &format!("Import of '{spec}' is blocked in this Realm"),
+            )?;
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return None;
+        }
         return get_or_load_builtin(scope, &spec, from_spec.as_deref());
     }
 
