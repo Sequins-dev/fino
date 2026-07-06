@@ -15,5 +15,6 @@ export default async function schedulerSyncHeavyWorker(request: {
   const start = Date.now();
   let spin = 0;
   while (Date.now() - start < request.data.busyMs) spin = (spin + 1) % 1_000_000;
-  return { result: 'idle', costMicros: spin === -1 ? 1 : 1 };
+  // `spin` is consumed here only so the busy loop above can't be optimized away.
+  return { result: 'idle', costMicros: 1 + (spin & 0) };
 }

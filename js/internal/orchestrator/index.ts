@@ -328,6 +328,13 @@ export interface DeployNodeOptions {
   shardCount?: number;
   /** Per-thread workload capacity. Defaults to the {@link SchedulerNode} default. */
   capacity?: number;
+  /**
+  * Return the running node instead of waiting for the workloads to finish.
+  * Long-lived tenants (connection servers, actors) never reach a terminal
+  * state, so the batch default would hang; with `detach` the caller owns the
+  * node's lifecycle and must call `node.shutdown()` when done.
+  */
+  detach?: boolean;
 }
 
 /**
@@ -349,6 +356,8 @@ export interface PlacedTenant {
 export interface DeployNodeResult {
   placements: PlacedTenant[];
   summaries: SchedulerShardSummary[];
+  /** The running node, present only when `detach` was set; the caller shuts it down. */
+  node?: SchedulerNode;
 }
 
 /**
@@ -357,11 +366,16 @@ export interface DeployNodeResult {
 * This is the multi-tenant counterpart to {@link runApp}: instead of running one
 * entry as an embedded child realm on the main thread, it boots a
 * {@link SchedulerNode} of scheduler threads and routes every placement decision
-* through the orchestrator — app deployment never chooses its own thread. Each
-* workload is registered as a supervised orchestrator workload so the node's
-* footprint shows up in {@link workloads}, and is released when the run
-* completes. Runaway containment (the budget watchdog) and facade-owned I/O come
-* from the node machinery; the single-tenant `runApp` fast path is untouched.
+* through the orchestrator — app deployment never chooses its own thread.
+* Runaway containment (the budget watchdog) and facade-owned I/O come from the
+* node machinery; the single-tenant `runApp` fast path is untouched.
+*
+* By default this is a **run-once batch**: each workload is registered as a
+* supervised orchestrator workload (so the node's footprint shows up in
+* {@link workloads}), and `deployNode` waits for every workload to reach a
+* terminal state, then shuts the node down. For **long-lived** tenants
+* (connection servers, actors) that never terminate, pass `{ detach: true }` to
+* get the running node back and manage its lifecycle yourself.
 *
 * ```ts no_run
 * import { deployNode } from 'internal:orchestrator';
@@ -382,25 +396,36 @@ export async function deployNode(deployments: TenantDeployment[], options: Deplo
   node.start();
   const collection = node.collection();
   const placements: PlacedTenant[] = [];
+  const placed: { tenantId: string; workloadId: string }[] = [];
+  for (const deployment of deployments) {
+    const workloadId = node.deploy({
+      tenantId: deployment.tenantId,
+      entryPath: deployment.entry,
+      ...deployment.data !== undefined ? { data: deployment.data } : {},
+      ...deployment.priority !== undefined ? { priority: deployment.priority } : {},
+      ...deployment.affinity !== undefined ? { affinity: deployment.affinity } : {}
+    });
+    placements.push({ tenantId: deployment.tenantId, workloadId, thread: collection.placementOf(workloadId) });
+    placed.push({ tenantId: deployment.tenantId, workloadId });
+    // Bring the workload in; its thread pumps it on the next loop wake.
+    node.wake(workloadId, { workloadId, reason: 'control', sourceId: `deploy:${deployment.tenantId}` });
+  }
+
+  // Detached: hand the running node back for a long-lived deployment. The
+  // caller owns shutdown; workloads are not globally supervised here (the node
+  // collection is their lifecycle owner).
+  if (options.detach === true) return { placements, summaries: [], node };
+
+  // Run-once batch: supervise each workload and wait for them all to finish.
   const supervised: string[] = [];
+  const done: Array<Promise<string>> = [];
+  for (const p of placed) {
+    const workload = registerWorkload('tenant', { tenantId: p.tenantId, workloadId: p.workloadId });
+    supervised.push(workload.id);
+    done.push(node.whenReleased(p.workloadId));
+  }
   let summaries: SchedulerShardSummary[] = [];
   try {
-    const done: Array<Promise<string>> = [];
-    for (const deployment of deployments) {
-      const workloadId = node.deploy({
-        tenantId: deployment.tenantId,
-        entryPath: deployment.entry,
-        ...deployment.data !== undefined ? { data: deployment.data } : {},
-        ...deployment.priority !== undefined ? { priority: deployment.priority } : {},
-        ...deployment.affinity !== undefined ? { affinity: deployment.affinity } : {}
-      });
-      const workload = registerWorkload('tenant', { tenantId: deployment.tenantId, workloadId });
-      supervised.push(workload.id);
-      placements.push({ tenantId: deployment.tenantId, workloadId, thread: collection.placementOf(workloadId) });
-      done.push(node.whenReleased(workloadId));
-      // Bring the workload in; its thread pumps it on the next loop wake.
-      node.wake(workloadId, { workloadId, reason: 'control', sourceId: `deploy:${deployment.tenantId}` });
-    }
     await Promise.all(done);
   } finally {
     summaries = await node.shutdown();

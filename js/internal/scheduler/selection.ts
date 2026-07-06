@@ -5,7 +5,8 @@
 */
 import type { PriorityClass, RunnableWorkload, TenantWake } from './types.ts';
 
-const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
+/** Priority-class ordering weight: lower runs first. The single source of truth. */
+export const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
   interactive: 0,
   service: 1,
   background: 2
@@ -31,25 +32,35 @@ function earliestWake(workload: RunnableWorkload): TenantWake | undefined {
   return best;
 }
 
-function compareRunnable(a: RunnableWorkload, b: RunnableWorkload): number {
+/**
+* Total order over runnable workloads: priority class first, then accumulated
+* budget debt (so a workload that has hogged CPU yields to a lighter one), then
+* age (`sequence`), then id for determinism. This is the single ranking the
+* runtime uses; wake *deadlines* order which wake to service within a workload
+* (see {@link firstWake}), not which workload to run.
+*/
+export function compareRunnable(a: RunnableWorkload, b: RunnableWorkload): number {
   const priority = PRIORITY_WEIGHT[a.priority] - PRIORITY_WEIGHT[b.priority];
   if (priority !== 0) return priority;
-
-  const aWake = earliestWake(a);
-  const bWake = earliestWake(b);
-  const aDeadline = aWake?.deadlineNanos ?? Number.POSITIVE_INFINITY;
-  const bDeadline = bWake?.deadlineNanos ?? Number.POSITIVE_INFINITY;
-  if (aDeadline !== bDeadline) return aDeadline - bDeadline;
-
   if (a.debtMicros !== b.debtMicros) return a.debtMicros - b.debtMicros;
-
-  const aWakeSequence = aWake?.sequence ?? a.sequence;
-  const bWakeSequence = bWake?.sequence ?? b.sequence;
-  if (aWakeSequence !== bWakeSequence) return aWakeSequence - bWakeSequence;
-
+  if (a.sequence !== b.sequence) return a.sequence - b.sequence;
   return a.workloadId < b.workloadId ? -1 : a.workloadId > b.workloadId ? 1 : 0;
 }
 
+/**
+* The highest-priority workload among `workloads`, or null if none. Unlike
+* {@link selectNextWorkload} this does not require a queued wake, so the shard
+* can also pick a mid-activation workload it must resume (which carries no wake).
+*/
+export function pickRunnable(workloads: readonly RunnableWorkload[]): RunnableWorkload | null {
+  let best: RunnableWorkload | null = null;
+  for (const workload of workloads) {
+    if (best === null || compareRunnable(workload, best) < 0) best = workload;
+  }
+  return best;
+}
+
+/** Like {@link pickRunnable} but only among workloads that actually have a queued wake. */
 export function selectNextWorkload(workloads: readonly RunnableWorkload[]): RunnableWorkload | null {
   let best: RunnableWorkload | null = null;
   for (const workload of workloads) {

@@ -15,9 +15,15 @@ function bytes(value: unknown): Uint8Array {
   return serialize(value)[0] as Uint8Array;
 }
 
-/** The pump outcome crosses back as internal:serializer bytes. */
-function pump(handle: number, requestJson: string): { pumpPending?: boolean; result?: string; costMicros?: number } {
-  return deserialize(dispatchWorkload(handle, requestJson)) as { pumpPending?: boolean; result?: string; costMicros?: number };
+/**
+* The pump outcome crosses back as internal:serializer bytes in a discriminated
+* `__finoPump` envelope; normalize it to `{ pending }` or the settled `value`.
+*/
+function pump(handle: number, requestJson: string): { pending?: boolean; value?: { result: string; costMicros: number } } {
+  const raw = deserialize(dispatchWorkload(handle, requestJson)) as { __finoPump: string; value?: { result: string; costMicros: number } };
+  if (raw.__finoPump === 'pending') return { pending: true };
+  if (raw.__finoPump === 'settled') return { value: raw.value };
+  return {};
 }
 
 const parkWorker = new URL('./fixtures/scheduler-park-worker.ts', import.meta.url).pathname;
@@ -27,12 +33,12 @@ describe('scheduled isolate pump', () => {
     const handle = createWorkload(parkWorker);
     try {
       const first = pump(handle, JSON.stringify({ data: { awaitId: 7 } }));
-      t.equal(first.pumpPending, true, 'first pump parks rather than blocking');
+      t.equal(first.pending, true, 'first pump parks rather than blocking');
 
       completeHostOperation(handle, 7, true, bytes(41));
 
       const second = pump(handle, '{}');
-      t.deepEqual(second, { result: 'idle', costMicros: 41 }, 're-pump settles the injected completion');
+      t.deepEqual(second.value, { result: 'idle', costMicros: 41 }, 're-pump settles the injected completion');
     } finally {
       terminateWorkload(handle);
     }
@@ -52,16 +58,16 @@ describe('scheduled isolate pump', () => {
     const a = createWorkload(parkWorker);
     const b = createWorkload(parkWorker);
     try {
-      t.equal(pump(a, JSON.stringify({ data: { awaitId: 1 } })).pumpPending, true);
-      t.equal(pump(b, JSON.stringify({ data: { awaitId: 1 } })).pumpPending, true);
+      t.equal(pump(a, JSON.stringify({ data: { awaitId: 1 } })).pending, true);
+      t.equal(pump(b, JSON.stringify({ data: { awaitId: 1 } })).pending, true);
 
       // Completing A's operation must not settle B.
       completeHostOperation(a, 1, true, bytes(10));
-      t.deepEqual(pump(a, '{}'), { result: 'idle', costMicros: 10 });
-      t.equal(pump(b, '{}').pumpPending, true, 'B stays parked');
+      t.deepEqual(pump(a, '{}').value, { result: 'idle', costMicros: 10 });
+      t.equal(pump(b, '{}').pending, true, 'B stays parked');
 
       completeHostOperation(b, 1, true, bytes(20));
-      t.deepEqual(pump(b, '{}'), { result: 'idle', costMicros: 20 });
+      t.deepEqual(pump(b, '{}').value, { result: 'idle', costMicros: 20 });
     } finally {
       terminateWorkload(a);
       terminateWorkload(b);

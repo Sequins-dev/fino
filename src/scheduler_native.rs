@@ -123,10 +123,11 @@ struct ParkedWorkload {
     thread_handle: v8::IsolateHandle,
     /// This workload's key in the process-global budget registry.
     budget_token: u64,
-    /// Pre-serialized `{pumpPending:true}` / `{budgetTerminated:true}` outcome
-    /// bytes, computed once while the isolate is healthy. The parked path is hot
-    /// (every I/O park returns it) and the terminated path runs on an isolate
-    /// whose execution is being unwound — so neither can call the JS serializer.
+    /// Pre-serialized `{__finoPump:'pending'}` / `{__finoPump:'terminated'}`
+    /// outcome bytes, computed once while the isolate is healthy. The parked path
+    /// is hot (every I/O park returns it) and the terminated path runs on an
+    /// isolate whose execution is being unwound — so neither can call the JS
+    /// serializer.
     pending_bytes: Vec<u8>,
     terminated_bytes: Vec<u8>,
     _state: Rc<RefCell<FinoState>>,
@@ -413,9 +414,9 @@ fn setup_workload(
         // Pre-serialize the fixed park/terminate sentinels now, while the isolate
         // is healthy — the pump can't run the JS serializer on these later (the
         // parked path is hot, the terminated path is mid-unwind).
-        let pending = sentinel_outcome(scope, "pumpPending");
+        let pending = sentinel_outcome(scope, "pending");
         let pending_bytes = serialize_outcome(scope, context, pending)?;
-        let terminated = sentinel_outcome(scope, "budgetTerminated");
+        let terminated = sentinel_outcome(scope, "terminated");
         let terminated_bytes = serialize_outcome(scope, context, terminated)?;
 
         (
@@ -626,7 +627,8 @@ fn dispatch_entered_parked(
             // A synchronous (non-Promise) return settles immediately; disarm the
             // budget before serializing so the outcome isn't charged/terminated.
             clear_budget(workload.budget_token);
-            return serialize_outcome(scope, context, value);
+            let outcome = settled_outcome(scope, value);
+            return serialize_outcome(scope, context, outcome);
         }
     }
 
@@ -662,9 +664,15 @@ fn dispatch_entered_parked(
         v8::PromiseState::Fulfilled => {
             let result = promise.result(scope);
             workload.active_promise = None;
-            serialize_outcome(scope, context, result)
+            let outcome = settled_outcome(scope, result);
+            serialize_outcome(scope, context, outcome)
         }
         v8::PromiseState::Rejected => {
+            // Contract: a rejected dispatch is a scheduler-side error, surfaced as
+            // an `Err` (a thrown exception on the caller), not a `settled` outcome.
+            // The shard treats it as a failed activation and releases the workload.
+            // Unlike a fulfilled result it is flattened to a message string — a
+            // rejection carries no structured/binary payload back to the scheduler.
             let result = promise.result(scope);
             workload.active_promise = None;
             Err(js_string(scope, result))
@@ -676,14 +684,39 @@ fn dispatch_entered_parked(
     }
 }
 
-/// Build a `{ <flag>: true }` control object — the pump's parked/terminated
-/// sentinels the scheduler branches on (`pumpPending`, `budgetTerminated`). These
-/// travel back inside the serialized outcome rather than as JSON strings.
-fn sentinel_outcome<'s>(scope: &mut v8::HandleScope<'s>, flag: &str) -> v8::Local<'s, v8::Value> {
+/// The discriminator key every pump outcome carries. A namespaced key so a
+/// tenant's own settled return value (which travels nested under `value`) can
+/// never be mistaken for a control outcome — the shard branches solely on this
+/// tag, not on the shape of the tenant's data.
+const PUMP_TAG: &str = "__finoPump";
+
+/// Build a tagged outcome object `{ __finoPump: kind }`. Callers add any extra
+/// fields (`value` for a settled result, `operations` for a host-op batch).
+fn tagged_outcome<'s>(scope: &mut v8::HandleScope<'s>, kind: &str) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
-    if let Some(key) = v8::String::new(scope, flag) {
-        let value = v8::Boolean::new(scope, true);
-        obj.set(scope, key.into(), value.into());
+    if let (Some(key), Some(val)) = (
+        v8::String::new(scope, PUMP_TAG),
+        v8::String::new(scope, kind),
+    ) {
+        obj.set(scope, key.into(), val.into());
+    }
+    obj
+}
+
+/// The pump's parked/terminated control sentinels (`pending`, `terminated`).
+fn sentinel_outcome<'s>(scope: &mut v8::HandleScope<'s>, kind: &str) -> v8::Local<'s, v8::Value> {
+    tagged_outcome(scope, kind).into()
+}
+
+/// Wrap a settled tenant result in `{ __finoPump: 'settled', value }` so it can
+/// never collide with a control outcome, whatever shape the tenant returned.
+fn settled_outcome<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    value: v8::Local<v8::Value>,
+) -> v8::Local<'s, v8::Value> {
+    let obj = tagged_outcome(scope, "settled");
+    if let Some(key) = v8::String::new(scope, "value") {
+        obj.set(scope, key.into(), value);
     }
     obj.into()
 }
@@ -741,8 +774,8 @@ fn take_host_operation(
     if ops.length() == 0 {
         return None;
     }
-    let envelope = v8::Object::new(scope);
-    let ops_key = v8::String::new(scope, "hostOperations")?;
+    let envelope = tagged_outcome(scope, "hostOps");
+    let ops_key = v8::String::new(scope, "operations")?;
     envelope.set(scope, ops_key.into(), ops.into())?;
     // Serialize the still-queued ops first; only on success swap in a fresh queue
     // so subsequent ops accumulate separately. A failed serialize leaves the ops
@@ -850,7 +883,17 @@ fn complete_host_operation(
 }
 
 fn drop_parked(mut workload: ParkedWorkload) {
+    // Unregister from the budget registry BEFORE disposing the isolate. A
+    // concurrent `sweep_budgets` on the watchdog thread holds the registry lock
+    // while it calls `terminate_execution`; unregistering under that same lock
+    // guarantees the sweep either terminates a still-live isolate or finds the
+    // entry already gone — never terminates one mid-dispose. This ordering is
+    // load-bearing (it also keeps the near-heap-limit callback, keyed by the same
+    // token, from firing on a freed isolate).
     unregister_budget_target(workload.budget_token);
+    // `Isolate::new` leaves the isolate entered on the creating thread and
+    // `setup_workload` exits it once; `OwnedIsolate::drop` must run from the
+    // entered state to exit + dispose cleanly, so re-enter before dropping.
     unsafe {
         workload.isolate.enter();
     }

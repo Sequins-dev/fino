@@ -19,8 +19,8 @@ import { getRealmData } from 'internal:realm-bridge';
 import { DiskFileSystem, DT_DIR, DT_REG, DT_UNKNOWN, type File, type Entry, type Stat } from 'fino:file';
 import { serialize } from 'internal:serializer';
 import { Isolate, type HostOperation } from './isolate.ts';
-import { coalesceWake, firstWake, removeWake } from './selection.ts';
-import type { DispatchResult, LeaseRecord, PriorityClass, RunnableWorkload, SchedulerControlMessage, SchedulerShardConfig, SchedulerShardSummary, ShardLoadSummary, TenantWake } from './types.ts';
+import { coalesceWake, firstWake, pickRunnable, removeWake } from './selection.ts';
+import type { DispatchResult, LeaseRecord, RunnableWorkload, SchedulerControlMessage, SchedulerShardConfig, SchedulerShardSummary, ShardLoadSummary, TenantWake } from './types.ts';
 
 interface HeldWorkload {
   lease: LeaseRecord;
@@ -43,12 +43,6 @@ interface HeldWorkload {
   /** True once this workload has been reported sync-heavy, so it reports at most once. */
   syncHeavyReported: boolean;
 }
-
-const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
-  interactive: 0,
-  service: 1,
-  background: 2
-};
 
 // Liveness heartbeat cadence: a slow tick that proves the thread is alive to the
 // orchestrator's hang backstop. Resource `load` is reported on change (see
@@ -457,22 +451,15 @@ class ShardScheduler {
     this.#reportLoadIfChanged();
   }
 
-  /** Highest-priority runnable workload: lowest priority weight, then debt, then age. */
+  /** Highest-priority runnable workload (shared ranking: priority, then debt, then age). */
   #pickRunnable(): HeldWorkload | null {
-    let best: HeldWorkload | null = null;
+    const candidates: RunnableWorkload[] = [];
     for (const workloadId of this.#runnable) {
       const workload = this.#held.get(workloadId);
-      if (workload === undefined) continue;
-      if (best === null) {
-        best = workload;
-        continue;
-      }
-      const dw = PRIORITY_WEIGHT[workload.lease.priority] - PRIORITY_WEIGHT[best.lease.priority];
-      if (dw < 0 || (dw === 0 && (workload.debtMicros < best.debtMicros || (workload.debtMicros === best.debtMicros && workload.sequence < best.sequence)))) {
-        best = workload;
-      }
+      if (workload !== undefined) candidates.push(runnableFromHeld(workload));
     }
-    return best;
+    const best = pickRunnable(candidates);
+    return best === null ? null : this.#held.get(best.workloadId) ?? null;
   }
 
   async #dispatchLoop(): Promise<void> {

@@ -42,22 +42,15 @@ export type PumpOutcome =
   | { kind: 'budgetTerminated' }
   | { kind: 'settled'; value: unknown };
 
-interface HostOperationsEnvelope {
-  hostOperations: HostOperation[];
-}
-
-function isHostOperationsEnvelope(value: unknown): value is HostOperationsEnvelope {
-  return typeof value === 'object'
-    && value !== null
-    && Array.isArray((value as { hostOperations?: unknown }).hostOperations);
-}
-
-function isPumpPending(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && (value as { pumpPending?: unknown }).pumpPending === true;
-}
-
-function isBudgetTerminated(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && (value as { budgetTerminated?: unknown }).budgetTerminated === true;
+/**
+* The native pump wraps every outcome in a discriminated envelope tagged with
+* `__finoPump`, so a tenant's own settled return value (nested under `value`)
+* can never be mistaken for a `pending`/`terminated`/`hostOps` control outcome.
+*/
+interface PumpEnvelope {
+  __finoPump: 'pending' | 'terminated' | 'hostOps' | 'settled';
+  operations?: HostOperation[];
+  value?: unknown;
 }
 
 /**
@@ -91,11 +84,14 @@ export class Isolate {
   * accounting budget the workload reads from its dispatch request.
   */
   pump(requestJson: string, hardBudgetMicros = 0): PumpOutcome {
-    const raw = deserialize(dispatchWorkload(this.#handle, requestJson, hardBudgetMicros));
-    if (isHostOperationsEnvelope(raw)) return { kind: 'hostOperations', operations: raw.hostOperations };
-    if (isPumpPending(raw)) return { kind: 'pending' };
-    if (isBudgetTerminated(raw)) return { kind: 'budgetTerminated' };
-    return { kind: 'settled', value: raw };
+    const raw = deserialize(dispatchWorkload(this.#handle, requestJson, hardBudgetMicros)) as PumpEnvelope;
+    switch (raw?.__finoPump) {
+      case 'hostOps': return { kind: 'hostOperations', operations: raw.operations ?? [] };
+      case 'pending': return { kind: 'pending' };
+      case 'terminated': return { kind: 'budgetTerminated' };
+      case 'settled': return { kind: 'settled', value: raw.value };
+      default: throw new Error('scheduler pump returned an untagged outcome');
+    }
   }
 
   /**
