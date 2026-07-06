@@ -129,6 +129,9 @@ const EVFILT_PROC = backend.EVFILT_PROC ?? null;
 const EVFILT_COMPLETION = backend.EVFILT_COMPLETION ?? null;
 const EVFILT_VNODE = backend.EVFILT_VNODE ?? null;
 const EVFILT_SIGNAL = backend.EVFILT_SIGNAL ?? null;
+// Set in a read event's `flags` when the peer closed its end of the fd (kqueue
+// only; 0 elsewhere, making the EOF checks below inert on backends without it).
+const EV_EOF = (backend.EV_EOF as number | undefined) ?? 0;
 const _addRead = backend.addRead as (raw: object, fd: number, ident?: number) => void;
 const _addWrite = backend.addWrite as (raw: object, fd: number, ident?: number) => void;
 const _addTimer = backend.addTimer as (raw: object, id: number, ms: number) => void;
@@ -177,6 +180,16 @@ function _dispatch(ev: LoopEvent): void {
     } else if (_wakeSources.has(ev.ident)) {
       // Pure wake source — fires to interrupt the kqueue sleep so the Rust
       // layer can drain async completions on the next pump_and_checkpoint.
+      // Wake sources are persistent (EV_CLEAR), so a peer that closed its write
+      // end reports EV_EOF on *every* tick forever. That is a busy-spin — and,
+      // via the returned event count, keeps the run loop from ever sleeping.
+      // Once the peer is gone the source can never carry a real wake again, so
+      // deregister it here (e.g. an isolate's async-runtime wake pipe closing as
+      // the isolate tears down).
+      if ((ev.flags & EV_EOF) !== 0) {
+        _wakeSources.delete(ev.ident);
+        backend.removeRead(_raw, ev.ident);
+      }
       return;
     }
   } else if (ev.filter === EVFILT_WRITE) {

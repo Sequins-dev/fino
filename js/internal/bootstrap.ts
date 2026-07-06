@@ -662,15 +662,14 @@ if (_childEntry) {
         _watcherRef.close();
         _watcherRef = null;
       }
-      if (!_portClosed && _childPort !== undefined) {
-        // Close the port to cancel any pending loop.readable() so that
-        // alive() can return false and the loop can exit cleanly.
-        _portClosed = true;
-        (_childPort as MessagePort | ThreadPort).close();
-      }
     }
     return done;
-  }, function _childOnDone() {}, { nonBlocking: true });
+    // A thread realm owns its OS thread and must BLOCK its poll when idle — a
+    // zero timeout would busy-spin at 100% CPU whenever any handle (e.g. a
+    // pending timer) keeps the loop alive. Only an embedded realm, whose
+    // sleeping is driven by the parent loop stepping it, uses a non-blocking
+    // poll. (`_threadWakeReadFd >= 0` ⇔ thread realm.)
+  }, function _childOnDone() {}, { nonBlocking: _threadWakeReadFd < 0 });
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop
   // ---------------------------------------------------------------------------
