@@ -160,7 +160,10 @@ export interface SchedulerShardConfig {
   budgetMicros?: number;
   /** Hard per-pump-slice limit (µs) for runaway containment; overruns are terminated. */
   hardBudgetMicros?: number;
-  /** Interval (ms) between load-summary reports to the orchestrator. Default 50. */
+  /** Liveness-heartbeat cadence (ms). Resource `load` reports are event-driven; this
+   * slow tick only proves the thread is alive for the orchestrator's hang backstop. */
+  heartbeatMs?: number;
+  /** @deprecated Load is now reported on change, not polled; retained for the supervisor's stale threshold. */
   loadReportMs?: number;
   /** Soft on-CPU limit (µs) for one sync pump slice; overrunning flags the workload sync-heavy. Default 50ms. */
   syncSliceThresholdMicros?: number;
@@ -184,13 +187,16 @@ export type SchedulerControlMessage =
 
 /**
 * Messages a scheduler thread pushes back to the orchestrator over the same
-* channel: terminal releases, periodic load, and (Phase 3) handoff reports.
+* channel: terminal releases, handoff reports, event-driven `load` (posted only
+* when the shard's resource band changes, never on a timer), and a slow
+* `heartbeat` (liveness only, for the orchestrator's hang backstop).
 */
 export type SchedulerReport =
   | { report: 'released'; shardId: ShardId; workloadId: WorkloadId; reason: string }
   | { report: 'drained'; shardId: ShardId; workloadId: WorkloadId; pending: { mailbox: PendingMessage[] } }
   | { report: 'syncHeavy'; shardId: ShardId; workloadId: WorkloadId; cpuMicros: number }
   | { report: 'load'; summary: ShardLoadSummary }
+  | { report: 'heartbeat'; shardId: ShardId; summary: ShardLoadSummary }
   | { report: 'summary'; summary: SchedulerShardSummary };
 
 export interface SchedulerShardSummary {

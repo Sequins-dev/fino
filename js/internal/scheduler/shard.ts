@@ -50,7 +50,13 @@ const PRIORITY_WEIGHT: Record<PriorityClass, number> = {
   background: 2
 };
 
-const DEFAULT_LOAD_REPORT_MS = 50;
+// Liveness heartbeat cadence: a slow tick that proves the thread is alive to the
+// orchestrator's hang backstop. Resource `load` is reported on change (see
+// `#reportLoadIfChanged`), not on this timer — an idle shard is near-silent.
+const DEFAULT_HEARTBEAT_MS = 1_500;
+// Debt granularity for the load-report change signature: debt swings smaller
+// than this band don't trigger a fresh report.
+const DEBT_BAND_MICROS = 1_000;
 // Soft on-CPU limit for one synchronous pump slice. A workload whose slice
 // exceeds this is flagged sync-heavy so the orchestrator can migrate it to a
 // batch thread, keeping latency-sensitive threads responsive. Well below the
@@ -308,7 +314,7 @@ class ShardScheduler {
   #shardId: string;
   #budgetMicros: number;
   #hardBudgetMicros: number;
-  #loadReportMs: number;
+  #heartbeatMs: number;
   #syncSliceMicros: number;
   #heapLimitBytes: number;
   #port: RealmPort;
@@ -319,12 +325,14 @@ class ShardScheduler {
   #claimed = 0;
   #dispatches = 0;
   #released = 0;
+  /** Signature of the last `load` report, so it re-reports only on real change. */
+  #lastLoadSignature: string | null = null;
 
   constructor(config: SchedulerShardConfig, port: RealmPort) {
     this.#shardId = config.shardId;
     this.#budgetMicros = config.budgetMicros ?? DEFAULT_BUDGET_MICROS;
     this.#hardBudgetMicros = config.hardBudgetMicros ?? DEFAULT_HARD_BUDGET_MICROS;
-    this.#loadReportMs = config.loadReportMs ?? DEFAULT_LOAD_REPORT_MS;
+    this.#heartbeatMs = config.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
     this.#syncSliceMicros = config.syncSliceThresholdMicros ?? DEFAULT_SYNC_SLICE_MICROS;
     this.#heapLimitBytes = config.heapLimitBytes ?? 0;
     this.#port = port;
@@ -333,9 +341,9 @@ class ShardScheduler {
   async run(): Promise<SchedulerShardSummary> {
     this.#port.addEventListener('message', (event) => this.#onControl(event.data as SchedulerControlMessage));
     this.#port.start?.();
-    const load = this.#reportLoadLoop();
+    const heartbeat = this.#heartbeatLoop();
     await this.#dispatchLoop();
-    await load;
+    await heartbeat;
     for (const workload of this.#held.values()) workload.isolate?.terminate();
     const heldLeases = this.#held.size;
     this.#held.clear();
@@ -382,6 +390,7 @@ class ShardScheduler {
       syncHeavyReported: false,
       ...lease.entryPath !== undefined ? { isolate: new Isolate(lease.entryPath, this.#heapLimitBytes) } : {}
     });
+    this.#reportLoadIfChanged();
   }
 
   #applyWake(rawWake: TenantWake): void {
@@ -402,6 +411,7 @@ class ShardScheduler {
     workload.isolate?.terminate();
     this.#released++;
     this.#port.postMessage({ report: 'released', shardId: this.#shardId, workloadId, reason });
+    this.#reportLoadIfChanged();
   }
 
   #markRunnable(workloadId: string): void {
@@ -444,6 +454,7 @@ class ShardScheduler {
     this.#runnable.delete(workloadId);
     isolate?.terminate();
     this.#port.postMessage({ report: 'drained', shardId: this.#shardId, workloadId, pending: { mailbox } });
+    this.#reportLoadIfChanged();
   }
 
   /** Highest-priority runnable workload: lowest priority weight, then debt, then age. */
@@ -467,6 +478,9 @@ class ShardScheduler {
   async #dispatchLoop(): Promise<void> {
     while (this.#running) {
       if (this.#runnable.size === 0) {
+        // Nothing runnable: report the settled resource state (if it changed)
+        // and park until a control message or completion wakes us. No polling.
+        this.#reportLoadIfChanged();
         await this.#ready.wait();
         continue;
       }
@@ -485,6 +499,7 @@ class ShardScheduler {
         if (!this.#running) break;
         this.#pumpOnce(workload);
       }
+      this.#reportLoadIfChanged();
       await timeout(0);
     }
   }
@@ -604,11 +619,31 @@ class ShardScheduler {
     );
   }
 
-  async #reportLoadLoop(): Promise<void> {
+  /** A coarse signature of the shard's resource state; a `load` report fires only when it changes. */
+  #loadSignature(): string {
+    let runnable = 0;
+    let debt = 0;
+    for (const workload of this.#held.values()) {
+      if (workload.wakes.length > 0) runnable++;
+      debt += workload.debtMicros;
+    }
+    return `${this.#held.size}:${runnable > 0 ? 1 : 0}:${Math.floor(debt / DEBT_BAND_MICROS)}`;
+  }
+
+  /** Report resource load, but only when the coarse signature actually changed. */
+  #reportLoadIfChanged(): void {
+    const signature = this.#loadSignature();
+    if (signature === this.#lastLoadSignature) return;
+    this.#lastLoadSignature = signature;
+    this.#port.postMessage({ report: 'load', summary: summarize(this.#shardId, this.#held, this.#dispatches) });
+  }
+
+  /** Slow liveness tick — proves the thread is alive without polling for work. */
+  async #heartbeatLoop(): Promise<void> {
     while (this.#running) {
-      await timeout(this.#loadReportMs);
+      await timeout(this.#heartbeatMs);
       if (!this.#running) break;
-      this.#port.postMessage({ report: 'load', summary: summarize(this.#shardId, this.#held, this.#dispatches) });
+      this.#port.postMessage({ report: 'heartbeat', shardId: this.#shardId, summary: summarize(this.#shardId, this.#held, this.#dispatches) });
     }
   }
 }

@@ -62,6 +62,9 @@ interface ShardHandle {
 
 const DEFAULT_HEARTBEAT_MS = 250;
 
+/** Must match the shard's own default heartbeat cadence (js/internal/scheduler/shard.ts). */
+const DEFAULT_SHARD_HEARTBEAT_MS = 1_500;
+
 /** How long to wait for a shard's run() to settle on shutdown before forcing it. */
 const SHARD_JOIN_TIMEOUT_MS = 2_000;
 
@@ -85,7 +88,9 @@ export interface SchedulerNodeOptions {
   budgetMicros?: number;
   /** Hard per-pump-slice runaway budget (µs) passed to each shard. */
   hardBudgetMicros?: number;
-  /** Load-report cadence (ms) for each shard. */
+  /** Liveness-heartbeat cadence (ms) for each shard; also sets the supervisor's stale threshold. */
+  heartbeatMs?: number;
+  /** @deprecated Load is reported on change now; ignored. */
   loadReportMs?: number;
   /** Soft on-CPU limit (µs) per sync slice; overrunning migrates the workload to a batch thread. */
   syncSliceThresholdMicros?: number;
@@ -103,7 +108,7 @@ export class SchedulerNode {
   #capacity: number;
   #budgetMicros?: number;
   #hardBudgetMicros?: number;
-  #loadReportMs?: number;
+  #heartbeatMs?: number;
   #syncSliceThresholdMicros?: number;
   #heapLimitBytes?: number;
   #shards = new Map<string, ShardHandle>();
@@ -122,7 +127,7 @@ export class SchedulerNode {
     this.#capacity = options.capacity ?? 8;
     this.#budgetMicros = options.budgetMicros;
     this.#hardBudgetMicros = options.hardBudgetMicros;
-    this.#loadReportMs = options.loadReportMs;
+    this.#heartbeatMs = options.heartbeatMs;
     this.#syncSliceThresholdMicros = options.syncSliceThresholdMicros;
     this.#heapLimitBytes = options.heapLimitBytes;
     const batchThreads = options.batchThreads ?? 0;
@@ -163,7 +168,7 @@ export class SchedulerNode {
         capacity: this.#capacity,
         ...this.#budgetMicros !== undefined ? { budgetMicros: this.#budgetMicros } : {},
         ...this.#hardBudgetMicros !== undefined ? { hardBudgetMicros: this.#hardBudgetMicros } : {},
-        ...this.#loadReportMs !== undefined ? { loadReportMs: this.#loadReportMs } : {},
+        ...this.#heartbeatMs !== undefined ? { heartbeatMs: this.#heartbeatMs } : {},
         ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceThresholdMicros: this.#syncSliceThresholdMicros } : {},
         ...this.#heapLimitBytes !== undefined ? { heapLimitBytes: this.#heapLimitBytes } : {}
       };
@@ -222,8 +227,11 @@ export class SchedulerNode {
   */
   #superviseHeartbeats(): { cancel(): void } {
     let cancelled = false;
-    const period = Math.max(DEFAULT_HEARTBEAT_MS, this.#loadReportMs ?? 50);
-    const stale = Math.max(2_000, (this.#loadReportMs ?? 50) * 40);
+    const heartbeat = this.#heartbeatMs ?? DEFAULT_SHARD_HEARTBEAT_MS;
+    const period = Math.max(DEFAULT_HEARTBEAT_MS, heartbeat);
+    // Tolerate several missed heartbeats before declaring a thread dead, so a
+    // transient GC pause or scheduling hiccup never triggers a spurious recovery.
+    const stale = Math.max(5_000, heartbeat * 4);
     const tick = (): void => {
       if (cancelled || this.#shuttingDown) return;
       const now = Date.now();
@@ -245,7 +253,9 @@ export class SchedulerNode {
     // lease would be mis-released).
     if (handle === undefined) return;
     handle.lastReport = Date.now();
-    if (message.report === 'load') {
+    if (message.report === 'load' || message.report === 'heartbeat') {
+      // `load` fires on resource change; `heartbeat` is the slow liveness tick.
+      // Both carry a fresh summary and both refresh `lastReport` (set above).
       this.#collection.recordLoad(shardId, message.summary);
       return;
     }
