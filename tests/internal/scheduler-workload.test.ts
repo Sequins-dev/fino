@@ -24,7 +24,6 @@ describe('workload state machine', () => {
     t.equal(r.state, 'unclaimed');
     t.equal(r.priority, 'service');
     t.equal(r.threadId, null);
-    t.equal(r.leaseEpoch, 0);
     t.equal(r.budget.debtMicros, 0);
     t.equal(r.lastPumpResult, null);
   });

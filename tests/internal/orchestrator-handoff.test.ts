@@ -3,8 +3,7 @@
 * tenant isolate cannot be moved across OS threads, so a move is drain →
 * data-only snapshot → transfer lease + snapshot → reconstruct. These tests
 * prove the pending work (messages, timers, in-flight facade ops) survives the
-* transfer, that a failed thread's workloads are recovered onto survivors, and
-* that overload is detectable.
+* transfer, and that a failed thread's workloads are recovered onto survivors.
 */
 import { describe, it } from 'fino:test/test';
 import { NodeIsolateCollection } from 'internal:orchestrator/node';
@@ -84,41 +83,20 @@ describe('node collection handoff', () => {
 });
 
 describe('node collection recovery', () => {
-  it('recovers a failed thread\'s workloads from their checkpoints onto survivors', (t) => {
-    const c = twoShards();
-    const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0', entryPath: '/w.ts' });
-    c.claim('shard-0', 4);
-    c.checkpoint(id, { mailbox: [{ sequence: 1, data: 'chk' }] }, 7);
-
-    const recovered = c.recoverShard('shard-0');
-    t.deepEqual(recovered, [id], 'the workload was recovered');
-    t.equal(c.placementOf(id), 'shard-1', 're-placed on the survivor');
-    t.equal(c.record(id)?.state, 'unclaimed');
-
-    const [lease] = c.claim('shard-1', 4);
-    t.equal(lease?.handoff?.mailbox[0]?.data, 'chk', 'checkpointed pending work restored on recovery');
-  });
-
-  it('respawns a workload with no checkpoint from its record and entry', (t) => {
+  it('respawns a failed thread\'s workloads from their record and entry onto survivors', (t) => {
     const c = twoShards();
     const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0', entryPath: '/w.ts' });
     c.claim('shard-0', 4);
 
+    // Crash recovery respawns from the entry (pending in-flight work is lost on a
+    // hard crash — periodic checkpointing is intentionally not wired).
     const recovered = c.recoverShard('shard-0');
     t.deepEqual(recovered, [id], 'the workload was respawned');
-    t.equal(c.placementOf(id), 'shard-1');
+    t.equal(c.placementOf(id), 'shard-1', 're-placed on the survivor');
+    t.equal(c.record(id)?.state, 'unclaimed');
     t.equal(c.snapshotOf(id), undefined, 'no snapshot — respawned fresh from the entry');
     const [lease] = c.claim('shard-1', 4);
+    t.equal(lease?.workloadId, id, 'the survivor reclaimed it');
     t.equal(lease?.handoff, undefined, 'reclaimed without pending work');
-  });
-});
-
-describe('node collection locality', () => {
-  it('reports threads carrying more than the overload threshold', (t) => {
-    const c = twoShards();
-    for (let i = 0; i < 3; i++) c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
-    c.claim('shard-0', 4);
-    t.deepEqual(c.overloadedShards(2), ['shard-0'], 'three held exceeds a threshold of two');
-    t.deepEqual(c.overloadedShards(3), [], 'three held does not exceed a threshold of three');
   });
 });

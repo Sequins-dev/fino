@@ -81,7 +81,6 @@ export function createWorkloadRecord(options: CreateWorkloadOptions): TenantWork
     workloadId: options.workloadId,
     isolateId: options.isolateId,
     threadId: null,
-    leaseEpoch: 0,
     state: 'unclaimed',
     priority: options.priority ?? 'service',
     budget: {
@@ -146,7 +145,6 @@ export function captureHandoff(
 export function reconstructRecord(snapshot: HandoffSnapshot): TenantWorkloadRecord {
   const rebuilt = cloneRecord(snapshot.record);
   rebuilt.threadId = null;
-  rebuilt.leaseEpoch = 0;
   rebuilt.state = 'unclaimed';
   rebuilt.runnableReasons = [];
   rebuilt.lastPumpResult = null;

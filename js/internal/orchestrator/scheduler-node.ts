@@ -280,6 +280,10 @@ export class SchedulerNode {
     if (message.report === 'released') {
       const leaseId = this.#collection.leaseOf(message.workloadId);
       if (leaseId !== null) this.#collection.release(leaseId, message.reason as ReleaseReason);
+      // A release freed a slot on this thread: assign any workload the allocator
+      // placed here but that couldn't be claimed while it was full (recovery /
+      // migration backlog), so nothing stays stranded waiting on a future deploy.
+      this.#activate();
       // Resolve `whenReleased` only for a truly terminal outcome. A re-placing
       // reason (`rebalanced`/`renew_failed`) is not the workload finishing, so
       // it must not resolve a deploy waiter and shut down still-live work.

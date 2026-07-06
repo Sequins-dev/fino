@@ -48,7 +48,6 @@ export interface TenantWorkloadRecord {
   workloadId: WorkloadId;
   isolateId: string;
   threadId: ShardId | null;
-  leaseEpoch: number;
   state: TenantWorkloadState;
   priority: PriorityClass;
   budget: {
@@ -69,7 +68,6 @@ export interface TenantWorkloadRecord {
 export interface LeaseRecord {
   leaseId: LeaseId;
   workloadId: WorkloadId;
-  epoch: number;
   priority: PriorityClass;
   entryPath?: string;
   data?: unknown;

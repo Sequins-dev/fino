@@ -595,6 +595,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
     source_builtin!("internal:orchestrator/node", "internal/orchestrator/node"),
     source_builtin!(
+        "internal:orchestrator/allocator",
+        "internal/orchestrator/allocator"
+    ),
+    source_builtin!(
         "internal:orchestrator/scheduler-node",
         "internal/orchestrator/scheduler-node"
     ),

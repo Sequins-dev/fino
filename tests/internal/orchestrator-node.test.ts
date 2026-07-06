@@ -1,6 +1,7 @@
 /**
-* Tests for the node isolate collection — placement, epoch-CAS leases, release
-* reconciliation, and load-driven balancing. Pure main-thread state, no threads.
+* Tests for the node isolate collection — allocator-driven placement, leases,
+* release reconciliation, and load-driven balancing. Pure main-thread state, no
+* threads.
 */
 import { describe, it } from 'fino:test/test';
 import { NodeIsolateCollection } from 'internal:orchestrator/node';
@@ -66,7 +67,7 @@ describe('node isolate collection placement', () => {
 });
 
 describe('node isolate collection leases', () => {
-  it('claims placed workloads into epoch-stamped leases and advances state', (t) => {
+  it('claims placed workloads into leases and advances state', (t) => {
     const c = twoShards(4);
     const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0', entryPath: '/w.ts', data: { k: 1 } });
     const leases = c.claim('shard-0', 4);
@@ -86,16 +87,6 @@ describe('node isolate collection leases', () => {
     const leases = c.claim('shard-0', 10);
     t.equal(leases.length, 2, 'capped at the thread capacity even when more is requested');
   });
-
-  it('renews only while the epoch matches, and stops after revoke', (t) => {
-    const c = twoShards(4);
-    const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
-    const [lease] = c.claim('shard-0', 4);
-    t.equal(c.renew(lease!.leaseId, lease!.epoch), true, 'valid epoch renews');
-    t.equal(c.renew(lease!.leaseId, lease!.epoch + 99), false, 'stale epoch rejected');
-    t.equal(c.revoke(id), true, 'revoke bumps the epoch');
-    t.equal(c.renew(lease!.leaseId, lease!.epoch), false, 'holder can no longer renew after revoke');
-  });
 });
 
 describe('node isolate collection release', () => {
@@ -106,17 +97,6 @@ describe('node isolate collection release', () => {
     c.release(lease!.leaseId, 'terminated');
     t.equal(c.record(id), undefined, 'record removed');
     t.equal(c.leaseOf(id), null, 'lease removed');
-  });
-
-  it('reaps a workload\'s snapshot and wakes on terminal release', (t) => {
-    const c = twoShards(4);
-    const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
-    const [lease] = c.claim('shard-0', 4);
-    c.checkpoint(id, { mailbox: [{ sequence: 1, data: 'x' }] }, 0);
-    c.enqueueWake(id, { workloadId: id, reason: 'io', sourceId: 's' });
-    t.equal(c.snapshotOf(id) !== undefined, true, 'snapshot present before release');
-    c.release(lease!.leaseId, 'terminated');
-    t.equal(c.snapshotOf(id), undefined, 'snapshot reaped on terminal release');
   });
 
   it('keeps a failed workload observable as failed', (t) => {
@@ -151,16 +131,34 @@ describe('node isolate collection release', () => {
   });
 });
 
-describe('node isolate collection wakes', () => {
-  it('delivers queued wakes to the hosting thread and clears them', (t) => {
-    const c = twoShards(4);
-    const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
-    c.claim('shard-0', 4);
-    c.enqueueWake(id, { workloadId: id, reason: 'io', sourceId: 's1' });
-    const first = c.pollWakes('shard-0');
-    t.equal(first.length, 1, 'wake delivered to the hosting thread');
-    t.equal(first[0]?.sourceId, 's1');
-    t.equal(c.pollWakes('shard-0').length, 0, 'drained after delivery');
-    t.equal(c.pollWakes('shard-1').length, 0, 'other thread sees nothing');
+describe('workload allocator', () => {
+  it('routes fresh work to latency threads, never batch', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('latency-0', 4, 'latency');
+    c.registerShard('batch-0', 4, 'batch');
+    for (let i = 0; i < 4; i++) c.deploy({ tenantId: 'acme' });
+    t.equal(c.workloadsOn('batch-0').length, 0, 'batch thread got no fresh placement');
+    t.equal(c.workloadsOn('latency-0').length, 4, 'all fresh work went to the latency thread');
+  });
+
+  it('targets the least-loaded thread of a class for migration', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('latency-0', 4, 'latency');
+    c.registerShard('batch-0', 4, 'batch');
+    c.registerShard('batch-1', 4, 'batch');
+    const alloc = c.allocator();
+    alloc.recordLoad('batch-0', { shardId: 'batch-0', heldLeases: 3, runnableWorkloads: 3, dispatches: 9, debtMicros: 0 });
+    alloc.recordLoad('batch-1', { shardId: 'batch-1', heldLeases: 0, runnableWorkloads: 0, dispatches: 0, debtMicros: 0 });
+    t.equal(alloc.leastLoadedOfClass('batch'), 'batch-1', 'picked the idle batch thread');
+    t.equal(alloc.leastLoadedOfClass('nonexistent' as 'batch'), null, 'empty class returns null');
+  });
+
+  it('reports no room once a thread is at capacity', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('shard-0', 1);
+    const alloc = c.allocator();
+    t.equal(alloc.hasRoom('shard-0'), true, 'room before placing');
+    c.deploy({ tenantId: 'acme', affinity: 'shard-0' });
+    t.equal(alloc.hasRoom('shard-0'), false, 'full after placing to capacity');
   });
 });

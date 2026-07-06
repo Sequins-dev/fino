@@ -2,31 +2,28 @@
 * internal:orchestrator/node — the node isolate collection.
 *
 * This is the orchestrator's authoritative registry of every tenant workload on
-* the node, the leases that bind each workload to a scheduler thread, and the
-* load each thread is carrying. The orchestrator claims workloads from it and
-* pushes them to their scheduler threads; threads report releases and load back,
-* which the orchestrator folds in here via `release` and `recordLoad`. Placement
-* — deciding which scheduler thread hosts a workload — lives here too, because
-* app code never chooses placement; it deploys a workload and the orchestrator
-* places it.
+* the node and the leases that bind each workload to a scheduler thread. It
+* delegates *placement* — which thread hosts a workload — and the thread
+* roster/load view to the {@link WorkloadAllocator}, exposing per-thread
+* occupancy back to it; app code never chooses placement, it deploys a workload
+* and the allocator places it. Threads report releases and load back, which the
+* orchestrator folds in via `release` and `recordLoad`.
 *
 * The collection is pure main-thread state driven only by the orchestrator loop,
 * so there is one writer and no shared mutable state across threads. Records are
 * the same `TenantWorkloadRecord`s the scheduler reasons about, driven through
-* the same
-* {@link transition} state machine, so the orchestrator's coarse view and the
-* scheduler's fine view can never disagree about a workload's lifecycle.
+* the same {@link transition} state machine, so the orchestrator's coarse view
+* and the scheduler's fine view can never disagree about a workload's lifecycle.
 *
-* Leases carry an epoch. `renew` is a compare-and-set on that epoch: the
-* orchestrator revokes a lease by bumping its epoch, so the holding thread's next
-* renewal fails and it drops the workload — the mechanism behind load-driven
-* rebalancing. State-preserving handoff of a *running* isolate is deferred to the
-* handoff/recovery phase; here a revoked workload is re-placed and reclaimed
-* fresh.
+* Revocation is immediate: the orchestrator pushes a `revoke`/`drain` control
+* message to the holding thread rather than waiting out a renewal window. A
+* revoked workload is re-placed and reclaimed fresh; state-preserving handoff of
+* a *running* isolate is the separate drain/snapshot flow.
 *
 * @internal
 */
 import { captureHandoff, createWorkloadRecord, reconstructRecord, transition, type PendingWork } from '../scheduler/workload.ts';
+import { WorkloadAllocator, type ShardClass } from './allocator.ts';
 import type {
   HandoffSnapshot,
   LeaseId,
@@ -34,10 +31,11 @@ import type {
   PriorityClass,
   ShardId,
   ShardLoadSummary,
-  TenantWake,
   TenantWorkloadRecord,
   WorkloadId
 } from '../scheduler/types.ts';
+
+export type { ShardClass } from './allocator.ts';
 
 const PRIORITY_RANK: Record<PriorityClass, number> = {
   interactive: 0,
@@ -70,28 +68,17 @@ interface StoredLease {
   leaseId: LeaseId;
   workloadId: WorkloadId;
   shardId: ShardId;
-  epoch: number;
   priority: PriorityClass;
   entryPath?: string;
   data?: unknown;
 }
 
 /**
-* The class of a scheduler thread. `latency` threads host normal work and stay
-* responsive; `batch` threads exist to absorb sync-heavy workloads migrated off
-* the latency threads, so they never receive fresh placement.
-*/
-export type ShardClass = 'latency' | 'batch';
-
-interface ShardHandle {
-  shardId: ShardId;
-  capacity: number;
-  shardClass: ShardClass;
-}
-
-/**
-* The node isolate collection: placement, leases, and load aggregation for every
-* tenant workload on one node.
+* The node isolate collection: workload records, leases, and handoff snapshots
+* for every tenant workload on one node. Placement — *which* thread hosts a
+* workload — and the thread roster/load view live in the {@link WorkloadAllocator}
+* this collection delegates to; the collection owns record lifecycle and exposes
+* per-thread occupancy back to the allocator.
 */
 export class NodeIsolateCollection {
   #workloads = new Map<WorkloadId, TenantWorkloadRecord>();
@@ -99,36 +86,29 @@ export class NodeIsolateCollection {
   #placement = new Map<WorkloadId, ShardId>();
   #leases = new Map<LeaseId, StoredLease>();
   #workloadLease = new Map<WorkloadId, LeaseId>();
-  #shards = new Map<ShardId, ShardHandle>();
-  #load = new Map<ShardId, ShardLoadSummary>();
-  #wakes = new Map<WorkloadId, TenantWake[]>();
   #snapshots = new Map<WorkloadId, HandoffSnapshot>();
-  #roundRobin = 0;
+  #allocator = new WorkloadAllocator({ assignedCount: (shardId) => this.#assignedCount(shardId) });
   #nextWorkload = 0;
   #nextLease = 0;
-  #nextEpoch = 0;
+
+  /** The node's workload allocator (thread roster, load view, placement policy). */
+  allocator(): WorkloadAllocator {
+    return this.#allocator;
+  }
 
   /** Register a scheduler thread, its capacity, and its class so placement can target it. */
   registerShard(shardId: ShardId, capacity: number, shardClass: ShardClass = 'latency'): void {
-    if (!Number.isFinite(capacity) || capacity < 0) {
-      throw new TypeError('shard capacity must be a non-negative finite number');
-    }
-    this.#shards.set(shardId, { shardId, capacity: Math.floor(capacity), shardClass });
-    if (!this.#load.has(shardId)) {
-      this.#load.set(shardId, { shardId, heldLeases: 0, runnableWorkloads: 0, dispatches: 0, debtMicros: 0 });
-    }
+    this.#allocator.registerShard(shardId, capacity, shardClass);
   }
 
   /** The class of a registered thread, or null if unknown. */
   shardClassOf(shardId: ShardId): ShardClass | null {
-    return this.#shards.get(shardId)?.shardClass ?? null;
+    return this.#allocator.shardClassOf(shardId);
   }
 
   /** The least-loaded registered thread of a given class, or null if none. */
   leastLoadedOfClass(shardClass: ShardClass, exclude?: ShardId): ShardId | null {
-    const pool = [...this.#shards.values()].filter((shard) => shard.shardClass === shardClass && shard.shardId !== exclude);
-    if (pool.length === 0) return null;
-    return this.#leastLoaded(exclude ?? null, shardClass);
+    return this.#allocator.leastLoadedOfClass(shardClass, exclude);
   }
 
   /**
@@ -137,13 +117,12 @@ export class NodeIsolateCollection {
   * stops new work being placed on it.
   */
   unregisterShard(shardId: ShardId): void {
-    this.#shards.delete(shardId);
-    this.#load.delete(shardId);
+    this.#allocator.unregisterShard(shardId);
   }
 
   /** Every registered scheduler thread. */
   shards(): ShardId[] {
-    return [...this.#shards.keys()];
+    return this.#allocator.shards();
   }
 
   /**
@@ -152,7 +131,7 @@ export class NodeIsolateCollection {
   * it. Throws if no scheduler thread is registered to host it.
   */
   deploy(spec: NodeWorkloadSpec): WorkloadId {
-    if (this.#shards.size === 0) throw new Error('cannot deploy: no scheduler threads registered');
+    if (this.#allocator.shards().length === 0) throw new Error('cannot deploy: no scheduler threads registered');
     const workloadId = spec.workloadId ?? `wl-${this.#nextWorkload++}`;
     if (this.#workloads.has(workloadId)) throw new Error(`workload already deployed: ${workloadId}`);
     const isolateId = spec.isolateId ?? `iso-${workloadId}`;
@@ -171,25 +150,14 @@ export class NodeIsolateCollection {
   }
 
   #choosePlacement(spec: NodeWorkloadSpec): ShardId {
-    if (spec.affinity !== undefined) {
-      if (!this.#shards.has(spec.affinity)) throw new Error(`unknown affinity thread: ${spec.affinity}`);
-      // A hard pin must honor capacity: over-subscribing a thread would leave the
-      // workload placed-but-never-claimable (claim caps at capacity), silently
-      // stranding it. Reject loudly instead.
-      if (!this.#hasRoom(spec.affinity)) throw new Error(`affinity thread at capacity: ${spec.affinity}`);
-      return spec.affinity;
-    }
-    if (spec.colocateWith !== undefined) {
-      const sibling = this.#shardOf(spec.colocateWith);
-      if (sibling !== null && this.#hasRoom(sibling)) return sibling;
-    }
-    // Fresh work goes to latency threads; batch threads only receive sync-heavy
-    // workloads migrated off them.
-    const target = this.#leastLoaded(null, 'latency');
-    // Every thread is full: refuse rather than pile onto a shard that cannot
-    // claim the workload.
-    if (!this.#hasRoom(target)) throw new Error('cannot place workload: all scheduler threads at capacity');
-    return target;
+    // Resolve same-tenant colocation to the sibling's current thread; the
+    // allocator applies affinity/capacity/class policy and enforces capacity.
+    const preferShard = spec.colocateWith !== undefined ? this.#shardOf(spec.colocateWith) : null;
+    return this.#allocator.choose({
+      ...spec.affinity !== undefined ? { affinity: spec.affinity } : {},
+      ...preferShard !== null ? { preferShard } : {},
+      shardClass: 'latency'
+    });
   }
 
   #shardOf(workloadId: WorkloadId): ShardId | null {
@@ -198,6 +166,7 @@ export class NodeIsolateCollection {
     return this.#placement.get(workloadId) ?? null;
   }
 
+  /** Per-thread occupancy: workloads leased to or placed on a thread. The allocator reads this. */
   #assignedCount(shardId: ShardId): number {
     let count = 0;
     for (const lease of this.#leases.values()) if (lease.shardId === shardId) count++;
@@ -205,51 +174,16 @@ export class NodeIsolateCollection {
     return count;
   }
 
-  #hasRoom(shardId: ShardId): boolean {
-    const shard = this.#shards.get(shardId);
-    if (shard === undefined) return false;
-    return this.#assignedCount(shardId) < shard.capacity;
-  }
-
   /**
-  * Least-loaded placement target. Ranks by current assignment count, breaking
-  * ties on the shard's last reported runnable/debt load, then round-robin so a
-  * cold start still spreads. `exclude` skips a thread (used when re-placing a
-  * revoked workload off its old thread).
-  */
-  #leastLoaded(exclude: ShardId | null, shardClass?: ShardClass): ShardId {
-    const all = [...this.#shards.values()];
-    const classed = shardClass === undefined ? all : all.filter((shard) => shard.shardClass === shardClass);
-    const source = classed.length > 0 ? classed : all;
-    const ids = source.map((shard) => shard.shardId).filter((id) => id !== exclude);
-    const pool = ids.length > 0 ? ids : source.map((shard) => shard.shardId);
-    let best: ShardId | null = null;
-    let bestKey = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < pool.length; i++) {
-      const id = pool[(this.#roundRobin + i) % pool.length];
-      const load = this.#load.get(id);
-      const assigned = this.#assignedCount(id);
-      const key = assigned * 1e6 + (load ? load.runnableWorkloads * 1e3 + Math.min(load.debtMicros, 999) : 0);
-      if (key < bestKey) {
-        bestKey = key;
-        best = id;
-      }
-    }
-    this.#roundRobin++;
-    return best ?? pool[0];
-  }
-
-  /**
-  * Hand a scheduler thread up to `capacity` workloads placed on it. Creates a
-  * fresh epoch-stamped lease for each and moves the record `unclaimed ->
-  * claimed`. Respects both the caller's requested `capacity` and the thread's
-  * registered capacity.
+  * Hand a scheduler thread the workloads the allocator has placed on it (up to
+  * `capacity`), turning each placement into a lease and moving the record
+  * `unclaimed -> claimed`. Respects both the caller's requested `capacity` and
+  * the thread's registered capacity.
   */
   claim(shardId: ShardId, capacity: number): LeaseRecord[] {
-    const shard = this.#shards.get(shardId);
-    if (shard === undefined) return [];
+    if (!this.#allocator.hasShard(shardId)) return [];
     const held = this.#heldCount(shardId);
-    const room = Math.max(0, Math.min(Math.floor(capacity), shard.capacity) - held);
+    const room = Math.max(0, Math.min(Math.floor(capacity), this.#allocator.capacityOf(shardId)) - held);
     if (room === 0) return [];
 
     const candidates: WorkloadId[] = [];
@@ -269,13 +203,11 @@ export class NodeIsolateCollection {
     for (const workloadId of candidates.slice(0, room)) {
       const record = this.#workloads.get(workloadId)!;
       const entry = this.#entries.get(workloadId) ?? {};
-      const epoch = ++this.#nextEpoch;
       const leaseId = `lease-${this.#nextLease++}`;
       const stored: StoredLease = {
         leaseId,
         workloadId,
         shardId,
-        epoch,
         priority: record.priority,
         ...entry.entryPath !== undefined ? { entryPath: entry.entryPath } : {},
         ...entry.data !== undefined ? { data: entry.data } : {}
@@ -283,7 +215,6 @@ export class NodeIsolateCollection {
       this.#leases.set(leaseId, stored);
       this.#workloadLease.set(workloadId, leaseId);
       this.#placement.delete(workloadId);
-      record.leaseEpoch = epoch;
       record.threadId = shardId;
       transition(record, 'claimed');
       // A reclaimed handed-off workload carries its snapshot so the destination
@@ -293,7 +224,6 @@ export class NodeIsolateCollection {
       leases.push({
         leaseId,
         workloadId,
-        epoch,
         priority: record.priority,
         ...stored.entryPath !== undefined ? { entryPath: stored.entryPath } : {},
         ...stored.data !== undefined ? { data: stored.data } : {},
@@ -315,24 +245,6 @@ export class NodeIsolateCollection {
     return this.#leases.get(leaseId) ?? null;
   }
 
-  /** Compare-and-set on the lease epoch. False once the orchestrator revokes it. */
-  renew(leaseId: LeaseId, epoch: number): boolean {
-    const lease = this.#leases.get(leaseId);
-    return lease !== undefined && lease.epoch === epoch;
-  }
-
-  /**
-  * Revoke the workload's active lease by bumping its epoch, so the holding
-  * thread's next {@link renew} fails and it releases the workload back to the
-  * collection for re-placement. Returns false if the workload holds no lease.
-  */
-  revoke(workloadId: WorkloadId): boolean {
-    const lease = this.#activeLease(workloadId);
-    if (lease === null) return false;
-    lease.epoch = ++this.#nextEpoch;
-    return true;
-  }
-
   /**
   * Return a workload to the collection. `release` is idempotent and stale-safe:
   * a call for a lease that is no longer the workload's active lease only clears
@@ -347,7 +259,6 @@ export class NodeIsolateCollection {
     const { workloadId } = lease;
     if (this.#workloadLease.get(workloadId) !== leaseId) return;
     this.#workloadLease.delete(workloadId);
-    this.#wakes.delete(workloadId);
     const record = this.#workloads.get(workloadId);
     if (record === undefined) return;
 
@@ -372,7 +283,7 @@ export class NodeIsolateCollection {
       case 'rebalanced': {
         if (record.state !== 'failed') transition(record, 'failed');
         transition(record, 'unclaimed');
-        const target = this.#leastLoaded(lease.shardId);
+        const target = this.#allocator.leastLoaded(lease.shardId);
         this.#placement.set(workloadId, target);
         record.threadId = target;
         break;
@@ -394,15 +305,13 @@ export class NodeIsolateCollection {
   }
 
   /**
-  * Begin draining a workload for handoff. It stops being schedulable and its
-  * lease is revoked (epoch bumped) so the holding thread finishes its current
-  * work, quiesces, and reports a snapshot via {@link completeHandoff}. The
-  * workload is walked to `draining` through the state machine.
+  * Begin draining a workload for handoff. It is walked to `draining` through the
+  * state machine; the holding thread — told to drain by the pushed control
+  * message — quiesces it and reports a snapshot via {@link completeHandoff}.
   */
   drainForHandoff(workloadId: WorkloadId): void {
     const record = this.#workloads.get(workloadId);
     if (record === undefined) throw new Error(`unknown workload: ${workloadId}`);
-    this.revoke(workloadId);
     if (record.state === 'claimed') transition(record, 'idle');
     if (record.state === 'idle' || record.state === 'runnable' || record.state === 'running') {
       transition(record, 'draining');
@@ -451,33 +360,12 @@ export class NodeIsolateCollection {
     if (record === undefined) throw new Error(`unknown workload: ${workloadId}`);
     if (record.state !== 'handoff_ready') throw new Error(`workload is not handoff_ready: ${workloadId}`);
     transition(record, 'unclaimed');
-    const target = toShardId !== undefined && this.#shards.has(toShardId)
+    const target = toShardId !== undefined && this.#allocator.hasShard(toShardId)
       ? toShardId
-      : this.#leastLoaded(record.threadId);
+      : this.#allocator.leastLoaded(record.threadId);
     this.#placement.set(workloadId, target);
     record.threadId = target;
     return target;
-  }
-
-  /**
-  * Store a recovery snapshot for a still-live workload without changing its
-  * state or lease. A scheduler checkpoints its workloads periodically so that if
-  * its thread crashes, {@link recoverShard} can restore recent pending work
-  * rather than only respawning from the entry.
-  */
-  checkpoint(workloadId: WorkloadId, pending: PendingWork, capturedAtNanos: number): HandoffSnapshot {
-    const record = this.#workloads.get(workloadId);
-    if (record === undefined) throw new Error(`unknown workload: ${workloadId}`);
-    const entry = this.#entries.get(workloadId) ?? {};
-    const snapshot = captureHandoff(record, {
-      ...entry.entryPath !== undefined ? { entryPath: entry.entryPath } : {},
-      ...entry.data !== undefined ? { data: entry.data } : {},
-      ...pending.mailbox !== undefined ? { mailbox: pending.mailbox } : {},
-      ...pending.timers !== undefined ? { timers: pending.timers } : {},
-      ...pending.facadeOps !== undefined ? { facadeOps: pending.facadeOps } : {}
-    }, capturedAtNanos);
-    this.#snapshots.set(workloadId, snapshot);
-    return snapshot;
   }
 
   /**
@@ -499,14 +387,13 @@ export class NodeIsolateCollection {
         this.#leases.delete(leaseId);
         this.#workloadLease.delete(workloadId);
       }
-      this.#wakes.delete(workloadId);
       const snapshot = this.#snapshots.get(workloadId);
       const record = snapshot !== undefined
         ? reconstructRecord(snapshot)
         : this.#respawnRecord(workloadId);
       if (record === undefined) continue;
       this.#workloads.set(workloadId, record);
-      const target = this.#leastLoaded(shardId);
+      const target = this.#allocator.leastLoaded(shardId);
       this.#placement.set(workloadId, target);
       record.threadId = target;
       recovered.push(workloadId);
@@ -527,46 +414,14 @@ export class NodeIsolateCollection {
     return rebuilt;
   }
 
-  /**
-  * Threads whose held-lease count exceeds `threshold`. Used to decide when to
-  * spread linked work off a hot thread onto a cooler one.
-  */
-  overloadedShards(threshold: number): ShardId[] {
-    const hot: ShardId[] = [];
-    for (const shardId of this.#shards.keys()) {
-      if (this.#heldCount(shardId) > threshold) hot.push(shardId);
-    }
-    return hot;
-  }
-
   /** The stored handoff snapshot for a workload awaiting reclaim, if any. */
   snapshotOf(workloadId: WorkloadId): HandoffSnapshot | undefined {
     return this.#snapshots.get(workloadId);
   }
 
-  /** Queue a wake for a workload; delivered to its thread by {@link pollWakes}. */
-  enqueueWake(workloadId: WorkloadId, wake: TenantWake): void {
-    const queue = this.#wakes.get(workloadId);
-    if (queue === undefined) this.#wakes.set(workloadId, [wake]);
-    else queue.push(wake);
-  }
-
-  /** Drain and return every queued wake for the workloads a thread is hosting. */
-  pollWakes(shardId: ShardId): TenantWake[] {
-    const wakes: TenantWake[] = [];
-    for (const lease of this.#leases.values()) {
-      if (lease.shardId !== shardId) continue;
-      const queue = this.#wakes.get(lease.workloadId);
-      if (queue === undefined || queue.length === 0) continue;
-      wakes.push(...queue);
-      this.#wakes.set(lease.workloadId, []);
-    }
-    return wakes;
-  }
-
-  /** Record a thread's latest load summary for placement decisions. */
+  /** Record a thread's latest load summary for the allocator's placement decisions. */
   recordLoad(shardId: ShardId, summary: ShardLoadSummary): void {
-    this.#load.set(shardId, summary);
+    this.#allocator.recordLoad(shardId, summary);
   }
 
   /** The thread currently hosting (or placed to host) a workload, if any. */
@@ -586,7 +441,7 @@ export class NodeIsolateCollection {
 
   /** Last reported load for a thread. */
   loadOf(shardId: ShardId): ShardLoadSummary | undefined {
-    return this.#load.get(shardId);
+    return this.#allocator.loadOf(shardId);
   }
 
   /** Number of live leases a thread is holding. */
