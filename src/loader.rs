@@ -97,6 +97,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(crate::net_native::create_module),
     ),
     (
+        "internal:reactor-native",
+        BuiltinKind::Synthetic(crate::reactor::create_module),
+    ),
+    (
         "internal:process",
         BuiltinKind::Synthetic(platform::create_module),
     ),
@@ -279,6 +283,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/dns-wire", "internal/net/dns-wire"),
     source_builtin!("internal:net/dnssec", "internal/net/dnssec"),
     source_builtin!("fino:net/socket", "net/socket"),
+    source_builtin!("fino:net/loop-reactor", "net/loop-reactor"),
     source_builtin!("fino:net/tls", "net/tls"),
     source_builtin!("fino:net/dns", "net/dns"),
     source_builtin!("fino:net/mdns", "net/mdns"),

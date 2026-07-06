@@ -11,6 +11,7 @@ mod net_native;
 mod platform;
 mod profiler;
 mod protobuf;
+mod reactor;
 mod realm;
 mod runtime;
 mod scheduler_native;

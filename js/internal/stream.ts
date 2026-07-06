@@ -68,6 +68,16 @@
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import * as loop from 'internal:runtime/loop';
+// Optional fused readiness+syscall ops. Present when the loop is backed by the
+// native reactor (fino:net/loop-reactor); absent on the default loop.ts, in
+// which case FdReader/FdWriter fall back to readable/writable + a libc syscall.
+// They return a byte count SYNCHRONOUSLY when the syscall completes without
+// blocking (the common case), or a Promise<number> when it would block — so the
+// hot path pays no Promise/microtask.
+const fusedLoop = loop as unknown as {
+  readAsync?: (fd: number, buf: ArrayBuffer | Uint8Array, offset: number, len: number) => number | Promise<number>;
+  writeAsync?: (fd: number, buf: ArrayBuffer | Uint8Array, offset: number, len: number) => number | Promise<number>;
+};
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const errnoFn = os === 'darwin' ? '__error' : '__errno_location';
 const EAGAIN = os === 'darwin' ? 35 : 11;
@@ -1364,6 +1374,18 @@ export class FdReader extends BufferedBytesReader {
   * @internal
   */
   protected async doPull(): Promise<Uint8Array | null> {
+    const readAsync = fusedLoop.readAsync;
+    if (readAsync !== undefined) {
+      if (this.closed) return null;
+      if (this.#fd < 0) throw new Error('read failed');
+      const r = readAsync(this.#fd, this.#readBuf, 0, 65536);
+      const n = typeof r === 'number' ? r : await r;
+      if (this.closed) return null;
+      if (n <= 0) return null;
+      const out = new Uint8Array(n);
+      out.set(this.#readView.subarray(0, n));
+      return out;
+    }
     while (true) {
       if (this.closed) return null;
       if (this.#fd < 0) throw new Error('read failed');
@@ -2211,6 +2233,14 @@ export class FdWriter extends BufferedBytesWriter {
   * @internal
   */
   protected async doFlush(buf: Uint8Array): Promise<void> {
+    const writeAsync = fusedLoop.writeAsync;
+    if (writeAsync !== undefined) {
+      const r = writeAsync(this.#fd, buf, 0, buf.byteLength);
+      const n = typeof r === 'number' ? r : await r;
+      if (this.closed) throw new Error('Writer closed during write');
+      if (n < 0) throw new Error('write failed');
+      return;
+    }
     let off = 0;
     while (off < buf.byteLength) {
       const slice = off === 0 ? buf : buf.subarray(off);
