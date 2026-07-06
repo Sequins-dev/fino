@@ -377,6 +377,19 @@ export class NodeIsolateCollection {
         record.threadId = target;
         break;
       }
+      default: {
+        // Any operator- or caller-supplied reason (`operator`, a custom string)
+        // is terminal: drop the record rather than leaving it — without this a
+        // custom revoke reason falls through and leaks the record in
+        // `#workloads`/`#entries`/`#placement` forever.
+        if (record.state !== 'terminating' && record.state !== 'dead') transition(record, 'terminating');
+        transition(record, 'dead');
+        this.#workloads.delete(workloadId);
+        this.#entries.delete(workloadId);
+        this.#placement.delete(workloadId);
+        this.#snapshots.delete(workloadId);
+        break;
+      }
     }
   }
 

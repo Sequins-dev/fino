@@ -527,7 +527,10 @@ class ShardScheduler {
       // Perform every operation the workload queued this pump concurrently; the
       // isolate is re-pumped as each completion lands and resumes once all have.
       workload.blocked = true;
-      for (const operation of outcome.operations) void this.#performHostOp(workload, operation);
+      // `.catch` is a final backstop: #performHostOp already guards its own
+      // completion, but an unexpected throw must never surface as an unhandled
+      // rejection on this fire-and-forget path.
+      for (const operation of outcome.operations) this.#performHostOp(workload, operation).catch(() => undefined);
       return;
     }
     if (outcome.kind === 'pending') {
@@ -564,15 +567,22 @@ class ShardScheduler {
 
   async #performHostOp(workload: HeldWorkload, operation: HostOperation): Promise<void> {
     // Results cross back as internal:serializer bytes, so binary payloads (file
-    // reads) never touch base64.
+    // reads) never touch base64. Compute the outcome first (so a serialize
+    // failure is reported as an error rather than thrown), then complete once.
+    let ok = true;
+    let payload!: Uint8Array;
     try {
-      const result = await runHostOperation(operation);
-      workload.isolate?.complete(operation.id, true, serialize(result)[0] as Uint8Array);
+      payload = serialize(await runHostOperation(operation))[0] as Uint8Array;
     } catch (error) {
-      workload.isolate?.complete(operation.id, false, serialize({
-        message: error instanceof Error ? error.message : String(error)
-      })[0] as Uint8Array);
+      ok = false;
+      payload = serialize({ message: error instanceof Error ? error.message : String(error) })[0] as Uint8Array;
     }
+    // The workload may have been released (its isolate terminated) while the op
+    // was in flight — injecting into a dead isolate would throw. Guard the whole
+    // resume so a mid-op revoke can't leak an unhandled rejection or leave the
+    // workload `blocked` forever (never re-pumped).
+    if (!this.#held.has(workload.lease.workloadId) || workload.isolate === undefined) return;
+    workload.isolate.complete(operation.id, ok, payload);
     workload.blocked = false;
     this.#markRunnable(workload.lease.workloadId);
   }

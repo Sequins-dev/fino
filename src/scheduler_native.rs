@@ -529,8 +529,12 @@ fn dispatch_workload(
             let backing = v8::ArrayBuffer::new_backing_store_from_vec(bytes).make_shared();
             let array_buffer = v8::ArrayBuffer::with_backing_store(scope, &backing);
             let len = array_buffer.byte_length();
-            if let Some(value) = v8::Uint8Array::new(scope, array_buffer, 0, len) {
-                rv.set(value.into());
+            match v8::Uint8Array::new(scope, array_buffer, 0, len) {
+                Some(value) => rv.set(value.into()),
+                // Match the completion path: surface allocation failure as a throw
+                // rather than silently returning `undefined` (which the shard would
+                // then try to `deserialize`, throwing with no useful context).
+                None => throw_error(scope, "dispatchWorkload: failed to allocate outcome bytes"),
             }
         }
         Err(err) => throw_error(scope, &err),
@@ -619,7 +623,9 @@ fn dispatch_entered_parked(
         if let Ok(promise) = v8::Local::<v8::Promise>::try_from(value) {
             workload.active_promise = Some(v8::Global::new(scope, promise));
         } else {
-            // A synchronous (non-Promise) return settles immediately.
+            // A synchronous (non-Promise) return settles immediately; disarm the
+            // budget before serializing so the outcome isn't charged/terminated.
+            clear_budget(workload.budget_token);
             return serialize_outcome(scope, context, value);
         }
     }
@@ -629,6 +635,13 @@ fn dispatch_entered_parked(
     // block waiting for external I/O.
     crate::realm::child::pump_and_checkpoint(scope);
 
+    // Disarm the hard budget now: the pump is the only tenant code this slice,
+    // so nothing after it (reading the promise, serializing the outcome) should
+    // be charged. Clearing the deadline also stops a watchdog sweep from firing
+    // during the outcome serialization below — which would make the serializer
+    // call return `None` and misreport a completed result as an error.
+    clear_budget(workload.budget_token);
+
     // If the watchdog terminated a runaway during the pump, surface it as a
     // hard-cancel rather than reading a half-settled promise.
     if scope.is_execution_terminating() {
@@ -637,9 +650,10 @@ fn dispatch_entered_parked(
     }
 
     // A host operation requested during the pump takes priority: the scheduler
-    // performs it and calls back through `completeHostOperation`.
+    // performs it and calls back through `completeHostOperation`. The capture is
+    // transactional — the ops leave the isolate's queue only once serialized.
     if let Some(host_op) = take_host_operation(scope, context) {
-        return serialize_outcome(scope, context, host_op);
+        return host_op;
     }
 
     let promise_global = workload.active_promise.as_ref().unwrap();
@@ -706,14 +720,20 @@ fn serialize_outcome(
     Ok(buf)
 }
 
-/// Drain every operation a workload queued this pump and swap in a fresh queue,
+/// Drain every operation a workload queued this pump into a serialized envelope,
 /// so a tenant's concurrent facade calls (e.g. `Promise.all([read(a), read(b)])`)
-/// are performed in parallel by the scheduler rather than one per pump cycle. The
-/// captured ops keep their contents (including binary args) for serialization.
-fn take_host_operation<'s>(
-    scope: &mut v8::HandleScope<'s>,
+/// are performed in parallel by the scheduler rather than one per pump cycle.
+///
+/// The capture is transactional: the ops are serialized *before* they are removed
+/// from `__finoSchedulerHostOps`. If serialization fails, the ops stay queued and
+/// are re-taken next pump — never lost. Dropping them would silently orphan the
+/// tenant promises still awaiting them (an unrecoverable hang). Returns `None`
+/// when nothing is queued, `Some(Ok(bytes))` on a captured+serialized batch, and
+/// `Some(Err(_))` when serialization failed (surfaced to the caller as a throw).
+fn take_host_operation(
+    scope: &mut v8::HandleScope,
     context: v8::Local<v8::Context>,
-) -> Option<v8::Local<'s, v8::Value>> {
+) -> Option<Result<Vec<u8>, String>> {
     let key = v8::String::new(scope, "__finoSchedulerHostOps")?;
     let global = context.global(scope);
     let ops_value = global.get(scope, key.into())?;
@@ -721,15 +741,19 @@ fn take_host_operation<'s>(
     if ops.length() == 0 {
         return None;
     }
-    // Swap in a fresh queue rather than truncating in place: the captured `ops`
-    // array stays referenced by the envelope (so it keeps its contents through
-    // serialization) while the workload's subsequent ops accumulate separately.
-    let fresh = v8::Array::new(scope, 0);
-    global.set(scope, key.into(), fresh.into())?;
     let envelope = v8::Object::new(scope);
     let ops_key = v8::String::new(scope, "hostOperations")?;
     envelope.set(scope, ops_key.into(), ops.into())?;
-    Some(envelope.into())
+    // Serialize the still-queued ops first; only on success swap in a fresh queue
+    // so subsequent ops accumulate separately. A failed serialize leaves the ops
+    // in place to be retaken, rather than orphaning their tenant promises.
+    let bytes = match serialize_outcome(scope, context, envelope.into()) {
+        Ok(bytes) => bytes,
+        Err(err) => return Some(Err(err)),
+    };
+    let fresh = v8::Array::new(scope, 0);
+    global.set(scope, key.into(), fresh.into())?;
+    Some(Ok(bytes))
 }
 
 fn complete_entered_host_operation(

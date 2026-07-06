@@ -62,6 +62,17 @@ interface ShardHandle {
 
 const DEFAULT_HEARTBEAT_MS = 250;
 
+/** How long to wait for a shard's run() to settle on shutdown before forcing it. */
+const SHARD_JOIN_TIMEOUT_MS = 2_000;
+
+/** Release reasons that re-place a workload rather than terminating it. */
+const RE_PLACING_REASONS = new Set<string>(['rebalanced', 'renew_failed']);
+
+/** A promise that resolves after `ms` on the orchestrator loop. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** How many scheduler threads to boot and how much each may hold. */
 export interface SchedulerNodeOptions {
   /** Number of latency-sensitive scheduler threads. Defaults to 2. */
@@ -228,13 +239,18 @@ export class SchedulerNode {
   #onReport(shardId: string, message: SchedulerReport): void {
     if (message === null || typeof message !== 'object') return;
     const handle = this.#shards.get(shardId);
-    if (handle !== undefined) handle.lastReport = Date.now();
+    // Ignore reports from a shard already retired by recovery. Otherwise a late
+    // `released`/`drained` from a presumed-dead thread mutates collection state
+    // for a workload that has since been recovered onto a survivor (its new
+    // lease would be mis-released).
+    if (handle === undefined) return;
+    handle.lastReport = Date.now();
     if (message.report === 'load') {
       this.#collection.recordLoad(shardId, message.summary);
       return;
     }
     if (message.report === 'summary') {
-      if (handle !== undefined) handle.summary = message.summary;
+      handle.summary = message.summary;
       return;
     }
     if (message.report === 'syncHeavy') {
@@ -254,10 +270,15 @@ export class SchedulerNode {
     if (message.report === 'released') {
       const leaseId = this.#collection.leaseOf(message.workloadId);
       if (leaseId !== null) this.#collection.release(leaseId, message.reason as ReleaseReason);
-      const resolve = this.#released.get(message.workloadId);
-      if (resolve !== undefined) {
-        this.#released.delete(message.workloadId);
-        resolve(message.reason);
+      // Resolve `whenReleased` only for a truly terminal outcome. A re-placing
+      // reason (`rebalanced`/`renew_failed`) is not the workload finishing, so
+      // it must not resolve a deploy waiter and shut down still-live work.
+      if (!RE_PLACING_REASONS.has(message.reason)) {
+        const resolve = this.#released.get(message.workloadId);
+        if (resolve !== undefined) {
+          this.#released.delete(message.workloadId);
+          resolve(message.reason);
+        }
       }
     }
   }
@@ -337,8 +358,20 @@ export class SchedulerNode {
     this.#supervisor = null;
     const handles = [...this.#shards.values()];
     for (const handle of handles) handle.port.postMessage({ control: 'shutdown' });
-    await Promise.all(handles.map((shard) => shard.done));
-    await this.#watchdog.stop();
+    try {
+      // Bound each join: posting `shutdown` asks the shard to settle its run(),
+      // but a wedged shard must not hang shutdown forever — which would also
+      // leave the budget-watchdog sweep loop spinning.
+      await Promise.all(handles.map((handle) =>
+        Promise.race([handle.done.catch(() => undefined), delay(SHARD_JOIN_TIMEOUT_MS)])
+      ));
+    } finally {
+      // Always dispose the realms and stop containment, even if a join stalled —
+      // posting `shutdown` does not itself tear the thread realm down, so without
+      // this the realm/port handles stay live and the process never quiesces.
+      for (const handle of handles) handle.realm.terminate();
+      await this.#watchdog.stop();
+    }
     const summaries = handles.map((shard) => shard.summary);
     this.#shards.clear();
     this.#released.clear();
