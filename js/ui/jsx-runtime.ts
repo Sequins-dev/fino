@@ -20,6 +20,9 @@ export { Fragment };
 *
 * `children` may be supplied through props by the compiler and is normalized by
 * `h()`.
+*
+* `key`, when supplied by the compiler, is copied into props before delegating
+* to `h()` so reconciliation sees the same key as a manual `h()` call.
 */
 export function jsx(type: VNodeType, props: (Props & {
   children?: Child;
@@ -35,6 +38,9 @@ export function jsx(type: VNodeType, props: (Props & {
 *
 * This has the same behavior as `jsx()`; it exists because TypeScript emits a
 * separate helper when an element contains multiple children.
+*
+* Use `jsxImportSource: "fino:ui"` or a file-level `@jsxImportSource` comment
+* so TypeScript imports this helper automatically.
 */
 export function jsxs(type: VNodeType, props: (Props & {
   children?: Child;
@@ -46,6 +52,9 @@ export function jsxs(type: VNodeType, props: (Props & {
 *
 * Fino does not add development-only owner metadata, so this delegates to
 * `jsx()`.
+*
+* Extra compiler-provided development arguments are intentionally ignored by
+* this runtime surface.
 */
 export function jsxDEV(type: VNodeType, props: (Props & {
   children?: Child;

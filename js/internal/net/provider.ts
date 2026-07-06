@@ -280,15 +280,30 @@ export interface ListenOptions {
 // Connection - a connected bidirectional byte stream
 // ---------------------------------------------------------------------------
 /**
-* A connected bidirectional byte stream.
+* A connected bidirectional byte stream produced by `connect` or `accept`.
 *
-* Backed by a real socket fd or an in-memory channel pair. Callers see only
-* the stream interface.
+* A connection may be backed by a real socket fd (`FdReader`/`FdWriter`) or by
+* an in-memory channel pair; callers never see that distinction and interact
+* only through the reader/writer pair returned by `split`. The connection
+* carries the resolved `remoteAddress` and `localAddress` when the transport can
+* report them, and a `closed` snapshot flag.
 *
-* @example
+* Typical use is to split once into a reader and writer, drive them
+* independently, and close when finished. The two halves may observe closure at
+* slightly different times as buffered data drains.
+*
 * ```ts no_run
-* const documentedType = 'Connection';
-* console.log(documentedType);
+* import type { Connection } from 'internal:net/provider';
+*
+* async function echo(conn: Connection): Promise<void> {
+*   const [reader, writer] = conn.split();
+*   const chunk = await reader.read();
+*   if (chunk) {
+*     await writer.write(chunk);
+*     await writer.flush();
+*   }
+*   conn.close();
+* }
 * ```
 */
 export interface Connection {
@@ -358,12 +373,31 @@ export interface Connection {
 // Listener - accepts inbound connections
 // ---------------------------------------------------------------------------
 /**
-* A listening server. Accepts inbound TCP connections.
+* A bound stream server that accepts inbound connections.
 *
-* @example
+* A listener is created synchronously by `NetworkProvider.listen` and exposes
+* the actual bound `address` (including any ephemeral port chosen for
+* `port: 0`). Accept the next connection with `accept`, which resolves `null`
+* once the listener is closed, or iterate the listener directly with
+* `for await` to consume connections until it shuts down.
+*
+* Closing the listener releases the bound address and unblocks pending accepts
+* with `null` so accept loops terminate cleanly.
+*
 * ```ts no_run
-* const documentedType = 'Listener';
-* console.log(documentedType);
+* import type { NetworkProvider } from 'internal:net/provider';
+*
+* async function serve(provider: NetworkProvider): Promise<void> {
+*   const listener = provider.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+*   console.log('listening on', listener.address);
+*
+*   for await (const conn of listener) {
+*     const [reader, writer] = conn.split();
+*     const req = await reader.read();
+*     if (req) await writer.write(req);
+*     conn.close();
+*   }
+* }
 * ```
 */
 export interface Listener {
@@ -421,12 +455,24 @@ export interface Listener {
 // DatagramSocket - connectionless UDP endpoint
 // ---------------------------------------------------------------------------
 /**
-* A bound UDP socket for sending and receiving datagrams.
+* A bound connectionless endpoint for sending and receiving datagrams.
 *
-* @example
+* Created by `NetworkProvider.datagram`, a datagram socket has a fixed local
+* `address` and exchanges individual packets with arbitrary peers: `send`
+* delivers one datagram to a destination address and `recv` yields the next
+* inbound packet together with its sender address. There is no connection state
+* and no delivery guarantee — datagrams may be lost, reordered, or duplicated
+* depending on the underlying transport.
+*
 * ```ts no_run
-* const documentedType = 'DatagramSocket';
-* console.log(documentedType);
+* import type { DatagramSocket, SocketAddress } from 'internal:net/provider';
+*
+* async function ping(socket: DatagramSocket, peer: SocketAddress): Promise<string> {
+*   await socket.send(new TextEncoder().encode('ping'), peer);
+*   const { data, addr } = await socket.recv();
+*   console.log('reply from', addr);
+*   return new TextDecoder().decode(data);
+* }
 * ```
 */
 export interface DatagramSocket {
@@ -486,16 +532,35 @@ export interface DatagramSocket {
 // NetworkProvider - abstract factory
 // ---------------------------------------------------------------------------
 /**
-* Abstract base class for network providers.
+* Abstract factory that every network provider implementation extends.
 *
-* A provider creates Connections, Listeners, and DatagramSockets. The
-* mechanism is provider-specific (real sockets vs in-memory channels vs
-* proxied connections), but the returned types are identical.
+* A provider is the single entry point for creating the three transport
+* primitives: outbound `Connection`s via `connect`, stream `Listener`s via
+* `listen`, and `DatagramSocket`s via `datagram`. Concrete subclasses decide how
+* those primitives are realized — the OS-backed provider wraps real sockets, the
+* `SimulatedNetworkProvider` uses deterministic in-memory channels, and future
+* virtual, disk, or restricted providers may proxy or gate the same operations.
+* Because the contract is stated in terms of connections and streams rather than
+* file descriptors, providers without real fds (in-memory channels between
+* Realms) satisfy the same interface.
 *
-* @example
+* Higher-level code accepts a `NetworkProvider` and stays agnostic to which
+* implementation backs it, so the same client or server logic runs against real
+* sockets in production and against a scripted simulator in tests.
+*
 * ```ts no_run
-* const documentedClass = 'NetworkProvider';
-* console.log(documentedClass);
+* import { NetworkProvider } from 'internal:net/provider';
+* import type { SocketAddress } from 'internal:net/provider';
+*
+* async function httpGet(provider: NetworkProvider, addr: SocketAddress): Promise<Uint8Array | null> {
+*   const conn = await provider.connect(addr, { noDelay: true });
+*   const [reader, writer] = conn.split();
+*   await writer.write(new TextEncoder().encode('GET / HTTP/1.0\r\n\r\n'));
+*   await writer.flush();
+*   const response = await reader.read();
+*   conn.close();
+*   return response;
+* }
 * ```
 */
 export abstract class NetworkProvider {

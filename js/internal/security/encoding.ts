@@ -183,7 +183,9 @@ export function sha256Base64url(bytes: BufferLike): string {
 *
 * Returns the original `Uint8Array` only when it already has the requested
 * length. Other inputs are SHA-256 digested and truncated to `bytes`, which
-* defaults to 32. This is not a password KDF.
+* defaults to 32. Because SHA-256 produces exactly 32 bytes, requesting a
+* length greater than 32 for material that is not already that length yields
+* at most 32 bytes. This is not a password KDF.
 *
 * ```typescript no_run
 * import { normalizeSecretKey } from 'internal:security/encoding';

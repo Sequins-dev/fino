@@ -1,5 +1,5 @@
 /**
-* internal/jobs/service — the jobs service: store ownership, the scheduler
+* internal:jobs/service — the jobs service: store ownership, the scheduler
 * loop, and processor management.
 *
 * One `JobsService` owns the single database connection for its file and the
@@ -10,7 +10,32 @@
 *
 * The sqlite `jobs` table is the real queue: the scheduler claims at most
 * the processors' free capacity, so processor-side queues stay ~empty and
-* exist only as a safety net.
+* exist only as a safety net. Each tick sweeps expired leases (recovering
+* work abandoned by dead workers), fires any due cron schedules, heartbeats
+* in-flight leases, then claims and dispatches. The poller re-arms to the
+* nearest absolute deadline across all pending work rather than polling on a
+* fixed interval, so an idle service is genuinely idle.
+*
+* This is the shared engine behind the public `fino:jobs` module. Application
+* code should use `Jobs` from `fino:jobs` rather than opening a service
+* directly; this module is imported by the runtime orchestrator and by
+* `fino:jobs`'s local-mode host.
+*
+* ```ts no_run
+* import { JobsService } from 'internal:jobs/service';
+* import { task } from 'fino:task';
+*
+* const greet = task({ name: 'greet', run: async (i: { who: string }) => `hi ${i.who}` });
+*
+* const svc = await JobsService.open({ path: './.fino/jobs.db' });
+* svc.processTasks([greet], { concurrency: 4 });
+* svc.start();
+*
+* const job = await svc.push('greet', { who: 'Ada' });
+* const done = await svc.waitFor(job.id);
+* console.log(done.status, done.result);
+* await svc.stop();
+* ```
 *
 * @internal
 */
@@ -35,56 +60,144 @@ const _topicLeaseExpire = topic(otelRuntimeTopic('jobs', 'lease', 'expire'));
 /**
 * A destination the scheduler can dispatch claimed jobs to.
 *
+* A processor advertises the task names it can execute and how many jobs it
+* can run concurrently; the scheduler never claims more than the summed free
+* capacity of its processors, so the sqlite table — not a processor-side
+* buffer — remains the queue of record. Each task name may be handled by at
+* most one registered processor (`processTasks`, `workers`, or
+* `_addExternalProcessor` throw on overlap).
+*
 * This is also the cluster seam: a future remote processor implements the
 * same interface over the cluster transport.
+*
+* ```ts no_run
+* import type { JobProcessor } from 'internal:jobs/service';
+* import { taskWorker } from 'internal:jobs/runner';
+*
+* const run = taskWorker(myTask);
+* const processor: JobProcessor = {
+*   kind: 'inline',
+*   taskNames: ['resize-image'],
+*   capacity: 8,
+*   run: (call) => run(call) as ReturnType<JobProcessor['run']>,
+*   close: async () => {},
+* };
+* ```
 *
 * @internal
 */
 export interface JobProcessor {
+  /** Whether the processor runs jobs on the local realm's loop (`inline`) or in an exclusive worker pool (`pool`). */
   readonly kind: 'inline' | 'pool';
+  /** The task names this processor can execute; each must be unique across all registered processors. */
   readonly taskNames: string[];
+  /** Maximum jobs this processor runs at once — the scheduler claims no more than the free portion of this. */
   readonly capacity: number;
+  /** Execute one claimed job envelope and resolve with its outcome (done, retryable/fatal error, or parked). */
   run(call: JobsWireCall): Promise<JobsWireResult>;
+  /** Release the processor's resources (close the pool, tear down realms). Called during `JobsService.stop()`. */
   close(): Promise<void>;
 }
 
 /**
 * Options accepted by `JobsService.open()`.
 *
+* `path` is the only required field: the sqlite file backing this service.
+* Exactly one service may own a given file per process. The remaining fields
+* tune the scheduler and default to production-safe values.
+*
+* ```ts no_run
+* import { JobsService } from 'internal:jobs/service';
+*
+* const svc = await JobsService.open({
+*   path: './.fino/jobs.db',
+*   id: 'worker-1',      // owner tag written onto claimed leases
+*   leaseMs: 30_000,     // how long a claim is held before the sweep recovers it
+*   pollIntervalMs: 30_000,
+*   closeTimeout: 5_000, // grace period for in-flight jobs during stop()
+* });
+* ```
+*
 * @internal
 */
 export interface JobsServiceOptions {
+  /** Path to the sqlite file backing this service; one service per file per process. */
   path: string;
+  /** Owner tag stamped onto claimed leases; defaults to a random `jobs-<suffix>`. Identifies which service holds a lease. */
   id?: string;
+  /** Lease duration in milliseconds (default 30000). A claim not heartbeated within this window is swept and requeued. */
   leaseMs?: number;
+  /** Upper bound between scheduler ticks in milliseconds (default 30000); the poller re-arms sooner when work is due. */
   pollIntervalMs?: number;
+  /** Grace period in milliseconds (default 5000) that `stop()` waits for in-flight dispatches to drain. */
   closeTimeout?: number;
 }
 /**
 * Options for pushing one job.
 *
+* All fields are optional; an empty options object enqueues onto the
+* `default` queue to run immediately with the default retry policy.
+*
+* ```ts no_run
+* await svc.push('send-email', { to: 'ada@example.com' }, {
+*   queue: 'mail',
+*   delay: '5m',          // run five minutes from now
+*   priority: 10,         // higher runs before lower at the same run time
+*   key: 'welcome:ada',   // dedupe: one active job per (queue, key)
+*   retry: { maxAttempts: 5 },
+*   timeoutMs: 30_000,
+* });
+* ```
+*
 * @internal
 */
 export interface PushOptions {
+  /** Target queue name; defaults to `default`. */
   queue?: string;
+  /** When to run: a delay in ms, a duration string like `"5m"` (`ms|s|m|h|d`), or an absolute `Date`. Defaults to now. */
   delay?: number | string | Date;
+  /** Claim ordering weight; higher-priority jobs at the same run time are claimed first. Defaults to 0. */
   priority?: number;
+  /** Dedupe key: at most one active (non-terminal) job may exist per `(queue, key)`; a duplicate push is folded onto the existing job. */
   key?: string;
+  /** Per-job overrides merged onto the default retry/backoff policy. */
   retry?: Partial<JobRetryPolicy>;
+  /** Wall-clock budget for one attempt, in milliseconds; passed through to the processor. */
   timeoutMs?: number;
 }
 /**
 * Options for creating a named schedule.
 *
+* Exactly one of `cron` or `every` must be provided — `schedule()` throws
+* otherwise. `cron` is a five/six-field cron expression evaluated in UTC;
+* `every` is a duration string (e.g. `"30s"`, `"1h"`) for fixed-interval
+* firing.
+*
+* ```ts no_run
+* // Nightly cleanup at 02:00 UTC, skipping a run if the previous one still runs.
+* await svc.schedule('nightly-cleanup', 'cleanup', { scope: 'temp' }, {
+*   cron: '0 2 * * *',
+*   overlap: 'skip',
+*   catchup: 'skip',
+* });
+* ```
+*
 * @internal
 */
 export interface ScheduleOptions {
+  /** Cron expression (UTC) for the firing schedule; mutually exclusive with `every`. */
   cron?: string;
+  /** Fixed interval as a duration string (e.g. `"30s"`); mutually exclusive with `cron`. */
   every?: string;
+  /** Queue for jobs this schedule enqueues; defaults to `default`. */
   queue?: string;
+  /** Input passed to each fired job. Falls back to the `input` argument of `schedule()` when omitted. */
   input?: unknown;
+  /** `skip` (default) suppresses a firing while the schedule's previous job is still active; `allow` fires regardless. */
   overlap?: 'skip' | 'allow';
+  /** Missed-firing policy after downtime: `skip` (default) drops overdue runs; `one` fires a single make-up job. */
   catchup?: 'skip' | 'one';
+  /** Retry/backoff overrides for jobs this schedule enqueues. */
   retry?: Partial<JobRetryPolicy>;
 }
 
@@ -126,7 +239,36 @@ function parkRunAt(waitingOn: WorkflowWait): number {
 }
 
 /**
-* The jobs service. Construct with `JobsService.open()`.
+* The jobs service: owns the store connection, the scheduler poller, and the
+* set of registered processors.
+*
+* Construct with the async `JobsService.open()` factory (the constructor is
+* private). A freshly opened service is not running: register processors with
+* `processTasks`/`workers`, then call `start()` to arm the poller. `push()`
+* and `schedule()` may be called before `start()` — the work simply waits for
+* the loop to begin. Always `stop()` (or use `await using`) to drain in-flight
+* jobs and close the store.
+*
+* Delivery is at-least-once: a crash or expired lease reruns a job, so task
+* handlers must be idempotent. Durable (`fino:task/durable`) jobs park on
+* `ctx.sleep()` / `ctx.waitForSignal()` and are resumed from their last
+* checkpoint by this scheduler.
+*
+* ```ts no_run
+* import { JobsService } from 'internal:jobs/service';
+* import { task } from 'fino:task';
+*
+* const resize = task({ name: 'resize', run: async (i: { id: string }) => i.id });
+*
+* await using svc = await JobsService.open({ path: './.fino/jobs.db' });
+* svc.processTasks([resize], { concurrency: 4 });
+* svc.schedule('hourly-sweep', 'resize', { id: 'batch' }, { every: '1h' });
+* svc.start();
+*
+* const job = await svc.push('resize', { id: 'photo-1' }, { priority: 5 });
+* await svc.waitFor(job.id);
+* // `await using` calls stop() on scope exit.
+* ```
 *
 * @internal
 */
@@ -154,7 +296,16 @@ export class JobsService {
     this.#closeTimeout = opts.closeTimeout ?? 5e3;
   }
   /**
-  * Open the backing store and construct the service (not yet started).
+  * Open the backing sqlite store and construct the service.
+  *
+  * The returned service is idle — no poller is armed and no processors are
+  * registered. Register processors and call `start()` to begin scheduling.
+  * This is the only way to obtain a `JobsService`; the constructor is
+  * private because opening the store is asynchronous.
+  *
+  * ```ts no_run
+  * const svc = await JobsService.open({ path: './.fino/jobs.db', leaseMs: 60_000 });
+  * ```
   *
   * @internal
   */
@@ -163,8 +314,13 @@ export class JobsService {
     return new JobsService(store, opts);
   }
   /**
-  * The workflow store view sharing this service's connection — exposed so
-  * facades can proxy durable checkpoints for worker realms.
+  * The workflow-checkpoint store sharing this service's single database
+  * connection.
+  *
+  * Durable jobs persist their run state through this view; it is exposed so
+  * the jobs control facade and the `fino:jobs/checkpoints` worker facade can
+  * proxy checkpoint reads and writes for realms that do not hold the
+  * connection themselves.
   *
   * @internal
   */
@@ -172,7 +328,25 @@ export class JobsService {
     return this.#workflowStore;
   }
   /**
-  * Enqueue a job by task name.
+  * Enqueue a job by task name and wake the scheduler.
+  *
+  * The job is persisted immediately and runs wherever a processor advertises
+  * `task` — the name need not be registered on this service. When `opts.key`
+  * is set and an active job already exists for `(queue, key)`, the push is
+  * deduplicated onto that job rather than inserting a new row. Publishes a
+  * `jobs.job.enqueue` telemetry event when subscribers are present.
+  *
+  * Throws if the service is closed, or if `opts.delay` is a malformed
+  * duration string.
+  *
+  * ```ts no_run
+  * const job = await svc.push('send-email', { to: 'ada@example.com' }, {
+  *   queue: 'mail',
+  *   delay: '30s',
+  *   key: 'welcome:ada',
+  * });
+  * console.log(job.id, job.status); // 'pending'
+  * ```
   *
   * @internal
   */
@@ -203,7 +377,24 @@ export class JobsService {
     return job;
   }
   /**
-  * Create or replace a named schedule.
+  * Create or replace a named schedule that enqueues jobs over time.
+  *
+  * `name` is the schedule's stable identity: calling `schedule()` again with
+  * the same name upserts (replaces) the existing schedule rather than adding
+  * a second one. The cron/every spec is parsed and validated eagerly, and the
+  * schedule's first firing is computed from now. The scheduler enqueues a job
+  * each time the schedule comes due, honoring its `overlap` and `catchup`
+  * policies.
+  *
+  * Throws if the service is closed, if neither `cron` nor `every` is given,
+  * or if the spec fails to parse.
+  *
+  * ```ts no_run
+  * await svc.schedule('report', 'daily-report', { format: 'pdf' }, {
+  *   cron: '0 6 * * *',   // 06:00 UTC daily
+  *   overlap: 'skip',
+  * });
+  * ```
   *
   * @internal
   */
@@ -227,7 +418,11 @@ export class JobsService {
     return record;
   }
   /**
-  * Remove a named schedule.
+  * Remove a named schedule so it stops enqueuing new jobs.
+  *
+  * Resolves `true` if a schedule with that name existed and was deleted,
+  * `false` if none matched. Jobs already enqueued by the schedule are not
+  * affected.
   *
   * @internal
   */
@@ -235,7 +430,7 @@ export class JobsService {
     return this.#store.deleteSchedule(name);
   }
   /**
-  * Load one job.
+  * Load one job by id, or `null` if no such job exists.
   *
   * @internal
   */
@@ -243,7 +438,14 @@ export class JobsService {
     return this.#store.getJob(id);
   }
   /**
-  * List jobs.
+  * List jobs, optionally filtered by queue, status, task, or originating
+  * schedule, with `limit`/`offset` paging.
+  *
+  * With no filter, returns recent jobs across all queues.
+  *
+  * ```ts no_run
+  * const failing = await svc.list({ status: 'error', queue: 'mail', limit: 50 });
+  * ```
   *
   * @internal
   */
@@ -258,7 +460,11 @@ export class JobsService {
     return this.#store.listJobs(filter ?? {});
   }
   /**
-  * Aggregate queue counts for dashboards and reactive read models.
+  * Aggregate per-status counts for one queue, or across all queues when
+  * `queue` is omitted.
+  *
+  * Intended for dashboards and reactive read models; the result includes the
+  * timestamp of the oldest pending job (or `null` when the queue is drained).
   *
   * @internal
   */
@@ -266,7 +472,7 @@ export class JobsService {
     return this.#store.queueStats(queue);
   }
   /**
-  * List schedules.
+  * List all named schedules and their next firing times.
   *
   * @internal
   */
@@ -274,7 +480,12 @@ export class JobsService {
     return this.#store.listSchedules();
   }
   /**
-  * Cancel a job (mark-only for running jobs in v1).
+  * Cancel a job, resolving `true` if its state changed.
+  *
+  * Pending and waiting jobs are moved to the terminal `cancelled` state so
+  * the scheduler never claims them. A job already running is marked
+  * cancelled but not forcibly interrupted (mark-only) — its current attempt
+  * runs to completion.
   *
   * @internal
   */
@@ -282,7 +493,11 @@ export class JobsService {
     return this.#store.cancel(id);
   }
   /**
-  * Requeue a terminal job.
+  * Requeue a terminal job for another attempt and wake the scheduler.
+  *
+  * Resets a `done`, `error`, `dead`, or `cancelled` job back to pending so it
+  * is claimed again. Resolves `true` when the job was requeued, `false` if it
+  * was not in a terminal state (or does not exist).
   *
   * @internal
   */
@@ -293,6 +508,20 @@ export class JobsService {
   }
   /**
   * Deliver an external signal to a parked durable job and wake it.
+  *
+  * Appends `{name, payload}` to the job's durable workflow run, flips the run
+  * from `waiting` back to `running`, clears its wait, and re-arms the job so
+  * the scheduler reclaims it. Used to satisfy a `ctx.waitForSignal(name)`
+  * park in a durable task.
+  *
+  * Throws if the job does not exist, has no durable run, its run cannot be
+  * loaded, it is not currently waiting for a signal, or it is waiting for a
+  * signal of a different name.
+  *
+  * ```ts no_run
+  * // A durable task parked on ctx.waitForSignal('approved'):
+  * await svc.signal(jobId, 'approved', { by: 'admin' });
+  * ```
   *
   * @internal
   */
@@ -322,8 +551,21 @@ export class JobsService {
     this.#wake();
   }
   /**
-  * Wait for a job to reach a terminal state (polling helper for scripts and
-  * tests).
+  * Poll until a job reaches a terminal state and resolve with its final
+  * record.
+  *
+  * Terminal states are `done`, `error`, `dead`, and `cancelled`. This is a
+  * convenience for scripts and tests; it polls with exponential backoff
+  * (starting at 10ms, capped at 250ms) rather than subscribing to events.
+  *
+  * Throws if the job disappears while polling, or if `timeoutMs` (default
+  * 30000) elapses before the job finishes.
+  *
+  * ```ts no_run
+  * const job = await svc.push('resize', { id: 'photo-1' });
+  * const done = await svc.waitFor(job.id, { timeoutMs: 60_000 });
+  * if (done.status === 'done') console.log(done.result);
+  * ```
   *
   * @internal
   */
@@ -346,7 +588,23 @@ export class JobsService {
     }
   }
   /**
-  * Register an inline processor executing tasks on this realm's loop.
+  * Register an inline processor that executes the given tasks on this realm's
+  * event loop.
+  *
+  * Every task name reachable from `tasks` (including nested task
+  * dependencies) becomes claimable, up to `opts.concurrency` jobs at once
+  * (default 1). Inline processors share the current realm — cheap and simple,
+  * but CPU-bound handlers block the loop; use `workers()` for isolation.
+  * Returns the registered processor and wakes the scheduler.
+  *
+  * Throws if any task name is already handled by another registered
+  * processor.
+  *
+  * ```ts no_run
+  * import { task } from 'fino:task';
+  * const resize = task({ name: 'resize', run: async (i) => i });
+  * svc.processTasks([resize], { concurrency: 8 });
+  * ```
   *
   * @internal
   */
@@ -366,9 +624,30 @@ export class JobsService {
     return processor;
   }
   /**
-  * Register a pool processor: an exclusive `RealmPool` whose entry
-  * default-exports a `Task`. The pool workers receive durable checkpoints
-  * through a `fino:jobs/checkpoints` facade bound to this service's store.
+  * Register a pool processor backed by an exclusive `RealmPool` of worker
+  * realms.
+  *
+  * The `entry` module must default-export a `Task`; the pool is queried for
+  * its task names on startup and rejects if the entry does not report them.
+  * `size` worker realms (default 1) each run one job at a time, giving the
+  * pool a total capacity of `size`. Workers reach this service's durable
+  * checkpoint store through an injected `fino:jobs/checkpoints` facade, so
+  * durable jobs resume correctly even though the workers do not own the
+  * database connection. Any `realm.overrides` supplied by the caller are
+  * preserved and the checkpoints facade is layered on top.
+  *
+  * Use this instead of `processTasks()` for CPU-heavy or isolation-sensitive
+  * work — pool workers run off the host realm's loop. The returned promise
+  * rejects (after closing the pool) if the entry cannot be loaded or does not
+  * export a `Task`.
+  *
+  * ```ts no_run
+  * const processor = await svc.workers({
+  *   entry: new URL('./workers/resize.ts', import.meta.url).pathname,
+  *   size: 4,
+  * });
+  * console.log(processor.taskNames, processor.capacity);
+  * ```
   *
   * @internal
   */
@@ -422,8 +701,13 @@ export class JobsService {
     return processor;
   }
   /**
-  * Register a processor implemented elsewhere (e.g. an inline relay whose
-  * execution lives in a client realm).
+  * Register a processor whose execution lives outside this service.
+  *
+  * The escape hatch for wiring in a `JobProcessor` implemented elsewhere —
+  * for example an inline relay that forwards `run` calls to a client realm
+  * over the jobs control facade, or a future remote/cluster processor. Same
+  * uniqueness rule as the other registration methods: throws if any of the
+  * processor's task names are already handled.
   *
   * @internal
   */
@@ -431,7 +715,8 @@ export class JobsService {
     this.#addProcessor(processor);
   }
   /**
-  * Private method `#addProcessor` used by `JobsService`.
+  * Register a processor and initialize its in-flight counter, rejecting any
+  * task name already claimed by another processor.
   *
   * @internal
   */
@@ -446,7 +731,8 @@ export class JobsService {
     this.#wake();
   }
   /**
-  * Private method `#processorFor` used by `JobsService`.
+  * Find the registered processor that handles a given task name, or
+  * `undefined` if none does.
   *
   * @internal
   */
@@ -454,7 +740,12 @@ export class JobsService {
     return this.#processors.find((p) => p.taskNames.includes(task));
   }
   /**
-  * Start the scheduler loop.
+  * Arm the scheduler poller so the service begins claiming and dispatching
+  * jobs.
+  *
+  * Idempotent and a no-op once the service is closed; calling it a second
+  * time does nothing. Jobs and schedules created before `start()` are picked
+  * up on the first tick.
   *
   * @internal
   */
@@ -464,7 +755,12 @@ export class JobsService {
     this.#wake();
   }
   /**
-  * Private method `#wake` — run a tick soon (coalesced).
+  * Schedule a scheduler tick to run as soon as possible, coalescing repeated
+  * wakes.
+  *
+  * If a tick is already in progress, a re-tick is requested for when it
+  * finishes; otherwise a zero-delay timer is armed (replacing any pending
+  * re-arm). No-op until the service is started and while it is closed.
   *
   * @internal
   */
@@ -481,8 +777,14 @@ export class JobsService {
     }, 0);
   }
   /**
-  * Private method `#tick` — one scheduler pass, then re-arm to the next
-  * absolute deadline.
+  * Run one scheduler pass, then re-arm to the next absolute deadline.
+  *
+  * A pass sweeps expired leases (emitting `jobs.lease.expire` events), fires
+  * due cron schedules, heartbeats the leases of in-flight jobs, then claims
+  * and dispatches ready work. Guarded so at most one tick runs at a time;
+  * errors are logged rather than thrown so the loop survives a bad pass. If a
+  * wake arrived mid-tick, another tick is scheduled immediately; otherwise it
+  * re-arms via `#rearm()`.
   *
   * @internal
   */
@@ -520,7 +822,12 @@ export class JobsService {
     await this.#rearm();
   }
   /**
-  * Private method `#rearm` used by `JobsService`.
+  * Re-arm the poller timer to the nearest future deadline.
+  *
+  * Wakes at the earliest of: the store's next due work, `pollIntervalMs` from
+  * now (a ceiling so the loop never sleeps indefinitely), and — while jobs
+  * are in flight — half the lease interval, so leases are heartbeated before
+  * they expire. No-op if the service is closed or a timer is already armed.
   *
   * @internal
   */
@@ -536,7 +843,15 @@ export class JobsService {
     }, Math.max(0, wake - now));
   }
   /**
-  * Private method `#fireDueSchedules` used by `JobsService`.
+  * Enqueue jobs for every schedule due at `now`, then advance each to its
+  * next occurrence.
+  *
+  * Applies each schedule's policies before inserting: under `catchup: 'skip'`
+  * a firing more than a minute overdue (missed during downtime) is dropped;
+  * under `overlap: 'skip'` a firing is dropped while the schedule's previous
+  * job is still active. Every due schedule advances its `nextRunAt`
+  * regardless, and a `jobs.schedule.fire` event records whether the firing
+  * produced a job or was skipped.
   *
   * @internal
   */
@@ -585,7 +900,14 @@ export class JobsService {
     }
   }
   /**
-  * Private method `#claimAndDispatch` used by `JobsService`.
+  * Claim up to the processors' combined free capacity and dispatch each
+  * claimed job.
+  *
+  * Sums the spare capacity of every processor and collects the task names
+  * they can serve, then claims at most that many ready jobs restricted to
+  * those tasks. This capacity-bounded claim is what keeps the sqlite table
+  * the queue of record — the service never pulls more work than it can
+  * immediately run. No-op when nothing has free capacity.
   *
   * @internal
   */
@@ -607,8 +929,15 @@ export class JobsService {
     }
   }
   /**
-  * Private method `#dispatch` — run one claimed job through its processor
-  * and record the outcome.
+  * Run one claimed job through its processor and persist the outcome.
+  *
+  * Marks the job running, invokes the processor, and records the result: a
+  * parked durable run moves to `waiting` (re-armed for its wake deadline); a
+  * success moves to `done`; a retryable failure with attempts remaining is
+  * rescheduled with backoff; anything else moves to `dead`. Maintains the
+  * per-processor in-flight counter and emits `jobs.job.start`/`.end` plus the
+  * matching outcome event. Always frees capacity and wakes the scheduler in
+  * `finally`, even if the processor throws.
   *
   * @internal
   */
@@ -689,6 +1018,17 @@ export class JobsService {
   * the store. In-flight work that outlives `closeTimeout` stays claimed and
   * is recovered by the lease sweep on the next start.
   *
+  * Idempotent: a second call resolves immediately. After `stop()` the service
+  * is permanently closed — `push()` and `schedule()` throw, and `start()` is
+  * a no-op.
+  *
+  * ```ts no_run
+  * const svc = await JobsService.open({ path: './.fino/jobs.db' });
+  * svc.start();
+  * // ... later, during shutdown:
+  * await svc.stop();
+  * ```
+  *
   * @internal
   */
   async stop(): Promise<void> {
@@ -707,6 +1047,12 @@ export class JobsService {
     }
     await this.#store.close();
   }
+  /**
+  * Async-dispose hook (`await using`) that calls `stop()` when the service
+  * leaves scope.
+  *
+  * @internal
+  */
   async [Symbol.asyncDispose](): Promise<void> {
     await this.stop();
   }

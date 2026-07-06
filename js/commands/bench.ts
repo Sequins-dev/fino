@@ -1,24 +1,38 @@
 /**
 * fino:commands/bench — reusable `fino bench` command task.
 *
-* Builds the `fino bench` command. The command imports one or more benchmark
-* modules, then delegates execution to `fino:bench`. Paths are normalized to
-* file URLs so direct paths, relative paths, absolute paths, and already
-* canonical specifiers all resolve through the runtime loader.
+* Builds the `fino bench` command. Positional arguments may be direct files,
+* directories, or glob patterns: directory-like arguments (trailing `/` or no
+* file extension) expand to descendant `.bench.ts` files, globs resolve from
+* the current working directory, and direct paths or already-canonical
+* specifiers pass through untouched. Every matched module is imported for its
+* `bench()` registration side effects, then execution is delegated to
+* `fino:bench`, which prints measurements to stdout.
 *
-* Import this module when another interface needs to mount the built-in
-* benchmark runner as a `Task`.
+* Paths are normalized to `file://` URLs before import so direct, relative,
+* and absolute paths all resolve through the runtime loader. Import this
+* module when another interface needs to mount the built-in benchmark runner
+* as a `Task` — the root Fino CLI does exactly that.
 *
-* ```js
+* ```ts no_run
 * import benchCommand from 'fino:commands/bench';
-* const command = benchCommand;
-* console.log(command.name);
+*
+* // Run every benchmark under ./benchmarks, as `fino bench benchmarks/` would.
+* await benchCommand.parse(['benchmarks/']);
 * ```
 *
 */
 import { cwd } from '../process.ts';
 import { Task } from '../task.ts';
 import { DiskFileSystem } from '../file/fs.ts';
+/**
+* Convert a CLI path argument into a specifier the module loader accepts.
+*
+* `file://` URLs and specifiers that already carry a scheme (anything
+* containing `:`) pass through unchanged. Absolute paths become `file://`
+* URLs directly; relative and bare paths are resolved against the current
+* working directory first.
+*/
 function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('file://')) return path;
   if (path.startsWith('/')) return `file://${path}`;
@@ -29,9 +43,11 @@ function normalizeModuleSpecifier(path: string): string {
 /**
 * Expand a single CLI argument into benchmark files to import.
 *
-* Glob arguments resolve from cwd. Directory-like arguments expand to
-* descendant `.bench.ts` files. Direct file paths and non-file specifiers are
-* returned unchanged so the loader keeps handling them.
+* Glob arguments (containing `*`, `?`, or `{`) resolve from cwd. Directory-like
+* arguments — trailing `/` or no file extension — expand to descendant
+* `.bench.ts` files. Direct file paths and non-file specifiers are returned
+* unchanged so the loader keeps handling them. Expanded matches are sorted for
+* a deterministic run order.
 */
 async function expandArg(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
@@ -53,18 +69,25 @@ async function expandArg(arg: string): Promise<string[]> {
   return results;
 }
 /**
-* Create the `bench` subcommand used by the root Fino CLI.
+* The `bench` subcommand used by the root Fino CLI.
 *
-* The returned command requires at least one positional benchmark file. It
-* imports each file for registration side effects and then calls
-* `fino:bench.run()`. `--filter` is optional; when provided, only benchmark
-* groups whose full path contains the filter text are run. The command throws
-* when no files are supplied or expansion finds no benchmark files and
-* otherwise returns the result of the benchmark runner.
+* Requires at least one positional benchmark file. Each argument is expanded
+* (globs, directories) and imported for registration side effects, then
+* `fino:bench`'s `run()` executes every registered benchmark group and prints
+* measurements to stdout. `--filter` is optional; when provided, only
+* benchmark groups whose full path contains the filter text are run.
 *
-* ```js
+* Throws when no files are supplied or when expansion finds no benchmark
+* files. In JSON output mode the command writes a summary object recording
+* the requested files, the modules actually imported, and the active filter;
+* the measurements themselves are always printed by the runner rather than
+* returned.
+*
+* ```ts no_run
 * import bench from 'fino:commands/bench';
-* await bench.parse(['--filter', 'parser', 'benchmarks/parser.bench.mjs']);
+*
+* // Equivalent to `fino bench --filter parser benchmarks/parser.bench.ts`
+* await bench.parse(['--filter', 'parser', 'benchmarks/parser.bench.ts']);
 * ```
 *
 */

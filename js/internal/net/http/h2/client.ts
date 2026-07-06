@@ -1,10 +1,27 @@
 /**
-* internal:net/http/h2/client - H2ClientDriver.
+* internal:net/http/h2/client — one-shot HTTP/2 client driver over a connected reader/writer pair.
 *
-* Sends one HTTP/2 request over an already-connected reader/writer pair.
-* Each call opens its own nghttp2 client session (no pooling; that is Step 13).
-* Response headers resolve before the response body finishes. Body bytes are
-* exposed through the shared HTTP stream queue.
+* This module exposes `H2ClientDriver`, a `ClientDriver`
+* implementation that speaks HTTP/2 by driving an nghttp2 client session
+* (`Nghttp2Session`) over an already-connected byte stream. It performs no
+* connection setup of its own: DNS, TCP, TLS, and ALPN negotiation are the
+* caller's responsibility, and the driver simply exchanges frames on the reader
+* and writer it is handed.
+*
+* Each `send()` call opens its own fresh nghttp2 client session and carries a
+* single request/response exchange — there is no stream multiplexing or
+* connection reuse at this layer even though the protocol supports it; that is
+* the job of the separate HTTP/2 connection pool. Unlike the general
+* `ClientDriver` contract (which leaves connection lifetime to the
+* caller), this one-shot driver deliberately sends GOAWAY and closes both the
+* session and the writer once the exchange completes, so the connection is not
+* reusable afterward.
+*
+* Response headers are surfaced as soon as the HEADERS frame with END_HEADERS
+* arrives, so the returned promise resolves before the response body has
+* finished streaming. Body DATA frames are pushed into an `HttpBodyQueue` that
+* backs the `Response` body as an async iterable, and trailers (a second
+* HEADERS block after DATA) are collected into the response's trailer headers.
 *
 * ## Flow
 *
@@ -15,8 +32,6 @@
 * 5. Resolve the returned Promise when response headers are complete.
 * 6. Send GOAWAY, drain, close session, close writer after stream completion.
 *
-* ## Example
-*
 * ```ts no_run
 * import { H2ClientDriver } from 'internal:net/http/h2/client';
 * import { Request } from 'internal:net/http/wire';
@@ -26,11 +41,15 @@
 *   new Request('https://example.test/'),
 *   reader,
 *   writer,
-*   {},
+*   { signal: null },
 * );
 *
 * response.status;
 * ```
+*
+* Learn more:
+* - HTTP/2 (RFC 9113): https://www.rfc-editor.org/rfc/rfc9113
+* - nghttp2: https://nghttp2.org/documentation/
 *
 * @internal
 */
@@ -77,10 +96,26 @@ interface H2ClientStream {
 * body. Connection pooling is handled by the separate HTTP/2 pool layer, not
 * this one-shot driver.
 *
+* The driver is stateless between calls: it holds no configuration and can be
+* constructed once and reused for many independent connections, since every
+* `send()` builds its own session, stream map, and receive loop. A single
+* instance is therefore safe to share across concurrent requests, each running
+* against its own reader/writer.
+*
 * ```ts no_run
 * import { H2ClientDriver } from 'internal:net/http/h2/client';
+* import { Request } from 'internal:net/http/wire';
+*
 * const driver = new H2ClientDriver();
-* driver.multiplexed;
+* const res = await driver.send(
+*   new Request('https://example.test/api'),
+*   reader,
+*   writer,
+*   { signal: null },
+* );
+* for await (const chunk of res.body) {
+*   // stream response DATA frames as they arrive
+* }
 * ```
 *
 * @internal
@@ -100,19 +135,47 @@ export class H2ClientDriver implements ClientDriver {
   */
   readonly multiplexed = true;
   /**
-  * Send one HTTP request over an already connected HTTP/2 stream pair.
+  * Send one HTTP request over an already connected HTTP/2 reader/writer pair.
   *
-  * The request body is buffered before submission. The returned promise
-  * resolves when response headers are complete, with the body exposed as a
-  * streaming async iterable. A background receive loop drains DATA frames and
-  * always attempts GOAWAY, session close, and writer close when complete.
+  * The request URL is split into `:method`, `:path`, `:scheme`, and
+  * `:authority` pseudo-headers, and the request's regular headers are appended
+  * after connection-management headers (`host`, `connection`, `keep-alive`,
+  * `transfer-encoding`, `upgrade`) are dropped, since they are meaningless in
+  * HTTP/2. The request body is fully buffered before submission — a body that
+  * cannot be read is treated as empty rather than fatal — and sent with
+  * END_STREAM when present.
+  *
+  * The returned promise resolves when response headers are complete (the
+  * HEADERS frame carrying END_HEADERS), before the body has finished, with the
+  * body exposed as a streaming async iterable. A background receive loop reads
+  * from `reader`, feeds bytes into the session, and streams DATA frames into
+  * the body; trailers arriving after the body are attached to the response's
+  * trailer headers. When the exchange finishes (or the loop errors) it always
+  * attempts GOAWAY, drains pending writes, closes the session, and closes the
+  * writer, so the connection is not reusable after `send()` returns.
+  *
+  * The `opts` argument matches the `ClientDriverOptions` contract but is not
+  * consulted by this driver; cancellation is not wired up here.
+  *
+  * Rejects if the stream is reset or closed with an nghttp2 error code before
+  * response headers arrive (surfaced as an `HttpStreamError`), or if reading
+  * from `reader` throws before headers complete. Errors that occur after the
+  * response has already resolved surface on the body's async iterator instead
+  * of on the returned promise.
   *
   * ```ts no_run
   * import { Request } from 'internal:net/http/wire';
   * import { H2ClientDriver } from 'internal:net/http/h2/client';
+  *
   * const driver = new H2ClientDriver();
-  * const res = await driver.send(new Request('https://example.test/'), reader, writer, {});
+  * const res = await driver.send(
+  *   new Request('https://example.test/', { method: 'POST', body: 'hello' }),
+  *   reader,
+  *   writer,
+  *   { signal: null },
+  * );
   * res.status;
+  * const text = await res.text();
   * ```
   */
   async send(req: Request, reader: BufferedBytesReader, writer: BytesWriter, _opts: ClientDriverOptions): Promise<Response> {

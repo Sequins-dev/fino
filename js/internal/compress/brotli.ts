@@ -1,10 +1,29 @@
 /**
 * Brotli compression backend for `fino:compress`.
 *
-* This module loads platform Brotli libraries through `fino:ffi` and provides
-* the one-shot and streaming implementation used by the public compression
-* module. It is hidden from generated application docs; public availability and
-* option details are documented on `fino:compress`.
+* Loads the platform Brotli encoder and decoder libraries (`libbrotlienc` and
+* `libbrotlidec`) through `fino:ffi`, probing the Homebrew and `/usr/local`
+* dylibs on macOS and `libbrotlienc.so.1`/`libbrotlidec.so.1` (then the
+* unversioned `.so` names) elsewhere. Loading happens once at module import,
+* and a missing library is not an import-time error: `brotliAvailable` is
+* `true` only when both libraries opened, and every codec entry point throws a
+* plain `Error` when either did not. `fino:compress` branches on that flag to
+* report the `brotli` format as unavailable instead of failing.
+*
+* Two API shapes are provided. The one-shot `brotliCompress` drives the native
+* `BrotliEncoderCompress` into a worst-case-sized buffer in a single call,
+* while `brotliDecompress` wraps the streaming decoder so malformed,
+* truncated, and trailing-garbage inputs fail identically in the one-shot and
+* streaming paths. The streaming `BrotliCompressor` / `BrotliDecompressor`
+* classes implement the shared `CompressionTransform` contract from
+* `internal:compress/common`: synchronous `write`/`finish` calls that return
+* zero or more output chunks, an async `transform` adapter, and explicit
+* `close` to free the native encoder/decoder state.
+*
+* The encoder always runs in generic mode with the default 22-bit window;
+* `level` selects Brotli quality (default 11, densest). This module is hidden
+* from generated application docs; public availability and option details are
+* documented on `fino:compress`.
 *
 * ## Example
 *
@@ -343,23 +362,12 @@ class BrotliCodec implements CompressionTransform {
 */
 export class BrotliCompressor extends BrotliCodec {
   /**
-  * Private property `#brotli` used by `BrotliCompressor`.
+  * Handle to the loaded `libbrotlienc` encoder library.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #brotli = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#brotli;
-  *   }
-  * }
-  * ```
+  * Resolved eagerly through `requireBrotliEncoder`, so constructing a
+  * `BrotliCompressor` throws immediately when the encoder library is
+  * unavailable. Every streaming call reaches the native encoder through this
+  * handle's `symbols`.
   *
   * @internal
   */
@@ -484,23 +492,12 @@ export class BrotliCompressor extends BrotliCodec {
 */
 export class BrotliDecompressor extends BrotliCodec {
   /**
-  * Private property `#brotli` used by `BrotliDecompressor`.
+  * Handle to the loaded `libbrotlidec` decoder library.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #brotli = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#brotli;
-  *   }
-  * }
-  * ```
+  * Resolved eagerly through `requireBrotliDecoder`, so constructing a
+  * `BrotliDecompressor` throws immediately when the decoder library is
+  * unavailable. Every streaming call reaches the native decoder through this
+  * handle's `symbols`.
   *
   * @internal
   */

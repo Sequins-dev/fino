@@ -564,48 +564,306 @@ export const SQLITE_IOCAP_POWERSAFE_OVERWRITE = 4096;
 * ```
 * @internal */
 export const SQLITE_FCNTL_LOCKSTATE = 1;
+/** File-control opcode requesting the macOS lock-proxy file path; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_GET_LOCKPROXYFILE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_GET_LOCKPROXYFILE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_GET_LOCKPROXYFILE = 2;
+/** File-control opcode setting the macOS lock-proxy file path; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_SET_LOCKPROXYFILE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_SET_LOCKPROXYFILE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_SET_LOCKPROXYFILE = 3;
+/** File-control opcode retrieving the last VFS errno; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_LAST_ERRNO } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_LAST_ERRNO;
+* ```
+* @internal */
 export const SQLITE_FCNTL_LAST_ERRNO = 4;
+/** File-control opcode hinting the file's expected final size so the VFS can preallocate.
+* ```typescript no_run
+* import { SQLITE_FCNTL_SIZE_HINT } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_SIZE_HINT;
+* ```
+* @internal */
 export const SQLITE_FCNTL_SIZE_HINT = 5;
+/** File-control opcode setting the chunk size the file grows by; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_CHUNK_SIZE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_CHUNK_SIZE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_CHUNK_SIZE = 6;
+/** File-control opcode fetching the underlying `sqlite3_file` pointer; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_FILE_POINTER } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_FILE_POINTER;
+* ```
+* @internal */
 export const SQLITE_FCNTL_FILE_POINTER = 7;
+/** File-control opcode notifying the VFS that a sync was omitted; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_SYNC_OMITTED } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_SYNC_OMITTED;
+* ```
+* @internal */
 export const SQLITE_FCNTL_SYNC_OMITTED = 8;
+/** File-control opcode tuning Windows anti-virus retry behavior; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_WIN32_AV_RETRY } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_WIN32_AV_RETRY;
+* ```
+* @internal */
 export const SQLITE_FCNTL_WIN32_AV_RETRY = 9;
+/** File-control opcode querying or setting WAL-file persistence; the JS VFS reports the persist flag.
+* ```typescript no_run
+* import { SQLITE_FCNTL_PERSIST_WAL } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_PERSIST_WAL;
+* ```
+* @internal */
 export const SQLITE_FCNTL_PERSIST_WAL = 10;
+/** File-control opcode signalling that the database will be overwritten; the JS VFS acknowledges it.
+* ```typescript no_run
+* import { SQLITE_FCNTL_OVERWRITE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_OVERWRITE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_OVERWRITE = 11;
+/** File-control opcode retrieving the VFS name stack; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_VFSNAME } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_VFSNAME;
+* ```
+* @internal */
 export const SQLITE_FCNTL_VFSNAME = 12;
+/** File-control opcode intercepting `PRAGMA` statements at the VFS layer; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_PRAGMA } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_PRAGMA;
+* ```
+* @internal */
 export const SQLITE_FCNTL_PRAGMA = 14;
+/** File-control opcode querying or setting powersafe-overwrite support; the JS VFS reports its capability.
+* ```typescript no_run
+* import { SQLITE_FCNTL_POWERSAFE_OVERWRITE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_POWERSAFE_OVERWRITE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_POWERSAFE_OVERWRITE = 13;
+/** File-control opcode passing a busy handler to the VFS; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_BUSYHANDLER } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_BUSYHANDLER;
+* ```
+* @internal */
 export const SQLITE_FCNTL_BUSYHANDLER = 15;
+/** File-control opcode requesting a temporary filename from the VFS; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_TEMPFILENAME } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_TEMPFILENAME;
+* ```
+* @internal */
 export const SQLITE_FCNTL_TEMPFILENAME = 16;
+/** File-control opcode querying or setting the memory-map size; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_MMAP_SIZE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_MMAP_SIZE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_MMAP_SIZE = 18;
+/** File-control opcode delivering SQL trace text to the VFS; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_TRACE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_TRACE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_TRACE = 19;
+/** File-control opcode asking whether the database file has been renamed or moved; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_HAS_MOVED } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_HAS_MOVED;
+* ```
+* @internal */
 export const SQLITE_FCNTL_HAS_MOVED = 20;
+/** File-control opcode fired at the start of each `xSync`; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_SYNC } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_SYNC;
+* ```
+* @internal */
 export const SQLITE_FCNTL_SYNC = 21;
+/** File-control opcode fired after commit phase two; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_COMMIT_PHASETWO } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_COMMIT_PHASETWO;
+* ```
+* @internal */
 export const SQLITE_FCNTL_COMMIT_PHASETWO = 22;
+/** File-control opcode setting the Windows file handle; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_WIN32_SET_HANDLE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_WIN32_SET_HANDLE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_WIN32_SET_HANDLE = 23;
+/** File-control opcode requesting blocking behavior on WAL locks; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_WAL_BLOCK } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_WAL_BLOCK;
+* ```
+* @internal */
 export const SQLITE_FCNTL_WAL_BLOCK = 24;
+/** File-control opcode reserved for the ZIPVFS extension; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_ZIPVFS } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_ZIPVFS;
+* ```
+* @internal */
 export const SQLITE_FCNTL_ZIPVFS = 25;
+/** File-control opcode used by the RBU (resumable bulk update) extension; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_RBU } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_RBU;
+* ```
+* @internal */
 export const SQLITE_FCNTL_RBU = 26;
+/** File-control opcode retrieving the top-level VFS pointer; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_VFS_POINTER } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_VFS_POINTER;
+* ```
+* @internal */
 export const SQLITE_FCNTL_VFS_POINTER = 27;
+/** File-control opcode retrieving the journal file's `sqlite3_file` pointer; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_JOURNAL_POINTER } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_JOURNAL_POINTER;
+* ```
+* @internal */
 export const SQLITE_FCNTL_JOURNAL_POINTER = 28;
+/** File-control opcode fetching the Windows file handle; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_WIN32_GET_HANDLE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_WIN32_GET_HANDLE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_WIN32_GET_HANDLE = 29;
+/** File-control opcode fetching the owning `sqlite3` database handle; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_PDB } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_PDB;
+* ```
+* @internal */
 export const SQLITE_FCNTL_PDB = 30;
+/** File-control opcode marking the start of an atomic batch write; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_BEGIN_ATOMIC_WRITE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_BEGIN_ATOMIC_WRITE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_BEGIN_ATOMIC_WRITE = 31;
+/** File-control opcode committing an atomic batch write; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_COMMIT_ATOMIC_WRITE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_COMMIT_ATOMIC_WRITE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_COMMIT_ATOMIC_WRITE = 32;
+/** File-control opcode rolling back an atomic batch write; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE = 33;
+/** File-control opcode setting the blocking-lock timeout in milliseconds; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_LOCK_TIMEOUT } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_LOCK_TIMEOUT;
+* ```
+* @internal */
 export const SQLITE_FCNTL_LOCK_TIMEOUT = 34;
+/** File-control opcode reading the database change-counter (data version); the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_DATA_VERSION } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_DATA_VERSION;
+* ```
+* @internal */
 export const SQLITE_FCNTL_DATA_VERSION = 35;
+/** File-control opcode querying or setting the maximum in-memory database size; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_SIZE_LIMIT } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_SIZE_LIMIT;
+* ```
+* @internal */
 export const SQLITE_FCNTL_SIZE_LIMIT = 36;
+/** File-control opcode fired after a WAL checkpoint completes; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_CKPT_DONE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_CKPT_DONE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_CKPT_DONE = 37;
+/** File-control opcode querying or setting reserved bytes per page; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_RESERVE_BYTES } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_RESERVE_BYTES;
+* ```
+* @internal */
 export const SQLITE_FCNTL_RESERVE_BYTES = 38;
+/** File-control opcode fired before a WAL checkpoint begins; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_CKPT_START } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_CKPT_START;
+* ```
+* @internal */
 export const SQLITE_FCNTL_CKPT_START = 39;
+/** File-control opcode checking for external readers of a WAL database; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_EXTERNAL_READER } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_EXTERNAL_READER;
+* ```
+* @internal */
 export const SQLITE_FCNTL_EXTERNAL_READER = 40;
+/** File-control opcode used by the checksum VFS shim; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_CKSM_FILE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_CKSM_FILE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_CKSM_FILE = 41;
+/** File-control opcode requesting that the page cache be reset; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_RESET_CACHE } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_RESET_CACHE;
+* ```
+* @internal */
 export const SQLITE_FCNTL_RESET_CACHE = 42;
+/** File-control opcode detaching the underlying file descriptor to release I/O; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_NULL_IO } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_NULL_IO;
+* ```
+* @internal */
 export const SQLITE_FCNTL_NULL_IO = 43;
+/** File-control opcode requesting the VFS block while connecting to a WAL database; the JS VFS acknowledges it as a no-op.
+* ```typescript no_run
+* import { SQLITE_FCNTL_BLOCK_ON_CONNECT } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_BLOCK_ON_CONNECT;
+* ```
+* @internal */
 export const SQLITE_FCNTL_BLOCK_ON_CONNECT = 44;
+/** Non-standard file-control opcode reserved by the fino VFS for file-stat queries; the JS VFS reports it unhandled.
+* ```typescript no_run
+* import { SQLITE_FCNTL_FILESTAT } from 'internal:database/sqlite/bindings';
+* void SQLITE_FCNTL_FILESTAT;
+* ```
+* @internal */
 export const SQLITE_FCNTL_FILESTAT = 45;
 // ---------------------------------------------------------------------------
 // Helpers

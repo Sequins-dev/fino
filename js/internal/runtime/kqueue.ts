@@ -1,5 +1,5 @@
 /**
-* fino:kqueue — low-level kqueue bindings for macOS/BSD.
+* internal:runtime/kqueue — low-level kqueue bindings for macOS/BSD.
 *
 * kqueue is the kernel event notification interface on macOS (and other BSDs).
 * A kqueue fd is a file descriptor that the kernel fills with events as they
@@ -7,8 +7,9 @@
 * wait for them with another `kevent()` call that blocks until events arrive.
 *
 * This module wraps `kqueue(2)` and `kevent(2)` via FFI (`fino:ffi`) and
-* implements the common backend interface that `fino:loop` expects. It is
-* only loaded on macOS; Linux uses `fino:io_uring` instead.
+* implements the common backend interface that `internal:runtime/loop`
+* expects. It is only loaded on macOS; Linux uses `internal:runtime/io_uring`
+* instead.
 *
 *
 * ## struct kevent layout
@@ -23,7 +24,8 @@
 *   offset 24: udata  (uint64)  — user-supplied opaque value, returned as-is in events
 *
 * We use `udata` to store the same value as `ident` (the fd or id) so that
-* `fino:loop`'s dispatch table can use a single field to look up the resolver.
+* `internal:runtime/loop`'s dispatch table can use a single field to look up
+* the resolver.
 *
 *
 * ## How kevent() is called
@@ -45,8 +47,9 @@
 * fires once. Without this flag, the timer would fire repeatedly. We also use
 * `EV_ONESHOT` for `EVFILT_PROC` (process exit) since we only want one
 * notification when the process exits. Read/write watches do NOT use EV_ONESHOT
-* — they remain registered until explicitly removed, which allows `fino:loop`
-* to re-arm them on the next `readable()`/`writable()` call.
+* — they remain registered until explicitly removed, which allows
+* `internal:runtime/loop` to re-arm them on the next `readable()`/`writable()`
+* call.
 *
 *
 * ## addProc race condition
@@ -56,8 +59,8 @@
 * `kevent()` call, the kernel rejects the filter (returns an error). We detect
 * this by checking the `kevent()` return value in `addProc()`: a negative
 * return means the process already exited, so `addProc()` returns `false` and
-* `fino:loop`'s `proc()` resolves immediately so the caller can proceed to
-* `waitpid()`.
+* `internal:runtime/loop`'s `proc()` resolves immediately so the caller can
+* proceed to `waitpid()`.
 *
 *
 * ## struct timespec for timeout
@@ -80,7 +83,8 @@
 * - All constants (EVFILT_*, EV_*, NOTE_*) match the macOS `<sys/event.h>` values.
 * - The `udata` field is written with the same value as `ident` everywhere. If
 *   you need to distinguish multiple registrations for the same fd, you'd change
-*   this — but `fino:loop` currently uses the fd itself as the map key.
+*   this — but `internal:runtime/loop` currently uses the fd itself as the map
+*   key.
 * - `MAX_EVENTS = 256` is a tunable. Higher values reduce syscall overhead for
 *   high-connection servers at the cost of a larger stack-allocated buffer.
 *
@@ -381,8 +385,13 @@ function readI64(view: DataView, offset: number): number {
   return hi * U32_FACTOR + lo;
 }
 /**
-* Build a struct timespec ArrayBuffer.
-* @param {number|null} ms  null → pass as null to kevent (infinite block)
+* Build a struct timespec ArrayBuffer from a millisecond timeout.
+*
+* Passing `null` returns `null` so the caller hands a null pointer to
+* `kevent()`, meaning "block indefinitely". A zero timeout returns the shared
+* pre-zeroed `_zeroTs` buffer for non-blocking polls. Any other value is split
+* into whole seconds and remaining nanoseconds written into the reusable
+* `_tsBuf`.
 */
 function makeTimespec(ms: number | null): ArrayBuffer | null {
   if (ms === null) return null;
@@ -400,13 +409,18 @@ function errno(): number {
 // kevent wrapper — registers changes and/or waits for events
 // ---------------------------------------------------------------------------
 /**
-* Call kevent(). Returns array of triggered events.
+* Call `kevent()` on `kqFd`, optionally registering changes and waiting for events.
 *
-* @param {number}      kqFd        kqueue file descriptor
-* @param {ArrayBuffer|null} changeBuf   changelist buffer (or null)
-* @param {number}      nChanges    number of entries in changeBuf
-* @param {ArrayBuffer|null} timeoutBuf  struct timespec (or null for infinite)
-* @returns {Array<{ident,filter,flags,fflags,data,udata}>}
+* `changeBuf` is the changelist to register (or `null` for none) and `nChanges`
+* its entry count; `timeoutBuf` is a struct timespec buffer (or `null` to block
+* indefinitely). The reads always target the shared `_eventBuf`, so the returned
+* array is a fresh decode of the triggered events.
+*
+* Retries transparently on `EINTR` — a signal that interrupts the wait before
+* the timeout elapses. Entries flagged `EV_ERROR` are inspected: benign errno
+* values (`ENOENT`, `EBADF` from an fd whose filter the kernel already removed)
+* are skipped, while any other change error is thrown. Throws if the syscall
+* itself fails with a non-`EINTR` errno.
 */
 function kevent(kqFd: number, changeBuf: ArrayBuffer | null, nChanges: number, timeoutBuf: ArrayBuffer | null): Kevent[] {
   const changePtr = changeBuf === null ? 0n : changeBuf === _pendingBuf ? _pendingPtr : _changePtr;
@@ -653,8 +667,8 @@ export function wait(loop: KqueueLoop, timeoutMs: number | null = null): Kevent[
 * The `fd` must remain open for as long as the watch is active. Closing the
 * fd automatically removes the filter from kqueue.
 *
-* `userData` is returned as `udata` in events (used by fino:loop to look
-* up the callback via the fd).
+* `userData` is returned as `udata` in events (used by internal:runtime/loop
+* to look up the callback via the fd).
 *
 * ```typescript no_run
 * import * as kqueue from 'internal:runtime/kqueue';

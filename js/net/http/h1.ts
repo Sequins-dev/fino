@@ -1,28 +1,45 @@
 /**
-* internal HTTP/1.1 server and client drivers.
+* internal:net/http/h1 — HTTP/1.1 server and client protocol drivers.
 *
-* Learn more:
-* - HTTP/1.1 messaging: https://www.rfc-editor.org/rfc/rfc9112
-* - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
+* This module provides the two protocol drivers that read and write HTTP/1.1
+* messages over an already-connected `BytesReader`/`BytesWriter` pair. It sits
+* below the public `serve()` and `fetch()` surfaces: the caller owns DNS, the
+* TCP/TLS connection, redirect following, pooling, and body wrapping, while
+* these drivers own only the on-the-wire framing of one connection.
 *
-* H1ServerDriver.run()  drives one accepted connection: pipelined keep-alive
-* pump, OTel instrumentation, protocol-upgrade handoff, batched writev.
+* `H1ServerDriver.run()` drives one accepted connection end to end. It parses
+* pipelined requests, runs the handler with bounded concurrency while
+* preserving response order, honours `Connection: keep-alive`/`close` and
+* `Expect: 100-continue`, batches queued responses into a single `writev`, and
+* emits OpenTelemetry runtime events. When `allowH2cUpgrade` is set it detects
+* an `Upgrade: h2c` prior-knowledge upgrade and hands the socket off to the
+* HTTP/2 server driver. Handler-returned `ConnectionTakeover` values (used for
+* WebSocket and other protocol switches) are also honoured.
 *
-* H1ClientDriver.send() serialises one Request and parses the Response on an
-* already-connected reader/writer pair. DNS, TCP/TLS connect, redirect
-* following and body wrapping are all handled by the caller (fetch.ts).
+* `H1ClientDriver.send()` serialises one `Request`, flushes it, and parses the
+* matching `Response` on the supplied reader/writer. HTTP/1.1 is not
+* multiplexed, so callers must serialise requests per connection; the driver
+* leaves the socket open on success so the caller can pool or reuse it.
 *
-* @example
+* Both drivers assume the framing rules of RFC 9112 messaging and the semantics
+* of RFC 9110; see those documents for header and body-length behaviour.
+*
 * ```ts no_run
-* import { H1ServerDriver } from 'internal:net/http/h1';
+* import { H1ServerDriver, H1ClientDriver } from 'internal:net/http/h1';
 * import { Response } from 'internal:net/http/wire';
 *
-* const driver = new H1ServerDriver();
-* await driver.run(reader, writer, async () => new Response('ok'), {
+* // Server: drive one accepted connection.
+* await new H1ServerDriver().run(reader, writer, async () => new Response('ok'), {
 *   maxConcurrent: 32,
 *   allowH2cUpgrade: true,
 * });
+*
+* // Client: send one request over an open socket.
+* const res = await new H1ClientDriver().send(req, reader, writer, { signal: null });
 * ```
+*
+* HTTP/1.1 messaging: https://www.rfc-editor.org/rfc/rfc9112
+* HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
 *
 * @internal
 */
@@ -299,27 +316,55 @@ async function _writeResponseBatch(writer: BytesWriter, batch: PreparedResponse[
 // H1ServerDriver
 // ---------------------------------------------------------------------------
 /**
-* HTTP/1.1 server protocol driver.
+* HTTP/1.1 server protocol driver for one accepted connection.
 *
-* The driver parses pipelined requests from one accepted connection, runs the
-* supplied handler with bounded concurrency, preserves response order, supports
-* h2c upgrade when enabled, and closes the reader/writer when done.
+* The driver runs an internal read/flush loop: a read pump parses pipelined
+* requests up to `maxConcurrent` in flight and hands each to the handler, while
+* a flush pump writes completed responses back in request order, coalescing
+* adjacent buffered responses into batched `writev` calls. It transparently
+* handles `Expect: 100-continue` (replying `100 Continue` before reading the
+* body), `Connection` keep-alive/close negotiation, request-body draining
+* before connection reuse, h2c upgrades when `allowH2cUpgrade` is enabled, and
+* handler-returned `ConnectionTakeover` handoffs.
+*
+* A single instance is stateless between connections and may be reused for
+* every accepted socket; all per-connection state lives inside `run()`.
 *
 * ```ts no_run
+* import { H1ServerDriver } from 'internal:net/http/h1';
+* import { Response } from 'internal:net/http/wire';
+*
 * const driver = new H1ServerDriver();
-* await driver.run(reader, writer, async () => new Response('ok'), { maxConcurrent: 32 });
+* for await (const conn of listener) {
+*   void driver.run(conn.reader, conn.writer, async (req) => {
+*     return new Response(`hello ${new URL(req.url).pathname}`);
+*   }, { maxConcurrent: 32, allowH2cUpgrade: true });
+* }
 * ```
 */
 export class H1ServerDriver implements ServerDriver {
   /**
   * Process one HTTP/1.1 connection until EOF, close, upgrade, or error.
   *
-  * Handler exceptions are converted to a 500 response and the connection is
-  * closed. Request bodies are drained before keep-alive reuse. The returned
-  * promise resolves after both I/O halves have been closed.
+  * Pipelined requests are parsed and dispatched concurrently up to
+  * `opts.maxConcurrent`, but responses are always written in request order.
+  * Handler exceptions become a `500 Internal Server Error` and close the
+  * connection; a headers-parse timeout produces `408 Request Timeout` and an
+  * unsupported `Expect` header produces `417 Expectation Failed`, both of which
+  * also close the connection. Request bodies are drained before a connection is
+  * reused for keep-alive. An idle timeout between requests closes the connection
+  * cleanly with no response.
+  *
+  * If the handler returns a `ConnectionTakeover` (or an h2c upgrade is
+  * detected), the raw reader/writer are handed to that protocol and this driver
+  * stops. The returned promise resolves only after both I/O halves have been
+  * closed, so awaiting it means the connection is fully torn down.
   *
   * ```ts no_run
-  * await new H1ServerDriver().run(reader, writer, handler, { maxConcurrent: 8 });
+  * await new H1ServerDriver().run(reader, writer, async (req) => {
+  *   if (req.url.endsWith('/health')) return new Response('ok');
+  *   return new Response('not found', { status: 404 });
+  * }, { maxConcurrent: 8, idleTimeoutMs: 5000, headersTimeoutMs: 10000 });
   * ```
   */
   async run(reader: BytesReader, writer: BytesWriter, handler: ServerHandler, opts: ServerDriverOptions): Promise<void> {
@@ -682,32 +727,51 @@ export class H1ServerDriver implements ServerDriver {
 /**
 * HTTP/1.1 client protocol driver for one already-connected socket.
 *
-* It serializes a single `Request`, flushes it, and parses the matching
-* `Response`. Connection creation, pooling, redirects, and retries are handled
-* by higher-level client code.
+* It serialises a single `Request`, flushes it, and parses the matching
+* `Response` off the same reader/writer pair. Everything around a single
+* exchange — DNS, TCP/TLS connect, connection pooling, redirect following, and
+* retries — is the caller's responsibility. Because HTTP/1.1 has no
+* multiplexing, one instance handles exactly one in-flight request at a time
+* over a given connection.
 *
 * ```ts no_run
-* const response = await new H1ClientDriver().send(req, reader, writer, { signal: null });
+* import { H1ClientDriver } from 'internal:net/http/h1';
+*
+* const driver = new H1ClientDriver();
+* const res = await driver.send(req, reader, writer, { signal: null });
+* console.log(res.status, await res.text());
 * ```
 */
 export class H1ClientDriver implements ClientDriver {
   /**
-  * HTTP/1.1 is not multiplexed; callers must serialize requests per
-  * connection.
+  * Always `false`: HTTP/1.1 cannot interleave requests on one connection.
+  *
+  * Pooling layers read this to decide whether a connection may carry a second
+  * request before the first response has been fully consumed. For this driver
+  * it never can, so a connection must be serialised or returned to the pool
+  * between requests.
   *
   * ```ts no_run
-  * if (!driver.multiplexed) console.log('one in-flight request');
+  * if (!driver.multiplexed) {
+  *   // Serialise: only borrow this connection for one exchange at a time.
+  * }
   * ```
   */
   readonly multiplexed = false;
   /**
   * Send one HTTP request and parse its response.
   *
-  * The method races writes, flush, and response parsing against `opts.signal`
-  * when provided. It does not close the reader or writer on success.
+  * The write, flush, and response-parse steps are each raced against
+  * `opts.signal` when one is supplied, so an abort rejects the returned promise
+  * with the signal's reason even if the peer is slow or unresponsive. On
+  * success the reader and writer are left open so the caller can pool or reuse
+  * the connection; on abort or parse failure the promise rejects and the caller
+  * is responsible for discarding the socket.
   *
   * ```ts no_run
+  * const controller = new AbortController();
   * const res = await driver.send(req, reader, writer, { signal: controller.signal });
+  * const body = await res.text();
   * ```
   */
   async send(req: Request, reader: BytesReader, writer: BytesWriter, opts: ClientDriverOptions): Promise<Response> {

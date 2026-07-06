@@ -54,14 +54,14 @@
 *   - `hostname` uses `'.'` as the delimiter, so `:sub` matches a single
 *     subdomain label
 *   - other components (search, hash, protocol, etc.) have no delimiter,
-*     so `:name` matches everything
+*     so `:name` matches any non-empty run of characters
 *
 *
 * ## String constructor input
 *
 * When `URLPattern` is constructed with a string (e.g.
 * `new URLPattern('https://example.com/users/:id')`), the string is parsed
-* into its URL components first using `_parsePatternString()`. This function
+* into its URL components first using `_parsePatternInitString()`. This function
 * finds the scheme, authority, path, search, and hash sections by scanning
 * for the structural characters (`:`, `//`, `/`, `?`, `#`) while respecting
 * `(...)` and `{...}` groups that may contain those characters. A `baseURL`
@@ -76,11 +76,29 @@
 * `exec(input) !== null`.
 *
 *
+* ## Canonicalization
+*
+* Literal pattern text is canonicalized on construction, mirroring the spec's
+* per-component encoding callbacks: text in username, password, pathname,
+* search, and hash patterns is percent-encoded with that component's encode
+* set, and literal hostname patterns are canonicalized through the URL parser
+* (Unicode labels become punycode). The component getters return the
+* canonical pattern string, so `new URLPattern({ pathname: '/café' }).pathname`
+* reads back as `'/caf%C3%A9'`, and `(.*)` groups read back as `*` wildcards.
+* Bodies of custom `(regexp)` groups are used verbatim — no encoding is
+* applied inside them.
+*
+*
+* ## Beyond matching
+*
+* `generate(component, groups)` runs a pattern in reverse, substituting
+* `:name` groups to produce a concrete component string. The static
+* `URLPattern.compareComponent(component, left, right)` orders two patterns
+* by routing precedence so routers can sort more-specific routes first.
+*
+*
 * ## What is NOT implemented
 *
-* - The WHATWG spec's "encoding callback" for percent-encoding patterns —
-*   patterns and inputs are matched as-is without percent-decoding or
-*   component-specific pre-encoding.
 * - Strict WHATWG tokenizer state machine parity. This uses a hand-rolled
 *   scanner that covers the routing syntax but may differ in edge cases.
 *
@@ -113,10 +131,20 @@ import { URL } from './url.ts';
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
+/**
+* A single lexical token produced by the pattern tokenizer (`_tokenize`).
+* `type` is one of the `T_*` constants; `value` carries the literal text,
+* parameter name, regexp body, or modifier character where applicable.
+*/
 interface Token {
   type: number;
   value?: string;
 }
+/**
+* One compiled URL component: the canonical pattern string, the anchored
+* matching regexp, and `keys` naming each capture group (`keys[i]` describes
+* regexp group `i + 1`).
+*/
 interface CompiledPattern {
   pattern: string;
   regexp: RegExp;
@@ -125,6 +153,12 @@ interface CompiledPattern {
   }>;
   hasRegExpGroups: boolean;
 }
+/**
+* Per-component dictionary accepted by the `URLPattern` constructor and by
+* `test()`/`exec()` as pre-split input. When constructing, missing components
+* default to the `*` wildcard; when matching, they default to the empty
+* string. `baseURL` fills in components the dictionary leaves unset.
+*/
 interface URLPatternInit {
   protocol?: string;
   username?: string;
@@ -136,9 +170,18 @@ interface URLPatternInit {
   hash?: string;
   baseURL?: string;
 }
+/**
+* Constructor options. `ignoreCase: true` compiles every component regexp
+* with the `i` flag so matching is case-insensitive.
+*/
 interface URLPatternOptions {
   ignoreCase?: boolean;
 }
+/**
+* Result of parsing a constructor pattern string; components absent from the
+* string remain `undefined` so they can later default to `*` or be filled
+* from a `baseURL`.
+*/
 interface ParsedURLPatternInit {
   protocol: string | undefined;
   username: string | undefined;
@@ -149,16 +192,29 @@ interface ParsedURLPatternInit {
   search: string | undefined;
   hash: string | undefined;
 }
+/**
+* Per-component match result from `exec()`: the component string that was
+* matched and the captured groups keyed by parameter name (or numeric index
+* for unnamed groups). Groups skipped by an optional modifier are `undefined`.
+*/
 interface URLPatternComponentResult {
   input: string;
   groups: Record<string, string | undefined>;
 }
+/**
+* Structural pattern piece used by `URLPattern.compareComponent()` to rank
+* routing precedence: text sorts after regexp, name, and wildcard parts.
+*/
 interface URLPatternComparePart {
   kind: 'text' | 'name' | 'regexp' | 'wildcard' | 'group';
   value?: string;
   modifier?: string;
   parts?: URLPatternComparePart[];
 }
+/**
+* Fully-resolved URL components extracted from a `test()`/`exec()` input,
+* with protocol/search/hash stripped of their `:`/`?`/`#` prefixes.
+*/
 interface URLComponentDict {
   protocol: string;
   username: string;
@@ -169,6 +225,9 @@ interface URLComponentDict {
   search: string;
   hash: string;
 }
+/**
+* Names of the eight URL components a URLPattern matches independently.
+*/
 type URLPatternComponentName = 'protocol' | 'username' | 'password' | 'hostname' | 'port' | 'pathname' | 'search' | 'hash';
 // ---------------------------------------------------------------------------
 // Pattern tokenizer
@@ -1350,190 +1409,74 @@ function _extractComponents(input: string | {
 * WHATWG URLPattern implementation for matching URLs by component.
 *
 * Patterns may be supplied as a URL-like string or as an object with per-part
-* patterns. Missing components default to "*".
+* patterns. Missing components default to the `*` wildcard, so
+* `new URLPattern({ pathname: '/users/:id' })` matches that path on any
+* protocol, host, and port. Installed on `globalThis` — no import is needed.
 *
-* ```typescript no_run
+* Use `test()` for a boolean check, `exec()` to extract named groups,
+* `generate()` to build a component string back from a pattern, and the
+* static `compareComponent()` to sort patterns by routing precedence.
+*
+* ```ts no_run
 * const pattern = new URLPattern({ pathname: '/users/:id' });
 * pattern.test('https://example.com/users/42'); // true
+*
+* const match = pattern.exec('https://example.com/users/42');
+* match?.pathname.groups.id; // "42"
 * ```
 */
 export class URLPattern {
   /**
-  * Private property `#protocol` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #protocol = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#protocol;
-  *   }
-  * }
-  * ```
+  * Compiled protocol component pattern.
   *
   * @internal
   */
   #protocol: CompiledPattern;
   /**
-  * Private property `#username` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #username = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#username;
-  *   }
-  * }
-  * ```
+  * Compiled username component pattern.
   *
   * @internal
   */
   #username: CompiledPattern;
   /**
-  * Private property `#password` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #password = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#password;
-  *   }
-  * }
-  * ```
+  * Compiled password component pattern.
   *
   * @internal
   */
   #password: CompiledPattern;
   /**
-  * Private property `#hostname` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #hostname = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#hostname;
-  *   }
-  * }
-  * ```
+  * Compiled hostname component pattern (`.`-delimited named params).
   *
   * @internal
   */
   #hostname: CompiledPattern;
   /**
-  * Private property `#port` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #port = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#port;
-  *   }
-  * }
-  * ```
+  * Compiled port component pattern.
   *
   * @internal
   */
   #port: CompiledPattern;
   /**
-  * Private property `#pathname` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #pathname = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#pathname;
-  *   }
-  * }
-  * ```
+  * Compiled pathname component pattern (`/`-delimited named params).
   *
   * @internal
   */
   #pathname: CompiledPattern;
   /**
-  * Private property `#search` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #search = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#search;
-  *   }
-  * }
-  * ```
+  * Compiled search component pattern.
   *
   * @internal
   */
   #search: CompiledPattern;
   /**
-  * Private property `#hash` used by `URLPattern`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #hash = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#hash;
-  *   }
-  * }
-  * ```
+  * Compiled hash component pattern.
   *
   * @internal
   */
   #hash: CompiledPattern;
+  /**
+  * Look up the compiled pattern for a URL component by name.
+  */
   #componentPattern(component: URLPatternComponentName): CompiledPattern {
     if (component === 'protocol') return this.#protocol;
     if (component === 'username') return this.#username;
@@ -1564,7 +1507,12 @@ export class URLPattern {
   * `{ ignoreCase: true }` as the options object to match ASCII and Unicode
   * letters without case sensitivity.
   *
-  * ```typescript no_run
+  * Throws a `TypeError` if the input is neither a string nor an object, or
+  * if a component pattern fails to parse — unmatched `(`, an empty `()`
+  * group, a `:` with no valid parameter name, or an invalid literal
+  * hostname.
+  *
+  * ```ts no_run
   * const pattern = new URLPattern('/files/:name', 'https://example.com', {
   *   ignoreCase: true,
   * });
@@ -1643,12 +1591,15 @@ export class URLPattern {
     return this.#password.pattern;
   }
   /**
-  * Hostname pattern.
+  * Hostname pattern in canonical form.
   *
-  * Hostname named parameters stop at "." by default.
+  * Hostname named parameters stop at "." by default. Literal hostnames are
+  * canonicalized through the URL parser, so Unicode labels read back as
+  * punycode.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * new URLPattern({ hostname: ':sub.example.com' }).hostname; // ":sub.example.com"
+  * new URLPattern({ hostname: 'café.example' }).hostname;     // "xn--caf-dma.example"
   * ```
   */
   get hostname() {
@@ -1665,11 +1616,12 @@ export class URLPattern {
     return this.#port.pattern;
   }
   /**
-  * Pathname pattern.
+  * Pathname pattern in canonical form.
   *
-  * Pathname named parameters stop at "/" by default.
+  * Pathname named parameters stop at "/" by default. Literal text is
+  * percent-encoded, so `/café` reads back as `/caf%C3%A9`.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * new URLPattern({ pathname: '/users/:id' }).pathname; // "/users/:id"
   * ```
   */
@@ -1697,11 +1649,15 @@ export class URLPattern {
     return this.#hash.pattern;
   }
   /**
-  * Returns true if any component contains an explicit regexp group `(...)`.
-  * Named params like `:name` do not count; only inline `(pattern)` groups do.
+  * True when any component contains an explicit regexp group.
   *
-  * ```typescript no_run
+  * Both unnamed `(pattern)` groups and named params with a custom regexp
+  * (`:name(pattern)`) count. Plain `:name` params and `*` wildcards do not,
+  * even though they also compile to capturing groups internally.
+  *
+  * ```ts no_run
   * new URLPattern({ pathname: '/:id(\\d+)' }).hasRegExpGroups; // true
+  * new URLPattern({ pathname: '/:id' }).hasRegExpGroups;      // false
   * ```
   */
   get hasRegExpGroups(): boolean {
@@ -1714,7 +1670,10 @@ export class URLPattern {
   * Return true when input matches every URL component pattern.
   *
   * Invalid string or href inputs return false. Object inputs are interpreted as
-  * already-split URLPatternInit component values.
+  * already-split URLPatternInit component values. When `input` is a relative
+  * URL string, the optional `baseURL` argument resolves it to an absolute URL
+  * before matching; an input that cannot be parsed against `baseURL` returns
+  * false rather than throwing.
   *
   * ```typescript no_run
   * const pattern = new URLPattern({ pathname: '/users/:id' });
@@ -1733,9 +1692,16 @@ export class URLPattern {
   *
   * The current support covers the common routing subset used by the WPT
   * generation fixture: text tokens, escaped literals, and `:name` groups.
-  * Wildcards, regexp groups, and optional or repeated groups throw `TypeError`.
+  * Pathname group values are percent-encoded when the pattern's protocol is
+  * a special scheme (http, https, ws, wss, ftp, file) or a wildcard, and
+  * generated hostnames are canonicalized through the URL parser.
   *
-  * ```typescript no_run
+  * Throws a `TypeError` for an invalid component name, a non-object `groups`
+  * argument, a `:name` group with no entry in `groups`, a pathname group
+  * value containing `/`, or a pattern using unsupported syntax — wildcards,
+  * regexp groups, and optional or repeated groups.
+  *
+  * ```ts no_run
   * new URLPattern({ pathname: '/users/:id' }).generate('pathname', { id: '42' });
   * // "/users/42"
   * ```
@@ -1753,11 +1719,16 @@ export class URLPattern {
   /**
   * Compare two URLPattern component patterns for routing precedence.
   *
-  * Parameter names do not affect ordering. Literal text sorts above regexp
-  * groups, named groups, and wildcards; group modifiers sort as `*`, `?`, `+`,
-  * then no modifier.
+  * Returns a negative number when `left` sorts before `right`, positive when
+  * it sorts after, and `0` when the patterns are equivalent. Parameter names
+  * do not affect ordering. Literal text sorts above regexp groups, named
+  * groups, and wildcards; group modifiers sort as `*`, `?`, `+`, then no
+  * modifier.
   *
-  * ```typescript no_run
+  * Throws a `TypeError` if `component` is not a URL component name or either
+  * argument is not a `URLPattern` instance.
+  *
+  * ```ts no_run
   * URLPattern.compareComponent(
   *   'pathname',
   *   new URLPattern({ pathname: '/users/:id' }),
@@ -1778,8 +1749,11 @@ export class URLPattern {
   /**
   * Match input and return per-component inputs and capture groups.
   *
-  * Returns null if parsing fails or any component does not match. The inputs
-  * array contains [input] or [input, baseURL] depending on call shape.
+  * Returns null if parsing fails or any component does not match. A relative
+  * `input` string is resolved against the optional `baseURL` argument first.
+  * On a successful match the returned `inputs` array echoes the call shape —
+  * `[input]`, or `[input, baseURL]` when a base URL was supplied — and each
+  * component field carries the matched substring plus its named capture groups.
   *
   * ```typescript no_run
   * const pattern = new URLPattern({ pathname: '/users/:id' });

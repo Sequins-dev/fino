@@ -9,6 +9,32 @@
 * directional network. Paths are canonicalized with realpath because Seatbelt
 * matches rules against the resolved path (e.g. `/tmp` → `/private/tmp`).
 *
+* This is the macOS half of the sandbox launcher, mirroring the Linux
+* seccomp/Landlock/rlimit path. The launcher checks `seatbeltAvailable()` to
+* decide whether it can enforce a policy, then writes the string from
+* `generateSeatbeltProfile` to a temporary file and passes it to
+* `sandbox-exec -f`. The two functions are kept side-effect-free and file-based
+* so the same profile can be logged, diffed, or asserted on in tests.
+*
+* ```ts no_run
+*   import {
+*     seatbeltAvailable,
+*     generateSeatbeltProfile,
+*   } from 'internal:security/sandbox/seatbelt';
+*
+*   if (seatbeltAvailable()) {
+*     const profile = generateSeatbeltProfile(
+*       { readonly: ['/usr/lib'], writable: ['/tmp/work'] },
+*       { outbound: [{ action: 'allow' }] },
+*       ['/bin/sh'],
+*     );
+*     // profile is the text for `sandbox-exec -f <file> /bin/sh ...`
+*   }
+* ```
+*
+* Seatbelt profile language (SBPL) is undocumented by Apple; the sample profiles
+* under `/System/Library/Sandbox/Profiles` are the practical reference.
+*
 * @internal
 */
 import { os } from 'internal:process';
@@ -33,14 +59,44 @@ function quotePath(path: string): string {
   return `"${path.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 /**
-* Build a Seatbelt profile string for the policy.
+* Build a deny-default Seatbelt profile string for the given policy, ready to
+* write to a file and pass to `sandbox-exec -f`.
 *
-* @param filesystem readonly/writable confinement; when absent, all reads are
-*   allowed (parity with an unconfined strict spawn) and only writes/exec/network
-*   are governed.
-* @param network coarse directional network policy.
-* @param execPaths when non-null, the exact set of binaries that may be exec'd
-*   (initial binary + allowlist); when null, any binary may be exec'd.
+* The `filesystem` argument governs path confinement. Each `readonly` entry
+* becomes an allowed `file-read*` subtree and each `writable` entry an allowed
+* `file-read* file-write*` subtree; entries are canonicalized with realpath
+* because Seatbelt matches against the resolved path. When `filesystem` is
+* absent, or lists neither readonly nor writable paths, all reads are allowed —
+* parity with an unconfined strict spawn — and only writes, exec, and network
+* remain governed.
+*
+* The `network` argument is coarse and directional: outbound network is allowed
+* only if some outbound rule has `action: 'allow'`, and likewise for inbound.
+* Per-destination, per-port, and per-protocol rules are not expressible in this
+* profile and are ignored here.
+*
+* The `execPaths` argument scopes `process-exec`. When it is an array, only
+* those exact binaries (typically the initial command plus the allowlist) may be
+* exec'd, deduplicated and canonicalized with realpath. When it is `null`, any
+* binary may be exec'd (`process-exec*`). `process-fork` is always allowed —
+* fork limiting is a Linux-only seccomp feature with no Seatbelt equivalent.
+*
+* The returned string always begins with `(version 1)`, `(import "system.sb")`,
+* and `(deny default)`, and ends with a trailing newline.
+*
+* Throws if any path in `filesystem` or `execPaths` cannot be resolved by
+* realpath (for example, a path that does not exist).
+*
+* ```ts no_run
+*   import { generateSeatbeltProfile } from 'internal:security/sandbox/seatbelt';
+*
+*   // Confine to a work dir, deny all network, allow only /bin/sh to exec.
+*   const profile = generateSeatbeltProfile(
+*     { readonly: ['/usr/lib', '/System'], writable: ['/tmp/job-42'] },
+*     { outbound: [{ action: 'deny' }] },
+*     ['/bin/sh'],
+*   );
+* ```
 */
 export function generateSeatbeltProfile(
   filesystem: FilesystemPolicy | undefined,

@@ -3,8 +3,18 @@
 *
 * This module loads the platform zlib library through `fino:ffi` and implements
 * gzip, zlib-wrapped deflate, and raw deflate support for the public
-* compression module. It is hidden from generated application docs; public
-* formats and usage are documented on `fino:compress`.
+* compression module. It exposes three tiers of API: one-shot helpers
+* (`zlibCompress`, `zlibDecompress`) for complete buffers, streaming codecs
+* (`ZlibCompressor`, `ZlibDecompressor`) for chunked pipelines, and RFC 7692
+* permessage-deflate helpers (`zlibDeflateRawMessage`, `zlibInflateRawMessage`,
+* `ZlibRawMessageInflater`) used by the WebSocket implementation.
+*
+* The native library is resolved at import time from platform candidate paths
+* (system and Homebrew `libz.dylib` on macOS, `libz.so.1`/`libz.so` elsewhere);
+* importing this module throws if no candidate can be loaded. All calls talk to
+* zlib through a manually laid out `z_stream` struct, so no Rust glue is
+* involved beyond `fino:ffi`. The module is hidden from generated application
+* docs; public formats and usage are documented on `fino:compress`.
 *
 * ## Example
 *
@@ -16,6 +26,10 @@
 * const restored = zlib.zlibDecompress(compressed, 'gzip');
 * console.assert(new TextDecoder().decode(restored) === 'payload');
 * ```
+*
+* zlib manual: https://zlib.net/manual.html
+*
+* RFC 7692 (permessage-deflate): https://www.rfc-editor.org/rfc/rfc7692
 *
 * @internal
 */
@@ -245,7 +259,10 @@ export function zlibDecompress(data: ByteInput, format: ZlibCompressionFormat): 
 *
 * RFC 7692 §7.2.1 uses raw DEFLATE with `Z_SYNC_FLUSH`, then removes the
 * trailing `00 00 ff ff` empty stored block marker before putting bytes on the
-* wire. This helper resets the compression context for each call.
+* wire. This helper creates and tears down a fresh deflate context on every
+* call, matching no-context-takeover semantics. `level` follows zlib's normal
+* range and defaults to `Z_DEFAULT_COMPRESSION`. Throws if zlib initialization
+* or deflation fails.
 *
 * ```typescript no_run
 * import { zlibDeflateRawMessage } from 'internal:compress/zlib';
@@ -285,7 +302,10 @@ export function zlibDeflateRawMessage(data: ByteInput, level = Z_DEFAULT_COMPRES
 * Decompress one WebSocket permessage-deflate message.
 *
 * RFC 7692 §7.2.2 restores the stripped `00 00 ff ff` tail before raw inflate.
-* This helper resets the decompression context for each call.
+* This helper creates and tears down a fresh inflate context on every call;
+* use `ZlibRawMessageInflater` to amortize that cost across many frames on a
+* single connection. Throws if zlib initialization fails or the payload is not
+* valid raw DEFLATE data.
 *
 * ```typescript no_run
 * import { zlibInflateRawMessage } from 'internal:compress/zlib';
@@ -348,10 +368,30 @@ export class ZlibRawMessageInflater {
   #zs = new ZStream();
   #outBuf = new ArrayBuffer(CHUNK);
   #closed = false;
+  /**
+  * Create the inflater and initialize a raw-inflate context.
+  *
+  * Throws if zlib refuses to initialize the native stream.
+  */
   constructor() {
     const r0 = this.#zlib.symbols.inflateInit2_(this.#zs.buffer, W_RAW, ZLIB_VERSION_BUF, Z_STREAM_SIZE);
     if (r0 !== Z_OK) throw new Error(`zlib inflateInit2_ failed (${r0})`);
   }
+  /**
+  * Inflate one complete permessage-deflate message payload.
+  *
+  * Appends the RFC 7692 `00 00 ff ff` tail, inflates, then resets the native
+  * context so the next call starts clean. Throws if the payload is not valid
+  * raw DEFLATE data, if the inflater has been closed, or — closing the
+  * inflater as a side effect — if the post-message reset fails.
+  *
+  * ```ts no_run
+  * import { ZlibRawMessageInflater } from 'internal:compress/zlib';
+  * const inflater = new ZlibRawMessageInflater();
+  * const first = inflater.inflateMessage(frame1Payload);
+  * const second = inflater.inflateMessage(frame2Payload);
+  * ```
+  */
   inflateMessage(data: ByteInput): Uint8Array {
     this.#assertOpen();
     const u8 = toU8(data);
@@ -384,6 +424,16 @@ export class ZlibRawMessageInflater {
       }
     }
   }
+  /**
+  * Release the native inflate context.
+  *
+  * Safe to call multiple times; after closing, `inflateMessage` throws. Call
+  * this when the owning connection shuts down to avoid leaking native state.
+  *
+  * ```ts no_run
+  * inflater.close();
+  * ```
+  */
   close(): void {
     if (this.#closed) return;
     this.#zlib.symbols.inflateEnd(this.#zs.buffer);
@@ -393,6 +443,15 @@ export class ZlibRawMessageInflater {
     if (this.#closed) throw new Error('compression stream is closed');
   }
 }
+/**
+* Shared streaming codec over one native zlib stream.
+*
+* Base class for `ZlibCompressor` and `ZlibDecompressor`; it owns the
+* `z_stream` state, a reusable 64 KiB output buffer, and the deflate/inflate
+* call loops. Not exported — consumers use the direction-specific subclasses,
+* whose public `write`/`finish`/`transform`/`close` members are documented
+* here.
+*/
 class ZlibCodec implements CompressionTransform {
   #zlib = requireZlib();
   #zs = new ZStream();
@@ -406,6 +465,16 @@ class ZlibCodec implements CompressionTransform {
     const r0 = isDeflate ? this.#zlib.symbols.deflateInit2_(this.#zs.buffer, level, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY, ZLIB_VERSION_BUF, Z_STREAM_SIZE) : this.#zlib.symbols.inflateInit2_(this.#zs.buffer, windowBits, ZLIB_VERSION_BUF, Z_STREAM_SIZE);
     if (r0 !== Z_OK) throw new Error(`zlib init failed (${r0})`);
   }
+  /**
+  * Feed one input chunk and return whatever output zlib produced.
+  *
+  * May return zero chunks while zlib buffers input, or several when output
+  * exceeds the internal 64 KiB buffer. On the inflate side, reaching the end
+  * of the compressed stream marks the codec finished; trailing bytes after
+  * that point surface as a `TypeError` from the next `write` or from
+  * `finish`. Throws if the codec is closed, already finished, or if zlib
+  * reports an error.
+  */
   write(chunk: ByteInput): Uint8Array[] {
     this.#assertOpen();
     if (this.#pendingError !== null) throw this.#pendingError;
@@ -432,6 +501,15 @@ class ZlibCodec implements CompressionTransform {
     } while (this.#zs.availIn > 0 || this.#zs.availOut === 0);
     return parts;
   }
+  /**
+  * Finalize the stream, returning any remaining output.
+  *
+  * For compressors this flushes with `Z_FINISH`, emitting format trailers
+  * (e.g. the gzip CRC). For decompressors it verifies the compressed stream
+  * already reached its end and throws `TypeError` if input was truncated.
+  * Native state is always released, so the codec is closed afterwards either
+  * way; calling `finish` on an already-finished codec returns `[]`.
+  */
   finish(): Uint8Array[] {
     this.#assertOpen();
     if (this.#pendingError !== null) {
@@ -463,6 +541,20 @@ class ZlibCodec implements CompressionTransform {
       this.close();
     }
   }
+  /**
+  * Pipe an async iterable of input chunks through the codec.
+  *
+  * Yields output chunks as they become available and finalizes the stream
+  * when the source ends. The codec is closed in a `finally` block, so native
+  * state is released even when the consumer stops iterating early or the
+  * source throws.
+  *
+  * ```ts no_run
+  * for await (const part of codec.transform(source)) {
+  *   sink.write(part);
+  * }
+  * ```
+  */
   async *transform(source: AsyncIterable<ByteInput>): AsyncGenerator<Uint8Array> {
     try {
       for await (const chunk of source) {
@@ -473,6 +565,13 @@ class ZlibCodec implements CompressionTransform {
       this.close();
     }
   }
+  /**
+  * Release the native zlib stream.
+  *
+  * Idempotent. `finish` and `transform` close the codec themselves; call this
+  * directly only when abandoning a stream early. After closing, `write` and
+  * `finish` throw.
+  */
   close(): void {
     if (this.#closed) return;
     if (this.#isDeflate) this.#zlib.symbols.deflateEnd(this.#zs.buffer);
@@ -488,7 +587,9 @@ class ZlibCodec implements CompressionTransform {
 *
 * The constructor accepts either a public zlib format or raw zlib window bits.
 * `write` returns any output currently available; `finish` must be called to
-* flush trailers and close native state.
+* flush trailers and close native state. For async pipelines, the inherited
+* `transform` pipes an `AsyncIterable` of chunks straight through and releases
+* native state when the source ends.
 *
 * ```typescript no_run
 * import { ZlibCompressor } from 'internal:compress/zlib';
@@ -519,14 +620,18 @@ export class ZlibCompressor extends ZlibCodec {
 *
 * `write` may produce chunks before the compressed stream is complete. `finish`
 * verifies the stream reached EOF and throws if the compressed input was
-* truncated.
+* truncated. The inherited `transform` offers the same pipeline shape as the
+* compressor for draining an `AsyncIterable` of compressed chunks.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { ZlibCompressor, ZlibDecompressor } from 'internal:compress/zlib';
-* const packed = new ZlibCompressor('deflate').write(new Uint8Array([1]));
-* const codec = new ZlibDecompressor('deflate');
-* void packed;
-* codec.close();
+* import { concat } from 'internal:compress/common';
+*
+* const gzip = new ZlibCompressor('gzip');
+* const packed = [...gzip.write(new TextEncoder().encode('payload')), ...gzip.finish()];
+*
+* const inflate = new ZlibDecompressor('gzip');
+* const plain = concat([...packed.flatMap((chunk) => inflate.write(chunk)), ...inflate.finish()]);
 * ```
 *
 * @internal

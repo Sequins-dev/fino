@@ -17,7 +17,28 @@
 *
 * @internal
 */
+/**
+* A shutdown callback: a function invoked once during `runShutdownHooks`.
+*
+* Hooks may be synchronous or return a promise; `runShutdownHooks` awaits each
+* one before moving to the next, so an async hook holds up shutdown until it
+* settles. A hook's return value is ignored, but a thrown error (or rejected
+* promise) is captured and surfaced after the remaining hooks have run.
+*
+* @internal
+*/
 type ShutdownHook = () => void | Promise<void>;
+/**
+* The aggregate error thrown when more than one shutdown hook fails.
+*
+* When a single hook fails, `runShutdownHooks` re-throws that error unchanged.
+* When two or more fail, it throws a plain `Error` whose message joins the
+* individual failure messages and whose `errors` array holds the original
+* thrown values in the order they were caught (reverse-registration order,
+* batch by batch). Inspect `errors` to recover the underlying failures.
+*
+* @internal
+*/
 interface ShutdownError extends Error {
   errors?: unknown[];
 }
@@ -25,8 +46,13 @@ const shutdownHooks: ShutdownHook[] = [];
 /**
 * Register a function to run during runtime shutdown.
 *
-* The hook may be synchronous or async. The returned disposable removes the
-* hook if shutdown has not reached it yet. Passing a non-function throws a
+* The hook may be synchronous or async and runs once, in reverse-registration
+* order relative to its siblings — the last hook registered runs first. The
+* returned object has a `dispose()` method that removes the hook if shutdown
+* has not yet reached it; `dispose()` is idempotent, so calling it more than
+* once (or after the hook has already run) is a harmless no-op. Registering a
+* hook from inside another hook while shutdown is in progress is allowed — it
+* will be picked up in a later drain batch. Passing a non-function throws a
 * `TypeError`.
 *
 * ```typescript no_run

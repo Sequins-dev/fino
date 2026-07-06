@@ -111,17 +111,49 @@ function getErrno(): number {
 // ---------------------------------------------------------------------------
 // Reader<T> — generic async producer of values
 // ---------------------------------------------------------------------------
-type ReaderCloseCallback = () => void | Promise<void>;
+/**
+* Cleanup callback invoked when a `Reader` closes.
+*
+* The callback may perform synchronous or asynchronous cleanup. `Reader`
+* invokes it at most once, and `close()` rejects if the callback throws or
+* returns a rejected promise.
+*/
+export type ReaderCloseCallback = () => void | Promise<void>;
 /**
 * Options for byte-reader pull operations.
 *
 * `maxBytes` bounds the returned chunk size. `signal` lets backends cancel a
 * pending source read without consuming future bytes for an abandoned caller.
+* Every structural read method (`read`, `readAtMost`, `readExactly`, `readByte`,
+* `readUntil`) accepts this object; a bare number is shorthand for `maxBytes`.
 *
-* @internal
+* ```ts no_run
+* import { FdReader } from 'fino:stream';
+*
+* const reader = new FdReader(0, () => {});
+* const controller = new AbortController();
+* setTimeout(() => controller.abort(new Error('slow input')), 1000);
+* const chunk = await reader.read({ maxBytes: 4096, signal: controller.signal });
+* console.log(chunk?.byteLength ?? 'eof');
+* ```
 */
 export interface BytesReadOptions {
+  /**
+  * Upper bound on the number of bytes a single read may return.
+  *
+  * The reader is free to return fewer bytes, and never returns more. Omitting
+  * it lets each method choose its own default: 64 KiB for `read`, one byte for
+  * `readByte`, and the exact requested count for `readExactly`.
+  */
   maxBytes?: number;
+  /**
+  * Abort signal that cancels the read.
+  *
+  * The signal is checked before each underlying source pull, so an
+  * already-aborted signal rejects before any bytes are touched and an abort
+  * that lands between chunks stops a multi-chunk structural read. The rejection
+  * carries the signal's `reason`. Passing `null` is equivalent to omitting it.
+  */
   signal?: AbortSignal | null;
 }
 function normalizeMaxBytes(value: number, label: string): number {
@@ -159,7 +191,6 @@ function normalizeReadOptions(input?: number | BytesReadOptions): BytesReadOptio
 * ```
 *
 * @typeParam T Value type produced by `read()`.
-* @internal
 */
 export abstract class Reader<T> implements AsyncIterator<T> {
   /**
@@ -221,7 +252,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
   * ```
   *
   * @param onClose Optional cleanup callback.
-  * @internal
   */
   constructor(onClose: ReaderCloseCallback = () => {}) {
     this.#onClose = onClose;
@@ -242,7 +272,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
   * ```
   *
   * @returns True after `close()` starts.
-  * @internal
   */
   get closed(): boolean {
     return this.#closed;
@@ -261,7 +290,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
   * ```
   *
   * @returns The next value, or `null` on EOF.
-  * @internal
   */
   abstract read(): Promise<T | null>;
   /**
@@ -280,7 +308,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
   * ```
   *
   * @returns A promise that resolves after cleanup.
-  * @internal
   */
   async close(): Promise<void> {
     if (this.#closed) return;
@@ -305,7 +332,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
   * ```
   *
   * @returns The next iterator result.
-  * @internal
   */
   async next(): Promise<IteratorResult<T>> {
     const v = await this.read();
@@ -334,7 +360,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
   * ```
   *
   * @returns This reader.
-  * @internal
   */
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return this;
@@ -367,8 +392,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
 * }
 * console.log(await new MemoryReader().readByte());
 * ```
-*
-* @internal
 */
 export abstract class BytesReader extends Reader<Uint8Array> {
   // Bytes stashed by readExactly/readUntil on EOF before their condition was
@@ -414,7 +437,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   *
   * @param maxBytes Maximum number of bytes requested by the caller.
   * @returns A byte chunk, or `null` on EOF.
-  * @internal
   */
   protected abstract doRead(maxBytes: number, options?: BytesReadOptions): Promise<Uint8Array | null>;
   /**
@@ -426,7 +448,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   * internally and then stashed after an incomplete structural read.
   *
   * @param bytes Number of bytes consumed by the caller-facing read operation.
-  * @internal
   */
   protected onConsume(_bytes: number): void {}
   // Internal: drain the stash before calling doRead. Used by all structural
@@ -483,7 +504,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   * ```
   *
   * @returns A byte chunk, or `null` on EOF.
-  * @internal
   */
   async read(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
     const readOptions = normalizeReadOptions(options);
@@ -502,7 +522,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   * @param maxBytes Maximum returned byte count.
   * @param options Optional abort signal.
   * @returns A byte chunk, or `null` on EOF.
-  * @internal
   */
   readAtMost(maxBytes: number, options: Omit<BytesReadOptions, 'maxBytes'> = {}): Promise<Uint8Array | null> {
     return this.read({
@@ -520,7 +539,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   * @param buffer Destination byte buffer.
   * @param options Optional abort signal.
   * @returns Number of bytes copied, or `null` on EOF.
-  * @internal
   */
   async readInto(buffer: Uint8Array, options: Omit<BytesReadOptions, 'maxBytes'> = {}): Promise<number | null> {
     if (!(buffer instanceof Uint8Array)) throw new TypeError('readInto buffer must be a Uint8Array');
@@ -555,7 +573,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   *
   * @param n Number of bytes required.
   * @returns Exactly `n` bytes, or `null` if EOF arrives first.
-  * @internal
   */
   async readExactly(n: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
     n = normalizeMaxBytes(n, 'n');
@@ -597,7 +614,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   * ```
   *
   * @returns One byte as a number, or `null` on EOF.
-  * @internal
   */
   async readByte(options?: BytesReadOptions): Promise<number | null> {
     const readOptions = normalizeReadOptions(options);
@@ -631,7 +647,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   * @param delim Delimiter bytes to include in the returned chunk.
   * @param max Maximum bytes to scan before throwing. Defaults to 1 MiB.
   * @returns Bytes through the delimiter, or `null` on EOF before a match.
-  * @internal
   */
   async readUntil(delim: Uint8Array, max: number = 1 << 20, options?: BytesReadOptions): Promise<Uint8Array | null> {
     if (delim.byteLength === 0) throw new Error('readUntil: empty delimiter');
@@ -679,7 +694,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   * partial structural read. Buffered readers include their chunk-list buffer.
   *
   * @returns Number of immediately buffered bytes.
-  * @internal
   */
   get bufferedBytes(): number {
     return this.#stash?.byteLength ?? 0;
@@ -703,8 +717,6 @@ export abstract class BytesReader extends Reader<Uint8Array> {
 * const reader = BufferedBytesReader.over(new EmptyBytes());
 * console.log(await reader.peek(1));
 * ```
-*
-* @internal
 */
 export abstract class BufferedBytesReader extends BytesReader {
   /**
@@ -789,7 +801,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   * ```
   *
   * @returns A raw byte chunk, or `null` on EOF.
-  * @internal
   */
   protected abstract doPull(): Promise<Uint8Array | null>;
   /**
@@ -808,7 +819,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   *
   * @param source Source byte reader to buffer.
   * @returns A buffered wrapper around `source`.
-  * @internal
   */
   static over(source: BytesReader): BufferedBytesReader {
     return new class WrappedBufferedReader extends BufferedBytesReader {
@@ -835,7 +845,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   *
   * @param maxBytes Maximum bytes to return.
   * @returns A byte chunk, or `null` on EOF.
-  * @internal
   */
   protected async doRead(maxBytes: number, _options?: BytesReadOptions): Promise<Uint8Array | null> {
     while (this.#chunks.length === 0) {
@@ -875,7 +884,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   * ```
   *
   * @returns Buffered byte count.
-  * @internal
   */
   get buffered(): number {
     return this.#bufferedBytes;
@@ -898,7 +906,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   * ```
   *
   * @returns True after EOF and buffer drain.
-  * @internal
   */
   get eof(): boolean {
     return this.#upstreamDone && this.#bufferedBytes === 0;
@@ -926,7 +933,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   *
   * @param n Desired number of bytes.
   * @returns A non-consuming copy of available bytes.
-  * @internal
   */
   async peek(n: number): Promise<Uint8Array> {
     while (this.#bufferedBytes < n && !this.#upstreamDone) {
@@ -963,7 +969,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   *
   * @param delim Delimiter bytes to find.
   * @returns Offset after the match, or `-1` when not found.
-  * @internal
   */
   scanBuffered(delim: Uint8Array): number {
     if (delim.byteLength === 0 || this.#bufferedBytes < delim.byteLength) return -1;
@@ -1035,7 +1040,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   *
   * @param n Number of bytes to consume.
   * @returns Exactly `n` buffered bytes.
-  * @internal
   */
   takeBuffered(n: number): Uint8Array {
     n = normalizeMaxBytes(n, 'n');
@@ -1067,7 +1071,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   *
   * @param n Number of bytes required.
   * @returns Exactly `n` bytes, or `null` if EOF arrives first.
-  * @internal
   */
   override async readExactly(n: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
     n = normalizeMaxBytes(n, 'n');
@@ -1098,7 +1101,6 @@ export abstract class BufferedBytesReader extends BytesReader {
   * @param delim Delimiter bytes to include in the returned chunk.
   * @param max Maximum buffered bytes to scan before throwing. Defaults to 1 MiB.
   * @returns Bytes through the delimiter, or `null` on EOF before a match.
-  * @internal
   */
   override async readUntil(delim: Uint8Array, max: number = 1 << 20, options?: BytesReadOptions): Promise<Uint8Array | null> {
     if (delim.byteLength === 0) throw new Error('readUntil: empty delimiter');
@@ -1404,7 +1406,6 @@ export class FdReader extends BufferedBytesReader {
 * ```
 *
 * @typeParam T Value type consumed by `write()`.
-* @internal
 */
 export abstract class Writer<T> {
   /**
@@ -1465,7 +1466,6 @@ export abstract class Writer<T> {
   * ```
   *
   * @param onClose Optional cleanup callback.
-  * @internal
   */
   constructor(onClose: () => void | Promise<void> = () => {}) {
     this.#onClose = onClose;
@@ -1485,7 +1485,6 @@ export abstract class Writer<T> {
   * ```
   *
   * @returns True after `close()` starts.
-  * @internal
   */
   get closed(): boolean {
     return this.#closed;
@@ -1507,7 +1506,6 @@ export abstract class Writer<T> {
   *
   * @param value Value to write.
   * @returns A promise that resolves after the value is accepted.
-  * @internal
   */
   abstract write(value: T): Promise<void>;
   /**
@@ -1527,8 +1525,6 @@ export abstract class Writer<T> {
   *   writer.writeSync(value);
   * }
   * ```
-  *
-  * @internal
   */
   writeSync?(value: T): void;
   /**
@@ -1550,7 +1546,6 @@ export abstract class Writer<T> {
   *
   * @param source Async iterable source.
   * @returns A promise that resolves after all values are written.
-  * @internal
   */
   async pipe(source: AsyncIterable<T>): Promise<void> {
     for await (const v of source) await this.write(v);
@@ -1569,7 +1564,6 @@ export abstract class Writer<T> {
   * ```
   *
   * @returns A promise that resolves after pending data is flushed.
-  * @internal
   */
   async flush(): Promise<void> {}
   /**
@@ -1587,7 +1581,6 @@ export abstract class Writer<T> {
   * ```
   *
   * @returns A promise that resolves after cleanup.
-  * @internal
   */
   async close(): Promise<void> {
     if (this.#closed) return;
@@ -1609,8 +1602,6 @@ export abstract class Writer<T> {
   *   writer.closeSync();
   * }
   * ```
-  *
-  * @internal
   */
   closeSync?(): void;
   [Symbol.asyncDispose](): Promise<void> {
@@ -1637,8 +1628,6 @@ export abstract class Writer<T> {
 * const writer = new MemoryWriter();
 * await writer.write(new Uint8Array([1]));
 * ```
-*
-* @internal
 */
 export abstract class BytesWriter extends Writer<Uint8Array> {
   /**
@@ -1658,7 +1647,6 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
   *
   * @param buf Bytes to emit completely.
   * @returns A promise that resolves after bytes are written.
-  * @internal
   */
   protected abstract doWrite(buf: Uint8Array): Promise<void>;
   /**
@@ -1681,7 +1669,6 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
   *
   * @param data Bytes to write.
   * @returns A promise that resolves after all bytes are accepted.
-  * @internal
   */
   async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
     if (this.closed) throw new Error('Writer is closed');
@@ -1709,7 +1696,6 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
   * @param vecs Byte vectors to write.
   * @param count Number of vectors from `vecs` to consider. Defaults to all.
   * @returns A promise that resolves after all selected vectors are written.
-  * @internal
   */
   async writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
     for (let i = 0; i < count; i++) {
@@ -1737,8 +1723,6 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
 * await writer.write(new Uint8Array([1]));
 * await writer.flush();
 * ```
-*
-* @internal
 */
 export abstract class BufferedBytesWriter extends BytesWriter {
   /**
@@ -1823,7 +1807,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   *
   * @param onClose Optional cleanup callback.
   * @param bufferSize Coalesce buffer size in bytes. Defaults to 65536.
-  * @internal
   */
   constructor(onClose: () => void | Promise<void> = () => {}, bufferSize: number = 65536) {
     super(onClose);
@@ -1846,7 +1829,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   *
   * @param buf Pending bytes to emit.
   * @returns A promise that resolves after all bytes are flushed.
-  * @internal
   */
   protected abstract doFlush(buf: Uint8Array): Promise<void>;
   /**
@@ -1865,7 +1847,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   * @param target Byte writer to wrap.
   * @param bufferSize Coalesce buffer size in bytes. Defaults to 65536.
   * @returns A buffered wrapper around `target`.
-  * @internal
   */
   static over(target: BytesWriter, bufferSize: number = 65536): BufferedBytesWriter {
     return new class WrappedBufferedWriter extends BufferedBytesWriter {
@@ -1890,7 +1871,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   *
   * @param buf Bytes to write.
   * @returns A promise that resolves after bytes are buffered or flushed.
-  * @internal
   */
   protected async doWrite(buf: Uint8Array): Promise<void> {
     if (buf.byteLength >= this.#buf.byteLength) {
@@ -1920,7 +1900,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   * @param vecs Byte vectors to write.
   * @param count Number of vectors from `vecs` to consider. Defaults to all.
   * @returns A promise that resolves after all selected vectors are buffered or flushed.
-  * @internal
   */
   async writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
     if (this.closed) throw new Error('Writer is closed');
@@ -1956,7 +1935,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   *
   * @param buf Bytes to copy into the coalesce buffer.
   * @returns True when bytes were accumulated; false when a flush is needed.
-  * @internal
   */
   protected _directAccumulate(buf: Uint8Array): boolean {
     if (this.#pending + buf.byteLength > this.#buf.byteLength) return false;
@@ -1979,7 +1957,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   * ```
   *
   * @returns A promise that resolves after pending bytes are emitted.
-  * @internal
   */
   async flush(): Promise<void> {
     if (this.#pending === 0) return;
@@ -2004,7 +1981,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   * ```
   *
   * @returns Pending bytes, or `null` when the buffer is empty.
-  * @internal
   */
   protected _takePending(): Uint8Array | null {
     if (this.#pending === 0) return null;
@@ -2026,7 +2002,6 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   * ```
   *
   * @returns A promise that resolves after flush and cleanup.
-  * @internal
   */
   async close(): Promise<void> {
     if (this.closed) return;
@@ -2395,38 +2370,123 @@ class PipeBuf<T> {
   }
 }
 /**
-* Writer end of a `Channel`. `write()` enqueues a value for the reader;
-* `close()` signals EOF; `fail(err)` propagates an error to the reader.
-* Writes after `close()` are silently dropped.
+* Writer end of a `Channel`.
+*
+* `write()` enqueues a value for the reader, `close()` signals EOF, and
+* `fail(err)` propagates an error to the reader. A value written while a reader
+* is blocked in `read()` is handed straight to that pending read; otherwise it
+* queues in the shared FIFO buffer. Writes after `close()` are silently dropped,
+* which lets a producer over-run a consumer that has already stopped without
+* raising.
+*
+* Instances are obtained from a `Channel`, never constructed directly.
+*
+* ```ts no_run
+* import { Channel } from 'fino:stream';
+*
+* const ch = new Channel<number>();
+* const writer = ch.writer;
+* await writer.write(1);
+* await writer.write(2);
+* await writer.close();
+* ```
 *
 * @internal
 */
 export class PipeWriter<T> extends Writer<T> {
   #buf: PipeBuf<T>;
+  /**
+  * Bind the writer to a shared pipe buffer.
+  *
+  * The `onClose` callback ends the buffer, which resolves any pending reader
+  * `read()` with EOF. This is called by `Channel`; application code should
+  * construct a `Channel` instead.
+  *
+  * @internal
+  */
   constructor(buf: PipeBuf<T>) {
     super(() => buf.end());
     this.#buf = buf;
   }
+  /**
+  * Enqueue a value for the connected reader.
+  *
+  * Resolves immediately: this channel applies no backpressure and never blocks
+  * the producer. If the reader is currently awaiting a value, it receives this
+  * one directly; otherwise the value is appended to the buffer.
+  *
+  * @internal
+  */
   override async write(value: T): Promise<void> {
     this.#buf.push(value);
   }
-  /** Signal an error to the connected reader. */
+  /**
+  * Signal an error to the connected reader.
+  *
+  * The next `reader.read()` (or any read already pending) rejects with `err`.
+  * Unlike `close()`, this surfaces a failure rather than a clean EOF, so a
+  * `for await` loop over the reader throws.
+  *
+  * ```ts no_run
+  * import { Channel } from 'fino:stream';
+  *
+  * const ch = new Channel<number>();
+  * ch.writer.fail(new Error('upstream reset'));
+  * await ch.reader.read(); // rejects with the same error
+  * ```
+  *
+  * @internal
+  */
   fail(err: unknown): void {
     this.#buf.fail(err);
   }
 }
 /**
-* Reader end of a `Channel`. Values are pulled in the order they were written.
-* Closing the reader cancels any waiting reads and releases the shared buffer.
+* Reader end of a `Channel`.
+*
+* Values are delivered in the order they were written. `read()` returns the
+* next buffered value, or waits when the buffer is empty, resolving with `null`
+* once the writer closes or rejecting if the writer called `fail()`. As a
+* `Reader<T>` it also supports `for await` iteration and `pipe()`. Closing the
+* reader cancels any waiting reads (resolving them with EOF) and releases the
+* shared buffer.
+*
+* Instances are obtained from a `Channel`, never constructed directly.
+*
+* ```ts no_run
+* import { Channel } from 'fino:stream';
+*
+* const ch = new Channel<string>();
+* void ch.writer.write('a');
+* void ch.writer.close();
+* for await (const v of ch.reader) console.log(v); // "a"
+* ```
 *
 * @internal
 */
 export class PipeReader<T> extends Reader<T> {
   #buf: PipeBuf<T>;
+  /**
+  * Bind the reader to a shared pipe buffer.
+  *
+  * The `onClose` callback cancels any waiting reads so a closed reader never
+  * leaves a promise pending. This is called by `Channel`; application code
+  * should construct a `Channel` instead.
+  *
+  * @internal
+  */
   constructor(buf: PipeBuf<T>) {
     super(() => buf.cancelWaiters());
     this.#buf = buf;
   }
+  /**
+  * Pull the next value from the channel.
+  *
+  * Returns a buffered value when one is available, otherwise waits until the
+  * writer produces a value, closes (resolving `null`), or fails (rejecting).
+  *
+  * @internal
+  */
   override read(): Promise<T | null> {
     return this.#buf.read();
   }
@@ -2449,8 +2509,32 @@ export class PipeReader<T> extends Reader<T> {
 * @internal
 */
 export class Channel<T> {
+  /**
+  * Producer half of the channel.
+  *
+  * Use `writer.write(v)` to enqueue values, `writer.close()` to signal EOF, and
+  * `writer.fail(err)` to surface an error to the reader.
+  *
+  * @internal
+  */
   readonly writer: PipeWriter<T>;
+  /**
+  * Consumer half of the channel.
+  *
+  * A standard `Reader<T>`: iterate it with `for await`, drive it with
+  * `reader.read()`, or feed another `Writer` with `writer.pipe(reader)`.
+  *
+  * @internal
+  */
   readonly reader: PipeReader<T>;
+  /**
+  * Create a connected writer/reader pair over a fresh in-memory buffer.
+  *
+  * The two halves share one FIFO buffer, so values written on `writer` become
+  * readable on `reader` in order.
+  *
+  * @internal
+  */
   constructor() {
     const buf = new PipeBuf<T>();
     this.writer = new PipeWriter(buf);

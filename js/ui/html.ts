@@ -44,6 +44,11 @@ const VOID_ELEMENTS = new Set([
 const RAW_HTML = Symbol('fino.ui.html.raw');
 
 export interface RawHtml {
+  /**
+  * Trusted markup payload consumed by `renderToHtml()`.
+  *
+  * The symbol key keeps this payload out of ordinary object enumeration.
+  */
   readonly [RAW_HTML]: string;
 }
 
@@ -52,6 +57,13 @@ export interface RawHtml {
 *
 * Raw HTML is inserted without escaping. Only pass strings produced by trusted
 * code or an HTML sanitizer.
+*
+* ```ts no_run
+* import { h } from 'fino:ui';
+* import { rawHtml, renderToHtml } from 'fino:ui/html';
+*
+* const html = renderToHtml(h('div', null, rawHtml('<span>ok</span>')));
+* ```
 */
 export function rawHtml(html: string): RawHtml {
   return { [RAW_HTML]: String(html) };
@@ -107,6 +119,17 @@ function renderChild(child: NormalizedChild | RawHtml): string {
 * The serializer accepts trees produced by `h()` or the JSX runtime. Fragments
 * render their children without a wrapper. Void elements never receive closing
 * tags.
+*
+* Text and attribute values are escaped. Function-valued props throw because
+* they cannot be represented in static HTML; use server-driven actions or a
+* client runtime rather than embedding handlers.
+*
+* ```ts no_run
+* import { h } from 'fino:ui';
+* import { renderToHtml } from 'fino:ui/html';
+*
+* const html = renderToHtml(h('input', { name: 'q', value: 'a&b' }));
+* ```
 */
 export function renderToHtml(vnode: VNode | RawHtml): string {
   if (isRawHtml(vnode)) return vnode[RAW_HTML];

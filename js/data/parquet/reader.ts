@@ -1,11 +1,30 @@
 /**
 * Parquet reader: Parquet file bytes → Arrow.
 *
-* Parses the schema tree (flat leaves and nested list/struct/map groups), reads
-* each leaf column's page stream through `column-reader.ts` (all encodings, v1
-* and v2 pages), and reassembles nested Arrow vectors from the repetition/
-* definition levels via `nested.ts`. Row groups are concatenated into one
-* Arrow `Table`.
+* This is the file-level layer of the Parquet reader, and the module behind
+* the public `readParquet` export of `fino:data/parquet`. It validates the
+* `PAR1` magic at both ends of the file, Thrift-decodes the footer
+* (`metadata.ts`), and turns the flat `SchemaElement` list into a schema node
+* tree of flat leaves and nested list/struct/map groups (`nested.ts`). Each
+* row group then becomes one Arrow `RecordBatch`: every leaf column's page
+* stream is decoded through `column-reader.ts` (all value encodings, v1 and
+* v2 data pages), and nested vectors are reassembled from the repetition/
+* definition levels. The batches are concatenated into a single Arrow
+* `Table`.
+*
+* Decoding is eager and fully in-memory: all pages of every column chunk are
+* materialized before the `Table` is returned. There is no projection or
+* row-group pruning at this layer — callers get the whole file.
+*
+* ```ts no_run
+* import { readParquet } from 'internal:data/parquet/reader';
+*
+* const table = readParquet(fileBytes);
+* console.log(table.numRows, table.schema.fields.map((f) => f.name));
+* ```
+*
+* File layout follows the Parquet format spec:
+* https://parquet.apache.org/docs/file-format/
 *
 * @internal
 */
@@ -29,7 +48,32 @@ function checkMagic(bytes: Uint8Array): void {
     }
   }
 }
-/** Decode a Parquet file into an Arrow `Table`. */
+/**
+* Decode a complete Parquet file into an Arrow `Table`.
+*
+* Accepts the file's bytes as a `Uint8Array` or `ArrayBuffer` (an
+* `ArrayBuffer` is viewed in place, not copied). Each row group in the file
+* becomes one `RecordBatch` in the returned table; a file with no row groups
+* yields a table containing a single zero-row batch, so the schema is always
+* preserved. Values arrive already converted to their Arrow logical types —
+* strings, decimals, dates, timestamps, nested lists/structs/maps, and so on.
+*
+* Throws `ParquetError` if the input is too short or missing the `PAR1`
+* magic, if the footer length is corrupt, if a row group's column-chunk count
+* does not match the schema's leaf count, or if a column chunk carries no
+* metadata. Errors from deeper layers (unsupported codec, malformed pages,
+* bad level streams) propagate as `ParquetError` too.
+*
+* ```ts no_run
+* import { readParquet } from 'internal:data/parquet/reader';
+* import { DiskFileSystem } from 'fino:file';
+*
+* const file = await new DiskFileSystem().open('/data/events.parquet', 'r');
+* const table = readParquet(await file.bytes());
+* await file.close();
+* for (const row of table) console.log(row);
+* ```
+*/
 export function readParquet(input: Uint8Array | ArrayBuffer): Table {
   const bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : input;
   checkMagic(bytes);

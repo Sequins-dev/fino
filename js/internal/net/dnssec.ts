@@ -23,6 +23,19 @@
 * digest completes the chain. NSEC3 validation supports SHA-1 hashes only and
 * rejects records above the module iteration cap.
 *
+* ```ts no_run
+* import { validateDnssecResponse, ROOT_TRUST_ANCHORS } from 'internal:net/dnssec';
+*
+* // `fetch` performs an authenticated DNS query and decodes the wire response
+* // into { rcode, answers, authorities } records with parsed RRSIG/DS data.
+* const A = 1;
+* await validateDnssecResponse(response, 'example.com', A, {
+*   trustAnchors: ROOT_TRUST_ANCHORS,
+*   fetch: (name, qtype) => resolver.queryDnssec(name, qtype),
+* });
+* // resolves → authenticated (secure or provably insecure); throws EDNSSEC → bogus
+* ```
+*
 * @internal
 */
 import { atob, btoa, TextEncoder } from '../../globals/encoding.ts';
@@ -74,6 +87,34 @@ type ChainValidationOptions = {
   maxFetches?: number;
   maxDepth?: number;
 };
+/**
+* Bounded LRU cache of validated per-zone DNSKEY sets, shared across chain
+* validations.
+*
+* `validateDnssecResponse` threads a cache through its options so repeated
+* lookups for the same zone reuse an already-authenticated DNSKEY RRset instead
+* of re-walking the delegation from the root. Each entry maps a zone cache key
+* to either the trusted keys for that zone or `null` (the zone was proven
+* insecure), together with an `expiresAt` UNIX timestamp derived from the
+* shortest record TTL and RRSIG expiration in the response that produced it.
+* Entries at or past `expiresAt` are discarded on access. `maxEntries` bounds
+* the map, evicting the least recently used entry once the size exceeds it
+* (default 256).
+*
+* Create one cache per resolver instance and reuse it across queries; start
+* with an empty `Map`.
+*
+* ```ts no_run
+* import { validateDnssecResponse, ROOT_TRUST_ANCHORS, DnssecCache } from 'internal:net/dnssec';
+*
+* const cache: DnssecCache = { entries: new Map(), maxEntries: 512 };
+* await validateDnssecResponse(response, 'example.com', 1, {
+*   trustAnchors: ROOT_TRUST_ANCHORS,
+*   fetch,
+*   cache,
+* });
+* ```
+*/
 export type DnssecCache = {
   entries: Map<string, {
     value: DnskeyInput[] | null;
@@ -103,8 +144,25 @@ function dnskeyRdata(flags: number, algorithm: number, publicKeyBase64: string):
   ]);
 }
 /**
-* IANA root trust anchors fetched from
-* https://data.iana.org/root-anchors/root-anchors.xml on 2026-06-19.
+* The IANA DNS root zone trust anchors, expressed as the DNSKEY inputs they
+* authenticate.
+*
+* These are the currently published root zone key-signing keys (KSKs) from
+* https://data.iana.org/root-anchors/root-anchors.xml (fetched 2026-06-19),
+* keyed to the root zone (`.`). Pass them as `trustAnchors` to
+* `validateDnssecResponse` or `validateSignedResponse` to anchor a chain of
+* trust at the root. Each entry's `rawData` is canonical DNSKEY RDATA (flags,
+* protocol, algorithm, public key), so it can be key-tagged and matched against
+* DS records directly.
+*
+* ```ts no_run
+* import { validateDnssecResponse, ROOT_TRUST_ANCHORS } from 'internal:net/dnssec';
+*
+* await validateDnssecResponse(response, 'example.com', 1, {
+*   trustAnchors: ROOT_TRUST_ANCHORS,
+*   fetch,
+* });
+* ```
 */
 export const ROOT_TRUST_ANCHORS: DnskeyInput[] = [{
   name: '.',
@@ -172,7 +230,18 @@ async function fetchForValidation(options: ChainValidationOptions, name: string,
 *
 * DNSSEC canonical form lowercases ASCII owner labels and strips a trailing
 * presentation root dot before producing normal length-prefixed DNS wire
-* labels. IDNA conversion is intentionally out of scope for this helper.
+* labels. The root name (`.` or the empty string) encodes as a single zero
+* byte. IDNA conversion is intentionally out of scope for this helper.
+*
+* Throws if any label exceeds 63 bytes, which the length-prefixed wire format
+* cannot represent.
+*
+* ```ts no_run
+* import { canonicalName } from 'internal:net/dnssec';
+*
+* canonicalName('Example.COM.');
+* // → 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00  (7 "example" 3 "com" 0)
+* ```
 */
 export function canonicalName(name: string): Uint8Array {
   const normalized = (name.endsWith('.') ? name.slice(0, -1) : name).toLowerCase();
@@ -197,7 +266,23 @@ export function canonicalName(name: string): Uint8Array {
   return out;
 }
 /**
-* Return the RFC 4034 appendix B DNSKEY key tag for DNSKEY RDATA.
+* Compute the RFC 4034 appendix B key tag for a DNSKEY's RDATA.
+*
+* The key tag is a 16-bit checksum over the DNSKEY RDATA used to cheaply
+* correlate a DNSKEY with the DS records and RRSIGs that reference it. It is
+* not unique — two keys can share a tag — so a tag match only narrows the
+* candidates; callers still confirm the full DS digest or signature. This
+* computation is the general form covering every algorithm except the obsolete
+* algorithm 1, which used a different tag derivation.
+*
+* ```ts no_run
+* import { dnskeyKeyTag } from 'internal:net/dnssec';
+*
+* const tag = dnskeyKeyTag(dnskey.rawData);
+* if (tag === rrsig.keyTag) {
+*   // candidate key — verify the signature to be sure
+* }
+* ```
 */
 export function dnskeyKeyTag(dnskeyRdata: Uint8Array): number {
   let ac = 0;
@@ -208,10 +293,25 @@ export function dnskeyKeyTag(dnskeyRdata: Uint8Array): number {
   return ac & 65535;
 }
 /**
-* Calculate a DS digest from owner name and DNSKEY RDATA.
+* Calculate a DS record digest over an owner name and DNSKEY RDATA.
 *
-* Digest type `1` is SHA-1 for legacy validation, `2` is SHA-256, and `4` is
-* SHA-384. Other digest types are intentionally unsupported.
+* The DS digest is `hash(canonicalName(owner) || dnskeyRdata)`. A parent zone
+* publishes this digest to commit to a child zone's key-signing key; recomputing
+* it and comparing against the published DS digest links parent and child in the
+* chain of trust. Digest type `1` is SHA-1 for legacy validation, `2` is
+* SHA-256, and `4` is SHA-384. Other digest types are intentionally unsupported.
+*
+* Throws if `digestType` is not one of the supported values.
+*
+* ```ts no_run
+* import { digestDnskey, dnskeyKeyTag } from 'internal:net/dnssec';
+*
+* const digest = await digestDnskey('example.com', key.rawData, ds.digestType);
+* const matches =
+*   ds.keyTag === dnskeyKeyTag(key.rawData) &&
+*   digest.length === ds.digest.length &&
+*   digest.every((b, i) => b === ds.digest[i]);
+* ```
 */
 export async function digestDnskey(ownerName: string, dnskeyRdata: Uint8Array, digestType: number): Promise<Uint8Array> {
   let hash: string;
@@ -233,9 +333,20 @@ export async function digestDnskey(ownerName: string, dnskeyRdata: Uint8Array, d
 /**
 * Serialize an RRset in DNSSEC canonical order for RRSIG verification.
 *
-* Each RR is encoded as owner name, type, class IN, RRSIG original TTL,
-* RDLENGTH, and exact RDATA. The returned data does not include the RRSIG
-* metadata prefix; callers prepend that when verifying a signature.
+* Each RR is encoded as owner name, type, class IN, the RRSIG original TTL,
+* RDLENGTH, and exact RDATA, and the encoded records are then sorted into
+* canonical byte order. When the RRSIG carries a `labels` count smaller than
+* the owner's label count the RRset was signed under a wildcard, so the owner
+* name is rewritten to `*.<closest-encloser>` before encoding. The returned
+* data does not include the RRSIG metadata prefix; `rrsigSignedData` prepends
+* that when building the exact signed input.
+*
+* ```ts no_run
+* import { canonicalRrsetData } from 'internal:net/dnssec';
+*
+* // Minimal timing input reuses the RRSIG's original TTL for every record.
+* const body = canonicalRrsetData(records, { originalTtl: rrsig.originalTtl });
+* ```
 */
 export function canonicalRrsetData(records: RrsetRecord[], rrsig: RrsigTiming): Uint8Array {
   const encoded = records.map((record) => concatBytes([
@@ -251,6 +362,16 @@ export function canonicalRrsetData(records: RrsetRecord[], rrsig: RrsigTiming): 
 }
 /**
 * Check whether a decoded NSEC/NSEC3 type bitmap includes a record type.
+*
+* NSEC and NSEC3 records carry a bitmap of the RR types that exist at their
+* owner name. An authenticated denial proof uses this to show a queried type is
+* absent — the name exists but its bitmap does not cover the type.
+*
+* ```ts no_run
+* import { nsecCoversType } from 'internal:net/dnssec';
+*
+* const hasMx = nsecCoversType(nsec.types, 15); // does an MX exist at this name?
+* ```
 */
 export function nsecCoversType(types: number[], type: number): boolean {
   return types.includes(type);
@@ -268,7 +389,21 @@ function canonicalOwnerName(name: string, rrsigLabels?: number): string {
   return ['*', ...labels.slice(labels.length - rrsigLabels)].join('.');
 }
 /**
-* Build the exact signed data covered by an RRSIG.
+* Build the exact byte string an RRSIG signs over an RRset.
+*
+* The signed data is the RRSIG RDATA up to but excluding the signature — type
+* covered, algorithm, labels, original TTL, expiration, inception, key tag, and
+* canonical signer name — followed by the canonical RRset encoding from
+* `canonicalRrsetData`. This is the precise input handed to the public-key
+* verify operation. `verifyRrsig` calls it internally, so callers rarely need
+* it directly; it is exported for building and testing custom verifiers.
+*
+* ```ts no_run
+* import { rrsigSignedData } from 'internal:net/dnssec';
+*
+* const signed = rrsigSignedData(rrsig, records);
+* const ok = await crypto.subtle.verify(algorithm, key, rrsig.signature, signed);
+* ```
 */
 export function rrsigSignedData(rrsig: RrsigData, records: RrsetRecord[]): Uint8Array {
   return concatBytes([
@@ -378,7 +513,31 @@ async function importDnskey(dnskeyRdata: Uint8Array): Promise<{
   throw new Error(`DNSSEC: unsupported DNSKEY algorithm ${dnskey.algorithm}`);
 }
 /**
-* Verify one RRSIG over an RRset with one DNSKEY.
+* Verify a single RRSIG over an RRset against one candidate DNSKEY.
+*
+* Returns `true` only when every check passes: `now` falls within the
+* signature's inception/expiration window, the DNSKEY's key tag and algorithm
+* match the RRSIG, the key's owner name equals the RRSIG signer name, an
+* Ed25519 (algorithm 15) signature is exactly 64 bytes, and the public-key
+* verification of `rrsigSignedData` succeeds. Any mismatch, an unsupported key
+* algorithm, or a malformed key returns `false` rather than throwing — a bogus
+* signature is a soft failure the caller aggregates across candidate keys.
+* `now` is a UNIX timestamp in seconds and defaults to the current time.
+*
+* Supported algorithms are RSASHA256 (8), RSASHA512 (10), ECDSAP256SHA256
+* (13), ECDSAP384SHA384 (14), and Ed25519 (15).
+*
+* ```ts no_run
+* import { verifyRrsig } from 'internal:net/dnssec';
+*
+* let authentic = false;
+* for (const key of zoneKeys) {
+*   if (await verifyRrsig(rrsig, records, key)) {
+*     authentic = true;
+*     break;
+*   }
+* }
+* ```
 */
 export async function verifyRrsig(rrsig: RrsigData, records: RrsetRecord[], dnskey: DnskeyInput, now = Math.floor(Date.now() / 1e3)): Promise<boolean> {
   if (now < rrsig.inception || now > rrsig.expiration) return false;
@@ -415,11 +574,28 @@ function findTrustKeysForSigner(trustAnchors: DnskeyInput[], signerName: string)
   return trustAnchors.filter((key) => sameName(key.name, signerName));
 }
 /**
-* Validate signed answer RRsets in a response with an already trusted DNSKEY.
+* Validate a response's answer RRset against an already-trusted DNSKEY set.
 *
-* This is the core signed-RRset validator used by the resolver after it has
-* built a chain of trust. It rejects bogus or indeterminate signed data with
-* `EDNSSEC`.
+* This is the leaf validator the resolver runs once it has authenticated the
+* signing zone's keys through a chain of trust. It selects the answer records
+* matching `qname` and `qtype`, gathers the RRSIGs covering that type, and
+* returns successfully as soon as one RRSIG verifies under a trust anchor whose
+* name matches the signer. It handles only positive answers (`rcode` 0) with
+* signed data present; authenticated denial-of-existence is out of scope here
+* and belongs to `validateDnssecResponse`.
+*
+* Rejects with an `EDNSSEC`-coded error when the response carries a non-zero
+* rcode, the answer RRset is missing, no covering RRSIG is present, or no RRSIG
+* verifies against the supplied trust anchors.
+*
+* ```ts no_run
+* import { validateSignedResponse } from 'internal:net/dnssec';
+*
+* // `zoneKeys` are DNSKEYs already authenticated for the signer.
+* await validateSignedResponse(response, 'example.com', 1, {
+*   trustAnchors: zoneKeys,
+* });
+* ```
 */
 export async function validateSignedResponse(response: DnssecResponse, qname: string, qtype: number, options: ValidationOptions): Promise<void> {
   if (response.rcode !== 0) throw dnssecError('DNSSEC denial validation is not available for this response');
@@ -842,11 +1018,36 @@ async function getTrustedKeys(zone: string, options: ChainValidationOptions, cac
   return dnskeys;
 }
 /**
-* Validate a DNS response by building a DNSSEC chain from trust anchors.
+* Validate a DNS response end to end by building a DNSSEC chain of trust.
 *
-* If an authenticated DS-negative proof marks a child delegation insecure,
-* this function returns without validating lower unsigned data. Bogus or
-* indeterminate signed data rejects with `EDNSSEC`.
+* This is the full validator the resolver drives. Starting from
+* `options.trustAnchors` (typically `ROOT_TRUST_ANCHORS`), it walks the
+* delegation from the root toward the signer, using `options.fetch` to retrieve
+* the DS and DNSKEY RRsets it needs and authenticating each hop before
+* descending. For a positive answer it verifies the RRSIG over the answer (or
+* CNAME) RRset; for an error rcode or an empty answer it verifies an
+* authenticated NSEC/NSEC3 denial-of-existence proof. Intermediate results can
+* be memoized through `options.cache`, and `maxFetches` and `maxDepth` (default
+* 32 each) bound the work performed per validation.
+*
+* If an authenticated DS-negative proof marks a delegation insecure, the
+* function returns without validating the unsigned data beneath it — a provably
+* insecure answer is not an error. It rejects with an `EDNSSEC`-coded error when
+* signed data is bogus, a required RRSIG or denial proof is missing, a DS/DNSKEY
+* link fails, or the fetch/depth limits are exceeded.
+*
+* ```ts no_run
+* import { validateDnssecResponse, ROOT_TRUST_ANCHORS, DnssecCache } from 'internal:net/dnssec';
+*
+* const cache: DnssecCache = { entries: new Map() };
+* await validateDnssecResponse(response, 'example.com', 1, {
+*   trustAnchors: ROOT_TRUST_ANCHORS,
+*   fetch: (name, qtype) => resolver.queryDnssec(name, qtype),
+*   cache,
+* });
+* // resolves → authenticated (secure or provably insecure)
+* // throws EDNSSEC → bogus
+* ```
 */
 export async function validateDnssecResponse(response: DnssecResponse, qname: string, qtype: number, options: ChainValidationOptions): Promise<void> {
   const now = options.now ?? Math.floor(Date.now() / 1e3);

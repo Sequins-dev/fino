@@ -5,7 +5,12 @@
 * iterator interface. Platform implementations differ, but the event model
 * is the same on both:
 *
-*   { type: 'create' | 'modify' | 'delete' | 'rename', path: string }
+* ```ts no_run
+* interface WatchEvent {
+*   type: 'create' | 'modify' | 'delete' | 'rename';
+*   path: string;
+* }
+* ```
 *
 * This is a Fino runtime watcher, not Node `fs.watch` parity. The public
 * release contract accepts string paths, yields events through async
@@ -41,17 +46,19 @@
 * ## Usage
 *
 * ```ts no_run
-* import { Watcher } from './watch.ts';
+* import { Watcher } from 'fino:file/watch';
 *
-* const watcher = new Watcher();
+* const watcher = new Watcher({ recursive: true });
 * watcher.watch('/tmp/mydir');
 *
 * for await (const event of watcher) {
 *   console.log(event.type, event.path);
+*   if (event.type === 'delete') break; // breaking closes the watcher
 * }
-*
-* watcher.close();
 * ```
+*
+* kqueue reference: https://man.freebsd.org/cgi/man.cgi?kqueue
+* inotify reference: https://man7.org/linux/man-pages/man7/inotify.7.html
 */
 import { lib, cstr, isDarwin, O_RDONLY, DT_DIR } from '../internal/file/bindings.ts';
 import { DirEntry } from '../internal/file/entry.ts';
@@ -86,8 +93,16 @@ const O_EVTONLY = 32768;
 * macOS.
 *
 * ```ts no_run
-* const type = 'modify';
-* console.log(type);
+* import { Watcher, type WatchEventType } from 'fino:file/watch';
+*
+* const counts: Record<WatchEventType, number> = {
+*   create: 0, modify: 0, delete: 0, rename: 0,
+* };
+* const watcher = new Watcher();
+* watcher.watch('/tmp/mydir');
+* for await (const event of watcher) {
+*   counts[event.type]++;
+* }
 * ```
 */
 export type WatchEventType = 'create' | 'modify' | 'delete' | 'rename';
@@ -99,8 +114,16 @@ export type WatchEventType = 'create' | 'modify' | 'delete' | 'rename';
 * that need exact metadata should stat or rescan after receiving the event.
 *
 * ```ts no_run
-* function logEvent(event) {
-*   console.log(event.type, event.path);
+* import { Watcher, type WatchEvent } from 'fino:file/watch';
+*
+* function isSourceChange(event: WatchEvent): boolean {
+*   return event.type === 'modify' && event.path.endsWith('.ts');
+* }
+*
+* const watcher = new Watcher({ recursive: true });
+* watcher.watch('./src');
+* for await (const event of watcher) {
+*   if (isSourceChange(event)) console.log('rebuild:', event.path);
 * }
 * ```
 */
@@ -111,11 +134,6 @@ export interface WatchEvent {
   * The value is one of `'create'`, `'modify'`, `'delete'`, or `'rename'`.
   * Backends may coalesce or duplicate events, so treat this as a notification
   * to re-check state rather than a complete change log.
-  *
-  * ```ts no_run
-  * const event = { type: 'create', path: '/tmp/file.txt' };
-  * console.log(event.type);
-  * ```
   */
   type: WatchEventType;
   /**
@@ -124,11 +142,6 @@ export interface WatchEvent {
   * The path shape follows the path passed to `watch()` and the platform event
   * backend. Linux directory events usually include the changed child name;
   * macOS directory events may only identify the watched directory.
-  *
-  * ```ts no_run
-  * const event = { type: 'modify', path: 'src/main.ts' };
-  * console.log(event.path);
-  * ```
   */
   path: string;
 }
@@ -162,11 +175,6 @@ export interface WatchOptions {
   * Recursive watching can miss a small number of events between a new
   * subdirectory being created and its watch being installed. Very large trees
   * may also hit fd or inotify watch limits.
-  *
-  * ```ts no_run
-  * const options = { recursive: true };
-  * console.log(options.recursive);
-  * ```
   */
   recursive?: boolean;
 }
@@ -193,159 +201,53 @@ export interface WatchOptions {
 */
 export class Watcher {
   /**
-  * Private property `#recursive` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #recursive = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#recursive;
-  *   }
-  * }
-  * ```
+  * Whether directory watches descend into subdirectories, captured from the
+  * constructor options.
   *
   * @internal
   */
   #recursive: boolean;
   /**
-  * Private property `#closed` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #closed = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#closed;
-  *   }
-  * }
-  * ```
+  * True once `close()` has run. Guards event emission, `watch()`, and the
+  * Linux read loop.
   *
   * @internal
   */
   #closed = false;
   // Pending events waiting to be consumed by the async iterator.
   /**
-  * Private property `#queue` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #queue = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#queue;
-  *   }
-  * }
-  * ```
+  * Events emitted while no iterator `next()` call was pending, buffered until
+  * consumed.
   *
   * @internal
   */
   #queue: WatchEvent[] = [];
   // Resolve functions for iterator .next() calls waiting for an event.
   /**
-  * Private property `#waiters` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #waiters = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#waiters;
-  *   }
-  * }
-  * ```
+  * Resolve callbacks for iterator `next()` calls parked while the event queue
+  * was empty. Resolved with `{ done: true }` on close.
   *
   * @internal
   */
   #waiters: Array<(result: IteratorResult<WatchEvent>) => void> = [];
   // macOS: fd → path string for each watched path.
   /**
-  * Private property `#fds` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fds = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fds;
-  *   }
-  * }
-  * ```
+  * macOS: open fd → watched path for each kqueue vnode registration. Closed
+  * and cleared on `close()` or when a watched path is deleted.
   *
   * @internal
   */
   #fds: Map<number, string> = new Map();
   // Linux: inotify fd and wd → { path, isDir } mapping.
   /**
-  * Private property `#inotifyFd` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #inotifyFd = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#inotifyFd;
-  *   }
-  * }
-  * ```
+  * Linux: the single inotify fd shared by all watches. Stays `-1` on macOS.
   *
   * @internal
   */
   #inotifyFd = -1;
   /**
-  * Private property `#wds` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #wds = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#wds;
-  *   }
-  * }
-  * ```
+  * Linux: inotify watch descriptor → watched path and directory flag. Entries
+  * are removed on `IN_IGNORED` and cleared on `close()`.
   *
   * @internal
   */
@@ -353,48 +255,23 @@ export class Watcher {
     path: string;
     isDir: boolean;
   }> = new Map();
+  /**
+  * Every currently watched path, on both platforms. Used to make repeated
+  * `watch()` calls for the same path a no-op; entries are removed when a
+  * watched path is deleted and cleared on `close()`.
+  */
   #paths: Set<string> = new Set();
   // Used to signal the background read loop to stop.
   /**
-  * Private property `#closePromise` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #closePromise = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#closePromise;
-  *   }
-  * }
-  * ```
+  * Resolves when `close()` is called; the Linux read loop races it against
+  * inotify readability so shutdown never blocks on a quiet fd.
   *
   * @internal
   */
   #closePromise: Promise<void>;
   /**
-  * Private property `#resolveClose` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #resolveClose = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#resolveClose;
-  *   }
-  * }
-  * ```
+  * Resolver for `#closePromise`, captured at construction and invoked by
+  * `close()`.
   *
   * @internal
   */
@@ -404,10 +281,8 @@ export class Watcher {
   *
   * By default, only the exact paths passed to `watch()` are watched.
   * `{ recursive: true }` scans subdirectories and adds backend watches for
-  * them. Construction may allocate native watch state on Linux; close the
-  * watcher when done.
-  *
-  * @param {WatchOptions} [options={}] Watch behavior options.
+  * them. Construction allocates an inotify fd and starts the background read
+  * loop on Linux; close the watcher when done.
   *
   * ```ts no_run
   * import { Watcher } from 'fino:file/watch';
@@ -436,12 +311,15 @@ export class Watcher {
   * On macOS, opens an fd for each watched path (and each subdirectory if
   * `recursive: true`). On Linux, adds an inotify watch.
   *
-  * May be called multiple times to watch multiple paths.
+  * May be called multiple times to watch multiple paths. Watching a path that
+  * is already watched is a no-op.
   *
-  * Throws if the watcher is already closed or the backend cannot register the
-  * path. On macOS, directory watches do not identify the exact changed child.
+  * Throws if the watcher is already closed, if `path` is not a string, or if
+  * the backend cannot register the path (for example, it does not exist).
   *
-  * @param path Absolute or relative filesystem path to watch.
+  * On macOS, directory watches do not identify the exact changed child —
+  * events carry the watched directory's path, so re-scan the directory if the
+  * specific entry matters.
   *
   * ```ts no_run
   * import { Watcher } from 'fino:file/watch';
@@ -507,17 +385,32 @@ export class Watcher {
     }
     this.#waiters.length = 0;
   }
+  /**
+  * Close the watcher when it leaves a `using` scope.
+  *
+  * Equivalent to calling `close()`; declared so a watcher can participate in
+  * explicit resource management.
+  *
+  * ```ts no_run
+  * import { Watcher } from 'fino:file/watch';
+  *
+  * {
+  *   using watcher = new Watcher();
+  *   watcher.watch('/tmp');
+  * } // close() runs automatically here
+  * ```
+  */
   [Symbol.dispose](): void {
     this.close();
   }
   /**
   * Return an async iterator of filesystem events.
   *
-  * `next()` waits until an event is available, unless the watcher is closed.
-  * Breaking out of a `for await` loop calls the iterator's `return()` method,
-  * which closes the watcher and releases native resources.
-  *
-  * @returns {AsyncIterator<WatchEvent>} Async iterator over queued and future events.
+  * `next()` yields queued events immediately and otherwise waits until an
+  * event arrives; once the watcher is closed and the queue is drained it
+  * resolves `{ done: true }`. Breaking out of a `for await` loop calls the
+  * iterator's `return()` method, which closes the watcher and releases native
+  * resources.
   *
   * ```ts no_run
   * import { Watcher } from 'fino:file/watch';
@@ -563,25 +456,8 @@ export class Watcher {
   // Event emission
   // ---------------------------------------------------------------------------
   /**
-  * Private method `#emit` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #emit() {
-  *     return 'emit';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#emit();
-  *   }
-  * }
-  * ```
+  * Deliver an event to the oldest parked iterator waiter, or buffer it in the
+  * queue. Events emitted after `close()` are dropped.
   *
   * @internal
   */
@@ -600,25 +476,9 @@ export class Watcher {
   // macOS implementation (kqueue EVFILT_VNODE)
   // ---------------------------------------------------------------------------
   /**
-  * Private method `#watchDarwin` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchDarwin() {
-  *     return 'watchDarwin';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#watchDarwin();
-  *   }
-  * }
-  * ```
+  * macOS: open `path` with `O_EVTONLY` and register a kqueue vnode filter for
+  * all NOTE_* flags, then recurse into subdirectories when recursive watching
+  * is enabled. Throws if the path cannot be opened.
   *
   * @internal
   */
@@ -639,25 +499,9 @@ export class Watcher {
     }
   }
   /**
-  * Private method `#handleVnode` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handleVnode() {
-  *     return 'handleVnode';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#handleVnode();
-  *   }
-  * }
-  * ```
+  * macOS: translate kqueue vnode fflags into normalized events. NOTE_DELETE
+  * closes and forgets the now-invalid fd; NOTE_WRITE on a recursive directory
+  * watch triggers a re-scan for new subdirectories.
   *
   * @internal
   */
@@ -703,27 +547,10 @@ export class Watcher {
       });
     }
   }
-  /** Recursively open+watch all subdirectories under `path`. */
   /**
-  * Private method `#scanDirDarwin` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #scanDirDarwin() {
-  *     return 'scanDirDarwin';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#scanDirDarwin();
-  *   }
-  * }
-  * ```
+  * macOS: asynchronously list `dirPath` and open a vnode watch for every
+  * subdirectory not already being watched. Listing errors (for example, the
+  * directory was deleted mid-scan) are swallowed.
   *
   * @internal
   */
@@ -746,27 +573,9 @@ export class Watcher {
       // Directory may have been deleted — ignore
     });
   }
-  /** Re-scan a directory for newly added subdirectories. */
   /**
-  * Private method `#rescanDirDarwin` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #rescanDirDarwin() {
-  *     return 'rescanDirDarwin';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#rescanDirDarwin();
-  *   }
-  * }
-  * ```
+  * macOS: re-scan a directory for newly added subdirectories after a
+  * directory modify event.
   *
   * @internal
   */
@@ -777,25 +586,9 @@ export class Watcher {
   // Linux implementation (inotify)
   // ---------------------------------------------------------------------------
   /**
-  * Private method `#watchLinux` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchLinux() {
-  *     return 'watchLinux';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#watchLinux();
-  *   }
-  * }
-  * ```
+  * Linux: add an inotify watch for `path` on the shared inotify fd, then
+  * recurse into subdirectories when recursive watching is enabled and the
+  * path is a directory.
   *
   * @internal
   */
@@ -811,25 +604,10 @@ export class Watcher {
     }
   }
   /**
-  * Private method `#handleInotify` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handleInotify() {
-  *     return 'handleInotify';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#handleInotify();
-  *   }
-  * }
-  * ```
+  * Linux: translate a parsed inotify event into normalized events, joining the
+  * watch's directory path with the event's child name. New subdirectories seen
+  * via IN_CREATE or IN_MOVED_TO are auto-watched when recursive; IN_IGNORED
+  * drops the watch descriptor's state.
   *
   * @internal
   */
@@ -888,27 +666,10 @@ export class Watcher {
       this.#wds.delete(ev.wd);
     }
   }
-  /** Recursively add inotify watches for all subdirectories under `dirPath`. */
   /**
-  * Private method `#scanDirLinux` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #scanDirLinux() {
-  *     return 'scanDirLinux';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#scanDirLinux();
-  *   }
-  * }
-  * ```
+  * Linux: asynchronously list `dirPath` and add inotify watches for every
+  * subdirectory not already being watched. Listing errors (for example, the
+  * directory was deleted mid-scan) are swallowed.
   *
   * @internal
   */
@@ -932,27 +693,12 @@ export class Watcher {
       // Directory may have been deleted — ignore
     });
   }
-  /** Background read loop for inotify (Linux). */
   /**
-  * Private method `#runReadLoop` used by `Watcher`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #runReadLoop() {
-  *     return 'runReadLoop';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#runReadLoop();
-  *   }
-  * }
-  * ```
+  * Linux: background loop started at construction. Waits for the inotify fd
+  * to become readable (racing against `close()`), reads a batch of events,
+  * and dispatches each to `#handleInotify`. IN_ATTRIB events on a watch that
+  * also reported IN_DELETE_SELF in the same batch are suppressed to avoid a
+  * spurious modify-after-delete.
   *
   * @internal
   */

@@ -20,29 +20,40 @@
 *
 * The WHATWG spec has a conceptual "abort steps" algorithm that is triggered
 * by the controller but runs inside the signal. In a full DOM implementation
-* this is a C++ internal link. Here we approximate it with a WeakMap.
+* this is a C++ internal link. Here we approximate it with WeakMaps.
 *
-* In `AbortSignal`'s constructor, a closure is created that has direct access
-* to `this.#aborted` and `this.#reason`. That closure is stored in the
-* module-level `_signalAbort` WeakMap, keyed on the signal instance.
-* `AbortController.abort()` calls `_signalAbort.get(this.#signal)` to
-* retrieve and invoke the closure.
+* In `AbortSignal`'s constructor, closures are created that have direct
+* access to `this.#aborted` and `this.#reason`. They are stored in the
+* module-level `_signalAbort` and `_signalMarkAbort` WeakMaps, keyed on the
+* signal instance. `AbortController.abort()` calls
+* `_signalAbort.get(this.#signal)` to retrieve and invoke the trigger.
+* Aborting is two-phase, matching the spec: first every affected signal
+* (the source plus its transitive dependents) is marked aborted and its
+* reason recorded, then abort events are dispatched in that same order.
+* An abort listener therefore always observes `aborted === true` on every
+* related signal, and sources fire before their dependents.
 *
 *
 * ## AbortSignal.timeout(ms)
 *
 * Coerces `ms` with Number() and accepts only finite, non-negative delays.
-* Invalid values throw RangeError before a signal is created. Uses `fino:loop`
-* to set a timer. The import is done lazily to avoid a circular dependency at
-* module load time. The timer is not externally cancelable; it either fires and
-* aborts the signal or is ignored if the realm exits first.
+* Invalid values throw RangeError before a signal is created. Uses
+* `internal:runtime/loop` to set a timer. The import is done lazily to avoid
+* a circular dependency at module load time. The timer is not externally
+* cancelable; it either fires and aborts the signal or is ignored if the
+* realm exits first.
 *
 *
 * ## AbortSignal.any(signals)
 *
-* Iterates the input signals. If any is already aborted, the output signal
-* is immediately aborted. Otherwise each input gets an abort listener that
-* triggers the output. The first input to fire wins (idempotent closure).
+* Validates that the input is iterable and every element is an AbortSignal.
+* If any input is already aborted, the output signal is created pre-aborted
+* with that input's reason. Otherwise the output is registered as a
+* dependent of each input's *source* signals (composite signals from a
+* previous `any()` call are flattened to their original sources), so a
+* single controller abort marks the whole dependency graph before any abort
+* event fires. The first source to abort wins; later aborts are ignored
+* because signal state is immutable once settled.
 *
 *
 * ```ts no_run
@@ -51,14 +62,14 @@
 * const controller = new AbortController();
 * const { signal } = controller;
 *
-* signal.addEventListener('abort', (e) => console.log('aborted:', e.target.reason));
+* signal.addEventListener('abort', () => console.log('aborted:', signal.reason));
 * controller.abort();
 * // → signal.aborted === true
 *
 * // Static factories:
-* AbortSignal.abort(reason?)   // pre-aborted signal
-* AbortSignal.timeout(ms)      // signal that aborts after ms milliseconds
-* AbortSignal.any(signals)     // signal that aborts when any input signal aborts
+* const done = AbortSignal.abort(new Error('done'));  // pre-aborted signal
+* const timed = AbortSignal.timeout(5000);            // aborts after 5s with a TimeoutError
+* const merged = AbortSignal.any([signal, timed]);    // aborts when any input aborts
 * ```
 *
 */
@@ -92,84 +103,64 @@ function _createSignal(): AbortSignal {
 // AbortSignal
 // ---------------------------------------------------------------------------
 /**
-* Generated-doc-visible class `AbortSignal`.
+* A signal object that notifies observers when an operation is aborted.
 *
-* This implementation detail is included when documentation is built with
-* `--include-private`. It describes state or helper behavior used by the
-* owning module rather than a stable application-facing contract. Prefer the
-* public API around the owning type unless you are maintaining this runtime.
+* This is the WHATWG `AbortSignal` interface, installed on `globalThis` by the
+* runtime bootstrap — application code never imports it. A signal starts
+* non-aborted; once it aborts (via its owning AbortController or one of the
+* static factories) it stays aborted forever, its `reason` is fixed, and an
+* `abort` event is dispatched exactly once. Listeners added after the signal
+* has already aborted are never called retroactively — check `aborted` first
+* or use `throwIfAborted()`.
 *
-* @example
+* Signals cannot be constructed directly (`new AbortSignal()` throws a
+* TypeError). Create them through `new AbortController().signal`,
+* `AbortSignal.abort()`, `AbortSignal.timeout()`, or `AbortSignal.any()`.
+*
 * ```ts no_run
-* const documentedClass = 'AbortSignal';
-* console.log(documentedClass);
+* const controller = new AbortController();
+* const { signal } = controller;
+*
+* async function poll(signal: AbortSignal) {
+*   while (true) {
+*     signal.throwIfAborted();
+*     await fetch('https://example.com/status', { signal });
+*   }
+* }
+*
+* const work = poll(signal).catch((err) => console.log('stopped:', err));
+* controller.abort(new Error('shutting down'));
 * ```
 *
-* @internal
 */
 export class AbortSignal extends EventTarget {
   /**
-  * Private property `#aborted` used by `AbortSignal`.
+  * Backing state for the `aborted` getter.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #aborted = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#aborted;
-  *   }
-  * }
-  * ```
+  * Flipped to true exactly once by the mark-abort closure created in the
+  * constructor; it never returns to false. Only that closure and the public
+  * getters read or write it, which is why the closure is captured in a
+  * module-level WeakMap rather than exposed as a method.
   *
   * @internal
   */
   #aborted: boolean = false;
   /**
-  * Private property `#reason` used by `AbortSignal`.
+  * Backing state for the `reason` getter.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #reason = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#reason;
-  *   }
-  * }
-  * ```
+  * Remains undefined until the signal aborts, then holds whatever value was
+  * passed to abort() — including falsy values like null, 0, or '' — for the
+  * rest of the signal's lifetime.
   *
   * @internal
   */
   #reason: unknown = undefined;
   /**
-  * Private property `#onabort` used by `AbortSignal`.
+  * Currently assigned `onabort` handler, or null when unset.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #onabort = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#onabort;
-  *   }
-  * }
-  * ```
+  * The setter mirrors this into a real addEventListener registration, so the
+  * field exists only to remember which listener to remove when the handler is
+  * replaced or cleared.
   *
   * @internal
   */
@@ -254,8 +245,9 @@ export class AbortSignal extends EventTarget {
   /**
   * IDL event handler for the abort event.
   *
-  * Assigning a non-function clears the handler. The handler fires before
-  * listeners registered with addEventListener('abort', ...).
+  * Assigning a non-function clears the handler. The handler is backed by a
+  * regular addEventListener registration, so it fires in insertion order
+  * relative to other abort listeners: assign it first and it runs first.
   *
   * ```typescript no_run
   * const controller = new AbortController();
@@ -340,7 +332,9 @@ export class AbortSignal extends EventTarget {
   * The delay is coerced with Number() and must be finite and non-negative.
   * NaN, negative values, and infinities throw RangeError. The timer is
   * scheduled with the runtime loop, and the reason is a DOMException named
-  * "TimeoutError".
+  * "TimeoutError". The timer cannot be cancelled from the outside; to combine
+  * a deadline with manual cancellation, merge this signal with a controller's
+  * signal via AbortSignal.any().
   *
   * ```typescript no_run
   * const signal = AbortSignal.timeout(1000);
@@ -364,10 +358,13 @@ export class AbortSignal extends EventTarget {
   /**
   * Create a signal that aborts when the first input signal aborts.
   *
-  * The input must be iterable and every element must be an AbortSignal. If an
-  * input is already aborted, the returned signal is aborted immediately with
-  * that reason. Otherwise the signal is linked to the original source signals
-  * so dependents are marked aborted before abort events are dispatched.
+  * The input must be iterable and every element must be an AbortSignal —
+  * anything else throws a TypeError. If an input is already aborted, the
+  * returned signal is aborted immediately with the reason of the first such
+  * input in iteration order. Otherwise the signal is linked to the original
+  * source signals (composite inputs from a previous any() call are flattened)
+  * so dependents are marked aborted before abort events are dispatched. An
+  * empty iterable yields a signal that can never abort.
   *
   * ```typescript no_run
   * const a = new AbortController();
@@ -420,40 +417,42 @@ export class AbortSignal extends EventTarget {
 // AbortController
 // ---------------------------------------------------------------------------
 /**
-* Generated-doc-visible class `AbortController`.
+* The controller half of the abort protocol: owns a signal and can abort it.
 *
-* This implementation detail is included when documentation is built with
-* `--include-private`. It describes state or helper behavior used by the
-* owning module rather than a stable application-facing contract. Prefer the
-* public API around the owning type unless you are maintaining this runtime.
+* This is the WHATWG `AbortController` interface, installed on `globalThis`
+* by the runtime bootstrap — application code never imports it. Construction
+* is cheap: each controller creates exactly one AbortSignal, hands out that
+* same instance from the `signal` getter, and `abort()` settles it at most
+* once. The split exists so cancellation authority stays with the code that
+* created the controller while the signal can be passed freely to any number
+* of consumers, none of which can trigger the abort themselves.
 *
-* @example
 * ```ts no_run
-* const documentedClass = 'AbortController';
-* console.log(documentedClass);
+* const controller = new AbortController();
+*
+* const response = fetch('https://example.com/large-file', {
+*   signal: controller.signal,
+* });
+*
+* // Give up if the download has not finished in five seconds.
+* setTimeout(() => controller.abort(new Error('took too long')), 5000);
+*
+* try {
+*   await response;
+* } catch (err) {
+*   if (controller.signal.aborted) console.log('cancelled:', controller.signal.reason);
+* }
 * ```
 *
-* @internal
 */
 export class AbortController {
   /**
-  * Private property `#signal` used by `AbortController`.
+  * The single AbortSignal owned by this controller.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #signal = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#signal;
-  *   }
-  * }
-  * ```
+  * Created eagerly at construction through _createSignal(), which flips the
+  * one-shot construction guard so the otherwise-illegal AbortSignal
+  * constructor can run. The instance never changes for the controller's
+  * lifetime.
   *
   * @internal
   */
@@ -489,8 +488,9 @@ export class AbortController {
   * Abort the controlled signal with an optional reason.
   *
   * The first call wins. Later calls are ignored because AbortSignal state is
-  * immutable after aborting. If reason is omitted, an "AbortError" Error is
-  * stored as a DOMException.
+  * immutable after aborting. If reason is omitted or undefined, the reason is
+  * a DOMException named "AbortError". Aborting also settles any dependent
+  * signals created with AbortSignal.any() before dispatching abort events.
   *
   * ```typescript no_run
   * const controller = new AbortController();

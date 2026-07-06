@@ -1,14 +1,36 @@
 /**
 * internal/opentelemetry/instrumentations/tls — internal runtime module.
 *
-* Converts runtime TLS handshake lifecycle topic events into client spans.
-* Handshakes are tracked by handshake id until an end or error event is
-* published.
+* Turns the runtime's internal TLS handshake lifecycle into OpenTelemetry client
+* spans. The runtime publishes `tls.handshake.start`, `tls.handshake.end`, and
+* `tls.handshake.error` events on the internal topic bus whenever a socket
+* negotiates TLS; this instrumentation subscribes to those topics and emits one
+* `TLS <hostname>:<port>` client span per completed handshake, tagged with the
+* peer address, negotiated protocol, and the originating runtime request when
+* the handshake belongs to an outgoing fetch or proxy hop.
 *
-* ```js
-* const { TlsInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/tls';
-* console.log(new TlsInstrumentation().constructor.name);
+* Each in-flight handshake is keyed by its handshake id from the start event
+* until the matching end or error event arrives, so overlapping handshakes on
+* different connections are tracked independently. A handshake whose start event
+* was never seen (for instance because tracing was enabled mid-handshake) is
+* ignored rather than producing a span with missing timing. Spans are recorded
+* only while the tracer provider context is enabled, so enabling the
+* instrumentation while tracing is off is inert until a provider is installed.
+*
+* This is internal wiring behind the public OpenTelemetry facade — application
+* code enables the full instrumentation set through the SDK rather than
+* constructing this class directly. Use it directly only when selectively wiring
+* runtime instrumentations against a custom SDK-like sink.
+*
+* ```ts no_run
+* import { TlsInstrumentation } from 'internal:opentelemetry/instrumentations/tls';
+*
+* const instrumentation = new TlsInstrumentation();
+* const disposable = instrumentation.enable(sdk);
+*
+* // TLS handshakes now record `TLS host:port` client spans through `sdk`.
+* // Detach the topic subscriptions during shutdown.
+* disposable.dispose();
 * ```
 *
 * @internal
@@ -21,14 +43,25 @@ import { isTracerProviderContextEnabled } from '../traces.ts';
 /**
 * Runtime TLS handshake instrumentation.
 *
-* The instrumentation subscribes to `tls.handshake.start`,
-* `tls.handshake.end`, and `tls.handshake.error` topics. It records spans only
-* while tracer context recording is enabled. Missing start events are ignored.
+* Construct once, then call `enable(sdk)` to attach the topic subscriptions and
+* receive a `Disposable` that removes them again. The class holds no global
+* state, so the same instrumentation type can be enabled independently against
+* several SDK instances; a single instance, however, keeps one live map of
+* in-flight handshakes and should be `enable`d once at a time.
 *
-* ```js
-* const { TlsInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/tls';
-* const disposable = new TlsInstrumentation().enable({ recordSpan() {} });
+* Only handshakes that both start and finish while the tracer provider context
+* is enabled produce a span. A start observed with tracing off leaves nothing to
+* correlate the later end against, and an end or error whose start was never
+* recorded is silently dropped.
+*
+* ```ts no_run
+* import { TlsInstrumentation } from 'internal:opentelemetry/instrumentations/tls';
+*
+* const spans: unknown[] = [];
+* const sdk = { recordSpan: (span: unknown) => spans.push(span) };
+*
+* const disposable = new TlsInstrumentation().enable(sdk);
+* // ... run TLS traffic; each handshake pushes a span into `spans` ...
 * disposable.dispose();
 * ```
 *
@@ -36,23 +69,14 @@ import { isTracerProviderContextEnabled } from '../traces.ts';
 */
 export class TlsInstrumentation {
   /**
-  * Private property `#active` used by `TlsInstrumentation`.
+  * Tracks in-flight TLS handshakes between their start and end/error events.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #active = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#active;
-  *   }
-  * }
-  * ```
+  * Keyed by the handshake id carried on every `RuntimeTlsEvent`, each entry
+  * captures the peer hostname and port, the originating runtime request id and
+  * hop when the handshake belongs to an outgoing request, and the start
+  * timestamp used as the span's start time. Entries are inserted on
+  * `tls.handshake.start` and removed when the matching end or error event
+  * finishes the span, so the map only ever holds handshakes still negotiating.
   *
   * @internal
   */
@@ -64,22 +88,34 @@ export class TlsInstrumentation {
     startTimeUnixNano: number;
   }>();
   /**
-  * Enable TLS handshake topic subscriptions.
+  * Subscribes to the TLS handshake topics and streams completed spans to `sdk`.
   *
-  * Each finished handshake records a client span named
-  * `TLS <hostname>:<port>` with server, TLS protocol, runtime request, and
-  * error attributes when present. The returned disposable removes all
-  * subscriptions.
+  * Attaches three subscriptions — start, end, and error — to the runtime's TLS
+  * handshake topics. `sdk` need only supply a `recordSpan` method; each finished
+  * handshake is passed to it as a client span named `TLS <hostname>:<port>`
+  * carrying `server.address`/`server.port`, the negotiated `tls.protocol.name`,
+  * the originating `runtime.request_id`/`runtime.request_hop` when the handshake
+  * belongs to an outgoing request, and `error.message` on failure. Successful
+  * handshakes get an `OK` status; failed ones get `ERROR` with the error text.
   *
-  * ```js
-  * const { TlsInstrumentation } =
-  *   import 'internal:opentelemetry/instrumentations/tls';
-  * const disposable = new TlsInstrumentation().enable({ recordSpan() {} });
+  * The returned `Disposable` removes all three subscriptions; call its `dispose`
+  * during shutdown to detach cleanly. While the tracer provider context is
+  * disabled every callback is a no-op, so no spans are buffered when tracing is
+  * off.
+  *
+  * ```ts no_run
+  * import { TlsInstrumentation } from 'internal:opentelemetry/instrumentations/tls';
+  *
+  * const disposable = new TlsInstrumentation().enable({
+  *   recordSpan(span) {
+  *     console.log('tls span', span.name);
+  *   },
+  * });
+  *
+  * // Stop recording TLS handshake spans.
   * disposable.dispose();
   * ```
   *
-  * @param sdk SDK-like sink that accepts completed spans.
-  * @returns A disposable that removes all TLS subscriptions.
   * @internal
   */
   enable(sdk: OtelSdkLike): Disposable {

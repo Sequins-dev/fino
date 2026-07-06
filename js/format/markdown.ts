@@ -7,8 +7,37 @@
 * GFM tables, reference links, autolinks, emphasis, strong text, code spans,
 * strikethrough, links, images, and raw HTML with safe defaults.
 *
-* Raw HTML is escaped unless `allowRawHtml` is enabled. Link URLs are limited
-* to relative URLs and `http`/`https` unless `allowUnsafeLinks` is set.
+* Parsing and rendering are split: `parseMarkdown()` produces a
+* `MarkdownDocument` block tree that can be inspected, transformed, or
+* rendered multiple times with different options, while `renderMarkdown()`
+* accepts either a source string or a parsed document and emits HTML.
+* `renderMarkdownInline()` renders span-level Markdown without wrapping the
+* result in block elements, which suits one-line summaries and table cells.
+* The parser never throws — malformed constructs fall back to escaped literal
+* text rather than errors.
+*
+* Output is safe by default. Raw HTML is escaped unless `allowRawHtml` is
+* enabled, and even then the GFM tagfilter neutralizes dangerous tags such as
+* `script` and `iframe`. Link and image URLs are limited to relative URLs and
+* `http`/`https` unless `allowUnsafeLinks` is set; unsafe URLs render as plain
+* label text instead of anchors.
+*
+* ```ts no_run
+* import { parseMarkdown, renderMarkdown } from 'fino:format/markdown';
+*
+* const doc = parseMarkdown(`# Guide
+*
+* See the [API reference][api] for details.
+*
+* [api]: ./api.md`);
+*
+* const html = renderMarkdown(doc, {
+*   headingOffset: 1,
+*   resolveLink: (href) => href.replace(/\.md$/, '.html'),
+* });
+* // <h2>Guide</h2>
+* // <p>See the <a href="./api.html">API reference</a> for details.</p>
+* ```
 *
 * Useful references:
 * - CommonMark: https://spec.commonmark.org/0.31.2/
@@ -17,10 +46,30 @@
 import { Scanner } from '../parsing/scanner.ts';
 /**
 * Options controlling Markdown HTML rendering, link safety, and code output.
+*
+* All fields are optional; the defaults render safe HTML with no external
+* hooks. The same options object is accepted by `renderMarkdown()` and
+* `renderMarkdownInline()`.
+*
+* ```ts no_run
+* import { renderMarkdown, type MarkdownOptions } from 'fino:format/markdown';
+*
+* const options: MarkdownOptions = {
+*   headingOffset: 1,
+*   references: { home: '/index.html' },
+*   renderCode: (code, lang) => `<pre data-lang="${lang}">${code}</pre>`,
+* };
+* const html = renderMarkdown('# Docs\n\nBack to [Home][home].', options);
+* ```
 */
 export interface MarkdownOptions {
   /**
   * Allow link URLs outside the default safe set.
+  *
+  * By default only relative URLs and `http`/`https` URLs are rendered; any
+  * other protocol (`javascript:`, `data:`, `mailto:`, ...) causes the link to
+  * degrade to its label text. Setting this renders every URL verbatim — only
+  * enable it for trusted input.
   */
   allowUnsafeLinks?: boolean;
   /**
@@ -32,19 +81,36 @@ export interface MarkdownOptions {
   allowRawHtml?: boolean;
   /**
   * Add this many levels to rendered Markdown headings.
+  *
+  * Useful when embedding a document under an existing page heading, e.g. an
+  * offset of `2` renders `# Title` as `<h3>`. Resulting levels are clamped to
+  * the `h1`–`h6` range.
   */
   headingOffset?: number;
   /**
   * Reference-style link definitions to use in addition to definitions parsed
   * from the document.
+  *
+  * Keys are matched case-insensitively with collapsed whitespace. Entries
+  * here override same-named definitions parsed from the source.
   */
   references?: Record<string, string>;
   /**
   * Rewrite link URLs while rendering.
+  *
+  * Called for every link and image with the raw destination and the link
+  * label (or image alt text). Return a replacement URL, or `undefined` to
+  * keep the original. The returned URL is still checked against the
+  * safe-link policy unless `allowUnsafeLinks` is set.
   */
   resolveLink?: (href: string, label: string) => string | undefined;
   /**
-  * Render fenced code blocks.
+  * Render fenced code blocks, replacing the default output.
+  *
+  * Receives the raw (unescaped) code, the language token, and any trailing
+  * info-string metadata. The returned string is inserted into the HTML as-is,
+  * so the callback is responsible for escaping. Without this hook, code
+  * renders as `<pre><code class="language-…">` with HTML-escaped content.
   */
   renderCode?: (code: string, lang: string, meta: string) => string;
 }
@@ -52,7 +118,17 @@ export interface MarkdownOptions {
 * Block node in a parsed Markdown document.
 *
 * The tree represents the block constructs rendered by `renderMarkdown()`.
-* Inline Markdown remains in string fields and is interpreted during rendering.
+* Inline Markdown remains in string fields (`text`, list item paragraphs,
+* table cells) and is interpreted during rendering, so a node tree can be
+* transformed before inline spans are committed to HTML.
+*
+* ```ts no_run
+* import { parseMarkdown, type MarkdownNode } from 'fino:format/markdown';
+*
+* const headings = parseMarkdown(source).nodes
+*   .filter((node): node is Extract<MarkdownNode, { kind: 'heading' }> => node.kind === 'heading')
+*   .map((node) => ({ level: node.level, text: node.text }));
+* ```
 */
 export type MarkdownNode = {
   kind: 'paragraph';
@@ -88,19 +164,50 @@ export type MarkdownNode = {
 /**
 * Parsed list item content.
 *
-* `nodes` contains the item blocks. `task` is `true` for checked GFM task
-* items, `false` for unchecked items, and omitted for ordinary list items.
+* Each item holds its own block tree, so nested lists, code blocks, and
+* multi-paragraph items appear as child nodes.
+*
+* ```ts no_run
+* import { parseMarkdown } from 'fino:format/markdown';
+*
+* const [list] = parseMarkdown('- [x] shipped\n- [ ] pending').nodes;
+* if (list?.kind === 'list') {
+*   const done = list.items.filter((item) => item.task === true).length;
+* }
+* ```
 */
 export interface MarkdownListItem {
+  /**
+  * Block nodes forming the item body, in source order.
+  */
   nodes: MarkdownNode[];
+  /**
+  * GFM task-list state: `true` for `[x]`, `false` for `[ ]`, and omitted for
+  * ordinary list items.
+  */
   task?: boolean;
 }
 /**
 * GFM table column alignment.
+*
+* Derived from colons in the table delimiter row (`:---`, `---:`, `:---:`).
+* `undefined` means the column declared no alignment and cells render without
+* an `align` attribute.
 */
 export type TableAlign = 'left' | 'right' | 'center' | undefined;
 /**
 * Parsed Markdown tree and reference-style link definitions.
+*
+* Produced by `parseMarkdown()` and accepted by `renderMarkdown()`, allowing
+* one parse to be inspected or rendered multiple times with different options.
+*
+* ```ts no_run
+* import { parseMarkdown, renderMarkdown, type MarkdownDocument } from 'fino:format/markdown';
+*
+* const doc: MarkdownDocument = parseMarkdown('See [Docs][docs].\n\n[docs]: /docs');
+* doc.references.docs;          // '/docs'
+* const html = renderMarkdown(doc);
+* ```
 */
 export interface MarkdownDocument {
   /**
@@ -109,6 +216,9 @@ export interface MarkdownDocument {
   nodes: MarkdownNode[];
   /**
   * Normalized reference-style link definitions parsed from the document.
+  *
+  * Keys are lowercased with whitespace collapsed; duplicate definitions are
+  * last-write-wins.
   */
   references: Record<string, string>;
 }
@@ -476,6 +586,27 @@ function parseList(state: ParseState, baseIndent: number): MarkdownNode | undefi
 }
 /**
 * Parse Markdown into a reusable document tree.
+*
+* Splits the source into block nodes (headings, paragraphs, lists, code,
+* blockquotes, tables, HTML blocks, thematic breaks) and collects
+* reference-style link definitions. Inline spans are left as raw text inside
+* the nodes and are only interpreted when the tree is rendered. Parsing never
+* throws; unrecognized syntax becomes paragraph text.
+*
+* ```ts no_run
+* import { parseMarkdown } from 'fino:format/markdown';
+*
+* const doc = parseMarkdown(`# Changelog
+*
+* - added \`renderCode\` hook
+* - fixed [tables][gfm]
+*
+* [gfm]: https://github.github.com/gfm/`);
+*
+* doc.nodes[0];               // { kind: 'heading', level: 1, text: 'Changelog' }
+* doc.nodes[1]?.kind;         // 'list'
+* doc.references.gfm;         // 'https://github.github.com/gfm/'
+* ```
 */
 export function parseMarkdown(markdown: string): MarkdownDocument {
   const scanner = new Scanner(markdown, {
@@ -558,6 +689,26 @@ function readLinkDestination(scanner: Scanner): {
 }
 /**
 * Render inline Markdown spans without wrapping the result in block elements.
+*
+* Interprets emphasis, strong text, code spans, strikethrough, links, images,
+* reference links, bare `http`/`https` autolinks, backslash escapes, and raw
+* inline HTML tags. Emphasis and strong text use asterisk delimiters only
+* (`*em*`, `**strong**`); underscore-delimited emphasis renders as literal
+* text. Everything else is HTML-escaped, and malformed constructs
+* (an unclosed link, a dangling `**`) degrade to escaped literal text.
+* Because block parsing never runs, reference links resolve only against
+* `options.references`. Use this for single-line contexts such as titles,
+* summaries, and table cells where a `<p>` wrapper would be wrong.
+*
+* ```ts no_run
+* import { renderMarkdownInline } from 'fino:format/markdown';
+*
+* renderMarkdownInline('Return the `value` as **HTML**.');
+* // 'Return the <code>value</code> as <strong>HTML</strong>.'
+*
+* renderMarkdownInline('See [Docs][docs].', { references: { docs: '/docs' } });
+* // 'See <a href="/docs">Docs</a>.'
+* ```
 */
 export function renderMarkdownInline(markdown: string, options: MarkdownOptions = {}): string {
   const references = Object.assign({}, options.references ?? {});
@@ -741,6 +892,27 @@ function renderTable(table: Extract<MarkdownNode, {
 }
 /**
 * Render a Markdown document or source string to HTML.
+*
+* A string argument is parsed with `parseMarkdown()` first; passing an
+* already-parsed `MarkdownDocument` skips that step, which is useful when the
+* same document renders more than once or was transformed after parsing.
+* Reference definitions from the document are merged with
+* `options.references`, with the options taking precedence.
+*
+* Output follows the module's safety defaults: raw HTML is escaped and
+* non-`http(s)`, non-relative link URLs are dropped unless the corresponding
+* options opt out.
+*
+* ```ts no_run
+* import { renderMarkdown } from 'fino:format/markdown';
+*
+* renderMarkdown('# Hello\n\nSome *emphasis* and a [link](/docs).');
+* // '<h1>Hello</h1>\n<p>Some <em>emphasis</em> and a <a href="/docs">link</a>.</p>'
+*
+* renderMarkdown('```ts\nconst x = 1;\n```', {
+*   renderCode: (code, lang) => highlight(code, lang),
+* });
+* ```
 */
 export function renderMarkdown(markdown: string | MarkdownDocument, options: MarkdownOptions = {}): string {
   const document = typeof markdown === 'string' ? parseMarkdown(markdown) : markdown;

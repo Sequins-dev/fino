@@ -6,6 +6,10 @@ import { DiskFileSystem } from 'fino:file';
 
 const fs = new DiskFileSystem();
 const jsRoot = new URL('../../js/', import.meta.url).pathname;
+const textDecoder = new TextDecoder();
+async function readText(path: string): Promise<string> {
+  return textDecoder.decode(await fs.readFile(path));
+}
 
 async function collectGuides(dir: string, prefix: string): Promise<string[]> {
   const found: string[] = [];
@@ -30,7 +34,7 @@ describe('documentation map', () => {
   it('links every authored guide under js/', async (t) => {
     const guides = await collectGuides(jsRoot, '');
     t.ok(guides.length > 30, `found ${guides.length} guides`);
-    const map = await fs.readFile(`${jsRoot}documentation.md`);
+    const map = await readText(`${jsRoot}documentation.md`);
     const linked = linkedPaths(map);
     const missing = guides.filter((guide) => {
       return guide !== 'documentation.md' && !linked.has(guide);
@@ -40,7 +44,7 @@ describe('documentation map', () => {
 
   it('links only guides that exist', async (t) => {
     const guides = new Set(await collectGuides(jsRoot, ''));
-    const map = await fs.readFile(`${jsRoot}documentation.md`);
+    const map = await readText(`${jsRoot}documentation.md`);
     const stale = [...linkedPaths(map)].filter((target) => {
       return !guides.has(target);
     });

@@ -103,7 +103,30 @@ type SimulatedNetworkTraceBase = {
 * Trace events are append-only snapshots intended for assertions and debugging.
 * Address objects and payload byte counts are copied when the event is created,
 * so later socket mutation or packet corruption does not alter previous trace
-* entries.
+* entries. The union is discriminated by `type`: datagram lifecycle events
+* (`datagram:queued`, `datagram:duplicated`, `datagram:dropped`,
+* `datagram:delivered`) carry the full packet fields, while stream events
+* (`stream:listen`, `stream:connect`, `stream:accepted`) carry only their
+* relevant addresses. Every event is pushed onto `SimulatedNetworkProvider.trace`
+* in the order it occurred at the current simulated time.
+*
+* ```ts no_run
+* import { SimulatedNetworkProvider } from 'internal:net/simulated-provider';
+* import type { SimulatedNetworkTraceEvent } from 'internal:net/simulated-provider';
+*
+* const net = new SimulatedNetworkProvider({ defaultLink: { latencyMs: 5 } });
+* const a = await net.datagram({ family: 'ipv4', ip: '10.0.0.1', port: 0 });
+* const b = await net.datagram({ family: 'ipv4', ip: '10.0.0.2', port: 4433 });
+*
+* await a.send(new TextEncoder().encode('ping'), b.address);
+* net.advance(5);
+* net.runUntilIdle();
+*
+* const dropped = net.trace.filter(
+*   (event: SimulatedNetworkTraceEvent) => event.type === 'datagram:dropped',
+* );
+* console.log('drops so far:', dropped.length);
+* ```
 *
 * @internal
 */
@@ -139,7 +162,34 @@ export type SimulatedNetworkTraceEvent = (SimulatedNetworkTraceBase & {
 * Values are deterministic for a given provider seed. Rates are clamped to the
 * inclusive range `0..1`; `1` means the impairment always applies and `0` means
 * it never applies. `queueLimit` counts original datagrams accepted for a link,
-* not duplicate copies created by the duplication impairment.
+* not duplicate copies created by the duplication impairment. Every field is
+* optional; omitted fields inherit from the provider's default link, and unset
+* delay/size fields mean "no impairment" (zero delay, unbounded MTU/queue).
+*
+* Pass these to the constructor's `defaultLink` to impair all traffic, or to
+* `setLink(from, to, options)` to override a single source/destination path.
+*
+* ```ts no_run
+* import { SimulatedNetworkProvider } from 'internal:net/simulated-provider';
+*
+* // A lossy, high-latency mobile-style uplink with a 1200-byte path MTU.
+* const net = new SimulatedNetworkProvider({
+*   defaultLink: {
+*     latencyMs: 40,
+*     jitterMs: 15,
+*     lossRate: 0.05,
+*     mtu: 1200,
+*     reorderRate: 0.1,
+*   },
+* });
+*
+* // Make one specific path drop everything larger than a tiny MTU.
+* net.setLink(
+*   { family: 'ipv4', ip: '10.0.0.1', port: 5000 },
+*   { family: 'ipv4', ip: '10.0.0.2', port: 4433 },
+*   { mtu: 8, duplicateRate: 1 },
+* );
+* ```
 *
 * @internal
 */
@@ -172,7 +222,18 @@ export interface SimulatedLinkOptions {
 *
 * `defaultLink` applies to traffic without a more specific `setLink()` rule.
 * `seed` controls jitter, rates, and reordering decisions so test runs are
-* reproducible.
+* reproducible: two providers built with the same seed and the same sequence of
+* sends make identical loss, duplication, corruption, and reorder choices.
+*
+* ```ts no_run
+* import { SimulatedNetworkProvider } from 'internal:net/simulated-provider';
+*
+* // Reproducible 10% loss across every link, pinned to seed 42.
+* const net = new SimulatedNetworkProvider({
+*   seed: 42,
+*   defaultLink: { latencyMs: 20, lossRate: 0.1 },
+* });
+* ```
 *
 * @internal
 */
@@ -594,6 +655,46 @@ class SimulatedDatagramSocket implements DatagramSocket {
 * controlled by simulated time; stream connections are accepted immediately but
 * still use the normal Fino `BufferedBytesReader`/`BufferedBytesWriter` shapes.
 *
+* The datagram model is fully manual: `send()` accepts a packet and schedules it
+* for a future simulated time based on the link's latency, jitter, bandwidth, and
+* reorder impairments, but nothing is handed to a receiver until the test both
+* moves time forward with `advance(ms)` and drains due events with
+* `runUntilIdle()`. Splitting time movement from delivery lets a test assert
+* exactly which packets are in flight at each instant. Stream `connect()`/
+* `listen()` bypass the clock entirely — a connect immediately pushes an accepted
+* peer onto the matching listener and returns a wired in-memory byte pipe.
+*
+* Impairments compose from a default link plus per-path overrides, and scripted
+* one-shot hooks (`dropNextDatagrams`, `corruptNextDatagrams`) fire before the
+* probabilistic link rules. NAT-style source rewriting (`rewriteSource`) changes
+* the address a receiver sees and routes replies back to the original socket.
+* Every scheduling decision, drop, duplication, and delivery is recorded on
+* `trace` for packet-level assertions.
+*
+* ```ts no_run
+* import { SimulatedNetworkProvider } from 'internal:net/simulated-provider';
+*
+* const net = new SimulatedNetworkProvider({
+*   seed: 7,
+*   defaultLink: { latencyMs: 15, lossRate: 0.2 },
+* });
+*
+* const client = await net.datagram({ family: 'ipv4', ip: '10.0.0.1', port: 0 });
+* const server = await net.datagram({ family: 'ipv4', ip: '10.0.0.2', port: 4433 });
+*
+* net.dropNextDatagrams(1);                       // force the first send to be lost
+* await client.send(new TextEncoder().encode('hello'), server.address);
+* await client.send(new TextEncoder().encode('world'), server.address);
+*
+* net.advance(15);
+* console.log('delivered', net.runUntilIdle(), 'datagrams');
+* const packet = await server.recv();
+* console.log(new TextDecoder().decode(packet.data)); // 'world'
+*
+* client.close();
+* server.close();
+* ```
+*
 * @internal
 */
 export class SimulatedNetworkProvider extends NetworkProvider {
@@ -610,7 +711,32 @@ export class SimulatedNetworkProvider extends NetworkProvider {
   #scheduled: ScheduledDatagram[] = [];
   #nextEventId = 1;
   #nextEphemeralPort = 49152;
+  /**
+  * Append-only log of every datagram and stream event, in occurrence order.
+  *
+  * Each entry is a copied snapshot, so mutating a socket or corrupting a later
+  * packet never rewrites earlier history. Tests typically map this to `.type`
+  * to assert the exact sequence of scheduling, drops, duplication, and delivery,
+  * or filter it to inspect the payload of a specific delivered datagram. The
+  * array is never cleared automatically; create a fresh provider for a fresh log.
+  *
+  * ```ts no_run
+  * const kinds = net.trace.map((event) => event.type);
+  * // e.g. ['datagram:queued', 'datagram:dropped', 'datagram:delivered']
+  * ```
+  */
   readonly trace: SimulatedNetworkTraceEvent[] = [];
+  /**
+  * Construct a provider with an optional seed and default link impairments.
+  *
+  * The clock starts at `0`. `options.seed` (default `1`) makes every random
+  * impairment decision reproducible, and `options.defaultLink` supplies the
+  * baseline impairments applied to any path without a `setLink()` override.
+  *
+  * ```ts no_run
+  * const net = new SimulatedNetworkProvider({ seed: 3, defaultLink: { latencyMs: 10 } });
+  * ```
+  */
   constructor(options: SimulatedNetworkProviderOptions = {}) {
     super();
     this.#rng = new DeterministicRandom(options.seed ?? 1);
@@ -752,6 +878,21 @@ export class SimulatedNetworkProvider extends NetworkProvider {
       ...filters.corruptByte === undefined ? {} : { corruptByte: filters.corruptByte & 255 }
     });
   }
+  /**
+  * Open a stream connection to a listener bound at `addr`.
+  *
+  * Connections are wired synchronously and are not subject to the simulated
+  * clock or link impairments: a fresh in-memory byte pipe is created, the server
+  * half is pushed onto the matching listener's accept queue, and the client half
+  * is returned resolved. `_opts` is accepted for interface compatibility but
+  * ignored. Throws if no open listener is bound at `addr`.
+  *
+  * ```ts no_run
+  * const listener = net.listen({ family: 'ipv4', ip: '127.0.0.1', port: 8080 });
+  * const client = await net.connect({ family: 'ipv4', ip: '127.0.0.1', port: 8080 });
+  * const server = await listener.accept();
+  * ```
+  */
   async connect(addr: SocketAddress, _opts?: ConnectOptions): Promise<Connection> {
     const listener = this.#listeners.get(addressKey(addr));
     if (listener === undefined || listener.closed) {
@@ -779,6 +920,19 @@ export class SimulatedNetworkProvider extends NetworkProvider {
     listener._push(server);
     return client;
   }
+  /**
+  * Bind a stream listener at `addr` and return it synchronously.
+  *
+  * A `port: 0` bind is assigned a deterministic ephemeral port; the actual bound
+  * address is available on `listener.address`. `_opts` is accepted for interface
+  * compatibility but ignored. Throws if a listener is already bound at the
+  * resolved address.
+  *
+  * ```ts no_run
+  * const listener = net.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+  * console.log('bound on', listener.address);
+  * ```
+  */
   listen(addr: SocketAddress, _opts?: ListenOptions): Listener {
     const bound = this.#allocateAddress(addr, this.#listeners);
     const key = addressKey(bound);
@@ -792,6 +946,20 @@ export class SimulatedNetworkProvider extends NetworkProvider {
     });
     return listener;
   }
+  /**
+  * Bind a datagram socket at `addr`.
+  *
+  * Only IPv4 and IPv6 addresses are accepted; Unix datagrams are unsupported and
+  * throw a `TypeError`. A `port: 0` bind receives a deterministic ephemeral port.
+  * Sends from the returned socket are queued and delivered through the simulated
+  * clock, so a receiver only observes them after `advance()` plus `runUntilIdle()`.
+  * Throws if a datagram socket is already bound at the resolved address.
+  *
+  * ```ts no_run
+  * const socket = await net.datagram({ family: 'ipv4', ip: '10.0.0.1', port: 0 });
+  * console.log('bound on port', socket.address);
+  * ```
+  */
   async datagram(addr: SocketAddress): Promise<DatagramSocket> {
     ensureIpAddress(addr, 'Simulated datagram bind');
     const bound = this.#allocateAddress(addr, this.#datagrams);
@@ -801,14 +969,36 @@ export class SimulatedNetworkProvider extends NetworkProvider {
     this.#datagrams.set(key, socket);
     return socket;
   }
+  /**
+  * Unbind a datagram socket during its own `close()`.
+  *
+  * Internal wiring called by `SimulatedDatagramSocket`; the address is only
+  * released if it still maps to this exact socket, so a rebind under the same
+  * address is never clobbered. Not part of the public provider surface.
+  */
   _removeDatagram(addr: SocketAddress, socket: SimulatedDatagramSocket): void {
     const key = addressKey(addr);
     if (this.#datagrams.get(key) === socket) this.#datagrams.delete(key);
   }
+  /**
+  * Unbind a stream listener during its own `close()`.
+  *
+  * Internal wiring called by `SimulatedListener`; the address is only released
+  * if it still maps to this exact listener. Not part of the public provider
+  * surface.
+  */
   _removeListener(addr: SocketAddress, listener: SimulatedListener): void {
     const key = addressKey(addr);
     if (this.#listeners.get(key) === listener) this.#listeners.delete(key);
   }
+  /**
+  * Route one datagram from a bound socket through the impairment pipeline.
+  *
+  * Internal wiring called by `SimulatedDatagramSocket.send()`. It applies, in
+  * order, scripted drops, MTU limits, probabilistic loss, queue overflow, then
+  * schedules the packet (and an optional duplicate) at its computed due time and
+  * records the corresponding trace events. Not called directly by tests.
+  */
   _sendDatagram(localAddress: SocketAddress, data: Uint8Array, dest: SocketAddress, ecn?: number): void {
     const source = this.#sourceRewrites.get(addressKey(localAddress)) ?? localAddress;
     const link = this.#link(localAddress, dest);

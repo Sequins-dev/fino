@@ -35,17 +35,39 @@ import { Signal, batch, createSignal } from 'fino:signals';
 export { Signal, batch, createSignal };
 export type { ObservedReads, ReadonlySignal, SignalSetter, SignalSubscriber } from 'fino:signals';
 
-/** Primitive child value accepted by `h()`. */
+/**
+* Primitive child value accepted by `h()`.
+*
+* Numbers are stringified, nested arrays are flattened, and `null`,
+* `undefined`, and boolean placeholders are ignored during normalization.
+*/
 export type Child = VNode | string | number | boolean | null | undefined | Child[];
-/** Function component accepted by `h()`. */
+/**
+* Function component accepted by `h()`.
+*
+* Components receive normalized props plus an optional normalized `children`
+* array. They return a concrete VNode; components do not keep hidden hook state.
+*/
 export type Component<P = Record<string, unknown>> = (props: P & {
   children?: NormalizedChild[];
 }) => VNode;
-/** Host-neutral component type. */
+/**
+* Host-neutral element or component type accepted by `h()`.
+*
+* Strings are host element names, `Fragment` groups children without a host
+* node, and functions are invoked as components.
+*/
 export type VNodeType = string | typeof Fragment | Component<any>;
-/** Child value after normalization. */
+/**
+* Child value after normalization.
+*
+* A normalized child is either a VNode or text. Empty placeholders and nested
+* arrays have already been removed.
+*/
 export type NormalizedChild = VNode | string;
-/** Props object stored on a VNode after `key` and `children` are removed. */
+/**
+* Props object stored on a VNode after `key` and `children` are removed.
+*/
 export type Props = Record<string, unknown>;
 /**
 * Host-neutral virtual node produced by `h()` and the JSX runtime.
@@ -55,9 +77,21 @@ export type Props = Record<string, unknown>;
 * flattened and does not contain `null`, `undefined`, or boolean placeholders.
 */
 export interface VNode {
+  /**
+  * Host element name, or `'fragment'` for fragment VNodes.
+  */
   type: string;
+  /**
+  * Host props with `key` and `children` removed.
+  */
   props: Props;
+  /**
+  * Flattened child nodes and text.
+  */
   children: NormalizedChild[];
+  /**
+  * Optional reconciliation key copied from the original props.
+  */
   key: string | number | null;
 }
 /**
@@ -95,6 +129,12 @@ function normalizeChildren(children: Child[]): NormalizedChild[] {
 * `children` from props and variadic children are merged, flattened, and
 * stripped of empty placeholders. Function components receive the normalized
 * children as `props.children`.
+*
+* ```ts no_run
+* import { h } from 'fino:ui';
+*
+* const button = h('button', { key: 'save', disabled: true }, 'Save');
+* ```
 */
 export function h(type: VNodeType, props: Props | null, ...children: Child[]): VNode {
   const rawProps = props ?? {};
@@ -132,19 +172,53 @@ export function h(type: VNodeType, props: Props | null, ...children: Child[]): V
 * Hosts own the concrete node representation. The renderer calls `beginUpdate`
 * and `endUpdate` once around each `render()` call when those hooks are
 * provided.
+*
+* ## Contract
+*
+* `createNode()` and `createText()` allocate host nodes. `insertChild()`,
+* `moveChild()`, and `removeChild()` mutate child order under a parent or root.
+* `updateNode()` replaces host props for an existing element, and `setText()`
+* updates an existing text node.
 */
 export interface HostAdapter<
   Node,
   Root
 > {
+  /**
+  * Create a host element node for `type` and `props`.
+  */
   createNode(type: string, props: Props): Node;
+  /**
+  * Create a host text node.
+  */
   createText(text: string): Node;
+  /**
+  * Replace or patch props on an existing host element node.
+  */
   updateNode(node: Node, props: Props): void;
+  /**
+  * Update an existing host text node.
+  */
   setText(node: Node, text: string): void;
+  /**
+  * Insert `child` under `parent` at `index`.
+  */
   insertChild(parent: Node | Root, child: Node, index: number): void;
+  /**
+  * Move an existing `child` under `parent` to `index`.
+  */
   moveChild(parent: Node | Root, child: Node, index: number): void;
+  /**
+  * Remove `child` from `parent`.
+  */
   removeChild(parent: Node | Root, child: Node): void;
+  /**
+  * Optional hook called before each render pass.
+  */
   beginUpdate?(): void;
+  /**
+  * Optional hook called after each render pass, including failed passes.
+  */
   endUpdate?(): void;
 }
 interface Mounted<Node> {
@@ -250,6 +324,16 @@ function reconcileChildren<
 * The renderer keeps one mounted tree per root object. Re-rendering the same
 * root reconciles by element type and child keys, producing host updates inside
 * one update batch.
+*
+* Children without explicit keys are matched by position. Text nodes are keyed
+* by their index, while VNodes prefer their `key` and fall back to index.
+*
+* ```ts no_run
+* import { createRenderer, h } from 'fino:ui';
+*
+* const renderer = createRenderer(host);
+* renderer.render(h('label', null, 'Ready'), root);
+* ```
 */
 export function createRenderer<
   Node,

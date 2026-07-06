@@ -13,7 +13,7 @@
 *
 * ## Example
 *
-* ```typescript no_run
+* ```ts no_run
 * import { File } from 'internal:file/handle';
 *
 * const file = new File(fd, fileSystem, '/tmp/data.txt', 'r');
@@ -32,179 +32,98 @@ import { Stat } from './stat.ts';
 import { FdWriter } from '../stream.ts';
 import type { Path } from '../../file/path.ts';
 /**
-* An opened file handle. Provides metadata access and Reader/Writer factories.
+* An opened file handle over a single POSIX descriptor.
 *
-* The File owns the fd lifecycle - call `close()` when done. Readers and
-* Writers produced by this File share the same underlying fd; close the File
-* (not the Reader/Writer) to release it.
+* Provides metadata access, whole-file reads, chunked reader and writer
+* factories, positional (`pread`/`pwrite`) I/O, advisory locking, syncing, and
+* truncation. The handle owns the descriptor lifecycle: call `close()` (or use
+* `await using`) exactly once when finished. Readers and writers produced by a
+* handle share the same underlying fd, so close the `File` — not the individual
+* stream — to release it. Closing flushes any writer created by `writer()`.
 *
-* ```typescript no_run
+* Async reads use io_uring on Linux and yield through the runtime loop around
+* synchronous syscalls on macOS. Every method throws if the handle is already
+* closed, and `reader()`/`writer()` also throw when the open mode disallows the
+* requested direction.
+*
+* ```ts no_run
 * import { File } from 'internal:file/handle';
-* const file = new File(fd, fs, '/tmp/file.txt', 'r');
-* await file.close();
+*
+* const file = new File(fd, fs, '/tmp/log.txt', 'r+');
+* try {
+*   for await (const chunk of file.reader()) {
+*     process.stdout.write(chunk);
+*   }
+* } finally {
+*   await file.close();
+* }
 * ```
 *
-* @internal
 */
 export class File {
   /**
-  * Private property `#fd` used by `File`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fd = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fd;
-  *   }
-  * }
-  * ```
+  * The underlying POSIX file descriptor this handle owns.
   *
   * @internal
   */
   #fd: number;
   /**
-  * Private property `#fs` used by `File`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fs = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fs;
-  *   }
-  * }
-  * ```
+  * The owning filesystem provider, retained for lifecycle bookkeeping.
   *
   * @internal
   */
   #fs: object;
   /**
-  * Private property `#path` used by `File`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #path = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#path;
-  *   }
-  * }
-  * ```
+  * Normalized path the descriptor was opened from, used only for diagnostics.
   *
   * @internal
   */
   #path: Path;
   /**
-  * Private property `#mode` used by `File`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #mode = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#mode;
-  *   }
-  * }
-  * ```
+  * The open mode string (`r`, `w`, `a`, `r+`, `w+`, `a+`, `c+`) that gates the
+  * readable and writable helpers.
   *
   * @internal
   */
   #mode: string;
   /**
-  * Private property `#closed` used by `File`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #closed = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#closed;
-  *   }
-  * }
-  * ```
+  * Whether `close` has run; guards every fd-touching method against reuse.
   *
   * @internal
   */
   #closed: boolean;
   /**
-  * Private property `#activeWriter` used by `File`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #activeWriter = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#activeWriter;
-  *   }
-  * }
-  * ```
+  * The most recent writer handed out by `writer()`, flushed automatically when
+  * the file is closed.
   *
   * @internal
   */
   #activeWriter: FdWriter | null = null;
   /**
-  * Generated-doc-visible property `split`.
+  * Splits the handle into a reader and writer over the same descriptor.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * const includePrivateShape = { split: undefined };
-  * console.log(includePrivateShape.split);
-  * ```
+  * Present only when the file was opened in a read-write mode (`r+`, `w+`,
+  * `a+`, `c+`); it is left `undefined` for read-only or write-only modes so a
+  * simple truthiness check reveals whether both directions are available.
   *
   * @internal
   */
   split?: () => [AsyncIterable<Uint8Array>, FdWriter];
   /**
-  * Create a file handle around an existing file descriptor.
+  * Wrap an already-open file descriptor as a `File` handle.
   *
-  * `mode` controls which high-level helpers are allowed. Read-write modes
-  * expose `split`, which returns a reader and writer over the same fd.
+  * The descriptor must already be opened by the calling provider; the
+  * constructor takes ownership of its lifecycle but does not open or `dup` it.
+  * `path` is normalized and kept for diagnostics only. `mode` gates the
+  * high-level helpers: readable modes enable `reader()`/`bytes()`/`text()`,
+  * writable modes enable `writer()`, and read-write modes (`r+`, `w+`, `a+`,
+  * `c+`) additionally install `split()`.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * import { File } from 'internal:file/handle';
+  *
   * const file = new File(fd, fs, '/tmp/file.txt', 'r+');
+  * const [reader, writer] = file.split!();
   * ```
   */
   constructor(fd: number, fs: object, path: Path | string, mode: string) {
@@ -220,25 +139,26 @@ export class File {
     }
   }
   /**
-  * Path associated with this file handle.
+  * The path this handle was opened from.
   *
-  * The path is used for diagnostics and does not re-open the file.
+  * Retained for diagnostics and error messages only; reading it never touches
+  * the filesystem or re-opens the descriptor.
   *
-  * ```typescript no_run
-  * const path = file.path.toString();
+  * ```ts no_run
+  * console.log(`reading ${file.path.toString()}`);
   * ```
-  *
-  * @returns {Path}
   */
   get path() {
     return this.#path;
   }
   /**
-  * Whether `close` has been called.
+  * Whether `close` has been called on this handle.
   *
-  * Once true, methods that touch the fd throw or return completed iteration.
+  * Once `true`, methods that touch the descriptor throw `File is closed`, and a
+  * live `reader()` iterator reports completion instead of yielding. Use it to
+  * make cleanup idempotent.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * if (!file.closed) await file.close();
   * ```
   */
@@ -246,11 +166,15 @@ export class File {
     return this.#closed;
   }
   /**
-  * Return file metadata via fstat(2) on the open fd.
-  * @returns {Promise<Stat>}
+  * Return file metadata by running `fstat(2)` against the open descriptor.
   *
-  * ```typescript no_run
+  * Reflects the current state of the file (size, mode, timestamps) even if it
+  * was renamed or unlinked after opening. Throws if the handle is closed or the
+  * syscall fails.
+  *
+  * ```ts no_run
   * const stat = await file.stat();
+  * console.log(`${stat.size} bytes, mode ${stat.mode.toString(8)}`);
   * ```
   */
   async stat(): Promise<Stat> {
@@ -261,21 +185,27 @@ export class File {
     return Stat.parse(buf);
   }
   /**
-  * Return an async iterable that yields Uint8Array chunks for this file.
-  * Only valid for readable modes (r, r+, w+, a+, c+).
+  * Return an async iterable that streams the file in up-to-64 KiB chunks from
+  * the current offset to EOF.
   *
-  * On Linux: uses IORING_OP_READ for genuine async I/O.
-  * On macOS: uses kqueue EVFILT_READ to yield to the event loop between reads.
-  *   EVFILT_READ on a vnode fires immediately when current_offset < file_size.
-  *   It does not fire at EOF (offset == file_size), so we check lseek(SEEK_CUR)
-  *   before each loop.readable() call to exit the loop cleanly at EOF.
+  * Reading advances the shared file offset, so consuming the iterator, then
+  * calling `bytes()` or another `reader()`, continues from where iteration
+  * stopped. If the file is closed mid-iteration the iterator completes cleanly.
+  * Throws immediately if the handle was opened in a non-readable mode (`w`,
+  * `a`).
   *
-  * @returns {AsyncIterable<Uint8Array>}
+  * On Linux this issues `IORING_OP_READ` for genuine async I/O. On macOS it
+  * yields through the runtime loop via kqueue `EVFILT_READ` between synchronous
+  * `read(2)` calls, checking `lseek(SEEK_CUR)` against the file size before each
+  * wait so it exits cleanly at EOF (where `EVFILT_READ` never fires) while still
+  * noticing a file that has grown.
   *
-  * ```typescript no_run
+  * ```ts no_run
+  * let total = 0;
   * for await (const chunk of file.reader()) {
-  *   void chunk.byteLength;
+  *   total += chunk.byteLength;
   * }
+  * console.log(`streamed ${total} bytes`);
   * ```
   */
   reader(): AsyncIterable<Uint8Array> {
@@ -343,13 +273,18 @@ export class File {
     return iterable;
   }
   /**
-  * Return a Writer for this file. Only valid for writable modes (w, a, r+, w+, a+, c+).
-  * The writer shares the fd; close the File when done, not the writer.
-  * @returns {FdWriter}
+  * Return a buffered `FdWriter` that appends to this file at the current
+  * offset.
   *
-  * ```typescript no_run
+  * The writer shares the handle's descriptor, so close the `File` — not the
+  * writer — to release it; `close()` flushes the most recently created writer
+  * first. Valid only for writable modes (`w`, `a`, `r+`, `w+`, `a+`, `c+`);
+  * throws otherwise. Each call installs a fresh writer as the one flushed on
+  * close.
+  *
+  * ```ts no_run
   * const writer = file.writer();
-  * writer.write(new Uint8Array([1, 2, 3]));
+  * writer.write(new TextEncoder().encode('hello\n'));
   * await writer.flush();
   * ```
   */
@@ -362,16 +297,18 @@ export class File {
     return w;
   }
   /**
-  * Read the entire file contents as a Uint8Array.
+  * Read the file from the current offset to EOF and return it as one
+  * `Uint8Array`.
   *
-  * On Linux: uses IORING_OP_READ for genuine async I/O.
-  * On macOS: uses kqueue EVFILT_READ to yield to the event loop between reads.
-  *   Same lseek(SEEK_CUR) EOF guard as reader() — see reader() for details.
+  * Drains the same chunked read loop as `reader()` and concatenates the result,
+  * so it advances the shared file offset and returns an empty array when
+  * already at EOF. Throws if the handle is closed. For large files prefer
+  * `reader()` to avoid holding the whole contents in memory. Uses the same
+  * Linux io_uring / macOS kqueue EOF strategy documented on `reader()`.
   *
-  * @returns {Promise<Uint8Array>}
-  *
-  * ```typescript no_run
+  * ```ts no_run
   * const bytes = await file.bytes();
+  * console.log(`loaded ${bytes.byteLength} bytes`);
   * ```
   */
   async bytes(): Promise<Uint8Array> {
@@ -422,24 +359,31 @@ export class File {
     return out;
   }
   /**
-  * Read the entire file contents as a UTF-8 string.
-  * @returns {Promise<string>}
+  * Read the file from the current offset to EOF and decode it as UTF-8 text.
   *
-  * ```typescript no_run
-  * const text = await file.text();
+  * A convenience wrapper over `bytes()` with the same offset and EOF behavior;
+  * invalid UTF-8 is replaced with the Unicode replacement character rather than
+  * throwing. Throws if the handle is closed.
+  *
+  * ```ts no_run
+  * const config = JSON.parse(await file.text());
   * ```
   */
   async text(): Promise<string> {
     return decodeUtf8(await this.bytes());
   }
   /**
-  * Read up to `len` bytes at `pos` without changing the file offset.
+  * Read up to `len` bytes starting at absolute offset `pos` without moving the
+  * shared file offset.
   *
-  * Returns a short buffer at EOF and an empty buffer for `len === 0`. Throws
-  * when the handle is closed or `pread(2)` fails.
+  * Because it is positional, `pread` is safe to interleave with `reader()` or
+  * other positional calls on the same handle. It returns a buffer shorter than
+  * `len` when `pos` lands near EOF and an empty buffer when `len` is `0`. Throws
+  * if the handle is closed or `pread(2)` fails.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const header = await file.pread(0n, 16);
+  * if (header.byteLength < 16) throw new Error('file truncated');
   * ```
   */
   async pread(pos: number | bigint, len: number): Promise<Uint8Array> {
@@ -477,13 +421,19 @@ export class File {
     return new Uint8Array(buf, 0, n);
   }
   /**
-  * Write bytes at `pos` without changing the file offset.
+  * Write `data` at absolute offset `pos` without moving the shared file offset.
   *
-  * Returns the number of bytes written. Callers that require full writes
-  * should compare the result with `data.byteLength`.
+  * Returns the number of bytes actually written, which may be fewer than
+  * `data.byteLength`; callers needing a complete write should loop until the
+  * whole buffer is consumed. Writing past the current end of the file extends
+  * it. Throws if the handle is closed or `pwrite(2)` fails.
   *
-  * ```typescript no_run
-  * const written = await file.pwrite(0, new Uint8Array([1, 2]));
+  * ```ts no_run
+  * let off = 0;
+  * const data = new TextEncoder().encode('record');
+  * while (off < data.byteLength) {
+  *   off += await file.pwrite(1024 + off, data.subarray(off));
+  * }
   * ```
   */
   async pwrite(pos: number | bigint, data: Uint8Array): Promise<number> {
@@ -501,11 +451,16 @@ export class File {
     return n;
   }
   /**
-  * Flush file contents to stable storage with `fsync(2)`.
+  * Flush file data and metadata to stable storage with `fsync(2)`.
   *
-  * Throws when the handle is closed or the syscall fails.
+  * Buffered writes go through an `FdWriter`, so flush the writer before calling
+  * `sync()` to guarantee the bytes have reached the descriptor. Throws if the
+  * handle is closed or the syscall fails.
   *
-  * ```typescript no_run
+  * ```ts no_run
+  * const writer = file.writer();
+  * writer.write(new Uint8Array([1, 2, 3]));
+  * await writer.flush();
   * await file.sync();
   * ```
   */
@@ -523,12 +478,15 @@ export class File {
     if (rc !== 0) throwErrno('fsync', this.#path.toString());
   }
   /**
-  * Set the file length with `ftruncate(2)`.
+  * Set the file to exactly `len` bytes with `ftruncate(2)`.
   *
-  * Extending a file creates zero-filled space according to the filesystem.
+  * Shrinking discards the trailing bytes; extending grows the file with a
+  * zero-filled (typically sparse) region. The shared file offset is unchanged,
+  * so it can point past the new end. Throws if the handle is closed or the
+  * syscall fails.
   *
-  * ```typescript no_run
-  * await file.truncate(0);
+  * ```ts no_run
+  * await file.truncate(0); // reset the file to empty
   * ```
   */
   async truncate(len: number | bigint): Promise<void> {
@@ -545,13 +503,15 @@ export class File {
     if (rc !== 0) throwErrno('ftruncate', this.#path.toString());
   }
   /**
-  * Return the current file size in bytes.
+  * Return the current file size in bytes as a `bigint`.
   *
-  * Uses `fstat(2)` on the open descriptor and returns a bigint for provider
-  * interface compatibility.
+  * Queries `fstat(2)` on the open descriptor; the `bigint` return keeps the
+  * full 64-bit range for large files and matches the provider interface. Throws
+  * if the handle is closed or the syscall fails.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const size = await file.size();
+  * const tail = await file.pread(size - 64n, 64);
   * ```
   */
   async size(): Promise<bigint> {
@@ -570,13 +530,18 @@ export class File {
     return BigInt(Stat.parse(buf).size);
   }
   /**
-  * Close this file handle and release the underlying fd.
+  * Flush any active writer, then close the handle and release the descriptor.
   *
-  * On Linux: uses IORING_OP_CLOSE for async close.
-  * On macOS: closes synchronously via close(2).
+  * Idempotent: a second call is a no-op. Any pending writer created by
+  * `writer()` is flushed before the fd is released, so buffered bytes are not
+  * lost. On Linux the close is issued as `IORING_OP_CLOSE`; on macOS it runs
+  * synchronously via `close(2)`. This method also backs `Symbol.asyncDispose`,
+  * so an `await using` binding closes the handle when it leaves scope.
   *
-  * ```typescript no_run
-  * await file.close();
+  * ```ts no_run
+  * await using file = new File(fd, fs, '/tmp/scratch', 'w');
+  * file.writer().write(new Uint8Array([0]));
+  * // handle is flushed and closed automatically at end of scope
   * ```
   */
   async close(): Promise<void> {
@@ -598,6 +563,21 @@ export class File {
       lib.symbols.close(this.#fd);
     }
   }
+  /**
+  * Dispose hook that closes the handle when an `await using` binding goes out
+  * of scope.
+  *
+  * Delegates to `close()`, so it flushes an active writer and is idempotent.
+  * Prefer `await using` over manual `close()` in `finally` blocks when the
+  * handle does not escape the current scope.
+  *
+  * ```ts no_run
+  * {
+  *   await using file = new File(fd, fs, '/tmp/data', 'r');
+  *   await file.text();
+  * } // Symbol.asyncDispose runs here
+  * ```
+  */
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();
   }
@@ -606,9 +586,9 @@ export class File {
   *
   * This low-level path is for native callbacks that must release descriptors
   * without scheduling io_uring work from inside another async FFI operation.
-  * Normal application code should use `close()`.
+  * Flushes any active writer synchronously first and is idempotent. Normal
+  * application code should use `close()` instead.
   *
-  * @returns Nothing.
   * @internal
   */
   closeSync(): void {

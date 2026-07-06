@@ -17,7 +17,7 @@
 *
 * ## Architecture
 *
-* A parsed URL is stored as a plain object with six string fields:
+* A parsed URL is stored as a plain object with eight string fields:
 *
 *   { scheme, username, password, host, port, pathname, search, hash }
 *
@@ -68,9 +68,11 @@
 * URLSearchParams uses `application/x-www-form-urlencoded` encoding, which
 * differs from URL component percent-encoding in two ways: spaces become `+`
 * (not `%20`), and the safe character set is narrower. The `_formEncode` /
-* `_formDecode` helpers implement this. For multi-byte characters they
-* delegate to the built-in `encodeURIComponent` / `decodeURIComponent` rather
-* than re-implementing the UTF-8 encoder. Mutation methods preserve the
+* `_formDecode` helpers implement this directly: they walk the string by code
+* point, encode each to UTF-8 bytes, and percent-escape them (decoding reverses
+* the process, running the decoded bytes through a UTF-8 decoder that emits
+* U+FFFD for malformed sequences). The runtime's `encodeURIComponent` /
+* `decodeURIComponent` are not used. Mutation methods preserve the
 * observable WHATWG ordering contract for common cases: `append()` adds to the
 * end, `set()` keeps the first matching position and removes later duplicates,
 * `sort()` is stable for duplicate names, and iterators observe live changes.
@@ -124,6 +126,11 @@ import { Blob } from './blob.ts';
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
+/**
+* Parsed URL component state — the plain-object representation described in
+* the module header. All fields are already-normalized strings; `_serialize`
+* concatenates them into an href and every URL getter reads from one of them.
+*/
 interface URLState {
   scheme: string;
   username: string;
@@ -428,58 +435,52 @@ function _parseQueryString(qs: string, stripLeadingQuestion = true): [string, st
 // URLSearchParams
 // ---------------------------------------------------------------------------
 /**
-* WHATWG URLSearchParams.
+* WHATWG `URLSearchParams` global — an ordered multimap of query parameters.
 *
-* When attached to a URL (via url.searchParams), mutations automatically
-* update url.search.
+* Entries are name/value string pairs; duplicate names are allowed and
+* insertion order is preserved. Serialization uses
+* application/x-www-form-urlencoded encoding (spaces become `+`), which is
+* what HTML form submission and query strings use — it is not the same as
+* URL percent-encoding.
 *
-* @example
+* Instances work standalone, but when obtained through `url.searchParams`
+* they are live: every mutation writes the re-serialized query string back
+* into the owning URL, and setting `url.search` resynchronizes the params.
+* Iterators are also live — entries appended during traversal are observed,
+* and deleting the current entry shifts what the iterator sees next.
+*
 * ```ts no_run
-* const documentedClass = 'URLSearchParams';
-* console.log(documentedClass);
+* // URLSearchParams is available via globalThis
+*
+* const params = new URLSearchParams('a=1&b=hello+world');
+* params.get('b');        // 'hello world'
+* params.append('a', '2');
+* params.getAll('a');     // ['1', '2']
+* params.set('a', '3');   // collapses duplicates, keeps first position
+* params.toString();      // 'a=3&b=hello+world'
+*
+* // Live view attached to a URL
+* const url = new URL('https://example.com/search');
+* url.searchParams.set('q', 'fino runtime');
+* url.href; // 'https://example.com/search?q=fino+runtime'
 * ```
 */
 export class URLSearchParams {
   /**
-  * Private property `#list` used by `URLSearchParams`.
+  * Ordered entry list of decoded [name, value] pairs.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #list = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#list;
-  *   }
-  * }
-  * ```
+  * Duplicates and insertion order are preserved. Iterators read this array
+  * live by index, which is what makes mutation-during-iteration observable.
   *
   * @internal
   */
   #list: [string, string][];
   /**
-  * Private property `#onUpdate` used by `URLSearchParams`.
+  * Callback invoked with the serialized query string after each mutation.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #onUpdate = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#onUpdate;
-  *   }
-  * }
-  * ```
+  * Set by URL when it creates its attached `searchParams` instance; the
+  * callback writes the new query string back into the URL's state. `null`
+  * for standalone instances, in which case mutations notify nothing.
   *
   * @internal
   */
@@ -811,12 +812,15 @@ export class URLSearchParams {
     return this.entries();
   }
   /**
-  * Update the list from a raw query string.
+  * Replace the entry list from a raw query string.
   *
-  * This internal hook is called by URL when its search setter runs. It accepts
-  * strings with or without a leading question mark and does not call onUpdate.
+  * This internal hook is the URL-to-params direction of the sync: URL calls
+  * it from its constructor, its `href` setter, and its `search` setter. The
+  * input must not carry a leading question mark (URL strips it first — a
+  * leading `?` here would become part of the first name). Does not call
+  * onUpdate, so it never loops back into the owning URL.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const params = new URLSearchParams();
   * params.setQuery('a=1');
   * params.get('a'); // "1"
@@ -828,25 +832,11 @@ export class URLSearchParams {
     this.#list = _parseQueryString(str, false);
   }
   /**
-  * Private method `#notifyURL` used by `URLSearchParams`.
+  * Push the serialized query string to the attached URL, if any.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #notifyURL() {
-  *     return 'notifyURL';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#notifyURL();
-  *   }
-  * }
-  * ```
+  * Called after every mutating method (`append`, `delete`, `set`, `sort`).
+  * `setQuery` deliberately does not call this, since it is the URL-to-params
+  * direction of the sync and notifying back would loop.
   *
   * @internal
   */
@@ -1041,9 +1031,11 @@ function _normalizeIPv6(host: string): string | null {
 }
 /**
 * Parse a URL string into a state object.
-* @param {string} input
-* @param {object|null} base  Parsed base URL state (for relative resolution).
-* @returns {{ scheme, username, password, host, port, pathname, search, hash } | null}
+*
+* `base` is a previously parsed state object used to resolve relative
+* references; pass null to require an absolute URL. Returns null instead of
+* throwing when the input cannot be parsed, so callers choose the failure
+* behavior (the URL constructor throws, `URL.parse` returns null).
 */
 function _parseURL(input: string, base: URLState | null): URLState | null {
   // Per WHATWG URL spec: strip leading/trailing C0 controls and space,
@@ -1220,9 +1212,11 @@ function _resolveRelative(input: string, base: URLState): URLState {
   });
 }
 /**
-* Resolve `.` and `..` segments in a path.
-* @param {string} path
-* @param {boolean} hasAuthority  When true, path must start with '/'.
+* Resolve `.` and `..` segments in a slash-delimited path.
+*
+* When `hasAuthority` is true the result always keeps a leading slash, since
+* a URL with an authority cannot have a rootless path. A trailing slash on
+* the input is preserved.
 */
 function _normalizePath(path: string, hasAuthority: boolean): string {
   if (!path) return hasAuthority ? '/' : '';
@@ -1278,62 +1272,55 @@ function _origin(s: URLState): string {
 // URL
 // ---------------------------------------------------------------------------
 /**
-* Generated-doc-visible class `URL`.
+* WHATWG `URL` global — parse, inspect, and mutate URLs.
 *
-* This implementation detail is included when documentation is built with
-* `--include-private`. It describes state or helper behavior used by the
-* owning module rather than a stable application-facing contract. Prefer the
-* public API around the owning type unless you are maintaining this runtime.
+* The constructor parses an absolute URL, or a relative reference resolved
+* against a base, and throws `TypeError` on unparseable input. Component
+* getters read from the parsed state; setters re-normalize their component
+* (lowercasing, default-port stripping, dot-segment resolution,
+* percent-encoding) and, per the WHATWG setter model, silently ignore
+* invalid values rather than throwing. `searchParams` is a live
+* `URLSearchParams` view that stays in sync with `search` in both
+* directions.
 *
-* @example
+* The class also hosts the File API object-URL registry:
+* `URL.createObjectURL()` mints a `blob:` URL that keeps its Blob alive in a
+* module-level store until `URL.revokeObjectURL()` drops it.
+*
+* Installed on `globalThis`, so application code uses it without importing
+* this internal module.
+*
 * ```ts no_run
-* const documentedClass = 'URL';
-* console.log(documentedClass);
-* ```
+* // URL is available via globalThis
 *
-* @internal
+* const url = new URL('/search?q=fino', 'https://example.com');
+* url.href;                  // 'https://example.com/search?q=fino'
+* url.searchParams.get('q'); // 'fino'
+*
+* url.port = '8443';
+* url.hash = 'results';
+* url.href; // 'https://example.com:8443/search?q=fino#results'
+*
+* URL.canParse('not a url'); // false
+* URL.parse('not a url');    // null (non-throwing variant)
+* ```
 */
 export class URL {
   /**
-  * Private property `#state` used by `URL`.
+  * Parsed component state — the single source of truth for every getter.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #state = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#state;
-  *   }
-  * }
-  * ```
+  * Setters mutate its fields directly; `href` and `toString()` serialize it
+  * on demand rather than caching a string.
   *
   * @internal
   */
   #state: URLState;
   /**
-  * Private property `#params` used by `URL`.
+  * The attached live URLSearchParams returned by `searchParams`.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #params = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#params;
-  *   }
-  * }
-  * ```
+  * Created once in the constructor with an onUpdate callback that writes
+  * mutations back into `#state.search`; the `search` and `href` setters
+  * resync it in the other direction via `setQuery`.
   *
   * @internal
   */
@@ -1359,9 +1346,6 @@ export class URL {
   * const url = new URL('../b', 'https://example.com/a/c');
   * url.href; // "https://example.com/b"
   * ```
-  *
-  * @param {string|URL} input
-  * @param {string|URL} [base]
   */
   constructor(input: string | URL, base?: string | URL) {
     let baseState = null;
@@ -1466,10 +1450,15 @@ export class URL {
   }
   // --- Origin (read-only) ---
   /**
-  * Serialized origin, or "null" for non-special schemes.
+  * Serialized origin, or the string "null" for opaque origins.
+  *
+  * Only http, https, ws, wss, and ftp URLs have a tuple origin; `blob:` URLs
+  * report the origin of their inner URL. Everything else (including `file:`
+  * and custom schemes) serializes as "null".
   *
   * ```typescript no_run
   * new URL('https://example.com:443/a').origin; // "https://example.com"
+  * new URL('file:///tmp/x').origin;             // "null"
   * ```
   */
   get origin() {

@@ -69,18 +69,10 @@ function _isPostQuoteBoundary(code: number, delimCode: number): boolean {
 */
 export class CsvParseError extends ParseError {
   /**
-  * Error name reported by `CsvParseError` instances.
+  * Error name, always `'CsvParseError'`.
   *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * const error = new CsvParseError('example', { line: 1, column: 1, offset: 0, snippet: 'x' });
-  * console.log(error.name);
-  * ```
+  * Useful for distinguishing CSV failures in logs or serialized error
+  * reports where `instanceof` checks are unavailable.
   */
   name = 'CsvParseError';
 }
@@ -493,9 +485,11 @@ function _autocast(v: string): unknown {
 *
 * Chunks from `src` are accumulated only until a complete row is available.
 * Quoted fields containing embedded newlines are handled across chunk
-* boundaries. The yielded row shape follows `header` and `columns` in the same
-* way as `parse()`. Unterminated quoted data or column mismatches throw while
-* iterating.
+* boundaries. When the stream ends with data after the last newline, that
+* remainder is parsed and yielded as a final row. The yielded row shape
+* follows `header` and `columns` in the same way as `parse()`. Unterminated
+* quoted data or column mismatches throw while iterating; invalid delimiter
+* or quote options throw `TypeError` on the first `next()` call.
 *
 * ```ts no_run
 * import { parseStream } from 'fino:format/csv';
@@ -667,8 +661,9 @@ function _emitStreamRow(raw: string[], headers: string[] | null, relax: boolean,
 *
 * Positional rows are emitted as-is. Record rows use an explicit header array
 * when provided or the union of discovered keys otherwise. Fields are converted
-* with `String()`, missing record values become `""`, and fields requiring
-* escaping are quoted. Empty input returns `""`.
+* with `String()`, missing record values become `""`, and fields containing the
+* delimiter, quote, or newlines are quoted automatically. Empty input returns
+* `""`. Throws `TypeError` if `delimiter` is not a single character.
 *
 * ```ts no_run
 * import { stringify } from 'fino:format/csv';

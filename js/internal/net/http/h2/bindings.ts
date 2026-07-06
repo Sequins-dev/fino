@@ -1,25 +1,54 @@
 /**
-* internal:net/http/h2/bindings - system libnghttp2 via dlopen.
+* internal:net/http/h2/bindings — system libnghttp2 loaded via dlopen.
+*
+* This module is the raw FFI foundation for Fino's HTTP/2 stack. It locates a
+* system-installed `libnghttp2`, binds the subset of the C API the higher-level
+* session code needs, and exposes the numeric constants, struct-layout offsets,
+* and byte-marshalling helpers required to drive nghttp2 from JavaScript. It
+* deliberately performs no protocol logic of its own — session lifecycle,
+* callback wiring, and stream state live in the modules that consume `sym`,
+* `requireH2()`, and these helpers.
+*
+* The library is discovered at module load by trying a list of candidate paths
+* in order and stopping at the first that `dlopen` accepts. Homebrew locations
+* come first on macOS so a `brew install libnghttp2` build wins over anything
+* older in the system prefix; Linux tries the SONAME plus the common
+* multiarch directories. The outcome is frozen into `h2Available`: when no
+* candidate loads, `sym` is `null` and `requireH2()` throws with install
+* guidance, letting callers degrade gracefully to HTTP/1.
+*
+* The in-memory session pump symbols (`nghttp2_session_mem_recv2` and
+* `nghttp2_session_mem_send2`) are bound synchronously rather than as
+* `async: true` FFI. They do no socket I/O — they only move bytes between JS
+* buffers and nghttp2's internal state — so running them on the V8 thread
+* avoids thread-pool overhead and, critically, keeps nghttp2's callbacks and
+* submit operations serialized against a single native session that is not
+* internally synchronized.
+*
+* Because every export is a low-level binding, all symbols are `@internal`:
+* they are importable only from other built-ins and are not part of Fino's
+* public surface. Callers marshal headers and settings into single
+* ArrayBuffers (`buildNvArray`, `buildSettingsArray`) and must keep those
+* buffers alive across the FFI call, since nghttp2 reads through the raw
+* pointers they contain.
 *
 * HTTP/2 specification: https://www.rfc-editor.org/rfc/rfc9113
 *
-* Tries candidate paths in order; sets `h2Available` accordingly.
-* Homebrew paths are first so macOS users get the right build.
-*
-* The in-memory session pump symbols (`session_mem_recv2` and
-* `session_mem_send2`) are intentionally synchronous. They do not perform
-* socket I/O, and running them on the V8 thread keeps nghttp2 callbacks and
-* submit operations serialized against the same native session.
-*
-* ## Example
-*
 * ```ts no_run
-* const { h2Available, requireH2, NGHTTP2_NO_ERROR } =
-*   import 'internal:net/http/h2/bindings';
+* import {
+*   h2Available,
+*   requireH2,
+*   buildSettingsArray,
+*   NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS,
+* } from 'internal:net/http/h2/bindings';
 *
 * if (h2Available) {
-*   requireH2();
-*   void NGHTTP2_NO_ERROR;
+*   const lib = requireH2();
+*   const settings = buildSettingsArray([
+*     [NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100],
+*   ]);
+*   // `settings` is now ready to hand to nghttp2_submit_settings via lib.symbols.
+*   void lib;
 * }
 * ```
 *

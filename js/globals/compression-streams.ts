@@ -1,13 +1,17 @@
 /**
-* CompressionStream and DecompressionStream globals.
+* CompressionStream and DecompressionStream globals (WHATWG Compression Streams).
 *
-* WHATWG Compression Streams specification implementation:
-* https://compression.spec.whatwg.org/
-* Wraps the streaming compression API from fino:compress in the
-* standard Web Streams interface (ReadableStream / WritableStream pair).
+* Both classes are installed on `globalThis`, so application code uses them
+* without importing anything. Each instance is a transform pair — a `writable`
+* side that accepts raw bytes and a `readable` side that emits the transformed
+* bytes — designed to be dropped into a stream pipeline with `pipeThrough()`.
 *
-* Supported formats: 'gzip', 'deflate', 'deflate-raw', and 'brotli' when the
-* platform Brotli backend is available.
+* Supported formats are the three the spec defines — `gzip`, `deflate`
+* (zlib-wrapped DEFLATE), and `deflate-raw` (bare DEFLATE with no wrapper) —
+* plus `brotli` as a runtime extension when the system Brotli library is
+* available. Constructing a stream with `'brotli'` on a machine without the
+* backend throws; portable code should check `brotliAvailable` from
+* `fino:compress` before selecting it.
 *
 * DecompressionStream mirrors the web API and does not expose a maximum output
 * size option. Consumers that handle untrusted compressed input should read the
@@ -17,9 +21,10 @@
 *
 * ## Bridging the two streaming APIs
 *
-* fino:compress provides streaming via factories: `createCompressor(opts)` returns
-* an object with `transform(asyncIterable) → asyncIterable`. This does not speak
-* Web Streams. To bridge:
+* All actual compression work lives in `fino:compress`, whose streaming shape
+* is factory-based: `createCompressor(opts)` returns an object with
+* `transform(asyncIterable) → asyncIterable`. That API does not speak Web
+* Streams. To bridge:
 *
 *   1. A simple async-iterable input channel is created.
 *   2. The compression factory is connected to it: `factory().transform(channel)`.
@@ -31,15 +36,16 @@
 *
 * ## Example
 *
-* ```typescript no_run
+* ```ts no_run
 * const source = new Blob(['hello']).stream();
 * const compressed = source.pipeThrough(new CompressionStream('gzip'));
 * const restored = compressed.pipeThrough(new DecompressionStream('gzip'));
 *
 * const text = await new Response(restored).text();
-* console.log(text);
+* console.log(text); // 'hello'
 * ```
 *
+* WHATWG Compression Streams specification: https://compression.spec.whatwg.org/
 */
 import { ReadableStream, WritableStream } from './webstreams.ts';
 import { createCompressor, createDecompressor } from 'fino:compress';
@@ -47,9 +53,15 @@ import { createCompressor, createDecompressor } from 'fino:compress';
 // Format maps
 // ---------------------------------------------------------------------------
 /**
-* Compression formats supported by Fino's CompressionStream.
+* Format names accepted by the CompressionStream and DecompressionStream
+* constructors.
 *
-* ```typescript no_run
+* `'gzip'`, `'deflate'` (zlib-wrapped DEFLATE), and `'deflate-raw'` (bare
+* DEFLATE without any wrapper) are always available. `'brotli'` is a runtime
+* extension beyond the WHATWG spec: it requires the system Brotli library, and
+* constructing a stream with it throws when that backend is missing.
+*
+* ```ts no_run
 * const format: CompressionFormat = 'gzip';
 * new CompressionStream(format);
 * ```
@@ -77,11 +89,15 @@ const DECOMPRESS_FORMATS: Record<string, () => {
 // Internal bridge
 // ---------------------------------------------------------------------------
 /**
-* Create a (readable, writable) Web Streams pair backed by one of the
+* Create a `{ readable, writable }` Web Streams pair backed by one of the
 * fino:compress streaming factories.
 *
-* @param {Function} factory — e.g. createCompressor/createDecompressor wrapper
-* @returns {{ readable: ReadableStream, writable: WritableStream }}
+* The writable side normalizes each BufferSource chunk to a `Uint8Array` view
+* and pushes it into a buffered async-iterable channel. The factory's
+* `transform()` consumes that channel, and its output iterable becomes the
+* readable side via `ReadableStream.from()`. Closing the writable ends the
+* channel so the transformer can flush its final block; aborting it fails the
+* channel, which propagates the abort reason to the readable side.
 */
 function _makeStreams(factory: () => {
   transform(input: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array>;
@@ -189,60 +205,41 @@ function _makeStreams(factory: () => {
 * Transforms a stream of bytes by compressing it using gzip, deflate,
 * deflate-raw (raw DEFLATE without a wrapper), or Brotli.
 *
+* Available as a global — no import required. The usual shape is
+* `source.pipeThrough(new CompressionStream(format))`, which yields a
+* compressed byte stream ready for further piping:
+*
 * ```ts no_run
 * const cs = new CompressionStream('gzip');
 * readableSource.pipeThrough(cs);  // cs.readable yields compressed chunks
 * ```
 *
+* For buffered use, write chunks through `writable` and collect `readable`:
+*
 * ```ts no_run
-* const cs  = new CompressionStream('gzip');
+* const cs = new CompressionStream('gzip');
 * const writer = cs.writable.getWriter();
-* await writer.write(data);
+* await writer.write(new TextEncoder().encode('hello '.repeat(1000)));
 * await writer.close();
 * const compressed = await new Response(cs.readable).bytes();
 * ```
+*
+* Output is standard for each format: anything framed as gzip, deflate, or
+* deflate-raw here is interchangeable with the one-shot
+* `compress()`/`decompress()` functions in `fino:compress` and with any other
+* conforming implementation.
 */
 export class CompressionStream {
   /**
-  * Private property `#readable` used by `CompressionStream`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #readable = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#readable;
-  *   }
-  * }
-  * ```
+  * Compressed-output stream handed out by the `readable` getter; created once
+  * in the constructor by the fino:compress bridge.
   *
   * @internal
   */
   #readable: ReadableStream;
   /**
-  * Private property `#writable` used by `CompressionStream`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #writable = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#writable;
-  *   }
-  * }
-  * ```
+  * Byte-input stream handed out by the `writable` getter; feeds the
+  * compressor's input channel.
   *
   * @internal
   */
@@ -250,7 +247,7 @@ export class CompressionStream {
   /**
   * String tag used by Object.prototype.toString.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const stream = new CompressionStream('gzip');
   * Object.prototype.toString.call(stream); // "[object CompressionStream]"
   * ```
@@ -261,10 +258,14 @@ export class CompressionStream {
   /**
   * Create a compression transform for the selected format.
   *
-  * Unsupported formats throw TypeError. The writable side accepts BufferSource
-  * chunks and the readable side emits compressed Uint8Array chunks.
+  * The writable side accepts BufferSource chunks and the readable side emits
+  * compressed Uint8Array chunks.
   *
-  * ```typescript no_run
+  * Throws TypeError if the format is not one of the supported names. Throws
+  * if the format is `'brotli'` and the system Brotli library is unavailable —
+  * portable code should check `brotliAvailable` from `fino:compress` first.
+  *
+  * ```ts no_run
   * const gzip = new CompressionStream('gzip');
   * await new Blob(['hello']).stream().pipeTo(gzip.writable);
   * ```
@@ -279,12 +280,13 @@ export class CompressionStream {
     this.#writable = writable;
   }
   /**
-  * Readable side that yields compressed bytes.
+  * Readable side that yields compressed bytes as Uint8Array chunks.
   *
-  * It closes after the writable side is closed and all compressor output has
-  * been emitted.
+  * Chunks become available as the compressor produces them. The stream closes
+  * after the writable side is closed and all compressor output — including the
+  * final flush block — has been emitted.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const cs = new CompressionStream('deflate');
   * const compressed = cs.readable;
   * ```
@@ -295,13 +297,16 @@ export class CompressionStream {
   /**
   * Writable side that accepts uncompressed BufferSource chunks.
   *
-  * Writing a non-buffer chunk throws TypeError. Closing this side completes the
-  * compression stream and flushes final bytes.
+  * Writing anything other than an ArrayBuffer or ArrayBufferView rejects the
+  * write with TypeError. Closing this side completes the compression stream
+  * and flushes final bytes; aborting it errors the readable side with the
+  * abort reason.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const cs = new CompressionStream('gzip');
   * const writer = cs.writable.getWriter();
   * await writer.write(new Uint8Array([1, 2, 3]));
+  * await writer.close();
   * ```
   */
   get writable() {
@@ -312,52 +317,39 @@ export class CompressionStream {
 * Transforms a stream of compressed bytes (gzip, deflate, deflate-raw, or
 * Brotli) into the original uncompressed data.
 *
+* Available as a global — no import required. Corrupt or truncated input does
+* not throw synchronously: the error surfaces on the readable side when the
+* backend decompressor detects it, rejecting the pending read or `pipeTo`
+* promise.
+*
+* Matching the web API, there is no maximum output size option. When
+* decompressing untrusted input, count bytes as you read and cancel the
+* stream if an application budget is exceeded.
+*
 * ```ts no_run
 * const ds = new DecompressionStream('gzip');
 * compressedReadable.pipeThrough(ds);  // ds.readable yields decompressed chunks
 * ```
+*
+* Decoding a fetched gzip payload to text:
+*
+* ```ts no_run
+* const response = await fetch('https://example.com/logs.gz');
+* const restored = response.body.pipeThrough(new DecompressionStream('gzip'));
+* const text = await new Response(restored).text();
+* ```
 */
 export class DecompressionStream {
   /**
-  * Private property `#readable` used by `DecompressionStream`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #readable = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#readable;
-  *   }
-  * }
-  * ```
+  * Decompressed-output stream handed out by the `readable` getter; created
+  * once in the constructor by the fino:compress bridge.
   *
   * @internal
   */
   #readable: ReadableStream;
   /**
-  * Private property `#writable` used by `DecompressionStream`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #writable = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#writable;
-  *   }
-  * }
-  * ```
+  * Compressed-input stream handed out by the `writable` getter; feeds the
+  * decompressor's input channel.
   *
   * @internal
   */
@@ -365,7 +357,7 @@ export class DecompressionStream {
   /**
   * String tag used by Object.prototype.toString.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const stream = new DecompressionStream('gzip');
   * Object.prototype.toString.call(stream); // "[object DecompressionStream]"
   * ```
@@ -376,10 +368,14 @@ export class DecompressionStream {
   /**
   * Create a decompression transform for the selected format.
   *
-  * Unsupported formats throw TypeError. Invalid compressed input causes the
-  * readable side to error when the backend decompressor detects it.
+  * The format must match how the input was actually compressed — the stream
+  * does not sniff; mismatched or invalid compressed input causes the readable
+  * side to error when the backend decompressor detects it.
   *
-  * ```typescript no_run
+  * Throws TypeError if the format is not one of the supported names. Throws
+  * if the format is `'brotli'` and the system Brotli library is unavailable.
+  *
+  * ```ts no_run
   * const gunzip = new DecompressionStream('gzip');
   * compressedReadable.pipeThrough(gunzip);
   * ```
@@ -394,9 +390,11 @@ export class DecompressionStream {
     this.#writable = writable;
   }
   /**
-  * Readable side that yields decompressed bytes.
+  * Readable side that yields decompressed bytes as Uint8Array chunks.
   *
-  * ```typescript no_run
+  * Errors here if the compressed input is invalid for the selected format.
+  *
+  * ```ts no_run
   * const ds = new DecompressionStream('deflate-raw');
   * const output = ds.readable;
   * ```
@@ -407,12 +405,15 @@ export class DecompressionStream {
   /**
   * Writable side that accepts compressed BufferSource chunks.
   *
+  * Chunk boundaries do not matter — compressed input may be split anywhere.
   * Close the writer to finish the decompressor and surface final output or
-  * format errors.
+  * truncation errors.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const ds = new DecompressionStream('gzip');
-  * await ds.writable.getWriter().close();
+  * const writer = ds.writable.getWriter();
+  * await writer.write(compressedBytes);
+  * await writer.close();
   * ```
   */
   get writable() {

@@ -57,8 +57,24 @@ import { DEFAULT_CLUSTER_PATH, WebTransportSeedTransport, WebTransportWorkerTran
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
-// Internal support export for fino:realm. Application code should use
-// startCluster(), joinCluster(), leaveCluster(), and Realm({ remote: true }).
+/**
+* Transport port that routes realm channel messages through the cluster.
+*
+* This is an internal support export for `fino:realm`, which binds a
+* `ClusterPort` to each `Realm({ remote: true })` so structured messages
+* flow over the seed-routed WebTransport connection. Application code should
+* not construct one directly — use `startCluster()` / `joinCluster()` and
+* spawn remote realms instead.
+*
+* ```ts no_run
+* import { startCluster } from 'fino:cluster';
+* import { Realm } from 'fino:realm';
+*
+* await startCluster({ port: 9999, tls: { cert: './cert.pem', key: './key.pem' } });
+* const realm = new Realm({ entry: './worker.ts', remote: true });
+* realm.port.postMessage({ hello: 'cluster' });
+* ```
+*/
 export { ClusterPort };
 // ---------------------------------------------------------------------------
 // Module-level active cluster state
@@ -92,6 +108,14 @@ export interface StartClusterOptions {
   * ```
   */
   port: number;
+  /**
+  * Interface address the seed server binds.
+  *
+  * Defaults to all interfaces (`0.0.0.0`, or `::` when an IPv6 hostname
+  * selects the IPv6 family). The seed also joins itself as a worker; for
+  * that self-connection wildcard binds (`0.0.0.0`, `::`) are mapped to the
+  * matching loopback address, and bare IPv6 literals are bracketed.
+  */
   hostname?: string;
   /**
   * Optional node identifier.
@@ -106,11 +130,44 @@ export interface StartClusterOptions {
   * ```
   */
   nodeId?: string;
+  /**
+  * TLS certificate and key files for the seed's HTTPS/HTTP/3 server.
+  *
+  * `cert` and `key` are filesystem paths to PEM files, not inline PEM text.
+  * TLS is required — WebTransport rides on HTTP/3 over QUIC, so there is no
+  * plaintext mode. For certificates not signed by a system-trusted CA,
+  * joining workers should trust the issuing CA via `tls.ca` or pin the
+  * certificate via `serverCertificateHashes`.
+  *
+  * ```ts no_run
+  * import { startCluster } from 'fino:cluster';
+  *
+  * await startCluster({ port: 9999, tls: { cert: './cert.pem', key: './key.pem' } });
+  * ```
+  */
   tls: {
+    /** Path to the PEM certificate chain file presented by the seed. */
     cert: string;
+    /** Path to the PEM private key file matching `cert`. */
     key: string;
   };
+  /**
+  * URL path of the cluster WebTransport endpoint on the seed server.
+  *
+  * Defaults to `/__fino_cluster`. A missing leading slash is added. Workers
+  * must connect to this exact path; WebTransport sessions requested on any
+  * other path are rejected with a 404, and plain HTTP requests receive a
+  * placeholder response.
+  */
   path?: string;
+  /**
+  * HTTP/3 listener configuration forwarded to the underlying server.
+  *
+  * HTTP/3 is always enabled — the cluster transport requires it — so the
+  * only useful form is an object whose `quic` field tunes the QUIC
+  * transport (timeouts, flow control, and similar low-level knobs).
+  * Omitting this or passing `true` uses the defaults.
+  */
   h3?: true | {
     quic?: Record<string, unknown>;
   };
@@ -152,11 +209,56 @@ export interface JoinClusterOptions {
   * ```
   */
   nodeId?: string;
+  /**
+  * TLS verification settings for the connection to the seed.
+  *
+  * `ca` is a filesystem path to a PEM CA bundle trusted for the seed's
+  * certificate — use it when the seed's certificate is not signed by a
+  * system-trusted CA. `rejectUnauthorized: false` skips verification
+  * entirely; avoid it outside local development, since it permits
+  * man-in-the-middle attacks — prefer `ca` or `serverCertificateHashes`.
+  *
+  * ```ts no_run
+  * import { joinCluster } from 'fino:cluster';
+  *
+  * await joinCluster({
+  *   seed: 'https://seed.example.test:9999/__fino_cluster',
+  *   tls: { ca: './cluster-ca.pem' },
+  * });
+  * ```
+  */
   tls?: {
+    /** Path to a PEM CA bundle trusted for the seed's certificate. */
     ca?: string;
+    /** Whether certificate verification failures abort the connection. Defaults to `true`. */
     rejectUnauthorized?: boolean;
   };
+  /**
+  * QUIC transport tuning forwarded to the WebTransport session.
+  *
+  * Low-level knobs (timeouts, flow control, and similar) applied to the
+  * QUIC connection under the WebTransport session. Most deployments should
+  * omit this and use the defaults.
+  */
   quic?: Record<string, unknown>;
+  /**
+  * Certificate pinning hashes for the seed's certificate.
+  *
+  * Follows the WebTransport `serverCertificateHashes` model: the connection
+  * is accepted when the seed's certificate matches one of the given hashes,
+  * bypassing CA-based validation. Useful for self-signed deployments where
+  * distributing a CA bundle is impractical.
+  *
+  * ```ts no_run
+  * import { joinCluster } from 'fino:cluster';
+  *
+  * const certSha256 = new Uint8Array(32); // SHA-256 digest of the seed certificate
+  * await joinCluster({
+  *   seed: 'https://127.0.0.1:9999/__fino_cluster',
+  *   serverCertificateHashes: [{ algorithm: 'sha-256', value: certSha256 }],
+  * });
+  * ```
+  */
   serverCertificateHashes?: readonly WebTransportHash[];
 }
 /**
@@ -212,8 +314,9 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
 * onto other nodes in the cluster.
 *
 * Throws if this process is already connected or if the seed URL cannot be
-* reached. The returned promise resolves once the worker transport is
-* connected and the client loop has started.
+* reached, and throws a `TypeError` when the seed URL does not use the
+* `https:` scheme. The returned promise resolves once the worker transport
+* is connected and the client loop has started.
 *
 * ```ts no_run
 * import { joinCluster, leaveCluster } from 'fino:cluster';

@@ -1,14 +1,38 @@
 /**
 * internal/opentelemetry/instrumentations/dns — internal runtime module.
 *
-* Converts runtime DNS lookup lifecycle topic events into client spans. Active
-* lookups are tracked by lookup id until an end or error event arrives.
+* Converts the runtime's DNS lookup lifecycle into OpenTelemetry client spans.
+* The runtime publishes `dns.lookup.start`, `dns.lookup.end`, and
+* `dns.lookup.error` topic events for each name resolution it performs; this
+* instrumentation subscribes to all three and correlates them by lookup id.
 *
-* ```js
-* const { DnsInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/dns';
+* A start event opens an in-flight entry that captures the hostname, the
+* originating request id and hop (when the lookup was triggered while handling
+* an instrumented request), and a start timestamp. The matching end or error
+* event closes the entry and emits a single `DNS <hostname>` client span
+* through the SDK sink. Spans are only recorded while tracer-context recording
+* is enabled, so instrumentation left enabled across a provider shutdown stops
+* producing data without needing to be torn down. End or error events whose
+* lookup id was never opened — for example because recording was disabled when
+* the lookup began — are ignored rather than producing an orphan span.
+*
+* This is internal plumbing wired up by the OpenTelemetry SDK, not something
+* applications construct directly. It is documented here for runtime
+* maintainers; the private state is visible only when docs are built with
+* `--include-private`.
+*
+* ```ts no_run
+* import { DnsInstrumentation } from 'internal:opentelemetry/instrumentations/dns';
+*
 * const instrumentation = new DnsInstrumentation();
-* console.log(typeof instrumentation.enable);
+* const disposable = instrumentation.enable({
+*   recordSpan(span) {
+*     console.log(span.name); // e.g. "DNS example.com"
+*   },
+* });
+*
+* // On SDK shutdown:
+* disposable.dispose();
 * ```
 *
 * @internal
@@ -19,18 +43,27 @@ import type { Disposable, OtelSdkLike, RuntimeDnsEvent, SpanStatus } from '../co
 import { createRuntimeClientSpan } from './_runtime-client.ts';
 import { isTracerProviderContextEnabled } from '../traces.ts';
 /**
-* Runtime DNS lookup instrumentation.
+* Turns runtime DNS lookup events into client spans.
 *
-* The instrumentation subscribes to `dns.lookup.start`, `dns.lookup.end`, and
-* `dns.lookup.error` topics. It records spans only while tracer context
-* recording is enabled. Missing start events are ignored, and dispose removes
-* all topic subscriptions.
+* A single instance owns the map of in-flight lookups keyed by lookup id. It
+* holds no configuration: construct it, call `enable` once with the SDK sink
+* that should receive completed spans, and keep the
+* returned disposable to unsubscribe at shutdown. Recording is gated on the
+* tracer provider's context recording flag, so spans are suppressed while
+* tracing is paused even though the subscriptions stay live.
 *
-* ```js
-* const { DnsInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/dns';
+* ```ts no_run
+* import { DnsInstrumentation } from 'internal:opentelemetry/instrumentations/dns';
+*
+* const spans: unknown[] = [];
 * const instrumentation = new DnsInstrumentation();
-* const disposable = instrumentation.enable({ recordSpan() {} });
+* const disposable = instrumentation.enable({
+*   recordSpan(span) {
+*     spans.push(span);
+*   },
+* });
+*
+* // ...run instrumented DNS lookups, then tear down:
 * disposable.dispose();
 * ```
 *
@@ -38,23 +71,15 @@ import { isTracerProviderContextEnabled } from '../traces.ts';
 */
 export class DnsInstrumentation {
   /**
-  * Private property `#active` used by `DnsInstrumentation`.
+  * In-flight lookups awaiting an end or error event, keyed by lookup id.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #active = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#active;
-  *   }
-  * }
-  * ```
+  * A start event inserts an entry carrying the fields needed to build the span
+  * later: the hostname, the optional originating request id and hop, and the
+  * lookup's start timestamp in Unix nanoseconds. The matching end or error
+  * event reads and deletes the entry so each lookup produces exactly one span
+  * and the map does not accumulate stale entries. Entries are only inserted
+  * while recording is enabled, so lookups that begin while tracing is paused
+  * are never tracked.
   *
   * @internal
   */
@@ -65,21 +90,38 @@ export class DnsInstrumentation {
     startTimeUnixNano: number;
   }>();
   /**
-  * Enable DNS topic subscriptions.
+  * Subscribes to the DNS lookup topics and streams completed spans to the sink.
   *
-  * Each completed lookup records a client span named `DNS <hostname>` with
-  * DNS, socket-family, runtime request, and error attributes when available.
-  * The returned disposable must be called during SDK shutdown to unsubscribe.
+  * Each finished lookup produces one client span named `DNS <hostname>`. The
+  * span's timestamps come from the start and end/error events, and its
+  * attributes are populated only where data is available:
+  * `dns.question.name` from the hostname, `dns.answer.address` from the
+  * resolved address, `net.sock.family` from the socket family,
+  * `runtime.request_id` and `runtime.request_hop` when the lookup was
+  * triggered inside an instrumented request, and `error.message` on failure.
+  * End events yield an `OK` status; error events yield an `ERROR` status
+  * carrying the error message. When an active trace context exists the span is
+  * parented to it, otherwise it starts a fresh trace.
   *
-  * ```js
-  * const { DnsInstrumentation } =
-  *   import 'internal:opentelemetry/instrumentations/dns';
-  * const disposable = new DnsInstrumentation().enable({ recordSpan() {} });
+  * Call this exactly once per instance. The returned disposable removes all
+  * three topic subscriptions and must be invoked during SDK shutdown to avoid
+  * leaking them; dropping the reference without disposing leaves the
+  * instrumentation subscribed for the lifetime of the process.
+  *
+  * ```ts no_run
+  * import { DnsInstrumentation } from 'internal:opentelemetry/instrumentations/dns';
+  *
+  * const disposable = new DnsInstrumentation().enable({
+  *   recordSpan(span) {
+  *     if (span.status?.code === 'ERROR') {
+  *       console.warn('DNS lookup failed:', span.attributes['error.message']);
+  *     }
+  *   },
+  * });
+  *
   * disposable.dispose();
   * ```
   *
-  * @param sdk SDK-like sink that accepts completed spans.
-  * @returns A disposable that removes all DNS subscriptions.
   * @internal
   */
   enable(sdk: OtelSdkLike): Disposable {

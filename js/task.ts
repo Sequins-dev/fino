@@ -69,11 +69,15 @@ export type TaskJsonValue = null | boolean | number | string | TaskJsonValue[] |
 * narrow before calling `writeText()` or `writeJson()`.
 */
 export type TaskOutputWriter = {
+  /** Selected output format for this writer. */
   readonly mode: 'text';
+  /** Write a text chunk for human-readable output. */
   writeText(chunk: string): void | Promise<void>;
   writeJson?: never;
 } | {
+  /** Selected output format for this writer. */
   readonly mode: 'json';
+  /** Write one JSON-compatible value for structured output. */
   writeJson(value: TaskJsonValue): void | Promise<void>;
   writeText?: never;
 };
@@ -81,27 +85,44 @@ export type TaskOutputWriter = {
 * Side-effect metadata for policy, approval, and audit layers.
 */
 export interface TaskEffect {
+  /** Machine-readable effect category. */
   kind: string;
+  /** Human-readable explanation of the effect. */
   description?: string;
 }
 /**
 * Context passed to a task executor.
 */
 export interface TaskContext {
+  /** Signal cancelled when the current run should stop. */
   readonly signal: AbortSignal;
+  /** Optional caller-supplied run identifier for tracing. */
   readonly runId?: string;
+  /** Output writer selected for this run. */
   readonly writer: TaskOutputWriter;
+  /** Environment variables visible to the task. */
   readonly env?: Record<string, string | undefined>;
+  /** Current working directory for filesystem-oriented tasks. */
   readonly cwd?: string;
+  /** Prompt session available to interactive CLI tasks. */
   readonly prompt?: PromptSession;
+  /** CLI option keys explicitly provided by the caller. */
   readonly providedOptions?: ReadonlySet<string>;
+  /** Return whether a CLI option key was explicitly provided. */
   optionProvided?(key: string): boolean;
+  /** AI tool call id when invoked through a model tool surface. */
   readonly toolCallId?: string;
+  /** AI agent step index when invoked through a model tool surface. */
   readonly step?: number;
+  /** Messages associated with an AI tool invocation. */
   readonly messages?: ModelMessage[];
+  /** Mutable message history associated with an AI tool invocation. */
   readonly history?: MessageHistory;
+  /** Suspend the current task for an external resume flow. */
   suspend?(opts?: {
+    /** Optional reason shown to the caller or scheduler. */
     reason?: string;
+    /** Optional opaque payload retained by the scheduler. */
     payload?: unknown;
   }): never;
 }
@@ -116,36 +137,57 @@ export type TaskHandler<
 * CLI option metadata for a task.
 */
 export interface TaskCliOption {
+  /** Input object key to populate. Defaults to the long or short flag name. */
   name?: string;
+  /** Comma-separated CLI flags, for example `-v, --verbose`. */
   flags: string;
+  /** Help text shown next to the option. */
   description?: string;
+  /** Primitive parser used for the option value. */
   type?: 'string' | 'number' | 'boolean';
+  /** Whether the option may appear more than once. */
   multiple?: boolean;
+  /** Whether parsing should fail when the option is missing. */
   required?: boolean;
+  /** Default value or resolver used by the argv parser. */
   default?: boolean | string | number | Array<string | number> | ((ctx: CommandContext) => unknown);
+  /** Allowed option values. */
   choices?: Array<string | number>;
 }
 /**
 * CLI positional metadata for a task.
 */
 export interface TaskCliPositional {
+  /** Input object key populated by this positional argument. */
   name: string;
+  /** Help text shown next to the positional. */
   description?: string;
+  /** Primitive parser used for the positional value. */
   type?: 'string' | 'number';
+  /** Whether parsing should fail when the positional is missing. */
   required?: boolean;
+  /** Whether the positional can collect multiple values. */
   multiple?: boolean;
+  /** Alias for `multiple` when the positional consumes the remaining args. */
   variadic?: boolean;
+  /** Allowed positional values. */
   choices?: Array<string | number>;
 }
 /**
 * CLI-facing task metadata.
 */
 export interface TaskCliSpec {
+  /** CLI command name. Defaults to the task name. */
   name?: string;
+  /** Usage string shown in help output. */
   usage?: string;
+  /** Option definitions accepted by this task's CLI parser. */
   options?: TaskCliOption[];
+  /** Positional argument definitions accepted by this task. */
   positionals?: TaskCliPositional[];
+  /** Whether unknown options should be preserved instead of rejected. */
   allowUnknown?: boolean;
+  /** Whether option parsing stops after the first positional argument. */
   stopOptionsAfterPositionals?: boolean;
   /**
   * Whether `--help` should be handled by this task's CLI parser.
@@ -159,14 +201,23 @@ export interface TaskCliSpec {
 * Runtime context passed to AI-tool-compatible task invocation.
 */
 export interface TaskRunContext {
+  /** Signal cancelled when the tool invocation should stop. */
   signal: AbortSignal;
+  /** Provider tool call id. */
   toolCallId: string;
+  /** Agent step index for this invocation. */
   step: number;
+  /** Run identifier shared across related tool calls. */
   runId: string;
+  /** Messages visible to the tool invocation. */
   messages: ModelMessage[];
+  /** Optional persistent message history. */
   history?: MessageHistory;
+  /** Suspend this invocation for an external resume flow. */
   suspend(opts?: {
+    /** Optional reason shown to the caller or scheduler. */
     reason?: string;
+    /** Optional opaque payload retained by the scheduler. */
     payload?: unknown;
   }): never;
 }
@@ -174,7 +225,9 @@ export interface TaskRunContext {
 * Result shape returned by AI-tool-compatible task invocation.
 */
 export type TaskToolResult = string | {
+  /** Tool result content returned to the model. */
   content: ContentPart | ContentPart[] | string;
+  /** Whether the tool result should be treated as an error. */
   isError?: boolean;
 };
 /**
@@ -184,43 +237,71 @@ export interface TaskOptions<
   Input = unknown,
   Output = unknown
 > {
+  /** Stable task name used by CLI, tool, and child lookup surfaces. */
   name: string;
+  /** Human-readable description for help text and model tool definitions. */
   description?: string;
+  /** Input schema used to validate raw task input. */
   inputSchema?: SchemaLike<Input>;
+  /** Optional output schema metadata for callers that inspect task shape. */
   outputSchema?: unknown;
+  /** Output formats this task supports. Defaults to `text`. */
   outputMode?: TaskOutputMode;
+  /** CLI parser metadata for `Task.parse()` and `Task.help()`. */
   cli?: TaskCliSpec;
+  /** Child tasks mounted under this task. */
   children?: Task[];
+  /** Side-effect metadata for policy and approval layers. */
   effects?: TaskEffect[];
+  /** Whether callers should request approval before running this task. */
   requiresApproval?: boolean;
+  /** Human-readable risk description. */
   risk?: string;
+  /** Whether the task is expected to mutate external state. */
   sideEffects?: boolean;
+  /** Timeout in milliseconds for direct and CLI execution. */
   timeoutMs?: number;
+  /** Whether AI-tool invocation should throw instead of returning error content. */
   throwOnError?: boolean;
+  /** Executor called after input validation. */
   run: TaskHandler<Input, Output>;
 }
 /**
 * Options for direct task execution.
 */
 export interface TaskRunOptions {
+  /** Requested output mode for this execution. */
   outputMode?: TaskRequestedOutputMode;
+  /** Writer used to receive task output. */
   writer?: TaskOutputWriter;
+  /** Signal cancelled when this run should stop. */
   signal?: AbortSignal;
+  /** Optional run identifier for tracing. */
   runId?: string;
+  /** Environment variables visible to the task. */
   env?: Record<string, string | undefined>;
+  /** Current working directory for filesystem-oriented tasks. */
   cwd?: string;
+  /** Prompt session available to interactive tasks. */
   prompt?: PromptSession;
+  /** CLI option keys explicitly provided by the caller. */
   providedOptions?: ReadonlySet<string>;
 }
 /**
 * Options for CLI-style task parsing.
 */
 export interface TaskParseOptions extends ParseOptions {
+  /** Requested output mode for the selected task. */
   outputMode?: TaskRequestedOutputMode;
+  /** Writer used to receive parsed task output. */
   writer?: TaskOutputWriter;
+  /** Signal cancelled when parsing or execution should stop. */
   signal?: AbortSignal;
+  /** Optional run identifier for tracing. */
   runId?: string;
+  /** Environment variables visible to the task. */
   env?: Record<string, string | undefined>;
+  /** Current working directory for filesystem-oriented tasks. */
   cwd?: string;
 }
 class TaskTimeoutError extends Error {
@@ -333,18 +414,31 @@ export class Task<
   Input = unknown,
   Output = unknown
 > {
+  /** Stable task name used by CLI, tool, and child lookup surfaces. */
   readonly name: string;
+  /** Human-readable description for help text and model tools. */
   readonly description?: string;
+  /** Normalized input schema used for validation and tool parameters. */
   readonly inputSchema?: Record<string, unknown>;
+  /** Optional output schema metadata. */
   readonly outputSchema?: unknown;
+  /** Output formats this task supports. */
   readonly outputMode: TaskOutputMode;
+  /** CLI parser metadata for this task. */
   readonly cli?: TaskCliSpec;
+  /** Direct child tasks. */
   readonly children: readonly Task[];
+  /** Side-effect metadata for policy and approval layers. */
   readonly effects: readonly TaskEffect[];
+  /** Whether callers should request approval before running this task. */
   readonly requiresApproval: boolean;
+  /** Human-readable risk description. */
   readonly risk?: string;
+  /** Whether this task is expected to mutate external state. */
   readonly sideEffects: boolean;
+  /** Timeout in milliseconds for task execution. */
   readonly timeoutMs?: number;
+  /** Tool parameters derived from the input schema. */
   readonly parameters: Record<string, unknown>;
   #run: TaskHandler<Input, Output>;
   #throwOnError: boolean;

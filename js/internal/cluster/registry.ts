@@ -47,46 +47,23 @@ interface PortEntry {
 */
 export class RealmRegistry {
   /**
-  * Private property `#ports` used by `RealmRegistry`.
+  * The authoritative record of every registered port, keyed by port ID.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #ports = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#ports;
-  *   }
-  * }
-  * ```
+  * Each entry carries the hosting node, the parent edge, and the set of direct
+  * child ports, so a single lookup answers ownership, parentage, and children
+  * for a port. Mutating this map is the source of truth; the by-node index is
+  * kept in sync alongside it.
   *
   * @internal
   */
   #ports = new Map<string, PortEntry>();
   // nodeId -> set of portIds hosted on that node
   /**
-  * Private property `#byNode` used by `RealmRegistry`.
+  * Reverse index mapping each node ID to the set of port IDs it hosts.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #byNode = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#byNode;
-  *   }
-  * }
-  * ```
+  * This is what makes `nodeDown` cheap: when a node disappears the registry
+  * reads its hosted-port set directly instead of scanning every entry. It is
+  * maintained in lockstep with `#ports` on every register and removal.
   *
   * @internal
   */
@@ -227,25 +204,12 @@ export class RealmRegistry {
     return entry ? [...entry.children] : [];
   }
   /**
-  * Private method `#removeRecursive` used by `RealmRegistry`.
+  * Depth-first removal of a port and its subtree, backing `exit`.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #removeRecursive() {
-  *     return 'removeRecursive';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#removeRecursive();
-  *   }
-  * }
-  * ```
+  * Descendants are visited and appended to `acc` before the port itself, so the
+  * accumulated list is ordered children-first. Each visit detaches the port
+  * from its parent's child set and from the by-node index before deleting the
+  * entry. Unknown ports are a no-op.
   *
   * @internal
   */
@@ -263,25 +227,13 @@ export class RealmRegistry {
     acc.push(portId);
   }
   /**
-  * Private method `#removeRecursiveWithParent` used by `RealmRegistry`.
+  * Depth-first removal variant used by `nodeDown` that records parent edges.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #removeRecursiveWithParent() {
-  *     return 'removeRecursiveWithParent';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#removeRecursiveWithParent();
-  *   }
-  * }
-  * ```
+  * Behaves like `#removeRecursive` — children-first ordering, parent and
+  * by-node detachment, no-op on unknown ports — but accumulates
+  * `{ portId, parentPortId }` pairs instead of bare IDs. The parent edge is
+  * captured before deletion so callers can still notify a removed child's
+  * parent host once the entry is gone.
   *
   * @internal
   */

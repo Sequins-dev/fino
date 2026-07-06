@@ -1,17 +1,32 @@
 /**
-* internal HTTP driver interfaces.
+* internal:net/http/driver — protocol driver contracts shared by the HTTP stack.
+*
+* This module holds no logic of its own: it defines the interfaces and helper
+* predicate that let `serve()` and `fetch()` treat HTTP/1, HTTP/2, and HTTP/3
+* uniformly. Concrete drivers (H1/H2 server and client implementations) live in
+* sibling modules and satisfy these contracts; keeping the contracts in one
+* type-only module avoids a cyclic dependency between the dispatchers and the
+* per-protocol code.
+*
+* On the server side, a `ServerDriver` owns one accepted connection for its
+* whole lifetime, invoking a `ServerHandler` per request and honoring the
+* limits in `ServerDriverOptions`. `serve()` chooses the driver from ALPN
+* negotiation, and the H1 driver additionally sniffs the h2c upgrade preface
+* when `allowH2cUpgrade` is set. On the client side, a `ClientDriver` sends one
+* logical request over an already-open reader/writer pair and leaves the
+* connection open so the caller can pool it; `multiplexed` reports whether the
+* connection can carry concurrent streams, and a `CancelSignal` races the send
+* against abort without binding to any particular `AbortSignal` global.
+*
+* `ConnectionTakeover` is the escape hatch for protocol upgrades such as
+* WebSocket. A handler returns one in place of a `Response`; the driver detects
+* it with `isConnectionTakeover()` (a duck-type check, since it is an interface
+* rather than a class), writes any handshake response, then hands the raw
+* reader/writer to `_takeOver()`. The H1 driver accepts any takeover, while the
+* H2 driver rejects one whose `compatibleProtocols` omits `'h2'` with an
+* RST_STREAM / INTERNAL_ERROR.
 *
 * HTTP semantics specification: https://www.rfc-editor.org/rfc/rfc9110
-*
-* Both H1ServerDriver and H2ServerDriver implement ServerDriver. Both
-* H1ClientDriver and H2ClientDriver implement ClientDriver. serve() and
-* fetch() dispatch to the right driver based on ALPN negotiation or h2c
-* preface detection.
-*
-* ConnectionTakeover is the base class for protocol-level connection hijacks
-* (e.g. WebSocket). The h1 driver checks `result instanceof ConnectionTakeover`
-* and calls _takeOver(reader, writer). The h2 driver additionally checks
-* compatibleProtocols before allowing the upgrade.
 *
 * @example
 * ```ts no_run

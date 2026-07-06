@@ -1,14 +1,48 @@
 /**
-* internal/opentelemetry/instrumentations/fetch — internal runtime module.
+* internal:opentelemetry/instrumentations/fetch — client spans for outgoing fetch requests.
 *
-* Converts runtime fetch request lifecycle topic events into client spans and
-* injects propagation headers into the outgoing request carrier.
+* This instrumentation turns the runtime's fetch request lifecycle into
+* OpenTelemetry client spans. The runtime publishes `fetch.request.start`,
+* `fetch.request.end`, and `fetch.request.error` events on the shared topic bus
+* for every outgoing `fetch()` call; this module subscribes to those topics,
+* correlates them by request id, and emits one span per request through the SDK
+* it is enabled with. Because the runtime, not this module, owns the fetch call
+* site, instrumentation is fully out-of-band: application code keeps using the
+* standard `fetch()` global and never references this class directly.
 *
-* ```js
-* const { FetchInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/fetch';
-* console.log(new FetchInstrumentation().constructor.name);
+* On a start event the active span context (if any) supplies the parent trace
+* id and parent span id; when there is no active context a fresh 128-bit trace
+* id is generated so the outgoing request still carries a valid W3C trace. The
+* SDK propagator is asked to inject `traceparent`/`tracestate` into the request
+* header carrier, so the downstream service continues the same trace. A snapshot
+* of the injected headers is retained and attached to the finished span for
+* debugging. On finish the span is named `<method> <url>`, tagged with
+* `http.request.method`, `url.full`, and `http.response.status_code`, and marked
+* as an error when the response status is 500 or higher or when the request
+* rejected. Spans are only produced while tracer-provider context recording is
+* enabled; when it is disabled, start and finish events are dropped and no state
+* accumulates. End or error events without a matching start (for example, a
+* request that began while recording was off) are ignored.
+*
+* This is internal plumbing wired up by the OpenTelemetry SDK's instrumentation
+* registry, not a public API. Enable it through the SDK rather than constructing
+* it yourself.
+*
+* ```ts no_run
+* import { FetchInstrumentation } from 'internal:opentelemetry/instrumentations/fetch';
+*
+* const disposable = new FetchInstrumentation().enable({
+*   propagator: {
+*     inject(carrier, ctx) { carrier.traceparent = `00-${ctx.traceId}-${ctx.spanId}-01`; },
+*   },
+*   recordSpan(span) { console.log(span.name, span.status?.code); },
+* });
+*
+* await fetch('https://example.com/api');  // emits a "GET https://example.com/api" span
+* disposable.dispose();
 * ```
+*
+* See the W3C Trace Context specification: https://www.w3.org/TR/trace-context/
 *
 * @internal
 */
@@ -19,19 +53,29 @@ import { getActiveSpanContext, isTracerProviderContextEnabled } from '../traces.
 /**
 * Runtime fetch client instrumentation.
 *
-* The instrumentation subscribes to fetch request start, end, and error topics.
-* Start events allocate a trace/span id and inject propagation headers through
-* the SDK propagator; finish events record the span and include a snapshot of
-* injected headers. Missing start events are ignored. HTTP status codes 500 and
-* above are marked as errors.
+* Instances are stateless until `enable()` is called. The class holds a map of
+* in-flight requests keyed by request id: a start event inserts an entry that
+* records the allocated trace and span ids, the parent span id, the start
+* timestamp, and the snapshot of injected headers; the matching end or error
+* event removes the entry and hands the assembled span to the SDK. Requests that
+* never receive a start event (or that start while recording is disabled) leave
+* no entry, so their end events are silently ignored.
 *
-* ```js
-* const { FetchInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/fetch';
-* const disposable = new FetchInstrumentation().enable({
+* One `FetchInstrumentation` can be enabled against exactly one SDK at a time.
+* Enabling twice creates independent subscriptions; dispose each returned
+* handle to unsubscribe. The class does not deduplicate or throttle — every
+* fetch lifecycle produces at most one span while recording is enabled.
+*
+* ```ts no_run
+* import { FetchInstrumentation } from 'internal:opentelemetry/instrumentations/fetch';
+*
+* const spans: unknown[] = [];
+* const instrumentation = new FetchInstrumentation();
+* const disposable = instrumentation.enable({
 *   propagator: { inject() {} },
-*   recordSpan() {},
+*   recordSpan(span) { spans.push(span); },
 * });
+* // ... application makes fetch() calls ...
 * disposable.dispose();
 * ```
 *
@@ -39,23 +83,15 @@ import { getActiveSpanContext, isTracerProviderContextEnabled } from '../traces.
 */
 export class FetchInstrumentation {
   /**
-  * Private property `#active` used by `FetchInstrumentation`.
+  * Map of in-flight fetch requests keyed by runtime request id.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #active = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#active;
-  *   }
-  * }
-  * ```
+  * Each entry captures the span state allocated at request start — trace id,
+  * span id, parent span id, start timestamp, span kind, method and url when
+  * known, and a snapshot of the headers injected by the propagator — and is
+  * removed when the matching end or error event finalizes the span. Entries only
+  * exist for requests observed while recording was enabled, which is why finish
+  * handlers tolerate a missing entry. This state is internal to the running
+  * instrumentation and has no application-facing contract.
   *
   * @internal
   */
@@ -70,26 +106,42 @@ export class FetchInstrumentation {
     injectedHeaders: Record<string, unknown>;
   }>();
   /**
-  * Enable fetch topic subscriptions and propagation injection.
+  * Subscribe to the fetch lifecycle topics and begin emitting client spans.
   *
-  * The SDK must provide a propagator with `inject()` and a `recordSpan()`
-  * method. Completed spans are named `<method> <url>`, use client kind, and
-  * include HTTP method, URL, response status, error message, resource, and
-  * injected header attributes when available. The returned disposable removes
-  * all subscriptions.
+  * The supplied SDK must expose a `propagator` with an `inject(carrier, ctx)`
+  * method and a `recordSpan(span)` sink. On each `fetch.request.start` the
+  * propagator injects trace headers into the outgoing request's header carrier;
+  * on `fetch.request.end` or `fetch.request.error` the finished span is passed
+  * to `recordSpan`. Completed spans use client kind, are named `<method> <url>`,
+  * and carry `http.request.method`, `url.full`, `http.response.status_code`,
+  * and `error.message` attributes when those fields are present, along with the
+  * request resource and the snapshot of injected headers. End events with a
+  * status of 500 or above are recorded with an `ERROR` status whose message is
+  * the status code; error events are recorded with `ERROR` and the error's
+  * message; all other completions are `OK`.
   *
-  * ```js
-  * const { FetchInstrumentation } =
-  *   import 'internal:opentelemetry/instrumentations/fetch';
+  * Nothing is emitted while tracer-provider context recording is disabled: both
+  * the start and finish handlers check the recording flag and return early, so
+  * toggling recording at runtime cleanly starts and stops span production. The
+  * returned disposable tears down all three topic subscriptions; call it to
+  * fully detach the instrumentation.
+  *
+  * ```ts no_run
+  * import { FetchInstrumentation } from 'internal:opentelemetry/instrumentations/fetch';
+  *
   * const disposable = new FetchInstrumentation().enable({
-  *   propagator: { inject(carrier) { carrier.traceparent = '00-demo'; } },
-  *   recordSpan(span) { console.log(span.kind); },
+  *   propagator: {
+  *     inject(carrier, ctx) { carrier.traceparent = `00-${ctx.traceId}-${ctx.spanId}-01`; },
+  *   },
+  *   recordSpan(span) {
+  *     console.log(span.name, span.attributes?.['http.response.status_code'], span.status?.code);
+  *   },
   * });
+  *
+  * await fetch('https://example.com/health');
   * disposable.dispose();
   * ```
   *
-  * @param sdk SDK-like sink with propagator and span recorder.
-  * @returns A disposable that removes all fetch subscriptions.
   * @internal
   */
   enable(sdk: OtelSdkLike): Disposable {

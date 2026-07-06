@@ -1,31 +1,68 @@
 /**
 * fino:commands/install — reusable `fino install` command task.
 *
-* Builds the `fino install` command. The command lazily loads the internal
-* package manager so normal CLI startup does not pay the installer cost unless
-* installation is requested.
+* Builds the `fino install` command as a `Task` so the same logic can be
+* mounted as a subcommand of the root CLI, parsed standalone, or invoked
+* programmatically. The heavy lifting is delegated to the internal package
+* manager, which resolves npm package specs, downloads and integrity-checks
+* tarballs, extracts each package under `.fino/packages`, and writes the
+* `.fino/package-map.json` consumed by the module loader at import time.
 *
-* ```js
+* Positional arguments are npm-style specs — `name` or `name@range` (scoped
+* names like `@scope/pkg@^1.2.0` work too). When specs are given they are
+* recorded in the project's `package.json` `dependencies` before resolution,
+* creating a minimal manifest if none exists. With no specs the command
+* reinstalls whatever the existing `package.json` already declares across its
+* `dependencies`, `devDependencies`, and `optionalDependencies` groups.
+*
+* Packages come from the registry named by the `FINO_NPM_REGISTRY` environment
+* variable, defaulting to the public npm registry.
+*
+* ```ts no_run
 * import installCommand from 'fino:commands/install';
-* const command = installCommand;
-* console.log(command.name);
+*
+* // Add a package and regenerate the package map:
+* await installCommand.parse(['left-pad@^1.3.0']);
+*
+* // Reinstall everything package.json already declares:
+* await installCommand.parse([]);
 * ```
 *
 */
 import { Task } from '../task.ts';
 import { installPackages } from '../internal/package_manager.ts';
 /**
-* Create the `install` subcommand used by the root Fino CLI.
+* The `install` subcommand used by the root Fino CLI.
 *
-* Positional package names are optional. When present, the installer adds them
-* to `package.json` before resolving dependencies and writing the `.fino`
-* package map. With no packages, it installs the dependencies already declared
-* by the current project. The command returns an empty string on success and
-* lets installer failures propagate as errors.
+* Positional package specs are optional. When present, each spec is added to
+* the project's `package.json` `dependencies` before the installer resolves
+* the full dependency graph and writes the `.fino` package map — a
+* `name@range` spec records the requested range, while a bare `name` is
+* pinned to the exact version that resolution selects. With no specs, it
+* installs the dependencies the current project already declares.
 *
-* ```js
+* Resolution walks transitive `dependencies` and `optionalDependencies`; a
+* failing optional dependency downgrades to a warning instead of aborting,
+* and peer dependencies are never installed automatically — each one produces
+* a warning naming the package that expects it.
+*
+* In text mode the task resolves to an empty string on success. With `--json`
+* it writes and returns a structured result of the shape
+* `{ command: 'install', ok: true, packages }`, where `packages` lists the
+* specs that were passed (empty when reinstalling declared dependencies).
+*
+* Throws if no specs are given and `package.json` does not exist, or if
+* resolution, download, integrity verification, or extraction fails for a
+* required package.
+*
+* ```ts no_run
 * import install from 'fino:commands/install';
+*
+* // Add a scoped package at a specific range:
 * await install.parse(['@scope/pkg@^1.2.0']);
+*
+* // Machine-readable output for tooling:
+* const result = await install.parse(['--json', 'left-pad']);
 * ```
 *
 */

@@ -1,14 +1,15 @@
 /**
-* fino:path — POSIX path manipulation.
+* fino:file/path — POSIX path manipulation.
 *
 * Provides an immutable `Path` class and a set of module-level functions for
 * working with filesystem path strings. All operations are purely in-memory
 * string transformations — no filesystem access, no stat() calls. For actual
 * filesystem I/O, see `fino:file`.
 *
-* The module supports POSIX paths (macOS, Linux) by default and has minimal
-* Windows stubs (the separator constants and `isAbsolute` regex detect Windows
-* paths), though Fino itself only runs on POSIX systems today.
+* The separator and absolute-path rules are chosen once at startup from the
+* host platform (via `internal:process`). Fino runs on POSIX systems (macOS,
+* Linux), where the separator is `/` and backslashes are ordinary filename
+* characters — the Windows branches in this module are inert on POSIX hosts.
 *
 *
 * ## Immutability
@@ -25,7 +26,7 @@
 *
 * ## Path normalization
 *
-* `_normalize(p)` collapses repeated separators and resolves `.` and `..`
+* `normalize()` collapses repeated separators and resolves `.` and `..`
 * segments. Key behavior:
 *
 * - Empty string → `'.'` (current directory, like POSIX realpath)
@@ -62,7 +63,7 @@
 *
 *
 * ```ts no_run
-* import { Path, join, resolve, relative, dirname, basename } from './path.ts';
+* import { Path, join, resolve, relative, dirname, basename } from 'fino:file/path';
 *
 * const p = new Path('/usr/local/bin');
 * p.dirname()       // Path('/usr/local')
@@ -174,23 +175,8 @@ function _resolve(parts: (string | Path)[]): string {
 */
 export class Path {
   /**
-  * Private property `#path` used by `Path`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #path = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#path;
-  *   }
-  * }
-  * ```
+  * The raw path string exactly as supplied at construction. Never mutated;
+  * every manipulation method builds a new `Path` around a new string.
   *
   * @internal
   */
@@ -202,8 +188,6 @@ export class Path {
   * input. Passing another `Path` copies its stored string. Use `Path.from()`
   * when you want to avoid allocating a new wrapper for existing `Path`
   * instances.
-  *
-  * @param input Raw path string or another `Path`.
   *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
@@ -231,9 +215,6 @@ export class Path {
   * object form. The returned object preserves the raw input string and may be
   * the same object that was passed in.
   *
-  * @param {string|Path} input
-  * @returns {Path}
-  *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
   *
@@ -256,8 +237,6 @@ export class Path {
   * The result is a new `Path`. Relative paths with no separator return `.`.
   * Trailing separators are ignored except when the path is the root
   * separator.
-  *
-  * @returns {Path}
   *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
@@ -284,10 +263,8 @@ export class Path {
   *
   * The method performs string manipulation only. It strips trailing
   * separators before finding the final component, and it removes `suffix`
-  * only when the full basename ends with that exact string.
-  *
-  * @param {string} [suffix]
-  * @returns {string}
+  * only when the full basename ends with that exact string. The root path
+  * `/` returns an empty string.
   *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
@@ -317,8 +294,6 @@ export class Path {
   * Compound extensions are not special-cased; only the substring after the
   * final dot is returned.
   *
-  * @returns {string}
-  *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
   *
@@ -341,8 +316,6 @@ export class Path {
   * On POSIX, an absolute path starts with `/`. The check does not verify that
   * the path exists.
   *
-  * @returns {boolean}
-  *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
   *
@@ -364,8 +337,6 @@ export class Path {
   * filesystem, or make relative paths absolute. A trailing separator is
   * preserved when present.
   *
-  * @returns {Path}
-  *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
   *
@@ -383,9 +354,6 @@ export class Path {
   * segments are ignored. Absolute later segments are not treated as a reset;
   * use `resolve()` for right-to-left absolute path resolution.
   *
-  * @param {...(string|Path)} segments
-  * @returns {Path}
-  *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
   *
@@ -400,10 +368,9 @@ export class Path {
   * Resolve this path against one or more base paths, producing an absolute
   * path. Processes from right to left; the first absolute path wins.
   *
-  * If no segments produce an absolute path, the result is relative.
-  *
-  * @param {...(string|Path)} bases  Base paths (leftmost = most significant).
-  * @returns {Path}
+  * Bases are listed outermost first: the leftmost base is consulted only when
+  * nothing to its right is absolute. If no segment is absolute at all, the
+  * result stays relative.
   *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
@@ -421,9 +388,6 @@ export class Path {
   *
   * The calculation is lexical and does not verify either path. When both
   * normalized paths are the same, the result is `.`.
-  *
-  * @param {string|Path} from
-  * @returns {Path}
   *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
@@ -457,8 +421,6 @@ export class Path {
   * This does not normalize or resolve the path, so it may include repeated
   * separators, `.` segments, or `..` segments exactly as supplied.
   *
-  * @returns {string}
-  *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
   *
@@ -473,8 +435,6 @@ export class Path {
   *
   * The returned value matches `toString()` and is not normalized.
   *
-  * @returns {string}
-  *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
   *
@@ -488,8 +448,6 @@ export class Path {
   * Convert the path to a primitive string for template literals and coercion.
   *
   * This hook returns the same raw value as `toString()`.
-  *
-  * @returns {string}
   *
   * ```ts no_run
   * import { Path } from 'fino:file/path';
@@ -512,9 +470,6 @@ export class Path {
 * joins the remaining segments with the platform separator, and normalizes the
 * result. With no usable segments, it returns `Path('.')`.
 *
-* @param {...(string|Path)} segments
-* @returns {Path}
-*
 * ```ts no_run
 * import { join } from 'fino:file/path';
 *
@@ -530,9 +485,6 @@ export function join(...segments: (string | Path)[]): Path {
 * Segments are processed from right to left until an absolute segment is
 * found, then the result is normalized. If no absolute segment is present, the
 * returned path remains relative.
-*
-* @param {...(string|Path)} segments
-* @returns {Path}
 *
 * ```ts no_run
 * import { resolve } from 'fino:file/path';
@@ -550,9 +502,6 @@ export function resolve(...segments: (string | Path)[]): Path {
 * `.` and `..` segments without inspecting the filesystem or resolving
 * symlinks.
 *
-* @param {string|Path} p
-* @returns {Path}
-*
 * ```ts no_run
 * import { normalize } from 'fino:file/path';
 *
@@ -567,9 +516,6 @@ export function normalize(p: string | Path): Path {
 *
 * The input is coerced with `Path.from()` and handled like `Path#dirname()`.
 * Relative paths with no separator return `Path('.')`.
-*
-* @param {string|Path} p Path to inspect.
-* @returns {Path} Directory portion of `p`.
 *
 * ```ts no_run
 * import { dirname } from 'fino:file/path';
@@ -586,10 +532,6 @@ export function dirname(p: string | Path): Path {
 * Trailing separators are ignored. The suffix is removed only when it exactly
 * matches the end of the final path component.
 *
-* @param {string|Path} p Path to inspect.
-* @param {string} [suffix] Optional suffix to remove from the final component.
-* @returns {string} Final component, possibly without `suffix`.
-*
 * ```ts no_run
 * import { basename } from 'fino:file/path';
 *
@@ -605,9 +547,6 @@ export function basename(p: string | Path, suffix?: string): string {
 * The extension includes the leading dot. Names without a dot, and leading-dot
 * names such as `.env`, return an empty string.
 *
-* @param {string|Path} p Path to inspect.
-* @returns {string} Extension including the dot, or `''`.
-*
 * ```ts no_run
 * import { extname } from 'fino:file/path';
 *
@@ -622,9 +561,6 @@ export function extname(p: string | Path): string {
 *
 * This is a string predicate only and does not check whether the path exists.
 *
-* @param {string|Path} p Path to inspect.
-* @returns {boolean} `true` when `p` is absolute for the current platform.
-*
 * ```ts no_run
 * import { isAbsolute } from 'fino:file/path';
 *
@@ -638,11 +574,8 @@ export function isAbsolute(p: string | Path): boolean {
 * Compute a relative path from `from` to `to`.
 *
 * Both paths are normalized before comparison. The calculation is lexical and
-* does not access the filesystem.
-*
-* @param {string|Path} from Starting path.
-* @param {string|Path} to Target path.
-* @returns {Path} Relative path from `from` to `to`, or `Path('.')`.
+* does not access the filesystem. When both paths normalize to the same
+* location, the result is `Path('.')`.
 *
 * ```ts no_run
 * import { relative } from 'fino:file/path';

@@ -37,376 +37,103 @@ import { arch } from 'internal:process';
 * stat.isFile(); // true
 * ```
 *
-* @internal
 */
 export class Stat {
   /**
-  * Private property `#nlink` used by `Stat`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #nlink = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#nlink;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  /**
-  * Private property `#mode` used by `Stat`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #mode = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#mode;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  /**
-  * Private property `#ino` used by `Stat`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #ino = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#ino;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  /**
-  * Private `#dev` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #dev = 0;
-  *
-  *   read() {
-  *     return this.#dev;
-  *   }
-  * }
-  * ```
+  * Backing store for the `dev` getter: the raw `st_dev` value, identifying the
+  * device (filesystem) that contains the inode.
   *
   * @internal
   */
   #dev: number;
   /**
-  * Private `#ino` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #ino = 0;
-  *
-  *   read() {
-  *     return this.#ino;
-  *   }
-  * }
-  * ```
+  * Backing store for the `ino` getter: the inode number, narrowed from the
+  * native `u64` to a JS Number.
   *
   * @internal
   */
   #ino: number;
   /**
-  * Private `#mode` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #mode = 0;
-  *
-  *   read() {
-  *     return this.#mode;
-  *   }
-  * }
-  * ```
+  * Backing store for the `mode` getter: the raw `st_mode` bits, combining the
+  * file-type field (`S_IFMT`) with the permission bits. The `permissions`
+  * getter and the `isFile`/`isDirectory`/etc. predicates all derive from this.
   *
   * @internal
   */
   #mode: number;
   /**
-  * Private `#nlink` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #nlink = 0;
-  *
-  *   read() {
-  *     return this.#nlink;
-  *   }
-  * }
-  * ```
+  * Backing store for the `nlink` getter: the number of hard links to the
+  * inode.
   *
   * @internal
   */
   #nlink: number;
   /**
-  * Private `#uid` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #uid = 0;
-  *
-  *   read() {
-  *     return this.#uid;
-  *   }
-  * }
-  * ```
+  * Backing store for the `uid` getter: the owning user's numeric ID.
   *
   * @internal
   */
   #uid: number;
   /**
-  * Private `#gid` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #gid = 0;
-  *
-  *   read() {
-  *     return this.#gid;
-  *   }
-  * }
-  * ```
+  * Backing store for the `gid` getter: the owning group's numeric ID.
   *
   * @internal
   */
   #gid: number;
   /**
-  * Private `#rdev` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #rdev = 0;
-  *
-  *   read() {
-  *     return this.#rdev;
-  *   }
-  * }
-  * ```
+  * Backing store for the `rdev` getter: the device ID described by the inode
+  * when it is a block or character special file (zero otherwise).
   *
   * @internal
   */
   #rdev: number;
   /**
-  * Private `#size` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #size = 0;
-  *
-  *   read() {
-  *     return this.#size;
-  *   }
-  * }
-  * ```
+  * Backing store for the `size` getter: the file size in bytes, narrowed from
+  * the native `i64` to a JS Number.
   *
   * @internal
   */
   #size: number;
   /**
-  * Private `#blksize` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #blksize = 0;
-  *
-  *   read() {
-  *     return this.#blksize;
-  *   }
-  * }
-  * ```
+  * Backing store for the `blksize` getter: the preferred block size for
+  * efficient filesystem I/O, in bytes.
   *
   * @internal
   */
   #blksize: number;
   /**
-  * Private `#blocks` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #blocks = 0;
-  *
-  *   read() {
-  *     return this.#blocks;
-  *   }
-  * }
-  * ```
+  * Backing store for the `blocks` getter: the number of 512-byte blocks
+  * actually allocated to the file (may be less than `size / 512` for sparse
+  * files).
   *
   * @internal
   */
   #blocks: number;
   /**
-  * Private `#atimeMs` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #atimeMs = 0;
-  *
-  *   read() {
-  *     return this.#atimeMs;
-  *   }
-  * }
-  * ```
+  * Backing store for the `atimeMs` getter: last access time, in milliseconds
+  * since the Unix epoch, combined from the `timespec` seconds and nanoseconds.
   *
   * @internal
   */
   #atimeMs: number;
   /**
-  * Private `#mtimeMs` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #mtimeMs = 0;
-  *
-  *   read() {
-  *     return this.#mtimeMs;
-  *   }
-  * }
-  * ```
+  * Backing store for the `mtimeMs` getter: last content-modification time, in
+  * milliseconds since the Unix epoch.
   *
   * @internal
   */
   #mtimeMs: number;
   /**
-  * Private `#ctimeMs` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #ctimeMs = 0;
-  *
-  *   read() {
-  *     return this.#ctimeMs;
-  *   }
-  * }
-  * ```
+  * Backing store for the `ctimeMs` getter: last status-change time (inode
+  * metadata change), in milliseconds since the Unix epoch.
   *
   * @internal
   */
   #ctimeMs: number;
   /**
-  * Private `#birthtimeMs` stat field parsed from platform metadata.
-  *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * class StatExample {
-  *   #birthtimeMs = 0;
-  *
-  *   read() {
-  *     return this.#birthtimeMs;
-  *   }
-  * }
-  * ```
+  * Backing store for the `birthtimeMs` getter: creation (birth) time, in
+  * milliseconds since the Unix epoch. Populated on macOS; left at zero on Linux
+  * because the parsed `struct stat` layout does not carry a birth-time field.
   *
   * @internal
   */

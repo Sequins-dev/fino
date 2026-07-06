@@ -1,5 +1,16 @@
 /**
-* internal:net/http/h2/server - H2ServerDriver.
+* internal:net/http/h2/server - HTTP/2 server driver backed by nghttp2.
+*
+* This module drives the server half of an HTTP/2 connection: it enforces
+* frame-level protocol invariants ahead of nghttp2 with a hardened validator,
+* accumulates and validates request pseudo-headers, streams request bodies into
+* a Fino HTTP handler, and submits response headers, body chunks, and trailers
+* back onto the session. It exposes a single public class, `H2ServerDriver`,
+* plus two small header-parsing helpers reused by the client. The two entry
+* points differ only in how the connection began: `run` handles a fresh h2
+* connection (expecting the client preface), while `runFromUpgrade` resumes h2
+* after an HTTP/1.1 `Upgrade: h2c` handshake by replaying the original request
+* as stream 1.
 *
 * Learn more:
 * - HTTP/2: https://www.rfc-editor.org/rfc/rfc9113

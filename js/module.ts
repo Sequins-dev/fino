@@ -1,12 +1,24 @@
 /**
-* fino:module - runtime module registration utilities.
+* fino:module — runtime module registration utilities.
 *
-* Use this module when a Realm needs to provide an in-memory module to code it
-* evaluates. Synthetic modules are scoped to the current runtime and are useful
-* for tests, plugins, and generated module graphs that do not have a backing
-* file on disk.
+* Registers in-memory modules whose exports come from a plain object rather
+* than a file on disk. Once installed, a synthetic module resolves through the
+* normal dynamic `import()` machinery, so any code in the runtime can import
+* the specifier as if it were a real file. This is useful for test fixtures,
+* plugins, and generated module graphs where writing source to disk would be
+* awkward or impossible.
 *
-* @example
+* Installation mutates the runtime's module registry and therefore only
+* affects imports that happen after `install()` returns. It does not rewrite
+* namespace objects that were already imported, and it is scoped to the current
+* runtime — a synthetic module installed in a parent Realm is not visible to a
+* child Realm running in its own isolate. Always pair `install()` with a later
+* `uninstall()` so fixtures do not leak into unrelated code.
+*
+* Specifiers must be application-owned bare or path-like strings. Prefixed
+* URI-like schemes such as `fino:`, `internal:`, or `app:` are rejected because
+* they are reserved for builtins and runtime providers.
+*
 * ```ts no_run
 * import { SyntheticModule } from 'fino:module';
 *
@@ -15,7 +27,8 @@
 *   mode: 'test',
 * });
 * fixture.install();
-* import * as config from 'fixture-config';
+* const config = await import('fixture-config');
+* console.log(config.default.port, config.mode); // 8080 test
 * fixture.uninstall();
 * ```
 */
@@ -23,77 +36,61 @@ import { _installSyntheticModule, _uninstallSyntheticModule } from 'internal:syn
 import { _register, _unregister } from 'internal:synthetic-direct';
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
 /**
-* Register a module specifier backed by an object of named exports.
+* A module specifier backed by an object of named exports, resolvable through
+* dynamic `import()` once installed.
 *
-* Synthetic modules intentionally cannot use prefixed builtin schemes such as
-* `fino:` or `internal:`. Use an application-owned bare or relative-like
-* specifier instead.
+* Construction is inert: it merely records the specifier and export object.
+* Nothing becomes importable until `install()` is called, and the module stays
+* importable until `uninstall()` removes it. Each export key becomes a named
+* export of the module; a `default` key becomes the default export. Because
+* installation targets the current runtime's registry, a synthetic module is
+* not shared across Realms that run in separate isolates.
 *
-* Installed modules affect future dynamic imports in the current runtime. They
-* do not rewrite already-loaded module namespace objects, and they should be
-* uninstalled when a test or plugin fixture is no longer needed.
+* Reinstalling the same specifier replaces the previous entry, which is a
+* convenient way to swap a fixture's exports between tests. Prefer a bare or
+* path-like specifier; scheme-prefixed specifiers are rejected by `install()`.
 *
 * ```ts no_run
 * import { SyntheticModule } from 'fino:module';
+* import { describe, it } from 'fino:test/test';
 *
-* const module = new SyntheticModule('fixtures:config', { port: 8080 });
-* module.install();
-* import * as config from 'fixtures:config';
-* module.uninstall();
+* describe('feature flags', () => {
+*   it('reads the injected config', async (t) => {
+*     const flags = new SyntheticModule('app-flags', { betaSearch: true });
+*     flags.install();
+*     try {
+*       const { betaSearch } = await import('app-flags');
+*       t.equal(betaSearch, true);
+*     } finally {
+*       flags.uninstall();
+*     }
+*   });
+* });
 * ```
 */
 export class SyntheticModule {
   /**
-  * Private readonly property `#specifier` used by `SyntheticModule`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #specifier = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#specifier;
-  *   }
-  * }
-  * ```
+  * The application-owned specifier this module registers under. Captured at
+  * construction and used as the registry key for both install and uninstall.
   *
   * @internal
   */
   readonly #specifier: string;
   /**
-  * Private readonly property `#exports` used by `SyntheticModule`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #exports = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#exports;
-  *   }
-  * }
-  * ```
+  * The named export values exposed by the module. Its keys become the module's
+  * export names when `install()` binds them into the synthetic namespace.
   *
   * @internal
   */
   readonly #exports: Record<string, unknown>;
   /**
-  * Create a synthetic module descriptor.
+  * Records the specifier and export object without touching the module
+  * registry.
   *
-  * The constructor only records the specifier and export object. Call
-  * `install()` to make the module resolvable. Export keys become the module's
-  * named exports; there is no implicit default export unless the object
-  * contains a `default` key.
+  * Construction has no side effects; call `install()` afterwards to make the
+  * module resolvable. The keys of `exports` become the module's named exports,
+  * and a `default` key becomes the default export — there is no implicit
+  * default otherwise.
   *
   * ```ts no_run
   * import { SyntheticModule } from 'fino:module';
@@ -103,9 +100,6 @@ export class SyntheticModule {
   *   mode: 'test',
   * });
   * ```
-  *
-  * @param specifier Application-owned module specifier to register.
-  * @param exports Named export values exposed by the synthetic module.
   */
   constructor(specifier: string, exports: Record<string, unknown>) {
     this.#specifier = specifier;

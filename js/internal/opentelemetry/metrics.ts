@@ -1,21 +1,46 @@
 /**
 * Metric providers, instruments, observable registrations, and aggregation.
 *
-* This internal module creates meters and metric instruments, publishes raw
-* metric observations, and contains the SDK-side helpers that clone, key,
-* aggregate, zero, and view-transform metric records. It supports counters,
-* up-down counters, gauges, histograms, observable instruments, exemplars, and
-* delta or cumulative reader flows.
+* This module implements the OpenTelemetry metrics API on top of Fino's topic
+* bus. A `MeterProvider` hands out `Meter`s scoped to an instrumentation library;
+* a meter creates the synchronous instruments (`Counter`, `UpDownCounter`,
+* `Gauge`, `HistogramInstrument`) and the observable instruments
+* (`ObservableCounter`, `ObservableUpDownCounter`, `ObservableGauge`). Recording a
+* measurement builds a `MetricRecord` — stamping it with the meter's scope, the
+* provider's resource, the current time, and, if a span is active, an exemplar
+* context — and publishes it to the meter's pre-cached per-scope topics plus the
+* shared `otel:metric:record` topic. Observable instruments do not record eagerly:
+* they publish a registration to `otel:metric:observable:register` and return a
+* disposable that republishes it to `otel:metric:observable:unregister`. The
+* reader and exporter side lives in the SDK, which subscribes to these topics.
 *
-* Instrument names must be non-empty. Histograms use the OpenTelemetry default
-* explicit bucket boundaries unless `advice.explicitBucketBoundaries` is
-* supplied. Observable instruments publish registration records and return a
-* disposable handle that unregisters the callback.
+* Alongside the API surface, this module holds the pure SDK-side helpers the
+* reader uses to fold a stream of records into a fixed set of series.
+* `cloneMetric` deep-copies a record so aggregation never mutates the published
+* one; `metricSeriesKey`, `metricInstrumentKey`, and `attributesKey` derive stable
+* grouping keys; `normalizeMetricKind` collapses observable kinds onto their
+* synchronous equivalents; `accumulateMetric` folds a new observation into a
+* running aggregate (summing counters, bucketing histograms, keeping the last
+* value for gauges); `applyMetricView` rewrites a record according to configured
+* views; and `zeroMetric` produces the reset points a delta reader emits for a
+* series that stopped reporting.
 *
-* ```typescript no_run
+* Instrument names must be non-empty — `requireNonEmptyName` throws a `TypeError`
+* otherwise. Histograms use the OpenTelemetry default explicit bucket boundaries
+* unless `advice.explicitBucketBoundaries` is supplied at creation. Use
+* `getMeterProvider()` to reach the active provider; `setMeterProvider` replaces
+* the process-wide default, while `runWithMeterProvider` and
+* `runWithoutMeterProvider` override it for the duration of a callback.
+*
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
 * const meter = getMeterProvider().getMeter('orders');
-* const counter = meter.createCounter('orders.created', { unit: '1' });
-* counter.add(1, { tenant: 'acme' });
+* const created = meter.createCounter('orders.created', { unit: '1' });
+* created.add(1, { tenant: 'acme' });
+*
+* const latency = meter.createHistogram('order.latency', { unit: 'ms' });
+* latency.record(42, { route: '/checkout' });
 * ```
 *
 * See OpenTelemetry metrics:
@@ -30,22 +55,38 @@ import type { Attributes, ExemplarRecord, MetricExemplarContext, MetricInstrumen
 import { getActiveSpanContext } from './traces.ts';
 import type { ReadonlySignal } from 'fino:signals';
 /**
-* MeterProvider class exposed by the OpenTelemetry API.
+* Entry point of the metrics API — the factory that produces scoped `Meter`s.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* A `MeterProvider` carries the resource (from `BaseProvider`) that every metric
+* it produces is stamped with. It holds no per-instrument state itself; each
+* `getMeter` call returns a fresh `Meter` bound to this provider and the given
+* instrumentation scope. Obtain the active provider with `getMeterProvider()`
+* rather than constructing one directly unless you are installing a custom SDK.
 *
-* ```typescript no_run
-* const ctor = MeterProvider;
+* ```ts no_run
+* import { MeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const provider = new MeterProvider({ resource: { 'service.name': 'billing' } });
+* const meter = provider.getMeter('billing/invoices', '1.4.0');
 * ```
 */
 export class MeterProvider extends BaseProvider {
   /**
-  * getMeter member on MeterProvider.
+  * Returns a `Meter` scoped to a named instrumentation library.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * `name` identifies the library or subsystem emitting metrics and is what
+  * per-scope topic routing keys off of; `version` and the optional `schemaUrl`,
+  * `attributes`, and `droppedAttributesCount` further qualify the scope. The
+  * arguments are passed through `normalizeScope`, which throws a `TypeError` if
+  * `name` is empty. Each call allocates a new `Meter`; there is no caching, so
+  * hold onto the returned instance rather than calling `getMeter` per record.
   *
-  * ```typescript no_run
-  * const member = MeterProvider.prototype.getMeter;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const meter = getMeterProvider().getMeter('db/pool', '2.0.0', {
+  *   schemaUrl: 'https://opentelemetry.io/schemas/1.24.0',
+  * });
   * ```
   */
   getMeter(name: string, version?: string, options?: {
@@ -57,53 +98,33 @@ export class MeterProvider extends BaseProvider {
   }
 }
 /**
-* Counter class exposed by the OpenTelemetry API.
+* A monotonic synchronous counter — records non-negative increments to a sum.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Use a counter for values that only ever go up, such as requests served or bytes
+* written. Each `add` publishes a `counter`-kind `MetricRecord`; the SDK folds
+* those into a running total per attribute set. For values that can also decrease,
+* use `UpDownCounter`. Create one with `Meter.createCounter` rather than
+* constructing it directly.
 *
-* ```typescript no_run
-* const ctor = Counter;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const requests = getMeterProvider().getMeter('http').createCounter('http.requests');
+* requests.add(1, { method: 'GET', route: '/health' });
 * ```
 */
 export class Counter {
-  /**
-  * #meter member on Counter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Counter.#meter';
-  * ```
-  */
+  /** The meter this counter records through. */
   #meter: Meter;
-  /**
-  * #name member on Counter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Counter.#name';
-  * ```
-  */
+  /** The validated, non-empty instrument name. */
   #name: string;
-  /**
-  * #options member on Counter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Counter.#options';
-  * ```
-  */
+  /** Instrument options (unit, description) merged into every record. */
   #options: MetricInstrumentOptions;
   /**
-  * constructor member on Counter.
+  * Binds the counter to a meter and validates its name.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new Counter();
-  * ```
+  * Throws a `TypeError` if `name` is empty or whitespace-only. Prefer
+  * `Meter.createCounter`, which calls this for you.
   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions = {}) {
     this.#meter = meter;
@@ -111,12 +132,18 @@ export class Counter {
     this.#options = options;
   }
   /**
-  * add member on Counter.
+  * Adds `value` to the counter for the given attribute set.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * `value` should be non-negative; the API does not reject a negative number, but
+  * a monotonic counter is only meaningful with increments. `attributes` partition
+  * the counter into independent series, so keep their cardinality bounded. Each
+  * call publishes one record synchronously to the meter's topics.
   *
-  * ```typescript no_run
-  * const member = Counter.prototype.add;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const bytes = getMeterProvider().getMeter('io').createCounter('io.bytes.written');
+  * bytes.add(4096, { device: 'nvme0' });
   * ```
   */
   add(value: number, attributes: Attributes = {}): void {
@@ -128,53 +155,33 @@ export class Counter {
   }
 }
 /**
-* UpDownCounter class exposed by the OpenTelemetry API.
+* A non-monotonic synchronous counter — records signed deltas to a sum that may rise or fall.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Use an up-down counter for quantities that go both directions, such as the
+* number of in-flight requests, items in a queue, or active connections. Positive
+* values increase the sum, negative values decrease it. The SDK marks the series
+* as non-monotonic so exporters treat it as a gauge-like sum. Create one with
+* `Meter.createUpDownCounter`.
 *
-* ```typescript no_run
-* const ctor = UpDownCounter;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const inflight = getMeterProvider().getMeter('http').createUpDownCounter('http.requests.active');
+* inflight.add(1);   // request started
+* inflight.add(-1);  // request finished
 * ```
 */
 export class UpDownCounter {
-  /**
-  * #meter member on UpDownCounter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'UpDownCounter.#meter';
-  * ```
-  */
+  /** The meter this counter records through. */
   #meter: Meter;
-  /**
-  * #name member on UpDownCounter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'UpDownCounter.#name';
-  * ```
-  */
+  /** The validated, non-empty instrument name. */
   #name: string;
-  /**
-  * #options member on UpDownCounter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'UpDownCounter.#options';
-  * ```
-  */
+  /** Instrument options (unit, description) merged into every record. */
   #options: MetricInstrumentOptions;
   /**
-  * constructor member on UpDownCounter.
+  * Binds the up-down counter to a meter and validates its name.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new UpDownCounter();
-  * ```
+  * Throws a `TypeError` if `name` is empty. Prefer `Meter.createUpDownCounter`.
   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions = {}) {
     this.#meter = meter;
@@ -182,12 +189,17 @@ export class UpDownCounter {
     this.#options = options;
   }
   /**
-  * add member on UpDownCounter.
+  * Adds a signed `value` to the counter for the given attribute set.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Pass a positive number to increment and a negative number to decrement the
+  * running sum. Each call publishes one `updowncounter`-kind record synchronously.
   *
-  * ```typescript no_run
-  * const member = UpDownCounter.prototype.add;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const queued = getMeterProvider().getMeter('jobs').createUpDownCounter('jobs.queued');
+  * queued.add(5, { queue: 'email' });
+  * queued.add(-2, { queue: 'email' });
   * ```
   */
   add(value: number, attributes: Attributes = {}): void {
@@ -217,63 +229,42 @@ const DEFAULT_HISTOGRAM_BOUNDARIES = [
   1e4
 ];
 /**
-* HistogramInstrument class exposed by the OpenTelemetry API.
+* A histogram instrument — records a distribution of values across explicit buckets.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Use a histogram for measurements whose distribution matters, such as request
+* latency or payload size. Each recorded value increments the bucket it falls into
+* and contributes to the count, sum, min, and max the SDK maintains per series.
+* Buckets are defined by the explicit boundaries passed as
+* `advice.explicitBucketBoundaries` at creation, defaulting to the OpenTelemetry
+* standard boundaries (0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000,
+* 7500, 10000) when none are given. Create one with `Meter.createHistogram`; the
+* public alias `Histogram` points at this class.
 *
-* ```typescript no_run
-* const ctor = HistogramInstrument;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const latency = getMeterProvider().getMeter('http').createHistogram('http.server.duration', {
+*   unit: 'ms',
+*   advice: { explicitBucketBoundaries: [1, 5, 10, 50, 100, 500] },
+* });
+* latency.record(37, { route: '/orders' });
 * ```
 */
 export class HistogramInstrument {
-  /**
-  * #meter member on HistogramInstrument.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'HistogramInstrument.#meter';
-  * ```
-  */
+  /** The meter this histogram records through. */
   #meter: Meter;
-  /**
-  * #name member on HistogramInstrument.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'HistogramInstrument.#name';
-  * ```
-  */
+  /** The validated, non-empty instrument name. */
   #name: string;
-  /**
-  * #options member on HistogramInstrument.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'HistogramInstrument.#options';
-  * ```
-  */
+  /** Instrument options (unit, description) merged into every record. */
   #options: MetricInstrumentOptions;
-  /**
-  * #boundaries member on HistogramInstrument.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'HistogramInstrument.#boundaries';
-  * ```
-  */
+  /** The explicit bucket boundaries, defaulted to the OTel standard set. */
   #boundaries: number[];
   /**
-  * constructor member on HistogramInstrument.
+  * Binds the histogram to a meter, validates its name, and fixes its buckets.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new HistogramInstrument();
-  * ```
+  * When `advice.explicitBucketBoundaries` is an array it is copied and used as the
+  * bucket boundaries; otherwise the shared default boundaries are used. Throws a
+  * `TypeError` if `name` is empty. Prefer `Meter.createHistogram`.
   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions & {
     advice?: {
@@ -286,12 +277,17 @@ export class HistogramInstrument {
     this.#boundaries = Array.isArray(options.advice?.explicitBucketBoundaries) ? [...options.advice!.explicitBucketBoundaries!] : DEFAULT_HISTOGRAM_BOUNDARIES;
   }
   /**
-  * record member on HistogramInstrument.
+  * Records a single `value` into the distribution for the given attribute set.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The record carries this histogram's explicit bounds so the reader can place the
+  * value in the correct bucket and update count, sum, min, and max. Publishes one
+  * `histogram`-kind record synchronously.
   *
-  * ```typescript no_run
-  * const member = HistogramInstrument.prototype.record;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const size = getMeterProvider().getMeter('http').createHistogram('http.request.size', { unit: 'By' });
+  * size.record(2048, { route: '/upload' });
   * ```
   */
   record(value: number, attributes: Attributes = {}): void {
@@ -306,35 +302,33 @@ export class HistogramInstrument {
   }
 }
 /**
-* ObservableGauge class exposed by the OpenTelemetry API.
+* Handle to a registered observable (asynchronous) instrument.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Unlike synchronous instruments, an observable gauge does not record eagerly.
+* `Meter.createObservableGauge` registers a callback that the SDK invokes on each
+* collection to read the current value; this object is the disposable handle that
+* unregisters that callback. It is the common return type for all observable
+* instruments — `ObservableCounter` and `ObservableUpDownCounter` subclass it with
+* no behavioral difference. Call `dispose()` (or use `using`) to stop observing.
 *
-* ```typescript no_run
-* const ctor = ObservableGauge;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const meter = getMeterProvider().getMeter('runtime');
+* const handle = meter.createObservableGauge('heap.used', () => ({ value: 12_345_678 }));
+* handle.dispose(); // stop reporting
 * ```
 */
 export class ObservableGauge {
-  /**
-  * #handle member on ObservableGauge.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'ObservableGauge.#handle';
-  * ```
-  */
+  /** Disposable that unregisters the observing callback, or `null` once disposed. */
   #handle: {
     dispose(): void;
   } | null;
   /**
-  * constructor member on ObservableGauge.
+  * Wraps the disposable returned by the meter's registration.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new ObservableGauge();
-  * ```
+  * Constructed internally by the `createObservable*` meter methods; you receive an
+  * instance rather than building one.
   */
   constructor(handle: {
     dispose(): void;
@@ -342,12 +336,16 @@ export class ObservableGauge {
     this.#handle = handle;
   }
   /**
-  * dispose member on ObservableGauge.
+  * Unregisters the observing callback so the instrument stops being collected.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Idempotent and safe to call when never registered — the underlying disposal is
+  * invoked at most once and missing handles are ignored.
   *
-  * ```typescript no_run
-  * const member = ObservableGauge.prototype.dispose;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const handle = getMeterProvider().getMeter('sys').createObservableCounter('gc.count', () => ({ value: 3 }));
+  * handle.dispose();
   * ```
   */
   dispose(): void {
@@ -355,53 +353,33 @@ export class ObservableGauge {
   }
 }
 /**
-* Gauge class exposed by the OpenTelemetry API.
+* A synchronous gauge — records the latest sampled value of something that varies.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Use a gauge for a current reading that is not a sum, such as a temperature, a
+* pool size, or a cache hit ratio. Each `record` replaces the previous value for
+* its attribute set (last-value semantics) rather than accumulating. When the
+* value is naturally produced by a callback on collection rather than pushed,
+* prefer an observable gauge via `Meter.createObservableGauge`. Create a
+* synchronous gauge with `Meter.createGauge`.
 *
-* ```typescript no_run
-* const ctor = Gauge;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const temp = getMeterProvider().getMeter('sensors').createGauge('cpu.temperature', { unit: 'Cel' });
+* temp.record(61.5, { core: '0' });
 * ```
 */
 export class Gauge {
-  /**
-  * #meter member on Gauge.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Gauge.#meter';
-  * ```
-  */
+  /** The meter this gauge records through. */
   #meter: Meter;
-  /**
-  * #name member on Gauge.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Gauge.#name';
-  * ```
-  */
+  /** The validated, non-empty instrument name. */
   #name: string;
-  /**
-  * #options member on Gauge.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Gauge.#options';
-  * ```
-  */
+  /** Instrument options (unit, description) merged into every record. */
   #options: MetricInstrumentOptions;
   /**
-  * constructor member on Gauge.
+  * Binds the gauge to a meter and validates its name.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new Gauge();
-  * ```
+  * Throws a `TypeError` if `name` is empty. Prefer `Meter.createGauge`.
   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions = {}) {
     this.#meter = meter;
@@ -409,12 +387,16 @@ export class Gauge {
     this.#options = options;
   }
   /**
-  * record member on Gauge.
+  * Records the current `value` for the given attribute set.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The reader keeps only the most recent value per series, so recording again
+  * overwrites rather than adds. Publishes one `gauge`-kind record synchronously.
   *
-  * ```typescript no_run
-  * const member = Gauge.prototype.record;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const ratio = getMeterProvider().getMeter('cache').createGauge('cache.hit.ratio');
+  * ratio.record(0.92, { tier: 'l1' });
   * ```
   */
   record(value: number, attributes: Attributes = {}): void {
@@ -426,94 +408,86 @@ export class Gauge {
   }
 }
 /**
-* ObservableCounter class exposed by the OpenTelemetry API.
+* Handle to a registered observable counter (monotonic asynchronous sum).
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Returned by `Meter.createObservableCounter`. Behaviorally identical to
+* `ObservableGauge` — the distinction is the registered instrument kind, which
+* the SDK aggregates as a monotonic sum. Call `dispose()` to stop observing.
 *
-* ```typescript no_run
-* const ctor = ObservableCounter;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const handle = getMeterProvider().getMeter('proc').createObservableCounter('page.faults', () => ({ value: 128 }));
+* handle.dispose();
 * ```
 */
 export class ObservableCounter extends ObservableGauge {}
 /**
-* ObservableUpDownCounter class exposed by the OpenTelemetry API.
+* Handle to a registered observable up-down counter (non-monotonic asynchronous sum).
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Returned by `Meter.createObservableUpDownCounter`. Behaviorally identical to
+* `ObservableGauge`, but the SDK aggregates it as a non-monotonic sum that may
+* rise or fall between collections. Call `dispose()` to stop observing.
 *
-* ```typescript no_run
-* const ctor = ObservableUpDownCounter;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const handle = getMeterProvider().getMeter('pool').createObservableUpDownCounter('conns.open', () => ({ value: 7 }));
+* handle.dispose();
 * ```
 */
 export class ObservableUpDownCounter extends ObservableGauge {}
 /**
-* Histogram const exposed by the OpenTelemetry API.
+* Public alias for `HistogramInstrument`, matching the OpenTelemetry `Histogram` name.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Provided so callers can name the type `Histogram` as the API spec does; it is
+* the exact same class. `Meter.createHistogram` returns instances of it.
 *
-* ```typescript no_run
-* const value = Histogram;
+* ```ts no_run
+* import { Histogram } from 'fino:opentelemetry/metrics';
+*
+* function record(h: InstanceType<typeof Histogram>, ms: number): void {
+*   h.record(ms);
+* }
 * ```
 */
 export const Histogram = HistogramInstrument;
 /**
-* Meter class exposed by the OpenTelemetry API.
+* The instrument factory for one instrumentation scope, and the source of metric records.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* A meter is bound to a `MeterProvider` and a `ScopeInfo` (name, version, and
+* schema). Its `create*` methods mint the synchronous and observable instruments;
+* those instruments all funnel measurements back through `Meter.record`, which
+* assembles a `MetricRecord` and publishes it to the scope's topics plus the
+* shared `otel:metric:record` topic. Topic sets are cached per
+* `instrumentName:kind`, so records for the same instrument reuse their topics.
+* Obtain a meter from `MeterProvider.getMeter` rather than constructing one.
 *
-* ```typescript no_run
-* const ctor = Meter;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const meter = getMeterProvider().getMeter('checkout', '3.1.0');
+* const orders = meter.createCounter('orders.count');
+* const latency = meter.createHistogram('orders.latency', { unit: 'ms' });
+* orders.add(1, { store: 'eu' });
+* latency.record(58, { store: 'eu' });
 * ```
 */
 export class Meter {
-  /**
-  * #provider member on Meter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Meter.#provider';
-  * ```
-  */
+  /** The provider that supplies the resource stamped on every record. */
   #provider: MeterProvider;
-  /**
-  * #scope member on Meter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Meter.#scope';
-  * ```
-  */
+  /** The instrumentation scope (name/version) this meter emits under. */
   #scope: ScopeInfo;
   // Pre-cached topic sets keyed by `${instrumentName}:${kind}`, plus the shared record topic.
-  /**
-  * #topicsByKey member on Meter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Meter.#topicsByKey';
-  * ```
-  */
+  /** Cache of per-instrument scoped topics, keyed by `instrumentName:kind`. */
   #topicsByKey: Map<string, Array<Topic<MetricRecord>>>;
-  /**
-  * #recordTopic member on Meter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Meter.#recordTopic';
-  * ```
-  */
+  /** The shared `otel:metric:record` topic every record is also published to. */
   #recordTopic: Topic<MetricRecord>;
   /**
-  * constructor member on Meter.
+  * Binds the meter to its provider and scope and prepares the shared record topic.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new Meter();
-  * ```
+  * Called internally by `MeterProvider.getMeter`; the `scope` is expected to have
+  * already been normalized to a non-empty name.
   */
   constructor(provider: MeterProvider, scope: ScopeInfo) {
     this.#provider = provider;
@@ -526,10 +500,6 @@ export class Meter {
   *
   * Topic names are created lazily and keyed by `instrumentName:kind`. The helper
   * assumes the caller already normalized and validated the instrument name.
-  *
-  * ```typescript no_run
-  * const helper = 'Meter.#getTopics';
-  * ```
   */
   #getTopics(instrumentName: string, kind: string): Array<Topic<MetricRecord>> {
     const key = `${instrumentName}:${kind}`;
@@ -541,12 +511,23 @@ export class Meter {
     return topics;
   }
   /**
-  * record member on Meter.
+  * Assembles a `MetricRecord` and publishes it to the scope's topics.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * This is the low-level sink all synchronous instruments delegate to; you rarely
+  * call it directly. It validates `name` (throwing a `TypeError` if empty),
+  * timestamps the record, and stamps it with the meter's scope, the provider's
+  * resource, the instrument `kind` (defaulting to `'record'`), and the `unit` and
+  * `description` from `options`. When a span is active on the current context, its
+  * trace and span ids are captured as an `exemplarContext` so the reader can build
+  * an exemplar. The record is published to each cached scoped topic and to the
+  * shared `otel:metric:record` topic; `explicitBounds`, when present, rides along
+  * for histogram bucketing.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.record;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const meter = getMeterProvider().getMeter('custom');
+  * meter.record('widgets.built', 3, { kind: 'counter', unit: '1', attributes: { line: 'a' } });
   * ```
   */
   record(name: string, value: number, options: MetricInstrumentOptions & {
@@ -578,36 +559,52 @@ export class Meter {
     this.#recordTopic.publish(record);
   }
   /**
-  * createCounter member on Meter.
+  * Creates a monotonic `Counter` bound to this meter.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Throws a `TypeError` if `name` is empty. `options.unit` and
+  * `options.description` are attached to every record the counter emits.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.createCounter;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const c = getMeterProvider().getMeter('api').createCounter('errors', { unit: '1' });
+  * c.add(1, { code: '500' });
   * ```
   */
   createCounter(name: string, options: MetricInstrumentOptions = {}): Counter {
     return new Counter(this, name, options);
   }
   /**
-  * createUpDownCounter member on Meter.
+  * Creates a non-monotonic `UpDownCounter` bound to this meter.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Throws a `TypeError` if `name` is empty. Use for quantities that both rise and
+  * fall, like active connections.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.createUpDownCounter;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const g = getMeterProvider().getMeter('pool').createUpDownCounter('conns');
+  * g.add(1);
   * ```
   */
   createUpDownCounter(name: string, options: MetricInstrumentOptions = {}): UpDownCounter {
     return new UpDownCounter(this, name, options);
   }
   /**
-  * createHistogram member on Meter.
+  * Creates a `HistogramInstrument` bound to this meter.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Throws a `TypeError` if `name` is empty. Pass
+  * `options.advice.explicitBucketBoundaries` to override the default bucket layout;
+  * otherwise the OTel standard boundaries are used.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.createHistogram;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const h = getMeterProvider().getMeter('api').createHistogram('latency', {
+  *   unit: 'ms',
+  *   advice: { explicitBucketBoundaries: [10, 50, 100, 250] },
+  * });
+  * h.record(42);
   * ```
   */
   createHistogram(name: string, options: MetricInstrumentOptions & {
@@ -618,24 +615,39 @@ export class Meter {
     return new HistogramInstrument(this, name, options);
   }
   /**
-  * createGauge member on Meter.
+  * Creates a synchronous last-value `Gauge` bound to this meter.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Throws a `TypeError` if `name` is empty. Each `record` overwrites the previous
+  * value for its attribute set.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.createGauge;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const q = getMeterProvider().getMeter('queue').createGauge('depth');
+  * q.record(17, { name: 'ingest' });
   * ```
   */
   createGauge(name: string, options: MetricInstrumentOptions = {}): Gauge {
     return new Gauge(this, name, options);
   }
   /**
-  * createObservableCounter member on Meter.
+  * Registers an asynchronous monotonic counter observed on each collection.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * `callback` is invoked by the SDK at collection time and returns the current
+  * cumulative value (and optional attributes). This publishes a registration to
+  * `otel:metric:observable:register` and returns an `ObservableCounter` handle;
+  * call its `dispose()` to unregister. Unlike the synchronous instruments, no name
+  * validation happens here — an empty name would surface downstream.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.createObservableCounter;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * let served = 0;
+  * const handle = getMeterProvider().getMeter('http').createObservableCounter(
+  *   'requests.total',
+  *   () => ({ value: served }),
+  * );
+  * handle.dispose();
   * ```
   */
   createObservableCounter(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableCounter {
@@ -654,12 +666,20 @@ export class Meter {
     } });
   }
   /**
-  * createObservableUpDownCounter member on Meter.
+  * Registers an asynchronous non-monotonic counter observed on each collection.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Like `createObservableCounter`, but the SDK treats the observed value as a
+  * non-monotonic sum that may decrease between collections. Returns an
+  * `ObservableUpDownCounter` handle; call `dispose()` to unregister.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.createObservableUpDownCounter;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const handle = getMeterProvider().getMeter('mem').createObservableUpDownCounter(
+  *   'heap.bytes',
+  *   () => ({ value: 8 * 1024 * 1024 }),
+  * );
+  * handle.dispose();
   * ```
   */
   createObservableUpDownCounter(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableUpDownCounter {
@@ -678,12 +698,22 @@ export class Meter {
     } });
   }
   /**
-  * createObservableGauge member on Meter.
+  * Registers an asynchronous gauge observed on each collection.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * `callback` returns the current reading (last-value semantics); the SDK invokes
+  * it at collection time. Use this when a value is cheaper to sample on demand than
+  * to push, such as a pool size or a system metric. Returns an `ObservableGauge`
+  * handle; call `dispose()` to unregister. See also `gaugeFromSignal` for wiring a
+  * `fino:signals` value directly.
   *
-  * ```typescript no_run
-  * const member = Meter.prototype.createObservableGauge;
+  * ```ts no_run
+  * import { getMeterProvider } from 'fino:opentelemetry/metrics';
+  *
+  * const handle = getMeterProvider().getMeter('os').createObservableGauge(
+  *   'load.avg',
+  *   () => ({ value: 0.42, attributes: { interval: '1m' } }),
+  * );
+  * handle.dispose();
   * ```
   */
   createObservableGauge(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableGauge {
@@ -703,7 +733,25 @@ export class Meter {
   }
 }
 /**
-* Create an observable gauge backed by a signal's latest numeric value.
+* Creates an observable gauge that reports a `fino:signals` value on each collection.
+*
+* Bridges reactive state into metrics: the gauge's collection callback simply
+* reads `signal.get()`, so whatever value the signal currently holds is what gets
+* exported, with no manual polling. The optional `attributes` are split out of
+* `options` and attached to every observation; the remaining instrument options
+* (unit, description) are forwarded to `createObservableGauge`. Returns the same
+* `ObservableGauge` handle — call `dispose()` to stop reporting.
+*
+* ```ts no_run
+* import { getMeterProvider, gaugeFromSignal } from 'fino:opentelemetry/metrics';
+* import { signal } from 'fino:signals';
+*
+* const depth = signal(0);
+* const meter = getMeterProvider().getMeter('queue');
+* const handle = gaugeFromSignal(meter, 'queue.depth', depth, { unit: '1', attributes: { name: 'ingest' } });
+* depth.set(12); // next collection reports 12
+* handle.dispose();
+* ```
 */
 export function gaugeFromSignal(meter: Meter, name: string, signal: ReadonlySignal<number>, options: MetricInstrumentOptions & {
   attributes?: Attributes;
@@ -715,12 +763,21 @@ export function gaugeFromSignal(meter: Meter, name: string, signal: ReadonlySign
   }), instrumentOptions);
 }
 /**
-* cloneMetric function exposed by the OpenTelemetry API.
+* Returns a deep copy of a metric record safe to aggregate into without mutating the original.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Published records are shared with every topic subscriber, so the SDK never
+* mutates them in place. This clones the record and independently copies its
+* mutable structures — the `attributes` map, and the `explicitBounds`,
+* `bucketCounts`, `quantileValues`, and `exemplars` arrays (including each
+* exemplar's `filteredAttributes`) — while leaving scalars and the shared
+* `resource`/`scope` references as-is. Non-array values in those fields are carried
+* through unchanged.
 *
-* ```typescript no_run
-* const fn = cloneMetric;
+* ```ts no_run
+* import { cloneMetric } from 'fino:opentelemetry/metrics';
+*
+* const copy = cloneMetric({ name: 'orders', value: 1, attributes: { store: 'eu' } });
+* copy.attributes!.store = 'us'; // does not affect the source record
 * ```
 */
 export function cloneMetric(metric: MetricRecord): MetricRecord {
@@ -737,12 +794,20 @@ export function cloneMetric(metric: MetricRecord): MetricRecord {
   };
 }
 /**
-* zeroMetric function exposed by the OpenTelemetry API.
+* Returns a zeroed clone of a metric record — a reset point for a series that stopped reporting.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* A delta reader must emit a final zero point for any series that reported last
+* cycle but not this one, so downstream consumers see it return to baseline. This
+* clones the record (via `cloneMetric`) and sets every present numeric aggregate —
+* `value`, `count`, `sum`, `min`, `max`, all `bucketCounts`, and each
+* `quantileValues` entry's `value` — to `0`, and clears `exemplars`. Fields that
+* were absent stay absent; identity fields (name, scope, attributes) are preserved.
 *
-* ```typescript no_run
-* const fn = zeroMetric;
+* ```ts no_run
+* import { zeroMetric } from 'fino:opentelemetry/metrics';
+*
+* const reset = zeroMetric({ name: 'orders', value: 42, attributes: { store: 'eu' } });
+* // reset.value === 0, same name and attributes
 * ```
 */
 export function zeroMetric(metric: MetricRecord): MetricRecord {
@@ -770,24 +835,35 @@ function sortAttributeEntries(attributes: Attributes): Array<[string, unknown]> 
   });
 }
 /**
-* attributesKey function exposed by the OpenTelemetry API.
+* Produces a stable string key for a set of attributes, independent of insertion order.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Attributes are sorted by key before serialization, so two records with the same
+* attributes in a different order yield the same key. Used to group measurements
+* into series within an instrument. A missing or empty bag produces the key for an
+* empty list.
 *
-* ```typescript no_run
-* const fn = attributesKey;
+* ```ts no_run
+* import { attributesKey } from 'fino:opentelemetry/metrics';
+*
+* attributesKey({ b: 2, a: 1 }) === attributesKey({ a: 1, b: 2 }); // true
 * ```
 */
 export function attributesKey(attributes: Attributes): string {
   return JSON.stringify(sortAttributeEntries(attributes));
 }
 /**
-* normalizeMetricKind function exposed by the OpenTelemetry API.
+* Collapses an instrument kind onto the aggregation it shares with a synchronous one.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Observable counters and up-down counters aggregate identically to their
+* synchronous equivalents, so this maps `'observablecounter'` to `'counter'` and
+* `'observableupdowncounter'` to `'updowncounter'`. Any other kind is returned
+* unchanged, and a missing kind becomes `'record'`.
 *
-* ```typescript no_run
-* const fn = normalizeMetricKind;
+* ```ts no_run
+* import { normalizeMetricKind } from 'fino:opentelemetry/metrics';
+*
+* normalizeMetricKind('observablecounter'); // 'counter'
+* normalizeMetricKind(undefined);           // 'record'
 * ```
 */
 export function normalizeMetricKind(kind: string | undefined): string {
@@ -796,12 +872,18 @@ export function normalizeMetricKind(kind: string | undefined): string {
   return kind || 'record';
 }
 /**
-* metricInstrumentKey function exposed by the OpenTelemetry API.
+* Produces a stable key identifying the instrument a record belongs to, ignoring attributes.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Combines the scope name and version, the metric name, the normalized kind, and
+* the unit. All records from the same instrument share this key regardless of
+* their attribute sets, which is how the SDK discovers every series under an
+* instrument (for example, to zero the ones that dropped out). See
+* `metricSeriesKey` for the per-series key that also folds in attributes.
 *
-* ```typescript no_run
-* const fn = metricInstrumentKey;
+* ```ts no_run
+* import { metricInstrumentKey } from 'fino:opentelemetry/metrics';
+*
+* const key = metricInstrumentKey({ name: 'orders', kind: 'counter', unit: '1' });
 * ```
 */
 export function metricInstrumentKey(metric: MetricRecord): string {
@@ -814,12 +896,17 @@ export function metricInstrumentKey(metric: MetricRecord): string {
   ]);
 }
 /**
-* metricSeriesKey function exposed by the OpenTelemetry API.
+* Produces a stable key identifying a single time series — an instrument plus one attribute set.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Extends `metricInstrumentKey` with the record's sorted attributes, so two
+* measurements collapse to the same key only when they share both the instrument
+* and every attribute value. This is the key `accumulateMetric` folds into, giving
+* one aggregate per distinct attribute combination.
 *
-* ```typescript no_run
-* const fn = metricSeriesKey;
+* ```ts no_run
+* import { metricSeriesKey } from 'fino:opentelemetry/metrics';
+*
+* const key = metricSeriesKey({ name: 'orders', kind: 'counter', unit: '1', attributes: { store: 'eu' } });
 * ```
 */
 export function metricSeriesKey(metric: MetricRecord): string {
@@ -900,12 +987,28 @@ function initializeAggregate(metric: MetricRecord): MetricRecord {
   };
 }
 /**
-* accumulateMetric function exposed by the OpenTelemetry API.
+* Folds one measurement into a running aggregate stored under a series key.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* This is the core reducer of the metrics SDK. On the first record for `key` it
+* seeds a fresh aggregate (from `initializeAggregate`): counters and up-down
+* counters start at their value with cumulative temporality, histograms start with
+* count 1 and the value placed in its bucket, gauges keep the last value. On
+* subsequent records it updates the existing aggregate in place — summing counter
+* values, accumulating histogram count/sum/min/max and bucket counts, or replacing
+* the value and timestamp for last-value kinds. Whenever a record carries an active
+* trace context, the latest exemplar replaces the aggregate's exemplar list.
+* Kind is resolved through `normalizeMetricKind`, so observable variants aggregate
+* like their synchronous counterparts. The input is cloned; the caller's record is
+* never mutated.
 *
-* ```typescript no_run
-* const fn = accumulateMetric;
+* ```ts no_run
+* import { accumulateMetric, metricSeriesKey, type MetricRecord } from 'fino:opentelemetry/metrics';
+*
+* const store = new Map<string, MetricRecord>();
+* const a = { name: 'orders', kind: 'counter', value: 1, attributes: { store: 'eu' } };
+* const b = { name: 'orders', kind: 'counter', value: 2, attributes: { store: 'eu' } };
+* accumulateMetric(store, metricSeriesKey(a), a);
+* accumulateMetric(store, metricSeriesKey(b), b); // aggregate value is now 3
 * ```
 */
 export function accumulateMetric(store: Map<string, MetricRecord>, key: string, metric: MetricRecord): void {
@@ -937,12 +1040,27 @@ export function accumulateMetric(store: Map<string, MetricRecord>, key: string, 
   if (exemplar) existing.exemplars = [exemplar];
 }
 /**
-* applyMetricView function exposed by the OpenTelemetry API.
+* Rewrites a metric record according to the configured views, returning a new record.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Views customize how an instrument is exported. Each view whose `instrumentName`
+* matches (or is unset, matching all) is applied in order to a clone of the input:
+* `name` and `description` are renamed when set; `attributeKeys` drops all
+* attributes except the listed ones; and `aggregation` reshapes the record —
+* `'histogram'` converts it to a histogram, seeding buckets from the current value
+* against the view's `boundaries`; `'lastValue'` turns it into a gauge; and
+* `'sum'` turns it into a counter or, when `monotonic` is `false`, an up-down
+* counter. The original record is not mutated.
 *
-* ```typescript no_run
-* const fn = applyMetricView;
+* ```ts no_run
+* import { applyMetricView, type MetricView } from 'fino:opentelemetry/metrics';
+*
+* const views: MetricView[] = [{
+*   instrumentName: 'http.duration',
+*   name: 'http.server.duration',
+*   aggregation: { type: 'histogram', boundaries: [10, 50, 100] },
+*   attributeKeys: ['route'],
+* }];
+* const out = applyMetricView({ name: 'http.duration', value: 42, attributes: { route: '/x', pid: 9 } }, views);
 * ```
 */
 export function applyMetricView(metric: MetricRecord, views: MetricView[]): MetricRecord {
@@ -986,48 +1104,74 @@ export function applyMetricView(metric: MetricRecord, views: MetricView[]): Metr
 const meterProviderContext = new Context<MeterProvider | null>('otel:meter-provider');
 let defaultMeterProvider = new MeterProvider();
 /**
-* getMeterProvider function exposed by the OpenTelemetry API.
+* Returns the meter provider in effect for the current context.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Resolves to the provider bound by an enclosing `runWithMeterProvider` call if
+* one is active on the context, otherwise the process-wide default. There is
+* always a provider — a default `MeterProvider` exists from startup — so this
+* never returns null. This is the entry point most instrumentation uses.
 *
-* ```typescript no_run
-* const fn = getMeterProvider;
+* ```ts no_run
+* import { getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const meter = getMeterProvider().getMeter('my-lib');
 * ```
 */
 export function getMeterProvider(): MeterProvider {
   return meterProviderContext.get() || defaultMeterProvider;
 }
 /**
-* setMeterProvider function exposed by the OpenTelemetry API.
+* Replaces the process-wide default meter provider.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Installs `provider` as the fallback returned by `getMeterProvider()` whenever no
+* context-scoped provider is active. Call this once during SDK setup. It does not
+* affect a provider currently bound by `runWithMeterProvider`, which takes
+* precedence for the duration of that call.
 *
-* ```typescript no_run
-* const fn = setMeterProvider;
+* ```ts no_run
+* import { MeterProvider, setMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* setMeterProvider(new MeterProvider({ resource: { 'service.name': 'api' } }));
 * ```
 */
 export function setMeterProvider(provider: MeterProvider): void {
   defaultMeterProvider = provider;
 }
 /**
-* runWithMeterProvider function exposed by the OpenTelemetry API.
+* Runs `fn` with `provider` as the active meter provider for the dynamic extent of the call.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Binds `provider` on the context so any `getMeterProvider()` reached while `fn`
+* runs (including through awaited async work that stays on the context) sees it,
+* then restores the previous provider on return. Returns whatever `fn` returns.
+* Use it to route a subsystem's metrics through a distinct provider without
+* touching the global default.
 *
-* ```typescript no_run
-* const fn = runWithMeterProvider;
+* ```ts no_run
+* import { MeterProvider, runWithMeterProvider, getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* const scoped = new MeterProvider({ resource: { 'service.name': 'worker' } });
+* runWithMeterProvider(scoped, () => {
+*   getMeterProvider().getMeter('jobs').createCounter('done').add(1);
+* });
 * ```
 */
 export function runWithMeterProvider<R>(provider: MeterProvider, fn: () => R): R {
   return meterProviderContext.runWithValue(provider, fn);
 }
 /**
-* runWithoutMeterProvider function exposed by the OpenTelemetry API.
+* Runs `fn` with the context-scoped meter provider explicitly cleared.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Binds `null` on the context so `getMeterProvider()` falls back to the
+* process-wide default even inside an enclosing `runWithMeterProvider`. Useful to
+* punch out of a scoped provider for a region of code. Returns whatever `fn`
+* returns.
 *
-* ```typescript no_run
-* const fn = runWithoutMeterProvider;
+* ```ts no_run
+* import { runWithoutMeterProvider, getMeterProvider } from 'fino:opentelemetry/metrics';
+*
+* runWithoutMeterProvider(() => {
+*   getMeterProvider().getMeter('sys').createCounter('ticks').add(1); // uses the default provider
+* });
 * ```
 */
 export function runWithoutMeterProvider<R>(fn: () => R): R {

@@ -1,10 +1,36 @@
 /**
-* Parquet writer: Arrow → Parquet file bytes.
+* internal:data/parquet/writer — Arrow → Parquet file serialization.
 *
-* Writes one row group as DATA_PAGE v1 or v2 with PLAIN, dictionary, RLE
-* (boolean), the DELTA family, or BYTE_STREAM_SPLIT value encodings. Nested
-* columns (list/struct/map) are shredded into per-leaf repetition/definition
-* level streams; flat columns are the degenerate case with no repetition.
+* Backs the public `writeParquet` re-exported from `fino:data/parquet`. The
+* whole file is produced in memory: `PAR1` magic, one column chunk per schema
+* leaf, the Thrift compact `FileMetaData` footer, the little-endian footer
+* length, and the trailing magic, returned as a single `Uint8Array`.
+*
+* The writer emits exactly one row group, and within it one data page per
+* column chunk (plus an optional dictionary page). Nested columns
+* (list/struct/map, at any depth) are shredded via `internal:data/parquet/nested`
+* into per-leaf value + repetition/definition level streams — each leaf becomes
+* its own column chunk; flat columns are the degenerate case with no repetition
+* levels. Levels are RLE/bit-packed hybrid encoded, length-prefixed inside the
+* v1 page body or stored raw ahead of the values in DATA_PAGE_V2.
+*
+* Value encoding is chosen per column from the options: PLAIN by default,
+* dictionary (PLAIN dictionary page + RLE_DICTIONARY indices) when
+* `dictionary` is set, or one of the alternative encodings (`delta`,
+* `byte-stream-split`, `rle`) where the column's physical type supports it,
+* falling back to PLAIN where it does not. Page bodies are compressed with
+* `internal:data/parquet/compression` (snappy by default).
+*
+* ```ts no_run
+* import { writeParquet } from 'internal:data/parquet/writer';
+* import { RecordBatch } from 'fino:data/arrow';
+*
+* const batch = RecordBatch.from({ id: [1, 2, 3], tag: ['a', 'b', 'a'] });
+* const bytes = writeParquet(batch, { compression: 'zstd', dictionary: true });
+* // bytes is a complete .parquet file, ready to hand to any reader.
+* ```
+*
+* Reference: https://parquet.apache.org/docs/file-format/
 *
 * @internal
 */
@@ -23,16 +49,54 @@ const MAGIC = new Uint8Array([
   82,
   49
 ]);
-/** Options for `writeParquet`. @internal */
+/**
+* Options controlling how `writeParquet` encodes and compresses pages.
+*
+* All fields are optional; the defaults (snappy compression, PLAIN encoding,
+* no dictionary, DATA_PAGE v1) produce files any Parquet reader can consume.
+* `dictionary` and `encoding` are independent axes: when `dictionary` is true
+* the pages are RLE_DICTIONARY-encoded and `encoding` has no effect.
+*
+* ```ts no_run
+* import { writeParquet, type ParquetWriteOptions } from 'internal:data/parquet/writer';
+* import { RecordBatch } from 'fino:data/arrow';
+*
+* const options: ParquetWriteOptions = {
+*   compression: 'zstd',
+*   encoding: 'delta',   // DELTA_BINARY_PACKED for the int64 column
+*   pageVersion: 2,
+* };
+* const bytes = writeParquet(RecordBatch.from({ n: [1n, 2n, 4n] }), options);
+* ```
+*
+* @internal
+*/
 export interface ParquetWriteOptions {
-  /** Page compression codec name; defaults to snappy. */
+  /**
+  * Page compression codec name; defaults to snappy. Availability depends on
+  * what `fino:compress` provides on this system — `writeParquet` throws for
+  * a codec that is not loadable.
+  */
   compression?: 'uncompressed' | 'snappy' | 'gzip' | 'zstd' | 'brotli';
-  /** Dictionary-encode column values (default false — PLAIN pages). */
+  /**
+  * Dictionary-encode column values (default false — PLAIN pages). When set,
+  * every column chunk gets a PLAIN dictionary page followed by a data page of
+  * RLE_DICTIONARY indices, which pays off when values repeat.
+  */
   dictionary?: boolean;
-  /** Value encoding for non-dictionary pages (default 'plain'). Applied per
-  * type where valid, falling back to PLAIN otherwise. */
+  /**
+  * Value encoding for non-dictionary pages (default 'plain'). Applied per
+  * column where the physical type supports it, falling back to PLAIN
+  * otherwise: `delta` covers INT32/INT64 (DELTA_BINARY_PACKED) and
+  * BYTE_ARRAY (DELTA_BYTE_ARRAY), `byte-stream-split` covers FLOAT/DOUBLE,
+  * and `rle` covers BOOLEAN.
+  */
   encoding?: 'plain' | 'delta' | 'byte-stream-split' | 'rle';
-  /** Data page format version (default 1). */
+  /**
+  * Data page format version (default 1). Version 2 stores repetition and
+  * definition levels uncompressed ahead of the (individually compressed)
+  * values instead of compressing the whole page body.
+  */
   pageVersion?: 1 | 2;
 }
 const CODEC_BY_NAME: Record<string, number> = {
@@ -48,7 +112,37 @@ interface WriteConfig {
   dataEncoding: string;
   pageVersion: number;
 }
-/** Serialize an Arrow table or batch to Parquet bytes. */
+/**
+* Serialize an Arrow table or batch to a complete Parquet file in memory.
+*
+* A `RecordBatch` is wrapped into a single-batch `Table`; a multi-batch
+* `Table` has its batches concatenated column-wise, so the output always
+* contains exactly one row group holding every row. The returned bytes are
+* the full file — magic, column chunks, footer — suitable for writing to
+* disk as-is or feeding straight back to `readParquet`.
+*
+* The Parquet schema is derived from the Arrow schema, including nested
+* list/struct/map columns, nullability (definition levels), and logical type
+* annotations. Encoding and compression choices come from `options`; see
+* `ParquetWriteOptions` for the per-column fallback rules.
+*
+* Throws a `ParquetError` if the requested compression codec's system
+* library is not available.
+*
+* ```ts no_run
+* import { writeParquet } from 'internal:data/parquet/writer';
+* import { RecordBatch, Schema, Field, list, int32, utf8, vectorFromArray } from 'fino:data/arrow';
+* import { DiskFileSystem } from 'fino:file';
+*
+* const scoresType = list(new Field('item', int32(), true));
+* const batch = new RecordBatch(
+*   new Schema([new Field('user', utf8(), false), new Field('scores', scoresType, true)]),
+*   [vectorFromArray(['ada', 'lin'], utf8()), vectorFromArray([[1, 2], [3]], scoresType)],
+* );
+* const bytes = writeParquet(batch, { compression: 'gzip', pageVersion: 2 });
+* await new DiskFileSystem().writeFile('scores.parquet', bytes);
+* ```
+*/
 export function writeParquet(source: Table | RecordBatch, options?: ParquetWriteOptions): Uint8Array {
   const table = source instanceof Table ? source : Table.from([source]);
   const codec = CODEC_BY_NAME[options?.compression ?? 'snappy'] ?? Compression.SNAPPY;

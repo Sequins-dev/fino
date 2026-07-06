@@ -68,7 +68,22 @@ export const INTERNAL_ERROR = -32603;
 *
 * Throw this from a `JsonRpcService` handler when an application-level failure
 * should be represented as a JSON-RPC error response instead of the default
-* `INTERNAL_ERROR`.
+* `INTERNAL_ERROR`. On the calling side, `JsonRpcPeer.call()` also rejects with a
+* `JsonRpcError` reconstructed from an inbound error response, so the same type
+* carries failures in both directions.
+*
+* ```ts no_run
+* import { JsonRpcService, JsonRpcError } from 'fino:jsonrpc';
+*
+* const service = new JsonRpcService();
+* service.method('account.withdraw').handle((params) => {
+*   const { amount, balance } = params as { amount: number; balance: number };
+*   if (amount > balance) {
+*     throw new JsonRpcError('Insufficient funds', -32001, { balance });
+*   }
+*   return balance - amount;
+* });
+* ```
 */
 export class JsonRpcError extends Error {
   /** JSON-RPC error code to serialize in the response. */
@@ -96,6 +111,31 @@ export class JsonRpcError extends Error {
 * `receive()` must yield complete JSON-RPC messages, and `close()` should stop
 * both directions. The peer and server do not impose newline, WebSocket, or
 * stream framing by themselves.
+*
+* Implement this interface to bridge any duplex byte or message stream into
+* `JsonRpcPeer` or `JsonRpcServer`. The example below adapts a WebSocket-like
+* object that already delivers discrete text frames, so no extra framing is
+* needed.
+*
+* ```ts no_run
+* import { JsonRpcPeer } from 'fino:jsonrpc';
+* import type { Transport } from 'fino:jsonrpc';
+*
+* function wsTransport(ws: {
+*   send(data: string): void;
+*   close(): void;
+*   messages(): AsyncIterable<string>;
+* }): Transport {
+*   return {
+*     send: (message) => ws.send(message),
+*     receive: () => ws.messages(),
+*     close: () => ws.close(),
+*   };
+* }
+*
+* const peer = new JsonRpcPeer(wsTransport(socket));
+* const result = await peer.call('ping');
+* ```
 */
 export interface Transport {
   /** Send one complete JSON-RPC message string. */
@@ -107,6 +147,22 @@ export interface Transport {
 }
 /**
 * Request-scoped data passed to method handlers.
+*
+* The second argument to every `JsonRpcHandler` carries the current request `id`
+* (or `undefined` for notifications) and an `AbortSignal` that fires when the
+* dispatch or underlying HTTP request is cancelled. Handlers should forward
+* `signal` to downstream async work so long-running methods can be aborted.
+*
+* ```ts no_run
+* import { JsonRpcService } from 'fino:jsonrpc';
+*
+* const service = new JsonRpcService();
+* service.method('fetch.upstream').handle(async (params, ctx) => {
+*   const { url } = params as { url: string };
+*   const res = await fetch(url, { signal: ctx.signal });
+*   return res.status;
+* });
+* ```
 */
 export interface RequestContext {
   /** Request id, notification marker, or `undefined` for notifications. */
@@ -119,14 +175,46 @@ export interface RequestContext {
 *
 * `params` is the raw request `params` value after optional schema validation.
 * The return value is serialized as the response `result` for requests. For
-* notifications, returned values are ignored.
+* notifications, returned values are ignored. Throwing a `JsonRpcError` controls
+* the error code sent to the caller; any other thrown value becomes an
+* `INTERNAL_ERROR` response.
+*
+* ```ts no_run
+* import { JsonRpcService } from 'fino:jsonrpc';
+* import type { JsonRpcHandler } from 'fino:jsonrpc';
+*
+* const greet: JsonRpcHandler = (params) => {
+*   const { name } = params as { name: string };
+*   return `Hello, ${name}`;
+* };
+*
+* new JsonRpcService().method('greet').handle(greet);
+* ```
 */
 export type JsonRpcHandler = (params: unknown, ctx: RequestContext) => unknown | Promise<unknown>;
 /**
 * Optional metadata attached to a registered method.
 *
 * Metadata is returned by `JsonRpcService.list()` and is also used for automatic
-* `params` validation when a schema is provided.
+* `params` validation when a schema is provided. Metadata is accumulated through
+* the `MethodBuilder` returned by `JsonRpcService.method()` rather than
+* constructed directly, but the shape is exported so discovery code that consumes
+* `list()` can type the entries it reads.
+*
+* ```ts no_run
+* import { JsonRpcService } from 'fino:jsonrpc';
+* import { v } from 'fino:validate';
+*
+* const service = new JsonRpcService();
+* service.method('user.rename')
+*   .description('Change a user display name.')
+*   .params(v.object({ id: v.string(), name: v.string() }))
+*   .handle((params) => params);
+*
+* for (const method of service.list()) {
+*   console.log(method.name, method.description);
+* }
+* ```
 */
 export interface MethodMeta {
   /** Human-readable method description for registries or discovery endpoints. */
@@ -174,6 +262,32 @@ class MethodBuilder {
 * A service maps method names to handlers and handles one inbound JSON-RPC
 * message string at a time. It is transport-agnostic: callers can feed messages
 * from HTTP, stdio, sockets, test queues, or `JsonRpcPeer`.
+*
+* Register methods with the `method(name)` builder, then dispatch raw message
+* strings through `handle()`. The same service can be mounted onto HTTP via
+* `httpHandler()`, served standalone through `JsonRpcServer`, or attached to a
+* bidirectional `JsonRpcPeer` to answer inbound requests.
+*
+* ```ts no_run
+* import { JsonRpcService } from 'fino:jsonrpc';
+* import { v } from 'fino:validate';
+*
+* const service = new JsonRpcService();
+* service.method('math.add')
+*   .params(v.object({ a: v.number(), b: v.number() }))
+*   .handle((params) => {
+*     const { a, b } = params as { a: number; b: number };
+*     return a + b;
+*   });
+*
+* const response = await service.handle(JSON.stringify({
+*   jsonrpc: '2.0',
+*   method: 'math.add',
+*   params: { a: 2, b: 3 },
+*   id: 1,
+* }));
+* // response === '{"jsonrpc":"2.0","result":5,"id":1}'
+* ```
 */
 export class JsonRpcService {
   #methods = new Map<string, MethodEntry>();
@@ -346,6 +460,26 @@ export class JsonRpcService {
 * calls from inbound responses and dispatches inbound requests to the optional
 * local service. Use `done` to observe the receive loop and `close()` to stop
 * the transport.
+*
+* Unlike `JsonRpcService`, a peer can originate traffic: `call()` sends a request
+* and awaits its result, while `notify()` sends a fire-and-forget notification.
+* Passing a `JsonRpcService` makes the connection symmetric so both ends can call
+* each other over the single transport.
+*
+* ```ts no_run
+* import { JsonRpcPeer, JsonRpcService } from 'fino:jsonrpc';
+* import type { Transport } from 'fino:jsonrpc';
+*
+* declare const transport: Transport;
+*
+* const local = new JsonRpcService();
+* local.method('log').handle((params) => { console.log(params); });
+*
+* const peer = new JsonRpcPeer(transport, local);
+* const sum = await peer.call('math.add', { a: 1, b: 2 });
+* await peer.notify('log', { level: 'info', message: 'done' });
+* await peer.close();
+* ```
 */
 export class JsonRpcPeer {
   #transport: Transport;
@@ -466,6 +600,19 @@ export class JsonRpcPeer {
 // ---------------------------------------------------------------------------
 /**
 * Options for serving JSON-RPC over HTTP.
+*
+* Passed to `JsonRpcServer.listen()` to control the bound port, host, and the URL
+* pathname that accepts JSON-RPC `POST` bodies. Requests to any other pathname
+* receive `404`.
+*
+* ```ts no_run
+* import { JsonRpcServer, JsonRpcService } from 'fino:jsonrpc';
+* import type { ListenOptions } from 'fino:jsonrpc';
+*
+* const opts: ListenOptions = { port: 0, host: '127.0.0.1', path: '/rpc' };
+* const handle = new JsonRpcServer(new JsonRpcService()).listen(opts);
+* await handle.ready;
+* ```
 */
 export interface ListenOptions {
   /** TCP port for the HTTP listener. Use `0` to request an ephemeral port. */
@@ -477,6 +624,21 @@ export interface ListenOptions {
 }
 /**
 * Handle returned by `JsonRpcServer.listen()`.
+*
+* Await `ready` before sending requests, read the resolved `port` (useful when
+* `0` was requested and an ephemeral port was assigned), and call `close()` to
+* shut the listener down.
+*
+* ```ts no_run
+* import { JsonRpcServer, JsonRpcService } from 'fino:jsonrpc';
+* import type { ServerHandle } from 'fino:jsonrpc';
+*
+* const handle: ServerHandle = new JsonRpcServer(new JsonRpcService())
+*   .listen({ port: 0, path: '/rpc' });
+* await handle.ready;
+* console.log(`listening on ${handle.port}`);
+* await handle.close();
+* ```
 */
 export interface ServerHandle {
   /** Actual bound port, including the assigned ephemeral port when `0` was used. */
@@ -493,6 +655,20 @@ export interface ServerHandle {
 * `App.rpc()` helper so authentication, routing, and middleware can live in the
 * application layer. `JsonRpcServer` is useful for tests, local tools, and simple
 * standalone JSON-RPC endpoints.
+*
+* The same server can drive an arbitrary `Transport` through `serve()` or spin up
+* a dedicated HTTP listener through `listen()`.
+*
+* ```ts no_run
+* import { JsonRpcServer, JsonRpcService } from 'fino:jsonrpc';
+*
+* const service = new JsonRpcService();
+* service.method('time.now').handle(() => Date.now());
+*
+* const server = new JsonRpcServer(service);
+* const handle = server.listen({ port: 3000, path: '/rpc' });
+* await handle.ready;
+* ```
 */
 export class JsonRpcServer {
   #service: JsonRpcService;

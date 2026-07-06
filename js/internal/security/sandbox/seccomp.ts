@@ -1,12 +1,49 @@
 /**
 * internal:security/sandbox/seccomp — build and install a seccomp-BPF filter
-* from a compiled {@link SeccompPlan}.
+* from a compiled `SeccompPlan`.
+*
+* This is the Linux syscall-filtering stage of the child-process sandbox. It
+* takes the plan produced by `internal:security/sandbox/plan` (`planSeccomp`)
+* and lowers it into a classic BPF program that the kernel evaluates on every
+* syscall the confined process makes.
 *
 * The BPF program loads the syscall number from `seccomp_data` offset 0 and
-* branches per rule, exactly like the previous native `seccomp_filters`:
-* denylist mode returns EPERM for listed syscalls over a default-allow tail,
-* allowlist mode returns ALLOW for listed syscalls over a default
-* kill-the-process tail.
+* branches per rule. The plan's default action decides the shape of the
+* program:
+*
+* - `allow` (denylist) — each `errno` rule matches its syscall and returns
+*   `SECCOMP_RET_ERRNO` with `EPERM`; anything unmatched falls through to a
+*   trailing `SECCOMP_RET_ALLOW`. This is used to poke individual holes (deny
+*   `fork`, deny raw networking) in an otherwise permissive policy.
+* - `kill` (allowlist) — each `allow` rule matches its syscall and returns
+*   `SECCOMP_RET_ALLOW`; anything unmatched falls through to a trailing
+*   `SECCOMP_RET_KILL_PROCESS`, so any syscall not explicitly permitted takes
+*   the whole process down.
+* - `none` — emits a bare allow-everything program (used only as an inert
+*   placeholder; `installSeccomp` never installs it).
+*
+* Installation is a one-way ratchet enforced by the kernel: it first sets
+* `PR_SET_NO_NEW_PRIVS` (required before an unprivileged process may load a
+* filter) and then `PR_SET_SECCOMP` in filter mode. Once installed the filter
+* cannot be removed or loosened for the life of the process, so call it late in
+* child bootstrap, after all needed file descriptors and libraries are open.
+*
+* This module is Linux-only; on other platforms the `prctl` calls simply fail
+* and `seccompAvailable` returns `false`. The macOS counterpart is
+* `internal:security/sandbox/seatbelt`.
+*
+* ```ts no_run
+*   import { seccompAvailable, installSeccomp } from 'internal:security/sandbox/seccomp';
+*   import { planSeccomp } from 'internal:security/sandbox/plan';
+*
+*   if (seccompAvailable()) {
+*     const plan = planSeccomp({ process: { allowFork: false } });
+*     const installed = installSeccomp(plan);
+*     // `installed` is false when the plan enforces nothing (e.g. empty denylist).
+*   }
+* ```
+*
+* seccomp uapi: https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html
 *
 * @internal
 */
@@ -16,9 +53,24 @@ import type { SeccompPlan } from './plan.ts';
 import { syscallNumber } from './plan.ts';
 const PR_GET_SECCOMP = 21;
 /**
-* True when the kernel supports seccomp filtering. `prctl(PR_GET_SECCOMP)`
-* returns the current mode (0 when unconfined) if `CONFIG_SECCOMP` is enabled,
-* or fails with `EINVAL` if it is compiled out.
+* Reports whether the running kernel supports seccomp filtering.
+*
+* Probes with `prctl(PR_GET_SECCOMP)`, which returns the current seccomp mode
+* (0 when the process is unconfined) if `CONFIG_SECCOMP` is compiled into the
+* kernel, and fails with `EINVAL` when it is not. A non-negative return means
+* the facility is present. On non-Linux platforms the `prctl` shim fails and
+* this returns `false`.
+*
+* Use this to gate `installSeccomp` so a policy degrades gracefully rather than
+* throwing on a kernel that cannot enforce it.
+*
+* ```ts no_run
+*   import { seccompAvailable } from 'internal:security/sandbox/seccomp';
+*
+*   if (!seccompAvailable()) {
+*     // Fall back to other confinement layers, or refuse to run untrusted code.
+*   }
+* ```
 */
 export function seccompAvailable(): boolean {
   return libc.symbols.prctl(PR_GET_SECCOMP, 0n, 0n, 0n, 0n) >= 0;
@@ -63,11 +115,37 @@ function build(plan: SeccompPlan): Instruction[] {
   return filters;
 }
 /**
-* Compile and install the seccomp filter for `plan`.
+* Compiles `plan` into a BPF program and installs it as the process seccomp
+* filter, returning whether a filter was actually loaded.
 *
-* A plan with no effective rules and a default-allow tail is a no-op and is
-* skipped so an unrestricted policy does not pay for an empty filter. Throws if
-* `PR_SET_NO_NEW_PRIVS` or `PR_SET_SECCOMP` fails.
+* The plan is lowered per its `defaultAction` (see the module overview) and
+* written into a `struct sock_filter[]` / `struct sock_fprog` pair, then handed
+* to the kernel via `PR_SET_NO_NEW_PRIVS` followed by `PR_SET_SECCOMP` in
+* filter mode. Both prctls are load-bearing: the no-new-privs bit is what lets
+* an unprivileged process install a filter at all.
+*
+* Returns `false` without touching the kernel when the plan enforces nothing —
+* a default-allow tail with no effective rules compiles to just a load plus a
+* blanket allow, so installing it would only add per-syscall overhead for zero
+* protection. A default-`kill` (allowlist) plan is always installed, even with
+* no allow rules, because that denies everything and is a meaningful policy.
+*
+* Once installed the filter is irrevocable for the life of the process, so run
+* this as the final confinement step in child bootstrap. Throws if a rule names
+* a syscall unknown on the current architecture, or if either prctl fails (for
+* example `EACCES` when no-new-privs cannot be set); the error message carries
+* the failing prctl and its `errno`.
+*
+* ```ts no_run
+*   import { installSeccomp } from 'internal:security/sandbox/seccomp';
+*   import { planSeccomp } from 'internal:security/sandbox/plan';
+*
+*   // Allowlist: only the named syscalls survive; anything else kills the process.
+*   const plan = planSeccomp({
+*     syscalls: { mode: 'allowlist', names: ['read', 'write', 'exit_group'] },
+*   });
+*   installSeccomp(plan); // true — an allowlist is always enforced
+* ```
 */
 export function installSeccomp(plan: SeccompPlan): boolean {
   const filters = build(plan);

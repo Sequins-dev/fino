@@ -1,15 +1,37 @@
 /**
-* internal/main.ts — Root realm CLI entry point.
+* internal:main — root realm CLI entry point.
 *
-* This is the entry module evaluated by the Rust runtime for the root Realm.
-* It imports the shared realm bootstrap (which sets up globals, the module
-* loader, and the source-map stack trace formatter), then runs the CLI command
-* infrastructure and drives the event loop.
+* This is the module the Rust runtime evaluates to start the process. It is a
+* pure entry point: importing it has no exported surface, only side effects. It
+* wires the shared realm bootstrap (globals, module loader, source-map stack
+* trace formatter) to the CLI command tree, parses `argv`, runs the selected
+* command, and drives the host event loop until the command and its shutdown
+* hooks have both settled.
 *
-* Child Realms do NOT evaluate this module — they evaluate `internal/bootstrap.ts`
-* directly and then import their own entry module.
+* Only the root Realm evaluates this module. Child Realms evaluate
+* `internal:bootstrap` directly and then import their own entry module, so none
+* of the CLI parsing, shutdown-hook, or child-stepping logic here runs inside a
+* child.
 *
-* ```js
+* Startup order matters. Before any CLI parsing, the module checks for
+* self-sandboxing launcher mode (`fino --sandbox-launcher <fd>`): in that mode
+* the process applies OS sandbox policy to itself over FFI and `execve()`s the
+* target, so `runLauncher` either replaces the process image or hard-exits and
+* never returns to the code below. Argv is then normalized (`--bench` is
+* rewritten to the `bench` subcommand, and a leading `--json` switches the
+* command writer into JSON output mode) and handed to the root command's
+* `parse`. The result string, if any, is printed; a thrown command error is
+* captured and re-raised after the loop drains.
+*
+* The event loop is driven through `driveLoop` from the bootstrap. The done
+* predicate first waits for the command promise to settle, then kicks off
+* shutdown hooks exactly once and only reports the loop finished after those
+* hooks resolve, guaranteeing cleanup runs before exit. `fino:realm` is imported
+* lazily so the root loop can also step and observe liveness of any child Realms
+* that were created, without hard-depending on the realm module being
+* registered (during tests it may not be).
+*
+* ```ts no_run
 * import 'internal:main';
 * ```
 *

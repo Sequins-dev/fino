@@ -1,15 +1,38 @@
 /**
-* fino:data/arrow/cdata - the Arrow C Data Interface over `fino:ffi`.
+* fino:data/arrow/cdata — the Arrow C Data Interface over `fino:ffi`.
 *
 * Exchanges Arrow arrays with native libraries in-process with zero copies:
 * `exportVector`/`exportRecordBatch` build the `ArrowSchema`/`ArrowArray`
-* structs a consumer expects, and `importVector`/`importRecordBatch` wrap the
-* structs a producer hands back into fino vectors (aliasing native memory via
-* `Pointer.view`). The `format` string codec (`typeToFormat`/`formatToType`)
-* is pure and covers every Arrow type.
+* structs a consumer expects, and `importVector` wraps the structs a producer
+* hands back into fino vectors (aliasing native memory via `Pointer.view`).
+* The `format` string codec (`typeToFormat`/`formatToType`) is pure and
+* covers every Arrow type.
+*
+* Ownership follows the C Data Interface contract. On export, every JS-side
+* allocation backing the structs — the struct memory itself, buffer pointer
+* arrays, C strings, and the vector's data buffers — is pinned in a
+* module-level registry keyed by the `ArrowArray` struct's address, and the
+* array's `release` field points at a native callback that drops those pins
+* and marks the struct released. Nothing is copied: the consumer reads the
+* vector's live buffers, and the memory stays valid exactly until `release`
+* runs. On import, buffers are viewed in place, so imported vectors alias the
+* producer's memory and must not be used after the importer's `release()`.
 *
 * This module is kept separate from the pure model so `fino:data/arrow` never
 * loads `fino:ffi`.
+*
+* ```ts no_run
+* import { vectorFromArray, int32, Field } from 'fino:data/arrow';
+* import { exportVector, importVector } from 'fino:data/arrow/cdata';
+*
+* const vec = vectorFromArray([1, 2, null, 4], int32());
+* const { schema, array } = exportVector(vec, new Field('n', int32(), true));
+* // Hand `schema` and `array` to a native consumer... or round-trip them:
+* using imported = importVector(schema, array);
+* imported.value.toArray(); // [1, 2, null, 4]
+* ```
+*
+* Spec: https://arrow.apache.org/docs/format/CDataInterface.html
 *
 * @internal
 */
@@ -64,7 +87,28 @@ const CODE_TIME_UNIT: Record<string, number> = {
   u: TimeUnit.MICROSECOND,
   n: TimeUnit.NANOSECOND
 };
-/** The Arrow C Data Interface format string for a type. */
+/**
+* The Arrow C Data Interface format string for a type.
+*
+* Pure and total over every type kind. Parameterized types embed their
+* parameters in the string (`d:38,4` for decimal, `w:16` for fixed-size
+* binary, `tsu:UTC` for a microsecond timestamp, `+ud:0,1` for a dense
+* union). Nested types produce only the parent code (`+l`, `+s`, ...) — the
+* child types live in the struct's `children`, not in the format string.
+*
+* Dictionary types encode as their *index* type's format: per the spec, the
+* dictionary is signaled by the schema's `dictionary` field rather than the
+* format string.
+*
+* ```ts no_run
+* import { typeToFormat } from 'fino:data/arrow/cdata';
+* import { int32, decimal, timestamp, TimeUnit } from 'fino:data/arrow';
+*
+* typeToFormat(int32());                                // 'i'
+* typeToFormat(decimal(38, 4));                         // 'd:38,4'
+* typeToFormat(timestamp(TimeUnit.MICROSECOND, 'UTC')); // 'tsu:UTC'
+* ```
+*/
 export function typeToFormat(type: DataType): string {
   switch (type.kind) {
     case 'null': return 'n';
@@ -102,8 +146,26 @@ export function typeToFormat(type: DataType): string {
   }
 }
 /**
-* Parse an Arrow C Data Interface format string into a type. Nested types
-* (`+l`, `+s`, ...) take their child types from the supplied `children`.
+* Parse an Arrow C Data Interface format string into a type.
+*
+* The inverse of `typeToFormat`. Nested types (`+l`, `+s`, ...) take their
+* child types from the supplied `children`, since the format string only
+* names the parent: lists and maps read `children[0]`, structs and unions
+* consume the whole array, and run-end-encoded reads `children[0]` (run
+* ends) and `children[1]` (values). Dictionary types are never produced
+* here — a schema's `dictionary` field carries that, and `importVector`
+* layers it on after decoding the index type's format.
+*
+* Throws an `ArrowError` if the format string is not recognized.
+*
+* ```ts no_run
+* import { formatToType } from 'fino:data/arrow/cdata';
+* import { Field, int32 } from 'fino:data/arrow';
+*
+* formatToType('g');                                      // float64
+* formatToType('tsu:America/New_York');                   // zoned timestamp
+* formatToType('+l', [new Field('item', int32(), true)]); // list<int32>
+* ```
 */
 export function formatToType(format: string, children: Field[] = []): DataType {
   switch (format) {
@@ -207,9 +269,36 @@ function cStringPointer(s: string, pins: unknown[]): ArrayBuffer {
   return Pointer.of(bytes) as ArrayBuffer;
 }
 /**
-* Export a vector's schema + array into freshly allocated C structs. Returns
-* pointer values to the two structs; the consumer must call the array's
-* `release`.
+* Export a vector's schema + array into freshly allocated C structs.
+*
+* Builds the `ArrowSchema` and `ArrowArray` trees (children and dictionaries
+* included) and returns pointer values to the two root structs. No data is
+* copied — the array's buffer pointers alias the vector's live memory, and
+* every JS allocation involved is pinned until the consumer invokes the
+* array's `release` callback, which frees the schema structs, the array
+* structs, and the pinned buffers together. Passing the pair back to
+* `importVector` and calling its `release()` drops the same pins in-process.
+*
+* When `field` is omitted, the schema describes an anonymous field of the
+* vector's type, nullable only if the vector actually contains nulls. Pass a
+* `Field` to control the exported name, nullability flag, or dictionary
+* framing.
+*
+* ```ts no_run
+* import { vectorFromArray, float64, Field } from 'fino:data/arrow';
+* import { exportVector } from 'fino:data/arrow/cdata';
+* import { dlopen } from 'fino:ffi';
+*
+* const lib = dlopen('/usr/local/lib/libengine.dylib', {
+*   engine_consume: { parameters: ['pointer', 'pointer'], result: 'void' }
+* });
+*
+* const vec = vectorFromArray([1.5, null, 2.25], float64());
+* const { schema, array } = exportVector(vec, new Field('x', float64(), true));
+* lib.symbols.engine_consume(schema, array);
+* // The consumer calls array->release(array) when it is done; that drops
+* // the pins and the exported memory with them.
+* ```
 */
 export function exportVector(vector: Vector, field?: Field): {
   schema: ArrayBuffer;
@@ -312,7 +401,24 @@ function childFieldsOf(type: DataType): Field[] {
     default: return [];
   }
 }
-/** Export a record batch as a struct array (Arrow models a batch as a struct). */
+/**
+* Export a record batch as a struct array (Arrow models a batch as a struct).
+*
+* This is the shape consumers of the C interface expect for tabular data:
+* the schema is an anonymous non-nullable struct with one child per column,
+* and the array's `length` is the batch's row count. Ownership and release
+* semantics are exactly those of `exportVector`.
+*
+* ```ts no_run
+* import { RecordBatch } from 'fino:data/arrow';
+* import { exportRecordBatch, importVector } from 'fino:data/arrow/cdata';
+*
+* const batch = RecordBatch.from({ id: [1, 2, 3], name: ['a', 'b', 'c'] });
+* const { schema, array } = exportRecordBatch(batch);
+* using imported = importVector(schema, array);
+* imported.value.toArray(); // [{ id: 1, name: 'a' }, ...]
+* ```
+*/
 export function exportRecordBatch(batch: RecordBatch): {
   schema: ArrayBuffer;
   array: ArrayBuffer;
@@ -330,14 +436,31 @@ export function exportRecordBatch(batch: RecordBatch): {
 // ---------------------------------------------------------------------------
 /**
 * Import an Arrow array from `ArrowSchema`/`ArrowArray` pointers into a fino
-* vector. Buffers are aliased via `Pointer.view`.
+* vector.
+*
+* Recursively decodes the schema (format strings, names, nullability flags,
+* children, and dictionaries) and wraps the array's buffers in place via
+* `Pointer.view` — nothing is copied, so `value` aliases the producer's
+* memory. The result carries `value` (the imported `Vector`), an idempotent
+* `release()`, and `[Symbol.dispose]` aliasing `release` so a `using`
+* declaration releases on scope exit.
 *
 * `release()` drops this importer's hold. For arrays exported by this module
-* in-process it also frees the pinned source buffers (via `private_data`). For
-* arrays produced by a foreign library, the producer's `release` function
-* pointer cannot yet be invoked from JS (that needs a future function-pointer
-* call primitive in `fino:ffi`); such arrays are freed when the producer is
-* torn down. Do not use imported views after `release()`.
+* in-process it also frees the pinned source buffers. For arrays produced by
+* a foreign library, the producer's `release` function pointer cannot yet be
+* invoked from JS (that needs a future function-pointer call primitive in
+* `fino:ffi`); such arrays are freed when the producer is torn down. Do not
+* use the imported vector or anything derived from its views after
+* `release()`.
+*
+* ```ts no_run
+* import { importVector } from 'fino:data/arrow/cdata';
+*
+* // `schemaPtr` and `arrayPtr` point at structs a native producer filled in.
+* using imported = importVector(schemaPtr, arrayPtr);
+* console.log(imported.value.length, imported.value.toArray());
+* // release() runs automatically at end of scope.
+* ```
 */
 export function importVector(schemaPtr: ArrayBuffer, arrayPtr: ArrayBuffer): {
   value: Vector;

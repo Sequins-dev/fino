@@ -155,89 +155,43 @@ function compileSegment(pat: string): string {
 */
 export class Glob {
   /**
-  * Private property `#pattern` used by `Glob`.
+  * The original, uncompiled glob pattern as passed to the constructor.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #pattern = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#pattern;
-  *   }
-  * }
-  * ```
+  * Retained verbatim so `pattern` can return it and so `test` and
+  * `couldMatch` can re-split it on `/` to reason about segments without
+  * reparsing the compiled regexps.
   *
   * @internal
   */
   #pattern: string;
   /**
-  * Private property `#re` used by `Glob`.
+  * The full pattern compiled to an anchored regular expression.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #re = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#re;
-  *   }
-  * }
-  * ```
+  * Built once in the constructor by translating the whole glob (including any
+  * `**` segments) into a single `^...$` regexp, then used by `test` to decide
+  * whether a candidate path matches.
   *
   * @internal
   */
   #re: RegExp;
   /**
-  * Private property `#dot` used by `Glob`.
+  * Whether dot-prefixed path segments are allowed to match.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #dot = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#dot;
-  *   }
-  * }
-  * ```
+  * Mirrors the constructor's `dot` option. When false, `test` rejects any path
+  * whose hidden segment is not matched by a literal dot in the corresponding
+  * pattern segment.
   *
   * @internal
   */
   #dot: boolean;
   /**
-  * Private property `#segPatterns` used by `Glob`.
+  * Per-segment compiled regexps used to prune directories, or `null`.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #segPatterns = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#segPatterns;
-  *   }
-  * }
-  * ```
+  * When the pattern contains no `**`, each `/`-delimited segment is compiled to
+  * its own anchored regexp so `couldMatch` can test a candidate directory's
+  * segments prefix-wise and skip subtrees that cannot lead to a match. Patterns
+  * that contain `**` set this to `null`, in which case `couldMatch` always
+  * descends because any subtree may match.
   *
   * @internal
   */

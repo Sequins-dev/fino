@@ -7,6 +7,7 @@ import { chdir, cwd, execPath, Process } from 'fino:process';
 import { Database, sqliteAvailable } from 'fino:database/sqlite';
 import rootCommand from 'internal:commands/root';
 const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1e6);
+const REPO_DIR = cwd();
 interface DocJsonMember {
   name: string;
   id?: string;
@@ -152,6 +153,13 @@ describe('fino doc', () => {
   let appDir: string;
   before(async () => {
     fs = new DiskFileSystem();
+    const rawReadFile = fs.readFile.bind(fs);
+    const rawWriteFile = fs.writeFile.bind(fs);
+    fs.readFile = (async (path: string) => new TextDecoder().decode(await rawReadFile(path))) as never;
+    fs.writeFile = (async (path: string, data: string | Uint8Array | ArrayBuffer | ArrayBufferView) => {
+      const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+      await rawWriteFile(path, bytes);
+    }) as never;
     await ensureDir(fs, TEST_DIR);
     appDir = TEST_DIR + '/app';
     await ensureDir(fs, appDir);
@@ -404,6 +412,48 @@ export class ResourceBox {
    * Hidden implementation detail.
    */
   private internalOnly(): void {}
+}
+
+/**
+ * Convert a timestamp into a date.
+ */
+export function fromDate(value: Date): Date {
+  return value;
+}
+
+/**
+ * Return a binary view unchanged.
+ */
+export function passthroughView(value: ArrayBufferView): ArrayBufferView {
+  return value;
+}
+
+/**
+ * Return iterable values as an array.
+ */
+export function collectValues(values: Iterable<string>): string[] {
+  return Array.from(values);
+}
+
+/**
+ * Return the passed async iterator unchanged.
+ */
+export function keepAsyncIterator(values: AsyncIterator<string>): AsyncIterator<string> {
+  return values;
+}
+
+/**
+ * Return the passed iterator result unchanged.
+ */
+export function keepIteratorResult(value: IteratorResult<string>): IteratorResult<string> {
+  return value;
+}
+
+/**
+ * Return a partial resource value unchanged.
+ */
+export function patchResource(value: Partial<ResourceBox>): Partial<ResourceBox> {
+  return value;
 }
 `);
     await fs.writeFile(appDir + '/private-stubs.ts', `/**
@@ -917,6 +967,12 @@ export function current(): number {
     t.ok(!html.includes('@returns'), 'html does not render directive tags');
     t.ok(!html.includes('@param'), 'html does not render param directive tags');
     t.ok(html.includes('<h5><code><span class="tok-keyword">static</span> from(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="advanced.html#advanced.ResourceBox">ResourceBox</a></code></h5>'), 'html links local symbols inside signatures');
+    t.ok(html.includes('href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date">Date</a>'), 'html links Date signatures to MDN');
+    t.ok(html.includes('href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Typed_arrays">ArrayBufferView</a>'), 'html links ArrayBufferView signatures to MDN');
+    t.ok(html.includes('href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols">Iterable</a>'), 'html links Iterable signatures to MDN');
+    t.ok(html.includes('href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterator</a>'), 'html links AsyncIterator signatures to MDN');
+    t.ok(html.includes('href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols">IteratorResult</a>'), 'html links IteratorResult signatures to MDN');
+    t.ok(html.includes('href="https://www.typescriptlang.org/docs/handbook/utility-types.html#partialtype">Partial</a>'), 'html links Partial signatures to TypeScript docs');
     t.ok(html.includes('<a href="advanced.html#advanced.ResourceBox">ResourceBox</a>'), 'html resolves reference links to generated symbol anchors');
     t.ok(html.includes('<a href="advanced.html#advanced.ResourceBox.name">the name getter</a>'), 'html resolves same-module symbol links');
     t.ok(html.includes('<a href="https://example.test/docs">https://example.test/docs</a>.'), 'html linkifies bare URLs');
@@ -956,6 +1012,379 @@ export function current(): number {
     ], appDir);
     t.equal(hidden.result.code, 0, 'doc search exits successfully for private member query');
     t.equal(hidden.stdout.includes('advanced.ResourceBox.internalOnly'), false, 'sqlite search excludes private members by default');
+  });
+  it('links archive helper types from public signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await fs.writeFile(appDir + '/archive.ts', await fs.readFile(REPO_DIR + '/js/archive.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './archive.ts',
+      '--format',
+      'both',
+      '--title',
+      'Archive API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'archive doc build exits successfully');
+    t.equal(run.stderr, '', 'archive doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/archive.html');
+    for (const name of ['ArchiveFormat', 'ArchiveKind', 'ZipCompression', 'ArchiveEntryHandle', 'ArchiveInput']) {
+      t.ok(html.includes(`id="archive.${name}"`), `html includes ${name} export`);
+      t.ok(html.includes(`href="#archive.${name}">${name}</a>`), `html links ${name} from signatures`);
+    }
+  });
+  it('links compression option types from public signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await fs.writeFile(appDir + '/compress.ts', await fs.readFile(REPO_DIR + '/js/compress.ts'));
+    await ensureDir(fs, appDir + '/internal/compress');
+    await fs.writeFile(appDir + '/internal/compress/common.ts', await fs.readFile(REPO_DIR + '/js/internal/compress/common.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './compress.ts',
+      './internal/compress/common.ts',
+      '--format',
+      'both',
+      '--title',
+      'Compress API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'compress doc build exits successfully');
+    t.equal(run.stderr, '', 'compress doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/compress.html');
+    for (const name of ['ByteInput', 'CompressionFormat', 'CompressOptions', 'DecompressOptions', 'CompressionTransform']) {
+      t.ok(html.includes(`id="compress.${name}"`), `html includes ${name} export`);
+      t.ok(html.includes(`href="#compress.${name}">${name}</a>`), `html links ${name} from signatures`);
+    }
+    t.equal(html.includes('InternalCompressOptions'), false, 'html does not expose internal compress option aliases');
+  });
+  it('links jobs record types from public signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/internal/jobs');
+    await fs.writeFile(appDir + '/jobs.ts', await fs.readFile(REPO_DIR + '/js/jobs.ts'));
+    await fs.writeFile(appDir + '/internal/jobs/store.ts', await fs.readFile(REPO_DIR + '/js/internal/jobs/store.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './jobs.ts',
+      './internal/jobs/store.ts',
+      '--format',
+      'both',
+      '--title',
+      'Jobs API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'jobs doc build exits successfully');
+    t.equal(run.stderr, '', 'jobs doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/jobs.html');
+    for (const name of ['JobRecord', 'ScheduleRecord', 'QueueStats']) {
+      t.ok(html.includes(`id="jobs.${name}"`), `html includes ${name} export`);
+      t.ok(html.includes(`href="#jobs.${name}">${name}</a>`), `html links ${name} from signatures`);
+    }
+  });
+  it('links DNS server family from public signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/net');
+    await fs.writeFile(appDir + '/net/dns.ts', await fs.readFile(REPO_DIR + '/js/net/dns.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './net/dns.ts',
+      '--format',
+      'both',
+      '--title',
+      'DNS API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'dns doc build exits successfully');
+    t.equal(run.stderr, '', 'dns doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/net/dns.html');
+    t.ok(html.includes('id="dns.DnsServerFamily"'), 'html includes DnsServerFamily export');
+    t.ok(html.includes('href="#dns.DnsServerFamily">DnsServerFamily</a>'), 'html links DnsServerFamily from DnsServer signature');
+    for (const name of ['_encodeName', '_buildQuery', '_decodeName', '_parseResponse', '_parseResolvConf', '_randomQueryId', '_reverseIP']) {
+      t.equal(html.includes(`id="dns.${name}"`), false, `html does not include internal ${name} helper`);
+    }
+    for (const name of ['DsRecord', 'DnskeyRecord', 'RrsigRecord', 'NsecRecord', 'Nsec3Record', 'Nsec3ParamRecord', 'DnsEdnsMetadata']) {
+      t.ok(html.includes(`id="dns.${name}"`), `html includes ${name} export`);
+    }
+    t.ok(html.includes('href="#dns.DnsEdnsMetadata">DnsEdnsMetadata</a>'), 'html links DnsEdnsMetadata from DnsResponse signature');
+  });
+  it('links HTTP arena from serialize signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await fs.writeFile(appDir + '/http-wire.ts', `/**
+ * HTTP wire fixture.
+ */
+export class Arena {
+  /**
+   * Allocate bytes.
+   */
+  alloc(n: number): Uint8Array {
+    return new Uint8Array(n);
+  }
+}
+
+/**
+ * Serialize a request.
+ */
+export function serializeRequest(req: Request, arena?: Arena): AsyncIterable<Uint8Array> {
+  return [] as Uint8Array[];
+}
+
+/**
+ * Serialize a response.
+ */
+export function serializeResponse(res: Response, arena?: Arena): AsyncIterable<Uint8Array> {
+  return [] as Uint8Array[];
+}
+`);
+    const run = await runCli([
+      'doc',
+      'build',
+      './http-wire.ts',
+      '--format',
+      'both',
+      '--title',
+      'HTTP Wire API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'http wire doc build exits successfully');
+    t.equal(run.stderr, '', 'http wire doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/http-wire.html');
+    t.ok(html.includes('id="http-wire.Arena"'), 'html includes Arena export');
+    t.ok(html.includes('id="http-wire.serializeRequest"'), 'html includes serializeRequest export');
+    t.ok(html.includes('id="http-wire.serializeResponse"'), 'html includes serializeResponse export');
+    t.ok(html.includes('href="#http-wire.Arena">Arena</a>'), 'html links Arena from serialize signatures');
+  });
+  it('documents HTTP app context and OpenAPI metadata types', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/net/http');
+    await fs.writeFile(appDir + '/net/http/app.ts', await fs.readFile(REPO_DIR + '/js/net/http/app.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './net/http/app.ts',
+      '--format',
+      'both',
+      '--title',
+      'HTTP App API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'http app doc build exits successfully');
+    t.equal(run.stderr, '', 'http app doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/net/http/app.html');
+    for (const name of ['SseContext', 'SseHandler', 'OpenApiParameter', 'OpenApiRequestBody', 'OpenApiResponse']) {
+      t.ok(html.includes(`id="app.${name}"`), `html includes ${name} export`);
+    }
+    t.ok(html.includes('href="#app.SseContext">SseContext</a>'), 'html links SseContext from SseHandler signature');
+    t.ok(html.includes('href="#app.OpenApiParameter">OpenApiParameter</a>'), 'html links OpenApiParameter from OperationMeta');
+    t.ok(html.includes('href="#app.OpenApiRequestBody">OpenApiRequestBody</a>'), 'html links OpenApiRequestBody from OperationMeta');
+    t.ok(html.includes('href="#app.OpenApiResponse">OpenApiResponse</a>'), 'html links OpenApiResponse from OperationMeta');
+  });
+  it('documents HTTP server incoming base types', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/net/http');
+    await fs.writeFile(appDir + '/net/http/server.ts', await fs.readFile(REPO_DIR + '/js/net/http/server.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './net/http/server.ts',
+      '--format',
+      'both',
+      '--title',
+      'HTTP Server API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'http server doc build exits successfully');
+    t.equal(run.stderr, '', 'http server doc build writes no stderr');
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const serverModule = json.modules.find((moduleDoc) => moduleDoc.path === 'net/http/server.ts');
+    t.ok(serverModule, 'server module is documented');
+    t.ok(serverModule!.exports.some((item) => item.name === 'IncomingBase'), 'server module exports IncomingBase');
+    const markdown = await fs.readFile(docsDir + '/net/http/server.md');
+    t.ok(markdown.includes('## IncomingBase'), 'server markdown includes IncomingBase');
+  });
+  it('documents CookieJar from the security cookie module', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/security');
+    await fs.writeFile(appDir + '/security/cookie.ts', await fs.readFile(REPO_DIR + '/js/security/cookie.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './security/cookie.ts',
+      '--format',
+      'both',
+      '--title',
+      'Cookie API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'security cookie doc build exits successfully');
+    t.equal(run.stderr, '', 'security cookie doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/security/cookie.html');
+    t.ok(html.includes('id="cookie.CookieJar"'), 'html includes CookieJar export from security cookie module');
+    t.ok(html.includes('id="cookie.CookieOptions"'), 'html includes CookieOptions export from security cookie module');
+  });
+  it('links fetch init from the fetch globals module', async (t) => {
+    const repoRoot = cwd();
+    const docsDir = repoRoot + '/docs';
+    await removeTree(fs, docsDir);
+    const run = await runCli([
+      'doc',
+      'build',
+      'js/globals/fetch.ts',
+      'js/test/mock.ts',
+      '--format',
+      'both',
+      '--title',
+      'Fetch API'
+    ], repoRoot);
+    t.equal(run.result.code, 0, 'fetch doc build exits successfully');
+    t.equal(run.stderr, '', 'fetch doc build writes no stderr');
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const fetchModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/fetch.ts');
+    const mockModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/test/mock.ts');
+    t.ok(fetchModule, 'fetch globals module is documented');
+    t.ok(mockModule, 'mock module is documented');
+    t.ok(fetchModule!.exports.some((item) => item.name === 'FetchInit'), 'fetch module exports FetchInit');
+    t.equal(fetchModule!.exports.some((item) => item.name === 'fetchLater'), false, 'fetch module does not export fetchLater');
+    t.equal(fetchModule!.exports.some((item) => item.name === 'FetchLaterResult'), false, 'fetch module does not export FetchLaterResult');
+    t.equal(mockModule!.exports.some((item) => item.name === 'FetchInit'), false, 'mock module does not export FetchInit');
+    t.ok(mockModule!.exports.some((item) => item.name === 'MockFetchInit'), 'mock module exports MockFetchInit');
+    const html = await fs.readFile(docsDir + '/js/globals/fetch.html');
+    t.ok(html.includes('id="fetch.FetchInit"'), 'fetch html includes FetchInit export');
+    t.ok(html.includes('href="#fetch.FetchInit">FetchInit</a>'), 'fetch signature links its local FetchInit');
+    t.equal(html.includes('mock.FetchInit'), false, 'fetch html does not link init options to mock.FetchInit');
+    t.equal(html.includes('fetchLater'), false, 'fetch html omits fetchLater');
+    await removeTree(fs, docsDir);
+  });
+  it('links FormData entry value from public signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await fs.writeFile(appDir + '/formdata.ts', await fs.readFile(REPO_DIR + '/js/globals/formdata.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './formdata.ts',
+      '--format',
+      'both',
+      '--title',
+      'FormData API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'formdata doc build exits successfully');
+    t.equal(run.stderr, '', 'formdata doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/formdata.html');
+    t.ok(html.includes('id="formdata.FormDataEntryValue"'), 'html includes FormDataEntryValue export');
+    t.ok(html.includes('href="formdata.html#formdata.FormDataEntryValue">FormDataEntryValue</a>'), 'html links FormDataEntryValue from signatures');
+    t.equal(html.includes('_createMultipartBoundary'), false, 'html hides multipart boundary helper');
+  });
+  it('links config value type from public signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await fs.writeFile(appDir + '/config.ts', await fs.readFile(REPO_DIR + '/js/config.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './config.ts',
+      '--format',
+      'both',
+      '--title',
+      'Config API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'config doc build exits successfully');
+    t.equal(run.stderr, '', 'config doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/config.html');
+    t.ok(html.includes('id="config.ConfigValue"'), 'html includes ConfigValue export');
+    t.ok(html.includes('href="#config.ConfigValue">ConfigValue</a>'), 'html links ConfigValue from signatures');
+  });
+  it('links Arrow base type from public type signatures', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await fs.writeFile(appDir + '/arrow-type.ts', await fs.readFile(REPO_DIR + '/js/data/arrow/type.ts'));
+    await fs.writeFile(appDir + '/arrow.ts', `/**
+ * Public Arrow facade.
+ */
+export * from './arrow-type.ts';
+`);
+    const run = await runCli([
+      'doc',
+      'build',
+      './arrow.ts',
+      './arrow-type.ts',
+      '--format',
+      'both',
+      '--title',
+      'Arrow Type API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'Arrow type doc build exits successfully');
+    t.equal(run.stderr, '', 'Arrow type doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/arrow.html');
+    t.ok(html.includes('id="arrow.BaseType"'), 'html includes BaseType export');
+    t.ok(html.includes('href="#arrow.BaseType">BaseType</a>'), 'html links BaseType from concrete type signatures');
+  });
+  it('links FileSystem from the public file module', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/file');
+    await ensureDir(fs, appDir + '/internal/file');
+    await fs.writeFile(appDir + '/file/fs.ts', await fs.readFile(REPO_DIR + '/js/file/fs.ts'));
+    await fs.writeFile(appDir + '/internal/file/provider.ts', await fs.readFile(REPO_DIR + '/js/internal/file/provider.ts'));
+    await fs.writeFile(appDir + '/internal/file/stat.ts', await fs.readFile(REPO_DIR + '/js/internal/file/stat.ts'));
+    await fs.writeFile(appDir + '/internal/file/handle.ts', await fs.readFile(REPO_DIR + '/js/internal/file/handle.ts'));
+    await fs.writeFile(appDir + '/internal/file/entry.ts', await fs.readFile(REPO_DIR + '/js/internal/file/entry.ts'));
+    await fs.writeFile(appDir + '/internal/file/glob.ts', await fs.readFile(REPO_DIR + '/js/internal/file/glob.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './file/fs.ts',
+      './internal/file/provider.ts',
+      './internal/file/stat.ts',
+      './internal/file/handle.ts',
+      './internal/file/entry.ts',
+      './internal/file/glob.ts',
+      '--format',
+      'both',
+      '--title',
+      'File API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'file doc build exits successfully');
+    t.equal(run.stderr, '', 'file doc build writes no stderr');
+    const html = await fs.readFile(docsDir + '/file/fs.html');
+    t.ok(html.includes('id="fs.FileSystem"'), 'html includes FileSystem export');
+    t.ok(html.includes('href="#fs.FileSystem">FileSystem</a>'), 'html links FileSystem from DiskFileSystem signature');
+    for (const name of ['Stat', 'File', 'Entry', 'FileEntry', 'DirEntry']) {
+      t.ok(html.includes(`id="fs.${name}"`), `html includes ${name} export`);
+    }
+    t.equal(await exists(fs, docsDir + '/internal/file/provider.html'), false, 'internal provider module remains hidden');
+  });
+  it('documents public stream reader and writer re-exports', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/js/internal');
+    await fs.writeFile(appDir + '/js/stream.ts', await fs.readFile(REPO_DIR + '/js/stream.ts'));
+    await fs.writeFile(appDir + '/js/internal/stream.ts', await fs.readFile(REPO_DIR + '/js/internal/stream.ts'));
+    const run = await runCli([
+      'doc',
+      'build',
+      './js/stream.ts',
+      './js/internal/stream.ts',
+      '--format',
+      'both',
+      '--title',
+      'Stream API'
+    ], appDir);
+    t.equal(run.result.code, 0, 'stream doc build exits successfully');
+    t.equal(run.stderr, '', 'stream doc build writes no stderr');
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const streamModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/stream.ts');
+    t.ok(streamModule, 'public stream module is documented');
+    for (const name of ['ReaderCloseCallback', 'BytesReadOptions', 'Reader', 'BytesReader', 'BufferedBytesReader', 'Writer', 'BytesWriter', 'BufferedBytesWriter']) {
+      t.ok(streamModule!.exports.some((item) => item.name === name), `stream module exports ${name}`);
+    }
+    const markdown = await fs.readFile(docsDir + '/js/stream.md');
+    for (const name of ['ReaderCloseCallback', 'BytesReadOptions', 'Reader', 'BytesReader', 'BufferedBytesReader', 'Writer', 'BytesWriter', 'BufferedBytesWriter']) {
+      t.ok(markdown.includes(`## ${name}`), `stream markdown includes ${name}`);
+    }
+    t.equal(await exists(fs, docsDir + '/js/internal/stream.md'), false, 'internal stream module remains hidden by default');
   });
   it('assigns unique doc ids to same-name type and value exports', async (t) => {
     const docsDir = appDir + '/docs';
@@ -2044,6 +2473,20 @@ path: ../escape.md
       'doc',
       'build',
       'js/globals/fetch.ts',
+      'js/globals/abort.ts',
+      'js/globals/blob.ts',
+      'js/globals/console.ts',
+      'js/globals/crypto.ts',
+      'js/globals/encoding.ts',
+      'js/globals/eventtarget.ts',
+      'js/globals/eventsource.ts',
+      'js/globals/formdata.ts',
+      'js/globals/messaging.ts',
+      'js/globals/url.ts',
+      'js/globals/websocket.ts',
+      'js/globals/webtransport.ts',
+      'js/net/http/websocket.ts',
+      'js/net/http/webtransport.ts',
       'js/internal/tty/bindings.ts',
       '--format',
       'markdown',
@@ -2054,10 +2497,144 @@ path: ../escape.md
     t.equal(run.stderr, '', 'doc build writes no stderr');
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     const fetchModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/fetch.ts');
+    const abortModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/abort.ts');
+    const blobModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/blob.ts');
+    const consoleModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/console.ts');
+    const cryptoModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/crypto.ts');
+    const encodingModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/encoding.ts');
+    const eventTargetModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/eventtarget.ts');
+    const eventSourceModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/eventsource.ts');
+    const formDataModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/formdata.ts');
+    const messagingModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/messaging.ts');
+    const urlModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/url.ts');
+    const webSocketModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/websocket.ts');
+    const webTransportModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/webtransport.ts');
+    const httpWebSocketModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/net/http/websocket.ts');
+    const httpWebTransportModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/net/http/webtransport.ts');
     t.ok(fetchModule, 'moved fetch globals module is documented by default');
+    t.ok(abortModule, 'abort globals module is documented by default');
+    t.ok(blobModule, 'blob globals module is documented by default');
+    t.ok(consoleModule, 'console globals module is documented by default');
+    t.ok(cryptoModule, 'crypto globals module is documented by default');
+    t.ok(encodingModule, 'encoding globals module is documented by default');
+    t.ok(eventTargetModule, 'eventtarget globals module is documented by default');
+    t.ok(eventSourceModule, 'eventsource globals module is documented by default');
+    t.ok(formDataModule, 'formdata globals module is documented by default');
+    t.ok(messagingModule, 'messaging globals module is documented by default');
+    t.ok(urlModule, 'url globals module is documented by default');
+    t.ok(webSocketModule, 'websocket globals module is documented by default');
+    t.ok(webTransportModule, 'webtransport globals module is documented by default');
+    t.ok(httpWebSocketModule, 'http websocket module is documented by default');
+    t.ok(httpWebTransportModule, 'http webtransport module is documented by default');
+    t.ok(fetchModule!.exports.some((item) => item.name === 'FetchInit'), 'fetch globals include FetchInit export');
+    t.equal(fetchModule!.exports.some((item) => item.name === 'fetchLater'), false, 'fetch globals do not export fetchLater');
+    t.equal(fetchModule!.exports.some((item) => item.name === 'FetchLaterResult'), false, 'fetch globals do not export FetchLaterResult');
+    t.ok(abortModule!.exports.some((item) => item.name === 'AbortSignal'), 'abort globals include AbortSignal export');
+    t.ok(abortModule!.exports.some((item) => item.name === 'AbortController'), 'abort globals include AbortController export');
+    for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
+      t.ok(blobModule!.exports.some((item) => item.name === name), `blob globals include ${name} export`);
+    }
+    t.ok(consoleModule!.exports.some((item) => item.name === 'Console'), 'console globals include Console export');
+    t.equal(consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureRecord'), false, 'console capture records stay internal');
+    t.equal(consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureSink'), false, 'console capture sinks stay internal');
+    for (const name of ['Crypto', 'SubtleCrypto', 'CryptoKey', 'KeyAlgorithm', 'KeyFormat', 'KeyUsage', 'BufferSource']) {
+      t.ok(cryptoModule!.exports.some((item) => item.name === name), `crypto globals include ${name} export`);
+    }
+    t.equal(encodingModule!.exports.some((item) => item.name === 'encodeUtf8'), false, 'encoding globals do not export encodeUtf8');
+    t.equal(encodingModule!.exports.some((item) => item.name === 'decodeUtf8'), false, 'encoding globals do not export decodeUtf8');
+    for (const name of ['AddEventListenerOptions', 'EventCallback']) {
+      t.ok(eventTargetModule!.exports.some((item) => item.name === name), `eventtarget globals include ${name} export`);
+    }
+    t.ok(formDataModule!.exports.some((item) => item.name === 'FormData'), 'formdata globals include FormData export');
+    t.ok(formDataModule!.exports.some((item) => item.name === 'FormDataEntryValue'), 'formdata globals include FormDataEntryValue export');
+    t.equal(formDataModule!.exports.some((item) => item.name === '_createMultipartBoundary'), false, 'formdata globals do not export multipart boundary helper');
+    for (const name of ['MessageEvent', 'MessagePort', 'MessageChannel']) {
+      t.ok(messagingModule!.exports.some((item) => item.name === name), `messaging globals include ${name} export`);
+    }
+    t.equal(messagingModule!.exports.some((item) => item.name === 'ThreadPort'), false, 'messaging globals do not export ThreadPort');
+    t.equal(messagingModule!.exports.some((item) => item.name === 'BaseTransportPort'), false, 'messaging globals do not export BaseTransportPort');
+    t.ok(urlModule!.exports.some((item) => item.name === 'URL'), 'url globals include URL export');
+    t.ok(urlModule!.exports.some((item) => item.name === 'URLSearchParams'), 'url globals include URLSearchParams export');
+    for (const name of ['WebSocket', 'CloseEvent', 'ErrorEvent', 'MessageEvent']) {
+      t.ok(webSocketModule!.exports.some((item) => item.name === name), `websocket globals include ${name} export`);
+    }
+    for (const name of ['WebSocketConnection', 'WebSocketAcceptOptions', 'WebSocketConnectOptions', 'WebSocketError']) {
+      t.equal(webSocketModule!.exports.some((item) => item.name === name), false, `websocket globals do not export ${name}`);
+    }
+    for (const name of ['WebSocketConnection', 'WebSocketAcceptOptions', 'WebSocketConnectOptions', 'WebSocketError']) {
+      t.ok(httpWebSocketModule!.exports.some((item) => item.name === name), `http websocket module exports ${name}`);
+    }
+    for (const name of ['WebTransport', 'WebTransportDatagramDuplexStream', 'WebTransportOptions']) {
+      t.ok(webTransportModule!.exports.some((item) => item.name === name), `webtransport globals include ${name} export`);
+    }
+    for (const name of ['Http3WebTransportInit', '_fromHttp3WebTransport', '_acceptIncomingQuicWebTransportStream']) {
+      t.equal(webTransportModule!.exports.some((item) => item.name === name), false, `webtransport globals do not export ${name}`);
+    }
+    t.ok(httpWebTransportModule!.exports.some((item) => item.name === 'WebTransport'), 'http webtransport module exports WebTransport');
     t.equal(json.modules.some((moduleDoc) => moduleDoc.path === 'js/internal/tty/bindings.ts'), false, 'internal tty bindings module is hidden by default');
     const markdown = await fs.readFile(docsDir + '/js/globals/fetch.md');
+    const abortMarkdown = await fs.readFile(docsDir + '/js/globals/abort.md');
+    const blobMarkdown = await fs.readFile(docsDir + '/js/globals/blob.md');
+    const consoleMarkdown = await fs.readFile(docsDir + '/js/globals/console.md');
+    const cryptoMarkdown = await fs.readFile(docsDir + '/js/globals/crypto.md');
+    const encodingMarkdown = await fs.readFile(docsDir + '/js/globals/encoding.md');
+    const eventTargetMarkdown = await fs.readFile(docsDir + '/js/globals/eventtarget.md');
+    const eventSourceMarkdown = await fs.readFile(docsDir + '/js/globals/eventsource.md');
+    const formDataMarkdown = await fs.readFile(docsDir + '/js/globals/formdata.md');
+    const messagingMarkdown = await fs.readFile(docsDir + '/js/globals/messaging.md');
+    const urlMarkdown = await fs.readFile(docsDir + '/js/globals/url.md');
+    const webSocketMarkdown = await fs.readFile(docsDir + '/js/globals/websocket.md');
+    const webTransportMarkdown = await fs.readFile(docsDir + '/js/globals/webtransport.md');
     t.equal(markdown.includes('internal:globals/'), false, 'generated module docs do not advertise internal globals specifiers');
+    t.ok(markdown.includes('## FetchInit'), 'fetch markdown includes FetchInit');
+    t.equal(markdown.includes('fetchLater'), false, 'fetch markdown omits fetchLater');
+    t.equal(markdown.includes('FetchLaterResult'), false, 'fetch markdown omits FetchLaterResult');
+    t.equal(abortMarkdown.includes('No exported declarations found.'), false, 'abort globals page includes public exports');
+    t.ok(abortMarkdown.includes('## AbortSignal'), 'abort markdown includes AbortSignal');
+    t.ok(abortMarkdown.includes('## AbortController'), 'abort markdown includes AbortController');
+    t.equal(blobMarkdown.includes('No exported declarations found.'), false, 'blob globals page includes public exports');
+    for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
+      t.ok(blobMarkdown.includes(`## ${name}`), `blob markdown includes ${name}`);
+    }
+    t.equal(consoleMarkdown.includes('No exported declarations found.'), false, 'console globals page includes public exports');
+    t.ok(consoleMarkdown.includes('## Console'), 'console markdown includes Console');
+    t.ok(consoleMarkdown.includes('### log'), 'console markdown includes log method docs');
+    t.ok(consoleMarkdown.includes('### timeEnd'), 'console markdown includes timer method docs');
+    t.equal(consoleMarkdown.includes('internal:globals/'), false, 'console markdown does not advertise internal globals specifiers');
+    t.equal(consoleMarkdown.includes('## Contributing'), false, 'console markdown omits contributor notes');
+    t.equal(consoleMarkdown.includes('ConsoleCaptureRecord'), false, 'console markdown hides internal capture records');
+    t.equal(cryptoMarkdown.includes('No exported declarations found.'), false, 'crypto globals page includes public exports');
+    t.ok(cryptoMarkdown.includes('## Crypto'), 'crypto markdown includes Crypto interface');
+    t.ok(cryptoMarkdown.includes('## SubtleCrypto'), 'crypto markdown includes SubtleCrypto interface');
+    t.ok(cryptoMarkdown.includes('## CryptoKey'), 'crypto markdown includes CryptoKey');
+    t.ok(cryptoMarkdown.includes('### digest'), 'crypto markdown includes subtle digest docs');
+    t.ok(cryptoMarkdown.includes('### getRandomValues'), 'crypto markdown includes getRandomValues docs');
+    t.equal(encodingMarkdown.includes('## encodeUtf8'), false, 'encoding markdown omits internal encodeUtf8 helper');
+    t.equal(encodingMarkdown.includes('## decodeUtf8'), false, 'encoding markdown omits internal decodeUtf8 helper');
+    t.ok(eventTargetMarkdown.includes('## AddEventListenerOptions'), 'eventtarget markdown includes AddEventListenerOptions');
+    t.ok(eventTargetMarkdown.includes('## EventCallback'), 'eventtarget markdown includes EventCallback');
+    t.equal(eventSourceMarkdown.includes('EventSourceReader'), false, 'eventsource globals markdown omits eventstream reader docs');
+    t.equal(eventSourceMarkdown.includes('EventSourceWriter'), false, 'eventsource globals markdown omits eventstream writer docs');
+    t.ok(formDataMarkdown.includes('## FormData'), 'formdata markdown includes FormData');
+    t.ok(formDataMarkdown.includes('## FormDataEntryValue'), 'formdata markdown includes FormDataEntryValue');
+    t.equal(formDataMarkdown.includes('_createMultipartBoundary'), false, 'formdata markdown hides multipart boundary helper');
+    t.ok(messagingMarkdown.includes('## MessagePort'), 'messaging markdown includes MessagePort');
+    t.ok(messagingMarkdown.includes('## MessageChannel'), 'messaging markdown includes MessageChannel');
+    t.equal(messagingMarkdown.includes('## ThreadPort'), false, 'messaging markdown omits ThreadPort');
+    t.equal(messagingMarkdown.includes('## BaseTransportPort'), false, 'messaging markdown omits BaseTransportPort');
+    t.ok(urlMarkdown.includes('## URL'), 'url markdown includes URL');
+    t.ok(urlMarkdown.includes('## URLSearchParams'), 'url markdown includes URLSearchParams');
+    t.ok(webSocketMarkdown.includes('## WebSocket'), 'websocket markdown includes WebSocket');
+    t.ok(webSocketMarkdown.includes('## CloseEvent'), 'websocket markdown includes CloseEvent');
+    t.ok(webSocketMarkdown.includes('## ErrorEvent'), 'websocket markdown includes ErrorEvent');
+    for (const name of ['WebSocketConnection', 'WebSocketAcceptOptions', 'WebSocketConnectOptions', 'WebSocketError']) {
+      t.equal(webSocketMarkdown.includes(`## ${name}`), false, `websocket markdown omits ${name}`);
+    }
+    t.ok(webTransportMarkdown.includes('## WebTransport'), 'webtransport markdown includes WebTransport');
+    t.ok(webTransportMarkdown.includes('## WebTransportDatagramDuplexStream'), 'webtransport markdown includes datagram constructor');
+    for (const name of ['Http3WebTransportInit', '_fromHttp3WebTransport', '_acceptIncomingQuicWebTransportStream', '_fromHttp3', '_acceptIncomingQuicStream', '_push', '_close', '_error', '_stats']) {
+      t.equal(webTransportMarkdown.includes(name), false, `webtransport markdown omits ${name}`);
+    }
     t.equal(await exists(fs, docsDir + '/js/internal/tty/bindings.md'), false, 'internal tty bindings markdown is not emitted by default');
     await removeTree(fs, docsDir);
   });

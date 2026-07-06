@@ -1,10 +1,20 @@
 /**
-* fino:topic - Named pub/sub channels with Context binding.
+* fino:context/topic - Named pub/sub channels with Context binding.
 *
-* A `Topic` is a named pub/sub channel. When a `Context` is bound to a Topic,
-* calling `topic.runWithValue(msg, fn)` automatically derives and installs the
-* bound context value for the duration of `fn`. This separates the concerns of
-* *publishing* (the library/framework) from *consuming* context (application code).
+* A `Topic` is a named pub/sub channel. `topic(name)` gets or creates one in a
+* process-wide registry, so independently loaded modules that use the same
+* name share the same channel - the basis for cross-cutting concerns such as
+* logging, tracing, and diagnostics. Delivery is synchronous: `publish()`
+* calls every subscriber before returning, isolating each in its own
+* try/catch and forwarding failures to the `execution-flow:error` topic so
+* one bad subscriber never starves the rest. Topics are also async iterable,
+* so a consumer can `for await` messages with per-iterator buffering.
+*
+* When a `Context` is bound to a Topic, calling `topic.runWithValue(msg, fn)`
+* automatically derives and installs the bound context value for the duration
+* of `fn`. This separates the concerns of *publishing* (the library/framework)
+* from *consuming* context (application code): the publisher never needs to
+* know which contexts downstream code cares about.
 *
 * ```ts no_run
 *   import { topic } from 'fino:context/topic';
@@ -42,9 +52,6 @@ const topicCreationSubscribers = new Map<symbol, (name: string, topic: Topic<unk
 * const requests = topic<{ id: string }>('http:request');
 * requests.publish({ id: 'req-1' });
 * ```
-*
-* @param {string} name
-* @returns {Topic}
 */
 export function topic<T = unknown>(name: string): Topic<T> {
   let t = registry.get(name);
@@ -58,10 +65,13 @@ export function topic<T = unknown>(name: string): Topic<T> {
 /**
 * Subscribe to all existing and future topics whose names match `matcher`.
 *
-* Returns a handle that removes every attached subscription when disposed.
 * The matcher is evaluated for topics already in the registry and for each
-* topic created later. Callback errors are handled by the matched topic's
-* normal `publish()` error path.
+* topic created later. The callback receives every published message along
+* with the name of the topic it came from, so one callback can fan in a
+* whole family of topics. Callback errors are handled by the matched
+* topic's normal `publish()` error path. Returns a handle that removes
+* every attached subscription (and stops watching for new topics) when
+* disposed.
 *
 * ```ts no_run
 * import { subscribeMatching, topic } from 'fino:context/topic';
@@ -73,10 +83,6 @@ export function topic<T = unknown>(name: string): Topic<T> {
 * topic('audit:login').publish({ user: 'ana' });
 * handle.dispose();
 * ```
-*
-* @param matcher Returns `true` for topic names that should be subscribed.
-* @param fn Receives each published message and the matching topic name.
-* @returns A disposable handle for every attached and future subscription.
 */
 export function subscribeMatching<T = unknown>(matcher: (name: string) => boolean, fn: (msg: T, topicName: string) => void): SubscriptionHandle {
   const handles = new Map<string, SubscriptionHandle>();
@@ -115,67 +121,24 @@ export function subscribeMatching<T = unknown>(matcher: (name: string) => boolea
 */
 export class Topic<T = unknown> {
   /**
-  * Private property `#name` used by `Topic`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #name = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#name;
-  *   }
-  * }
-  * ```
+  * Topic name fixed at construction. Exposed via the `name` getter and used
+  * as the registry lookup key for topics created through `topic()`.
   *
   * @internal
   */
   #name: string;
   /**
-  * Private property `#subscribers` used by `Topic`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #subscribers = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#subscribers;
-  *   }
-  * }
-  * ```
+  * Active subscriber callbacks keyed by a per-subscription symbol, so the
+  * same function can be subscribed multiple times and each subscription can
+  * be disposed independently.
   *
   * @internal
   */
   #subscribers: Map<symbol, (msg: T) => void> = new Map();
   /**
-  * Private property `#bindings` used by `Topic`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #bindings = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#bindings;
-  *   }
-  * }
-  * ```
+  * Registered context bindings in registration order. Each entry pairs a
+  * context-like object with the transform that derives the context value
+  * from a published message; `runWithValue()` enters them outermost-first.
   *
   * @internal
   */
@@ -197,8 +160,6 @@ export class Topic<T = unknown> {
   * const privateTopic = new Topic<number>('local:count');
   * privateTopic.publish(1);
   * ```
-  *
-  * @param {string} name Topic name exposed through the `name` getter.
   */
   constructor(name: string) {
     this.#name = name;
@@ -256,9 +217,6 @@ export class Topic<T = unknown> {
   * const handle = messages.subscribe((message) => console.log(message));
   * handle.dispose();
   * ```
-  *
-  * @param {(msg: any) => void} fn
-  * @returns {SubscriptionHandle}
   */
   subscribe(fn: (msg: T) => void): SubscriptionHandle {
     const id = Symbol();
@@ -282,8 +240,6 @@ export class Topic<T = unknown> {
   * const handle = events.subscribe(() => {});
   * events.unsubscribe(handle);
   * ```
-  *
-  * @param {SubscriptionHandle} handle
   */
   unsubscribe(handle: SubscriptionHandle): void {
     handle.dispose();
@@ -306,8 +262,6 @@ export class Topic<T = unknown> {
   *   break; // disposes the subscription
   * }
   * ```
-  *
-  * @returns An async iterator that yields messages until `return()` is called.
   */
   [Symbol.asyncIterator](): AsyncIterator<T> {
     const queue: T[] = [];
@@ -380,8 +334,6 @@ export class Topic<T = unknown> {
   * events.subscribe((event) => console.log(event.ok));
   * events.publish({ ok: true });
   * ```
-  *
-  * @param {*} msg
   */
   publish(msg: T): void {
     if (!this.hasSubscribers) return;
@@ -408,9 +360,10 @@ export class Topic<T = unknown> {
   * be set to `transform(msg)` for the duration of the call. Multiple bindings
   * are entered in registration order (outermost first) and restored in reverse.
   *
-  * @param {Context} ctx
-  * @param {(msg: any) => any} transform
-  * @returns {BindingHandle}
+  * Anything with a `runWithValue(value, fn)` method works as the binding
+  * target, though `Context` from `fino:context` is the usual choice. The
+  * returned handle removes the binding when disposed; `publish()` alone
+  * never enters bound scopes.
   *
   * ```ts no_run
   * import { Context } from 'fino:context';
@@ -451,8 +404,6 @@ export class Topic<T = unknown> {
   * const handle = events.bindContext(ctx, (event) => event.tenant);
   * events.unbindContext(handle);
   * ```
-  *
-  * @param {BindingHandle} handle
   */
   unbindContext(handle: BindingHandle): void {
     handle.dispose();
@@ -461,11 +412,8 @@ export class Topic<T = unknown> {
   * Enter all bound context scopes (in registration order), publish `msg` to
   * subscribers, then run `fn` - all within those scopes. Context values are
   * derived by calling each binding's `transform(msg)`. Scopes are restored in
-  * reverse order after `fn` returns or throws.
-  *
-  * @param {*}        msg
-  * @param {Function} fn
-  * @returns The return value of `fn`.
+  * reverse order after `fn` returns or throws, and the return value of `fn`
+  * is passed through.
   *
   * ```ts no_run
   * import { Context } from 'fino:context';
@@ -483,25 +431,9 @@ export class Topic<T = unknown> {
   // Enter bindings[index..] recursively so that each binding's runWithValue
   // restores cleanly even when fn throws.
   /**
-  * Private method `#runWithBindings` used by `Topic`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #runWithBindings() {
-  *     return 'runWithBindings';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#runWithBindings();
-  *   }
-  * }
-  * ```
+  * Recursively enter `#bindings[index..]` so each binding's `runWithValue`
+  * frame restores its context cleanly even when `fn` throws, then publish
+  * `msg` and invoke `fn` inside the innermost scope.
   *
   * @internal
   */
@@ -537,23 +469,8 @@ export class Topic<T = unknown> {
 */
 export class SubscriptionHandle {
   /**
-  * Private property `#dispose` used by `SubscriptionHandle`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #dispose = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#dispose;
-  *   }
-  * }
-  * ```
+  * Removal callback captured at construction; invoked on every `dispose()`
+  * call to detach the subscription from its owning topic.
   *
   * @internal
   */
@@ -571,8 +488,6 @@ export class SubscriptionHandle {
   * const handle = new SubscriptionHandle(() => console.log('disposed'));
   * handle.dispose();
   * ```
-  *
-  * @param disposeFn Function that removes the subscription.
   */
   constructor(disposeFn: () => void) {
     this.#dispose = disposeFn;
@@ -612,23 +527,8 @@ export class SubscriptionHandle {
 */
 export class BindingHandle {
   /**
-  * Private property `#dispose` used by `BindingHandle`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #dispose = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#dispose;
-  *   }
-  * }
-  * ```
+  * Removal callback captured at construction; invoked on every `dispose()`
+  * call to detach the binding from its owning topic.
   *
   * @internal
   */
@@ -645,8 +545,6 @@ export class BindingHandle {
   * const handle = new BindingHandle(() => console.log('unbound'));
   * handle.dispose();
   * ```
-  *
-  * @param disposeFn Function that removes the binding.
   */
   constructor(disposeFn: () => void) {
     this.#dispose = disposeFn;

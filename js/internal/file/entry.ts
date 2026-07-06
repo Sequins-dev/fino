@@ -1,19 +1,27 @@
 /**
-* Directory entry wrappers for internal `fino:file` providers.
+* internal:file/entry — directory entry wrappers for `fino:file` providers.
 *
 * The entry hierarchy represents results returned by filesystem directory
 * listings. `Entry` stores the reported basename, normalized path, owning
-* provider reference, and `dirent.d_type` value for fast type checks. `FileEntry`
-* adds open support for regular files, while `DirEntry` exposes directory
-* mutation helpers and async iteration over child entries.
+* provider reference, and `dirent.d_type` value for fast type checks without
+* an extra syscall. `FileEntry` adds open support for regular files, while
+* `DirEntry` exposes directory mutation helpers and async iteration over
+* child entries.
 *
-* Entries may also be detached from a provider for tests or synthetic listings.
-* Detached entries can still report name, path, and cheap type checks, but
-* methods that require a filesystem throw because there is no provider to call.
+* Directory listing (`DirEntry.entries` and `for await` iteration) reads the
+* local disk directly through libc `opendir(3)`/`readdir(3)`, decoding the
+* platform-specific `struct dirent` layout in JS. All other provider-backed
+* operations — `stat`, `lstat`, `open`, `child`, `mkdir`, `remove` — delegate
+* to the owning filesystem so virtual providers can intercept them.
+*
+* Entries may also be detached from a provider (constructed with a `null`
+* filesystem) for tests or synthetic listings. Detached entries still report
+* name, path, and cheap type checks, but provider-backed methods throw
+* because there is no filesystem to call.
 *
 * ## Example
 *
-* ```typescript no_run
+* ```ts no_run
 * import { DirEntry } from 'internal:file/entry';
 *
 * const root = new DirEntry('tmp', '/tmp', fileSystem, 4);
@@ -30,6 +38,17 @@
 import { lib, isDarwin, Pointer, cstr, throwErrno, readCStr, _toPath, joinPath, DT_UNKNOWN, DT_DIR, DT_REG, DT_LNK, decodeUtf8 } from './bindings.ts';
 import { Stat } from './stat.ts';
 import { Path } from '../../file/path.ts';
+/**
+* The subset of a `fino:file` provider that entries call into.
+*
+* Every provider-backed entry method (`stat`, `open`, `child`, `mkdir`,
+* `remove`, and friends) forwards to one of these members on the owning
+* filesystem, so a virtual provider can intercept them by implementing this
+* shape. Directory listing is the sole exception: it reads the local disk
+* through libc rather than going through the provider.
+*
+* @internal
+*/
 interface EntryFileSystem {
   stat(path: Path | string): Promise<Stat>;
   lstat(path: Path | string): Promise<Stat>;
@@ -53,93 +72,31 @@ interface EntryFileSystem {
 * entry.name; // 'file.txt'
 * ```
 *
-* @internal
 */
 export class Entry {
   /**
-  * Private property `#name` used by `Entry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #name = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#name;
-  *   }
-  * }
-  * ```
+  * Basename reported by the directory listing that produced this entry.
   *
   * @internal
   */
   #name: string;
   /**
-  * Private property `#path` used by `Entry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #path = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#path;
-  *   }
-  * }
-  * ```
+  * Normalized full path of the entry, stored as a `Path`.
   *
   * @internal
   */
   #path: Path;
   /**
-  * Private property `#fs` used by `Entry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fs = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fs;
-  *   }
-  * }
-  * ```
+  * Owning filesystem the provider-backed methods delegate to, or `null` when
+  * the entry is detached.
   *
   * @internal
   */
   #fs: EntryFileSystem | null;
   /**
-  * Private property `#dtype` used by `Entry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #dtype = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#dtype;
-  *   }
-  * }
-  * ```
+  * Cached `dirent.d_type` value backing the cheap `isFile`/`isDirectory`/
+  * `isSymlink` predicates. May be `DT_UNKNOWN` when the listing could not
+  * classify the entry.
   *
   * @internal
   */
@@ -177,8 +134,6 @@ export class Entry {
   * ```typescript no_run
   * const path = entry.path.toString();
   * ```
-  *
-  * @returns {Path}
   */
   get path() {
     return this.#path;
@@ -252,27 +207,10 @@ export class Entry {
 * fileEntry.isFile(); // true
 * ```
 *
-* @internal
 */
 export class FileEntry extends Entry {
   /**
-  * Private property `#fs` used by `FileEntry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fs = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fs;
-  *   }
-  * }
-  * ```
+  * Owning filesystem used by `open`, or `null` when the entry is detached.
   *
   * @internal
   */
@@ -295,11 +233,10 @@ export class FileEntry extends Entry {
   /**
   * Open this file.
   *
-  * Mode defaults to `r`. Throws when the entry is detached from a filesystem or
-  * when the provider rejects the mode/path.
-  *
-  * @param {string} [mode='r']
-  * @returns {Promise<File>}
+  * Resolves to the provider's open-file handle. Mode defaults to `r` and is
+  * passed through to the owning filesystem, so the accepted mode strings are
+  * whatever that provider supports. Throws when the entry is detached from a
+  * filesystem, or when the provider rejects the mode or path.
   *
   * ```typescript no_run
   * const file = await fileEntry.open('r');
@@ -321,27 +258,11 @@ export class FileEntry extends Entry {
 * dir.isDirectory(); // true
 * ```
 *
-* @internal
 */
 export class DirEntry extends Entry {
   /**
-  * Private property `#fs` used by `DirEntry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fs = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fs;
-  *   }
-  * }
-  * ```
+  * Owning filesystem used for listing children and mutating the directory, or
+  * `null` when the entry is detached.
   *
   * @internal
   */
@@ -362,12 +283,21 @@ export class DirEntry extends Entry {
     this.#fs = fs;
   }
   /**
-  * Read all children of this directory into an array, skipping `.` and `..`.
-  * Returns FileEntry for regular files, DirEntry for directories, Entry for other types.
-  * @returns {Promise<Entry[]>}
+  * Read every child of this directory into an array, skipping `.` and `..`.
+  *
+  * Unlike the provider-backed methods, this reads the local disk directly
+  * through libc `opendir(3)`/`readdir(3)`, decoding the platform-specific
+  * `struct dirent` layout in JS. Each child is wrapped by concrete type from
+  * its `d_type`: a `FileEntry` for regular files, a `DirEntry` for
+  * directories, and a plain `Entry` for everything else (symlinks, sockets,
+  * devices, or types the listing could not classify). Throws if `opendir`
+  * fails, for example when the path does not exist or is not a directory.
   *
   * ```typescript no_run
-  * const children = await dir.entries();
+  * for (const child of await dir.entries()) {
+  *   if (child instanceof FileEntry) console.log('file', child.name);
+  *   else if (child instanceof DirEntry) console.log('dir', child.name);
+  * }
   * ```
   */
   async entries(): Promise<Entry[]> {
@@ -435,13 +365,17 @@ export class DirEntry extends Entry {
     } };
   }
   /**
-  * Return an Entry for a named child, determined via lstat.
-  * Does not scan the directory — single lstat call.
-  * @param {string} name
-  * @returns {Promise<Entry>}
+  * Resolve a single named child through the provider, typed by its kind.
+  *
+  * This does not scan the directory; it delegates to the filesystem's `entry`
+  * lookup (a single `lstat`-style probe), so it is cheap even in large
+  * directories. The returned object is a `FileEntry`, `DirEntry`, or plain
+  * `Entry` depending on what the provider reports. Throws when the entry is
+  * detached from a filesystem, or when the provider cannot resolve the name.
   *
   * ```typescript no_run
   * const child = await dir.child('file.txt');
+  * console.log(child.isFile());
   * ```
   */
   async child(name: string): Promise<Entry> {

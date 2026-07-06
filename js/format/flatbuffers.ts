@@ -82,8 +82,18 @@ function _fail(source: Uint8Array, offset: number, detail: string): never {
 * ```ts no_run
 * import { FlatBuffer } from 'fino:format/flatbuffers';
 *
-* const fb = FlatBuffer.from(bytes);
+* // wireBytes: a Uint8Array received over the network or read from disk
+* const fb = FlatBuffer.from(wireBytes, { sizePrefixed: true });
+* if (!fb.hasIdentifier('MONS')) throw new Error('not a Monster buffer');
 * const root = fb.rootTable();
+*
+* // Inline structs have no self-describing layout; read their members
+* // with the positional accessors from the struct's absolute position.
+* const posOffset = root.struct(0);
+* if (posOffset !== null) {
+*   const x = fb.f32At(posOffset);
+*   const y = fb.f32At(posOffset + 4);
+* }
 * ```
 */
 export class FlatBuffer {
@@ -248,6 +258,8 @@ export class FlatBuffer {
   }
   /**
   * Whether the buffer carries the given 4-character file identifier.
+  *
+  * Throws a `TypeError` if `id` is not exactly 4 characters.
   */
   hasIdentifier(id: string): boolean {
     if (id.length !== FILE_IDENTIFIER_LENGTH) {
@@ -275,6 +287,16 @@ export class FlatBuffer {
 * Unions follow the standard two-field convention: the type tag is a `u8`
 * field at id N and the value is a table field at id N + 1 — read them with
 * `u8(N, 0)` and `table(N + 1)`.
+*
+* ```ts no_run
+* import { FlatBuffer } from 'fino:format/flatbuffers';
+*
+* // Schema: table Monster { name: string; hp: short = 100; friend: Monster; }
+* const monster = FlatBuffer.from(wireBytes).rootTable();
+* monster.string(0);          // name, or null when absent
+* monster.i16(1, 100);        // hp, falling back to the schema default
+* monster.table(2)?.string(0); // friend's name, if a friend is set
+* ```
 */
 export class Table {
   /**
@@ -417,6 +439,22 @@ export class Table {
 /**
 * A vector within a `FlatBuffer`. Element accessors are typed by the caller
 * (the wire format does not carry element types); indexes are bounds-checked.
+*
+* ```ts no_run
+* import { FlatBuffer } from 'fino:format/flatbuffers';
+*
+* // Schema: table Monster { ...; inventory: [ubyte]; weapons: [Weapon]; }
+* const monster = FlatBuffer.from(wireBytes).rootTable();
+*
+* const inventory = monster.vector(3);
+* inventory?.bytes(); // zero-copy Uint8Array view of the [ubyte] contents
+*
+* const weapons = monster.vector(4);
+* for (let i = 0; i < (weapons?.length ?? 0); i++) {
+*   const weapon = weapons!.table(i);
+*   console.log(weapon.string(0), weapon.i16(1, 0));
+* }
+* ```
 */
 export class Vector {
   /**
@@ -827,7 +865,24 @@ export class Builder {
   /**
   * Add an inline struct field to the current table. The struct must have
   * been written immediately before this call (its offset must equal the
-  * current builder offset).
+  * current builder offset); otherwise this throws.
+  *
+  * Structs are written with `prep()` plus the raw `write*` methods, members
+  * in reverse declaration order (the builder writes back-to-front):
+  *
+  * ```ts no_run
+  * import { Builder } from 'fino:format/flatbuffers';
+  *
+  * // struct Vec3 { x: float; y: float; z: float; } — 12 bytes, align 4
+  * const b = new Builder();
+  * b.startTable(1);
+  * b.prep(4, 12);
+  * b.writeFloat32(z);
+  * b.writeFloat32(y);
+  * b.writeFloat32(x);
+  * b.addFieldStruct(0, b.offset());
+  * b.finish(b.endTable());
+  * ```
   */
   addFieldStruct(id: number, offset: number): void {
     if (offset !== 0) {
@@ -839,6 +894,10 @@ export class Builder {
   }
   /**
   * Begin a table with `numFields` field slots.
+  *
+  * Throws if another table or vector is already being built — tables do not
+  * nest during construction; build inner objects first and reference them by
+  * offset.
   */
   startTable(numFields: number): void {
     if (this.#isNested) {
@@ -852,6 +911,8 @@ export class Builder {
   /**
   * Finish the current table, writing (or reusing) its vtable. Returns the
   * table's builder offset.
+  *
+  * Throws if no table is being built.
   */
   endTable(): number {
     if (this.#vtable === null || !this.#isNested) {
@@ -898,6 +959,24 @@ export class Builder {
   * Begin a vector of `numElems` elements of `elemSize` bytes, aligned to
   * `alignment`. Write elements back-to-front with the raw `write*` methods or
   * `addOffset`, then call `endVector()`.
+  *
+  * Because the builder writes toward lower addresses, the *last* element is
+  * written first. Throws if a table or vector is already being built.
+  *
+  * ```ts no_run
+  * import { Builder } from 'fino:format/flatbuffers';
+  *
+  * // Build [10, 20, 30] as an [int] vector.
+  * const b = new Builder();
+  * b.startVector(4, 3, 4);
+  * b.writeInt32(30);
+  * b.writeInt32(20);
+  * b.writeInt32(10);
+  * const vec = b.endVector();
+  * b.startTable(1);
+  * b.addFieldOffset(0, vec);
+  * b.finish(b.endTable());
+  * ```
   */
   startVector(elemSize: number, numElems: number, alignment: number): void {
     if (this.#isNested) {
@@ -910,6 +989,8 @@ export class Builder {
   }
   /**
   * Finish the current vector and return its builder offset.
+  *
+  * Throws if no vector is being built.
   */
   endVector(): number {
     if (!this.#isNested) {
@@ -944,6 +1025,8 @@ export class Builder {
   * Finalize the buffer with `rootTable` as the root. An optional 4-character
   * `fileIdentifier` is stored after the root offset; `sizePrefixed` writes
   * the standard 4-byte length prefix.
+  *
+  * Throws a `TypeError` if `fileIdentifier` is not exactly 4 characters.
   */
   finish(rootTable: number, options?: {
     fileIdentifier?: string;
@@ -969,7 +1052,7 @@ export class Builder {
   }
   /**
   * The finished buffer contents (a view over the builder's storage, not a
-  * copy). Only valid after `finish()`.
+  * copy). Throws if called before `finish()`.
   */
   bytes(): Uint8Array {
     if (!this.#finished) {

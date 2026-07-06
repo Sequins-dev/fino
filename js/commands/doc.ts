@@ -3,9 +3,20 @@
 *
 * Builds the `fino doc` command tree and contains the source parser, Markdown
 * and HTML renderers, search database generation, and doc-test runner used by
-* that command. The builder reads commented source modules, extracts module and
-* symbol JSDoc, resolves supported re-exports, writes generated documentation
-* under `docs/`, and can execute runnable fenced examples from comments.
+* that command. The `build` path parses commented TypeScript and JavaScript
+* sources (plus Markdown guide pages), extracts module and symbol doc
+* comments, resolves supported re-exports, and writes generated documentation
+* under `docs/`: one Markdown and/or HTML page per module and guide, an
+* `api.json` snapshot, and a SQLite index (`docs.db`) with full-text search.
+* Stale generated pages are pruned after each build, and per-file parse
+* results are cached in the index keyed by size and mtime so unchanged files
+* are not re-parsed.
+*
+* `show` and `search` query the generated index, transparently refreshing it
+* from the recorded input roots when a lookup misses. `test` extracts fenced
+* `ts`/`js` code blocks from doc comments and executes each one in an
+* isolated realm: blocks tagged `no_run` or `ignore` are skipped, and blocks
+* tagged `throws` must reject.
 *
 * Use this module when another interface needs to mount the built-in docs
 * workflow as a `Task`. Helper functions remain module-private because they
@@ -37,6 +48,8 @@ import { Scanner } from '../parsing/scanner.ts';
 import * as sqlite from '../database/sqlite.ts';
 import { timeout } from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 const DOCS_DIR_NAME = 'docs';
 const API_JSON_NAME = 'api.json';
 const DOCS_DB_NAME = 'docs.db';
@@ -60,6 +73,12 @@ const DOC_DISCOVERY_IGNORES = new Set([
   'target',
   'vendor'
 ]);
+async function readTextFile(path: string): Promise<string> {
+  return textDecoder.decode(await fs.readFile(path));
+}
+async function writeTextFile(path: string, text: string): Promise<void> {
+  await fs.writeFile(path, textEncoder.encode(text));
+}
 interface DocTag {
   name: string;
   value: string;
@@ -669,7 +688,7 @@ function signaturesOf(item: {
   return item.signature ? [item.signature] : [];
 }
 async function extractModulesFromSource(path: string, includePrivate: boolean): Promise<ParsedModuleDoc[]> {
-  const source = String(await fs.readFile(path));
+  const source = await readTextFile(path);
   const parsed = parseTypeScript(source, {
     filename: path,
     tokens: true
@@ -1889,7 +1908,7 @@ async function renderReadmeHtml(api: ApiDoc): Promise<string> {
   const readmePath = `${cwd().replace(/\/+$/, '')}/README.md`;
   if (!await exists(readmePath)) return '<h1>API Documentation</h1>\n<p class="muted">No README.md found.</p>';
   const assets = new Map<string, SourceAssetRef>();
-  const html = renderMarkdown(await fs.readFile(readmePath), {
+  const html = renderMarkdown(await readTextFile(readmePath), {
     headingOffset: 0,
     resolveLink: buildSourceLinkResolver(api, 'README.md', 'index.html', undefined, { assets }),
     renderCode: (code, lang) => renderCodeHtml(lang, code)
@@ -2200,17 +2219,23 @@ const MDN_SIGNATURE_TYPES: Record<string, string> = {
   AbortSignal: 'https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal',
   Array: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array',
   ArrayBuffer: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer',
+  ArrayBufferView: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Typed_arrays',
   AsyncGenerator: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator',
   AsyncIterable: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator',
+  AsyncIterator: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator',
   BigInt: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt',
   Blob: 'https://developer.mozilla.org/en-US/docs/Web/API/Blob',
+  Date: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date',
   Error: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error',
   Event: 'https://developer.mozilla.org/en-US/docs/Web/API/Event',
   EventTarget: 'https://developer.mozilla.org/en-US/docs/Web/API/EventTarget',
   File: 'https://developer.mozilla.org/en-US/docs/Web/API/File',
   Float32Array: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array',
   Headers: 'https://developer.mozilla.org/en-US/docs/Web/API/Headers',
+  Iterable: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols',
+  IteratorResult: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols',
   Map: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map',
+  Partial: 'https://www.typescriptlang.org/docs/handbook/utility-types.html#partialtype',
   Promise: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise',
   Record: 'https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type',
   Request: 'https://developer.mozilla.org/en-US/docs/Web/API/Request',
@@ -2470,7 +2495,7 @@ function relativeHref(fromHref: string, toHref: string): string {
   return [...fromParts.map(() => '..'), ...toParts].join('/') || basename(toHref);
 }
 async function readApi(path: string): Promise<ApiDoc> {
-  return JSON.parse(await fs.readFile(path)) as ApiDoc;
+  return JSON.parse(await readTextFile(path)) as ApiDoc;
 }
 async function extractApi(files: string[], includePrivate: boolean = false): Promise<ApiDoc> {
   const modules: ParsedModuleDoc[] = [];
@@ -2629,7 +2654,7 @@ async function currentDocFile(file: string, kind: DocFileKind, outputPath?: stri
 }
 async function parseCurrentDocFile(file: CurrentDocFile, includePrivate: boolean): Promise<ParsedModuleDoc[] | GuideDoc> {
   if (file.kind === 'source') return extractModulesFromSource(file.file, includePrivate);
-  const parsed = parseGuideMarkdown(file.path, String(await fs.readFile(file.file)));
+  const parsed = parseGuideMarkdown(file.path, await readTextFile(file.file));
   const guidePath = parsed.virtualPath ?? file.outputPath ?? file.path;
   const guide: GuideDoc = {
     id: guideId(file.path),
@@ -2686,7 +2711,7 @@ async function extractGuides(files: string[]): Promise<GuideDoc[]> {
   const guides: GuideDoc[] = [];
   for (const file of files) {
     const path = normalizeDocPath(file);
-    const parsed = parseGuideMarkdown(path, String(await fs.readFile(file)));
+    const parsed = parseGuideMarkdown(path, await readTextFile(file));
     const guide: GuideDoc = {
       id: guideId(path),
       path,
@@ -2843,6 +2868,17 @@ function resolveReExportModule(modules: ParsedModuleDoc[], fromModule: ParsedMod
     const candidates = modulePathCandidates(target);
     return modules.find((moduleDoc) => candidates.has(normalizeDocPath(moduleDoc.path)));
   }
+  if (specifier.startsWith('internal:')) {
+    const source = specifier.slice('internal:'.length);
+    const fromPath = normalizeDocPath(fromModule.path);
+    const firstSegment = fromPath.includes('/') ? fromPath.slice(0, fromPath.indexOf('/')) : '';
+    const candidates = modulePathCandidates(`internal/${source}`);
+    if (firstSegment) {
+      for (const candidate of modulePathCandidates(`${firstSegment}/internal/${source}`)) candidates.add(candidate);
+    }
+    const match = modules.find((moduleDoc) => candidates.has(normalizeDocPath(moduleDoc.path)));
+    if (match) return match;
+  }
   return modules.find((moduleDoc) => moduleDoc.sourceModule === specifier || moduleDoc.name === specifier || normalizeDocPath(moduleDoc.path) === specifier);
 }
 function modulePathCandidates(path: string): Set<string> {
@@ -2989,7 +3025,7 @@ async function ensureApiJson(): Promise<ApiDoc> {
   const metadata = await readDocInputMetadata();
   if (metadata) api.input = metadata;
   await ensureDir(docsDir());
-  await fs.writeFile(path, JSON.stringify(api, null, 2) + '\n');
+  await writeTextFile(path, JSON.stringify(api, null, 2) + '\n');
   return api;
 }
 async function ensureDocsDb(): Promise<string> {
@@ -3196,8 +3232,8 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   if (format === 'html' || format === 'both') {
     const cssPath = `${outDir}/${DOCS_CSS_NAME}`;
     const jsPath = `${outDir}/${DOCS_JS_NAME}`;
-    await fs.writeFile(cssPath, DOCS_HTML_CSS + '\n');
-    await fs.writeFile(jsPath, DOCS_CLIENT_JS.trimStart());
+    await writeTextFile(cssPath, DOCS_HTML_CSS + '\n');
+    await writeTextFile(jsPath, DOCS_CLIENT_JS.trimStart());
     written.push(`Wrote ${cssPath}`);
     written.push(`Wrote ${jsPath}`);
   }
@@ -3205,13 +3241,13 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
     if (format === 'markdown' || format === 'both') {
       const markdownPath = `${outDir}/${moduleHref(moduleDoc).replace(/\.html$/i, '.md')}`;
       await ensureDir(dirname(markdownPath));
-      await fs.writeFile(markdownPath, renderModule(moduleDoc));
+      await writeTextFile(markdownPath, renderModule(moduleDoc));
       written.push(`Wrote ${markdownPath}`);
     }
     if (format === 'html' || format === 'both') {
       const htmlPath = `${outDir}/${moduleHref(moduleDoc)}`;
       await ensureDir(dirname(htmlPath));
-      await fs.writeFile(htmlPath, renderModuleHtml(api, moduleDoc, title));
+      await writeTextFile(htmlPath, renderModuleHtml(api, moduleDoc, title));
       written.push(`Wrote ${htmlPath}`);
     }
   }
@@ -3219,24 +3255,24 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
     if (format === 'markdown' || format === 'both') {
       const markdownPath = `${outDir}/${guide.href.replace(/\.html$/i, '.md')}`;
       await ensureDir(dirname(markdownPath));
-      await fs.writeFile(markdownPath, guide.text);
+      await writeTextFile(markdownPath, guide.text);
       written.push(`Wrote ${markdownPath}`);
     }
     if (format === 'html' || format === 'both') {
       const htmlPath = `${outDir}/${guide.href}`;
       await ensureDir(dirname(htmlPath));
-      await fs.writeFile(htmlPath, renderGuideHtml(api, guide, title));
+      await writeTextFile(htmlPath, renderGuideHtml(api, guide, title));
       written.push(`Wrote ${htmlPath}`);
     }
   }
   if (format === 'html' || format === 'both') {
     const indexPath = `${outDir}/index.html`;
-    await fs.writeFile(indexPath, await renderIndexHtml(api, title));
+    await writeTextFile(indexPath, await renderIndexHtml(api, title));
     written.push(`Wrote ${indexPath}`);
   }
   const jsonPath = apiJsonPath();
   await ensureDir(dirname(jsonPath));
-  await fs.writeFile(jsonPath, JSON.stringify(api, null, 2) + '\n');
+  await writeTextFile(jsonPath, JSON.stringify(api, null, 2) + '\n');
   written.push(`Wrote ${jsonPath}`);
   await pruneGeneratedOutputs(expectedOutputs);
   await withDocsWriteLock(async () => {
@@ -3274,7 +3310,7 @@ async function inferPackageJsonTitle(path: string): Promise<string | undefined> 
   if (!await exists(path)) return undefined;
   let data: unknown;
   try {
-    data = JSON.parse(await fs.readFile(path));
+    data = JSON.parse(await readTextFile(path));
   } catch (_) {
     return undefined;
   }
@@ -3293,7 +3329,7 @@ async function inferPackageJsonTitle(path: string): Promise<string | undefined> 
 async function inferCargoPackageTitle(path: string): Promise<string | undefined> {
   if (!await exists(path)) return undefined;
   let inPackage = false;
-  for (const line of (await fs.readFile(path)).split(/\r?\n/)) {
+  for (const line of (await readTextFile(path)).split(/\r?\n/)) {
     const section = /^\s*\[([^\]]+)\]\s*$/.exec(line);
     if (section) {
       inPackage = section[1] === 'package';
@@ -3502,7 +3538,7 @@ async function refreshDocsForQuery(query: string): Promise<ApiDoc> {
   const metadata = await readDocInputMetadata();
   if (metadata) api.input = metadata;
   await ensureDir(docsDir());
-  await fs.writeFile(apiJsonPath(), JSON.stringify(api, null, 2) + '\n');
+  await writeTextFile(apiJsonPath(), JSON.stringify(api, null, 2) + '\n');
   return api;
 }
 function docQueryTerms(query: string): string[] {
@@ -3522,7 +3558,7 @@ function docQueryTerms(query: string): string[] {
 }
 async function docFileContainsAnyTerm(path: string, terms: string[]): Promise<boolean> {
   if (terms.length === 0) return false;
-  const text = String(await fs.readFile(path)).toLowerCase();
+  const text = (await readTextFile(path)).toLowerCase();
   return terms.some((term) => text.includes(term));
 }
 async function searchSqlite(dbPath: string, query: string): Promise<string> {
@@ -3628,7 +3664,7 @@ async function runDocTestCommand(input: Record<string, unknown>, ctx: TaskContex
     lines.push(`  });`);
   }
   lines.push(`});`, ``);
-  await fs.writeFile(testPath, lines.join('\n'));
+  await writeTextFile(testPath, lines.join('\n'));
   await import(normalizeModuleSpecifier(testPath));
   const { run } = await import('fino:test/test');
   await run({});
@@ -3683,19 +3719,34 @@ function filesPositional() {
   }];
 }
 /**
-* Create the `doc` subcommand tree used by the root Fino CLI.
+* The `doc` command task mounted as `fino doc` by the root CLI.
 *
-* The returned command supports `build`, `show`, `search`, and `test`.
-* Invoking `fino doc` directly runs the build path. Build accepts source files,
-* directories, or globs and writes Markdown or HTML documentation depending on
-* `--format`. `--include-private` includes internal and private declarations.
-* `show` and `search` read generated docs, while `test` extracts fenced examples
-* from comments and executes runnable examples. Parser, filesystem, rendering,
-* and doc-test failures propagate as command errors.
+* Invoking the command without a subcommand runs the build path. Four
+* subcommands are available:
 *
-* ```js
+* - `build <files...>` — generate documentation from source files,
+*   directories, or globs. `--format` selects `markdown` (default), `html`,
+*   or `both`; `--title` overrides the page title otherwise inferred from
+*   `package.json` or `Cargo.toml`; `--types` merges additional declaration
+*   inputs into the same docs; `--include-private` also documents `@internal`
+*   and private declarations.
+* - `show <symbol>` — print one documented symbol as Markdown by id or name,
+*   with "did you mean" suggestions when nothing matches exactly.
+* - `search <query...>` — full-text search over the generated docs index.
+* - `test <files...>` — extract fenced examples from doc comments and run
+*   each one in an isolated realm.
+*
+* Parser, filesystem, rendering, and doc-test failures propagate as command
+* errors. Throws from `build` and `test` if no source files are specified,
+* and from `show` and `search` when no prior doc build exists to refresh
+* from.
+*
+* ```ts no_run
 * import doc from 'fino:commands/doc';
-* await doc.parse(['build', '--format', 'markdown', 'js/internal/stream.ts']);
+*
+* await doc.parse(['build', '--format', 'both', 'js/internal/stream.ts']);
+* await doc.parse(['search', 'Stream']);
+* await doc.parse(['show', 'stream.Stream']);
 * ```
 *
 */

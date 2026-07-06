@@ -2,10 +2,24 @@
 * fino:ai/cache — exact and semantic cache wrappers for chat models.
 *
 * `cachedModel()` wraps a provider-neutral `Model` and serves repeated
-* requests from a local cache before calling the underlying provider. The exact
-* tier keys normalized request shape. The optional semantic tier embeds the
-* user-facing request text and reuses a prior result when cosine similarity is
-* above a configured threshold.
+* requests from a local cache before calling the underlying provider. Two
+* tiers are checked in order:
+*
+* - **Exact** — always on. The key is a stable serialization of the model
+*   identity (`id`, `name`, `provider`) plus the request with object keys
+*   sorted and `signal` excluded, so property order and abort signals do not
+*   affect matching.
+* - **Semantic** — opt-in via `semantic`. The user-facing request text
+*   (system prompt plus role-prefixed message text) is embedded, and a prior
+*   result is reused when its similarity score meets the configured
+*   threshold. Lookup is a brute-force cosine scan over an index kept in the
+*   semantic cache, or a sqlite-vec KNN query when a `path` is configured and
+*   vector support is available.
+*
+* Both `generate()` and `stream()` are cached. A streamed miss forwards
+* provider events unchanged while recording them; a hit replays an
+* equivalent coalesced stream (one text delta, tool-call event groups, then
+* usage and stop) rather than the original chunk boundaries.
 *
 * ## Caveats
 *
@@ -14,7 +28,10 @@
 * because tool context usually needs exact matching.
 *
 * Cache hits report provider spend as zero and put avoided tokens in
-* `localCacheReadInputTokens` and `localCacheReadOutputTokens`.
+* `localCacheReadInputTokens` and `localCacheReadOutputTokens`. Every result
+* is stamped with `providerMetadata.finoCache` so callers can observe hit
+* rates: `{ hit: true, tier, score? }` on hits, `{ hit: false, tier: null }`
+* on misses.
 *
 * ```ts no_run
 * import { memoryCache } from 'fino:cache';
@@ -34,13 +51,41 @@ import type { EmbeddingModel, GenerateRequest, GenerateResult, Model, ModelStrea
 
 /**
 * Semantic cache configuration for `cachedModel()`.
+*
+* The semantic tier only runs when the exact tier misses, and it is skipped
+* entirely — for both lookup and writes — on requests with tool context
+* (declared `tools`, or `tool_use`/`tool_result` message parts).
+*
+* By default the index of embeddings and results lives in `cache` under a
+* reserved key and is scanned with brute-force cosine similarity, which suits
+* small working sets. Setting `path` adds a persistent SQLite store queried
+* via sqlite-vec KNN; when the sqlite-vec extension is unavailable or the
+* embedder reports zero `dimensions`, lookup silently falls back to the
+* in-cache index.
+*
+* ```ts no_run
+* import { memoryCache } from 'fino:cache';
+* import { cachedModel } from 'fino:ai/cache';
+* import { openai } from 'fino:ai/model';
+*
+* const embedder = openai({ model: 'gpt-4o' });
+* const model = cachedModel(openai({ model: 'gpt-4o' }), {
+*   cache: memoryCache(),
+*   semantic: {
+*     cache: memoryCache(),
+*     embedder,
+*     threshold: 0.9,
+*     path: './semantic-cache.db',
+*   },
+* });
+* ```
 */
 export interface SemanticCacheOptions {
-  /** Cache used to store the semantic index. */
+  /** Cache holding the semantic index of embeddings and cached results. */
   cache: Cache;
   /** Embedding model used to compare request text. */
   embedder: EmbeddingModel;
-  /** Minimum cosine score for a semantic hit. Defaults to `0.92`. */
+  /** Minimum similarity score for a semantic hit. Defaults to `0.92`. */
   threshold?: number;
   /** Optional SQLite database path for sqlite-vec backed semantic lookup. */
   path?: string;
@@ -50,15 +95,39 @@ export interface SemanticCacheOptions {
 
 /**
 * Options for `cachedModel()`.
+*
+* Only `cache` is required; it backs the always-on exact tier. Add `semantic`
+* for similarity-based reuse and `bypass` to exempt requests that must always
+* reach the provider (time-sensitive prompts, per-user answers, and so on).
+*
+* ```ts no_run
+* import { memoryCache } from 'fino:cache';
+* import { cachedModel } from 'fino:ai/cache';
+* import { openai } from 'fino:ai/model';
+*
+* const model = cachedModel(openai({ model: 'gpt-4o' }), {
+*   cache: memoryCache(),
+*   ttlMs: 5 * 60_000,
+*   bypass: (req) => req.messages.some(
+*     (m) => typeof m.content === 'string' && m.content.includes('today'),
+*   ),
+* });
+* ```
 */
 export interface CachedModelOptions {
   /** Exact cache backend. */
   cache: Cache;
-  /** TTL applied to stored exact and semantic entries. */
+  /**
+  * TTL applied to stored exact entries and to the in-cache semantic index.
+  * Rows in a `path`-backed semantic SQLite store are not expired.
+  */
   ttlMs?: number;
   /** Optional semantic tier. */
   semantic?: SemanticCacheOptions;
-  /** Return true to bypass all cache lookup and writes for a request. */
+  /**
+  * Return true to bypass all cache lookup and writes for a request. Bypassed
+  * requests always hit the provider and are never stored.
+  */
   bypass?: (req: GenerateRequest) => boolean;
 }
 
@@ -305,6 +374,41 @@ function withCacheMetadata(result: GenerateResult, hit: boolean): GenerateResult
 
 /**
 * Wrap a chat model with exact and optional semantic local caching.
+*
+* The returned model preserves the identity of `base` (`id`, `name`,
+* `provider`, `capabilities`) and caches both `generate()` and `stream()`.
+* Each request first checks the exact tier, then the semantic tier when
+* configured; a hit returns the stored result with usage zeroed and avoided
+* tokens reported as `localCacheReadInputTokens` /
+* `localCacheReadOutputTokens`. On a miss the provider result is stored and
+* returned stamped with `providerMetadata.finoCache = { hit: false, tier:
+* null }`, so the same conversation replayed later — even with request
+* properties in a different order — is served locally.
+*
+* Streamed hits replay a coalesced event stream synthesized from the cached
+* result: a single text delta, start/delta/end groups per tool call, then
+* usage and stop events. Streamed misses forward the provider's events
+* unmodified while recording the final result for future hits.
+*
+* Because the cache key includes the model identity, wrappers around
+* different models can safely share one `Cache` instance.
+*
+* ```ts no_run
+* import { memoryCache } from 'fino:cache';
+* import { cachedModel } from 'fino:ai/cache';
+* import { openai } from 'fino:ai/model';
+*
+* const model = cachedModel(openai({ model: 'gpt-4o' }), {
+*   cache: memoryCache(),
+*   ttlMs: 60_000,
+* });
+*
+* const req = { messages: [{ role: 'user' as const, content: 'What is TAP output?' }] };
+* const first = await model.generate(req);   // calls the provider
+* const second = await model.generate(req);  // served locally
+* console.log(second.providerMetadata?.finoCache); // { hit: true, tier: 'exact' }
+* console.log(second.usage.localCacheReadOutputTokens); // tokens avoided
+* ```
 */
 export function cachedModel(base: Model, opts: CachedModelOptions): Model {
   async function read(req: GenerateRequest): Promise<{ result: GenerateResult; tier: CacheTier; score?: number } | null> {

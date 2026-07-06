@@ -547,8 +547,36 @@ class OpenAIModelProvider implements ModelProvider {
 * Create an OpenAI-compatible model provider.
 *
 * `listModels()` calls `GET /models` on `baseUrl`, which defaults to the
-* public OpenAI `/v1` API base URL. OpenAI-compatible gateways can override
-* `baseUrl` and keep the same discovery shape.
+* public OpenAI `/v1` API base URL. OpenAI-compatible gateways (vLLM, Ollama,
+* LiteLLM, and similar) can override `baseUrl` and keep the same discovery
+* shape. Each returned `ModelInfo` carries the raw listing entry in
+* `metadata` and a `create()` shortcut that builds the model with the
+* provider's credentials and defaults; `createModel(id, opts)` does the same
+* for an id you already know. Options passed to `create()`/`createModel()`
+* override the provider-level defaults per model.
+*
+* Throws immediately if no API key is given and `OPENAI_API_KEY` is unset.
+* `listModels()` throws `ModelListingUnsupportedError` when the endpoint
+* responds 404 (a compatible gateway without a listing route) and `ModelError`
+* for any other non-2xx response.
+*
+* ```ts no_run
+* import { openaiProvider } from 'fino:ai/model/openai';
+*
+* const provider = openaiProvider({
+*   baseUrl: 'http://localhost:8000/v1',
+*   apiKey: 'sk-local',
+* });
+*
+* const models = await provider.listModels();
+* console.log(models.map((m) => m.id));
+*
+* const model = await provider.createModel(models[0].id, { temperature: 0 });
+* const result = await model.generate({
+*   messages: [{ role: 'user', content: 'Summarize the release notes.' }],
+* });
+* console.log(result.text);
+* ```
 */
 export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
   return new OpenAIModelProvider(opts);
@@ -556,8 +584,37 @@ export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
 /**
 * Create an OpenAI-backed `Model`.
 *
-* `apiKey` defaults to `OPENAI_API_KEY`. Override `client` in tests or custom
-* runtimes that provide their own HTTP transport.
+* `model` defaults to `gpt-4o` and `apiKey` defaults to `OPENAI_API_KEY`;
+* construction throws if neither the option nor the environment variable
+* provides a key. Sampling options (`maxTokens`, `temperature`, `topP`,
+* `seed`) become model-level defaults that individual `generate()` and
+* `stream()` requests may override, and `providerOptions.openai` entries are
+* merged verbatim into every request body for provider-specific knobs.
+*
+* `generate()` and `stream()` call `POST /chat/completions`; `embed()` calls
+* `POST /embeddings` with `text-embedding-3-small` and returns one
+* `Float32Array` per input, in input order. Non-2xx responses throw
+* `ModelError` carrying the status and response body. Override `client` in
+* tests or custom runtimes that provide their own HTTP transport.
+*
+* ```ts no_run
+* import { openai } from 'fino:ai/model/openai';
+*
+* const model = openai({ model: 'gpt-4o-mini', temperature: 0.3 });
+*
+* const result = await model.generate({
+*   system: 'You are a terse changelog writer.',
+*   messages: [{ role: 'user', content: 'Describe the 2.1 release.' }],
+* });
+* console.log(result.text, result.usage);
+*
+* const stream = model.stream({
+*   messages: [{ role: 'user', content: 'Draft the announcement post.' }],
+* });
+* for await (const event of stream) {
+*   if (event.type === 'text_delta') console.log(event.text);
+* }
+* ```
 */
 export function openai(opts: ProviderOptions = {}): Model {
   return new OpenAIModel(opts.model ?? 'gpt-4o', resolveApiKey(opts, 'OPENAI_API_KEY'), opts.client != null ? (opts.client as unknown) as ClientLike : (new HttpClient() as unknown) as ClientLike, opts.baseUrl ?? OPENAI_BASE_URL, opts.headers ?? {}, opts.maxTokens ?? DEFAULT_MAX_TOKENS, opts.temperature, opts.topP, opts.seed, opts.providerOptions, opts.dimensions ?? 0, 'text-embedding-3-small');

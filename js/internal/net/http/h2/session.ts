@@ -1,5 +1,5 @@
 /**
-* internal:net/http/h2/session - Nghttp2Session wrapper.
+* internal:net/http/h2/session — Nghttp2Session wrapper.
 *
 * HTTP/2 specification: https://www.rfc-editor.org/rfc/rfc9113
 *
@@ -56,9 +56,13 @@ export { buildNvArray, buildSettingsArray };
 /**
 * Callback set invoked by nghttp2 session events.
 *
-* The wrapper copies C-owned header and DATA bytes before invoking these
-* callbacks. Implementations must not call blocking nghttp2 FFI from a callback
-* because callbacks are bridged from blocking-pool threads to JavaScript.
+* The wrapper copies C-owned header and DATA bytes into JavaScript-owned memory
+* before invoking these callbacks, so the values stay valid after the callback
+* returns. Each callback fires synchronously and re-entrantly on the V8 thread
+* from inside `recv()` or `flush()`, while nghttp2 is mid-parse or mid-serialize.
+* Implementations must therefore not re-enter the same session — do not call
+* `recv`, `flush`, or any `submit*` method from within a callback — because the
+* native nghttp2 session is not re-entrant.
 *
 * ```ts
 * const callbacks = {
@@ -161,9 +165,13 @@ function _decodeFromPtr(ptr: ArrayBuffer, len: number): string {
 /**
 * Stateful wrapper around an `nghttp2_session*`.
 *
-* The wrapper owns callback structs, JavaScript callback objects, data-provider
-* state, and the async mutex that serializes blocking-pool FFI calls. Call
-* `close()` exactly once when the session is no longer needed.
+* The wrapper owns the `nghttp2_session_callbacks` registration, the GC-pinned
+* `FfiCallback` objects, the shared 16-byte data-provider struct, and the
+* per-stream data slots that back the data-provider callback. All of the pump
+* (`recv`, `flush`) and `submit*` operations are synchronous and run on the V8
+* thread against a single native session, so no locking is required. Call
+* `close()` exactly once when the session is no longer needed; it frees the
+* native session and releases every pinned callback.
 *
 * ```ts no_run
 * import { Nghttp2Session } from 'internal:net/http/h2/session';
@@ -265,6 +273,16 @@ export class Nghttp2Session {
   * @internal
   */
   #streamHasData = new Set<number>();
+  /**
+  * Queue of `[streamId, byteLength]` pairs recorded by the DATA-chunk callback.
+  *
+  * Because the session is created with automatic window updates disabled, the
+  * wrapper is responsible for reporting consumed DATA back to nghttp2. The
+  * `on_data_chunk_recv` callback fires re-entrantly inside `recv()`, so instead
+  * of calling `nghttp2_session_consume` from the callback the wrapper records
+  * the byte counts here and drains them after `nghttp2_session_mem_recv2`
+  * returns, letting nghttp2 emit the appropriate WINDOW_UPDATE frames.
+  */
   #pendingConsumedData: Array<[number, number]> = [];
   /**
   * Private property `#closed` used by `Nghttp2Session`.

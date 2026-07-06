@@ -13,6 +13,8 @@
 * 4xx responses other than 429 are not retried.
 *
 * ```typescript no_run
+* import { OTLPHttpJsonExporter } from 'internal:opentelemetry/exporters';
+*
 * const exporter = new OTLPHttpJsonExporter({
 *   endpoint: 'http://127.0.0.1:4318',
 *   retry: { maxAttempts: 2, initialBackoffMillis: 100 },
@@ -546,132 +548,94 @@ function normalizeStatus(status: {
   return 0;
 }
 /**
-* OTLPHttpJsonExporter class exposed by the OpenTelemetry API.
+* OTLP/HTTP JSON exporter for spans, logs, and metrics.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Construct one exporter and reuse it for all three signals. Each `export*`
+* method serializes its records into the matching OTLP JSON envelope
+* (`resourceSpans`, `resourceLogs`, or `resourceMetrics`), groups records that
+* share a resource and instrumentation scope so they emit under a single
+* `scope*` entry rather than repeated envelopes, optionally compresses the body,
+* and POSTs it to the collector.
+*
+* Every method resolves to an `ExportResult`. Any 2xx response yields
+* `{ code: 'success' }` — a partial-success body still counts as success but
+* invokes the `onPartialSuccess` callback first with the rejected counts.
+* `{ code: 'failure' }` is returned after the exporter is shut down, when the
+* request throws, when a non-retryable 4xx (anything but 429) comes back, or
+* when the retry budget is exhausted. Methods never throw for transport errors;
+* failures surface only through the returned code and the `onError` callback.
+* Retries honor a `Retry-After` header (seconds or HTTP-date) when present,
+* otherwise they use exponential backoff seeded from `initialBackoffMillis`.
 *
 * ```typescript no_run
-* const ctor = OTLPHttpJsonExporter;
+* import { OTLPHttpJsonExporter } from 'internal:opentelemetry/exporters';
+*
+* const exporter = new OTLPHttpJsonExporter({
+*   endpoint: 'http://collector:4318',
+*   compression: 'gzip',
+*   retry: { maxAttempts: 3, initialBackoffMillis: 200 },
+*   onPartialSuccess: (r) => console.warn('collector rejected', r.rejectedSpans),
+* });
+*
+* const result = await exporter.exportSpans(finishedSpans);
+* if (result.code === 'failure') {
+*   // buffer the batch and retry on the next flush
+* }
+* await exporter.shutdown();
 * ```
 */
 export class OTLPHttpJsonExporter {
   /**
-  * #baseEndpoint member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#baseEndpoint';
-  * ```
+  * Base collector URL; the `/v1/{signal}` path is appended unless it already
+  * ends in one or a per-signal override applies.
   */
   #baseEndpoint: string;
-  /**
-  * #signalEndpoints member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#signalEndpoints';
-  * ```
-  */
+  /** Per-signal endpoint overrides that, when set, replace the derived URL for that signal. */
   #signalEndpoints: Record<OtlpSignal, string | undefined>;
-  /**
-  * #headers member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#headers';
-  * ```
-  */
+  /** Extra request headers merged onto every export POST (for auth, tenancy, etc.). */
   #headers: Record<string, string>;
-  /**
-  * #timeoutMillis member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#timeoutMillis';
-  * ```
-  */
+  /** Per-attempt timeout in milliseconds; `0` disables the abort timer. */
   #timeoutMillis: number;
-  /**
-  * #compression member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#compression';
-  * ```
-  */
+  /** Requested body compression (`gzip`, `deflate`, `br`, or `null`); `br` degrades to none when brotli is unavailable. */
   #compression: CompressionKind;
-  /**
-  * #retry member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#retry';
-  * ```
-  */
+  /** Normalized retry budget: max attempts (at least 1) and the initial exponential backoff. */
   #retry: Required<RetryOptions>;
-  /**
-  * #onError member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#onError';
-  * ```
-  */
+  /** Optional callback fired on transport errors and non-2xx responses before deciding whether to retry. */
   #onError: ((error: Error) => void) | null;
-  /**
-  * #onPartialSuccess member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#onPartialSuccess';
-  * ```
-  */
+  /** Optional callback fired with the rejected counts when a 2xx body reports a partial success. */
   #onPartialSuccess: ((result: PartialSuccessResult) => void) | null;
-  /**
-  * #onRequest member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#onRequest';
-  * ```
-  */
+  /** Optional callback invoked with the outgoing request details before each attempt (useful for logging or debugging). */
   #onRequest: OtlpExporterOptions['onRequest'] | null;
-  /**
-  * #onResponse member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#onResponse';
-  * ```
-  */
+  /** Optional callback invoked with each response's status, headers, and body text after it is read. */
   #onResponse: OtlpExporterOptions['onResponse'] | null;
-  /**
-  * #isShutdown member on OTLPHttpJsonExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OTLPHttpJsonExporter.#isShutdown';
-  * ```
-  */
+  /** Set once `shutdown()` runs; after this every export short-circuits to failure. */
   #isShutdown: boolean;
   /**
-  * constructor member on OTLPHttpJsonExporter.
+  * Creates an exporter bound to a collector endpoint and export policy.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * `options.endpoint` is the base URL (default `http://127.0.0.1:4318`); the
+  * signal path (`/v1/traces`, `/v1/logs`, `/v1/metrics`) is appended
+  * automatically unless the base already contains `/v1/`, or a per-signal URL is
+  * given in `options.endpoints`. `compression` may be `gzip`, `deflate`, or `br`
+  * (brotli silently falls back to no compression when unavailable). `retry`
+  * bounds the attempts and the initial exponential backoff, and `timeoutMillis`
+  * aborts each attempt through `AbortSignal.timeout`. All options are validated
+  * and normalized eagerly, so a bad configuration fails here rather than at the
+  * first export.
+  *
+  * Throws `TypeError` if `endpoints` or `headers` are not plain objects, a
+  * per-signal endpoint is present but not a non-empty string, `compression` is
+  * not one of the supported values, or the `timeoutMillis` / `retry` numbers are
+  * non-finite.
   *
   * ```typescript no_run
-  * const instance = new OTLPHttpJsonExporter();
+  * import { OTLPHttpJsonExporter } from 'internal:opentelemetry/exporters';
+  *
+  * const exporter = new OTLPHttpJsonExporter({
+  *   endpoints: { traces: 'http://collector:4318/v1/traces' },
+  *   headers: { 'x-api-key': 'secret' },
+  *   timeoutMillis: 5000,
+  * });
   * ```
   */
   constructor(options: OtlpExporterOptions = {}) {
@@ -694,11 +658,9 @@ export class OTLPHttpJsonExporter {
   * Returns `{ code: 'success' }` for successful HTTP responses, including
   * partial-success responses after invoking the configured callback. Returns
   * `{ code: 'failure' }` after shutdown, network failure, non-retryable 4xx, or
-  * exhausted retry attempts.
-  *
-  * ```typescript no_run
-  * const helper = 'OTLPHttpJsonExporter.#post';
-  * ```
+  * exhausted retry attempts. The outgoing `fetch` runs with the tracer, logger,
+  * and meter provider contexts suppressed so the export request never generates
+  * telemetry of its own.
   */
   async #post(path: OtlpSignal, payload: Record<string, unknown>): Promise<ExportResult> {
     const body = JSON.stringify(payload);
@@ -717,48 +679,81 @@ export class OTLPHttpJsonExporter {
     }, path, body, 'application/json');
   }
   /**
-  * exportSpans member on OTLPHttpJsonExporter.
+  * Serializes finished spans into a `resourceSpans` envelope and posts it to the
+  * traces endpoint.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Spans are grouped by resource and instrumentation scope, so a mixed batch
+  * still produces one request. Passing an empty array sends an envelope with no
+  * spans and normally returns success. Resolves to `{ code: 'failure' }` under
+  * the failure conditions described on the class.
   *
   * ```typescript no_run
-  * const member = OTLPHttpJsonExporter.prototype.exportSpans;
+  * import { OTLPHttpJsonExporter } from 'internal:opentelemetry/exporters';
+  *
+  * const exporter = new OTLPHttpJsonExporter();
+  * const result = await exporter.exportSpans(finishedSpans);
   * ```
   */
   async exportSpans(spans: SpanRecord[]): Promise<ExportResult> {
     return this.#post('traces', jsonTraceExport(spans));
   }
   /**
-  * exportLogs member on OTLPHttpJsonExporter.
+  * Serializes log records into a `resourceLogs` envelope and posts it to the
+  * logs endpoint.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Missing timestamps default to the current time and `observedTimeUnixNano`
+  * falls back to `timeUnixNano`; severity defaults to `INFO` (number 9). When a
+  * record omits `flags` but carries `traceFlags`, the low 8 bits of the W3C
+  * trace flags are emitted. Grouping and failure semantics match the other
+  * signals.
   *
   * ```typescript no_run
-  * const member = OTLPHttpJsonExporter.prototype.exportLogs;
+  * import { OTLPHttpJsonExporter } from 'internal:opentelemetry/exporters';
+  *
+  * const exporter = new OTLPHttpJsonExporter();
+  * await exporter.exportLogs([{ body: 'request handled', severityText: 'INFO' }]);
   * ```
   */
   async exportLogs(logs: LogRecord[]): Promise<ExportResult> {
     return this.#post('logs', jsonLogsExport(logs));
   }
   /**
-  * exportMetrics member on OTLPHttpJsonExporter.
+  * Serializes metric records into a `resourceMetrics` envelope and posts it to
+  * the metrics endpoint.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Each record's aggregation kind selects the OTLP data shape — `sum` /
+  * `counter` / `updowncounter` become a `sum`, `histogram` and
+  * `exponentialhistogram` map to their point types, `summary` to a summary, and
+  * anything else to a `gauge`. Integer values are emitted as `asInt` strings and
+  * non-integers as `asDouble`. Grouping and failure semantics match the other
+  * signals.
   *
   * ```typescript no_run
-  * const member = OTLPHttpJsonExporter.prototype.exportMetrics;
+  * import { OTLPHttpJsonExporter } from 'internal:opentelemetry/exporters';
+  *
+  * const exporter = new OTLPHttpJsonExporter();
+  * await exporter.exportMetrics([
+  *   { name: 'requests_total', kind: 'counter', value: 42 },
+  * ]);
   * ```
   */
   async exportMetrics(metrics: MetricRecord[]): Promise<ExportResult> {
     return this.#post('metrics', jsonMetricsExport(metrics));
   }
   /**
-  * shutdown member on OTLPHttpJsonExporter.
+  * Marks the exporter shut down so every later export resolves to failure.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * This is idempotent and does not flush or drain in-flight requests — it only
+  * flips the guard that `export*` checks before serializing. Call it once the
+  * owning provider is tearing down; any export already awaiting a response
+  * completes normally.
   *
   * ```typescript no_run
-  * const member = OTLPHttpJsonExporter.prototype.shutdown;
+  * import { OTLPHttpJsonExporter } from 'internal:opentelemetry/exporters';
+  *
+  * const exporter = new OTLPHttpJsonExporter();
+  * await exporter.shutdown();
+  * const result = await exporter.exportSpans(spans); // { code: 'failure' }
   * ```
   */
   async shutdown(): Promise<void> {

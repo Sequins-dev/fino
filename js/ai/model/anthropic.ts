@@ -550,19 +550,83 @@ class AnthropicModelProvider implements ModelProvider {
   }
 }
 /**
-* Create an Anthropic model provider.
+* Create a discovery-capable Anthropic model provider.
 *
-* `listModels()` calls `GET /v1/models` on `baseUrl`, which defaults to the
-* public Anthropic API origin.
+* Options passed here become the defaults for every model the provider
+* constructs: `apiKey` (defaults to the `ANTHROPIC_API_KEY` environment
+* variable), `baseUrl`, extra `headers`, `maxTokens`, `temperature`, `topP`,
+* and provider-specific `providerOptions`. `createModel()` accepts per-model
+* overrides that are layered on top of those defaults.
+*
+* `listModels()` calls `GET /v1/models` on `baseUrl` — the public Anthropic
+* API origin by default — and returns one `ModelInfo` per discovered id,
+* carrying the raw listing entry in `metadata` and a `create()` closure that
+* delegates to `createModel()`. If the endpoint responds 404, common for
+* Anthropic-compatible proxies that only implement `/v1/messages`, listing
+* throws `ModelListingUnsupportedError`; any other non-2xx response throws
+* `ModelError` with the HTTP status and body.
+*
+* Throws if no API key is passed and `ANTHROPIC_API_KEY` is unset.
+*
+* ```ts no_run
+* import { anthropicProvider } from 'fino:ai/model/anthropic';
+*
+* const provider = anthropicProvider({ maxTokens: 2048 });
+*
+* const models = await provider.listModels();
+* const opus = models.find((info) => info.id.startsWith('claude-opus'));
+* const model = await opus!.create({ temperature: 0.2 });
+*
+* const result = await model.generate({
+*   messages: [{ role: 'user', content: 'Summarize the release notes.' }],
+* });
+* console.log(result.text, result.usage.outputTokens);
+* ```
 */
 export function anthropicProvider(opts: ProviderOptions = {}): ModelProvider {
   return new AnthropicModelProvider(opts);
 }
 /**
-* Create an Anthropic-backed `Model`.
+* Create an Anthropic-backed `Model` in one call.
 *
-* `apiKey` defaults to `ANTHROPIC_API_KEY`. Override `client` in tests or
-* custom runtimes that provide their own HTTP transport.
+* `model` selects the Anthropic model id and defaults to `claude-opus-4-8`.
+* `apiKey` defaults to the `ANTHROPIC_API_KEY` environment variable; the call
+* throws immediately when neither is available. Anthropic requires
+* `max_tokens` on every request, so the adapter fills in `maxTokens` (default
+* 4096) whenever a request does not set its own. `temperature`, `topP`, extra
+* `headers`, and `baseUrl` set per-model defaults, and fields under
+* `providerOptions.anthropic` are merged verbatim into the request body — the
+* escape hatch for Anthropic parameters the neutral request shape does not
+* model.
+*
+* The returned model supports `generate()` for buffered responses and
+* `stream()` for incremental `StreamEvent` values — text deltas, tool-call
+* assembly, and usage including cache read/creation token counts. Tool
+* calling works with every `toolChoice` mode, and `responseFormat` with
+* `type: 'json_schema'` maps to Anthropic's native structured-output support.
+* Non-2xx responses from either path reject with `ModelError` carrying the
+* HTTP status and body. `embed()` always rejects: Anthropic exposes no
+* embeddings endpoint through this adapter.
+*
+* Override `client` in tests or custom runtimes that provide their own HTTP
+* transport.
+*
+* ```ts no_run
+* import { anthropic } from 'fino:ai/model/anthropic';
+*
+* const model = anthropic({ model: 'claude-opus-4-8', maxTokens: 8192 });
+*
+* const stream = model.stream({
+*   system: 'You are a terse release-note writer.',
+*   messages: [{ role: 'user', content: 'Draft notes for the 1.4 release.' }],
+* });
+* let text = '';
+* for await (const event of stream) {
+*   if (event.type === 'text_delta') text += event.text;
+* }
+* const result = await stream.result();
+* console.log(text, result.stopReason, result.usage.outputTokens);
+* ```
 */
 export function anthropic(opts: ProviderOptions = {}): Model {
   return new AnthropicModel(opts.model ?? 'claude-opus-4-8', resolveApiKey(opts, 'ANTHROPIC_API_KEY'), opts.client != null ? (opts.client as unknown) as ClientLike : (new HttpClient() as unknown) as ClientLike, opts.baseUrl ?? ANTHROPIC_BASE_URL, opts.headers ?? {}, opts.maxTokens ?? DEFAULT_MAX_TOKENS, opts.temperature, opts.topP, opts.providerOptions);

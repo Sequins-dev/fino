@@ -1,16 +1,29 @@
 /**
 * fino:commands/root — reusable root Fino command task.
 *
-* Composes the top-level `fino` command and all built-in subcommands. The root
-* command also preserves the legacy behavior where `fino <script>` runs a
-* script directly and bare `fino` starts the REPL.
+* Composes the top-level `fino` command from the built-in subcommand tasks —
+* `run`, `test`, `bench`, `install`, `init`, `doc`, `fmt`, `lint`, `task`,
+* and `repl` — and layers the shorthand behavior on top: `fino <script>`
+* executes the script directly (delegating to `fino:commands/run`), and bare
+* `fino` with no arguments starts the interactive REPL.
 *
-* ```js
-* import rootCommand from 'fino:commands/root';
-* const root = rootCommand;
-* console.log(root.name);
+* Option parsing stops after the first positional, so flags that follow the
+* script path (`fino app.ts --port 8080`) are forwarded to the script as its
+* own arguments instead of being consumed by the CLI.
+*
+* The runtime entry module (`internal:main`) drives the whole CLI by parsing
+* `argv` through this task; embedders and tests can invoke the same surface
+* programmatically with `parse()` or `run()`.
+*
+* ```ts no_run
+* import root from 'fino:commands/root';
+*
+* // Equivalent to `fino test tests/ffi.test.ts` on the command line.
+* await root.parse(['test', 'tests/ffi.test.ts']);
+*
+* // Shorthand: run a script directly; trailing flags go to the script.
+* await root.parse(['app.ts', '--port', '8080']);
 * ```
-*
 */
 import { Task } from '../task.ts';
 import testCommand from './test.ts';
@@ -24,18 +37,27 @@ import replCommand from './repl.ts';
 import runCommand from './run.ts';
 import taskCommand from './task.ts';
 /**
-* Create the root CLI command.
+* The root `fino` CLI command.
 *
-* The returned command includes shared root options such as `--watch` and
-* `--otlp-endpoint`, direct script execution, and the registered `run`, `test`,
-* `bench`, `install`, `init`, `doc`, and `repl` subcommands. If parsing reaches
-* the root without a script argument, the command starts the interactive REPL.
+* A `Task` named `fino` whose children are the built-in subcommands. The root
+* itself declares two options that apply to direct script execution:
+* `--watch` re-runs the script whenever any imported file changes, and
+* `--otlp-endpoint` enables OpenTelemetry export to the given OTLP/HTTP
+* collector endpoint.
 *
-* ```js
+* When parsing does not match a subcommand, the root's own run function takes
+* over: with a `script` positional it delegates to the `run` command, and with
+* no arguments at all it hands the same execution context (signal, writer,
+* env, cwd, prompt, provided options) to the `repl` command and starts the
+* interactive REPL.
+*
+* ```ts no_run
 * import root from 'fino:commands/root';
-* await root.parse(['run', 'example.ts']);
-* ```
 *
+* await root.parse(['run', 'example.ts']); // explicit subcommand
+* await root.parse(['example.ts']);        // shorthand, same effect
+* await root.parse([]);                    // starts the REPL
+* ```
 */
 const command = new Task({
     name: 'fino',

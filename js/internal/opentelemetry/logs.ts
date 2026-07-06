@@ -1,20 +1,38 @@
 /**
-* Log providers, loggers, severity helpers, builders, and log limits.
+* internal:opentelemetry/logs — logger providers, loggers, severities, builders, and log limits.
 *
-* This internal module creates scoped loggers and publishes `LogRecord`
-* payloads on severity-specific and shared log topics. It captures the active
-* trace context when a log is emitted, applies default severity values, and
-* provides a builder for structured log records.
+* This module backs the public `fino:opentelemetry/logs` surface. It creates
+* scoped loggers that turn each emitted log into a `LogRecord` and publish it on
+* two sets of topics: severity-specific scoped topics (for consumers that filter
+* by scope and phase) and the shared `otel:log:record` topic (for the SDK, which
+* collects every record regardless of scope). Emission captures the active trace
+* context — trace id, span id, trace flags, and baggage — so logs written inside
+* a span are correlated with it automatically.
 *
-* The default severity is `INFO` with severity number `9`. `emitRecord()` fills
-* missing timestamps, scope, resource, and trace context but preserves explicit
-* fields from the builder or partial record. Attribute limiting is separate so
-* processors can apply SDK-specific limits without changing logger behavior.
+* Records are filled with sensible defaults at emit time: the severity defaults
+* to `INFO` with severity number `9`, the timestamp defaults to the current wall
+* clock in Unix nanoseconds, the scope is the logger's own scope, and the
+* resource comes from the owning provider. Explicit fields you set through the
+* builder or a partial record are always preserved over these defaults. Attribute
+* count and value-length limiting is deliberately kept out of the logger and
+* exposed separately as `applyLogLimits`, so SDK processors can enforce their own
+* limits without changing what loggers emit.
+*
+* The active provider is resolved through an async-context slot, so tests and
+* request scopes can override it with `runWithLoggerProvider` without mutating
+* global state, while `setLoggerProvider` replaces the process-wide default.
 *
 * ```typescript no_run
-* const logger = getLoggerProvider().getLogger('orders');
+* import { LogRecordBuilder, SeverityNumber, getLoggerProvider } from 'internal:opentelemetry/logs';
+*
+* const logger = getLoggerProvider().getLogger('orders', '1.4.0');
 * logger.info('created order', { orderId: 'ord_123' });
-* logger.emitRecord(new LogRecordBuilder().setSeverity('WARN').setTextBody('slow path'));
+* logger.emitRecord(
+*   new LogRecordBuilder()
+*     .setSeverity('WARN', SeverityNumber.WARN)
+*     .setTextBody('slow order path')
+*     .setAttribute('latency.ms', 812),
+* );
 * ```
 *
 * See OpenTelemetry logs:
@@ -28,273 +46,111 @@ import { BaseProvider, OTEL_SCHEMA_VERSION, limitAttributeEntries, normalizeScop
 import type { Attributes, LogRecord, ScopeInfo, TraceContext } from './common.ts';
 import { getActiveSpanContext } from './traces.ts';
 /**
-* SeverityNumber enum exposed by the OpenTelemetry API.
+* Numeric severity levels from the OpenTelemetry log data model.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Each of the six named ranges (TRACE, DEBUG, INFO, WARN, ERROR, FATAL) spans
+* four numeric values, from the base level to three increasingly urgent
+* sub-levels, giving the `1`–`24` contiguous range the spec defines. Higher
+* numbers are more severe. These values populate the `severityNumber` field of a
+* `LogRecord` and pair with the free-form `severityText`; the number is what
+* backends sort and threshold on, so prefer passing a member of this enum over a
+* raw integer.
 *
 * ```typescript no_run
-* const value = SeverityNumber;
+* import { LogRecordBuilder, SeverityNumber } from 'internal:opentelemetry/logs';
+*
+* const record = new LogRecordBuilder()
+*   .setSeverity('ERROR', SeverityNumber.ERROR)
+*   .setTextBody('payment declined')
+*   .build();
 * ```
 */
 export enum SeverityNumber {
-  /**
-  * TRACE numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.TRACE;
-  * ```
-  */
+  /** Lowest severity — the base TRACE level (1). */
   TRACE = 1,
-  /**
-  * TRACE2 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.TRACE2;
-  * ```
-  */
+  /** Second TRACE sub-level (2). */
   TRACE2 = 2,
-  /**
-  * TRACE3 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.TRACE3;
-  * ```
-  */
+  /** Third TRACE sub-level (3). */
   TRACE3 = 3,
-  /**
-  * TRACE4 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.TRACE4;
-  * ```
-  */
+  /** Fourth TRACE sub-level (4). */
   TRACE4 = 4,
-  /**
-  * DEBUG numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.DEBUG;
-  * ```
-  */
+  /** Base DEBUG level (5). */
   DEBUG = 5,
-  /**
-  * DEBUG2 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.DEBUG2;
-  * ```
-  */
+  /** Second DEBUG sub-level (6). */
   DEBUG2 = 6,
-  /**
-  * DEBUG3 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.DEBUG3;
-  * ```
-  */
+  /** Third DEBUG sub-level (7). */
   DEBUG3 = 7,
-  /**
-  * DEBUG4 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.DEBUG4;
-  * ```
-  */
+  /** Fourth DEBUG sub-level (8). */
   DEBUG4 = 8,
-  /**
-  * INFO numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.INFO;
-  * ```
-  */
+  /** Base INFO level (9) — the default severity for emitted records. */
   INFO = 9,
-  /**
-  * INFO2 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.INFO2;
-  * ```
-  */
+  /** Second INFO sub-level (10). */
   INFO2 = 10,
-  /**
-  * INFO3 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.INFO3;
-  * ```
-  */
+  /** Third INFO sub-level (11). */
   INFO3 = 11,
-  /**
-  * INFO4 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.INFO4;
-  * ```
-  */
+  /** Fourth INFO sub-level (12). */
   INFO4 = 12,
-  /**
-  * WARN numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.WARN;
-  * ```
-  */
+  /** Base WARN level (13). */
   WARN = 13,
-  /**
-  * WARN2 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.WARN2;
-  * ```
-  */
+  /** Second WARN sub-level (14). */
   WARN2 = 14,
-  /**
-  * WARN3 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.WARN3;
-  * ```
-  */
+  /** Third WARN sub-level (15). */
   WARN3 = 15,
-  /**
-  * WARN4 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.WARN4;
-  * ```
-  */
+  /** Fourth WARN sub-level (16). */
   WARN4 = 16,
-  /**
-  * ERROR numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.ERROR;
-  * ```
-  */
+  /** Base ERROR level (17). */
   ERROR = 17,
-  /**
-  * ERROR2 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.ERROR2;
-  * ```
-  */
+  /** Second ERROR sub-level (18). */
   ERROR2 = 18,
-  /**
-  * ERROR3 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.ERROR3;
-  * ```
-  */
+  /** Third ERROR sub-level (19). */
   ERROR3 = 19,
-  /**
-  * ERROR4 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.ERROR4;
-  * ```
-  */
+  /** Fourth ERROR sub-level (20). */
   ERROR4 = 20,
-  /**
-  * FATAL numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.FATAL;
-  * ```
-  */
+  /** Base FATAL level (21). */
   FATAL = 21,
-  /**
-  * FATAL2 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.FATAL2;
-  * ```
-  */
+  /** Second FATAL sub-level (22). */
   FATAL2 = 22,
-  /**
-  * FATAL3 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.FATAL3;
-  * ```
-  */
+  /** Third FATAL sub-level (23). */
   FATAL3 = 23,
-  /**
-  * FATAL4 numeric severity value in SeverityNumber.
-  *
-  * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself.
-  *
-  * ```typescript no_run
-  * const severity = SeverityNumber.FATAL4;
-  * ```
-  */
+  /** Highest severity — the fourth FATAL sub-level (24). */
   FATAL4 = 24
 }
 /**
-* LoggerProvider class exposed by the OpenTelemetry API.
+* Factory for `Logger` instances, carrying the resource that stamps every record they emit.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Extends `BaseProvider`, so a provider is constructed with a `resource` (or
+* plain attributes) that identifies the emitting service; every logger it hands
+* out attaches that resource to its records. A single provider is typically
+* shared across a whole application and installed as the active provider via
+* `setLoggerProvider` or `runWithLoggerProvider`.
 *
 * ```typescript no_run
-* const ctor = LoggerProvider;
+* import { LoggerProvider } from 'internal:opentelemetry/logs';
+* import { Resource } from 'internal:opentelemetry/common';
+*
+* const provider = new LoggerProvider({ resource: new Resource({ 'service.name': 'api' }) });
+* const logger = provider.getLogger('api/http');
+* logger.info('server started');
 * ```
 */
 export class LoggerProvider extends BaseProvider {
   /**
-  * getLogger member on LoggerProvider.
+  * Returns a `Logger` bound to a named instrumentation scope.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The `name` is required and identifies the library or subsystem producing the
+  * logs; it drives the scoped topic names records are published on. The optional
+  * `version` and `options` (schema URL, scope attributes, dropped-attribute
+  * count) further qualify the scope. The scope is normalized before use, which
+  * trims the name and throws a `TypeError` if it is empty or whitespace-only.
   *
   * ```typescript no_run
-  * const member = LoggerProvider.prototype.getLogger;
+  * import { LoggerProvider } from 'internal:opentelemetry/logs';
+  *
+  * const provider = new LoggerProvider();
+  * const logger = provider.getLogger('billing', '2.0.0', {
+  *   schemaUrl: 'https://opentelemetry.io/schemas/1.31.0',
+  *   attributes: { team: 'payments' },
+  * });
   * ```
   */
   getLogger(name: string, version?: string, options?: {
@@ -306,63 +162,48 @@ export class LoggerProvider extends BaseProvider {
   }
 }
 /**
-* Logger class exposed by the OpenTelemetry API.
+* Emitter of log records for one instrumentation scope.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* A logger holds its owning provider and normalized scope, and offers two ways
+* to produce records: the convenience methods (`debug`/`info`/`warn`/`error` and
+* the general `emit`), which take a body plus attributes; and `emitRecord`, which
+* accepts a fully or partially built `LogRecord` for cases that need event
+* names, categories, or an explicit timestamp. Both paths fill missing defaults,
+* stamp the logger's scope and the provider's resource, and capture the active
+* trace context so logs written inside a span are correlated with it.
+*
+* Every record is published on the scope's severity-phase topics and on the
+* shared `otel:log:record` topic. Construct loggers through
+* `LoggerProvider.getLogger` rather than directly.
 *
 * ```typescript no_run
-* const ctor = Logger;
+* import { getLoggerProvider } from 'internal:opentelemetry/logs';
+*
+* const logger = getLoggerProvider().getLogger('worker');
+* logger.debug('job dequeued', { jobId: 'j-9' });
+* logger.error('job failed', { jobId: 'j-9', attempt: 3 });
 * ```
 */
 export class Logger {
-  /**
-  * #provider member on Logger.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Logger.#provider';
-  * ```
-  */
+  /** The provider that created this logger; supplies the resource stamped on records. */
   #provider: LoggerProvider;
-  /**
-  * #scope member on Logger.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Logger.#scope';
-  * ```
-  */
+  /** Normalized instrumentation scope this logger emits under. */
   #scope: ScopeInfo;
   // Pre-cached topic sets keyed by severity suffix, plus the shared record topic.
-  /**
-  * #topicsByPhase member on Logger.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Logger.#topicsByPhase';
-  * ```
-  */
+  /** Lazily built cache of scoped topic arrays, keyed by lowercased emit phase. */
   #topicsByPhase: Map<string, Array<Topic<LogRecord>>>;
-  /**
-  * #recordTopic member on Logger.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'Logger.#recordTopic';
-  * ```
-  */
+  /** The shared `otel:log:record` topic every record is also published to. */
   #recordTopic: Topic<LogRecord>;
   /**
-  * constructor member on Logger.
+  * Binds a logger to its provider and scope and prepares the shared record topic.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Called by `LoggerProvider.getLogger`; application code does not invoke this
+  * directly.
   *
   * ```typescript no_run
-  * const instance = new Logger();
+  * import { LoggerProvider } from 'internal:opentelemetry/logs';
+  *
+  * const logger = new LoggerProvider().getLogger('scope.name');
   * ```
   */
   constructor(provider: LoggerProvider, scope: ScopeInfo) {
@@ -377,10 +218,6 @@ export class Logger {
   * The first call creates the topic set for the logger scope; later calls reuse
   * it. Unknown phases are accepted and encoded into topic names, so callers
   * should pass normalized severity text.
-  *
-  * ```typescript no_run
-  * const helper = 'Logger.#getTopics';
-  * ```
   */
   #getTopics(phase: string): Array<Topic<LogRecord>> {
     let topics = this.#topicsByPhase.get(phase);
@@ -395,22 +232,22 @@ export class Logger {
   *
   * The record is forwarded as provided. Processor-side limits and resource
   * enrichment happen later in `OtelSDK`, not in this helper.
-  *
-  * ```typescript no_run
-  * const helper = 'Logger.#publishRecord';
-  * ```
   */
   #publishRecord(record: LogRecord, phase: string): void {
     for (const t of this.#getTopics(phase)) t.publish(record);
     this.#recordTopic.publish(record);
   }
   /**
-  * scope member on Logger.
+  * A defensive copy of this logger's instrumentation scope.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The returned object is safe to mutate; its `attributes` are also copied, so
+  * changes to it never affect records this logger emits.
   *
   * ```typescript no_run
-  * const getter = Logger.prototype.scope;
+  * import { getLoggerProvider } from 'internal:opentelemetry/logs';
+  *
+  * const logger = getLoggerProvider().getLogger('cache', '1.0.0');
+  * const { name, version } = logger.scope;
   * ```
   */
   get scope(): ScopeInfo {
@@ -420,12 +257,25 @@ export class Logger {
     };
   }
   /**
-  * emit member on Logger.
+  * Emits a log record from a body and options, filling defaults and trace context.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The `body` may be any value — a string message or a structured object. When
+  * omitted, `severityText` defaults to `'INFO'` and `severityNumber` to
+  * `SeverityNumber.INFO`. The timestamp is set to now, the logger's scope and the
+  * provider's resource are attached, and any active trace context (trace id, span
+  * id, trace flags, baggage) is captured. The record is published on the phase
+  * topic derived from the lowercased `severityText` (or `'emit'` when none is
+  * given) and on the shared record topic.
   *
   * ```typescript no_run
-  * const member = Logger.prototype.emit;
+  * import { getLoggerProvider, SeverityNumber } from 'internal:opentelemetry/logs';
+  *
+  * const logger = getLoggerProvider().getLogger('auth');
+  * logger.emit('token refreshed', {
+  *   severityText: 'INFO',
+  *   severityNumber: SeverityNumber.INFO,
+  *   attributes: { 'user.id': 'u_7' },
+  * });
   * ```
   */
   emit(body: unknown, options: {
@@ -451,12 +301,28 @@ export class Logger {
     this.#publishRecord(record, String(options.severityText || 'emit').toLowerCase());
   }
   /**
-  * emitRecord member on Logger.
+  * Emits a pre-built or partial log record, preserving its explicit fields.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Accepts either a `LogRecordBuilder` (which is built first) or a partial
+  * `LogRecord`. Explicit fields on the record win; only missing ones are filled:
+  * schema version, severity text/number (default `'INFO'` / `SeverityNumber.INFO`),
+  * timestamp, resource. The logger's scope always replaces any scope on the input.
+  * Trace correlation fields (trace id, span id, trace flags, baggage) fall back to
+  * the active trace context when not already set on the record. Optional fields
+  * (`body`, `observedTimeUnixNano`, `eventName`, `categoryName`, `flags`,
+  * `droppedAttributesCount`) are carried through only when present. The publish
+  * phase is the lowercased final `severityText`.
   *
   * ```typescript no_run
-  * const member = Logger.prototype.emitRecord;
+  * import { getLoggerProvider, LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const logger = getLoggerProvider().getLogger('checkout');
+  * logger.emitRecord(
+  *   new LogRecordBuilder()
+  *     .setEventName('order.placed')
+  *     .setJsonBody({ orderId: 'ord_9', total: 42.5 })
+  *     .setSeverity('INFO'),
+  * );
   * ```
   */
   emitRecord(builder: LogRecordBuilder | Partial<LogRecord>): void {
@@ -488,12 +354,14 @@ export class Logger {
     this.#publishRecord(finalRecord, String(finalRecord.severityText || 'emit').toLowerCase());
   }
   /**
-  * debug member on Logger.
+  * Emits a record at DEBUG severity (severity number 5).
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Shorthand for `emit` with `severityText: 'DEBUG'`.
   *
   * ```typescript no_run
-  * const member = Logger.prototype.debug;
+  * import { getLoggerProvider } from 'internal:opentelemetry/logs';
+  *
+  * getLoggerProvider().getLogger('db').debug('query executed', { rows: 12 });
   * ```
   */
   debug(body: unknown, attributes: Attributes = {}): void {
@@ -504,12 +372,14 @@ export class Logger {
     });
   }
   /**
-  * info member on Logger.
+  * Emits a record at INFO severity (severity number 9).
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Shorthand for `emit` with `severityText: 'INFO'`.
   *
   * ```typescript no_run
-  * const member = Logger.prototype.info;
+  * import { getLoggerProvider } from 'internal:opentelemetry/logs';
+  *
+  * getLoggerProvider().getLogger('http').info('request handled', { status: 200 });
   * ```
   */
   info(body: unknown, attributes: Attributes = {}): void {
@@ -520,12 +390,14 @@ export class Logger {
     });
   }
   /**
-  * warn member on Logger.
+  * Emits a record at WARN severity (severity number 13).
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Shorthand for `emit` with `severityText: 'WARN'`.
   *
   * ```typescript no_run
-  * const member = Logger.prototype.warn;
+  * import { getLoggerProvider } from 'internal:opentelemetry/logs';
+  *
+  * getLoggerProvider().getLogger('pool').warn('connection retry', { attempt: 2 });
   * ```
   */
   warn(body: unknown, attributes: Attributes = {}): void {
@@ -536,12 +408,14 @@ export class Logger {
     });
   }
   /**
-  * error member on Logger.
+  * Emits a record at ERROR severity (severity number 17).
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Shorthand for `emit` with `severityText: 'ERROR'`.
   *
   * ```typescript no_run
-  * const member = Logger.prototype.error;
+  * import { getLoggerProvider } from 'internal:opentelemetry/logs';
+  *
+  * getLoggerProvider().getLogger('api').error('unhandled exception', { code: 'E_IO' });
   * ```
   */
   error(body: unknown, attributes: Attributes = {}): void {
@@ -553,46 +427,57 @@ export class Logger {
   }
 }
 /**
-* LogRecordBuilder class exposed by the OpenTelemetry API.
+* Fluent builder that assembles a `LogRecord` field by field before emission.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Every setter mutates the in-progress record and returns `this`, so calls chain.
+* The builder starts with an empty attribute map and no other fields; nothing is
+* filled with defaults here — defaults are applied later when a `Logger` emits
+* the built record. Use this when a log needs more than a body and attributes,
+* such as an event name, a category, an explicit dropped-attribute count, or a
+* trace context detached from the ambient one. Call `build` to snapshot the
+* record, or hand the builder straight to `Logger.emitRecord`.
 *
 * ```typescript no_run
-* const ctor = LogRecordBuilder;
+* import { LogRecordBuilder, SeverityNumber, getLoggerProvider } from 'internal:opentelemetry/logs';
+*
+* const record = new LogRecordBuilder()
+*   .setTextBody('cache miss')
+*   .setSeverity('WARN', SeverityNumber.WARN)
+*   .setAttributes({ key: 'user:7', region: 'us-east' })
+*   .setEventName('cache.miss')
+*   .build();
+*
+* getLoggerProvider().getLogger('cache').emitRecord(record);
 * ```
 */
 export class LogRecordBuilder {
-  /**
-  * #record member on LogRecordBuilder.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'LogRecordBuilder.#record';
-  * ```
-  */
+  /** In-progress record accumulated by the setters; always carries an attribute map. */
   #record: Partial<LogRecord> & {
     attributes: Attributes;
   };
   /**
-  * constructor member on LogRecordBuilder.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Creates an empty builder with an empty attribute map and no other fields set.
   *
   * ```typescript no_run
-  * const instance = new LogRecordBuilder();
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const builder = new LogRecordBuilder();
   * ```
   */
   constructor() {
     this.#record = { attributes: {} };
   }
   /**
-  * setBody member on LogRecordBuilder.
+  * Sets the record body to any value, unchanged.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Use this when the body may be a string, number, boolean, or structured
+  * object and you do not want coercion; `setTextBody` and `setJsonBody` are
+  * intent-revealing variants.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setBody;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setBody({ event: 'ping', ok: true });
   * ```
   */
   setBody(body: unknown): this {
@@ -600,12 +485,15 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setTextBody member on LogRecordBuilder.
+  * Sets the record body to the string form of the given value.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The value is passed through `String()`, so non-string inputs are stringified.
+  * Use this for human-readable log messages.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setTextBody;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setTextBody('user signed in');
   * ```
   */
   setTextBody(body: string): this {
@@ -613,12 +501,15 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setJsonBody member on LogRecordBuilder.
+  * Sets the record body to a structured value, unchanged.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Behaves like `setBody` but signals intent that the body is structured JSON
+  * data rather than a text message.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setJsonBody;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setJsonBody({ orderId: 'ord_1', items: 3 });
   * ```
   */
   setJsonBody(body: unknown): this {
@@ -626,12 +517,16 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setSeverity member on LogRecordBuilder.
+  * Sets the severity text and, optionally, the severity number.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * When `severityNumber` is omitted the number field is cleared, letting the
+  * emitting logger apply its default (`SeverityNumber.INFO`). Passing an explicit
+  * number pins it. The text is stored as given, so callers control casing.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setSeverity;
+  * import { LogRecordBuilder, SeverityNumber } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setSeverity('ERROR', SeverityNumber.ERROR);
   * ```
   */
   setSeverity(severityText: string, severityNumber?: number): this {
@@ -644,12 +539,12 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setAttribute member on LogRecordBuilder.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Sets a single attribute by key, replacing any previous value for that key.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setAttribute;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setAttribute('http.status_code', 503);
   * ```
   */
   setAttribute(key: string, value: unknown): this {
@@ -657,12 +552,15 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setAttributes member on LogRecordBuilder.
+  * Merges a map of attributes into the record, overwriting duplicate keys.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * A nullish argument is treated as an empty map. Existing attributes not present
+  * in the argument are kept.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setAttributes;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setAttributes({ region: 'eu', shard: 4 });
   * ```
   */
   setAttributes(attributes: Attributes): this {
@@ -670,12 +568,15 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setEventName member on LogRecordBuilder.
+  * Sets the event name that identifies this record as a named event.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The value is coerced to a string. Event names typically follow a dotted
+  * namespace such as `user.login`.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setEventName;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setEventName('user.login');
   * ```
   */
   setEventName(name: string): this {
@@ -683,12 +584,14 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setCategory member on LogRecordBuilder.
+  * Sets the category name used to group related records.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The value is coerced to a string.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setCategory;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setCategory('auth');
   * ```
   */
   setCategory(name: string): this {
@@ -696,12 +599,16 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setDroppedAttributesCount member on LogRecordBuilder.
+  * Records how many attributes were dropped before this record was built.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The count is coerced with `Number()` and any non-numeric or NaN value becomes
+  * `0`. Set this when you have already trimmed attributes upstream and want the
+  * loss reflected in the exported record.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setDroppedAttributesCount;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setDroppedAttributesCount(3);
   * ```
   */
   setDroppedAttributesCount(count: number): this {
@@ -709,12 +616,21 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * setContext member on LogRecordBuilder.
+  * Attaches an explicit trace context, or clears it when given nullish/empty context.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Each of trace id, span id, trace flags, and baggage is set when present on the
+  * given context and deleted otherwise, so passing `null` or an empty object
+  * removes any previously set correlation fields. Use this to correlate a record
+  * with a specific span rather than the ambient one the logger would capture.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.setContext;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const b = new LogRecordBuilder().setContext({
+  *   traceId: '5b8aa5a2d2c872e8321cf37308d69df2',
+  *   spanId: '051581bf3cb55c13',
+  *   traceFlags: 1,
+  * });
   * ```
   */
   setContext(context: TraceContext | null | undefined): this {
@@ -729,12 +645,17 @@ export class LogRecordBuilder {
     return this;
   }
   /**
-  * build member on LogRecordBuilder.
+  * Snapshots the accumulated record into a plain `LogRecord`.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * The returned record is a shallow copy with its own copied attribute map, so
+  * further mutation of the builder does not affect it. Only fields that were
+  * explicitly set are present; defaults are applied later at emission. The
+  * builder can be reused after `build`.
   *
   * ```typescript no_run
-  * const member = LogRecordBuilder.prototype.build;
+  * import { LogRecordBuilder } from 'internal:opentelemetry/logs';
+  *
+  * const record = new LogRecordBuilder().setTextBody('done').build();
   * ```
   */
   build(): LogRecord {
@@ -745,12 +666,27 @@ export class LogRecordBuilder {
   }
 }
 /**
-* applyLogLimits function exposed by the OpenTelemetry API.
+* Returns a log record with attribute count and value-length limits applied.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* When neither limit is finite the original record is returned unchanged, so
+* this is cheap to call unconditionally. Otherwise attributes beyond
+* `attributeCountLimit` are dropped and string values longer than
+* `attributeValueLengthLimit` are truncated; any newly dropped attributes are
+* added to the record's `droppedAttributesCount`. Kept separate from logger
+* emission so SDK processors can enforce limits at export time without changing
+* what loggers produce.
 *
 * ```typescript no_run
-* const fn = applyLogLimits;
+* import { applyLogLimits, LogRecordBuilder } from 'internal:opentelemetry/logs';
+*
+* const record = new LogRecordBuilder()
+*   .setAttributes({ a: 1, b: 2, c: 'a very long string value' })
+*   .build();
+*
+* const limited = applyLogLimits(record, {
+*   attributeCountLimit: 2,
+*   attributeValueLengthLimit: 8,
+* });
 * ```
 */
 export function applyLogLimits(log: LogRecord, limits: {
@@ -769,48 +705,73 @@ export function applyLogLimits(log: LogRecord, limits: {
 const loggerProviderContext = new Context<LoggerProvider | null>('otel:logger-provider');
 let defaultLoggerProvider = new LoggerProvider();
 /**
-* getLoggerProvider function exposed by the OpenTelemetry API.
+* Returns the active `LoggerProvider` for the current async context.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Resolves to the provider installed by an enclosing `runWithLoggerProvider`
+* call if one is on the async-context stack; otherwise the process-wide default
+* (set by `setLoggerProvider`, or the built-in provider at startup). This is the
+* entry point most code uses to obtain a logger.
 *
 * ```typescript no_run
-* const fn = getLoggerProvider;
+* import { getLoggerProvider } from 'internal:opentelemetry/logs';
+*
+* const logger = getLoggerProvider().getLogger('app');
 * ```
 */
 export function getLoggerProvider(): LoggerProvider {
   return loggerProviderContext.get() || defaultLoggerProvider;
 }
 /**
-* setLoggerProvider function exposed by the OpenTelemetry API.
+* Replaces the process-wide default `LoggerProvider`.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Affects every subsequent `getLoggerProvider` call that is not inside a
+* `runWithLoggerProvider` scope. Typically called once at startup by the SDK
+* after building a provider with the desired resource. To override a provider
+* only for a bounded region, prefer `runWithLoggerProvider`.
 *
 * ```typescript no_run
-* const fn = setLoggerProvider;
+* import { LoggerProvider, setLoggerProvider } from 'internal:opentelemetry/logs';
+* import { Resource } from 'internal:opentelemetry/common';
+*
+* setLoggerProvider(new LoggerProvider({ resource: new Resource({ 'service.name': 'api' }) }));
 * ```
 */
 export function setLoggerProvider(provider: LoggerProvider): void {
   defaultLoggerProvider = provider;
 }
 /**
-* runWithLoggerProvider function exposed by the OpenTelemetry API.
+* Runs a function with a scoped `LoggerProvider` visible to `getLoggerProvider`.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Installs `provider` in the async-context slot for the duration of `fn`,
+* including across `await` boundaries, then restores the previous value. Returns
+* whatever `fn` returns (its promise, if async). Use this to give a request,
+* test, or child scope its own provider without mutating the global default.
 *
 * ```typescript no_run
-* const fn = runWithLoggerProvider;
+* import { LoggerProvider, runWithLoggerProvider, getLoggerProvider } from 'internal:opentelemetry/logs';
+*
+* const scoped = new LoggerProvider();
+* await runWithLoggerProvider(scoped, async () => {
+*   getLoggerProvider().getLogger('req').info('handling request');
+* });
 * ```
 */
 export function runWithLoggerProvider<R>(provider: LoggerProvider, fn: () => R): R {
   return loggerProviderContext.runWithValue(provider, fn);
 }
 /**
-* runWithoutLoggerProvider function exposed by the OpenTelemetry API.
+* Runs a function with any scoped logger provider suppressed.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Clears the async-context slot for the duration of `fn`, so `getLoggerProvider`
+* falls back to the process-wide default even when called inside an enclosing
+* `runWithLoggerProvider` scope. Returns whatever `fn` returns.
 *
 * ```typescript no_run
-* const fn = runWithoutLoggerProvider;
+* import { runWithoutLoggerProvider, getLoggerProvider } from 'internal:opentelemetry/logs';
+*
+* runWithoutLoggerProvider(() => {
+*   getLoggerProvider().getLogger('bootstrap').info('using default provider');
+* });
 * ```
 */
 export function runWithoutLoggerProvider<R>(fn: () => R): R {

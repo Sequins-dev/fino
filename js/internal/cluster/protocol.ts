@@ -14,6 +14,12 @@
 * SPAWN message carries `parentPortId` so the child relay knows where to
 * address PORT_MSG.
 *
+* Decoding is strict and reconstructive: `decode()` rebuilds each message from
+* scratch, so fields that are not part of the protocol (auth tokens, transport
+* negotiation flags, anything a peer smuggles in) are silently dropped rather
+* than forwarded. Every validation failure throws a plain `Error` whose
+* message starts with `cluster protocol:`.
+*
 * ## Example
 *
 * ```ts no_run
@@ -42,13 +48,19 @@ import { Scanner } from 'fino:parsing/scanner';
 /**
 * Runtime load sample advertised by a cluster node.
 *
-* The seed uses this value as a routing hint when choosing a target for remote
-* realm spawns. Values are trusted only within the cluster control plane; the
-* decoder rejects malformed or out-of-range samples.
+* Load samples travel in `HELLO` messages and in the `PeerInfo` entries of
+* `WELCOME` and `PEER_UP`. The seed uses them as a routing hint when choosing
+* a target for remote realm spawns. Values are trusted only within the cluster
+* control plane; the decoder rejects malformed or out-of-range samples.
 *
-* ```ts
+* ```ts no_run
 * import { encode } from 'internal:cluster/protocol';
-* encode({ t: 'HEARTBEAT', ts: Date.now() });
+*
+* encode({
+*   t: 'HELLO',
+*   nodeId: 'worker-1',
+*   load: { cpu: 0.25, memory: 512 * 1024 * 1024 },
+* });
 * ```
 *
 * @internal
@@ -196,6 +208,29 @@ export interface SerializedSpawnConfig {
 * payload between ports. `decode()` returns this union or throws a protocol
 * error when required fields are missing or malformed.
 *
+* Message roles:
+*
+* - `HELLO` — a joining node introduces itself to the seed with its node ID
+*   and current load sample.
+* - `WELCOME` — the seed's reply to `HELLO`, carrying the seed's own node ID
+*   and the current peer list.
+* - `PEER_UP` / `PEER_DOWN` — membership deltas broadcast by the seed when a
+*   node joins or leaves.
+* - `HEARTBEAT` — periodic liveness signal from each node to the seed; `ts`
+*   is the sender's clock in milliseconds.
+* - `SPAWN` — request to create a realm on another node, routed through the
+*   seed. `spawnReqId` correlates the eventual ack, and `parentPortId` tells
+*   the target's relay where to address child-to-parent `PORT_MSG` traffic.
+* - `SPAWN_ACK` — the target node's response to `SPAWN`. On success `ok` is
+*   true and `childPortId` identifies the child's port; on failure `ok` is
+*   false, `childPortId` is the empty string, and `error` explains why.
+* - `REALM_EXIT` — sent by the hosting node when a spawned realm terminates,
+*   with `error` set if it exited abnormally.
+* - `TERMINATE` — request to kill a realm on its hosting node; the seed also
+*   emits this to descendants when an ancestor realm exits.
+* - `PORT_MSG` — data-plane frame between two ports. `payload` is an opaque
+*   serialized string; the protocol layer never inspects it.
+*
 * ```ts
 * import { decode } from 'internal:cluster/protocol';
 * const msg = decode('{"t":"HEARTBEAT","ts":1}');
@@ -273,6 +308,12 @@ export function encode(msg: ClusterMessage): string {
 * `Error` with a `cluster protocol:` prefix for invalid JSON, unknown message
 * types, malformed IDs, invalid load samples, or missing fields. No defaults
 * are applied.
+*
+* The result is rebuilt field by field rather than returned as the parsed JSON
+* object, so any properties outside the protocol schema are discarded — a peer
+* cannot smuggle extra fields through the decoder. One shape-specific
+* exception applies to ID validation: a `SPAWN_ACK` may carry an empty
+* `childPortId`, which is how a failed spawn (`ok: false`) is represented.
 *
 * ```ts
 * import { decode } from 'internal:cluster/protocol';

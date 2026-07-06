@@ -3,14 +3,50 @@
 * confines the launcher (and thus the exec'd target) to a set of readonly and
 * writable path subtrees, and scopes which binaries may be executed.
 *
+* Landlock is a Linux LSM (kernel 5.13+) that lets an unprivileged process add
+* filesystem access rules to itself. The rules are inherited across `execve`, so
+* the launcher installs a ruleset and then execs the sandboxed target into it.
+* This module is the Landlock arm of the child-process sandbox: it is invoked
+* inside the launcher, just before the final `execve`, once seccomp and rlimits
+* are already staged.
+*
 * Filesystem confinement: readonly paths get read access, writable paths get
-* read+write, everything else is unreachable. Execute scoping: when the policy
-* expresses an exec rule (`process.allowExec === false` or
-* `process.allowedBinaries`), `LANDLOCK_ACCESS_FS_EXECUTE` is *handled* and
-* granted ONLY on the initial binary and the allowlisted binaries — so a
-* sandboxed process can no longer `exec` an arbitrary binary that merely happens
-* to be readable. Shared libraries load via `mmap` (read access), not
-* Landlock-execute, so dynamically linked targets still run.
+* read+write, everything else is unreachable. Only access types the policy
+* actually restricts are placed in `handled_access_fs` — unmentioned access
+* categories stay unrestricted, so a policy that lists no paths and no exec rule
+* installs nothing at all. Execute scoping: when the policy expresses an exec
+* rule (`process.allowExec === false` or `process.allowedBinaries`),
+* `LANDLOCK_ACCESS_FS_EXECUTE` is *handled* and granted ONLY on the initial
+* binary and the allowlisted binaries — so a sandboxed process can no longer
+* `exec` an arbitrary binary that merely happens to be readable. Shared
+* libraries load via `mmap` (read access), not Landlock-execute, so dynamically
+* linked targets still run; the target's own ELF interpreter is granted execute
+* explicitly because the kernel checks it as part of `execve`.
+*
+* Newer access bits are gated on the kernel's ABI version: write rights exist
+* since ABI v1, `FS_REFER` arrived in v2 and `FS_TRUNCATE` in v3. Passing a bit
+* the running kernel does not recognise makes `create_ruleset` fail with EINVAL,
+* so {@link landlockAbi} is probed first and {@link writeRightsFor} masks the
+* rights down to what is supported.
+*
+* Probe availability with {@link landlockAvailable} before relying on this
+* mechanism, and apply a policy with {@link installLandlock}. Callers outside the
+* launcher (for example capability reporting) generally only need the probe.
+*
+* ```ts no_run
+* import { landlockAvailable, installLandlock } from 'internal:security/sandbox/landlock';
+*
+* if (landlockAvailable()) {
+*   const result = installLandlock(
+*     { readonly: ['/usr', '/lib'], writable: ['/tmp/work'] },
+*     { allowExec: false },
+*     '/tmp/work/target',
+*   );
+*   // result.fsConfined === true, result.execScoped === true
+* }
+* ```
+*
+* Landlock reference: https://docs.kernel.org/userspace-api/landlock.html
 *
 * @internal
 */
@@ -44,15 +80,49 @@ const WRITE_RIGHTS_V1 = FS_WRITE_FILE | FS_REMOVE_DIR | FS_REMOVE_FILE | FS_MAKE
   | FS_MAKE_DIR | FS_MAKE_REG | FS_MAKE_SOCK | FS_MAKE_FIFO | FS_MAKE_BLOCK | FS_MAKE_SYM;
 const LANDLOCK_CREATE_RULESET_VERSION = 1n << 0n;
 /**
-* The kernel's Landlock ABI version, or 0 when Landlock is unavailable
-* (compiled out or not in the active LSM list). Asking `create_ruleset` for its
-* version does not create a ruleset.
+* Returns the kernel's Landlock ABI version, or 0 when Landlock is unavailable
+* (compiled out or not in the active LSM list).
+*
+* The version is obtained through the `create_ruleset` syscall in its
+* version-query mode (the `LANDLOCK_CREATE_RULESET_VERSION` flag with a null
+* attribute): this only reports the number and does not create a ruleset, so the
+* call is cheap and side-effect free. A positive result is the highest ABI the
+* running kernel implements — higher numbers add access bits (v2 adds
+* `FS_REFER`, v3 adds `FS_TRUNCATE`) that older kernels reject. A non-positive
+* syscall return is normalised to 0.
+*
+* ```ts no_run
+* import { landlockAbi } from 'internal:security/sandbox/landlock';
+*
+* const abi = landlockAbi();
+* if (abi === 0) throw new Error('Landlock LSM not enabled on this kernel');
+* if (abi >= 3) {
+*   // safe to rely on FS_TRUNCATE being handled
+* }
+* ```
 */
 export function landlockAbi(): number {
   const rc = libc.symbols.syscall(SYS_LANDLOCK_CREATE_RULESET, 0n, 0n, LANDLOCK_CREATE_RULESET_VERSION, 0n);
   return rc > 0n ? Number(rc) : 0;
 }
-/** True when the running kernel has the Landlock LSM enabled. */
+/**
+* Returns true when the running kernel has the Landlock LSM enabled and usable.
+*
+* This is the guard callers should check before requesting filesystem
+* confinement or exec scoping: it is a thin `landlockAbi() > 0` convenience,
+* since any positive ABI version means a ruleset can be built. The
+* capability-reporting path and the launcher both use it to decide whether the
+* Landlock mechanism can back a policy or whether the sandbox must degrade (or,
+* in strict mode, refuse to spawn).
+*
+* ```ts no_run
+* import { landlockAvailable } from 'internal:security/sandbox/landlock';
+*
+* if (!landlockAvailable()) {
+*   // filesystem confinement cannot be enforced on this host
+* }
+* ```
+*/
 export function landlockAvailable(): boolean {
   return landlockAbi() > 0;
 }
@@ -63,10 +133,42 @@ function writeRightsFor(abi: number): bigint {
   if (abi >= 3) rights |= FS_TRUNCATE;
   return rights;
 }
-/** What a Landlock install actually confined, for the report. */
+/**
+* Describes what an {@link installLandlock} call actually confined.
+*
+* The launcher uses this to build the sandbox report honestly: each flag maps to
+* a category the caller can surface (filesystem confinement, process/exec
+* scoping) so the report reflects what was truly enforced rather than what was
+* merely requested. When a policy asks for neither confinement nor scoping, the
+* result is all-false and no ruleset is installed.
+*
+* ```ts no_run
+* import { installLandlock } from 'internal:security/sandbox/landlock';
+*
+* const result = installLandlock(
+*   { readonly: ['/usr'] },
+*   { allowedBinaries: ['/bin/sh'] },
+*   '/bin/task',
+* );
+* if (result.installed) {
+*   if (result.fsConfined) console.log('filesystem restricted');
+*   if (result.execScoped) console.log('execute restricted');
+* }
+* ```
+*/
 export interface LandlockResult {
+  /** True when a ruleset was created and applied to the process via `restrict_self`. */
   installed: boolean;
+  /**
+   * True when at least one readonly or writable path was supplied, so read (and
+   * for writable subtrees, write) access is now confined to those subtrees.
+   */
   fsConfined: boolean;
+  /**
+   * True when execute scoping was engaged, meaning `execve` is restricted to the
+   * initial binary, the absolute-path entries of `allowedBinaries`, and their ELF
+   * interpreters.
+   */
   execScoped: boolean;
 }
 const NOT_INSTALLED: LandlockResult = { installed: false, fsConfined: false, execScoped: false };
@@ -130,15 +232,47 @@ function addPathBeneathRule(rulesetFd: number, path: string, access: bigint): vo
   }
 }
 /**
-* Apply the filesystem and execute policy as a Landlock ruleset.
+* Applies the filesystem and execute policy as a Landlock ruleset on the calling
+* process, returning a {@link LandlockResult} describing what was confined.
 *
-* @param filesystem readonly/writable path confinement (optional).
-* @param process exec policy; execute scoping engages when `allowExec === false`
-*   or `allowedBinaries` is non-empty.
-* @param initialBinary the target's own path — always granted execute so the
-*   launcher's post-`restrict_self` `execve` of it succeeds.
-* @returns what was confined, or {@link NOT_INSTALLED} when the policy asks for
-*   neither filesystem confinement nor exec scoping.
+* The `filesystem` argument supplies readonly and writable path subtrees; when
+* omitted or empty, no filesystem access is restricted. The `process` argument
+* drives execute scoping, which engages when `allowExec === false` or
+* `allowedBinaries` is non-empty. The `initialBinary` is the target's own path
+* and is always granted execute so the launcher's `execve` of it — performed
+* after `restrict_self` — still succeeds.
+*
+* Only the access categories the policy restricts are placed in
+* `handled_access_fs`, so everything else stays unrestricted. Readonly paths
+* receive read rights, writable paths receive read plus the write rights the
+* kernel's ABI supports, and — when exec scoping is on — execute is granted only
+* on the initial binary, the absolute-path entries of `allowedBinaries`, and the
+* ELF interpreters those binaries need. Basename-only allowlist entries cannot be
+* pinned to a path and are therefore left non-executable, a deliberate
+* fail-closed choice. Grant paths that do not exist (ENOENT) are silently
+* skipped, which only tightens the sandbox.
+*
+* When the policy asks for neither filesystem confinement nor exec scoping,
+* nothing is installed and the returned result is all-false. Otherwise the
+* function performs real syscalls and throws if any of them fail: it throws when
+* the Landlock LSM is unavailable, when `create_ruleset` or `add_rule` fails, or
+* when `prctl(PR_SET_NO_NEW_PRIVS)` or `restrict_self` fails. Because
+* `restrict_self` is irreversible, a successful call permanently narrows the
+* current process (and everything it later execs) for its lifetime.
+*
+* ```ts no_run
+* import { installLandlock } from 'internal:security/sandbox/landlock';
+*
+* // Confine a task to read /usr and /lib, write only under /tmp/job, and forbid
+* // exec of anything but the task binary itself.
+* const result = installLandlock(
+*   { readonly: ['/usr', '/lib', '/lib64'], writable: ['/tmp/job'] },
+*   { allowExec: false },
+*   '/tmp/job/target',
+* );
+* // From here on, opening a file outside those subtrees fails with EACCES.
+* console.log(result); // { installed: true, fsConfined: true, execScoped: true }
+* ```
 */
 export function installLandlock(
   filesystem: FilesystemPolicy | undefined,

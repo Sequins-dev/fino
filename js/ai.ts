@@ -11,7 +11,34 @@
 *
 * The facade does not add behavior. It re-exports the same symbols from the
 * underlying modules so users can start with one import and later split imports
-* by subsystem without changing runtime semantics.
+* by subsystem without changing runtime semantics. Each symbol is documented
+* in its home module; this page maps which subsystems the facade covers.
+*
+* ## What's included
+*
+* - `fino:ai/agent` — `Agent`, `agent()`, and `streamText()`: the high-level
+*   model loop that drives tools and strategy-owned history.
+* - `fino:ai/model` — provider-neutral `Model` messages and streams, plus the
+*   `anthropic()`, `openai()`, and `local()` adapters, provider factories, the
+*   `ModelRegistry`, and the model error types.
+* - `fino:task` — `task()` and `Task`: shared executable operations usable
+*   from CLIs, agents, and MCP, with `toTaskToolDefinition()` for tool calling.
+* - `fino:ai/tool` — `tool()` and `Tool`: validated tool definitions, plus
+*   `SuspendSignal` for human-in-the-loop pauses.
+* - `fino:ai/runtime` — `GuardrailError`, the `maxSteps()` stop condition, and
+*   the `runContext` async context populated while an agent step runs.
+* - `fino:ai/cache` — `cachedModel()`: exact and semantic response caching
+*   wrapped around any chat model.
+* - `fino:ai/session` — `session()` and `Session`: durable agent runs with
+*   session-owned history in an in-memory or SQLite store.
+* - `fino:ai/memory` — `memory()`, `retriever()`, and `SqliteMemory`: thread
+*   memory, working memory, and vector recall that outlive one context window.
+* - `fino:ai/eval` — `evaluate()` with scorers (`exactMatch`, `contains`,
+*   `semanticSimilarity`, `llmJudge`, `schemaScorer`) and reporters.
+* - `fino:ai/skill` — `skill()` and `skillRegistry()`: lazily loaded
+*   instructions, resources, and tools packaged behind a manifest.
+* - `fino:ai/mcp` — Model Context Protocol client and server adapters with
+*   stdio and HTTP transports, plus `mountMcp()` for serving over HTTP apps.
 *
 * ```ts no_run
 * import { agent, openai, streamText, tool } from 'fino:ai';

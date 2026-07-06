@@ -33,9 +33,13 @@
 * the numeric IP family that produced it. Providers choose ordering and may
 * prefer IPv4 or IPv6 according to resolver policy unless `family` is supplied.
 *
-* ```ts
-* const result = { address: '127.0.0.1', family: 4 };
-* result.family;
+* ```ts no_run
+* import type { DnsProvider, LookupResult } from 'internal:net/dns-provider';
+*
+* async function connectHost(provider: DnsProvider, host: string) {
+*   const result: LookupResult = await provider.lookup(host, { family: 4 });
+*   return `${result.address}:443`;
+* }
 * ```
 *
 * @internal
@@ -72,9 +76,13 @@ export interface LookupResult {
 * Lower `priority` values are preferred by SMTP clients. Providers return the
 * exchange hostname as it appears after DNS decoding.
 *
-* ```ts
-* const mx = { priority: 10, exchange: 'mail.example.com' };
-* mx.exchange;
+* ```ts no_run
+* import type { DnsProvider, MxRecord } from 'internal:net/dns-provider';
+*
+* async function primaryMx(provider: DnsProvider, domain: string) {
+*   const records = (await provider.resolve(domain, 'MX')) as MxRecord[];
+*   return records.sort((a, b) => a.priority - b.priority)[0]?.exchange;
+* }
 * ```
 *
 * @internal
@@ -110,9 +118,16 @@ export interface MxRecord {
 * SOA records describe authority and timing metadata for a zone. Time fields
 * are expressed in seconds as decoded from the DNS response.
 *
-* ```ts
-* const soa = { nsname: 'ns.example.com', hostmaster: 'hostmaster.example.com', serial: 1, refresh: 3600, retry: 600, expire: 86400, minttl: 60 };
-* soa.serial;
+* A successful `resolve(name, 'SOA')` returns a single-element array, since a
+* zone has exactly one SOA record at its apex.
+*
+* ```ts no_run
+* import type { DnsProvider, SoaRecord } from 'internal:net/dns-provider';
+*
+* async function zoneSerial(provider: DnsProvider, zone: string) {
+*   const [soa] = (await provider.resolve(zone, 'SOA')) as SoaRecord[];
+*   return soa.serial;
+* }
 * ```
 *
 * @internal
@@ -196,9 +211,14 @@ export interface SoaRecord {
 * Providers return decoded records; client-side priority/weight selection is
 * left to higher layers.
 *
-* ```ts
-* const srv = { priority: 0, weight: 10, port: 443, name: 'api.example.com' };
-* srv.port;
+* ```ts no_run
+* import type { DnsProvider, SrvRecord } from 'internal:net/dns-provider';
+*
+* async function locateService(provider: DnsProvider, name: string) {
+*   const records = (await provider.resolve(name, 'SRV')) as SrvRecord[];
+*   const target = records.sort((a, b) => a.priority - b.priority)[0];
+*   return target ? `${target.name}:${target.port}` : null;
+* }
 * ```
 *
 * @internal
@@ -249,12 +269,18 @@ export interface SrvRecord {
 * Decoded DNS record payload used by provider implementations.
 *
 * The concrete member depends on the requested RR type: address-like records
-* are strings, TXT is `string[]`, binary/unknown data may be `Uint8Array`, and
-* explicitly empty records may be `null`.
+* (`A`, `AAAA`, `NS`, `CNAME`, `PTR`) are strings, `TXT` is `string[]`, `MX`,
+* `SOA`, and `SRV` are their record objects, binary or unknown data may be a
+* `Uint8Array`, and explicitly empty records may be `null`. Callers narrow the
+* union based on the `rrtype` they passed to `resolve()`.
 *
-* ```ts
-* const data = '127.0.0.1';
-* data;
+* ```ts no_run
+* import type { DnsProvider, DnsRecordData } from 'internal:net/dns-provider';
+*
+* async function firstAddress(provider: DnsProvider, host: string) {
+*   const records: DnsRecordData[] = await provider.resolve(host, 'A');
+*   return records.find((r): r is string => typeof r === 'string');
+* }
 * ```
 *
 * @internal
@@ -264,11 +290,17 @@ export type DnsRecordData = string | string[] | MxRecord | SoaRecord | SrvRecord
 * DNS resource-record types accepted by `DnsProvider.resolve()`.
 *
 * The default record type is provider-defined by the abstract signature and is
-* currently `A` in concrete callers that omit it.
+* currently `A` in concrete callers that omit it. Each value maps to a standard
+* DNS resource-record type: address (`A`, `AAAA`), delegation (`NS`), aliasing
+* (`CNAME`, `PTR`), zone authority (`SOA`), mail (`MX`), text (`TXT`), and
+* service location (`SRV`).
 *
-* ```ts
-* const rrtype = 'AAAA';
-* rrtype;
+* ```ts no_run
+* import type { DnsProvider, RRType } from 'internal:net/dns-provider';
+*
+* async function queryAll(provider: DnsProvider, host: string, types: RRType[]) {
+*   return Promise.all(types.map((t) => provider.resolve(host, t)));
+* }
 * ```
 *
 * @internal
@@ -282,44 +314,79 @@ export type RRType = 'A' | 'NS' | 'CNAME' | 'SOA' | 'PTR' | 'MX' | 'TXT' | 'AAAA
 *
 * Providers resolve hostnames to IP addresses and perform reverse lookups.
 * The system provider queries real nameservers over UDP; virtual providers
-* may resolve Realm names within a VirtualNetwork routing table.
+* may resolve Realm names within a VirtualNetwork routing table. Concrete
+* subclasses must implement all five methods; the base class supplies no
+* default behavior and exists only to fix the shared contract.
 *
-* @example
+* Subclass this to interpose a custom resolution policy — for example a static
+* host table for tests, or a routing layer that maps logical names to in-process
+* Realms — while keeping the same surface the rest of the runtime consumes.
+*
 * ```ts no_run
-* const documentedClass = 'DnsProvider';
-* console.log(documentedClass);
+* import { DnsProvider, type LookupResult, type DnsRecordData, type RRType } from 'internal:net/dns-provider';
+*
+* class HostsFileProvider extends DnsProvider {
+*   #table: Map<string, string>;
+*   #servers: string[] = [];
+*
+*   constructor(entries: Record<string, string>) {
+*     super();
+*     this.#table = new Map(Object.entries(entries));
+*   }
+*
+*   async lookup(hostname: string): Promise<LookupResult> {
+*     const address = this.#table.get(hostname);
+*     if (!address) throw new Error(`no entry for ${hostname}`);
+*     return { address, family: address.includes(':') ? 6 : 4 };
+*   }
+*
+*   async resolve(hostname: string, _rrtype: RRType = 'A'): Promise<DnsRecordData[]> {
+*     const address = this.#table.get(hostname);
+*     return address ? [address] : [];
+*   }
+*
+*   async reverse(ip: string): Promise<string[]> {
+*     return [...this.#table].filter(([, v]) => v === ip).map(([k]) => k);
+*   }
+*
+*   getServers(): string[] { return [...this.#servers]; }
+*   setServers(servers: string[]): void { this.#servers = [...servers]; }
+* }
+*
+* const provider = new HostsFileProvider({ 'service.local': '127.0.0.1' });
+* const { address } = await provider.lookup('service.local');
 * ```
 */
 export abstract class DnsProvider {
   /**
-  * Resolve a hostname to an IP address (equivalent to getaddrinfo).
-  * @param hostname  The hostname to resolve.
-  * @param opts      Optional: { family: 4 | 6 } to restrict address family.
+  * Resolve a hostname to a single IP address, equivalent to getaddrinfo.
   *
-  * The promise resolves with one selected address or rejects on resolver,
+  * Pass `opts.family` as `4` or `6` to restrict the address family; when it is
+  * omitted the provider selects a family according to its own policy. The
+  * promise resolves with exactly one selected address or rejects on resolver,
   * timeout, unsupported-family, or not-found errors. No empty result shape is
-  * returned for failed lookups.
+  * returned for failed lookups — callers should expect a rejection instead.
   *
   * ```ts no_run
   * const result = await provider.lookup('example.com', { family: 4 });
-  * result.address;
+  * const socket = await connect(result.address, 443);
   * ```
   */
   abstract lookup(hostname: string, opts?: {
     family?: 4 | 6;
   }): Promise<LookupResult>;
   /**
-  * Query DNS records of the given type.
-  * @param hostname  The hostname to query.
-  * @param rrtype    Record type: 'A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA', 'SRV', 'PTR'
+  * Query DNS records of a given resource-record type.
   *
-  * `rrtype` defaults according to the concrete provider, generally `A`.
-  * Successful queries may return an empty array when the name exists but no
-  * matching records are present.
+  * The `rrtype` selects which records to return and defaults according to the
+  * concrete provider, generally `A`. The element type of the resolved array
+  * depends on `rrtype`, as documented by `DnsRecordData`. Successful queries may
+  * return an empty array when the name exists but carries no matching records;
+  * the promise rejects only on resolver or transport errors.
   *
   * ```ts no_run
   * const records = await provider.resolve('example.com', 'MX');
-  * records.length;
+  * for (const mx of records as MxRecord[]) console.log(mx.priority, mx.exchange);
   * ```
   */
   abstract resolve(hostname: string, rrtype?: RRType): Promise<DnsRecordData[]>;

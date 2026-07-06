@@ -91,15 +91,18 @@ export class XmlParseError extends ParseError {
   /**
   * Error name reported by `XmlParseError` instances.
   *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
+  * Always the string `"XmlParseError"`, which distinguishes XML errors from
+  * other `ParseError` subtypes in logs and `error.name` checks without an
+  * `instanceof` test.
   *
-  * @example
   * ```ts no_run
-  * const error = new XmlParseError('example', { line: 1, column: 1, offset: 0, snippet: 'x' });
-  * console.log(error.name);
+  * import { parse } from 'fino:format/xml';
+  *
+  * try {
+  *   parse('<root>');
+  * } catch (error) {
+  *   if ((error as Error).name === 'XmlParseError') console.error('bad XML');
+  * }
   * ```
   */
   name = 'XmlParseError';
@@ -398,8 +401,9 @@ export interface XmlPI {
   /**
   * Processing instruction target.
   *
-  * The target is lower- or upper-case as written by the source except for
-  * comparisons internal to parsing.
+  * The target keeps its source spelling. Targets that match `xml`
+  * case-insensitively are reserved: they are consumed as the XML declaration
+  * at the start of a document and rejected anywhere else.
   *
   * ```ts no_run
   * import { parse } from 'fino:format/xml';
@@ -748,9 +752,11 @@ export interface XmlParseOptions {
   /**
   * Optional resolver for external DTD entities.
   *
-  * Defaults to `null`, which rejects external entities. A resolver should
-  * return the entity text, or `null` to ignore it. Supplying a resolver opts
-  * into any filesystem, network, and trust-boundary risks it performs.
+  * Defaults to `null`, which rejects external entities. A resolver receives
+  * the entity's system identifier and returns the replacement text, or `null`
+  * to leave the entity undefined — referencing an undefined entity later
+  * still throws. Supplying a resolver opts into any filesystem, network, and
+  * trust-boundary risks it performs.
   *
   * ```ts no_run
   * import { parse } from 'fino:format/xml';
@@ -833,6 +839,11 @@ export function parse(input: string | Uint8Array, options: XmlParseOptions = {})
 * stalls are retried with more input. Because accumulated bytes are retained
 * and reparsed, this is not a bounded-memory streaming parser for very large
 * documents.
+*
+* Prolog nodes (XML declaration, comments, doctype, processing instructions
+* before the root) are consumed but not emitted as events. Entity expansion
+* limits apply as in `parse()`, but the `maxDepth` option is not enforced on
+* this event path.
 *
 * ```ts no_run
 * import { parseStream } from 'fino:format/xml';

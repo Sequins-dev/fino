@@ -4,7 +4,17 @@
 * This command lints JavaScript and TypeScript-family source files. With no
 * positional inputs it scans the current working directory using the shared
 * source discovery policy; explicit inputs may be files, directories, or globs.
-* `--fix` applies safe lint fixes only and does not run formatting.
+*
+* Linting is scope-limited by design: `--fix` writes only the safe fixes that
+* come from lint rules and never reformats layout — `fino lint --fix` and
+* `fino fmt` stay separate commands. Diagnostics are grouped per file and
+* printed to stderr; any remaining diagnostic makes the command fail, so a
+* clean exit means the checked tree is lint-clean.
+*
+* The default export is a `Task`, so the command is equally usable
+* programmatically (via `parse()` or `run()`) and as the `lint` subcommand of
+* the root Fino CLI. Passing `--json` switches output to a single JSON result
+* object instead of the human-readable summary line.
 *
 * ```ts no_run
 * import lintCommand from 'fino:commands/lint';
@@ -16,11 +26,34 @@
 import { Task } from '../task.ts';
 import { runLint } from '../internal/tooling/lint.ts';
 /**
-* Create the `lint` subcommand used by the root Fino CLI.
+* The `lint` command task, mounted as a subcommand by the root Fino CLI.
 *
-* The task returns a success string for text output, writes a JSON result when
-* `--json` is requested, and throws after diagnostics so `internal/main.ts`
-* preserves standard CLI exit behavior.
+* On success the task returns a one-line summary string (for example
+* `fino lint: 12 files checked`, or `fino lint: fixed 2 files, 0 remaining`
+* with `--fix`). When `--json` is requested it instead writes — and returns —
+* a result object of the shape `{ command: 'lint', ok: true, fix, files,
+* message }`.
+*
+* Throws after reportable failures so `internal/main.ts` preserves standard
+* CLI exit behavior: when diagnostics remain, the grouped per-file report is
+* printed to stderr first and the thrown message carries only the aggregate
+* count (including how many files `--fix` rewrote). Input discovery errors —
+* such as a named file that does not exist — also throw, before any linting
+* runs.
+*
+* ```ts no_run
+* import lintCommand from 'fino:commands/lint';
+*
+* // Lint the current project; throws if any diagnostic is found.
+* console.log(await lintCommand.parse([]));
+*
+* // Apply safe fixes to a subtree, then gate on what remains.
+* try {
+*   await lintCommand.parse(['--fix', 'src', 'tests/*.test.ts']);
+* } catch {
+*   console.error('unfixable lint diagnostics remain');
+* }
+* ```
 *
 */
 const command = new Task({

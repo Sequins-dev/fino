@@ -78,17 +78,52 @@ const CLIENT_INFO = {
   name: 'fino',
   version: '0.1.0'
 };
+/**
+* Re-export of the JSON-RPC `Transport` interface from `fino:jsonrpc`.
+*
+* An MCP transport only sends JSON-RPC strings, yields received strings, and
+* closes. `stdioTransport()` and `httpTransport()` are the bundled
+* implementations; supply a custom object with the same three members for
+* in-memory peers, embedded servers, or tests.
+*/
 export type { Transport };
 // ---------------------------------------------------------------------------
 // stdioTransport
 // ---------------------------------------------------------------------------
 /**
 * Options for launching an MCP server over stdio.
+*
+* The command is spawned as a child process and JSON-RPC messages travel as
+* newline-delimited JSON over its stdin/stdout, matching the MCP stdio
+* transport convention.
+*
+* ```ts no_run
+* import { stdioTransport } from 'fino:ai/mcp';
+*
+* const transport = stdioTransport({
+*   command: 'mcp-filesystem',
+*   args: ['--root', '/srv/data'],
+*   env: { LOG_LEVEL: 'warn' },
+*   cwd: '/srv',
+* });
+* ```
 */
 export interface StdioTransportOptions {
+  /**
+  * Executable to spawn.
+  */
   command: string;
+  /**
+  * Arguments passed to the executable.
+  */
   args?: string[];
+  /**
+  * Environment variables for the child process.
+  */
   env?: Record<string, string>;
+  /**
+  * Working directory for the child process.
+  */
   cwd?: string;
 }
 async function* splitLines(source: AsyncIterable<Uint8Array>): AsyncIterable<string> {
@@ -107,6 +142,25 @@ async function* splitLines(source: AsyncIterable<Uint8Array>): AsyncIterable<str
 }
 /**
 * Create a stdio transport for an MCP server process.
+*
+* The process is spawned immediately. Each `send()` writes one
+* newline-terminated JSON-RPC message to the child's stdin, and `receive()`
+* yields non-empty lines from its stdout. `close()` closes the child's stdin —
+* the conventional shutdown signal for stdio MCP servers, which are expected
+* to exit once their input ends.
+*
+* ```ts no_run
+* import { MCPClient, stdioTransport } from 'fino:ai/mcp';
+*
+* const client = new MCPClient({
+*   transport: stdioTransport({
+*     command: 'npx',
+*     args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv/data'],
+*   }),
+* });
+* await client.connect();
+* const tools = await client.listTools();
+* ```
 */
 export function stdioTransport(opts: StdioTransportOptions): Transport {
   const proc = new Process(opts.command, opts.args ?? [], {
@@ -131,12 +185,31 @@ export function stdioTransport(opts: StdioTransportOptions): Transport {
 // ---------------------------------------------------------------------------
 /**
 * Options for connecting to an MCP server over HTTP.
+*
+* ```ts no_run
+* import { httpTransport } from 'fino:ai/mcp';
+*
+* const transport = httpTransport({
+*   url: 'https://tools.example.com/mcp',
+*   headers: { authorization: 'Bearer <token>' },
+*   sseChannel: true,
+* });
+* ```
 */
 export interface HttpTransportOptions {
+  /**
+  * MCP endpoint URL; every JSON-RPC message is POSTed here.
+  */
   url: string;
+  /**
+  * Extra headers sent on every request — typically authorization.
+  */
   headers?: Record<string, string>;
   /**
   * Open a GET SSE channel to receive server-initiated messages.
+  *
+  * The channel opens only after the server issues an `Mcp-Session-Id`, and
+  * resumes with `Last-Event-ID` when the stream drops.
   */
   sseChannel?: boolean;
 }
@@ -149,7 +222,30 @@ async function drainSse(body: AsyncIterable<Uint8Array>, ch: Channel<string>, on
   } catch {}
 }
 /**
-* Create an HTTP or SSE transport for an MCP server.
+* Create a Streamable HTTP transport for an MCP server.
+*
+* Every outgoing message is POSTed to the endpoint with the MCP protocol
+* version header. When a response carries an `Mcp-Session-Id` header the
+* transport pins that session id on all subsequent requests and, if
+* `sseChannel` is set, opens a GET `text/event-stream` channel for
+* server-initiated messages. Servers may answer a POST with either a JSON body
+* or an SSE stream; both are folded into the single `receive()` iterable.
+*
+* Throws `JsonRpcError` from `send()` when the endpoint responds with a
+* non-2xx status.
+*
+* ```ts no_run
+* import { MCPClient, httpTransport } from 'fino:ai/mcp';
+*
+* const client = new MCPClient({
+*   transport: httpTransport({
+*     url: 'https://tools.example.com/mcp',
+*     headers: { authorization: 'Bearer <token>' },
+*     sseChannel: true,
+*   }),
+* });
+* await client.connect();
+* ```
 */
 export function httpTransport(opts: HttpTransportOptions): Transport {
   const ch = new Channel<string>();
@@ -228,15 +324,57 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
 // ---------------------------------------------------------------------------
 /**
 * Options for `MCPClient`.
+*
+* Only `transport` is required. Providing `roots`, `sampling`, or
+* `elicitation` also advertises the matching client capability during the
+* `initialize` handshake so the server knows it may call back; a server that
+* calls an unconfigured handler receives a JSON-RPC error. The `on*` callbacks
+* observe server notifications after the client has already scheduled a
+* refresh of its retained list signals.
+*
+* ```ts no_run
+* import { MCPClient, httpTransport } from 'fino:ai/mcp';
+*
+* const client = new MCPClient({
+*   transport: httpTransport({ url: 'https://tools.example.com/mcp' }),
+*   roots: [{ uri: 'file:///srv/project', name: 'project' }],
+*   elicitation: async ({ message }) => ({ action: 'decline' }),
+*   onToolsChanged: () => console.log('remote tool list changed'),
+* });
+* ```
 */
 export interface MCPClientOptions {
+  /**
+  * Transport used to exchange JSON-RPC messages with the server.
+  */
   transport: Transport;
+  /**
+  * Root URIs, or a provider for them, answered to server `roots/list` calls.
+  */
   roots?: McpRoot[] | (() => McpRoot[] | Promise<McpRoot[]>);
+  /**
+  * Handler for server-initiated `sampling/createMessage` requests.
+  */
   sampling?: (params: McpSamplingRequest) => McpSamplingResult | Promise<McpSamplingResult>;
+  /**
+  * Handler for server-initiated `elicitation/create` requests.
+  */
   elicitation?: (params: McpElicitationRequest) => McpElicitationResult | Promise<McpElicitationResult>;
+  /**
+  * Called after the server signals that its tool list changed.
+  */
   onToolsChanged?: () => void | Promise<void>;
+  /**
+  * Called after the server signals that its resource list changed.
+  */
   onResourcesChanged?: () => void | Promise<void>;
+  /**
+  * Called after the server signals that its prompt list changed.
+  */
   onPromptsChanged?: () => void | Promise<void>;
+  /**
+  * Called when a resource URI subscribed via `subscribeResource()` updates.
+  */
   onResourceUpdated?: (uri: string) => void | Promise<void>;
 }
 interface McpToolDef {
@@ -253,6 +391,9 @@ interface McpCallResult {
 }
 /**
 * Content part used by MCP prompts, sampling, and tool/resource responses.
+*
+* `text` carries plain text, `image` carries base64-encoded data with a MIME
+* type, and `resource` embeds a full `McpResourceContent` object inline.
 */
 export type McpContent = {
   type: 'text';
@@ -267,120 +408,392 @@ export type McpContent = {
 };
 /**
 * Resource descriptor returned by an MCP server.
+*
+* Descriptors identify what a server can serve; pass the `uri` to
+* `MCPClient.readResource()` to fetch the content itself.
+*
+* ```ts no_run
+* const resources = await client.listResources();
+* for (const res of resources) {
+*   console.log(res.uri, res.mimeType ?? 'unknown type');
+* }
+* ```
 */
 export interface McpResource {
+  /**
+  * Unique URI identifying the resource.
+  */
   uri: string;
+  /**
+  * Human-readable resource name.
+  */
   name?: string;
+  /**
+  * Description of what the resource contains.
+  */
   description?: string;
+  /**
+  * MIME type of the resource content.
+  */
   mimeType?: string;
 }
 /**
 * Resource template descriptor returned by an MCP server.
+*
+* Templates describe parameterized URIs (RFC 6570) that clients expand
+* themselves before calling `readResource()`.
+*
+* ```ts no_run
+* const templates = await client.listResourceTemplates();
+* const uri = templates[0].uriTemplate.replace('{name}', 'report');
+* const contents = await client.readResource(uri);
+* ```
 */
 export interface McpResourceTemplate {
+  /**
+  * RFC 6570 URI template, e.g. `file:///data/{name}.txt`.
+  */
   uriTemplate: string;
+  /**
+  * Human-readable template name.
+  */
   name?: string;
+  /**
+  * Description of the resources the template expands to.
+  */
   description?: string;
+  /**
+  * MIME type shared by resources matching the template.
+  */
   mimeType?: string;
 }
 /**
 * Resource content returned from `readResource()`.
+*
+* A content object carries either `text` (for textual resources) or `blob`
+* (base64-encoded binary), not both.
+*
+* ```ts no_run
+* const [content] = await client.readResource('file:///data/report.txt');
+* if (content.text !== undefined) console.log(content.text);
+* ```
 */
 export interface McpResourceContent {
+  /**
+  * URI of the resource this content belongs to.
+  */
   uri: string;
+  /**
+  * MIME type of the content.
+  */
   mimeType?: string;
+  /**
+  * Textual content, when the resource is text.
+  */
   text?: string;
+  /**
+  * Base64-encoded binary content, when the resource is binary.
+  */
   blob?: string;
 }
 /**
 * Prompt argument descriptor returned by an MCP server.
+*
+* ```ts no_run
+* const [prompt] = await client.listPrompts();
+* const required = (prompt.arguments ?? []).filter((arg) => arg.required);
+* ```
 */
 export interface McpPromptArgument {
+  /**
+  * Argument name, used as a key in the `getPrompt()` args object.
+  */
   name: string;
+  /**
+  * Description of what the argument controls.
+  */
   description?: string;
+  /**
+  * Whether the argument must be supplied to `getPrompt()`.
+  */
   required?: boolean;
 }
 /**
 * Prompt descriptor returned by an MCP server.
+*
+* Descriptors come from `listPrompts()`; render one into messages with
+* `getPrompt()`.
+*
+* ```ts no_run
+* const prompts = await client.listPrompts();
+* const summarize = prompts.find((p) => p.name === 'summarize');
+* ```
 */
 export interface McpPrompt {
+  /**
+  * Prompt name passed to `getPrompt()`.
+  */
   name: string;
+  /**
+  * Description of what the prompt produces.
+  */
   description?: string;
+  /**
+  * Arguments the prompt accepts.
+  */
   arguments?: McpPromptArgument[];
 }
 /**
 * Prompt message returned by `getPrompt()`.
+*
+* ```ts no_run
+* const { messages } = await client.getPrompt('summarize', { text: '...' });
+* for (const msg of messages) {
+*   if (msg.content.type === 'text') console.log(msg.role, msg.content.text);
+* }
+* ```
 */
 export interface McpPromptMessage {
+  /**
+  * Conversation role the message belongs to.
+  */
   role: 'user' | 'assistant';
+  /**
+  * Message content part.
+  */
   content: McpContent;
 }
 /**
 * Prompt content returned by `getPrompt()`.
+*
+* ```ts no_run
+* const result = await client.getPrompt('summarize', { text: 'long text' });
+* console.log(result.description, result.messages.length);
+* ```
 */
 export interface McpPromptResult {
+  /**
+  * Description of the rendered prompt.
+  */
   description?: string;
+  /**
+  * Rendered conversation messages, ready to feed to a model.
+  */
   messages: McpPromptMessage[];
 }
 /**
 * Root URI exposed by an MCP client.
+*
+* Roots tell a server which locations the client considers in scope. They are
+* served to the peer when it calls `roots/list`.
+*
+* ```ts no_run
+* const client = new MCPClient({
+*   transport,
+*   roots: [{ uri: 'file:///srv/project', name: 'project' }],
+* });
+* ```
 */
 export interface McpRoot {
+  /**
+  * Root URI, typically a `file://` URL.
+  */
   uri: string;
+  /**
+  * Human-readable root name.
+  */
   name?: string;
 }
 /**
 * Server-initiated sampling request delivered to an MCP client.
+*
+* Sampling lets a server borrow the client's model access: the server sends a
+* conversation and generation parameters, and the client's `sampling` handler
+* decides whether and how to run the completion.
+*
+* ```ts no_run
+* const client = new MCPClient({
+*   transport,
+*   sampling: async (req) => {
+*     const answer = await runModel(req.messages, { maxTokens: req.maxTokens });
+*     return { role: 'assistant', content: { type: 'text', text: answer } };
+*   },
+* });
+* ```
 */
 export interface McpSamplingRequest {
+  /**
+  * Conversation to complete.
+  */
   messages: McpPromptMessage[];
+  /**
+  * Maximum tokens the server wants generated.
+  */
   maxTokens?: number;
+  /**
+  * System prompt requested by the server.
+  */
   systemPrompt?: string;
+  /**
+  * How much MCP context to include, per the MCP sampling spec.
+  */
   includeContext?: string;
+  /**
+  * Requested sampling temperature.
+  */
   temperature?: number;
+  /**
+  * Sequences that should stop generation.
+  */
   stopSequences?: string[];
+  /**
+  * Provider-specific metadata passed through unchanged.
+  */
   metadata?: Record<string, unknown>;
+  /**
+  * Model selection hints from the server.
+  */
   modelPreferences?: Record<string, unknown>;
 }
 /**
 * Sampling result returned by an MCP client.
+*
+* ```ts no_run
+* const result: McpSamplingResult = {
+*   role: 'assistant',
+*   content: { type: 'text', text: 'Paris is the capital of France.' },
+*   model: 'gpt-4o',
+*   stopReason: 'endTurn',
+* };
+* ```
 */
 export interface McpSamplingResult {
+  /**
+  * Role of the generated message.
+  */
   role: 'assistant' | 'user';
+  /**
+  * Generated content.
+  */
   content: McpContent;
+  /**
+  * Name of the model that produced the completion.
+  */
   model?: string;
+  /**
+  * Why generation stopped.
+  */
   stopReason?: string;
 }
 /**
 * Server-initiated elicitation request delivered to an MCP client.
+*
+* Elicitation lets a server ask the user for structured input mid-operation.
+* The client's `elicitation` handler surfaces the message, collects a
+* response, and reports whether the user accepted, declined, or cancelled.
+*
+* ```ts no_run
+* const client = new MCPClient({
+*   transport,
+*   elicitation: async ({ message }) => {
+*     const email = await askUser(message);
+*     if (email === null) return { action: 'cancel' };
+*     return { action: 'accept', content: { email } };
+*   },
+* });
+* ```
 */
 export interface McpElicitationRequest {
+  /**
+  * Human-readable request to show the user.
+  */
   message: string;
+  /**
+  * JSON schema the accepted `content` should conform to.
+  */
   requestedSchema?: Record<string, unknown>;
+  /**
+  * Provider-specific metadata passed through unchanged.
+  */
   metadata?: Record<string, unknown>;
 }
 /**
 * Elicitation result returned by an MCP client.
+*
+* ```ts no_run
+* const accepted: McpElicitationResult = {
+*   action: 'accept',
+*   content: { email: 'user@example.com' },
+* };
+* ```
 */
 export interface McpElicitationResult {
+  /**
+  * Whether the user accepted, declined, or cancelled the request.
+  */
   action: 'accept' | 'decline' | 'cancel';
+  /**
+  * User-provided values when the action is `accept`.
+  */
   content?: Record<string, unknown>;
 }
 /**
 * Cursor accepted by MCP list methods.
+*
+* Pass the `nextCursor` from a previous `McpListPage` to fetch the following
+* page; omit it to start from the beginning.
+*
+* ```ts no_run
+* let cursor: string | undefined;
+* do {
+*   const page = await client.listToolsPage(cursor ? { cursor } : {});
+*   use(page.items);
+*   cursor = page.nextCursor;
+* } while (cursor !== undefined);
+* ```
 */
 export interface McpListParams {
+  /**
+  * Opaque cursor from a previous page's `nextCursor`.
+  */
   cursor?: string;
 }
 /**
-* Optional MCP list cursor returned when more items are available.
+* One page of an MCP list result.
+*
+* `nextCursor` is present only when more items are available; feed it back as
+* `McpListParams.cursor` to continue. Server option callbacks (`tools`,
+* `resources`, `prompts`, ...) may also return this shape to serve paginated
+* lists.
+*
+* ```ts no_run
+* const page = await client.listResourcesPage();
+* if (page.nextCursor !== undefined) {
+*   const more = await client.listResourcesPage({ cursor: page.nextCursor });
+* }
+* ```
 */
 export interface McpListPage<T> {
+  /**
+  * Items in this page.
+  */
   items: T[];
+  /**
+  * Cursor for the next page, absent on the final page.
+  */
   nextCursor?: string;
 }
 /**
-* Context passed to MCP server resource readers.
+* Context passed to MCP server resource readers and prompt renderers.
+*
+* ```ts no_run
+* const server = mcpServer({
+*   readResource: async (uri, ctx) => {
+*     const text = await loadDocument(uri, ctx.signal);
+*     return { uri, mimeType: 'text/plain', text };
+*   },
+* });
+* ```
 */
 export interface MCPServerContext {
   /**
@@ -397,6 +810,31 @@ export interface MCPServerContext {
 }
 /**
 * Options for exposing local Fino capabilities as an MCP server.
+*
+* Every capability is optional; the server only advertises what is configured.
+* `tools`, `resources`, `resourceTemplates`, and `prompts` accept either a
+* static array or a callback receiving `McpListParams`, which allows
+* cursor-based pagination by returning an `McpListPage`.
+*
+* ```ts no_run
+* import { mcpServer } from 'fino:ai/mcp';
+* import { tool } from 'fino:ai/tool';
+* import { v } from 'fino:validate';
+*
+* const server = mcpServer({
+*   name: 'docs',
+*   instructions: 'Read-only access to project documentation.',
+*   tools: [tool({
+*     name: 'search_docs',
+*     description: 'Search documentation by keyword.',
+*     parameters: v.object({ query: v.string().describe('Search query') }),
+*     execute: async ({ query }: { query: string }) => searchDocs(query),
+*   })],
+*   resources: [{ uri: 'doc://readme', name: 'README', mimeType: 'text/markdown' }],
+*   readResource: (uri) => ({ uri, mimeType: 'text/markdown', text: loadDoc(uri) }),
+*   listChanged: { tools: true, resources: true },
+* });
+* ```
 */
 export interface MCPServerOptions {
   /**
@@ -458,7 +896,17 @@ export interface MCPServerOptions {
 /**
 * Minimal route target accepted by `mountMcp()`.
 *
-* `App` and `Router` both satisfy this shape.
+* `App` and `Router` from `fino:net/http/app` both satisfy this shape, so MCP
+* endpoints can be mounted at the application root or inside a nested router
+* with its own middleware stack.
+*
+* ```ts no_run
+* import { App } from 'fino:net/http/app';
+* import { mcpServer, mountMcp } from 'fino:ai/mcp';
+*
+* const app = new App();
+* mountMcp(app, '/mcp', mcpServer({ name: 'tools' }));
+* ```
 */
 export interface MCPRouteTarget {
   /**
@@ -476,6 +924,15 @@ export interface MCPRouteTarget {
 }
 /**
 * Method branch returned by an `MCPRouteTarget` verb; `handle()` registers.
+*
+* This mirrors the fluent `app.get(path).handle(fn)` route-registration shape
+* of `fino:net/http/app`, so `mountMcp()` can register the same handler for
+* each HTTP method without depending on the full router API.
+*
+* ```ts no_run
+* const handler = server.httpHandler();
+* app.post('/mcp').handle((ctx) => handler(ctx.request));
+* ```
 */
 export interface MCPRouteMethod {
   /**
@@ -623,7 +1080,33 @@ function ssePayload(event: SseEvent): Uint8Array {
 *
 * Use `serve()` for stdio or custom transports, `httpHandler()` for a
 * Streamable HTTP route, or `listen()` for small standalone tools. HTTP
-* sessions are tracked in memory and are scoped to this server instance.
+* sessions are tracked in memory and are scoped to this server instance, so a
+* load-balanced deployment must pin clients to the instance that created
+* their session.
+*
+* Tool calls dispatch to `Tool.invoke()` with a synthetic run context whose
+* `suspend()` throws — MCP has no suspension protocol, so suspendable tools
+* fail the call instead of pausing. Tool results are converted from Fino
+* content parts to MCP content (text, image, and document-as-resource parts).
+*
+* ```ts no_run
+* import { MCPServer } from 'fino:ai/mcp';
+* import { tool } from 'fino:ai/tool';
+* import { v } from 'fino:validate';
+*
+* const server = new MCPServer({
+*   name: 'support-tools',
+*   tools: [tool({
+*     name: 'lookup_ticket',
+*     description: 'Look up a support ticket by id.',
+*     parameters: v.object({ id: v.string().describe('Ticket id') }),
+*     execute: async ({ id }: { id: string }) => `ticket:${id}`,
+*   })],
+* });
+*
+* const handle = server.listen({ port: 8080, path: '/mcp' });
+* await handle.ready;
+* ```
 */
 export class MCPServer {
   #service: JsonRpcService;
@@ -640,6 +1123,15 @@ export class MCPServer {
   #terminatedSessions = new Set<string>();
   #sessionBySignal = new WeakMap<AbortSignal, string>();
   #recordBySignal = new WeakMap<AbortSignal, McpConnectionRecord>();
+  /**
+  * Create an MCP server from the given capabilities.
+  *
+  * The advertised MCP capabilities are derived from which options are
+  * present: configuring `tools` advertises tools, any of `resources` /
+  * `resourceTemplates` / `readResource` advertises resources, and `prompts` /
+  * `getPrompt` advertises prompts. `listChanged` flags add the corresponding
+  * `listChanged` (and, for resources, `subscribe`) capability markers.
+  */
   constructor(opts: MCPServerOptions = {}) {
     this.#tools = opts.tools ?? [];
     this.#resources = opts.resources;
@@ -920,6 +1412,16 @@ export class MCPServer {
   }
   /**
   * Notify clients that the server tool list changed.
+  *
+  * Broadcasts `notifications/tools/list_changed` to every connected peer and
+  * HTTP session. No-op unless `listChanged.tools` was enabled — the
+  * capability must be advertised before clients can rely on the signal.
+  *
+  * ```ts no_run
+  * const server = mcpServer({ tools: () => currentTools, listChanged: { tools: true } });
+  * currentTools.push(newTool);
+  * await server.notifyToolsChanged();
+  * ```
   */
   async notifyToolsChanged(): Promise<void> {
     if (!this.#listChanged.tools) return;
@@ -927,6 +1429,9 @@ export class MCPServer {
   }
   /**
   * Notify clients that the server resource list changed.
+  *
+  * Broadcasts `notifications/resources/list_changed` to every connected peer
+  * and HTTP session. No-op unless `listChanged.resources` was enabled.
   */
   async notifyResourcesChanged(): Promise<void> {
     if (!this.#listChanged.resources) return;
@@ -934,6 +1439,9 @@ export class MCPServer {
   }
   /**
   * Notify clients that the server prompt list changed.
+  *
+  * Broadcasts `notifications/prompts/list_changed` to every connected peer
+  * and HTTP session. No-op unless `listChanged.prompts` was enabled.
   */
   async notifyPromptsChanged(): Promise<void> {
     if (!this.#listChanged.prompts) return;
@@ -941,12 +1449,34 @@ export class MCPServer {
   }
   /**
   * Notify subscribed clients that a resource URI was updated.
+  *
+  * Sends `notifications/resources/updated` only to connections that
+  * subscribed to this exact URI via `resources/subscribe`; unlike the list
+  * change notifications it is not gated on a `listChanged` flag.
+  *
+  * ```ts no_run
+  * await saveDocument('doc://readme', updated);
+  * await server.notifyResourceUpdated('doc://readme');
+  * ```
   */
   async notifyResourceUpdated(uri: string): Promise<void> {
     await this.#broadcast('notifications/resources/updated', { uri }, (record) => record.subscriptions.has(uri));
   }
   /**
   * Serve this MCP endpoint over any JSON-RPC string transport.
+  *
+  * Handles one peer per call and resolves when the transport ends. Use this
+  * to run the server over a stdio pair, an in-memory duplex in tests, or any
+  * custom transport; server-initiated notifications flow back through the
+  * same peer.
+  *
+  * ```ts no_run
+  * const [clientSide, serverSide] = inMemoryTransportPair();
+  * void server.serve(serverSide);
+  *
+  * const client = new MCPClient({ transport: clientSide });
+  * await client.connect();
+  * ```
   */
   async serve(transport: Transport): Promise<void> {
     const record = this.#newRecord(`transport-${randomSessionId()}`);
@@ -966,9 +1496,27 @@ export class MCPServer {
   /**
   * Create a Streamable HTTP handler for this MCP endpoint.
   *
-  * Mount the returned handler on one path for `GET`, `POST`, and `DELETE`.
-  * This non-streaming implementation returns `405` for `GET` because it does
-  * not yet offer an independent SSE channel.
+  * Mount the returned handler on one path for `GET`, `POST`, and `DELETE` —
+  * `mountMcp()` does exactly that. `POST` carries client JSON-RPC traffic: an
+  * `initialize` request creates a session whose id is returned in the
+  * `Mcp-Session-Id` response header, and every later request must echo that
+  * header (missing ids get `400`, unknown ids `404`). `GET` opens the
+  * standalone SSE channel for server-initiated notifications and replays
+  * missed events when a client reconnects with `Last-Event-ID` (the last 32
+  * events per session are retained). `DELETE` terminates the session.
+  *
+  * Requests failing the `allowedOrigins` policy are rejected with `403`;
+  * other methods get `405`.
+  *
+  * ```ts no_run
+  * import { App } from 'fino:net/http/app';
+  *
+  * const app = new App();
+  * const handler = server.httpHandler();
+  * app.get('/mcp').handle((ctx) => handler(ctx.request));
+  * app.post('/mcp').handle((ctx) => handler(ctx.request));
+  * app.delete('/mcp').handle((ctx) => handler(ctx.request));
+  * ```
   */
   httpHandler(): (request: Request) => Promise<Response> {
     return async (request: Request): Promise<Response> => {
@@ -992,8 +1540,17 @@ export class MCPServer {
   /**
   * Start a small standalone HTTP MCP server.
   *
-  * Prefer mounting `httpHandler()` into `fino:net/http/app` for production
-  * services so application middleware controls authentication and policy.
+  * Binds a bare HTTP server and dispatches only the configured path (default
+  * `/`); anything else responds `404`. Prefer mounting `httpHandler()` into
+  * `fino:net/http/app` for production services so application middleware
+  * controls authentication and policy.
+  *
+  * ```ts no_run
+  * const handle = server.listen({ port: 0, path: '/mcp' });
+  * await handle.ready;
+  * console.log(`listening on ${handle.port}`);
+  * handle.close();
+  * ```
   */
   listen(opts: ListenOptions): ServerHandle {
     const path = opts.path ?? '/';
@@ -1019,6 +1576,24 @@ export class MCPServer {
 }
 /**
 * Create an MCP server from local Fino tools and resource readers.
+*
+* Convenience wrapper around `new MCPServer(opts)`.
+*
+* ```ts no_run
+* import { mcpServer } from 'fino:ai/mcp';
+* import { tool } from 'fino:ai/tool';
+* import { v } from 'fino:validate';
+*
+* const server = mcpServer({
+*   name: 'calculator',
+*   tools: [tool({
+*     name: 'add',
+*     description: 'Add two numbers.',
+*     parameters: v.object({ a: v.number(), b: v.number() }),
+*     execute: ({ a, b }: { a: number; b: number }) => String(a + b),
+*   })],
+* });
+* ```
 */
 export function mcpServer(opts: MCPServerOptions = {}): MCPServer {
   return new MCPServer(opts);
@@ -1026,8 +1601,20 @@ export function mcpServer(opts: MCPServerOptions = {}): MCPServer {
 /**
 * Mount an MCP server on a Fino `App` or `Router`.
 *
-* The target's middleware remains responsible for authentication,
-* authorization, logging, and rate limiting around the MCP endpoint.
+* Registers the server's Streamable HTTP handler for `GET`, `POST`, and
+* `DELETE` on the given path and returns the target for chaining. The
+* target's middleware remains responsible for authentication, authorization,
+* logging, and rate limiting around the MCP endpoint.
+*
+* ```ts no_run
+* import { App } from 'fino:net/http/app';
+* import { mcpServer, mountMcp } from 'fino:ai/mcp';
+*
+* const app = new App();
+* app.use(requireBearerToken);
+* mountMcp(app, '/mcp', mcpServer({ name: 'internal-tools' }));
+* app.listen({ port: 8080 });
+* ```
 */
 export function mountMcp(target: MCPRouteTarget, path: string, server: MCPServer): MCPRouteTarget {
   const handler = server.httpHandler();
@@ -1038,6 +1625,38 @@ export function mountMcp(target: MCPRouteTarget, path: string, server: MCPServer
 }
 /**
 * Client for MCP tools and resources.
+*
+* Construct with a transport, call `connect()` to perform the `initialize`
+* handshake, then use the list and read methods. Remote MCP tools are
+* converted into Fino `Tool` instances whose `execute` proxies `tools/call`
+* over the transport, so they can be passed directly to an `Agent`.
+*
+* The client also answers server-initiated requests: `roots/list` when
+* `roots` is configured, `sampling/createMessage` when `sampling` is
+* configured, and `elicitation/create` when `elicitation` is configured.
+* List-changed notifications from the server refresh the retained `tools`,
+* `resources`, `resourceTemplates`, and `prompts` signals automatically.
+*
+* Every request method throws if called before `connect()`.
+*
+* ```ts no_run
+* import { MCPClient, stdioTransport } from 'fino:ai/mcp';
+* import { agent, streamText } from 'fino:ai/agent';
+* import { openai } from 'fino:ai/model';
+*
+* const mcp = new MCPClient({
+*   transport: stdioTransport({ command: 'mcp-filesystem', args: ['/srv/data'] }),
+* });
+* await mcp.connect();
+*
+* const bot = agent({
+*   model: openai({ model: 'gpt-4o' }),
+*   tools: await mcp.listTools(),
+* });
+* const stream = bot.stream('Summarize the monthly report.');
+* for await (const text of streamText(stream)) console.log(text);
+* await mcp.close();
+* ```
 */
 export class MCPClient {
   #peer: JsonRpcPeer;
@@ -1075,6 +1694,13 @@ export class MCPClient {
       this.#promptSetters.delete(set);
     };
   });
+  /**
+  * Create a client on the given transport.
+  *
+  * The JSON-RPC peer starts reading from the transport immediately so
+  * server-initiated requests and notifications can be answered, but no MCP
+  * traffic is sent until `connect()` runs the `initialize` handshake.
+  */
   constructor(opts: MCPClientOptions) {
     this.#opts = opts;
     const service = new JsonRpcService().method('roots/list').handle(async (params) => {
@@ -1113,19 +1739,49 @@ export class MCPClient {
     });
     this.#peer = new JsonRpcPeer(opts.transport, service);
   }
-  /** Retained first-page list of remote tools. */
+  /**
+  * Retained first-page list of remote tools.
+  *
+  * The signal starts empty, fetches lazily on first observation, and
+  * refreshes automatically when the server emits
+  * `notifications/tools/list_changed`. Use `listTools()` /
+  * `listToolsPage()` for an explicit fetch or for pagination.
+  *
+  * ```ts no_run
+  * import { effect } from 'fino:signals';
+  *
+  * effect(() => {
+  *   console.log('tools:', mcp.tools.value.map((t) => t.name));
+  * });
+  * ```
+  */
   get tools(): ReadonlySignal<Tool[]> {
     return this.#toolsSignal;
   }
-  /** Retained first-page list of remote resources. */
+  /**
+  * Retained first-page list of remote resources.
+  *
+  * Fetches lazily on first observation and refreshes when the server emits
+  * `notifications/resources/list_changed`.
+  */
   get resources(): ReadonlySignal<McpResource[]> {
     return this.#resourcesSignal;
   }
-  /** Retained first-page list of remote resource templates. */
+  /**
+  * Retained first-page list of remote resource templates.
+  *
+  * Fetches lazily on first observation and refreshes when the server emits
+  * `notifications/resources/list_changed`.
+  */
   get resourceTemplates(): ReadonlySignal<McpResourceTemplate[]> {
     return this.#resourceTemplatesSignal;
   }
-  /** Retained first-page list of remote prompts. */
+  /**
+  * Retained first-page list of remote prompts.
+  *
+  * Fetches lazily on first observation and refreshes when the server emits
+  * `notifications/prompts/list_changed`.
+  */
   get prompts(): ReadonlySignal<McpPrompt[]> {
     return this.#promptsSignal;
   }
@@ -1153,6 +1809,14 @@ export class MCPClient {
     if (one) one(items);
     else for (const set of this.#promptSetters) set(items);
   }
+  /**
+  * Perform the MCP `initialize` handshake.
+  *
+  * Advertises the client capabilities implied by the configured options
+  * (`roots`, `sampling`, `elicitation`), then sends
+  * `notifications/initialized`. Must complete before any list, read, or
+  * subscribe method is used — those throw until the client is connected.
+  */
   async connect(): Promise<void> {
     const capabilities: Record<string, unknown> = {};
     if (this.#opts.roots !== undefined) capabilities.roots = {};
@@ -1169,6 +1833,22 @@ export class MCPClient {
   #assertConnected(): void {
     if (!this.#connected) throw new Error('MCPClient: call connect() first');
   }
+  /**
+  * List remote tools as Fino `Tool` instances.
+  *
+  * Returns one `tools/list` page without cursor metadata — the convenience
+  * form for servers that fit their tool list in a single page. Each returned
+  * `Tool` proxies its execution through `tools/call` on this client; text
+  * content parts of the result are concatenated, and a result flagged
+  * `isError` is surfaced as a tool error rather than a thrown exception.
+  *
+  * Throws if called before `connect()`.
+  *
+  * ```ts no_run
+  * const tools = await mcp.listTools();
+  * const bot = agent({ model, tools });
+  * ```
+  */
   async listTools(params: McpListParams = {}): Promise<Tool[]> {
     return (await this.listToolsPage(params)).items;
   }
@@ -1178,6 +1858,18 @@ export class MCPClient {
   * Use this when a remote server may paginate large tool lists. `listTools()`
   * remains the compatibility helper for one-page servers and returns only the
   * current page's `Tool` instances.
+  *
+  * Throws if called before `connect()`.
+  *
+  * ```ts no_run
+  * const all: Tool[] = [];
+  * let cursor: string | undefined;
+  * do {
+  *   const page = await mcp.listToolsPage(cursor ? { cursor } : {});
+  *   all.push(...page.items);
+  *   cursor = page.nextCursor;
+  * } while (cursor !== undefined);
+  * ```
   */
   async listToolsPage(params: McpListParams = {}): Promise<McpListPage<Tool>> {
     this.#assertConnected();
@@ -1210,11 +1902,20 @@ export class MCPClient {
       ...result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}
     };
   }
+  /**
+  * List remote resource descriptors.
+  *
+  * Returns one `resources/list` page without cursor metadata; use
+  * `listResourcesPage()` when the server paginates. Throws if called before
+  * `connect()`.
+  */
   async listResources(params: McpListParams = {}): Promise<McpResource[]> {
     return (await this.listResourcesPage(params)).items;
   }
   /**
   * Return one MCP `resources/list` page with cursor metadata.
+  *
+  * Throws if called before `connect()`.
   */
   async listResourcesPage(params: McpListParams = {}): Promise<McpListPage<McpResource>> {
     this.#assertConnected();
@@ -1227,11 +1928,20 @@ export class MCPClient {
       ...result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}
     };
   }
+  /**
+  * List remote resource templates.
+  *
+  * Returns one `resources/templates/list` page without cursor metadata; use
+  * `listResourceTemplatesPage()` when the server paginates. Throws if called
+  * before `connect()`.
+  */
   async listResourceTemplates(params: McpListParams = {}): Promise<McpResourceTemplate[]> {
     return (await this.listResourceTemplatesPage(params)).items;
   }
   /**
   * Return one MCP `resources/templates/list` page with cursor metadata.
+  *
+  * Throws if called before `connect()`.
   */
   async listResourceTemplatesPage(params: McpListParams = {}): Promise<McpListPage<McpResourceTemplate>> {
     this.#assertConnected();
@@ -1244,6 +1954,19 @@ export class MCPClient {
       ...result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}
     };
   }
+  /**
+  * Read the content of a resource by URI.
+  *
+  * Returns the server's content list — usually one entry, but servers may
+  * return several (e.g. a directory URI expanding to its files). Throws if
+  * called before `connect()`; unknown URIs surface as `JsonRpcError` from the
+  * server.
+  *
+  * ```ts no_run
+  * const [content] = await mcp.readResource('file:///data/report.txt');
+  * console.log(content.text);
+  * ```
+  */
   async readResource(uri: string): Promise<McpResourceContent[]> {
     this.#assertConnected();
     const result = await this.#peer.call('resources/read', { uri }) as {
@@ -1251,11 +1974,20 @@ export class MCPClient {
     };
     return result.contents ?? [];
   }
+  /**
+  * List remote prompt descriptors.
+  *
+  * Returns one `prompts/list` page without cursor metadata; use
+  * `listPromptsPage()` when the server paginates. Throws if called before
+  * `connect()`.
+  */
   async listPrompts(params: McpListParams = {}): Promise<McpPrompt[]> {
     return (await this.listPromptsPage(params)).items;
   }
   /**
   * Return one MCP `prompts/list` page with cursor metadata.
+  *
+  * Throws if called before `connect()`.
   */
   async listPromptsPage(params: McpListParams = {}): Promise<McpListPage<McpPrompt>> {
     this.#assertConnected();
@@ -1268,6 +2000,17 @@ export class MCPClient {
       ...result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}
     };
   }
+  /**
+  * Render a remote prompt into conversation messages.
+  *
+  * Calls `prompts/get` with the given argument values. Throws if called
+  * before `connect()`; unknown prompt names surface as `JsonRpcError` from
+  * the server.
+  *
+  * ```ts no_run
+  * const { messages } = await mcp.getPrompt('summarize', { text: longText });
+  * ```
+  */
   async getPrompt(name: string, args: Record<string, unknown> = {}): Promise<McpPromptResult> {
     this.#assertConnected();
     return await this.#peer.call('prompts/get', {
@@ -1275,20 +2018,59 @@ export class MCPClient {
       arguments: args
     }) as McpPromptResult;
   }
+  /**
+  * Subscribe to update notifications for a resource URI.
+  *
+  * Updates arrive through the `onResourceUpdated` callback configured on the
+  * client. Throws if called before `connect()`.
+  *
+  * ```ts no_run
+  * const mcp = new MCPClient({
+  *   transport,
+  *   onResourceUpdated: (uri) => console.log('updated:', uri),
+  * });
+  * await mcp.connect();
+  * await mcp.subscribeResource('file:///data/report.txt');
+  * ```
+  */
   async subscribeResource(uri: string): Promise<void> {
     this.#assertConnected();
     await this.#peer.call('resources/subscribe', { uri });
   }
+  /**
+  * Cancel a resource subscription made with `subscribeResource()`.
+  *
+  * Throws if called before `connect()`.
+  */
   async unsubscribeResource(uri: string): Promise<void> {
     this.#assertConnected();
     await this.#peer.call('resources/unsubscribe', { uri });
   }
+  /**
+  * Close the underlying peer and transport.
+  *
+  * For stdio transports this closes the child's stdin so the server process
+  * can exit. The client cannot be reused after closing.
+  */
   async close(): Promise<void> {
     await this.#peer.close();
   }
 }
 /**
 * Create an `MCPClient`.
+*
+* Convenience wrapper around `new MCPClient(opts)`; the returned client still
+* needs `connect()` before use.
+*
+* ```ts no_run
+* import { mcpClient, httpTransport } from 'fino:ai/mcp';
+*
+* const client = mcpClient({
+*   transport: httpTransport({ url: 'https://tools.example.com/mcp' }),
+* });
+* await client.connect();
+* const tools = await client.listTools();
+* ```
 */
 export function mcpClient(opts: MCPClientOptions): MCPClient {
   return new MCPClient(opts);

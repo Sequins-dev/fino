@@ -1,6 +1,38 @@
 /**
 * Arrow IPC stream and file writers.
 *
+* Serializes `RecordBatch` / `Table` data into the two Arrow IPC formats: the
+* streaming format (schema message, dictionary batches, record batches, then
+* an end-of-stream marker) and the random-access file format (the same
+* message stream wrapped in `ARROW1` magic bytes with a Flatbuffers footer
+* that indexes every block). Output is accumulated entirely in memory and
+* returned as one contiguous `Uint8Array`.
+*
+* Body buffers are laid out per the columnar spec: every buffer is padded to
+* 8-byte alignment, validity bitmaps are regenerated from each vector's null
+* mask, and sliced vectors are serialized window-only — offset buffers are
+* rebased so the first visible element starts at 0, and list children are
+* trimmed to the referenced range. Dictionary-encoded columns (at any nesting
+* depth) emit one dictionary batch per dictionary id, placed before the first
+* record batch that references it. Optional per-buffer body compression (LZ4
+* frame or Zstd) uses the spec's compressed-buffer framing — an 8-byte
+* uncompressed-length prefix, with a `-1` sentinel storing the buffer raw
+* whenever compression fails to shrink it.
+*
+* The public surface — `RecordBatchStreamWriter`, `RecordBatchFileWriter`,
+* `tableToIPC`, and `IPCWriteOptions` — is re-exported through
+* `fino:data/arrow`; import from there. The reading half lives in
+* `./reader.ts`.
+*
+* ```ts no_run
+* import { RecordBatch, tableToIPC } from 'fino:data/arrow';
+*
+* const batch = RecordBatch.from({ id: [1, 2, 3], name: ['a', 'b', 'c'] });
+* const bytes = tableToIPC(batch, { format: 'file', compression: 'zstd' });
+* ```
+*
+* Arrow IPC format: https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
+*
 * @internal
 */
 import { compress as compressBytes } from 'fino:compress';
@@ -20,9 +52,30 @@ const MAGIC = new Uint8Array([
   87,
   49
 ]);
-/** Options controlling IPC serialization. */
+/**
+* Options controlling IPC serialization.
+*
+* Accepted by every writer in this module. Compression applies to record
+* batch and dictionary batch bodies only — message metadata is never
+* compressed — and readers on the other end must support the chosen codec.
+*
+* ```ts no_run
+* import { RecordBatch, tableToIPC, type IPCWriteOptions } from 'fino:data/arrow';
+*
+* const options: IPCWriteOptions = { compression: 'lz4' };
+* const bytes = tableToIPC(RecordBatch.from({ id: [1, 2, 3] }), options);
+* ```
+*/
 export interface IPCWriteOptions {
-  /** Body compression codec, or `undefined` for uncompressed. */
+  /**
+  * Body compression codec, or `undefined` for uncompressed buffers.
+  *
+  * `'lz4'` is the LZ4 frame format; `'zstd'` is Zstandard. The codec must be
+  * available through `fino:compress` (backed by the system's liblz4 /
+  * libzstd). Buffers that do not shrink under compression are stored raw,
+  * so enabling compression never inflates a body buffer beyond its 8-byte
+  * length prefix.
+  */
   compression?: 'lz4' | 'zstd';
 }
 interface BatchBuffers {
@@ -247,6 +300,29 @@ function findDictionaries(vec: Vector, out: Map<number, Vector>): void {
 /**
 * Serialize batches into the Arrow IPC stream or file format.
 *
+* The shared engine behind `RecordBatchStreamWriter` and
+* `RecordBatchFileWriter` — those classes are thin format-selecting wrappers
+* around this one. The first `writeBatch` call captures the batch's schema
+* and emits the schema message (preceded by the `ARROW1` magic in file mode);
+* batches written after that are assumed to share the same schema — no
+* cross-batch validation is performed. Dictionary batches are emitted
+* lazily, once per dictionary id, ahead of the first record batch that
+* references them.
+*
+* A writer is single-use and fully in-memory: append batches with
+* `writeBatch`, then call `finish` exactly once to terminate the output and
+* obtain the bytes. This class is not part of the public `fino:data/arrow`
+* surface; built-in code that needs direct control imports it from
+* `internal:data/arrow/ipc/writer`.
+*
+* ```ts no_run
+* import { IPCWriter } from 'internal:data/arrow/ipc/writer';
+*
+* const writer = new IPCWriter({ file: true, compression: 'zstd' });
+* writer.writeBatch(batch);
+* const bytes = writer.finish();
+* ```
+*
 * @internal
 */
 export class IPCWriter {
@@ -266,6 +342,11 @@ export class IPCWriter {
   }[] = [];
   #position = 0;
   #dictionariesWritten = new Set<number>();
+  /**
+  * Create a writer; `file: true` selects the file format, otherwise the
+  * streaming format is produced. `compression` behaves as documented on
+  * `IPCWriteOptions`.
+  */
   constructor(options: (IPCWriteOptions & {
     file?: boolean;
   }) | undefined) {
@@ -311,7 +392,16 @@ export class IPCWriter {
       this.#dictBlocks.push(block);
     }
   }
-  /** Append a record batch. */
+  /**
+  * Append a record batch to the output.
+  *
+  * The first call captures the batch's schema and writes the schema message.
+  * Dictionaries referenced by the batch (at any nesting depth) that have not
+  * been written yet are emitted as dictionary batches before the record
+  * batch itself. Throws `ArrowError` when a column is a sliced list-view,
+  * union, or run-end-encoded vector — serializing a sliced window of those
+  * layouts is not supported; compact the vector first.
+  */
   writeBatch(batch: RecordBatch): void {
     this.#ensureSchema(batch.schema);
     this.#writeDictionaries(batch);
@@ -320,7 +410,15 @@ export class IPCWriter {
     const block = this.#pushMessage(meta, bufs.body);
     this.#batchBlocks.push(block);
   }
-  /** Finish the stream/file and return the complete byte buffer. */
+  /**
+  * Terminate the output and return the complete byte buffer.
+  *
+  * In stream mode this appends the end-of-stream marker; in file mode it
+  * appends the Flatbuffers footer indexing every dictionary and record
+  * batch block, the footer length, and the trailing `ARROW1` magic. Throws
+  * `ArrowError` if no batch was ever written, since there is no schema to
+  * emit. Call exactly once — the writer is spent afterwards.
+  */
   finish(): Uint8Array {
     if (this.#schema === null) throw new ArrowError('cannot finish an IPC writer with no schema (write at least one batch)');
     if (this.#file) {
@@ -391,46 +489,116 @@ function encodeBlocks(b: Builder, blocks: {
   return b.endVector();
 }
 /**
-* Stream-format IPC writer: schema, dictionaries, batches, EOS.
+* Writer for the Arrow IPC streaming format.
+*
+* Produces the sequential wire form — schema message, dictionary batches,
+* record batches, end-of-stream marker — meant for transports where the
+* consumer reads messages in order (sockets, pipes, HTTP bodies) and for any
+* Arrow-speaking peer (pyarrow, polars, DuckDB, ...). The schema is taken
+* from the first batch written; later batches are assumed to match it and
+* are not validated. The whole stream is buffered in memory until `toBytes`.
+*
+* ```ts no_run
+* import { RecordBatch, RecordBatchStreamWriter } from 'fino:data/arrow';
+*
+* const writer = new RecordBatchStreamWriter({ compression: 'lz4' });
+* writer
+*   .write(RecordBatch.from({ id: [1, 2], name: ['a', 'b'] }))
+*   .write(RecordBatch.from({ id: [3, 4], name: ['c', 'd'] }));
+* const bytes = writer.toBytes();
+* ```
 */
 export class RecordBatchStreamWriter {
   #writer: IPCWriter;
+  /** Create a stream writer, optionally compressing batch bodies. */
   constructor(options?: IPCWriteOptions) {
     this.#writer = new IPCWriter(options);
   }
-  /** Append a batch. */
+  /**
+  * Append a batch; returns `this` so calls chain.
+  *
+  * Throws `ArrowError` for sliced list-view, union, or run-end-encoded
+  * columns, which must be compacted before writing.
+  */
   write(batch: RecordBatch): this {
     this.#writer.writeBatch(batch);
     return this;
   }
-  /** Finish and return the stream bytes. */
+  /**
+  * Finish the stream and return the full byte buffer.
+  *
+  * Appends the end-of-stream marker, so nothing more can be written. Throws
+  * `ArrowError` if no batch was written. Call exactly once.
+  */
   toBytes(): Uint8Array {
     return this.#writer.finish();
   }
 }
 /**
-* File-format IPC writer: magic, message stream, footer, magic.
+* Writer for the Arrow IPC file format (also known as Feather V2).
+*
+* Wraps the streaming message sequence in `ARROW1` magic bytes and appends a
+* Flatbuffers footer recording the offset and size of every dictionary and
+* record batch block, so readers can seek straight to any batch without
+* scanning. This is the format to persist to disk (conventionally `.arrow`
+* files); use `RecordBatchStreamWriter` for sequential transports. Like the
+* stream writer, the schema comes from the first batch and everything is
+* buffered in memory until `toBytes`.
+*
+* ```ts no_run
+* import { RecordBatch, RecordBatchFileWriter } from 'fino:data/arrow';
+*
+* const writer = new RecordBatchFileWriter({ compression: 'zstd' });
+* writer.write(RecordBatch.from({ id: [1, 2, 3], score: [0.5, 0.9, 0.1] }));
+* const bytes = writer.toBytes(); // write these to a .arrow file
+* ```
 */
 export class RecordBatchFileWriter {
   #writer: IPCWriter;
+  /** Create a file writer, optionally compressing batch bodies. */
   constructor(options?: IPCWriteOptions) {
     this.#writer = new IPCWriter({
       ...options,
       file: true
     });
   }
-  /** Append a batch. */
+  /**
+  * Append a batch; returns `this` so calls chain.
+  *
+  * Throws `ArrowError` for sliced list-view, union, or run-end-encoded
+  * columns, which must be compacted before writing.
+  */
   write(batch: RecordBatch): this {
     this.#writer.writeBatch(batch);
     return this;
   }
-  /** Finish and return the file bytes. */
+  /**
+  * Finish the file and return the full byte buffer.
+  *
+  * Appends the footer and trailing magic, so nothing more can be written.
+  * Throws `ArrowError` if no batch was written. Call exactly once.
+  */
   toBytes(): Uint8Array {
     return this.#writer.finish();
   }
 }
 /**
-* Serialize a table or batch to Arrow IPC bytes.
+* Serialize a table or a single record batch to Arrow IPC bytes.
+*
+* One-shot convenience over the writer classes: a `Table` writes each of its
+* batches in order, a lone `RecordBatch` writes just itself. `format`
+* selects the streaming format (the default) or the random-access file
+* format; `tableFromIPC` is the inverse and auto-detects which one it was
+* given. Throws `ArrowError` if the source contains no batches.
+*
+* ```ts no_run
+* import { RecordBatch, Table, tableToIPC, tableFromIPC } from 'fino:data/arrow';
+*
+* const b1 = RecordBatch.from({ id: [1, 2], name: ['a', 'b'] });
+* const b2 = RecordBatch.from({ id: [3, 4], name: ['c', 'd'] });
+* const bytes = tableToIPC(Table.from([b1, b2]), { format: 'file' });
+* tableFromIPC(bytes).numRows; // 4
+* ```
 */
 export function tableToIPC(source: Table | RecordBatch, options?: IPCWriteOptions & {
   format?: 'stream' | 'file';

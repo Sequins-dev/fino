@@ -1,13 +1,18 @@
 /**
 * Shared compression contracts and validation helpers.
 *
-* These declarations back `fino:compress` but are not an application-facing
-* module. Public aliases are documented from `fino:compress` so generated docs
-* do not need to expose this internal implementation path.
+* These declarations back `fino:compress` and its per-format backends (zlib,
+* Brotli, Zstandard, LZ4, Snappy) but are not an application-facing module.
+* Each backend imports the `CompressionTransform` contract and the byte
+* helpers from here so streaming codecs behave identically regardless of
+* format, while `fino:compress` uses the validators to reject bad options
+* before dispatching to native code. Public aliases are documented from
+* `fino:compress` so generated docs do not need to expose this internal
+* implementation path.
 *
 * ## Example
 *
-* ```typescript no_run
+* ```ts no_run
 * import * as common from 'internal:compress/common';
 *
 * const options = common.validateCompressOptions({ format: 'gzip', level: 6 });
@@ -21,25 +26,27 @@
 /**
 * Compression formats accepted by `fino:compress`.
 *
-* `gzip`, `deflate`, and `deflate-raw` are handled by zlib. `brotli` is
-* handled by the Brotli backend and may be unavailable when system libraries
-* cannot be loaded.
+* `gzip`, `deflate`, and `deflate-raw` are handled by zlib. `brotli`, `zstd`,
+* `lz4`, and `snappy` each have their own backend that loads the matching
+* system library, and may be unavailable at runtime when that library cannot
+* be loaded — check the per-format `*Available` flags on `fino:compress`
+* before relying on them.
 *
-* ```typescript no_run
-* import type { CompressionFormat } from 'internal:compress/common';
+* ```ts no_run
+* import type { CompressionFormat } from 'fino:compress';
 * const format: CompressionFormat = 'gzip';
 * ```
-*
-* @internal
 */
 export type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli' | 'zstd' | 'lz4' | 'snappy';
 /**
 * Compression formats implemented by the zlib backend.
 *
-* This narrows `CompressionFormat` by excluding Brotli before dispatching to
-* zlib. Passing Brotli to zlib helpers throws before native calls are made.
+* This narrows `CompressionFormat` by excluding the formats owned by other
+* backends (`brotli`, `zstd`, `lz4`, `snappy`) before dispatching to zlib.
+* Passing one of those formats to zlib helpers throws before native calls are
+* made.
 *
-* ```typescript no_run
+* ```ts no_run
 * import type { ZlibCompressionFormat } from 'internal:compress/common';
 * const format: ZlibCompressionFormat = 'deflate';
 * ```
@@ -54,33 +61,29 @@ export type ZlibCompressionFormat = Exclude<CompressionFormat, 'brotli' | 'zstd'
 * Strings are intentionally not accepted here so callers choose their own text
 * encoding before compression.
 *
-* ```typescript no_run
-* import type { ByteInput } from 'internal:compress/common';
+* ```ts no_run
+* import type { ByteInput } from 'fino:compress';
 * const input: ByteInput = new Uint8Array([1, 2, 3]);
 * ```
-*
-* @internal
 */
 export type ByteInput = Uint8Array | ArrayBuffer;
 /**
 * Options for one-shot or streaming compression.
 *
-* `format` is required. `level` is backend-specific and optional; zlib accepts
-* its normal level range and Brotli interprets it as quality.
+* `format` is required. `level` is backend-specific and optional; see the
+* `level` property for how each backend interprets it.
 *
-* ```typescript no_run
-* import type { CompressOptions } from 'internal:compress/common';
+* ```ts no_run
+* import type { CompressOptions } from 'fino:compress';
 * const opts: CompressOptions = { format: 'gzip', level: 6 };
 * ```
-*
-* @internal
 */
 export interface CompressOptions {
   /**
   * Compression format to use.
   *
-  * ```typescript no_run
-  * import type { CompressOptions } from 'internal:compress/common';
+  * ```ts no_run
+  * import type { CompressOptions } from 'fino:compress';
   * const options: CompressOptions = { format: 'brotli' };
   * options.format;
   * ```
@@ -89,11 +92,14 @@ export interface CompressOptions {
   /**
   * Optional backend compression level.
   *
-  * Omitted values use backend defaults. Invalid ranges are currently left to
-  * the native backend to reject.
+  * zlib formats accept the usual zlib level range, `brotli` interprets it as
+  * encoder quality, `zstd` maps it to the Zstandard compression level, and
+  * `lz4` maps it to the LZ4 Frame level. `snappy` has no levels and ignores
+  * this option. Omitted values use backend defaults. Invalid ranges are
+  * currently left to the native backend to reject.
   *
-  * ```typescript no_run
-  * import type { CompressOptions } from 'internal:compress/common';
+  * ```ts no_run
+  * import type { CompressOptions } from 'fino:compress';
   * const options: CompressOptions = { format: 'deflate', level: 1 };
   * options.level;
   * ```
@@ -105,19 +111,17 @@ export interface CompressOptions {
 *
 * Only `format` is accepted because decompression does not use a level.
 *
-* ```typescript no_run
-* import type { DecompressOptions } from 'internal:compress/common';
+* ```ts no_run
+* import type { DecompressOptions } from 'fino:compress';
 * const opts: DecompressOptions = { format: 'deflate-raw' };
 * ```
-*
-* @internal
 */
 export interface DecompressOptions {
   /**
   * Compression format expected in the input stream.
   *
-  * ```typescript no_run
-  * import type { DecompressOptions } from 'internal:compress/common';
+  * ```ts no_run
+  * import type { DecompressOptions } from 'fino:compress';
   * const options: DecompressOptions = { format: 'gzip' };
   * options.format;
   * ```
@@ -130,20 +134,18 @@ export interface DecompressOptions {
 * `write` may return zero or more chunks for each input. `finish` finalizes the
 * stream and closes native state. Calling methods after close may throw.
 *
-* ```typescript no_run
-* import * as common from 'internal:compress/common';
-* function drain(codec: common.CompressionTransform, chunk: common.ByteInput) {
+* ```ts no_run
+* import type { ByteInput, CompressionTransform } from 'fino:compress';
+* function drain(codec: CompressionTransform, chunk: ByteInput) {
 *   return [...codec.write(chunk), ...codec.finish()];
 * }
 * ```
-*
-* @internal
 */
 export interface CompressionTransform {
   /**
   * Feed one binary chunk and return produced output chunks.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const parts = codec.write(new Uint8Array([1, 2, 3]));
   * ```
   */
@@ -151,7 +153,7 @@ export interface CompressionTransform {
   /**
   * Finish the stream and return final output chunks.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const finalParts = codec.finish();
   * ```
   */
@@ -162,7 +164,7 @@ export interface CompressionTransform {
   * The implementation closes the codec in a `finally` block, including when
   * the consumer stops early.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * for await (const part of codec.transform(source)) {
   *   void part;
   * }
@@ -175,7 +177,7 @@ export interface CompressionTransform {
   * Multiple calls should be harmless for concrete codecs unless native state
   * has already been destroyed by `finish`.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * codec.close();
   * ```
   */
@@ -187,7 +189,7 @@ export interface CompressionTransform {
 * `Uint8Array` inputs are returned unchanged. `ArrayBuffer` inputs share memory
 * with the returned view.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { toU8 } from 'internal:compress/common';
 * const view = toU8(new ArrayBuffer(4));
 * ```
@@ -202,10 +204,12 @@ export function toU8(data: ByteInput): Uint8Array {
 /**
 * Concatenate output chunks into one `Uint8Array`.
 *
-* When `total` is omitted the byte length is computed from the parts. Empty
-* inputs return an empty array; a single input is returned as-is.
+* When `total` is omitted the byte length is computed from the parts; when
+* provided it is trusted as the exact combined length and skips the summing
+* pass. Empty inputs return an empty array; a single part is returned as-is
+* without copying.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { concat } from 'internal:compress/common';
 * const bytes = concat([new Uint8Array([1]), new Uint8Array([2])]);
 * ```
@@ -234,7 +238,7 @@ export function concat(parts: Uint8Array[], total?: number): Uint8Array {
 * Throws `TypeError` for unknown values. The return type is narrowed to
 * `CompressionFormat`.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { validateFormat } from 'internal:compress/common';
 * const format = validateFormat('gzip');
 * ```
@@ -253,7 +257,7 @@ export function validateFormat(format: unknown): CompressionFormat {
 * Requires an object and validates `format`. Other fields are shallow-copied
 * through unchanged so backend-specific options can be added later.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { validateCompressOptions } from 'internal:compress/common';
 * const opts = validateCompressOptions({ format: 'brotli', level: 5 });
 * ```
@@ -275,7 +279,7 @@ export function validateCompressOptions(options: CompressOptions): CompressOptio
 * Requires an object and validates `format`. Throws `TypeError` for `null`,
 * primitives, or unsupported formats.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { validateDecompressOptions } from 'internal:compress/common';
 * const opts = validateDecompressOptions({ format: 'deflate' });
 * ```
@@ -292,12 +296,13 @@ export function validateDecompressOptions(options: DecompressOptions): Decompres
   };
 }
 /**
-* Narrow a non-Brotli format for zlib-backed operations.
+* Narrow a format to the zlib-backed subset for zlib operations.
 *
-* Returns the original format when zlib can handle it. Passing `brotli` throws
-* `TypeError` before native zlib is invoked.
+* Returns the original format when zlib can handle it. Passing a format owned
+* by another backend (`brotli`, `zstd`, `lz4`, or `snappy`) throws `TypeError`
+* before native zlib is invoked.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { assertZlibFormat } from 'internal:compress/common';
 * const zlibFormat = assertZlibFormat('gzip');
 * ```

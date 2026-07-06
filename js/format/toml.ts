@@ -21,6 +21,10 @@
 *
 * Integer overflow throws by default; pass `{ bigint: true }` to receive
 * `BigInt` values for integers outside JavaScript's safe integer range.
+* Malformed input is reported as `ParseError` values from
+* `fino:parsing/scanner` tagged with `format: 'toml'`, carrying line/column
+* location and a `render()` diagnostic helper.
+*
 * Stringification emits a normalized TOML document and does not preserve
 * comments, source ordering between scalars and tables, or original quoting
 * style. Heterogeneous arrays are accepted as Fino values even though many
@@ -48,36 +52,37 @@ import { Scanner, ParseError } from 'fino:parsing/scanner';
 // Per-format error class
 // ---------------------------------------------------------------------------
 /**
-* Error thrown when TOML input is malformed or violates TOML structure rules.
+* TOML-branded parse error subclass of `ParseError` from `fino:parsing/scanner`.
 *
-* The error inherits source location and rendering support from `ParseError`.
-* Invalid values, duplicate keys, duplicate table declarations, and integer
-* overflow without `bigint: true` are reported through this error type.
+* It inherits source location metadata (`offset`, `line`, `column`) and the
+* `render()` diagnostic helper from `ParseError`. Note that `parse()` itself
+* reports malformed input — invalid values, duplicate keys, duplicate table
+* declarations, and integer overflow without `bigint: true` — as base
+* `ParseError` instances whose `format` is `'toml'`, not as instances of this
+* subclass. Catch with `instanceof ParseError` (which also matches
+* `TomlParseError`) and check `error.format` when the format matters; this
+* class exists for code layered on top of this module that wants to raise a
+* TOML-specific error distinguishable by `name`.
 *
 * ```ts no_run
-* import { TomlParseError, parse } from 'fino:format/toml';
+* import { ParseError } from 'fino:parsing/scanner';
+* import { parse } from 'fino:format/toml';
 *
 * try {
 *   parse('answer =');
 * } catch (error) {
-*   if (error instanceof TomlParseError) console.error(error.render());
+*   if (error instanceof ParseError && error.format === 'toml') {
+*     console.error(error.render());
+*   }
 * }
 * ```
 */
 export class TomlParseError extends ParseError {
   /**
-  * Error name reported by `TomlParseError` instances.
+  * Error name, always `'TomlParseError'`.
   *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * const error = new TomlParseError('example', { line: 1, column: 1, offset: 0, snippet: 'x' });
-  * console.log(error.name);
-  * ```
+  * Useful for distinguishing TOML failures in logs or serialized error
+  * reports where `instanceof` checks are unavailable.
   */
   name = 'TomlParseError';
 }
@@ -480,15 +485,33 @@ export interface TomlStringifyOptions {
 /**
 * Parse a TOML document into a plain object.
 *
-* The parser enforces TOML 1.0.0 key uniqueness, table structure, scalar
-* syntax, and integer range rules. It returns an object with a null prototype
-* internally, but callers should treat the result as a plain record of
-* `TomlValue`.
+* Input may be a string or UTF-8 bytes. The parser enforces TOML 1.0.0 key
+* uniqueness, table structure, scalar syntax, and integer range rules. Tables
+* become plain objects, arrays of tables become arrays of objects, and
+* temporal values follow the mapping described in the module header (offset
+* datetimes become native `Date`, local values use the wrapper classes).
+*
+* Throws a `ParseError` (from `fino:parsing/scanner`, with `format` set to
+* `'toml'`) on malformed syntax, duplicate keys, duplicate table
+* declarations, and integers outside JavaScript's safe range unless
+* `bigint: true` is passed.
 *
 * ```ts no_run
 * import { parse } from 'fino:format/toml';
 *
-* parse('title = "Fino"\n[server]\nport = 8080\n');
+* const cfg = parse(`
+* title = "Fino"
+*
+* [server]
+* port = 8080
+* hosts = ["a.example", "b.example"]
+*
+* [[jobs]]
+* name = "backup"
+* at = 02:30:00
+* `);
+* cfg.title;                     // 'Fino'
+* (cfg.server as any).port;      // 8080
 * ```
 */
 export function parse(input: string | Uint8Array, options: TomlParseOptions = {}): Record<string, TomlValue> {
@@ -980,17 +1003,26 @@ class TomlParser {
 // Stringify
 // ---------------------------------------------------------------------------
 /**
-* Serialize a TOML-compatible object.
+* Serialize a TOML-compatible object to TOML text.
 *
-* The stringifier emits TOML scalars before nested tables, converts native
-* `Date` values to UTC offset datetimes, and emits local wrappers through
-* their `toString()` methods. It does not preserve comments or original source
-* formatting from a parsed document.
+* The stringifier emits scalars before nested tables, nested objects as
+* `[table]` headers, and arrays of objects as `[[array-of-tables]]` entries.
+* Native `Date` values become UTC offset datetimes (`+00:00`), local temporal
+* wrappers serialize through their `toString()` methods, and non-finite
+* numbers become `inf`, `-inf`, or `nan`. Keys that are not bare-key safe are
+* quoted, and strings prefer literal (single-quoted) form when they contain no
+* single quotes or newlines. Output is normalized: comments and original
+* source formatting from a parsed document are not preserved.
 *
 * ```ts no_run
-* import { stringify } from 'fino:format/toml';
+* import { parse, stringify } from 'fino:format/toml';
 *
-* stringify({ server: { port: 8080 } });
+* const text = stringify({
+*   title: 'Fino',
+*   server: { port: 8080, hosts: ['a.example', 'b.example'] },
+*   listeners: [{ port: 8080 }, { port: 8443 }],
+* });
+* parse(text); // round-trips to an equivalent object
 * ```
 */
 export function stringify(value: Record<string, TomlValue>, options: TomlStringifyOptions = {}): string {

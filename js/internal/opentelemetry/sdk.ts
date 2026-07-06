@@ -1,24 +1,42 @@
 /**
-* OpenTelemetry SDK wiring for processors, readers, exporters, and runtime instrumentation.
+* internal:opentelemetry/sdk — cross-signal SDK wiring for processors, readers, exporters, and instrumentations.
 *
-* This internal module subscribes to the trace, log, metric, and observable
-* registration topics produced by the runtime OpenTelemetry modules. It applies
-* sampling, limits, metric views, cardinality limits, resource enrichment, and
-* exporter fan-out before delivering records to processors and readers.
+* This internal module is the collection engine behind `fino:opentelemetry/sdk`
+* (which re-exports everything here). `OtelSDK` subscribes to the runtime's
+* trace, log, metric, and observable-registration topics and applies the full
+* pipeline before records reach an exporter: span limits, sampling, log limits,
+* metric views, cardinality limits, resource enrichment, and multi-exporter
+* fan-out. The individual span processors, log processors, and metric readers
+* are the batching stages that sit between the SDK and the exporters.
 *
-* By default, the SDK uses an OTLP HTTP JSON exporter, a batch span processor,
-* no log processors, no metric readers, an always-on sampler, and a W3C
-* propagator. `start()` is idempotent, `flush()` exports queued telemetry and
-* collects observables, and `shutdown()` flushes before disposing
-* instrumentations and readers.
+* By default an `OtelSDK` uses an OTLP HTTP JSON exporter, a single
+* `BatchSpanProcessor`, no log processors, no metric readers, an always-on
+* sampler, and a W3C trace-context propagator. `start()` is idempotent and
+* wires up the topic subscriptions and periodic readers; `flush()` collects
+* observable metrics and drains every processor and reader; `shutdown()`
+* flushes, then disposes instrumentations and readers and resets state so the
+* SDK can be started again.
 *
-* ```typescript no_run
+* Metrics are aggregated in two parallel stores — one cumulative, one delta —
+* so a reader configured for either temporality can be served without
+* re-accumulating. Spans are sampled once: `recordSpanStart` remembers a
+* sampled span id so the matching `recordSpan` can skip a second sampler pass,
+* and a bare `recordSpan` (no prior start) samples on the spot.
+*
+* ```ts no_run
+* import { BatchSpanProcessor, InMemoryExporter, OtelSDK } from 'fino:opentelemetry/sdk';
+*
 * const memory = new InMemoryExporter();
 * const sdk = new OtelSDK({
 *   exporters: [memory],
-*   spanProcessors: [new BatchSpanProcessor(memory)],
+*   spanProcessors: [new BatchSpanProcessor(memory, { scheduledDelayMillis: 0 })],
 * }).start();
+*
+* // ... run instrumented work ...
+*
 * await sdk.flush();
+* console.log(memory.getFinishedSpans().length);
+* await sdk.shutdown();
 * ```
 *
 * See OpenTelemetry SDK concepts:
@@ -38,338 +56,202 @@ import { W3CTraceContextPropagator } from './common.ts';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
 /**
-* InMemoryExporter class exposed by the OpenTelemetry API.
+* An exporter that retains every span, log, and metric it receives in memory.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* This is the exporter to reach for in tests and assertions: nothing leaves the
+* process, and the `getFinished*` accessors return defensive copies of what has
+* been exported so far. Its `export*` methods always resolve with a `success`
+* result, so it never exercises retry or failure paths — pair it with a real
+* exporter if you need to test those.
 *
-* ```typescript no_run
-* const ctor = InMemoryExporter;
+* ```ts no_run
+* import { BatchSpanProcessor, InMemoryExporter, OtelSDK } from 'fino:opentelemetry/sdk';
+*
+* const memory = new InMemoryExporter();
+* const sdk = new OtelSDK({
+*   spanProcessors: [new BatchSpanProcessor(memory, { scheduledDelayMillis: 0 })],
+* }).start();
+*
+* await sdk.flush();
+* for (const span of memory.getFinishedSpans()) console.log(span.name);
 * ```
 */
 export class InMemoryExporter {
-  /**
-  * #spans member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'InMemoryExporter.#spans';
-  * ```
-  */
+  /** Spans accumulated by `exportSpans`, in arrival order. */
   #spans: SpanRecord[] = [];
-  /**
-  * #logs member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'InMemoryExporter.#logs';
-  * ```
-  */
+  /** Log records accumulated by `exportLogs`, in arrival order. */
   #logs: LogRecord[] = [];
-  /**
-  * #metrics member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'InMemoryExporter.#metrics';
-  * ```
-  */
+  /** Metric records accumulated by `exportMetrics`, in arrival order. */
   #metrics: MetricRecord[] = [];
   /**
-  * exportSpans member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = InMemoryExporter.prototype.exportSpans;
-  * ```
+  * Appends the given spans to the in-memory store and resolves with success.
   */
   async exportSpans(spans: SpanRecord[]): Promise<ExportResult> {
     this.#spans.push(...spans);
     return { code: 'success' };
   }
   /**
-  * exportLogs member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = InMemoryExporter.prototype.exportLogs;
-  * ```
+  * Appends the given log records to the in-memory store and resolves with success.
   */
   async exportLogs(logs: LogRecord[]): Promise<ExportResult> {
     this.#logs.push(...logs);
     return { code: 'success' };
   }
   /**
-  * exportMetrics member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = InMemoryExporter.prototype.exportMetrics;
-  * ```
+  * Appends the given metric records to the in-memory store and resolves with success.
   */
   async exportMetrics(metrics: MetricRecord[]): Promise<ExportResult> {
     this.#metrics.push(...metrics);
     return { code: 'success' };
   }
   /**
-  * getFinishedSpans member on InMemoryExporter.
+  * Returns a shallow copy of every span exported so far.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = InMemoryExporter.prototype.getFinishedSpans;
-  * ```
+  * The returned array is a snapshot; later exports do not mutate it. Assert
+  * against its length and contents after calling `sdk.flush()`.
   */
   getFinishedSpans(): SpanRecord[] {
     return [...this.#spans];
   }
   /**
-  * getFinishedLogs member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = InMemoryExporter.prototype.getFinishedLogs;
-  * ```
+  * Returns a shallow copy of every log record exported so far.
   */
   getFinishedLogs(): LogRecord[] {
     return [...this.#logs];
   }
   /**
-  * getFinishedMetrics member on InMemoryExporter.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = InMemoryExporter.prototype.getFinishedMetrics;
-  * ```
+  * Returns a shallow copy of every metric record exported so far.
   */
   getFinishedMetrics(): MetricRecord[] {
     return [...this.#metrics];
   }
 }
 /**
-* SpanProcessor class exposed by the OpenTelemetry API.
+* Base class for span processors; the no-op default that subclasses override.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* A span processor is the stage the SDK notifies when a span starts
+* (`onStart`) and ends (`onEnd`). The base implementation does nothing, which
+* makes it a valid null processor and a convenient superclass. Subclass it to
+* batch, filter, or forward spans — see `BatchSpanProcessor`.
 *
-* ```typescript no_run
-* const ctor = SpanProcessor;
+* ```ts no_run
+* import { SpanProcessor } from 'fino:opentelemetry/sdk';
+* import type { SpanRecord } from 'fino:opentelemetry';
+*
+* class LoggingProcessor extends SpanProcessor {
+*   onEnd(span: SpanRecord): void {
+*     console.log('finished span', span.name);
+*   }
+* }
 * ```
 */
 export class SpanProcessor {
-  /**
-  * onStart member on SpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = SpanProcessor.prototype.onStart;
-  * ```
-  */
+  /** Called when a span starts, after sampling and limits are applied. No-op by default. */
   onStart(_span: SpanRecord): void {}
-  /**
-  * onEnd member on SpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = SpanProcessor.prototype.onEnd;
-  * ```
-  */
+  /** Called when a span ends, after limits are applied. No-op by default. */
   onEnd(_span: SpanRecord): void {}
-  /**
-  * forceFlush member on SpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = SpanProcessor.prototype.forceFlush;
-  * ```
-  */
+  /** Exports anything the processor has buffered. Resolves immediately by default. */
   async forceFlush(): Promise<void> {}
-  /**
-  * shutdown member on SpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = SpanProcessor.prototype.shutdown;
-  * ```
-  */
+  /** Flushes and releases resources. Resolves immediately by default. */
   async shutdown(): Promise<void> {}
 }
 /**
-* LogRecordProcessor class exposed by the OpenTelemetry API.
+* Base class for log-record processors; the no-op default that subclasses override.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* A log processor is notified once per emitted log record via `onEmit`. The
+* base implementation is a null processor. Subclass it to batch or forward logs
+* — see `BatchLogRecordProcessor`.
 *
-* ```typescript no_run
-* const ctor = LogRecordProcessor;
+* ```ts no_run
+* import { LogRecordProcessor } from 'fino:opentelemetry/sdk';
+* import type { LogRecord } from 'fino:opentelemetry';
+*
+* class ConsoleLogProcessor extends LogRecordProcessor {
+*   onEmit(log: LogRecord): void {
+*     console.log(log.severityText, log.body);
+*   }
+* }
 * ```
 */
 export class LogRecordProcessor {
-  /**
-  * onEmit member on LogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = LogRecordProcessor.prototype.onEmit;
-  * ```
-  */
+  /** Called for each emitted log record. No-op by default. */
   onEmit(_log: LogRecord): void {}
-  /**
-  * forceFlush member on LogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = LogRecordProcessor.prototype.forceFlush;
-  * ```
-  */
+  /** Exports anything the processor has buffered. Resolves immediately by default. */
   async forceFlush(): Promise<void> {}
-  /**
-  * shutdown member on LogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = LogRecordProcessor.prototype.shutdown;
-  * ```
-  */
+  /** Flushes and releases resources. Resolves immediately by default. */
   async shutdown(): Promise<void> {}
 }
 /**
-* MetricReader class exposed by the OpenTelemetry API.
+* Base class for metric readers; carries the reader's aggregation temporality.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* A metric reader is the sink the SDK delivers aggregated metric batches to.
+* Its `temporality` — `'cumulative'` (default) or `'delta'` — selects which of
+* the SDK's two aggregate stores feeds it, and stamps `aggregationTemporality`
+* on each record. The base class is a null reader; subclass it to collect
+* (`ManualMetricReader`) or export on a timer (`PeriodicMetricReader`).
 *
-* ```typescript no_run
-* const ctor = MetricReader;
+* ```ts no_run
+* import { MetricReader } from 'fino:opentelemetry/sdk';
+*
+* const reader = new MetricReader({ temporality: 'delta' });
+* console.log(reader.temporality); // 'delta'
 * ```
 */
 export class MetricReader {
-  /**
-  * #temporality member on MetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'MetricReader.#temporality';
-  * ```
-  */
+  /** The configured aggregation temporality, `'cumulative'` or `'delta'`. */
   #temporality: MetricTemporality;
   /**
-  * constructor member on MetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new MetricReader();
-  * ```
+  * Constructs a reader with the given temporality, defaulting to `'cumulative'`.
   */
   constructor(options: {
     temporality?: MetricTemporality;
   } = {}) {
     this.#temporality = options.temporality || 'cumulative';
   }
-  /**
-  * temporality member on MetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const getter = MetricReader.prototype.temporality;
-  * ```
-  */
+  /** The aggregation temporality this reader reports metrics with. */
   get temporality(): MetricTemporality {
     return this.#temporality;
   }
-  /**
-  * record member on MetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = MetricReader.prototype.record;
-  * ```
-  */
+  /** Records a single metric. No-op by default. */
   record(_metric: MetricRecord): void {}
-  /**
-  * receive member on MetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = MetricReader.prototype.receive;
-  * ```
-  */
+  /** Receives a batch of aggregated metrics from the SDK. No-op by default. */
   receive(_metrics: MetricRecord[]): void {}
-  /**
-  * forceFlush member on MetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = MetricReader.prototype.forceFlush;
-  * ```
-  */
+  /** Exports anything buffered. Resolves immediately by default. */
   async forceFlush(): Promise<void> {}
-  /**
-  * shutdown member on MetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = MetricReader.prototype.shutdown;
-  * ```
-  */
+  /** Stops collection and releases resources. Resolves immediately by default. */
   async shutdown(): Promise<void> {}
 }
 /**
-* ManualMetricReader class exposed by the OpenTelemetry API.
+* A metric reader that buffers the latest batch for synchronous `collect()`.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Unlike `PeriodicMetricReader`, this reader never exports on its own — it holds
+* the most recent batch the SDK delivered and hands it out when you call
+* `collect()`. This is the building block behind `metricsSignal` and any pull-
+* based integration (a scrape endpoint, a dashboard poll). Under `'delta'`
+* temporality, receiving an empty batch after having seen data emits zeroed
+* copies of the last series so downstream consumers observe the reset.
 *
-* ```typescript no_run
-* const ctor = ManualMetricReader;
+* ```ts no_run
+* import { ManualMetricReader, OtelSDK } from 'fino:opentelemetry/sdk';
+*
+* const reader = new ManualMetricReader({ temporality: 'delta' });
+* const sdk = new OtelSDK({ metricReaders: [reader] }).start();
+*
+* await sdk.flush();          // SDK delivers a batch to the reader
+* const metrics = reader.collect(); // drains and returns it
 * ```
 */
 export class ManualMetricReader extends MetricReader {
-  /**
-  * #batch member on ManualMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'ManualMetricReader.#batch';
-  * ```
-  */
+  /** The batch currently available to `collect()`; cleared once collected. */
   #batch: MetricRecord[] = [];
-  /**
-  * #lastSeen member on ManualMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'ManualMetricReader.#lastSeen';
-  * ```
-  */
+  /** The last non-empty batch, used to synthesize zeroed deltas on reset. */
   #lastSeen: MetricRecord[] = [];
   /**
-  * receive member on ManualMetricReader.
+  * Stores the delivered batch for the next `collect()`.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = ManualMetricReader.prototype.receive;
-  * ```
+  * Each call replaces the buffered batch rather than appending. When a delta
+  * reader receives an empty batch after previously seeing data, the buffer is
+  * filled with zeroed copies of the last series so the reset is visible.
   */
   receive(metrics: MetricRecord[]): void {
     if (metrics.length === 0 && this.temporality === 'delta' && this.#lastSeen.length > 0) {
@@ -380,13 +262,11 @@ export class ManualMetricReader extends MetricReader {
     if (metrics.length > 0) this.#lastSeen = metrics.map((metric) => cloneMetric(metric));
   }
   /**
-  * collect member on ManualMetricReader.
+  * Returns and clears the buffered batch as cloned records.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = ManualMetricReader.prototype.collect;
-  * ```
+  * The buffer is emptied, so a second call before the next `receive()` returns
+  * an empty array. Records are cloned, so mutating them does not affect SDK
+  * state.
   */
   collect(): MetricRecord[] {
     const out = this.#batch.map((metric) => cloneMetric(metric));
@@ -395,7 +275,24 @@ export class ManualMetricReader extends MetricReader {
   }
 }
 /**
-* Create a cold signal that periodically collects a manual metric reader.
+* Wraps a `ManualMetricReader` in a cold signal that re-collects on an interval.
+*
+* The returned signal starts empty, collects once immediately when it gains its
+* first subscriber, then polls `reader.collect()` every `intervalMs`
+* (default 1000). Empty collections are skipped, so the signal only updates
+* when there is new metric data. Being cold, the polling timer is only active
+* while the signal has subscribers and is cleared when the last one leaves.
+*
+* ```ts no_run
+* import { ManualMetricReader, OtelSDK, metricsSignal } from 'fino:opentelemetry/sdk';
+*
+* const reader = new ManualMetricReader();
+* new OtelSDK({ metricReaders: [reader] }).start();
+*
+* const metrics = metricsSignal(reader, { intervalMs: 5000 });
+* const stop = metrics.subscribe((batch) => console.log('metrics', batch.length));
+* // later: stop();
+* ```
 */
 export function metricsSignal(reader: ManualMetricReader, options: {
   intervalMs?: number;
@@ -412,93 +309,47 @@ export function metricsSignal(reader: ManualMetricReader, options: {
   });
 }
 /**
-* BatchSpanProcessor class exposed by the OpenTelemetry API.
+* A span processor that queues finished spans and exports them in batches.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Spans are buffered on `onEnd` and flushed to the exporter in slices of
+* `maxExportBatchSize` (default 512). Once the queue reaches `maxQueueSize`
+* (default 2048), further spans are dropped and counted in `droppedSpanCount`.
+* When `scheduledDelayMillis` is greater than zero a timer flushes the queue
+* after that delay; with the default of `0` no timer is armed and you must call
+* `forceFlush()` (or `sdk.flush()`) to export — which is what tests typically
+* want for determinism.
 *
-* ```typescript no_run
-* const ctor = BatchSpanProcessor;
+* ```ts no_run
+* import { BatchSpanProcessor, InMemoryExporter } from 'fino:opentelemetry/sdk';
+*
+* const exporter = new InMemoryExporter();
+* const processor = new BatchSpanProcessor(exporter, {
+*   maxQueueSize: 4096,
+*   maxExportBatchSize: 256,
+*   scheduledDelayMillis: 5000,
+* });
 * ```
 */
 export class BatchSpanProcessor extends SpanProcessor {
-  /**
-  * #exporter member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchSpanProcessor.#exporter';
-  * ```
-  */
+  /** The exporter batches are handed to. */
   #exporter: OtelExporter;
-  /**
-  * #queue member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchSpanProcessor.#queue';
-  * ```
-  */
+  /** Spans buffered since the last flush. */
   #queue: SpanRecord[] = [];
-  /**
-  * #maxExportBatchSize member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchSpanProcessor.#maxExportBatchSize';
-  * ```
-  */
+  /** Maximum spans exported per `exportSpans` call. */
   #maxExportBatchSize: number;
-  /**
-  * #maxQueueSize member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchSpanProcessor.#maxQueueSize';
-  * ```
-  */
+  /** Queue capacity; spans arriving when full are dropped. */
   #maxQueueSize: number;
-  /**
-  * #scheduledDelayMillis member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchSpanProcessor.#scheduledDelayMillis';
-  * ```
-  */
+  /** Delay before an automatic flush; `0` disables the timer. */
   #scheduledDelayMillis: number;
-  /**
-  * #timer member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchSpanProcessor.#timer';
-  * ```
-  */
+  /** Handle for the pending scheduled-flush timer, or null when idle. */
   #timer: number | null = null;
-  /**
-  * #droppedSpanCount private field on BatchSpanProcessor.
-  *
-  * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
-  *
-  * ```typescript no_run
-  * const field = 'BatchSpanProcessor.#droppedSpanCount';
-  * ```
-  */
+  /** Count of spans dropped because the queue was full. */
   #droppedSpanCount = 0;
   /**
-  * constructor member on BatchSpanProcessor.
+  * Constructs a batch processor around an exporter with optional sizing.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new BatchSpanProcessor();
-  * ```
+  * `maxQueueSize` defaults to 2048, `maxExportBatchSize` to 512, and
+  * `scheduledDelayMillis` to 0 (manual flush only).
   */
   constructor(exporter: OtelExporter, options: {
     maxQueueSize?: number;
@@ -511,26 +362,15 @@ export class BatchSpanProcessor extends SpanProcessor {
     this.#maxExportBatchSize = options.maxExportBatchSize || 512;
     this.#scheduledDelayMillis = options.scheduledDelayMillis || 0;
   }
-  /**
-  * droppedSpanCount member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const getter = BatchSpanProcessor.prototype.droppedSpanCount;
-  * ```
-  */
+  /** How many spans have been dropped because the queue was full. */
   get droppedSpanCount(): number {
     return this.#droppedSpanCount;
   }
   /**
-  * onEnd member on BatchSpanProcessor.
+  * Enqueues a finished span, dropping it if the queue is at capacity.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = BatchSpanProcessor.prototype.onEnd;
-  * ```
+  * When a positive `scheduledDelayMillis` is configured and no flush is
+  * pending, this arms the flush timer.
   */
   onEnd(span: SpanRecord): void {
     if (this.#queue.length >= this.#maxQueueSize) {
@@ -546,13 +386,11 @@ export class BatchSpanProcessor extends SpanProcessor {
     }
   }
   /**
-  * forceFlush member on BatchSpanProcessor.
+  * Cancels any pending timer and exports the whole queue in batches.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = BatchSpanProcessor.prototype.forceFlush;
-  * ```
+  * Drains the queue in slices of `maxExportBatchSize`, awaiting each
+  * `exportSpans` call in turn, so it resolves only once everything buffered
+  * has been handed to the exporter.
   */
   async forceFlush(): Promise<void> {
     if (this.#timer !== null) {
@@ -564,117 +402,54 @@ export class BatchSpanProcessor extends SpanProcessor {
       await this.#exporter.exportSpans(batch);
     }
   }
-  /**
-  * shutdown member on BatchSpanProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = BatchSpanProcessor.prototype.shutdown;
-  * ```
-  */
+  /** Flushes remaining spans; the exporter itself is not closed here. */
   async shutdown(): Promise<void> {
     await this.forceFlush();
   }
 }
 /**
-* BatchLogRecordProcessor class exposed by the OpenTelemetry API.
+* A log-record processor that applies attribute limits and exports in batches.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Logs are buffered on `onEmit` after `attributeCountLimit` and
+* `attributeValueLengthLimit` (both unbounded by default) are enforced, then
+* flushed to the exporter in slices of `maxExportBatchSize` (default 512).
+* Records arriving when the queue is at `maxQueueSize` (default 2048) are
+* silently dropped. As with the span processor, `scheduledDelayMillis` of `0`
+* means no automatic flush — call `forceFlush()` or `sdk.flush()`.
 *
-* ```typescript no_run
-* const ctor = BatchLogRecordProcessor;
+* ```ts no_run
+* import { BatchLogRecordProcessor, InMemoryExporter, OtelSDK } from 'fino:opentelemetry/sdk';
+*
+* const exporter = new InMemoryExporter();
+* const sdk = new OtelSDK({
+*   logRecordProcessors: [
+*     new BatchLogRecordProcessor(exporter, { attributeValueLengthLimit: 1024 }),
+*   ],
+* }).start();
 * ```
 */
 export class BatchLogRecordProcessor extends LogRecordProcessor {
-  /**
-  * #exporter member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#exporter';
-  * ```
-  */
+  /** The exporter batches are handed to. */
   #exporter: OtelExporter;
-  /**
-  * #queue member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#queue';
-  * ```
-  */
+  /** Log records buffered since the last flush. */
   #queue: LogRecord[] = [];
-  /**
-  * #maxQueueSize member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#maxQueueSize';
-  * ```
-  */
+  /** Queue capacity; records arriving when full are dropped. */
   #maxQueueSize: number;
-  /**
-  * #maxExportBatchSize member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#maxExportBatchSize';
-  * ```
-  */
+  /** Maximum records exported per `exportLogs` call. */
   #maxExportBatchSize: number;
-  /**
-  * #scheduledDelayMillis member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#scheduledDelayMillis';
-  * ```
-  */
+  /** Delay before an automatic flush; `0` disables the timer. */
   #scheduledDelayMillis: number;
-  /**
-  * #attributeCountLimit member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#attributeCountLimit';
-  * ```
-  */
+  /** Cap on attribute entries retained per record. */
   #attributeCountLimit: number;
-  /**
-  * #attributeValueLengthLimit member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#attributeValueLengthLimit';
-  * ```
-  */
+  /** Cap on attribute string-value length per record. */
   #attributeValueLengthLimit: number;
-  /**
-  * #timer member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'BatchLogRecordProcessor.#timer';
-  * ```
-  */
+  /** Handle for the pending scheduled-flush timer, or null when idle. */
   #timer: number | null = null;
   /**
-  * constructor member on BatchLogRecordProcessor.
+  * Constructs a batch log processor around an exporter with optional limits.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new BatchLogRecordProcessor();
-  * ```
+  * Sizing defaults match `BatchSpanProcessor`; attribute-count and value-length
+  * limits default to unbounded (`Number.POSITIVE_INFINITY`).
   */
   constructor(exporter: OtelExporter, options: {
     maxQueueSize?: number;
@@ -692,13 +467,10 @@ export class BatchLogRecordProcessor extends LogRecordProcessor {
     this.#attributeValueLengthLimit = options.attributeValueLengthLimit || Number.POSITIVE_INFINITY;
   }
   /**
-  * onEmit member on BatchLogRecordProcessor.
+  * Applies attribute limits and enqueues the record, dropping it if full.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = BatchLogRecordProcessor.prototype.onEmit;
-  * ```
+  * Arms the flush timer when a positive `scheduledDelayMillis` is configured
+  * and none is pending.
   */
   onEmit(log: LogRecord): void {
     if (this.#queue.length >= this.#maxQueueSize) return;
@@ -714,13 +486,7 @@ export class BatchLogRecordProcessor extends LogRecordProcessor {
     }
   }
   /**
-  * forceFlush member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = BatchLogRecordProcessor.prototype.forceFlush;
-  * ```
+  * Cancels any pending timer and exports the whole queue in batches.
   */
   async forceFlush(): Promise<void> {
     if (this.#timer !== null) {
@@ -732,29 +498,24 @@ export class BatchLogRecordProcessor extends LogRecordProcessor {
       await this.#exporter.exportLogs(batch);
     }
   }
-  /**
-  * shutdown member on BatchLogRecordProcessor.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = BatchLogRecordProcessor.prototype.shutdown;
-  * ```
-  */
+  /** Flushes remaining logs; the exporter itself is not closed here. */
   async shutdown(): Promise<void> {
     await this.forceFlush();
   }
 }
+/**
+* Exporter that fans a single export call out to several underlying exporters.
+*
+* Used internally by `OtelSDK` when more than one exporter is configured. Each
+* signal method dispatches to every wrapped exporter in parallel via
+* `Promise.allSettled`, and reports `failure` if any exporter rejects or itself
+* returns `failure`; otherwise `success`. Missing methods on a wrapped exporter
+* are treated as trivially successful.
+*
+* @internal
+*/
 class FanoutExporter implements OtelExporter {
-  /**
-  * #exporters private field on FanoutExporter.
-  *
-  * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
-  *
-  * ```typescript no_run
-  * const field = 'FanoutExporter.#exporters';
-  * ```
-  */
+  /** The wrapped exporters each call is delivered to. */
   #exporters: OtelExporter[];
   constructor(exporters: OtelExporter[]) {
     this.#exporters = exporters;
@@ -775,63 +536,39 @@ class FanoutExporter implements OtelExporter {
   }
 }
 /**
-* PeriodicMetricReader class exposed by the OpenTelemetry API.
+* A metric reader that periodically collects aggregates and exports them.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Once `OtelSDK.start()` wires it up, this reader exports on a fixed interval
+* (`intervalMs`, default 60000). Each cycle the SDK collects the aggregate
+* store matching the reader's temporality, delivers it via `receive()`, and the
+* reader exports the buffered batch. A non-positive interval disables the timer,
+* leaving the reader flush-on-demand. Use `PeriodicExportingMetricReader` as the
+* stable alias for this class.
 *
-* ```typescript no_run
-* const ctor = PeriodicMetricReader;
+* ```ts no_run
+* import { OTLPHttpJsonExporter, OtelSDK, PeriodicMetricReader } from 'fino:opentelemetry/sdk';
+*
+* const sdk = new OtelSDK({
+*   metricReaders: [
+*     new PeriodicMetricReader(new OTLPHttpJsonExporter(), { intervalMs: 15000 }),
+*   ],
+* }).start();
 * ```
 */
 export class PeriodicMetricReader extends MetricReader {
-  /**
-  * #exporter member on PeriodicMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'PeriodicMetricReader.#exporter';
-  * ```
-  */
+  /** The exporter each collected batch is sent to. */
   #exporter: OtelExporter;
-  /**
-  * #queue member on PeriodicMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'PeriodicMetricReader.#queue';
-  * ```
-  */
+  /** Metrics buffered by `receive` awaiting the next flush. */
   #queue: MetricRecord[] = [];
-  /**
-  * #intervalMs member on PeriodicMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'PeriodicMetricReader.#intervalMs';
-  * ```
-  */
+  /** Collection/export interval in milliseconds. */
   #intervalMs: number;
-  /**
-  * #timer member on PeriodicMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'PeriodicMetricReader.#timer';
-  * ```
-  */
+  /** Handle for the periodic collection timer, or null when not started. */
   #timer: number | null = null;
   /**
-  * constructor member on PeriodicMetricReader.
+  * Constructs a periodic reader around an exporter.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new PeriodicMetricReader();
-  * ```
+  * `temporality` is passed through to `MetricReader` (default `'cumulative'`)
+  * and `intervalMs` defaults to 60000.
   */
   constructor(exporter: OtelExporter, options: {
     temporality?: MetricTemporality;
@@ -842,15 +579,18 @@ export class PeriodicMetricReader extends MetricReader {
     this.#intervalMs = options.intervalMs ?? 6e4;
   }
   /**
-  * Called by OtelSDK.start() to wire up a periodic collection cycle.
+  * Called by `OtelSDK.start()` to begin the periodic collection cycle.
   *
-  * `collectAndFlush` calls back into the SDK to collect accumulated metrics,
-  * deliver them via `receive()`, and then call `forceFlush()` to export. A
-  * non-positive interval disables scheduling, and repeated calls are ignored
-  * once a timer is active.
+  * `collectAndFlush` is the SDK-supplied callback that collects accumulated
+  * metrics, delivers them via `receive()`, and calls `forceFlush()` to export.
+  * A non-positive interval disables scheduling, and repeated calls are ignored
+  * once a timer is active. This is an internal wiring hook, not part of the
+  * public reader contract.
   *
-  * ```typescript no_run
-  * const reader = new PeriodicMetricReader({} as never, { intervalMs: 1000 });
+  * ```ts no_run
+  * import { OTLPHttpJsonExporter, PeriodicMetricReader } from 'fino:opentelemetry/sdk';
+  *
+  * const reader = new PeriodicMetricReader(new OTLPHttpJsonExporter(), { intervalMs: 1000 });
   * reader._startPeriodicCollection(async () => {});
   * ```
   */
@@ -860,41 +600,17 @@ export class PeriodicMetricReader extends MetricReader {
       void collectAndFlush();
     }, this.#intervalMs) as unknown) as number;
   }
-  /**
-  * receive member on PeriodicMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = PeriodicMetricReader.prototype.receive;
-  * ```
-  */
+  /** Buffers a batch of aggregated metrics for the next flush. */
   receive(metrics: MetricRecord[]): void {
     this.#queue.push(...metrics);
   }
-  /**
-  * forceFlush member on PeriodicMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = PeriodicMetricReader.prototype.forceFlush;
-  * ```
-  */
+  /** Exports and clears the buffered metrics; a no-op when empty. */
   async forceFlush(): Promise<void> {
     if (this.#queue.length === 0) return;
     const batch = this.#queue.splice(0, this.#queue.length);
     await this.#exporter.exportMetrics(batch);
   }
-  /**
-  * shutdown member on PeriodicMetricReader.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = PeriodicMetricReader.prototype.shutdown;
-  * ```
-  */
+  /** Stops the collection timer and flushes any remaining metrics. */
   async shutdown(): Promise<void> {
     if (this.#timer !== null) {
       clearInterval(this.#timer);
@@ -904,16 +620,27 @@ export class PeriodicMetricReader extends MetricReader {
   }
 }
 /**
-* PeriodicExportingMetricReader const exposed by the OpenTelemetry API.
+* Stable OpenTelemetry-spec alias for `PeriodicMetricReader`.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* Provided so code written against the standard SDK naming works unchanged;
+* it is the same constructor, not a subclass.
 *
-* ```typescript no_run
-* const value = PeriodicExportingMetricReader;
+* ```ts no_run
+* import { OTLPHttpJsonExporter, PeriodicExportingMetricReader } from 'fino:opentelemetry/sdk';
+*
+* const reader = new PeriodicExportingMetricReader(new OTLPHttpJsonExporter());
 * ```
 */
 export const PeriodicExportingMetricReader = PeriodicMetricReader;
-/** Evaluate a sampler result and return the (possibly attribute-enriched) span, or null if not sampled. */
+/**
+* Evaluates a sampler result against a span.
+*
+* Returns the span (possibly enriched with the sampler's added attributes and
+* trace state) when sampled, or null when dropped. A boolean result is treated
+* as a plain keep/drop decision with no enrichment.
+*
+* @internal
+*/
 function applySamplingResult(span: SpanRecord, result: SamplingResult | boolean): SpanRecord | null {
   if (typeof result === 'boolean') return result ? span : null;
   if (!result.sample) return null;
@@ -928,185 +655,84 @@ function applySamplingResult(span: SpanRecord, result: SamplingResult | boolean)
   };
 }
 /**
-* OtelSDK class exposed by the OpenTelemetry API.
+* The cross-signal collection engine that turns runtime telemetry into exports.
 *
-* Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
+* An `OtelSDK` ties together processors, readers, exporters, a sampler, a
+* propagator, metric views, span/log limits, a cardinality limit, and a
+* resource. Once `start()` runs it subscribes to the runtime metric/log/
+* observable topics and drives any periodic readers; span recording is driven
+* by instrumentations calling `recordSpanStart`/`recordSpan`. Records flow
+* through the pipeline — sampling and limits for spans, limits for logs, views
+* and cardinality capping for metrics — with the configured resource merged in
+* along the way, before reaching processors and readers.
 *
-* ```typescript no_run
-* const ctor = OtelSDK;
+* Construction fills in defaults for anything omitted: an OTLP HTTP JSON
+* exporter, one `BatchSpanProcessor`, no log processors or metric readers, an
+* `AlwaysOnSampler`, a `W3CTraceContextPropagator`, no views, an unbounded
+* cardinality limit, empty span limits, and no resource. Multiple exporters are
+* automatically wrapped in a fan-out exporter.
+*
+* ```ts no_run
+* import {
+*   BatchSpanProcessor,
+*   InMemoryExporter,
+*   OtelSDK,
+*   PeriodicMetricReader,
+* } from 'fino:opentelemetry/sdk';
+*
+* const exporter = new InMemoryExporter();
+* const sdk = new OtelSDK({
+*   resource: { 'service.name': 'checkout' },
+*   spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
+*   metricReaders: [new PeriodicMetricReader(exporter, { intervalMs: 0 })],
+* }).start();
+*
+* await sdk.flush();
+* await sdk.shutdown();
 * ```
 */
 export class OtelSDK {
-  /**
-  * #spanProcessors member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#spanProcessors';
-  * ```
-  */
+  /** Span processors that receive sampled, limited spans. */
   #spanProcessors: SpanProcessor[];
-  /**
-  * #logRecordProcessors member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#logRecordProcessors';
-  * ```
-  */
+  /** Log processors that receive enriched log records. */
   #logRecordProcessors: LogRecordProcessor[];
-  /**
-  * #metricReaders member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#metricReaders';
-  * ```
-  */
+  /** Metric readers fed from the aggregate stores. */
   #metricReaders: MetricReader[];
-  /**
-  * #sampler member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#sampler';
-  * ```
-  */
+  /** Sampler consulted once per span to keep or drop it. */
   #sampler: Sampler;
-  /**
-  * #propagator member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#propagator';
-  * ```
-  */
+  /** Propagator exposed for injecting/extracting trace context. */
   #propagator: TextMapPropagator;
-  /**
-  * #instrumentations member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#instrumentations';
-  * ```
-  */
+  /** Instrumentations enabled on `start()` and disposed on `shutdown()`. */
   #instrumentations: Instrumentation[];
-  /**
-  * #disposables member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#disposables';
-  * ```
-  */
+  /** Disposables (topic subscriptions and instrumentation handles) to release on shutdown. */
   #disposables: Array<{
     dispose(): void;
   }> = [];
-  /**
-  * #started private field on OtelSDK.
-  *
-  * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#started';
-  * ```
-  */
+  /** Whether `start()` has run; guards idempotency. */
   #started = false;
-  /**
-  * #sampledSpans private field on OtelSDK.
-  *
-  * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#sampledSpans';
-  * ```
-  */
+  /** Span ids sampled at start, so their end can skip a second sampler pass. */
   #sampledSpans = new Set<string>();
-  /**
-  * #metricAggregates private field on OtelSDK.
-  *
-  * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#metricAggregates';
-  * ```
-  */
+  /** Cumulative-temporality metric aggregates, keyed by series. */
   #metricAggregates = new Map<string, MetricRecord>();
-  /**
-  * #metricDeltaAggregates private field on OtelSDK.
-  *
-  * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#metricDeltaAggregates';
-  * ```
-  */
+  /** Delta-temporality metric aggregates, cleared after each delta flush. */
   #metricDeltaAggregates = new Map<string, MetricRecord>();
-  /**
-  * #observableMetrics private field on OtelSDK.
-  *
-  * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#observableMetrics';
-  * ```
-  */
+  /** Registered observable (pull) metric callbacks, collected on flush. */
   #observableMetrics = new Set<ObservableMetricRegistration>();
-  /**
-  * #views member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#views';
-  * ```
-  */
+  /** Metric views applied to shape or rename instruments. */
   #views: MetricView[];
-  /**
-  * #metricCardinalityLimit member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#metricCardinalityLimit';
-  * ```
-  */
+  /** Maximum distinct attribute sets retained per instrument. */
   #metricCardinalityLimit: number;
-  /**
-  * #spanLimits member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#spanLimits';
-  * ```
-  */
+  /** Span attribute/event/link limits applied before export. */
   #spanLimits: SpanLimits;
-  /**
-  * #resource member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const field = 'OtelSDK.#resource';
-  * ```
-  */
+  /** Resource merged into every emitted record, or null when unset. */
   #resource: Resource | null;
   /**
-  * constructor member on OtelSDK.
+  * Constructs an SDK, filling in defaults for any omitted option.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const instance = new OtelSDK();
-  * ```
+  * When no exporters are given a single OTLP HTTP JSON exporter is used; when
+  * several are given they are wrapped in a fan-out exporter feeding the default
+  * `BatchSpanProcessor`. A plain object passed as `resource` is normalized into
+  * a `Resource`.
   */
   constructor(options: {
     exporters?: OtelExporter[];
@@ -1134,27 +760,11 @@ export class OtelSDK {
     this.#spanLimits = options.spanLimits || {};
     this.#resource = options.resource == null ? null : normalizeResource(options.resource);
   }
-  /**
-  * propagator member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const getter = OtelSDK.prototype.propagator;
-  * ```
-  */
+  /** The configured trace-context propagator, for injecting/extracting carriers. */
   get propagator(): TextMapPropagator {
     return this.#propagator;
   }
-  /**
-  * resource member on OtelSDK.
-  *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const getter = OtelSDK.prototype.resource;
-  * ```
-  */
+  /** The configured resource merged into emitted records, or null when unset. */
   get resource(): Resource | null {
     return this.#resource;
   }
@@ -1165,9 +775,7 @@ export class OtelSDK {
   * resource is configured, its attributes override the record resource
   * attributes and its dropped-count, schema URL, and entity refs are preserved.
   *
-  * ```typescript no_run
-  * const helper = 'OtelSDK.#withResource';
-  * ```
+  * @internal
   */
   #withResource<TRecord extends {
     resource?: Resource;
@@ -1186,12 +794,18 @@ export class OtelSDK {
     };
   }
   /**
-  * start member on OtelSDK.
+  * Starts collection: subscribes to runtime topics and enables instrumentations.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Idempotent — a second call while already started is a no-op and returns
+  * `this`. Subscribes to the metric, log, and observable-registration topics,
+  * arms periodic metric readers, and enables each instrumentation, tracking any
+  * returned disposables for `shutdown()`. Returns the SDK so `start()` can be
+  * chained onto construction.
   *
-  * ```typescript no_run
-  * const member = OtelSDK.prototype.start;
+  * ```ts no_run
+  * import { OtelSDK } from 'fino:opentelemetry/sdk';
+  *
+  * const sdk = new OtelSDK().start();
   * ```
   */
   start(): this {
@@ -1233,13 +847,12 @@ export class OtelSDK {
     return this;
   }
   /**
-  * recordSpanStart member on OtelSDK.
+  * Records the start of a span, applying limits and sampling.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = OtelSDK.prototype.recordSpanStart;
-  * ```
+  * The span is limit-clamped and resource-enriched, then the sampler decides
+  * whether to keep it. Dropped spans return immediately; kept spans have their
+  * id remembered so the matching `recordSpan` skips re-sampling, and every span
+  * processor's `onStart` is invoked.
   */
   recordSpanStart(span: SpanRecord): void {
     const limited = applySpanLimits(this.#withResource(span), this.#spanLimits);
@@ -1250,13 +863,12 @@ export class OtelSDK {
     for (const processor of this.#spanProcessors) processor.onStart?.(finalSpan);
   }
   /**
-  * recordSpan member on OtelSDK.
+  * Records the end of a span and delivers it to the processors.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = OtelSDK.prototype.recordSpan;
-  * ```
+  * If the span was sampled at start its remembered id is consumed and the span
+  * is passed straight to each processor's `onEnd`. A span with no prior
+  * `recordSpanStart` (a direct end) is sampled here first, and dropped if the
+  * sampler declines.
   */
   recordSpan(span: SpanRecord): void {
     if (!this.#sampledSpans.delete(span.spanId)) {
@@ -1272,26 +884,23 @@ export class OtelSDK {
     for (const processor of this.#spanProcessors) processor.onEnd(limited);
   }
   /**
-  * recordLog member on OtelSDK.
+  * Records a log, enriches it with the resource, and emits to log processors.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = OtelSDK.prototype.recordLog;
-  * ```
+  * This is the handler bound to the `otel:log:record` topic on `start()`, but
+  * it can also be called directly.
   */
   recordLog(log: LogRecord): void {
     const enriched = this.#withResource(log);
     for (const processor of this.#logRecordProcessors) processor.onEmit(enriched);
   }
   /**
-  * recordMetric member on OtelSDK.
+  * Records a metric, applying views, cardinality limits, and aggregation.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
-  *
-  * ```typescript no_run
-  * const member = OtelSDK.prototype.recordMetric;
-  * ```
+  * The metric is view-shaped and resource-enriched, then dropped if it would
+  * introduce a new attribute set beyond the per-instrument cardinality limit.
+  * Surviving metrics are accumulated into both the cumulative and delta
+  * aggregate stores keyed by series. This is the handler bound to the
+  * `otel:metric:record` topic on `start()`.
   */
   recordMetric(metric: MetricRecord): void {
     const prepared = applyMetricView(this.#withResource(metric), this.#views);
@@ -1304,12 +913,25 @@ export class OtelSDK {
     accumulateMetric(this.#metricDeltaAggregates, key, prepared);
   }
   /**
-  * flush member on OtelSDK.
+  * Collects observable metrics and drains all processors and readers.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Each registered observable callback is invoked (errors are swallowed and the
+  * observable skipped) and its observations recorded. Then, for every reader,
+  * the aggregate store matching its temporality is delivered via `receive()`,
+  * and all span processors, log processors, and readers are flushed in
+  * parallel. Delta aggregates are cleared afterward so the next window starts
+  * fresh.
   *
-  * ```typescript no_run
-  * const member = OtelSDK.prototype.flush;
+  * ```ts no_run
+  * import { BatchSpanProcessor, InMemoryExporter, OtelSDK } from 'fino:opentelemetry/sdk';
+  *
+  * const exporter = new InMemoryExporter();
+  * const sdk = new OtelSDK({
+  *   spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
+  * }).start();
+  *
+  * await sdk.flush();
+  * console.log(exporter.getFinishedSpans().length);
   * ```
   */
   async flush(): Promise<void> {
@@ -1352,12 +974,19 @@ export class OtelSDK {
     this.#metricDeltaAggregates.clear();
   }
   /**
-  * shutdown member on OtelSDK.
+  * Flushes, then shuts down processors, readers, and instrumentations.
   *
-  * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+  * Runs a final `flush()`, then shuts down every span processor, log processor,
+  * and reader in parallel, disposes all tracked disposables (topic
+  * subscriptions and instrumentation handles, errors ignored), clears the
+  * sampled-span and aggregate state, and marks the SDK stopped. After this the
+  * SDK can be `start()`ed again.
   *
-  * ```typescript no_run
-  * const member = OtelSDK.prototype.shutdown;
+  * ```ts no_run
+  * import { OtelSDK } from 'fino:opentelemetry/sdk';
+  *
+  * const sdk = new OtelSDK().start();
+  * await sdk.shutdown();
   * ```
   */
   async shutdown(): Promise<void> {

@@ -1,14 +1,38 @@
 /**
-* internal/opentelemetry/instrumentations/trace-topic — internal runtime module.
+* internal:opentelemetry/instrumentations/trace-topic — bridges manual tracing
+* events into assembled OpenTelemetry span records.
 *
-* Bridges user-facing trace topic events into OpenTelemetry span records.
-* Scoped trace topics can start spans, mutate attributes, append events and
-* links, update status, rename operations, and end spans.
+* Manual tracing in Fino works by publishing events onto scoped trace topics:
+* starting a span, setting an attribute, appending an event or link, updating
+* status, renaming the operation, and ending the span each publish a discrete
+* message. This instrumentation is the consumer that stitches those messages
+* back into a single span. It subscribes to every phase, buffers the in-flight
+* span keyed by span id, folds each mutation into the buffered record, and on
+* the end event delivers one completed `SpanRecord` to the SDK's processors.
 *
-* ```js
-* const { TraceTopicInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/trace-topic';
-* console.log(new TraceTopicInstrumentation().constructor.name);
+* Without this instrumentation enabled, manually created spans publish their
+* events but nothing collects them, so they never reach an exporter. It is
+* installed by default in the standard SDK bootstrap and is also listed
+* explicitly whenever an application configures its own `OtelSDK`.
+*
+* Buffered spans that never receive an end event would otherwise leak, so the
+* instrumentation runs a periodic sweep that evicts any span open for longer
+* than five minutes. This is a safety valve, not a normal code path — a
+* well-behaved producer always ends its spans.
+*
+* Because it is an `internal:*` module, application code does not import it
+* directly; it is re-exported as `TraceTopicInstrumentation` from
+* `fino:opentelemetry` and `fino:opentelemetry/sdk` and passed to the SDK.
+*
+* ```ts no_run
+* import { OtelSDK, BatchSpanProcessor, OTLPHttpJsonExporter, TraceTopicInstrumentation }
+*   from 'fino:opentelemetry/sdk';
+*
+* const sdk = new OtelSDK({
+*   spanProcessors: [new BatchSpanProcessor(new OTLPHttpJsonExporter())],
+*   instrumentations: [new TraceTopicInstrumentation()],
+* });
+* sdk.start();
 * ```
 *
 * @internal
@@ -17,47 +41,79 @@ import { subscribeMatching } from '../../../context/topic.ts';
 import type { Disposable, OtelSdkLike, SpanEventRecord, SpanLinkRecord, SpanRecord } from '../common.ts';
 import { isScopedTraceTopic } from '../traces.ts';
 /**
-* Runtime trace-topic instrumentation.
+* Instrumentation that assembles manual-tracing topic events into span records.
 *
-* The instrumentation subscribes to all scoped trace topics and keeps active
-* spans in memory until an end event arrives. Active spans older than five
-* minutes are evicted to avoid unbounded growth if an end event is missing.
-* Dispose clears subscriptions, the eviction timer, and active span state.
+* An instance is stateless until `enable()` is called; the SDK constructs it,
+* holds it in its instrumentation list, and calls `enable()` once during
+* startup. The returned disposable is retained by the SDK and disposed on
+* shutdown. All buffering, subscription, and eviction state lives inside the
+* `enable()` closure rather than on the instance, so the same instrument can be
+* enabled against more than one SDK sink independently.
 *
-* ```js
-* const { TraceTopicInstrumentation } =
-*   import 'internal:opentelemetry/instrumentations/trace-topic';
-* const disposable = new TraceTopicInstrumentation().enable({
+* The instrument matches the scoped trace topics for the seven span phases
+* (`start`, `attribute`, `event`, `link`, `status`, `rename`, `end`) using
+* `isScopedTraceTopic`. Mutation events for an unknown span id are dropped
+* silently, which tolerates events that arrive after eviction or before a
+* start.
+*
+* ```ts no_run
+* import { TraceTopicInstrumentation }
+*   from 'internal:opentelemetry/instrumentations/trace-topic';
+*
+* const instrumentation = new TraceTopicInstrumentation();
+* const spans = [];
+* const handle = instrumentation.enable({
 *   recordSpanStart() {},
-*   recordSpan() {},
+*   recordSpan(span) { spans.push(span); },
 * });
-* disposable.dispose();
+*
+* // ... manual tracing publishes start/attribute/end events for a span ...
+*
+* handle.dispose(); // stops subscriptions, cancels eviction, clears buffers
 * ```
 *
 * @internal
 */
 export class TraceTopicInstrumentation {
   /**
-  * Enable scoped trace-topic subscriptions.
+  * Subscribe to the scoped trace topics and begin forwarding spans to a sink.
   *
-  * Start events call `recordSpanStart()`. Attribute, event, link, status, and
-  * rename events mutate the stored span record. End events merge the stored
-  * state with final fields and call `recordSpan()`. Unknown span ids on
-  * mutation events are ignored; an end event without a start still records a
-  * best-effort span from the end payload.
+  * A `start` event seeds a buffered record from the span's identity, kind,
+  * parent, start time, initial attributes, and scope/resource, then calls
+  * `sdk.recordSpanStart()` with the raw start payload. Subsequent `attribute`,
+  * `event`, `link`, `status`, and `rename` events fold into that buffered
+  * record: attributes are merged by key, events and links are appended, status
+  * replaces the current status, and a rename replaces the operation name. A
+  * mutation whose span id is not currently buffered is ignored.
   *
-  * ```js
-  * const { TraceTopicInstrumentation } =
-  *   import 'internal:opentelemetry/instrumentations/trace-topic';
-  * const disposable = new TraceTopicInstrumentation().enable({
-  *   recordSpanStart(span) { console.log(span.spanId); },
-  *   recordSpan(span) { console.log(span.name); },
+  * The `end` event finalizes the span. It merges the buffered start state with
+  * the defined fields of the end payload — preferring the accumulated name,
+  * attributes, status, events, and links — resolves start and end timestamps,
+  * removes the buffered entry, and calls `sdk.recordSpan()` with the completed
+  * record. An end event for a span that was never started (or was already
+  * evicted) still produces a best-effort record from the end payload alone.
+  *
+  * Buffered spans carry an internal start timestamp; a timer running once per
+  * minute evicts any span older than five minutes so a missing end event
+  * cannot leak memory indefinitely.
+  *
+  * The returned disposable removes all seven subscriptions, cancels the
+  * eviction timer, and clears the buffer. Disposing is idempotent from the
+  * SDK's perspective and should be called on shutdown.
+  *
+  * ```ts no_run
+  * import { TraceTopicInstrumentation }
+  *   from 'internal:opentelemetry/instrumentations/trace-topic';
+  *
+  * const handle = new TraceTopicInstrumentation().enable({
+  *   recordSpanStart(span) { console.log('started', span.spanId); },
+  *   recordSpan(span) { console.log('completed', span.name, span.attributes); },
   * });
-  * disposable.dispose();
+  *
+  * // Later, during SDK shutdown:
+  * handle.dispose();
   * ```
   *
-  * @param sdk SDK-like sink that accepts span starts and completed spans.
-  * @returns A disposable that removes subscriptions and clears buffered spans.
   * @internal
   */
   enable(sdk: OtelSdkLike): Disposable {

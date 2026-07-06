@@ -1,10 +1,48 @@
 /**
-* Mapping between a Parquet schema and an Arrow schema, plus per-column
-* descriptors (physical type, max levels) and the value converters that bridge
-* Parquet physical representations and Arrow JS values.
+* internal:data/parquet/schema — the type bridge between Parquet schemas and
+* Arrow schemas for flat (non-nested) columns.
 *
-* Flat columns are handled here; nested group columns are handled by
-* `nested.ts` (which reuses `arrowTypeToParquet`/`parquetLeafToArrow`).
+* Parquet describes a column twice: a physical type says how bytes are laid
+* out on disk (BOOLEAN, INT32, INT64, INT96, FLOAT, DOUBLE, BYTE_ARRAY,
+* FIXED_LEN_BYTE_ARRAY) and an optional annotation says what they mean
+* (string, decimal, timestamp, …). Arrow has a single type per column. This
+* module owns the mapping in both directions: `arrowTypeToParquet`,
+* `arrowFieldToElement`, and `arrowSchemaToParquet` turn Arrow fields into
+* the `SchemaElement` list the writer Thrift-encodes into the footer, while
+* `parquetLeafToArrow` and `parquetSchemaToArrow` turn a decoded footer
+* schema back into Arrow.
+*
+* Each mapping also yields a pair of `ValueConverter`s, bundled with the
+* physical layout and Dremel level bounds into a `ColumnDescriptor`: `decode`
+* lifts a decoded physical value (a UTF-8 byte string, an unscaled decimal
+* byte string, an INT96 timestamp, …) to the Arrow JS value, and `encode` is
+* its inverse for the page encoder. The byte-level codecs the converters are
+* built from live in `internal:data/parquet/convert`.
+*
+* When reading, the modern `LogicalType` annotation takes precedence over the
+* legacy `ConvertedType`; when writing, both are emitted where an equivalent
+* exists so pre-logical-type readers stay compatible.
+*
+* Only flat columns are handled here. Nested group columns (struct, list,
+* map) are handled by `internal:data/parquet/nested`, which reuses
+* `arrowTypeToParquet` and `parquetLeafToArrow` for its leaves.
+*
+* ```ts no_run
+* import { arrowSchemaToParquet, parquetSchemaToArrow } from 'internal:data/parquet/schema';
+* import { Schema, Field, int64, utf8 } from 'fino:data/arrow';
+*
+* const arrow = new Schema([
+*   new Field('id', int64(), false),
+*   new Field('name', utf8(), true),
+* ]);
+* const { elements, columns } = arrowSchemaToParquet(arrow);
+* // elements → footer schema list; columns → descriptors for the writer
+*
+* const back = parquetSchemaToArrow(elements);
+* // back.schema is equivalent to `arrow`
+* ```
+*
+* Reference: https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
 *
 * @internal
 */
@@ -13,17 +51,72 @@ import { PType, ConvertedType, Repetition, TimeUnitId, LogicalTypeId, ParquetErr
 import type { SchemaElement, LogicalType } from './metadata.ts';
 import { decimalBytesToBigInt, bigIntToDecimalBytes, int96ToEpochNanos, float16BytesToNumber, numberToFloat16Bytes } from './convert.ts';
 const _decoder = new TextDecoder();
-/** Convert a decoded physical value to the Arrow JS value, or the reverse. @internal */
+/**
+* Converts one value between its Parquet physical representation and its
+* Arrow JS representation.
+*
+* Converters are direction-specific: a `decode` converter maps a value the
+* page decoder produced to the Arrow JS value, and an `encode` converter maps
+* the Arrow JS value back to what the page encoder expects. Most columns need
+* no conversion and use the identity function; the non-trivial converters
+* cover UTF-8 strings, decimals, INT96 timestamps, and float16.
+*
+* Converters only ever see present values — nulls are resolved from
+* definition levels before conversion.
+*
+* @internal
+*/
 export type ValueConverter = (value: unknown) => unknown;
 const identity: ValueConverter = (v) => v;
-/** A single leaf column: how to encode/decode it and where it sits. @internal */
+/**
+* Everything the column reader and writer need to process one leaf column:
+* where it sits in the schema tree, its physical layout, its Dremel level
+* bounds, and the value converters bridging to Arrow.
+*
+* Descriptors come out of `arrowSchemaToParquet` / `parquetSchemaToArrow` for
+* flat schemas and out of `internal:data/parquet/nested` for nested ones. The
+* column reader hands back raw physical values and levels; applying `decode`
+* and resolving nulls against `maxDefinitionLevel` is the caller's job.
+*
+* ```ts no_run
+* import { parquetSchemaToArrow } from 'internal:data/parquet/schema';
+*
+* const { columns } = parquetSchemaToArrow(footerSchemaElements);
+* const col = columns[0]!;
+* let vi = 0;
+* const out = page.defLevels.map((def) =>
+*   def === col.maxDefinitionLevel ? col.decode(page.values[vi++]) : null);
+* ```
+*
+* @internal
+*/
 export interface ColumnDescriptor {
+  /** Leaf column name — the last segment of `path`. */
   name: string;
+  /**
+  * Path segments from the schema root (excluded) down to this leaf. Flat
+  * columns get `[name]`; nested leaves include the intermediate group
+  * segments (e.g. `['tags', 'list', 'item']`). The writer stores this as
+  * `pathInSchema` in each column chunk's metadata.
+  */
   path: string[];
+  /** Parquet physical type (a `PType` value) — the on-disk value layout. */
   physicalType: number;
+  /** Byte width of each value for FIXED_LEN_BYTE_ARRAY columns; absent otherwise. */
   typeLength?: number;
+  /**
+  * Highest definition level a slot in this column can carry; a slot at this
+  * level holds a value, anything lower is a null (or, for nested columns, a
+  * null/empty ancestor). `1` for a nullable flat column, `0` for a required
+  * one.
+  */
   maxDefinitionLevel: number;
+  /**
+  * Number of repeated ancestors above this leaf. Always `0` for flat
+  * columns; positive only for leaves inside lists or maps.
+  */
   maxRepetitionLevel: number;
+  /** The Arrow field this column materializes as — name, type, nullability. */
   arrowField: Field;
   /** Parquet physical value → Arrow JS value. */
   decode: ValueConverter;
@@ -31,16 +124,76 @@ export interface ColumnDescriptor {
   encode: ValueConverter;
 }
 // --- Arrow -> Parquet ------------------------------------------------------
-/** Physical + logical typing plus converters for an Arrow leaf type. @internal */
+/**
+* How one Arrow leaf type is expressed in Parquet: the physical type, the
+* logical annotations, and the value converters for that column.
+*
+* Produced by `arrowTypeToParquet`. Both the modern `logicalType` and the
+* legacy `convertedType` are populated wherever an equivalent exists, so
+* written files stay readable by pre-logical-type readers.
+*
+* ```ts no_run
+* import { arrowTypeToParquet, type ParquetTypeInfo } from 'internal:data/parquet/schema';
+* import { utf8 } from 'fino:data/arrow';
+*
+* const info: ParquetTypeInfo = arrowTypeToParquet(utf8());
+* // info.physicalType === PType.BYTE_ARRAY
+* // info.logicalType  → { kind: 'string' }
+* info.decode(new Uint8Array([0x68, 0x69])); // 'hi'
+* ```
+*
+* @internal
+*/
 export interface ParquetTypeInfo {
+  /** Parquet physical type (a `PType` value). */
   physicalType: number;
+  /** Legacy `ConvertedType` annotation, when one exists for the type. */
   convertedType?: number;
+  /** Modern logical type annotation, when the type means more than its physical layout. */
   logicalType?: LogicalType;
+  /** Byte width per value for FIXED_LEN_BYTE_ARRAY (float16 → 2, decimal128 → 16, decimal256 → 32). */
   typeLength?: number;
+  /** Parquet physical value → Arrow JS value. */
   decode: ValueConverter;
+  /** Arrow JS value → Parquet physical value. */
   encode: ValueConverter;
 }
-/** Map an Arrow leaf type to its Parquet physical/logical typing + converters. @internal */
+/**
+* Map an Arrow leaf type to its Parquet physical/logical typing and value
+* converters.
+*
+* Highlights of the mapping:
+*
+* - `int`: INT32 for widths up to 32 bits, INT64 above, with an `integer`
+*   logical type recording the exact width and signedness.
+* - `float`: half → FIXED_LEN_BYTE_ARRAY(2) with the `float16` logical type,
+*   single → FLOAT, double → DOUBLE.
+* - `decimal`: INT32 (32-bit), INT64 (64-bit), or FIXED_LEN_BYTE_ARRAY of
+*   16/32 bytes (128/256-bit), always annotated with precision and scale.
+* - `utf8` → BYTE_ARRAY with the `string` annotation; `binary` → BYTE_ARRAY;
+*   `fixedsizebinary` → FIXED_LEN_BYTE_ARRAY of the declared width.
+* - `date` (32-bit days), `time` (millis/micros/nanos), and `timestamp` map
+*   to INT32/INT64 with the matching annotation; a timestamp is marked
+*   `isAdjustedToUTC` when its Arrow type carries a timezone.
+*
+* Throws a `ParquetError` for types with no Parquet equivalent — 64-bit
+* dates, second-resolution times, and any nested type (nested fields go
+* through `internal:data/parquet/nested` instead).
+*
+* ```ts no_run
+* import { arrowTypeToParquet } from 'internal:data/parquet/schema';
+* import { decimal, timestamp, TimeUnit } from 'fino:data/arrow';
+*
+* const dec = arrowTypeToParquet(decimal(38, 9, 128));
+* // FIXED_LEN_BYTE_ARRAY(16) with logicalType { kind: 'decimal', ... }
+* dec.encode(12345n); // 16-byte big-endian two's-complement Uint8Array
+*
+* const ts = arrowTypeToParquet(timestamp(TimeUnit.MICROSECOND, 'UTC'));
+* // INT64 with logicalType { kind: 'timestamp', ... isAdjustedToUTC: true }
+* ```
+*
+* @internal
+*/
 export function arrowTypeToParquet(type: DataType): ParquetTypeInfo {
   switch (type.kind) {
     case 'bool': return {
@@ -214,7 +367,28 @@ function intConverted(bitWidth: number, signed: boolean): number {
   if (signed) return bitWidth === 8 ? ConvertedType.INT_8 : bitWidth === 16 ? ConvertedType.INT_16 : bitWidth === 32 ? ConvertedType.INT_32 : ConvertedType.INT_64;
   return bitWidth === 8 ? ConvertedType.UINT_8 : bitWidth === 16 ? ConvertedType.UINT_16 : bitWidth === 32 ? ConvertedType.UINT_32 : ConvertedType.UINT_64;
 }
-/** Build the Parquet element + descriptor for one Arrow field (flat). @internal */
+/**
+* Build the Parquet `SchemaElement` and type info for one flat Arrow field.
+*
+* The element carries the physical type and annotations from
+* `arrowTypeToParquet` plus a repetition of OPTIONAL for nullable fields and
+* REQUIRED otherwise. 32-bit decimals also populate the element's legacy
+* top-level `scale`/`precision` fields; wider decimals carry precision and
+* scale only in their annotations. Throws a `ParquetError` (via
+* `arrowTypeToParquet`) if the field's type is nested or has no Parquet
+* equivalent.
+*
+* ```ts no_run
+* import { arrowFieldToElement } from 'internal:data/parquet/schema';
+* import { Field, utf8 } from 'fino:data/arrow';
+*
+* const { element, info } = arrowFieldToElement(new Field('name', utf8(), true));
+* // element → { name: 'name', type: PType.BYTE_ARRAY,
+* //             repetitionType: Repetition.OPTIONAL, logicalType: { kind: 'string' }, ... }
+* ```
+*
+* @internal
+*/
 export function arrowFieldToElement(field: Field): {
   element: SchemaElement;
   info: ParquetTypeInfo;
@@ -239,8 +413,30 @@ export function arrowFieldToElement(field: Field): {
   };
 }
 /**
-* Build the Parquet `SchemaElement` list (root + leaves) and column descriptors
-* for a flat Arrow schema.
+* Build the Parquet `SchemaElement` list and column descriptors for a flat
+* Arrow schema.
+*
+* The returned `elements` start with the root group (named `schema`, carrying
+* `numChildren`) followed by one leaf element per field in field order — the
+* exact list the writer Thrift-encodes into the file footer. Each field also
+* yields a `ColumnDescriptor` with `maxDefinitionLevel` 1 for nullable fields
+* (0 otherwise) and `maxRepetitionLevel` 0.
+*
+* Throws a `ParquetError` if any field is nested or otherwise unmappable;
+* schemas containing struct/list/map fields go through
+* `internal:data/parquet/nested` instead.
+*
+* ```ts no_run
+* import { arrowSchemaToParquet } from 'internal:data/parquet/schema';
+* import { Schema, Field, int64, utf8 } from 'fino:data/arrow';
+*
+* const { elements, columns } = arrowSchemaToParquet(new Schema([
+*   new Field('id', int64(), false),
+*   new Field('name', utf8(), true),
+* ]));
+* // elements: [root, id, name] — ready for the footer
+* // columns[1].path → ['name'], columns[1].maxDefinitionLevel → 1
+* ```
 */
 export function arrowSchemaToParquet(schema: Schema): {
   elements: SchemaElement[];
@@ -272,7 +468,42 @@ export function arrowSchemaToParquet(schema: Schema): {
   };
 }
 // --- Parquet -> Arrow ------------------------------------------------------
-/** Map a Parquet leaf `SchemaElement` to an Arrow type + converters. @internal */
+/**
+* Map a Parquet leaf `SchemaElement` to an Arrow type plus value converters.
+*
+* Resolution starts from the physical type and refines it with annotations,
+* preferring the modern `logicalType` over the legacy `convertedType`:
+*
+* - INT32 → 32-bit decimal, date32, time32, or a sized integer from the
+*   annotation; plain `int32` otherwise.
+* - INT64 → 64-bit decimal, timestamp, time64, or a sized integer; plain
+*   `int64` otherwise. Legacy TIMESTAMP_MILLIS/MICROS annotations are
+*   treated as UTC-adjusted.
+* - INT96 → nanosecond timestamp with no timezone (the legacy Impala/Hive
+*   layout), decoded to epoch nanoseconds.
+* - BYTE_ARRAY → 128-bit decimal, or `utf8` for string/enum/JSON
+*   annotations; plain `binary` otherwise.
+* - FIXED_LEN_BYTE_ARRAY → `float16`, decimal (256-bit when the element is
+*   wider than 16 bytes, 128-bit otherwise), or `fixedSizeBinary` of the
+*   declared length.
+*
+* Throws a `ParquetError` when the element's physical type is unsupported.
+*
+* ```ts no_run
+* import { parquetLeafToArrow } from 'internal:data/parquet/schema';
+* import { PType, ConvertedType } from 'internal:data/parquet/types';
+*
+* const { type, decode } = parquetLeafToArrow({
+*   name: 'name',
+*   type: PType.BYTE_ARRAY,
+*   convertedType: ConvertedType.UTF8,
+* });
+* // type.kind === 'utf8'
+* decode(new Uint8Array([0x68, 0x69])); // 'hi'
+* ```
+*
+* @internal
+*/
 export function parquetLeafToArrow(el: SchemaElement): {
   type: DataType;
   decode: ValueConverter;
@@ -436,8 +667,24 @@ function timestampFromUnit(unitId: number, isUtc: boolean): DataType {
   return timestamp(unit, isUtc ? 'UTC' : null);
 }
 /**
-* Build the Arrow schema and column descriptors from a Parquet `SchemaElement`
-* list. Flat schemas; nested group columns are dispatched to `nested.ts`.
+* Build the Arrow schema and column descriptors from a Parquet
+* `SchemaElement` list.
+*
+* Expects the footer's flattened schema: the root element first, followed by
+* its `numChildren` leaves. Every leaf whose repetition is not REQUIRED
+* becomes a nullable Arrow field with `maxDefinitionLevel` 1.
+*
+* Handles flat schemas only. Throws a `ParquetError` when the list is empty
+* or truncated, or when it contains a group column — nested schemas must be
+* parsed with `internal:data/parquet/nested` instead.
+*
+* ```ts no_run
+* import { parquetSchemaToArrow } from 'internal:data/parquet/schema';
+*
+* const { schema, columns } = parquetSchemaToArrow(footer.schema);
+* schema.fields.map((f) => `${f.name}: ${f.type.kind}`);
+* // e.g. ['id: int', 'name: utf8']
+* ```
 */
 export function parquetSchemaToArrow(elements: SchemaElement[]): {
   schema: Schema;

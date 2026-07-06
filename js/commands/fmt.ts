@@ -7,6 +7,17 @@
 * `--check` compares formatted output without writing and exits nonzero when
 * any file would change.
 *
+* Formatting is scope-limited by design: it rewrites layout only and never
+* applies lint fixes — `fino fmt` and `fino lint --fix` stay separate
+* commands. Files that fail to parse are reported as diagnostics on stderr and
+* cause the command to fail; parseable files in the same run are still
+* formatted.
+*
+* The default export is a `Task`, so the command is equally usable
+* programmatically (via `parse()` or `run()`) and as the `fmt` subcommand
+* of the root Fino CLI. Passing `--json` switches output to a single JSON
+* result object instead of the human-readable summary line.
+*
 * ```ts no_run
 * import fmtCommand from 'fino:commands/fmt';
 *
@@ -17,11 +28,32 @@
 import { Task } from '../task.ts';
 import { runFormat } from '../internal/tooling/format.ts';
 /**
-* Create the `fmt` subcommand used by the root Fino CLI.
+* The `fmt` command task, mounted as a subcommand by the root Fino CLI.
 *
-* The task returns a success string for text output, writes a JSON result when
-* `--json` is requested, and throws after reportable failures so
-* `internal/main.ts` preserves standard CLI exit behavior.
+* On success the task returns a one-line summary string (for example
+* `fino fmt: formatted 2 files` or `fino fmt: no changes`). When `--json` is
+* requested it instead writes — and returns — a result object of the shape
+* `{ command: 'fmt', ok: true, check, files, message }`.
+*
+* Throws after reportable failures so `internal/main.ts` preserves standard
+* CLI exit behavior: parse diagnostics in any input file, or — in `--check`
+* mode — at least one file that would reformat. In both cases the details are
+* printed to stderr before the throw, and the thrown message carries only the
+* aggregate count.
+*
+* ```ts no_run
+* import fmtCommand from 'fino:commands/fmt';
+*
+* // Format the current project in place.
+* console.log(await fmtCommand.parse([]));
+*
+* // Verify a subtree is clean without writing; throws if anything changed.
+* try {
+*   await fmtCommand.parse(['--check', 'src', 'tests/*.test.ts']);
+* } catch {
+*   console.error('run `fino fmt` before committing');
+* }
+* ```
 *
 */
 const command = new Task({

@@ -2,15 +2,51 @@
 * internal:ai/runtime — implementation of the agent model loop.
 *
 * This module contains the mutable runtime behind `fino:ai/agent`: model
-* request assembly, tool execution, structured-output repair, guardrail checks,
-* fallback/retry behavior, telemetry, and stream plumbing. Public application
-* code should import `Agent` from `fino:ai/agent` and integration helpers from
-* `fino:ai/runtime` instead of constructing `AgentRuntime` directly.
+* request assembly, tool execution, structured-output capture and repair,
+* guardrail checks, fallback/retry behavior, telemetry, and stream plumbing.
+* Public application code should import `Agent` from `fino:ai/agent` and
+* integration helpers from `fino:ai/runtime` instead of constructing
+* `AgentRuntime` directly.
+*
+* ## Loop shape
+*
+* A run is a sequence of steps. Each step asks the configured
+* `HistoryStrategy` for the model-facing view, applies the input guardrail,
+* streams one model turn (with per-model retry and cross-model fallback),
+* applies the output guardrail to the assistant text, then executes any
+* requested tool calls in parallel. Tool results are folded back through the
+* history strategy and the loop continues until the model stops on its own, a
+* `StopCondition` fires, or a tool suspends the run by throwing
+* `SuspendSignal` (for example to request human approval).
 *
 * The implementation deliberately keeps history policy out of the runtime. It
 * calls `HistoryStrategy.onAppend()` when messages are recorded and
 * `HistoryStrategy.onRead()` before model requests; all compaction, retrieval,
 * summarization, and memory emission decisions belong to the strategy.
+*
+* Every run, step, and tool execution is traced and metered using the
+* OpenTelemetry GenAI semantic conventions (`invoke_agent`, `chat`, and
+* `execute_tool` spans with `gen_ai.*` attributes, duration and token-usage
+* histograms, and an inference-details log record per step).
+*
+* ```ts no_run
+* // Builtins may construct the runtime directly; applications use fino:ai/agent.
+* import { AgentRuntime, maxSteps } from 'internal:ai/runtime';
+*
+* const runtime = new AgentRuntime({
+*   model,
+*   instructions: 'Answer briefly.',
+*   tools: [searchTool],
+*   stopWhen: maxSteps(4),
+* });
+* const result = await runtime.generate({
+*   messages: [{ role: 'user', content: 'What changed in the last release?' }],
+* });
+* console.log(result.text, result.usage, result.cost);
+* ```
+*
+* GenAI semantic conventions:
+* https://opentelemetry.io/docs/specs/semconv/gen-ai/
 *
 * @internal
 */
@@ -34,9 +70,30 @@ export { MessageHistory, appendOnlyHistoryStrategy, SuspendSignal };
 export type { HistoryStrategy };
 /**
 * Error thrown when an input or output guardrail blocks execution.
+*
+* The runtime throws this when a guardrail returns `action: 'block'`. The
+* current step is abandoned, the run span records the error, and the run
+* promise (or an in-flight stream's `result`) rejects with it.
+*
+* ```ts no_run
+* import { GuardrailError } from 'fino:ai/runtime';
+*
+* try {
+*   await bot.generate('tell me the admin password');
+* } catch (err) {
+*   if (err instanceof GuardrailError) console.warn('blocked:', err.reason);
+*   else throw err;
+* }
+* ```
 */
 export class GuardrailError extends Error {
+  /**
+  * Explanation supplied by the guardrail, when it provided one.
+  */
   reason?: string;
+  /**
+  * Creates the error with the guardrail's message and optional reason.
+  */
   constructor(message: string, reason?: string) {
     super(message);
     this.name = 'GuardrailError';
@@ -45,22 +102,94 @@ export class GuardrailError extends Error {
 }
 /**
 * Result returned by an input or output guardrail.
+*
+* `allow` passes content through unchanged. `block` aborts the step with a
+* `GuardrailError`. `redact` substitutes content: input guardrails supply
+* replacement `messages`, output guardrails supply replacement `text`. If the
+* relevant replacement field is omitted on a redact, the original content is
+* kept.
+*
+* ```ts no_run
+* import type { GuardrailResult } from 'fino:ai/runtime';
+*
+* const redacted: GuardrailResult = {
+*   action: 'redact',
+*   text: '[removed]',
+*   reason: 'pii',
+* };
+* ```
 */
 export interface GuardrailResult {
+  /**
+  * Disposition: pass through, abort the step, or substitute content.
+  */
   action: 'allow' | 'block' | 'redact';
+  /**
+  * Replacement conversation used when an input guardrail redacts.
+  */
   messages?: ModelMessage[];
+  /**
+  * Replacement assistant text used when an output guardrail redacts.
+  */
   text?: string;
+  /**
+  * Explanation surfaced on `guardrail` events and `GuardrailError.reason`.
+  */
   reason?: string;
 }
 /**
 * Optional input and output guardrails for an agent.
+*
+* The input guardrail runs before every model request, after the history
+* strategy has produced the model-facing view. The output guardrail runs on
+* each step's assistant text and is skipped when the turn produced no text.
+* Both may be async, and each invocation emits a `guardrail` agent event with
+* the action taken.
+*
+* ```ts no_run
+* import type { Guardrails } from 'fino:ai/runtime';
+*
+* const guardrails: Guardrails = {
+*   input: (messages) =>
+*     messages.length > 200
+*       ? { action: 'block', reason: 'conversation too long' }
+*       : { action: 'allow' },
+*   output: (text) =>
+*     /ssn:\S+/.test(text)
+*       ? { action: 'redact', text: text.replace(/ssn:\S+/g, '[redacted]') }
+*       : { action: 'allow' },
+* };
+* ```
 */
 export interface Guardrails {
+  /**
+  * Inspects the outgoing conversation before each model request.
+  */
   input?: (messages: ModelMessage[]) => GuardrailResult | Promise<GuardrailResult>;
+  /**
+  * Inspects each step's assistant text before it is recorded.
+  */
   output?: (text: string) => GuardrailResult | Promise<GuardrailResult>;
 }
 /**
 * Async context for the active agent or workflow run.
+*
+* The runtime populates this context for the duration of `generate()`,
+* `stream()`, `step()`, and `approveTool()` calls, so any code on the async
+* call chain — most usefully tool `execute` functions — can read the current
+* `runId`, the zero-based `stepIndex` (updated in place as the loop advances),
+* and the run's abort signal. Calls that already execute inside a run context
+* (for example `step()` driven by a session) reuse the existing run instead of
+* minting a new id.
+*
+* ```ts no_run
+* import { runContext } from 'fino:ai/runtime';
+*
+* function logProgress(label: string) {
+*   const run = runContext.get();
+*   if (run) console.log(`[${run.runId} step ${run.stepIndex}] ${label}`);
+* }
+* ```
 */
 export const runContext = new Context<{
   runId: string;
@@ -69,33 +198,126 @@ export const runContext = new Context<{
 }>('fino:ai/run');
 /**
 * Mutable state passed through one agent run.
+*
+* Each step consumes a state and produces the next one: `messages` is the
+* model-facing conversation rendered by the history strategy, `usage` and
+* `cost` accumulate across steps, and `stepIndex` counts completed model
+* turns. Harnesses that drive the loop manually with `step()` keep threading
+* the returned state back in.
+*
+* ```ts no_run
+* import type { AgentState } from 'fino:ai/runtime';
+*
+* let state: AgentState = {
+*   messages: [{ role: 'user', content: 'Summarize the report.' }],
+*   stepIndex: 0,
+*   usage: { inputTokens: 0, outputTokens: 0 },
+* };
+* ```
 */
 export interface AgentState {
+  /**
+  * Model-facing conversation, as rendered by the history strategy.
+  */
   messages: ModelMessage[];
+  /**
+  * Number of completed model steps in this run.
+  */
   stepIndex: number;
+  /**
+  * Token usage accumulated across all steps so far.
+  */
   usage: Usage;
+  /**
+  * Running USD cost derived from usage and the pricing table, when known.
+  */
   cost?: number;
+  /**
+  * History handle backing `messages`; present once a step has run.
+  */
   history?: MessageHistory;
+  /**
+  * Abort signal observed by model requests and tool executions.
+  */
   signal?: AbortSignal;
 }
 /**
 * Result of one agent step.
+*
+* `done` is true when the model finished without requesting tool calls, so
+* the loop has nothing further to execute. When a tool suspended the step,
+* `suspend` carries the `SuspendSignal` (with its payload, such as a
+* `ToolApprovalRequest`) and the run should be checkpointed for later
+* resumption.
+*
+* ```ts no_run
+* import type { StepResult } from 'fino:ai/runtime';
+*
+* let r: StepResult = await agent.step(state);
+* while (!r.done && !r.suspend) r = await agent.step(r.state);
+* ```
 */
 export interface StepResult {
+  /**
+  * State after the step, including appended messages and updated usage.
+  */
   state: AgentState;
+  /**
+  * True when the model stopped without requesting tool calls.
+  */
   done: boolean;
+  /**
+  * Present when a tool paused the run; resume via a session or `approveTool()`.
+  */
   suspend?: SuspendSignal;
+  /**
+  * Why the model stopped this turn.
+  */
   stopReason: StopReason;
 }
 /**
 * Persisted approval request for a tool call that suspended before execution.
+*
+* When a tool declares `requiresApproval`, the runtime does not execute it;
+* instead the step suspends with a `SuspendSignal` whose payload is this
+* shape. Sessions persist the payload and later pass it back to
+* `approveTool()` along with the human decision. `risk` and `sideEffects`
+* mirror the tool's own annotations so approval UIs can render them without
+* loading the tool.
+*
+* ```ts no_run
+* import type { ToolApprovalRequest } from 'fino:ai/runtime';
+*
+* const request = r.suspend?.payload as ToolApprovalRequest;
+* if (request?.type === 'tool_approval') {
+*   console.log(`Approve ${request.toolName}?`, request.args);
+* }
+* ```
 */
 export interface ToolApprovalRequest {
+  /**
+  * Discriminant identifying the suspend payload as a tool approval.
+  */
   type: 'tool_approval';
+  /**
+  * Id of the pending `tool_use` part awaiting a result.
+  */
   toolCallId: string;
+  /**
+  * Name of the tool the model asked to run.
+  */
   toolName: string;
+  /**
+  * Arguments the model supplied for the call.
+  */
   args: unknown;
+  /**
+  * Tool-declared risk annotation, for approval UIs.
+  */
   risk?: string;
+  /**
+  * Whether the tool declares side effects.
+  */
   sideEffects?: boolean;
 }
 /**
@@ -103,7 +325,25 @@ export interface ToolApprovalRequest {
 *
 * Provider `StreamEvent` values are wrapped in `model_event`. Lifecycle events
 * add run-loop context around model streaming, retries, fallback, tool
-* execution, guardrails, suspension, and final completion.
+* execution, guardrails, suspension, and final completion. Every run emits
+* `step_start`/`step_end` pairs per model turn and exactly one `final` event
+* (carrying the same `AgentResult` that `AgentStream.result` resolves with)
+* when it completes successfully.
+*
+* ```ts no_run
+* for await (const ev of stream.reader) {
+*   switch (ev.type) {
+*     case 'model_event':
+*       if (ev.event.type === 'text_delta') render(ev.event.text);
+*       break;
+*     case 'tool_start':
+*       console.log(`running ${ev.name}`);
+*       break;
+*     case 'final':
+*       console.log('cost:', ev.result.cost);
+*   }
+* }
+* ```
 */
 export type AgentEvent = {
   type: 'model_event';
@@ -162,48 +402,167 @@ export type AgentEvent = {
 };
 /**
 * Predicate that decides whether an agent run should stop.
+*
+* Conditions are checked after every completed step, including tool-execution
+* steps; the run ends as soon as any configured condition returns true. When
+* no `stopWhen` is configured, the runtime defaults to `maxSteps(8)`.
+*
+* ```ts no_run
+* import type { StopCondition } from 'fino:ai/runtime';
+*
+* const budgetCap: StopCondition = (state) => (state.cost ?? 0) > 0.5;
+* ```
 */
 export type StopCondition = (state: AgentState, info: {
   stopReason: StopReason;
 }) => boolean;
 /**
 * Stop after `n` model steps.
+*
+* This is the most common stop condition and the default (with `n = 8`) when
+* no `stopWhen` is configured. It bounds runaway tool loops: a step is one
+* model turn, so tool-heavy conversations reach the limit faster than plain
+* chats.
+*
+* ```ts no_run
+* import { agent } from 'fino:ai/agent';
+* import { maxSteps } from 'fino:ai/runtime';
+*
+* const bot = agent({ model, stopWhen: maxSteps(4) });
+* ```
 */
 export function maxSteps(n: number): StopCondition {
   return (state) => state.stepIndex >= n;
 }
 /**
 * Input accepted by `Agent.generate()` and `Agent.stream()`.
+*
+* Messages are appended to the run's history before the first step. The
+* signal, when provided, aborts in-flight model requests and is passed to
+* tool executions.
+*
+* ```ts no_run
+* import type { RunInput } from 'fino:ai/runtime';
+*
+* const controller = new AbortController();
+* const input: RunInput = {
+*   messages: [{ role: 'user', content: 'Plan the release.' }],
+*   signal: controller.signal,
+* };
+* ```
 */
 export interface RunInput {
+  /**
+  * Conversation to append before the first model request.
+  */
   messages: ModelMessage[];
+  /**
+  * Cancels the run: model streaming and tool calls observe this signal.
+  */
   signal?: AbortSignal;
 }
 /**
 * Final result of an agent run.
+*
+* `text` is the assistant text from the last completed step, `messages` is
+* the full conversation as rendered by the history strategy, and `steps`
+* records the state after each step for inspection. `object` is set only on
+* structured-output runs.
+*
+* ```ts no_run
+* const result = await bot.generate('Name three sorting algorithms.');
+* console.log(result.text);
+* console.log(result.usage.inputTokens, result.usage.outputTokens);
+* console.log(result.stopReason); // 'end_turn'
+* ```
 */
 export interface AgentResult {
+  /**
+  * Assistant text from the final step.
+  */
   text: string;
+  /**
+  * Parsed structured output; present only when an output schema was set.
+  */
   object?: unknown;
+  /**
+  * Full conversation, including tool calls and results.
+  */
   messages: ModelMessage[];
+  /**
+  * Per-step state snapshots, in order.
+  */
   steps: AgentState[];
+  /**
+  * Token usage summed across all steps.
+  */
   usage: Usage;
+  /**
+  * Estimated USD cost when pricing for the models used is known.
+  */
   cost?: number;
+  /**
+  * Stop reason from the final model turn.
+  */
   stopReason: StopReason;
 }
 /**
 * Retry policy for provider failures.
+*
+* Retries apply per model before fallback advances: each model in
+* `[model, ...fallback]` gets the full retry budget. Delays use exponential
+* backoff with full jitter, capped at `maxDelayMs`, except when the provider
+* supplied an explicit retry-after delay, which is honored verbatim. Errors
+* thrown after streaming has begun are never retried — partial output cannot
+* be safely replayed.
+*
+* ```ts no_run
+* const bot = agent({
+*   model,
+*   retry: { maxRetries: 3, baseDelayMs: 250 },
+*   fallback: [backupModel],
+* });
+* ```
 */
 export interface RetryOptions {
+  /**
+  * Additional attempts per model after the first failure. Default 0.
+  */
   maxRetries?: number;
+  /**
+  * Base backoff delay in milliseconds. Default 500.
+  */
   baseDelayMs?: number;
+  /**
+  * Upper bound on any backoff delay, in milliseconds. Default 30000.
+  */
   maxDelayMs?: number;
+  /**
+  * Overrides which errors are retryable. By default only `ModelError`s with
+  * status 429 or 5xx are retried.
+  */
   retryOn?: (err: unknown) => boolean;
 }
 /**
 * Minimal sink a history strategy can use to emit durable memory.
+*
+* Matches the ingest surface of `fino:ai/memory` stores so strategies can
+* archive summarized or evicted conversation content without depending on a
+* concrete store type. Hosts such as sessions hand a sink to their strategy,
+* which calls it as part of compaction.
+*
+* ```ts no_run
+* import type { StrategyMemorySink } from 'fino:ai/runtime';
+*
+* async function archive(sink: StrategyMemorySink, summary: string) {
+*   await sink.ingest([{ text: summary, metadata: { kind: 'summary' } }]);
+* }
+* ```
 */
 export interface StrategyMemorySink {
+  /**
+  * Stores the given documents durably.
+  */
   ingest(docs: {
     text: string;
     metadata?: Record<string, unknown>;
@@ -212,18 +571,61 @@ export interface StrategyMemorySink {
 /**
 * Internal options consumed by the runtime implementation.
 *
-* Application code should use `AgentOptions` from `fino:ai/agent`.
+* Application code should use `AgentOptions` from `fino:ai/agent`, which is
+* this shape with `history` optional. Defaults applied by the runtime:
+* `stopWhen` falls back to `maxSteps(8)`, `history` to an append-only
+* in-memory strategy, `budgetTokens` to 200000, `structuredOutputMode` to
+* `'tool'`, and `captureContent` to false.
+*
+* ```ts no_run
+* import { AgentRuntime } from 'internal:ai/runtime';
+*
+* const runtime = new AgentRuntime({
+*   model,
+*   name: 'triage',
+*   instructions: 'Route each report to the right team.',
+*   tools: [routeTool],
+*   retry: { maxRetries: 2 },
+*   budgetTokens: 100000,
+* });
+* ```
 */
 export interface AgentRuntimeOptions {
+  /**
+  * Primary model used for every step until fallback engages.
+  */
   model: Model;
+  /**
+  * Agent name recorded as `gen_ai.agent.name` on run spans.
+  */
   name?: string;
+  /**
+  * System prompt. When `skills` is set, a skill manifest section is appended.
+  */
   instructions?: string;
+  /**
+  * Tools offered to the model on every step.
+  */
   tools?: Tool[];
+  /**
+  * Skill registry. Registers its `load_skill` loader tool and, once the model
+  * loads a skill, augments later steps with that skill's instructions and
+  * tools.
+  */
   skills?: SkillRegistry;
+  /**
+  * Stop condition(s) checked after each step. Defaults to `maxSteps(8)`.
+  */
   stopWhen?: StopCondition | StopCondition[];
+  /**
+  * Constrains model tool selection on every request.
+  */
   toolChoice?: 'auto' | 'any' | 'none' | {
     name: string;
   };
+  /**
+  * Request parameter defaults merged into every model request.
+  */
   defaults?: {
     temperature?: number;
     topP?: number;
@@ -246,11 +648,31 @@ export interface AgentRuntimeOptions {
   * model declares `capabilities.structuredOutput.native`.
   */
   structuredOutputMode?: 'tool' | 'native';
+  /**
+  * Record full prompt content on inference log records. Off by default;
+  * enable only where conversation content is acceptable in telemetry.
+  */
   captureContent?: boolean;
+  /**
+  * Per-model retry policy for provider failures.
+  */
   retry?: RetryOptions;
+  /**
+  * Models tried in order after the primary exhausts its retries or refuses.
+  */
   fallback?: Model[];
+  /**
+  * Input/output guardrails applied around each step.
+  */
   guardrails?: Guardrails;
+  /**
+  * History strategy owning append and read-time curation of the conversation.
+  */
   history?: HistoryStrategy;
+  /**
+  * Token budget passed to the history strategy when producing the model-facing
+  * view. Default 200000.
+  */
   budgetTokens?: number;
 }
 let runCounter = 0;
@@ -262,31 +684,94 @@ async function* asyncOf<T>(items: T[]): AsyncGenerator<T> {
 }
 /**
 * Stream handle returned by `Agent.stream()`.
+*
+* Offers three views of one run: `reader` yields every `AgentEvent` in order,
+* `state` is a retained signal holding a coarse `AgentRunView` snapshot, and
+* `result` settles with the final `AgentResult`. The run starts immediately;
+* if it throws, the reader fails with the error and `result` rejects.
+*
+* ```ts no_run
+* const stream = bot.stream('Draft the changelog.');
+* for await (const ev of stream.reader) {
+*   if (ev.type === 'model_event' && ev.event.type === 'text_delta') {
+*     render(ev.event.text);
+*   }
+* }
+* const result = await stream.result;
+* ```
 */
 export interface AgentStream {
+  /**
+  * Ordered stream of every agent event; closes when the run finishes.
+  */
   reader: Reader<AgentEvent>;
+  /**
+  * Settles with the final result; rejects if the run throws.
+  */
   result: Promise<AgentResult>;
+  /**
+  * Retained coarse view of the run, updated as events arrive.
+  */
   state: ReadonlySignal<AgentRunView>;
 }
 /**
 * Retained current view of an agent stream.
 *
-* This signal-shaped read model is intentionally coarse and lossy. Keep using
-* `AgentStream.reader` when every event is significant.
+* This signal-shaped read model is intentionally coarse and lossy — it folds
+* the event stream into a single "what is happening now" snapshot suitable
+* for binding to UI. Keep using `AgentStream.reader` when every event is
+* significant.
+*
+* ```ts no_run
+* const stream = bot.stream('Investigate the failure.');
+* const unsubscribe = stream.state.subscribe((view) => {
+*   setStatus(view.status === 'tool' ? `running ${view.currentTool?.name}` : view.status);
+* });
+* ```
 */
 export interface AgentRunView {
+  /**
+  * Coarse run phase; `error` is set on model errors, tool errors, and run
+  * failure, `done` once the final result is known.
+  */
   status: 'streaming' | 'tool' | 'suspended' | 'done' | 'error';
+  /**
+  * Assistant text accumulated for the current turn, replaced by the final
+  * text when the run completes.
+  */
   text: string;
+  /**
+  * Tool currently executing, or null between tool calls.
+  */
   currentTool: {
     id: string;
     name: string;
   } | null;
+  /**
+  * Token usage observed so far.
+  */
   usage: Usage;
+  /**
+  * Estimated USD cost, populated when the run completes.
+  */
   cost?: number;
+  /**
+  * Index of the step currently in flight.
+  */
   stepIndex: number;
 }
 /**
 * Iterate over only text deltas from an agent stream.
+*
+* Filters the event stream down to `text_delta` payloads, discarding tool
+* activity, lifecycle events, and the final result. Await `stream.result`
+* separately when the run outcome matters.
+*
+* ```ts no_run
+* const stream = bot.stream('Write a haiku about kqueue.');
+* let out = '';
+* for await (const text of streamText(stream)) out += text;
+* ```
 */
 export async function* streamText(stream: AgentStream): AsyncGenerator<string> {
   for await (const ev of stream.reader) {
@@ -414,7 +899,22 @@ function historyReadCtx(model: Model, budgetTokens: number, signal?: AbortSignal
 /**
 * Internal implementation behind `Agent`.
 *
-* This class is not part of the public `fino:ai/runtime` surface.
+* Owns the run loop: request assembly from history and skills, per-model
+* retry and cross-model fallback, guardrails, parallel tool execution,
+* structured-output capture and repair, approval suspension, cost accounting,
+* and GenAI telemetry. This class is not part of the public `fino:ai/runtime`
+* surface; applications construct an `Agent` from `fino:ai/agent`, which
+* delegates every call here.
+*
+* ```ts no_run
+* import { AgentRuntime } from 'internal:ai/runtime';
+*
+* const runtime = new AgentRuntime({ model, instructions: 'Be terse.' });
+* const result = await runtime.generate({
+*   messages: [{ role: 'user', content: 'ping' }],
+* });
+* console.log(result.text);
+* ```
 */
 export class AgentRuntime {
   #model: Model;
@@ -447,6 +947,13 @@ export class AgentRuntime {
   #guardrails?: Guardrails;
   #historyStrategy: HistoryStrategy;
   #budgetTokens: number;
+  /**
+  * Builds the runtime from resolved options.
+  *
+  * When a skill registry is supplied, the constructor appends the skill
+  * manifest to the instructions and registers the registry's `load_skill`
+  * loader tool alongside the configured tools.
+  */
   constructor(opts: AgentRuntimeOptions) {
     this.#model = opts.model;
     this.#agentName = opts.name;
@@ -1230,6 +1737,26 @@ export class AgentRuntime {
       throw err;
     }
   }
+  /**
+  * Run one model/tool step from an existing state.
+  *
+  * Seeds the history strategy first: when `state.history` is present, any
+  * `state.messages` beyond what that history renders are appended; for a
+  * fresh (empty) strategy, all of `state.messages` are appended. The step
+  * itself emits no agent events. An ambient run context is reused when
+  * present; otherwise a new run id is minted for this call. Harnesses such as
+  * `fino:ai/session` drive the loop step-by-step with this method so each
+  * transition can be checkpointed.
+  *
+  * ```ts no_run
+  * let r = await runtime.step({
+  *   messages: [{ role: 'user', content: 'What is 2 + 2?' }],
+  *   stepIndex: 0,
+  *   usage: { inputTokens: 0, outputTokens: 0 },
+  * });
+  * while (!r.done && !r.suspend) r = await runtime.step(r.state);
+  * ```
+  */
   step(state: AgentState): Promise<StepResult> {
     const existing = runContext.get();
     const runId = existing?.runId ?? newRunId();
@@ -1274,6 +1801,26 @@ export class AgentRuntime {
     };
     return runContext.runWithValue(runState, doStep);
   }
+  /**
+  * Execute or reject a pending approval-required tool call.
+  *
+  * `approval` may be `true` or `{ approved: true }` to execute the tool;
+  * anything else records a rejection tool result (using `reason` from the
+  * approval object when present) so the model sees the denial. The resulting
+  * `tool_result` message is appended through the history strategy, and the
+  * returned step has `done: false` and `stopReason: 'tool_use'`, ready for
+  * the next `step()` call.
+  *
+  * Throws if the referenced tool call is not actually pending — no matching
+  * `tool_use` exists in history, or it already has a `tool_result` — which
+  * makes approval tokens effectively single-use.
+  *
+  * ```ts no_run
+  * const request = r.suspend!.payload as ToolApprovalRequest;
+  * const next = await runtime.approveTool(r.state, request, { approved: true });
+  * const resumed = await runtime.step(next.state);
+  * ```
+  */
   async approveTool(state: AgentState, request: ToolApprovalRequest, approval: unknown): Promise<StepResult> {
     const existing = runContext.get();
     const runId = existing?.runId ?? newRunId();
@@ -1348,6 +1895,21 @@ export class AgentRuntime {
     }
     return this.#runLoop(state, onEvent, this.#tools, this.#baseToolDefs, this.#toolChoice, undefined, this.#output);
   }
+  /**
+  * Run the loop to completion and return the final result.
+  *
+  * Starts a fresh state from the input messages and loops until the model
+  * finishes, a stop condition fires, a tool suspends the run, or an error is
+  * thrown. This is `stream()` without event delivery — the same loop runs,
+  * only the observers differ.
+  *
+  * ```ts no_run
+  * const result = await runtime.generate({
+  *   messages: [{ role: 'user', content: 'Summarize HTTP/3 in one line.' }],
+  * });
+  * console.log(result.text, result.stopReason);
+  * ```
+  */
   generate(input: RunInput): Promise<AgentResult> {
     return this.#runWithOutput({
       messages: input.messages,
@@ -1359,6 +1921,27 @@ export class AgentRuntime {
       signal: input.signal
     }, undefined);
   }
+  /**
+  * Start a streamed run.
+  *
+  * Runs the same loop as `generate()` while delivering every `AgentEvent`
+  * through the returned handle's `reader` and folding events into its
+  * retained `state` signal. The run begins immediately; on failure the reader
+  * is failed with the error and `result` rejects, so callers should consume
+  * the reader, await `result`, or both.
+  *
+  * ```ts no_run
+  * const stream = runtime.stream({
+  *   messages: [{ role: 'user', content: 'Stream a limerick.' }],
+  * });
+  * for await (const ev of stream.reader) {
+  *   if (ev.type === 'model_event' && ev.event.type === 'text_delta') {
+  *     render(ev.event.text);
+  *   }
+  * }
+  * const final = await stream.result;
+  * ```
+  */
   stream(input: RunInput): AgentStream {
     const ch = new Channel<AgentEvent>();
     const w = ch.writer;

@@ -13,6 +13,12 @@
 * in future work nodes can establish direct peer connections. For now routing
 * through the seed is correct and sufficient.
 *
+* Workers send HEARTBEAT messages; the seed only records when each node was
+* last seen and periodically sweeps for silent peers. The sweep cadence and
+* expiry default to 2500 ms / 7500 ms and can be overridden through the
+* `FINO_CLUSTER_HEARTBEAT_INTERVAL_MS` and `FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS`
+* environment variables (useful for fast failure-detection tests).
+*
 * ## Example
 *
 * ```ts no_run
@@ -33,17 +39,35 @@ import type { ClusterSeedTransport } from './transport.ts';
 import { type ClusterMessage } from './protocol.ts';
 import { RealmRegistry } from './registry.ts';
 import { env } from 'internal:process';
+/** Default milliseconds between heartbeat timeout sweeps. */
 const HEARTBEAT_INTERVAL_MS = 2500;
+/** Default milliseconds of heartbeat silence before a peer is declared down. */
 const HEARTBEAT_TIMEOUT_MS = 7500;
+/**
+* Read a positive millisecond duration from an environment variable.
+*
+* Returns `fallback` when the variable is unset, empty, non-numeric, zero, or
+* negative, so a malformed override can never disable heartbeat monitoring.
+*/
 function envMs(name: string, fallback: number): number {
   const raw = env[name];
   if (raw === undefined || raw === '') return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
+/**
+* Effective sweep interval: `FINO_CLUSTER_HEARTBEAT_INTERVAL_MS` or 2500 ms.
+*
+* Read at `start()` time, so the override must be set before the seed starts.
+*/
 function heartbeatIntervalMs(): number {
   return envMs('FINO_CLUSTER_HEARTBEAT_INTERVAL_MS', HEARTBEAT_INTERVAL_MS);
 }
+/**
+* Effective heartbeat expiry: `FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS` or 7500 ms.
+*
+* Read on every sweep, so changes to the environment take effect immediately.
+*/
 function heartbeatTimeoutMs(): number {
   return envMs('FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS', HEARTBEAT_TIMEOUT_MS);
 }
@@ -51,8 +75,12 @@ function heartbeatTimeoutMs(): number {
 * Cluster seed router for membership, spawn, and port-message routing.
 *
 * The server owns the authoritative registry of which node hosts each port. It
-* listens on a `WebTransportSeedTransport`, sends heartbeats checks every 2500 ms,
-* and treats peers as down after 7500 ms without a heartbeat.
+* listens on a `ClusterSeedTransport` (WebTransport in production), sweeps for
+* missed worker heartbeats every 2500 ms, and treats a peer as down after
+* 7500 ms of silence (both durations are env-overridable; see the module
+* header). When a peer dies — by disconnect or by heartbeat expiry — the seed
+* broadcasts `PEER_DOWN`, fails any spawns in flight toward that node, and
+* sends `TERMINATE` for every orphaned descendant realm.
 *
 * ```ts no_run
 * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
@@ -65,67 +93,30 @@ function heartbeatTimeoutMs(): number {
 */
 export class SeedServer {
   /**
-  * Private property `#transport` used by `SeedServer`.
+  * Seed-side transport the router listens and routes on.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #transport = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#transport;
-  *   }
-  * }
-  * ```
+  * Provided by the constructor; `start()` registers the message handler and
+  * calls `listen()`, `stop()` closes it. All sends, broadcasts, and the seed's
+  * own `nodeId` go through this object.
   *
   * @internal
   */
   #transport: ClusterSeedTransport;
   /**
-  * Private property `#registry` used by `SeedServer`.
+  * Authoritative realm ownership tree (portId, parent edge, hosting node).
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #registry = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#registry;
-  *   }
-  * }
-  * ```
+  * Populated on SPAWN/SPAWN_ACK, pruned on REALM_EXIT and node death. Its
+  * removal snapshots drive `TERMINATE` propagation to descendant hosts.
   *
   * @internal
   */
   #registry = new RealmRegistry();
   /**
-  * Private property `#peers` used by `SeedServer`.
+  * Live worker membership keyed by node ID.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #peers = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#peers;
-  *   }
-  * }
-  * ```
+  * Each entry holds the load snapshot reported in the node's HELLO; spawn
+  * placement (`#selectTarget`) picks the member with the lowest CPU load.
+  * Entries are removed on disconnect (`PEER_DOWN`) or heartbeat expiry.
   *
   * @internal
   */
@@ -136,46 +127,23 @@ export class SeedServer {
     };
   }>();
   /**
-  * Private property `#lastSeen` used by `SeedServer`.
+  * `Date.now()` timestamp of the last HELLO or HEARTBEAT per node ID.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #lastSeen = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#lastSeen;
-  *   }
-  * }
-  * ```
+  * `#checkHeartbeats` declares a peer down once its entry is older than the
+  * heartbeat timeout.
   *
   * @internal
   */
   #lastSeen = new Map<string, number>();
   // spawnReqId -> { requesterNodeId, parentPortId, targetNodeId }
   /**
-  * Private property `#pendingSpawns` used by `SeedServer`.
+  * In-flight SPAWN requests keyed by `spawnReqId`.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #pendingSpawns = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#pendingSpawns;
-  *   }
-  * }
-  * ```
+  * Records who asked, which parent port the child attaches to, and which node
+  * was chosen, so the eventual SPAWN_ACK can be routed back to the requester
+  * and registered under the right parent. `#handleNodeDown` synthesizes a
+  * failed SPAWN_ACK when the target dies mid-spawn and silently drops entries
+  * whose requester died.
   *
   * @internal
   */
@@ -190,45 +158,21 @@ export class SeedServer {
   // Could be consolidated with registry.getNodeId() if registry exposed a
   // "snapshot before remove" operation, but the parallel map is simpler.
   /**
-  * Private property `#portNodes` used by `SeedServer`.
+  * Flat portId -> hosting nodeId map for PORT_MSG and TERMINATE routing.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #portNodes = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#portNodes;
-  *   }
-  * }
-  * ```
+  * Deliberately parallel to `#registry` (see the comment above): node-down
+  * handling removes registry entries before parent hosts are looked up, so
+  * this map must survive long enough to answer "which node hosts the parent
+  * port of the realm that just died".
   *
   * @internal
   */
   #portNodes = new Map<string, string>();
   /**
-  * Private property `#heartbeatTimer` used by `SeedServer`.
+  * Interval handle for the periodic heartbeat sweep.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #heartbeatTimer = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#heartbeatTimer;
-  *   }
-  * }
-  * ```
+  * `null` until `start()` and again after `stop()`, which uses it to make
+  * repeated `stop()` calls harmless.
   *
   * @internal
   */
@@ -301,25 +245,25 @@ export class SeedServer {
     this.#checkHeartbeats();
   }
   /**
-  * Private method `#handle` used by `SeedServer`.
+  * Dispatch a single inbound `ClusterMessage` from node `from`.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
+  * - `HELLO`: record the peer and its load, reply with `WELCOME` (current
+  *   peer list), broadcast `PEER_UP` to everyone else.
+  * - `PEER_DOWN`: synthetic message from the transport on connection drop;
+  *   forget the peer, rebroadcast, and run the node-down cascade.
+  * - `HEARTBEAT`: refresh the peer's last-seen timestamp.
+  * - `SPAWN`: pick the least-loaded other node and forward the request, or
+  *   reply immediately with a failed `SPAWN_ACK` when no worker is eligible.
+  *   The parent port is registered before forwarding so replies can route.
+  * - `SPAWN_ACK`: register the child port under its parent (on success) and
+  *   forward the ack to the original requester.
+  * - `REALM_EXIT`: prune the realm's subtree from the registry, notify the
+  *   parent port's host, and send `TERMINATE` to each descendant's host
+  *   (skipping the exiting realm itself, which is already gone).
+  * - `PORT_MSG`: forward to the node hosting `toPort`; dropped silently when
+  *   the port is unknown.
   *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handle() {
-  *     return 'handle';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#handle();
-  *   }
-  * }
-  * ```
+  * Unknown message types are ignored.
   *
   * @internal
   */
@@ -428,25 +372,17 @@ export class SeedServer {
     }
   }
   /**
-  * Private method `#handleNodeDown` used by `SeedServer`.
+  * Run the cleanup cascade after a node disconnects or times out.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
+  * Pending spawns requested by the dead node are dropped; pending spawns
+  * targeting it are failed with a synthesized error `SPAWN_ACK` back to the
+  * requester. Every port hosted on the node (and all descendants) is removed
+  * from the registry, and for each orphaned realm a `TERMINATE` is sent to
+  * the host of its parent port - the dead node itself can no longer receive
+  * messages, so notification goes to the surviving side of each edge.
   *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handleNodeDown() {
-  *     return 'handleNodeDown';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#handleNodeDown();
-  *   }
-  * }
-  * ```
+  * Callers are responsible for peer bookkeeping and the `PEER_DOWN`
+  * broadcast; this method only handles spawn and realm-tree fallout.
   *
   * @internal
   */
@@ -484,25 +420,12 @@ export class SeedServer {
     }
   }
   /**
-  * Private method `#selectTarget` used by `SeedServer`.
+  * Choose the spawn target: the peer with the lowest reported CPU load.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #selectTarget() {
-  *     return 'selectTarget';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#selectTarget();
-  *   }
-  * }
-  * ```
+  * The requesting node is excluded so spawns always land on a different node.
+  * Returns `null` when no other peer is connected, which callers turn into an
+  * immediate failed `SPAWN_ACK`. Load figures come from each peer's HELLO and
+  * are not refreshed afterwards, so placement is best-effort.
   *
   * @internal
   */
@@ -520,25 +443,12 @@ export class SeedServer {
     return best;
   }
   /**
-  * Private method `#checkHeartbeats` used by `SeedServer`.
+  * Sweep for peers whose last heartbeat is older than the timeout.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #checkHeartbeats() {
-  *     return 'checkHeartbeats';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#checkHeartbeats();
-  *   }
-  * }
-  * ```
+  * Each expired peer is removed from membership, announced to the rest of the
+  * cluster with `PEER_DOWN`, and put through the same node-down cascade as a
+  * hard disconnect. Runs on the interval started by `start()`; tests invoke
+  * it directly via `_checkHeartbeatsForTest()`.
   *
   * @internal
   */

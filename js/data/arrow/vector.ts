@@ -1,12 +1,44 @@
 /**
 * Arrow columnar arrays — one `Vector` class per physical layout.
 *
-* Vectors own their buffers and a logical offset (so `slice` is zero-copy).
-* `get(i)` returns raw physical values: `number` for widths up to 32 bits,
-* `bigint` for 64-bit ints/timestamps/durations, `boolean`, `string`,
-* `Uint8Array` for binary, arrays/objects for nested types, and `null` for
-* nulls. `makeVector` builds any vector from raw buffers (the hot path used by
-* IPC and native producers); `vectorFromArray` infers a type from JS values.
+* A `Vector` is a single immutable, typed column: a `DataType` paired with
+* the raw Arrow buffers that encode it (validity bitmap, values, offsets,
+* views, children, dictionary). Every physical layout in the Arrow columnar
+* format is covered — fixed-width primitives, booleans, decimals,
+* variable-length binary/utf8 and their view variants, lists and list views,
+* fixed-size lists, structs, maps, unions, dictionary encoding, and run-end
+* encoding — each implemented by a private subclass that `makeVector` selects
+* from `type.kind`.
+*
+* Vectors keep a logical offset alongside their buffers, so `slice` is
+* zero-copy: it returns a new vector over the same buffers with only the
+* offset and length adjusted. `get(i)` returns raw physical values —
+* `number` for widths up to 32 bits, `bigint` for 64-bit ints, timestamps,
+* durations, and decimals, `boolean`, `string` for utf8, `Uint8Array` for
+* binary, arrays/objects for nested types, and `null` for null slots. No
+* boxing happens at this layer: dates stay as day/millisecond counts and
+* decimals stay as unscaled integers.
+*
+* Two builders cover both directions. `makeVector` wraps raw little-endian
+* buffers without copying or validating — the hot path used by IPC decoding
+* and native producers. `vectorFromArray` encodes plain JS values into fresh
+* buffers, inferring a type when none is given — the convenience path for
+* tests and small data.
+*
+* This module is re-exported through `fino:data/arrow`; import from there.
+*
+* ```ts no_run
+* import { vectorFromArray } from 'fino:data/arrow';
+*
+* const v = vectorFromArray(['a', null, 'c']); // inferred utf8
+* v.length;             // 3
+* v.nullCount;          // 1
+* v.get(0);             // 'a'
+* v.get(1);             // null
+* v.slice(1).toArray(); // [null, 'c'] — zero-copy view
+* ```
+*
+* Arrow columnar format: https://arrow.apache.org/docs/format/Columnar.html
 *
 * @internal
 */
@@ -15,20 +47,66 @@ import { Field } from './schema.ts';
 import { type DataType, Precision, DateUnit, IntervalUnit, UnionMode, fixedWidthBytes, bool, int32, int64, float64, utf8, list, struct } from './type.ts';
 const _decoder = new TextDecoder();
 const _encoder = new TextEncoder();
-/** Raw column data used to construct a `Vector`. */
+/**
+* Raw column data used to construct a `Vector` via `makeVector`.
+*
+* Only the buffers relevant to the layout of `type` are consulted; the rest
+* may be omitted. Buffers are raw little-endian bytes (`Uint8Array`) exactly
+* as they appear in Arrow IPC — e.g. `valueOffsets` for a `utf8` column is
+* the byte image of an `Int32Array`, not the typed array itself.
+*
+* ```ts no_run
+* import { makeVector, int32 } from 'fino:data/arrow';
+*
+* const values = new Uint8Array(new Int32Array([10, 20, 30]).buffer);
+* const v = makeVector({ type: int32(), length: 3, values });
+* v.get(2); // 30
+* ```
+*/
 export interface VectorData {
+  /** Logical type of the column; its `kind` selects the physical layout. */
   type: DataType;
+  /** Number of logical elements. */
   length: number;
+  /**
+  * Known null count. Omit (or pass a negative value) to have it computed
+  * lazily from `validity` on first access.
+  */
   nullCount?: number;
+  /**
+  * Validity bitmap, LSB-first (bit set = valid). `null` or omitted means
+  * every value is valid.
+  */
   validity?: Uint8Array | null;
+  /**
+  * Logical element offset into the buffers. Non-zero for zero-copy slices
+  * and for data imported with an offset (e.g. via the C Data Interface).
+  */
   offset?: number;
+  /**
+  * Primary data buffer: fixed-width values, variable-length data bytes,
+  * bit-packed booleans, or dictionary indices, depending on the layout.
+  */
   values?: Uint8Array;
+  /**
+  * Offsets buffer for variable-length binary/utf8, list, and map layouts
+  * (`i32`, or `i64` for the `large*` variants), and for dense unions.
+  */
   valueOffsets?: Uint8Array;
+  /** Sizes buffer for the `listview`/`largelistview` layouts. */
   sizes?: Uint8Array;
+  /** 16-byte view structs for the `utf8view`/`binaryview` layouts. */
   views?: Uint8Array;
+  /** Data buffers referenced by `views` entries longer than 12 bytes. */
   variadicBuffers?: Uint8Array[];
+  /** Per-slot child type ids for union layouts. */
   typeIds?: Uint8Array;
+  /** Child vectors for nested layouts (list, struct, map, union, run-end). */
   children?: Vector[];
+  /**
+  * Decoded values vector for dictionary layouts; `values` then holds the
+  * indices.
+  */
   dictionary?: Vector;
 }
 function bitGet(bitmap: Uint8Array, i: number): boolean {
@@ -44,7 +122,24 @@ function readLeBigInt(bytes: Uint8Array, offset: number, byteLength: number, sig
   }
   return value;
 }
-/** Abstract base for every Arrow vector. */
+/**
+* Abstract base for every Arrow vector — one typed, immutable column.
+*
+* The concrete subclasses (one per physical layout) are private; obtain
+* instances through `makeVector`, `vectorFromArray`, or by decoding IPC data.
+* All element access flows through `get`, which applies the validity bitmap
+* and the logical offset before dispatching to the layout-specific read.
+* Vectors are iterable, yielding `get(0)` through `get(length - 1)`.
+*
+* ```ts no_run
+* import { vectorFromArray } from 'fino:data/arrow';
+*
+* const v = vectorFromArray([1.5, null, 3]); // inferred float64
+* v.isValid(1); // false
+* v.get(2);     // 3
+* [...v];       // [1.5, null, 3]
+* ```
+*/
 export abstract class Vector {
   /** Logical type of the column. */
   readonly type: DataType;
@@ -95,7 +190,10 @@ export abstract class Vector {
     if (this.validity === null) return true;
     return bitGet(this.validity, this.offset + i);
   }
-  /** Read element `i` (null-aware), returning the physical value or `null`. */
+  /**
+  * Read element `i`, returning the physical value, or `null` for a null
+  * slot. Out-of-range indices return `undefined`.
+  */
   get(i: number): unknown {
     if (i < 0 || i >= this.length) return undefined;
     if (!this.isValid(i)) return null;
@@ -114,10 +212,18 @@ export abstract class Vector {
     for (let i = 0; i < this.length; i++) out[i] = this.get(i);
     return out;
   }
+  /** Iterate elements in order, exactly as `get` returns them (nulls included). */
   *[Symbol.iterator](): Iterator<unknown> {
     for (let i = 0; i < this.length; i++) yield this.get(i);
   }
-  /** A zero-copy logical sub-range of this vector. */
+  /**
+  * A zero-copy logical sub-range of this vector.
+  *
+  * The result shares the underlying buffers; only the logical offset and
+  * length change. `end` is exclusive and clamped to the vector length;
+  * negative indices are not supported. The null count of the slice is
+  * recomputed lazily for the new range.
+  */
   slice(begin = 0, end: number = this.length): Vector {
     const length = Math.max(0, Math.min(end, this.length) - begin);
     return makeVector({
@@ -153,7 +259,11 @@ export abstract class Vector {
       nullCount: this.validity === null ? 0 : this.nullCount
     };
   }
-  /** The logical offset into the backing buffers. @internal */
+  /**
+  * The logical offset into the backing buffers.
+  *
+  * @internal
+  */
   get logicalOffset(): number {
     return this.offset;
   }
@@ -227,8 +337,8 @@ class PrimitiveVector extends Vector {
     }
   }
   /**
-  * A typed-array view over the raw values buffer for fixed-width types. Copies
-  * only when the underlying buffer is not aligned for the element type.
+  * The raw values buffer as bytes, without the logical offset applied.
+  * Returned as-is (no copy); consumers reinterpret it for the element type.
   */
   values(): ArrayBufferView {
     return this.#data;
@@ -560,8 +670,26 @@ function bufBytes(dv: DataView): Uint8Array {
   return new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
 }
 /**
-* Construct a vector from raw column buffers. The hot path used by IPC decoding
-* and native producers.
+* Construct a vector from raw column buffers.
+*
+* Selects the layout subclass from `data.type.kind` and wraps the provided
+* buffers without copying. This is the hot path used by IPC decoding and
+* native producers, so no validation is performed — buffers are trusted to
+* match the layout of `type`, and missing or undersized buffers surface as
+* errors (or garbage reads) only when elements are accessed.
+*
+* ```ts no_run
+* import { makeVector, vectorFromArray, dictionary, int8, utf8 } from 'fino:data/arrow';
+*
+* // A dictionary-encoded column: int8 indices into ['red', 'green', 'blue'].
+* const v = makeVector({
+*   type: dictionary(0, int8(), utf8()),
+*   length: 4,
+*   values: new Uint8Array([0, 1, 0, 2]),
+*   dictionary: vectorFromArray(['red', 'green', 'blue'], utf8()),
+* });
+* v.toArray(); // ['red', 'green', 'red', 'blue']
+* ```
 */
 export function makeVector(data: VectorData): Vector {
   switch (data.type.kind) {
@@ -630,8 +758,32 @@ function inferType(values: unknown[]): DataType {
   return int32();
 }
 /**
-* Build a vector from JS values, inferring the type when not given. Intended
-* for convenience and tests; `makeVector` is the performance path.
+* Build a vector from plain JS values, inferring the type when not given.
+*
+* Inference looks at the first non-null value: `boolean` → bool, `number` →
+* float64, `bigint` → int64, `string` → utf8, arrays → list, other objects →
+* struct. An all-null input infers int32. Passing an explicit `type` skips
+* inference and encodes the values for that layout — supported kinds are
+* bool, the fixed-width primitives (int, float, date, time, timestamp,
+* duration), utf8/binary and their `large*` variants, list/largelist, struct,
+* map, decimal, and fixedsizebinary. Both `null` and `undefined` become null
+* slots.
+*
+* Throws `ArrowError` for kinds it cannot build (views, unions,
+* dictionaries, run-end encoding, intervals, fixed-size lists) — construct
+* those with `makeVector` from raw buffers instead.
+*
+* Intended for convenience and tests; `makeVector` is the performance path.
+*
+* ```ts no_run
+* import { vectorFromArray, timestamp, TimeUnit } from 'fino:data/arrow';
+*
+* vectorFromArray(['a', null, 'c']).toArray();  // ['a', null, 'c']
+* vectorFromArray([{ x: 1 }, { x: 2 }]).get(1); // { x: 2 }
+*
+* const ts = vectorFromArray([1720000000000n, null], timestamp(TimeUnit.MILLISECOND));
+* ts.get(0); // 1720000000000n
+* ```
 */
 export function vectorFromArray(values: unknown[], type?: DataType): Vector {
   const dt = type ?? inferType(values);

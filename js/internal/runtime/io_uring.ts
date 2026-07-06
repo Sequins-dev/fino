@@ -1,5 +1,5 @@
 /**
-* fino:io_uring — low-level io_uring backend via raw Linux syscalls.
+* internal:runtime/io_uring — low-level io_uring backend via raw Linux syscalls.
 *
 * io_uring is Linux's high-performance asynchronous I/O interface, introduced
 * in kernel 5.1. Unlike epoll (which is level-triggered and requires separate
@@ -377,16 +377,33 @@ function unpackUserData(raw: bigint): {
 // Ring setup
 // ---------------------------------------------------------------------------
 /**
-* Create a new io_uring event loop handle.
-* @param {number} [entries=256]
+* Create a new io_uring event loop handle, allocating and mapping its rings.
 *
-* The returned handle owns three mmap regions and a ring fd. Release it with
-* `destroy`.
+* Calls `io_uring_setup` to establish a ring sized for at least `entries`
+* submission slots (default 256; the kernel may round up), then `mmap`s the
+* three shared regions — the submission-queue ring, the completion-queue ring,
+* and the SQE array — using the offsets the kernel reports in `io_uring_params`.
+* The returned handle bundles those pointers together with the shadow tail
+* counters and the buffer-lifetime maps that keep async operands alive until
+* their completions arrive.
+*
+* Throws if `io_uring_setup` fails (for example on a kernel older than 5.1, or
+* when io_uring is disabled by `kernel.io_uring_disabled`) or if any of the
+* three `mmap` calls returns null. The returned handle owns kernel resources
+* and must be released with `destroy` to avoid leaking the ring fd and the
+* mapped regions.
 *
 * ```typescript no_run
 * import * as uring from 'internal:runtime/io_uring';
-* const loop = uring.create(256);
-* uring.destroy(loop);
+*
+* const loop = uring.create();
+* try {
+*   uring.addTimer(loop, 1, 25);
+*   const events = uring.wait(loop, 100);
+*   console.log(events.map(e => e.filter));
+* } finally {
+*   uring.destroy(loop);
+* }
 * ```
 */
 export function create(entries: number = 256): IoUringLoop {
@@ -789,16 +806,29 @@ export function wait(loop: IoUringLoop, timeoutMs: number | null = null): CqeEve
 // emits EVFILT_COMPLETION for these completions (instead of EVFILT_READ/WRITE).
 // The caller (loop.submit) maps the completion back to a Promise resolver.
 /**
-* Submit an async openat(2) via IORING_OP_OPENAT.
-* @param {object} loop  Raw io_uring handle from create().
-* @param {Uint8Array} pathBuf  Null-terminated C string; kept alive until completion.
-* @param {number} flags  O_RDONLY / O_WRONLY | O_CREAT | O_TRUNC etc.
-* @param {number} mode   File creation permissions (e.g. 0o666).
-* @param {number} userData  Completion identifier assigned by loop.submit().
+* Submit an async `openat(2)` relative to the current directory via
+* `IORING_OP_OPENAT`.
+*
+* `pathBuf` must hold a null-terminated C string and is retained in
+* `loop.fileBufs` under `userData` until the completion arrives, so the kernel
+* cannot read a buffer the GC has already freed. `flags` is the usual open
+* flag set (`O_RDONLY`, `O_WRONLY | O_CREAT | O_TRUNC`, and so on) and `mode`
+* the creation permission bits used when `O_CREAT` is present. The completion
+* is delivered as an `EVFILT_COMPLETION` event whose `res` is the new file
+* descriptor on success or a negative errno on failure; `internal:runtime/loop`
+* maps `userData` back to the awaiting promise.
 *
 * ```typescript no_run
 * import * as uring from 'internal:runtime/io_uring';
-* uring.asyncOpen(loop, pathBuf, flags, 0o666, id);
+*
+* const O_RDONLY = 0;
+* const path = new TextEncoder().encode('/etc/hostname\0').buffer;
+* const id = 1001;
+* uring.asyncOpen(loop, path, O_RDONLY, 0o644, id);
+*
+* for (const event of uring.wait(loop, 100)) {
+*   if (event.ident === id) console.log('opened fd', event.res);
+* }
 * ```
 */
 export function asyncOpen(loop: IoUringLoop, pathBuf: ArrayBuffer, flags: number, mode: number, userData: number): void {
@@ -809,16 +839,27 @@ export function asyncOpen(loop: IoUringLoop, pathBuf: ArrayBuffer, flags: number
   submitSqe(loop, IORING_OP_OPENAT, AT_FDCWD, addr, mode, 0, packUserData(USER_DATA_FILE, userData), flags);
 }
 /**
-* Submit an async read(2) via IORING_OP_READ at the current file position.
-* @param {object} loop  Raw io_uring handle from create().
-* @param {number} fd
-* @param {ArrayBuffer} buf  Destination buffer; kept alive until completion.
-* @param {number} len  Maximum bytes to read.
-* @param {number} userData  Completion identifier assigned by loop.submit().
+* Submit an async `read(2)` via `IORING_OP_READ` at the file's current
+* position.
+*
+* The SQE offset is set to `UINT64_MAX`, which tells io_uring to read from and
+* advance the descriptor's current position exactly as `read(2)` does, rather
+* than a fixed offset. `buf` receives up to `len` bytes and is held in
+* `loop.fileBufs` under `userData` until the completion arrives, guarding it
+* from garbage collection while the kernel is still writing into it. The
+* completion is an `EVFILT_COMPLETION` event whose `res` is the number of bytes
+* read (0 at end of file) on success or a negative errno on failure.
 *
 * ```typescript no_run
 * import * as uring from 'internal:runtime/io_uring';
-* uring.asyncRead(loop, fd, new ArrayBuffer(4096), 4096, id);
+*
+* const buf = new ArrayBuffer(4096);
+* const id = 2002;
+* uring.asyncRead(loop, fd, buf, buf.byteLength, id);
+*
+* for (const event of uring.wait(loop, 100)) {
+*   if (event.ident === id) console.log('read', event.res, 'bytes');
+* }
 * ```
 */
 export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: number, userData: number): void {
@@ -828,14 +869,22 @@ export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: 
   submitSqe(loop, IORING_OP_READ, fd, addr, len, IORING_READ_AT_CURPOS, packUserData(USER_DATA_FILE, userData), 0);
 }
 /**
-* Submit an async close(2) via IORING_OP_CLOSE.
-* @param {object} loop  Raw io_uring handle from create().
-* @param {number} fd  File descriptor to close.
-* @param {number} userData  Completion identifier assigned by loop.submit().
+* Submit an async `close(2)` via `IORING_OP_CLOSE`.
+*
+* No operand buffer is needed, so the `fileBufs` entry for `userData` is an
+* empty array — it exists only so `drainCqes` classifies the completion as an
+* `EVFILT_COMPLETION` file event rather than a poll readiness event. The
+* completion's `res` is 0 on success or a negative errno on failure.
 *
 * ```typescript no_run
 * import * as uring from 'internal:runtime/io_uring';
+*
+* const id = 3003;
 * uring.asyncClose(loop, fd, id);
+*
+* for (const event of uring.wait(loop, 100)) {
+*   if (event.ident === id) console.log('close result', event.res);
+* }
 * ```
 */
 export function asyncClose(loop: IoUringLoop, fd: number, userData: number): void {
