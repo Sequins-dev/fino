@@ -637,6 +637,17 @@ if (_childEntry) {
     // thread/process realms (sets _externalTerminate).
     const entryDone = _watchMode ? _externalTerminate || isTerminated() as boolean : _childDone || isTerminated() as boolean;
     if (entryDone && !_shutdownStarted) _startChildShutdown();
+    // Close the receive port as soon as we begin winding down — do NOT wait for
+    // shutdown hooks to finish. Once the entry is done (or the parent asked us to
+    // terminate), we no longer need to receive messages; leaving the wake-fd
+    // `readable()` watch armed makes the loop busy-spin the moment the parent
+    // closes its end of the pipe (the read reports EOF on every tick), and that
+    // spin also keeps `alive()` true so the loop can never exit. Cancelling the
+    // watch here turns the shutdown-hook window into an idle wait, not a spin.
+    if (entryDone && !_portClosed && _childPort !== undefined) {
+      _portClosed = true;
+      (_childPort as MessagePort | ThreadPort).close();
+    }
     const done = entryDone && _shutdownDone;
     if (done) {
       // Tear down the watcher and poll interval so alive() drains to false
