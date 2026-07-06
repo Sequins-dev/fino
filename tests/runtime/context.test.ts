@@ -88,6 +88,48 @@ describe('runClear', () => {
     });
   });
 });
+describe('using scopes', () => {
+  it('Context — withValue restores nested values when disposed', async (t) => {
+    const ctx = new Context('using-value');
+    {
+      using outer = ctx.withValue('outer');
+      t.equal(ctx.get(), 'outer', 'outer scope is active');
+      await Promise.resolve();
+      {
+        using inner = ctx.withValue('inner');
+        t.equal(ctx.get(), 'inner', 'inner scope overrides outer');
+        await Promise.resolve();
+      }
+      t.equal(ctx.get(), 'outer', 'disposing inner restores outer');
+    }
+    t.equal(ctx.get(), undefined, 'disposing outer clears context');
+  });
+  it('Context — withClear hides and restores outer value', (t) => {
+    const ctx = new Context('using-clear');
+    ctx.runWithValue('outer', () => {
+      {
+        using scope = ctx.withClear();
+        t.equal(ctx.get(), undefined, 'cleared inside scope');
+      }
+      t.equal(ctx.get(), 'outer', 'outer value restored');
+    });
+  });
+  it('Context — withValue propagates through queued continuations', async (t) => {
+    const ctx = new Context('using-async');
+    let seen: unknown;
+    {
+      using scope = ctx.withValue('queued');
+      await new Promise<void>((resolve) => {
+        queueMicrotask(() => {
+          seen = ctx.get();
+          resolve();
+        });
+      });
+    }
+    t.equal(seen, 'queued', 'queued continuation sees scoped value');
+    t.equal(ctx.get(), undefined, 'scope is cleared after dispose');
+  });
+});
 describe('async propagation', () => {
   it('Context — value propagates through await', async (t) => {
     const ctx = new Context('async-prop');
@@ -194,9 +236,9 @@ describe('async propagation', () => {
     const fs = new DiskFileSystem();
     const path = `/tmp/fino-context-prop-${Date.now()}-${Math.random()}.txt`;
     let seen: unknown;
-    await fs.writeFile(path, 'context');
+    await fs.writeFile(path, new TextEncoder().encode('context'));
     await ctx.runWithValue('via-file-io', async () => {
-      const contents = await fs.readFile(path);
+      const contents = new TextDecoder().decode(await fs.readFile(path));
       seen = ctx.get();
       t.equal(contents, 'context', 'file read completed');
     });

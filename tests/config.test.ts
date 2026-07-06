@@ -3,6 +3,7 @@ import { ConfigError, loadConfig } from 'fino:config';
 import { DiskFileSystem } from 'fino:file';
 import { v } from 'fino:validate';
 const TEST_DIR = '/tmp/fino-config-test-' + Math.floor(Math.random() * 1e6);
+const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> => fs.writeFile(path, new TextEncoder().encode(text));
 describe('fino:config', () => {
   let fs: DiskFileSystem;
   before(async () => {
@@ -31,21 +32,21 @@ describe('fino:config', () => {
     await fs.rmdir(TEST_DIR);
   });
   it('loads explicit sources in list order with later sources taking precedence', async (t) => {
-    await fs.writeFile(TEST_DIR + '/app.json', JSON.stringify({
+    await writeText(fs, TEST_DIR + '/app.json', JSON.stringify({
       server: {
         host: 'json-host',
         port: 4e3
       },
       feature: true
     }));
-    await fs.writeFile(TEST_DIR + '/app.toml', [
+    await writeText(fs, TEST_DIR + '/app.toml', [
       'mode = "toml"',
       '[server]',
       'host = "toml-host"',
       'port = 5000',
       ''
     ].join('\n'));
-    await fs.writeFile(TEST_DIR + '/.env', [
+    await writeText(fs, TEST_DIR + '/.env', [
       'APP_PORT=6000',
       'APP_SECRET=from-dotenv',
       ''
@@ -136,7 +137,7 @@ describe('fino:config', () => {
     }), (err) => err instanceof ConfigError && err.message.includes('[redacted]') && !err.message.includes('short') && err.issues.length === 1, 'config errors redact configured secret paths');
   });
   it('maps quoted dotenv and prefixed env values with schema coercion', async (t) => {
-    await fs.writeFile(TEST_DIR + '/quoted.env', [
+    await writeText(fs, TEST_DIR + '/quoted.env', [
       'APP_SERVER_PORT="8080"',
       'APP_SERVER_HOST=\'localhost\'',
       'IGNORED_VALUE=true',
@@ -218,8 +219,8 @@ describe('fino:config', () => {
     t.equal(loaded.get('missing.path'), undefined, 'missing get path returns undefined');
   });
   it('rejects malformed files and unknown source types', async (t) => {
-    await fs.writeFile(TEST_DIR + '/bad.json', '{ not json');
-    await fs.writeFile(TEST_DIR + '/bad.toml', 'x =');
+    await writeText(fs, TEST_DIR + '/bad.json', '{ not json');
+    await writeText(fs, TEST_DIR + '/bad.toml', 'x =');
     await t.rejects(() => loadConfig({
       schema: v.object({}),
       sources: [{

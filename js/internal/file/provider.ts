@@ -22,8 +22,8 @@
 * }
 *
 * const fs = new MemoryFileSystem();
-* await fs.writeFile('/tmp/message.txt', 'hello');
-* const message = await fs.readFile('/tmp/message.txt', 'utf8');
+* await fs.writeFile('/tmp/message.txt', new TextEncoder().encode('hello'));
+* const message = new TextDecoder().decode(await fs.readFile('/tmp/message.txt'));
 * console.assert(message === 'hello');
 * ```
 *
@@ -86,12 +86,28 @@ export interface ByteWriter {
 }
 /**
 * An open file handle. Provides read/write access and metadata.
-* The handle owns its resource lifecycle — call `close()` when done.
 *
-* @example
+* Returned by a provider's `open` method. The handle owns its resource
+* lifecycle — the caller must `close()` it when done, ideally in a `finally`
+* block so it is released even when a read or write throws. Which methods are
+* usable depends on the mode the file was opened with: `reader`/`text`/`bytes`
+* require a readable mode, `writer`/`pwrite`/`truncate` require a writable one.
+*
+* The `*Sync` members are optional and exist only for native callback
+* integrations (such as the SQLite VFS) that run inside synchronous C code and
+* cannot await; ordinary callers should use the async methods.
+*
 * ```ts no_run
-* const documentedType = 'FileHandle';
-* console.log(documentedType);
+* import type { FileSystem } from 'internal:file/provider';
+*
+* async function readHeader(fs: FileSystem, path: string): Promise<Uint8Array> {
+*   const file = await fs.open(path, 'r');
+*   try {
+*     return await file.pread(0, 16);
+*   } finally {
+*     await file.close();
+*   }
+* }
 * ```
 */
 export interface FileHandle {
@@ -258,7 +274,6 @@ export interface FileHandle {
   * without scheduling additional async work. Providers without a synchronous
   * close path can omit it; callers must fall back to `close()`.
   *
-  * @returns Nothing.
   * @internal
   */
   closeSync?(): void;
@@ -266,14 +281,29 @@ export interface FileHandle {
 /**
 * Abstract base class for filesystem providers.
 *
-* Implementations must provide the core POSIX-like operations. The convenience
-* methods `readFile` and `writeFile` are implemented here using `open` and
-* the handle's reader/writer, so providers get them for free.
+* Defines the contract every provider must satisfy: the abstract methods are
+* the core POSIX-like primitives (`stat`, `open`, `mkdir`, `rename`, and so on)
+* that each backend implements against its own storage. The concrete
+* convenience methods `readFile` and `writeFile` are implemented here in terms
+* of `open` and the returned handle's reader/writer, so every provider inherits
+* them for free; a provider may override them when it can do the whole-file
+* transfer more efficiently.
 *
-* @example
+* The optional `*Sync` methods mirror the async primitives for native callback
+* integrations (such as the SQLite VFS) and can be omitted by providers that do
+* not need synchronous access.
+*
 * ```ts no_run
-* const documentedClass = 'FileSystem';
-* console.log(documentedClass);
+* import { FileSystem } from 'internal:file/provider';
+*
+* class ReadOnlyFs extends FileSystem {
+*   // Implement stat, lstat, open, dir, entry, mkdir, rmdir, unlink,
+*   // rename, readlink, symlink, and realpath against the backing store.
+* }
+*
+* const fs: FileSystem = new ReadOnlyFs();
+* const text = new TextDecoder().decode(await fs.readFile('/etc/hostname'));
+* console.log(text.trim());
 * ```
 */
 export abstract class FileSystem {
@@ -418,43 +448,47 @@ export abstract class FileSystem {
   // Convenience — built on core operations; may be overridden for efficiency
   // ---------------------------------------------------------------------------
   /**
-  * Read the entire file contents as a UTF-8 string.
+  * Read the entire file contents as bytes.
   *
   * Opens the file in read mode and always closes the handle in a `finally`
-  * block. Providers may override this for efficiency.
+  * block. Text decoding is intentionally caller-owned. Providers may override
+  * this for efficiency.
   *
   * ```typescript no_run
-  * const text = await fs.readFile('/tmp/file.txt');
+  * const bytes = await fs.readFile('/tmp/file.txt');
   * ```
   */
-  async readFile(path: Path | string): Promise<string> {
+  async readFile(path: Path | string): Promise<Uint8Array> {
     const f = await this.open(path, 'r');
     try {
-      return await f.text();
+      return await f.bytes();
     } finally {
       await f.close();
     }
   }
   /**
-  * Write data to a file, creating or truncating as needed.
+  * Write byte data to a file, creating or truncating as needed.
   *
-  * Strings are UTF-8 encoded. The file is opened with mode `w`, flushed, and
-  * closed even when writing fails.
+  * The file is opened with mode `w`, flushed, and closed even when writing
+  * fails. Text encoding is intentionally caller-owned.
   *
   * ```typescript no_run
-  * await fs.writeFile('/tmp/file.txt', 'hello');
+  * await fs.writeFile('/tmp/file.txt', new TextEncoder().encode('hello'));
   * ```
   */
-  async writeFile(path: Path | string, data: string | Uint8Array | ArrayBuffer): Promise<void> {
+  async writeFile(path: Path | string, data: Uint8Array | ArrayBuffer | ArrayBufferView): Promise<void> {
+    if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
+      throw new TypeError('writeFile data must be a Uint8Array, ArrayBuffer, or ArrayBufferView');
+    }
     const f = await this.open(path, 'w');
     try {
       const w = f.writer();
-      if (typeof data === 'string') {
-        w.write(new TextEncoder().encode(data));
+      if (data instanceof Uint8Array) {
+        w.write(data);
       } else if (data instanceof ArrayBuffer) {
         w.write(new Uint8Array(data));
       } else {
-        w.write(data);
+        w.write(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
       }
       await w.flush();
     } finally {

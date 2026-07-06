@@ -15,13 +15,13 @@
 * | Flow collections | Supported for `[]` sequences and `{}` mappings. |
 * | Scalar styles | Plain, single-quoted, double-quoted, literal `|`, and folded `>` scalars are supported. |
 * | Core scalar resolution | YAML 1.2 core `null`, booleans, integers, floats, and strings are resolved; YAML 1.1 words such as `yes`, `on`, and `Off` stay strings. |
-* | Anchors and aliases | Supported within one document with expansion and depth limits; undefined, recursive, and cross-document aliases are rejected. |
+* | Anchors and aliases | Supported within one document under an expansion budget; undefined, recursive, and cross-document aliases are rejected. |
 * | Explicit core tags | `!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!seq`, `!!map`, `!!binary`, and `!!timestamp` are supported. |
 * | Merge keys | `<<: *anchor` and `<<: [*a, *b]` are absorbed into the enclosing mapping. |
 * | Complex keys | `? key` is supported; mappings with non-string keys return `Map<unknown, YamlValue>`. |
 * | Comments and markers | Comments, `---`, `...`, and `parseAll()` multi-document streams are supported; comments and markers are not re-emitted. |
 * | Stringify normalization | Output preserves the value graph but normalizes comments, source anchor names, document markers, and merge syntax. |
-* | Security limits | Alias expansion count and depth are bounded, and arbitrary object construction is never performed. |
+* | Security limits | Alias expansion is bounded by an estimated-size budget, and arbitrary object construction is never performed. |
 * | Intentional limits | `%YAML`/`%TAG` directives, custom tags, local tags, and application object construction are rejected. |
 *
 * This parser targets Fino's core-schema configuration use cases, not complete
@@ -54,7 +54,7 @@
 *   - YAML core schema: https://yaml.org/spec/1.2.2/#103-core-schema
 */
 import { ParseError } from 'fino:parsing/scanner';
-import { decodeUtf8 } from '../globals/encoding.ts';
+import { decodeUtf8 } from 'internal:encoding';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -94,18 +94,10 @@ const CORE_TAGS = new Set([
 */
 export class YamlParseError extends ParseError {
   /**
-  * Error name reported by `YamlParseError` instances.
+  * Error name, always `'YamlParseError'`.
   *
-  * This member is emitted by the docs generator when
-  * `--include-private` is enabled. It is maintained by runtime
-  * internals and should be changed only with the surrounding
-  * implementation contract in mind.
-  *
-  * @example
-  * ```ts no_run
-  * const error = new YamlParseError('example', { line: 1, column: 1, offset: 0, snippet: 'x' });
-  * console.log(error.name);
-  * ```
+  * Useful for distinguishing YAML failures from other `ParseError` subclasses
+  * in logs or serialized error reports where `instanceof` is unavailable.
   */
   name = 'YamlParseError';
 }
@@ -140,24 +132,19 @@ export type YamlValue = null | boolean | number | string | Uint8Array | Date | Y
 */
 export type YamlMapping = {
   /**
-  * YAML mapping key with a string-compatible key name.
+  * Entry keyed by the mapping key's string form.
   *
-  * Parser output uses this object shape only when every key can be represented
-  * as a JavaScript string. Complex keys are returned as `Map` instead.
-  *
-  * ```ts no_run
-  * import type { YamlMapping } from 'fino:format/yaml';
-  *
-  * const mapping: YamlMapping = { server: { port: 8080 } };
-  * ```
+  * The parser produces this object shape only when every key in the mapping
+  * is a plain string; a mapping with any non-string key is returned as
+  * `Map<unknown, YamlValue>` instead.
   */
   [k: string]: YamlValue;
 };
 /**
 * Options controlling YAML parsing limits and duplicate-key behavior.
 *
-* Defaults reject duplicate keys, cap total alias expansion at 1,000,000
-* estimated characters, and cap alias expansion depth at 100.
+* Defaults reject duplicate keys and cap total alias expansion at 1,000,000
+* estimated characters.
 *
 * ```ts no_run
 * import { parse, type YamlParseOptions } from 'fino:format/yaml';
@@ -194,16 +181,15 @@ export interface YamlParseOptions {
   */
   maxAliasExpansion?: number;
   /**
-  * Maximum nested alias expansion depth. Defaults to `100`.
+  * Reserved cap on nested alias expansion depth. Defaults to `100`.
   *
-  * This option exists to bound deeply nested alias graphs. The parser also
-  * applies the total expansion cap in `maxAliasExpansion`.
-  *
-  * ```ts no_run
-  * import { parse } from 'fino:format/yaml';
-  *
-  * parse('a: &a [1]\nb: *a\n', { maxAliasDepth: 10 });
-  * ```
+  * The current parser resolves an alias against a node that is already fully
+  * constructed (an anchor is only bound once its value is complete, which is
+  * also why self-referential aliases fail as undefined), so depth cannot grow
+  * during resolution and this option is not separately enforced. Alias
+  * amplification attacks are instead caught by the `maxAliasExpansion`
+  * budget. The option is accepted so configurations remain valid if a future
+  * parser needs an explicit depth check.
   */
   maxAliasDepth?: number;
 }
@@ -211,7 +197,7 @@ export interface YamlParseOptions {
 * Options controlling YAML serialization style.
 *
 * Stringification emits a readable block style for objects and arrays and does
-* not preserve source comments, anchors, aliases, or merge keys from parsed
+* not preserve source comments, anchor names, or merge keys from parsed
 * input.
 *
 * ```ts no_run
@@ -236,16 +222,12 @@ export interface YamlStringifyOptions {
   */
   indent?: number;
   /**
-  * Preferred scalar wrapping width.
+  * Reserved preferred scalar wrapping width.
   *
-  * This option is reserved for scalar wrapping behavior. Current output may
-  * keep long scalar values on one line when quoting is required.
-  *
-  * ```ts no_run
-  * import { stringify } from 'fino:format/yaml';
-  *
-  * stringify({ message: 'hello world' }, { lineWidth: 80 });
-  * ```
+  * The current formatter never wraps scalars: long strings stay on one line
+  * (quoted when required), and short all-scalar sequences are inlined using a
+  * fixed internal width. This option is accepted but has no effect on output
+  * today; it exists so configurations remain valid if wrapping is added.
   */
   lineWidth?: number;
 }
@@ -259,10 +241,25 @@ export interface YamlStringifyOptions {
 * contains no document content, the function returns `null`. For multi-document
 * streams, use `parseAll()` to keep every document.
 *
-* ```ts no_run
-* import { parse } from 'fino:format/yaml';
+* Throws `YamlParseError` when the input is malformed, uses an unsupported
+* feature (directives, custom or local tags), repeats a key without
+* `allowDuplicateKeys`, or exceeds the alias expansion budget.
 *
-* parse('server:\n  port: 8080\n');
+* ```ts no_run
+* import { parse, type YamlMapping } from 'fino:format/yaml';
+*
+* const config = parse(`
+* server:
+*   host: 0.0.0.0
+*   port: 8080
+* features:
+*   - metrics
+*   - tracing
+* `) as YamlMapping;
+*
+* const server = config.server as YamlMapping;
+* server.port;    // 8080 (number, resolved by the core schema)
+* config.features; // ['metrics', 'tracing']
 * ```
 */
 export function parse(input: string | Uint8Array, options: YamlParseOptions = {}): YamlValue {
@@ -274,8 +271,12 @@ export function parse(input: string | Uint8Array, options: YamlParseOptions = {}
 * Parse all YAML documents from a multi-document stream.
 *
 * Document markers (`---` and `...`) are consumed between documents. Anchors
-* are scoped per document and cleared before parsing the next document. Empty
+* are scoped per document and cleared before parsing the next document, so an
+* alias in one document cannot reference an anchor from a previous one. Empty
 * input returns an empty array.
+*
+* Throws `YamlParseError` under the same conditions as `parse()`; a syntax
+* error anywhere in the stream fails the whole call.
 *
 * ```ts no_run
 * import { parseAll } from 'fino:format/yaml';
@@ -292,13 +293,26 @@ export function parseAll(input: string | Uint8Array, options: YamlParseOptions =
 * Serialize a YAML-compatible value.
 *
 * Serialization emits YAML core-schema values from JavaScript primitives,
-* arrays, plain mappings, `Map`, `Uint8Array`, and `Date`. It does not re-emit
-* comments, anchors, aliases, merge keys, or original document markers.
+* arrays, plain mappings, `Map`, `Uint8Array` (as `!!binary`), and `Date` (as
+* `!!timestamp`). It does not re-emit comments, merge keys, document markers,
+* or anchor names from parsed input; however, an object referenced more than
+* once in the value graph is emitted once with a generated anchor (`&a1`) and
+* aliased (`*a1`) at later occurrences, so shared identity survives a
+* round-trip. Strings that would otherwise resolve as another scalar type, or
+* that start with an indicator character or contain newlines, are
+* single-quoted.
 *
 * ```ts no_run
 * import { stringify } from 'fino:format/yaml';
 *
-* stringify({ hosts: ['a', 'b'] });
+* stringify({
+*   server: { host: '0.0.0.0', port: 8080 },
+*   hosts: ['a', 'b'],
+* });
+* // server:
+* //   host: 0.0.0.0
+* //   port: 8080
+* // hosts: [a, b]
 * ```
 */
 export function stringify(value: YamlValue, options: YamlStringifyOptions = {}): string {

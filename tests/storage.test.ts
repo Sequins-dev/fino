@@ -75,8 +75,8 @@ describe('fino:storage', () => {
         return new Response('<ListBucketResult></ListBucketResult>');
       }
     }));
-    await fs.writeFile('/note.txt', 'hello');
-    t.equal(await fs.readFile('/note.txt'), 'hello');
+    await fs.writeFile('/note.txt', new TextEncoder().encode('hello'));
+    t.equal(new TextDecoder().decode(await fs.readFile('/note.txt')), 'hello');
     t.equal((await fs.stat('/note.txt')).size, 5);
     await fs.unlink('/note.txt');
     await t.rejects(() => fs.stat('/note.txt'), /S3/);

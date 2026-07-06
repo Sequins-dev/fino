@@ -5,6 +5,7 @@ import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Watcher } from 'fino:file/watch';
 const TEST_DIR = '/tmp/fino-watch-test-' + Math.floor(Math.random() * 1e6);
+const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> => fs.writeFile(path, new TextEncoder().encode(text));
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -65,11 +66,11 @@ describe('Watcher', () => {
   });
   it('detects file modification', async (t) => {
     const path = TEST_DIR + '/modify-test.txt';
-    await fs.writeFile(path, 'initial');
+    await writeText(fs, path, 'initial');
     const watcher = new Watcher();
     watcher.watch(path);
     // Write to the file to trigger an event
-    await fs.writeFile(path, 'modified');
+    await writeText(fs, path, 'modified');
     const events = await collectEvents(watcher, 1);
     watcher.close();
     await fs.unlink(path);
@@ -79,7 +80,7 @@ describe('Watcher', () => {
   });
   it('detects file deletion', async (t) => {
     const path = TEST_DIR + '/delete-test.txt';
-    await fs.writeFile(path, 'hello');
+    await writeText(fs, path, 'hello');
     const watcher = new Watcher();
     watcher.watch(path);
     await fs.unlink(path);
@@ -95,7 +96,7 @@ describe('Watcher', () => {
     watcher.watch(dir);
     // Create a file in the watched directory
     const newFile = dir + '/newfile.txt';
-    await fs.writeFile(newFile, 'content');
+    await writeText(fs, newFile, 'content');
     const events = await collectEvents(watcher, 1);
     watcher.close();
     // Cleanup
@@ -107,7 +108,7 @@ describe('Watcher', () => {
   });
   it('close() stops the iterator', async (t) => {
     const path = TEST_DIR + '/close-test.txt';
-    await fs.writeFile(path, 'x');
+    await writeText(fs, path, 'x');
     const watcher = new Watcher();
     watcher.watch(path);
     watcher.close();
@@ -130,12 +131,12 @@ describe('Watcher', () => {
   it('watches multiple paths', async (t) => {
     const file1 = TEST_DIR + '/multi1.txt';
     const file2 = TEST_DIR + '/multi2.txt';
-    await fs.writeFile(file1, 'a');
-    await fs.writeFile(file2, 'b');
+    await writeText(fs, file1, 'a');
+    await writeText(fs, file2, 'b');
     const watcher = new Watcher();
     watcher.watch(file1);
     watcher.watch(file2);
-    await fs.writeFile(file1, 'aa');
+    await writeText(fs, file1, 'aa');
     const events = await collectEvents(watcher, 1);
     watcher.close();
     await fs.unlink(file1);
@@ -150,12 +151,12 @@ describe('Watcher', () => {
   });
   it('close() suppresses events for modifications made after close', async (t) => {
     const path = TEST_DIR + '/post-close-test.txt';
-    await fs.writeFile(path, 'initial');
+    await writeText(fs, path, 'initial');
     const watcher = new Watcher();
     watcher.watch(path);
     watcher.close();
     // Modify the file after the watcher was closed — should not receive events
-    await fs.writeFile(path, 'modified after close');
+    await writeText(fs, path, 'modified after close');
     const iter = watcher[Symbol.asyncIterator]();
     const result = await iter.next();
     t.ok(result.done === true, 'iterator is done immediately after close (no post-close events)');
@@ -172,7 +173,7 @@ describe('Watcher', () => {
     await delay(50);
     // Write to a file in the subdirectory
     const newFile = sub + '/deep.txt';
-    await fs.writeFile(newFile, 'deep content');
+    await writeText(fs, newFile, 'deep content');
     const events = await collectEvents(watcher, 1);
     watcher.close();
     // Cleanup
@@ -184,7 +185,7 @@ describe('Watcher', () => {
   it('reports rename or delete when a watched file is renamed then removed', async (t) => {
     const path = TEST_DIR + '/rename-delete-source.txt';
     const renamed = TEST_DIR + '/rename-delete-target.txt';
-    await fs.writeFile(path, 'hello');
+    await writeText(fs, path, 'hello');
     const watcher = new Watcher();
     watcher.watch(path);
     await fs.rename(path, renamed);
@@ -204,7 +205,7 @@ describe('Watcher', () => {
     watcher.watch(dir);
     await fs.mkdir(sub);
     await delay(100);
-    await fs.writeFile(file, 'later');
+    await writeText(fs, file, 'later');
     const events = await collectEvents(watcher, 3);
     watcher.close();
     await fs.unlink(file).catch(() => {});
@@ -215,7 +216,7 @@ describe('Watcher', () => {
   });
   it('close() completes an already pending iterator next()', async (t) => {
     const path = TEST_DIR + '/pending-close.txt';
-    await fs.writeFile(path, 'x');
+    await writeText(fs, path, 'x');
     const watcher = new Watcher();
     watcher.watch(path);
     const iter = watcher[Symbol.asyncIterator]();
@@ -227,11 +228,11 @@ describe('Watcher', () => {
   });
   it('duplicate watch() calls for the same path do not emit duplicate notifications', async (t) => {
     const path = TEST_DIR + '/duplicate-watch.txt';
-    await fs.writeFile(path, 'initial');
+    await writeText(fs, path, 'initial');
     const watcher = new Watcher();
     watcher.watch(path);
     watcher.watch(path);
-    await fs.writeFile(path, 'changed');
+    await writeText(fs, path, 'changed');
     const events = await collectEvents(watcher, 2, 250);
     watcher.close();
     await fs.unlink(path);
@@ -241,11 +242,11 @@ describe('Watcher', () => {
   });
   it('rapid event bursts produce at least one coherent notification', async (t) => {
     const path = TEST_DIR + '/burst.txt';
-    await fs.writeFile(path, '0');
+    await writeText(fs, path, '0');
     const watcher = new Watcher();
     watcher.watch(path);
     for (let i = 1; i <= 8; i++) {
-      await fs.writeFile(path, String(i));
+      await writeText(fs, path, String(i));
     }
     const events = await collectEvents(watcher, 4);
     watcher.close();
@@ -256,7 +257,7 @@ describe('Watcher', () => {
   });
   it('uses explicit close and string paths instead of Node fs.watch options', async (t) => {
     const path = TEST_DIR + '/release-contract.txt';
-    await fs.writeFile(path, 'x');
+    await writeText(fs, path, 'x');
     const watcher = new Watcher({
       recursive: false,
       persistent: false,

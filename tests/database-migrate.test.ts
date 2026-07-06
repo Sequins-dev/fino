@@ -24,6 +24,11 @@ if (!sqliteAvailable) {
 }
 
 const fs = new DiskFileSystem();
+const textEncoder = new TextEncoder();
+
+function writeText(path: string, text: string): Promise<void> {
+  return fs.writeFile(path, textEncoder.encode(text));
+}
 
 function tmpName(name: string): string {
   return `/tmp/fino-migrate-${name}-${Math.floor(Math.random() * 1e9)}`;
@@ -99,7 +104,7 @@ DROP TABLE users;
   it('imports .sql files as generated SQL modules', async (t) => {
     const dir = tmpName('import');
     await mkdirp(dir);
-    await fs.writeFile(`${dir}/queries.sql`, `-- import type { User } from './types.ts'
+    await writeText(`${dir}/queries.sql`, `-- import type { User } from './types.ts'
 -- function findUser(input: User)
 SELECT * FROM users WHERE id = '{{ input.id }}'
 
@@ -173,7 +178,7 @@ describe('fino:database/migrate — runner', () => {
   it('loads directive SQL files and executes exported up/down functions', async (t) => {
     const dir = tmpName('files');
     await mkdirp(dir);
-    await fs.writeFile(`${dir}/001_users.sql`, `-- function up()
+    await writeText(`${dir}/001_users.sql`, `-- function up()
 CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL);
 
 -- function down()

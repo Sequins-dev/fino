@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { createConsoleSink, createJsonSink, createLogger, createOtelSink, getLogContext, runWithLogContext, subscribeLogs } from 'fino:log';
+import { createConsoleSink, createJsonSink, createLogger, createOtelSink, getLogContext, runWithLogContext, subscribeLogs, withLogContext } from 'fino:log';
 import { topic } from 'fino:context/topic';
 import { LoggerProvider, runWithLoggerProvider } from 'fino:opentelemetry/logs';
 import { Process, execPath } from 'fino:process';
@@ -72,13 +72,26 @@ describe('fino:log', () => {
     t.deepEqual(records[0].fields, { code: 'E_TEST' }, 'fields are preserved');
     t.ok(records[0].error && typeof records[0].error === 'object', 'error details are attached');
   });
-  it('returns a defensive copy of the active log context', async (t) => {
-    await runWithLogContext({ requestId: 'req-copy' }, async () => {
+  it('returns a defensive copy of the active log context', (t) => {
+    {
+      using scope = withLogContext({ requestId: 'req-copy' });
       const context = getLogContext();
       context.requestId = 'mutated';
       t.deepEqual(getLogContext(), { requestId: 'req-copy' }, 'mutating returned context does not alter active context');
-    });
+    }
     t.deepEqual(getLogContext(), {}, 'context clears after scope');
+  });
+  it('restores nested log context when using scopes are disposed', (t) => {
+    {
+      using outer = withLogContext({ requestId: 'outer', tenant: 'acme' });
+      t.deepEqual(getLogContext(), { requestId: 'outer', tenant: 'acme' }, 'outer scope is active');
+      {
+        using inner = withLogContext({ requestId: 'inner', route: '/health' });
+        t.deepEqual(getLogContext(), { requestId: 'inner', tenant: 'acme', route: '/health' }, 'inner scope merges over outer');
+      }
+      t.deepEqual(getLogContext(), { requestId: 'outer', tenant: 'acme' }, 'disposing inner restores outer');
+    }
+    t.deepEqual(getLogContext(), {}, 'disposing outer clears context');
   });
   it('creates child loggers with merged names, levels, and context', (t) => {
     const records: Array<Record<string, unknown>> = [];

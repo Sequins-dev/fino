@@ -44,6 +44,7 @@ import 'fino:net/http/websocket';
 import 'fino:net/http/webtransport';
 import 'fino:ai/cache';
 import { DiskFileSystem } from 'fino:file';
+const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 describe('builtin module layout', () => {
   it('exposes the pre-release public module grouping', async (t) => {
     t.ok(true, 'new public builtin grouping resolves');
@@ -58,6 +59,8 @@ describe('builtin module layout', () => {
     const http = await import('fino:net/http');
     t.deepEqual(Object.keys(http).sort(), [
       'App',
+      'Arena',
+      'BuilderBranch',
       'CloseEvent',
       'CookieJar',
       'ErrorEvent',
@@ -70,6 +73,7 @@ describe('builtin module layout', () => {
       'RouteBuilder',
       'Router',
       'RouterBase',
+      'RouterBranch',
       'WebSocket',
       'WebSocketConnection',
       'WebSocketError',
@@ -92,6 +96,21 @@ describe('builtin module layout', () => {
       'staticFiles'
     ]);
   });
+  it('splits QUIC class modules out of the public endpoint facade', async (t) => {
+    const endpoint = await import('fino:net/quic/endpoint');
+    const connection = await import('fino:net/quic/connection');
+    const listener = await import('fino:net/quic/listener');
+    const stream = await import('fino:net/quic/stream');
+    const quic = await import('fino:net/quic');
+
+    t.equal('QuicConnection' in endpoint, false, 'endpoint module omits QuicConnection');
+    t.equal('QuicListener' in endpoint, false, 'endpoint module omits QuicListener');
+    t.equal('QuicStream' in endpoint, false, 'endpoint module omits QuicStream');
+    t.equal(typeof endpoint.QuicEndpoint, 'function', 'endpoint module keeps QuicEndpoint');
+    t.equal(quic.QuicConnection, connection.QuicConnection, 'barrel reexports QuicConnection');
+    t.equal(quic.QuicListener, listener.QuicListener, 'barrel reexports QuicListener');
+    t.equal(quic.QuicStream, stream.QuicStream, 'barrel reexports QuicStream');
+  });
   it('marks HTTP implementation source modules as internal for docs and type surfaces', async (t) => {
     const fs = new DiskFileSystem('/');
     for (const path of [
@@ -101,13 +120,14 @@ describe('builtin module layout', () => {
       'js/net/http/h2.ts',
       'js/net/http/h3.ts'
     ]) {
-      const text = await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname);
+      const text = decodeUtf8(await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname));
       t.ok(text.slice(0, text.indexOf('*/') + 2).includes('@internal'), `${path} is @internal`);
     }
   });
   it('marks internal DNSSEC and HTTP/3 implementation modules as internal', async (t) => {
     const fs = new DiskFileSystem('/');
     for (const path of [
+      'js/internal/encoding.ts',
       'js/internal/net/dnssec.ts',
       'js/internal/net/http/h3/bindings.ts',
       'js/internal/net/http/h3/body-queue.ts',
@@ -117,7 +137,7 @@ describe('builtin module layout', () => {
       'js/internal/net/http/h3/session.ts',
       'js/internal/net/http/h3/webtransport.ts'
     ]) {
-      const text = await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname);
+      const text = decodeUtf8(await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname));
       t.ok(text.slice(0, text.indexOf('*/') + 2).includes('@internal'), `${path} is @internal`);
     }
   });

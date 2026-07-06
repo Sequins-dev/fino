@@ -105,50 +105,104 @@ interface NodeLoad {
 ```
 
 The heartbeat already fires every 2500 ms; the extended sample rides it with
-zero new connections. The seed keeps a decaying per-node, per-realm view —
-that view *is* the cost model. The same stats module should register OTel
-observable gauges (the meter API exists, no runtime instruments do), so
-cluster scheduling and observability draw from one source.
+zero new connections. The control-plane leader keeps a decaying per-node,
+per-realm view — that view *is* the cost model. The same stats module should
+register OTel observable gauges (the meter API exists, no runtime instruments
+do), so cluster scheduling and observability draw from one source.
+
+The node-local details behind loop share, runnable queues, isolate/context
+pooling, and facade-owned I/O belong in
+`realm-loop-orchestration.md`; this note only consumes the resulting summarized
+load and capability signals for cross-node placement.
 
 ## 3. Coordination, membership, and the CLI
 
-### Keep the star, make the seed's state soft
+### Quorum control plane, soft node state
 
-The single-seed star topology is the right v1 and worth keeping longer than
-instinct suggests — but the seed should be *restartable*, not *precious*. The
-move: split seed state into two tiers.
+The current implementation is a trusted single seed. That is fine for the
+remote-realm prototype, but it is not a reliable deployment substrate. A
+production cluster should have a small seed quorum — normally three nodes, five
+when losing two control-plane members matters — with one elected leader. The
+leader schedules, accepts deploys, and publishes control-plane changes; followers
+replicate the log and can take over after failure.
 
-- **Runtime state (soft)**: membership, port registry, load views. All of it
-  is rebuildable if every worker re-announces its hosted realms and ports on
-  reconnect. Add that re-announce message and seed restart becomes a
-  reconnect storm, not an outage. No Raft, no election — deferred exactly as
-  `cluster.md` already defers it, but now with a story for why that's safe.
-- **Desired state (durable)**: deployments — "app X, version Y, N replicas,
-  these grants, these limits." This is the one thing that must survive a seed
-  restart, and fino has sqlite; the seed keeps a small sqlite database and
-  reconciles observed state (which realms exist) against desired state
-  (which should) on a loop. That reconcile loop is the deployment controller.
+The important split is not "seed state" versus "worker state"; it is durable
+intent versus reconstructable observation:
 
-Seed HA proper (standby seeds, failover ordering shipped in the join config)
-and cluster authentication should be designed together, as `cluster.md` says.
-For auth, the kubeadm pattern fits fino's constraints well: `cluster start`
-mints a join token and prints a join string embedding address, token, and the
-seed's certificate hash — WebTransport already requires TLS, so cert pinning
-via the join string closes the bootstrap loop without a CA:
+- **Durable desired state**: deployments, versions, rollout generations,
+  package hashes, requested replicas, grants, resource requests, lease/fencing
+  records, join tokens, and cluster policy. These are quorum-committed before
+  a CLI reports success. SQLite can remain the local storage engine for each
+  seed, but the unit of durability is a replicated log entry, not a single
+  seed's file.
+- **Soft observed state**: membership, currently hosted realms, port/route
+  tables, load views, package-cache contents, and health samples. Nodes
+  re-announce this on reconnect, leader change, and periodically. Losing a
+  leader should cause a control-plane gap, not an application outage.
+
+With this contract, existing app traffic keeps flowing through direct node
+routes while the seed quorum elects a new leader. New deploys, scale decisions,
+lease acquisition, and membership-changing writes require quorum and fail
+closed if quorum is unavailable. That is the right reliability boundary:
+serving should survive a seed failover, but two partitions must not both accept
+conflicting desired state.
+
+Cluster authentication belongs in the same bootstrap story. The kubeadm pattern
+fits fino's constraints well: `cluster start` mints a join token and prints a
+join string embedding control-plane addresses, token, cluster ID, and
+certificate hashes. WebTransport already requires TLS, so cert pinning via the
+join string closes the bootstrap loop without a CA:
 
 ```
 fino cluster start --listen :4433 --state ./cluster.db
-  → join with: fino cluster join fino://10.0.0.5:4433/#tok_9f3a…@sha256:ab12…
+  -> join with: fino cluster join fino://10.0.0.5:4433/#cid:c1,tok:t9,sha256:ab12
 
-fino cluster join 'fino://10.0.0.5:4433/#tok_9f3a…@sha256:ab12…'
+fino cluster join 'fino://10.0.0.5:4433/#cid:c1,tok:t9,sha256:ab12'
 fino cluster status        # nodes, load, hosted realms
-fino deploy ./my-app --replicas 3
-fino ps                    # deployments and realm placement
+fino deploy ./my-app --cluster prod --replicas 3
+fino cluster deployments   # desired state, rollout health, placement
 ```
 
-All of this is thin: the commands infrastructure exists
-(`js/internal/commands/`), and each command wraps the existing `fino:cluster`
-API plus the seed's control protocol. Nothing goes in Rust.
+All of this can stay in JS at the command layer: the commands infrastructure
+exists (`js/commands/`), and each command wraps `fino:cluster` plus the
+control-plane protocol. The Rust runtime should only gain primitives that JS
+cannot provide, such as stats hooks or storage bindings.
+
+### CLI: cluster-first, app commands preserved
+
+The cluster lifecycle should be explicit and nested:
+
+```sh
+fino cluster start --listen :4433 --state ./cluster.db
+fino cluster join '<join-string>'
+fino cluster status
+fino cluster nodes
+fino cluster deployments
+fino deploy ./my-app --cluster prod --replicas 3 --wait
+```
+
+`cluster start` and `cluster join` intentionally take no entrypoint. They start
+the local runtime substrate: control-plane member when configured, worker agent,
+local supervisor, transport bus, package cache, telemetry, and base services.
+An app arrives later through `deploy`.
+
+The existing app-first commands remain first-class:
+
+```sh
+fino run app.ts
+fino app.ts
+fino run --watch app.ts
+fino test tests
+fino bench benchmarks
+```
+
+Conceptually, `run` should become sugar for "start an ephemeral local
+single-node substrate, deploy this entrypoint into it, attach stdio/signals, and
+tear it down when done." The implementation does not have to pay that full
+abstraction cost on day one; it can keep the current fast local path as long as
+the behavior stays compatible with the deployment model. The key rule is that
+`run` is for development and one-off execution, while `deploy` is the durable
+multi-tenant path.
 
 ### DNS-oriented discovery records
 
@@ -195,10 +249,10 @@ metadata after the transport finds a viable path.
 Today every inter-realm message relays through the seed — acceptable now,
 fatal for a multi-tenant runtime where tenant traffic is the workload. The
 deferred direct-peer work becomes load-bearing here: workers already learn of
-peers via seed broadcasts, so the seed's remaining data-plane job is
-introductions (peer address + cert hash), after which `PORT_MSG` flows over
-direct WebTransport connections. The seed stays control-plane only:
-membership, placement, desired state.
+peers via control-plane broadcasts, so the control plane's remaining
+data-plane job is introductions (peer address + cert hash), after which
+`PORT_MSG` flows over direct WebTransport connections. Seeds stay
+control-plane only: membership, placement, desired state.
 
 Prefer one authenticated WebTransport session per peer pair, then multiplex
 isolated logical channels over streams:
@@ -228,8 +282,9 @@ Every joined node should run the same root-level substrate:
 
 - **Orchestrator main thread**: owns local service registry, workload registry,
   node health, local reconciliation, and supervision.
-- **Base cluster services**: KV, service registry, virtual DNS/resolver,
-  package cache, telemetry, leases/locks when those land.
+- **Base cluster services**: service registry, virtual DNS/resolver, package
+  cache, telemetry, and lease clients. Durable KV and lease authority live in
+  the control-plane quorum; node-local copies are caches or replicas.
 - **Package/cask manager**: fetches content-addressed deployments assigned to
   the node and keeps them warm for restart/rebalance.
 - **Local supervisor**: starts, drains, restarts, and reports app realms and
@@ -237,16 +292,17 @@ Every joined node should run the same root-level substrate:
 - **Transport bus**: keeps authenticated WebTransport sessions to peers and
   multiplexes service, replication, and realm traffic over streams.
 
-The seed/leader owns desired state and global scheduling. Nodes own observed
-local state. If the seed restarts, nodes re-announce base services, hosted
-replicas, route endpoints, package cache contents, and telemetry; the seed
-rebuilds soft state and reconciles against durable desired state.
+The control-plane leader owns desired state and global scheduling. The seed
+quorum owns durability. Nodes own observed local state. After leader failover,
+nodes re-announce base services, hosted replicas, route endpoints, package cache
+contents, and telemetry; the new leader rebuilds soft state and reconciles
+against quorum-committed desired state.
 
 ### Apps as active-active replica sets
 
 Deployments should default to active-active. A deployment describes one or more
-components, each with an entrypoint, resource profile, endpoints, grants,
-linked realm groups, and replica policy:
+components, each with an entrypoint, resource profile, ingress, grants, linked
+components, and replica policy:
 
 ```jsonc
 {
@@ -255,6 +311,9 @@ linked realm groups, and replica policy:
   "components": {
     "api": {
       "entry": "src/api.ts",
+      "ingress": [
+        { "host": "api.example.com", "path": "/billing", "protocols": ["h2", "h3"] }
+      ],
       "replicas": { "min": 2, "max": 20, "minHealthy": 2 },
       "profile": "latency",
       "links": ["worker"],
@@ -289,16 +348,19 @@ API realm to worker pool, workflow coordinator to activity workers, or agent
 session to memory/RAG helper. The manifest should let those declare a
 placement group with soft colocation preferences:
 
-1. same realm or embedded child when isolation allows;
-2. same process/thread node over local ports/facades;
-3. same locality/zone over direct WebTransport;
-4. any healthy replica over the cluster bus.
+1. same node when local scheduling can provide low-latency execution;
+2. same locality/zone over direct WebTransport;
+3. any healthy replica over the cluster bus.
 
 Colocation is a score boost, not a hard requirement unless declared as one.
 The scheduler should split linked realms when a node would overload, when a
 failure-domain policy requires spread, or when another node gives materially
 better latency/headroom. This is the BEAM-style lesson to keep: locality is an
 optimization under supervision, not a correctness assumption.
+
+Within a node, the details of whether linked realms share an isolate, run in
+separate contexts, or move across scheduler threads are delegated to
+`realm-loop-orchestration.md`.
 
 ### Virtual DNS and in-cluster routing
 
@@ -325,6 +387,34 @@ depend on those details because doing so makes failover and rebalancing harder.
 Trusting a caller with topology does not mean topology should be the default
 programming model.
 
+### Gateway and ingress routing
+
+External traffic needs the same location transparency as in-cluster calls.
+Gateway nodes or gateway realms should terminate inbound protocols — HTTP/1,
+HTTP/2, HTTP/3, WebTransport, TLS/SNI, and eventually raw TCP/UDP where that
+fits the runtime — then route to virtual service endpoints through the internal
+service registry.
+
+The gateway should classify traffic by stable request metadata, not by physical
+realm address:
+
+- SNI and `Host`;
+- path prefix or route rule;
+- ALPN/protocol and method when relevant;
+- tenant and cluster identity;
+- deployment generation or rollout channel when pinned.
+
+The result is a virtual endpoint such as `fino://tenant/acme/billing-api/api`.
+From there, normal route selection applies: health, locality, load, drain state,
+tenant boundary, and capability checks. Internal DNS is the naming and discovery
+source; gateway route tables are the live request-dispatch mechanism.
+
+Gateways are themselves replicated deployments. They advertise load, route-table
+freshness, accepted protocols, and external listener addresses. During rollout,
+gateways must stop sending new traffic to draining replicas before those
+replicas exit, and they must be able to route both old and new deployment
+generations while a rollout is in progress.
+
 ### Routing and overload behavior
 
 Every virtual endpoint should keep a live route table with:
@@ -346,18 +436,35 @@ work: reject, queue within policy, or trigger autoscaling.
 Local supervisors handle local failures first. Realm crash, health-check
 failure, or drain timeout should restart or replace that realm on the same node
 when policy allows. Node failure is a cluster-level event: after heartbeat
-expiry, the seed marks observed replicas on that node gone and reconciles
-desired state by scheduling replacements elsewhere.
+expiry, the control-plane leader marks observed replicas on that node gone and
+reconciles desired state by scheduling replacements elsewhere.
 
 The resilience contract should be explicit:
 
-- desired state is durable;
+- desired state is committed by quorum before it is acknowledged;
 - observed state is soft and re-announced;
 - active-active replicas maintain `minHealthy` when enough nodes exist;
 - spread policy prevents all replicas from landing on one node before the
   resilience target is satisfied;
 - route tables remove draining or dead replicas before callers observe them;
-- base services such as KV run on every node and resync after reconnect.
+- direct node-to-node data routes keep serving during leader failover;
+- writes that change desired state fail closed when quorum is unavailable;
+- base services resync from the quorum or their replication peers after
+  reconnect.
+
+Failure behavior should be boring:
+
+- **Leader failure**: serving continues over existing routes; the remaining
+  quorum elects a leader; nodes re-announce observed state; scheduling resumes.
+- **Quorum loss**: existing deployments keep serving from last known route
+  tables, but deploys, scaling decisions, grants, and leases are unavailable.
+- **Worker loss**: routes evict its replicas after heartbeat expiry; the
+  leader schedules replacements to restore `minHealthy`.
+- **Network partition**: only the quorum side accepts desired-state writes.
+  Minority nodes may keep serving already-authorized local traffic until route
+  leases expire, but they cannot accept deploys or acquire new singleton leases.
+- **Rollout failure**: the controller stops the rollout, keeps or restores the
+  previous healthy generation, and reports the failed generation explicitly.
 
 This gives fino the BEAM-like shape that fits its substrate: supervised
 processes, location-transparent names, cheap restart, and explicit message
@@ -394,13 +501,23 @@ directory plus a manifest:
 }
 ```
 
-The flow: `fino deploy ./app` archives the directory, content-addresses it by
-hash, uploads it to the seed over the cluster transport; the seed stores the
-blob (sqlite again), records the deployment as desired state, schedules it;
-chosen nodes fetch the archive by hash, unpack into a content-addressed cache
-(`~/.fino/casks/<hash>/`), and spawn the realm with the entry path inside the
-cache. The hash-addressed cache makes redeploys of unchanged versions free and
-rollbacks instant.
+The flow: `fino deploy ./app --cluster prod --replicas 3 --wait` archives the
+directory, content-addresses it by hash, uploads it to the active control-plane
+leader, and waits for the package and desired-state write to commit through the
+seed quorum. Chosen nodes fetch the archive by hash, unpack into a
+content-addressed cache (`~/.fino/casks/<hash>/`), and spawn the realm with the
+entry path inside the cache. The hash-addressed cache makes redeploys of
+unchanged versions free and rollbacks instant.
+
+Deploy success should mean something precise. Without `--wait`, success means
+the cask is durably available and the new desired generation is quorum-committed.
+With `--wait`, success additionally means the requested health target is met:
+`minHealthy` replicas are running, their health checks pass, and virtual routes
+have published the new generation. If packaging uploads but the desired-state
+write does not commit, the cask is garbage-collectable. If desired state commits
+but rollout is interrupted, reconciliation resumes from the committed generation.
+If health fails, the controller stops the rollout and preserves or restores the
+previous healthy generation.
 
 Two design points worth settling early:
 
@@ -413,7 +530,7 @@ Two design points worth settling early:
 - **`constraints.libs` is a real, fino-specific scheduling input.** The
   prefer-system-libs policy means nodes legitimately differ in what
   `dlopen` can satisfy. Nodes should probe their candidate paths at join time
-  and advertise resolved libraries; the seed filters placement on manifest
+  and advertise resolved libraries; the leader filters placement on manifest
   constraints. This turns the existing candidate-path machinery into a
   capability advertisement, and it composes with platform constraints
   (io_uring vs kqueue, arch — until WASM erases arch, §7).
@@ -424,7 +541,7 @@ into the shared cache. Start hermetic.
 
 ### Scheduling with real senses
 
-With §2's telemetry flowing, the seed's placement upgrades from
+With §2's telemetry flowing, the control-plane leader's placement upgrades from
 lowest-hardcoded-zero to the classic two-phase shape:
 
 1. **Filter**: platform/arch/libs constraints, memory request fits node's
@@ -434,15 +551,20 @@ lowest-hardcoded-zero to the classic two-phase shape:
    latency-sensitive apps and raw CPU headroom for batch work; a per-app
    `profile: "latency" | "throughput"` hint in the manifest picks the weights.
 
-Because per-realm cost is tracked continuously, the seed accumulates an
+Because per-realm cost is tracked continuously, the leader accumulates an
 empirical cost model per app version ("billing-api@3.2.1 costs ~0.3 cores,
 ~180 MB, ~20% loop at steady state"), which beats manifest requests for
 second-and-later placements and enables rebalancing: when a node's loop idle
-collapses, the seed picks its cheapest-to-move realm and respawns it
+collapses, the leader picks its cheapest-to-move realm and respawns it
 elsewhere. Restart-based rebalancing is honest about fino's model — realms
 are cheap to restart, so don't build live migration; build fast, graceful
 drain (child-initiated: node asks realm to finish in-flight work and exit
 with a "relocating" code).
+
+Scheduler v2 should split decisions cleanly. The control-plane leader chooses
+nodes and failure-domain spread. The node scheduler chooses local execution
+details and reports summarized capacity, load, and health back to the cluster.
+See `realm-loop-orchestration.md` for context/isolate/thread scheduling.
 
 ## 6. Syscall-level virtualization
 
@@ -578,9 +700,9 @@ The three explorations end in the same place. The module graph is the one
 mechanism: import rules already decide *what exists* for a realm; the dlopen
 shim extends that to *what syscalls mean*; the WASI shim extends it to *what
 non-JS code sees*; the capability manifest extends it *across the network*.
-Telemetry prices each realm; virtual names hide placement; the seed places by
-price, locality, and resilience; packages move the code. Multi-tenancy is then
-the composition — narrowing for trust, metering for cost, scheduling for
+Telemetry prices each realm; virtual names hide placement; the control plane
+places by price, locality, and resilience; packages move the code. Multi-tenancy
+is then the composition — narrowing for trust, metering for cost, scheduling for
 placement, and supervision for recovery — with no component that isn't also
 useful alone.
 
@@ -592,32 +714,45 @@ Ordered by unblocking power, each step independently shippable:
    `loop.ts`, rusage/thread-CPU via FFI, heap stats via one Rust call;
    replace the hardcoded `cpu: 0`. The existing lowest-CPU scheduler starts
    working the day this lands. Smallest step, immediate payoff.
-2. **Cluster CLI** — `cluster start/join/status`, join-string auth with cert
-   pinning. Thin JS over existing APIs; makes the cluster demoable.
-3. **DNS discovery records** — define SRV/TXT-shaped cluster identity,
+2. **Cluster CLI** — `cluster start/join/status/nodes/deployments`, join-string
+   auth with cert pinning, and an explicit no-entrypoint node lifecycle. Thin JS
+   over existing APIs; makes the cluster demoable without changing `run`.
+3. **Direct peer data plane + route tables** — move `PORT_MSG` and service
+   traffic off the seed path early, because app availability during leader
+   failover depends on nodes continuing to serve without the control plane.
+4. **Cask format + `fino deploy`** — archive + manifest +
+   content-addressed fetch/unpack + committed desired state. Kills the
+   shared-filesystem assumption; the reconcile loop makes deployments
+   self-healing.
+5. **Single-leader desired-state controller** — durable local state first:
+   package refs, deployment generations, rollout health, node re-announcement,
+   and restart recovery. This proves the reconciliation model before quorum.
+6. **Seed quorum** — replicated desired-state log, leader election, fail-closed
+   writes on quorum loss, and node re-announcement after leader change.
+7. **DNS discovery records** — define SRV/TXT-shaped cluster identity,
    endpoint, certificate, and service metadata once; read it from platform DNS
    first, use mDNS for LAN bootstrap, and add a Fino DNS service when
    orchestrator-backed dynamic records are needed.
-4. **Cask format + `fino deploy`** — archive + manifest + content-addressed
-   fetch/unpack + seed sqlite desired-state. Kills the shared-filesystem
-   assumption; the reconcile loop makes deployments self-healing.
-5. **Node participation + virtual routing model** — base services on every
+8. **Gateway ingress** — replicated gateway nodes/realms, Host/SNI/path/
+   protocol routing to virtual endpoints, route tables with generation/drain
+   awareness, and load reporting like any other deployment.
+9. **Node participation + virtual routing model** — base services on every
    node, local supervisor, virtual service names, route tables, and route
    selection that prefers same-node/nearby replicas without exposing topology
    by default.
-6. **Scheduler v2** — filter/score, lib/platform advertisement, empirical
+10. **Scheduler v2** — filter/score, lib/platform advertisement, empirical
    per-app cost model, linked-realm colocation, failure-domain spread,
    active-active scaling, and drain-based rebalancing.
-7. **dlopen shim prototype** — interposition table + importer-scoped
+11. **Node-local loop scheduler** — developed in `realm-loop-orchestration.md`;
+   the cluster consumes its summarized load, capacity, and health signals.
+12. **dlopen shim prototype** — interposition table + importer-scoped
    passthrough; prove it on a virtual filesystem under `fino:file`-denied
    code, and audit OpenSSL's residual file access while there.
-8. **JSPI smoke test, then WASI preview1 shim** — gate on the smoke test;
+13. **JSPI smoke test, then WASI preview1 shim** — gate on the smoke test;
    the shim itself is small and pure JS.
-9. **Direct peer data plane + seed soft-state rebuild** — when tenant traffic
-   or seed restarts start to hurt, in that order.
 
 Naming, when things need names (offered, not assumed): fino is a sherry, and
 the sherry lexicon fits unusually well — *solera* for the scheduling/
 distribution system (the solera literally distributes contents across barrels
-over time), *cask* for the deployment archive, *bodega* for the seed's
+over time), *cask* for the deployment archive, *bodega* for the replicated
 package store. Each is honest about what the thing concretely does.

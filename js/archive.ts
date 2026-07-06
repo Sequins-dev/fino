@@ -98,10 +98,34 @@ const DEFAULT_MODE = 420;
 const DEFAULT_DIR_MODE = 493;
 // Max decompressed bytes per entry — guards against zip-bomb attacks.
 const MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
-type ArchiveFormat = 'zip' | 'tar' | 'tar.gz';
-type ArchiveKind = 'file' | 'directory';
-type ZipCompression = 'store' | 'deflate';
-type ArchiveInput = string | Uint8Array | ArrayBuffer;
+/**
+* Archive container format supported by `Archive`.
+*
+* `zip` supports mutation and per-entry compression. `tar` and `tar.gz` use
+* tar headers, with `tar.gz` applying gzip compression to the whole archive.
+*/
+export type ArchiveFormat = 'zip' | 'tar' | 'tar.gz';
+/**
+* Entry kind stored in archive metadata.
+*
+* File entries carry payload bytes. Directory entries carry no payload and
+* read back as empty byte arrays.
+*/
+export type ArchiveKind = 'file' | 'directory';
+/**
+* ZIP per-entry compression mode.
+*
+* `deflate` compresses file data and is the default. `store` writes the bytes
+* unchanged and is useful for already-compressed assets.
+*/
+export type ZipCompression = 'store' | 'deflate';
+/**
+* Binary or text input accepted by archive write helpers.
+*
+* Strings are encoded as UTF-8. `Uint8Array` and `ArrayBuffer` inputs are
+* copied into the archive entry payload.
+*/
+export type ArchiveInput = string | Uint8Array | ArrayBuffer;
 type ArchiveLoader = () => Promise<Uint8Array>;
 /**
 * Options for opening or creating an archive.
@@ -616,16 +640,13 @@ function isZeroBlock(bytes: Uint8Array, offset: number): boolean {
 * await archive.close();
 * ```
 */
-class ArchiveEntryHandle {
+export class ArchiveEntryHandle {
   #archive: Archive;
   #name: string;
   /**
   * Create an entry handle bound to an archive and normalized entry name.
   *
   * Application code normally obtains handles through `Archive.entry()`.
-  *
-  * @param {Archive} archive Archive that owns the entry.
-  * @param {string} name Normalized archive entry name.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -753,8 +774,6 @@ class ArchiveEntryHandle {
   * Directory entries return an empty byte array. Missing entries or closed
   * archives throw.
   *
-  * @returns {Promise<Uint8Array>} Entry payload bytes.
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -772,8 +791,6 @@ class ArchiveEntryHandle {
   *
   * Directory entries decode as an empty string. Invalid UTF-8 is handled by
   * `TextDecoder` replacement behavior.
-  *
-  * @returns {Promise<string>} UTF-8 decoded entry payload.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -793,10 +810,6 @@ class ArchiveEntryHandle {
   * This delegates to `Archive.write()` using the handle's current name.
   * Read-only or closed archives throw.
   *
-  * @param {ArchiveInput} data New entry data.
-  * @param {ArchiveWriteOptions} [options] Replacement metadata.
-  * @returns {Promise<void>}
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -815,8 +828,6 @@ class ArchiveEntryHandle {
   * Removing a missing entry is a no-op when called through `Archive.remove()`,
   * but this handle can throw if the archive has been closed. Changes are
   * persisted on `save()` or writable `close()`.
-  *
-  * @returns {Promise<void>}
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -849,133 +860,37 @@ class ArchiveEntryHandle {
 */
 export class Archive {
   /**
-  * Private property `#path` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #path = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#path;
-  *   }
-  * }
-  * ```
+  * Destination path on disk for this archive, as given to the constructor and exposed via the `path` getter.
   *
   * @internal
   */
   #path: string;
   /**
-  * Private property `#format` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #format = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#format;
-  *   }
-  * }
-  * ```
+  * Resolved archive format that drives parse and serialize behavior.
   *
   * @internal
   */
   #format: ArchiveFormat;
   /**
-  * Private property `#readOnly` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #readOnly = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#readOnly;
-  *   }
-  * }
-  * ```
+  * Whether mutating methods are rejected for this handle.
   *
   * @internal
   */
   #readOnly: boolean;
   /**
-  * Private property `#closed` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #closed = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#closed;
-  *   }
-  * }
-  * ```
+  * Set once `close()` runs; open-handle assertions check this flag.
   *
   * @internal
   */
   #closed: boolean;
   /**
-  * Private property `#dirty` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #dirty = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#dirty;
-  *   }
-  * }
-  * ```
+  * Tracks unsaved in-memory changes so a writable `close()` knows to save.
   *
   * @internal
   */
   #dirty: boolean;
   /**
-  * Private property `#entries` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #entries = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#entries;
-  *   }
-  * }
-  * ```
+  * In-memory entry table keyed by normalized archive path.
   *
   * @internal
   */
@@ -986,10 +901,6 @@ export class Archive {
   * This constructor does not read or write the archive file. Prefer
   * `Archive.create()` or `Archive.open()` for extension-based format
   * detection and parsing.
-  *
-  * @param {string} path Filesystem path backing the archive.
-  * @param {ArchiveFormat} format Archive format.
-  * @param {ArchiveOpenOptions} [options={}] Open behavior options.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1062,10 +973,6 @@ export class Archive {
   * The archive is written when `save()` is called or when a dirty writable
   * handle is closed. Existing files at `path` are replaced on save.
   *
-  * @param {string} path Archive path used for format inference and saving.
-  * @param {ArchiveOpenOptions} [options={}] Format override options.
-  * @returns {Promise<Archive>} Empty writable archive handle.
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -1085,10 +992,6 @@ export class Archive {
   * archive bytes. Throws when the file cannot be read, the format cannot be
   * inferred, or the archive structure is invalid.
   *
-  * @param {string} path Archive file to open.
-  * @param {ArchiveOpenOptions} [options={}] Format and read-only options.
-  * @returns {Promise<Archive>} Parsed archive handle.
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -1105,25 +1008,7 @@ export class Archive {
     return archive;
   }
   /**
-  * Private method `#assertOpen` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #assertOpen() {
-  *     return 'assertOpen';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#assertOpen();
-  *   }
-  * }
-  * ```
+  * Throws if the handle has already been closed.
   *
   * @internal
   */
@@ -1131,25 +1016,7 @@ export class Archive {
     if (this.#closed) throw new Error('Archive is closed');
   }
   /**
-  * Private method `#assertWritable` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #assertWritable() {
-  *     return 'assertWritable';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#assertWritable();
-  *   }
-  * }
-  * ```
+  * Throws if the handle is closed or was opened read-only.
   *
   * @internal
   */
@@ -1158,25 +1025,7 @@ export class Archive {
     if (this.#readOnly) throw new Error('Archive is read-only');
   }
   /**
-  * Private method `#markDirty` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #markDirty() {
-  *     return 'markDirty';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#markDirty();
-  *   }
-  * }
-  * ```
+  * Flags the in-memory entry table as diverged from the file on disk.
   *
   * @internal
   */
@@ -1191,8 +1040,6 @@ export class Archive {
   * return `null`. Throws if the archive is closed or the entry is missing.
   *
   * @internal
-  * @param {string} name Entry name to inspect.
-  * @returns {ArchiveEntryInfo} Current entry metadata.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1211,25 +1058,7 @@ export class Archive {
     return this.#toInfo(entry);
   }
   /**
-  * Private method `#entryNames` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #entryNames() {
-  *     return 'entryNames';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#entryNames();
-  *   }
-  * }
-  * ```
+  * Returns entry names sorted so listing and serialization are deterministic.
   *
   * @internal
   */
@@ -1237,25 +1066,7 @@ export class Archive {
     return Array.from(this.#entries.keys()).sort();
   }
   /**
-  * Private method `#toInfo` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #toInfo() {
-  *     return 'toInfo';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#toInfo();
-  *   }
-  * }
-  * ```
+  * Converts an internal entry record into public `ArchiveEntryInfo` metadata.
   *
   * @internal
   */
@@ -1270,25 +1081,7 @@ export class Archive {
     };
   }
   /**
-  * Private method `#setEntry` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #setEntry() {
-  *     return 'setEntry';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#setEntry();
-  *   }
-  * }
-  * ```
+  * Inserts or replaces an entry in the table under its normalized name.
   *
   * @internal
   */
@@ -1296,25 +1089,7 @@ export class Archive {
     this.#entries.set(entry.name, entry);
   }
   /**
-  * Private method `#load` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #load() {
-  *     return 'load';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#load();
-  *   }
-  * }
-  * ```
+  * Parses raw archive bytes into the entry table, gunzipping `tar.gz` input first.
   *
   * @internal
   */
@@ -1332,8 +1107,6 @@ export class Archive {
   *
   * Returns metadata only; file payloads are not decoded unless already loaded.
   * Throws if the archive is closed.
-  *
-  * @returns {Promise<ArchiveEntryInfo[]>} Sorted entry metadata.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1354,9 +1127,6 @@ export class Archive {
   * The lookup name is normalized before matching, so `docs/./README.md` and
   * `docs/README.md` refer to the same archive entry. Throws if the archive is
   * closed.
-  *
-  * @param {string} name Entry name to find.
-  * @returns {Promise<ArchiveEntryHandle | null>} Entry handle, or `null`.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1380,9 +1150,6 @@ export class Archive {
   * Directory entries return an empty byte array. ZIP entries compressed with
   * unsupported methods throw when read. Missing entries and closed archives
   * throw.
-  *
-  * @param {string} name Entry name to read.
-  * @returns {Promise<Uint8Array>} Entry payload bytes.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1414,9 +1181,6 @@ export class Archive {
   * This decodes `read(name)` with `TextDecoder`. Directory entries decode as
   * an empty string. Invalid UTF-8 uses replacement behavior.
   *
-  * @param {string} name Entry name to read.
-  * @returns {Promise<string>} UTF-8 decoded entry contents.
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -1432,14 +1196,10 @@ export class Archive {
   /**
   * Create or replace one archive entry.
   *
-  * Entry names are normalized to archive paths. Empty names throw. Strings are
-  * encoded as UTF-8. Writable archives are marked dirty and are persisted by
-  * `save()` or `close()`. Read-only and closed archives throw.
-  *
-  * @param {string} name Entry name to create or replace.
-  * @param {ArchiveInput} data Entry bytes, ArrayBuffer, or UTF-8 string.
-  * @param {ArchiveWriteOptions} [options={}] Entry metadata.
-  * @returns {Promise<void>}
+  * Entry names are normalized to archive paths; empty names throw. Data may be
+  * a `Uint8Array`, an `ArrayBuffer`, or a string encoded as UTF-8. Writable
+  * archives are marked dirty and are persisted by `save()` or `close()`.
+  * Read-only and closed archives throw.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1476,11 +1236,6 @@ export class Archive {
   * are copied unless overridden. Throws on source read/stat errors, read-only
   * archives, or closed archives.
   *
-  * @param {string} srcPath Host file path to read.
-  * @param {string | null} [archivePath=null] Destination entry path.
-  * @param {ArchiveWriteOptions} [options={}] Metadata overrides.
-  * @returns {Promise<void>}
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -1505,12 +1260,9 @@ export class Archive {
   *
   * Directory contents are walked through the Fino filesystem APIs. Regular
   * files are added; directories are traversed. Symlinks and special files are
-  * skipped by the current implementation. Throws on directory read failures or
-  * when the archive is not writable.
-  *
-  * @param {string} srcPath Host directory path to read.
-  * @param {string} [archivePath=''] Entry prefix for added files.
-  * @returns {Promise<void>}
+  * skipped by the current implementation. Added entries are stored under the
+  * `archivePath` prefix when one is provided, otherwise relative to `srcPath`.
+  * Throws on directory read failures or when the archive is not writable.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1538,9 +1290,6 @@ export class Archive {
   * Missing entries are ignored. Removing an existing entry marks the archive
   * dirty. Read-only and closed archives throw.
   *
-  * @param {string} name Entry name to remove.
-  * @returns {Promise<void>}
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -1561,10 +1310,6 @@ export class Archive {
   *
   * Both names are normalized before lookup. Throws if the source is missing,
   * the target exists, the archive is read-only, or the archive is closed.
-  *
-  * @param {string} oldName Existing entry name.
-  * @param {string} newName New entry name.
-  * @returns {Promise<void>}
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
@@ -1593,17 +1338,15 @@ export class Archive {
   * Extraction rejects absolute archive paths and parent-directory escapes,
   * removes pre-existing symlinks at output file paths, creates directories as
   * needed, and counts only file entries in the result. Existing regular files
-  * are overwritten. If extraction throws, previously written files remain.
-  *
-  * @param {string} destination Host directory to extract into.
-  * @param {object} [_options={}] Reserved for future extraction options.
-  * @returns {Promise<ExtractResult>} Count of file entries written.
+  * are overwritten. `ArchiveExtractOptions.maxEntries` and `maxTotalBytes` add
+  * opt-in policy limits; exceeding either throws mid-extraction. Whenever
+  * extraction throws, previously written files remain on disk.
   *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
   * const archive = await Archive.open('bundle.zip', { readOnly: true });
-  * const result = await archive.extract('unpacked');
+  * const result = await archive.extract('unpacked', { maxEntries: 10_000 });
   * console.log(result.entries);
   * await archive.close();
   * ```
@@ -1650,8 +1393,6 @@ export class Archive {
   * unique temporary path, then renamed into place. Read-only and closed
   * archives throw. Successful saves clear the dirty flag.
   *
-  * @returns {Promise<void>}
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -1676,8 +1417,6 @@ export class Archive {
   * Calling `close()` more than once is allowed. Dirty writable archives are
   * saved automatically; read-only archives are simply closed.
   *
-  * @returns {Promise<void>}
-  *
   * ```ts no_run
   * import { Archive } from 'fino:archive';
   *
@@ -1691,29 +1430,26 @@ export class Archive {
     if (!this.#readOnly && this.#dirty) await this.save();
     this.#closed = true;
   }
+  /**
+  * Close the archive when disposed with `await using`.
+  *
+  * Delegates to `close()`, so dirty writable archives are saved before the
+  * handle is marked closed.
+  *
+  * ```ts no_run
+  * import { Archive } from 'fino:archive';
+  *
+  * {
+  *   await using archive = await Archive.create('bundle.zip');
+  *   await archive.write('README.md', 'hello');
+  * }
+  * ```
+  */
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();
   }
   /**
-  * Private method `#serialize` used by `Archive`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #serialize() {
-  *     return 'serialize';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#serialize();
-  *   }
-  * }
-  * ```
+  * Serializes the entry table to archive bytes in sorted name order.
   *
   * @internal
   */
@@ -2002,10 +1738,6 @@ async function serializeTar(entries: LoadedArchiveEntry[]): Promise<Uint8Array> 
 * Convenience wrapper for `Archive.open()`. Pass `{ readOnly: true }` to reject
 * writes. Throws on read, format, or parse failures.
 *
-* @param {string} path Archive file to open.
-* @param {ArchiveOpenOptions} [options={}] Open options.
-* @returns {Promise<Archive>} Parsed archive handle.
-*
 * ```ts no_run
 * import { openArchive } from 'fino:archive';
 *
@@ -2023,10 +1755,6 @@ export async function openArchive(path: string, options: ArchiveOpenOptions = {}
 * Convenience wrapper for `Archive.create()`. The archive is not written until
 * `save()` or writable `close()`.
 *
-* @param {string} path Archive path used for saving and format inference.
-* @param {ArchiveOpenOptions} [options={}] Format options.
-* @returns {Promise<Archive>} Empty writable archive handle.
-*
 * ```ts no_run
 * import { createArchive } from 'fino:archive';
 *
@@ -2043,10 +1771,6 @@ export async function createArchive(path: string, options: ArchiveOpenOptions = 
 *
 * The archive is opened read-only regardless of `options.readOnly`. Throws on
 * read, parse, or listing failures.
-*
-* @param {string} path Archive file to inspect.
-* @param {ArchiveOpenOptions} [options={}] Format options.
-* @returns {Promise<ArchiveEntryInfo[]>} Sorted entry metadata.
 *
 * ```ts no_run
 * import { listArchive } from 'fino:archive';
@@ -2072,11 +1796,8 @@ export async function listArchive(path: string, options: ArchiveOpenOptions = {}
 * The archive is opened read-only regardless of `options.readOnly`. Extraction
 * uses the same safety checks as `Archive#extract()`: absolute paths and parent
 * escapes are rejected, and pre-existing symlinks at output paths are removed.
-*
-* @param {string} path Archive file to extract.
-* @param {string} destination Host directory to extract into.
-* @param {ArchiveOpenOptions} [options={}] Format options.
-* @returns {Promise<ExtractResult>} Count of file entries written.
+* `ArchiveExtractOptions.maxEntries` and `maxTotalBytes` are forwarded as
+* extraction limits; exceeding either throws.
 *
 * ```ts no_run
 * import { extractArchive } from 'fino:archive';

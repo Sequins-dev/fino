@@ -41,10 +41,9 @@ function makeApp() {
     }
   });
   const app = new App();
-  app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() }));
-  app.use(webUI({ store, secret: 'test-secret' }));
-  app.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
-  app.post('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
+  const ui = app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() })).layer(webUI({ store, secret: 'test-secret' }));
+  ui.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
+  ui.post('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
   return { app };
 }
 
@@ -74,10 +73,9 @@ function makeSecureApp() {
     }
   });
   const app = new App();
-  app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() }));
-  app.use(webUI({ store, secret: 'test-secret' }));
-  app.get('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
-  app.post('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
+  const ui = app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() })).layer(webUI({ store, secret: 'test-secret' }));
+  ui.get('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
+  ui.post('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
   return { app, runs: () => handlerRuns };
 }
 

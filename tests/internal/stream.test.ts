@@ -440,7 +440,7 @@ describe('FdReader / FdWriter', () => {
       await file.close();
     }
     try {
-      t.equal(await fs.readFile(path), 'abcd', 'FdWriter.writev writes all vectors in order');
+      t.equal(new TextDecoder().decode(await fs.readFile(path)), 'abcd', 'FdWriter.writev writes all vectors in order');
     } finally {
       await fs.unlink(path).catch(() => {});
     }

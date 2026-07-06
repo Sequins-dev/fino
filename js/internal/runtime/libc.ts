@@ -1,17 +1,16 @@
 /**
-* fino:libc — low-level C library bindings used by the Fino standard library.
+* internal:runtime/libc — low-level C library bindings for raw stdio and the process ID.
 *
-* This module opens the platform's C library via `fino:ffi` and exposes the
-* small set of primitives that the rest of the Fino standard library builds
-* on. It is intentionally minimal: only functions that are needed by multiple
-* other modules and that are awkward to reopen in each module live here.
+* This module opens the platform's C library via `fino:ffi` at load time and
+* exposes the small set of primitives that the rest of the Fino standard
+* library builds on. It is intentionally minimal: only functions needed by
+* multiple other modules, and awkward to reopen in each of them, live here.
+* The bound signatures are exactly `write(2)`, `printf(3)`, and `getpid(2)` —
+* nothing more.
 *
-* Currently exported:
-*   - `writeBytes(fd, bytes)` — write raw bytes to a file descriptor
-*   - `writeLine(fd, str)`    — encode a string to UTF-8 and write with newline
-*   - `printfRaw(str)`        — write a pre-formatted C string via `printf(3)`
-*   - `getpid()`              — return the current process ID
-*   - `close()`               — close the libc handle (no-op in practice)
+* The exports fall into three groups: raw output (`writeBytes`, `writeLine`,
+* `printfRaw`), process identity (`getpid`), and a no-op lifecycle hook
+* (`close`).
 *
 *
 * ## Why this exists as a separate module
@@ -19,49 +18,52 @@
 * Fino's design principle is "thin Rust, everything else in JS". That means
 * even basic output (e.g. `console.log`) is implemented in JS. This module
 * bridges the gap between JS and the OS by opening libc and exposing
-* `write(2)` directly.
+* `write(2)` directly, so console-style output does not depend on any Rust
+* host function.
 *
-* By centralising this here, other modules (the console global, etc.) don't each
-* need to open libc themselves for simple output needs. Modules that need more
-* libc functions (sockets, files, etc.) open libc themselves with their
-* specific function signatures.
+* By centralising this here, other modules (the console global, the logger)
+* don't each need to open libc themselves for simple output needs. Modules
+* that need more libc functions (sockets, files, etc.) open libc themselves
+* with their own specific function signatures rather than growing this one.
 *
 *
 * ## Platform detection
 *
-* The C library path differs by OS:
-*   - macOS:        `/usr/lib/libSystem.B.dylib`
+* The C library path differs by OS, so `openLibc` tries a fixed list of
+* candidates and keeps the first that `dlopen` accepts:
+*   - macOS:         `/usr/lib/libSystem.B.dylib`
 *   - Linux (glibc): `libc.so.6`
 *   - Linux (musl):  `libc.so`
 *
-* `openLibc()` tries each candidate in order and returns the first successful
-* `dlopen`. If all fail, it throws — Fino cannot run without a C library.
+* If every candidate fails the module throws while loading — Fino cannot run
+* without a C library, so this surfaces immediately rather than on first use.
 *
 *
 * ## printf vs write
 *
-* Both `printfRaw` and `writeLine` ultimately write to stdout, but via
-* different C functions. `writeLine` uses `write(2)` which is the raw POSIX
-* syscall wrapper — it writes exactly the bytes given, no formatting. This is
-* what the console global uses because it formats strings in JS first.
+* Both `printfRaw` and `writeLine` ultimately reach stdout, but via different
+* C functions. `writeLine` and `writeBytes` use `write(2)`, the raw POSIX
+* syscall wrapper — they write exactly the bytes given, with no formatting and
+* no C stdio buffering. This is what the console global uses, because it
+* formats strings in JS first and wants the bytes out immediately and in
+* order.
 *
-* `printfRaw` uses `printf(3)` and is provided as an alternative for cases
-* where the C-level buffering of printf is acceptable. The string must not
-* contain unescaped `%` characters (pass a pre-formatted string only, never
-* user input) because we only declare the signature as `(const char *) → int`.
+* `printfRaw` uses `printf(3)` and is provided for cases where C-level stdio
+* buffering is acceptable. Because the signature is declared as
+* `(const char *) → int` with no variadic arguments, the string is treated as
+* a format string: it must not contain unescaped `%` characters, so only ever
+* pass pre-formatted text and never untrusted user input.
 *
 *
-* ## Contributing
+* ## Blocking behavior
 *
-* - Keep this module small. If you need a libc function that's only used in
-*   one place, open libc in that module directly.
-* - `writeBytes` and `writeLine` are synchronous — they call `write(2)`
-*   directly without going through the event loop. This is intentional for
-*   console output, where you want deterministic, in-order output.
+* `writeBytes` and `writeLine` are synchronous — they call `write(2)` directly
+* without going through the event loop. This is intentional for console
+* output, where deterministic, in-order writes matter more than never
+* blocking. Do not route bulk or network I/O through this module; use the
+* async loop primitives for that.
 *
-* ## Example
-*
-* ```typescript no_run
+* ```ts no_run
 * import { writeLine, getpid } from 'internal:runtime/libc';
 *
 * writeLine(1, `worker pid: ${getpid()}`);
@@ -72,7 +74,7 @@
 */
 import { dlopen } from 'fino:ffi';
 import type { DynamicLibrary } from 'fino:ffi';
-import { encodeUtf8 } from '../../globals/encoding.ts';
+import { encodeUtf8 } from '../encoding.ts';
 // ---------------------------------------------------------------------------
 // Platform library path
 // ---------------------------------------------------------------------------
@@ -124,52 +126,76 @@ const _lib = openLibc();
 // Exported primitives
 // ---------------------------------------------------------------------------
 /**
-* Write UTF-8 bytes to a file descriptor.
+* Write raw bytes to a file descriptor with a single synchronous `write(2)`.
 *
-* This is a synchronous `write(2)` call. It returns the OS result directly, so
-* negative values indicate an error and short writes are possible.
+* Pass 1 for stdout and 2 for stderr, or any other open descriptor. The bytes
+* are written verbatim — no encoding, framing, or trailing newline is added.
 *
-* @param {number} fd  - 1 for stdout, 2 for stderr
-* @param {Uint8Array} bytes
-* @returns {number} bytes written (or negative on error)
+* The kernel's return value is passed straight through as a `number`. A
+* negative result means the syscall failed (the value corresponds to a
+* negated errno), and a positive result smaller than `bytes.length` is a
+* short write: `write(2)` is not guaranteed to consume the whole buffer, so
+* callers that need every byte delivered must loop on the returned count. This
+* function does not retry and does not throw on OS errors; inspect the return
+* value instead.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { writeBytes } from 'internal:runtime/libc';
-* writeBytes(1, new TextEncoder().encode('hello\n'));
+*
+* const bytes = new TextEncoder().encode('hello\n');
+* let off = 0;
+* while (off < bytes.length) {
+*   const n = writeBytes(1, bytes.subarray(off));
+*   if (n < 0) throw new Error('write failed');
+*   off += n;
+* }
 * ```
 */
 export function writeBytes(fd: number, bytes: Uint8Array): number {
   return Number(_lib.symbols.write(fd, bytes, bytes.length));
 }
 /**
-* Write a string to a file descriptor, appending a newline.
+* Encode a string to UTF-8, append a newline, and write it to a descriptor.
 *
-* The string is encoded as UTF-8 before writing. This helper does not retry on
-* short writes and does not flush C stdio buffers because it uses `write(2)`.
+* This is the convenience wrapper the console global and logger use for
+* line-oriented output. The string is UTF-8 encoded, a single `\n` is
+* appended, and the result is handed to `writeBytes`.
 *
-* @param {number} fd
-* @param {string} str
+* Because it delegates to `writeBytes`/`write(2)`, it inherits the same
+* caveats: the write is synchronous, C stdio buffers are not flushed, and a
+* short write is silently possible for very large strings (the extra bytes are
+* dropped rather than retried). It is intended for modest, human-readable
+* lines, not bulk output.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { writeLine } from 'internal:runtime/libc';
-* writeLine(2, 'diagnostic');
+*
+* writeLine(1, 'server listening on :8080'); // stdout
+* writeLine(2, 'diagnostic: cache miss');    // stderr
 * ```
 */
 export function writeLine(fd: number, str: string): void {
   writeBytes(fd, encodeUtf8(str + '\n'));
 }
 /**
-* Write a pre-formatted string via printf.
-* The string must not contain unescaped % characters.
+* Write a pre-formatted string to stdout via `printf(3)`.
 *
-* The input is passed as the format string and no variadic arguments are
-* supplied, so never pass untrusted text containing `%`.
+* The string is UTF-8 encoded, null-terminated, and passed as the sole
+* argument to `printf`, which treats it as a format string. Since no variadic
+* arguments are supplied, any unescaped `%` in the input is undefined behavior
+* at the C level — never pass untrusted text. Callers must pre-format their
+* string (and pre-escape any literal `%` as `%%`) before calling.
 *
-* @param {string} str
+* Unlike `writeLine`, this goes through C stdio and is subject to `printf`'s
+* buffering, so output may not appear until the buffer flushes. Prefer
+* `writeLine` for ordinary output; `printfRaw` exists for the rare case where
+* routing through `printf` specifically is desired.
 *
-* ```typescript no_run
+* ```ts no_run
 * import { printfRaw } from 'internal:runtime/libc';
+*
 * printfRaw('ready\n');
+* printfRaw('progress: 50%%\n'); // literal percent must be doubled
 * ```
 */
 export function printfRaw(str: string): void {
@@ -178,13 +204,16 @@ export function printfRaw(str: string): void {
   _lib.symbols.printf(bytes);
 }
 /**
-* Return the current process ID.
+* Return the current process ID via `getpid(2)`.
 *
-* @returns {number}
+* The result is the OS process identifier of the running Fino process as a
+* `number`. It is stable for the lifetime of the process and useful for log
+* prefixes, temp-file naming, and correlating output across workers.
 *
-* ```typescript no_run
-* import { getpid } from 'internal:runtime/libc';
-* const pid = getpid();
+* ```ts no_run
+* import { getpid, writeLine } from 'internal:runtime/libc';
+*
+* writeLine(1, `[pid ${getpid()}] booted`);
 * ```
 */
 export function getpid(): number {

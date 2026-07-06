@@ -9,12 +9,13 @@
 *
 * ```ts no_run
 * import { App } from 'fino:net/http/app';
-* import { Signal } from 'fino:ui';
+* import { h, Signal } from 'fino:ui';
 * import { page, view, webUI } from 'fino:ui/web';
 * import { InMemoryViewStore } from 'fino:ui/web/state';
 *
 * const app = new App();
-* app.use(webUI({ store: new InMemoryViewStore(), secret: 'dev-secret' }));
+* const ui = app.layer(webUI({ store: new InMemoryViewStore(), secret: 'dev-secret' }));
+* ui.get('/').handle(page(() => h('main', null, 'Hello')));
 * ```
 */
 import { EventSourceWriter } from 'fino:net/http/eventstream';
@@ -24,7 +25,7 @@ import { parseCookieHeader, sealCookie, serializeCookie, unsealCookie } from 'fi
 import { escapeHtml } from 'fino:template';
 import { batch, h, Signal, type Props, type VNode } from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
-import type { Handler, HttpContext, Middleware } from 'fino:net/http/app';
+import type { Handler, HttpContext, LayerMiddleware } from 'fino:net/http/app';
 import type { ViewSnapshot, ViewStateStore } from 'fino:ui/web/state';
 
 type StateRecord = Record<string, Signal<unknown>>;
@@ -472,7 +473,7 @@ function redirectBack(ctx: HttpContext): Response {
 /**
 * Middleware that installs server-driven UI handling for an `App`.
 */
-export function webUI(options: WebUIOptions): Middleware {
+export function webUI(options: WebUIOptions): LayerMiddleware {
   if (!options.secret) throw new Error('webUI requires a secret for CSRF protection');
   return async (ctx, next) => {
     const url = new URL(ctx.request.url);

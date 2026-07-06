@@ -1,17 +1,40 @@
 /**
-* internal:package_manager — package installation helpers.
+* internal:package_manager — npm dependency installer for Fino projects.
 *
-* Resolves npm package specs, downloads tarballs, verifies registry integrity
-* metadata, extracts packages into `.fino/packages`, and writes the runtime
-* package map consumed by the internal loader.
+* Backs the `fino install` command. Given a set of package specs (or an
+* existing `package.json`), it resolves versions against an npm-compatible
+* registry, downloads and integrity-checks each tarball, extracts packages into
+* `.fino/packages`, recursively installs their dependencies, and writes a flat
+* `.fino/package-map.json` that the internal module loader consumes to resolve
+* bare specifiers at runtime.
 *
-* Builds that install packages from registries should include OpenSSL support
-* for real tarball integrity enforcement. SHA-1 `shasum` metadata is accepted
-* only as a legacy npm fallback when modern SRI metadata is absent or unusable.
+* Resolution follows npm semantics closely enough to be useful without cloning
+* npm: dist-tags are honored, semver ranges are matched via `fino:semver`, and
+* a package's entrypoints are derived from its `exports` map (including
+* conditional, array, and wildcard `*` forms) with a legacy `main`/`module`
+* fallback and deep-import probing when no `exports` field is present. Regular
+* and optional dependencies are installed transitively; optional failures are
+* downgraded to warnings while required failures propagate. Peer dependencies
+* are only warned about, never auto-installed.
 *
-* ```js
-* import { installPackages } from 'internal:package_manager';
-* console.log(typeof installPackages);
+* The registry defaults to the `FINO_NPM_REGISTRY` environment variable, or
+* `https://registry.npmjs.org` when unset. Builds that install from registries
+* should include OpenSSL so tarball integrity metadata is actually enforced;
+* without it, downloads are extracted unverified. SHA-1 `shasum` metadata is
+* accepted only as a legacy fallback when modern SRI (`sha256`/`sha384`/
+* `sha512`) metadata is absent or uses an unsupported algorithm.
+*
+* This is an `internal:*` module: it is importable only from other built-ins,
+* not from user code, and the public entry point is the `fino install` CLI.
+*
+* ```ts no_run
+*   import { installPackages } from 'internal:package_manager';
+*
+*   // Add packages to package.json and install everything into .fino/packages.
+*   await installPackages(['left-pad@^1.3.0', '@scope/util']);
+*
+*   // With no specs, install exactly what package.json already declares.
+*   await installPackages();
 * ```
 *
 * @internal
@@ -23,6 +46,8 @@ import { compare, maxSatisfying } from 'fino:semver';
 import { Scanner } from 'fino:parsing/scanner';
 import * as openssl from './openssl.ts';
 const fs = new DiskFileSystem();
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 const DEFAULT_REGISTRY = env.FINO_NPM_REGISTRY ?? 'https://registry.npmjs.org';
 const PROBE_EXTENSIONS = [
   '.mjs',
@@ -113,29 +138,35 @@ function base64Digest(alg: string, bytes: Uint8Array): string {
   return actualB64;
 }
 /**
-* Verify package tarball bytes against npm registry integrity metadata.
+* Verify downloaded tarball bytes against a package's npm integrity metadata.
 *
-* `integrity` is expected to contain one or more SRI tokens such as
-* `sha512-...`; when multiple supported tokens are present, the strongest one
-* is checked. `shasum` is the legacy SHA-1 hex fallback. If OpenSSL is
-* unavailable, or both metadata fields are absent, the function returns without
-* verification. Release builds that install packages should enable OpenSSL so
-* integrity metadata is actually enforced. Mismatches, malformed metadata
-* without a usable fallback, and unsupported algorithms throw descriptive
-* errors. SHA-1 `shasum` is a legacy npm fallback for registries that do not
-* provide usable SRI metadata.
+* `integrity` holds one or more SRI tokens from the registry's `dist.integrity`
+* field, such as `sha512-base64…`; when several supported tokens are present
+* the strongest algorithm (`sha512` over `sha384` over `sha256`) is the one
+* actually checked. `shasum` is the registry's legacy `dist.shasum` SHA-1 hex
+* value, used only as a fallback. `packageId` (for example `left-pad@1.3.0`) is
+* interpolated into error messages so failures name the offending package.
 *
-* ```js
-* import { verifyTarballIntegrity } from 'internal:package_manager';
-* const bytes = new Uint8Array([1, 2, 3]);
-* verifyTarballIntegrity(bytes, undefined, undefined, 'demo@1.0.0');
+* Verification is a no-op when OpenSSL is unavailable — `cryptoAvailable` is
+* false — or when neither metadata field is supplied, so callers must ensure
+* crypto is present for enforcement to mean anything. When a usable SRI token
+* exists it is checked and a `shasum` fallback is ignored; a digest mismatch
+* throws. If the only SRI tokens use unsupported algorithms, or the integrity
+* string is malformed, that is tolerated only when a `shasum` is available to
+* fall back to — otherwise it throws. The SHA-1 fallback throws on mismatch.
+*
+* Throws an `Error` whose message begins `Integrity check failed for <id>` on
+* any digest mismatch, unsupported-only SRI without a shasum, or unparseable
+* integrity string without a shasum.
+*
+* ```ts no_run
+*   import { verifyTarballIntegrity } from 'internal:package_manager';
+*
+*   const bytes = await fetchBytes(dist.tarball);
+*   // Throws if the bytes don't match the registry's advertised digest.
+*   verifyTarballIntegrity(bytes, dist.integrity, dist.shasum, 'left-pad@1.3.0');
 * ```
 *
-* @param bytes Tarball bytes to verify.
-* @param integrity Optional npm `dist.integrity` SRI value.
-* @param shasum Optional npm `dist.shasum` SHA-1 hex value.
-* @param packageId Human-readable package id used in error messages.
-* @returns Nothing on success or when verification is skipped.
 * @internal
 */
 export function verifyTarballIntegrity(bytes: Uint8Array, integrity: string | undefined, shasum: string | undefined, packageId: string): void {
@@ -273,11 +304,11 @@ async function removeTree(path: string): Promise<void> {
   await fs.unlink(path);
 }
 async function readJson(path: string): Promise<any> {
-  return JSON.parse(await fs.readFile(path));
+  return JSON.parse(textDecoder.decode(await fs.readFile(path)));
 }
 async function writeJson(path: string, value: unknown): Promise<void> {
   await ensureDir(dirname(path));
-  await fs.writeFile(path, JSON.stringify(value, null, 2) + '\n');
+  await fs.writeFile(path, textEncoder.encode(JSON.stringify(value, null, 2) + '\n'));
 }
 function encodeRegistryPackageName(name: string): string {
   return name.replace(/\//g, '%2f');
@@ -539,23 +570,41 @@ async function buildInstallPlan(root: string, packageSpecs: string[]): Promise<{
   };
 }
 /**
-* Install project dependencies and write the Fino package map.
+* Install a project's dependencies and write the Fino package map.
 *
-* With `packageSpecs`, the root `package.json` is created or updated with the
-* requested packages before resolution. With no specs, an existing
-* `package.json` is required and all declared dependency groups are installed.
-* Packages are resolved from `FINO_NPM_REGISTRY` or the npm public registry by
-* default. The installer writes `.fino/package-map.json` and package contents
-* under `.fino/packages`; network, filesystem, registry, and integrity failures
-* are thrown.
+* This is the entry point behind `fino install`. It operates on the current
+* working directory as the project root. Each entry in `packageSpecs` is a
+* bare name (`left-pad`, `@scope/util`) or a `name@range` spec (`left-pad@^1.3`,
+* `@scope/util@latest`); when any specs are given they are merged into the root
+* `package.json`'s `dependencies` (creating a minimal `package.json` if none
+* exists) before resolution. When `packageSpecs` is empty an existing
+* `package.json` is required, and the union of its `dependencies`,
+* `devDependencies`, and `optionalDependencies` is installed.
 *
-* ```js
-* import { installPackages } from 'internal:package_manager';
-* await installPackages(['left-pad@^1.3.0']);
+* Resolution walks the dependency graph transitively, downloading and
+* integrity-checking each tarball and extracting it under `.fino/packages`.
+* Newly requested packages are pinned back into `package.json`: a spec given
+* without a range is rewritten to the exact resolved version, while an explicit
+* range is preserved as written. On completion the flat resolution graph is
+* serialized to `.fino/package-map.json` (schema `version: 1`, with the
+* registry, top-level `rootDependencies`, and every installed `packages`
+* record) for the loader to consume.
+*
+* Required-dependency failures propagate: network errors, missing
+* `dist.tarball`, unmatched semver ranges, and integrity mismatches all throw.
+* Optional-dependency and unsatisfiable-optional failures are collected as
+* warnings and printed via `console.warn` at the end rather than aborting the
+* install; peer dependencies are likewise only warned about, never installed.
+*
+* ```ts no_run
+*   import { installPackages } from 'internal:package_manager';
+*
+*   // From a project directory, add and install two packages.
+*   await installPackages(['left-pad@^1.3.0', '@scope/util']);
+*   // .fino/package-map.json and .fino/packages/* now exist; package.json
+*   // has left-pad pinned to its resolved range and @scope/util to a version.
 * ```
 *
-* @param packageSpecs Optional package names or `name@range` specs to add.
-* @returns A promise that resolves after installation and map generation.
 * @internal
 */
 export async function installPackages(packageSpecs: string[] = []): Promise<void> {

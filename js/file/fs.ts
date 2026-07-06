@@ -7,33 +7,34 @@
 * etc. The I/O is wired to the event loop so that reads and writes yield
 * control to other async tasks while waiting for the kernel.
 *
-*
 * ## Design: explicit filesystem instance
 *
 * Unlike Node.js's implicit global `fs` module, here callers construct a
-* `DiskFileSystem` explicitly and pass their loop handle:
+* `DiskFileSystem` explicitly:
 *
 * ```ts no_run
 *   const fs = new DiskFileSystem();
 * ```
 *
-* This is intentional. It makes the event-loop dependency visible, enables
-* future alternative backends (in-memory, zip archive, overlay), and avoids
-* shared global state that makes testing harder.
-*
+* This is intentional. It keeps the backend swappable behind the abstract
+* `FileSystem` interface — enabling alternative backends (in-memory, zip
+* archive, overlay) — and avoids shared global state that makes testing
+* harder.
 *
 * ## Object hierarchy
 *
-*   DiskFileSystem          — the factory; owns no fds itself
-*     .open()   → File      — an open fd; owns the fd lifecycle
-*       .reader()  → async iterable of Uint8Array chunks
-*       .writer()  → Writer (from fino:stream)
-*       .bytes()   → Promise<Uint8Array>  (reads entire file)
-*       .text()    → Promise<string>
-*     .dir()    → DirEntry  — directory handle (uses opendir/readdir/closedir)
-*       .entries() → Promise<Entry[]>
-*       [Symbol.asyncIterator]  — iterates entries
-*     .entry()  → Entry / FileEntry / DirEntry
+* ```text
+* DiskFileSystem          — the factory; owns no fds itself
+*   .open()   → File      — an open fd; owns the fd lifecycle
+*     .reader()  → async iterable of Uint8Array chunks
+*     .writer()  → Writer (from fino:stream)
+*     .bytes()   → Promise<Uint8Array>  (reads entire file)
+*     .text()    → Promise<string>
+*   .dir()    → DirEntry  — directory handle (uses opendir/readdir/closedir)
+*     .entries() → Promise<Entry[]>
+*     [Symbol.asyncIterator]  — iterates entries
+*   .entry()  → Entry / FileEntry / DirEntry
+* ```
 *
 * `File` owns its fd and closes it on `file.close()`. The Reader/Writer
 * produced by `file.reader()` / `file.writer()` borrow the fd with a no-op
@@ -41,12 +42,12 @@
 * `file.close()` instead.
 */
 import { lib, Pointer, isDarwin, loopModule, asyncOps, cstr, throwErrno, throwErrnoCode, readCStr, _toStr, _toPath, joinPath, O_CREAT, O_RDONLY, O_WRONLY, O_RDWR, O_TRUNC, O_APPEND, O_EXCL, S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR, SEEK_SET, SEEK_CUR, SEEK_END, DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK, F_OK as _F_OK, R_OK as _R_OK, W_OK as _W_OK, X_OK as _X_OK, modeToFlags, encodeUtf8, decodeUtf8 } from 'internal:file/bindings';
-import { Stat } from 'internal:file/stat';
-import { File } from 'internal:file/handle';
-import { Entry, FileEntry, DirEntry } from 'internal:file/entry';
-import { Glob, glob as globWalk, type GlobOptions } from 'internal:file/glob';
+import { Stat } from '../internal/file/stat.ts';
+import { File } from '../internal/file/handle.ts';
+import { Entry, FileEntry, DirEntry } from '../internal/file/entry.ts';
+import { Glob, glob as globWalk, type GlobOptions } from '../internal/file/glob.ts';
 import type { Path } from './path.ts';
-import { FileSystem } from 'internal:file/provider';
+import { FileSystem } from '../internal/file/provider.ts';
 /**
 * Access flag that checks whether a path exists.
 *
@@ -104,8 +105,12 @@ export const W_OK = _W_OK;
 */
 export const X_OK = _X_OK;
 // Re-export the public API surface
-export { FileSystem };
-export { Stat, File, Entry, FileEntry, DirEntry, O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_EXCL, S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR, SEEK_SET, SEEK_CUR, SEEK_END, DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK, Glob };
+export { FileSystem } from '../internal/file/provider.ts';
+export { Stat } from '../internal/file/stat.ts';
+export { File } from '../internal/file/handle.ts';
+export { Entry, FileEntry, DirEntry } from '../internal/file/entry.ts';
+export { Glob } from '../internal/file/glob.ts';
+export { O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_EXCL, S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR, SEEK_SET, SEEK_CUR, SEEK_END, DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK };
 /**
 * A POSIX filesystem backend backed by libc syscalls via FFI.
 *
@@ -118,7 +123,7 @@ export { Stat, File, Entry, FileEntry, DirEntry, O_RDONLY, O_WRONLY, O_RDWR, O_C
 * import { DiskFileSystem } from 'fino:file';
 *
 * const fs = new DiskFileSystem();
-* const text = await fs.readFile('/etc/hosts');
+* const text = new TextDecoder().decode(await fs.readFile('/etc/hosts'));
 * ```
 */
 export class DiskFileSystem extends FileSystem {
@@ -128,9 +133,6 @@ export class DiskFileSystem extends FileSystem {
   * Returns parsed POSIX metadata for the target. If `path` is a symlink, the
   * returned `Stat` describes the symlink target. Throws when the path cannot
   * be resolved or the process lacks permission.
-  *
-  * @param {string|Path} path Path to inspect.
-  * @returns {Promise<Stat>} Metadata for the resolved file.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -165,9 +167,6 @@ export class DiskFileSystem extends FileSystem {
   * describes the link rather than the linked target. Throws on missing paths,
   * permission failures, or other `lstat(2)` errors.
   *
-  * @param {string|Path} path Path to inspect.
-  * @returns {Promise<Stat>} Metadata for the directory entry.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -186,14 +185,12 @@ export class DiskFileSystem extends FileSystem {
   /**
   * Open a file and return a File handle.
   *
-  * The default mode is `'r'`. Mode strings are translated to POSIX open flags
-  * by the file bindings; create modes use `0o666` before the process umask and
-  * then normalize new files to `0o644`. Throws if the file cannot be opened.
-  * Close the returned `File` when finished.
-  *
-  * @param {string|Path} path File path to open.
-  * @param {string} [mode='r'] Open mode such as `'r'`, `'w'`, or `'a'`.
-  * @returns {Promise<File>} Open file handle owning the file descriptor.
+  * The default mode is `'r'`. Supported mode strings are `'r'`, `'w'`, `'a'`,
+  * `'r+'`, `'w+'`, `'a+'`, and `'c+'` (read/write, create without truncating);
+  * unknown mode strings throw. Create modes use `0o666` before the process
+  * umask and then normalize new files to `0o644`. Throws if the file cannot be
+  * opened. Close the returned `File` when finished — the readers and writers
+  * it produces borrow its fd rather than owning it.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -258,9 +255,6 @@ export class DiskFileSystem extends FileSystem {
   * The returned entry can enumerate children with `entries()` or async
   * iteration. Symlinks are not followed for the directory check.
   *
-  * @param {string|Path} path Directory path to inspect.
-  * @returns {Promise<DirEntry>} Directory entry wrapper.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -282,9 +276,6 @@ export class DiskFileSystem extends FileSystem {
   * Directories become `DirEntry`, regular files become `FileEntry`, symlinks
   * become a generic `Entry` with link type, and other filesystem nodes become
   * a generic `Entry` with unknown type. Throws if `path` cannot be lstat'ed.
-  *
-  * @param {string|Path} path Path to classify.
-  * @returns {Promise<Entry>} Entry wrapper for the detected type.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -309,9 +300,6 @@ export class DiskFileSystem extends FileSystem {
   * automatically. The default mode is `0o755` before the process umask.
   * Throws if the path exists, a parent is missing, or permissions fail.
   *
-  * @param {string|Path} path Directory path to create.
-  * @param {number} [mode=0o755] POSIX permission mode.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -331,8 +319,6 @@ export class DiskFileSystem extends FileSystem {
   * throws if the path is not a directory, is not empty, is missing, or cannot
   * be removed.
   *
-  * @param {string|Path} path Empty directory to remove.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -351,8 +337,6 @@ export class DiskFileSystem extends FileSystem {
   * Removes a directory entry with `unlink(2)`. For symlinks, the link itself
   * is removed and the target is left untouched. Throws for directories,
   * missing paths, or permission failures.
-  *
-  * @param {string|Path} path File or symlink to remove.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -380,9 +364,6 @@ export class DiskFileSystem extends FileSystem {
   * Follows symlinks, matching `chmod(2)`. Throws when the target is missing or
   * the process cannot change permissions.
   *
-  * @param {string|Path} path Path whose permissions should change.
-  * @param {number} mode POSIX mode bits, for example `0o644`.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -402,10 +383,6 @@ export class DiskFileSystem extends FileSystem {
   * requires elevated privileges. Throws for missing paths, invalid IDs, or
   * permission failures.
   *
-  * @param {string|Path} path Path whose owner should change.
-  * @param {number} uid Numeric user ID.
-  * @param {number} gid Numeric group ID.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -423,10 +400,6 @@ export class DiskFileSystem extends FileSystem {
   *
   * For symlinks, changes ownership of the link itself. The same permission
   * and platform caveats as `lchown(2)` apply.
-  *
-  * @param {string|Path} path Path whose directory entry owner should change.
-  * @param {number} uid Numeric user ID.
-  * @param {number} gid Numeric group ID.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -446,10 +419,6 @@ export class DiskFileSystem extends FileSystem {
   * Numeric timestamps are interpreted as seconds since the Unix epoch. `Date`
   * values are converted to fractional seconds. Throws when the target is
   * missing or timestamp updates are not permitted.
-  *
-  * @param {string|Path} path Path whose timestamps should change.
-  * @param {Date|number} atime Access time as a `Date` or seconds since epoch.
-  * @param {Date|number} mtime Modification time as a `Date` or seconds since epoch.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -479,9 +448,6 @@ export class DiskFileSystem extends FileSystem {
   * sparse zero-filled space depending on the filesystem. Throws if the path is
   * missing, not writable, or invalid for truncation.
   *
-  * @param {string|Path} path File to truncate.
-  * @param {number} [size=0] Target byte length.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -500,9 +466,6 @@ export class DiskFileSystem extends FileSystem {
   * Creates `newPath` as another directory entry for `existingPath`. The source
   * and destination must usually be on the same filesystem. Throws when the
   * target exists, the source is missing, or hard links are not allowed.
-  *
-  * @param {string|Path} existingPath Path of the existing file.
-  * @param {string|Path} newPath Path of the hard link to create.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -524,9 +487,6 @@ export class DiskFileSystem extends FileSystem {
   * existence. Combine `R_OK`, `W_OK`, and `X_OK` to check permissions from
   * the process perspective. Throws when the requested access is unavailable.
   *
-  * @param {string|Path} path Path to check.
-  * @param {number} [mode=F_OK] Bitwise OR of `F_OK`, `R_OK`, `W_OK`, and `X_OK`.
-  *
   * ```ts no_run
   * import { DiskFileSystem, R_OK, W_OK } from 'fino:file';
   *
@@ -546,9 +506,6 @@ export class DiskFileSystem extends FileSystem {
   * truncation, then applies the source mode bits. This is intended for modest
   * files; stream manually for very large files. Throws if either open, read,
   * write, or chmod step fails.
-  *
-  * @param {string|Path} src Source file path.
-  * @param {string|Path} dest Destination file path.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -584,9 +541,6 @@ export class DiskFileSystem extends FileSystem {
   * rules. Moving across filesystems may fail. Throws on missing sources,
   * invalid destinations, or permission errors.
   *
-  * @param {string|Path} oldPath Existing path.
-  * @param {string|Path} newPath New path.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -606,9 +560,6 @@ export class DiskFileSystem extends FileSystem {
   * Returns the raw link target string exactly as stored by the symlink. The
   * target may be relative and may not exist. Throws if `path` is not a symlink
   * or cannot be read.
-  *
-  * @param {string|Path} path Symlink path.
-  * @returns {Promise<string>} Link target text.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
@@ -631,9 +582,6 @@ export class DiskFileSystem extends FileSystem {
   * normalized. Throws if `linkpath` already exists or the platform rejects the
   * link creation.
   *
-  * @param {string|Path} target Link target, as stored in the symlink.
-  * @param {string|Path} linkpath Path of the symlink to create.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -654,9 +602,6 @@ export class DiskFileSystem extends FileSystem {
   * components must exist. Throws for missing components, loops, or permission
   * failures.
   *
-  * @param {string|Path} path Path to resolve.
-  * @returns {Promise<string>} Canonical absolute path.
-  *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
@@ -676,26 +621,25 @@ export class DiskFileSystem extends FileSystem {
     return decodeUtf8(bytes.subarray(0, len));
   }
   /**
-  * Read an entire file and return its UTF-8 contents as a string.
+  * Read an entire file and return its bytes.
   *
-  * Opens the file in read mode, reads all bytes, decodes them as UTF-8, and
-  * closes the handle. This loads the full file into memory. Throws on open,
-  * read, or decode-related filesystem errors.
-  *
-  * @param {string|Path} path File to read.
-  * @returns {Promise<string>} UTF-8 decoded file contents.
+  * Opens the file in read mode, reads all bytes, and closes the handle. This
+  * loads the full file into memory. Text decoding is intentionally caller-owned:
+  * pass the returned `Uint8Array` to `TextDecoder` when text is expected.
+  * Throws on open or read-related filesystem errors.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
   * const fs = new DiskFileSystem();
-  * const text = await fs.readFile('/tmp/config.json');
+  * const bytes = await fs.readFile('/tmp/config.json');
+  * const text = new TextDecoder().decode(bytes);
   * ```
   */
-  async readFile(path: Path | string): Promise<string> {
+  async readFile(path: Path | string): Promise<Uint8Array> {
     const file = await this.open(path, 'r');
     try {
-      return await file.text();
+      return await file.bytes();
     } finally {
       await file.close();
     }
@@ -703,24 +647,29 @@ export class DiskFileSystem extends FileSystem {
   /**
   * Write data to a file, creating or truncating it.
   *
-  * Opens the path with mode `'w'`, writes the full buffer, and closes the
-  * handle. Strings are encoded as UTF-8. Parent directories are not created.
-  * Throws on open or write failure.
-  *
-  * @param {string|Path} path File to create or replace.
-  * @param {string|Uint8Array|ArrayBuffer} data Data to write.
+  * Opens the path with mode `'w'`, writes the full byte buffer, and closes the
+  * handle. Text encoding is intentionally caller-owned: pass strings through
+  * `TextEncoder` before calling this method. Parent directories are not
+  * created. Throws on open, invalid input, or write failure.
   *
   * ```ts no_run
   * import { DiskFileSystem } from 'fino:file';
   *
   * const fs = new DiskFileSystem();
-  * await fs.writeFile('/tmp/message.txt', 'hello\n');
+  * await fs.writeFile('/tmp/message.txt', new TextEncoder().encode('hello\n'));
   * ```
   */
-  async writeFile(path: Path | string, data: string | Uint8Array | ArrayBuffer): Promise<void> {
+  async writeFile(path: Path | string, data: Uint8Array | ArrayBuffer | ArrayBufferView): Promise<void> {
+    if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
+      throw new TypeError('writeFile data must be a Uint8Array, ArrayBuffer, or ArrayBufferView');
+    }
     const file = await this.open(path, 'w');
     try {
-      const buf = typeof data === 'string' ? encodeUtf8(data) : data instanceof Uint8Array ? data : new Uint8Array(data);
+      const buf = data instanceof Uint8Array
+        ? data
+        : data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
       const w = file.writer();
       await w.write(buf);
       await w.close();
@@ -736,13 +685,15 @@ export class DiskFileSystem extends FileSystem {
   * reads happen lazily as iteration advances. Errors from directory listing or
   * entry inspection propagate through the async iterator.
   *
-  * @param {string} pattern  Glob pattern, e.g. `**\/*.ts`, `src/lib/*.ts`.
-  * @param {GlobOptions} [options]
-  * @returns {AsyncGenerator<Entry>}
+  * `**` matches zero or more path segments, so `src/**` walks everything under
+  * `src/` recursively.
   *
   * ```ts no_run
-  * for await (const entry of fs.glob('**\/*.ts')) {
-  *   console.log(entry.path.toString());
+  * import { DiskFileSystem } from 'fino:file';
+  *
+  * const fs = new DiskFileSystem();
+  * for await (const entry of fs.glob('src/**')) {
+  *   if (entry.isFile()) console.log(entry.path.toString());
   * }
   * ```
   */

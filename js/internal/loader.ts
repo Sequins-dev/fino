@@ -1,19 +1,34 @@
 /**
-* internal:loader — JS-side module resolution and import.meta population.
+* internal:loader — JS-side module resolution, transpilation, and import.meta population.
 *
-* Registers two callbacks with the Rust module loader via `internal:loader-hooks`:
+* Importing this module for its side effects installs the runtime's module
+* pipeline. It registers three callbacks with the Rust module loader through the
+* `internal:loader-hooks` bridge, and the Rust loader calls back into them for
+* every filesystem import:
 *
-*   - `resolve(specifier, referrerDir, root)` → canonical absolute path
-*   - `initImportMeta(importMeta, filename, root)` → populates import.meta
+*   - a resolve hook that turns an import specifier plus the referrer's directory
+*     into a canonical absolute path (handling relative paths, `file://` URLs,
+*     absolute paths, bare package specifiers via the package map, and extension
+*     probing for `.ts`/`.mts`/`.mjs`/`.js`/`.json`);
+*   - an import.meta hook that populates `url`, `filename`, `dirname`, and a
+*     module-local `resolve()` on each filesystem module's `import.meta`;
+*   - a transpile hook that lowers TypeScript (and `.sql` modules) to executable
+*     JavaScript with a source map.
 *
-* This module must remain synchronous (no top-level `await`) so it can be
-* statically imported from `internal/main.mjs`.
+* Bare specifiers are resolved against the package map produced by
+* `fino install` (surfaced through `internal:loader-hooks`). Resolution is
+* referrer-aware: a dependency is looked up first in the owning package's
+* `dependencies`, then in the root's, so nested packages can pin their own
+* versions. When no package map is present, bare specifiers fall back to being
+* resolved relative to the loader root.
 *
-* We open our own libc handle for `realpath` rather than reusing
-* `internal:file/bindings` because that module uses `await import(...)`,
-* which would make this module (and `internal/main.mjs`) async.
+* This module must remain synchronous — it has no top-level `await` — so it can
+* be statically imported from the bootstrap entry (`internal/main`) before the
+* event loop exists. For the same reason it opens its own libc handle for
+* `realpath`/`opendir`/`closedir` rather than reusing `internal:file/bindings`,
+* which is async because it uses dynamic `import()`.
 *
-* ```js
+* ```ts no_run
 * import 'internal:loader';
 * ```
 *
@@ -21,7 +36,7 @@
 */
 import { dlopen } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from '../globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from './encoding.ts';
 import { registerResolve, registerInitMeta, registerTranspile, getPackageMap } from 'internal:loader-hooks';
 import { transpile as transpileTypeScript } from 'fino:format/typescript';
 import { parseSqlModule, toSqlModuleSource } from 'fino:database/sql';
@@ -64,8 +79,12 @@ function cstr(s: string): Uint8Array {
   return buf;
 }
 /**
-* Call realpath(3) to canonicalize a path.
-* Returns the canonical path string, or null if the path does not exist.
+* Canonicalize a path with realpath(3), resolving symlinks and `.`/`..` segments.
+*
+* Returns the canonical absolute path, or `null` when the path does not exist
+* (any realpath failure, such as `ENOENT`, is reported as `null` rather than
+* thrown). The canonical form is read out of the caller-provided 4 KiB buffer up
+* to the first NUL byte and decoded as UTF-8.
 */
 function realpath(path: string): string | null {
   const buf = new ArrayBuffer(4096);
@@ -168,13 +187,22 @@ function resolveWithPackageMap(specifier: string, referrerDir: string | null): s
 /**
 * Resolve a module specifier to a canonical absolute path.
 *
-* Called by the Rust module loader for filesystem imports.
+* This is the resolve hook the Rust module loader invokes for every filesystem
+* import. `referrerDir` is the directory of the importing module, or `null` when
+* there is no filesystem referrer (built-in or realm entry), in which case
+* resolution is anchored at `root`, the loader's root directory.
 *
-* @param {string} specifier  - The import specifier
-* @param {string|null} referrerDir - Directory of the importing module (null for builtins/realm)
-* @param {string} root - The module loader root directory
-* @returns {string} Canonical absolute path
-* @throws {Error} If the path cannot be resolved
+* Relative specifiers (`./`, `../`) resolve against the referrer directory,
+* `file://` URLs are normalized to a local path, and absolute specifiers are
+* used as-is. Anything else is treated as a bare package specifier and looked up
+* in the package map; if that yields nothing, it falls back to being resolved
+* relative to `root`. Once a raw path is chosen it is canonicalized, and if that
+* names a nonexistent or directory path the loader probes `.ts`, `.mts`, `.mjs`,
+* `.js`, and `.json` extensions in that order.
+*
+* Throws if the specifier cannot be resolved to an existing file, and (via the
+* package-map lookup) if a bare specifier has no package-map entry — the error
+* message suggests running `fino install`.
 */
 function resolve(specifier: string, referrerDir: string | null, root: string): string {
   const base = referrerDir ?? root;
@@ -206,13 +234,21 @@ function resolve(specifier: string, referrerDir: string | null, root: string): s
   throw new Error(`Cannot resolve module '${specifier}': No such file or directory`);
 }
 /**
-* Populate import.meta for a filesystem module.
+* Populate `import.meta` for a filesystem module.
 *
-* Called by the Rust module loader after a filesystem module is parsed.
+* This is the import.meta hook the Rust module loader invokes after a filesystem
+* module is parsed, with `filename` set to the module's absolute canonical path
+* and `root` the loader root. It sets `import.meta.url` to the module's
+* `file://` URL, `import.meta.filename` to the canonical path, and
+* `import.meta.dirname` to the containing directory (falling back to `root` for
+* a path with no parent directory).
 *
-* @param {object} importMeta - The import.meta object to populate
-* @param {string} filename   - Absolute canonical path of the module
-* @param {string} root       - The module loader root directory
+* It also installs `import.meta.resolve(specifier)`, a synchronous resolver
+* scoped to this module. Built-in specifiers (`fino:*`, `internal:*`) are
+* returned unchanged; every other specifier is resolved with the same rules as
+* the loader's resolve hook — relative to the module's own directory — and the
+* result is returned as a `file://` URL. The scoped resolver throws if the
+* specifier cannot be resolved to an existing file.
 */
 function initImportMeta(importMeta: ImportMeta & {
   url?: string;
@@ -256,6 +292,18 @@ function initImportMeta(importMeta: ImportMeta & {
     throw new Error(`Cannot resolve '${spec}': No such file or directory`);
   };
 }
+/**
+* Lower a module's source to executable JavaScript with a source map.
+*
+* This is the transpile hook the Rust module loader invokes for source it cannot
+* run directly. `filename` selects the pipeline: a `.sql` path is first parsed as
+* a SQL module and rewritten to a TypeScript wrapper, and everything else is
+* transpiled as TypeScript. Both paths run through `fino:format/typescript`, so
+* the returned `code` is JavaScript and `map` is its source map.
+*
+* Throws if compilation fails, joining the underlying diagnostic messages into
+* the error (with a generic fallback message when none are reported).
+*/
 function transpile(source: string, filename: string): {
   code: string;
   map: string;

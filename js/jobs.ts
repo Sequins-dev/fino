@@ -44,7 +44,6 @@
 * ```
 */
 import type { Task } from './task.ts';
-import type { JobRecord, JobRetryPolicy, JobStatus, QueueStats, ScheduleRecord } from './internal/jobs/store.ts';
 import type { JobsService } from './internal/jobs/service.ts';
 import type { JobsWireCall, JobsWireResult } from './internal/jobs/runner.ts';
 import type { WorkflowState, WorkflowStore } from './workflow.ts';
@@ -54,12 +53,227 @@ import type { ReadonlySignal } from 'fino:signals';
 import { subscribeMatching } from 'fino:context/topic';
 
 /**
+* Job lifecycle states stored in `JobRecord.status`.
+*
+* Terminal states are `done`, `error`, `dead`, and `cancelled`; `wait()`
+* resolves when a job reaches one of those states.
+*/
+export type JobStatus = 'pending' | 'claimed' | 'running' | 'waiting' | 'done' | 'error' | 'dead' | 'cancelled';
+
+/**
+* Retry/backoff policy copied onto each job.
+*
+* Attempts are delayed by `baseMs * factor ** (attempt - 1)`, capped at
+* `maxMs`. When `jitter` is true, the computed delay is randomized between
+* zero and the capped delay to avoid retry bursts.
+*
+* Every field is required here; `JobsPushOptions.retry` and
+* `JobsScheduleOptions.retry` accept a `Partial<JobRetryPolicy>` and merge it
+* over the service defaults.
+*
+* ```ts no_run
+* import type { JobRetryPolicy } from 'fino:jobs';
+*
+* const policy: JobRetryPolicy = {
+*   maxAttempts: 5,
+*   baseMs: 1000,
+*   factor: 2,
+*   maxMs: 60_000,
+*   jitter: true,
+* };
+* ```
+*/
+export interface JobRetryPolicy {
+  /** Total attempts before the job is dead-lettered, including the first run. */
+  maxAttempts: number;
+  /** Delay of the first retry, and the base of the exponential backoff. */
+  baseMs: number;
+  /** Multiplier applied per attempt: attempt `n` waits `baseMs * factor ** (n - 1)`. */
+  factor: number;
+  /** Ceiling on the computed delay so backoff does not grow without bound. */
+  maxMs: number;
+  /** When true, randomize each delay in `[0, computed]` to spread out retry bursts. */
+  jitter: boolean;
+}
+
+/**
+* Persisted job row returned by `push()`, `get()`, `list()`, `job()`, and
+* `wait()`.
+*
+* Timestamps are epoch milliseconds. `input`, `result`, `waitingOn`, and
+* `error` are JSON-compatible values stored in the jobs database. Active jobs
+* may have `claimedBy` / `claimedUntil` set while a worker owns their lease;
+* terminal jobs set `finishedAt`.
+*
+* ```ts no_run
+* import { Jobs } from 'fino:jobs';
+*
+* const jobs = await Jobs.open({ path: './.fino/jobs.db' });
+* const record = await jobs.get('job-id');
+* if (record !== null && record.status === 'error') {
+*   console.error(`${record.task} failed after ${record.attempts} attempts:`, record.error?.message);
+* }
+* ```
+*/
+export interface JobRecord {
+  /** Unique job id assigned at push time. */
+  id: string;
+  /** Queue the job belongs to; scopes dedupe and stats. */
+  queue: string;
+  /** Registered task name that will run this job. */
+  task: string;
+  /** JSON-compatible input passed to the task handler. */
+  input: unknown;
+  /** Current lifecycle state. */
+  status: JobStatus;
+  /** Sort priority among jobs due at the same time; higher runs first. */
+  priority: number;
+  /** Earliest epoch-ms time the job may be claimed. */
+  runAt: number;
+  /** Number of attempts made so far. */
+  attempts: number;
+  /** Maximum attempts before dead-lettering, copied from the retry policy. */
+  maxAttempts: number;
+  /** Retry/backoff policy for this job, or `null` to use service defaults. */
+  backoff: JobRetryPolicy | null;
+  /** Per-attempt timeout in milliseconds, or `null` for no timeout. */
+  timeoutMs: number | null;
+  /** Dedupe key that reserves the `(queue, key)` slot while active, or `null`. */
+  dedupeKey: string | null;
+  /** Worker id holding the current lease, or `null` when unclaimed. */
+  claimedBy: string | null;
+  /** Epoch-ms expiry of the current lease, or `null` when unclaimed. */
+  claimedUntil: number | null;
+  /** Durable workflow run id backing this job, or `null` for a plain job. */
+  workflowRunId: string | null;
+  /** Signal or condition a parked durable job is waiting on, if any. */
+  waitingOn: unknown;
+  /** Id of the schedule that enqueued this job, or `null` if pushed directly. */
+  scheduleId: string | null;
+  /** Return value of a `done` job; otherwise `null`/undefined. */
+  result: unknown;
+  /** Failure details for an `error` or `dead` job, or `null`. */
+  error: {
+    message: string;
+    stack?: string;
+  } | null;
+  /** Epoch-ms creation time. */
+  createdAt: number;
+  /** Epoch-ms time of the last state change. */
+  updatedAt: number;
+  /** Epoch-ms time the job reached a terminal state, or `null` while active. */
+  finishedAt: number | null;
+}
+
+/**
+* Aggregate counts for one queue or all queues.
+*
+* Returned by the live `Jobs.stats()` signal. `oldestPendingAt` is the oldest
+* due pending job timestamp, or `null` when there is no pending work.
+*
+* ```ts no_run
+* import { Jobs } from 'fino:jobs';
+*
+* const jobs = await Jobs.open({ path: './.fino/jobs.db' });
+* const stats = jobs.stats('emails');
+* stats.subscribe((s) => {
+*   if (s.oldestPendingAt !== null && Date.now() - s.oldestPendingAt > 60_000) {
+*     console.warn(`emails queue is backing up: ${s.pending} pending`);
+*   }
+* });
+* ```
+*/
+export interface QueueStats {
+  /** Jobs that are due and awaiting a claim. */
+  pending: number;
+  /** Jobs currently executing on a worker. */
+  running: number;
+  /** Durable jobs parked on a signal or sleep. */
+  waiting: number;
+  /** Jobs that completed successfully. */
+  done: number;
+  /** Jobs that failed their last attempt and may still retry. */
+  error: number;
+  /** Jobs that exhausted retries or were dead-lettered. */
+  dead: number;
+  /** Jobs cancelled before completion. */
+  cancelled: number;
+  /** Epoch-ms timestamp of the oldest due pending job, or `null` when idle. */
+  oldestPendingAt: number | null;
+}
+
+/**
+* Persisted schedule row returned by `schedule()` and `schedules()`.
+*
+* `spec` is the normalized cron or interval expression. `nextRunAt` and
+* `lastRunAt` are epoch milliseconds; `lastJobId` links to the most recently
+* enqueued job when one exists.
+*
+* ```ts no_run
+* import { Jobs } from 'fino:jobs';
+*
+* const jobs = await Jobs.open({ path: './.fino/jobs.db' });
+* for (const s of await jobs.schedules()) {
+*   console.log(`${s.id} (${s.spec}) next runs at ${new Date(s.nextRunAt).toISOString()}`);
+* }
+* ```
+*/
+export interface ScheduleRecord {
+  /** Schedule name, unique per service; passed to `schedule()`/`unschedule()`. */
+  id: string;
+  /** Task name enqueued on each occurrence. */
+  task: string;
+  /** JSON-compatible input passed to every enqueued job. */
+  input: unknown;
+  /** Queue that jobs from this schedule are pushed to. */
+  queue: string;
+  /** Normalized cron or interval expression driving the cadence. */
+  spec: string;
+  /** Whether the schedule is currently active. */
+  enabled: boolean;
+  /** Overlap policy when a prior scheduled job is still active. */
+  overlap: 'skip' | 'allow';
+  /** Catch-up policy for occurrences missed during downtime. */
+  catchup: 'skip' | 'one';
+  /** Retry policy copied onto each enqueued job, or `null` for defaults. */
+  retry: JobRetryPolicy | null;
+  /** Epoch-ms time of the next due occurrence. */
+  nextRunAt: number;
+  /** Epoch-ms time the schedule last fired, or `null` if it never has. */
+  lastRunAt: number | null;
+  /** Id of the most recently enqueued job, or `null` if none exists. */
+  lastJobId: string | null;
+  /** Epoch-ms creation time. */
+  createdAt: number;
+  /** Epoch-ms time of the last modification. */
+  updatedAt: number;
+}
+
+/**
 * A job that could not complete and should not be retried.
 *
 * Throw from a task handler to send the job straight to the dead-letter
-* state regardless of remaining attempts.
+* state regardless of remaining attempts. Use it for failures that cannot
+* succeed on a retry — malformed input, a permanent 4xx from an upstream
+* service, or a business-rule rejection.
+*
+* ```ts no_run
+* import { task } from 'fino:task';
+* import { NonRetryableJobError } from 'fino:jobs';
+*
+* const charge = task({
+*   name: 'charge',
+*   run: async (input: { amount: number }) => {
+*     if (input.amount <= 0) {
+*       throw new NonRetryableJobError(`invalid amount: ${input.amount}`);
+*     }
+*     return input.amount;
+*   },
+* });
+* ```
 */
 export class NonRetryableJobError extends Error {
+  /** Construct the error with a human-readable failure reason. */
   constructor(message: string) {
     super(message);
     this.name = 'NonRetryableJobError';
@@ -68,6 +282,25 @@ export class NonRetryableJobError extends Error {
 
 /**
 * Options for `Jobs.open()`.
+*
+* `path` is the only required field. Supplying `tasks` registers inline
+* workers in the same call, equivalent to a follow-up `process()`; the
+* remaining fields tune the locally-hosted service and are ignored when a
+* runtime orchestrator already hosts the jobs service.
+*
+* ```ts no_run
+* import { task } from 'fino:task';
+* import { Jobs } from 'fino:jobs';
+*
+* const resize = task({ name: 'resize', run: async () => null });
+*
+* await using jobs = await Jobs.open({
+*   path: './.fino/jobs.db',
+*   tasks: [resize],
+*   concurrency: 4,
+*   leaseMs: 30_000,
+* });
+* ```
 */
 export interface JobsOptions {
   /** Path to the sqlite database file backing jobs, schedules, and durable runs. */
@@ -85,31 +318,132 @@ export interface JobsOptions {
 }
 /**
 * Options for `Jobs.push()`.
+*
+* All fields are optional; an empty object enqueues an immediately-due job on
+* the `default` queue. Combine `delay` with `key` to schedule debounced work,
+* or `priority` with `retry` to control ordering and failure handling.
+*
+* ```ts no_run
+* import { Jobs } from 'fino:jobs';
+*
+* const jobs = await Jobs.open({ path: './.fino/jobs.db' });
+* await jobs.push('send-digest', { userId: 42 }, {
+*   queue: 'emails',
+*   delay: '1h',
+*   key: 'digest:42',
+*   priority: 10,
+*   retry: { maxAttempts: 3 },
+*   timeoutMs: 15_000,
+* });
+* ```
 */
 export interface JobsPushOptions {
+  /**
+  * Queue name used for ordering, stats, and worker selection.
+  *
+  * Defaults to `'default'`. Jobs in different queues are independent for
+  * dedupe and queue-level stats, but all queues share the same backing store.
+  */
   queue?: string;
-  /** Delay before the job becomes due: ms, `<n><ms|s|m|h|d>`, or absolute Date. */
+  /**
+  * Delay before the job becomes claimable.
+  *
+  * A number is milliseconds from now, a string accepts `<n><ms|s|m|h|d>`, and
+  * a `Date` is treated as an absolute run time. Omit it to make the job due
+  * immediately.
+  */
   delay?: number | string | Date;
+  /**
+  * Sort priority among jobs that are due at the same time.
+  *
+  * Higher numbers are claimed first. Defaults to `0`.
+  */
   priority?: number;
-  /** Dedupe key: at most one active job per (queue, key). */
+  /**
+  * Dedupe key for active work in this queue.
+  *
+  * When set, at most one non-terminal job may exist for `(queue, key)`.
+  * Finished, dead, cancelled, or errored jobs release the key.
+  */
   key?: string;
+  /**
+  * Retry policy overrides for this job.
+  *
+  * Values are merged with the service defaults. Throw
+  * `NonRetryableJobError` from a handler to bypass retries and dead-letter
+  * the job immediately.
+  */
   retry?: Partial<JobRetryPolicy>;
+  /**
+  * Per-attempt timeout in milliseconds.
+  *
+  * When set, a running attempt that exceeds this duration is treated as a
+  * failed attempt and follows the retry policy.
+  */
   timeoutMs?: number;
 }
 /**
 * Options for `Jobs.schedule()`.
+*
+* Exactly one of `cron` or `every` sets the cadence; the rest tune overlap,
+* catch-up after downtime, the target queue, and the retry policy copied onto
+* each enqueued job. Cron cadences evaluate in UTC.
+*
+* ```ts no_run
+* import { Jobs } from 'fino:jobs';
+*
+* const jobs = await Jobs.open({ path: './.fino/jobs.db' });
+* await jobs.schedule('nightly-report', 'report', {}, {
+*   cron: '0 3 * * *',
+*   queue: 'reports',
+*   overlap: 'skip',
+*   catchup: 'one',
+*   retry: { maxAttempts: 2 },
+* });
+* ```
 */
 export interface JobsScheduleOptions {
-  /** 5-field UTC cron expression or `@alias`. */
+  /**
+  * Five-field UTC cron expression or supported alias such as `@daily`.
+  *
+  * Use either `cron` or `every`, not both. Cron schedules are evaluated in
+  * UTC.
+  */
   cron?: string;
-  /** Interval sugar: `<n><ms|s|m|h|d>`. */
+  /**
+  * Fixed interval schedule using `<n><ms|s|m|h|d>` syntax.
+  *
+  * Use either `every` or `cron`, not both.
+  */
   every?: string;
+  /**
+  * Queue used for jobs created by this schedule.
+  *
+  * Defaults to `'default'`.
+  */
   queue?: string;
+  /**
+  * Overlap behavior when a previous scheduled job is still active.
+  *
+  * `'skip'` avoids enqueueing another job while one from this schedule is
+  * pending, running, waiting, claimed, or errored. `'allow'` always enqueues
+  * the due occurrence.
+  */
   overlap?: 'skip' | 'allow';
+  /**
+  * Catch-up behavior after downtime or delayed scheduler ticks.
+  *
+  * `'skip'` advances to the next future occurrence without backfilling.
+  * `'one'` enqueues at most one missed occurrence.
+  */
   catchup?: 'skip' | 'one';
+  /**
+  * Retry policy applied to jobs created by the schedule.
+  *
+  * Values are copied onto each enqueued job when it is created.
+  */
   retry?: Partial<JobRetryPolicy>;
 }
-export type { JobRecord, JobRetryPolicy, JobStatus, QueueStats, ScheduleRecord };
 
 function emptyQueueStats(): QueueStats {
   return {

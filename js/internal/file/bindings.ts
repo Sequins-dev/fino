@@ -30,7 +30,7 @@
 */
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from '../../globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from '../encoding.ts';
 import { Path } from '../../file/path.ts';
 export { Pointer };
 export { encodeUtf8, decodeUtf8 };
@@ -605,7 +605,16 @@ export function throwErrno(syscall: string, path: string): never {
 *
 * Linux io_uring completions report failures as negative errno values rather
 * than setting thread-local errno in the JavaScript thread. Use this helper for
-* those completion results.
+* those completion results, passing the raw (possibly negative) result — the
+* sign is normalized before the code is looked up. Unmapped numbers are
+* rendered as `E<number>`.
+*
+* ```typescript no_run
+* import { throwErrnoCode } from 'internal:file/bindings';
+* // io_uring read completion: negative value is -errno
+* const res = -2; // -ENOENT
+* if (res < 0) throwErrnoCode('read', '/tmp/file.txt', res);
+* ```
 *
 * @internal
 */

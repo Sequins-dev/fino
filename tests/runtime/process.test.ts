@@ -114,7 +114,7 @@ describe('Process APIs', () => {
   });
   it('internal:process cannot be imported from user code', async (t) => {
     const script = `/tmp/fino-internal-process-check-${pid}.ts`;
-    await fs.writeFile(script, 'await import(\'internal:process\');\n', 'utf8');
+    await fs.writeFile(script, encodeUtf8('await import(\'internal:process\');\n'));
     const proc = new Process(execPath, [script]);
     proc.stdin.close();
     const chunks: Uint8Array[] = [];
@@ -263,8 +263,8 @@ describe('Process class', () => {
     const deniedFile = `${deniedDir}/denied.txt`;
     await fs.mkdir(allowedDir);
     await fs.mkdir(deniedDir);
-    await fs.writeFile(allowedFile, 'allowed\n', 'utf8');
-    await fs.writeFile(deniedFile, 'denied\n', 'utf8');
+    await fs.writeFile(allowedFile, encodeUtf8('allowed\n'));
+    await fs.writeFile(deniedFile, encodeUtf8('denied\n'));
     try {
       const proc = new Process('/bin/cat', [allowedFile, deniedFile], {
         sandbox: {

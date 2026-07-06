@@ -2,10 +2,14 @@
 * fino:ai/runtime — shared agent integration helpers and result types.
 *
 * This module exposes the small runtime surface that application adapters need
-* without exposing the internal agent loop implementation. Use it for
-* cross-cutting helpers such as `runContext`, `maxSteps()`, `streamText()`,
-* guardrail error types, and the public state/result types shared by
-* `fino:ai/agent` and `fino:ai/session`.
+* without exposing the internal agent loop implementation. It carries the
+* cross-cutting helpers — `runContext`, `maxSteps()`, `streamText()`, and the
+* guardrail and suspension error types — together with the public state and
+* result types shared by `fino:ai/agent` and `fino:ai/session`: run inputs and
+* results, per-step state, streaming events, retry policy, and tool-approval
+* requests. Import from here when writing integration code (UI adapters,
+* observability hooks, session stores) that consumes agent runs but does not
+* construct agents itself.
 *
 * ## Boundary
 *
@@ -33,9 +37,9 @@
 * }
 * ```
 */
-import { GuardrailError as RuntimeGuardrailError, runContext as runtimeRunContext, maxSteps as runtimeMaxSteps, streamText as runtimeStreamText } from 'internal:ai/runtime';
-import type { GuardrailResult as RuntimeGuardrailResult, Guardrails as RuntimeGuardrails, AgentState as RuntimeAgentState, StepResult as RuntimeStepResult, StopCondition as RuntimeStopCondition, RunInput as RuntimeRunInput, AgentResult as RuntimeAgentResult, RetryOptions as RuntimeRetryOptions, StrategyMemorySink as RuntimeStrategyMemorySink, AgentStream as RuntimeAgentStream, AgentEvent as RuntimeAgentEvent, ToolApprovalRequest as RuntimeToolApprovalRequest } from 'internal:ai/runtime';
 import { SuspendSignal } from 'fino:ai/tool';
+import { GuardrailError as RuntimeGuardrailError, runContext as runtimeRunContext, maxSteps as runtimeMaxSteps, streamText as runtimeStreamText } from 'internal:ai/runtime';
+import type { AgentStream, StopCondition } from './runtime-internal.ts';
 /**
 * Error thrown when an input or output guardrail blocks execution.
 */
@@ -56,60 +60,30 @@ export function maxSteps(n: number): StopCondition {
 export function streamText(stream: AgentStream): AsyncGenerator<string> {
   return runtimeStreamText(stream);
 }
-/**
-* Result returned by an input or output guardrail.
-*/
-export type GuardrailResult = RuntimeGuardrailResult;
-/**
-* Optional input and output guardrails for an agent.
-*/
-export type Guardrails = RuntimeGuardrails;
-/**
-* Mutable state passed through one agent run.
-*/
-export type AgentState = RuntimeAgentState;
-/**
-* Result of one agent step.
-*/
-export type StepResult = RuntimeStepResult;
-/**
-* Predicate that decides whether an agent run should stop.
-*/
-export type StopCondition = RuntimeStopCondition;
-/**
-* Input accepted by `Agent.generate()` and `Agent.stream()`.
-*/
-export type RunInput = RuntimeRunInput;
-/**
-* Final result of an agent run.
-*/
-export type AgentResult = RuntimeAgentResult;
-/**
-* Retry policy for provider failures.
-*/
-export type RetryOptions = RuntimeRetryOptions;
-/**
-* Minimal sink a history strategy can use to emit durable memory.
-*/
-export type StrategyMemorySink = RuntimeStrategyMemorySink;
-/**
-* Stream handle returned by `Agent.stream()`.
-*/
-export type AgentStream = RuntimeAgentStream;
-/**
-* Event emitted by `Agent.stream()`.
-*
-* Raw provider stream events are wrapped as
-* `{ type: 'model_event', event }`. Other event variants describe agent
-* lifecycle, tool execution, retries, fallbacks, guardrails, suspension, and
-* final completion.
-*/
-export type AgentEvent = RuntimeAgentEvent;
-/**
-* Persisted request for approval before executing a tool call.
-*/
-export type ToolApprovalRequest = RuntimeToolApprovalRequest;
+export type { AgentEvent, AgentResult, AgentState, AgentStream, GuardrailResult, Guardrails, RetryOptions, RunInput, StepResult, StopCondition, StrategyMemorySink, ToolApprovalRequest } from './runtime-internal.ts';
 /**
 * Signals that execution should suspend instead of fail.
+*
+* Throw this from a tool executor — or call the executor context's
+* `suspend()`, which throws it — to pause the run at the current step. The
+* step completes with `StepResult.suspend` set and the run's `stopReason`
+* reflects the interrupted tool turn (`tool_use`). A durable session persists
+* a resume token so the run can continue later with external input. `payload`
+* carries arbitrary data for whoever resumes the run, such as a question for
+* a human operator.
+*
+* ```ts no_run
+* import { tool } from 'fino:ai/tool';
+* import { SuspendSignal } from 'fino:ai/runtime';
+*
+* const askHuman = tool({
+*   name: 'ask_human',
+*   description: 'Ask the operator a question.',
+*   parameters: { type: 'object', properties: { question: { type: 'string' } } },
+*   execute: ({ question }: { question: string }) => {
+*     throw new SuspendSignal('needs human input', { question });
+*   },
+* });
+* ```
 */
 export { SuspendSignal };

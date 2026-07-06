@@ -10,6 +10,7 @@ import { describe, it } from 'fino:test/test';
 import { os, pid, Process, processSandboxCapabilities } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 const fs = new DiskFileSystem();
+const textEncoder = new TextEncoder();
 function joinChunks(chunks: Uint8Array[]): string {
   const total = chunks.reduce((n, c) => n + c.byteLength, 0);
   const merged = new Uint8Array(total);
@@ -36,8 +37,8 @@ describe('macOS Seatbelt filesystem confinement', () => {
     await fs.mkdir(base);
     await fs.mkdir(allowed);
     await fs.mkdir(denied);
-    await fs.writeFile(`${allowed}/f.txt`, 'ALLOWED\n', 'utf8');
-    await fs.writeFile(`${denied}/f.txt`, 'DENIED\n', 'utf8');
+    await fs.writeFile(`${allowed}/f.txt`, textEncoder.encode('ALLOWED\n'));
+    await fs.writeFile(`${denied}/f.txt`, textEncoder.encode('DENIED\n'));
     try {
       const readAllowed = await run('/bin/cat', [`${allowed}/f.txt`],
         { mode: 'strict', filesystem: { readonly: [allowed] }, process: { allowedBinaries: ['/bin/cat'] } });

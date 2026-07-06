@@ -1,8 +1,6 @@
 /**
 * fino:config — explicit ordered config loading over fino:validate.
 *
-* JSON Schema specification: https://json-schema.org/specification
-*
 * Config loading is intentionally explicit. Callers provide a `sources` list,
 * and that list is both the set of enabled source types and the precedence
 * order. Earlier sources are lower precedence; later sources override them.
@@ -10,7 +8,7 @@
 * The final merged value is validated through `fino:validate`, so config can
 * use fluent builders or raw JSON Schema loaded from disk. Environment and argv
 * sources produce strings by default, then the loader coerces scalar values
-* according to the validation schema before parsing.
+* according to the schema before validating.
 *
 * ```ts no_run
 * import { loadConfig } from 'fino:config';
@@ -30,13 +28,23 @@
 *
 * loaded.value.server.port; // 8080
 * ```
+*
+* JSON Schema specification: https://json-schema.org/specification
 */
 import { DiskFileSystem } from './file/fs.ts';
 import { parse as parseToml } from './format/toml.ts';
 import { argv as processArgv, env as processEnv } from './process.ts';
 import { ValidationError, parse as validateParse } from './validate.ts';
 import type { JsonSchema, ValidationIssue } from './validate.ts';
-type ConfigValue = Record<string, unknown>;
+const textDecoder = new TextDecoder();
+/**
+* Plain object value produced by config sources before schema validation.
+*
+* Config sources merge object-shaped data. Nested values may be strings,
+* numbers, booleans, arrays, nulls, or other objects at runtime, but the
+* top-level source value must be an object so precedence merging can apply.
+*/
+export type ConfigValue = Record<string, unknown>;
 /**
 * One config input source.
 *
@@ -585,11 +593,9 @@ export interface LoadedConfig<T = unknown> {
   /**
   * Read a dotted path from the validated config value.
   *
-  * Missing paths return `undefined`. Array indexes can be used as dotted path
-  * segments when the underlying value is represented with numeric keys.
-  *
-  * @param {string} path Dotted config path.
-  * @returns {unknown} Value at `path`, or `undefined` when missing.
+  * Missing paths return `undefined`. Only plain objects are traversed:
+  * a path segment that lands on an array, scalar, or `null` resolves to
+  * `undefined` rather than throwing.
   *
   * ```ts no_run
   * import { loadConfig } from 'fino:config';
@@ -647,12 +653,10 @@ export class ConfigError extends Error {
   /**
   * Create a config error.
   *
-  * The default issue list is empty. The `name` property is set to
-  * `'ConfigError'` for callers that distinguish config failures from other
-  * exceptions.
-  *
-  * @param {string} message Error message.
-  * @param {ValidationIssue[]} [issues=[]] Validation issues, when available.
+  * When the failure came from validation, pass the `ValidationIssue` list as
+  * the second argument; it defaults to an empty array. The `name` property is
+  * set to `'ConfigError'` for callers that distinguish config failures from
+  * other exceptions.
   *
   * ```ts no_run
   * import { ConfigError } from 'fino:config';
@@ -891,7 +895,7 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
     };
   }
   if (source.type === 'file') {
-    const text = await fs.readFile(source.path);
+    const text = textDecoder.decode(await fs.readFile(source.path));
     const format = source.format ?? inferFormat(source.path);
     const value = format === 'toml' ? parseToml(text) as ConfigValue : JSON.parse(text) as ConfigValue;
     return {
@@ -904,7 +908,7 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
     };
   }
   if (source.type === 'dotenv') {
-    const values = parseDotenv(await fs.readFile(source.path));
+    const values = parseDotenv(textDecoder.decode(await fs.readFile(source.path)));
     const value = mapEnvLike(values, source);
     return {
       value,
@@ -952,10 +956,8 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
 * and validates through `fino:validate`. Validation failures throw
 * `ConfigError` with `issues`; file parse errors and unsupported sources also
 * reject. There are no implicit defaults beyond what you provide in `sources`
-* or the validation schema.
-*
-* @param {LoadConfigOptions<T>} options Schema, sources, and optional secret paths.
-* @returns {Promise<LoadedConfig<T>>} Validated config plus source reports.
+* or the validation schema. The resolved `LoadedConfig` carries the validated
+* value, per-source reports, and a dotted-path `get()` accessor.
 *
 * ```ts no_run
 * import { loadConfig } from 'fino:config';

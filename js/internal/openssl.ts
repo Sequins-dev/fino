@@ -27,7 +27,7 @@
 */
 import { dlopen, FfiCallback, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from '../globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from './encoding.ts';
 /**
 * Result returned by symmetric encryption helpers.
 *
@@ -1234,9 +1234,10 @@ const _libsslQuic = _tryOpen(_sslPaths, _sslQuicSymbols);
 * `OpenSSL not available` when this flag is false. Public modules use this to
 * produce clearer user-facing errors before attempting native calls.
 *
-* ```js
-* import { cryptoAvailable } from 'internal:openssl';
-* console.log(typeof cryptoAvailable);
+* ```ts no_run
+* import { cryptoAvailable, digest } from 'internal:openssl';
+* if (!cryptoAvailable) throw new Error('crypto features require OpenSSL libcrypto');
+* const hash = digest('sha-256', new TextEncoder().encode('payload'));
 * ```
 *
 * @internal
@@ -1249,9 +1250,11 @@ export const cryptoAvailable = _libcrypto !== null;
 * `OpenSSL SSL not available` when this flag is false. Public TLS modules use
 * this to decide whether TLS support can be enabled.
 *
-* ```js
-* import { tlsAvailable } from 'internal:openssl';
-* console.log(typeof tlsAvailable);
+* ```ts no_run
+* import { tlsAvailable, sslCtxNewClient, sslCtxFree } from 'internal:openssl';
+* if (!tlsAvailable) throw new Error('TLS features require OpenSSL libssl');
+* const ctx = sslCtxNewClient();
+* sslCtxFree(ctx);
 * ```
 *
 * @internal
@@ -1280,12 +1283,17 @@ function _requireSslQuic(): SslQuicLibrary {
 * queue and formats it with `ERR_error_string_n()`. This is a low-level helper;
 * callers should include their own operation context in thrown errors.
 *
-* ```js
-* import { getErrorString } from 'internal:openssl';
-* console.log(typeof getErrorString());
+* ```ts no_run
+* import { getErrorString, randBytes, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   try {
+*     randBytes(new ArrayBuffer(0), 0);
+*   } catch {
+*     console.log(getErrorString()); // most recent OpenSSL error text
+*   }
+* }
 * ```
 *
-* @returns A human-readable OpenSSL error string.
 * @internal
 */
 export function getErrorString(): string {
@@ -1354,9 +1362,6 @@ function _normalizeCipherAlgorithm(algorithm: string): CipherAlgorithm {
 * }
 * ```
 *
-* @param buf Destination buffer.
-* @param len Number of bytes to fill.
-* @returns Nothing.
 * @internal
 */
 export function randBytes(buf: ArrayBuffer, len: number): void {
@@ -1382,9 +1387,6 @@ export function randBytes(buf: ArrayBuffer, len: number): void {
 * }
 * ```
 *
-* @param algorithm Digest algorithm name.
-* @param data Bytes to hash.
-* @returns Digest bytes.
 * @internal
 */
 export function digest(algorithm: string, data: Uint8Array): Uint8Array {
@@ -1426,10 +1428,6 @@ export function digest(algorithm: string, data: Uint8Array): Uint8Array {
 * }
 * ```
 *
-* @param algorithm Digest algorithm name.
-* @param key Secret HMAC key bytes.
-* @param data Message bytes.
-* @returns HMAC bytes.
 * @internal
 */
 export function hmac(algorithm: string, key: Uint8Array | ArrayBuffer, data: Uint8Array | ArrayBuffer): Uint8Array {
@@ -1631,12 +1629,6 @@ function _decryptCBC(cipher: object, key: Uint8Array, iv: Uint8Array, ciphertext
 * }
 * ```
 *
-* @param algorithm AES cipher name.
-* @param key Raw key bytes of the size required by the algorithm.
-* @param iv Initialization vector or nonce bytes.
-* @param plaintext Plaintext bytes to encrypt.
-* @param aad Optional GCM additional authenticated data.
-* @returns Ciphertext plus optional authentication tag.
 * @internal
 */
 export function cipherEncrypt(algorithm: string, key: Uint8Array, iv: Uint8Array, plaintext: Uint8Array, aad?: Uint8Array | null): CipherResult {
@@ -1663,13 +1655,6 @@ export function cipherEncrypt(algorithm: string, key: Uint8Array, iv: Uint8Array
 * }
 * ```
 *
-* @param algorithm AES cipher name.
-* @param key Raw key bytes of the size required by the algorithm.
-* @param iv Initialization vector or nonce bytes.
-* @param ciphertext Ciphertext bytes to decrypt.
-* @param tag Required GCM authentication tag; ignored for CBC.
-* @param aad Optional GCM additional authenticated data.
-* @returns Plaintext bytes.
 * @internal
 */
 export function cipherDecrypt(algorithm: string, key: Uint8Array, iv: Uint8Array, ciphertext: Uint8Array, tag?: Uint8Array | null, aad?: Uint8Array | null): Uint8Array {
@@ -1700,12 +1685,6 @@ export function cipherDecrypt(algorithm: string, key: Uint8Array, iv: Uint8Array
 * }
 * ```
 *
-* @param password Password bytes.
-* @param salt Salt bytes.
-* @param iterations PBKDF2 iteration count.
-* @param hashAlg Digest algorithm used by HMAC.
-* @param keyLength Desired output length in bytes.
-* @returns Derived key bytes.
 * @internal
 */
 export function pbkdf2(password: Uint8Array, salt: Uint8Array, iterations: number, hashAlg: string, keyLength: number): Uint8Array {
@@ -1735,12 +1714,6 @@ export function pbkdf2(password: Uint8Array, salt: Uint8Array, iterations: numbe
 * }
 * ```
 *
-* @param hashAlg Digest algorithm used by HMAC.
-* @param ikm Input key material.
-* @param salt Optional salt bytes; empty means HashLen zero bytes.
-* @param info Optional context/application info.
-* @param keyLength Desired output length in bytes.
-* @returns Derived key bytes.
 * @internal
 */
 export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: Uint8Array, keyLength: number): Uint8Array {
@@ -1917,8 +1890,6 @@ const _CURVE_INFO: Record<string, _CurveInfo> = {
 * console.log(ecdsaCoordSize('P-256'));
 * ```
 *
-* @param namedCurve Web Crypto named curve.
-* @returns Coordinate size in bytes.
 * @internal
 */
 export function ecdsaCoordSize(namedCurve: string): number {
@@ -1941,8 +1912,6 @@ export function ecdsaCoordSize(namedCurve: string): number {
 * }
 * ```
 *
-* @param namedCurve `P-256`, `P-384`, or `P-521`.
-* @returns Opaque owning `EVP_PKEY*`.
 * @internal
 */
 export function evpPkeyGenerateEc(namedCurve: string): object {
@@ -1982,8 +1951,6 @@ export function evpPkeyGenerateEc(namedCurve: string): object {
 * }
 * ```
 *
-* @returns Opaque owning P-256 `EVP_PKEY*`.
-* @deprecated Use `evpPkeyGenerateEc('P-256')` instead.
 * @internal
 */
 export function evpPkeyGenerateEcP256(): object {
@@ -2004,8 +1971,6 @@ export function evpPkeyGenerateEcP256(): object {
 * }
 * ```
 *
-* @param pkey Opaque owning `EVP_PKEY*`.
-* @returns Nothing.
 * @internal
 */
 export function evpPkeyFree(pkey: object): void {
@@ -2014,9 +1979,21 @@ export function evpPkeyFree(pkey: object): void {
 /**
 * Increment an EVP_PKEY reference count and return the same native handle.
 *
-* The returned handle is an owning reference and must eventually be released
-* with `evpPkeyFree()`. This is used when cloning CryptoKey wrappers without
-* exporting non-extractable key material.
+* The returned handle is the same native pointer with its refcount bumped, so
+* both the original and the clone are owning references and each must eventually
+* be released with `evpPkeyFree()`. This is used when cloning CryptoKey wrappers
+* without exporting non-extractable key material. Throws if libcrypto is
+* unavailable or OpenSSL fails to increment the count.
+*
+* ```ts no_run
+* import { evpPkeyGenerateEc, evpPkeyUpRef, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEc('P-256');
+*   const clone = evpPkeyUpRef(key); // same handle, refcount 2
+*   evpPkeyFree(clone);              // refcount 1
+*   evpPkeyFree(key);                // freed
+* }
+* ```
 *
 * @internal
 */
@@ -2047,7 +2024,16 @@ function _readSizeT(buf: Uint8Array): number {
 * Ed25519 always signs the original message bytes directly; callers must not
 * prehash input. Unavailable libcrypto or OpenSSL generation failures throw.
 *
-* @returns Opaque owning Ed25519 `EVP_PKEY*`.
+* ```ts no_run
+* import { evpPkeyGenerateEd25519, ed25519Sign, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEd25519();
+*   const signature = ed25519Sign(key, new TextEncoder().encode('hello'));
+*   console.log(signature.byteLength); // 64
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function evpPkeyGenerateEd25519(): object {
@@ -2056,10 +2042,26 @@ export function evpPkeyGenerateEd25519(): object {
   return evpPkeyImportRawPrivateEd25519(seed);
 }
 /**
-* Import a 32-byte raw Ed25519 public key.
+* Import a 32-byte raw Ed25519 public key into an owning `EVP_PKEY*`.
 *
-* @param publicKey Raw public key bytes.
-* @returns Opaque owning Ed25519 public `EVP_PKEY*`.
+* The resulting key holds only the public component and can verify signatures
+* but not produce them. Throws if `publicKey` is not exactly 32 bytes, if
+* libcrypto is unavailable, or if OpenSSL rejects the point. Free the returned
+* handle with `evpPkeyFree()`.
+*
+* ```ts no_run
+* import {
+*   evpPkeyGenerateEd25519, evpPkeyExportRawPublicEd25519,
+*   evpPkeyImportRawPublicEd25519, evpPkeyFree, cryptoAvailable,
+* } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const priv = evpPkeyGenerateEd25519();
+*   const pub = evpPkeyImportRawPublicEd25519(evpPkeyExportRawPublicEd25519(priv));
+*   evpPkeyFree(pub);
+*   evpPkeyFree(priv);
+* }
+* ```
+*
 * @internal
 */
 export function evpPkeyImportRawPublicEd25519(publicKey: Uint8Array): object {
@@ -2070,10 +2072,23 @@ export function evpPkeyImportRawPublicEd25519(publicKey: Uint8Array): object {
   return pkey;
 }
 /**
-* Import a 32-byte raw Ed25519 private seed.
+* Import a 32-byte raw Ed25519 private seed into an owning `EVP_PKEY*`.
 *
-* @param seed Raw private seed bytes.
-* @returns Opaque owning Ed25519 private `EVP_PKEY*`.
+* The seed is the raw private key; OpenSSL derives the matching public key from
+* it, so the returned handle can both sign and verify. Throws if `seed` is not
+* exactly 32 bytes, if libcrypto is unavailable, or if OpenSSL rejects the seed.
+* Free the returned handle with `evpPkeyFree()`.
+*
+* ```ts no_run
+* import { evpPkeyImportRawPrivateEd25519, ed25519Sign, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const seed = new Uint8Array(32); // in practice: 32 random bytes
+*   const key = evpPkeyImportRawPrivateEd25519(seed);
+*   const sig = ed25519Sign(key, new Uint8Array([1, 2, 3]));
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function evpPkeyImportRawPrivateEd25519(seed: Uint8Array): object {
@@ -2084,10 +2099,22 @@ export function evpPkeyImportRawPrivateEd25519(seed: Uint8Array): object {
   return pkey;
 }
 /**
-* Export a 32-byte raw Ed25519 public key from an `EVP_PKEY`.
+* Export the 32-byte raw Ed25519 public key from an `EVP_PKEY`.
 *
-* @param pkey Ed25519 public or private key.
-* @returns Raw public key bytes.
+* Works for both public-only and private Ed25519 keys, since a private key
+* carries its public component. Throws if libcrypto is unavailable, if the key
+* is not Ed25519, or if OpenSSL returns an unexpected length.
+*
+* ```ts no_run
+* import { evpPkeyGenerateEd25519, evpPkeyExportRawPublicEd25519, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEd25519();
+*   const raw = evpPkeyExportRawPublicEd25519(key);
+*   console.log(raw.byteLength); // 32
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function evpPkeyExportRawPublicEd25519(pkey: object): Uint8Array {
@@ -2107,10 +2134,22 @@ export function evpPkeyExportRawPublicEd25519(pkey: object): Uint8Array {
   return out;
 }
 /**
-* Export a 32-byte raw Ed25519 private seed from an `EVP_PKEY`.
+* Export the 32-byte raw Ed25519 private seed from an `EVP_PKEY`.
 *
-* @param pkey Ed25519 private key.
-* @returns Raw private seed bytes.
+* Only succeeds for keys that carry a private component; a public-only key makes
+* OpenSSL fail and this helper throws. Also throws if libcrypto is unavailable
+* or if OpenSSL returns an unexpected length. Treat the returned bytes as secret.
+*
+* ```ts no_run
+* import { evpPkeyGenerateEd25519, evpPkeyExportRawPrivateEd25519, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEd25519();
+*   const seed = evpPkeyExportRawPrivateEd25519(key);
+*   console.log(seed.byteLength); // 32
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function evpPkeyExportRawPrivateEd25519(pkey: object): Uint8Array {
@@ -2133,10 +2172,20 @@ export function evpPkeyExportRawPrivateEd25519(pkey: object): Uint8Array {
 * Export a public key as DER SubjectPublicKeyInfo with OpenSSL i2d_PUBKEY.
 *
 * This generic helper supports RSA and Ed25519 keys and any other `EVP_PKEY`
-* type OpenSSL can encode. Unavailable libcrypto and OpenSSL failures throw.
+* type OpenSSL can encode. Unlike `evpPkeyExportSpki()`, which hand-assembles EC
+* SPKI from a coordinate table, this delegates entirely to OpenSSL's encoder.
+* Unavailable libcrypto and OpenSSL failures throw.
 *
-* @param pkey Public or private key with a public component.
-* @returns DER SubjectPublicKeyInfo bytes.
+* ```ts no_run
+* import { evpPkeyGenerateEd25519, evpPkeyExportSpkiDer, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEd25519();
+*   const spki = evpPkeyExportSpkiDer(key); // DER SubjectPublicKeyInfo
+*   console.log(spki.byteLength);
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function evpPkeyExportSpkiDer(pkey: object): Uint8Array {
@@ -2152,8 +2201,21 @@ export function evpPkeyExportSpkiDer(pkey: object): Uint8Array {
 /**
 * Import a public key from DER SubjectPublicKeyInfo with OpenSSL d2i_PUBKEY.
 *
-* @param der DER SubjectPublicKeyInfo bytes.
-* @returns Opaque owning `EVP_PKEY*`.
+* The inverse of `evpPkeyExportSpkiDer()`; the key type (RSA, Ed25519, EC, ...)
+* is inferred from the SPKI. The returned handle is owning and must be freed
+* with `evpPkeyFree()`. Malformed DER, unavailable libcrypto, and OpenSSL parse
+* failures throw.
+*
+* ```ts no_run
+* import { evpPkeyGenerateEd25519, evpPkeyExportSpkiDer, evpPkeyImportSpkiDer, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEd25519();
+*   const imported = evpPkeyImportSpkiDer(evpPkeyExportSpkiDer(key));
+*   evpPkeyFree(imported);
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function evpPkeyImportSpkiDer(der: Uint8Array): object {
@@ -2164,11 +2226,23 @@ export function evpPkeyImportSpkiDer(der: Uint8Array): object {
   return pkey;
 }
 /**
-* Sign message bytes with Ed25519 using OpenSSL one-shot EVP APIs.
+* Sign message bytes with Ed25519 and return the 64-byte signature.
 *
-* @param pkey Ed25519 private key.
-* @param data Message bytes.
-* @returns 64-byte Ed25519 signature.
+* Ed25519 hashes the message internally, so `data` is the raw message, never a
+* precomputed digest. `pkey` must carry a private component. Throws if libcrypto
+* is unavailable, if the key cannot sign, or if OpenSSL reports a signing error.
+*
+* ```ts no_run
+* import { evpPkeyGenerateEd25519, ed25519Sign, ed25519Verify, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEd25519();
+*   const msg = new TextEncoder().encode('attach to the wire');
+*   const sig = ed25519Sign(key, msg);
+*   console.log(ed25519Verify(key, sig, msg)); // true
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function ed25519Sign(pkey: object, data: Uint8Array): Uint8Array {
@@ -2196,12 +2270,24 @@ export function ed25519Sign(pkey: object, data: Uint8Array): Uint8Array {
   }
 }
 /**
-* Verify an Ed25519 signature over message bytes.
+* Verify an Ed25519 signature over raw message bytes.
 *
-* @param pkey Ed25519 public key.
-* @param sig Signature bytes.
-* @param data Message bytes.
-* @returns Whether the signature verifies.
+* Returns `true` for a valid signature and `false` for any signature that does
+* not verify. `pkey` may be a public-only or private Ed25519 key. Throws only
+* for unavailable libcrypto or OpenSSL context-setup failures, never for a plain
+* verification mismatch.
+*
+* ```ts no_run
+* import { evpPkeyGenerateEd25519, ed25519Sign, ed25519Verify, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   const key = evpPkeyGenerateEd25519();
+*   const msg = new Uint8Array([9, 9, 9]);
+*   const sig = ed25519Sign(key, msg);
+*   console.log(ed25519Verify(key, sig, new Uint8Array([0]))); // false — wrong message
+*   evpPkeyFree(key);
+* }
+* ```
+*
 * @internal
 */
 export function ed25519Verify(pkey: object, sig: Uint8Array, data: Uint8Array): boolean {
@@ -2226,9 +2312,8 @@ export function ed25519Verify(pkey: object, sig: Uint8Array, data: Uint8Array): 
 * Unavailable libcrypto, unsupported curves, malformed keys, and OpenSSL point
 * conversion failures throw.
 *
-* ```js
-* const { evpPkeyGenerateEc, evpPkeyExportSpki, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateEc, evpPkeyExportSpki, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   console.log(evpPkeyExportSpki(key, 'P-256').byteLength);
@@ -2236,9 +2321,6 @@ export function ed25519Verify(pkey: object, sig: Uint8Array, data: Uint8Array): 
 * }
 * ```
 *
-* @param pkey EC key to export.
-* @param namedCurve Expected curve name.
-* @returns DER SubjectPublicKeyInfo bytes.
 * @internal
 */
 export function evpPkeyExportSpki(pkey: object, namedCurve: string): Uint8Array {
@@ -2268,9 +2350,8 @@ export function evpPkeyExportSpki(pkey: object, namedCurve: string): Uint8Array 
 * `evpPkeyFree()`. Unknown headers, invalid point encodings, unavailable
 * libcrypto, and OpenSSL allocation/import failures throw.
 *
-* ```js
-* const { evpPkeyGenerateEc, evpPkeyExportSpki, evpPkeyImportSpki, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateEc, evpPkeyExportSpki, evpPkeyImportSpki, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   const imported = evpPkeyImportSpki(evpPkeyExportSpki(key, 'P-256'));
@@ -2280,8 +2361,6 @@ export function evpPkeyExportSpki(pkey: object, namedCurve: string): Uint8Array 
 * }
 * ```
 *
-* @param der DER SubjectPublicKeyInfo bytes.
-* @returns Imported key and detected curve name.
 * @internal
 */
 export function evpPkeyImportSpki(der: Uint8Array): {
@@ -2358,9 +2437,8 @@ export function evpPkeyImportSpki(der: Uint8Array): {
 * encoded. Unavailable libcrypto, non-EC keys, and OpenSSL signing failures
 * throw.
 *
-* ```js
-* const { digest, ecdsaSign, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { digest, ecdsaSign, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   const sig = ecdsaSign(digest('sha-256', new Uint8Array([1])), key);
@@ -2369,9 +2447,6 @@ export function evpPkeyImportSpki(der: Uint8Array): {
 * }
 * ```
 *
-* @param hash Precomputed digest bytes.
-* @param pkey EC private key.
-* @returns DER-encoded ECDSA signature.
 * @internal
 */
 export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
@@ -2393,9 +2468,8 @@ export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
 * Returns `true` for a valid signature and `false` for an invalid signature.
 * It throws for unavailable libcrypto or when `pkey` is not an EC key.
 *
-* ```js
-* const { digest, ecdsaSign, ecdsaVerify, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { digest, ecdsaSign, ecdsaVerify, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   const hash = digest('sha-256', new Uint8Array([1]));
@@ -2404,10 +2478,6 @@ export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
 * }
 * ```
 *
-* @param hash Precomputed digest bytes.
-* @param derSig DER-encoded ECDSA signature.
-* @param pkey EC public or private key.
-* @returns Whether the signature verifies.
 * @internal
 */
 export function ecdsaVerify(hash: Uint8Array, derSig: Uint8Array, pkey: object): boolean {
@@ -2453,9 +2523,6 @@ function _setRsaOaepLabel(lib: DynamicLibrary<typeof _cryptoSymbols>, ctx: objec
 * }
 * ```
 *
-* @param modulusBits RSA modulus size in bits.
-* @param publicExponent Public exponent, usually 65537.
-* @returns Opaque owning `EVP_PKEY*`.
 * @internal
 */
 export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number): object {
@@ -2498,9 +2565,8 @@ export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number):
 * `EVP_PKEY` types. Unavailable libcrypto and OpenSSL length/write failures
 * throw.
 *
-* ```js
-* const { evpPkeyGenerateRsa, evpPkeyExportSpkiRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateRsa, evpPkeyExportSpkiRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   console.log(evpPkeyExportSpkiRsa(key).byteLength);
@@ -2508,8 +2574,6 @@ export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number):
 * }
 * ```
 *
-* @param pkey RSA key to export.
-* @returns DER SubjectPublicKeyInfo bytes.
 * @internal
 */
 export function evpPkeyExportSpkiRsa(pkey: object): Uint8Array {
@@ -2529,9 +2593,8 @@ export function evpPkeyExportSpkiRsa(pkey: object): Uint8Array {
 * uses `d2i_PUBKEY()` and is intended for RSA SPKI input; unavailable libcrypto
 * and OpenSSL parse failures throw.
 *
-* ```js
-* const { evpPkeyGenerateRsa, evpPkeyExportSpkiRsa, evpPkeyImportSpkiRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateRsa, evpPkeyExportSpkiRsa, evpPkeyImportSpkiRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   const imported = evpPkeyImportSpkiRsa(evpPkeyExportSpkiRsa(key));
@@ -2540,8 +2603,6 @@ export function evpPkeyExportSpkiRsa(pkey: object): Uint8Array {
 * }
 * ```
 *
-* @param der DER SubjectPublicKeyInfo bytes.
-* @returns Opaque owning `EVP_PKEY*`.
 * @internal
 */
 export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
@@ -2559,9 +2620,8 @@ export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
 * unsupported hashes, invalid keys,
 * oversize plaintext, and OpenSSL failures throw.
 *
-* ```js
-* const { rsaOaepEncrypt, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { rsaOaepEncrypt, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   console.log(rsaOaepEncrypt(key, 'sha-256', null, new Uint8Array([1])).byteLength);
@@ -2569,11 +2629,6 @@ export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
 * }
 * ```
 *
-* @param pkey RSA public or private key.
-* @param hashAlg Digest algorithm for OAEP and MGF1.
-* @param label Optional OAEP label.
-* @param data Plaintext bytes.
-* @returns Ciphertext bytes.
 * @internal
 */
 export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array | null, data: Uint8Array): Uint8Array {
@@ -2618,9 +2673,8 @@ export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array 
 * Wrong keys, wrong ciphertext, padding/authentication failures, unavailable
 * libcrypto, and OpenSSL failures throw.
 *
-* ```js
-* const { rsaOaepEncrypt, rsaOaepDecrypt, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { rsaOaepEncrypt, rsaOaepDecrypt, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   const ciphertext = rsaOaepEncrypt(key, 'sha-256', null, new Uint8Array([1]));
@@ -2629,11 +2683,6 @@ export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array 
 * }
 * ```
 *
-* @param pkey RSA private key.
-* @param hashAlg Digest algorithm for OAEP and MGF1.
-* @param label Optional OAEP label.
-* @param data Ciphertext bytes.
-* @returns Plaintext bytes.
 * @internal
 */
 export function rsaOaepDecrypt(pkey: object, hashAlg: string, label: Uint8Array | null, data: Uint8Array): Uint8Array {
@@ -2678,9 +2727,8 @@ export function rsaOaepDecrypt(pkey: object, hashAlg: string, label: Uint8Array 
 * to OpenSSL. Unavailable libcrypto, unsupported digests, invalid keys, and
 * OpenSSL signing failures throw.
 *
-* ```js
-* const { rsaPssSign, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { rsaPssSign, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   console.log(rsaPssSign(key, 'sha-256', -1, new Uint8Array([1])).byteLength);
@@ -2688,11 +2736,6 @@ export function rsaOaepDecrypt(pkey: object, hashAlg: string, label: Uint8Array 
 * }
 * ```
 *
-* @param pkey RSA private key.
-* @param hashAlg Digest algorithm used before signing.
-* @param saltLength PSS salt length; `-1` means digest length.
-* @param data Message bytes to hash and sign.
-* @returns Signature bytes.
 * @internal
 */
 export function rsaPssSign(pkey: object, hashAlg: string, saltLength: number, data: Uint8Array): Uint8Array {
@@ -2737,9 +2780,8 @@ export function rsaPssSign(pkey: object, hashAlg: string, saltLength: number, da
 * signatures and throws for unavailable libcrypto, unsupported digests, invalid
 * keys, and OpenSSL setup failures.
 *
-* ```js
-* const { rsaPssSign, rsaPssVerify, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { rsaPssSign, rsaPssVerify, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   const data = new Uint8Array([1]);
@@ -2748,11 +2790,6 @@ export function rsaPssSign(pkey: object, hashAlg: string, saltLength: number, da
 * }
 * ```
 *
-* @param pkey RSA public or private key.
-* @param hashAlg Digest algorithm used before verification.
-* @param sig Signature bytes.
-* @param data Message bytes to hash and verify.
-* @returns Whether the signature verifies.
 * @internal
 */
 export function rsaPssVerify(pkey: object, hashAlg: string, sig: Uint8Array, data: Uint8Array): boolean {
@@ -2785,9 +2822,8 @@ export function rsaPssVerify(pkey: object, hashAlg: string, sig: Uint8Array, dat
 * Unavailable libcrypto, unsupported digests, invalid keys, and OpenSSL
 * signing failures throw.
 *
-* ```js
-* const { rsaPkcs1Sign, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { rsaPkcs1Sign, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   console.log(rsaPkcs1Sign(key, 'sha-256', new Uint8Array([1])).byteLength);
@@ -2795,10 +2831,6 @@ export function rsaPssVerify(pkey: object, hashAlg: string, sig: Uint8Array, dat
 * }
 * ```
 *
-* @param pkey RSA private key.
-* @param hashAlg Digest algorithm used before signing.
-* @param data Message bytes to hash and sign.
-* @returns Signature bytes.
 * @internal
 */
 export function rsaPkcs1Sign(pkey: object, hashAlg: string, data: Uint8Array): Uint8Array {
@@ -2838,9 +2870,8 @@ export function rsaPkcs1Sign(pkey: object, hashAlg: string, data: Uint8Array): U
 * `false` for invalid signatures and throws for unavailable libcrypto,
 * unsupported digests, invalid keys, and OpenSSL setup failures.
 *
-* ```js
-* const { rsaPkcs1Sign, rsaPkcs1Verify, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { rsaPkcs1Sign, rsaPkcs1Verify, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateRsa(2048, 65537);
 *   const data = new Uint8Array([1]);
@@ -2849,11 +2880,6 @@ export function rsaPkcs1Sign(pkey: object, hashAlg: string, data: Uint8Array): U
 * }
 * ```
 *
-* @param pkey RSA public or private key.
-* @param hashAlg Digest algorithm used before verification.
-* @param sig Signature bytes.
-* @param data Message bytes to hash and verify.
-* @returns Whether the signature verifies.
 * @internal
 */
 export function rsaPkcs1Verify(pkey: object, hashAlg: string, sig: Uint8Array, data: Uint8Array): boolean {
@@ -2900,13 +2926,22 @@ function _bytesToBn(lib: ReturnType<typeof _requireCrypto>, bytes: Uint8Array): 
 * be freed with `evpPkeyFree()`. Missing required components, unavailable
 * libcrypto, allocation failures, and OpenSSL import failures throw.
 *
-* ```js
-* import { rsaImportComponents } from 'internal:openssl';
-* console.log(typeof rsaImportComponents);
+* ```ts no_run
+* import { rsaImportComponents, rsaPkcs1Verify, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+* if (cryptoAvailable) {
+*   // Reconstruct a public key from JWK-style modulus/exponent bytes.
+*   const key = rsaImportComponents({
+*     n: modulusBytes,          // big-endian modulus
+*     e: new Uint8Array([1, 0, 1]), // 65537
+*   });
+*   const ok = rsaPkcs1Verify(key, 'sha-256', signature, message);
+*   evpPkeyFree(key);
+* }
+* declare const modulusBytes: Uint8Array;
+* declare const signature: Uint8Array;
+* declare const message: Uint8Array;
 * ```
 *
-* @param components RSA component byte arrays.
-* @returns Opaque owning `EVP_PKEY*`.
 * @internal
 */
 export function rsaImportComponents(components: {
@@ -2970,9 +3005,8 @@ export function rsaImportComponents(components: {
 * Unsupported curves, unavailable libcrypto, non-EC keys, and OpenSSL point
 * conversion failures throw.
 *
-* ```js
-* const { ecPublicKeyCoords, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { ecPublicKeyCoords, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   console.log(ecPublicKeyCoords(key, 'P-256').x.byteLength);
@@ -2980,9 +3014,6 @@ export function rsaImportComponents(components: {
 * }
 * ```
 *
-* @param pkey EC key.
-* @param namedCurve Expected curve name.
-* @returns Fixed-width X and Y coordinate bytes.
 * @internal
 */
 export function ecPublicKeyCoords(pkey: object, namedCurve: string): {
@@ -3015,9 +3046,8 @@ export function ecPublicKeyCoords(pkey: object, namedCurve: string): {
 * the curve coordinate size. Unsupported curves, invalid coordinate lengths,
 * unavailable libcrypto, and OpenSSL import failures throw.
 *
-* ```js
-* const { evpPkeyGenerateEc, ecPublicKeyCoords, evpPkeyImportEcJwk, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateEc, ecPublicKeyCoords, evpPkeyImportEcJwk, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const source = evpPkeyGenerateEc('P-256');
 *   const { x, y } = ecPublicKeyCoords(source, 'P-256');
@@ -3027,11 +3057,6 @@ export function ecPublicKeyCoords(pkey: object, namedCurve: string): {
 * }
 * ```
 *
-* @param namedCurve `P-256`, `P-384`, or `P-521`.
-* @param x Public X coordinate.
-* @param y Public Y coordinate.
-* @param d Optional private scalar.
-* @returns Opaque owning `EVP_PKEY*`.
 * @internal
 */
 export function evpPkeyImportEcJwk(namedCurve: string, x: Uint8Array, y: Uint8Array, d?: Uint8Array): object {
@@ -3116,9 +3141,8 @@ function _ptrPtrBuf(buf: Uint8Array): Uint8Array {
 * a PKCS8 `PrivateKeyInfo` structure without encryption. Unavailable libcrypto,
 * public-only keys, and OpenSSL conversion failures throw.
 *
-* ```js
-* const { evpPkeyGenerateEc, evpPkeyExportPkcs8, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateEc, evpPkeyExportPkcs8, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   console.log(evpPkeyExportPkcs8(key).byteLength);
@@ -3126,8 +3150,6 @@ function _ptrPtrBuf(buf: Uint8Array): Uint8Array {
 * }
 * ```
 *
-* @param pkey EC or RSA private key.
-* @returns Unencrypted PKCS8 DER bytes.
 * @internal
 */
 export function evpPkeyExportPkcs8(pkey: object): Uint8Array {
@@ -3156,9 +3178,8 @@ export function evpPkeyExportPkcs8(pkey: object): Uint8Array {
 * EC and RSA private keys supported by OpenSSL. Encrypted PKCS8, malformed DER,
 * unavailable libcrypto, and OpenSSL conversion failures throw.
 *
-* ```js
-* const { evpPkeyGenerateEc, evpPkeyExportPkcs8, evpPkeyImportPkcs8, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateEc, evpPkeyExportPkcs8, evpPkeyImportPkcs8, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   const imported = evpPkeyImportPkcs8(evpPkeyExportPkcs8(key));
@@ -3167,8 +3188,6 @@ export function evpPkeyExportPkcs8(pkey: object): Uint8Array {
 * }
 * ```
 *
-* @param der Unencrypted PKCS8 `PrivateKeyInfo` bytes.
-* @returns Opaque owning `EVP_PKEY*`.
 * @internal
 */
 export function evpPkeyImportPkcs8(der: Uint8Array): object {
@@ -3197,9 +3216,8 @@ export function evpPkeyImportPkcs8(der: Uint8Array): object {
 * produced by OpenSSL. Unavailable libcrypto, mismatched curves, invalid keys,
 * and OpenSSL derive failures throw.
 *
-* ```js
-* const { evpPkeyGenerateEc, evpPkeyDeriveEcdh, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { evpPkeyGenerateEc, evpPkeyDeriveEcdh, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const a = evpPkeyGenerateEc('P-256');
 *   const b = evpPkeyGenerateEc('P-256');
@@ -3209,9 +3227,6 @@ export function evpPkeyImportPkcs8(der: Uint8Array): object {
 * }
 * ```
 *
-* @param privateKey Local EC private key.
-* @param publicKey Peer EC public key.
-* @returns Raw ECDH shared secret bytes.
 * @internal
 */
 export function evpPkeyDeriveEcdh(privateKey: object, publicKey: object): Uint8Array {
@@ -3250,9 +3265,8 @@ export function evpPkeyDeriveEcdh(privateKey: object, publicKey: object): Uint8A
 * must be an EC private key. Public-only keys, unavailable libcrypto, and
 * OpenSSL BIGNUM conversion failures throw.
 *
-* ```js
-* const { ecPrivateKeyD, ecdsaCoordSize, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { ecPrivateKeyD, ecdsaCoordSize, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
 * if (cryptoAvailable) {
 *   const key = evpPkeyGenerateEc('P-256');
 *   console.log(ecPrivateKeyD(key, ecdsaCoordSize('P-256')).byteLength);
@@ -3260,9 +3274,6 @@ export function evpPkeyDeriveEcdh(privateKey: object, publicKey: object): Uint8A
 * }
 * ```
 *
-* @param pkey EC private key.
-* @param coordSize Expected coordinate width in bytes.
-* @returns Zero-padded private scalar bytes.
 * @internal
 */
 export function ecPrivateKeyD(pkey: object, coordSize: number): Uint8Array {
@@ -3299,7 +3310,6 @@ export function ecPrivateKeyD(pkey: object, coordSize: number): Uint8Array {
 * }
 * ```
 *
-* @returns Opaque owning `SSL_CTX*`.
 * @internal
 */
 export function sslCtxNewClient(): object {
@@ -3324,7 +3334,6 @@ export function sslCtxNewClient(): object {
 * }
 * ```
 *
-* @returns Opaque owning `SSL_CTX*`.
 * @internal
 */
 export function sslCtxNewServer(): object {
@@ -3338,9 +3347,18 @@ export function sslCtxNewServer(): object {
 * Create a client QUIC context using OpenSSL's thread-assisted QUIC method.
 *
 * The context is owning and must be freed with `sslCtxFree()`. OpenSSL requires
-* ALPN for QUIC; callers should configure protocols before connecting.
+* ALPN for QUIC; callers should configure protocols before connecting. Requires
+* the QUIC-capable libssl (OpenSSL 3.5+); throws `OpenSSL QUIC SSL not available`
+* otherwise.
 *
-* @returns Opaque owning `SSL_CTX*`.
+* ```ts no_run
+* import { sslCtxNewQuicClient, sslCtxSetAlpnProtos, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewQuicClient();
+* sslCtxSetAlpnProtos(ctx, ['h3']);
+* // ... open a QUIC connection with this context ...
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslCtxNewQuicClient(): object {
@@ -3355,8 +3373,23 @@ export function sslCtxNewQuicClient(): object {
 *
 * The context is owning and must be freed with `sslCtxFree()`. Load a
 * certificate/key pair and install a server ALPN callback before listening.
+* Requires the QUIC-capable libssl (OpenSSL 3.5+); throws
+* `OpenSSL QUIC SSL not available` otherwise.
 *
-* @returns Opaque owning `SSL_CTX*`.
+* ```ts no_run
+* import {
+*   sslCtxNewQuicServer, sslCtxUseCertKey, sslCtxSetAlpnServerProtos,
+*   sslNewListener, sslListen, sslCtxFree,
+* } from 'internal:openssl';
+* const ctx = sslCtxNewQuicServer();
+* sslCtxUseCertKey(ctx, '/etc/tls/cert.pem', '/etc/tls/key.pem');
+* const alpnCb = sslCtxSetAlpnServerProtos(ctx, ['h3']);
+* const listener = sslNewListener(ctx);
+* sslListen(listener);
+* // ... accept connections ...
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslCtxNewQuicServer(): object {
@@ -3367,12 +3400,22 @@ export function sslCtxNewQuicServer(): object {
   return ctx;
 }
 /**
-* Load a PEM certificate and private key into an existing SSL context.
+* Load a PEM certificate chain and private key into an existing SSL context.
 *
-* @param ctx SSL_CTX* to configure.
-* @param certPath Path to PEM certificate.
-* @param keyPath Path to PEM private key.
-* @returns Nothing.
+* Both paths must reference PEM files. The certificate chain, the private key,
+* and a consistency check between them are applied in order; a failure at any
+* step throws with the offending path and the OpenSSL error text. Unlike
+* `sslCtxLoadCertKey()`, this configures a context the caller already created
+* and does not touch ALPN.
+*
+* ```ts no_run
+* import { sslCtxNewServer, sslCtxUseCertKey, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewServer();
+* sslCtxUseCertKey(ctx, '/etc/tls/fullchain.pem', '/etc/tls/privkey.pem');
+* // ... accept TLS connections on this context ...
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslCtxUseCertKey(ctx: object, certPath: string, keyPath: string): void {
@@ -3390,18 +3433,24 @@ export function sslCtxUseCertKey(ctx: object, certPath: string, keyPath: string)
   }
 }
 /**
-* Create a server SSL context and load a PEM certificate + private key.
-* Both paths must point to PEM-encoded files (SSL_FILETYPE_PEM = 1).
-* Throws if the context cannot be created or either file fails to load.
+* Create a server SSL context and load a PEM certificate chain and private key.
 *
-* ```js
-* import { sslCtxLoadCertKey } from 'internal:openssl';
-* console.log(typeof sslCtxLoadCertKey);
+* A one-call convenience over `sslCtxNewServer()` + `sslCtxUseCertKey()` that
+* also advertises `http/1.1` via ALPN. Both paths must point to PEM files; the
+* certificate, key, and their consistency are checked in order, and any failure
+* frees the context and throws with the offending path. The returned `SSL_CTX*`
+* is owning and must be freed with `sslCtxFree()`.
+*
+* ```ts no_run
+* import { sslCtxLoadCertKey, sslNew, sslSetAcceptState, sslFree, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxLoadCertKey('/etc/tls/fullchain.pem', '/etc/tls/privkey.pem');
+* const ssl = sslNew(ctx);
+* sslSetAcceptState(ssl);
+* // ... drive the handshake, serve requests ...
+* sslFree(ssl);
+* sslCtxFree(ctx);
 * ```
 *
-* @param {string} certPath — path to PEM certificate file
-* @param {string} keyPath  — path to PEM private key file
-* @returns {object} SSL_CTX* configured with the cert/key pair
 * @internal
 */
 export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
@@ -3445,8 +3494,6 @@ export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
 * }
 * ```
 *
-* @param ctx Opaque owning `SSL_CTX*`.
-* @returns Nothing.
 * @internal
 */
 export function sslCtxFree(ctx: object): void {
@@ -3479,9 +3526,8 @@ function _encodeAlpnProtocols(protocols: string[]): Uint8Array {
 * Set the ALPN protocol list on an SSL_CTX (client side: preference list).
 * Used to advertise supported protocols during TLS handshake.
 *
-* ```js
-* const { sslCtxNewClient, sslCtxSetAlpnProtos, sslCtxFree, tlsAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxSetAlpnProtos, sslCtxFree, tlsAvailable } from 'internal:openssl';
 * if (tlsAvailable) {
 *   const ctx = sslCtxNewClient();
 *   sslCtxSetAlpnProtos(ctx, ['http/1.1']);
@@ -3489,9 +3535,6 @@ function _encodeAlpnProtocols(protocols: string[]): Uint8Array {
 * }
 * ```
 *
-* @param ctx SSL_CTX* from `sslCtxNewClient()` or `sslCtxLoadCertKey()`.
-* @param protocols Ordered preference list, for example `['http/1.1']`.
-* @returns Nothing.
 * @internal
 */
 export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
@@ -3505,11 +3548,16 @@ export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
 *
 * OpenSSL expects standard TLS 1.3 suite names separated by colons, for example
 * `TLS_CHACHA20_POLY1305_SHA256`. QUIC uses TLS 1.3 exclusively, so callers
-* should validate the suite list before it reaches this low-level helper.
+* should validate the suite list before it reaches this low-level helper. Throws
+* `TypeError` on an empty list and an `Error` if OpenSSL rejects a name.
 *
-* @param ctx SSL_CTX* to configure.
-* @param cipherSuites Ordered TLS 1.3 cipher-suite names.
-* @returns Nothing.
+* ```ts no_run
+* import { sslCtxNewQuicClient, sslCtxSetCipherSuites, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewQuicClient();
+* sslCtxSetCipherSuites(ctx, ['TLS_AES_128_GCM_SHA256', 'TLS_CHACHA20_POLY1305_SHA256']);
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslCtxSetCipherSuites(ctx: object, cipherSuites: readonly string[]): void {
@@ -3522,11 +3570,18 @@ export function sslCtxSetCipherSuites(ctx: object, cipherSuites: readonly string
 /**
 * Restrict TLS supported groups on an `SSL_CTX`.
 *
-* OpenSSL expects colon-separated group names such as `P-256` or `X25519`.
+* OpenSSL expects colon-separated group names such as `P-256` or `X25519`; this
+* helper joins `groups` and forwards them via `SSL_CTX_set1_groups_list`. The
+* order expresses key-share preference. Throws `TypeError` on an empty list and
+* an `Error` if OpenSSL rejects a group name.
 *
-* @param ctx SSL_CTX* to configure.
-* @param groups Ordered TLS group names.
-* @returns Nothing.
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxSetGroups, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* sslCtxSetGroups(ctx, ['X25519', 'P-256']);
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslCtxSetGroups(ctx: object, groups: readonly string[]): void {
@@ -3540,11 +3595,19 @@ export function sslCtxSetGroups(ctx: object, groups: readonly string[]): void {
 * Set the ALPN protocol list on a single SSL connection object.
 *
 * This is used by ngtcp2's OpenSSL crypto backend, which configures QUIC TLS
-* on an `SSL*` rather than on OpenSSL's high-level QUIC transport object.
+* on an `SSL*` rather than on OpenSSL's high-level QUIC transport object. It is
+* the per-connection counterpart of `sslCtxSetAlpnProtos()`. Throws if OpenSSL
+* rejects the encoded list.
 *
-* @param ssl SSL* connection object.
-* @param protocols Ordered ALPN preference list.
-* @returns Nothing.
+* ```ts no_run
+* import { sslCtxNewClient, sslNew, sslSetAlpnProtos, sslFree, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* const ssl = sslNew(ctx);
+* sslSetAlpnProtos(ssl, ['h3']);
+* sslFree(ssl);
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslSetAlpnProtos(ssl: object, protocols: string[]): void {
@@ -3558,15 +3621,20 @@ export function sslSetAlpnProtos(ssl: object, protocols: string[]): void {
 *
 * Returns `null` when no protocol has been negotiated, ALPN was not used, or
 * the handshake has not completed. The returned string is copied from OpenSSL's
-* borrowed protocol bytes.
+* borrowed protocol bytes, so it is safe to retain. Call it after the handshake
+* to branch on the agreed protocol.
 *
-* ```js
+* ```ts no_run
 * import { sslGetAlpnSelected } from 'internal:openssl';
-* console.log(typeof sslGetAlpnSelected);
+* function chooseHandler(ssl: object) {
+*   switch (sslGetAlpnSelected(ssl)) {
+*     case 'h2': return 'http/2';
+*     case 'http/1.1': return 'http/1.1';
+*     default: return 'unknown';
+*   }
+* }
 * ```
 *
-* @param ssl Opaque `SSL*`.
-* @returns Negotiated protocol name, or `null`.
 * @internal
 */
 export function sslGetAlpnSelected(ssl: object): string | null {
@@ -3580,7 +3648,23 @@ export function sslGetAlpnSelected(ssl: object): string | null {
   const bytes = Pointer.copyFrom(dataBuf, len) as Uint8Array;
   return decodeUtf8(bytes);
 }
-/** Return the current TLS cipher name and protocol version for an `SSL*`. */
+/**
+* Return the negotiated cipher name and protocol version for an `SSL*`.
+*
+* Both fields are `null` before a cipher has been selected (for example prior to
+* a completed handshake). Otherwise `cipher` is a name like `TLS_AES_256_GCM_SHA384`
+* and `cipherVersion` is the protocol that suite belongs to, such as `TLSv1.3`.
+*
+* ```ts no_run
+* import { sslGetCurrentCipherInfo } from 'internal:openssl';
+* function reportCipher(ssl: object) {
+*   const { cipher, cipherVersion } = sslGetCurrentCipherInfo(ssl);
+*   console.log(cipher ? `${cipherVersion} ${cipher}` : 'no cipher yet');
+* }
+* ```
+*
+* @internal
+*/
 export function sslGetCurrentCipherInfo(ssl: object): {
   cipher: string | null;
   cipherVersion: string | null;
@@ -3596,7 +3680,25 @@ export function sslGetCurrentCipherInfo(ssl: object): {
     cipherVersion: readCStr(lib.symbols.SSL_CIPHER_get_version(cipher) as ArrayBuffer | null) || null
   };
 }
-/** Return OpenSSL peer verification status for an `SSL*`. */
+/**
+* Return the OpenSSL peer-certificate verification result for an `SSL*`.
+*
+* `code` is the raw `X509_V_*` result: `0` (`X509_V_OK`) means the chain
+* verified, and any non-zero value is a failure whose `reason` carries the
+* human-readable OpenSSL description (for example `certificate has expired`).
+* On success `reason` is `null`. Note that a value of `0` only reflects OpenSSL's
+* own chain checks; hostname matching is enforced separately via `sslSetHostname()`.
+*
+* ```ts no_run
+* import { sslGetVerifyResult } from 'internal:openssl';
+* function assertVerified(ssl: object) {
+*   const { code, reason } = sslGetVerifyResult(ssl);
+*   if (code !== 0) throw new Error(`TLS verify failed: ${reason}`);
+* }
+* ```
+*
+* @internal
+*/
 export function sslGetVerifyResult(ssl: object): {
   code: number;
   reason: string | null;
@@ -3609,7 +3711,24 @@ export function sslGetVerifyResult(ssl: object): {
     reason
   };
 }
-/** Return the peer certificate as DER bytes, or `null` when absent. */
+/**
+* Return the peer's leaf certificate as DER bytes, or `null` when absent.
+*
+* Returns `null` when the peer sent no certificate (for example an anonymous or
+* not-yet-handshaked connection) or when OpenSSL cannot encode it. Only the leaf
+* certificate is returned, not the full chain. The DER can be parsed by a higher
+* layer to expose subject, SAN, and validity fields.
+*
+* ```ts no_run
+* import { sslGetPeerCertificate } from 'internal:openssl';
+* function peerCertLen(ssl: object): number {
+*   const der = sslGetPeerCertificate(ssl);
+*   return der ? der.byteLength : 0;
+* }
+* ```
+*
+* @internal
+*/
 export function sslGetPeerCertificate(ssl: object): Uint8Array | null {
   const lib = _requireSsl();
   const cert = lib.symbols.SSL_get1_peer_certificate(ssl) as ArrayBuffer | null;
@@ -3626,7 +3745,24 @@ export function sslGetPeerCertificate(ssl: object): Uint8Array | null {
     lib.symbols.X509_free(cert);
   }
 }
-/** Export RFC 5705 TLS keying material for an `SSL*`. */
+/**
+* Derive `length` bytes of RFC 5705 exported keying material for an `SSL*`.
+*
+* The output binds the TLS master secret to a `label` and a caller-supplied
+* `context`, producing a shared secret both peers can compute identically (the
+* basis for channel binding). Both ends must use the same `label`, `context`,
+* and `length`. Throws `RangeError` if `length` is negative or not an integer,
+* and `Error` if OpenSSL's exporter fails (for example before the handshake).
+*
+* ```ts no_run
+* import { sslExportKeyingMaterial } from 'internal:openssl';
+* function channelBinding(ssl: object): ArrayBuffer {
+*   return sslExportKeyingMaterial(ssl, 'EXPORTER-my-app', new Uint8Array(), 32);
+* }
+* ```
+*
+* @internal
+*/
 export function sslExportKeyingMaterial(ssl: object, label: string, context: Uint8Array, length: number): ArrayBuffer {
   const lib = _requireSsl();
   if (!Number.isInteger(length) || length < 0) throw new RangeError('TLS exporter length must be a non-negative integer');
@@ -3636,7 +3772,23 @@ export function sslExportKeyingMaterial(ssl: object, label: string, context: Uin
   if (rc !== 1) throw new Error('SSL_export_keying_material failed: ' + getErrorString());
   return out.buffer;
 }
-/** Return the SNI server name associated with an `SSL*`, when available. */
+/**
+* Return the SNI server name a client requested on an `SSL*`, or `null`.
+*
+* On the server side this is the hostname the client sent in the TLS SNI
+* extension, available once the ClientHello has been processed; it is the value
+* an SNI callback keys on to select a certificate. Returns `null` when the peer
+* sent no SNI or the extension is unavailable.
+*
+* ```ts no_run
+* import { sslGetServername } from 'internal:openssl';
+* function requestedHost(ssl: object): string {
+*   return sslGetServername(ssl) ?? '(no SNI)';
+* }
+* ```
+*
+* @internal
+*/
 export function sslGetServername(ssl: object): string | null {
   const ptr = _requireSsl().symbols.SSL_get_servername(ssl, 0) as ArrayBuffer | null;
   return readCStr(ptr) || null;
@@ -3660,7 +3812,34 @@ function _matchServername(name: string, entries: ReadonlyMap<string, object>): o
   }
   return null;
 }
-/** Install an OpenSSL SNI callback that swaps SSL_CTX based on server name. */
+/**
+* Install an SNI callback that swaps the active `SSL_CTX` by requested hostname.
+*
+* `entries` maps lowercased server names to the context that should serve them;
+* keys may be exact names or single-level wildcards like `*.example.com`. When a
+* client's SNI matches an entry the connection's context (and thus its
+* certificate) is switched to it during the handshake; unmatched names are left
+* on the base context. Names are normalized (lowercased, trailing dot stripped)
+* on both sides before matching.
+*
+* Returns the `FfiCallback` backing the native callback. It must be retained for
+* the lifetime of `ctx` and closed when the context is freed, or the callback is
+* collected and the handshake crashes.
+*
+* ```ts no_run
+* import { sslCtxNewServer, sslCtxLoadCertKey, sslCtxSetServernameCallback, sslCtxFree } from 'internal:openssl';
+* const base = sslCtxNewServer();
+* const byHost = new Map<string, object>([
+*   ['a.example.com', sslCtxLoadCertKey('/tls/a.crt', '/tls/a.key')],
+*   ['*.internal.example.com', sslCtxLoadCertKey('/tls/wild.crt', '/tls/wild.key')],
+* ]);
+* const cb = sslCtxSetServernameCallback(base, byHost);
+* // ... keep `cb` alive; close it before sslCtxFree(base) ...
+* sslCtxFree(base);
+* ```
+*
+* @internal
+*/
 export function sslCtxSetServernameCallback(ctx: object, entries: ReadonlyMap<string, object>): object {
   const lib = _requireSsl();
   const normalizedEntries = new Map<string, object>();
@@ -3693,9 +3872,8 @@ export function sslCtxSetServernameCallback(ctx: object, entries: ReadonlyMap<st
 * This is normally called for client contexts that verify peers. Unavailable
 * libssl and OpenSSL trust-path setup failures throw.
 *
-* ```js
-* const { sslCtxNewClient, sslCtxSetDefaultVerifyPaths, sslCtxFree, tlsAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxSetDefaultVerifyPaths, sslCtxFree, tlsAvailable } from 'internal:openssl';
 * if (tlsAvailable) {
 *   const ctx = sslCtxNewClient();
 *   sslCtxSetDefaultVerifyPaths(ctx);
@@ -3703,8 +3881,6 @@ export function sslCtxSetServernameCallback(ctx: object, entries: ReadonlyMap<st
 * }
 * ```
 *
-* @param ctx SSL_CTX* to configure.
-* @returns Nothing.
 * @internal
 */
 export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
@@ -3712,17 +3888,22 @@ export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
   if (rc !== 1) throw new Error('SSL_CTX_set_default_verify_paths failed: ' + getErrorString());
 }
 /**
-* Load CA certificate(s) for peer verification.
+* Load CA certificates for peer verification from a file and/or directory.
 *
-* ```js
-* import { sslCtxLoadVerifyLocations } from 'internal:openssl';
-* console.log(typeof sslCtxLoadVerifyLocations);
+* `caFile` names a single PEM bundle and `caPath` a directory of hashed PEM
+* files; pass `null` for whichever is unused (at least one should be non-null).
+* Unlike `sslCtxSetDefaultVerifyPaths()`, this points at an explicit trust
+* location instead of the system store. Throws if OpenSSL cannot load the trust
+* material.
+*
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxLoadVerifyLocations, sslCtxSetVerify, SSL_VERIFY_PEER, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* sslCtxLoadVerifyLocations(ctx, '/etc/ssl/certs/ca-bundle.pem', null);
+* sslCtxSetVerify(ctx, SSL_VERIFY_PEER);
+* sslCtxFree(ctx);
 * ```
 *
-* @param {object} ctx — SSL_CTX* pointer
-* @param {string|null} caFile — path to a PEM file, or null
-* @param {string|null} caPath — path to a directory of PEM files, or null
-* @returns Nothing.
 * @internal
 */
 export function sslCtxLoadVerifyLocations(ctx: object, caFile: string | null, caPath: string | null): void {
@@ -3732,7 +3913,25 @@ export function sslCtxLoadVerifyLocations(ctx: object, caFile: string | null, ca
   const rc = lib.symbols.SSL_CTX_load_verify_locations(ctx, fileBuf, pathBuf);
   if (rc !== 1) throw new Error('SSL_CTX_load_verify_locations failed: ' + getErrorString());
 }
-/** Add PEM-encoded CA certificates to an SSL_CTX trust store. */
+/**
+* Add PEM-encoded CA certificate(s) to an `SSL_CTX` trust store.
+*
+* Accepts a single PEM string or byte array, or an array of them; each entry may
+* itself contain several concatenated PEM certificates, all of which are added.
+* Use this to trust a private CA in addition to (or instead of) the system trust
+* store. Throws `TypeError` on an empty list or empty entry, and `Error` if the
+* store is unavailable or a certificate cannot be parsed or added.
+*
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxAddCaCertificates, sslCtxSetVerify, SSL_VERIFY_PEER, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* sslCtxAddCaCertificates(ctx, '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n');
+* sslCtxSetVerify(ctx, SSL_VERIFY_PEER);
+* sslCtxFree(ctx);
+* ```
+*
+* @internal
+*/
 export function sslCtxAddCaCertificates(ctx: object, pem: string | Uint8Array | Array<string | Uint8Array>): void {
   const lib = _requireSsl();
   const store = lib.symbols.SSL_CTX_get_cert_store(ctx) as ArrayBuffer | null;
@@ -3768,22 +3967,44 @@ export function sslCtxAddCaCertificates(ctx: object, pem: string | Uint8Array | 
 *
 * `mode` is passed directly to `SSL_CTX_set_verify()`, commonly
 * `SSL_VERIFY_PEER` for clients that require certificate verification. The
-* verify callback is always null.
+* verify callback is always null, so verification uses OpenSSL's built-in chain
+* checks; combine it with a trust source such as `sslCtxSetDefaultVerifyPaths()`.
 *
-* ```js
-* import { SSL_VERIFY_PEER, sslCtxSetVerify } from 'internal:openssl';
-* console.log(SSL_VERIFY_PEER, typeof sslCtxSetVerify);
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxSetDefaultVerifyPaths, sslCtxSetVerify, SSL_VERIFY_PEER, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* sslCtxSetDefaultVerifyPaths(ctx);
+* sslCtxSetVerify(ctx, SSL_VERIFY_PEER);
+* sslCtxFree(ctx);
 * ```
 *
-* @param ctx SSL_CTX* to configure.
-* @param mode OpenSSL verification bitmask.
-* @returns Nothing.
 * @internal
 */
 export function sslCtxSetVerify(ctx: object, mode: number): void {
   _requireSsl().symbols.SSL_CTX_set_verify(ctx, mode, null);
 }
-/** Set TLS verification mode with a callback that records but allows failures. */
+/**
+* Set a verification mode whose callback requests certificates but always passes.
+*
+* The installed verify callback unconditionally returns success, so the peer
+* certificate is requested and captured (retrievable via `sslGetPeerCertificate()`)
+* but chain failures do not abort the handshake. This is for opportunistic or
+* fingerprint-based flows that inspect the peer certificate themselves; it is not
+* secure transport verification. `mode` is the `SSL_VERIFY_*` bitmask.
+*
+* Returns the `FfiCallback` that must be retained for the context's lifetime and
+* closed when the context is freed.
+*
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxSetPermissiveVerify, SSL_VERIFY_PEER, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* const cb = sslCtxSetPermissiveVerify(ctx, SSL_VERIFY_PEER);
+* // ... keep `cb` alive; close it before sslCtxFree(ctx) ...
+* sslCtxFree(ctx);
+* ```
+*
+* @internal
+*/
 export function sslCtxSetPermissiveVerify(ctx: object, mode: number): object {
   const cb = new FfiCallback({
     parameters: ['i32', 'pointer'],
@@ -3792,7 +4013,25 @@ export function sslCtxSetPermissiveVerify(ctx: object, mode: number): object {
   _requireSsl().symbols.SSL_CTX_set_verify(ctx, mode, cb.pointer);
   return cb;
 }
-/** Set TLS verification mode on a single SSL connection. */
+/**
+* Set the TLS verification mode on a single `SSL*`, overriding its context.
+*
+* The per-connection counterpart of `sslCtxSetVerify()`; `mode` is the
+* `SSL_VERIFY_*` bitmask and the verify callback is always null. Apply it after
+* `sslNew()` and before the handshake to, for example, require a peer certificate
+* on one connection without changing the shared context.
+*
+* ```ts no_run
+* import { sslCtxNewServer, sslNew, sslSetVerify, SSL_VERIFY_PEER, SSL_VERIFY_FAIL_IF_NO_PEER_CERT, sslFree, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewServer();
+* const ssl = sslNew(ctx);
+* sslSetVerify(ssl, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT); // require mTLS
+* sslFree(ssl);
+* sslCtxFree(ctx);
+* ```
+*
+* @internal
+*/
 export function sslSetVerify(ssl: object, mode: number): void {
   _requireSsl().symbols.SSL_set_verify(ssl, mode, null);
 }
@@ -3806,6 +4045,29 @@ function readCStr(ptr: ArrayBuffer | null): string {
   }
   return decodeUtf8(new Uint8Array(bytes));
 }
+/**
+* Install an NSS-format TLS key-log callback on an `SSL_CTX`.
+*
+* `onLine` is invoked once per key-log line (already decoded to a string, no
+* trailing newline) as OpenSSL derives handshake and traffic secrets. Feeding
+* those lines to a file named by `SSLKEYLOGFILE` lets Wireshark decrypt captured
+* traffic — a debugging aid that exposes session keys, so never enable it in
+* production. Every connection created from `ctx` reports through this callback.
+*
+* Returns the `FfiCallback` backing the native callback; retain it for the
+* lifetime of `ctx` and close it when the context is freed.
+*
+* ```ts no_run
+* import { sslCtxNewClient, sslCtxSetKeylogCallback, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* const lines: string[] = [];
+* const cb = sslCtxSetKeylogCallback(ctx, (line) => lines.push(line));
+* // ... perform handshakes, then persist `lines` to $SSLKEYLOGFILE ...
+* sslCtxFree(ctx);
+* ```
+*
+* @internal
+*/
 export function sslCtxSetKeylogCallback(ctx: object, onLine: (line: string) => void): object {
   const cb = new FfiCallback({
     parameters: ['pointer', 'pointer'],
@@ -3826,9 +4088,8 @@ export function sslCtxSetKeylogCallback(ctx: object, onLine: (line: string) => v
 * usually bind it to a descriptor with `sslSetFd()` before handshaking.
 * Unavailable libssl and OpenSSL allocation failures throw.
 *
-* ```js
-* const { sslCtxNewClient, sslNew, sslFree, sslCtxFree, tlsAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { sslCtxNewClient, sslNew, sslFree, sslCtxFree, tlsAvailable } from 'internal:openssl';
 * if (tlsAvailable) {
 *   const ctx = sslCtxNewClient();
 *   const ssl = sslNew(ctx);
@@ -3837,8 +4098,6 @@ export function sslCtxSetKeylogCallback(ctx: object, onLine: (line: string) => v
 * }
 * ```
 *
-* @param ctx SSL_CTX* used to create the connection.
-* @returns Opaque owning `SSL*`.
 * @internal
 */
 export function sslNew(ctx: object): object {
@@ -3849,8 +4108,18 @@ export function sslNew(ctx: object): object {
 /**
 * Put an `SSL*` into client handshake mode.
 *
-* @param ssl SSL* connection object.
-* @returns Nothing.
+* Marks the connection so the next handshake acts as the client (`SSL_connect`
+* semantics). Call it after `sslNew()` and before driving the handshake.
+*
+* ```ts no_run
+* import { sslCtxNewClient, sslNew, sslSetConnectState, sslFree, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewClient();
+* const ssl = sslNew(ctx);
+* sslSetConnectState(ssl);
+* sslFree(ssl);
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslSetConnectState(ssl: object): void {
@@ -3859,45 +4128,171 @@ export function sslSetConnectState(ssl: object): void {
 /**
 * Put an `SSL*` into server handshake mode.
 *
-* @param ssl SSL* connection object.
-* @returns Nothing.
+* Marks the connection so the next handshake acts as the server (`SSL_accept`
+* semantics). Call it after `sslNew()` and before driving the handshake.
+*
+* ```ts no_run
+* import { sslCtxNewServer, sslNew, sslSetAcceptState, sslFree, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewServer();
+* const ssl = sslNew(ctx);
+* sslSetAcceptState(ssl);
+* sslFree(ssl);
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslSetAcceptState(ssl: object): void {
   _requireSsl().symbols.SSL_set_accept_state(ssl);
 }
+/**
+* Request that the server issue a fresh TLS 1.3 session ticket on an `SSL*`.
+*
+* Used by servers to hand a client a new resumption ticket after the handshake
+* (`SSL_new_session_ticket`), enabling later 0-RTT/session resumption. Throws if
+* libssl is unavailable or OpenSSL declines to schedule the ticket.
+*
+* ```ts no_run
+* import { sslNewSessionTicket } from 'internal:openssl';
+* function refreshTicket(ssl: object) {
+*   sslNewSessionTicket(ssl);
+* }
+* ```
+*
+* @internal
+*/
 export function sslNewSessionTicket(ssl: object): void {
   if (_requireSsl().symbols.SSL_new_session_ticket(ssl) !== 1) {
     throw new Error('SSL_new_session_ticket failed: ' + getErrorString());
   }
 }
+/**
+* Set the maximum early-data (0-RTT) bytes this `SSL*` will send or accept.
+*
+* `maxBytes` is clamped to the unsigned 32-bit range and floored. Setting it
+* above zero opts the connection into TLS 1.3 early data. Throws if libssl is
+* unavailable or OpenSSL rejects the value.
+*
+* ```ts no_run
+* import { sslSetMaxEarlyData } from 'internal:openssl';
+* function allowEarlyData(ssl: object) {
+*   sslSetMaxEarlyData(ssl, 16 * 1024);
+* }
+* ```
+*
+* @internal
+*/
 export function sslSetMaxEarlyData(ssl: object, maxBytes: number): void {
   const max = Math.max(0, Math.min(4294967295, Math.floor(maxBytes)));
   if (_requireSsl().symbols.SSL_set_max_early_data(ssl, max) !== 1) {
     throw new Error('SSL_set_max_early_data failed: ' + getErrorString());
   }
 }
+/**
+* Set the maximum early-data bytes this `SSL*` will accept from the peer.
+*
+* The receive-side counterpart of `sslSetMaxEarlyData()`; bounds how much 0-RTT
+* data a server reads before the handshake completes. `maxBytes` is clamped to
+* the unsigned 32-bit range and floored. Throws if libssl is unavailable or
+* OpenSSL rejects the value.
+*
+* ```ts no_run
+* import { sslSetRecvMaxEarlyData } from 'internal:openssl';
+* function boundEarlyData(ssl: object) {
+*   sslSetRecvMaxEarlyData(ssl, 16 * 1024);
+* }
+* ```
+*
+* @internal
+*/
 export function sslSetRecvMaxEarlyData(ssl: object, maxBytes: number): void {
   const max = Math.max(0, Math.min(4294967295, Math.floor(maxBytes)));
   if (_requireSsl().symbols.SSL_set_recv_max_early_data(ssl, max) !== 1) {
     throw new Error('SSL_set_recv_max_early_data failed: ' + getErrorString());
   }
 }
+/**
+* Set the default maximum early-data bytes for connections from an `SSL_CTX`.
+*
+* Context-level default inherited by each `SSL*` created from `ctx`, overridable
+* per connection with `sslSetMaxEarlyData()`. `maxBytes` is clamped to the
+* unsigned 32-bit range and floored. Throws if libssl is unavailable or OpenSSL
+* rejects the value.
+*
+* ```ts no_run
+* import { sslCtxNewServer, sslCtxSetMaxEarlyData, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewServer();
+* sslCtxSetMaxEarlyData(ctx, 16 * 1024);
+* sslCtxFree(ctx);
+* ```
+*
+* @internal
+*/
 export function sslCtxSetMaxEarlyData(ctx: object, maxBytes: number): void {
   const max = Math.max(0, Math.min(4294967295, Math.floor(maxBytes)));
   if (_requireSsl().symbols.SSL_CTX_set_max_early_data(ctx, max) !== 1) {
     throw new Error('SSL_CTX_set_max_early_data failed: ' + getErrorString());
   }
 }
+/**
+* Set the default maximum early-data bytes an `SSL_CTX` will accept.
+*
+* Receive-side context default paired with `sslSetRecvMaxEarlyData()`.
+* `maxBytes` is clamped to the unsigned 32-bit range and floored. Throws if
+* libssl is unavailable or OpenSSL rejects the value.
+*
+* ```ts no_run
+* import { sslCtxNewServer, sslCtxSetRecvMaxEarlyData, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewServer();
+* sslCtxSetRecvMaxEarlyData(ctx, 16 * 1024);
+* sslCtxFree(ctx);
+* ```
+*
+* @internal
+*/
 export function sslCtxSetRecvMaxEarlyData(ctx: object, maxBytes: number): void {
   const max = Math.max(0, Math.min(4294967295, Math.floor(maxBytes)));
   if (_requireSsl().symbols.SSL_CTX_set_recv_max_early_data(ctx, max) !== 1) {
     throw new Error('SSL_CTX_set_recv_max_early_data failed: ' + getErrorString());
   }
 }
+/**
+* Enable or disable TLS early data for a QUIC `SSL*`.
+*
+* Toggles OpenSSL's QUIC-specific early-data path (`SSL_set_quic_tls_early_data_enabled`),
+* which is the QUIC analogue of the byte-limit setters above. Apply it before the
+* handshake on a QUIC connection.
+*
+* ```ts no_run
+* import { sslEnableQuicEarlyData } from 'internal:openssl';
+* function enableZeroRtt(quicSsl: object) {
+*   sslEnableQuicEarlyData(quicSsl, true);
+* }
+* ```
+*
+* @internal
+*/
 export function sslEnableQuicEarlyData(ssl: object, enabled: boolean): void {
   _requireSsl().symbols.SSL_set_quic_tls_early_data_enabled(ssl, enabled ? 1 : 0);
 }
+/**
+* Serialize the current TLS session of an `SSL*` to DER, or `null`.
+*
+* Captures the session (`SSL_get1_session`) and encodes it as an
+* `i2d_SSL_SESSION` blob that a client can persist and later replay through
+* `sslImportSession()` to resume — the basis for session reuse and 0-RTT. Returns
+* `null` when no session is established yet or OpenSSL cannot encode it. The
+* returned bytes carry resumption secrets; store them securely.
+*
+* ```ts no_run
+* import { sslExportSession } from 'internal:openssl';
+* function persistSession(ssl: object): Uint8Array | null {
+*   return sslExportSession(ssl); // save to a cache keyed by host
+* }
+* ```
+*
+* @internal
+*/
 export function sslExportSession(ssl: object): Uint8Array | null {
   const lib = _requireSsl();
   const session = lib.symbols.SSL_get1_session(ssl);
@@ -3914,6 +4309,29 @@ export function sslExportSession(ssl: object): Uint8Array | null {
     lib.symbols.SSL_SESSION_free(session);
   }
 }
+/**
+* Restore a serialized TLS session onto an `SSL*` for resumption.
+*
+* Decodes DER produced by `sslExportSession()` and attaches it to the connection
+* before the handshake so it can resume rather than perform a full handshake. The
+* result reports whether the session was accepted (`imported`) and the effective
+* early-data limit (`maxEarlyData`); if the stored session carries no early-data
+* limit, the positive `earlyDataMax` hint is applied so 0-RTT can be attempted.
+* A malformed or unreadable blob yields `{ imported: false, maxEarlyData: 0 }`
+* rather than throwing.
+*
+* ```ts no_run
+* import { sslImportSession } from 'internal:openssl';
+* function resume(ssl: object, saved: Uint8Array) {
+*   const { imported, maxEarlyData } = sslImportSession(ssl, saved, 16 * 1024);
+*   if (imported && maxEarlyData > 0) {
+*     // safe to write up to maxEarlyData bytes of 0-RTT data
+*   }
+* }
+* ```
+*
+* @internal
+*/
 export function sslImportSession(ssl: object, data: Uint8Array, earlyDataMax = 0): {
   imported: boolean;
   maxEarlyData: number;
@@ -3940,11 +4358,19 @@ export function sslImportSession(ssl: object, data: Uint8Array, earlyDataMax = 0
   }
 }
 /**
-* Set OpenSSL app data for an `SSL*`.
+* Attach an opaque native pointer as OpenSSL application data on an `SSL*`.
 *
-* @param ssl SSL* connection object.
-* @param data Native pointer value or null.
-* @returns Nothing.
+* Stores `data` in ex-data slot 0 so native callbacks (ALPN, verify, SNI) that
+* receive only the raw `SSL*` can recover an associated context. Pass `null` to
+* clear it. Throws if libssl is unavailable or OpenSSL rejects the store.
+*
+* ```ts no_run
+* import { sslSetAppData } from 'internal:openssl';
+* function clearAppData(ssl: object) {
+*   sslSetAppData(ssl, null);
+* }
+* ```
+*
 * @internal
 */
 export function sslSetAppData(ssl: object, data: ArrayBuffer | null = null): void {
@@ -3952,21 +4378,91 @@ export function sslSetAppData(ssl: object, data: ArrayBuffer | null = null): voi
     throw new Error('SSL_set_ex_data failed: ' + getErrorString());
   }
 }
+/**
+* Default-stream mode passed to `SSL_set_default_stream_mode` to disable the
+* implicit default QUIC stream. Applied by `sslUseQuicMultiStreamMode()`.
+*
+* @internal
+*/
 export const SSL_DEFAULT_STREAM_MODE_NONE = 0;
+/**
+* Incoming-stream policy value that makes a QUIC connection accept peer-initiated
+* streams. Applied by `sslUseQuicMultiStreamMode()`.
+*
+* @internal
+*/
 export const SSL_INCOMING_STREAM_POLICY_ACCEPT = 1;
+/**
+* Flag for `SSL_accept_connection` requesting a non-blocking accept that returns
+* `null` instead of waiting. Used by `sslAcceptConnectionNoBlock()`.
+*
+* @internal
+*/
 export const SSL_ACCEPT_CONNECTION_NO_BLOCK = 1;
+/**
+* `SSL_new_stream` flag selecting a unidirectional (send-only) QUIC stream.
+* Combined with the no-block flag by `sslNewQuicStream()`.
+*
+* @internal
+*/
 export const SSL_STREAM_FLAG_UNI = 1;
+/**
+* `SSL_new_stream` flag requesting non-blocking stream creation. Always set by
+* `sslNewQuicStream()`.
+*
+* @internal
+*/
 export const SSL_STREAM_FLAG_NO_BLOCK = 2;
+/**
+* Flag for `SSL_accept_stream` requesting a non-blocking accept that returns
+* `null` when no stream is queued. Used by `sslAcceptStreamNoBlock()`.
+*
+* @internal
+*/
 export const SSL_ACCEPT_STREAM_NO_BLOCK = 1;
+/**
+* `SSL_accept_stream` selector bit for unidirectional streams.
+*
+* @internal
+*/
 export const SSL_ACCEPT_STREAM_UNI = 2;
+/**
+* `SSL_accept_stream` selector bit for bidirectional streams.
+*
+* @internal
+*/
 export const SSL_ACCEPT_STREAM_BIDI = 4;
+/**
+* `SSL_write_ex2` flag that concludes (sends FIN on) the stream after the write.
+* Set by `sslWriteEx2()` when its `conclude` argument is `true`.
+*
+* @internal
+*/
 export const SSL_WRITE_FLAG_CONCLUDE = 1;
+/**
+* `SSL_shutdown_ex` flag for a rapid QUIC connection close with no draining.
+* Used by `sslShutdownQuicRapid()`.
+*
+* @internal
+*/
 export const SSL_SHUTDOWN_FLAG_RAPID = 1;
 /**
-* Create an OpenSSL QUIC listener object from a QUIC server context.
+* Create an owning OpenSSL QUIC listener from a QUIC server context.
 *
-* @param ctx QUIC server SSL_CTX*.
-* @returns Opaque owning listener `SSL*`.
+* The listener is the top of the QUIC server object tree: it accepts connections,
+* which in turn yield streams. Free it with `sslFree()`. Requires the QUIC-capable
+* libssl; throws `OpenSSL QUIC SSL not available`, and throws on allocation
+* failure.
+*
+* ```ts no_run
+* import { sslCtxNewQuicServer, sslNewListener, sslListen, sslFree, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxNewQuicServer();
+* const listener = sslNewListener(ctx);
+* sslListen(listener);
+* sslFree(listener);
+* sslCtxFree(ctx);
+* ```
+*
 * @internal
 */
 export function sslNewListener(ctx: object): object {
@@ -3975,10 +4471,21 @@ export function sslNewListener(ctx: object): object {
   return ssl;
 }
 /**
-* Start an OpenSSL listener.
+* Begin listening for QUIC connections on a listener object.
 *
-* @param listener QUIC listener `SSL*`.
-* @returns Nothing.
+* Transitions a listener created by `sslNewListener()` into the accepting state;
+* call it once before polling with `sslAcceptConnectionNoBlock()`. Throws if
+* libssl QUIC is unavailable or OpenSSL fails to start listening.
+*
+* ```ts no_run
+* import { sslNewListener, sslListen } from 'internal:openssl';
+* function startListening(ctx: object): object {
+*   const listener = sslNewListener(ctx);
+*   sslListen(listener);
+*   return listener;
+* }
+* ```
+*
 * @internal
 */
 export function sslListen(listener: object): void {
@@ -3987,31 +4494,66 @@ export function sslListen(listener: object): void {
   }
 }
 /**
-* Accept a QUIC connection from a listener without blocking.
+* Accept one queued QUIC connection from a listener without blocking.
 *
-* @param listener QUIC listener `SSL*`.
-* @returns Owning connection `SSL*`, or null when no connection is queued.
+* Returns an owning connection `SSL*` when one is ready, or `null` when the
+* accept queue is empty. Drive it from the event loop, freeing each accepted
+* connection with `sslFree()` when done. Because it never blocks, pair it with
+* `sslGetAcceptConnectionQueueLen()` to drain all pending connections per wakeup.
+*
+* ```ts no_run
+* import { sslAcceptConnectionNoBlock, sslGetAcceptConnectionQueueLen } from 'internal:openssl';
+* function drainConnections(listener: object): object[] {
+*   const conns: object[] = [];
+*   while (sslGetAcceptConnectionQueueLen(listener) > 0) {
+*     const conn = sslAcceptConnectionNoBlock(listener);
+*     if (conn === null) break;
+*     conns.push(conn);
+*   }
+*   return conns;
+* }
+* ```
+*
 * @internal
 */
 export function sslAcceptConnectionNoBlock(listener: object): object | null {
   return _requireSslQuic().symbols.SSL_accept_connection(listener, SSL_ACCEPT_CONNECTION_NO_BLOCK) as object | null;
 }
 /**
-* Return queued QUIC connections ready to be accepted from a listener.
+* Return the number of QUIC connections queued and ready to be accepted.
 *
-* @param listener QUIC listener `SSL*`.
-* @returns Number of queued connections.
+* A positive value means `sslAcceptConnectionNoBlock()` will return a connection
+* rather than `null`. Use it to bound an accept-drain loop.
+*
+* ```ts no_run
+* import { sslGetAcceptConnectionQueueLen } from 'internal:openssl';
+* function hasPending(listener: object): boolean {
+*   return sslGetAcceptConnectionQueueLen(listener) > 0;
+* }
+* ```
+*
 * @internal
 */
 export function sslGetAcceptConnectionQueueLen(listener: object): number {
   return Number(_requireSslQuic().symbols.SSL_get_accept_connection_queue_len(listener));
 }
 /**
-* Create a locally-initiated QUIC stream.
+* Open a locally-initiated QUIC stream on a connection.
 *
-* @param conn QUIC connection `SSL*`.
-* @param unidirectional Whether to create a unidirectional stream.
-* @returns Owning stream `SSL*`.
+* Creates an owning, non-blocking stream `SSL*`; pass `unidirectional` to open a
+* send-only stream instead of the default bidirectional one. Free it with
+* `sslFree()`. Throws if libssl QUIC is unavailable or OpenSSL cannot create the
+* stream.
+*
+* ```ts no_run
+* import { sslNewQuicStream, sslWriteEx2, sslFree } from 'internal:openssl';
+* function sendOnce(conn: object, bytes: Uint8Array) {
+*   const stream = sslNewQuicStream(conn); // bidirectional
+*   sslWriteEx2(stream, bytes, true);      // write and conclude
+*   sslFree(stream);
+* }
+* ```
+*
 * @internal
 */
 export function sslNewQuicStream(conn: object, unidirectional = false): object {
@@ -4021,20 +4563,44 @@ export function sslNewQuicStream(conn: object, unidirectional = false): object {
   return stream;
 }
 /**
-* Accept a remote-initiated QUIC stream without blocking.
+* Accept one remote-initiated QUIC stream without blocking.
 *
-* @param conn QUIC connection `SSL*`.
-* @returns Owning stream `SSL*`, or null when no stream is queued.
+* Returns an owning stream `SSL*` opened by the peer, or `null` when none is
+* queued. Requires the connection to be in multi-stream mode (see
+* `sslUseQuicMultiStreamMode()`). Free each accepted stream with `sslFree()`.
+*
+* ```ts no_run
+* import { sslAcceptStreamNoBlock, sslGetStreamId, sslFree } from 'internal:openssl';
+* function acceptStream(conn: object): number | null {
+*   const stream = sslAcceptStreamNoBlock(conn);
+*   if (stream === null) return null;
+*   const id = sslGetStreamId(stream);
+*   sslFree(stream);
+*   return id;
+* }
+* ```
+*
 * @internal
 */
 export function sslAcceptStreamNoBlock(conn: object): object | null {
   return _requireSslQuic().symbols.SSL_accept_stream(conn, SSL_ACCEPT_STREAM_NO_BLOCK) as object | null;
 }
 /**
-* Return an OpenSSL QUIC stream ID.
+* Return the QUIC transport stream ID for a stream `SSL*`.
 *
-* @param stream QUIC stream `SSL*`.
-* @returns Stream ID as a number.
+* The ID is the wire-level identifier; its low bits encode initiator and
+* directionality per RFC 9000. Useful for logging and correlating streams.
+*
+* ```ts no_run
+* import { sslNewQuicStream, sslGetStreamId, sslFree } from 'internal:openssl';
+* function streamId(conn: object): number {
+*   const stream = sslNewQuicStream(conn);
+*   const id = sslGetStreamId(stream);
+*   sslFree(stream);
+*   return id;
+* }
+* ```
+*
 * @internal
 */
 export function sslGetStreamId(stream: object): number {
@@ -4047,9 +4613,8 @@ export function sslGetStreamId(stream: object): number {
 * this call. Shutdown should be handled separately when protocol semantics
 * require it.
 *
-* ```js
-* const { sslCtxNewClient, sslNew, sslFree, sslCtxFree, tlsAvailable } =
-*   import 'internal:openssl';
+* ```ts no_run
+* import { sslCtxNewClient, sslNew, sslFree, sslCtxFree, tlsAvailable } from 'internal:openssl';
 * if (tlsAvailable) {
 *   const ctx = sslCtxNewClient();
 *   const ssl = sslNew(ctx);
@@ -4058,8 +4623,6 @@ export function sslGetStreamId(stream: object): number {
 * }
 * ```
 *
-* @param ssl Opaque owning `SSL*`.
-* @returns Nothing.
 * @internal
 */
 export function sslFree(ssl: object): void {
@@ -4069,16 +4632,21 @@ export function sslFree(ssl: object): void {
 * Bind an SSL connection object to a file descriptor.
 *
 * The descriptor is borrowed by OpenSSL and must remain valid while the SSL
-* object is used. OpenSSL setup failure throws.
+* object is used; OpenSSL will read and write directly through it. Bind the fd
+* before handshaking. OpenSSL setup failure throws.
 *
-* ```js
-* import { sslSetFd } from 'internal:openssl';
-* console.log(typeof sslSetFd);
+* ```ts no_run
+* import { sslCtxNewClient, sslNew, sslSetFd, sslSetConnectState, sslConnect } from 'internal:openssl';
+* function startClient(connectedSocketFd: number): object {
+*   const ctx = sslCtxNewClient();
+*   const ssl = sslNew(ctx);
+*   sslSetFd(ssl, connectedSocketFd);
+*   sslSetConnectState(ssl);
+*   sslConnect(ssl); // drive to completion via sslGetError()
+*   return ssl;
+* }
 * ```
 *
-* @param ssl Opaque `SSL*`.
-* @param fd POSIX file descriptor.
-* @returns Nothing.
 * @internal
 */
 export function sslSetFd(ssl: object, fd: number): void {
@@ -4089,11 +4657,17 @@ export function sslSetFd(ssl: object, fd: number): void {
 * Configure OpenSSL application-level blocking mode.
 *
 * QUIC network sockets remain nonblocking; this controls whether OpenSSL API
-* calls wait internally. Fino uses nonblocking mode and the JS event loop.
+* calls wait internally. Fino uses nonblocking mode and the JS event loop, so
+* callers set `blocking` to `false` and drive readiness with `sslHandleEvents()`.
+* Throws if libssl QUIC is unavailable or OpenSSL rejects the change.
 *
-* @param ssl SSL* object.
-* @param blocking Whether OpenSSL calls should block.
-* @returns Nothing.
+* ```ts no_run
+* import { sslSetBlockingMode } from 'internal:openssl';
+* function goNonBlocking(quicSsl: object) {
+*   sslSetBlockingMode(quicSsl, false);
+* }
+* ```
+*
 * @internal
 */
 export function sslSetBlockingMode(ssl: object, blocking: boolean): void {
@@ -4102,10 +4676,22 @@ export function sslSetBlockingMode(ssl: object, blocking: boolean): void {
   }
 }
 /**
-* Disable the implicit default QUIC stream for multi-stream operation.
+* Switch a QUIC connection to explicit multi-stream operation.
 *
-* @param ssl QUIC connection SSL*.
-* @returns Nothing.
+* Disables OpenSSL's implicit default stream and sets the incoming-stream policy
+* to accept, so every stream — local and remote — is managed explicitly through
+* `sslNewQuicStream()` and `sslAcceptStreamNoBlock()`. Call it once, after the
+* connection is established and before creating or accepting streams. Throws if
+* libssl QUIC is unavailable or either OpenSSL call fails.
+*
+* ```ts no_run
+* import { sslUseQuicMultiStreamMode, sslAcceptStreamNoBlock } from 'internal:openssl';
+* function enableMultiStream(conn: object) {
+*   sslUseQuicMultiStreamMode(conn);
+*   // now sslAcceptStreamNoBlock(conn) returns peer-initiated streams
+* }
+* ```
+*
 * @internal
 */
 export function sslUseQuicMultiStreamMode(ssl: object): void {
@@ -4118,38 +4704,63 @@ export function sslUseQuicMultiStreamMode(ssl: object): void {
   }
 }
 /**
-* Drive OpenSSL QUIC event processing.
+* Drive OpenSSL QUIC event processing for a listener, connection, or stream.
 *
-* @param ssl QUIC listener, connection, or stream SSL*.
-* @returns Raw OpenSSL return value.
+* Advances QUIC timers and I/O: it flushes pending packets, processes received
+* datagrams, and services acks and loss detection. Because the underlying symbol
+* is declared `async: true`, the call is offloaded to the blocking pool and
+* returns a `Promise`; await it on each loop wakeup to keep a QUIC endpoint live.
+* Throws if libssl QUIC is unavailable.
+*
+* ```ts no_run
+* import { sslHandleEvents } from 'internal:openssl';
+* async function pump(quicSsl: object) {
+*   await sslHandleEvents(quicSsl);
+* }
+* ```
+*
 * @internal
 */
 export function sslHandleEvents(ssl: object): Promise<number> {
   return _requireSslQuic().symbols.SSL_handle_events(ssl) as Promise<number>;
 }
 /**
-* Whether an SSL handshake has completed.
+* Report whether the TLS handshake on an `SSL*` has completed.
 *
-* @param ssl SSL* object.
-* @returns True after handshake completion.
+* Returns `true` once the handshake is finished and application data can flow.
+* Use it to gate reads and writes that must wait for a secure channel.
+*
+* ```ts no_run
+* import { sslIsInitFinished } from 'internal:openssl';
+* function ready(ssl: object): boolean {
+*   return sslIsInitFinished(ssl);
+* }
+* ```
+*
 * @internal
 */
 export function sslIsInitFinished(ssl: object): boolean {
   return _requireSsl().symbols.SSL_is_init_finished(ssl) === 1;
 }
 /**
-* Set SNI hostname and enable hostname verification.
-* RFC 6066 forbids IP literals in the SNI extension — SNI is skipped for them.
-* SSL_set1_host is always called so that IP SAN matching still works.
+* Set the SNI hostname and enable OpenSSL hostname verification on an `SSL*`.
 *
-* ```js
-* import { sslSetHostname } from 'internal:openssl';
-* console.log(typeof sslSetHostname);
+* Sends `hostname` in the TLS SNI extension so the server can pick a certificate,
+* and enables name matching so the peer certificate must cover it. RFC 6066
+* forbids IP literals in SNI, so for an IPv4/IPv6 literal the SNI extension is
+* skipped; `SSL_set1_host` is still called so IP-SAN matching works. Apply it on
+* a client `SSL*` before the handshake.
+*
+* ```ts no_run
+* import { sslNew, sslSetHostname, sslSetConnectState } from 'internal:openssl';
+* function connectTo(ctx: object, host: string): object {
+*   const ssl = sslNew(ctx);
+*   sslSetHostname(ssl, host); // e.g. 'example.com'
+*   sslSetConnectState(ssl);
+*   return ssl;
+* }
 * ```
 *
-* @param {object} ssl — SSL* pointer
-* @param {string} hostname — DNS name or IP address
-* @returns Nothing.
 * @internal
 */
 export function sslSetHostname(ssl: object, hostname: string): void {
@@ -4168,15 +4779,20 @@ export function sslSetHostname(ssl: object, hostname: string): void {
 *
 * Returns the raw `SSL_connect()` result, usually `1` on success and
 * non-positive values requiring `sslGetError()` handling. This wrapper does not
-* loop on WANT_READ or WANT_WRITE.
+* loop on WANT_READ or WANT_WRITE; the caller retries after the event loop
+* reports the requested readiness.
 *
-* ```js
-* import { sslConnect } from 'internal:openssl';
-* console.log(typeof sslConnect);
+* ```ts no_run
+* import { sslConnect, sslGetError, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE } from 'internal:openssl';
+* function step(ssl: object): 'done' | 'again' {
+*   const rc = sslConnect(ssl);
+*   if (rc === 1) return 'done';
+*   const err = sslGetError(ssl, rc);
+*   if (err === SSL_ERROR_WANT_READ || err === SSL_ERROR_WANT_WRITE) return 'again';
+*   throw new Error('handshake failed');
+* }
 * ```
 *
-* @param ssl Opaque `SSL*`.
-* @returns Raw OpenSSL handshake result.
 * @internal
 */
 export function sslConnect(ssl: object): number {
@@ -4185,17 +4801,21 @@ export function sslConnect(ssl: object): number {
 /**
 * Perform a server TLS handshake step.
 *
-* Returns the raw `SSL_accept()` result, usually `1` on success. The FFI symbol
-* is async and runs on the blocking pool so ALPN callbacks can bridge safely.
-* Non-positive results require `sslGetError()` handling by the caller.
+* Returns a promise resolving to the raw `SSL_accept()` result, usually `1` on
+* success. The FFI symbol is `async: true` and runs on the blocking pool so a
+* server ALPN callback (see `sslCtxSetAlpnServerProtos()`) can bridge safely
+* rather than firing on the V8 thread. Non-positive results require
+* `sslGetError()` handling by the caller.
 *
-* ```js
-* import { sslAccept } from 'internal:openssl';
-* console.log(typeof sslAccept);
+* ```ts no_run
+* import { sslAccept, sslGetError, SSL_ERROR_WANT_READ } from 'internal:openssl';
+* async function handshakeServer(ssl: object): Promise<boolean> {
+*   const rc = await sslAccept(ssl);
+*   if (rc === 1) return true;
+*   return sslGetError(ssl, rc) === SSL_ERROR_WANT_READ; // retry later
+* }
 * ```
 *
-* @param ssl Opaque `SSL*`.
-* @returns A promise resolving to the raw OpenSSL handshake result.
 * @internal
 */
 export function sslAccept(ssl: object): Promise<number> {
@@ -4213,14 +4833,14 @@ export function sslAccept(ssl: object): Promise<number> {
 * Requires SSL_accept to be async:true so the FfiCallback fires via the
 * condvar bridge rather than silently on the V8 thread.
 *
-* ```js
-* import { sslCtxSetAlpnServerProtos } from 'internal:openssl';
-* console.log(typeof sslCtxSetAlpnServerProtos);
+* ```ts no_run
+* import { sslCtxLoadCertKey, sslCtxSetAlpnServerProtos, sslCtxFree } from 'internal:openssl';
+* const ctx = sslCtxLoadCertKey('/tls/cert.pem', '/tls/key.pem');
+* const alpnCb = sslCtxSetAlpnServerProtos(ctx, ['h2', 'http/1.1']); // prefer h2
+* // ... keep `alpnCb` alive for the context's lifetime; close it before sslCtxFree ...
+* sslCtxFree(ctx);
 * ```
 *
-* @param ctx Server SSL_CTX*.
-* @param protocols Ordered server preference list.
-* @returns Retained FFI callback object; caller must keep and close it.
 * @internal
 */
 export function sslCtxSetAlpnServerProtos(ctx: object, protocols: string[]): object {
@@ -4260,28 +4880,45 @@ export function sslCtxSetAlpnServerProtos(ctx: object, protocols: string[]): obj
 *
 * This returns the raw `SSL_read()` result: positive byte count on success, `0`
 * for graceful close, or a negative value that should be interpreted with
-* `sslGetError()`. The buffer must be at least `len` bytes.
+* `sslGetError()`. The buffer must be at least `len` bytes. For QUIC streams and
+* 64-bit lengths prefer the classified `sslReadEx()`.
 *
-* ```js
-* import { sslRead } from 'internal:openssl';
-* console.log(typeof sslRead);
+* ```ts no_run
+* import { sslRead, sslGetError, SSL_ERROR_WANT_READ } from 'internal:openssl';
+* function readInto(ssl: object): Uint8Array | null {
+*   const buf = new ArrayBuffer(4096);
+*   const n = sslRead(ssl, buf, 4096);
+*   if (n > 0) return new Uint8Array(buf, 0, n);
+*   if (n <= 0 && sslGetError(ssl, n) === SSL_ERROR_WANT_READ) return null; // retry
+*   return new Uint8Array(0); // closed
+* }
 * ```
 *
-* @param {object} ssl
-* @param {ArrayBuffer} buf
-* @param {number} len
-* @returns {number} bytes read, 0 on graceful close, negative on error
 * @internal
 */
 export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number {
   return _requireSsl().symbols.SSL_read(ssl, buf, len);
 }
 /**
-* Read decrypted bytes with OpenSSL's size_t-based API.
+* Read decrypted bytes with OpenSSL's `size_t`-based `SSL_read_ex` API.
 *
-* @param ssl QUIC stream `SSL*`.
-* @param buf Destination buffer.
-* @returns Bytes read, `0` for graceful stream EOF, or `null` for WANT_READ/WRITE.
+* Unlike `sslRead()`, this classifies the outcome instead of returning a raw
+* code: a positive count is the bytes read, `0` signals a graceful stream/EOF
+* close (`SSL_ERROR_ZERO_RETURN`), and `null` means the operation would block
+* (`WANT_READ`/`WANT_WRITE`) and should be retried after the event loop reports
+* readiness. Any other error throws. Used for QUIC streams where 64-bit lengths
+* matter. Reads at most `buf.byteLength` bytes.
+*
+* ```ts no_run
+* import { sslReadEx } from 'internal:openssl';
+* function readChunk(stream: object): Uint8Array | null {
+*   const buf = new ArrayBuffer(4096);
+*   const n = sslReadEx(stream, buf);
+*   if (n === null || n === 0) return null; // would block, or closed
+*   return new Uint8Array(buf, 0, n);
+* }
+* ```
+*
 * @internal
 */
 export function sslReadEx(ssl: object, buf: ArrayBuffer): number | null {
@@ -4298,29 +4935,41 @@ export function sslReadEx(ssl: object, buf: ArrayBuffer): number | null {
 *
 * This returns the raw `SSL_write()` result: positive byte count on success or
 * a non-positive value that should be interpreted with `sslGetError()`. The
-* caller is responsible for retrying partial writes.
+* caller is responsible for retrying partial writes, resubmitting the unwritten
+* tail once the loop reports writability.
 *
-* ```js
-* import { sslWrite } from 'internal:openssl';
-* console.log(typeof sslWrite);
+* ```ts no_run
+* import { sslWrite, sslGetError, SSL_ERROR_WANT_WRITE } from 'internal:openssl';
+* function writeAll(ssl: object, data: Uint8Array): number {
+*   const n = sslWrite(ssl, data, data.byteLength);
+*   if (n > 0) return n; // may be < data.byteLength; send the remainder next time
+*   if (sslGetError(ssl, n) === SSL_ERROR_WANT_WRITE) return 0; // retry later
+*   throw new Error('TLS write failed');
+* }
 * ```
 *
-* @param {object} ssl
-* @param {Uint8Array|ArrayBuffer} buf
-* @param {number} len
-* @returns {number} bytes written, or negative on error
 * @internal
 */
 export function sslWrite(ssl: object, buf: Uint8Array | ArrayBuffer, len: number): number {
   return _requireSsl().symbols.SSL_write(ssl, buf, len);
 }
 /**
-* Write decrypted bytes with optional QUIC FIN.
+* Write bytes to a QUIC stream with an optional concluding FIN.
 *
-* @param ssl QUIC stream `SSL*`.
-* @param buf Source bytes.
-* @param conclude Whether to append the stream FIN after this write.
-* @returns Bytes accepted, or `null` for WANT_READ/WRITE.
+* Uses OpenSSL's `SSL_write_ex2`. Returns the number of bytes accepted, or `null`
+* when the write would block (`WANT_READ`/`WANT_WRITE`) and should be retried
+* after the loop reports writability. When `conclude` is `true` the stream's send
+* side is closed after this write (equivalent to a follow-up `sslStreamConclude()`),
+* signalling the peer that no more data will follow. Any other error throws.
+*
+* ```ts no_run
+* import { sslWriteEx2 } from 'internal:openssl';
+* function sendFinal(stream: object, payload: Uint8Array): boolean {
+*   const n = sslWriteEx2(stream, payload, true);
+*   return n === payload.byteLength; // null means retry later
+* }
+* ```
+*
 * @internal
 */
 export function sslWriteEx2(ssl: object, buf: Uint8Array | ArrayBuffer, conclude = false): number | null {
@@ -4332,10 +4981,20 @@ export function sslWriteEx2(ssl: object, buf: Uint8Array | ArrayBuffer, conclude
   throw new Error('SSL_write_ex2 failed: ' + getErrorString());
 }
 /**
-* Conclude the sending side of a QUIC stream.
+* Close the sending side of a QUIC stream (send FIN) without writing data.
 *
-* @param ssl QUIC stream `SSL*`.
-* @returns Nothing.
+* Signals normal end-of-stream so the peer sees EOF; the receive side stays open
+* for a bidirectional stream. Prefer the `conclude` flag of `sslWriteEx2()` when
+* concluding alongside a final write. Throws if libssl QUIC is unavailable or
+* OpenSSL rejects the call.
+*
+* ```ts no_run
+* import { sslStreamConclude } from 'internal:openssl';
+* function finish(stream: object) {
+*   sslStreamConclude(stream);
+* }
+* ```
+*
 * @internal
 */
 export function sslStreamConclude(ssl: object): void {
@@ -4344,10 +5003,19 @@ export function sslStreamConclude(ssl: object): void {
   }
 }
 /**
-* Rapidly close a QUIC connection.
+* Immediately close a QUIC connection without a draining handshake.
 *
-* @param ssl QUIC connection `SSL*`.
-* @returns Raw OpenSSL result.
+* Uses the `SSL_SHUTDOWN_FLAG_RAPID` flag so `SSL_shutdown_ex` tears the
+* connection down at once rather than waiting for the peer's acknowledgement —
+* appropriate on error paths or forced teardown. Returns the raw OpenSSL result.
+*
+* ```ts no_run
+* import { sslShutdownQuicRapid } from 'internal:openssl';
+* function forceClose(conn: object) {
+*   sslShutdownQuicRapid(conn);
+* }
+* ```
+*
 * @internal
 */
 export function sslShutdownQuicRapid(ssl: object): number {
@@ -4356,17 +5024,20 @@ export function sslShutdownQuicRapid(ssl: object): number {
 /**
 * Initiate or continue the TLS shutdown sequence.
 *
-* Returns the raw `SSL_shutdown()` result. Callers must interpret non-success
-* results with OpenSSL semantics and may need to call the function again for a
-* bidirectional shutdown.
+* Returns the raw `SSL_shutdown()` result: `1` when the bidirectional close is
+* complete, `0` when the close-notify has been sent but the peer's is still
+* pending (call again after reading), or negative for an error to inspect with
+* `sslGetError()`.
 *
-* ```js
+* ```ts no_run
 * import { sslShutdown } from 'internal:openssl';
-* console.log(typeof sslShutdown);
+* function closeTls(ssl: object): boolean {
+*   let rc = sslShutdown(ssl);
+*   if (rc === 0) rc = sslShutdown(ssl); // second call after peer close-notify
+*   return rc === 1;
+* }
 * ```
 *
-* @param ssl Opaque `SSL*`.
-* @returns Raw OpenSSL shutdown result.
 * @internal
 */
 export function sslShutdown(ssl: object): number {
@@ -4378,15 +5049,18 @@ export function sslShutdown(ssl: object): number {
 * Use this after `sslRead()`, `sslWrite()`, `sslConnect()`, `sslAccept()`, or
 * `sslShutdown()` return a non-success value. Returned constants include
 * `SSL_ERROR_WANT_READ`, `SSL_ERROR_WANT_WRITE`, and `SSL_ERROR_ZERO_RETURN`.
+* `ret` must be the exact value the preceding call returned, since OpenSSL keys
+* the classification on it.
 *
-* ```js
-* import { sslGetError, SSL_ERROR_WANT_READ } from 'internal:openssl';
-* console.log(typeof sslGetError, SSL_ERROR_WANT_READ);
+* ```ts no_run
+* import { sslWrite, sslGetError, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE } from 'internal:openssl';
+* function wouldBlock(ssl: object, data: Uint8Array): boolean {
+*   const rc = sslWrite(ssl, data, data.byteLength);
+*   const err = sslGetError(ssl, rc);
+*   return err === SSL_ERROR_WANT_READ || err === SSL_ERROR_WANT_WRITE;
+* }
 * ```
 *
-* @param ssl Opaque `SSL*`.
-* @param ret Raw result from a previous SSL operation.
-* @returns OpenSSL SSL_ERROR_* code.
 * @internal
 */
 export function sslGetError(ssl: object, ret: number): number {
@@ -4396,15 +5070,23 @@ export function sslGetError(ssl: object, ret: number): number {
 * Return bytes already decrypted and buffered by OpenSSL.
 *
 * This does not read from the underlying descriptor. A positive value means
-* `sslRead()` can return decrypted bytes without waiting for more network I/O.
+* `sslRead()` can return decrypted bytes without waiting for more network I/O,
+* so loop on it to drain a TLS record fully before parking on socket readiness.
 *
-* ```js
-* import { sslPending } from 'internal:openssl';
-* console.log(typeof sslPending);
+* ```ts no_run
+* import { sslPending, sslRead } from 'internal:openssl';
+* function drain(ssl: object): Uint8Array[] {
+*   const chunks: Uint8Array[] = [];
+*   while (sslPending(ssl) > 0) {
+*     const buf = new ArrayBuffer(4096);
+*     const n = sslRead(ssl, buf, 4096);
+*     if (n <= 0) break;
+*     chunks.push(new Uint8Array(buf, 0, n));
+*   }
+*   return chunks;
+* }
 * ```
 *
-* @param ssl Opaque `SSL*`.
-* @returns Pending decrypted byte count.
 * @internal
 */
 export function sslPending(ssl: object): number {
@@ -4490,5 +5172,19 @@ export const SSL_ERROR_ZERO_RETURN = 6;
 * @internal
 */
 export const SSL_VERIFY_PEER = 1;
-/** OpenSSL verification mode bit requiring clients to send a certificate. */
+/**
+* OpenSSL verification mode bit that aborts the handshake if the peer sends no
+* certificate.
+*
+* Only meaningful on a server, and only in combination with `SSL_VERIFY_PEER`;
+* together they enforce mutual TLS. Combine with the bitwise OR operator.
+*
+* ```ts no_run
+* import { SSL_VERIFY_PEER, SSL_VERIFY_FAIL_IF_NO_PEER_CERT } from 'internal:openssl';
+* const requireClientCert = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+* console.log(requireClientCert); // 3
+* ```
+*
+* @internal
+*/
 export const SSL_VERIFY_FAIL_IF_NO_PEER_CERT = 2;

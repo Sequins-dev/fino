@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { App, cookies, memorySessionStore, sessions } from 'fino:net/http/app';
+import { App } from 'fino:net/http/app';
 import { parseEventStream } from 'fino:net/http/eventstream';
 import { topic } from 'fino:context/topic';
 import { h, Signal } from 'fino:ui';
@@ -29,9 +29,8 @@ function makeApp() {
     }
   });
   const app = new App();
-  app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() }));
-  app.use(webUI({ store, secret: 'test-secret' }));
-  app.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
+  const ui = app.layer(webUI({ store, secret: 'test-secret' }));
+  ui.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
   return { app, store };
 }
 

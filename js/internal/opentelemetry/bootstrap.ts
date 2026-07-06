@@ -15,10 +15,25 @@
 * auto-discovery of third-party instrumentation packages, and upstream Node SDK
 * bootstrap parity are intentionally outside this module.
 *
-* ```js
-* import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
-* console.log(typeof createCliOtelRuntime);
+* This module is not meant to be imported by application code. The CLI calls
+* `createCliOtelRuntime` once during startup when an OTLP endpoint is present;
+* the returned providers are installed as the process-wide OpenTelemetry
+* runtime and the module registers its own shutdown hook to flush pending
+* telemetry before exit. There is no teardown API to call yourself.
+*
+* ```ts no_run
+*   import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
+*
+*   const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://127.0.0.1:4318';
+*   const { tracerProvider, loggerProvider, meterProvider } =
+*     await createCliOtelRuntime(endpoint, 'server.ts');
+*
+*   const tracer = tracerProvider.getTracer('cli');
+*   const span = tracer.startSpan('startup');
+*   span.end();
 * ```
+*
+* OpenTelemetry OTLP/HTTP specification: https://opentelemetry.io/docs/specs/otlp/
 *
 * @internal
 */
@@ -98,7 +113,7 @@ function envResourceAttributes(): Record<string, unknown> {
 async function loadCliResource(script: string): Promise<Resource> {
   const attributes: Record<string, unknown> = {};
   try {
-    const pkgText = await fs.readFile(`${cwd()}/package.json`);
+    const pkgText = new TextDecoder().decode(await fs.readFile(`${cwd()}/package.json`));
     const pkg = JSON.parse(pkgText);
     if (typeof pkg?.name === 'string' && pkg.name.trim()) attributes['service.name'] = pkg.name.trim();
     if (typeof pkg?.version === 'string' && pkg.version.trim()) attributes['service.version'] = pkg.version.trim();
@@ -110,25 +125,56 @@ async function loadCliResource(script: string): Promise<Resource> {
   return new Resource(attributes);
 }
 /**
-* Build tracer, logger, and meter providers for an instrumented CLI script.
+* Build and start the tracer, logger, and meter providers for an instrumented CLI script.
 *
-* The resource is loaded from `package.json`, `OTEL_RESOURCE_ATTRIBUTES`, and
-* `OTEL_SERVICE_NAME`, then falls back to a service name inferred from `script`.
-* `debug` enables verbose exporter request and response logging. The returned
-* providers are started through an `OtelSDK` instance and a shutdown hook is
-* registered to flush and stop it. Exporter partial-success and request
-* failures are logged to stderr.
+* `endpoint` is the base OTLP/HTTP collector URL; per-signal overrides from
+* `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `..._LOGS_ENDPOINT`, and
+* `..._METRICS_ENDPOINT` are layered on top of it. `script` is the path or
+* specifier of the entry script and is only used to derive a fallback
+* `service.name` when neither `package.json`, `OTEL_RESOURCE_ATTRIBUTES`, nor
+* `OTEL_SERVICE_NAME` supply one. Passing `debug` as true logs every exporter
+* request and response to stderr under the `[otel]` prefix, including request
+* headers and bodies — useful for diagnosing collector connectivity, verbose
+* enough to avoid in production.
 *
-* ```js
-* import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
-* const runtime = await createCliOtelRuntime('http://127.0.0.1:4318', 'server.ts');
-* console.log(Boolean(runtime.tracerProvider));
+* A single `OTLPHttpJsonExporter` is shared by a `BatchSpanProcessor`, a
+* `BatchLogRecordProcessor`, and a `PeriodicMetricReader`. The batch delay and
+* metric interval both come from `FINO_OTEL_EXPORT_INTERVAL_MS` (default 1000ms).
+* Export failures and OTLP partial-success responses are always reported to
+* stderr regardless of `debug`. The full built-in instrumentation set — trace
+* topic, HTTP server, fetch, DNS, socket, TLS, and jobs — is installed and
+* started before this function returns.
+*
+* The whole runtime is driven by an `OtelSDK` instance that is started
+* immediately, and a shutdown hook is registered so the SDK flushes buffered
+* telemetry and stops on process exit; the caller does not manage teardown.
+* The returned object exposes the freshly constructed `tracerProvider`,
+* `loggerProvider`, and `meterProvider` for the CLI to install as the global
+* OpenTelemetry providers.
+*
+* Throws a `TypeError` if `OTEL_EXPORTER_OTLP_COMPRESSION` is set to anything
+* other than `none` or `gzip`. A missing or unreadable `package.json` is not an
+* error — resource discovery silently falls back to the environment and the
+* inferred service name.
+*
+* ```ts no_run
+*   import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
+*
+*   const { tracerProvider, meterProvider } = await createCliOtelRuntime(
+*     'http://127.0.0.1:4318',
+*     '/srv/app/server.ts',
+*     true, // verbose exporter logging
+*   );
+*
+*   const tracer = tracerProvider.getTracer('request');
+*   const meter = meterProvider.getMeter('request');
+*   const requests = meter.createCounter('http.server.requests');
+*
+*   const span = tracer.startSpan('handle');
+*   requests.add(1);
+*   span.end();
 * ```
 *
-* @param endpoint OTLP/HTTP collector endpoint.
-* @param script Script path or specifier used for fallback service metadata.
-* @param debug Enables exporter request/response logging when true.
-* @returns Providers to install around CLI script execution.
 * @internal
 */
 export async function createCliOtelRuntime(endpoint: string, script: string, debug = false) {

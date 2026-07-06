@@ -75,9 +75,10 @@ describe('fino:cache', () => {
 
   it('responseCache stores cacheable GET responses and respects vary headers', async (t) => {
     const cache = memoryCache();
-    const app = new App().use(responseCache(cache, { ttlMs: 1_000, vary: ['accept-language'] }));
+    const app = new App();
+    const cached = app.layer(responseCache(cache, { ttlMs: 1_000, vary: ['accept-language'] }));
     let calls = 0;
-    app.get('/hello').handle((ctx) => {
+    cached.get('/hello').handle((ctx) => {
       calls++;
       return new Response(`hello ${ctx.request.headers.get('accept-language') ?? 'none'} ${calls}`, {
         headers: { 'content-type': 'text/plain' }
@@ -96,10 +97,11 @@ describe('fino:cache', () => {
 
   it('responseCache bypasses unsafe or private responses', async (t) => {
     const cache = memoryCache();
-    const app = new App().use(responseCache(cache, { ttlMs: 1_000 }));
+    const app = new App();
+    const cached = app.layer(responseCache(cache, { ttlMs: 1_000 }));
     let calls = 0;
-    app.post('/mutate').handle(() => new Response('mutated'));
-    app.get('/private').handle(() => {
+    cached.post('/mutate').handle(() => new Response('mutated'));
+    cached.get('/private').handle(() => {
       calls++;
       return new Response(`private ${calls}`, {
         headers: { 'set-cookie': 'sid=1' }

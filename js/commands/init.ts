@@ -1,15 +1,29 @@
 /**
 * fino:commands/init — reusable `fino init` command task.
 *
-* Builds the `fino init` command. The command creates a `package.json` in the
-* current working directory, deriving defaults from the directory name and Git
-* configuration when available. Interactive prompts are used only when the
-* command context supports them and `--yes` is not set.
+* Builds the `fino init` command, which scaffolds a `package.json` in the
+* current working directory. Defaults are derived from the environment where
+* possible: the package name comes from the directory basename (falling back
+* to `fino-app`), the author from `git config user.name` / `user.email`, and
+* the repository from `git config remote.origin.url`. Git lookups fail soft —
+* a missing `git` binary or unset config simply yields an empty default.
 *
-* ```js
+* When the command runs on an interactive terminal, each field that was not
+* passed explicitly as a flag is confirmed through a prompt; `--yes` accepts
+* all defaults without prompting, and non-interactive contexts behave as if
+* `--yes` were set. The generated manifest always includes `type: "module"` —
+* fino packages are ESM-only.
+*
+* An existing `package.json` is never overwritten unless `--force` is passed.
+* Package names are validated against the npm-style form
+* `@scope/name` / `name` (lowercase letters, digits, dots, underscores,
+* hyphens); an invalid name aborts the command before anything is written.
+*
+* ```ts no_run
 * import initCommand from 'fino:commands/init';
-* const command = initCommand;
-* console.log(command.name);
+*
+* // Non-interactive scaffold, accepting derived defaults:
+* await initCommand.parse(['--yes', '--name', 'my-tool', '--license', 'Apache-2.0']);
 * ```
 *
 */
@@ -17,6 +31,7 @@ import { Task, type TaskContext } from '../task.ts';
 import { DiskFileSystem } from '../file/fs.ts';
 import { cwd, env, Process } from '../process.ts';
 const fs = new DiskFileSystem();
+const textEncoder = new TextEncoder();
 function definedEnv(source: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
@@ -118,16 +133,25 @@ async function resolveField(ctx: TaskContext, input: Record<string, unknown>, ke
   return currentValue;
 }
 /**
-* Create the `init` subcommand used by the root Fino CLI.
+* The `init` subcommand used by the root Fino CLI.
 *
-* The returned command writes `package.json` with `name`, `version`, `type`,
-* `description`, `license`, `author`, and `repository` fields. Existing files
-* are preserved unless `--force` is provided. Package names are validated before
-* writing; invalid input and filesystem failures are reported as thrown errors.
+* Writes `package.json` with `name`, `version`, `type`, `description`,
+* `license`, `author`, and `repository` fields, pretty-printed with two-space
+* indentation and a trailing newline. In text mode the task resolves to a
+* `Wrote <path>` message; with `--json` it writes and returns a structured
+* result of the shape `{ command, ok, path, package, message }`.
 *
-* ```js
+* Throws if `package.json` already exists and `--force` was not given, if the
+* resolved package name fails validation, or if the filesystem write fails.
+*
+* ```ts no_run
 * import init from 'fino:commands/init';
-* await init.parse(['--yes', '--name', 'fino-app']);
+*
+* // Interactive: prompts for each field on a TTY.
+* await init.parse([]);
+*
+* // Scripted: accept defaults, overwrite an existing manifest.
+* await init.parse(['--yes', '--force', '--name', 'fino-app']);
 * ```
 *
 */
@@ -177,7 +201,7 @@ const command = new Task({
         author,
         repository
       };
-      await fs.writeFile(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n');
+      await fs.writeFile(packageJsonPath, textEncoder.encode(JSON.stringify(pkg, null, 2) + '\n'));
       const message = `Wrote ${packageJsonPath}`;
       if (ctx.writer.mode === 'json') {
         const result = {

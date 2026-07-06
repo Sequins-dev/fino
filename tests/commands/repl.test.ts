@@ -1,7 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import { Process, env, execPath } from 'fino:process';
-import { _formatRawTerminalOutput } from 'fino:commands/repl';
 const encodeUtf8 = (value: string): Uint8Array => new TextEncoder().encode(value);
 const decodeUtf8 = (value: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(value);
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
@@ -136,10 +135,6 @@ describe('REPL realm', () => {
   });
 });
 describe('REPL CLI', () => {
-  it('formats raw terminal output with carriage-return line endings', (t) => {
-    t.equal(_formatRawTerminalOutput('Fino REPL\nType .exit to quit.\n\n> '), 'Fino REPL\r\nType .exit to quit.\r\n\r\n> ', 'raw terminal newlines return to column zero');
-    t.equal(_formatRawTerminalOutput('already\r\nok\n'), 'already\r\nok\r\n', 'existing CRLF line endings are preserved');
-  });
   it('evaluates stdin expressions and exits on .exit', async (t) => {
     const { stdout, stderr, result } = await runRepl('1 + 2\n.exit\n');
     t.equal(result.code, 0, 'repl exits successfully');

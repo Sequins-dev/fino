@@ -36,7 +36,8 @@
 */
 import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
-import { MessagePort, MessageChannel, ThreadPort, BaseTransportPort, type MessageEvent } from '../globals/messaging.ts';
+import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
+import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
 import type { ClusterClient } from 'internal:cluster/client';

@@ -5,6 +5,7 @@ import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { createArchive, extractArchive, listArchive, openArchive } from 'fino:archive';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+const decodeUtf8 = (b: Uint8Array): string => new TextDecoder().decode(b);
 const TEST_DIR = '/tmp/fino-archive-test-' + Math.floor(Math.random() * 1e6);
 async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
   try {
@@ -34,6 +35,9 @@ async function readBytes(fs: DiskFileSystem, path: string): Promise<Uint8Array> 
   } finally {
     await file.close();
   }
+}
+async function readText(fs: DiskFileSystem, path: string): Promise<string> {
+  return decodeUtf8(await fs.readFile(path));
 }
 function findSignature(bytes: Uint8Array, signature: number): number {
   for (let i = 0; i + 4 <= bytes.byteLength; i++) {
@@ -172,7 +176,7 @@ describe('fino:archive', () => {
     t.equal(bytes[3], 4, 'binary content preserved');
     await opened.close();
     await extractArchive(archivePath, outputDir);
-    t.equal(await fs.readFile(outputDir + '/hello.txt'), 'hello zip', 'extracts text file');
+    t.equal(await readText(fs, outputDir + '/hello.txt'), 'hello zip', 'extracts text file');
     const nested = await fs.open(outputDir + '/nested/data.bin', 'r');
     const nestedBytes = await nested.bytes();
     await nested.close();
@@ -217,7 +221,7 @@ describe('fino:archive', () => {
     t.equal(await opened.readText('docs/readme.txt'), 'hello tar', 'tar readText');
     await opened.close();
     await extractArchive(archivePath, outputDir);
-    t.equal(await fs.readFile(outputDir + '/docs/readme.txt'), 'hello tar', 'tar extract');
+    t.equal(await readText(fs, outputDir + '/docs/readme.txt'), 'hello tar', 'tar extract');
   });
   it('creates, reads, mutates, and extracts tar.gz archives', async (t) => {
     const archivePath = TEST_DIR + '/sample.tgz';
@@ -240,8 +244,8 @@ describe('fino:archive', () => {
     t.equal(await reopened.readText('renamed.txt'), 'one', 'renamed entry preserved');
     await reopened.close();
     await extractArchive(archivePath, outputDir);
-    t.equal(await fs.readFile(outputDir + '/renamed.txt'), 'one', 'tar.gz extract renamed file');
-    t.equal(await fs.readFile(outputDir + '/added.txt'), 'three', 'tar.gz extract added file');
+    t.equal(await readText(fs, outputDir + '/renamed.txt'), 'one', 'tar.gz extract renamed file');
+    t.equal(await readText(fs, outputDir + '/added.txt'), 'three', 'tar.gz extract added file');
   });
   // ---------------------------------------------------------------------------
   // Security regression tests (A1, A2, A3 fixes)
@@ -304,7 +308,7 @@ describe('fino:archive', () => {
     await fs.writeFile(archivePath, tarBytes);
     await extractArchive(archivePath, outputDir);
     // The safe file should be extracted
-    t.equal(await fs.readFile(outputDir + '/safe.txt'), 'safe file content', 'regular file extracted');
+    t.equal(await readText(fs, outputDir + '/safe.txt'), 'safe file content', 'regular file extracted');
     // The symlink entry must NOT have created a file
     let symlinkFileExists = false;
     try {
@@ -359,14 +363,14 @@ describe('fino:archive', () => {
     await archive.close();
     // Place a symlink at the expected output path pointing to a different file.
     const victim = TEST_DIR + '/victim.txt';
-    await fs.writeFile(victim, 'original victim');
+    await fs.writeFile(victim, encodeUtf8('original victim'));
     await fs.symlink(victim, outputDir + '/data.txt');
     await extractArchive(archivePath, outputDir);
     // The symlink should have been replaced with the real file.
-    const content = await fs.readFile(outputDir + '/data.txt');
+    const content = await readText(fs, outputDir + '/data.txt');
     t.equal(content, 'real content from archive', 'archive content written to output path');
     // Victim file must not have been overwritten.
-    const victimContent = await fs.readFile(victim);
+    const victimContent = await readText(fs, victim);
     t.equal(victimContent, 'original victim', 'victim file was NOT modified (symlink was unlinked)');
   });
   it('rejects traversal entries during extract', async (t) => {
@@ -542,8 +546,8 @@ describe('fino:archive', () => {
       maxTotalBytes: 4
     });
     t.equal(result.entries, 2, 'limits allow exact-size extraction');
-    t.equal(await fs.readFile(TEST_DIR + '/limits-ok/a.txt'), 'aa', 'first limited file extracted');
-    t.equal(await fs.readFile(TEST_DIR + '/limits-ok/b.txt'), 'bb', 'second limited file extracted');
+    t.equal(await readText(fs, TEST_DIR + '/limits-ok/a.txt'), 'aa', 'first limited file extracted');
+    t.equal(await readText(fs, TEST_DIR + '/limits-ok/b.txt'), 'bb', 'second limited file extracted');
   });
   it('reads compatibility-style ZIP and TAR fixtures with directory entries and metadata', async (t) => {
     const zipPath = TEST_DIR + '/compat.zip';
@@ -563,7 +567,7 @@ describe('fino:archive', () => {
     t.equal(zipEntries[0]?.kind, 'directory', 'zip directory kind is detected');
     t.equal(zipEntries[1]?.name, 'docs/readme.txt', 'zip file entry is preserved');
     await extractArchive(zipPath, zipOut);
-    t.equal(await fs.readFile(zipOut + '/docs/readme.txt'), 'zip compat\n', 'zip fixture extracts file under directory');
+    t.equal(await readText(fs, zipOut + '/docs/readme.txt'), 'zip compat\n', 'zip fixture extracts file under directory');
     const tarPath = TEST_DIR + '/compat.tar';
     const payload = encodeUtf8('tar compat\n');
     const padded = new Uint8Array(Math.ceil(payload.byteLength / 512) * 512);
@@ -578,6 +582,6 @@ describe('fino:archive', () => {
     t.equal(tarEntries[0]?.kind, 'directory', 'tar directory kind is detected');
     t.equal(tarEntries[1]?.name, 'docs/readme.txt', 'tar file entry is preserved');
     await extractArchive(tarPath, TEST_DIR + '/compat-tar-out');
-    t.equal(await fs.readFile(TEST_DIR + '/compat-tar-out/docs/readme.txt'), 'tar compat\n', 'tar fixture extracts file under directory');
+    t.equal(await readText(fs, TEST_DIR + '/compat-tar-out/docs/readme.txt'), 'tar compat\n', 'tar fixture extracts file under directory');
   });
 });

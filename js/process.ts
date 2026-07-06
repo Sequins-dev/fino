@@ -98,7 +98,7 @@ import { landlockAvailable } from './internal/security/sandbox/landlock.ts';
 import { seccompAvailable } from './internal/security/sandbox/seccomp.ts';
 import { seatbeltAvailable } from './internal/security/sandbox/seatbelt.ts';
 import type { SandboxPolicy } from './internal/security/sandbox/plan.ts';
-import { encodeUtf8, decodeUtf8 } from './globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { FdReader, FdWriter } from './internal/stream.ts';
 import * as loop from './internal/runtime/loop.ts';
 import { topic, Topic } from './context/topic.ts';

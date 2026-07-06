@@ -5,6 +5,7 @@
 import { task } from 'fino:task';
 import { durableTask } from 'fino:task/durable';
 import { DiskFileSystem } from 'fino:file';
+const textEncoder = new TextEncoder();
 
 export default task({
   name: 'pool-root',
@@ -22,7 +23,7 @@ export default task({
           await fs.stat(input.marker);
           return 'second-try';
         } catch {
-          await fs.writeFile(input.marker, 'seen');
+          await fs.writeFile(input.marker, textEncoder.encode('seen'));
           throw new Error('first try fails');
         }
       }

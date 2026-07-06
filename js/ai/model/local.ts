@@ -20,6 +20,19 @@
 * structured response formats, and embeddings because the local adapter does
 * not yet have portable support for those capabilities.
 *
+* Library discovery honors the `LLAMA_CPP_LIBRARY` and `FINO_LLAMA_LIBRARY`
+* environment variables first, then platform-conventional install locations
+* (Homebrew and `/usr/local/lib` on macOS; `/usr/local/lib`, `/usr/lib`, and
+* multiarch directories on Linux). When a companion `libggml` is found next to
+* libllama or in the same conventional locations, its compute backends (BLAS,
+* CPU variants) are registered too. All llama.cpp and ggml logging is
+* silenced so model loading does not write to stderr.
+*
+* Streaming is emulated: `stream()` runs the full generation and yields the
+* complete text as a single `text_delta` event, and reported token usage is
+* always zero. Concurrent `generate()` and `stream()` calls on one model are
+* serialized because they share a single llama.cpp context.
+*
 * ```ts no_run
 * import { hasLlamaCpp, local } from 'fino:ai/model/local';
 *
@@ -43,7 +56,7 @@ import { env, os } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import { dirname, join } from 'fino:file/path';
 import { HttpClient } from 'fino:net/http/client';
-import { encodeUtf8, decodeUtf8 } from '../../globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { ClientLike, ResponseLike } from 'internal:ai/shared';
 const DEFAULT_MAX_TOKENS = 512;
@@ -296,6 +309,13 @@ const GGML_SYMBOLS = {
 let silentLogCallback: ReturnType<typeof FfiCallback> | null = null;
 /**
 * Source accepted by the local llama.cpp adapter.
+*
+* A plain string or the `{ path }` form names a GGUF file on disk. The
+* `{ repo, file, revision }` form names an explicit GGUF file in a Hugging
+* Face repository, downloaded into the cache directory on first use
+* (`revision` defaults to `main`). Every form must end in `.gguf` — the
+* adapter refuses to guess quantizations or resolve non-GGUF artifacts and
+* throws for anything else.
 */
 export type LocalModelSource = string | {
   path: string;
@@ -308,40 +328,130 @@ export type LocalModelSource = string | {
 * Internal binding shape used by tests and by the direct FFI wrapper.
 *
 * Application code normally does not provide bindings directly. Use
-* `libraryPath` to point at a system `libllama`.
+* `libraryPath` to point at a system `libllama`. A bindings object owns the
+* whole native lifecycle: `open` produces an opaque handle, `generate` runs
+* one prompt to completion against that handle, and `close` releases it.
+*
+* ```ts no_run
+* import { local, type LocalLlamaBindings } from 'fino:ai/model/local';
+*
+* const fake: LocalLlamaBindings = {
+*   async open(path, options) { return { path, options }; },
+*   async generate(handle, prompt, options) { return `echo: ${prompt}`; },
+*   close(handle) {},
+* };
+* const model = await local({ model: '/tmp/model.gguf', bindings: fake });
+* ```
 *
 * @internal
 */
 export interface LocalLlamaBindings {
+  /**
+  * Load the GGUF file at `path` and resolve with an opaque handle for
+  * subsequent `generate` and `close` calls.
+  */
   open(path: string, options: LocalOpenOptions): Promise<unknown>;
+  /**
+  * Run one full generation for `prompt` against an open handle, resolving
+  * with the output text (stop sequences already applied).
+  */
   generate(handle: unknown, prompt: string, options: LocalGenerateOptions): Promise<string>;
+  /**
+  * Release every native resource held by `handle`.
+  */
   close(handle: unknown): void;
 }
 /**
 * Options passed to libllama when opening a model.
 *
+* `local()` fills every field from `LocalModelOptions` before calling
+* `LocalLlamaBindings.open`, so bindings always receive concrete values.
+*
+* ```ts no_run
+* import type { LocalOpenOptions } from 'fino:ai/model/local';
+*
+* const options: LocalOpenOptions = { contextSize: 4096, threads: 0, batchSize: 512, gpuLayers: 0 };
+* ```
+*
 * @internal
 */
 export interface LocalOpenOptions {
+  /**
+  * Token window of the llama.cpp context.
+  */
   contextSize: number;
+  /**
+  * CPU worker thread count; `0` lets libllama choose.
+  */
   threads: number;
+  /**
+  * Maximum tokens submitted per decode batch.
+  */
   batchSize: number;
+  /**
+  * Number of transformer layers offloaded to the GPU.
+  */
   gpuLayers: number;
 }
 /**
 * Options passed to libllama when generating text.
 *
+* Sampling fields left `undefined` fall back to the adapter defaults
+* (temperature 0.8, top-k 40, top-p 0.95) inside the binding.
+*
+* ```ts no_run
+* import type { LocalGenerateOptions } from 'fino:ai/model/local';
+*
+* const options: LocalGenerateOptions = { maxTokens: 64, temperature: 0, stopSequences: ['\n'] };
+* ```
+*
 * @internal
 */
 export interface LocalGenerateOptions {
+  /**
+  * Hard cap on the number of generated tokens.
+  */
   maxTokens: number;
+  /**
+  * Sampling temperature; values of `0` or below select greedy sampling.
+  */
   temperature?: number;
+  /**
+  * Nucleus sampling threshold; applied only when strictly between 0 and 1.
+  */
   topP?: number;
+  /**
+  * Top-k cutoff; applied only when positive.
+  */
   topK?: number;
+  /**
+  * Sequences that end generation; output is trimmed at the first match.
+  */
   stopSequences: string[];
 }
 /**
 * Options for creating a local llama.cpp-backed model.
+*
+* Inherited `ModelCreateOptions` fields act as generation defaults: requests
+* that omit `maxTokens` or `temperature` fall back to the values given here,
+* then to the module defaults (512 tokens, temperature 0.8).
+*
+* ```ts no_run
+* import { local } from 'fino:ai/model/local';
+*
+* const model = await local({
+*   model: {
+*     repo: 'bartowski/SmolLM2-135M-Instruct-GGUF',
+*     file: 'SmolLM2-135M-Instruct-Q2_K.gguf',
+*   },
+*   cacheDir: '/tmp/fino-models',
+*   contextSize: 2048,
+*   threads: 4,
+*   maxTokens: 64,
+*   temperature: 0,
+*   stopSequences: ['\n'],
+* });
+* ```
 */
 export interface LocalModelOptions extends ModelCreateOptions {
   /**
@@ -366,7 +476,8 @@ export interface LocalModelOptions extends ModelCreateOptions {
   */
   cacheDir?: string;
   /**
-  * Hugging Face token for private repositories. Defaults to `HF_TOKEN`.
+  * Hugging Face token for private repositories. Defaults to the `HF_TOKEN`
+  * environment variable.
   */
   hfToken?: string;
   /**
@@ -386,15 +497,20 @@ export interface LocalModelOptions extends ModelCreateOptions {
   */
   gpuLayers?: number;
   /**
-  * Sampling nucleus. Defaults to libllama's normal value when omitted.
+  * Sampling nucleus. Defaults to 0.95; values outside the exclusive (0, 1)
+  * range disable the top-p stage.
   */
   topP?: number;
   /**
-  * Sampling top-k. Defaults to libllama's normal value when omitted.
+  * Sampling top-k. Defaults to 40; values of 0 or below disable the top-k
+  * stage.
   */
   topK?: number;
   /**
-  * Stop sequences checked by future streaming support.
+  * Default stop sequences for requests that do not supply their own.
+  *
+  * Generation ends at the first match and the matched sequence is trimmed
+  * from the returned text.
   */
   stopSequences?: string[];
   /**
@@ -413,15 +529,58 @@ export interface LocalModelOptions extends ModelCreateOptions {
 }
 /**
 * Configured model entry exposed by `localProvider()`.
+*
+* Entries are static configuration: `listModels()` reports each one as a
+* `ModelInfo` row, and the model's GGUF source is only resolved and opened
+* when the entry is instantiated through `createModel()` or
+* `ModelInfo.create()`.
+*
+* ```ts no_run
+* import type { LocalModelProviderEntry } from 'fino:ai/model/local';
+*
+* const entry: LocalModelProviderEntry = {
+*   id: 'smol',
+*   model: { repo: 'bartowski/SmolLM2-135M-Instruct-GGUF', file: 'SmolLM2-135M-Instruct-Q2_K.gguf' },
+*   displayName: 'SmolLM2 135M',
+* };
+* ```
 */
 export interface LocalModelProviderEntry {
+  /**
+  * Stable identifier used by `listModels()` and `createModel()`, and
+  * preserved as the constructed model's `id`.
+  */
   id: string;
+  /**
+  * GGUF source opened when the entry is instantiated.
+  */
   model: LocalModelSource;
+  /**
+  * Human-readable name surfaced on the listed `ModelInfo`.
+  */
   displayName?: string;
+  /**
+  * Extra `ModelInfo` metadata. Defaults to `{ source: model }` when omitted.
+  */
   metadata?: Record<string, unknown>;
 }
 /**
 * Options for a local provider.
+*
+* Everything except `models` is shared `LocalModelOptions` configuration —
+* library path, cache directory, sampling defaults, and so on — applied to
+* every model the provider creates. Per-call `ModelCreateOptions` passed to
+* `createModel()` layer on top of these shared options.
+*
+* ```ts no_run
+* import { localProvider } from 'fino:ai/model/local';
+*
+* const provider = localProvider({
+*   cacheDir: '/tmp/fino-models',
+*   contextSize: 2048,
+*   models: [{ id: 'tiny', model: '/models/tiny.Q4_K_M.gguf' }],
+* });
+* ```
 */
 export interface LocalProviderOptions extends Omit<LocalModelOptions, 'model'> {
   /**
@@ -431,9 +590,32 @@ export interface LocalProviderOptions extends Omit<LocalModelOptions, 'model'> {
 }
 /**
 * Error thrown when libllama cannot be loaded.
+*
+* `local()` throws this when an explicit `libraryPath` fails to open, or when
+* no `libraryPath` is given and default discovery found no libllama (that is,
+* `hasLlamaCpp` is `false`).
+*
+* ```ts no_run
+* import { local, LocalModelLibraryError } from 'fino:ai/model/local';
+*
+* try {
+*   await local({ model: '/tmp/model.gguf', libraryPath: '/opt/llama/lib/libllama.so' });
+* } catch (err) {
+*   if (err instanceof LocalModelLibraryError) {
+*     console.error(`libllama unavailable at ${err.libraryPath}`);
+*   }
+* }
+* ```
 */
 export class LocalModelLibraryError extends Error {
+  /**
+  * The explicit library path that failed to load, when one was provided.
+  * Absent when default discovery found no candidate at all.
+  */
   libraryPath?: string;
+  /**
+  * Create the error, optionally recording the library path that failed.
+  */
   constructor(message: string, opts: {
     libraryPath?: string;
   } = {}) {
@@ -445,8 +627,32 @@ export class LocalModelLibraryError extends Error {
 /**
 * Error thrown for model request features that the local adapter does not
 * support.
+*
+* Raised for tool definitions or any explicit `toolChoice`, native
+* `responseFormat` requests, non-text content parts (images, documents), and
+* `embed()` calls. Catch it to fall back to a remote provider for requests
+* that need those capabilities.
+*
+* ```ts no_run
+* import { local, LocalModelUnsupportedError } from 'fino:ai/model/local';
+*
+* const model = await local({ model: './models/tiny.Q4_K_M.gguf' });
+* try {
+*   await model.generate({
+*     messages: [{ role: 'user', content: 'What is the weather?' }],
+*     tools: [{ name: 'weather', description: 'Look up weather', parameters: {} }],
+*   });
+* } catch (err) {
+*   if (err instanceof LocalModelUnsupportedError) {
+*     // route this request to a remote model instead
+*   }
+* }
+* ```
 */
 export class LocalModelUnsupportedError extends Error {
+  /**
+  * Create the error with a description of the unsupported capability.
+  */
   constructor(message: string) {
     super(message);
     this.name = 'LocalModelUnsupportedError';
@@ -969,8 +1175,35 @@ class LocalLlamaModel implements Model {
 *
 * Construction resolves the model source, downloads Hugging Face GGUF files
 * into the cache when necessary, loads the optional libllama, and opens the
-* model. Close long-lived models with `model.close?.()` when your application
-* is done with them.
+* model. Requests fall back to the option defaults given here, then to the
+* module defaults (512 max tokens, temperature 0.8, top-k 40, top-p 0.95); a
+* temperature of `0` or below switches to deterministic greedy sampling.
+* Concurrent `generate()` and `stream()` calls are serialized on the single
+* llama.cpp context. Close long-lived models with `model.close?.()` when your
+* application is done with them.
+*
+* Throws `LocalModelLibraryError` when libllama cannot be loaded, and a plain
+* `Error` when the source is not a `.gguf` file, a Hugging Face download
+* fails, or the model itself fails to open.
+*
+* ```ts no_run
+* import { local } from 'fino:ai/model/local';
+*
+* const model = await local({
+*   model: {
+*     repo: 'bartowski/SmolLM2-135M-Instruct-GGUF',
+*     file: 'SmolLM2-135M-Instruct-Q2_K.gguf',
+*   },
+*   contextSize: 2048,
+*   maxTokens: 64,
+* });
+*
+* for await (const event of model.stream({
+*   messages: [{ role: 'user', content: 'Tell me a joke.' }],
+* })) {
+*   if (event.type === 'text_delta') console.log(event.text);
+* }
+* ```
 */
 export async function local(opts: LocalModelOptions): Promise<Model> {
   const bindings = requireBindings(opts);
@@ -1042,7 +1275,31 @@ class LocalModelProvider implements ModelProvider {
 * Create a local provider for configured GGUF models.
 *
 * `listModels()` returns the static `models` entries supplied here. It does not
-* scan local directories or query Hugging Face.
+* scan local directories or query Hugging Face. `createModel(id)` — or the
+* `create()` callback on a listed `ModelInfo` — opens the entry's GGUF source
+* through `local()` with the provider's shared options, and throws when `id`
+* was not configured.
+*
+* ```ts no_run
+* import { localProvider } from 'fino:ai/model/local';
+*
+* const provider = localProvider({
+*   cacheDir: '/tmp/fino-models',
+*   models: [
+*     {
+*       id: 'smol',
+*       model: {
+*         repo: 'bartowski/SmolLM2-135M-Instruct-GGUF',
+*         file: 'SmolLM2-135M-Instruct-Q2_K.gguf',
+*       },
+*       displayName: 'SmolLM2 135M',
+*     },
+*   ],
+* });
+*
+* const [info] = await provider.listModels();
+* const model = await info.create({ maxTokens: 128 });
+* ```
 */
 export function localProvider(opts: LocalProviderOptions = {}): ModelProvider {
   return new LocalModelProvider(opts);

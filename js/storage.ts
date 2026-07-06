@@ -17,35 +17,124 @@ import { Stat } from 'internal:file/stat';
 import type { Path } from './file/path.ts';
 
 export interface S3Credentials {
+  /** Access key id used in the SigV4 credential scope. */
   accessKeyId: string;
+  /** Secret access key used to derive the SigV4 signing key. */
   secretAccessKey: string;
+  /** Optional temporary-session token sent as `x-amz-security-token`. */
   sessionToken?: string;
 }
 
 /** Object metadata returned by `headObject()`. */
 export interface S3ObjectHead {
+  /** Object size in bytes from the `Content-Length` header. */
   size: number;
+  /** Entity tag returned by the service, or `null` when omitted. */
   etag: string | null;
 }
 
 /** One object summary returned by `listObjectsV2()`. */
 export interface S3ObjectSummary {
+  /** Object key relative to the bucket. */
   key: string;
+  /** Object size in bytes. */
   size: number;
+  /** Entity tag returned by the service. */
   etag?: string;
+  /** Last-modified timestamp string returned by the service. */
   lastModified?: string;
 }
 
 /** Result of an S3 multipart upload creation. */
 export interface S3MultipartUpload {
+  /** Object key being uploaded. */
   key: string;
+  /** Provider upload id passed to subsequent multipart calls. */
   uploadId: string;
 }
 
 /** One uploaded multipart part. */
 export interface S3UploadedPart {
+  /** 1-based multipart part number. */
   partNumber: number;
+  /** Entity tag returned by the service for this part. */
   etag: string;
+}
+
+/**
+* Options for signing an S3-compatible request with SigV4.
+*/
+export interface S3SignOptions {
+  /** AWS region used in the credential scope. */
+  region: string;
+  /** SigV4 service name. Defaults to `s3`. */
+  service?: string;
+  /** Credentials used to derive the signature. */
+  credentials: S3Credentials;
+  /** Signing timestamp. Defaults to the current time. */
+  now?: Date;
+  /** Payload hash to sign. Defaults to `UNSIGNED-PAYLOAD`. */
+  payloadHash?: string;
+}
+
+/**
+* Options for creating a presigned S3-compatible URL.
+*/
+export interface S3PresignOptions {
+  /** AWS region used in the credential scope. */
+  region: string;
+  /** SigV4 service name. Defaults to `s3`. */
+  service?: string;
+  /** Credentials used to derive the URL signature. */
+  credentials: S3Credentials;
+  /** Signing timestamp. Defaults to the current time. */
+  now?: Date;
+  /** URL lifetime in seconds. Defaults to 900. */
+  expiresIn?: number;
+}
+
+/**
+* Options for constructing an `S3Client`.
+*/
+export interface S3ClientOptions {
+  /** S3-compatible endpoint. Defaults to `https://s3.amazonaws.com`. */
+  endpoint?: string;
+  /** AWS region used when signing requests. */
+  region: string;
+  /** Optional bucket name applied to object requests. */
+  bucket?: string;
+  /** Credentials used for all signed requests. */
+  credentials: S3Credentials;
+  /** Force path-style bucket addressing instead of virtual-host addressing. */
+  forcePathStyle?: boolean;
+  /** Fetch implementation used for HTTP requests. */
+  fetch?: typeof fetch;
+  /** Clock hook used for deterministic signing in tests. */
+  clock?: () => Date;
+}
+
+/**
+* Options for `S3Client.listObjectsV2()`.
+*/
+export interface S3ListObjectsOptions {
+  /** Prefix used to filter returned keys. */
+  prefix?: string;
+  /** Continuation token returned by a previous truncated response. */
+  continuationToken?: string;
+  /** Maximum number of keys requested from the service. */
+  maxKeys?: number;
+}
+
+/**
+* Result returned by `S3Client.listObjectsV2()`.
+*/
+export interface S3ListObjectsResult {
+  /** Object summaries in the current page. */
+  objects: S3ObjectSummary[];
+  /** Whether another page is available. */
+  isTruncated: boolean;
+  /** Token to pass as `continuationToken` for the next page. */
+  nextContinuationToken?: string;
 }
 
 function hex(bytes: Uint8Array): string {
@@ -75,14 +164,14 @@ function signingKey(secret: string, date: string, region: string, service: strin
   return hmac('sha-256', kService, toBytes('aws4_request'));
 }
 
-/** Sign an S3-compatible HTTP request with AWS Signature Version 4. */
-export async function signS3Request(input: Request, options: {
-  region: string;
-  service?: string;
-  credentials: S3Credentials;
-  now?: Date;
-  payloadHash?: string;
-}): Promise<Request> {
+/**
+* Sign an S3-compatible HTTP request with AWS Signature Version 4.
+*
+* The input request is updated in place with `host`, `x-amz-date`,
+* `x-amz-content-sha256`, optional session-token, and `authorization` headers,
+* then returned for convenience.
+*/
+export async function signS3Request(input: Request, options: S3SignOptions): Promise<Request> {
   const now = options.now ?? new Date();
   const service = options.service ?? 's3';
   const date = shortDate(now);
@@ -106,14 +195,13 @@ export async function signS3Request(input: Request, options: {
   return input;
 }
 
-/** Create a presigned S3 URL for browser or third-party upload/download flows. */
-export async function presignS3Url(method: string, urlInput: string | URL, options: {
-  region: string;
-  service?: string;
-  credentials: S3Credentials;
-  now?: Date;
-  expiresIn?: number;
-}): Promise<URL> {
+/**
+* Create a presigned S3 URL for browser or third-party upload/download flows.
+*
+* The returned URL contains the SigV4 query parameters needed to authorize a
+* single request with the supplied method and expiration window.
+*/
+export async function presignS3Url(method: string, urlInput: string | URL, options: S3PresignOptions): Promise<URL> {
   const now = options.now ?? new Date();
   const service = options.service ?? 's3';
   const date = shortDate(now);
@@ -135,11 +223,19 @@ export async function presignS3Url(method: string, urlInput: string | URL, optio
 
 /** Error raised for non-success S3 responses. */
 export class S3Error extends Error {
+  /** Create an error with the failing HTTP status code. */
   constructor(message: string, readonly status: number) {
     super(message);
   }
 }
 
+/**
+* Minimal S3-compatible object client.
+*
+* The client signs every request with SigV4 and supports common object,
+* listing, and multipart-upload operations. It accepts any endpoint that speaks
+* the S3 HTTP API closely enough for those operations.
+*/
 export class S3Client {
   #endpoint: string;
   #region: string;
@@ -149,7 +245,7 @@ export class S3Client {
   #clock: () => Date;
   #forcePathStyle: boolean;
   /** Create an S3-compatible client with injectable fetch and clock hooks. */
-  constructor(options: { endpoint?: string; region: string; bucket?: string; credentials: S3Credentials; forcePathStyle?: boolean; fetch?: typeof fetch; clock?: () => Date }) {
+  constructor(options: S3ClientOptions) {
     this.#endpoint = options.endpoint ?? 'https://s3.amazonaws.com';
     this.#region = options.region;
     this.#bucket = options.bucket;
@@ -203,7 +299,7 @@ export class S3Client {
     await this.#request('DELETE', key);
   }
   /** List objects with the S3 ListObjectsV2 API. */
-  async listObjectsV2(options: { prefix?: string; continuationToken?: string; maxKeys?: number } = {}): Promise<{ objects: S3ObjectSummary[]; isTruncated: boolean; nextContinuationToken?: string }> {
+  async listObjectsV2(options: S3ListObjectsOptions = {}): Promise<S3ListObjectsResult> {
     const res = await this.#request('GET', '', undefined, {
       'list-type': '2',
       prefix: options.prefix,
@@ -325,6 +421,13 @@ class S3File implements FileHandle {
   }
 }
 
+/**
+* Async `FileSystem` adapter backed by an S3 key prefix.
+*
+* The adapter maps paths to object keys and supports object-shaped operations
+* such as open, read, write, stat, and unlink. Directory handles, symlinks,
+* rename, truncate, and positional writes are intentionally unsupported.
+*/
 export class S3FileSystem extends FileSystem {
   /** Create an async filesystem view over an S3 key prefix. */
   constructor(readonly client: S3Client, readonly prefix = '') {

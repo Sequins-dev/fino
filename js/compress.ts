@@ -72,8 +72,11 @@
 *   - DEFLATE format: https://www.rfc-editor.org/rfc/rfc1951
 *   - gzip format: https://www.rfc-editor.org/rfc/rfc1952
 *   - Brotli format: https://www.rfc-editor.org/rfc/rfc7932
+*   - Zstandard format: https://www.rfc-editor.org/rfc/rfc8878
+*   - LZ4 Frame format: https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md
+*   - Snappy format: https://github.com/google/snappy/blob/main/format_description.txt
 */
-import { assertZlibFormat, validateCompressOptions, validateDecompressOptions, type ByteInput, type CompressOptions as InternalCompressOptions, type CompressionTransform, type DecompressOptions } from './internal/compress/common.ts';
+import { assertZlibFormat, validateCompressOptions, validateDecompressOptions, type ByteInput, type CompressOptions, type CompressionTransform, type DecompressOptions } from './internal/compress/common.ts';
 import { zlibCompress, zlibDecompress, ZlibCompressor, ZlibDecompressor } from './internal/compress/zlib.ts';
 import { brotliAvailable as internalBrotliAvailable, brotliCompress, brotliDecompress, BrotliCompressor, BrotliDecompressor } from './internal/compress/brotli.ts';
 import { zstdAvailable as internalZstdAvailable, zstdCompress, zstdDecompress, ZstdCompressor, ZstdDecompressor } from './internal/compress/zstd.ts';
@@ -95,60 +98,22 @@ export type {
 /**
 * Supported compression wire formats.
 *
-* `gzip`, `deflate`, and `deflate-raw` are zlib-backed formats. `brotli`
-* requires Brotli backend support; check `brotliAvailable` before selecting
-* it dynamically.
+* `gzip`, `deflate`, and `deflate-raw` are always available through the zlib
+* backend. `brotli`, `zstd`, `lz4`, and `snappy` depend on their system
+* libraries being loadable; check the matching availability flag
+* (`brotliAvailable`, `zstdAvailable`, `lz4Available`, `snappyAvailable`)
+* before selecting one of them dynamically.
 *
 * ```ts no_run
-* const format = 'deflate-raw';
+* import { zstdAvailable, type CompressionFormat } from 'fino:compress';
+*
+* const format: CompressionFormat = zstdAvailable ? 'zstd' : 'gzip';
 * console.log(format);
 * ```
 */
  CompressionFormat,
-/**
-* Options for one-shot and streaming decompression.
-*
-* `format` must match the compressed byte stream. Passing the wrong format
-* raises a backend decompression error rather than returning partial data.
-*
-* ```ts no_run
-* const options = { format: 'gzip' };
-* console.log(options.format);
-* ```
-*/
- DecompressOptions } from './internal/compress/common.ts';
-/**
-* Options for one-shot and streaming compression.
-*
-* `format` selects the wire format to produce and is required for all public
-* compression helpers. `level` is optional and backend-dependent: zlib formats
-* use the usual compression level range, while Brotli support depends on the
-* runtime Brotli backend being available. Invalid options throw `TypeError`
-* before native compression is attempted.
-*
-* ```ts no_run
-* import { compress, type CompressOptions } from 'fino:compress';
-*
-* const options: CompressOptions = { format: 'gzip', level: 6 };
-* const output = compress(new TextEncoder().encode('hello'), options);
-* console.log(output.byteLength);
-* ```
-*/
-export type CompressOptions = InternalCompressOptions;
-export type {
-/**
-* Internal streaming backend contract shared by concrete compressor classes.
-*
-* Public code usually uses `Compressor` or `Decompressor` instead of this
-* low-level transform shape.
-*
-* ```ts no_run
-* const transformName = 'CompressionTransform';
-* console.log(transformName);
-* ```
-*
-* @internal
-*/
+ CompressOptions,
+ DecompressOptions,
  CompressionTransform } from './internal/compress/common.ts';
 /**
 * `true` when the Brotli encoder and decoder backend libraries are available.
@@ -217,13 +182,10 @@ export const snappyAvailable = internalSnappyAvailable;
 /**
 * Compress one byte buffer and return a single compressed byte array.
 *
-* This one-shot helper keeps both input and output in memory. `options.format`
-* is required, and invalid options throw `TypeError`. Backend compression
-* failures propagate as errors.
-*
-* @param {ByteInput} data Bytes to compress.
-* @param {CompressOptions} options Compression format and optional level.
-* @returns {Uint8Array} Complete compressed byte stream.
+* This one-shot helper keeps both input and output in memory and returns the
+* complete compressed stream as a single `Uint8Array`. `options.format` is
+* required, and invalid options throw `TypeError`. Selecting a format whose
+* backend library is unavailable, or a backend compression failure, throws.
 *
 * ```ts no_run
 * import { compress } from 'fino:compress';
@@ -249,10 +211,6 @@ export function compress(data: ByteInput, options: CompressOptions): Uint8Array 
 * truncated, or uses a format that is unavailable. It does not cap the
 * decompressed output size; callers should use streaming decompression when
 * handling untrusted or potentially large compressed input.
-*
-* @param {ByteInput} data Compressed bytes.
-* @param {DecompressOptions} options Decompression format.
-* @returns {Uint8Array} Complete decompressed bytes.
 *
 * ```ts no_run
 * import { compress, decompress } from 'fino:compress';
@@ -291,23 +249,10 @@ export function decompress(data: ByteInput, options: DecompressOptions): Uint8Ar
 */
 export class Compressor implements CompressionTransform {
   /**
-  * Private property `#impl` used by `Compressor`.
+  * Format-specific backend transform selected at construction.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #impl = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#impl;
-  *   }
-  * }
-  * ```
+  * Every public method on `Compressor` delegates to this backend, which owns
+  * the native compression state for the chosen format.
   *
   * @internal
   */
@@ -315,11 +260,10 @@ export class Compressor implements CompressionTransform {
   /**
   * Create a compressor for the requested format.
   *
-  * Invalid options throw `TypeError`. Brotli construction requires the Brotli
-  * backend to be available. The created compressor owns native state until
-  * `finish()` or `close()` is called.
-  *
-  * @param {CompressOptions} options Compression format and optional level.
+  * Invalid options throw `TypeError`. Formats backed by optional system
+  * libraries (`brotli`, `zstd`, `lz4`, `snappy`) require the matching backend
+  * to be available. The created compressor owns native state until `finish()`
+  * or `close()` is called.
   *
   * ```ts no_run
   * import { Compressor } from 'fino:compress';
@@ -337,9 +281,6 @@ export class Compressor implements CompressionTransform {
   *
   * The returned array may be empty when the backend buffers data. Do not treat
   * an empty array as EOF; call `finish()` when no more input remains.
-  *
-  * @param {ByteInput} chunk Bytes to append to the compression stream.
-  * @returns {Uint8Array[]} Zero or more compressed chunks.
   *
   * ```ts no_run
   * import { Compressor } from 'fino:compress';
@@ -360,8 +301,6 @@ export class Compressor implements CompressionTransform {
   * return zero or more chunks. Writing after finish is backend-dependent and
   * should be avoided; create a new compressor for a new stream.
   *
-  * @returns {Uint8Array[]} Final compressed chunks.
-  *
   * ```ts no_run
   * import { Compressor } from 'fino:compress';
   *
@@ -379,10 +318,8 @@ export class Compressor implements CompressionTransform {
   *
   * Output chunks are yielded as the backend produces them, followed by final
   * flush chunks. Errors from the source iterable or compression backend
-  * propagate through iteration.
-  *
-  * @param {AsyncIterable<ByteInput>} source Source byte chunks.
-  * @returns {AsyncIterable<Uint8Array>} Async iterable of compressed chunks.
+  * propagate through iteration, and the compressor is closed when iteration
+  * ends — including when the consumer stops early.
   *
   * ```ts no_run
   * import { Compressor } from 'fino:compress';
@@ -416,6 +353,20 @@ export class Compressor implements CompressionTransform {
   close(): void {
     this.#impl.close();
   }
+  /**
+  * Dispose support: equivalent to `close()`.
+  *
+  * Lets a compressor participate in `using` declarations so native state is
+  * released when the block exits, even on error.
+  *
+  * ```ts no_run
+  * import { Compressor } from 'fino:compress';
+  *
+  * using compressor = new Compressor({ format: 'gzip' });
+  * const chunks = [...compressor.write(new Uint8Array([1])), ...compressor.finish()];
+  * console.log(chunks.length);
+  * ```
+  */
   [Symbol.dispose](): void {
     this.close();
   }
@@ -440,23 +391,10 @@ export class Compressor implements CompressionTransform {
 */
 export class Decompressor implements CompressionTransform {
   /**
-  * Private property `#impl` used by `Decompressor`.
+  * Format-specific backend transform selected at construction.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #impl = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#impl;
-  *   }
-  * }
-  * ```
+  * Every public method on `Decompressor` delegates to this backend, which
+  * owns the native decompression state for the chosen format.
   *
   * @internal
   */
@@ -465,9 +403,8 @@ export class Decompressor implements CompressionTransform {
   * Create a decompressor for the requested format.
   *
   * `options.format` must match the compressed stream. Invalid options throw
-  * `TypeError`; unavailable Brotli support throws from the Brotli backend.
-  *
-  * @param {DecompressOptions} options Decompression format.
+  * `TypeError`; selecting a format whose backend library is unavailable
+  * (`brotli`, `zstd`, `lz4`, `snappy`) throws from that backend.
   *
   * ```ts no_run
   * import { Decompressor } from 'fino:compress';
@@ -485,9 +422,6 @@ export class Decompressor implements CompressionTransform {
   *
   * The returned array may be empty while the backend waits for more input.
   * Invalid or mismatched compressed data throws.
-  *
-  * @param {ByteInput} chunk Compressed bytes to append.
-  * @returns {Uint8Array[]} Zero or more decompressed chunks.
   *
   * ```ts no_run
   * import { Decompressor, compress } from 'fino:compress';
@@ -508,8 +442,6 @@ export class Decompressor implements CompressionTransform {
   * This checks for a complete compressed stream and flushes pending output.
   * Truncated data or malformed trailing state throws.
   *
-  * @returns {Uint8Array[]} Final decompressed chunks.
-  *
   * ```ts no_run
   * import { Decompressor } from 'fino:compress';
   *
@@ -527,10 +459,8 @@ export class Decompressor implements CompressionTransform {
   *
   * The returned iterable yields output as it becomes available and validates
   * the end of stream when the source completes. Source and backend errors
-  * propagate through iteration.
-  *
-  * @param {AsyncIterable<ByteInput>} source Source compressed chunks.
-  * @returns {AsyncIterable<Uint8Array>} Async iterable of decompressed chunks.
+  * propagate through iteration, and the decompressor is closed when iteration
+  * ends — including when the consumer stops early.
   *
   * ```ts no_run
   * import { Decompressor } from 'fino:compress';
@@ -564,6 +494,21 @@ export class Decompressor implements CompressionTransform {
   close(): void {
     this.#impl.close();
   }
+  /**
+  * Dispose support: equivalent to `close()`.
+  *
+  * Lets a decompressor participate in `using` declarations so native state is
+  * released when the block exits, even on error.
+  *
+  * ```ts no_run
+  * import { Decompressor, compress } from 'fino:compress';
+  *
+  * const packed = compress(new Uint8Array([1]), { format: 'gzip' });
+  * using decompressor = new Decompressor({ format: 'gzip' });
+  * const chunks = [...decompressor.write(packed), ...decompressor.finish()];
+  * console.log(chunks.length);
+  * ```
+  */
   [Symbol.dispose](): void {
     this.close();
   }
@@ -573,9 +518,6 @@ export class Decompressor implements CompressionTransform {
 *
 * This is a factory wrapper around `new Compressor(options)`. It returns an
 * object that must be finished or closed to release backend state.
-*
-* @param {CompressOptions} options Compression format and optional level.
-* @returns {Compressor} New stateful compressor.
 *
 * ```ts no_run
 * import { createCompressor } from 'fino:compress';
@@ -592,9 +534,6 @@ export function createCompressor(options: CompressOptions): Compressor {
 *
 * This is a factory wrapper around `new Decompressor(options)`. The selected
 * format must match the stream that will be written.
-*
-* @param {DecompressOptions} options Decompression format.
-* @returns {Decompressor} New stateful decompressor.
 *
 * ```ts no_run
 * import { createDecompressor } from 'fino:compress';

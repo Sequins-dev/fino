@@ -403,7 +403,7 @@ describe('EvalReporter', () => {
         passed: 1,
         total: 1
       });
-      const raw = await fs.readFile(path);
+      const raw = new TextDecoder().decode(await fs.readFile(path));
       const json = JSON.parse(raw) as {
         summary?: {
           name: string;

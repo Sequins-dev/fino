@@ -4,27 +4,38 @@
 * A `Context` is a named slot whose value follows the causal chain of async
 * execution through promise continuations, including `await`, `.then()`,
 * `queueMicrotask()`, timers implemented on the runtime loop, and promise-based
-* runtime APIs such as file I/O. It works by hooking into V8's ContinuationPreservedEmbedderData (CPED):
-* when a promise continuation is enqueued, the current frame is captured;
-* when the continuation runs, the frame is restored.
+* runtime APIs such as file I/O. It works by hooking into V8's
+* ContinuationPreservedEmbedderData (CPED): when a promise continuation is
+* enqueued, the current frame is captured; when the continuation runs, the
+* frame is restored. Because the frame array is copied on every write, values
+* captured by already-enqueued continuations are never mutated retroactively -
+* each async branch sees exactly the values that were active when it was
+* scheduled.
 *
 * Synchronous dispatch and callback re-entry observe whatever context is active
-* during the dispatch/callback call. External or native schedulers that do not
-* enqueue through these runtime paths are not promised to preserve context
-* unless they are explicitly covered by tests or the callback is manually
-* wrapped with a `Snapshot`.
+* during the dispatch/callback call (e.g. an `EventTarget` listener sees the
+* context of the `dispatchEvent()` caller). External or native schedulers that
+* do not enqueue through these runtime paths are not promised to preserve
+* context unless they are explicitly covered by tests or the callback is
+* manually wrapped with a `Snapshot`.
 *
-* API mirrors the execution-flow library (closure-based):
+* The API supports both callback and disposable scopes. `runWithValue()` scopes
+* a value to a callback and restores the previous frame afterwards, similar to
+* Node's `AsyncLocalStorage.run()`. `withValue()` returns a disposable scope for
+* `using` blocks. `enterWith()`/`exit()` remain the unscoped escape hatch, and
+* `Snapshot` replays a frame across schedulers that do not propagate. For
+* context-bound publish/subscribe, see `fino:context/topic`.
 *
 * ```ts no_run
-*   import { Context } from './context.ts';
+*   import { Context } from 'fino:context';
 *
-*   const requestId = new Context('requestId');
+*   const requestId = new Context<string>('requestId');
 *
-*   await requestId.runWithValue('abc-123', async () => {
+*   {
+*     using scope = requestId.withValue('abc-123');
 *     await someAsyncOp();
 *     console.log(requestId.get()); // 'abc-123' - propagated through await
-*   });
+*   }
 * ```
 */
 import { getCPED, setCPED } from 'internal:async-context';
@@ -67,6 +78,42 @@ function restore(state: unknown): void {
   setCPED(state);
 }
 /**
+* Disposable context scope returned by `Context.withValue()` and
+* `Context.withClear()`.
+*
+* Disposing the scope restores the complete context frame captured before the
+* scope was entered. `using` declarations dispose in reverse order, so nested
+* scopes restore naturally.
+*
+* ```ts no_run
+* import { Context } from 'fino:context';
+*
+* const request = new Context<string>('request');
+* {
+*   using scope = request.withValue('req-1');
+*   console.log(request.get());
+* }
+* ```
+*/
+export interface ContextScope {
+  /**
+  * Restore the context frame captured before the scope was entered.
+  *
+  * Calling this method more than once has no additional effect.
+  */
+  [Symbol.dispose](): void;
+}
+function restoreScope(previous: unknown): ContextScope {
+  let disposed = false;
+  return {
+    [Symbol.dispose]() {
+      if (disposed) return;
+      disposed = true;
+      restore(previous);
+    }
+  };
+}
+/**
 * Async-local context slot whose value follows promise continuations.
 *
 * Each `Context` instance owns one independent slot. Values are scoped to the
@@ -86,45 +133,16 @@ function restore(state: unknown): void {
 */
 export class Context<T = unknown> {
   /**
-  * Private property `#id` used by `Context`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #id = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#id;
-  *   }
-  * }
-  * ```
+  * Slot index allocated from the module-wide counter at construction time.
+  * It is this context's fixed position in the CPED frame array and is what
+  * actually keys lookups - not the debug name.
   *
   * @internal
   */
   #id: number;
   /**
-  * Private property `#name` used by `Context`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #name = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#name;
-  *   }
-  * }
-  * ```
+  * Debug name supplied to the constructor, exposed via the `name` getter.
+  * Purely informational; it plays no part in slot identity.
   *
   * @internal
   */
@@ -142,8 +160,6 @@ export class Context<T = unknown> {
   * const tenant = new Context<string>('tenant');
   * console.log(tenant.name);
   * ```
-  *
-  * @param {string} name Descriptive name for diagnostics and docs output.
   */
   constructor(name: string) {
     this.#name = name;
@@ -181,8 +197,6 @@ export class Context<T = unknown> {
   * console.log(locale.get());
   * locale.runWithValue('en-US', () => console.log(locale.get()));
   * ```
-  *
-  * @returns {* | undefined}
   */
   get(): T | undefined {
     return getSlot(this.#id) as T | undefined;
@@ -207,10 +221,6 @@ export class Context<T = unknown> {
   *   return trace.get();
   * });
   * ```
-  *
-  * @param {*}        value  The value to set for the duration of `fn`.
-  * @param {Function} fn     The function to run.
-  * @returns The return value of `fn`.
   */
   runWithValue<R>(value: T, fn: () => R): R {
     const snap = snapshot();
@@ -220,6 +230,30 @@ export class Context<T = unknown> {
     } finally {
       restore(snap);
     }
+  }
+  /**
+  * Enter a disposable scope with this context slot set to `value`.
+  *
+  * Use this with a `using` declaration when the scope is naturally represented
+  * by a block instead of a callback. Disposing the returned scope restores the
+  * complete context frame that was active before `withValue()` was called.
+  * Promise continuations scheduled while the scope is active inherit `value`.
+  *
+  * ```ts no_run
+  * import { Context } from 'fino:context';
+  *
+  * const trace = new Context<string>('trace');
+  * {
+  *   using scope = trace.withValue('abc');
+  *   await Promise.resolve();
+  *   console.log(trace.get());
+  * }
+  * ```
+  */
+  withValue(value: T): ContextScope {
+    const snap = snapshot();
+    setSlot(this.#id, value);
+    return restoreScope(snap);
   }
   /**
   * Run `fn` with this context slot explicitly cleared, making `get()` return
@@ -238,9 +272,6 @@ export class Context<T = unknown> {
   *   auth.runClear(() => console.log(auth.get()));
   * });
   * ```
-  *
-  * @param {Function} fn
-  * @returns The return value of `fn`.
   */
   runClear<R>(fn: () => R): R {
     const snap = snapshot();
@@ -250,6 +281,28 @@ export class Context<T = unknown> {
     } finally {
       restore(snap);
     }
+  }
+  /**
+  * Enter a disposable scope with this context slot cleared.
+  *
+  * Use this when a block must not inherit an outer value. Disposing the scope
+  * restores the complete context frame that was active before `withClear()` was
+  * called.
+  *
+  * ```ts no_run
+  * import { Context } from 'fino:context';
+  *
+  * const auth = new Context<string>('auth');
+  * auth.runWithValue('token', () => {
+  *   using scope = auth.withClear();
+  *   console.log(auth.get());
+  * });
+  * ```
+  */
+  withClear(): ContextScope {
+    const snap = snapshot();
+    clearSlot(this.#id);
+    return restoreScope(snap);
   }
   /**
   * Unconditionally set this slot to `value` in the current async execution
@@ -273,8 +326,6 @@ export class Context<T = unknown> {
   * queueMicrotask(() => console.log(request.get()));
   * request.exit();
   * ```
-  *
-  * @param {*} value
   */
   enterWith(value: T): void {
     setSlot(this.#id, value);
@@ -315,8 +366,6 @@ export class Context<T = unknown> {
   * const saved = ctx.runWithValue('req-1', () => ctx.snapshot());
   * saved.runWithValue(() => console.log(ctx.get()));
   * ```
-  *
-  * @returns {Snapshot}
   */
   snapshot() {
     return new Snapshot(snapshot());
@@ -338,23 +387,9 @@ export class Context<T = unknown> {
 */
 export class Snapshot {
   /**
-  * Private property `#handle` used by `Snapshot`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handle = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#handle;
-  *   }
-  * }
-  * ```
+  * Opaque CPED frame captured at snapshot time. Restored verbatim for the
+  * duration of `runWithValue()`; never mutated, so the snapshot stays valid
+  * across repeated re-entries.
   *
   * @internal
   */
@@ -372,8 +407,6 @@ export class Snapshot {
   * const snap = snapshotAll();
   * snap.runWithValue(() => console.log('restored'));
   * ```
-  *
-  * @param handle Opaque frame returned by the runtime.
   */
   constructor(handle: unknown) {
     this.#handle = handle;
@@ -392,9 +425,6 @@ export class Snapshot {
   * const snap = ctx.runWithValue('abc', () => snapshotAll());
   * await snap.runWithValue(async () => ctx.get());
   * ```
-  *
-  * @param {Function} fn
-  * @returns The return value of `fn`.
   */
   runWithValue<R>(fn: () => R): R {
     const prev = snapshot();
@@ -421,8 +451,6 @@ export class Snapshot {
 * const snap = ctx.runWithValue('acme', () => snapshotAll());
 * setTimeout(() => snap.runWithValue(() => console.log(ctx.get())), 0);
 * ```
-*
-* @returns {Snapshot}
 */
 export function snapshotAll(): Snapshot {
   return new Snapshot(snapshot());

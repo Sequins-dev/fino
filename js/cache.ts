@@ -9,11 +9,15 @@
 *
 * ## Design
 *
-* A `Cache` is a simple async key/value interface. `memoryCache()` is intended
-* for tests and single-process applications; `sqliteCache()` persists entries
-* through `fino:database/sqlite` and the configured filesystem provider.
-* `responseCache()` is middleware for `fino:net/http/app` and caches safe
-* `GET`/`HEAD` responses by method, URL, and configured vary headers.
+* A `Cache` is a simple async key/value interface. `memoryCache()` is an LRU
+* cache intended for tests and single-process applications; `sqliteCache()`
+* persists entries through `fino:database/sqlite` and the configured
+* filesystem provider. `responseCache()` is a layer for `fino:net/http/app`
+* and caches safe `GET`/`HEAD` responses by method, URL, and configured vary
+* headers, stamping each response with an `x-fino-cache` diagnostic header.
+*
+* Expiry is lazy: expired entries are removed by the read that observes them,
+* not by a background sweeper.
 *
 * This is deliberately not a distributed systems layer. There is no cross-
 * process invalidation for memory caches, no cluster coherence, and no binary
@@ -27,17 +31,32 @@
 * await cache.set('user:1', { name: 'Ada' }, { ttlMs: 60_000, tags: ['users'] });
 * const user = await cache.get('user:1');
 *
-* const app = new App().use(responseCache(cache, { ttlMs: 5_000 }));
+* const app = new App().layer(responseCache(cache, { ttlMs: 5_000 }));
 * ```
 */
 import { Database } from 'fino:database/sqlite';
 import type { FileSystem } from 'internal:file/provider';
-import { defineMiddleware, type Middleware } from 'fino:net/http/app';
+import { defineMiddleware, type LayerMiddleware } from 'fino:net/http/app';
 
 /**
-* Clock used by cache backends.
+* Clock used by cache backends to decide when entries expire.
 *
-* Supplying a fake clock makes TTL behavior deterministic in tests.
+* Both `memoryCache()` and `sqliteCache()` read the clock on every operation
+* and compare it against each entry's stored expiry. Supplying a fake clock
+* makes TTL behavior deterministic in tests: advance the fake time instead of
+* sleeping.
+*
+* ```ts no_run
+* import { memoryCache, type CacheClock } from 'fino:cache';
+*
+* let now = 0;
+* const clock: CacheClock = { now: () => now };
+* const cache = memoryCache({ clock });
+*
+* await cache.set('k', 'v', { ttlMs: 50 });
+* now += 51;
+* await cache.get('k'); // null — expired without waiting
+* ```
 */
 export interface CacheClock {
   /** Return the current time in milliseconds. */
@@ -45,7 +64,20 @@ export interface CacheClock {
 }
 
 /**
-* Options applied when writing a cache entry.
+* Options applied when writing a cache entry with `Cache.set()`.
+*
+* Omitting `ttlMs` stores the entry without an expiry. A `ttlMs` of `0` (or a
+* negative value, which is clamped to `0`) produces an entry that is already
+* expired on the next read. Tags are remembered per entry and matched later by
+* `invalidateTags()`; writing a key again replaces its previous tags entirely.
+*
+* ```ts no_run
+* import { memoryCache } from 'fino:cache';
+*
+* const cache = memoryCache();
+* await cache.set('user:1', { name: 'Ada' }, { ttlMs: 60_000, tags: ['users'] });
+* await cache.invalidateTags(['users']); // removes user:1
+* ```
 */
 export interface CacheSetOptions {
   /** Milliseconds until the entry expires. Omit for no expiry. */
@@ -57,9 +89,30 @@ export interface CacheSetOptions {
 /**
 * Small async cache interface shared by all backends.
 *
-* `get()` returns `null` for missing or expired entries. `namespace()` returns a
-* view over the same backend with a different namespace, so tag invalidation is
-* local to that namespace.
+* Values round-trip through JSON, so only JSON-serializable data survives a
+* `set()`/`get()` cycle, and reads return a fresh deserialized copy rather
+* than the object that was stored. `get()` returns `null` for missing or
+* expired entries; the read that observes an expired entry also deletes it.
+*
+* Every operation is scoped to the cache's current namespace. `namespace()`
+* returns a view over the same backend with a different namespace, so keys do
+* not collide across namespaces and tag invalidation only affects the
+* namespace it is called on.
+*
+* ```ts no_run
+* import { memoryCache, type Cache } from 'fino:cache';
+*
+* const cache: Cache = memoryCache();
+* await cache.set('config', { theme: 'dark' }, { tags: ['settings'] });
+*
+* const tenant = cache.namespace('tenant-42');
+* await tenant.set('config', { theme: 'light' });
+*
+* await cache.get('config');  // { theme: 'dark' }
+* await tenant.get('config'); // { theme: 'light' }
+*
+* await cache.invalidateTags(['settings']); // leaves tenant-42 untouched
+* ```
 */
 export interface Cache {
   /** Read `key`, returning `null` when the entry is missing or expired. */
@@ -76,6 +129,15 @@ export interface Cache {
 
 /**
 * Options for `memoryCache()`.
+*
+* ```ts no_run
+* import { memoryCache } from 'fino:cache';
+*
+* const cache = memoryCache({
+*   maxEntries: 10_000,
+*   namespace: 'sessions'
+* });
+* ```
 */
 export interface MemoryCacheOptions {
   /** Maximum retained entries across all namespaces. Defaults to unlimited. */
@@ -88,6 +150,17 @@ export interface MemoryCacheOptions {
 
 /**
 * Options for `sqliteCache()`.
+*
+* ```ts no_run
+* import { sqliteCache } from 'fino:cache';
+* import { DiskFileSystem } from 'fino:file';
+*
+* const cache = await sqliteCache({
+*   path: '/var/lib/myapp/cache.db',
+*   namespace: 'render',
+*   fs: new DiskFileSystem()
+* });
+* ```
 */
 export interface SqliteCacheOptions {
   /** SQLite database path. */
@@ -194,8 +267,24 @@ class MemoryCache implements Cache {
 /**
 * Create an in-memory LRU cache.
 *
-* Entries are lost when the process exits and are not shared across realms or
-* processes. LRU size is counted in entries, not bytes.
+* Recency is tracked per key: reads refresh an entry's position, and when a
+* `set()` pushes the cache past `maxEntries` the least recently used entries
+* are evicted regardless of namespace. Entries are lost when the process exits
+* and are not shared across realms or processes. LRU size is counted in
+* entries, not bytes.
+*
+* ```ts no_run
+* import { memoryCache } from 'fino:cache';
+*
+* const cache = memoryCache({ maxEntries: 2 });
+* await cache.set('one', 1);
+* await cache.set('two', 2);
+* await cache.get('one');      // refreshes 'one'
+* await cache.set('three', 3); // evicts 'two', the least recently used
+*
+* await cache.get('two'); // null
+* await cache.get('one'); // 1
+* ```
 */
 export function memoryCache(opts: MemoryCacheOptions = {}): Cache {
   return new MemoryCache(new Map(), {
@@ -206,7 +295,23 @@ export function memoryCache(opts: MemoryCacheOptions = {}): Cache {
 }
 
 /**
-* SQLite-backed cache with optional `close()`.
+* SQLite-backed cache handle returned by `sqliteCache()`.
+*
+* Adds `close()` on top of the `Cache` interface. Only the handle returned by
+* `sqliteCache()` owns the database connection; namespace views created with
+* `namespace()` share it without owning it, so closing the owning handle ends
+* access for every view derived from it.
+*
+* ```ts no_run
+* import { sqliteCache } from 'fino:cache';
+*
+* const cache = await sqliteCache({ path: '/tmp/app-cache.db' });
+* try {
+*   await cache.set('greeting', 'hello', { ttlMs: 60_000 });
+* } finally {
+*   await cache.close();
+* }
+* ```
 */
 export interface SqliteCache extends Cache {
   /** Close the underlying SQLite database. */
@@ -300,6 +405,24 @@ class SqliteCacheImpl implements SqliteCache {
 
 /**
 * Open a SQLite-backed cache.
+*
+* Opens (creating if necessary) the database at `opts.path` and ensures the
+* `fino_cache_entries` and `fino_cache_tags` tables exist, so the same file
+* can also hold unrelated application tables. Entries persist across process
+* restarts; expired entries are removed lazily when a read observes them.
+* Call `close()` on the returned handle when the cache is no longer needed.
+*
+* ```ts no_run
+* import { sqliteCache } from 'fino:cache';
+*
+* const cache = await sqliteCache({ path: '/var/lib/myapp/cache.db' });
+* let report = await cache.get<string>('report:2026-07');
+* if (report === null) {
+*   report = 'expensive result';
+*   await cache.set('report:2026-07', report, { ttlMs: 3_600_000, tags: ['reports'] });
+* }
+* await cache.close();
+* ```
 */
 export function sqliteCache(opts: SqliteCacheOptions): Promise<SqliteCache> {
   return SqliteCacheImpl.open(opts);
@@ -307,9 +430,20 @@ export function sqliteCache(opts: SqliteCacheOptions): Promise<SqliteCache> {
 
 /**
 * Options for `responseCache()`.
+*
+* ```ts no_run
+* import { memoryCache, responseCache } from 'fino:cache';
+*
+* const middleware = responseCache(memoryCache(), {
+*   ttlMs: 5_000,
+*   vary: ['accept-language'],
+*   statuses: [200, 404],
+*   header: 'x-cache'
+* });
+* ```
 */
 export interface ResponseCacheOptions {
-  /** TTL for stored responses. Required for writes. */
+  /** TTL applied to every stored response. */
   ttlMs: number;
   /** HTTP methods to cache. Defaults to `GET` and `HEAD`. */
   methods?: string[];
@@ -317,7 +451,7 @@ export interface ResponseCacheOptions {
   statuses?: number[];
   /** Request header names included in the cache key. */
   vary?: string[];
-  /** Disable the `x-fino-cache` diagnostic header. */
+  /** Diagnostic header name, or `false` to disable it. Defaults to `x-fino-cache`. */
   header?: false | string;
 }
 
@@ -354,11 +488,35 @@ function cacheHeaderName(opts: ResponseCacheOptions): string | null {
 /**
 * Create HTTP response-cache middleware for `fino:net/http/app`.
 *
-* The middleware only caches responses that are safe by default: method is
-* `GET` or `HEAD`, status is `200`, no `Set-Cookie` header is present, and
-* `Cache-Control` does not include `no-store`.
+* Requests whose method is in `methods` (default `GET`/`HEAD`) are looked up
+* by method, full URL, and the values of the configured `vary` request
+* headers. On a hit the stored status, headers, and body are replayed without
+* invoking downstream handlers. On a miss the downstream response is stored
+* when it is safe to reuse: its status is in `statuses` (default `[200]`), it
+* carries no `Set-Cookie` header, and its `Cache-Control` does not include
+* `no-store`.
+*
+* Unless disabled with `header: false`, every response gains a diagnostic
+* header (default `x-fino-cache`) valued `HIT`, `MISS`, or `BYPASS`, so cache
+* behavior is observable in tests and from clients. Stored entries expire
+* after `ttlMs`; pair the cache with `invalidateTags()` or `delete()` on a
+* namespaced view if routes need explicit invalidation.
+*
+* ```ts no_run
+* import { memoryCache, responseCache } from 'fino:cache';
+* import { App } from 'fino:net/http/app';
+*
+* const app = new App()
+*   .layer(responseCache(memoryCache({ maxEntries: 500 }), {
+*     ttlMs: 5_000,
+*     vary: ['accept-language']
+*   }));
+*
+* app.get('/hello').handle(() => new Response('hello'));
+* // First request: x-fino-cache: MISS. Repeats within 5s: HIT.
+* ```
 */
-export function responseCache(cache: Cache, opts: ResponseCacheOptions): Middleware {
+export function responseCache(cache: Cache, opts: ResponseCacheOptions): LayerMiddleware {
   const methods = new Set((opts.methods ?? ['GET', 'HEAD']).map((method) => method.toUpperCase()));
   const statuses = new Set(opts.statuses ?? [200]);
   const vary = opts.vary ?? [];

@@ -19,6 +19,10 @@ const meta = import.meta as ImportMeta & {
 const thisFile = meta.filename;
 const thisDir = meta.dirname;
 const thisUrl = meta.url;
+const textEncoder = new TextEncoder();
+function writeText(fs: DiskFileSystem, path: string, text: string): Promise<void> {
+  return fs.writeFile(path, textEncoder.encode(text));
+}
 async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
   try {
     await fs.lstat(path);
@@ -127,7 +131,7 @@ describe('resolve()', () => {
     const fs = new DiskFileSystem();
     const root = `/tmp/fino-file-url-resolve-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await ensureDir(fs, root + '/space dir');
-    await fs.writeFile(root + '/space dir/mod.ts', 'export default "decoded-url";\n');
+    await writeText(fs, root + '/space dir/mod.ts', 'export default "decoded-url";\n');
     const encoded = `file://${root}/space%20dir/mod.ts`;
     const resolved = meta.resolve(encoded);
     t.ok(resolved.startsWith('file://'), 'percent-encoded file path resolves to a file URL');
@@ -142,7 +146,7 @@ describe('resolve()', () => {
     const filename = 'meta space #query?percent%.ts';
     const absolute = root + '/' + filename;
     await ensureDir(fs, root);
-    await fs.writeFile(absolute, [
+    await writeText(fs, absolute, [
       'const relative = import.meta.resolve("./meta space #query?percent%.ts");',
       'const absolute = import.meta.resolve(import.meta.filename);',
       'const fileInput = import.meta.resolve(import.meta.url);',
@@ -189,10 +193,10 @@ describe('resolve()', () => {
     const fs = new DiskFileSystem();
     const root = `/tmp/fino-import-meta-package-map-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await ensureDir(fs, root + '/.fino/packages/pkg/dist');
-    await fs.writeFile(root + '/package.json', JSON.stringify({ type: 'module' }, null, 2));
-    await fs.writeFile(root + '/.fino/packages/pkg/index.js', 'export default "pkg";\n');
-    await fs.writeFile(root + '/.fino/packages/pkg/dist/feature.js', 'export default "feature";\n');
-    await fs.writeFile(root + '/.fino/package-map.json', JSON.stringify({
+    await writeText(fs, root + '/package.json', JSON.stringify({ type: 'module' }, null, 2));
+    await writeText(fs, root + '/.fino/packages/pkg/index.js', 'export default "pkg";\n');
+    await writeText(fs, root + '/.fino/packages/pkg/dist/feature.js', 'export default "feature";\n');
+    await writeText(fs, root + '/.fino/package-map.json', JSON.stringify({
       version: 1,
       root,
       rootDependencies: {
@@ -208,14 +212,14 @@ describe('resolve()', () => {
         }
       } }
     }, null, 2));
-    await fs.writeFile(root + '/resolve-ok.ts', [
+    await writeText(fs, root + '/resolve-ok.ts', [
       'const rootUrl = import.meta.resolve("pkg");',
       'const featureUrl = import.meta.resolve("pkg/feature");',
       'const fileUrl = import.meta.resolve(new URL("./resolve-ok.ts", import.meta.url).href);',
       'console.log([rootUrl, featureUrl, fileUrl].join("\\n"));',
       ''
     ].join('\n'));
-    await fs.writeFile(root + '/resolve-missing-record.ts', 'import.meta.resolve("missing");\n');
+    await writeText(fs, root + '/resolve-missing-record.ts', 'import.meta.resolve("missing");\n');
     const ok = await runCli(['resolve-ok.ts'], root);
     t.equal(ok.code, 0, 'package-map resolve script exits successfully');
     t.equal(ok.stderr, '', 'package-map resolve script has no stderr');
@@ -235,21 +239,21 @@ describe('resolve()', () => {
     const root = `/tmp/fino-loader-non-goals-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await ensureDir(fs, root + '/dir');
     await ensureDir(fs, root + '/node_modules/pkg');
-    await fs.writeFile(root + '/package.json', JSON.stringify({
+    await writeText(fs, root + '/package.json', JSON.stringify({
       type: 'module',
       imports: { '#alias': './alias.ts' },
       dependencies: { pkg: '1.0.0' }
     }, null, 2));
-    await fs.writeFile(root + '/alias.ts', 'export default "alias";\n');
-    await fs.writeFile(root + '/dir/index.ts', 'export default "index";\n');
-    await fs.writeFile(root + '/node_modules/pkg/package.json', JSON.stringify({
+    await writeText(fs, root + '/alias.ts', 'export default "alias";\n');
+    await writeText(fs, root + '/dir/index.ts', 'export default "index";\n');
+    await writeText(fs, root + '/node_modules/pkg/package.json', JSON.stringify({
       type: 'module',
       exports: { '.': './index.ts' }
     }, null, 2));
-    await fs.writeFile(root + '/node_modules/pkg/index.ts', 'export default "pkg";\n');
-    await fs.writeFile(root + '/package-imports.ts', 'import "#alias";\n');
-    await fs.writeFile(root + '/directory-index.ts', 'import "./dir";\n');
-    await fs.writeFile(root + '/bare-package.ts', 'import "pkg";\n');
+    await writeText(fs, root + '/node_modules/pkg/index.ts', 'export default "pkg";\n');
+    await writeText(fs, root + '/package-imports.ts', 'import "#alias";\n');
+    await writeText(fs, root + '/directory-index.ts', 'import "./dir";\n');
+    await writeText(fs, root + '/bare-package.ts', 'import "pkg";\n');
     const packageImports = await runCli(['package-imports.ts'], root);
     t.equal(packageImports.code, 1, 'package imports fail without package imports support');
     t.ok(packageImports.stderr.includes('Cannot resolve package \'#alias\'') || packageImports.stderr.includes('Cannot resolve module \'#alias\''), 'package imports failure is explicit');

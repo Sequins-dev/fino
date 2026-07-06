@@ -63,13 +63,16 @@
 *
 * ## Example
 *
-* ```typescript no_run
+* ```ts no_run
 * import { FinoVFS } from 'internal:database/sqlite/vfs';
+* import { DiskFileSystem } from 'fino:file';
 *
-* const vfs = new FinoVFS(fileSystem, 'fino');
+* const vfs = new FinoVFS(new DiskFileSystem(), 'fino');
 * vfs.register();
 * try {
-*   // Open sqlite connections with this VFS name while the callbacks live.
+*   // Open sqlite connections with `vfs.name` / `vfs.nameCstrPointer` while the
+*   // callbacks are alive; every file the database touches is routed through the
+*   // provider instead of the platform default VFS.
 * } finally {
 *   vfs.unregister();
 * }
@@ -143,14 +146,27 @@ function _openMode(flags: number): string {
 /**
 * JavaScript sqlite VFS backed by a Fino `FileSystem`.
 *
-* A `FinoVFS` owns native callback objects and struct buffers for as long as it
-* is registered. Call `unregister` when the VFS is no longer needed; open
-* sqlite connections should be closed first.
+* Constructing a `FinoVFS` eagerly builds the native `sqlite3_vfs` and
+* `sqlite3_io_methods` structs and the `FfiCallback`s they point at. Those
+* objects — and the buffers holding them — must stay reachable for as long as
+* the VFS is registered, so a `FinoVFS` is meant to be held by whatever owns the
+* database connections that use it (see `js/database/sqlite.ts`, which keeps one
+* per connection). Because every file operation is dispatched synchronously from
+* sqlite's C code, the backing `FileSystem`/`FileHandle` must expose the `*Sync`
+* variants (`openSync`, `preadSync`, `pwriteSync`, …); providers that only offer
+* async I/O return `SQLITE_IOERR` for the corresponding operation.
 *
-* ```typescript no_run
+* Give each VFS a distinct `name`, register it before opening databases that
+* should use it, pass `name`/`nameCstrPointer` as the `zVfs` argument to
+* `sqlite3_open_v2`, and `unregister` once every database using it is closed.
+*
+* ```ts no_run
 * import { FinoVFS } from 'internal:database/sqlite/vfs';
-* const vfs = new FinoVFS(fs, 'fino');
+* import { DiskFileSystem } from 'fino:file';
+*
+* const vfs = new FinoVFS(new DiskFileSystem(), 'fino-disk');
 * vfs.register();
+* // ... open sqlite connections with `zVfs = vfs.name` ...
 * vfs.unregister();
 * ```
 *
@@ -158,135 +174,54 @@ function _openMode(flags: number): string {
 */
 export class FinoVFS {
   /**
-  * Private readonly property `#fs` used by `FinoVFS`.
+  * The provider every VFS file operation is delegated to.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fs = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fs;
-  *   }
-  * }
-  * ```
+  * Its `*Sync` methods (`openSync`, `unlinkSync`, `statSync`, and the handle's
+  * `preadSync`/`pwriteSync`/…) back the sqlite callbacks; the async surface of
+  * `FileSystem` is unused here because sqlite drives I/O synchronously.
   *
   * @internal
   */
   readonly #fs: FileSystem;
   /**
-  * Private readonly property `#name` used by `FinoVFS`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #name = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#name;
-  *   }
-  * }
-  * ```
+  * The VFS name registered with sqlite and exposed through the `name` getter.
   *
   * @internal
   */
   readonly #name: string;
   /**
-  * Private readonly property `#nameBuf` used by `FinoVFS`.
+  * Null-terminated C-string bytes for the VFS name.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #nameBuf = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#nameBuf;
-  *   }
-  * }
-  * ```
+  * Held for the lifetime of the instance so the struct's `zName` pointer (and
+  * `nameCstrPointer`) keep pointing at live memory.
   *
   * @internal
   */
   readonly #nameBuf: Uint8Array;
   // Persistent struct buffers — must remain alive as long as the VFS is registered.
   /**
-  * Private readonly property `#vfsBuf` used by `FinoVFS`.
+  * The 168-byte `sqlite3_vfs` struct buffer passed to `sqlite3_vfs_register`.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #vfsBuf = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#vfsBuf;
-  *   }
-  * }
-  * ```
+  * Must stay alive while the VFS is registered; sqlite retains the raw address.
   *
   * @internal
   */
   readonly #vfsBuf: ArrayBuffer;
   /**
-  * Private readonly property `#ioMethodsBuf` used by `FinoVFS`.
+  * The 152-byte `sqlite3_io_methods` struct shared by every open file.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #ioMethodsBuf = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#ioMethodsBuf;
-  *   }
-  * }
-  * ```
+  * Each `sqlite3_file` created by `xOpen` stores this buffer's address in its
+  * `pMethods` slot, so it must outlive all open handles.
   *
   * @internal
   */
   readonly #ioMethodsBuf: ArrayBuffer;
   // All FfiCallbacks — held to prevent GC and to close on unregister.
   /**
-  * Private readonly property `#callbacks` used by `FinoVFS`.
+  * Every `FfiCallback` wired into the two structs.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #callbacks = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#callbacks;
-  *   }
-  * }
-  * ```
+  * Retained both to keep the trampolines from being garbage-collected while
+  * sqlite may still invoke them and to `close()` them all in `unregister`.
   *
   * @internal
   */
@@ -295,46 +230,25 @@ export class FinoVFS {
   }> = [];
   // Map from numeric file ID to the open file state.
   /**
-  * Private readonly property `#handles` used by `FinoVFS`.
+  * Open files keyed by the numeric ID stored at byte 8 of each `sqlite3_file`.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handles = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#handles;
-  *   }
-  * }
-  * ```
+  * `xOpen` inserts an entry, the io-method callbacks look up their file's state
+  * by reading that ID back out of the struct, and `xClose` removes it. Using an
+  * integer key instead of a raw pointer keeps the map GC-safe.
   *
   * @internal
   */
   readonly #handles: Map<number, VfsFileState> = new Map();
+  /**
+  * Per-path monotonic counter backing `SQLITE_FCNTL_DATA_VERSION`.
+  *
+  * Bumped on every write, truncate, or size-hint so sqlite can detect that a
+  * file changed underneath a connection; keyed by path (not file ID) so the
+  * version survives close/reopen. Wraps back to 1 past the 32-bit signed max.
+  */
   readonly #dataVersions: Map<string, number> = new Map();
   /**
-  * Private property `#nextId` used by `FinoVFS`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #nextId = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#nextId;
-  *   }
-  * }
-  * ```
+  * Monotonic source of file IDs handed out by `xOpen`.
   *
   * @internal
   */
@@ -342,12 +256,17 @@ export class FinoVFS {
   /**
   * Create sqlite VFS structs and callbacks for a filesystem provider.
   *
-  * `name` defaults to `fino` and is copied into a null-terminated C string.
-  * Construction does not register with sqlite; call `register` explicitly.
+  * Eagerly builds both native structs and every `FfiCallback`, so the instance
+  * is fully wired the moment it returns. `name` defaults to `fino` and is copied
+  * into a null-terminated C string; give co-existing VFSes distinct names so
+  * they do not collide in sqlite's global registry. Construction does not
+  * register anything — call `register` before opening databases.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * import { FinoVFS } from 'internal:database/sqlite/vfs';
-  * const vfs = new FinoVFS(fs, 'memory-backed');
+  * import { DiskFileSystem } from 'fino:file';
+  *
+  * const vfs = new FinoVFS(new DiskFileSystem(), 'memory-backed');
   * ```
   */
   constructor(fs: FileSystem, name = 'fino') {
@@ -363,25 +282,12 @@ export class FinoVFS {
   // sqlite3_io_methods
   // ---------------------------------------------------------------------------
   /**
-  * Private method `#buildIoMethods` used by `FinoVFS`.
+  * Construct the shared `sqlite3_io_methods` struct.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #buildIoMethods() {
-  *     return 'buildIoMethods';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#buildIoMethods();
-  *   }
-  * }
-  * ```
+  * Allocates one `FfiCallback` per file operation (`xClose`, `xRead`, `xWrite`,
+  * `xTruncate`, `xSync`, `xFileSize`, the locking and `xFileControl` handlers,
+  * `xSectorSize`, `xDeviceCharacteristics`), records them in `#callbacks`, and
+  * writes their addresses into `#ioMethodsBuf`. Called once from the constructor.
   *
   * @internal
   */
@@ -723,25 +629,14 @@ export class FinoVFS {
   // sqlite3_vfs
   // ---------------------------------------------------------------------------
   /**
-  * Private method `#buildVfs` used by `FinoVFS`.
+  * Construct the `sqlite3_vfs` struct.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #buildVfs() {
-  *     return 'buildVfs';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#buildVfs();
-  *   }
-  * }
-  * ```
+  * Fills in the version/`szOsFile`/`mxPathname` header, points `zName` at
+  * `#nameBuf`, and allocates the VFS-level callbacks (`xOpen`, `xDelete`,
+  * `xAccess`, `xFullPathname`, `xRandomness`, `xSleep`, `xCurrentTime`,
+  * `xGetLastError`, `xCurrentTimeInt64`) into `#vfsBuf`. `xOpen` binds each new
+  * `sqlite3_file` to the shared `#ioMethodsBuf` and registers a `#handles`
+  * entry. Called once from the constructor, after `#buildIoMethods`.
   *
   * @internal
   */
@@ -909,16 +804,23 @@ export class FinoVFS {
   // Registration
   // ---------------------------------------------------------------------------
   /**
-  * Register this VFS with sqlite.
+  * Register this VFS with sqlite via `sqlite3_vfs_register`.
   *
-  * Call before opening databases that should use it. Pass `true` to make it
-  * sqlite's default VFS. Throws when sqlite is unavailable or registration
-  * returns a non-OK result.
+  * Call before opening databases that should use it. With `makeDflt` false
+  * (the default) the VFS is available by name — pass `name`/`nameCstrPointer`
+  * as the `zVfs` argument to `sqlite3_open_v2`; with `makeDflt` true it also
+  * becomes the default VFS for opens that request none.
   *
-  * ```typescript no_run
+  * Throws if sqlite is not available (`requireSqlite`) or if registration
+  * returns a non-`SQLITE_OK` result.
+  *
+  * ```ts no_run
   * import { FinoVFS } from 'internal:database/sqlite/vfs';
-  * const vfs = new FinoVFS(fs);
+  * import { DiskFileSystem } from 'fino:file';
+  *
+  * const vfs = new FinoVFS(new DiskFileSystem());
   * vfs.register(false);
+  * // sqlite3_open_v2(path, ppDb, flags, vfs.nameCstrPointer)
   * ```
   */
   register(makeDflt = false): void {
@@ -928,13 +830,15 @@ export class FinoVFS {
     if (rc !== SQLITE_OK) throw new Error(`sqlite3_vfs_register failed: ${rc}`);
   }
   /**
-  * Unregister this VFS and free all callbacks.
+  * Unregister this VFS from sqlite and free all callbacks.
   *
-  * Close sqlite databases using this VFS before unregistering. After this
-  * method, the instance should not be registered again because callbacks have
-  * been closed.
+  * Removes the struct from sqlite's registry, then `close()`s every
+  * `FfiCallback` and clears the list. Close all sqlite databases that were
+  * opened against this VFS first — sqlite must not invoke a callback after it is
+  * freed. The instance is single-use once unregistered: its callbacks are gone,
+  * so a fresh `FinoVFS` is required to register again.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * vfs.unregister();
   * ```
   */
@@ -946,9 +850,12 @@ export class FinoVFS {
     this.#callbacks.length = 0;
   }
   /**
-  * VFS name to pass as `zVfs` to `sqlite3_open_v2`.
+  * The registered VFS name, for use as the `zVfs` argument to `sqlite3_open_v2`.
   *
-  * ```typescript no_run
+  * This is a JS string; the bindings that take a raw C pointer should use
+  * `nameCstrPointer` instead.
+  *
+  * ```ts no_run
   * const name = vfs.name;
   * ```
   */
@@ -956,13 +863,16 @@ export class FinoVFS {
     return this.#name;
   }
   /**
-  * Fino pointer to the VFS name C-string.
+  * A Fino pointer to the null-terminated VFS name C-string.
   *
-  * The returned `ArrayBuffer` contains the native address, not the bytes of the
-  * string. It remains valid while this VFS instance is alive.
+  * The returned 8-byte `ArrayBuffer` holds the native address of the name bytes,
+  * not the bytes themselves, so it can be passed straight to FFI symbols that
+  * expect a `const char *zVfs` (such as `sqlite3_open_v2`). Valid only while this
+  * instance is alive, since it points into `#nameBuf`.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const namePtr = vfs.nameCstrPointer;
+  * // sqlite3_open_v2(pathPtr, ppDb, flags, namePtr)
   * ```
   */
   get nameCstrPointer(): ArrayBuffer {

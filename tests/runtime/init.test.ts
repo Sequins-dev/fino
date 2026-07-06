@@ -113,6 +113,12 @@ describe('fino init', () => {
   let appDir: string;
   before(async () => {
     fs = new DiskFileSystem();
+    const rawReadFile = fs.readFile.bind(fs);
+    const rawWriteFile = fs.writeFile.bind(fs);
+    fs.readFile = (async (path: string) => decodeUtf8(await rawReadFile(path))) as never;
+    fs.writeFile = (async (path: string, data: string | Uint8Array | ArrayBuffer | ArrayBufferView) => {
+      await rawWriteFile(path, typeof data === 'string' ? new TextEncoder().encode(data) : data);
+    }) as never;
     await fs.mkdir(TEST_DIR);
     appDir = TEST_DIR + '/app';
     await fs.mkdir(appDir);

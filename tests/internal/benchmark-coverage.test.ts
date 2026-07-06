@@ -1,6 +1,10 @@
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 const fs = new DiskFileSystem();
+const textDecoder = new TextDecoder();
+async function readText(path: string): Promise<string> {
+  return textDecoder.decode(await fs.readFile(path));
+}
 function publicBuiltins(source: string): string[] {
   const specs = new Set<string>();
   const re = /"(?<spec>fino:[^"]+)"/g;
@@ -30,13 +34,13 @@ function listedBenchmarkPaths(source: string): string[] {
 }
 describe('benchmark coverage map', () => {
   it('documents every public fino builtin registered in the loader', async (t) => {
-    const loader = await fs.readFile('src/loader.rs', 'utf8');
-    const coverage = await fs.readFile('benchmarks/COVERAGE.md', 'utf8');
+    const loader = await readText('src/loader.rs');
+    const coverage = await readText('benchmarks/COVERAGE.md');
     const missing = publicBuiltins(loader).filter((spec) => !coveredBuiltins(coverage).has(spec));
     t.deepEqual(missing, [], 'all public builtins appear in benchmarks/COVERAGE.md');
   });
   it('uses js-mirrored benchmark paths for public source builtins', async (t) => {
-    const coverage = await fs.readFile('benchmarks/COVERAGE.md', 'utf8');
+    const coverage = await readText('benchmarks/COVERAGE.md');
     const expected = [
       '`fino:log` | `benchmarks/log.bench.ts`',
       '`fino:config` | `benchmarks/config.bench.ts`',
@@ -64,7 +68,7 @@ describe('benchmark coverage map', () => {
     }
   });
   it('points only at benchmark files that exist', async (t) => {
-    const coverage = await fs.readFile('benchmarks/COVERAGE.md', 'utf8');
+    const coverage = await readText('benchmarks/COVERAGE.md');
     const missing: string[] = [];
     for (const file of listedBenchmarkPaths(coverage)) {
       try {
@@ -89,7 +93,7 @@ describe('benchmark coverage map', () => {
     ]);
     const missing: string[] = [];
     for (const [file, markers] of required) {
-      const source = await fs.readFile(file, 'utf8');
+      const source = await readText(file);
       for (const marker of markers) {
         if (!source.includes(marker)) missing.push(`${file}: ${marker}`);
       }
@@ -97,7 +101,7 @@ describe('benchmark coverage map', () => {
     t.deepEqual(missing, [], 'release-audit benchmark stress/failure markers are present');
   });
   it('links release notes to benchmark inventory and intentional non-parity areas', async (t) => {
-    const notes = await fs.readFile('research-docs/research/js-release-notes.md', 'utf8');
+    const notes = await readText('research-docs/research/js-release-notes.md');
     const required = [
       'benchmarks/COVERAGE.md',
       'JOSE',
@@ -115,7 +119,7 @@ describe('benchmark coverage map', () => {
     t.deepEqual(missing, [], 'release notes cover benchmark workflow and intentional non-parity areas');
   });
   it('keeps DNSSEC release lane and root anchor policy documented', async (t) => {
-    const notes = await fs.readFile('research-docs/research/js-release-notes.md', 'utf8');
+    const notes = await readText('research-docs/research/js-release-notes.md');
     const required = [
       'FINO_DNS_LIVE=1',
       'FINO_DNS_SERVER',

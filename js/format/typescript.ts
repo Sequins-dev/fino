@@ -1,20 +1,28 @@
 /**
-* fino:format/typescript - OXC-backed TypeScript and JavaScript parser.
+* fino:format/typescript - OXC-backed TypeScript and JavaScript tooling.
 *
-* This module exposes the runtime's OXC parser and transformer to JavaScript.
-* Use it for tooling-oriented tasks such as inspecting TypeScript/JavaScript
-* source, collecting comments and tokens, validating syntax, or stripping
-* TypeScript syntax before evaluation. It is not a type checker.
+* This module exposes the runtime's OXC parser, transformer, formatter, and
+* linter to JavaScript. Use it for tooling-oriented tasks such as inspecting
+* TypeScript/JavaScript source, collecting comments and tokens, validating
+* syntax, stripping TypeScript syntax before evaluation, normalizing source
+* style, or running the default lint rule set. It is not a type checker.
 *
 * `parse()` returns OXC's serialized ESTree-compatible AST, comments, optional
 * tokens, diagnostics, and the detected source mode. The AST shape follows the
 * bundled OXC version and can change as OXC evolves. `transpile()` returns
 * JavaScript code plus source map text and diagnostics for TypeScript/JSX
-* syntax lowering.
+* syntax lowering. `format()` rewrites source with stable style defaults, and
+* `lint()` reports diagnostics from the runtime's default rule set. For
+* serving browser-side TypeScript directly from a Fino HTTP app,
+* `transpileFiles()` provides transpile-on-request middleware.
 *
-* Source grammar is inferred from `filename` when possible. Pass `sourceType`
-* to force JavaScript, JSX, TypeScript, TSX, declaration-file, module, or
-* script parsing behavior.
+* Source grammar is inferred from `filename` when possible, and TypeScript
+* module grammar is assumed when neither `filename` nor `sourceType` selects
+* one. Pass `sourceType` to force JavaScript, JSX, TypeScript, TSX,
+* declaration-file, module, or script parsing behavior in `parse()`,
+* `format()`, and `lint()`. `transpile()` derives grammar from `filename`
+* alone, so give JSX or declaration input a filename with a matching
+* extension such as `.tsx` or `.d.ts`.
 *
 * ```ts no_run
 * import { parse } from 'fino:format/typescript';
@@ -44,7 +52,7 @@ import { parse as parseNative, transpile as transpileNative, format as formatNat
 // TypeScript transpile hook, before globals and the fs/http stacks exist.
 // Keep module scope free of runtime imports; transpileFiles() loads its
 // dependencies lazily and imports only types eagerly.
-import type { Middleware } from 'fino:net/http/app';
+import type { LayerMiddleware } from 'fino:net/http/app';
 /**
 * Options controlling source grammar detection and parser output.
 *
@@ -75,7 +83,8 @@ export interface ParseOptions {
   */
   filename?: string;
   /**
-  * Explicit source grammar. Defaults are inferred from `filename` when possible.
+  * Explicit source grammar. Defaults are inferred from `filename` when
+  * possible, falling back to TypeScript module grammar when neither is given.
   *
   * Use this when parsing virtual source or when a filename extension does not
   * match the syntax. The parser still reports diagnostics rather than throwing
@@ -286,12 +295,14 @@ export interface ParseComment {
   /**
   * Whether the comment is a JSDoc-style block comment.
   *
-  * This is true for comments that OXC recognizes as documentation comments.
+  * This is true only for block comments that OXC recognizes as documentation
+  * comments (those opening with `/**`); line comments are never JSDoc.
   *
   * ```ts no_run
   * import { parse } from 'fino:format/typescript';
   *
-  * parse('// docs\nconst x = 1;').comments[0]?.jsdoc;
+  * const source = '/** docs *' + '/\nconst x = 1;';
+  * parse(source).comments[0]?.jsdoc;
   * ```
   */
   jsdoc: boolean;
@@ -508,8 +519,10 @@ export interface TranspileOptions {
   /**
   * Filename used for syntax-mode inference and source map metadata.
   *
-  * The file is not read from disk. Use this to get `.tsx` or `.d.ts` behavior
-  * without passing `sourceType` directly.
+  * The file is not read from disk. For `transpile()` this is the only grammar
+  * control: use a `.tsx`, `.jsx`, or `.d.ts` extension to select those modes.
+  * Without a filename, transpilation assumes TypeScript module grammar
+  * (source maps then reference `module.ts`).
   *
   * ```ts no_run
   * import { transpile } from 'fino:format/typescript';
@@ -519,15 +532,18 @@ export interface TranspileOptions {
   */
   filename?: string;
   /**
-  * Explicit source grammar. Defaults are inferred from `filename` when possible.
+  * Explicit source grammar for the functions that honor it.
   *
-  * Use this for virtual source or when extension-based detection would choose
-  * the wrong grammar.
+  * `format()` and `lint()` resolve grammar from this field before falling
+  * back to `filename` inference. `transpile()` itself ignores this field and
+  * derives grammar from `filename` alone, so pass a filename with a matching
+  * extension to transpile JSX or declaration-file input.
   *
   * ```ts no_run
-  * import { transpile } from 'fino:format/typescript';
+  * import { format, transpile } from 'fino:format/typescript';
   *
-  * transpile('const el = <div />;', { sourceType: 'tsx' });
+  * format('const el = <div />;', { sourceType: 'tsx' });
+  * transpile('const el = <div />;', { filename: 'component.tsx' });
   * ```
   */
   sourceType?: ParseOptions['sourceType'];
@@ -536,14 +552,14 @@ export interface TranspileOptions {
 * JavaScript output, source map text, and diagnostics from transpilation.
 *
 * `code` and `map` are strings returned by OXC. Check `ok` before evaluating or
-* writing the output; failed transpilation may contain diagnostics and partial
-* output.
+* writing the output; failed transpilation returns empty `code` and `map`
+* strings alongside diagnostics in `errors`.
 *
 * ```ts no_run
 * import { transpile, type TranspileResult } from 'fino:format/typescript';
 *
 * const result: TranspileResult = transpile('const x: number = 1;', {
-*   sourceType: 'ts',
+*   filename: 'x.ts',
 * });
 * ```
 */
@@ -556,7 +572,7 @@ export interface TranspileResult {
   * ```ts no_run
   * import { transpile } from 'fino:format/typescript';
   *
-  * const ok = transpile('const x: number = 1;', { sourceType: 'ts' }).ok;
+  * const ok = transpile('const x: number = 1;', { filename: 'x.ts' }).ok;
   * ```
   */
   ok: boolean;
@@ -564,20 +580,20 @@ export interface TranspileResult {
   * Transpiled JavaScript source code.
   *
   * Type syntax is removed or lowered according to OXC's transformer behavior.
-  * The result is not bundled or minified.
+  * The result is not bundled or minified. Empty when transpilation failed.
   *
   * ```ts no_run
   * import { transpile } from 'fino:format/typescript';
   *
-  * const code = transpile('const x: number = 1;', { sourceType: 'ts' }).code;
+  * const code = transpile('const x: number = 1;', { filename: 'x.ts' }).code;
   * ```
   */
   code: string;
   /**
   * Source map text emitted by OXC.
   *
-  * The string may be empty when the native transformer does not emit a map for
-  * the selected input and options.
+  * The map references `filename` (or the `module.ts` default) as its source.
+  * Empty when transpilation failed.
   *
   * ```ts no_run
   * import { transpile } from 'fino:format/typescript';
@@ -595,7 +611,7 @@ export interface TranspileResult {
   * ```ts no_run
   * import { transpile } from 'fino:format/typescript';
   *
-  * const errors = transpile('const =', { sourceType: 'ts' }).errors;
+  * const errors = transpile('const =', { filename: 'x.ts' }).errors;
   * ```
   */
   errors: ParseDiagnostic[];
@@ -603,10 +619,10 @@ export interface TranspileResult {
 /**
 * Options controlling source formatting.
 *
-* Formatting uses the same source parsing controls as `transpile()`, including
-* `filename`, `sourceType`, JSX handling, and source-map choices where the
-* native formatter supports them. Invalid source returns `ok: false` with
-* diagnostics instead of emitting partial formatted code.
+* Formatting uses the same source grammar controls as `parse()`: an explicit
+* `sourceType` wins, then `filename` inference, then the TypeScript module
+* default. Invalid source returns `ok: false` with diagnostics instead of
+* emitting partial formatted code.
 *
 * ```ts no_run
 * import type { FormatOptions } from 'fino:format/typescript';
@@ -622,7 +638,7 @@ export interface FormatOptions extends TranspileOptions {}
 * `errors` contains parse or formatter diagnostics and is empty on success.
 *
 * ```ts no_run
-* import { format } from 'fino:format/typescript';
+* import { format, type FormatResult } from 'fino:format/typescript';
 *
 * const result: FormatResult = format('const value = "x";');
 * ```
@@ -638,9 +654,10 @@ export interface FormatResult {
 /**
 * Options controlling source linting.
 *
-* Linting shares the parser options from `transpile()`. When `fix` is true,
-* supported automatic fixes are returned in `fixedCode`; unsupported fixes
-* remain diagnostics and do not rewrite the input.
+* Linting shares the source grammar controls from `parse()`: explicit
+* `sourceType` first, then `filename` inference. When `fix` is true, automatic
+* fixes that the rule set can apply are returned in `fixedCode`; diagnostics
+* without a safe fix never rewrite the input.
 *
 * ```ts no_run
 * import type { LintOptions } from 'fino:format/typescript';
@@ -649,17 +666,23 @@ export interface FormatResult {
 * ```
 */
 export interface LintOptions extends TranspileOptions {
-  /** Return fixed source text when the default rule set can safely apply fixes. */
+  /**
+  * Request automatically fixed source text in `fixedCode`.
+  *
+  * The input string is never modified. The default rule set currently has no
+  * auto-fixable rules, so `fixedCode` comes back `null` even with `fix: true`.
+  */
   fix?: boolean;
 }
 /**
 * Result returned by `lint()`.
 *
-* `ok` is `true` only when no diagnostics remain. `fixedCode` is present when
-* `fix: true` produced a changed source string.
+* `ok` is `true` only when no diagnostics remain. `fixedCode` carries a
+* rewritten source string only when automatic fixes were applied; it is `null`
+* otherwise, including whenever the rule set has nothing to fix.
 *
 * ```ts no_run
-* import { lint } from 'fino:format/typescript';
+* import { lint, type LintResult } from 'fino:format/typescript';
 *
 * const result: LintResult = lint('debugger;');
 * ```
@@ -669,7 +692,7 @@ export interface LintResult {
   ok: boolean;
   /** Parse and lint diagnostics from the default rule set. */
   diagnostics: ParseDiagnostic[];
-  /** Fixed source text when requested and available. */
+  /** Rewritten source when automatic fixes were applied; `null` otherwise. */
   fixedCode?: string;
 }
 /**
@@ -693,12 +716,16 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
 *
 * The native transformer removes TypeScript syntax and lowers supported syntax
 * according to OXC. It does not perform type-checking, module resolution, or
-* bundling. Check `ok` and `errors` before consuming `code`.
+* bundling. Grammar comes from `filename` alone — TypeScript module grammar
+* when omitted — so JSX or declaration input needs a filename with a matching
+* extension; `options.sourceType` is not consulted here. Check `ok` and
+* `errors` before consuming `code`.
 *
 * ```ts no_run
 * import { transpile } from 'fino:format/typescript';
 *
-* const { code } = transpile('const x: number = 1;', { sourceType: 'ts' });
+* const { code } = transpile('const x: number = 1;', { filename: 'x.ts' });
+* const jsx = transpile('const el = <div />;', { filename: 'component.tsx' });
 * ```
 */
 export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
@@ -709,6 +736,24 @@ function stripTrailingWhitespace(code: string): string {
 }
 /**
 * Format JavaScript or TypeScript source with the runtime's OXC-backed tooling.
+*
+* Formatting normalizes quotes, indentation, and the trailing newline while
+* preserving TypeScript and JSX syntax as written. Trailing whitespace is
+* stripped from every line of successful output. Source grammar follows the
+* same `sourceType` selection and `filename` inference as `parse()`.
+*
+* Invalid source does not throw: the result carries `ok: false`, an empty
+* `code` string, and parse diagnostics in `errors`.
+*
+* ```ts no_run
+* import { format } from 'fino:format/typescript';
+*
+* const result = format('const value = "hello";\nif (value) { console.log(value); }\n', {
+*   filename: 'sample.ts',
+* });
+* if (result.ok) console.log(result.code);
+* else console.error(result.errors[0]?.message);
+* ```
 */
 export function format(source: string, options: FormatOptions = {}): FormatResult {
   const result = formatNative(String(source), options) as FormatResult;
@@ -717,6 +762,27 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
 }
 /**
 * Lint JavaScript or TypeScript source with the runtime's default rule set.
+*
+* The result is `ok: true` only when no diagnostics remain. Syntax errors fail
+* lint the same way rule violations do, so `lint()` can double as a validity
+* check. Each diagnostic carries the rule `code` (for example `no-debugger`)
+* and one-based `line`/`column` positions where available.
+*
+* With `fix: true`, automatically fixable diagnostics would produce a
+* rewritten source string in `fixedCode`; the input is never modified, and
+* `fixedCode` is `null` when no fixes apply — which is currently always, as
+* the default rule set has no auto-fixable rules.
+*
+* ```ts no_run
+* import { lint } from 'fino:format/typescript';
+*
+* const result = lint('debugger;\nconst el = <button />;\n', {
+*   filename: 'component.tsx',
+* });
+* for (const diagnostic of result.diagnostics) {
+*   console.log(`${diagnostic.code} at ${diagnostic.line}:${diagnostic.column}`);
+* }
+* ```
 */
 export function lint(source: string, options: LintOptions = {}): LintResult {
   return lintNative(String(source), options) as LintResult;
@@ -758,18 +824,24 @@ function isTypeScriptPath(path: string): boolean {
 * the same OXC-backed `transpile()` as the rest of this module. It is intended
 * for small browser-side modules in Fino apps that do not need a bundler: it
 * only strips TypeScript syntax, and does not bundle imports, rewrite package
-* specifiers, minify, or hide source code. Paths are resolved inside the
-* configured root and traversal attempts are rejected.
+* specifiers, minify, or hide source code.
+*
+* Requests outside `prefix`, non-TypeScript paths, and files missing from
+* `root` fall through to the next middleware. Path traversal attempts return
+* `403`, and source that fails to transpile returns `500` with the diagnostic
+* messages as the body. Transpiled output is cached per file and invalidated
+* when the file's mtime or size changes, so edits are picked up on the next
+* request without restarting the server.
 *
 * ```ts no_run
 * import { App } from 'fino:net/http/app';
 * import { transpileFiles } from 'fino:format/typescript';
 *
 * const app = new App();
-* app.use(transpileFiles('./client', { prefix: '/client/' }));
+* app.layer(transpileFiles('./client', { prefix: '/client/' }));
 * ```
 */
-export function transpileFiles(root: string, opts: TranspileFilesOptions = {}): Middleware {
+export function transpileFiles(root: string, opts: TranspileFilesOptions = {}): LayerMiddleware {
   const prefix = opts.prefix ?? '/';
   const cache = new Map<string, ServeCacheEntry>();
   const deps = async () => {

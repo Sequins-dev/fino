@@ -30,7 +30,7 @@ export type FetchInput = string | URL | Request;
 /**
 * Minimal fetch init shape captured by scoped fetch mocks.
 */
-export type FetchInit = {
+export type MockFetchInit = {
   method?: string;
   headers?: unknown;
   body?: unknown;
@@ -89,7 +89,7 @@ export interface MockFetchCall {
   * const originalInit = call.init;
   * ```
   */
-  init: FetchInit | undefined;
+  init: MockFetchInit | undefined;
   /**
   * Normalized `Request` constructed from input and init.
   *
@@ -210,15 +210,15 @@ function _isAbortSignal(value: unknown): value is {
 } {
   return typeof value === 'object' && value !== null && 'aborted' in value;
 }
-function _throwIfAborted(init?: FetchInit): void {
+function _throwIfAborted(init?: MockFetchInit): void {
   const signal = init?.signal;
   if (_isAbortSignal(signal) && signal.aborted) throw _createAbortError();
 }
-async function _passthroughFetch(input: FetchInput, init?: FetchInit): Promise<Response> {
+async function _passthroughFetch(input: FetchInput, init?: MockFetchInit): Promise<Response> {
   const original = _originalFetch ?? globalThis.fetch;
   return await original(input as never, init as never);
 }
-async function _mockedFetch(input: FetchInput, init?: FetchInit): Promise<Response> {
+async function _mockedFetch(input: FetchInput, init?: MockFetchInit): Promise<Response> {
   _throwIfAborted(init);
   const scope = _activeMockFetchScope.get();
   if (scope) return await scope._dispatch(input, init);
@@ -698,7 +698,7 @@ export class MockFetchScope {
   *
   * @internal
   */
-  async _dispatch(input: FetchInput, init?: FetchInit): Promise<Response> {
+  async _dispatch(input: FetchInput, init?: MockFetchInit): Promise<Response> {
     const request = input instanceof Request ? init === undefined ? input.clone() : new Request(input, init) : new Request(typeof input === 'string' ? input : input.href, init);
     const body = await _readRequestBody(request);
     const call: MockFetchCall = {

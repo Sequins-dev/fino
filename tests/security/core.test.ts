@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { buildCorsHeaders, createSecurityHeaders, hashPassword, parseCookieHeader, randomBase64Url, randomBytes, randomInt, randomToken, sealCookie, serializeCookie, signCookie, unsealCookie, verifyCookie, verifyPassword } from 'fino:security';
+import { buildCorsHeaders, CookieJar, createSecurityHeaders, hashPassword, parseCookieHeader, randomBase64Url, randomBytes, randomInt, randomToken, sealCookie, serializeCookie, signCookie, unsealCookie, verifyCookie, verifyPassword } from 'fino:security';
 import { issueToken as issueDirectToken, verifyToken as verifyDirectToken } from 'fino:security/token';
 describe('fino:security core helpers', () => {
   it('generates base64url tokens and bounded integers', (t) => {
@@ -120,6 +120,13 @@ describe('fino:security core helpers', () => {
     const signed = signCookie('abc', 'secret-key');
     t.equal(verifyCookie(signed, 'secret-key'), 'abc', 'signed cookie verifies');
     t.equal(verifyCookie(signed + 'tamper', 'secret-key'), null, 'tampered cookie is rejected');
+  });
+  it('CookieJar reads and mutates request cookies', (t) => {
+    const jar = new CookieJar('sid=abc%20123; theme=light');
+    t.equal(jar.get('sid'), 'abc 123', 'jar reads parsed cookies');
+    jar.set('theme', 'dark', { path: '/' });
+    jar.delete('sid', { path: '/' });
+    t.deepEqual(jar.all(), { theme: 'dark' }, 'jar reflects local mutations');
   });
   it('rejects cookie attributes that can inject headers', (t) => {
     t.throws(() => serializeCookie('sid', 'abc', { domain: 'example.com\r\nSet-Cookie: injected=1' }), /Invalid cookie Domain attribute/, 'domain CRLF injection is rejected');

@@ -4,6 +4,7 @@
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem, Glob } from 'fino:file';
 const TEST_DIR = '/tmp/fino-glob-test-' + Math.floor(Math.random() * 1e6);
+const textEncoder = new TextEncoder();
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ async function createTree(fs: DiskFileSystem, root: string, tree: Record<string,
       } catch {}
     }
     if (content !== null) {
-      await fs.writeFile(abs, content ?? '');
+      await fs.writeFile(abs, textEncoder.encode(content ?? ''));
     } else {
       try {
         await fs.mkdir(abs);

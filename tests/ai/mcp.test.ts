@@ -944,11 +944,11 @@ describe('fino:ai/mcp — MCPServer', () => {
         text: string;
       }) => text
     })] });
-    const app = new App().use((ctx, next) => {
+    const app = new App();
+    const guarded = app.use((ctx) => {
       if (ctx.request.headers.get('authorization') !== 'Bearer ok') return new Response('blocked', { status: 401 });
-      return next();
     });
-    mountMcp(app, '/mcp', server);
+    mountMcp(guarded, '/mcp', server);
     const blocked = await app.handle(new Request('http://local.test/mcp', {
       method: 'POST',
       headers: {

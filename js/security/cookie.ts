@@ -32,8 +32,16 @@
 * ```
 */
 import { cipherDecrypt, cipherEncrypt, hmac } from '../internal/openssl.ts';
-import { base64urlDecode, base64urlEncode, normalizeSecretKey, timingSafeEqualString, toBytes, utf8, type BufferLike } from '../internal/security/encoding.ts';
+import { base64urlDecode, base64urlEncode, normalizeSecretKey, timingSafeEqualString, toBytes, utf8, type BufferLike as SecurityBufferLike } from '../internal/security/encoding.ts';
 import { randomBytes } from './random.ts';
+
+/**
+* Byte-oriented secret input accepted by cookie signing and sealing helpers.
+*
+* Strings are encoded as UTF-8. `Uint8Array`, `ArrayBuffer`, and other
+* `ArrayBufferView` values are read as bytes.
+*/
+export type BufferLike = SecurityBufferLike;
 /**
 * Options used when serializing a single `Set-Cookie` header value.
 *
@@ -209,6 +217,116 @@ export function parseCookieHeader(header: string): Record<string, string> {
     if (name.length > 0) out[name] = decodeURIComponent(value);
   }
   return out;
+}
+/**
+* Mutable cookie jar populated from a request `Cookie` header.
+*
+* Queue cookie changes with `set()` or `delete()`. Framework integrations can
+* call `_apply()` to append queued `Set-Cookie` headers to a response. The jar
+* also updates its in-memory values immediately, so handlers can read their own
+* writes during a request.
+*
+* ```ts no_run
+* import { CookieJar } from 'fino:security/cookie';
+*
+* const jar = new CookieJar('sid=123');
+* jar.set('theme', 'dark', { path: '/' });
+* console.log(jar.get('theme'));
+* ```
+*/
+export class CookieJar {
+  /**
+  * Request cookie values plus local mutations made during this request.
+  *
+  * @internal
+  */
+  #values: Record<string, string>;
+  /**
+  * Serialized `Set-Cookie` headers queued for the outgoing response.
+  *
+  * @internal
+  */
+  #out: string[] = [];
+  /**
+  * Parse a `Cookie` header into a mutable jar.
+  *
+  * `null` creates an empty jar. Parsing uses `parseCookieHeader()`, including
+  * its URI-decoding behavior for cookie values.
+  *
+  * ```ts no_run
+  * const jar = new CookieJar(request.headers.get('cookie'));
+  * ```
+  */
+  constructor(header: string | null) {
+    this.#values = header === null ? {} : parseCookieHeader(header);
+  }
+  /**
+  * Read one cookie value from the current jar state.
+  *
+  * Returns `undefined` when the cookie was not present or has been deleted
+  * locally.
+  *
+  * ```ts no_run
+  * const sid = jar.get('sid');
+  * ```
+  */
+  get(name: string): string | undefined {
+    return this.#values[name];
+  }
+  /**
+  * Return all current cookie values as a plain object copy.
+  *
+  * ```ts no_run
+  * const values = jar.all();
+  * ```
+  */
+  all(): Record<string, string> {
+    return { ...this.#values };
+  }
+  /**
+  * Queue a `Set-Cookie` header and update this jar's current value.
+  *
+  * Cookie options are passed to `serializeCookie()`.
+  *
+  * ```ts no_run
+  * jar.set('sid', session.id, { httpOnly: true, path: '/' });
+  * ```
+  */
+  set(name: string, value: string, options: CookieOptions = {}): void {
+    this.#values[name] = value;
+    this.#out.push(serializeCookie(name, value, options));
+  }
+  /**
+  * Queue an expired `Set-Cookie` header and remove this jar's current value.
+  *
+  * ```ts no_run
+  * jar.delete('sid', { path: '/' });
+  * ```
+  */
+  delete(name: string, options: CookieOptions = {}): void {
+    delete this.#values[name];
+    this.#out.push(serializeCookie(name, '', {
+      ...options,
+      expires: new Date(0),
+      maxAge: 0
+    }));
+  }
+  /**
+  * Append queued `Set-Cookie` headers to a response-like object.
+  *
+  * This is used by HTTP framework integrations after a handler returns. It
+  * relies on the runtime's trusted header append hook so multiple `Set-Cookie`
+  * headers are preserved instead of joined.
+  *
+  * @internal
+  */
+  _apply(res: {
+    headers: {
+      _appendTrusted(name: string, value: string): void;
+    };
+  }): void {
+    for (const value of this.#out) res.headers._appendTrusted('set-cookie', value);
+  }
 }
 /**
 * Sign a cookie value with HMAC-SHA-256 and return `payload.signature`.

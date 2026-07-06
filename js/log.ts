@@ -21,25 +21,52 @@
 * `createOtelSink()`.
 *
 * ```ts no_run
-* import { createJsonSink, createLogger, runWithLogContext } from 'fino:log';
+* import { createJsonSink, createLogger, withLogContext } from 'fino:log';
 *
 * const sink = createJsonSink();
 * const log = createLogger({ name: 'api', level: 'info' });
 *
-* await runWithLogContext({ requestId: 'req-1' }, async () => {
+* {
+*   using scope = withLogContext({ requestId: 'req-1' });
 *   log.info('request started', { route: '/health' });
-* });
+* }
 *
 * sink.dispose();
 * ```
 */
-import { Context } from './context/index.ts';
+import { Context, type ContextScope } from './context/index.ts';
 import { topic } from './context/topic.ts';
 import { writeLine } from 'internal:runtime/libc';
 import { getActiveSpanContext } from './opentelemetry/traces.ts';
 import { getLoggerProvider, SeverityNumber } from './opentelemetry/logs.ts';
-type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
-type Fields = Record<string, unknown>;
+/**
+* Normalized severity level accepted by loggers and sinks.
+*
+* Levels are ordered from most verbose to most severe. Logger thresholds and
+* sink thresholds both use this ordering when deciding whether to emit or
+* forward a record.
+*
+* ```ts no_run
+* import type { LogLevel } from 'fino:log';
+*
+* const level: LogLevel = 'info';
+* ```
+*/
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+/**
+* Structured fields attached to log records.
+*
+* Values should be JSON-friendly when records are sent to JSON or telemetry
+* sinks, but the type intentionally accepts any value so custom sinks can decide
+* how to render richer runtime objects.
+*
+* ```ts no_run
+* import type { Fields } from 'fino:log';
+*
+* const fields: Fields = { requestId: 'req-1' };
+* ```
+*/
+export type Fields = Record<string, unknown>;
 /**
 * Structured event emitted by `Logger` and consumed by sinks/subscribers.
 *
@@ -260,6 +287,26 @@ const severityNumbers: Record<LogLevel, number> = {
 };
 const logContext = new Context<Fields>('fino:log:context');
 const logTopic = topic<LogRecord>('fino:log');
+/**
+* Disposable scope returned by `withLogContext()`.
+*
+* Dispose happens automatically when used with a `using` declaration, restoring
+* the previous async log context for the current execution branch. Capture the
+* scope explicitly only when you need to dispose it manually outside of a
+* `using` block.
+*
+* ```ts no_run
+* import { withLogContext, type LogContextScope } from 'fino:log';
+*
+* const scope: LogContextScope = withLogContext({ requestId: 'req-1' });
+* try {
+*   // ... work that should log with requestId attached ...
+* } finally {
+*   scope[Symbol.dispose]();
+* }
+* ```
+*/
+export type LogContextScope = ContextScope;
 // ---------------------------------------------------------------------------
 // Internal normalization helpers
 // ---------------------------------------------------------------------------
@@ -299,22 +346,47 @@ function shouldEmit(recordLevel: LogLevel, threshold: LogLevel | undefined): boo
 * active context.
 *
 * ```ts no_run
-* import { getLogContext, runWithLogContext } from 'fino:log';
+* import { getLogContext, withLogContext } from 'fino:log';
 *
-* runWithLogContext({ requestId: 'req-1' }, () => {
+* {
+*   using scope = withLogContext({ requestId: 'req-1' });
 *   getLogContext().requestId; // 'req-1'
-* });
+* }
 * ```
 */
 export function getLogContext(): Fields {
   return { ...logContext.get() ?? {} };
 }
 /**
+ * Enter a disposable structured log context scope.
+ *
+ * The provided fields are shallow-merged over any existing context and are
+ * visible to logger calls made while the scope is active, including async
+ * continuations scheduled before the scope is disposed. Disposing restores the
+ * previous log context for the current execution branch.
+ *
+ * ```ts no_run
+* import { createLogger, withLogContext } from 'fino:log';
+ *
+ * const log = createLogger({ name: 'api' });
+* {
+*   using scope = withLogContext({ requestId: 'req-1' });
+*   await Promise.resolve();
+ *   log.info('handled request');
+* }
+ * ```
+ */
+export function withLogContext(context: Fields): LogContextScope {
+  return logContext.withValue({
+    ...logContext.get() ?? {},
+    ...cloneFields(context)
+  });
+}
+/**
 * Run `fn` with additional structured log context.
 *
-* The provided fields are shallow-merged over any existing context and are
-* visible to logger calls made through async continuations created inside
-* `fn`.
+* Prefer `using scope = withLogContext(...)` for new code. This callback helper
+* remains as a compatibility wrapper.
 *
 * ```ts no_run
 * import { createLogger, runWithLogContext } from 'fino:log';
@@ -326,10 +398,8 @@ export function getLogContext(): Fields {
 * ```
 */
 export function runWithLogContext<R>(context: Fields, fn: () => R): R {
-  return logContext.runWithValue({
-    ...getLogContext(),
-    ...cloneFields(context)
-  }, fn);
+  using scope = withLogContext(context);
+  return fn();
 }
 // ---------------------------------------------------------------------------
 // Logger
@@ -351,67 +421,26 @@ export function runWithLogContext<R>(context: Fields, fn: () => R): R {
 */
 export class Logger {
   /**
-  * Private property `#name` used by `Logger`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #name = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#name;
-  *   }
-  * }
-  * ```
+  * Validated, trimmed logger name stamped onto every emitted record and used to
+  * build the per-logger topic `fino:log:<name>`. Child loggers derive their name
+  * by appending `.<child>` to this value.
   *
   * @internal
   */
   #name: string;
   /**
-  * Private property `#level` used by `Logger`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #level = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#level;
-  *   }
-  * }
-  * ```
+  * Normalized minimum level this logger emits. Records below this threshold are
+  * dropped in `log()` before any topic is published, so a raised threshold
+  * short-circuits work rather than filtering downstream.
   *
   * @internal
   */
   #level: LogLevel;
   /**
-  * Private property `#context` used by `Logger`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #context = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#context;
-  *   }
-  * }
-  * ```
+  * Logger-scoped fields shallow-copied from the constructor options and merged
+  * over the async log context on every record. Child loggers inherit and extend
+  * this map. Because it is layered last, logger context takes precedence over
+  * async context on key collisions.
   *
   * @internal
   */

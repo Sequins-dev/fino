@@ -73,6 +73,14 @@ async function rmrf(fs: DiskFileSystem, path: string): Promise<void> {
 }
 async function withTempProject<T>(tree: Record<string, string>, fn: (dir: string, fs: DiskFileSystem) => Promise<T>): Promise<T> {
   const fs = new DiskFileSystem();
+  const textEncoder = new TextEncoder();
+  const textDecoder = new TextDecoder();
+  const rawReadFile = fs.readFile.bind(fs);
+  const rawWriteFile = fs.writeFile.bind(fs);
+  fs.readFile = (async (path: string) => textDecoder.decode(await rawReadFile(path))) as never;
+  fs.writeFile = (async (path: string, data: string | Uint8Array | ArrayBuffer | ArrayBufferView) => {
+    await rawWriteFile(path, typeof data === 'string' ? textEncoder.encode(data) : data);
+  }) as never;
   const dir = '/tmp/fino-tooling-cli-' + Math.floor(Math.random() * 1e9);
   await fs.mkdir(dir);
   try {
@@ -80,7 +88,7 @@ async function withTempProject<T>(tree: Record<string, string>, fn: (dir: string
       const path = dir + '/' + rel;
       const slash = path.lastIndexOf('/');
       if (slash > dir.length) await mkdirp(fs, path.slice(0, slash));
-      await fs.writeFile(path, content);
+      await fs.writeFile(path, content as never);
     }
     return await fn(dir, fs);
   } finally {

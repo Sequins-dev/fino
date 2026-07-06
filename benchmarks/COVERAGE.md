@@ -51,6 +51,13 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:net/http/websocket` | `benchmarks/net/http/websocket.bench.ts` |
 | `fino:net/http/webtransport` | `benchmarks/net/http/h3.bench.ts` |
 | `fino:net/quic` | `benchmarks/net/quic.bench.ts` |
+| `fino:net/quic/availability` | `benchmarks/net/quic.bench.ts` |
+| `fino:net/quic/connection` | `benchmarks/net/quic.bench.ts` |
+| `fino:net/quic/endpoint` | `benchmarks/net/quic.bench.ts` |
+| `fino:net/quic/events` | `benchmarks/net/quic.bench.ts` |
+| `fino:net/quic/listener` | `benchmarks/net/quic.bench.ts` |
+| `fino:net/quic/stream` | `benchmarks/net/quic.bench.ts` |
+| `fino:net/quic/types` | `benchmarks/net/quic.bench.ts` |
 | `fino:file` | `benchmarks/file/fs.bench.ts` |
 | `fino:file/path` | `benchmarks/file/path.bench.ts` |
 | `fino:file/watch` | `benchmarks/file/watch.bench.ts` |

@@ -46,7 +46,7 @@
 */
 import { os } from 'internal:process';
 import { dlopen, Pointer } from 'fino:ffi';
-import { encodeUtf8, decodeUtf8 } from '../../globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 /**
 * True when the runtime is running on macOS.
 *
@@ -411,7 +411,15 @@ export function inotifyClose(fd: number): void {
 * partial byte count may produce invalid reads.
 *
 * ```typescript no_run
-* const events = parseEvents(buf, n);
+* import { inotifyRead, parseEvents, IN_CREATE, IN_ISDIR } from 'internal:file/watch-bindings';
+* const buf = new ArrayBuffer(4096);
+* const n = inotifyRead(fd, buf);
+* for (const event of parseEvents(buf, n)) {
+*   if (event.mask & IN_CREATE) {
+*     const kind = event.mask & IN_ISDIR ? 'directory' : 'file';
+*     console.log(`created ${kind}: ${event.name}`);
+*   }
+* }
 * ```
 */
 export function parseEvents(buf: ArrayBuffer, n: number): InotifyEvent[] {

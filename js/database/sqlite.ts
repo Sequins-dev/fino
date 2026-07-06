@@ -3,12 +3,14 @@
 *
 * SQLite C API reference: https://www.sqlite.org/c3ref/intro.html
 *
-* Uses dlopen to load the system-installed `libsqlite3`. Release coverage
-* requires that library to be present; CI should set `FINO_REQUIRE_SQLITE=1`
-* when running SQLite tests so missing bindings fail the lane instead of
-* skipping it. All file I/O is routed through the realm's FileSystem provider
-* via a JS-implemented sqlite3_vfs, so virtual providers (MemoryFileSystem,
-* S3FileSystem, etc.) work transparently.
+* Uses dlopen to load the system-installed `libsqlite3`. The re-exported
+* `sqliteAvailable` flag reports whether those bindings loaded, so code that
+* may run without system SQLite can branch instead of catching. Release
+* coverage requires the library to be present; CI should set
+* `FINO_REQUIRE_SQLITE=1` when running SQLite tests so missing bindings fail
+* the lane instead of skipping it. All file I/O is routed through the realm's
+* FileSystem provider via a JS-implemented sqlite3_vfs, so virtual providers
+* (MemoryFileSystem, S3FileSystem, etc.) work transparently.
 *
 * The release baseline focuses on core connection, statement, transaction,
 * vector-helper, extension-loading, and VFS-backed file behavior. SQLite-native
@@ -85,11 +87,17 @@ const _TRANSIENT = (() => {
 * Options for opening a SQLite database.
 *
 * Options control the filesystem provider, open mode, and INTEGER result
-* mapping for the connection. They are read once by `Database.open()`.
+* mapping for the connection. They are read once by `Database.open()`;
+* changing the object afterwards has no effect on the connection.
 *
 * ```ts no_run
-* const options = { readonly: true, safeIntegers: true };
-* console.log(options.readonly);
+* import { Database } from 'fino:database/sqlite';
+*
+* const db = await Database.open('/data/app.db', {
+*   readonly: true,
+*   safeIntegers: false,
+* });
+* await db.close();
 * ```
 */
 export interface DatabaseOptions {
@@ -97,13 +105,15 @@ export interface DatabaseOptions {
   * FileSystem provider used by Fino's SQLite VFS.
   *
   * Defaults to a new `DiskFileSystem`. Supplying a custom provider lets SQLite
-  * read and write through virtual filesystems.
+  * read and write through virtual filesystems — a database file, its journal,
+  * and its WAL all flow through this provider rather than direct disk I/O.
   *
   * ```ts no_run
+  * import { Database } from 'fino:database/sqlite';
   * import { DiskFileSystem } from 'fino:file';
   *
-  * const options = { fs: new DiskFileSystem() };
-  * console.log(options.fs);
+  * const db = await Database.open('/data/app.db', { fs: new DiskFileSystem() });
+  * await db.close();
   * ```
   */
   fs?: FileSystem;
@@ -113,11 +123,6 @@ export interface DatabaseOptions {
   * The default is `false`, which opens read-write and creates the database if
   * needed. Read-only connections reject writes at SQLite level and fail when
   * the file does not exist.
-  *
-  * ```ts no_run
-  * const options = { readonly: true };
-  * console.log(options.readonly);
-  * ```
   */
   readonly?: boolean;
   /**
@@ -125,12 +130,8 @@ export interface DatabaseOptions {
   *
   * The default is `true`. Set to `false` to coerce INTEGER results to
   * JavaScript `number`, accepting precision loss for values outside the safe
-  * integer range.
-  *
-  * ```ts no_run
-  * const options = { safeIntegers: false };
-  * console.log(options.safeIntegers);
-  * ```
+  * integer range. This does not affect `lastInsertRowid`, which is always a
+  * `bigint`.
   */
   safeIntegers?: boolean;
 }
@@ -140,13 +141,20 @@ export interface DatabaseOptions {
 /**
 * Values accepted for SQLite parameter binding and returned from result rows.
 *
-* `null` and `undefined` bind as SQL NULL. Integers may be bound as `number`
-* or `bigint`; floating-point numbers bind as REAL. Strings bind as UTF-8
-* text, and `Uint8Array` binds as BLOB.
+* `null` and `undefined` bind as SQL NULL. A whole `number` or a `bigint`
+* binds as INTEGER; fractional numbers bind as REAL. Strings bind as UTF-8
+* text, and `Uint8Array` binds as BLOB. Reads map back the same way: INTEGER
+* columns decode as `bigint` (or `number` when `safeIntegers` is `false`),
+* TEXT as string, BLOB as `Uint8Array`, and NULL as `null`.
 *
 * ```ts no_run
-* const params = [1n, 'name', null, new Uint8Array([1, 2])];
-* console.log(params.length);
+* import { Database } from 'fino:database/sqlite';
+*
+* const db = await Database.open(':memory:');
+* await db.exec('CREATE TABLE t (id INTEGER, score REAL, name TEXT, data BLOB)');
+* await db.prepare('INSERT INTO t VALUES (?, ?, ?, ?)')
+*   .run(1n, 0.5, 'ada', new Uint8Array([1, 2]));
+* await db.close();
 * ```
 */
 export type SqlValue = null | undefined | bigint | number | string | Uint8Array;
@@ -220,147 +228,58 @@ function _bindParam(stmtPtr: ArrayBuffer, idx: number, val: SqlValue): void {
 */
 export class Statement {
   /**
-  * Private readonly property `#db` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #db = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#db;
-  *   }
-  * }
-  * ```
+  * The owning connection. Every native call this statement makes is routed
+  * through the connection's `_serialize()` queue so the `sqlite3*` handle is
+  * never entered concurrently.
   *
   * @internal
   */
   readonly #db: Database;
   /**
-  * Private readonly property `#sql` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #sql = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#sql;
-  *   }
-  * }
-  * ```
+  * SQL text captured at `prepare()` time. Compilation is deferred until the
+  * first execution method runs, so syntax errors surface there rather than in
+  * `prepare()`.
   *
   * @internal
   */
   readonly #sql: string;
   /**
-  * Private readonly property `#safeIntegers` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #safeIntegers = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#safeIntegers;
-  *   }
-  * }
-  * ```
+  * Whether INTEGER columns decode as `bigint` rather than `number`. Inherited
+  * from the connection's `safeIntegers` option when created via
+  * `Database.prepare()`.
   *
   * @internal
   */
   readonly #safeIntegers: boolean;
   /**
-  * Private property `#ptr` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #ptr = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#ptr;
-  *   }
-  * }
-  * ```
+  * Fino pointer buffer holding the compiled `sqlite3_stmt*`, or `null` before
+  * first compilation. Set once by `#compile()` and freed by `finalize()`.
   *
   * @internal
   */
   #ptr: ArrayBuffer | null = null;
   /**
-  * Private property `#finalized` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #finalized = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#finalized;
-  *   }
-  * }
-  * ```
+  * Set once by `finalize()`. Any later attempt to compile or execute throws
+  * `Statement is finalized`.
   *
   * @internal
   */
   #finalized = false;
   /**
-  * Private property `#colNames` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #colNames = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#colNames;
-  *   }
-  * }
-  * ```
+  * Cached result-column names, resolved on the first row read and reused for
+  * every subsequent row this statement produces.
   *
   * @internal
   */
   #colNames: string[] | null = null;
   /**
-  * Create a statement wrapper.
+  * Create a statement wrapper over `sql` for an open connection.
   *
   * Application code should normally call `Database.prepare()` instead of this
-  * constructor so the statement inherits the database's integer mapping.
-  * Compilation remains lazy until the first execution method is called.
-  *
-  * @param {Database} db Open database connection.
-  * @param {string} sql SQL text to prepare.
-  * @param {boolean} safeIntegers Whether INTEGER columns should be returned as `bigint`.
+  * constructor so the statement inherits the database's integer mapping and is
+  * tracked for cleanup at `close()`. `safeIntegers` controls whether INTEGER
+  * columns are returned as `bigint`. Compilation remains lazy until the first
+  * execution method is called.
   *
   * ```ts no_run
   * import { Database, Statement } from 'fino:database/sqlite';
@@ -378,25 +297,9 @@ export class Statement {
     this.#safeIntegers = safeIntegers;
   }
   /**
-  * Private method `#compile` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #compile() {
-  *     return 'compile';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#compile();
-  *   }
-  * }
-  * ```
+  * Compile the SQL with `sqlite3_prepare_v2` on first use, caching the
+  * statement pointer for reuse. Throws `Statement is finalized` after
+  * `finalize()`, and with the database error message when compilation fails.
   *
   * @internal
   */
@@ -418,25 +321,8 @@ export class Statement {
     return ppStmt;
   }
   /**
-  * Private method `#colCount` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #colCount() {
-  *     return 'colCount';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#colCount();
-  *   }
-  * }
-  * ```
+  * Result-column count for the compiled statement, via
+  * `sqlite3_column_count`.
   *
   * @internal
   */
@@ -444,25 +330,8 @@ export class Statement {
     return requireSqlite().symbols.sqlite3_column_count(ptr) as number;
   }
   /**
-  * Private method `#getColNames` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #getColNames() {
-  *     return 'getColNames';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#getColNames();
-  *   }
-  * }
-  * ```
+  * Resolve and cache the statement's column names. Columns without a name
+  * fall back to their zero-based index as a string.
   *
   * @internal
   */
@@ -478,25 +347,8 @@ export class Statement {
     return this.#colNames;
   }
   /**
-  * Private method `#readRow` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #readRow() {
-  *     return 'readRow';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#readRow();
-  *   }
-  * }
-  * ```
+  * Materialize the row the statement is currently stopped on as a
+  * column-name-keyed record, applying this statement's integer mapping.
   *
   * @internal
   */
@@ -509,25 +361,9 @@ export class Statement {
     return row;
   }
   /**
-  * Private method `#bindArgs` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #bindArgs() {
-  *     return 'bindArgs';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#bindArgs();
-  *   }
-  * }
-  * ```
+  * Reset the statement, clear old bindings, and bind positional parameters.
+  * Throws when the value count does not exactly match the statement's bind
+  * slot count.
   *
   * @internal
   */
@@ -544,25 +380,10 @@ export class Statement {
     }
   }
   /**
-  * Private method `#bindNamed` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #bindNamed() {
-  *     return 'bindNamed';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#bindNamed();
-  *   }
-  * }
-  * ```
+  * Bind a named-parameter object. Validation is strict: the statement may not
+  * mix in anonymous `?` slots, and the object's keys (without the `:`/`$`/`@`
+  * prefix) must exactly cover the statement's named parameters — a missing or
+  * extra key throws before anything is bound.
   *
   * @internal
   */
@@ -603,25 +424,9 @@ export class Statement {
     }
   }
   /**
-  * Private method `#resolveParams` used by `Statement`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #resolveParams() {
-  *     return 'resolveParams';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#resolveParams();
-  *   }
-  * }
-  * ```
+  * Choose the binding mode: a single plain-object argument (not `null` and
+  * not a `Uint8Array`) binds named parameters; anything else binds
+  * positionally.
   *
   * @internal
   */
@@ -638,10 +443,8 @@ export class Statement {
   * Parameters may be positional values or one named-parameter object. The
   * statement is reset after execution. Parameter counts are validated before
   * binding. SQL errors reject with the database error message. Result rows,
-  * if any, are not returned by this method.
-  *
-  * @param {...SqlValue} params Positional values, or one named parameter object.
-  * @returns {Promise<{ changes: number; lastInsertRowid: bigint }>} Change count and last insert rowid.
+  * if any, are discarded; the resolved object carries the connection's change
+  * count and last insert rowid.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -679,9 +482,6 @@ export class Statement {
   * as object keys. Parameter counts are validated before binding. The
   * statement is reset before returning or throwing.
   *
-  * @param {...SqlValue} params Positional values, or one named parameter object.
-  * @returns {Promise<Record<string, SqlValue> | undefined>} First row, or `undefined`.
-  *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
   *
@@ -714,10 +514,7 @@ export class Statement {
   *
   * This buffers every result row in memory. Use `iterate()` for large result
   * sets. Parameter counts are validated before binding. The statement is
-  * reset before returning or throwing.
-  *
-  * @param {...SqlValue} params Positional values, or one named parameter object.
-  * @returns {Promise<Record<string, SqlValue>[]>} All rows in result order.
+  * reset before returning or throwing, and rows resolve in result order.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -755,10 +552,9 @@ export class Statement {
   *
   * The statement remains active for the duration of iteration and is reset in
   * a `finally` block when iteration finishes, throws, or is abandoned early.
-  * Parameter counts are validated before binding.
-  *
-  * @param {...SqlValue} params Positional values, or one named parameter object.
-  * @returns {AsyncGenerator<Record<string, SqlValue>>} Rows in result order.
+  * Parameter counts are validated before binding. Each step is serialized on
+  * the connection individually, so other operations on the same connection
+  * may interleave between rows.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -826,6 +622,21 @@ export class Statement {
     if (this.#ptr) requireSqlite().symbols.sqlite3_finalize(this.#ptr);
     this.#db._untrackStatement(this);
   }
+  /**
+  * Alias for `finalize()`, letting a statement participate in `using`
+  * declarations for automatic cleanup at scope exit.
+  *
+  * ```ts no_run
+  * import { Database } from 'fino:database/sqlite';
+  *
+  * const db = await Database.open(':memory:');
+  * {
+  *   using stmt = db.prepare('SELECT 1 AS n');
+  *   console.log(await stmt.get());
+  * } // stmt.finalize() runs here
+  * await db.close();
+  * ```
+  */
   [Symbol.dispose](): void {
     this.finalize();
   }
@@ -851,118 +662,50 @@ export class Statement {
 */
 export class Database {
   /**
-  * Private readonly property `#ptr` used by `Database`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #ptr = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#ptr;
-  *   }
-  * }
-  * ```
+  * Fino pointer buffer holding the native `sqlite3*` handle, written by
+  * `sqlite3_open_v2` and invalidated by `close()`.
   *
   * @internal
   */
   readonly #ptr: ArrayBuffer;
   /**
-  * Private readonly property `#vfs` used by `Database`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #vfs = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#vfs;
-  *   }
-  * }
-  * ```
+  * This connection's private `FinoVFS` registration, which routes SQLite file
+  * I/O through the configured FileSystem provider. Unregistered during
+  * `close()`.
   *
   * @internal
   */
   readonly #vfs: FinoVFS | null;
   /**
-  * Private readonly property `#safeIntegers` used by `Database`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #safeIntegers = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#safeIntegers;
-  *   }
-  * }
-  * ```
+  * Connection-wide INTEGER mapping from `DatabaseOptions.safeIntegers`,
+  * inherited by every statement this connection prepares.
   *
   * @internal
   */
   readonly #safeIntegers: boolean;
   /**
-  * Private property `#closed` used by `Database`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #closed = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#closed;
-  *   }
-  * }
-  * ```
+  * Set once by `close()`. Methods guarded by `#checkOpen()` throw
+  * `Database is closed` afterwards.
   *
   * @internal
   */
   #closed = false;
   /**
-  * Private property `#vectorsAvailable` used by `Database`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #vectorsAvailable = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#vectorsAvailable;
-  *   }
-  * }
-  * ```
+  * Cached result of the sqlite-vec probe. `null` until `vectorsAvailable` is
+  * first read; the probe result (including failure) is cached for the life of
+  * the connection.
   *
   * @internal
   */
   #vectorsAvailable: boolean | null = null;
+  /**
+  * Live statements created by `prepare()` that have not been finalized.
+  * `close()` finalizes everything left in this set before closing the native
+  * handle; `Statement.finalize()` removes itself via `_untrackStatement()`.
+  */
   #statements = new Set<Statement>();
   /**
-  * Private property `#opQueue` — tail of the per-connection operation queue.
+  * Tail of the per-connection operation queue.
   *
   * Statement stepping is offloaded to the blocking thread pool, and a
   * `sqlite3*` connection must never be entered from two threads at once (nor
@@ -973,19 +716,9 @@ export class Database {
   */
   #opQueue: Promise<unknown> = Promise.resolve();
   /**
-  * Generated-doc-visible constructor `constructor`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * // Construct Database through the documented constructor path.
-  * const ctorName = 'Database';
-  * console.log(ctorName);
-  * ```
+  * Wrap an already-open `sqlite3*` handle and its VFS registration. Private:
+  * connections are only created through `Database.open()`, which performs the
+  * VFS setup and open-flag handling this constructor assumes has succeeded.
   *
   * @internal
   */
@@ -999,9 +732,8 @@ export class Database {
   *
   * This getter exposes the native pointer wrapper used by this module. It is
   * public for `Statement` integration but is not needed by normal application
-  * code. The value becomes invalid after `close()`.
-  *
-  * @returns {ArrayBuffer} Fino pointer buffer containing `sqlite3*`.
+  * code. The value is a Fino pointer buffer containing the `sqlite3*` address
+  * and becomes invalid after `close()`.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -1022,10 +754,6 @@ export class Database {
   * `{ readonly: true }` opens read-only. Each connection registers a private
   * Fino VFS name so file operations go through the chosen filesystem provider.
   * Throws when SQLite is unavailable, open fails, or VFS registration fails.
-  *
-  * @param {string} path Database path, or `':memory:'`.
-  * @param {DatabaseOptions} [opts={}] Open options.
-  * @returns {Promise<Database>} Open database connection.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -1073,9 +801,6 @@ export class Database {
   * user input into `exec()` strings. Throws on SQL errors or when the database
   * is closed.
   *
-  * @param {string} sql SQL text to execute.
-  * @returns {Promise<void>}
-  *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
   *
@@ -1103,9 +828,6 @@ export class Database {
   * Throws immediately if the database is closed. SQL syntax errors are thrown
   * later when the statement first compiles.
   *
-  * @param {string} sql SQL statement text.
-  * @returns {Statement} Lazy prepared statement wrapper.
-  *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
   *
@@ -1128,10 +850,10 @@ export class Database {
   *
   * Async native sqlite calls execute on blocking-pool threads, and a
   * connection (and its JS VFS trampoline) must never be entered concurrently
-  * — statement wrappers route every step/compile through this queue.
+  * — statement wrappers route every step/compile through this queue. Resolves
+  * or rejects with `fn`'s own outcome; a rejected predecessor does not block
+  * the queue.
   *
-  * @param fn Operation to serialize onto the connection.
-  * @returns The operation's result.
   * @internal
   */
   _serialize<T>(fn: () => Promise<T>): Promise<T> {
@@ -1145,8 +867,6 @@ export class Database {
   * Statement wrappers call this during `finalize()` so `close()` only has to
   * finalize wrappers that still own native statement pointers.
   *
-  * @param {Statement} stmt Statement to remove from the connection registry.
-  * @returns Nothing.
   * @internal
   */
   _untrackStatement(stmt: Statement): void {
@@ -1156,11 +876,9 @@ export class Database {
   * Run `fn` inside a BEGIN/COMMIT transaction. Rolls back on throw.
   *
   * The transaction starts with `BEGIN`, commits if `fn` resolves, and attempts
-  * `ROLLBACK` if `fn` throws. Nested transaction behavior depends on SQLite
+  * `ROLLBACK` if `fn` throws, then rethrows `fn`'s error. The resolved value
+  * is whatever `fn` returned. Nested transaction behavior depends on SQLite
   * and the SQL executed by `fn`; this helper does not create savepoints.
-  *
-  * @param {() => Promise<T>} fn Async function to run inside the transaction.
-  * @returns {Promise<T>} The value returned by `fn`.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -1192,10 +910,9 @@ export class Database {
   * was found. Probed lazily on first access.
   *
   * The probe tries `FINO_SQLITE_VEC_PATH` first when present, then common
-  * platform paths. A failed probe caches `false`. Access may enable extension
-  * loading on the connection.
-  *
-  * @returns {boolean} `true` when sqlite-vec was loaded successfully.
+  * platform paths, and returns `true` only when sqlite-vec actually loaded.
+  * A failed probe caches `false`. Access may enable extension loading on the
+  * connection.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -1212,25 +929,10 @@ export class Database {
     return this.#vectorsAvailable;
   }
   /**
-  * Private method `#probeVectors` used by `Database`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #probeVectors() {
-  *     return 'probeVectors';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#probeVectors();
-  *   }
-  * }
-  * ```
+  * Probe for sqlite-vec: enable extension loading, then attempt to load from
+  * `FINO_SQLITE_VEC_PATH` followed by common install paths. Absolute
+  * candidates are stat-checked before the load attempt; relative candidates
+  * are only tried when they came from the environment variable.
   *
   * @internal
   */
@@ -1274,12 +976,10 @@ export class Database {
   * Loading an extension executes native code inside the current process. Only
   * load trusted extension libraries from trusted paths.
   *
-  * The optional `entryPoint` is passed through to `sqlite3_load_extension`.
-  * Throws with SQLite's extension error message when loading fails, and throws
-  * if the database is closed.
-  *
-  * @param {string} path Filesystem path to the extension library.
-  * @param {string} [entryPoint] Optional extension entry point symbol.
+  * The optional `entryPoint` symbol is passed through to
+  * `sqlite3_load_extension`. Throws when an absolute `path` does not exist,
+  * with SQLite's extension error message when loading fails, and if the
+  * database is closed.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -1317,8 +1017,6 @@ export class Database {
   * INSERT, UPDATE, DELETE, and similar statements. It throws only if SQLite
   * bindings are unavailable.
   *
-  * @returns {number} Last change count for this connection.
-  *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
   *
@@ -1339,8 +1037,6 @@ export class Database {
   * regardless of `safeIntegers`, because rowids may exceed JavaScript's safe
   * integer range.
   *
-  * @returns {bigint} Last inserted rowid for this connection.
-  *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
   *
@@ -1357,10 +1053,9 @@ export class Database {
   /**
   * Close the database and unregister the VFS.
   *
-  * Calling `close()` more than once is allowed. Any statements created by this
-  * connection are finalized before the native database handle is closed.
-  *
-  * @returns {Promise<void>}
+  * Calling `close()` more than once is allowed. The close runs after any
+  * in-flight queued operations, and any statements created by this connection
+  * are finalized before the native database handle is closed.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -1379,29 +1074,24 @@ export class Database {
       if (this.#vfs) this.#vfs.unregister();
     });
   }
+  /**
+  * Alias for `close()`, letting a connection participate in `await using`
+  * declarations for automatic cleanup at scope exit.
+  *
+  * ```ts no_run
+  * import { Database } from 'fino:database/sqlite';
+  *
+  * {
+  *   await using db = await Database.open(':memory:');
+  *   await db.exec('CREATE TABLE t (value TEXT)');
+  * } // db.close() runs here
+  * ```
+  */
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();
   }
   /**
-  * Private method `#checkOpen` used by `Database`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #checkOpen() {
-  *     return 'checkOpen';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#checkOpen();
-  *   }
-  * }
-  * ```
+  * Throws `Database is closed` once `close()` has been called.
   *
   * @internal
   */
@@ -1418,16 +1108,17 @@ export class Database {
 *
 * The returned string is not SQL-escaped; bind it as a parameter or use it only
 * where sqlite-vec expects a vector literal. Numbers are converted through
-* `Float32Array` when the input is a regular array.
-*
-* @param {Float32Array|number[]} arr Vector values.
-* @returns {string} sqlite-vec text vector literal.
+* `Float32Array` when the input is a regular array, so values round to float32
+* precision.
 *
 * ```ts no_run
-* import { vec } from 'fino:database/sqlite';
+* import { Database, vec } from 'fino:database/sqlite';
 *
-* const literal = vec([0.1, 0.2, 0.3]);
-* console.log(literal);
+* const db = await Database.open(':memory:');
+* await db.exec('CREATE VIRTUAL TABLE docs USING vec0(embedding float[3])');
+* await db.prepare('INSERT INTO docs (rowid, embedding) VALUES (?, ?)')
+*   .run(1n, vec([0.1, 0.2, 0.3]));
+* await db.close();
 * ```
 */
 export function vec(arr: Float32Array | number[]): string {
@@ -1442,9 +1133,6 @@ export function vec(arr: Float32Array | number[]): string {
 * for `Float32Array` use and independent of the original byte offset. Invalid
 * byte lengths that are not multiples of four follow `Float32Array`
 * construction rules and may throw.
-*
-* @param {Uint8Array} blob sqlite-vec vector BLOB bytes.
-* @returns {Float32Array} Decoded float32 vector.
 *
 * ```ts no_run
 * import { vecDecode } from 'fino:database/sqlite';

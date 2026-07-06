@@ -25,7 +25,7 @@
 * }
 * ```
 */
-import { encodeUtf8, decodeUtf8 } from '../globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 /**
 * Text encodings supported by scanner text operations.
 *

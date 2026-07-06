@@ -11,9 +11,14 @@ import { Realm } from 'fino:realm';
 import * as loop from 'internal:runtime/loop';
 const TEST_DIR = '/tmp/fino-realm-watch-' + Math.floor(Math.random() * 1e6);
 const fs = new DiskFileSystem();
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+function writeText(path: string, text: string): Promise<void> {
+  return fs.writeFile(path, textEncoder.encode(text));
+}
 async function poll(check: () => Promise<boolean> | boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (true) {
@@ -26,7 +31,7 @@ async function poll(check: () => Promise<boolean> | boolean, timeoutMs: number):
 }
 async function readCounter(path: string): Promise<number> {
   try {
-    const n = parseInt(await fs.readFile(path));
+    const n = parseInt(textDecoder.decode(await fs.readFile(path)));
     return isNaN(n) ? 0 : n;
   } catch {
     return 0;
@@ -38,8 +43,10 @@ function entryCode(counterPath: string, extra = ''): string {
   return [
     `import { DiskFileSystem } from 'fino:file';`,
     `const _fs = new DiskFileSystem();`,
-    `const _n = parseInt(await _fs.readFile(${cp}).catch(() => '0'));`,
-    `await _fs.writeFile(${cp}, String(isNaN(_n) ? 1 : _n + 1));`,
+    `const _decode = (bytes) => new TextDecoder().decode(bytes);`,
+    `const _encode = (text) => new TextEncoder().encode(text);`,
+    `const _n = parseInt(await _fs.readFile(${cp}).then(_decode).catch(() => '0'));`,
+    `await _fs.writeFile(${cp}, _encode(String(isNaN(_n) ? 1 : _n + 1)));`,
     extra
   ].join('\n');
 }
@@ -75,7 +82,7 @@ describe('Realm watch mode', () => {
     await fs.mkdir(dir);
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
-    await fs.writeFile(entryPath, entryCode(counterPath));
+    await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       entry: entryPath,
       watch: true
@@ -86,7 +93,7 @@ describe('Realm watch mode', () => {
     // Allow the watcher loop to set up after the first import graph is known.
     await loop.timeout(100);
     // Trigger reload by modifying the entry file.
-    await fs.writeFile(entryPath, entryCode(counterPath) + '\n// trigger reload');
+    await writeText(entryPath, entryCode(counterPath) + '\n// trigger reload');
     // Wait for the second run.
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 3e3);
     realm.terminate();
@@ -99,15 +106,17 @@ describe('Realm watch mode', () => {
     const helperPath = dir + '/helper.ts';
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
-    await fs.writeFile(helperPath, `export const VERSION = 1;`);
-    await fs.writeFile(entryPath, [
+    await writeText(helperPath, `export const VERSION = 1;`);
+    await fs.writeFile(entryPath, textEncoder.encode([
       `import { VERSION } from ${JSON.stringify(helperPath)};`,
       `import { DiskFileSystem } from 'fino:file';`,
       `const _fs = new DiskFileSystem();`,
-      `const _n = parseInt(await _fs.readFile(${JSON.stringify(counterPath)}).catch(() => '0'));`,
-      `await _fs.writeFile(${JSON.stringify(counterPath)}, String(isNaN(_n) ? 1 : _n + 1));`,
+      `const _decode = (bytes) => new TextDecoder().decode(bytes);`,
+      `const _encode = (text) => new TextEncoder().encode(text);`,
+      `const _n = parseInt(await _fs.readFile(${JSON.stringify(counterPath)}).then(_decode).catch(() => '0'));`,
+      `await _fs.writeFile(${JSON.stringify(counterPath)}, _encode(String(isNaN(_n) ? 1 : _n + 1)));`,
       `void VERSION;`
-    ].join('\n'));
+    ].join('\n')));
     const realm = new Realm({
       entry: entryPath,
       watch: true
@@ -116,7 +125,7 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 2e3);
     await loop.timeout(100);
     // Modify the helper — not the entry — to trigger reload.
-    await fs.writeFile(helperPath, `export const VERSION = 2;`);
+    await writeText(helperPath, `export const VERSION = 2;`);
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 3e3);
     realm.terminate();
     await runP;
@@ -128,8 +137,8 @@ describe('Realm watch mode', () => {
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
     const unrelatedPath = dir + '/unrelated.txt';
-    await fs.writeFile(entryPath, entryCode(counterPath));
-    await fs.writeFile(unrelatedPath, 'initial');
+    await writeText(entryPath, entryCode(counterPath));
+    await writeText(unrelatedPath, 'initial');
     const realm = new Realm({
       entry: entryPath,
       watch: true
@@ -138,7 +147,7 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 2e3);
     await loop.timeout(100);
     // Modify a file the realm never imported.
-    await fs.writeFile(unrelatedPath, 'changed');
+    await writeText(unrelatedPath, 'changed');
     // Wait past the debounce window (50ms) to confirm no reload fires.
     await loop.timeout(150);
     const countAfter = await readCounter(counterPath);
@@ -151,7 +160,7 @@ describe('Realm watch mode', () => {
     await fs.mkdir(dir);
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
-    await fs.writeFile(entryPath, entryCode(counterPath));
+    await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       entry: entryPath,
       watch: true
@@ -161,7 +170,7 @@ describe('Realm watch mode', () => {
     await loop.timeout(100);
     // Write 5 times rapidly; each write resets the 50ms debounce timer.
     for (let i = 0; i < 5; i++) {
-      await fs.writeFile(entryPath, entryCode(counterPath) + `\n// rapid edit ${i}`);
+      await writeText(entryPath, entryCode(counterPath) + `\n// rapid edit ${i}`);
       await loop.timeout(5);
     }
     // Wait for exactly one reload.
@@ -178,7 +187,7 @@ describe('Realm watch mode', () => {
     await fs.mkdir(dir);
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
-    await fs.writeFile(entryPath, entryCode(counterPath));
+    await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       entry: entryPath,
       watch: true
@@ -191,7 +200,7 @@ describe('Realm watch mode', () => {
     t.ok(true, 'run() resolved after terminate()');
     // Modifying the entry after terminate must not cause another reload.
     const countBefore = await readCounter(counterPath);
-    await fs.writeFile(entryPath, entryCode(counterPath) + '\n// post-terminate');
+    await writeText(entryPath, entryCode(counterPath) + '\n// post-terminate');
     await loop.timeout(150);
     t.equal(await readCounter(counterPath), countBefore, 'no reload after terminate()');
   });
@@ -200,7 +209,7 @@ describe('Realm watch mode', () => {
     await fs.mkdir(dir);
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
-    await fs.writeFile(entryPath, entryCode(counterPath));
+    await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       thread: true,
       entry: entryPath,
@@ -209,7 +218,7 @@ describe('Realm watch mode', () => {
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 5e3);
     await loop.timeout(150);
-    await fs.writeFile(entryPath, entryCode(counterPath) + '\n// trigger reload');
+    await writeText(entryPath, entryCode(counterPath) + '\n// trigger reload');
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 5e3);
     realm.terminate();
     await runP;
@@ -220,7 +229,7 @@ describe('Realm watch mode', () => {
     await fs.mkdir(dir);
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
-    await fs.writeFile(entryPath, entryCode(counterPath));
+    await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       process: true,
       entry: entryPath,
@@ -229,7 +238,7 @@ describe('Realm watch mode', () => {
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 8e3);
     await loop.timeout(150);
-    await fs.writeFile(entryPath, entryCode(counterPath) + '\n// trigger reload');
+    await writeText(entryPath, entryCode(counterPath) + '\n// trigger reload');
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 8e3);
     realm.terminate();
     await runP;

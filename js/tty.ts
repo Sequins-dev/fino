@@ -18,7 +18,7 @@
 * ```
 */
 import { dlopen } from 'fino:ffi';
-import { encodeUtf8, decodeUtf8 } from './globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { os } from 'internal:process';
 import { stdout as processStdout, stderr as processStderr } from './process.ts';
 import type { BytesWriter } from './internal/stream.ts';
