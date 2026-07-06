@@ -17,6 +17,9 @@ const syncHeavy = new URL('./fixtures/scheduler-syncheavy-worker.ts', import.met
 const parallelOps = new URL('./fixtures/scheduler-parallel-ops-worker.ts', import.meta.url).pathname;
 const heapHog = new URL('./fixtures/scheduler-heaphog-worker.ts', import.meta.url).pathname;
 const readWorker = new URL('./fixtures/scheduler-read-worker.ts', import.meta.url).pathname;
+const fileErrorWorker = new URL('./fixtures/scheduler-fileerror-worker.ts', import.meta.url).pathname;
+const ioLoopWorker = new URL('./fixtures/scheduler-ioloop-worker.ts', import.meta.url).pathname;
+const handleBinaryWorker = new URL('./fixtures/scheduler-handle-binary-worker.ts', import.meta.url).pathname;
 
 function tmpRoot(tag: string): string {
   return `/tmp/fino-node-${tag}-${Math.floor(Math.random() * 1e9)}`;
@@ -250,6 +253,108 @@ describe('scheduler node', () => {
       await fs.unlink(out).catch(() => undefined);
       await fs.rmdir(root).catch(() => undefined);
     }
+  });
+
+  it('propagates a failed host operation back to tenant await with its message', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('fileerr');
+    await fs.mkdir(root);
+    const out = `${root}/err.txt`;
+    const node = new SchedulerNode({ shardCount: 1, capacity: 2 });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'io', entryPath: fileErrorWorker, data: { missingPath: `${root}/does-not-exist.bin`, outputPath: out } });
+      const released = node.whenReleased(id);
+      wakeFor(node, id, 'go');
+      await released;
+      const message = new TextDecoder().decode(await fs.readFile(out));
+      t.equal(message !== 'no-error' && message.length > 0, true, `the facade read rejection reached the tenant (got: ${message})`);
+    } finally {
+      await node.shutdown();
+      await fs.unlink(out).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('revokes a workload that has a host operation in flight without wedging the thread', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('revoke-inflight');
+    await fs.mkdir(root);
+    const readPath = `${root}/loop-input.bin`;
+    const survivorOut = `${root}/survivor.txt`;
+    await fs.writeFile(readPath, new Uint8Array(4096));
+    const node = new SchedulerNode({ shardCount: 1, capacity: 4 });
+    node.start();
+    try {
+      // A workload looping on facade reads (almost always mid-op), on the same
+      // thread as a run-once sibling.
+      const loop = node.deploy({ tenantId: 'loop', entryPath: ioLoopWorker, data: { readPath } });
+      const loopReleased = node.whenReleased(loop);
+      wakeFor(node, loop, 'go');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Revoke mid-op; the isolate is terminated while a #performHostOp is
+      // outstanding — must not leak an unhandled rejection or wedge the thread.
+      node.revoke(loop, 'operator');
+      await loopReleased;
+      // The thread is still healthy: a sibling deployed after the revoke runs.
+      const survivor = node.deploy({ tenantId: 'ok', entryPath: runOnce, data: { outputPath: survivorOut, message: 'alive' } });
+      const survivorReleased = node.whenReleased(survivor);
+      wakeFor(node, survivor, 'go');
+      await survivorReleased;
+      t.equal(new TextDecoder().decode(await fs.readFile(survivorOut)), 'alive', 'the thread kept working after a mid-op revoke');
+    } finally {
+      await node.shutdown();
+      await fs.unlink(readPath).catch(() => undefined);
+      await fs.unlink(survivorOut).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('round-trips full-range binary through the file-handle pwrite and write paths', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('handlebin');
+    await fs.mkdir(root);
+    const pwritePath = `${root}/pwrite.bin`;
+    const writePath = `${root}/write.bin`;
+    const node = new SchedulerNode({ shardCount: 1, capacity: 2 });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'io', entryPath: handleBinaryWorker, data: { pwritePath, writePath } });
+      const released = node.whenReleased(id);
+      wakeFor(node, id, 'go');
+      await released;
+      for (const path of [pwritePath, writePath]) {
+        const got = await fs.readFile(path);
+        t.equal(got.length, 256, `${path}: 256 bytes written`);
+        t.equal([...got].every((b, i) => b === i), true, `${path}: every 0..255 byte survived the handle write`);
+      }
+    } finally {
+      await node.shutdown();
+      await fs.unlink(pwritePath).catch(() => undefined);
+      await fs.unlink(writePath).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('quiesces on shutdown: every shard settles its run() and returns a final summary', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('quiesce');
+    await fs.mkdir(root);
+    const out = `${root}/done.txt`;
+    const node = new SchedulerNode({ shardCount: 2, capacity: 4 });
+    node.start();
+    const id = node.deploy({ tenantId: 'acme', entryPath: runOnce, data: { outputPath: out, message: 'done' } });
+    const released = node.whenReleased(id);
+    wakeFor(node, id, 'go');
+    await released;
+    // shutdown() bounds each shard join and returns a summary per shard only if
+    // each shard's run() settled cleanly (dispatch + heartbeat loops stopped),
+    // rather than being force-killed on the join timeout.
+    const summaries = await node.shutdown();
+    t.equal(summaries.length, 2, 'a final summary per shard');
+    t.equal(summaries.every((s) => typeof s.shardId === 'string' && s.dispatches >= 0), true, 'each shard reported a well-formed summary');
+    await fs.unlink(out).catch(() => undefined);
+    await fs.rmdir(root).catch(() => undefined);
   });
 
   it('hands a live workload off to another thread, preserving its pending state', async (t) => {
