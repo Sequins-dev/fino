@@ -1,16 +1,22 @@
 /**
-* Fetch API global implementation.
+* Fetch global and server-side transport.
 *
-* WHATWG Fetch Standard: https://fetch.spec.whatwg.org/
+* This module installs the global `fetch()` function and contains the
+* server-side transport implementation. Some pool-inspection hooks exist for
+* runtime tests, but application code calls the global directly and never
+* imports this module.
 *
 * Implements Fino's release-supported server-side Fetch baseline:
 *   - HTTP and HTTPS support over plain TCP and TLS
 *   - HTTP/2 reuse for HTTPS origins that negotiate `h2` through ALPN
+*   - HTTP/3 over QUIC, forced with `protocol: 'h3'` or discovered through
+*     `Alt-Svc` response headers
 *   - Redirect following with configurable `redirect` mode
 *   - AbortSignal cancellation, including during response body streaming
 *   - Subresource integrity checks for buffered response bodies
 *   - Explicit `referrer` and `referrerPolicy` handling
 *   - Response decompression for gzip, deflate, and brotli when available
+*   - `data:` and `blob:` URL fetches resolved without touching the network
 *   - global Request/Response/Headers backed by `internal:net/http/wire`
 *
 *
@@ -24,16 +30,33 @@
 * reuse the resulting H2 session through the origin-keyed pool.
 *
 *
+* ## HTTP/3 and Alt-Svc
+*
+* When libnghttp3 is available, `protocol: 'h3'` forces the request over QUIC.
+* In `'auto'` mode an HTTPS response carrying an `Alt-Svc: h3=...` header
+* populates an origin-keyed cache (honouring the `ma` max-age parameter), and
+* later requests to that origin with replayable bodies (string, `Uint8Array`,
+* `ArrayBuffer`, or none) are first attempted over a pooled H3 session. If the
+* QUIC attempt fails, the cache entry is evicted and the request silently
+* falls back to TCP.
+*
+*
 * ## Redirect handling
 *
 * The `redirect` init option controls redirect behaviour:
-*   - `'follow'` (default) — follow up to 20 redirects
+*   - `'follow'` (default) — follow up to 20 redirects, then throw TypeError
 *   - `'error'`            — throw TypeError on any redirect response
-*   - `'manual'`           — return the redirect response as-is
+*   - `'manual'`           — return an opaque redirect response
+*                            (status 0, empty headers, null body)
 *
 * Method changes on redirect:
 *   - 301, 302, 303: method → GET, body dropped
-*   - 307, 308:      method kept; body must be replayable (non-stream)
+*   - 307, 308:      method kept; body must be replayable — a streaming
+*                    (async-iterable or ReadableStream) body throws TypeError
+*
+* A redirect status without a `Location` header is returned as a normal
+* response. Redirect targets must be `http:` or `https:` URLs; anything else
+* (`javascript:`, `file:`, `data:`, ...) throws TypeError.
 *
 *
 * ## AbortSignal
@@ -42,6 +65,14 @@
 * TLS handshake, and response parsing. After `fetch()` returns, the wrapped
 * body iterator also checks `signal.aborted` on each `.next()` call so that
 * a long streaming response can be cancelled mid-stream.
+*
+*
+* ## Request safety
+*
+* Requests to a known list of unsafe ports (SMTP, IRC, NFS, ...) are rejected
+* with a TypeError, mirroring the WHATWG bad-port list. The `CONNECT`,
+* `TRACE`, and `TRACK` methods are forbidden. GET and HEAD requests reject
+* when given a body.
 *
 *
 * ## Browser policy non-parity
@@ -62,15 +93,16 @@
 *   const res = await fetch('https://example.com/data');
 *   const json = await res.json();
 *
-*   const res = await fetch(url, {
+*   const posted = await fetch('https://example.com/items', {
 *     method: 'POST',
 *     headers: { 'content-type': 'application/json' },
-*     body: JSON.stringify(data),
+*     body: JSON.stringify({ name: 'widget' }),
 *     signal: AbortSignal.timeout(5000),
 *     redirect: 'follow',
 *   });
 * ```
 *
+* WHATWG Fetch Standard: https://fetch.spec.whatwg.org/
 */
 import { lookup } from 'fino:net/dns';
 import { Socket } from 'fino:net/socket';
@@ -90,7 +122,9 @@ import { otelRuntimeEvent, otelRuntimeTopic } from '../internal/opentelemetry/co
 import * as openssl from '../internal/openssl.ts';
 import { _resolveObjectURL } from './url.ts';
 import { _getBlobBytes } from './blob.ts';
-import { atob, DOMException, encodeUtf8 } from './encoding.ts';
+import { atob, DOMException } from './encoding.ts';
+import type { AbortSignal } from './abort.ts';
+import { encodeUtf8 } from 'internal:encoding';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -105,9 +139,6 @@ const REDIRECT_STATUSES = new Set([
   308
 ]);
 let _fetchRequestSeq = 0;
-const _fetchLaterResultState = new WeakMap<FetchLaterResult, {
-  activated: boolean;
-}>();
 type HeadersInput = Headers | string[][] | Record<string, string> | null | undefined;
 type FetchBody = unknown;
 interface MinimalAbortSignal {
@@ -118,31 +149,126 @@ interface MinimalAbortSignal {
   }): void;
   removeEventListener(type: string, fn: () => void): void;
 }
-interface FetchInit {
+/**
+* Options accepted by the global `fetch()` function.
+*
+* Fino accepts the standard request init fields used by browser and server
+* Fetch implementations, plus transport-specific `tls`, `protocol`, and
+* request `trailers` options for runtime-managed HTTP clients. Fields set
+* here override the corresponding fields of a `Request` passed as `input`.
+*
+* ```ts no_run
+*   const res = await fetch('https://internal.example/report', {
+*     method: 'POST',
+*     headers: { 'content-type': 'application/json' },
+*     body: JSON.stringify({ ok: true }),
+*     signal: AbortSignal.timeout(10_000),
+*     redirect: 'error',
+*     tls: { ca: '/etc/ssl/internal-ca.pem' },
+*     protocol: 'h2',
+*   });
+* ```
+*/
+export interface FetchInit {
+  /**
+  * Request method. Common methods are normalized to uppercase before
+  * sending; unknown methods are sent verbatim. `CONNECT`, `TRACE`, and
+  * `TRACK` throw a TypeError.
+  */
   method?: string;
-  headers?: HeadersInput;
-  body?: FetchBody;
-  signal?: MinimalAbortSignal | null;
+  /**
+  * Request headers as a `Headers` instance, an array of `[name, value]`
+  * pairs, or a plain name-to-value record. `Host`, `Connection`, and
+  * `Accept-Encoding` are auto-injected for HTTP/1 requests when absent.
+  */
+  headers?: Headers | string[][] | Record<string, string> | null | undefined;
+  /**
+  * Request body value: a string, byte buffer, `Blob`, `FormData`,
+  * `URLSearchParams`, async iterable of `Uint8Array`, or `ReadableStream`.
+  * Streaming bodies are one-shot — they cannot be replayed across 307/308
+  * redirects and disable automatic Alt-Svc HTTP/3 upgrades. GET and HEAD
+  * requests must not have a body.
+  */
+  body?: unknown;
+  /**
+  * Abort signal used to cancel connection setup, redirects, uploads, and
+  * streaming response reads. Rejects with `signal.reason`.
+  */
+  signal?: AbortSignal | null;
+  /**
+  * Redirect handling mode. `'follow'` (default) chases up to 20 redirects,
+  * `'error'` throws a TypeError on any redirect status, and `'manual'`
+  * returns an opaque redirect response (status 0, empty headers, null body).
+  */
   redirect?: 'follow' | 'error' | 'manual';
+  /**
+  * Subresource integrity metadata (e.g. `sha256-<base64>`; sha256, sha384,
+  * and sha512 are supported). The response body is buffered in full and the
+  * digest verified before the Response is returned; a mismatch throws a
+  * TypeError. Silently skipped when libcrypto is unavailable.
+  */
   integrity?: string;
+  /**
+  * Referrer policy used when constructing the outgoing `Referer` header
+  * from `referrer`. Defaults to `'strict-origin-when-cross-origin'`. Only
+  * applies when an explicit `referrer` is provided — Fino never synthesizes
+  * a default browser referrer.
+  */
   referrerPolicy?: 'no-referrer' | 'no-referrer-when-downgrade' | 'origin' | 'origin-when-cross-origin' | 'same-origin' | 'strict-origin' | 'strict-origin-when-cross-origin' | 'unsafe-url' | '';
+  /**
+  * Explicit referrer URL reduced through `referrerPolicy` into a `Referer`
+  * header. `'no-referrer'` suppresses the header; `'about:client'` is
+  * ignored (no header is sent).
+  */
   referrer?: string;
+  /**
+  * Browser compatibility field. Fino accepts it but does not enforce CORS or
+  * synthesize opaque responses.
+  */
   mode?: 'cors' | 'no-cors' | 'same-origin' | 'navigate';
+  /**
+  * Browser compatibility field. Fino does not maintain a browser cookie jar.
+  */
   credentials?: 'omit' | 'same-origin' | 'include';
+  /**
+  * Browser compatibility field. Fino does not maintain an HTTP cache.
+  */
   cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached';
+  /**
+  * Browser compatibility field. Fino accepts it without extending request
+  * lifetime after runtime shutdown.
+  */
   keepalive?: boolean;
+  /**
+  * Request priority hint. Validated (`'high'`, `'low'`, or `'auto'`) but not
+  * currently used for scheduling.
+  */
   priority?: 'high' | 'low' | 'auto';
+  /**
+  * HTTP trailers sent after the request body: either a `Headers` instance
+  * or a function (sync or async) called after the body is written, so
+  * trailer values can be computed from the streamed content.
+  */
   trailers?: Headers | (() => Headers | Promise<Headers>);
+  /**
+  * TLS client and trust options for HTTPS connections. `ca`, `cert`, and
+  * `key` are paths to PEM files; `rejectUnauthorized` defaults to `true`.
+  * Requests carrying a client certificate are pooled separately from
+  * anonymous connections to the same origin.
+  */
   tls?: {
     ca?: string;
     rejectUnauthorized?: boolean;
     cert?: string;
     key?: string;
   };
+  /**
+  * Preferred HTTP protocol. `'auto'` (default) negotiates: ALPN picks h2 or
+  * HTTP/1.1, and a cached Alt-Svc entry may upgrade to h3. `'h2'` requires
+  * ALPN to negotiate h2 and throws otherwise; `'h3'` requires an HTTPS URL
+  * and libnghttp3. `'http/1.1'` pins the request to HTTP/1.
+  */
   protocol?: 'auto' | 'http/1.1' | 'h2' | 'h3';
-}
-interface DeferredRequestInit extends FetchInit {
-  activateAfter?: number;
 }
 interface TraceRuntime {
   requestId?: string;
@@ -264,96 +390,6 @@ function _normalizeFetchUrl(input: string): string {
     } catch {}
     throw new TypeError(`Invalid URL: ${input}`);
   }
-}
-/**
-* Result object returned by `fetchLater()`.
-*
-* Fino currently exposes the Fetch Standard IDL surface and validation
-* behavior for deferred fetch requests. The returned result starts inactive;
-* deferred page-lifecycle delivery is browser-document behavior and is not
-* performed by this server-side runtime.
-*
-* ```ts no_run
-* const result = fetchLater('https://example.com/analytics');
-* result.activated; // false
-* ```
-*/
-export interface FetchLaterResult {
-  readonly activated: boolean;
-}
-type FetchLaterResultConstructor = {
-  readonly prototype: FetchLaterResult;
-  new (): FetchLaterResult;
-};
-export const FetchLaterResult = ((function FetchLaterResult(): never {
-  throw new TypeError('Illegal constructor');
-}) as unknown) as FetchLaterResultConstructor;
-const fetchLaterResultActivatedGetter = function(this: FetchLaterResult): boolean {
-  const state = _fetchLaterResultState.get(this);
-  if (state === undefined) throw new TypeError('FetchLaterResult receiver expected');
-  return state.activated;
-};
-Object.defineProperty(fetchLaterResultActivatedGetter, 'name', {
-  value: 'get activated',
-  configurable: true
-});
-Object.defineProperties(FetchLaterResult.prototype, {
-  activated: {
-    get: fetchLaterResultActivatedGetter,
-    enumerable: true,
-    configurable: true
-  },
-  [Symbol.toStringTag]: {
-    value: 'FetchLaterResult',
-    configurable: true
-  }
-});
-Object.defineProperty(FetchLaterResult, 'length', {
-  value: 0,
-  configurable: true
-});
-Object.defineProperty(FetchLaterResult, 'prototype', { writable: false });
-function _createFetchLaterResult(): FetchLaterResult {
-  const result = Object.create(FetchLaterResult.prototype) as FetchLaterResult;
-  _fetchLaterResultState.set(result, { activated: false });
-  return result;
-}
-function _isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '[::1]' || normalized === '::1';
-}
-function _normalizeFetchLaterUrl(input: string | Request): string {
-  const href = input instanceof Request ? input.url : _normalizeFetchUrl(String(input));
-  const url = new URL(href);
-  if (url.protocol === 'https:') return url.href;
-  if (url.protocol === 'http:' && _isLoopbackHostname(url.hostname)) return url.href;
-  throw new TypeError(`fetchLater: URL is not potentially trustworthy: ${url.href}`);
-}
-/**
-* Queue a deferred fetch request.
-*
-* The Fetch Standard defines `fetchLater()` for Window secure contexts. Fino
-* validates the request and exposes an inactive `FetchLaterResult`, but it
-* does not implement browser document lifecycle delivery. Aborted initial
-* signals reject immediately and later aborts keep the inactive result inert.
-*
-* ```ts no_run
-* const result = fetchLater('/analytics', { activateAfter: 0 });
-* result.activated; // false
-* ```
-*/
-export function fetchLater(this: unknown, input: string | Request, init: DeferredRequestInit = {}): FetchLaterResult {
-  if (this !== undefined && this !== globalThis) throw new TypeError('fetchLater receiver expected');
-  if (arguments.length < 1) throw new TypeError('fetchLater requires 1 argument');
-  _normalizeFetchLaterUrl(input);
-  if (init != null && init.activateAfter !== undefined && Number(init.activateAfter) < 0) {
-    throw new RangeError('fetchLater activateAfter must be non-negative');
-  }
-  const signal = init != null ? init.signal : null;
-  if (signal != null && signal.aborted) {
-    throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
-  }
-  return _createFetchLaterResult();
 }
 function _normalizeFetchMethod(method: string): string {
   if (/^(connect|trace|track)$/i.test(method)) {
@@ -850,17 +886,14 @@ function _hasBody(status: number, method?: string): boolean {
   return true;
 }
 /**
-* Execute a single HTTP request hop and return the raw parsed response
-* plus the open socket (and its reader/writer split).
+* Execute a single HTTP request hop and return the raw parsed response plus
+* the open socket.
 *
-* Caller is responsible for closing the socket on error paths.
-*
-* @param {string}   url      — absolute URL string
-* @param {string}   method   — HTTP method
-* @param {Headers}  headers  — request headers (Host will be auto-injected)
-* @param {any}      body     — request body (null for bodyless, raw init value otherwise)
-* @param {AbortSignal|null} signal
-* @returns {Promise<{ response: Response, sock: Socket, reader, writer }>}
+* Tries transports in order: forced or Alt-Svc-discovered HTTP/3, the pooled
+* HTTP/2 fast path, then a fresh TCP/TLS connection (H2 via ALPN or the H1
+* driver with auto-injected `Host`, `Connection: close`, and
+* `Accept-Encoding` headers). `sock` is `null` for pooled H2/H3 responses.
+* The caller is responsible for closing the socket on error paths.
 */
 async function _singleFetch(url: string, method: string, headers: Headers, body: FetchBody, signal: MinimalAbortSignal | null, runtime: TraceRuntime = {}, trailers?: Headers | (() => Headers | Promise<Headers>), tls?: FetchInit['tls'], protocol: FetchProtocol = 'auto', trustedHeaders?: Record<string, string>): Promise<{
   response: Response;
@@ -1323,16 +1356,28 @@ async function _buildFinalResponseWithIntegrity(response: Response, sock: Socket
 * Fetch a resource over HTTP or HTTPS.
 *
 * Follows the WHATWG Fetch API core flow with Fino Request, Response, and
-* Headers objects. Redirect mode defaults to "follow", up to 20 hops. GET and
-* HEAD requests reject when given a body. AbortSignal cancellation is checked
-* before the request starts, during network operations, and while reading the
-* response body.
+* Headers objects. `input` is a URL string (resolved against
+* `globalThis.location` when relative and a location is set) or a `Request`
+* whose fields serve as defaults for `init`. `data:` and `blob:` URLs are
+* resolved in-process without network I/O; `blob:` fetches support GET only,
+* including `Range` requests. The returned Response carries the final URL
+* after redirects and `redirected` metadata.
+*
+* Redirect mode defaults to `'follow'`, up to 20 hops, and cross-origin
+* redirects strip `Authorization` and `Cookie` headers. GET and HEAD requests
+* reject when given a body. Requests to unsafe ports and the `CONNECT`,
+* `TRACE`, and `TRACK` methods throw a TypeError. AbortSignal cancellation is
+* checked before the request starts, during DNS/connect/TLS/parse, and while
+* reading the response body.
 *
 * The returned Response may have a streamed body. If the body is not consumed
 * or closed, the underlying HTTP/1 socket can remain open until the runtime
 * tears it down. HTTPS requests may reuse an HTTP/2 session when ALPN
-* negotiates h2. Integrity checks buffer the full body before returning a
-* Response.
+* negotiates h2, or an HTTP/3 session when `protocol: 'h3'` is set or a
+* cached Alt-Svc entry exists. Integrity checks buffer the full body before
+* returning a Response. Compressed bodies (gzip, deflate, brotli) are
+* transparently decompressed and the `Content-Encoding`/`Content-Length`
+* headers removed.
 *
 * Browser policy knobs are intentionally limited in this release: CORS,
 * credentials, cache, cookies, keepalive lifetime, and default referrer
@@ -1342,7 +1387,7 @@ async function _buildFinalResponseWithIntegrity(response: Response, sock: Socket
 * normal runtime lifetime. Explicit `referrer` and `referrerPolicy` values are
 * converted to a `Referer` header when supported.
 *
-* ```typescript no_run
+* ```ts no_run
 * const response = await fetch('https://example.com/data.json', {
 *   headers: { accept: 'application/json' },
 *   signal: AbortSignal.timeout(5000),
@@ -1352,12 +1397,18 @@ async function _buildFinalResponseWithIntegrity(response: Response, sock: Socket
 *   const payload = await response.json();
 *   console.log(payload);
 * }
-* ```
 *
-* @param {string|Request} input   URL string or Request object.
-* @param {object}         [init]  RequestInit options:
-*   method?, headers?, body?, signal?, redirect?
-* @returns {Promise<Response>} response with final URL and redirect metadata.
+* // Stream a large download, cancellable mid-body:
+* const controller = new AbortController();
+* const download = await fetch('https://example.com/archive.bin', {
+*   signal: controller.signal,
+* });
+* let received = 0;
+* for await (const chunk of download.body!) {
+*   received += chunk.byteLength;
+*   if (received > 100_000_000) controller.abort(new Error('too large'));
+* }
+* ```
 */
 export async function fetch(input: string | Request, init?: FetchInit): Promise<Response> {
   // ---- Normalize input -------------------------------------------------------
@@ -1604,7 +1655,16 @@ Object.defineProperty(fetch, 'length', {
 * Return whether the internal global fetch HTTP/2 pool has a live entry.
 *
 * This hook exists for runtime tests that need to assert ALPN pooling behavior
-* without exposing pool state through a public `fino:*` API.
+* without exposing pool state through a public `fino:*` API. Origin keys are
+* `protocol//hostname:port` with the port always explicit, e.g.
+* `https://example.test:443`.
+*
+* ```ts no_run
+*   import { _fetchH2PoolHas } from 'internal:globals/fetch';
+*
+*   await fetch(`https://localhost:${port}/`);
+*   t.ok(_fetchH2PoolHas(`https://localhost:${port}`), 'pooled after ALPN h2');
+* ```
 *
 * @internal
 */
@@ -1614,9 +1674,17 @@ export function _fetchH2PoolHas(origin: string): boolean {
 /**
 * Gracefully close one internal global fetch HTTP/2 pool entry for tests.
 *
-* The entry remains in the pool map until normal liveness checks evict it, so
-* `_fetchH2PoolHas()` observes the same `goingAway` state used by production
-* acquisition.
+* Resolves `true` if an entry existed for `origin` and was closed, `false` if
+* the pool had no entry. The entry remains in the pool map until normal
+* liveness checks evict it, so `_fetchH2PoolHas()` observes the same
+* `goingAway` state used by production acquisition.
+*
+* ```ts no_run
+*   import { _closeFetchH2PoolEntry } from 'internal:globals/fetch';
+*
+*   const closed = await _closeFetchH2PoolEntry(`https://localhost:${port}`);
+*   t.ok(closed, 'existing session was drained');
+* ```
 *
 * @internal
 */
@@ -1627,7 +1695,14 @@ export async function _closeFetchH2PoolEntry(origin: string): Promise<boolean> {
   return true;
 }
 /**
-* Gracefully close one internal global fetch HTTP/2 pool entry for tests.
+* Alias of `_closeFetchH2PoolEntry` kept for tests that import the
+* `ForTest`-suffixed name.
+*
+* ```ts no_run
+*   import { _closeFetchH2PoolEntryForTest } from 'internal:globals/fetch';
+*
+*   await _closeFetchH2PoolEntryForTest(`https://localhost:${port}`);
+* ```
 *
 * @internal
 */
@@ -1639,6 +1714,13 @@ export function _closeFetchH2PoolEntryForTest(origin: string): Promise<boolean> 
 *
 * Use this only in tests to isolate origin-keyed pool state between cases.
 *
+* ```ts no_run
+*   import { _resetFetchH2Pool } from 'internal:globals/fetch';
+*
+*   // Test teardown: drop any pooled H2 sessions before the next case.
+*   await _resetFetchH2Pool();
+* ```
+*
 * @internal
 */
 export function _resetFetchH2Pool(): Promise<void> {
@@ -1647,6 +1729,15 @@ export function _resetFetchH2Pool(): Promise<void> {
 /**
 * Return whether the internal global fetch HTTP/3 pool has a live entry.
 *
+* Uses the same `protocol//hostname:port` origin keys as the HTTP/2 pool.
+*
+* ```ts no_run
+*   import { _fetchH3PoolHas } from 'internal:globals/fetch';
+*
+*   await fetch(url, { protocol: 'h3' });
+*   t.ok(_fetchH3PoolHas(`https://localhost:${port}`), 'H3 session pooled');
+* ```
+*
 * @internal
 */
 export function _fetchH3PoolHas(origin: string): boolean {
@@ -1654,6 +1745,16 @@ export function _fetchH3PoolHas(origin: string): boolean {
 }
 /**
 * Close and clear all internal global fetch HTTP/3 pool entries.
+*
+* Closes every pooled H3 session, QUIC connection, and endpoint, waiting for
+* all closes to settle. Use in tests to isolate QUIC session state between
+* cases.
+*
+* ```ts no_run
+*   import { _resetFetchH3Pool } from 'internal:globals/fetch';
+*
+*   await _resetFetchH3Pool();
+* ```
 *
 * @internal
 */
@@ -1664,11 +1765,21 @@ export async function _resetFetchH3Pool(): Promise<void> {
   await Promise.allSettled(closes);
 }
 /**
-* Override automatic fetch HTTP/3 handshake timeout for deterministic tests.
+* Override the fetch HTTP/3 handshake timeout for deterministic tests.
 *
 * Passing `null` restores the runtime default. Existing H3 pool entries keep
 * the timeout they were created with, so tests should reset the H3 pool after
-* changing this value.
+* changing this value. Throws TypeError if `ms` is neither `null` nor a
+* positive finite number; fractional values are floored.
+*
+* ```ts no_run
+*   import { _resetFetchH3Pool, _setFetchH3HandshakeTimeoutForTest } from 'internal:globals/fetch';
+*
+*   _setFetchH3HandshakeTimeoutForTest(250);
+*   await _resetFetchH3Pool();
+*   // ... exercise a handshake that should time out quickly ...
+*   _setFetchH3HandshakeTimeoutForTest(null);
+* ```
 *
 * @internal
 */
@@ -1681,6 +1792,16 @@ export function _setFetchH3HandshakeTimeoutForTest(ms: number | null): void {
 /**
 * Return whether the internal global fetch Alt-Svc cache has a valid entry.
 *
+* Expired entries are evicted (along with any dependent H3 session) during
+* the check, so this reports `false` once an entry's `ma` lifetime lapses.
+*
+* ```ts no_run
+*   import { _fetchAltSvcHas } from 'internal:globals/fetch';
+*
+*   await fetch(url); // response advertised Alt-Svc: h3=":443"; ma=60
+*   t.ok(_fetchAltSvcHas(`https://localhost:${port}`), 'h3 endpoint cached');
+* ```
+*
 * @internal
 */
 export function _fetchAltSvcHas(origin: string): boolean {
@@ -1688,6 +1809,15 @@ export function _fetchAltSvcHas(origin: string): boolean {
 }
 /**
 * Clear the internal global fetch Alt-Svc cache and dependent H3 sessions.
+*
+* Combines an Alt-Svc cache wipe with `_resetFetchH3Pool()` so no stale
+* upgrade hints or pooled QUIC sessions leak into the next test case.
+*
+* ```ts no_run
+*   import { _resetFetchAltSvc } from 'internal:globals/fetch';
+*
+*   await _resetFetchAltSvc();
+* ```
 *
 * @internal
 */

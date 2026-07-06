@@ -72,11 +72,19 @@
 *
 */
 import { Blob, File } from './blob.ts';
-import { encodeUtf8 } from './encoding.ts';
+import { encodeUtf8 } from 'internal:encoding';
 import { randBytes } from '../internal/openssl.ts';
 // ---------------------------------------------------------------------------
 // Multipart/form-data serialization
 // ---------------------------------------------------------------------------
+/**
+* Create the random boundary used for multipart/form-data serialization.
+*
+* This is exported only for internal Request/Response body construction, where
+* the `Content-Type` header must be set before the lazy body iterator runs.
+*
+* @internal
+*/
 export function _createMultipartBoundary(): string {
   const bytes = new ArrayBuffer(18);
   randBytes(bytes, 18);
@@ -114,6 +122,10 @@ function _escapeParameter(s: string): string {
 * Serialization builds a complete `Uint8Array` before returning. This keeps
 * fetch integration simple, but callers should avoid unbounded or very large
 * bodies until streaming multipart serialization is added.
+*
+* A FormData with no entries serializes to a zero-length body — no closing
+* boundary line is emitted — while the returned content type still carries
+* the boundary parameter.
 *
 * ```typescript no_run
 * const fd = new FormData();
@@ -166,10 +178,14 @@ export async function _serializeFormData(fd: FormData, boundary?: string): Promi
     body
   };
 }
-// ---------------------------------------------------------------------------
-// Internal
-// ---------------------------------------------------------------------------
-type FormDataEntryValue = string | File;
+/**
+* Value stored in a FormData entry.
+*
+* String entries represent regular form fields. File entries represent Blob
+* values after FormData normalizes them with a filename for multipart/form-data
+* serialization.
+*/
+export type FormDataEntryValue = string | File;
 // WHATWG spec: string values in FormData have line endings normalized to CRLF.
 function _normalizeCRLF(s: string): string {
   return s.replace(/\r\n|\r|\n/g, '\r\n');
@@ -204,23 +220,13 @@ function _normalizeEntry(name: string, value: string | Blob, filename?: string):
 */
 export class FormData {
   /**
-  * Private property `#entries` used by `FormData`.
+  * The backing entry list: an ordered array of [name, value] tuples.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #entries = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#entries;
-  *   }
-  * }
-  * ```
+  * Every mutation method rewrites or appends to this array, and every reader
+  * scans it linearly, which preserves the WHATWG "ordered list of entries"
+  * semantics (duplicates allowed, insertion order significant). Values are
+  * already normalized by `_normalizeEntry` before they land here, so the list
+  * only ever holds strings and File instances.
   *
   * @internal
   */
@@ -257,7 +263,9 @@ export class FormData {
   * Append a new entry without removing existing entries with the same name.
   *
   * Names and string values are string-coerced and line endings are normalized
-  * to CRLF. Blob values become File values, using filename or "blob".
+  * to CRLF. Blob values become File values: the filename argument sets the
+  * name, otherwise a plain Blob defaults to "blob" and an existing File keeps
+  * its own name.
   *
   * ```typescript no_run
   * const form = new FormData();

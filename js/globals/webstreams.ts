@@ -1,7 +1,9 @@
 /**
 * ReadableStream, WritableStream, TransformStream globals.
 *
-* WHATWG Streams specification: https://streams.spec.whatwg.org/
+* Registered as `internal:globals/webstreams` and re-exported onto
+* `globalThis` by the global installer, so application code uses these
+* classes without importing anything.
 *
 * ## Architecture
 *
@@ -58,6 +60,7 @@
 * for await (const chunk of stream) console.log(chunk);
 * ```
 *
+* WHATWG Streams specification: https://streams.spec.whatwg.org/
 */
 import { Writer } from '../internal/stream.ts';
 import { AbortController } from './abort.ts';
@@ -1145,45 +1148,19 @@ export class ReadableByteStreamController {
 */
 export class ReadableStreamBYOBRequest {
   /**
-  * Private property `#controller` used by `ReadableStreamBYOBRequest`.
+  * Owning byte stream controller.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #controller = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#controller;
-  *   }
-  * }
-  * ```
+  * respond() and respondWithNewView() route through it so the pending BYOB
+  * descriptor is resolved against the stream's state record.
   *
   * @internal
   */
   #controller: ReadableByteStreamController;
   /**
-  * Private property `#desc` used by `ReadableStreamBYOBRequest`.
+  * Pending pull-into descriptor this request fulfills.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #desc = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#desc;
-  *   }
-  * }
-  * ```
+  * Holds the caller-supplied view, the byte count filled so far, and the
+  * resolve/reject callbacks of the parked BYOB read.
   *
   * @internal
   */
@@ -1263,7 +1240,15 @@ export class ReadableStreamBYOBRequest {
 * created with ReadableStream.from() and read directly from the iterable.
 *
 * ```typescript no_run
-* const stream = new ReadableStream({ start(controller) { controller.close(); } });
+* const stream = new ReadableStream({
+*   start(controller) {
+*     controller.enqueue('first');
+*     controller.enqueue('second');
+*     controller.close();
+*   },
+* });
+*
+* for await (const chunk of stream) console.log(chunk); // "first", then "second"
 * ```
 */
 export class ReadableStream {
@@ -2348,23 +2333,10 @@ async function _wsCloseInternal(s: WritableStreamState): Promise<void> {
 */
 export class WritableStreamDefaultController {
   /**
-  * Private property `#abortCtrl` used by `WritableStreamDefaultController`.
+  * Backing AbortController for the `signal` getter.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #abortCtrl = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#abortCtrl;
-  *   }
-  * }
-  * ```
+  * The writable abort path calls `_abort(reason)`, which aborts this
+  * controller so sinks observing `signal` see the abort.
   *
   * @internal
   */
@@ -2451,7 +2423,15 @@ export class WritableStreamDefaultController {
 * streams delegate directly to a Fino Writer for low overhead.
 *
 * ```typescript no_run
-* const stream = new WritableStream({ write(chunk) { console.log(chunk); } });
+* const stream = new WritableStream({
+*   write(chunk) { console.log('writing', chunk); },
+*   close() { console.log('flushed'); },
+* });
+*
+* const writer = stream.getWriter();
+* await writer.write('a');
+* await writer.write('b');
+* await writer.close();
 * ```
 */
 export class WritableStream {
@@ -2755,27 +2735,23 @@ export class WritableStreamDefaultWriter {
 */
 export class TransformStreamDefaultController {
   /**
-  * Private property `#rsState` used by `TransformStreamDefaultController`.
+  * State record of the transform's readable side.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #rsState = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#rsState;
-  *   }
-  * }
-  * ```
+  * Attached via `_setReadableState()` after the readable side is constructed;
+  * when present, `desiredSize`, `enqueue()`, `terminate()`, and `error()`
+  * route through the readable controller instead of the internal channel.
   *
   * @internal
   */
   #rsState: ReadableStreamState | null = null;
+  /**
+  * Error propagation hook installed by the owning TransformStream.
+  *
+  * Invoked when the controller errors so the transform's writable side is
+  * errored with the same reason.
+  *
+  * @internal
+  */
   #errorAlgorithm: ((reason: unknown) => void) | null = null;
   /**
   * String tag used by Object.prototype.toString.
@@ -2902,49 +2878,22 @@ export class TransformStreamDefaultController {
 * const upper = new TransformStream({
 *   transform(chunk, controller) { controller.enqueue(String(chunk).toUpperCase()); },
 * });
+*
+* const readable = ReadableStream.from(['a', 'b']).pipeThrough(upper);
+* for await (const chunk of readable) console.log(chunk); // "A", then "B"
 * ```
 */
 export class TransformStream {
   /**
-  * Private property `#readable` used by `TransformStream`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #readable = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#readable;
-  *   }
-  * }
-  * ```
+  * Source-backed readable side that pulls transformed chunks from the
+  * internal channel.
   *
   * @internal
   */
   #readable: ReadableStream;
   /**
-  * Private property `#writable` used by `TransformStream`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #writable = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#writable;
-  *   }
-  * }
-  * ```
+  * Sink-backed writable side that runs the transformer's transform, flush,
+  * and cancel algorithms for chunks written to it.
   *
   * @internal
   */

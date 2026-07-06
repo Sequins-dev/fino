@@ -1,15 +1,41 @@
 /**
-* internal/bootstrap.ts — Shared realm bootstrap.
+* internal:bootstrap — shared realm bootstrap.
 *
-* Evaluated in every Realm context (root and child) before any user code runs.
-* Sets up web globals, source map stack traces, the module loader hooks, and
-* exports `driveLoop` — the function that registers a step/onDone callback pair
-* with the Rust host loop.
+* Evaluated in every Realm context — root and child alike — before any user
+* code runs. Uniform bootstrap is deliberate: a child realm sees exactly the
+* same environment as the root, and only its configuration (entry path, port,
+* watch/REPL flags read from `internal:realm-bridge`) differs.
 *
-* The root realm's entry (`internal/main.ts`) imports this module, then runs the CLI.
-* Child realms also evaluate this module as their first step; the child's entry
-* module is then dynamically imported and driveLoop is called with the child's
-* own isDone/onDone callbacks.
+* Evaluating this module has several side effects:
+*
+* - Installs the WHATWG globals on `globalThis`: events, streams, `URL`,
+*   `fetch`, `Blob`/`File`, encoders, timers, `console`, `crypto`,
+*   `WebSocket`, `WebTransport`, message ports, and friends. All are
+*   writable and configurable but non-enumerable (except `fetch`, which the
+*   spec requires to be enumerable). `performance` is installed as a
+*   replaceable accessor, and `self`, `navigator`, and `reportError` are
+*   defined.
+* - Wraps `Atomics.waitAsync` so pending async futex waits keep the event
+*   loop alive — V8's `has_pending_background_tasks()` does not cover futex
+*   waiters, so without the shim the loop could exit before a notify fires.
+* - Installs `Error.prepareStackTrace` so stack traces map through source
+*   maps (via `internal:loader-hooks`) back to original TypeScript positions.
+* - Imports `internal:loader` to register module-resolution and
+*   `import.meta` hooks, and registers the async-runtime wake pipe with the
+*   event loop backend so background FFI threads can interrupt a sleeping
+*   poll.
+*
+* The module's one export is `driveLoop`, which registers a step/onDone
+* callback pair with the Rust host loop. The root realm's entry
+* (`internal/main.ts`) imports this module and then runs the CLI; child
+* realms evaluate it as their first step and the bootstrap takes over from
+* there: when `getEntryPath()` reports an entry module, it is dynamically
+* imported, port-based call/pool invocation modes are wired up for
+* default-exported functions, watch-mode reloads and shutdown hooks are
+* handled, and `driveLoop` is called with the child's own isDone/onDone
+* callbacks — so user entry modules never call `driveLoop` themselves.
+* Realms created with `repl: true` instead load `internal:repl-handler` and
+* answer `__eval` messages until terminated.
 *
 * ## Example
 *
@@ -45,8 +71,9 @@ import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask, Performance, performance } from '../globals/time.ts';
-import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, crypto, cryptoAvailable, tlsAvailable, fetch, FetchLaterResult, fetchLater, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebSocketError, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts, BroadcastChannel } from '../globals/global.ts';
+import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, CryptoKey, crypto, cryptoAvailable, tlsAvailable, fetch, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, _flushPorts, BroadcastChannel } from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
+import { ThreadPort } from 'internal:realm/transport-port';
 import { getWakeReadFd } from 'internal:thread-port';
 interface StackFrame {
   getFileName?(): string | null;
@@ -135,12 +162,11 @@ for (const [name, value] of Object.entries({
   URLSearchParams,
   URLPattern,
   console,
+  CryptoKey,
   crypto,
   cryptoAvailable,
   tlsAvailable,
   fetch,
-  FetchLaterResult,
-  fetchLater,
   Headers,
   Request,
   Response,
@@ -148,7 +174,6 @@ for (const [name, value] of Object.entries({
   DecompressionStream,
   EventSource,
   WebSocket,
-  WebSocketError,
   WebTransport,
   WebTransportDatagramDuplexStream,
   CloseEvent,
@@ -156,7 +181,6 @@ for (const [name, value] of Object.entries({
   MessageEvent,
   MessagePort,
   MessageChannel,
-  ThreadPort,
   BroadcastChannel,
   setTimeout,
   clearTimeout,
@@ -167,7 +191,7 @@ for (const [name, value] of Object.entries({
   queueMicrotask,
   Performance
 })) {
-  defineGlobal(name, value, name === 'fetch' || name === 'fetchLater');
+  defineGlobal(name, value, name === 'fetch');
 }
 const performanceGlobalDescriptor = Object.getOwnPropertyDescriptor({
   get performance() {
@@ -229,25 +253,44 @@ runtimeError.prepareStackTrace = function prepareStackTrace(err: Error, callSite
   if (!Array.isArray(callSites) || callSites.length === 0) return header;
   return header + '\n' + callSites.map(formatCallSite).join('\n');
 };
+/**
+* Optional hooks controlling how `driveLoop` polls and how it coordinates
+* with child Realms embedded in the caller's isolate.
+*
+* @internal
+*/
 interface DriveLoopOptions {
+  /** Called once per tick, after microtasks drain, to advance any embedded
+  *  child Realms sharing this isolate. */
   stepChildren?: () => void;
+  /** Reports whether any child Realm still has pending work. While it
+  *  returns true the loop keeps running even after `isDone()` is true. */
   childrenAlive?: () => boolean;
   /** If true, always poll with timeout=0 (non-blocking). Used for child realms
   *  that are driven by a parent loop — the parent controls sleeping. */
   nonBlocking?: boolean;
 }
 /**
-* Register step and onDone callbacks with the Rust host loop.
+* Registers a step/onDone callback pair with the Rust host loop.
 *
-* The host loop calls `step()` repeatedly until it returns false, then calls
-* `onDone()`. The step function polls I/O events, drains microtasks, and
-* optionally steps any active child Realms.
+* The host loop calls the registered step function once per iteration until
+* it returns false, then calls `onDone` (e.g. to surface errors or clean up).
+* Each step polls the event loop backend (kqueue/io_uring) for I/O, timer,
+* and wake-pipe events, flushes inter-realm message ports, drains the
+* microtask queue, and — when `opts.stepChildren` is provided — advances any
+* embedded child Realms.
 *
-* @param isDone  Returns true when the caller's work is complete.
-* @param onDone  Called after the loop exits (e.g. to handle errors).
-* @param opts    Optional hooks for child Realm stepping.
+* `isDone` reports whether the caller's own work is complete, but a true
+* result alone does not stop the loop: the loop also keeps running while the
+* event loop still has live handles (pending timers, sockets, watchers,
+* Atomics waiters) or while `opts.childrenAlive?.()` reports live children.
 *
-* ```typescript no_run
+* Polling is adaptive: after three consecutive empty ticks the poll blocks
+* for up to 25ms to avoid spinning, and any completed event resets the
+* backoff. `opts.nonBlocking` forces a zero timeout on every tick, for realms
+* whose sleeping is controlled by a parent loop.
+*
+* ```ts no_run
 * import { driveLoop } from 'internal:bootstrap';
 *
 * let complete = false;

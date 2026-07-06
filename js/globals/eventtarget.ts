@@ -1,5 +1,5 @@
 /**
-* Event, CustomEvent, and EventTarget globals
+* Event, CustomEvent, and EventTarget globals.
 *
 * Pure JS implementation of the WHATWG EventTarget interface:
 * https://dom.spec.whatwg.org/#interface-eventtarget
@@ -49,7 +49,18 @@ interface EventState {
   timeStamp: number;
   trusted: boolean;
 }
-type EventCallback = ((event: Event) => void) | {
+/**
+* Event listener callback accepted by `EventTarget.addEventListener()`.
+*
+* A listener can be a function or an object with a `handleEvent()` method.
+* Both forms receive the dispatched `Event` instance.
+*
+* ```typescript no_run
+* const listener: EventCallback = (event) => console.log(event.type);
+* target.addEventListener('ready', listener);
+* ```
+*/
+export type EventCallback = ((event: Event) => void) | {
   handleEvent(event: Event): void;
 };
 interface ListenerRecord {
@@ -59,10 +70,41 @@ interface ListenerRecord {
   passive: boolean;
   removed: boolean;
 }
-interface AddEventListenerOptions {
+/**
+* Options accepted by `EventTarget.addEventListener()`.
+*
+* `capture` participates in listener identity for compatibility, but Fino has
+* no DOM tree and dispatches every event at the target. `once` removes the
+* listener after the first call. `passive` prevents `preventDefault()` from
+* canceling the event while that listener runs. `signal` removes the listener
+* when the supplied `AbortSignal` aborts.
+*
+* ```typescript no_run
+* target.addEventListener('message', onMessage, {
+*   once: true,
+*   signal: controller.signal,
+* });
+* ```
+*/
+export interface AddEventListenerOptions {
+  /**
+  * Participates in listener identity (a listener is uniquely keyed by callback
+  * plus capture flag) but has no traversal effect in Fino's flat dispatch.
+  */
   capture?: boolean;
+  /**
+  * When true, the listener is removed automatically after its first invocation.
+  */
   once?: boolean;
+  /**
+  * When true, `preventDefault()` is a no-op while this listener runs, so the
+  * listener cannot cancel the event.
+  */
   passive?: boolean;
+  /**
+  * An AbortSignal that removes the listener when it aborts. A signal that is
+  * already aborted skips registration entirely; passing `null` throws.
+  */
   signal?: AbortSignal;
 }
 // Event internal mutable state, keyed on Event instance.
@@ -493,23 +535,8 @@ Object.defineProperty(Event.prototype, 'srcElement', {
 */
 export class CustomEvent extends Event {
   /**
-  * Private property `#detail` used by `CustomEvent`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #detail = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#detail;
-  *   }
-  * }
-  * ```
+  * Backing store for the `detail` payload, set at construction and replaced
+  * by `initCustomEvent()`.
   *
   * @internal
   */
@@ -611,9 +638,16 @@ export class EventTarget {
   /**
   * Register an event listener.
   *
-  * Null callbacks and objects without handleEvent are ignored. The once option
-  * removes a listener after its first call, passive prevents default
-  * cancellation, and signal removes the listener when aborted.
+  * Registration is idempotent: adding the same callback with the same capture
+  * flag again is a no-op. Null callbacks and objects without a `handleEvent`
+  * method are silently ignored, and a signal that is already aborted skips
+  * registration entirely. The `once` option removes the listener after its
+  * first invocation, `passive` prevents `preventDefault()` from canceling the
+  * event while that listener runs, and `signal` removes the listener when the
+  * AbortSignal aborts.
+  *
+  * Throws if `signal` is explicitly `null` rather than an AbortSignal or
+  * `undefined` — even when the callback is also null.
   *
   * ```typescript no_run
   * const target = new EventTarget();
@@ -691,8 +725,14 @@ export class EventTarget {
   /**
   * Dispatch an Event synchronously to matching listeners.
   *
-  * The argument must be an Event instance and cannot already be dispatching.
-  * Returns false only when a cancelable event was canceled.
+  * Listeners run in registration order against a snapshot taken at dispatch
+  * time: listeners added during dispatch do not run for the current event,
+  * while listeners removed during dispatch are skipped. Exceptions thrown by
+  * listeners are swallowed so later listeners still run. Returns false only
+  * when a cancelable event was canceled via `preventDefault()`.
+  *
+  * Throws if the argument is not an Event instance, or if the event is
+  * already being dispatched.
   *
   * ```typescript no_run
   * const target = new EventTarget();

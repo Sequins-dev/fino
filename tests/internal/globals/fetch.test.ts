@@ -105,74 +105,10 @@ describe('Fetch API WebIDL descriptors', () => {
     }
   });
 });
-describe('fetchLater WebIDL surface', () => {
-  function withFetchLaterLocation<T>(fn: () => T): T {
-    const previousLocation = (globalThis as any).location;
-    (globalThis as any).location = new URL('https://example.com/page');
-    try {
-      return fn();
-    } finally {
-      (globalThis as any).location = previousLocation;
-    }
-  }
-  it('installs fetchLater and FetchLaterResult with WebIDL descriptors', (t) => {
-    const fetchLater = (globalThis as any).fetchLater;
-    const FetchLaterResult = (globalThis as any).FetchLaterResult;
-    t.equal(typeof fetchLater, 'function', 'fetchLater is installed');
-    t.equal(fetchLater.length, 1, 'fetchLater.length');
-    t.equal(fetchLater.name, 'fetchLater', 'fetchLater.name');
-    t.equal(descriptor(globalThis, 'fetchLater').enumerable, true, 'fetchLater is enumerable');
-    t.equal(typeof FetchLaterResult, 'function', 'FetchLaterResult is installed');
-    t.equal(FetchLaterResult.length, 0, 'FetchLaterResult.length');
-    t.throws(() => new FetchLaterResult(), TypeError, 'FetchLaterResult constructor is illegal');
-    t.equal(descriptor(FetchLaterResult, 'prototype').writable, false, 'FetchLaterResult.prototype is readonly');
-    t.equal(descriptor(FetchLaterResult.prototype, 'activated').enumerable, true, 'activated is enumerable');
-  });
-  it('validates fetchLater URL and init inputs', (t) => {
-    withFetchLaterLocation(() => {
-      const fetchLater = (globalThis as any).fetchLater;
-      t.throws(() => fetchLater(), TypeError, 'request is required');
-      t.throws(() => Reflect.apply(fetchLater, {}, ['/']), TypeError, 'fetchLater requires a Window receiver');
-      for (const url of [
-        '/',
-        'https://example.com/',
-        'http://localhost/',
-        'http://127.0.0.1/',
-        'http://[::1]/'
-      ]) {
-        const result = fetchLater(url);
-        t.equal(result.activated, false, `${url} starts inactive`);
-        t.equal(Object.prototype.toString.call(result), '[object FetchLaterResult]', `${url} result tag`);
-        t.throws(() => {
-          result.activated = true;
-        }, TypeError, 'activated is readonly');
-      }
-      for (const url of [
-        'http://example.com/',
-        'file://tmp',
-        'ftp://example.com/',
-        'wss://example.com/',
-        'about:blank',
-        'javascript:alert(1)',
-        'data:text/plain,Hello',
-        'blob:https://example.com/id'
-      ]) {
-        t.throws(() => fetchLater(url), TypeError, `${url} rejects`);
-      }
-      t.throws(() => fetchLater('https://example.com/', { activateAfter: -1 }), RangeError, 'negative activateAfter rejects');
-    });
-  });
-  it('observes initially aborted fetchLater signals without sending', (t) => {
-    withFetchLaterLocation(() => {
-      const fetchLater = (globalThis as any).fetchLater;
-      const controller = new AbortController();
-      controller.abort();
-      t.throws(() => fetchLater('/', { signal: controller.signal }), DOMException, 'initial abort rejects');
-      const laterController = new AbortController();
-      const result = fetchLater('/', { signal: laterController.signal });
-      laterController.abort();
-      t.equal(result.activated, false, 'aborting after creation keeps request inactive');
-    });
+describe('fetch globals surface', () => {
+  it('does not install fetchLater or FetchLaterResult', (t) => {
+    t.equal('fetchLater' in globalThis, false, 'fetchLater is not installed');
+    t.equal('FetchLaterResult' in globalThis, false, 'FetchLaterResult is not installed');
   });
 });
 describe('Basic GET / POST', () => {

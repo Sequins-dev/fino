@@ -1,53 +1,42 @@
 /**
-* UTF-8 TextEncoder / TextDecoder globals.
+* TextEncoder / TextDecoder, base64, DOMException, and structuredClone globals.
 *
-* WHATWG Encoding Standard: https://encoding.spec.whatwg.org/
+* This module implements the encoding-adjacent web globals that userland code
+* expects to find on `globalThis`: `TextEncoder` and `TextDecoder` for
+* text/byte conversion, `btoa` and `atob` for base64, `DOMException` and
+* `QuotaExceededError` for platform-style errors, and `structuredClone` for
+* deep copies. Everything here is installed globally at startup, so no import
+* is needed to use any of it.
 *
-* This module provides two layers:
-*
-* 1. **Internal helpers** (`encodeUtf8`, `decodeUtf8`): low-level functions
-*    used throughout the standard library whenever bytes need to cross the
-*    JS↔C boundary. Every module that passes strings to libc (file paths,
-*    DNS names, HTTP headers, process arguments, …) uses `encodeUtf8` to
-*    produce null-terminated byte arrays. These are exported so modules can
-*    import them directly without going through the WHATWG class wrappers.
-*
-* 2. **WHATWG API** (`TextEncoder`, `TextDecoder`): the web-standard classes
-*    that userland code expects. The release scope is UTF-8 only:
-*    `TextEncoder.encoding` is always `"utf-8"`, and `TextDecoder` accepts
-*    any of the WHATWG-defined UTF-8 label aliases ("utf8",
-*    "unicode-1-1-utf-8", etc.) but rejects other encodings with a RangeError.
-*    `stream: true` is supported for UTF-8 by buffering incomplete trailing
-*    multi-byte sequences and prepending them to the next `decode()` call.
-*    Non-UTF-8 labels remain outside the release contract.
+* `TextEncoder.encoding` is always `"utf-8"`. `TextDecoder` accepts UTF-8
+* label aliases plus the UTF-16 labels (`utf-16`, `utf-16le`, `utf-16be`) and
+* rejects every other encoding with a RangeError. `stream: true` buffers
+* incomplete trailing multi-byte sequences and prepends them to the next
+* `decode()` call.
 *
 *
-* ## Why UTF-8 only?
+* ## Why no legacy encodings?
 *
 * The WHATWG Encoding Standard requires implementations to support all
 * legacy encodings (Latin-1, Shift-JIS, etc.) for decoding. We intentionally
-* limit this to UTF-8 only. The vast majority of modern text is UTF-8, and
-* adding full encoding support would require a large lookup table or a C
+* limit this to UTF-8 and UTF-16. The vast majority of modern text is UTF-8,
+* and adding full encoding support would require a large lookup table or a C
 * library dependency (libiconv). Contributors who need legacy encoding support
 * can import a pure-JS library via the module loader.
 *
 *
 * ## Encoder implementation
 *
-* `encodeUtf8` processes each JS code unit. JS strings are UTF-16 internally,
-* so surrogate pairs (U+D800..U+DBFF followed by U+DC00..U+DFFF) must be
-* recombined into a 32-bit code point before encoding as a 4-byte UTF-8
-* sequence. The algorithm pre-allocates `str.length * 4` bytes (worst case),
-* writes into that buffer, then calls `slice(0, pos)` to return a correctly-
-* sized copy. Using `slice()` rather than `subarray()` ensures the returned
-* Uint8Array's `.buffer` property has the right `byteLength`, which matters
-* when callers pass `.buffer` to FFI or `Pointer.of()`.
+* `TextEncoder.encode()` processes each JS code unit. JS strings are UTF-16
+* internally, so surrogate pairs (U+D800..U+DBFF followed by U+DC00..U+DFFF)
+* are recombined into a 32-bit code point before encoding as a 4-byte UTF-8
+* sequence. Lone surrogates are encoded as U+FFFD, matching web behavior.
 *
 *
 * ## Decoder implementation
 *
-* `decodeUtf8` validates each multi-byte sequence against three classes of
-* errors (also checked by browsers):
+* `TextDecoder.decode()` validates each multi-byte sequence against three
+* classes of errors:
 *
 * - **Invalid lead byte**: a byte whose high bits don't match any UTF-8
 *   sequence prefix (e.g. 0xFF).
@@ -73,217 +62,33 @@
 * counts as 2 code units), `written` is the number of bytes written. Stops
 * early if the destination would overflow.
 *
+*
+* ## structuredClone
+*
+* `structuredClone()` deep-copies a value using V8's native structured
+* serialization — the same machinery realm messaging uses — and falls back to
+* a JS clone pass only for platform objects V8 cannot reconstruct on its own
+* (`Blob`, `File`, `CryptoKey`, `DOMException`). See the function docs for the
+* full support matrix and transfer semantics.
+*
 * ## Example
 *
-* ```typescript no_run
-* const encoded = new TextEncoder().encode('hello');
-* console.log(new TextDecoder().decode(encoded));
+* ```ts no_run
+* const bytes = new TextEncoder().encode('hello');
+* const text = new TextDecoder().decode(bytes); // "hello"
 *
-* const pathBytes = encodeUtf8('/tmp/fino.txt');
-* console.log(decodeUtf8(pathBytes));
+* const b64 = btoa('hi');  // "aGk="
+* const raw = atob(b64);   // "hi"
+*
+* const copy = structuredClone({ nested: new Map([['x', 1]]) });
 * ```
 *
+* WHATWG Encoding Standard: https://encoding.spec.whatwg.org/
+* base64 utilities and structuredClone: https://html.spec.whatwg.org/multipage/
+* DOMException: https://webidl.spec.whatwg.org/#idl-DOMException
 */
-import { detachArrayBuffer as _detachArrayBuffer } from 'internal:serializer';
-// ---------------------------------------------------------------------------
-// Internal UTF-8 primitives
-// ---------------------------------------------------------------------------
-/**
-* Encode a JS string to a Uint8Array of UTF-8 bytes.
-* Handles the full Unicode range including surrogate pairs.
-*
-* Returns a subarray view of an over-allocated backing buffer. Callers that
-* need the exact byte count should use `.byteLength` on the returned view
-* (not `.buffer.byteLength`). This avoids a second allocation (slice copy)
-* while keeping the API identical to before.
-*
-* ```typescript no_run
-* const bytes = encodeUtf8('hello');
-* bytes.byteLength; // 5
-* ```
-*
-* @param {string} str
-* @returns {Uint8Array}
-*/
-export function encodeUtf8(str: string): Uint8Array {
-  // ASCII fast path: scan for any code unit ≥ 0x80. If none found, skip the
-  // 4× over-allocation and surrogate handling — one byte per character, exact.
-  let ascii = true;
-  for (let i = 0; i < str.length; i++) {
-    if (str.charCodeAt(i) >= 128) {
-      ascii = false;
-      break;
-    }
-  }
-  if (ascii) {
-    const buf = new Uint8Array(str.length);
-    for (let i = 0; i < str.length; i++) buf[i] = str.charCodeAt(i);
-    return buf;
-  }
-  // Non-ASCII: worst case 4 bytes per JS code unit.
-  const buf = new Uint8Array(str.length * 4);
-  let pos = 0;
-  for (let i = 0; i < str.length; i++) {
-    let cp = str.charCodeAt(i);
-    // Surrogate pair — combine, or replace lone surrogate with U+FFFD.
-    if (cp >= 55296 && cp <= 56319) {
-      const lo = str.charCodeAt(i + 1);
-      if (lo >= 56320 && lo <= 57343) {
-        cp = 65536 + (cp - 55296 << 10) + (lo - 56320);
-        i++;
-      } else {
-        cp = 65533;
-      }
-    } else if (cp >= 56320 && cp <= 57343) {
-      cp = 65533;
-    }
-    if (cp < 128) {
-      buf[pos++] = cp;
-    } else if (cp < 2048) {
-      buf[pos++] = 192 | cp >> 6;
-      buf[pos++] = 128 | cp & 63;
-    } else if (cp < 65536) {
-      buf[pos++] = 224 | cp >> 12;
-      buf[pos++] = 128 | cp >> 6 & 63;
-      buf[pos++] = 128 | cp & 63;
-    } else {
-      buf[pos++] = 240 | cp >> 18;
-      buf[pos++] = 128 | cp >> 12 & 63;
-      buf[pos++] = 128 | cp >> 6 & 63;
-      buf[pos++] = 128 | cp & 63;
-    }
-  }
-  // subarray() avoids a second allocation. The view's .byteLength is correct;
-  // only .buffer.byteLength is over-allocated (4× worst-case). No callers
-  // access .buffer directly on encodeUtf8 results.
-  return buf.subarray(0, pos);
-}
-/**
-* Decode a Uint8Array of UTF-8 bytes to a JS string.
-* Invalid sequences are replaced with U+FFFD (replacement character).
-*
-* In fatal mode, malformed bytes throw TypeError. When skipBom is true, an
-* initial UTF-8 BOM is omitted from the result.
-*
-* ```typescript no_run
-* const text = decodeUtf8(new Uint8Array([104, 105]));
-* text; // "hi"
-* ```
-*
-* @param {Uint8Array} bytes
-* @param {boolean} [fatal=false]  Throw TypeError on invalid sequences instead of replacing.
-* @param {boolean} [skipBom=true] Strip a leading BOM (U+FEFF) if present.
-* @returns {string}
-*/
-export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: boolean = true): string {
-  // ASCII fast path: HTTP headers, DNS names, and most internal strings are pure
-  // ASCII. Scan for any high byte — if none, use String.fromCharCode.apply which
-  // converts the entire buffer in one native call instead of 300+ string concats.
-  // The BOM check is skipped because U+FEFF is a multi-byte sequence (0xEF 0xBB 0xBF)
-  // and would fail the < 0x80 scan, falling through to the slow path.
-  if (!fatal && skipBom) {
-    let ascii = true;
-    for (let k = 0; k < bytes.length; k++) {
-      if (bytes[k]! >= 128) {
-        ascii = false;
-        break;
-      }
-    }
-    if (ascii) {
-      // fromCharCode.apply handles TypedArrays as array-like. Chunk at 65536 to
-      // stay within safe argument-list sizes on all engines.
-      if (bytes.length <= 65536) return String.fromCharCode.apply(null, (bytes as unknown) as number[]);
-      let out = '';
-      for (let k = 0; k < bytes.length; k += 65536) {
-        out += String.fromCharCode.apply(null, (bytes.subarray(k, k + 65536) as unknown) as number[]);
-      }
-      return out;
-    }
-  }
-  let str = '';
-  let i = 0;
-  let first = true;
-  while (i < bytes.length) {
-    const b0 = bytes[i]!;
-    let cp: number;
-    let seqLen: number;
-    if (b0 < 128) {
-      cp = b0;
-      seqLen = 1;
-    } else if ((b0 & 224) === 192) {
-      cp = b0 & 31;
-      seqLen = 2;
-    } else if ((b0 & 240) === 224) {
-      cp = b0 & 15;
-      seqLen = 3;
-    } else if ((b0 & 248) === 240) {
-      cp = b0 & 7;
-      seqLen = 4;
-    } else {
-      // Invalid lead byte
-      if (fatal) throw new TypeError(`TextDecoder: invalid byte 0x${b0.toString(16)} at index ${i}`);
-      str += '�';
-      i++;
-      continue;
-    }
-    if (seqLen >= 3 && i + 1 < bytes.length) {
-      const b1 = bytes[i + 1]!;
-      const invalidSecond = (b1 & 192) === 128 && (b0 === 224 && b1 < 160 || b0 === 237 && b1 > 159 || b0 === 240 && b1 < 144 || b0 === 244 && b1 > 143);
-      if (invalidSecond) {
-        if (fatal) throw new TypeError(`TextDecoder: invalid byte 0x${b1.toString(16)} at index ${i + 1}`);
-        str += '�';
-        i++;
-        continue;
-      }
-    }
-    // Validate and accumulate continuation bytes.
-    let valid = true;
-    let missingContinuation = false;
-    let invalidContinuationOffset = 1;
-    for (let j = 1; j < seqLen; j++) {
-      if (i + j >= bytes.length) {
-        missingContinuation = true;
-        valid = false;
-        break;
-      }
-      if ((bytes[i + j]! & 192) !== 128) {
-        invalidContinuationOffset = j;
-        valid = false;
-        break;
-      }
-      cp = cp << 6 | bytes[i + j]! & 63;
-    }
-    if (!valid) {
-      if (fatal) throw new TypeError(`TextDecoder: incomplete sequence at index ${i}`);
-      str += '�';
-      i += missingContinuation ? bytes.length - i : invalidContinuationOffset;
-      continue;
-    }
-    // Overlong / surrogate / out-of-range checks
-    if (seqLen === 2 && cp < 128 || seqLen === 3 && cp < 2048 || seqLen === 4 && cp < 65536 || cp > 1114111 || cp >= 55296 && cp <= 57343) {
-      if (fatal) throw new TypeError(`TextDecoder: invalid code point U+${cp.toString(16)} at index ${i}`);
-      str += '�';
-      i += seqLen;
-      continue;
-    }
-    // Skip BOM at the very start of the stream.
-    if (first && skipBom && cp === 65279) {
-      i += seqLen;
-      first = false;
-      continue;
-    }
-    first = false;
-    if (cp < 65536) {
-      str += String.fromCharCode(cp);
-    } else {
-      // Supplementary plane → surrogate pair
-      cp -= 65536;
-      str += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023));
-    }
-    i += seqLen;
-  }
-  return str;
-}
+import { serialize as _serialize, deserialize as _deserialize, detachArrayBuffer as _detachArrayBuffer } from 'internal:serializer';
+import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 function decodeUtf16(bytes: Uint8Array, littleEndian: boolean, fatal: boolean = false, skipBom: boolean = true, streaming: boolean = false, pendingLead: number | null = null): {
   text: string;
   pendingLead: number | null;
@@ -377,14 +182,20 @@ for (let i = 0; i < 64; i++) BASE64_DECODE[BASE64_CHARS.charCodeAt(i)] = i;
 BASE64_DECODE[61] = -2;
 /**
 * Encode a Latin-1 binary string to base64 (web `btoa`).
-* Throws if any character code is > 255.
 *
-* ```typescript no_run
+* Each character of the input is treated as one byte, so the input must be a
+* "binary string" whose character codes are all in [0, 255]. Throws a
+* TypeError if any character code is greater than 255 — encode real text to
+* UTF-8 bytes with `TextEncoder` first if it may contain non-Latin-1
+* characters. The output is standard base64 with `=` padding.
+*
+* ```ts no_run
 * btoa('hi'); // "aGk="
-* ```
 *
-* @param {string} data  Binary string — each char must be in [0, 255].
-* @returns {string}
+* // Base64-encode arbitrary bytes:
+* const bytes = new TextEncoder().encode('héllo');
+* const b64 = btoa(String.fromCharCode(...bytes));
+* ```
 */
 export function btoa(data: string): string {
   const str = String(data);
@@ -408,17 +219,21 @@ export function btoa(data: string): string {
 }
 /**
 * Decode a base64 string to a Latin-1 binary string (web `atob`).
-* Throws on invalid base64 input.
 *
-* ASCII whitespace is ignored. Missing padding is accepted for valid 2- and
-* 3-character remainders, but length % 4 == 1 is rejected.
+* Each character of the result holds one decoded byte. ASCII whitespace
+* (space, tab, LF, CR, FF) in the input is ignored, and missing `=` padding
+* is accepted for valid 2- and 3-character remainders. Throws a TypeError on
+* any other malformed input: characters outside the base64 alphabet,
+* misplaced padding, or a whitespace-stripped length of `% 4 == 1` (which no
+* padding can make valid).
 *
-* ```typescript no_run
+* ```ts no_run
 * atob('aGk='); // "hi"
-* ```
+* atob('aGk');  // "hi" — missing padding accepted
 *
-* @param {string} encodedData
-* @returns {string}
+* // Recover bytes from base64:
+* const bytes = Uint8Array.from(atob('aGk='), (c) => c.charCodeAt(0));
+* ```
 */
 export function atob(encodedData: string): string {
   // Strip ASCII whitespace per the spec (spaces, tabs, newlines, CR, FF).
@@ -476,7 +291,7 @@ let _blobCloneHelper: BlobCloneHelper | null = null;
 * the helper to synchronously clone Blob and File instances by byte-copying
 * their internal storage.
 *
-* ```typescript no_run
+* ```ts no_run
 * _registerBlobCloneHelper({
 *   getBlobBytes: () => new Uint8Array(),
 *   BlobCtor: Blob as any,
@@ -500,7 +315,16 @@ type CryptoKeyCloneHelper = {
 let _cryptoKeyCloneHelper: CryptoKeyCloneHelper | null = null;
 /**
 * Register CryptoKey clone helpers without importing crypto.ts from this
-* module. CryptoKey material stays encapsulated in the crypto module.
+* module. CryptoKey material stays encapsulated in the crypto module;
+* structuredClone() only calls `isCryptoKey` to detect keys and
+* `cloneCryptoKey` to copy one.
+*
+* ```ts no_run
+* _registerCryptoKeyCloneHelper({
+*   isCryptoKey: (v) => v instanceof CryptoKey,
+*   cloneCryptoKey: (v) => cloneKeyInternals(v),
+* });
+* ```
 *
 * @internal
 */
@@ -538,20 +362,66 @@ const _DOM_EXCEPTION_CODES: Record<string, number> = {
 * Web DOMException class used by platform APIs and structuredClone errors.
 *
 * The `name`, `message`, and legacy numeric `code` properties follow the DOM
-* standard names used by browsers. Unknown names receive code 0.
+* standard names used by browsers. Unknown names receive code 0. The legacy
+* `INDEX_SIZE_ERR`-style numeric constants are defined on both the
+* constructor and the prototype, matching the WebIDL surface.
+*
+* Fino's own APIs throw plain `Error` subclasses; this class exists for
+* web-platform compatibility — primarily `structuredClone()`'s
+* `DataCloneError` — and for userland code that expects the global.
+*
+* ```ts no_run
+* try {
+*   structuredClone(() => {});
+* } catch (err) {
+*   if (err instanceof DOMException && err.name === 'DataCloneError') {
+*     console.log(err.code); // 25
+*   }
+* }
+* ```
 */
 export class DOMException extends Error {
   #name: string;
+  /**
+  * Create a DOMException with a message and a standard error name.
+  *
+  * Both arguments are string-coerced. `name` defaults to `'Error'` and
+  * selects the legacy `code` value when it matches one of the DOM standard
+  * error names.
+  *
+  * ```ts no_run
+  * const err = new DOMException('operation was aborted', 'AbortError');
+  * ```
+  */
   constructor(message = '', name = 'Error') {
     super(String(message));
     this.#name = String(name);
   }
+  /**
+  * String tag used by Object.prototype.toString.
+  *
+  * ```ts no_run
+  * Object.prototype.toString.call(new DOMException()); // "[object DOMException]"
+  * ```
+  */
   get [Symbol.toStringTag]() {
     return 'DOMException';
   }
+  /**
+  * Standard error name supplied at construction, such as `'AbortError'` or
+  * `'DataCloneError'`.
+  */
   get name() {
     return this.#name;
   }
+  /**
+  * Legacy numeric code matching `name`, or 0 for names without one.
+  *
+  * ```ts no_run
+  * new DOMException('', 'AbortError').code; // 20
+  * new DOMException('', 'SomethingElse').code; // 0
+  * ```
+  */
   get code() {
     return _DOM_EXCEPTION_CODES[this.#name] ?? 0;
   }
@@ -568,7 +438,9 @@ export class DOMException extends Error {
 * ```
 */
 export class QuotaExceededError extends DOMException {
+  /** Amount the failed operation asked for, or `null` when unknown. */
   readonly requested: number | null;
+  /** Quota limit that was exceeded, or `null` when unknown. */
   readonly quota: number | null;
   /**
   * Create a quota exceeded error.
@@ -641,11 +513,13 @@ function _dataCloneError(message: string): DOMException {
 // structuredClone
 // ---------------------------------------------------------------------------
 /**
-* Deep-clone a value using the structured clone algorithm (subset).
+* Deep-clone a value using V8's structured serialization machinery.
 *
-* Fino implements a documented subset of the HTML
-* [structured clone algorithm](https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal).
-* Cycles are detected and reproduced correctly.
+* Fino routes ordinary JavaScript values through the runtime's V8
+* `ValueSerializer` / `ValueDeserializer` binding, the same native machinery
+* used by realm messaging. JS-defined platform objects that V8 cannot
+* reconstruct by itself, such as `Blob`, `File`, and `CryptoKey`, are cloned
+* through narrow Fino host-object helpers.
 *
 * ## structured-clone support matrix
 *
@@ -659,39 +533,62 @@ function _dataCloneError(message: string): DOMException {
 * | Maps and sets | `Map` and `Set` clone entries recursively, including cyclic references. |
 * | Errors | `Error`, `AggregateError`, and `DOMException` clone their supported name/message/cause/error details. |
 * | URL types | `URL` and `URLSearchParams` throw `DataCloneError`. |
-* | File API | `Blob` and `File` clone by byte-copying their internal storage. |
-* | Crypto | `CryptoKey` clones through the WebCrypto module's internal key-material helper. |
+* | File API | `Blob` and `File` clone through Fino host-object helpers. |
+* | Crypto | `CryptoKey` clones through the WebCrypto module's key-material helper. |
 * | Binary data | `ArrayBuffer`, typed arrays, `BigInt64Array`, `BigUint64Array`, and `DataView` clone with copied backing bytes. |
 * | Cycles | Object, array, map, and set cycles are preserved in the cloned graph. |
 *
-* Transfer lists support only `ArrayBuffer`. Transferred buffers are copied into
-* the clone and then detached with V8's native detach operation, so the source
-* buffer's `byteLength` becomes zero. Supplying the same buffer more than once
-* in the transfer list throws `DataCloneError`.
+* Transfer lists support only `ArrayBuffer`. V8 transfers the backing data into
+* the clone and detaches the source buffer, so the source buffer's `byteLength`
+* becomes zero. Supplying the same buffer more than once in the transfer list
+* throws `DataCloneError`.
 *
 * Functions, symbols, weak collections, objects with custom prototypes,
 * streams, direct `MessagePort` values, stream transfer entries, and
 * `MessagePort` transfer entries throw `DataCloneError`.
 *
-* ```typescript no_run
+* ```ts no_run
 * const original: any = { nested: new Map([['x', 1]]) };
 * original.self = original;
 * const copy = structuredClone(original);
 * copy.self === copy; // true
+*
+* // Transfer instead of copy — detaches the source buffer:
+* const buf = new ArrayBuffer(1024);
+* const moved = structuredClone(buf, { transfer: [buf] });
+* buf.byteLength; // 0
 * ```
 */
 export function structuredClone<T>(value: T, options?: {
   transfer?: ArrayBuffer[];
 }): T {
-  return _structuredCloneWithTransferMap(value, options);
+  const transferList = _validateStructuredCloneTransferList(options?.transfer);
+  const preflight = _preflightStructuredClone(value, undefined);
+  if (preflight.useFallback) {
+    return _structuredCloneWithTransferMap(value, {
+      transfer: transferList
+    });
+  }
+  try {
+    const chunks = _serialize(value, transferList);
+    const main = chunks[0];
+    if (!(main instanceof Uint8Array)) {
+      throw new Error('structuredClone: serializer returned no payload');
+    }
+    return _deserialize(main, chunks.slice(1)) as T;
+  } catch (err) {
+    throw _toDataCloneError(err, 'structuredClone: value cannot be cloned.');
+  }
 }
 /**
-* Clone using the same implementation as global `structuredClone()`, with an
-* optional object substitution map for internal message-transfer algorithms.
+* Clone using Fino's JS host-object fallback, with an optional object
+* substitution map for internal message-transfer algorithms.
 *
 * The transfer map is intentionally not exposed on `globalThis.structuredClone`.
 * It lets `MessagePort.postMessage()` replace transferred ports inside the
 * message graph while keeping direct global `MessagePort` cloning unsupported.
+* Global `structuredClone()` uses V8 serialization first and calls this helper
+* only for JS-defined host objects that need Fino-specific clone hooks.
 *
 * @internal
 */
@@ -699,20 +596,9 @@ export function _structuredCloneWithTransferMap<T>(value: T, options?: {
   transfer?: ArrayBuffer[];
   transferMap?: WeakMap<object, unknown>;
 }): T {
-  const transferList = options?.transfer;
-  const transferSet = transferList ? new Set<ArrayBuffer>(transferList) : null;
-  if (transferList) {
-    const seenTransfers = new Set<ArrayBuffer>();
-    for (const buf of transferList) {
-      if (!(buf instanceof ArrayBuffer)) {
-        throw _dataCloneError('structuredClone: transfer list only supports ArrayBuffer values');
-      }
-      if (seenTransfers.has(buf)) {
-        throw _dataCloneError('structuredClone: duplicate ArrayBuffer in transfer list.');
-      }
-      seenTransfers.add(buf);
-    }
-  }
+  const transferList = _validateStructuredCloneTransferList(options?.transfer);
+  const transferSet = transferList.length === 0 ? null : new Set<ArrayBuffer>(transferList);
+  _preflightStructuredClone(value, options?.transferMap);
   const seen = new WeakMap<object, unknown>();
   const clone = _clone(value, seen, transferSet, options?.transferMap) as T;
   if (transferSet) {
@@ -721,6 +607,94 @@ export function _structuredCloneWithTransferMap<T>(value: T, options?: {
     }
   }
   return clone;
+}
+function _validateStructuredCloneTransferList(transferList: unknown): ArrayBuffer[] {
+  if (transferList === undefined) return [];
+  if (!Array.isArray(transferList)) {
+    throw _dataCloneError('structuredClone: transfer must be an ArrayBuffer list.');
+  }
+  const seenTransfers = new Set<ArrayBuffer>();
+  const buffers: ArrayBuffer[] = [];
+  for (const item of transferList) {
+    if (!(item instanceof ArrayBuffer)) {
+      throw _dataCloneError('structuredClone: transfer list only supports ArrayBuffer values');
+    }
+    if (seenTransfers.has(item)) {
+      throw _dataCloneError('structuredClone: duplicate ArrayBuffer in transfer list.');
+    }
+    seenTransfers.add(item);
+    buffers.push(item);
+  }
+  return buffers;
+}
+function _toDataCloneError(err: unknown, fallbackMessage: string): DOMException {
+  if (err instanceof DOMException && err.name === 'DataCloneError') return err;
+  const message = err instanceof Error && err.message ? err.message : fallbackMessage;
+  return _dataCloneError(message);
+}
+function _preflightStructuredClone(value: unknown, transferMap: WeakMap<object, unknown> | undefined, seen: WeakSet<object> = new WeakSet()): {
+  useFallback: boolean;
+} {
+  if (value === null) return { useFallback: false };
+  const type = typeof value;
+  if (type === 'symbol') throw _dataCloneError('structuredClone: Symbol values cannot be cloned.');
+  if (type === 'function') throw _dataCloneError('structuredClone: function values cannot be cloned.');
+  if (type !== 'object') return { useFallback: false };
+  const object = value as object;
+  if (seen.has(object)) return { useFallback: false };
+  seen.add(object);
+  if (transferMap?.has(object)) return { useFallback: true };
+  if (value instanceof URL) throw _dataCloneError('structuredClone: URL values cannot be cloned.');
+  if (value instanceof URLSearchParams) throw _dataCloneError('structuredClone: URLSearchParams values cannot be cloned.');
+  if (value instanceof WeakMap || value instanceof WeakSet) {
+    throw _dataCloneError('structuredClone: WeakMap/WeakSet values cannot be cloned.');
+  }
+  if (_cryptoKeyCloneHelper?.isCryptoKey(object)) return { useFallback: true };
+  if (_blobCloneHelper?.isBlob(object)) return { useFallback: true };
+  if (value instanceof DOMException) return { useFallback: true };
+  if (value instanceof Date || value instanceof RegExp || value instanceof Boolean || value instanceof Number || value instanceof String || value instanceof ArrayBuffer || typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer || ArrayBuffer.isView(value)) {
+    return { useFallback: false };
+  }
+  let useFallback = false;
+  const visit = (item: unknown): void => {
+    if (_preflightStructuredClone(item, transferMap, seen).useFallback) useFallback = true;
+  };
+  if (value instanceof Map) {
+    for (const [key, item] of value) {
+      visit(key);
+      visit(item);
+    }
+    return { useFallback };
+  }
+  if (value instanceof Set) {
+    for (const item of value) visit(item);
+    return { useFallback };
+  }
+  if (value instanceof Error) {
+    const constructorName = (value as any).constructor?.name;
+    if (constructorName === 'AggregateError') {
+      return { useFallback: true };
+    }
+    if (value.name !== new ((value as any).constructor)('').name) {
+      return { useFallback: true };
+    }
+    if ('cause' in value) visit((value as any).cause);
+    for (const key of Object.keys(value)) visit((value as any)[key]);
+    return { useFallback };
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(value, i)) visit(value[i]);
+    }
+    return { useFallback };
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto === null) return { useFallback: true };
+  if (proto !== null && proto !== Object.prototype && Object.getPrototypeOf(proto) !== null) {
+    throw _dataCloneError('structuredClone: object with non-plain prototype cannot be cloned.');
+  }
+  for (const key of Object.keys(value)) visit((value as any)[key]);
+  return { useFallback };
 }
 function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set<ArrayBuffer> | null = null, transferMap?: WeakMap<object, unknown>): unknown {
   // Primitives
@@ -787,6 +761,10 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     const clone = value.slice(0);
     seen.set(value, clone);
     return clone;
+  }
+  if (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer) {
+    seen.set(value, value);
+    return value;
   }
   // TypedArrays and DataView
   if (ArrayBuffer.isView(value)) {
@@ -884,19 +862,29 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
 // TextEncoder
 // ---------------------------------------------------------------------------
 /**
-* WHATWG TextEncoder — always UTF-8.
-* https://encoding.spec.whatwg.org/#interface-textencoder
+* WHATWG TextEncoder — encodes strings to UTF-8 bytes.
 *
-* ```typescript no_run
+* Per the spec, `TextEncoder` supports only UTF-8; there is no label
+* argument. The constructor takes no options and instances are stateless, so
+* one shared encoder can serve a whole module. Lone surrogates in the input
+* are replaced with U+FFFD rather than throwing, matching browsers.
+*
+* ```ts no_run
 * const encoder = new TextEncoder();
-* encoder.encode('hello');
+* const bytes = encoder.encode('héllo'); // Uint8Array of UTF-8 bytes
+*
+* // Zero-allocation encoding into an existing buffer:
+* const dest = new Uint8Array(64);
+* const { read, written } = encoder.encodeInto('héllo', dest);
 * ```
+*
+* https://encoding.spec.whatwg.org/#interface-textencoder
 */
 export class TextEncoder {
   /**
   * String tag used by Object.prototype.toString.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * Object.prototype.toString.call(new TextEncoder()); // "[object TextEncoder]"
   * ```
   */
@@ -906,29 +894,25 @@ export class TextEncoder {
   /**
   * Encoding label for this encoder.
   *
-  * TextEncoder only supports UTF-8, so this always returns "utf-8".
+  * TextEncoder only supports UTF-8, so this always returns `"utf-8"`.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * new TextEncoder().encoding; // "utf-8"
   * ```
-  *
-  * @returns {"utf-8"}
   */
   get encoding() {
     return 'utf-8';
   }
   /**
-  * Encode `input` to a new Uint8Array.
+  * Encode `input` to a new Uint8Array of UTF-8 bytes.
   *
-  * Input is string-coerced and lone surrogates are encoded as U+FFFD.
+  * The input is string-coerced and defaults to the empty string. Lone
+  * surrogates are encoded as U+FFFD; the method never throws on any string.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const bytes = new TextEncoder().encode('ok');
-  * bytes[0]; // 111
+  * bytes[0]; // 111 ('o')
   * ```
-  *
-  * @param {string} [input='']
-  * @returns {Uint8Array}
   */
   encode(input: string = ''): Uint8Array {
     return encodeUtf8(String(input));
@@ -936,18 +920,19 @@ export class TextEncoder {
   /**
   * Encode as much of `input` as fits into `destination` without allocating.
   *
-  * Returns the number of UTF-16 code units read and UTF-8 bytes written.
-  * Stops before writing a partial UTF-8 sequence.
+  * Returns `{ read, written }`: `read` is the number of UTF-16 code units
+  * consumed (a surrogate pair counts as 2) and `written` is the number of
+  * UTF-8 bytes stored. Encoding stops before a character whose full UTF-8
+  * sequence would not fit, so `destination` never receives a partial
+  * sequence — resume by re-calling with `input.slice(read)`. Throws if
+  * `destination` is not a Uint8Array.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const dest = new Uint8Array(2);
   * const result = new TextEncoder().encodeInto('abc', dest);
+  * result.read;    // 2
   * result.written; // 2
   * ```
-  *
-  * @param {string} input
-  * @param {Uint8Array} destination
-  * @returns {{ read: number, written: number }}
   */
   encodeInto(input: string, destination: Uint8Array): {
     read: number;
@@ -1041,15 +1026,6 @@ function _normaliseDecoderLabel(label: string): TextDecoderEncoding | null {
   if (UTF16BE_LABELS.has(normalised)) return 'utf-16be';
   return null;
 }
-/**
-* WHATWG TextDecoder — UTF-8 only.
-* https://encoding.spec.whatwg.org/#interface-textdecoder
-*
-* ```typescript no_run
-* const decoder = new TextDecoder('utf-8', { fatal: false });
-* decoder.decode(new Uint8Array([104, 105])); // "hi"
-* ```
-*/
 // Scan the end of `bytes` for an incomplete multi-byte UTF-8 sequence.
 // Returns the byte offset at which the incomplete sequence starts,
 // or bytes.length if all sequences are complete.
@@ -1085,127 +1061,70 @@ function _findIncompleteEnd(bytes: Uint8Array): number {
   return len;
 }
 /**
-* WHATWG TextDecoder facade for UTF-8 decoding with optional fatal mode and
-* BOM handling.
+* WHATWG TextDecoder — decodes UTF-8, UTF-16LE, and UTF-16BE bytes to strings.
 *
-* Only UTF-8 labels are accepted. Streaming decode buffers incomplete trailing
-* UTF-8 sequences across calls.
+* The constructor accepts the UTF-8 label aliases from the WHATWG Encoding
+* spec plus `utf-16`, `utf-16le`, and `utf-16be`; any other label throws a
+* RangeError. Malformed input is replaced with U+FFFD by default, or throws a
+* TypeError when constructed with `fatal: true`. A leading BOM is stripped
+* unless `ignoreBOM: true`.
 *
-* ```typescript no_run
+* Passing `{ stream: true }` to `decode()` buffers an incomplete trailing
+* multi-byte sequence (or a trailing UTF-16 lead surrogate) instead of
+* replacing it, and prepends the buffered bytes to the next call — so a byte
+* stream can be decoded chunk by chunk without splitting characters. A
+* decoder used for streaming is stateful; use one instance per stream.
+*
+* ```ts no_run
+* new TextDecoder().decode(new Uint8Array([0x68, 0x69])); // "hi"
+*
+* // Chunked decoding — "€" (0xE2 0x82 0xAC) split across two reads:
 * const decoder = new TextDecoder();
-* decoder.decode(new Uint8Array([0x68, 0x69])); // "hi"
+* decoder.decode(new Uint8Array([0xe2, 0x82]), { stream: true }); // ""
+* decoder.decode(new Uint8Array([0xac])); // "€"
 * ```
+*
+* https://encoding.spec.whatwg.org/#interface-textdecoder
 */
 export class TextDecoder {
   /**
-  * Private property `#encoding` used by `TextDecoder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #encoding = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#encoding;
-  *   }
-  * }
-  * ```
+  * Normalized encoding selected from the constructor label.
   *
   * @internal
   */
   #encoding: TextDecoderEncoding;
   /**
-  * Private property `#fatal` used by `TextDecoder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fatal = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#fatal;
-  *   }
-  * }
-  * ```
+  * Whether malformed input throws instead of emitting U+FFFD.
   *
   * @internal
   */
   #fatal: boolean;
   /**
-  * Private property `#ignoreBOM` used by `TextDecoder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #ignoreBOM = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#ignoreBOM;
-  *   }
-  * }
-  * ```
+  * Whether a leading BOM is preserved in the decoded output.
   *
   * @internal
   */
   #ignoreBOM: boolean;
   /**
-  * Private property `#pending` used by `TextDecoder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #pending = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#pending;
-  *   }
-  * }
-  * ```
+  * Bytes of an incomplete trailing sequence buffered by a streaming
+  * `decode()` call, prepended to the next chunk.
   *
   * @internal
   */
   #pending: Uint8Array | null = null;
+  /**
+  * Code unit of a trailing UTF-16 lead surrogate held back by a streaming
+  * `decode()` call, awaiting its trail surrogate in the next chunk.
+  *
+  * @internal
+  */
   #pendingUtf16Lead: number | null = null;
   // Tracks whether the BOM at the stream start has been seen/consumed. Resets
   // after each non-streaming decode() call per WHATWG spec.
   /**
-  * Private property `#bomHandled` used by `TextDecoder`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #bomHandled = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#bomHandled;
-  *   }
-  * }
-  * ```
+  * Whether the BOM at the start of the stream has already been handled, so
+  * it is only stripped from the first non-empty chunk. Resets after each
+  * non-streaming `decode()` call.
   *
   * @internal
   */
@@ -1213,7 +1132,7 @@ export class TextDecoder {
   /**
   * String tag used by Object.prototype.toString.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * Object.prototype.toString.call(new TextDecoder()); // "[object TextDecoder]"
   * ```
   */
@@ -1221,18 +1140,18 @@ export class TextDecoder {
     return 'TextDecoder';
   }
   /**
-  * Create a UTF-8 TextDecoder.
+  * Create a TextDecoder for a supported encoding label.
   *
-  * Non-UTF-8 labels throw RangeError. fatal controls malformed byte handling,
-  * and ignoreBOM preserves an initial BOM when true.
+  * `label` is matched case-insensitively after trimming ASCII whitespace and
+  * defaults to `'utf-8'`; unsupported labels throw a RangeError. `fatal`
+  * makes malformed input throw a TypeError instead of emitting U+FFFD, and
+  * `ignoreBOM` preserves an initial BOM instead of stripping it.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * const decoder = new TextDecoder('utf8', { fatal: true });
   * decoder.encoding; // "utf-8"
+  * new TextDecoder('shift-jis'); // throws RangeError
   * ```
-  *
-  * @param {string} [label='utf-8']
-  * @param {{ fatal?: boolean, ignoreBOM?: boolean }} [options]
   */
   constructor(label: string = 'utf-8', options: {
     fatal?: boolean;
@@ -1247,25 +1166,26 @@ export class TextDecoder {
     this.#ignoreBOM = Boolean(options.ignoreBOM);
   }
   /**
-  * Normalized encoding name.
+  * Normalized encoding name: `"utf-8"`, `"utf-16le"`, or `"utf-16be"`.
   *
-  * ```typescript no_run
+  * Label aliases normalize to their canonical form, so `'utf8'` and
+  * `'unicode-1-1-utf-8'` both report `"utf-8"`, and `'utf-16'` reports
+  * `"utf-16le"`.
+  *
+  * ```ts no_run
   * new TextDecoder('unicode-1-1-utf-8').encoding; // "utf-8"
+  * new TextDecoder('utf-16').encoding; // "utf-16le"
   * ```
-  *
-  * @returns {"utf-8"}
   */
   get encoding() {
     return this.#encoding;
   }
   /**
-  * Whether malformed UTF-8 throws TypeError instead of replacement.
+  * Whether malformed input throws a TypeError instead of emitting U+FFFD.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * new TextDecoder('utf-8', { fatal: true }).fatal; // true
   * ```
-  *
-  * @returns {boolean}
   */
   get fatal() {
     return this.#fatal;
@@ -1273,13 +1193,11 @@ export class TextDecoder {
   /**
   * Whether an initial BOM is preserved in decoded output.
   *
-  * false means the leading BOM is skipped, matching browser defaults.
+  * `false` means the leading BOM is skipped, matching browser defaults.
   *
-  * ```typescript no_run
+  * ```ts no_run
   * new TextDecoder('utf-8', { ignoreBOM: true }).ignoreBOM; // true
   * ```
-  *
-  * @returns {boolean}
   */
   get ignoreBOM() {
     return this.#ignoreBOM;
@@ -1287,18 +1205,28 @@ export class TextDecoder {
   /**
   * Decode `input` to a string.
   *
-  * @param {ArrayBuffer|ArrayBufferView} [input]
-  * @param {{ stream?: boolean }} [options]
-  *   When `stream: true`, incomplete multi-byte sequences at the end are
-  *   buffered and prepended to the next call, enabling chunk-by-chunk decoding.
+  * `input` may be an ArrayBuffer or any ArrayBufferView (the view's byte
+  * range is decoded); omitting it or passing `null` decodes an empty chunk,
+  * which is how a streaming sequence is flushed. Any other input type throws
+  * a TypeError.
   *
-  * ```typescript no_run
+  * With `stream: true`, an incomplete multi-byte sequence at the end of the
+  * chunk is buffered and prepended to the next call instead of being
+  * replaced, enabling chunk-by-chunk decoding of a byte stream. Finish the
+  * stream with a final non-streaming call (typically `decode()` with no
+  * argument): leftover incomplete bytes then become U+FFFD, or throw a
+  * TypeError in fatal mode.
+  *
+  * In fatal mode a TypeError is thrown on any malformed sequence, and the
+  * decoder's buffered streaming state is reset.
+  *
+  * ```ts no_run
   * const decoder = new TextDecoder();
-  * decoder.decode(new Uint8Array([0xe2, 0x82]), { stream: true }); // ""
-  * decoder.decode(new Uint8Array([0xac])).length; // 1
+  * for await (const chunk of byteStream) {
+  *   process(decoder.decode(chunk, { stream: true }));
+  * }
+  * process(decoder.decode()); // flush
   * ```
-  *
-  * @returns {string}
   */
   decode(input?: ArrayBuffer | ArrayBufferView | null, options?: {
     stream?: boolean;

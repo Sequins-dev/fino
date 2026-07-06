@@ -693,6 +693,18 @@ describe('structuredClone', () => {
     t.equal(clone.byteLength, 4, 'byteLength preserved');
     t.equal(clone.getUint32(0, true), 305419896, 'offset data preserved');
   });
+  it('clones SharedArrayBuffer through the V8 serializer path', (t) => {
+    const shared = new SharedArrayBuffer(4);
+    const src = new Uint8Array(shared);
+    src[0] = 7;
+    const clone = structuredClone(shared);
+    t.ok(clone instanceof SharedArrayBuffer, 'clone is SharedArrayBuffer');
+    t.ok(clone !== shared, 'clone is a distinct wrapper');
+    const cloned = new Uint8Array(clone);
+    t.equal(cloned[0], 7, 'clone sees original data');
+    cloned[1] = 9;
+    t.equal(src[1], 9, 'clone shares backing memory');
+  });
   it('transfer option copies ArrayBuffer and detaches fixed source', (t) => {
     const buf = new ArrayBuffer(4);
     new Uint8Array(buf).set([

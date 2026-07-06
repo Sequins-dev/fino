@@ -1,69 +1,22 @@
 /**
-* standard Console API installed on globalThis.
+* Console globals available as `globalThis.console`.
 *
-* Console Standard: https://console.spec.whatwg.org/
+* The console API provides synchronous diagnostic output for programs and
+* runtime tooling. Methods write formatted text directly to stdout or stderr,
+* so logging is available before stream globals or the event loop are fully
+* initialized.
 *
-* Provides `console.log`, `warn`, `error`, `info`, `debug`, `assert`,
-* `dir`, `table`, `group`, `groupCollapsed`, `groupEnd`, `time`, `timeEnd`,
-* and `timeLog`. Output goes to stdout (fd 1) or stderr (fd 2) through
-* `writeLine()` from `internal:runtime/libc`, which calls `write(2)` directly.
+* Values are formatted with a small inspector that understands primitives,
+* arrays, plain objects, errors, dates, maps, sets, typed arrays, and circular
+* references. String-first calls support printf-style substitutions such as
+* `%s`, `%d`, `%f`, `%o`, `%O`, `%c`, and `%%`.
 *
-* **Why JS instead of Rust?**
-* Implementing console in JS keeps all output on a single path through
-* `write(2)` via FFI, consistent with the rest of the standard library.
-* It also lets contributors modify console formatting without touching Rust.
+* Grouping indents later output until `groupEnd()` is called. Timers and
+* counters are stored per label, matching the shape of the WHATWG Console API
+* while keeping terminal-only operations such as `clear()` and `timeStamp()`
+* as no-ops.
 *
-*
-* ## Value formatting: inspect()
-*
-* `inspect(value, depth)` is a simplified version of Node.js's `util.inspect`.
-* It recurses into arrays and plain objects up to `depth` levels deep,
-* then collapses deeper structures to `[Array]` or `[Object]`. At the top
-* level (depth=2, the default for `console.log`), strings are printed bare
-* (without quotes). Nested strings are quoted with JSON.stringify so the
-* difference between a string and a number is visible.
-*
-* Key choices:
-* - `-0` is rendered as `"-0"` (not `"0"`), matching Node.js.
-* - BigInt values are suffixed with `n` (e.g. `42n`).
-* - Functions show as `[Function: name]` (or `[Function: (anonymous)]`).
-* - Single-line layout is used when the result fits in 72 characters;
-*   otherwise a multi-line indented layout is used.
-*
-*
-* ## printf-style substitution: format()
-*
-* `format(args)` handles `%s`, `%d`, `%i`, `%f`, `%o`, `%O`, and `%%` in
-* the first argument when additional arguments are present. Remaining args
-* after all substitutions are exhausted are appended with `inspect()`.
-*
-*
-* ## group / timer state
-*
-* `_groupDepth` is a module-level counter incremented by `group()` and
-* decremented by `groupEnd()`. All output is prefixed with `INDENT` repeated
-* `_groupDepth` times. `groupCollapsed()` is identical to `group()` — the
-* "collapsed" hint is only meaningful for browser DevTools GUIs that fino
-* doesn't have.
-*
-* Timer state is stored in a module-level `Map<label, startMs>`. `time()`
-* sets the start, `timeEnd()` removes it and prints the elapsed time.
-*
-*
-* ## Contributing
-*
-* - `console.table()` currently falls back to JSON.stringify. A proper
-*   column-aligned table renderer would be a good first contribution.
-* - `console.count()` and `console.countReset()` maintain per-label counters.
-* - `console.clear()` and `console.timeStamp()` are no-ops in this terminal
-*   runtime, and `console.dirxml()` delegates to normal formatting because
-*   there is no DOM renderer.
-* - Do not switch output to process.stdout streams — the direct `writeLine`
-*   call is intentional (no buffering, works before the event loop starts).
-*
-* ## Example
-*
-* ```typescript no_run
+* ```ts no_run
 * console.group('request');
 * console.log({ method: 'GET', url: '/health' });
 * console.time('work');
@@ -71,31 +24,204 @@
 * console.groupEnd();
 * ```
 *
+* Console Standard: https://console.spec.whatwg.org/
 */
 import { writeLine } from 'internal:runtime/libc';
 // ---------------------------------------------------------------------------
 // Value formatting
 // ---------------------------------------------------------------------------
 const INDENT = '  ';
-interface ConsoleShape {
+/**
+* The console object installed on `globalThis.console`.
+*
+* Console methods synchronously format their arguments and write one line to
+* stdout or stderr. Formatting supports common JavaScript values, `%` style
+* substitutions in string-first calls, indentation groups, timers, and
+* counters.
+*
+* The runtime installs a singleton implementing this interface on
+* `globalThis.console`, so no import is needed:
+*
+* ```ts no_run
+* console.log('user %s logged in', 'ada');   // stdout: user ada logged in
+* console.error(new Error('boom'));          // stderr: [error] Error: boom ...
+* console.time('parse');
+* JSON.parse('{"large": "payload"}');
+* console.timeEnd('parse');                  // stdout: parse: 0.42ms
+* console.count('requests');                 // stdout: requests: 1
+* ```
+*/
+export interface Console {
+  /**
+  * Brand string used by `Object.prototype.toString.call(console)`.
+  */
+  readonly [Symbol.toStringTag]: string;
+  /**
+  * Write a formatted line to stdout.
+  */
+  log(...args: unknown[]): void;
+  /**
+  * Write a formatted informational line to stdout.
+  */
+  info(...args: unknown[]): void;
+  /**
+  * Write a formatted debug line to stdout.
+  */
+  debug(...args: unknown[]): void;
+  /**
+  * Write a formatted warning line to stderr with a warning prefix.
+  */
+  warn(...args: unknown[]): void;
+  /**
+  * Write a formatted error line to stderr with an error prefix.
+  */
+  error(...args: unknown[]): void;
+  /**
+  * Write an assertion failure to stderr when `condition` is falsy.
+  */
+  assert(condition: unknown, ...args: unknown[]): void;
+  /**
+  * Inspect `obj` and write the result to stdout.
+  *
+  * `depth` controls object and array recursion. `colors` is accepted for
+  * compatibility but ignored because console output is plain text.
+  */
+  dir(obj: unknown, opts?: {
+    depth?: number;
+    colors?: boolean;
+  }): void;
+  /**
+  * Write table data to stdout.
+  *
+  * Fino currently prints JSON when possible and falls back to normal object
+  * inspection for values that cannot be serialized.
+  */
+  table(data: unknown): void;
+  /**
+  * Write an optional heading and indent subsequent console output.
+  */
   group(...args: unknown[]): void;
+  /**
+  * Write an optional heading and indent subsequent output.
+  *
+  * This is equivalent to `group()` in the terminal runtime because there is no
+  * DevTools UI that can collapse groups.
+  */
+  groupCollapsed(...args: unknown[]): void;
+  /**
+  * End the current indentation group.
+  */
+  groupEnd(): void;
+  /**
+  * Start or replace a timer for `label`.
+  *
+  * Omitting `label` uses the label `'default'`. Starting a timer that already
+  * exists silently restarts it.
+  */
+  time(label?: string): void;
+  /**
+  * Print the elapsed time for `label` to stdout and remove the timer.
+  *
+  * If no timer with that label exists, a `[warn]` line is written to stderr
+  * instead.
+  */
+  timeEnd(label?: string): void;
+  /**
+  * Print the elapsed time for `label` without removing the timer.
+  *
+  * Extra arguments are formatted and appended after the elapsed time. If no
+  * timer with that label exists, a `[warn]` line is written to stderr instead.
+  */
+  timeLog(label?: string, ...args: unknown[]): void;
+  /**
+  * Increment and print the counter for `label`.
+  *
+  * Omitting `label` uses the label `'default'`. The first call for a label
+  * prints `1`.
+  */
+  count(label?: string): void;
+  /**
+  * Reset the counter for `label`.
+  *
+  * If no counter with that label exists, a `[warn]` line is written to stderr.
+  */
+  countReset(label?: string): void;
+  /**
+  * Clear the console when an interactive console is available.
+  *
+  * This is a no-op in Fino's terminal runtime.
+  */
+  clear(): void;
+  /**
+  * Write a stack trace to stdout with optional formatted leading text.
+  */
+  trace(...args: unknown[]): void;
+  /**
+  * Write XML-like diagnostic output.
+  *
+  * Because Fino has no DOM renderer, this delegates to normal console
+  * formatting.
+  */
+  dirxml(...args: unknown[]): void;
+  /**
+  * Record a performance timestamp when a DevTools timeline is available.
+  *
+  * This is a no-op in Fino's terminal runtime.
+  */
+  timeStamp(label?: string): void;
 }
 /**
-*  Captured console output record used by internal test tooling. */
+* One fully formatted console line captured by a `ConsoleCaptureSink`.
+*
+* The record is produced after all formatting has been applied: printf-style
+* substitution, value inspection, group indentation, and level prefixes such
+* as `[warn]` or `[error]` are already part of `text`. The trailing newline
+* that would be written to the file descriptor is not included.
+*
+* ```ts no_run
+* import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
+*
+* const lines: ConsoleCaptureRecord[] = [];
+* const release = _pushConsoleCapture((record) => lines.push(record));
+* console.warn('careful');
+* release();
+* // lines[0] is { fd: 2, text: '[warn] careful' }
+* ```
+*
+* @internal
+*/
 export interface ConsoleCaptureRecord {
+  /**
+  * Which file descriptor the line was destined for: `1` for stdout
+  * (`log`, `info`, `debug`, `dir`, `table`, timers, counters) or `2` for
+  * stderr (`warn`, `error`, `assert`, and missing-label warnings). */
   fd: 1 | 2;
+  /**
+  * The complete formatted line, including group indentation and any level
+  * prefix, without a trailing newline. */
   text: string;
 }
 /**
-*  Callback that receives formatted console lines while capture is active. */
+* Callback that receives formatted console lines while capture is active.
+*
+* Called synchronously from inside each console method, once per output
+* line, with the line that would otherwise have been written to stdout or
+* stderr. Install one with `_pushConsoleCapture`.
+*
+* @internal
+*/
 export type ConsoleCaptureSink = (record: ConsoleCaptureRecord) => void;
 /**
-* Convert a single value to a human-readable string, similar to Node's
-* util.inspect (simplified).
+* Convert a single value to a human-readable string, similar to a
+* simplified version of Node's util.inspect.
 *
-* @param {unknown} value
-* @param {number} depth  - remaining nesting depth before collapsing to [Object]
-* @returns {string}
+* `depth` is the remaining nesting budget: arrays and plain objects recurse
+* with `depth - 1` and collapse to `[Array]` / `[Object]` once it reaches
+* zero. At the top-level default (`depth === 2`) strings are printed bare;
+* at any other depth they are quoted with JSON.stringify. Errors render
+* their stack, Dates their ISO string, Maps/Sets their entries, and typed
+* arrays their first 100 elements. The `seen` set breaks reference cycles
+* by rendering revisited objects as `[Circular *]`.
 */
 function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new WeakSet()): string {
   switch (typeof value) {
@@ -162,12 +288,13 @@ function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new 
   }
 }
 /**
-* Format a list of arguments the way console.log does:
-* - If the first arg is a string containing %s/%d/%i/%f/%o/%O, substitute.
-* - Otherwise join with spaces.
+* Format an argument list the way console.log does.
 *
-* @param {unknown[]} args
-* @returns {string}
+* When the first argument is a string and more arguments follow, printf-style
+* specifiers (`%s`, `%d`, `%i`, `%f`, `%o`, `%O`, `%c`, `%%`) are substituted
+* left to right; a specifier with no remaining argument is left in place, and
+* arguments left over after substitution are appended with `inspect()`.
+* Otherwise every argument is inspected and joined with single spaces.
 */
 function format(args: unknown[]): string {
   if (args.length === 0) return '';
@@ -219,8 +346,29 @@ const _captureStack: ConsoleCaptureSink[] = [];
 /**
 * Capture formatted console output until the returned release function runs.
 *
+* While a sink is installed, every console line is delivered to it as a
+* `ConsoleCaptureRecord` instead of being written to stdout/stderr. Sinks
+* form a stack: only the most recently pushed sink receives output, and
+* releasing it restores the previous sink (or direct fd output when the
+* stack is empty). The release function is idempotent and tolerates
+* out-of-order release — releasing a sink that is no longer on top removes
+* it from wherever it sits in the stack.
+*
 * This is intentionally internal: normal console calls still write directly to
-* stdout/stderr unless a runtime tool such as the test runner installs a sink.
+* stdout/stderr unless a runtime tool such as the test runner or benchmark
+* harness installs a sink.
+*
+* ```ts no_run
+* import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
+*
+* const records: ConsoleCaptureRecord[] = [];
+* const release = _pushConsoleCapture((record) => records.push(record));
+* try {
+*   console.log('hello %s', 'world'); // → { fd: 1, text: 'hello world' }
+* } finally {
+*   release();
+* }
+* ```
 *
 * @internal
 */
@@ -262,37 +410,12 @@ function out(fd: 1 | 2, label: string, args: unknown[]): void {
 * Formatting is intentionally small and synchronous so console works before
 * stream globals or the event loop are fully initialized.
 *
-* ```typescript no_run
+* ```ts no_run
 * console.log('ready');
 * console.warn('slow path');
 * ```
 */
-const console: ConsoleShape & {
-  readonly [Symbol.toStringTag]: string;
-  log(...args: unknown[]): void;
-  info(...args: unknown[]): void;
-  debug(...args: unknown[]): void;
-  warn(...args: unknown[]): void;
-  error(...args: unknown[]): void;
-  assert(condition: unknown, ...args: unknown[]): void;
-  dir(obj: unknown, opts?: {
-    depth?: number;
-    colors?: boolean;
-  }): void;
-  table(data: unknown): void;
-  group(...args: unknown[]): void;
-  groupCollapsed(...args: unknown[]): void;
-  groupEnd(): void;
-  time(label?: string): void;
-  timeEnd(label?: string): void;
-  timeLog(label?: string, ...args: unknown[]): void;
-  count(label?: string): void;
-  countReset(label?: string): void;
-  clear(): void;
-  trace(...args: unknown[]): void;
-  dirxml(...args: unknown[]): void;
-  timeStamp(_label?: string): void;
-} = {
+const console: Console = {
   [Symbol.toStringTag]: 'console',
   log(...args) {
     out(1, '', args);

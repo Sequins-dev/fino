@@ -1,57 +1,25 @@
 /**
-* Server-Sent Events (SSE) client and server.
+* EventSource global for Server-Sent Events (SSE) clients.
 *
-* Implements the SSE wire protocol (W3C EventSource spec) in two composable
-* layers, following the same thin-primitive philosophy as Fino streams and
-* HTTP wire helpers.
+* Implements the browser-shaped EventSource client over Fino's server-side
+* networking stack. The global handles connection management, automatic
+* reconnection with Last-Event-ID resumption, and EventTarget-based event
+* dispatch. It extends EventTarget so `addEventListener()` /
+* `removeEventListener()` work as expected.
+*
+* The client opens direct HTTP/1 socket or TLS connections and parses the SSE
+* wire stream itself. It intentionally does not share the `fetch()` connection
+* pool or provide HTTP/2 or HTTP/3 transport behavior in this release baseline.
+* Transport-agnostic SSE parser and formatter primitives are documented in
+* `fino:net/http/eventstream`.
 *
 * EventSource / SSE specification:
 * https://html.spec.whatwg.org/multipage/server-sent-events.html
 *
 *
-* ## EventSourceReader (composable parser primitive)
-*
-* Wraps any async iterable of byte chunks and yields parsed SSE events.
-* No connection or reconnection logic — purely a wire-format parser, analogous
-* to how `parseResponse()` consumes a byte stream.
+* ## Example
 *
 * ```ts no_run
-*
-*   const reader = new EventSourceReader(response.body);
-*   for await (const event of reader) {
-*     // event: { type, data, id, retry }
-*   }
-*   reader.lastEventId; // persists across all events in the stream
-* ```
-*
-*
-* ## EventSourceWriter (composable formatter primitive)
-*
-* Formats and writes SSE events to any Writer (from fino:stream).
-* Server-side counterpart to EventSourceReader.
-*
-* ```ts no_run
-*
-*   const esw = new EventSourceWriter(writer);
-*   await esw.event({ data: 'hello' });
-*   await esw.event({ event: 'update', data: 'multi\nline', id: '42' });
-*   await esw.comment('keep-alive');
-*   await esw.retry(5000);
-* ```
-*
-*
-* ## EventSource (server-side SSE client)
-*
-* Runtime EventSource with connection management, automatic reconnection with
-* Last-Event-ID resumption, and EventTarget-based event dispatch. Extends
-* EventTarget so `addEventListener` / `removeEventListener` work as expected.
-*
-* The client opens direct HTTP/1 socket or TLS connections and parses the SSE
-* wire stream itself. It intentionally does not share the `fetch()` connection
-* pool or provide HTTP/2 or HTTP/3 transport behavior in this release baseline.
-*
-* ```ts no_run
-*
 *   const es = new EventSource('http://localhost:3000/events');
 *   es.onopen    = () => { ... };
 *   es.onmessage = (e) => { console.log(e.data); };
@@ -76,7 +44,7 @@
 * ignored. Line terminators: LF, CRLF, or bare CR (per W3C spec).
 *
 *
-* ## EventSourceReader parser rules (W3C spec)
+* ## Parser behavior
 *
 * - `id:` field value must not contain null (U+0000); otherwise ignored.
 * - `retry:` value must be all ASCII digits; otherwise ignored.
@@ -98,8 +66,9 @@
 * - HTTP 204 closes the stream gracefully without reconnecting.
 * - Reconnection uses a configurable retry interval (default: 3000ms),
 *   updated dynamically by `retry:` fields in the event stream.
-* - The `Last-Event-ID` header is sent on every reconnect attempt if
-*   a non-empty last event ID has been seen.
+* - The `Last-Event-ID` header is sent on every reconnect attempt once any
+*   `id:` field has been seen — including an empty `id:` field, which is sent
+*   as an empty header value per the WHATWG spec rather than omitted.
 *
 * ## Credentials, CORS, and TLS
 *
@@ -111,21 +80,8 @@
 * is enabled by default for `https:` URLs. Tests and private deployments may
 * pass a pinned CA path through `tls.ca`; disabling certificate verification
 * with `tls.rejectUnauthorized: false` should be limited to local development.
-*
-*
-* ## Contributing
-*
-* - EventSourceReader is a single-use async iterator — do not call
-*   `[Symbol.asyncIterator]()` more than once on the same instance.
-* - EventSourceWriter does not own the Writer; callers are responsible
-* ```ts no_run
-*   for closing it.
-* ```
-* - EventSource connects immediately upon construction.
-* - Keep EventSourceReader and EventSourceWriter free of connection logic.
-*   Network concerns belong in EventSource only.
 */
-import { encodeUtf8 } from './encoding.ts';
+import { encodeUtf8 } from 'internal:encoding';
 import { Headers, parseResponse } from '../net/http/index.ts';
 import type { SseEvent } from '../net/http/eventstream.ts';
 import { EventSourceReader } from '../net/http/eventstream.ts';
@@ -182,6 +138,10 @@ export interface EventSourceInit {
     rejectUnauthorized?: boolean;
   };
 }
+/**
+* Shape of the reader half of a split socket: an async byte stream that can be
+* closed to abort an in-flight read.
+*/
 interface ClosableAsyncByteReader extends AsyncIterable<Uint8Array | ArrayBuffer> {
   close(): void;
 }
@@ -215,6 +175,10 @@ const MAX_REDIRECTS = 20;
 /**
 *  Default reconnection interval per W3C spec (3 seconds). */
 const DEFAULT_RETRY_MS = 3e3;
+/**
+* Base URL for resolving relative EventSource URLs, taken from
+* `globalThis.location` when a host embedder defines one.
+*/
 function eventSourceBaseUrl(): string | undefined {
   const location = (globalThis as {
     location?: unknown;
@@ -222,6 +186,12 @@ function eventSourceBaseUrl(): string | undefined {
   if (location === undefined || location === null) return undefined;
   return String(location);
 }
+/**
+* Resolve and validate the constructor URL against the optional base.
+*
+* Throws a `SyntaxError` DOMException when the URL cannot be parsed or its
+* authority contains control characters or spaces.
+*/
 function resolveEventSourceUrl(url: string): string {
   try {
     if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*[\u0000-\u0020]/.test(url)) {
@@ -235,18 +205,25 @@ function resolveEventSourceUrl(url: string): string {
 /**
 * W3C EventSource — a spec-compliant SSE client.
 *
-* Manages its own HTTP connection (plain or TLS), handles reconnection with
-* exponential retry intervals, resumes from the last event ID, and dispatches
-* events through the EventTarget interface.
+* Manages its own HTTP/1.1 connection (plain or TLS), reconnects after stream
+* EOF, network errors, and retriable HTTP statuses, resumes from the last
+* event ID, and dispatches events through the EventTarget interface. The
+* reconnection delay is a fixed interval — 3000ms by default, updated when the
+* server sends a `retry:` field — not an exponential backoff.
 *
+* Instances begin connecting as soon as they are constructed. Named events
+* (`event: update`) are delivered to `addEventListener('update', ...)`
+* listeners; events without an `event:` field dispatch as `message`. Call
+* `close()` to stop the stream and suppress any further reconnection.
 *
 * ```ts no_run
-* loop.run(async () => {
-*   const es = new EventSource('http://localhost:3000/events');
-*   es.onmessage = (e) => console.log(e.data);
-*   await someShutdownSignal;
-*   es.close();
-* });
+* const es = new EventSource('http://localhost:3000/events');
+* es.onopen = () => console.log('connected');
+* es.onmessage = (e) => console.log('message:', e.data);
+* es.onerror = () => console.log('disconnected; will retry');
+* es.addEventListener('update', (e) => console.log('update:', e.data));
+* // later:
+* es.close();
 * ```
 */
 export class EventSource extends EventTarget {
@@ -272,45 +249,15 @@ export class EventSource extends EventTarget {
   */
   static CLOSED = CLOSED;
   /**
-  * Private property `#url` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #url = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#url;
-  *   }
-  * }
-  * ```
+  * Resolved absolute URL the client connects to; backs the `url` getter.
   *
   * @internal
   */
   #url: string;
   /**
-  * Private property `#readyState` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #readyState = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#readyState;
-  *   }
-  * }
-  * ```
+  * Current lifecycle state — CONNECTING (0), OPEN (1), or CLOSED (2); backs
+  * the `readyState` getter. The connection loop checks it after every await
+  * so `close()` takes effect at the next suspension point.
   *
   * @internal
   */
@@ -319,160 +266,60 @@ export class EventSource extends EventTarget {
   // The distinction matters for Last-Event-ID: an empty id should still be
   // sent on reconnect (with an empty value) per the WHATWG EventSource spec.
   /**
-  * Private property `#lastEventId` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #lastEventId = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#lastEventId;
-  *   }
-  * }
-  * ```
+  * Most recent `id:` field value, or `null` if no `id:` field has ever been
+  * received. When non-null (including the empty string) it is sent as the
+  * `Last-Event-ID` request header on reconnect; backs the `lastEventId`
+  * getter, which coalesces `null` to `''`.
   *
   * @internal
   */
   #lastEventId: string | null;
   /**
-  * Private property `#retryInterval` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #retryInterval = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#retryInterval;
-  *   }
-  * }
-  * ```
+  * Reconnection delay in milliseconds. Starts at the spec default (3000ms)
+  * and is replaced whenever the server sends a valid `retry:` field.
   *
   * @internal
   */
   #retryInterval: number;
   /**
-  * Private property `#extraHeaders` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #extraHeaders = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#extraHeaders;
-  *   }
-  * }
-  * ```
+  * Caller-provided headers from `EventSourceInit.headers`, sent on the
+  * initial request and on every reconnect attempt.
   *
   * @internal
   */
   #extraHeaders: Headers;
+  /** TLS trust options from `EventSourceInit.tls`, applied on `https:` connects. */
   #tlsOptions: EventSourceInit['tls'] | undefined;
+  /** Reflected `EventSourceInit.withCredentials` flag; carries no cookie or CORS behavior. */
   #withCredentials: boolean;
   /**
-  * Private property `#currentReader` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #currentReader = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#currentReader;
-  *   }
-  * }
-  * ```
+  * Reader half of the active socket, retained so `close()` can cancel an
+  * in-flight read and unwind the connection loop.
   *
   * @internal
   */
   #currentReader: {
     close(): void;
   } | null;
+  /** Pending reconnect timer, retained so `close()` can cancel the wait. */
   #retryTimer: loop.CancelablePromise | null;
   /**
-  * Private property `#onopen` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #onopen = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#onopen;
-  *   }
-  * }
-  * ```
+  * Backing store for the `onopen` handler property, registered with the
+  * EventTarget machinery by the setter.
   *
   * @internal
   */
   #onopen: ((e: Event) => void) | null;
   /**
-  * Private property `#onmessage` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #onmessage = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#onmessage;
-  *   }
-  * }
-  * ```
+  * Backing store for the `onmessage` handler property, registered with the
+  * EventTarget machinery by the setter.
   *
   * @internal
   */
   #onmessage: ((e: MessageEvent) => void) | null;
   /**
-  * Private property `#onerror` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #onerror = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#onerror;
-  *   }
-  * }
-  * ```
+  * Backing store for the `onerror` handler property, registered with the
+  * EventTarget machinery by the setter.
   *
   * @internal
   */
@@ -483,8 +330,13 @@ export class EventSource extends EventTarget {
   * Only `http:` and `https:` URLs are supported. Connection errors dispatch
   * `error` and reconnect for retriable statuses unless `close()` is called.
   *
+  * Throws a `SyntaxError` DOMException if the URL cannot be parsed (relative
+  * URLs resolve against `globalThis.location` when a host defines one).
+  *
   * ```ts no_run
-  * const es = new EventSource('https://example.com/events');
+  * const es = new EventSource('https://example.com/events', {
+  *   headers: { authorization: 'Bearer token' },
+  * });
   * es.onmessage = (event) => console.log(event.data);
   * ```
   */
@@ -632,6 +484,17 @@ export class EventSource extends EventTarget {
       this.#currentReader = null;
     }
   }
+  /**
+  * Closes the source when disposed, enabling `using` declarations.
+  *
+  * ```ts no_run
+  * {
+  *   using es = new EventSource('http://localhost:3000/events');
+  *   es.onmessage = (e) => console.log(e.data);
+  *   // ...
+  * } // closed automatically at end of block
+  * ```
+  */
   [Symbol.dispose](): void {
     this.close();
   }
@@ -639,25 +502,13 @@ export class EventSource extends EventTarget {
   // Internal: connection and reconnection loop
   // ---------------------------------------------------------------------------
   /**
-  * Private method `#run` used by `EventSource`.
+  * Connection and reconnection loop, started by the constructor.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #run() {
-  *     return 'run';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#run();
-  *   }
-  * }
-  * ```
+  * Each iteration resolves DNS, connects (TCP or TLS), sends the GET request,
+  * follows local redirects, validates the response status and content type,
+  * then feeds the body through `EventSourceReader` and dispatches events
+  * until the stream ends. Retriable failures wait `#retryInterval` and loop;
+  * fatal ones (or `close()`) end the loop with readyState CLOSED.
   *
   * @internal
   */
@@ -811,6 +662,11 @@ export class EventSource extends EventTarget {
       }
     }
   }
+  /**
+  * Sleeps for the current retry interval before a reconnect attempt. Returns
+  * `false` when the source was closed while waiting, telling the caller to
+  * stop reconnecting.
+  */
   async #waitForRetry(): Promise<boolean> {
     const timer = loop.timeout(this.#retryInterval);
     this.#retryTimer = timer;
@@ -825,25 +681,8 @@ export class EventSource extends EventTarget {
   // Internal: event dispatching
   // ---------------------------------------------------------------------------
   /**
-  * Private method `#fireOpen` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fireOpen() {
-  *     return 'fireOpen';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#fireOpen();
-  *   }
-  * }
-  * ```
+  * Dispatches an `open` event after a 200 `text/event-stream` response is
+  * accepted.
   *
   * @internal
   */
@@ -852,25 +691,9 @@ export class EventSource extends EventTarget {
     this.dispatchEvent(e);
   }
   /**
-  * Private method `#fireMessage` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fireMessage() {
-  *     return 'fireMessage';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#fireMessage();
-  *   }
-  * }
-  * ```
+  * Wraps a parsed SSE event in a `MessageEvent` — typed by its `event:` field
+  * (default `message`) and carrying the current lastEventId and origin — and
+  * dispatches it.
   *
   * @internal
   */
@@ -883,25 +706,8 @@ export class EventSource extends EventTarget {
     this.dispatchEvent(e);
   }
   /**
-  * Private method `#fireError` used by `EventSource`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #fireError() {
-  *     return 'fireError';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#fireError();
-  *   }
-  * }
-  * ```
+  * Dispatches an `error` event; fired for retriable failures (before a
+  * reconnect wait) and terminal failures alike.
   *
   * @internal
   */
@@ -914,10 +720,8 @@ export class EventSource extends EventTarget {
 // Internal helpers
 // ---------------------------------------------------------------------------
 /**
-* Write bytes to a socket writer and flush the coalesce buffer to the wire.
-*
-* @param {{ write(data: Uint8Array): Promise<void>; flush(): Promise<void> }} writer
-* @param {Uint8Array} bytes
+* Write bytes to a socket writer and flush the coalesce buffer so the request
+* reaches the wire immediately.
 */
 async function _writeToSocket(writer: {
   write(data: Uint8Array): Promise<void>;
@@ -927,8 +731,7 @@ async function _writeToSocket(writer: {
   await writer.flush();
 }
 /**
-* Close a Socket or TlsSocket, suppressing errors.
-* @param {{ closed: boolean, close(): void }} sock
+* Close a Socket or TlsSocket if it is not already closed.
 */
 function _closeSocket(sock: {
   closed: boolean;

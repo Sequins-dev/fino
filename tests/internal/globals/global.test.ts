@@ -57,6 +57,25 @@ describe('internal:globals/global registry', () => {
   it('keeps internal helper exports off globalThis', (t) => {
     t.equal(typeof moduleRecord._flushPorts, 'function', '_flushPorts remains importable for bootstrap');
     t.equal(globalRecord._flushPorts, undefined, '_flushPorts is not installed globally');
+    t.equal(moduleRecord.ThreadPort, undefined, 'ThreadPort is not exported by the global registry');
+    t.equal(globalRecord.ThreadPort, undefined, 'ThreadPort is not installed globally');
+    t.equal(moduleRecord.BaseTransportPort, undefined, 'BaseTransportPort is not exported by the global registry');
+    t.equal(globalRecord.BaseTransportPort, undefined, 'BaseTransportPort is not installed globally');
+    t.equal(moduleRecord.WebSocketConnection, undefined, 'WebSocketConnection is not exported by the global registry');
+    t.equal(globalRecord.WebSocketConnection, undefined, 'WebSocketConnection is not installed globally');
+    t.equal(moduleRecord.WebSocketError, undefined, 'WebSocketError is not exported by the global registry');
+    t.equal(globalRecord.WebSocketError, undefined, 'WebSocketError is not installed globally');
+    t.equal(moduleRecord.Http3WebTransportInit, undefined, 'Http3WebTransportInit is not exported by the global registry');
+    t.equal(moduleRecord._fromHttp3WebTransport, undefined, '_fromHttp3WebTransport is not exported by the global registry');
+    t.equal(moduleRecord._acceptIncomingQuicWebTransportStream, undefined, '_acceptIncomingQuicWebTransportStream is not exported by the global registry');
+    t.equal(globalRecord._fromHttp3WebTransport, undefined, '_fromHttp3WebTransport is not installed globally');
+    t.equal(globalRecord._acceptIncomingQuicWebTransportStream, undefined, '_acceptIncomingQuicWebTransportStream is not installed globally');
+    t.equal('_fromHttp3' in moduleRecord.WebTransport, false, 'WebTransport does not expose internal HTTP/3 factory');
+    t.equal('_acceptIncomingQuicStream' in moduleRecord.WebTransport.prototype, false, 'WebTransport does not expose internal stream router');
+    t.equal('_push' in moduleRecord.WebTransportDatagramDuplexStream.prototype, false, 'datagram stream does not expose internal push hook');
+    t.equal('_close' in moduleRecord.WebTransportDatagramDuplexStream.prototype, false, 'datagram stream does not expose internal close hook');
+    t.equal('_error' in moduleRecord.WebTransportDatagramDuplexStream.prototype, false, 'datagram stream does not expose internal error hook');
+    t.equal('_stats' in moduleRecord.WebTransportDatagramDuplexStream.prototype, false, 'datagram stream does not expose internal stats hook');
   });
   it('does not add timer/performance facade exports to the registry', (t) => {
     for (const name of [
