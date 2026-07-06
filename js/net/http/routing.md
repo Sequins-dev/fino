@@ -7,18 +7,21 @@ weight: 12
 
 ## The routing tree
 
-Route configuration is an **immutable enrichment tree**. Every non-terminal call — `use()`, `value()`, `meta()`, `route()`, and the verb methods — records a node pointing at its parent and returns a new builder around that node. A terminal — `.handle()` for HTTP methods, or `websocket()`, `sse()`, `webtransport()`, `rpc()`, and `mount()` on a route — resolves the branch it hangs off by walking back to the root and freezing the result into an operation.
+Route configuration is an **immutable enrichment tree**. Every non-terminal call — `use()`, `layer()`, `value()`, `meta()`, `route()`, and the verb methods — records a node pointing at its parent and returns a new builder around that node. A terminal — `.handle()` for HTTP methods, or `websocket()`, `sse()`, `webtransport()`, `rpc()`, and `mount()` on a route — resolves the branch it hangs off by walking back to the root and freezing the result into an operation.
 
 Two properties follow:
 
 - **A held builder reference is a fixed point in the tree.** `const r = app.route('/x'); r.value('a', p)` does not change `r` — the enriched builder is the *return value*. Chain calls, or reassign, to accumulate.
-- **Registration order is meaningful.** Middleware and values installed on the app apply to routes registered *after* them, Express-style. Unmatched requests always run the app's current chain before the fallback response.
+- **Root enrichments are immutable too.** `const authed = app.use(auth); authed.get('/account')` applies `auth` to `/account`; `app.get('/public')` does not inherit it unless it is registered through the returned branch.
 
 A later `value()` with the same name shadows an earlier one along a branch, and later `meta()` overrides earlier metadata key by key — last wins.
 
 ## The middleware model
 
-Middleware is Koa-style: each function receives `(ctx, next)` and can short-circuit by returning a `Response`, or call `await next()` and optionally mutate the downstream response. The order is: app-level middleware runs first, then route-level, then method-level, then the terminal handler.
+There are two middleware forms:
+
+- `use()` installs one-way branch middleware. It receives `ctx`, can short-circuit by returning a `Response`, and continues by returning nothing.
+- `layer()` installs Koa-style wrappers. It receives `(ctx, next)`, can run before and after downstream dispatch, and can wrap fallback responses when its branch constraints match.
 
 ```ts
 import { App, defineMiddleware } from 'fino:net/http/app';
@@ -32,14 +35,14 @@ const timing = defineMiddleware(async (ctx, next) => {
   return res;
 });
 
-app.use(timing);
-app.get('/health').handle(() => Response.json({ ok: true }));
+const timed = app.layer(timing);
+timed.get('/health').handle(() => Response.json({ ok: true }));
 
 const server = app.listen({ port: 3000 });
 await server.close();
 ```
 
-`use()` accepts one or more middleware functions and appends them in call order. Middleware is never passed inline to a verb — it always attaches through `.use()` on the branch it should cover.
+`use()` and `layer()` accept one or more functions and append them in call order. Middleware is never passed inline to a verb — it always attaches through the branch it should cover.
 
 ## Registering routes
 
@@ -143,7 +146,7 @@ app.route('/search')
 ```ts
 app.route('/status')
   .get()
-  .use(schema.response(v.object({ ok: v.boolean() })))
+  .layer(schema.response(v.object({ ok: v.boolean() })))
   .handle(() => Response.json({ ok: true }));
 ```
 
@@ -175,10 +178,10 @@ import { App, cookies, sessions, memorySessionStore } from 'fino:net/http/app';
 
 const store = memorySessionStore();
 
-app.value('cookies', cookies())
-   .value('session', sessions({ store }));
+const stateful = app.value('cookies', cookies())
+  .value('session', sessions({ store }));
 
-app.get('/me').handle((ctx) => {
+stateful.get('/me').handle((ctx) => {
   const session = ctx.session as { id: string; data: Record<string, unknown>; isNew: boolean };
   session.data.visits = Number(session.data.visits ?? 0) + 1;
   return Response.json({ visits: session.data.visits });
@@ -194,7 +197,7 @@ app.get('/me').handle((ctx) => {
 ```ts
 import { App, errorHandler } from 'fino:net/http/app';
 
-app.use(errorHandler({ expose: false })); // set expose: true in development
+const guarded = app.layer(errorHandler({ expose: false })); // set expose: true in development
 ```
 
 ## Static files
@@ -204,7 +207,7 @@ app.use(errorHandler({ expose: false })); // set expose: true in development
 ```ts
 import { App, staticFiles } from 'fino:net/http/app';
 
-app.use(staticFiles('/var/www', { index: 'index.html', prefix: '/static/' }));
+const assets = app.layer(staticFiles('/var/www', { index: 'index.html', prefix: '/static/' }));
 ```
 
 ## Routers and mounting
@@ -214,10 +217,10 @@ app.use(staticFiles('/var/www', { index: 'index.html', prefix: '/static/' }));
 ```ts
 import { App, Router } from 'fino:net/http/app';
 
-const usersRouter = new Router()
-  .value('tenant', () => 'default');
+const usersRouter = new Router();
+const tenantUsers = usersRouter.value('tenant', () => 'default');
 
-usersRouter.route('/users').get().handle(() => Response.json([]));
+tenantUsers.route('/users').get().handle(() => Response.json([]));
 
 const app = new App({ name: 'API' });
 app.route('/v1').mount(usersRouter);

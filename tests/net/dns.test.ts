@@ -2,7 +2,8 @@
 * Tests for fino:dns — Resolver, lookup, wire protocol helpers.
 */
 import { describe, it, before, after } from 'fino:test/test';
-import { Resolver, lookup, RECORD_TYPES, _encodeName, _buildQuery, _decodeName, _parseResponse, _parseResolvConf, _randomQueryId, _reverseIP } from 'fino:net/dns';
+import { Resolver, lookup } from 'fino:net/dns';
+import { RECORD_TYPES, _encodeName, _buildQuery, _decodeName, _parseResponse, _parseResolvConf, _randomQueryId, _reverseIP } from 'internal:net/dns-wire';
 import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';
 import * as sock from 'fino:net/socket';

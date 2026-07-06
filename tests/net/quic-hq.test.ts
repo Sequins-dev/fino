@@ -3,6 +3,7 @@ import { DiskFileSystem } from 'fino:file';
 import { Process } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
+const enc = new TextEncoder();
 const dec = new TextDecoder();
 const HQ_ROOT = '/private/tmp/fino-quic-hq-test-root';
 const WSSL_HQ_CLIENT_CANDIDATES = [
@@ -27,7 +28,7 @@ async function exists(path: string): Promise<boolean> {
 }
 async function ensureHqRoot(): Promise<void> {
   if (!await exists(HQ_ROOT)) await fs.mkdir(HQ_ROOT);
-  await fs.writeFile(`${HQ_ROOT}/echo`, 'ossl-hq-ok\n');
+  await fs.writeFile(`${HQ_ROOT}/echo`, enc.encode('ossl-hq-ok\n'));
 }
 async function findFirst(paths: string[]): Promise<string | null> {
   for (const path of paths) {

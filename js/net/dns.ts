@@ -1,5 +1,5 @@
 /**
-* fino:dns — async DNS resolution via the RFC 1035 wire protocol.
+* fino:net/dns — async DNS resolution via the RFC 1035 wire protocol.
 *
 * DNS protocol specification: https://www.rfc-editor.org/rfc/rfc1035
 *
@@ -45,8 +45,9 @@
 *
 * DNS responses use **compression pointers** to avoid repeating domain names:
 * a two-byte sequence starting with bits 11xxxxxx is a pointer to an earlier
-* offset in the message. `_decodeName()` follows these pointers recursively,
-* with a hop limit to prevent infinite loops from malformed responses.
+* offset in the message. The internal decoder follows these pointers
+* recursively, with a hop limit to prevent infinite loops from malformed
+* responses.
 *
 *
 * ## Resource record parsing
@@ -145,9 +146,8 @@
 *   material with EDNS(0) DO, verify chains locally, and reject bogus or
 *   indeterminate data with `EDNSSEC`.
 *
-* @example
 * ```ts no_run
-* import { Resolver } from 'fino:dns';
+* import { Resolver } from 'fino:net/dns';
 *
 * const resolver = new Resolver({ timeout: 1_000, retries: 2 });
 * resolver.setServers(['1.1.1.1', '8.8.8.8']);
@@ -157,19 +157,60 @@
 import * as sock from './socket.ts';
 import * as loop from '../internal/runtime/loop.ts';
 import { DiskFileSystem } from '../file/fs.ts';
-import { decodeUtf8, encodeUtf8 } from '../globals/encoding.ts';
+import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
 import { os } from 'internal:process';
 import { Scanner } from '../parsing/scanner.ts';
 import { ROOT_TRUST_ANCHORS, validateDnssecResponse, type DnssecCache } from 'internal:net/dnssec';
-type DnsServerFamily = 'ipv4' | 'ipv6';
+/**
+* Address family for a DNS nameserver endpoint.
+*
+* The resolver uses this value to choose the socket family when sending UDP
+* queries or opening TCP fallback connections. `ipv4` addresses are dotted
+* decimal literals, and `ipv6` addresses are numeric IPv6 literals.
+*
+* ```ts no_run
+* import type { DnsServerFamily } from 'fino:net/dns';
+*
+* const family: DnsServerFamily = 'ipv4';
+* ```
+*/
+export type DnsServerFamily = 'ipv4' | 'ipv6';
 type RecordTypeName = keyof typeof RECORD_TYPES;
-/** Parsed DNS nameserver endpoint used internally by the resolver. */
+/**
+* Parsed DNS nameserver endpoint used by `Resolver`.
+*
+* `Resolver.setServers()` accepts string forms such as `1.1.1.1`,
+* `[2606:4700:4700::1111]:53`, or `8.8.8.8:53` and normalizes them into this
+* endpoint shape internally. `Resolver.getServers()` returns the string form
+* again for compatibility with familiar DNS resolver APIs.
+*
+* ```ts no_run
+* import type { DnsServer } from 'fino:net/dns';
+*
+* const server: DnsServer = { ip: '1.1.1.1', family: 'ipv4', port: 53 };
+* ```
+*/
 export interface DnsServer {
-  /** Numeric IPv4 or IPv6 address literal. */
+  /**
+  * Numeric IPv4 or IPv6 address literal.
+  *
+  * Host names are not accepted here; recursive resolver endpoints must already
+  * be concrete addresses.
+  */
   ip: string;
-  /** Socket address family for `ip`. */
+  /**
+  * Socket address family for `ip`.
+  *
+  * The family controls whether the resolver opens an IPv4 or IPv6 UDP/TCP
+  * socket for this endpoint.
+  */
   family: DnsServerFamily;
-  /** UDP/TCP DNS port, normally 53. */
+  /**
+  * UDP and TCP DNS port.
+  *
+  * Classic DNS uses `53`. The same port is used for the initial UDP query and
+  * TCP fallback when a response is truncated.
+  */
   port: number;
 }
 interface DnsError extends Error {
@@ -317,52 +358,281 @@ export interface SrvRecord {
 *
 * DS records bind a child zone DNSKEY to its parent zone. The digest is the
 * raw hash from wire format; callers that display it commonly hex-encode it.
+*
+* ```ts no_run
+* import { Resolver } from 'fino:net/dns';
+*
+* const [ds] = await new Resolver({ dnssec: true }).resolve('example.com', 'DS');
+* const hex = Array.from(ds.digest, (b) => b.toString(16).padStart(2, '0')).join('');
+* console.log(ds.keyTag, ds.algorithm, ds.digestType, hex);
+* ```
 */
 export interface DsRecord {
+  /**
+  * Key tag of the child DNSKEY this DS record identifies.
+  *
+  * The value is copied from the wire record and is used with `algorithm` and
+  * `digestType` to select the matching DNSKEY during validation.
+  */
   keyTag: number;
+  /**
+  * DNSSEC algorithm number for the referenced child DNSKEY.
+  *
+  * Algorithm numbers follow the IANA DNS Security Algorithm registry.
+  */
   algorithm: number;
+  /**
+  * Digest algorithm number used to hash the child DNSKEY owner name and key.
+  *
+  * Common values include SHA-1 and SHA-256, but unsupported digest algorithms
+  * remain visible here so callers can inspect the delegation.
+  */
   digestType: number;
+  /**
+  * Raw DS digest bytes from RDATA.
+  *
+  * Display tools usually hex-encode this value. The resolver keeps bytes
+  * unchanged for DNSSEC chain validation.
+  */
   digest: Uint8Array;
 }
-/** DNSSEC DNSKEY record payload. */
+/**
+* DNSSEC DNSKEY record payload.
+*
+* DNSKEY records publish a zone's public signing keys. The resolver parses the
+* raw key material and uses it with DS and RRSIG records when DNSSEC validation
+* is enabled.
+*
+* ```ts no_run
+* import { Resolver } from 'fino:net/dns';
+*
+* const keys = await new Resolver({ dnssec: true }).resolve('example.com', 'DNSKEY');
+* for (const key of keys) {
+*   const isKsk = (key.flags & 0x0001) !== 0;
+*   console.log(key.algorithm, key.publicKey.byteLength, isKsk ? 'KSK' : 'ZSK');
+* }
+* ```
+*/
 export interface DnskeyRecord {
+  /**
+  * DNSKEY flags field.
+  *
+  * This includes bits such as Zone Key and Secure Entry Point. The resolver
+  * exposes the numeric field unchanged.
+  */
   flags: number;
+  /**
+  * DNSKEY protocol field.
+  *
+  * DNSSEC uses protocol value `3`; other values remain visible for malformed
+  * or experimental records.
+  */
   protocol: number;
+  /**
+  * DNSSEC algorithm number for this key.
+  */
   algorithm: number;
+  /**
+  * Raw public key bytes from RDATA.
+  *
+  * The encoding is algorithm-specific and is not converted to a WebCrypto key
+  * by the parser.
+  */
   publicKey: Uint8Array;
 }
-/** DNSSEC RRSIG record payload. */
+/**
+* DNSSEC RRSIG record payload.
+*
+* RRSIG records authenticate an RRset. Time fields are Unix epoch seconds from
+* the wire record; the parser does not convert them to `Date` objects.
+*
+* ```ts no_run
+* import { Resolver } from 'fino:net/dns';
+*
+* const [sig] = await new Resolver({ dnssec: true }).resolve('example.com', 'RRSIG');
+* console.log(sig.typeCovered, sig.keyTag, new Date(sig.expiration * 1000).toISOString());
+* ```
+*/
 export interface RrsigRecord {
+  /**
+  * Numeric record type covered by this signature.
+  */
   typeCovered: number;
+  /**
+  * DNSSEC algorithm number used by the signing key.
+  */
   algorithm: number;
+  /**
+  * Number of labels in the original signed owner name.
+  *
+  * This is used by DNSSEC wildcard handling.
+  */
   labels: number;
+  /**
+  * Original TTL of the signed RRset in seconds.
+  */
   originalTtl: number;
+  /**
+  * Signature expiration time as Unix epoch seconds.
+  */
   expiration: number;
+  /**
+  * Signature inception time as Unix epoch seconds.
+  */
   inception: number;
+  /**
+  * Key tag of the DNSKEY that produced this signature.
+  */
   keyTag: number;
+  /**
+  * Signer name from RDATA.
+  */
   signerName: string;
+  /**
+  * Raw signature bytes.
+  *
+  * The byte format depends on `algorithm`.
+  */
   signature: Uint8Array;
 }
-/** DNSSEC NSEC authenticated-denial record payload. */
+/**
+* DNSSEC NSEC authenticated-denial record payload.
+*
+* NSEC records prove non-existence by naming the next existing owner and a type
+* bitmap for the current owner.
+*
+* ```ts no_run
+* import { Resolver, RECORD_TYPES } from 'fino:net/dns';
+*
+* const [nsec] = await new Resolver({ dnssec: true }).resolve('example.com', 'NSEC');
+* console.log(nsec.nextDomainName, nsec.types.includes(RECORD_TYPES.A));
+* ```
+*/
 export interface NsecRecord {
+  /**
+  * Next existing owner name in canonical order.
+  */
   nextDomainName: string;
+  /**
+  * Numeric RR types present at the NSEC owner name.
+  */
   types: number[];
 }
-/** DNSSEC NSEC3 authenticated-denial record payload. */
+/**
+* DNSSEC NSEC3 authenticated-denial record payload.
+*
+* NSEC3 records prove non-existence with hashed owner names. The parser exposes
+* salt and hashed owner bytes directly so validation code can recompute the
+* covered interval.
+*
+* ```ts no_run
+* import { Resolver } from 'fino:net/dns';
+*
+* const [nsec3] = await new Resolver({ dnssec: true }).resolve('example.com', 'NSEC3');
+* const optOut = (nsec3.flags & 0x01) !== 0;
+* console.log(nsec3.hashAlgorithm, nsec3.iterations, nsec3.salt.byteLength, optOut);
+* ```
+*/
 export interface Nsec3Record {
+  /**
+  * Hash algorithm number used for owner names.
+  */
   hashAlgorithm: number;
+  /**
+  * NSEC3 flags field.
+  *
+  * This may include the opt-out bit for insecure delegations.
+  */
   flags: number;
+  /**
+  * Number of additional hash iterations.
+  */
   iterations: number;
+  /**
+  * Salt bytes used by the NSEC3 hash, or an empty array when no salt is set.
+  */
   salt: Uint8Array;
+  /**
+  * Next hashed owner name bytes from RDATA.
+  */
   nextHashedOwnerName: Uint8Array;
+  /**
+  * Numeric RR types present at the original owner name.
+  */
   types: number[];
 }
-/** DNSSEC NSEC3PARAM record payload. */
+/**
+* DNSSEC NSEC3PARAM record payload.
+*
+* NSEC3PARAM records publish the hash parameters a zone uses for NSEC3
+* authenticated denial.
+*
+* ```ts no_run
+* import { Resolver } from 'fino:net/dns';
+*
+* const [params] = await new Resolver({ dnssec: true }).resolve('example.com', 'NSEC3PARAM');
+* console.log(params.hashAlgorithm, params.iterations, params.salt.byteLength);
+* ```
+*/
 export interface Nsec3ParamRecord {
+  /**
+  * Hash algorithm number used for NSEC3 owner hashes.
+  */
   hashAlgorithm: number;
+  /**
+  * NSEC3 parameter flags.
+  */
   flags: number;
+  /**
+  * Number of additional hash iterations.
+  */
   iterations: number;
+  /**
+  * Salt bytes used by the zone, or an empty array when no salt is configured.
+  */
   salt: Uint8Array;
+}
+/**
+* EDNS(0) metadata parsed from an OPT pseudo-record.
+*
+* EDNS extends the DNS header with a larger UDP payload size, an extended
+* response code, a version, and feature flags such as DNSSEC OK. This metadata
+* is present only when the response contains an OPT record, and it surfaces on
+* the `edns` field of a parsed `DnsResponse`.
+*
+* ```ts no_run
+* import type { DnsResponse } from 'fino:net/dns';
+*
+* function reportEdns(response: DnsResponse) {
+*   if (!response.edns) return;
+*   console.log(response.edns.udpPayloadSize, response.edns.dnssecOk);
+* }
+* ```
+*/
+export interface DnsEdnsMetadata {
+  /**
+  * UDP payload size advertised by the responder.
+  */
+  udpPayloadSize: number;
+  /**
+  * Whether the DNSSEC OK bit was set.
+  *
+  * A true value means the peer was willing to send DNSSEC records; it is not
+  * proof that the answer was validated.
+  */
+  dnssecOk: boolean;
+  /**
+  * Extended response-code bits from the OPT record.
+  */
+  extendedRcode: number;
+  /**
+  * EDNS version number.
+  */
+  version: number;
+  /**
+  * Raw EDNS flags field.
+  */
+  flags: number;
 }
 /**
 * Decoded DNS record payload for supported record types; unknown data is raw
@@ -383,8 +653,8 @@ export type DnsRecordData = string | string[] | MxRecord | SoaRecord | SrvRecord
 * documented by `DnsRecordData`. The resolver does not cache by TTL.
 *
 * ```ts no_run
-* const response = dns._parseResponse(packet);
-* for (const rr of response.answers) console.log(rr.name, rr.ttl, rr.data);
+* const answers = await new Resolver().resolve('example.com', 'A');
+* for (const answer of answers) console.log(answer);
 * ```
 */
 export interface DnsResourceRecord {
@@ -436,8 +706,8 @@ export interface DnsResourceRecord {
 * it directly.
 *
 * ```ts no_run
-* const parsed = _parseResponse(responseBytes);
-* if (!parsed.truncated) console.log(parsed.answers);
+* const records = await new Resolver().resolve('example.com', 'MX');
+* console.log(records);
 * ```
 */
 export interface DnsResponse {
@@ -490,14 +760,12 @@ export interface DnsResponse {
   * ```
   */
   additionals: DnsResourceRecord[];
-  /** Parsed EDNS(0) metadata when the response contains an OPT pseudo-RR. */
-  edns?: {
-    udpPayloadSize: number;
-    dnssecOk: boolean;
-    extendedRcode: number;
-    version: number;
-    flags: number;
-  };
+  /**
+  * Parsed EDNS(0) metadata when the response contains an OPT pseudo-RR.
+  *
+  * Omitted for classic DNS responses without EDNS.
+  */
+  edns?: DnsEdnsMetadata;
 }
 /**
 * Resolver timeout and retry controls.
@@ -604,7 +872,8 @@ const QTYPE_NSEC3PARAM = 51;
 * keys.
 *
 * ```ts no_run
-* const query = _buildQuery(1, 'example.com', RECORD_TYPES.AAAA);
+* const aaaa = RECORD_TYPES.AAAA;
+* console.log(aaaa);
 * ```
 */
 export const RECORD_TYPES = {
@@ -678,7 +947,7 @@ function isIpv6Literal(value: string): boolean {
 *
 * @internal
 */
-export function _parseResolvConf(text: string): DnsServer[] {
+function _parseResolvConf(text: string): DnsServer[] {
   const servers: DnsServer[] = [];
   for (const line of text.split('\n')) {
     const trimmed = line.replace(/#.*/, '').trim();
@@ -710,7 +979,7 @@ export function _parseResolvConf(text: string): DnsServer[] {
 *
 * @internal
 */
-export function _randomQueryId(): number {
+function _randomQueryId(): number {
   const bytes = new Uint16Array(1);
   do {
     crypto.getRandomValues(bytes);
@@ -790,7 +1059,7 @@ function _normalizeDnsLabel(label: string): string {
 *
 * Exported for unit testing.
 */
-export function _encodeName(name: string): Uint8Array {
+function _encodeName(name: string): Uint8Array {
   if (name.endsWith('.')) name = name.slice(0, -1);
   const labels = name.split('.');
   let totalLen = 1;
@@ -828,7 +1097,7 @@ export function _encodeName(name: string): Uint8Array {
 *
 * Exported for unit testing.
 */
-export function _buildQuery(id: number, name: string, qtype: number, options: {
+function _buildQuery(id: number, name: string, qtype: number, options: {
   dnssec?: boolean;
   udpPayloadSize?: number;
 } = {}): Uint8Array {
@@ -878,7 +1147,7 @@ export function _buildQuery(id: number, name: string, qtype: number, options: {
 *
 * Exported for unit testing.
 */
-export function _decodeName(msg: Uint8Array, startOffset: number): {
+function _decodeName(msg: Uint8Array, startOffset: number): {
   name: string;
   nextOffset: number;
 } {
@@ -1166,7 +1435,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
 *
 * Exported for unit testing.
 */
-export function _parseResponse(msg: Uint8Array): DnsResponse {
+function _parseResponse(msg: Uint8Array): DnsResponse {
   if (msg.length < 12) throw new Error('DNS: response too short');
   const scanner = new Scanner(msg, { format: 'dns' });
   const id = scanner.readU16BEField('id');
@@ -1272,7 +1541,7 @@ function formatIPv6(bytes16: Uint8Array): string {
 *
 * Exported for unit testing.
 */
-export function _reverseIP(ip: string): string {
+function _reverseIP(ip: string): string {
   if (ip.includes(':')) {
     return ipv6ToPtrName(ip);
   }
@@ -1734,7 +2003,7 @@ export class Resolver {
   async #loadServers() {
     try {
       const fs = new DiskFileSystem();
-      const text = await fs.readFile('/etc/resolv.conf');
+      const text = new TextDecoder().decode(await fs.readFile('/etc/resolv.conf'));
       this.#servers = _parseResolvConf(text);
     } catch {
       this.#servers = DEFAULT_SERVERS;

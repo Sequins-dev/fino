@@ -6,6 +6,7 @@ import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import { CB_ACK_DATAGRAM, CID_DATA, CID_DATALEN, CB_DCID_STATUS, CB_DCID_STATUS2, CB_EARLY_DATA_REJECTED, CB_EXTEND_MAX_STREAM_DATA, CB_GET_NEW_CONNECTION_ID, CB_GET_NEW_CONNECTION_ID2, CB_GET_PATH_CHALLENGE_DATA, CB_GET_PATH_CHALLENGE_DATA2, CB_LOST_DATAGRAM, CB_RECV_NEW_TOKEN, CB_RECV_RX_KEY, CB_RECV_STATELESS_RESET, CB_RECV_STATELESS_RESET2, CB_RECV_TX_KEY, NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE, NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE, NGTCP2_CID_SIZE, NGTCP2_CALLBACKS_VERSION, NGTCP2_MAX_UDP_PAYLOAD_SIZE, NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN, NGTCP2_PATH_VALIDATION_RESULT_SUCCESS, NGTCP2_PROTO_VER_V1, TP_ACTIVE_CONNECTION_ID_LIMIT, TP_ACK_DELAY_EXPONENT, TP_DISABLE_ACTIVE_MIGRATION, TP_INITIAL_MAX_DATA, TP_INITIAL_MAX_STREAMS_BIDI, TP_INITIAL_MAX_STREAMS_UNI, TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL, TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE, TP_INITIAL_MAX_STREAM_DATA_UNI, TP_MAX_ACK_DELAY, TP_MAX_DATAGRAM_FRAME_SIZE, TP_MAX_IDLE_TIMEOUT, TP_MAX_UDP_PAYLOAD_SIZE, TP_PREFERRED_ADDR, TP_PREFERRED_ADDR_CID, TP_PREFERRED_ADDR_PRESENT, TP_PREFERRED_ADDR_STATELESS_RESET_TOKEN, TP_STATELESS_RESET_TOKEN_PRESENT, Pointer, sym as ngtcp2Sym } from '../../js/internal/net/quic/ngtcp2/bindings.ts';
 import { sym as cryptoSym } from '../../js/internal/net/quic/ngtcp2/crypto.ts';
+import { quicConnectionInternals, quicEndpointInternals, quicStreamInternals } from 'internal:net/quic/endpoint';
 const encodeUtf8 = (value: string) => new TextEncoder().encode(value);
 const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 const TEST_CERT = 'tests/net/fixtures/test.crt';
@@ -14,8 +15,22 @@ const NGTCP2_CID_TOKEN_SIZE = 160;
 const CID_TOKEN_SEQ = 0;
 const CID_TOKEN_CID = 8;
 const fs = new DiskFileSystem('/');
+function streamConnectionStub(overrides: Record<PropertyKey, unknown> = {}): any {
+  return {
+    closed: false,
+    nativeHandle: new ArrayBuffer(8),
+    [quicConnectionInternals.isClosedForInternalUse]: () => false,
+    [quicConnectionInternals.extendConnectionReceiveCredit]() {},
+    [quicConnectionInternals.extendStreamReceiveCredit]() {},
+    [quicConnectionInternals.removeStream]() {},
+    [quicConnectionInternals.scheduleWrites]() {},
+    [quicConnectionInternals.reserveStreamData]() {},
+    [quicConnectionInternals.queueStreamData]() {},
+    ...overrides
+  };
+}
 async function readPemCertificateDer(path: string): Promise<Uint8Array> {
-  const pem = await fs.readFile(path);
+  const pem = decodeUtf8(await fs.readFile(path));
   const base64 = pem.replace(/-----BEGIN CERTIFICATE-----/g, '').replace(/-----END CERTIFICATE-----/g, '').replace(/\s+/g, '');
   const binary = atob(base64);
   const der = new Uint8Array(binary.length);
@@ -458,13 +473,7 @@ describe('QUIC hardening options', () => {
   });
   it('exposes read-only connection and stream stats snapshots', (t) => {
     const endpoint = new QuicEndpoint();
-    const stream = new QuicStream(0, 'bidirectional', {
-      closed: false,
-      nativeHandle: new ArrayBuffer(8),
-      _extendConnectionReceiveCredit() {},
-      _extendStreamReceiveCredit() {},
-      _removeStream() {}
-    } as any);
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub());
     t.equal(Object.isFrozen(stream.stats), true, 'stream stats snapshot is frozen');
     t.equal(stream.stats.bytesReceived, 0, 'stream stats include received byte count');
     t.equal(stream.stats.bytesSent, 0, 'stream stats include sent byte count');
@@ -724,7 +733,7 @@ describe('QUIC endpoint lifecycle', () => {
         for (let i = 0; i < 8; i++) probe[6 + i] = attempt + i & 255;
         probe[14] = 8;
         for (let i = 0; i < 8; i++) probe[15 + i] = 128 + attempt + i & 255;
-        endpoint._handleDatagram(listener, sendFd, listener.address, probe, bound);
+        endpoint[quicEndpointInternals.handleDatagram](listener, sendFd, listener.address, probe, bound);
       }
       const elapsedSeconds = (performance.now() - started) / 1e3;
       let responses = 0;
@@ -961,8 +970,8 @@ describe('QUIC loopback object model', () => {
   it('reassembles stream data by QUIC offset before exposing reads', async (t) => {
     const request = encodeUtf8('GET /intense-warm-floppy\r\n');
     const stream = new QuicStream(0, 'bidirectional', null as any);
-    stream._pushIncoming(13, request.subarray(13), true);
-    stream._pushIncoming(0, request.subarray(0, 13), false);
+    stream[quicStreamInternals.pushIncoming](13, request.subarray(13), true);
+    stream[quicStreamInternals.pushIncoming](0, request.subarray(0, 13), false);
     const chunks: Uint8Array[] = [];
     for (;;) {
       const chunk = await stream.reader.read();
@@ -984,8 +993,8 @@ describe('QUIC loopback object model', () => {
     const gapStart = 6685332;
     const gapEnd = gapStart + 2599;
     const stream = new QuicStream(0, 'bidirectional', null as any);
-    stream._pushIncoming(0, body.subarray(0, gapStart), false);
-    stream._pushIncoming(gapEnd, body.subarray(gapEnd), true);
+    stream[quicStreamInternals.pushIncoming](0, body.subarray(0, gapStart), false);
+    stream[quicStreamInternals.pushIncoming](gapEnd, body.subarray(gapEnd), true);
     let total = 0;
     while (total < gapStart) {
       const chunk = await stream.reader.read();
@@ -993,7 +1002,7 @@ describe('QUIC loopback object model', () => {
       total += chunk.byteLength;
     }
     t.equal(total, gapStart, 'reader exposes contiguous data before the missing range');
-    stream._pushIncoming(gapStart, body.subarray(gapStart, gapEnd), false);
+    stream[quicStreamInternals.pushIncoming](gapStart, body.subarray(gapStart, gapEnd), false);
     let checksum = 0;
     for (;;) {
       const chunk = await stream.reader.read();
@@ -1012,8 +1021,8 @@ describe('QUIC loopback object model', () => {
     const stream = new QuicStream(0, 'bidirectional', null as any);
     const chunks: Uint8Array[] = [];
     let total = 0;
-    stream._pushIncoming(0, body.subarray(0, gapStart), false);
-    stream._pushIncoming(gapEnd, body.subarray(gapEnd), true);
+    stream[quicStreamInternals.pushIncoming](0, body.subarray(0, gapStart), false);
+    stream[quicStreamInternals.pushIncoming](gapEnd, body.subarray(gapEnd), true);
     while (total < gapStart) {
       const chunk = await stream.reader.read();
       if (chunk === null) break;
@@ -1023,12 +1032,12 @@ describe('QUIC loopback object model', () => {
     t.equal(total, gapStart, 'reader waits at the missing range even after FIN has arrived');
     const blockedRead = stream.reader.read();
     t.equal(await Promise.race([blockedRead.then(() => 'read'), timeoutValue(25, 'blocked')]), 'blocked', 'reader is blocked on the gap');
-    stream._pushIncoming(gapStart - 1200, body.subarray(gapStart - 1200, gapStart + 900), false);
+    stream[quicStreamInternals.pushIncoming](gapStart - 1200, body.subarray(gapStart - 1200, gapStart + 900), false);
     chunks.push((await blockedRead)!);
     total += chunks[chunks.length - 1].byteLength;
     t.equal(total, gapStart + 900, 'first overlapping retransmit advances into the gap');
-    stream._pushIncoming(gapStart + 300, body.subarray(gapStart + 300, gapEnd - 300), false);
-    stream._pushIncoming(gapEnd - 700, body.subarray(gapEnd - 700, gapEnd), false);
+    stream[quicStreamInternals.pushIncoming](gapStart + 300, body.subarray(gapStart + 300, gapEnd - 300), false);
+    stream[quicStreamInternals.pushIncoming](gapEnd - 700, body.subarray(gapEnd - 700, gapEnd), false);
     let checksum = 0;
     for (;;) {
       const chunk = await Promise.race([stream.reader.read(), timeoutValue(1e3, undefined)]);
@@ -1045,24 +1054,24 @@ describe('QUIC loopback object model', () => {
     const request = encodeUtf8('GET /credit-accounting\r\n');
     const connectionCredits: number[] = [];
     const streamCredits: number[] = [];
-    const stream = new QuicStream(0, 'bidirectional', {
-      _extendConnectionReceiveCredit(bytes: number) {
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({
+      [quicConnectionInternals.extendConnectionReceiveCredit](bytes: number) {
         connectionCredits.push(bytes);
       },
-      _extendStreamReceiveCredit(_streamId: number, bytes: number) {
+      [quicConnectionInternals.extendStreamReceiveCredit](_streamId: number, bytes: number) {
         streamCredits.push(bytes);
       }
-    } as any);
-    stream._pushIncoming(8, request.subarray(8, 16), false);
+    }));
+    stream[quicStreamInternals.pushIncoming](8, request.subarray(8, 16), false);
     t.deepEqual(connectionCredits, [], 'out-of-order buffered bytes do not return connection credit');
     t.deepEqual(streamCredits, [], 'out-of-order data does not return stream credit');
-    stream._pushIncoming(0, request.subarray(0, 12), false);
+    stream[quicStreamInternals.pushIncoming](0, request.subarray(0, 12), false);
     t.deepEqual(connectionCredits, [], 'contiguous but unread bytes do not return connection credit');
     t.deepEqual(streamCredits, [], 'contiguous but unread bytes do not return stream credit');
-    stream._pushIncoming(4, request.subarray(4, 16), false);
+    stream[quicStreamInternals.pushIncoming](4, request.subarray(4, 16), false);
     t.deepEqual(connectionCredits, [], 'duplicate data does not return connection credit');
     t.deepEqual(streamCredits, [], 'duplicate data does not return stream credit');
-    stream._pushIncoming(16, request.subarray(16), true);
+    stream[quicStreamInternals.pushIncoming](16, request.subarray(16), true);
     t.deepEqual(connectionCredits, [], 'complete but unread stream data remains under connection credit');
     t.deepEqual(streamCredits, [], 'complete but unread stream data remains under stream credit');
     const chunks: Uint8Array[] = [];
@@ -1079,14 +1088,13 @@ describe('QUIC loopback object model', () => {
   it('honors byte reader maximum sizes for QUIC stream reads', async (t) => {
     const request = encodeUtf8('abcdef');
     const credits: number[] = [];
-    const stream = new QuicStream(0, 'bidirectional', {
-      _extendConnectionReceiveCredit() {},
-      _extendStreamReceiveCredit(_streamId: number, bytes: number) {
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({
+      [quicConnectionInternals.extendStreamReceiveCredit](_streamId: number, bytes: number) {
         credits.push(bytes);
       }
-    } as any);
+    }));
     const pendingByte = stream.reader.readByte();
-    stream._pushIncoming(0, request, true);
+    stream[quicStreamInternals.pushIncoming](0, request, true);
     t.equal(await pendingByte, 97, 'pending one-byte read consumes one byte from an arriving chunk');
     t.equal(decodeUtf8((await stream.reader.readExactly(2))!), 'bc', 'readExactly consumes only the requested bytes');
     t.equal(decodeUtf8((await stream.reader.read())!), 'def', 'remaining bytes stay queued for later reads');
@@ -1099,69 +1107,51 @@ describe('QUIC loopback object model', () => {
   });
   it('coalesces contiguous queued stream data up to the read limit', async (t) => {
     const credits: number[] = [];
-    const stream = new QuicStream(0, 'bidirectional', {
-      _extendConnectionReceiveCredit() {},
-      _extendStreamReceiveCredit(_streamId: number, bytes: number) {
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({
+      [quicConnectionInternals.extendStreamReceiveCredit](_streamId: number, bytes: number) {
         credits.push(bytes);
       }
-    } as any);
-    stream._pushIncoming(0, encodeUtf8('abc'), false);
-    stream._pushIncoming(3, encodeUtf8('def'), false);
-    stream._pushIncoming(6, encodeUtf8('ghi'), true);
+    }));
+    stream[quicStreamInternals.pushIncoming](0, encodeUtf8('abc'), false);
+    stream[quicStreamInternals.pushIncoming](3, encodeUtf8('def'), false);
+    stream[quicStreamInternals.pushIncoming](6, encodeUtf8('ghi'), true);
     t.equal(decodeUtf8((await stream.reader.read({ maxBytes: 8 }))!), 'abcdefgh', 'read coalesces queued contiguous chunks up to maxBytes');
     t.equal(decodeUtf8((await stream.reader.read())!), 'i', 'remaining byte is preserved for the next read');
     t.equal(await stream.reader.read(), null, 'stream still reaches EOF');
     t.deepEqual(credits, [8, 1], 'flow-control credit follows the coalesced read sizes');
   });
   it('rejects reads when a connection closes before stream FIN', async (t) => {
-    const stream = new QuicStream(0, 'bidirectional', {
-      _extendConnectionReceiveCredit() {},
-      _extendStreamReceiveCredit() {},
-      _removeStream() {}
-    } as any);
-    stream._pushIncoming(0, encodeUtf8('partial'), false);
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub());
+    stream[quicStreamInternals.pushIncoming](0, encodeUtf8('partial'), false);
     t.equal(decodeUtf8((await stream.reader.read())!), 'partial', 'partial data is readable first');
-    stream._closeFromConnection(new Error('connection closed before FIN'));
+    stream[quicStreamInternals.closeFromConnection](new Error('connection closed before FIN'));
     await t.rejects(() => stream.reader.read(), /connection closed before FIN/, 'incomplete connection close rejects instead of returning EOF');
   });
   it('supports AbortSignal on QUIC stream reads', async (t) => {
-    const stream = new QuicStream(0, 'bidirectional', {
-      _extendConnectionReceiveCredit() {},
-      _extendStreamReceiveCredit() {},
-      _removeStream() {}
-    } as any);
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub());
     await t.rejects(() => stream.reader.read({ signal: AbortSignal.abort(new Error('pre-aborted read')) }), /pre-aborted read/, 'pre-aborted read rejects with the abort reason');
     const controller = new AbortController();
     const pending = stream.reader.read({ signal: controller.signal });
     controller.abort(new Error('mid-read abort'));
     await t.rejects(() => pending, /mid-read abort/, 'pending read rejects when the signal aborts');
-    stream._pushIncoming(0, encodeUtf8('after-abort'), true);
+    stream[quicStreamInternals.pushIncoming](0, encodeUtf8('after-abort'), true);
     t.equal(decodeUtf8((await stream.reader.read())!), 'after-abort', 'aborted waiter is removed before later data arrives');
     t.equal(await stream.reader.read(), null, 'stream reaches EOF after the post-abort read');
   });
   it('rejects stream control operations after connection close', (t) => {
     let scheduledWrites = 0;
-    const stream = new QuicStream(0, 'bidirectional', {
-      _isClosedForInternalUse: () => true,
-      nativeHandle: new ArrayBuffer(8),
-      _scheduleWrites() {
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({
+      [quicConnectionInternals.isClosedForInternalUse]: () => true,
+      [quicConnectionInternals.scheduleWrites]() {
         scheduledWrites++;
-      },
-      _removeStream() {}
-    } as any);
+      }
+    }));
     t.throws(() => stream.reset(1), /QUIC connection is closed/, 'reset does not enter native code after close');
     t.throws(() => stream.stopSending(1), /QUIC connection is closed/, 'STOP_SENDING does not enter native code after close');
     t.equal(scheduledWrites, 0, 'closed stream control does not schedule native writes');
   });
   it('pre-closes unavailable unidirectional stream sides', async (t) => {
-    const sendOnly = new QuicStream(2, 'unidirectional', {
-      _queueStreamData() {},
-      _reserveStreamData() {},
-      _removeStream() {},
-      _scheduleStreamWriterFlush(callback: () => void) {
-        callback();
-      }
-    } as any, false);
+    const sendOnly = new QuicStream(2, 'unidirectional', streamConnectionStub(), false);
     t.equal(await sendOnly.reader.read(), null, 'local send-only stream reader reaches EOF immediately');
     const readableReader = sendOnly.readable.getReader();
     t.deepEqual(await readableReader.read(), {
@@ -1169,15 +1159,8 @@ describe('QUIC loopback object model', () => {
       done: true
     }, 'local send-only Web readable is closed');
     await sendOnly.writer.write(encodeUtf8('send-only-ok'));
-    const receiveOnly = new QuicStream(3, 'unidirectional', {
-      _queueStreamData() {},
-      _reserveStreamData() {},
-      _removeStream() {},
-      _scheduleStreamWriterFlush(callback: () => void) {
-        callback();
-      }
-    } as any, true);
-    receiveOnly._pushIncoming(0, encodeUtf8('receive-only-ok'), true);
+    const receiveOnly = new QuicStream(3, 'unidirectional', streamConnectionStub(), true);
+    receiveOnly[quicStreamInternals.pushIncoming](0, encodeUtf8('receive-only-ok'), true);
     t.equal(decodeUtf8((await receiveOnly.reader.read())!), 'receive-only-ok', 'remote receive-only stream remains readable');
     await t.rejects(() => receiveOnly.writer.write(encodeUtf8('not-writable')), /receive-only/, 'remote receive-only stream writer rejects deterministically');
   });
@@ -1187,13 +1170,13 @@ describe('QUIC loopback object model', () => {
       data: Uint8Array;
       fin: boolean;
     }[] = [];
-    const stream = new QuicStream(0, 'bidirectional', { _queueStreamData(stream: QuicStream, data: Uint8Array, fin: boolean) {
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({ [quicConnectionInternals.queueStreamData](stream: QuicStream, data: Uint8Array, fin: boolean) {
       queued.push({
         stream,
         data,
         fin
       });
-    } } as any);
+    } }));
     const write = stream.writer.write(encodeUtf8('GET /coalesced-fin\r\n'));
     const close = stream.writer.close();
     await Promise.all([write, close]);
@@ -1207,13 +1190,13 @@ describe('QUIC loopback object model', () => {
       data: Uint8Array;
       fin: boolean;
     }[] = [];
-    const stream = new QuicStream(0, 'bidirectional', { _queueStreamData(stream: QuicStream, data: Uint8Array, fin: boolean) {
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({ [quicConnectionInternals.queueStreamData](stream: QuicStream, data: Uint8Array, fin: boolean) {
       queued.push({
         stream,
         data,
         fin
       });
-    } } as any);
+    } }));
     await stream.writer.write(encodeUtf8('GET /awaited-fin\r\n'));
     await stream.writer.close();
     await loop.timeout(0);
@@ -1946,7 +1929,7 @@ describe('QUIC loopback object model', () => {
       await t.rejects(() => connection.sendDatagram(encodeUtf8('over-limit')), /0-RTT write exceeds maxBytes 16/, '0-RTT DATAGRAM bytes count against the early-data cap');
       await loop.timeout(0);
       const serverConnection = await server.accept();
-      const event = serverConnection._inspectLastDatagramEvent();
+      const event = serverConnection[quicConnectionInternals.inspectLastDatagramEvent]();
       if (event === null) throw new Error('server did not receive the 0-RTT DATAGRAM');
       t.equal(event.earlyData, true, 'received DATAGRAM is marked as 0-RTT early data');
       t.equal(decodeUtf8(event.data), 'early-dgram', 'server receives the 0-RTT DATAGRAM payload');
@@ -2274,7 +2257,7 @@ describe('QUIC loopback object model', () => {
       });
       clientConnection.addEventListener('newtoken', (event) => newTokenEvents.push(event));
       const topicHandle = topic<any>('quic.session.new.token').subscribe((event) => topicEvents.push(event));
-      clientConnection._onNewToken(token);
+      clientConnection[quicConnectionInternals.onNewToken](token);
       await loop.timeout(0);
       topicHandle.dispose();
       const state = sessions.get('localhost|fino-hq');
@@ -2346,16 +2329,10 @@ describe('QUIC loopback object model', () => {
     try {
       server.setBusy(true);
       server.setBusy(false);
-      const streamConnection = {
-        closed: false,
-        nativeHandle: new ArrayBuffer(8),
-        _extendConnectionReceiveCredit() {},
-        _extendStreamReceiveCredit() {},
-        _removeStream() {}
-      } as any;
+      const streamConnection = streamConnectionStub();
       const stream = new QuicStream(0, 'bidirectional', streamConnection);
       const streamCloseError = new Error('topic stream close failure');
-      stream._closeFromConnection(streamCloseError);
+      stream[quicStreamInternals.closeFromConnection](streamCloseError);
       const listener = await server.listen(testListenOptions({ address: {
         family: 'ipv4',
         ip: '127.0.0.1',
@@ -2372,16 +2349,16 @@ describe('QUIC loopback object model', () => {
       await clientConnection.sendDatagram(encodeUtf8('topic-datagram'));
       t.equal(decodeUtf8((await reader.read()).value), 'topic-datagram', 'topic test DATAGRAM transfers data');
       await reader.cancel();
-      clientConnection._onSessionTicket(new Uint8Array([9]));
-      clientConnection._onDatagramStatus(7, 'ack');
-      clientConnection._onNewToken(new Uint8Array([
+      clientConnection[quicConnectionInternals.onSessionTicket](new Uint8Array([9]));
+      clientConnection[quicConnectionInternals.onDatagramStatus](7, 'ack');
+      clientConnection[quicConnectionInternals.onNewToken](new Uint8Array([
         3,
         4,
         5
       ]));
-      clientConnection._onEarlyDataRejected();
-      clientConnection._onPathValidationFinished(null, null, NGTCP2_PATH_VALIDATION_RESULT_SUCCESS, 0);
-      serverStream._resetFromConnection(42);
+      clientConnection[quicConnectionInternals.onEarlyDataRejected]();
+      clientConnection[quicConnectionInternals.onPathValidationFinished](null, null, NGTCP2_PATH_VALIDATION_RESULT_SUCCESS, 0);
+      serverStream[quicStreamInternals.resetFromConnection](42);
       clientConnection.initiateKeyUpdate();
       await loop.timeout(0);
       const saw = (name: string, predicate: (event: any) => boolean = () => true) => events.some((event) => event.name === name && predicate(event.event));
@@ -2396,7 +2373,7 @@ describe('QUIC loopback object model', () => {
       t.ok(saw('quic.session.received.stream', (event) => event.connection === serverConnection && event.stream === serverStream), 'received stream publishes a topic');
       t.ok(saw('quic.session.send.datagram', (event) => event.connection === clientConnection && event.length === 'topic-datagram'.length), 'DATAGRAM send publishes a topic');
       t.ok(saw('quic.session.receive.datagram', (event) => event.connection === serverConnection && event.length === 'topic-datagram'.length), 'DATAGRAM receive publishes a topic');
-      clientConnection._onVersionNegotiationForTest(1, [1, 1889161412], [1, 1889161412]);
+      clientConnection[quicConnectionInternals.onVersionNegotiationForTest](1, [1, 1889161412], [1, 1889161412]);
       t.ok(saw('quic.session.version.negotiation', (event) => event.connection === clientConnection && event.wireVersion === 1 && event.requestedWireVersions?.includes(1889161412)), 'received Version Negotiation publishes a session topic');
       t.ok(saw('quic.session.path.validation', (event) => event.connection === clientConnection && event.result === 'success'), 'path validation publishes a topic');
       t.ok(saw('quic.session.update.key', (event) => event.connection === clientConnection), 'key update publishes a topic');
@@ -2406,7 +2383,7 @@ describe('QUIC loopback object model', () => {
       t.ok(saw('quic.session.new.token', (event) => event.connection === clientConnection && event.token?.[0] === 3), 'NEW_TOKEN topic payload is observable');
       t.ok(events.some(({ name, event }) => name === 'quic.session.receive.datagram.status' && event.connection === clientConnection && event.id === 7 && event.status === 'ack'), 'datagram status topic payload is observable');
       t.ok(saw('quic.session.early.rejected', (event) => event.connection === clientConnection), 'early-data rejection publishes a topic');
-      clientConnection._onStatelessReset();
+      clientConnection[quicConnectionInternals.onStatelessReset]();
       await loop.timeout(0);
       t.ok(saw('quic.session.error', (event) => event.connection === clientConnection && /stateless reset/.test(event.error?.message)), 'session error publishes a topic');
       t.ok(saw('quic.endpoint.error', (event) => event.endpoint === client && event.connection === clientConnection), 'endpoint error publishes a topic');
@@ -2425,13 +2402,7 @@ describe('QUIC loopback object model', () => {
     }
   });
   it('isolates QUIC EventTarget listener errors as an intentional Node callback divergence', async (t) => {
-    const stream = new QuicStream(0, 'bidirectional', {
-      closed: false,
-      nativeHandle: new ArrayBuffer(8),
-      _extendConnectionReceiveCredit() {},
-      _extendStreamReceiveCredit() {},
-      _removeStream() {}
-    } as any);
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub());
     let secondListenerCalled = false;
     stream.addEventListener('close', () => {
       throw new Error('listener failure');
@@ -2439,7 +2410,7 @@ describe('QUIC loopback object model', () => {
     stream.addEventListener('close', () => {
       secondListenerCalled = true;
     });
-    stream._closeFromConnection();
+    stream[quicStreamInternals.closeFromConnection]();
     await loop.timeout(0);
     t.equal(secondListenerCalled, true, 'throwing QUIC EventTarget listeners do not interrupt later listeners');
   });
@@ -2677,7 +2648,7 @@ describe('QUIC loopback object model', () => {
       const pathValidation = new Promise<any>((resolve) => {
         clientConnection.addEventListener('pathvalidation', resolve, { once: true });
       });
-      clientConnection._onPathValidationFinished(null, null, NGTCP2_PATH_VALIDATION_RESULT_SUCCESS, NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN);
+      clientConnection[quicConnectionInternals.onPathValidationFinished](null, null, NGTCP2_PATH_VALIDATION_RESULT_SUCCESS, NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN);
       const event = await pathValidation;
       t.equal(event.result, 'success', 'path validation result is surfaced');
       t.equal(event.newToken, true, 'path validation exposes NEW_TOKEN generation requests');
@@ -2764,7 +2735,7 @@ describe('QUIC loopback object model', () => {
       await client.close();
       await server.close();
       await loop.timeout(0);
-      const qlog = await fs.readFile(qlogPath);
+      const qlog = decodeUtf8(await fs.readFile(qlogPath));
       t.ok(qlog.includes('qlog'), 'qlog file contains qlog preamble');
       t.ok(qlog.includes('packet'), 'qlog file contains packet events');
     } finally {
@@ -2803,7 +2774,7 @@ describe('QUIC loopback object model', () => {
       const serverConnection = await server.accept();
       await clientConnection.connected;
       await serverConnection.connected;
-      const keylog = await fs.readFile(keylogPath);
+      const keylog = decodeUtf8(await fs.readFile(keylogPath));
       t.ok(keylog.includes('CLIENT_HANDSHAKE_TRAFFIC_SECRET'), 'keylog contains handshake traffic secrets');
       t.ok(keylog.includes('CLIENT_TRAFFIC_SECRET_0') || keylog.includes('SERVER_TRAFFIC_SECRET_0'), 'keylog contains application traffic secrets');
       const clientHandshakeLine = keylog.split(/\r?\n/).find((line) => line.startsWith('CLIENT_HANDSHAKE_TRAFFIC_SECRET '));
@@ -3407,7 +3378,7 @@ describe('QUIC loopback object model', () => {
       t.equal(typeof id, 'number', 'sendDatagram returns a numeric Fino datagram id');
       t.ok(id > 0, 'sendDatagram returns a nonzero datagram id');
       t.equal(decodeUtf8((await reader.read()).value), 'id-correlates', 'returned-id datagram is delivered');
-      clientConnection._onDatagramStatus(id, 'ack');
+      clientConnection[quicConnectionInternals.onDatagramStatus](id, 'ack');
       t.deepEqual(statuses, [`${id}:ack`], 'DATAGRAM ack event uses the returned id');
       t.ok(statusTopicEvents.some((event) => event.connection === clientConnection && event.id === id && event.status === 'ack'), 'DATAGRAM status topic uses the returned id');
       t.ok(sendTopicEvents.some((event) => event.connection === clientConnection && event.id === id && event.length === 'id-correlates'.length), 'DATAGRAM send topic uses the returned id');
@@ -3533,8 +3504,8 @@ describe('QUIC loopback object model', () => {
       clientConnection.addEventListener('datagramstatus', (event: any) => {
         statuses.push(`${event.id}:${event.status}`);
       });
-      clientConnection._onDatagramStatus(3, 'ack');
-      clientConnection._onDatagramStatus(4, 'lost');
+      clientConnection[quicConnectionInternals.onDatagramStatus](3, 'ack');
+      clientConnection[quicConnectionInternals.onDatagramStatus](4, 'lost');
       t.deepEqual(statuses, ['3:ack', '4:lost'], 'datagram status callbacks are surfaced to applications');
     } finally {
       await client.close();
@@ -3563,7 +3534,7 @@ describe('QUIC loopback object model', () => {
       clientConnection.addEventListener('datagramabandoned', (event: any) => {
         events.push(`abandoned:${event.id}:${event.status}`);
       });
-      clientConnection._onDatagramStatus(5, 'abandoned' as any);
+      clientConnection[quicConnectionInternals.onDatagramStatus](5, 'abandoned' as any);
       t.deepEqual(events, ['status:5:abandoned', 'abandoned:5:abandoned'], 'abandoned datagrams are not reported as lost');
     } finally {
       await client.close();
@@ -3783,11 +3754,11 @@ describe('QUIC loopback object model', () => {
     ]));
     const token = new Uint8Array(16);
     for (let i = 0; i < token.byteLength; i++) token[i] = 160 + i;
-    clientConnection._onDestinationCidStatus(NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE, cid, Pointer.of(token.buffer));
+    clientConnection[quicConnectionInternals.onDestinationCidStatus](NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE, cid, Pointer.of(token.buffer));
     const reset = new Uint8Array(33);
     reset[0] = 64;
     reset.set(token, reset.byteLength - token.byteLength);
-    client._handleDatagram(null, 0, listener.address, reset, listener.address);
+    client[quicEndpointInternals.handleDatagram](null, 0, listener.address, reset, listener.address);
     await loop.timeout(0);
     t.equal(clientConnection.state, 'closed', 'stateless reset token closes the matching connection');
     await client.close();
@@ -3814,9 +3785,9 @@ describe('QUIC loopback object model', () => {
       ]);
       const issuedCid = makeNativeCid(issuedCidBytes);
       const issuedKey = cidHex(issuedCidBytes);
-      clientConnection._registerIssuedCid(issuedCid);
+      clientConnection[quicConnectionInternals.registerIssuedCid](issuedCid);
       t.equal(client.cidTable.get(issuedKey), clientConnection, 'issued CID routes to the connection');
-      clientConnection._unregisterIssuedCid(issuedCid);
+      clientConnection[quicConnectionInternals.unregisterIssuedCid](issuedCid);
       t.equal(client.cidTable.get(issuedKey), undefined, 'retired issued CID is removed from routing');
     } finally {
       await client.close();
@@ -3843,12 +3814,12 @@ describe('QUIC loopback object model', () => {
       ]));
       const token = new Uint8Array(16);
       for (let i = 0; i < token.byteLength; i++) token[i] = 192 + i;
-      clientConnection._onDestinationCidStatus(NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE, cid, Pointer.of(token.buffer));
-      clientConnection._onDestinationCidStatus(NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE, cid, Pointer.of(token.buffer));
+      clientConnection[quicConnectionInternals.onDestinationCidStatus](NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE, cid, Pointer.of(token.buffer));
+      clientConnection[quicConnectionInternals.onDestinationCidStatus](NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE, cid, Pointer.of(token.buffer));
       const reset = new Uint8Array(33);
       reset[0] = 64;
       reset.set(token, reset.byteLength - token.byteLength);
-      client._handleDatagram(null, 0, listener.address, reset, listener.address);
+      client[quicEndpointInternals.handleDatagram](null, 0, listener.address, reset, listener.address);
       await loop.timeout(0);
       t.notEqual(clientConnection.state, 'closed', 'deactivated stateless reset token no longer closes the connection');
     } finally {
@@ -3884,7 +3855,7 @@ describe('QUIC loopback object model', () => {
       const packet = new Uint8Array(43);
       packet[0] = 64;
       for (let i = 1; i < packet.byteLength; i++) packet[i] = i;
-      endpoint._handleDatagram(listener, sendFd, listener.address, packet, bound);
+      endpoint[quicEndpointInternals.handleDatagram](listener, sendFd, listener.address, packet, bound);
       const response = await recvUdp(responseFd, 500);
       if (response === null) throw new Error('no stateless reset was sent');
       t.ok(response.byteLength >= 17, 'stateless reset contains random bytes and token');
@@ -3926,7 +3897,7 @@ describe('QUIC loopback object model', () => {
       const packet = new Uint8Array(43);
       packet[0] = 64;
       for (let i = 1; i < packet.byteLength; i++) packet[i] = i;
-      endpoint._handleDatagram(listener, sendFd, listener.address, packet, bound);
+      endpoint[quicEndpointInternals.handleDatagram](listener, sendFd, listener.address, packet, bound);
       t.equal(await recvUdp(responseFd, 100), null, 'unknown short packet receives no stateless reset when disabled');
       t.equal(endpoint.stats.statelessResetSent, 0, 'disabled stateless reset does not increment sent counter');
     } finally {
@@ -3963,7 +3934,7 @@ describe('QUIC loopback object model', () => {
       const packet = new Uint8Array(41);
       packet[0] = 64;
       for (let i = 1; i < packet.byteLength; i++) packet[i] = i;
-      endpoint._handleDatagram(listener, sendFd, listener.address, packet, bound);
+      endpoint[quicEndpointInternals.handleDatagram](listener, sendFd, listener.address, packet, bound);
       t.equal(await recvUdp(responseFd, 100), null, 'unknown short packet below the minimum reset source size is ignored');
     } finally {
       socketClose(responseFd);
@@ -4003,7 +3974,7 @@ describe('QUIC loopback object model', () => {
       const started = performance.now();
       for (let attempt = 0; attempt < attempts; attempt++) {
         for (let i = 1; i < packet.byteLength; i++) packet[i] = attempt + i & 255;
-        endpoint._handleDatagram(listener, sendFd, listener.address, packet, bound);
+        endpoint[quicEndpointInternals.handleDatagram](listener, sendFd, listener.address, packet, bound);
       }
       const elapsedSeconds = (performance.now() - started) / 1e3;
       let responses = 0;

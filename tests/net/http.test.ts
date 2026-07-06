@@ -2,7 +2,7 @@
 * Tests for HTTP wire helpers, globals, and the HTTP/1.1 parser.
 */
 import { describe, it } from 'fino:test/test';
-import { parseRequest, parseResponse, serializeRequest, serializeResponse } from 'fino:net/http';
+import { Arena, parseRequest, parseResponse, serializeRequest, serializeResponse } from 'fino:net/http';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 async function* source(str: string): AsyncIterable<Uint8Array> {
@@ -639,6 +639,16 @@ describe('Serialization', () => {
     t.ok(text.includes('content-type: application/json\r\n'), 'custom header');
     t.ok(text.includes('4\r\ndata\r\n'), 'body chunk present');
     t.ok(text.endsWith('0\r\n\r\n'), 'terminal chunk present');
+  });
+  it('serializeRequest — accepts an arena for generated framing bytes', async (t) => {
+    const req = new Request('http://example.com/path', {
+      method: 'POST',
+      body: 'data'
+    });
+    const bytes = await collectBody(serializeRequest(req, new Arena(1024)));
+    const text = decodeUtf8(bytes);
+    t.ok(text.startsWith('POST /path HTTP/1.1\r\n'), 'request line correct');
+    t.ok(text.includes('4\r\ndata\r\n'), 'chunked body is framed');
   });
   it('serializeRequest — GET has no body', async (t) => {
     const req = new Request('http://example.com/');

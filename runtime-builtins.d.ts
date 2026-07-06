@@ -1,65 +1,284 @@
 /**
- * fino:ffi — Rust-backed native library binding.
+ * fino:ffi - Rust-backed native library binding.
  *
- * This synthetic module exposes Fino's low-level FFI surface. It is intended
- * for runtime modules and advanced applications that need to load system
- * libraries, call C ABI functions, pass pointers, or expose JS callbacks to
- * native code.
+ * This synthetic module exposes Fino's low-level C ABI surface. It is intended
+ * for built-in runtime modules and advanced applications that need to load
+ * system libraries, call native functions, pass raw pointers, describe by-value
+ * structs, or expose JavaScript callbacks to native code.
  *
- * FFI calls are process-local and can crash the runtime when signatures,
- * pointer lifetimes, or struct layouts are wrong. Prefer higher-level `fino:*`
- * modules when one exists.
+ * Prefer a higher-level `fino:*` module when one exists. FFI signatures are not
+ * checked against native headers, and mistakes in parameter types, return
+ * types, pointer lifetimes, struct layout, callback lifetimes, or ownership
+ * rules can corrupt memory or crash the process.
+ *
+ * Native functions use the platform C calling convention. Buffers passed to
+ * native code must stay alive until native code has finished reading or writing
+ * them, and memory returned by native libraries must be released with the
+ * matching native API.
+ *
+ * ```ts no_run
+ * import { dlopen } from 'fino:ffi';
+ *
+ * const libc = dlopen(null, {
+ *   getpid: { parameters: [], result: 'i32' },
+ * });
+ *
+ * console.log(libc.symbols.getpid());
+ * ```
  */
 declare module 'fino:ffi' {
   /**
-   * Native function signature metadata passed to `dlopen`.
+   * String descriptor for a scalar or pointer-shaped C ABI type.
+   *
+   * Integer descriptors use the matching C width. `usize` and `isize` marshal
+   * results as JavaScript `number`; use `usizeBig` or `isizeBig` when the full
+   * pointer-sized range must round-trip as `bigint`.
+   *
+   * `pointer` represents an opaque `void*` and crosses JS as `NativePointer`.
+   * `buffer` passes an `ArrayBuffer` or typed-array backing-store address as a
+   * `void*` parameter. `ignoredPointer` is for callbacks that receive a pointer
+   * parameter but intentionally do not materialize it in JavaScript.
+   */
+  export type NativeTypeName =
+    | 'void'
+    | 'bool'
+    | 'u8'
+    | 'i8'
+    | 'u16'
+    | 'i16'
+    | 'u32'
+    | 'i32'
+    | 'u64'
+    | 'i64'
+    | 'usize'
+    | 'isize'
+    | 'usizeBig'
+    | 'isizeBig'
+    | 'f32'
+    | 'f64'
+    | 'pointer'
+    | 'ignoredPointer'
+    | 'buffer';
+  /**
+   * Native type descriptor accepted in parameter and result positions.
+   *
+   * `structType()` values may be used by `dlopen()` for by-value struct
+   * parameters and return values. `FfiCallback` does not currently support
+   * struct parameters or struct returns.
+   */
+  export type NativeTypeDescriptor = NativeTypeName | StructType;
+  /**
+   * Native function signature metadata passed to `dlopen()`.
+   *
+   * A symbol descriptor maps the JavaScript call boundary to the native ABI.
+   * `parameters` defaults to an empty list only when an empty array is supplied;
+   * each entry must be a native type descriptor. `result` describes the return
+   * type and should be `'void'` for functions that do not return a value.
    */
   export interface NativeSymbolSpec {
     /**
-     * Positional native parameter descriptors.
+     * Positional native parameter descriptors in C call order.
      */
-    parameters?: readonly unknown[];
+    parameters?: readonly NativeTypeDescriptor[];
     /**
      * Native return descriptor.
      */
-    result?: unknown;
+    result?: NativeTypeDescriptor;
     /**
-     * Run the call on the native blocking pool when true.
+     * Legacy compatibility flag. Use `async` for new bindings.
      */
     nonblocking?: boolean;
     /**
-     * Run the call on the native blocking pool when true.
+     * Run the call on Fino's native blocking pool and return a `Promise`.
+     *
+     * Use this for long-running calls or functions that may block on I/O. Do
+     * not pass pointers to short-lived stack-like JS buffers unless those
+     * buffers are retained until the promise settles.
      */
     async?: boolean;
+    /**
+     * Enable V8 Fast API dispatch when the signature supports it.
+     *
+     * Defaults to `true`. Set this to `false` for native functions that may
+     * synchronously call back into JavaScript through an `FfiCallback`, because
+     * those calls need the normal V8 handle-scope path.
+     */
+    fast?: boolean;
+    /**
+     * Number of fixed parameters before variadic arguments.
+     *
+     * Variadic C functions require a variadic libffi call interface on some
+     * platforms. For example, `fcntl(fd, cmd, ...)` has two fixed parameters.
+     */
+    variadic?: number;
   }
   /**
    * Map of C symbol names to native call signatures.
    */
   export type NativeSymbolMap = Record<string, NativeSymbolSpec>;
   /**
-   * Callable JS wrappers for symbols loaded from a dynamic library.
+   * Callable JavaScript wrappers for symbols loaded from a dynamic library.
+   *
+   * The runtime validates and marshals arguments according to the symbol's
+   * descriptor on each call. Synchronous symbols return their native result
+   * directly; symbols marked `async: true` return a `Promise`.
    */
   export type NativeBindings<TSymbols extends NativeSymbolMap> = {
     [K in keyof TSymbols]: (...args: any[]) => any;
   };
   /**
-   * Handle returned by `dlopen`.
+   * Raw native code pointers for symbols loaded from a dynamic library.
+   *
+   * These pointers are useful when a C API needs another function pointer, but
+   * they should not be called or dereferenced manually.
+   */
+  export type NativeSymbolPointers<TSymbols extends NativeSymbolMap> = {
+    [K in keyof TSymbols]: ArrayBuffer;
+  };
+  /**
+   * Handle returned by `dlopen()`.
+   *
+   * The handle keeps the native library open for as long as any bound function
+   * may be called. `symbols` contains callable wrappers, while `pointers`
+   * contains raw pointer-sized buffers for the resolved symbol addresses.
    */
   export interface DynamicLibrary<TSymbols extends NativeSymbolMap = NativeSymbolMap> {
     /**
      * Bound native symbols keyed by their C symbol name.
      */
     symbols: NativeBindings<TSymbols>;
+    /**
+     * Raw symbol addresses keyed by their C symbol name.
+     */
+    pointers: NativeSymbolPointers<TSymbols>;
   }
   /**
    * A native pointer value: an 8-byte `ArrayBuffer` holding the address as a
    * little-endian `u64`, or `null` for the C null pointer.
+   *
+   * `ArrayBufferView` values may be passed where a pointer to the view's first
+   * byte is required. The view's `byteOffset` is included in the address.
    */
   export type NativePointer = ArrayBuffer | ArrayBufferView | null;
   /**
-   * Namespace of pointer and raw-memory helpers.
+   * Metadata for one field in a `StructType`.
    */
-  export const Pointer: {
+  export interface StructFieldInfo {
+    /**
+     * Field name used by `get()`, `set()`, and `offsetOf()`.
+     */
+    name: string;
+    /**
+     * Byte offset from the start of the struct.
+     */
+    offset: number;
+    /**
+     * Field width in bytes.
+     */
+    size: number;
+  }
+  /**
+   * By-value C struct descriptor returned by `structType()`.
+   *
+   * Struct values are represented as `ArrayBuffer`s containing the native byte
+   * layout. The descriptor can allocate a correctly sized buffer, read and
+   * write fields, report offsets, and be used as a `dlopen()` parameter or
+   * result descriptor.
+   */
+  export interface StructType {
+    /**
+     * Total struct size in bytes, including trailing padding.
+     */
+    readonly size: number;
+    /**
+     * Struct alignment in bytes.
+     */
+    readonly align: number;
+    /**
+     * Field metadata in declaration order.
+     */
+    readonly fields: readonly StructFieldInfo[];
+    /**
+     * Allocate a zero-filled `ArrayBuffer` with this struct's size.
+     */
+    alloc(): ArrayBuffer;
+    /**
+     * Read a field value from a struct buffer.
+     *
+     * Nested struct fields are returned as copied `ArrayBuffer`s. Pointer
+     * fields are returned as `NativePointer` values.
+     */
+    get(buffer: ArrayBuffer | ArrayBufferView, field: string): unknown;
+    /**
+     * Write a field value into a struct buffer.
+     *
+     * The buffer must be large enough to contain the target field at its native
+     * offset. Nested struct fields accept a buffer with the nested layout.
+     */
+    set(buffer: ArrayBuffer | ArrayBufferView, field: string, value: unknown): void;
+    /**
+     * Return the byte offset of a named field.
+     */
+    offsetOf(field: string): number;
+  }
+  /**
+   * Object-form field descriptor accepted by `structType()`.
+   */
+  export interface StructFieldDescriptor {
+    /**
+     * Field name.
+     */
+    name: string;
+    /**
+     * Field type, another `StructType`, or `'bytes'` for explicit padding.
+     */
+    type: NativeTypeDescriptor | 'bytes';
+    /**
+     * Explicit byte offset. When omitted, the field is naturally aligned after
+     * the previous field.
+     */
+    offset?: number;
+    /**
+     * Padding byte count when `type` is `'bytes'`.
+     */
+    size?: number;
+  }
+  /**
+   * Tuple-form field descriptor accepted by `structType()`.
+   */
+  export type StructFieldTuple = readonly [name: string, type: NativeTypeDescriptor];
+  /**
+   * Field descriptor accepted by `structType()`.
+   */
+  export type StructField = StructFieldTuple | StructFieldDescriptor;
+  /**
+   * Callback object returned by `new FfiCallback()`.
+   */
+  export interface FfiCallbackHandle {
+    /**
+     * Native function pointer to pass to C APIs.
+     */
+    readonly pointer: ArrayBuffer;
+    /**
+     * Release the native callback trampoline.
+     *
+     * The method is idempotent. Do not close the callback while native code may
+     * still call `pointer`.
+     */
+    close(): void;
+    /**
+     * Dispose hook used by `using` declarations.
+     */
+    [Symbol.dispose](): void;
+  }
+  /**
+   * Pointer and raw-memory helper API exposed as `Pointer`.
+   *
+   * Pointer helpers dereference raw addresses. They do not validate that the
+   * address is allocated, correctly aligned, or large enough for the requested
+   * access.
+   */
+  export interface PointerApi {
     /**
      * The C null pointer.
      */
@@ -83,30 +302,93 @@ declare module 'fino:ffi' {
       arena?: ArrayBuffer | ArrayBufferView,
       byteOffset?: number,
     ): ArrayBuffer | undefined;
+    /**
+     * Read an unsigned 8-bit integer at `ptr + offset`.
+     */
     readU8(ptr: NativePointer, offset?: number): number;
+    /**
+     * Read a signed 8-bit integer at `ptr + offset`.
+     */
     readI8(ptr: NativePointer, offset?: number): number;
+    /**
+     * Read an unsigned 16-bit little-endian integer at `ptr + offset`.
+     */
     readU16(ptr: NativePointer, offset?: number): number;
+    /**
+     * Read a signed 16-bit little-endian integer at `ptr + offset`.
+     */
     readI16(ptr: NativePointer, offset?: number): number;
+    /**
+     * Read an unsigned 32-bit little-endian integer at `ptr + offset`.
+     */
     readU32(ptr: NativePointer, offset?: number): number;
+    /**
+     * Read a signed 32-bit little-endian integer at `ptr + offset`.
+     */
     readI32(ptr: NativePointer, offset?: number): number;
+    /**
+     * Read an unsigned 64-bit little-endian integer at `ptr + offset`.
+     */
     readU64(ptr: NativePointer, offset?: number): bigint;
+    /**
+     * Read a signed 64-bit little-endian integer at `ptr + offset`.
+     */
     readI64(ptr: NativePointer, offset?: number): bigint;
+    /**
+     * Read a 32-bit little-endian float at `ptr + offset`.
+     */
     readF32(ptr: NativePointer, offset?: number): number;
+    /**
+     * Read a 64-bit little-endian float at `ptr + offset`.
+     */
     readF64(ptr: NativePointer, offset?: number): number;
     /**
      * Dereference a pointer-sized field at `ptr + offset`.
      */
     readPointer(ptr: NativePointer, offset?: number): NativePointer;
+    /**
+     * Write an unsigned 8-bit integer at `ptr + offset`.
+     */
     writeU8(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write a signed 8-bit integer at `ptr + offset`.
+     */
     writeI8(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write an unsigned 16-bit little-endian integer at `ptr + offset`.
+     */
     writeU16(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write a signed 16-bit little-endian integer at `ptr + offset`.
+     */
     writeI16(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write an unsigned 32-bit little-endian integer at `ptr + offset`.
+     */
     writeU32(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write a signed 32-bit little-endian integer at `ptr + offset`.
+     */
     writeI32(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write an unsigned 64-bit little-endian integer at `ptr + offset`.
+     */
     writeU64(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write a signed 64-bit little-endian integer at `ptr + offset`.
+     */
     writeI64(ptr: NativePointer, offset: number, value: number | bigint): void;
+    /**
+     * Write a 32-bit little-endian float at `ptr + offset`.
+     */
     writeF32(ptr: NativePointer, offset: number, value: number): void;
+    /**
+     * Write a 64-bit little-endian float at `ptr + offset`.
+     */
     writeF64(ptr: NativePointer, offset: number, value: number): void;
+    /**
+     * Write a pointer-sized address at `ptr + offset`.
+     */
     writePointer(ptr: NativePointer, offset: number, value: NativePointer): void;
     /**
      * Copy `len` bytes from `ptr` into a new `Uint8Array`.
@@ -131,22 +413,74 @@ declare module 'fino:ffi' {
      * copies the bytes; transferring detaches the buffer and triggers release.
      */
     view(ptr: NativePointer, len: number, opts?: { onRelease?: () => void }): ArrayBuffer;
-  };
+  }
+  /**
+   * Namespace of pointer and raw-memory helpers.
+   */
+  export const Pointer: PointerApi;
   /**
    * Native callback constructor.
    *
    * Constructed callbacks expose a native function pointer and must be retained
-   * for as long as native code may call them.
+   * for as long as native code may call them. The callback may be closed
+   * explicitly or with a `using` declaration.
+   *
+   * ```ts no_run
+   * import { FfiCallback } from 'fino:ffi';
+   *
+   * using cmp = new FfiCallback(
+   *   { parameters: ['pointer', 'pointer'], result: 'i32' },
+   *   (left, right) => 0,
+   * );
+   *
+   * nativeApi.symbols.registerComparator(cmp.pointer);
+   * ```
    */
-  export const FfiCallback: any;
+  export const FfiCallback: {
+    new (
+      spec: Pick<NativeSymbolSpec, 'parameters' | 'result'>,
+      callback: (...args: any[]) => unknown,
+    ): FfiCallbackHandle;
+  };
   /**
    * Build a by-value struct descriptor from field layout metadata.
+   *
+   * Fields may be declared as `[name, type]` tuples or as objects with
+   * explicit `offset` and `size` metadata. Normal fields are naturally aligned
+   * by default. Object fields with `type: 'bytes'` add explicit padding and
+   * require `size`.
+   *
+   * ```ts no_run
+   * import { structType } from 'fino:ffi';
+   *
+   * const Point = structType([
+   *   ['x', 'i32'],
+   *   ['y', 'i32'],
+   * ]);
+   *
+   * const point = Point.alloc();
+   * Point.set(point, 'x', 12);
+   * Point.set(point, 'y', -3);
+   * ```
    */
-  export function structType(fields: readonly unknown[], options?: { size?: number; align?: number }): unknown;
+  export function structType(fields: readonly StructField[], options?: { size?: number; align?: number }): StructType;
   /**
    * Open a dynamic library and bind the requested symbols.
    *
-   * `path` may be `null` to resolve symbols from the current process.
+   * `path` may be `null` to resolve symbols from the current process. The
+   * returned handle exposes callable wrappers in `symbols` and raw symbol
+   * addresses in `pointers`.
+   *
+   * ```ts no_run
+   * import { dlopen } from 'fino:ffi';
+   *
+   * const libc = dlopen('/usr/lib/libSystem.B.dylib', {
+   *   strlen: { parameters: ['buffer'], result: 'usize' },
+   * });
+   *
+   * const input = new TextEncoder().encode('hello\0');
+   * console.log(libc.symbols.strlen(input));
+   * ```
    */
   export function dlopen<TSymbols extends NativeSymbolMap = NativeSymbolMap>(path: string | null, symbols: TSymbols): DynamicLibrary<TSymbols>;
 }

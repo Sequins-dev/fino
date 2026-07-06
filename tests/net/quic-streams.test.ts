@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { quicAvailable, quicResetStreamAtAvailable } from 'fino:net/quic';
+import { quicConnectionInternals } from 'internal:net/quic/endpoint';
 import { QuicPipe, decodeUtf8, encodeUtf8 } from './fixtures/quic/sim-harness.ts';
 function once(target: EventTarget, type: string): Promise<any> {
   return new Promise((resolve) => {
@@ -182,7 +183,7 @@ describe('QUIC stream state conformance', () => {
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       await pipe.pumpUntil(blocked);
       await pipe.runUntilSettled();
-      t.ok(client._inspectSendState().pendingWriteBytes > 0, 'pending bytes are tracked while stream credit is exhausted');
+      t.ok(client[quicConnectionInternals.inspectSendState]().pendingWriteBytes > 0, 'pending bytes are tracked while stream credit is exhausted');
       let received = 0;
       while (received < payload.byteLength) {
         const chunk = await pipe.pumpUntil(serverStream.reader.read());
@@ -194,7 +195,7 @@ describe('QUIC stream state conformance', () => {
       t.equal(await pipe.pumpUntil(serverStream.reader.read()), null, 'peer receives FIN after stream-level credit drains queued data');
       await pipe.runUntilSettled();
       t.equal(received, payload.byteLength, 'peer read returns stream-level credit until the write completes');
-      t.equal(client._inspectSendState().pendingWriteCount, 0, 'stream-level blocked write queue drains');
+      t.equal(client[quicConnectionInternals.inspectSendState]().pendingWriteCount, 0, 'stream-level blocked write queue drains');
     } finally {
       await pipe.close();
     }

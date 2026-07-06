@@ -126,7 +126,8 @@
 *
 * @internal
 */
-import { decodeUtf8, encodeUtf8, TextDecoder } from '../../globals/encoding.ts';
+import { TextDecoder } from '../../globals/encoding.ts';
+import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
 import { AbortController, AbortSignal } from '../../globals/abort.ts';
 import { ReadableStream, isReadableStreamDisturbed } from '../../globals/webstreams.ts';
 import { Blob } from '../../globals/blob.ts';
@@ -524,10 +525,11 @@ function _isNullBodyStatus(status: number): boolean {
 * the cursor by `n`, and never allocates a new backing store. `reset()` sets
 * the cursor back to zero, logically freeing all previous allocations in O(1).
 *
-* Used to eliminate per-request allocations for response encoding. All bytes
-* written into arena views are consumed by `write(2)` before `reset()` is
-* called, so there is no aliasing hazard. If the arena is full, `alloc()`
-* falls back to a regular `new Uint8Array(n)` — no failure mode.
+* Used to eliminate per-message allocations for HTTP/1.1 request and response
+* encoding. All bytes written into arena views are consumed by `write(2)`
+* before `reset()` is called, so there is no aliasing hazard. If the arena is
+* full, `alloc()` falls back to a regular `new Uint8Array(n)` — no failure
+* mode.
 *
 * The FFI layer correctly handles the non-zero `byteOffset` of arena views
 * when they are passed to `write(2)` as `buffer` arguments.
@@ -3882,22 +3884,24 @@ export async function* serializeResponse(res: Response, arena?: Arena): AsyncGen
 *   - `content-length` already present → body emitted verbatim.
 *   - Body without content-length → `transfer-encoding: chunked` injected.
 *
-* Reading from the returned iterable consumes the request body.
+* Reading from the returned iterable consumes the request body. Passing an
+* `Arena` reuses its backing buffer for generated head and chunk framing bytes.
 *
 * ```ts no_run
-* for await (const chunk of serializeRequest(req)) {
+* for await (const chunk of serializeRequest(req, new Arena())) {
 *   await writer.write(chunk);
 * }
 * ```
 */
-export async function* serializeRequest(req: Request): AsyncGenerator<Uint8Array> {
+export async function* serializeRequest(req: Request, arena?: Arena): AsyncGenerator<Uint8Array> {
   const hasOutTrailers = req._hasOutTrailers();
   const chunked = hasOutTrailers || req.hasBody && !req.headers.has('content-length');
-  yield encodeUtf8(_buildRequestHead(req, chunked));
+  const headStr = _buildRequestHead(req, chunked);
+  yield arena ? _encodeAscii(headStr, arena) : encodeUtf8(headStr);
   const body = req.body;
   if (body !== null) {
     for await (const chunk of body) {
-      yield chunked ? _chunkedFrame(chunk) : chunk;
+      yield chunked ? _chunkedFrame(chunk, arena) : chunk;
     }
   }
   if (chunked) {
@@ -3914,7 +3918,7 @@ export async function* serializeRequest(req: Request): AsyncGenerator<Uint8Array
       let trailerBlock = '0\r\n';
       for (const [name, value] of trailers) trailerBlock += name + ': ' + value + '\r\n';
       trailerBlock += '\r\n';
-      yield encodeUtf8(trailerBlock);
+      yield arena ? _encodeAscii(trailerBlock, arena) : encodeUtf8(trailerBlock);
     } else {
       yield LAST_CHUNK_BYTES;
     }

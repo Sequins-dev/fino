@@ -2,7 +2,7 @@
 * Focused DNSSEC helper tests.
 */
 import { describe, it } from 'fino:test/test';
-import { _encodeName, RECORD_TYPES } from 'fino:net/dns';
+import { _encodeName, RECORD_TYPES } from 'internal:net/dns-wire';
 import { canonicalName, canonicalRrsetData, digestDnskey, dnskeyKeyTag, nsecCoversType, validateDnssecResponse, rrsigSignedData, validateSignedResponse, verifyRrsig } from '../../js/internal/net/dnssec.ts';
 const cryptoAvailable = (globalThis as typeof globalThis & {
   cryptoAvailable?: boolean;

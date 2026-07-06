@@ -127,6 +127,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:realm/pool", "realm/pool"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
+    source_builtin!(
+        "internal:realm/transport-port",
+        "internal/realm/transport-port"
+    ),
     source_builtin!("internal:globals/messaging", "globals/messaging"),
     // public CLI command tasks, with internal aliases for runtime compatibility
     source_builtin!("fino:commands/root", "commands/root"),
@@ -156,6 +160,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tooling/report", "internal/tooling/report"),
     source_builtin!("internal:duration", "internal/duration"),
     source_builtin!("internal:shutdown", "internal/shutdown"),
+    source_builtin!("internal:encoding", "internal/encoding"),
     source_builtin!("internal:package_manager", "internal/package_manager"),
     source_builtin!("internal:repl-handler", "internal/repl/handler"),
     source_builtin!("internal:commands/repl", "commands/repl"),
@@ -172,6 +177,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:globals/crypto", "globals/crypto"),
     source_builtin!("internal:globals/time", "globals/time"),
     source_builtin!("internal:globals/fetch", "globals/fetch"),
+    source_builtin!("internal:globals/websocket", "globals/websocket"),
+    source_builtin!("internal:globals/webtransport", "globals/webtransport"),
     source_builtin!(
         "internal:globals/compression-streams",
         "globals/compression-streams"
@@ -265,6 +272,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/net/simulated-provider"
     ),
     source_builtin!("internal:net/dns-provider", "internal/net/dns-provider"),
+    source_builtin!("internal:net/dns-wire", "internal/net/dns-wire"),
     source_builtin!("internal:net/dnssec", "internal/net/dnssec"),
     source_builtin!("fino:net/socket", "net/socket"),
     source_builtin!("fino:net/tls", "net/tls"),
@@ -315,8 +323,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/http/pool", "internal/net/http/pool"),
     source_builtin!("fino:net/http/eventstream", "net/http/eventstream"),
     source_builtin!("fino:net/http/eventsource", "globals/eventsource"),
-    source_builtin!("fino:net/http/websocket", "globals/websocket"),
-    source_builtin!("fino:net/http/webtransport", "globals/webtransport"),
+    source_builtin!("fino:net/http/websocket", "net/http/websocket"),
+    source_builtin!("fino:net/http/webtransport", "net/http/webtransport"),
     source_builtin!(
         "internal:net/quic/ngtcp2/bindings",
         "internal/net/quic/ngtcp2/bindings"
@@ -333,8 +341,22 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:net/quic/ngtcp2/crypto",
         "internal/net/quic/ngtcp2/crypto"
     ),
+    source_builtin!("internal:net/quic/core", "internal/net/quic/core"),
     source_builtin!("internal:net/quic/endpoint", "internal/net/quic/endpoint"),
-    source_builtin!("fino:net/quic", "net/quic"),
+    source_builtin!(
+        "internal:net/quic/connection",
+        "internal/net/quic/connection"
+    ),
+    source_builtin!("internal:net/quic/listener", "internal/net/quic/listener"),
+    source_builtin!("internal:net/quic/stream", "internal/net/quic/stream"),
+    source_builtin!("fino:net/quic/availability", "net/quic/availability"),
+    source_builtin!("fino:net/quic/connection", "net/quic/connection"),
+    source_builtin!("fino:net/quic/endpoint", "net/quic/endpoint"),
+    source_builtin!("fino:net/quic/events", "net/quic/events"),
+    source_builtin!("fino:net/quic/listener", "net/quic/listener"),
+    source_builtin!("fino:net/quic/stream", "net/quic/stream"),
+    source_builtin!("fino:net/quic/types", "net/quic/types"),
+    source_builtin!("fino:net/quic", "net/quic/index"),
     // file
     source_builtin!("fino:file", "file/fs"),
     source_builtin!("fino:file/path", "file/path"),

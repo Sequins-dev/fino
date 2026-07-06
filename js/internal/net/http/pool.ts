@@ -54,13 +54,36 @@ import { Headers, Request, Response } from 'internal:net/http/wire';
 import { Nghttp2Session } from './h2/session.ts';
 import type { H2StreamCallbacks } from './h2/session.ts';
 import type { BufferedBytesReader, BytesWriter } from '../../stream.ts';
+/**
+* Default idle timeout in milliseconds (60s) before an idle entry self-evicts.
+*
+* @internal
+*/
 const IDLE_MS = 6e4;
+/**
+* Optional tuning for a pool entry.
+*
+* `idleMs` overrides the default idle-eviction timeout; omit it to inherit
+* `IDLE_MS`. A short value is useful in tests to force idle teardown quickly.
+*
+* @internal
+*/
 interface H2PoolEntryOptions {
   idleMs?: number;
 }
 // ---------------------------------------------------------------------------
 // Per-stream state inside a pool entry
 // ---------------------------------------------------------------------------
+/**
+* Mutable state accumulated for one in-flight HTTP/2 stream.
+*
+* The receive-loop callbacks build up `status`, `headers`, `trailerHeaders`,
+* and `bodyChunks` as frames arrive; `inTrailers` tracks whether the current
+* header block is a trailer block; `done` guards against double settlement; and
+* `resolve`/`reject` settle the promise returned by `send()`.
+*
+* @internal
+*/
 interface StreamDeferred {
   streamId: number;
   status: number;
@@ -94,183 +117,85 @@ interface StreamDeferred {
 */
 export class H2PoolEntry {
   /**
-  * Private readonly property `#session` used by `H2PoolEntry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #session = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#session;
-  *   }
-  * }
-  * ```
+  * The live nghttp2 client session multiplexing all streams on this connection.
   *
   * @internal
   */
   readonly #session: Nghttp2Session;
   /**
-  * Private readonly property `#writer` used by `H2PoolEntry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #writer = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#writer;
-  *   }
-  * }
-  * ```
+  * Write half of the connected socket; receives serialized nghttp2 output.
   *
   * @internal
   */
   readonly #writer: BytesWriter;
+  /**
+  * Read half of the connected socket; drained by the background receive loop.
+  *
+  * @internal
+  */
   readonly #reader: BufferedBytesReader;
   /**
-  * Private property `#streams` used by `H2PoolEntry`.
+  * In-flight streams keyed by nghttp2 stream identifier.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #streams = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#streams;
-  *   }
-  * }
-  * ```
+  * Each `StreamDeferred` accumulates response status, headers, trailers, and
+  * body chunks until the stream ends, then resolves the caller's `send()`
+  * promise. Entries are removed on stream close, finish, or teardown.
   *
   * @internal
   */
   #streams = new Map<number, StreamDeferred>();
   /**
-  * Private property `#goingAway` used by `H2PoolEntry`.
+  * Whether the connection is refusing new streams.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #goingAway = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#goingAway;
-  *   }
-  * }
-  * ```
+  * Set on idle timeout, explicit close, peer GOAWAY, or transport failure.
+  * Backs the public `goingAway` getter.
   *
   * @internal
   */
   #goingAway = false;
   /**
-  * Private property `#maxConcurrent` used by `H2PoolEntry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #maxConcurrent = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#maxConcurrent;
-  *   }
-  * }
-  * ```
+  * Advisory ceiling on concurrent streams for this connection.
   *
   * @internal
   */
   #maxConcurrent = 100;
   /**
-  * Private property `#closed` used by `H2PoolEntry`.
+  * Whether the nghttp2 session and I/O halves have been closed.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #closed = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#closed;
-  *   }
-  * }
-  * ```
+  * Once set, `drainWrite`, `send`, and the receive loop become no-ops.
   *
   * @internal
   */
   #closed = false;
   /**
-  * Private property `#drainChain` used by `H2PoolEntry`.
+  * Promise mutex serializing every `drainWrite` call.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #drainChain = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#drainChain;
-  *   }
-  * }
-  * ```
+  * Concurrent `nghttp2_session_mem_send2` calls on one session are a data race,
+  * so all flushes from the receive loop and from `send()` are chained through
+  * this promise.
   *
   * @internal
   */
   #drainChain: Promise<void> = Promise.resolve();
+  /**
+  * Memoized promise for the in-progress or completed graceful close.
+  *
+  * Non-null once `close()` has started, making repeated calls idempotent.
+  *
+  * @internal
+  */
   #closePromise: Promise<void> | null = null;
   /**
-  * Private property `#idleTimer` used by `H2PoolEntry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #idleTimer = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#idleTimer;
-  *   }
-  * }
-  * ```
+  * Handle for the idle-eviction timer, or `null` when disarmed.
   *
   * @internal
   */
   #idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+  * Idle timeout in milliseconds before an idle connection self-evicts.
+  *
+  * @internal
+  */
   readonly #idleMs: number;
   /**
   * Create a pool entry around a client nghttp2 session and split streams.
@@ -452,25 +377,12 @@ export class H2PoolEntry {
   // Background recv loop
   // -------------------------------------------------------------------------
   /**
-  * Private method `#recvLoop` used by `H2PoolEntry`.
+  * Background loop that feeds inbound socket bytes into the nghttp2 session.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #recvLoop() {
-  *     return 'recvLoop';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#recvLoop();
-  *   }
-  * }
-  * ```
+  * Each chunk is passed to `session.recv` and any resulting output is flushed
+  * through `drainWrite`. The loop exits when the reader ends, the entry closes,
+  * or an error occurs, and always runs `#teardown` in its `finally` block so
+  * pending streams are rejected once the transport is gone.
   *
   * @internal
   */
@@ -672,6 +584,22 @@ export class H2PoolEntry {
     this.#closePromise = closeH2PoolEntry(this);
     return this.#closePromise;
   }
+  /**
+  * Dispose support so an entry can be used with `using`.
+  *
+  * Delegates to `close()` for graceful teardown when the entry leaves a
+  * `using` scope. The close runs asynchronously; await `close()` directly if
+  * you need to observe completion.
+  *
+  * ```ts no_run
+  * import { Request } from 'internal:net/http/wire';
+  * import { createPoolEntry } from 'internal:net/http/pool';
+  * {
+  *   using entry = createPoolEntry(reader, writer);
+  *   await entry.send(new Request('https://example.test/'));
+  * } // entry.close() runs here
+  * ```
+  */
   [Symbol.dispose](): void {
     this.close();
   }
@@ -679,25 +607,12 @@ export class H2PoolEntry {
   // Private helpers
   // -------------------------------------------------------------------------
   /**
-  * Private method `#finishStream` used by `H2PoolEntry`.
+  * Concatenate a stream's buffered body and resolve its `send()` promise.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #finishStream() {
-  *     return 'finishStream';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#finishStream();
-  *   }
-  * }
-  * ```
+  * Coalesces the accumulated chunks into a single body, builds a `Response`
+  * from the collected status, headers, and trailers, removes the stream from
+  * the active map, and triggers `close()` if this was the last stream on a
+  * going-away connection. No-op if the stream already finished.
   *
   * @internal
   */
@@ -724,25 +639,12 @@ export class H2PoolEntry {
     if (this.#goingAway && this.#streams.size === 0) void this.close();
   }
   /**
-  * Private method `#teardown` used by `H2PoolEntry`.
+  * Abrupt teardown that rejects every in-flight stream with the given error.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #teardown() {
-  *     return 'teardown';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#teardown();
-  *   }
-  * }
-  * ```
+  * Used when the transport fails or the socket closes unexpectedly. Marks the
+  * entry closed and going away, rejects and clears all pending streams, closes
+  * the nghttp2 session, and closes both I/O halves. Idempotent after the first
+  * call.
   *
   * @internal
   */
@@ -763,6 +665,14 @@ export class H2PoolEntry {
     } catch {}
     void this.#closeHalves();
   }
+  /**
+  * Close the reader and writer halves, ignoring individual close failures.
+  *
+  * Both closes are attempted and awaited via `Promise.allSettled` so a failure
+  * on one half never prevents the other from being released.
+  *
+  * @internal
+  */
   async #closeHalves(): Promise<void> {
     const closes: Promise<void>[] = [];
     try {
@@ -774,25 +684,11 @@ export class H2PoolEntry {
     await Promise.allSettled(closes);
   }
   /**
-  * Private method `#resetIdleTimer` used by `H2PoolEntry`.
+  * Re-arm the idle-eviction timer after clearing any existing one.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #resetIdleTimer() {
-  *     return 'resetIdleTimer';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#resetIdleTimer();
-  *   }
-  * }
-  * ```
+  * Does nothing when the entry is closed, going away, or has active streams;
+  * the timer only runs while the connection is genuinely idle. On expiry the
+  * entry marks itself going away and begins a graceful `close()`.
   *
   * @internal
   */
@@ -806,25 +702,7 @@ export class H2PoolEntry {
     }, this.#idleMs);
   }
   /**
-  * Private method `#clearIdleTimer` used by `H2PoolEntry`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #clearIdleTimer() {
-  *     return 'clearIdleTimer';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#clearIdleTimer();
-  *   }
-  * }
-  * ```
+  * Cancel and forget the idle-eviction timer if one is armed.
   *
   * @internal
   */
@@ -854,23 +732,7 @@ export class H2PoolEntry {
 */
 export class H2ConnectionPool {
   /**
-  * Private property `#entries` used by `H2ConnectionPool`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #entries = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#entries;
-  *   }
-  * }
-  * ```
+  * Live pool entries keyed by normalized `scheme://host:port` origin.
   *
   * @internal
   */

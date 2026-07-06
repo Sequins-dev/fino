@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { topic } from 'fino:context/topic';
 import { QuicEndpoint, quicAvailable, type QuicAddress, type QuicConnection } from 'fino:net/quic';
+import { quicConnectionInternals, quicEndpointInternals } from 'internal:net/quic/endpoint';
 import { QuicPipe, SimulatedQuicDatagramTransportFactory, SimulatedQuicRuntime, decodeUtf8, encodeUtf8 } from './fixtures/quic/sim-harness.ts';
 import { QUIC_V2, makeVersionNegotiationPacket } from './fixtures/quic/packet-craft.ts';
 import { parseQuicHeader } from './fixtures/quic/packet-parse.ts';
@@ -735,11 +736,11 @@ describe('QUIC simulator conformance', () => {
       await pipe.runUntilSettled();
       pipe.advance(12e4);
       await pipe.runUntilSettled();
-      const before = pipe.server._inspectAddressValidationStats();
+      const before = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       secondClient = newSimClient(pipe, localAddress, { sessionStore });
       const second = await connectSimClient(pipe, secondClient);
       await pipe.runUntilSettled();
-      const after = pipe.server._inspectAddressValidationStats();
+      const after = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       t.equal(second.handshakeComplete, true, 'same-address reconnect completes with the stored NEW_TOKEN');
       t.equal(after.addressTokenAccepted, before.addressTokenAccepted + 1, 'server accepts the regular NEW_TOKEN');
       t.equal(after.retrySent, before.retrySent, 'accepted NEW_TOKEN avoids a fresh Retry');
@@ -837,27 +838,27 @@ describe('QUIC simulator conformance', () => {
       await pipe.runUntilSettled();
       const tampered = validToken.slice();
       tampered[Math.min(1, tampered.byteLength - 1)] ^= 1;
-      const beforeTamper = pipe.server._inspectAddressValidationStats();
+      const beforeTamper = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       const tamperedResponse = await sendInitialProbe(pipe, originalAddress, tampered, 31);
-      const afterTamper = pipe.server._inspectAddressValidationStats();
+      const afterTamper = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       t.equal(afterTamper.addressTokenAccepted, beforeTamper.addressTokenAccepted, 'tampered regular token is not accepted');
       t.ok(tamperedResponse === null || (tamperedResponse[0] & 240) === 240, 'tampered regular token is dropped or challenged with Retry');
       pipe.advance(12e4);
       await pipe.runUntilSettled();
-      const beforeWrongAddress = pipe.server._inspectAddressValidationStats();
+      const beforeWrongAddress = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       const wrongAddressResponse = await sendInitialProbe(pipe, {
         family: 'ipv4',
         ip: '10.0.0.9',
         port: 55102
       }, validToken, 32);
-      const afterWrongAddress = pipe.server._inspectAddressValidationStats();
+      const afterWrongAddress = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       t.equal(afterWrongAddress.addressTokenAccepted, beforeWrongAddress.addressTokenAccepted, 'wrong-address regular token is not accepted');
       t.ok(wrongAddressResponse === null || (wrongAddressResponse[0] & 240) === 240, 'wrong-address regular token is dropped or challenged with Retry');
       pipe.advance(24 * 60 * 60 * 1e3 + 12e4);
       await pipe.runUntilSettled();
-      const beforeExpiry = pipe.server._inspectAddressValidationStats();
+      const beforeExpiry = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       const expiredResponse = await sendInitialProbe(pipe, originalAddress, validToken, 33);
-      const afterExpiry = pipe.server._inspectAddressValidationStats();
+      const afterExpiry = pipe.server[quicEndpointInternals.inspectAddressValidationStats]();
       t.equal(afterExpiry.addressTokenAccepted, beforeExpiry.addressTokenAccepted, 'expired regular token is not accepted');
       t.ok(expiredResponse === null || (expiredResponse[0] & 240) === 240, 'expired regular token is dropped or challenged with Retry');
     } finally {
@@ -1067,7 +1068,7 @@ describe('QUIC simulator conformance', () => {
         serverStreams.push(await pipe.pumpUntil(serverStreamPromise));
       }
       await pipe.runUntilSettled();
-      const blocked = client._inspectSendState();
+      const blocked = client[quicConnectionInternals.inspectSendState]();
       t.ok(blocked.pendingWriteBytes > 0, 'aggregate stream writes are blocked by connection-level credit');
       t.ok(blockedTopics.some((event) => event.connection === client && event.stream !== null), 'stream blocked topic includes connection and stream');
       t.ok(blockedEvents.some((event) => event.connection === client && event.stream !== null), 'stream blocked event includes connection and stream');
@@ -1077,7 +1078,7 @@ describe('QUIC simulator conformance', () => {
         t.equal(received[0], payloads[i][0], `stream ${i} preserves payload bytes`);
       }
       await pipe.runUntilSettled();
-      const unblocked = client._inspectSendState();
+      const unblocked = client[quicConnectionInternals.inspectSendState]();
       t.equal(unblocked.pendingWriteBytes, 0, 'all connection-blocked writes resume after peer reads across streams');
       t.equal(unblocked.pendingWriteCount, 0, 'no pending stream writes remain after credit is returned');
     } finally {
@@ -1569,7 +1570,7 @@ describe('QUIC simulator conformance', () => {
       const { client, server } = await pipe.handshake();
       const closed = once(server, 'close');
       const traceBefore = pipe.trace().length;
-      client._injectTransportCloseForTest();
+      client[quicConnectionInternals.injectTransportCloseForTest]();
       await pipe.pumpUntil(closed);
       t.equal(server.state, 'closed', 'peer closes after receiving transport CONNECTION_CLOSE');
       await t.rejects(() => server.openBidirectionalStream(), /closed|connected/i, 'opening a stream rejects after transport close');
@@ -1586,7 +1587,7 @@ describe('QUIC simulator conformance', () => {
     try {
       const { client, server } = await pipe.handshake();
       const closed = once(client, 'close');
-      server._injectTransportCloseForTest();
+      server[quicConnectionInternals.injectTransportCloseForTest]();
       await pipe.pumpUntil(closed);
       t.equal(client.state, 'closed', 'client closes after peer sends a transport-error CONNECTION_CLOSE');
       await t.rejects(() => client.openBidirectionalStream(), /closed|connected/i, 'client stream open rejects after protocol-error close');

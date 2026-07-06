@@ -21,7 +21,7 @@
 * notes.
 *
 * ```ts no_run
-* import { h3Available, serve } from '../../js/net/http/h3.ts';
+* import { h3Available, serve } from 'internal:net/http/h3';
 *
 * if (h3Available) {
 *   const server = await serve({
@@ -39,14 +39,14 @@
 *
 * @internal
 */
-import { QuicEndpoint, QuicConnectionEvent } from '../quic.ts';
+import { QuicEndpoint, QuicConnectionEvent } from '../quic/index.ts';
 import { H3ServerDriver } from '../../internal/net/http/h3/server.ts';
 import type { H3ServerDriverOptions } from '../../internal/net/http/h3/server.ts';
 import { H3ClientSession } from '../../internal/net/http/h3/client.ts';
 import type { H3RequestInit } from '../../internal/net/http/h3/client.ts';
 import { h3Available as _h3Available, requireH3 as _requireH3 } from '../../internal/net/http/h3/bindings.ts';
 import { resolveH3ConnectAddress } from '../../internal/net/http/h3/resolve.ts';
-import type { QuicConnectOptions, QuicListenOptions } from '../quic.ts';
+import type { QuicConnectOptions, QuicListenOptions } from '../quic/index.ts';
 /**
 * Whether libnghttp3 was loaded successfully.
 *
@@ -59,13 +59,26 @@ export const h3Available = _h3Available;
 /**
 * Return the loaded libnghttp3 binding or throw an installation hint.
 *
-* Use this during startup when HTTP/3 is mandatory. Optional HTTP/3 features
-* should usually check `h3Available` and choose a fallback instead. The throw
-* path is intentionally early so missing libnghttp3 does not open sockets or
-* partially initialize QUIC state.
+* Use this during startup when HTTP/3 is mandatory, so a missing library fails
+* immediately rather than partway through the first request. Optional HTTP/3
+* features should instead check `h3Available` and fall back to HTTP/2 or
+* HTTP/1. The throw path is intentionally early: it runs before any socket is
+* opened or QUIC state is initialized, so a failed call leaves nothing to tear
+* down.
 *
-* @returns The loaded libnghttp3 dynamic-library handle.
-* @throws When libnghttp3 cannot be loaded on this system.
+* The return value is the loaded libnghttp3 dynamic-library handle, the same
+* one used internally by `serve()` and `fetch()`. Throws when libnghttp3
+* cannot be loaded on this system; the error carries an install hint for the
+* current platform.
+*
+* ```ts no_run
+* import { requireH3, h3Available } from 'internal:net/http/h3';
+*
+* if (!h3Available) {
+*   throw new Error('this deployment requires HTTP/3');
+* }
+* const nghttp3 = requireH3(); // throws with an install hint if missing
+* ```
 */
 export function requireH3(): ReturnType<typeof _requireH3> {
   return _requireH3();
@@ -73,9 +86,26 @@ export function requireH3(): ReturnType<typeof _requireH3> {
 /**
 * Options for `serve()`.
 *
-* `port` is required. `hostname` defaults to `127.0.0.1`; pass an explicit
-* address to listen elsewhere. Certificate options match `fino:net/quic` and
-* are file paths read by the QUIC TLS layer.
+* `port` is required; use `0` to request an ephemeral port and read the actual
+* value back from the returned `H3Server`. `hostname` defaults to `127.0.0.1`,
+* so pass an explicit address (for example `::` or `0.0.0.0`) to listen on
+* other interfaces. `certificateFile` and `privateKeyFile` are PEM file paths
+* read by the QUIC TLS layer and match the corresponding `fino:net/quic`
+* options; the remaining QUIC listen options are inherited unchanged, while
+* `address`, `alpnProtocols`, and the certificate fields are managed by
+* `serve()` itself.
+*
+* ```ts no_run
+* import { serve, H3ServeOptions } from 'internal:net/http/h3';
+*
+* const options: H3ServeOptions = {
+*   port: 0,
+*   hostname: '::',
+*   certificateFile: './cert.pem',
+*   privateKeyFile: './key.pem',
+* };
+* const server = await serve(options, () => new Response('ok'));
+* ```
 */
 export interface H3ServeOptions extends Omit<QuicListenOptions, 'address' | 'alpnProtocols' | 'certificateFile' | 'privateKeyFile'> {
   /** UDP port for the QUIC listener. Use `0` to request an ephemeral port. */
@@ -89,6 +119,25 @@ export interface H3ServeOptions extends Omit<QuicListenOptions, 'address' | 'alp
 }
 /**
 * Running HTTP/3 server handle returned by `serve()`.
+*
+* `port` and `hostname` reflect the address the QUIC endpoint actually bound,
+* which matters when `serve()` was called with `port: 0`. `close()` shuts the
+* endpoint down and stops accepting new connections; in-flight connections are
+* torn down by the endpoint.
+*
+* ```ts no_run
+* import { serve } from 'internal:net/http/h3';
+*
+* const server = await serve(
+*   { port: 0, certificateFile: './cert.pem', privateKeyFile: './key.pem' },
+*   () => new Response('ok'),
+* );
+* try {
+*   console.log(`bound to ${server.hostname}:${server.port}`);
+* } finally {
+*   await server.close();
+* }
+* ```
 */
 export interface H3Server {
   /** Bound UDP port. */
@@ -101,18 +150,51 @@ export interface H3Server {
 /**
 * Fetch-compatible HTTP/3 request handler.
 *
-* Handlers receive a standard `Request` and return a standard `Response`.
-* Thrown errors are converted to server-side failures by the H3 driver.
+* A handler receives a standard `Request` and returns a `Response`, or a
+* promise of one. Any error it throws is caught by the H3 server driver and
+* turned into a server-side failure on that request's stream rather than
+* crashing the listener, so throwing is a safe way to signal an error.
+*
+* ```ts no_run
+* import { serve, H3Handler } from 'internal:net/http/h3';
+*
+* const handler: H3Handler = async (request) => {
+*   if (request.method !== 'GET') {
+*     return new Response('method not allowed', { status: 405 });
+*   }
+*   return Response.json({ path: new URL(request.url).pathname });
+* };
+* await serve(
+*   { port: 4433, certificateFile: './cert.pem', privateKeyFile: './key.pem' },
+*   handler,
+* );
+* ```
 */
 export type H3Handler = (request: Request) => Response | Promise<Response>;
 /**
 * Options for one-shot HTTP/3 `fetch()`.
 *
-* `quic` supplies connection-level QUIC options such as `verifyPeer`, `ca`,
-* client certificates, transport tuning, or key logging. The URL determines
-* the remote address and ALPN is always forced to `h3`.
+* Extends the standard H3 request init (method, headers, body) with a `quic`
+* field that supplies connection-level QUIC options such as `verifyPeer`,
+* `ca`, client certificates, transport tuning, or key logging. The `address`
+* and `alpnProtocols` QUIC fields are managed by `fetch()` — the remote address
+* is derived from the URL and ALPN is always forced to `h3` — so they cannot be
+* set here.
+*
+* ```ts no_run
+* import { fetch, H3FetchInit } from 'internal:net/http/h3';
+*
+* const init: H3FetchInit = {
+*   method: 'POST',
+*   body: JSON.stringify({ hello: 'world' }),
+*   headers: { 'content-type': 'application/json' },
+*   quic: { verifyPeer: true, ca: './ca.pem' },
+* };
+* const response = await fetch('https://example.test:4433/echo', init);
+* ```
 */
 export interface H3FetchInit extends H3RequestInit {
+  /** Connection-level QUIC options for the temporary endpoint. `address` and `alpnProtocols` are set by `fetch()` and cannot be overridden. */
   quic?: Omit<QuicConnectOptions, 'address' | 'alpnProtocols'>;
 }
 /**
@@ -123,14 +205,30 @@ export interface H3FetchInit extends H3RequestInit {
 /**
 * Start an HTTP/3 server.
 *
-* The server listens with ALPN `h3`, accepts QUIC connections, and dispatches
-* each request to `handler`. If listener setup fails, the underlying endpoint
-* is closed before the error is rethrown.
+* Opens a QUIC endpoint advertising ALPN `h3`, binds it to the address in
+* `options`, and dispatches every accepted request to `handler`. Each incoming
+* QUIC connection is served by its own `H3ServerDriver`, so a failure while
+* handling one connection is isolated and never tears down the listener.
+* `driverOptions` forwards advanced server-driver tuning and is rarely needed.
 *
-* @param options H3 listener and TLS options.
-* @param handler Fetch-compatible request handler.
-* @returns A server handle exposing the bound address and close operation.
-* @throws When libnghttp3 is unavailable or the QUIC listener cannot start.
+* If the listener cannot bind — an in-use port, an invalid certificate, or
+* missing libnghttp3 — the underlying endpoint is closed before the error is
+* rethrown, so a failed `serve()` never leaks a socket. Throws when libnghttp3
+* is unavailable or the QUIC listener cannot start.
+*
+* The returned handle reports the address that was actually bound, which is how
+* you recover the concrete port after passing `port: 0`.
+*
+* ```ts no_run
+* import { serve } from 'internal:net/http/h3';
+*
+* const server = await serve(
+*   { port: 4433, certificateFile: './cert.pem', privateKeyFile: './key.pem' },
+*   async (request) => Response.json({ path: new URL(request.url).pathname }),
+* );
+* console.log(`listening on https://${server.hostname}:${server.port}`);
+* await server.close();
+* ```
 */
 export async function serve(options: H3ServeOptions, handler: H3Handler, driverOptions: H3ServerDriverOptions = {}): Promise<H3Server> {
   requireH3();
@@ -172,17 +270,32 @@ export async function serve(options: H3ServeOptions, handler: H3Handler, driverO
 /**
 * Perform a one-shot HTTP/3 request.
 *
-* The helper opens a temporary QUIC endpoint, resolves the URL host to a QUIC
-* socket address, connects with ALPN `h3`, sends the request, materializes the
-* response body and trailers, then closes the endpoint. Use lower-level
-* QUIC/H3 session APIs for connection reuse. Automatic H3 origin pooling is
-* deferred for this release.
+* Accepts an absolute HTTP/3 URL as a string or `URL` plus standard Fetch
+* request options. Opens a temporary QUIC endpoint, resolves the URL host to a
+* QUIC socket address through `fino:net/dns`, connects with ALPN `h3` (keeping
+* the URL host as the default TLS SNI name), sends the request, fully
+* materializes the response body and trailers, then closes the endpoint before
+* resolving. Connection-level QUIC settings — peer verification, a custom CA,
+* client certificates, key logging — go through `init.quic`.
 *
-* @param url Absolute HTTP/3 URL as a string or `URL`.
-* @param init Standard Fetch request options.
-* @returns A standard `Response` with body bytes already materialized.
-* @throws When libnghttp3 is unavailable, connection setup fails, or the H3
-* request is rejected.
+* Because the endpoint is discarded after each call there is no connection
+* reuse; drive `H3ClientSession` directly when issuing many requests to one
+* origin. Automatic H3 origin pooling is deferred for this release.
+*
+* Resolves to a standard `Response` whose body bytes are already in memory, so
+* a following `arrayBuffer()`, `json()`, or `text()` never blocks on the
+* network. Throws when libnghttp3 is unavailable, connection setup fails, or
+* the server rejects the request.
+*
+* ```ts no_run
+* import { fetch } from 'internal:net/http/h3';
+*
+* const response = await fetch('https://localhost:4433/health', {
+*   headers: { accept: 'application/json' },
+*   quic: { verifyPeer: false },
+* });
+* console.log(response.status, await response.json());
+* ```
 */
 export async function fetch(url: string | URL, init: H3FetchInit = {}): Promise<Response> {
   requireH3();

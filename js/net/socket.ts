@@ -124,7 +124,7 @@
 import { dlopen, Pointer } from 'fino:ffi';
 import { networkInterfaces as nativeNetworkInterfaces } from 'internal:net-native';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from '../globals/encoding.ts';
+import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import * as loop from '../internal/runtime/loop.ts';
 import { FdReader, FdWriter, BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.ts';
 // ---------------------------------------------------------------------------

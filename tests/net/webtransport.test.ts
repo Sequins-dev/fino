@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { WebTransport } from 'fino:net/http/webtransport';
+import { WebTransport as HttpWebTransport, _fromHttp3WebTransport } from '../../js/net/http/webtransport.ts';
 import { encodeHttpDatagram } from 'internal:net/http/h3/webtransport';
 class FakeH3Connection extends EventTarget {
   sent: Uint8Array[] = [];
@@ -104,6 +105,8 @@ describe('WebTransport over HTTP/3 public API', () => {
     t.equal(typeof WebTransport, 'function');
     t.equal((globalThis as any).WebTransport, WebTransport);
     t.equal('WebTransportSession' in mod, false);
+    t.equal('_fromHttp3' in WebTransport, false, 'internal HTTP/3 factory is not a public constructor member');
+    t.equal('_acceptIncomingQuicStream' in WebTransport.prototype, false, 'internal stream router is not a public prototype member');
     const wt = WebTransport.unavailable('https://example.test/wt', 'test unavailable');
     t.equal(wt.url, 'https://example.test/wt');
     t.equal('readyState' in wt, false);
@@ -119,13 +122,13 @@ describe('WebTransport over HTTP/3 public API', () => {
   });
   it('exposes standards-shaped datagram streams for connected H3 sessions', async (t) => {
     const connection = new FakeH3Connection();
-    const wt = WebTransport._fromHttp3('https://example.test/wt', {
+    const wt = _fromHttp3WebTransport('https://example.test/wt', {
       connection,
       sessionStreamId: 8n,
       responseHeaders: new Headers({ 'sec-webtransport-http3-draft': 'draft-15' }),
       protocol: 'chat'
     });
-    t.ok(wt instanceof WebTransport);
+    t.ok(wt instanceof HttpWebTransport);
     t.equal(await wt.ready, undefined);
     t.equal(wt.responseHeaders?.get('sec-webtransport-http3-draft'), 'draft-15');
     t.equal(wt.protocol, 'chat');
@@ -144,7 +147,7 @@ describe('WebTransport over HTTP/3 public API', () => {
   });
   it('uses ReadableStream incoming stream queues and standard stream wrappers', async (t) => {
     const connection = new FakeH3Connection();
-    const wt = WebTransport._fromHttp3('https://example.test/wt', {
+    const wt = _fromHttp3WebTransport('https://example.test/wt', {
       connection,
       sessionStreamId: 8n
     });
@@ -186,7 +189,7 @@ describe('WebTransport over HTTP/3 public API', () => {
   });
   it('resolves closed on clean close and rejects it on transport error', async (t) => {
     const connection = new FakeH3Connection();
-    const wt = WebTransport._fromHttp3('https://example.test/wt', {
+    const wt = _fromHttp3WebTransport('https://example.test/wt', {
       connection,
       sessionStreamId: 8n
     });
@@ -212,7 +215,7 @@ describe('WebTransport over HTTP/3 public API', () => {
       done: true
     }, 'incoming stream readable closes');
     const erroredConnection = new FakeH3Connection();
-    const errored = WebTransport._fromHttp3('https://example.test/wt2', {
+    const errored = _fromHttp3WebTransport('https://example.test/wt2', {
       connection: erroredConnection,
       sessionStreamId: 12n
     });
@@ -228,7 +231,7 @@ describe('WebTransport over HTTP/3 public API', () => {
       3
     ]);
     const hash = await crypto.subtle.digest('SHA-256', matchingConnection.peerCertificate);
-    const wt = WebTransport._fromHttp3('https://example.test/wt', {
+    const wt = _fromHttp3WebTransport('https://example.test/wt', {
       connection: matchingConnection,
       sessionStreamId: 8n,
       options: { serverCertificateHashes: [{
@@ -265,7 +268,7 @@ describe('WebTransport over HTTP/3 public API', () => {
       5,
       6
     ]);
-    const failed = WebTransport._fromHttp3('https://example.test/wt', {
+    const failed = _fromHttp3WebTransport('https://example.test/wt', {
       connection: mismatchedConnection,
       sessionStreamId: 12n,
       options: { serverCertificateHashes: [{

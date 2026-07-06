@@ -3,7 +3,7 @@
 */
 import { describe, it } from 'fino:test/test';
 import { Mdns } from 'fino:net/mdns';
-import { RECORD_TYPES, _buildQuery, _decodeName, _encodeName, _parseResponse } from 'fino:net/dns';
+import { RECORD_TYPES, _buildQuery, _decodeName, _encodeName, _parseResponse } from 'internal:net/dns-wire';
 import * as sock from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
 

@@ -17,8 +17,9 @@ const available = quicAvailable && h3Available;
 const TEST_CERT = 'tests/net/fixtures/test.crt';
 const TEST_KEY = 'tests/net/fixtures/test.key';
 const fs = new DiskFileSystem('/');
+const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 async function readPemCertificateDer(path: string): Promise<Uint8Array> {
-  const pem = await fs.readFile(path);
+  const pem = decodeUtf8(await fs.readFile(path));
   const base64 = pem.replace(/-----BEGIN CERTIFICATE-----/g, '').replace(/-----END CERTIFICATE-----/g, '').replace(/\s+/g, '');
   const binary = atob(base64);
   const der = new Uint8Array(binary.length);
@@ -731,9 +732,9 @@ describe('HTTP/3 (h3 ALPN)', () => {
   });
   it('App.listen() accepts WebTransport routes over H3', async (t) => {
     if (!available) return;
-    const app = new App().value('tenant', () => 'acme');
+    const app = new App();
     let accepted = false;
-    app.route('/wt/:room').webtransport(async (session, ctx) => {
+    app.value('tenant', () => 'acme').route('/wt/:room').webtransport(async (session, ctx) => {
       accepted = session instanceof WebTransport && ctx.incoming.kind === 'webtransport' && ctx.protocol === 'h3' && ctx.session?.transport === 'quic' && ctx.params?.room === 'lobby' && ctx.tenant === 'acme';
     });
     const server = app.listen({

@@ -23,7 +23,7 @@
 */
 import { Reader, Writer } from '../../internal/stream.ts';
 import type { BytesWriter } from '../../internal/stream.ts';
-import { decodeUtf8, encodeUtf8 } from '../../globals/encoding.ts';
+import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -57,9 +57,13 @@ export interface SseEvent {
 * ```
 */
 export interface SseEventOptions {
+  /** Event payload. Multi-line strings are split into one `data:` line each. */
   data: string;
+  /** Event type written as an `event:` field; the client's `message` handler fires when omitted. */
   event?: string;
+  /** Event ID written as an `id:` field; the client echoes it back as `Last-Event-ID` on reconnect. */
   id?: string;
+  /** Reconnection interval in milliseconds, floored to an integer and written as a `retry:` field. */
   retry?: number;
 }
 // ---------------------------------------------------------------------------
@@ -143,6 +147,24 @@ export class EventSourceReader extends Reader<SseEvent> {
   get lastEventId(): string {
     return this.#lastEventId;
   }
+  /**
+  * Pull the next parsed event from the stream, or `null` once the source is
+  * exhausted.
+  *
+  * This is the pull-based counterpart to `for await`; the inherited async
+  * iterator calls it under the hood. Events with no `data:` field are skipped
+  * rather than yielded, so each resolved value always carries a payload. The
+  * parser reads and buffers as many source chunks as needed to complete one
+  * event before resolving.
+  *
+  * ```ts no_run
+  * const reader = new EventSourceReader(response.body);
+  * let event;
+  * while ((event = await reader.read()) !== null) {
+  *   console.log(event.type, event.data);
+  * }
+  * ```
+  */
   async read(): Promise<SseEvent | null> {
     if (this.#gen === null) this.#gen = this.#parse();
     const result = await this.#gen.next();

@@ -2,7 +2,7 @@
 * Tests for fino:net/http/app — middleware, routing, context, and OpenAPI.
 */
 import { describe, it } from 'fino:test/test';
-import { App, Router, RouteBuilder, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
+import { App, BuilderBranch, Router, RouteBuilder, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
 import { WebSocketConnection, MessageEvent } from 'fino:net/http/websocket';
 import { WebTransport } from 'fino:net/http/webtransport';
 import { parseEventStream } from 'fino:net/http/eventstream';
@@ -32,18 +32,17 @@ describe('HTTP app routing and middleware', () => {
       hasIncoming: false
     });
   });
-  it('runs middleware in Koa order and exposes async request context', async (t) => {
+  it('runs layers in Koa order and exposes async request context', async (t) => {
     const app = new App();
     const order: string[] = [];
-    app.value('emptySlot', async () => undefined);
-    app.use(async (ctx, next) => {
+    const branch = app.value('emptySlot', async () => undefined).layer(async (ctx, next) => {
       order.push('root:before');
       t.equal(app.context(), ctx, 'active context visible before await');
       await next();
       t.equal(app.context(), ctx, 'active context visible after await');
       order.push('root:after');
     });
-    app.route('/users/:id').value('params', schema.params(v.object({ id: v.string() }))).value('user', async (ctx) => `user-${ctx.params.id}`).get().handle((ctx) => {
+    branch.route('/users/:id').value('params', schema.params(v.object({ id: v.string() }))).value('user', async (ctx) => `user-${ctx.params.id}`).get().handle((ctx) => {
       order.push('handler');
       return Response.json({
         id: ctx.params.id,
@@ -65,8 +64,8 @@ describe('HTTP app routing and middleware', () => {
     t.equal(app.context(), undefined, 'context clears after request');
   });
   it('supports short-circuit middleware and empty declared slots', async (t) => {
-    const app = new App().value('emptySlot', async () => undefined).use((_ctx, _next) => new Response('blocked', { status: 403 }));
-    app.get('/never').handle(() => new Response('never'));
+    const app = new App();
+    app.value('emptySlot', async () => undefined).use(() => new Response('blocked', { status: 403 })).get('/never').handle(() => new Response('never'));
     const res = await app.handle(request('/never'));
     t.equal(res.status, 403);
     t.equal(await res.text(), 'blocked');
@@ -79,29 +78,74 @@ describe('HTTP app routing and middleware', () => {
     base.get().handle((ctx) => Response.json({ flavor: ctx.flavor ?? null }));
     const res = await app.handle(request('/branch'));
     t.deepEqual(await res.json(), { flavor: null }, 'sibling branch does not see the enrichment');
-    t.ok(app.route('/other').use(async (_ctx, next) => next()) instanceof RouteBuilder, 'use() returns a builder');
+    t.ok(app.route('/other').use(async () => {}) instanceof RouteBuilder, 'use() returns a builder');
+    t.ok(app.route('/shared') instanceof BuilderBranch, 'route builders share the exported base');
   });
-  it('applies app enrichments in registration order', async (t) => {
+  it('requires explicit immutable root branches for inherited enrichments', async (t) => {
     const app = new App();
-    app.value('seen', () => 'early');
-    app.get('/early').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
-    app.value('late', () => 'late');
-    app.get('/late').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
+    const early = app.value('seen', () => 'early');
+    early.get('/early').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
+    const late = early.value('late', () => 'late');
+    late.get('/late').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
+    app.get('/plain').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
     t.deepEqual(await (await app.handle(request('/early'))).json(), {
       seen: 'early',
       late: null
-    }, 'routes registered before an enrichment do not include it');
+    }, 'explicit branch includes its inherited value');
     t.deepEqual(await (await app.handle(request('/late'))).json(), {
       seen: 'early',
       late: 'late'
-    }, 'routes registered after include the whole chain');
+    }, 'child branch includes both values');
+    t.deepEqual(await (await app.handle(request('/plain'))).json(), {
+      seen: null,
+      late: null
+    }, 'root routes do not inherit unchained branch values');
   });
   it('lets a later value shadow an earlier one along a branch', async (t) => {
-    const app = new App().value('who', () => 'app');
-    app.get('/app').handle((ctx) => Response.json({ who: ctx.who }));
-    app.route('/branch').value('who', () => 'branch').get().handle((ctx) => Response.json({ who: ctx.who }));
+    const app = new App();
+    const base = app.value('who', () => 'app');
+    base.get('/app').handle((ctx) => Response.json({ who: ctx.who }));
+    base.route('/branch').value('who', () => 'branch').get().handle((ctx) => Response.json({ who: ctx.who }));
     t.deepEqual(await (await app.handle(request('/app'))).json(), { who: 'app' });
     t.deepEqual(await (await app.handle(request('/branch'))).json(), { who: 'branch' });
+  });
+  it('layers wrap downstream routes and unmatched fallback responses', async (t) => {
+    const app = new App();
+    const seen: string[] = [];
+    const layered = app.layer(async (ctx, next) => {
+      seen.push(`before:${ctx.route}`);
+      const res = await next();
+      seen.push(`after:${res instanceof Response ? res.status : 'upgrade'}`);
+      if (res instanceof Response) res.headers.set('x-layered', 'yes');
+      return res;
+    });
+    layered.get('/hit').handle(() => new Response('hit'));
+    const hit = await app.handle(request('/hit'));
+    t.equal(await hit.text(), 'hit');
+    t.equal(hit.headers.get('x-layered'), 'yes');
+    const miss = await app.handle(request('/miss'));
+    t.equal(miss.status, 404);
+    t.equal(miss.headers.get('x-layered'), 'yes');
+    t.deepEqual(seen, [
+      'before:/hit',
+      'after:200',
+      'before:/miss',
+      'after:404'
+    ]);
+  });
+  it('route-scoped layers only run when their path branch matches', async (t) => {
+    const app = new App();
+    const seen: string[] = [];
+    app.route('/admin').layer(async (_ctx, next) => {
+      seen.push('admin');
+      return next();
+    }).get().handle(() => new Response('admin'));
+    app.get('/public').handle(() => new Response('public'));
+    t.equal(await (await app.handle(request('/admin'))).text(), 'admin');
+    t.equal(await (await app.handle(request('/public'))).text(), 'public');
+    t.equal((await app.handle(request('/admin', { method: 'POST' }))).status, 405);
+    t.equal((await app.handle(request('/other'))).status, 404);
+    t.deepEqual(seen, ['admin', 'admin']);
   });
   it('nests route builders for grouped REST routes', async (t) => {
     const app = new App();
@@ -126,8 +170,9 @@ describe('HTTP app routing and middleware', () => {
     t.equal((await app.handle(request('/users/7', { method: 'DELETE' }))).status, 204);
   });
   it('mounts routers and keeps route method forks isolated', async (t) => {
-    const router = new Router().value('tenant', () => 'acme');
-    router.route('/items/:id').value('params', schema.params(v.object({ id: v.string() }))).get().value('verbValue', () => 'read').handle((ctx) => Response.json({
+    const router = new Router();
+    const tenantRouter = router.value('tenant', () => 'acme');
+    tenantRouter.route('/items/:id').value('params', schema.params(v.object({ id: v.string() }))).get().value('verbValue', () => 'read').handle((ctx) => Response.json({
       tenant: ctx.tenant,
       id: ctx.params.id,
       verb: ctx.verbValue,
@@ -162,7 +207,7 @@ describe('HTTP app routing and middleware', () => {
     const app = new App();
     app.route('/api').mount(router);
     t.throws(() => router.get('/b'), /already mounted/, 'registering after mount throws');
-    t.throws(() => router.use(async (_ctx, next) => next()), /already mounted/, 'use after mount throws');
+    t.throws(() => router.use(async () => undefined), /already mounted/, 'use after mount throws');
     const again = new App();
     t.throws(() => again.route('/v2').mount(router), /already mounted/, 'mounting twice throws');
   });
@@ -188,9 +233,8 @@ describe('HTTP app routing and middleware', () => {
       return new Response('ok');
     });
     const app = new App();
-    app.route('/x').use(async (_ctx, next) => {
+    app.route('/x').use(async () => {
       order.push('branch');
-      return next();
     }).mount(router);
     await app.handle(request('/x/child'));
     t.deepEqual(order, ['branch', 'handler']);
@@ -220,7 +264,7 @@ describe('HTTP app OpenAPI', () => {
     app.route('/users/:id').meta({ tags: ['users'] }).value('params', schema.params(v.object({ id: v.string() }))).get().meta({
       operationId: 'getUser',
       summary: 'Fetch a user'
-    }).use(schema.query(v.object({ verbose: v.boolean().optional() }))).use(schema.response(v.object({ id: v.string() }), {
+    }).use(schema.query(v.object({ verbose: v.boolean().optional() }))).layer(schema.response(v.object({ id: v.string() }), {
       status: 200,
       description: 'OK'
     })).handle((ctx) => Response.json({ id: ctx.params.id }));
@@ -242,12 +286,12 @@ describe('HTTP app OpenAPI', () => {
   });
   it('generates operation IDs and applies last-wins metadata', (t) => {
     const app = new App();
-    app.get('/users/:id').use(schema.response(v.object({ ok: v.boolean() }))).handle(() => Response.json({ ok: true }));
+    app.get('/users/:id').layer(schema.response(v.object({ ok: v.boolean() }))).handle(() => Response.json({ ok: true }));
     const doc = app.openapi({ version: '1.0.0' }) as any;
     t.equal(doc.paths['/users/{id}'].get.operationId, 'getUsersById');
     const duplicate = new App();
-    duplicate.get('/a').use(defineMiddleware((_ctx, next) => next(), { operationId: 'same' })).handle(() => new Response('a'));
-    duplicate.get('/b').use(defineMiddleware((_ctx, next) => next(), { operationId: 'same' })).handle(() => new Response('b'));
+    duplicate.get('/a').use(defineMiddleware(() => undefined, { operationId: 'same' })).handle(() => new Response('a'));
+    duplicate.get('/b').use(defineMiddleware(() => undefined, { operationId: 'same' })).handle(() => new Response('b'));
     t.throws(() => duplicate.openapi({ version: '1.0.0' }), /Duplicate OpenAPI operationId/, 'duplicate operation IDs throw');
     const bodies = new App();
     bodies.post('/body').value('first', defineProducer(async () => ({}), { requestBody: { content: { 'application/json': { schema: { type: 'object' } } } } })).value('second', defineProducer(async () => ({}), { requestBody: { content: { 'text/plain': { schema: { type: 'string' } } } } })).handle(() => new Response('ok'));
@@ -269,16 +313,17 @@ describe('HTTP app OpenAPI', () => {
 });
 describe('HTTP app built-ins', () => {
   it('parses body, mutates cookies, and persists memory sessions', async (t) => {
-    const app = new App().value('cookies', cookies()).value('session', sessions({
+    const app = new App();
+    const stateful = app.value('cookies', cookies()).value('session', sessions({
       store: memorySessionStore(),
       cookie: 'sid'
     }));
-    app.post('/login').value('body', body.json(v.object({ user: v.string() }))).handle((ctx) => {
+    stateful.post('/login').value('body', body.json(v.object({ user: v.string() }))).handle((ctx) => {
       ctx.session.data.user = ctx.body.user;
       ctx.cookies.set('theme', 'dark', { path: '/' });
       return Response.json({ user: ctx.session.data.user });
     });
-    app.get('/me').handle((ctx) => Response.json({
+    stateful.get('/me').handle((ctx) => Response.json({
       user: ctx.session.data.user ?? null,
       theme: ctx.cookies.get('theme') ?? null
     }));
@@ -352,12 +397,11 @@ describe('HTTP app built-ins', () => {
   it('runs middleware for websocket routes and rejects with responses', async (t) => {
     const order: string[] = [];
     const app = new App();
-    app.route('/guarded').use(async (ctx, next) => {
+    app.route('/guarded').use(async (ctx) => {
       order.push('guard');
       if (ctx.request.headers.get('x-key') !== 'secret') {
         return Response.json({ error: 'Forbidden' }, { status: 403 });
       }
-      return next();
     }).websocket(async () => {
       order.push('handler');
     });
@@ -469,9 +513,9 @@ describe('HTTP app built-ins', () => {
     t.equal(first?.data, 'queue:mail', 'mounted sse route streams with prefix params');
   });
   it('registers webtransport routes with inherited context values', async (t) => {
-    const app = new App().value('tenant', () => 'acme');
+    const app = new App();
     let sawContext = false;
-    app.route('/wt/:room').webtransport(async (session, ctx) => {
+    app.value('tenant', () => 'acme').route('/wt/:room').webtransport(async (session, ctx) => {
       sawContext = session instanceof WebTransport && ctx.method === 'WEBTRANSPORT' && ctx.params?.room === 'lobby' && ctx.tenant === 'acme';
     });
     const incoming = {
@@ -509,8 +553,8 @@ describe('HTTP app built-ins', () => {
     t.equal(got.headers.get('allow'), 'POST');
   });
   it('converts errors with errorHandler', async (t) => {
-    const app = new App().use(errorHandler());
-    app.get('/boom').handle(() => {
+    const app = new App();
+    app.layer(errorHandler()).get('/boom').handle(() => {
       throw new Error('boom');
     });
     const res = await app.handle(request('/boom'));

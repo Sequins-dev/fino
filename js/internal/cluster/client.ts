@@ -1,16 +1,27 @@
 /**
 * internal:cluster/client - worker node cluster client.
 *
-* A ClusterClient:
-* - Connects to the seed, sends HELLO, waits for WELCOME.
-* - Accepts SPAWN messages and creates local realm instances for them.
-* - Bridges each local realm's ThreadPort <-> cluster PORT_MSG transport
+* A `ClusterClient` is the worker-side half of the cluster protocol. It sits
+* on top of a `ClusterTransport` — the transport owns the connection and the
+* HELLO handshake — and:
+*
+* - Tracks peer membership from the seed's WELCOME / PEER_UP / PEER_DOWN
+*   messages.
+* - Accepts SPAWN messages and creates local thread realms for them.
+* - Bridges each spawned realm's ThreadPort <-> cluster PORT_MSG transport
 *   (the relay pattern - the relay is transparent to all message content,
 *   so __rpc_req / __rpc_res travel as opaque PORT_MSG payloads).
-* - Sends HEARTBEAT every 2.5 s.
+* - Sends HEARTBEAT to the seed every 2.5 s.
 * - Exposes spawnRemote() so the cluster public API can spawn realms onto
 *   remote nodes by sending SPAWN through the seed.
 * - Exposes registerPort() so ClusterPort instances can receive PORT_MSG.
+*
+* `ClusterPort` is the parent-side handle for a remotely spawned realm: a
+* `BaseTransportPort` whose messages travel as PORT_MSG cluster frames
+* instead of an in-process channel. Ports register themselves with the
+* client on construction, queue outbound messages until SPAWN_ACK assigns
+* the child port ID, and preserve transferred ArrayBuffers end-to-end as
+* base64-encoded serializer store parts.
 *
 * ## Example
 *
@@ -28,8 +39,15 @@
 * const client = new ClusterClient(transport, 'worker-a');
 * client.start();
 *
+* // Spawn a realm on another node and talk to it through a port.
 * const port = new ClusterPort('worker-a/p-1', client);
-* client.registerPort(port);
+* const childPortId = await client.spawnRemote(port.portId, {
+*   entry: '/app/child.ts',
+*   root: '/app',
+*   rules: [],
+* });
+* port._setChildPortId(childPortId);
+* port.postMessage({ hello: 'child' });
 * ```
 *
 * @internal
@@ -39,7 +57,7 @@ import { type ClusterMessage, type SerializedSpawnConfig, type PeerInfo, encode,
 import { serialize, deserialize } from 'internal:serializer';
 import { createThreadContext, stepThreadContext, getThreadPortWakeReadFd, threadPortSend, threadPortRecv } from 'internal:realm-native';
 import { readable, removeRead } from 'internal:runtime/loop';
-import { BaseTransportPort } from '../../globals/messaging.ts';
+import { BaseTransportPort } from 'internal:realm/transport-port';
 const HEARTBEAT_MS = 2500;
 // ---------------------------------------------------------------------------
 // Base64 helpers for payload encoding
@@ -111,134 +129,52 @@ export class ClusterClient {
   */
   readonly nodeId: string;
   /**
-  * Private property `#transport` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #transport = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#transport;
-  *   }
-  * }
-  * ```
+  * Transport used to reach the seed and peers. The client assumes it is
+  * already connected where the implementation requires it, and closes it in
+  * `stop()`.
   *
   * @internal
   */
   #transport: ClusterTransport;
   /**
-  * Private property `#peers` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #peers = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#peers;
-  *   }
-  * }
-  * ```
+  * Peer membership keyed by node ID, populated from the seed's WELCOME
+  * message and kept current by PEER_UP / PEER_DOWN.
   *
   * @internal
   */
   #peers = new Map<string, PeerInfo>();
   /**
-  * Private property `#relays` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #relays = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#relays;
-  *   }
-  * }
-  * ```
+  * Active child-realm relays keyed by childPortId. Each relay bridges a
+  * locally spawned thread realm's ThreadPort to cluster PORT_MSG traffic;
+  * entries are removed when the realm exits or `stop()` runs.
   *
   * @internal
   */
   #relays = new Map<string, RealmRelay>();
   /**
-  * Private property `#portHandlers` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #portHandlers = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#portHandlers;
-  *   }
-  * }
-  * ```
+  * Parent-side `ClusterPort` instances keyed by portId, consulted first when
+  * routing an inbound PORT_MSG.
   *
   * @internal
   */
   #portHandlers = new Map<string, ClusterPort>();
   /**
-  * Private property `#exitHandlers` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #exitHandlers = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#exitHandlers;
-  *   }
-  * }
-  * ```
+  * One-shot realm-exit callbacks keyed by childPortId, registered through
+  * `onRealmExit()` and consumed on REALM_EXIT, TERMINATE, PEER_DOWN, or
+  * `stop()`.
   *
   * @internal
   */
   #exitHandlers = new Map<string, (error?: string) => void>();
+  /**
+  * Exit results (error string or undefined for clean exit) for realms that
+  * exited before any `onRealmExit()` handler was registered, replayed once a
+  * handler arrives.
+  */
   #exitedRealms = new Map<string, string | undefined>();
   /**
-  * Private property `#pendingSpawns` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #pendingSpawns = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#pendingSpawns;
-  *   }
-  * }
-  * ```
+  * In-flight `spawnRemote()` requests keyed by spawnReqId, settled by the
+  * matching SPAWN_ACK or rejected en masse by `stop()`.
   *
   * @internal
   */
@@ -247,45 +183,15 @@ export class ClusterClient {
     reject: (err: Error) => void;
   }>();
   /**
-  * Private property `#localHandle` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #localHandle = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#localHandle;
-  *   }
-  * }
-  * ```
+  * Monotonic counter used to mint node-unique spawn-request IDs and child
+  * port IDs.
   *
   * @internal
   */
   #localHandle = 0;
   /**
-  * Private property `#heartbeatTimer` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #heartbeatTimer = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#heartbeatTimer;
-  *   }
-  * }
-  * ```
+  * Interval handle for the 2.5 s HEARTBEAT to the seed; null before `start()`
+  * and after `stop()`.
   *
   * @internal
   */
@@ -361,7 +267,9 @@ export class ClusterClient {
   *
   * A later handler for the same `childPortId` replaces the previous one. The
   * handler receives an optional error string from the remote realm; missing
-  * error means normal completion.
+  * error means normal completion. If the realm already exited before the
+  * handler was registered, the buffered exit result is replayed and the
+  * handler fires asynchronously on the microtask queue.
   *
   * ```ts no_run
   * import { ClusterClient } from 'internal:cluster/client';
@@ -494,25 +402,15 @@ export class ClusterClient {
     this.#transport.close();
   }
   /**
-  * Private method `#handle` used by `ClusterClient`.
+  * Dispatch one inbound cluster message.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handle() {
-  *     return 'handle';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#handle();
-  *   }
-  * }
-  * ```
+  * Membership messages update `#peers` (PEER_DOWN also fails exit waiters
+  * for realms on the lost node), SPAWN_ACK settles the matching pending
+  * spawn, SPAWN creates a local child realm (failures are reported back as a
+  * failed SPAWN_ACK), TERMINATE forwards `__terminate` into a live relay or
+  * settles/buffers the exit waiter, REALM_EXIT notifies or buffers the
+  * parent-side waiter, and PORT_MSG routes to a registered `ClusterPort`
+  * first, then to a child-realm relay. Unknown message types are ignored.
   *
   * @internal
   */
@@ -620,25 +518,12 @@ export class ClusterClient {
     }
   }
   /**
-  * Private method `#handleSpawn` used by `ClusterClient`.
+  * Create a child thread realm for an inbound SPAWN.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handleSpawn() {
-  *     return 'handleSpawn';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#handleSpawn();
-  *   }
-  * }
-  * ```
+  * Mints a childPortId, starts the realm via `createThreadContext`, registers
+  * a relay for it, acknowledges with a successful SPAWN_ACK, and kicks off
+  * the relay loop. Errors thrown here are converted to a failed SPAWN_ACK by
+  * the caller.
   *
   * @internal
   */
@@ -669,25 +554,15 @@ export class ClusterClient {
     this.#runRelayLoop(relay);
   }
   /**
-  * Private method `#runRelayLoop` used by `ClusterClient`.
+  * Drive a child realm's relay until the realm finishes.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #runRelayLoop() {
-  *     return 'runRelayLoop';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#runRelayLoop();
-  *   }
-  * }
-  * ```
+  * Two mechanisms run concurrently: a zero-delay interval steps the thread
+  * context each tick (so the child's timers and microtasks advance even with
+  * no traffic), and an async loop awaits the realm's wake-fd to drain
+  * outbound thread-port messages promptly. `finalize` runs exactly once —
+  * on realm completion, step error, `__terminate`, or wake-fd failure — and
+  * sends REALM_EXIT to the seed after any in-flight PORT_MSG sends settle,
+  * carrying the step error or a recorded `__call_error` message if present.
   *
   * @internal
   */
@@ -751,25 +626,15 @@ export class ClusterClient {
     }
   }
   /**
-  * Private method `#drainInbound` used by `ClusterClient`.
+  * Drain messages the child realm has written to its thread port and forward
+  * them to the parent as PORT_MSG frames.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #drainInbound() {
-  *     return 'drainInbound';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#drainInbound();
-  *   }
-  * }
-  * ```
+  * Raw serialized bytes are forwarded unmodified so ArrayBuffer transfer
+  * stores survive the hop. Each message is peeked (deserialized without
+  * stores) to detect the `__terminate` sentinel, which triggers `finalize`
+  * instead of forwarding, and to record `__call_error` messages for the
+  * eventual REALM_EXIT. Per-message errors are logged and skipped so one bad
+  * frame cannot stall the relay.
   *
   * @internal
   */
@@ -811,25 +676,11 @@ export class ClusterClient {
     }
   }
   /**
-  * Private method `#sendToThread` used by `ClusterClient`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #sendToThread() {
-  *     return 'sendToThread';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#sendToThread();
-  *   }
-  * }
-  * ```
+  * Serialize a value and push it into a child thread realm's inbound thread
+  * port. Used for control messages like `__terminate` and for delivering
+  * inbound PORT_MSG payloads after transferred buffers have been
+  * reconstructed; the value is re-serialized as a single part with no
+  * separate transfer stores.
   *
   * @internal
   */
@@ -873,45 +724,16 @@ export class ClusterPort extends BaseTransportPort {
   */
   readonly portId: string;
   /**
-  * Private property `#client` used by `ClusterPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #client = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#client;
-  *   }
-  * }
-  * ```
+  * Owning `ClusterClient`, used for registration and outbound `sendPortMsg()`
+  * calls.
   *
   * @internal
   */
   #client: ClusterClient;
   /**
-  * Private property `#childPortId` used by `ClusterPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #childPortId = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#childPortId;
-  *   }
-  * }
-  * ```
+  * Remote child port ID assigned by SPAWN_ACK via `_setChildPortId()`; null
+  * until then, during which outbound messages accumulate in the pre-spawn
+  * queue.
   *
   * @internal
   */
@@ -968,10 +790,12 @@ export class ClusterPort extends BaseTransportPort {
   /**
   * Serialize and send a message to the remote child realm.
   *
-  * If the port is closed or has no child port ID yet, the call is a no-op.
-  * Transferable `ArrayBuffer`s are preserved as serialized store parts and
-  * forwarded through the cluster payload. MessagePort transfer is not
-  * supported by the cluster relay and non-ArrayBuffer transfer entries throw.
+  * If the port is closed the call is a no-op. If the child port ID has not
+  * arrived yet, the serialized message is queued and flushed in order once
+  * `_setChildPortId()` runs. Transferable `ArrayBuffer`s are preserved as
+  * serialized store parts and forwarded through the cluster payload.
+  * MessagePort transfer is not supported by the cluster relay and
+  * non-ArrayBuffer transfer entries throw.
   *
   * ```ts no_run
   * import { ClusterClient, ClusterPort } from 'internal:cluster/client';
