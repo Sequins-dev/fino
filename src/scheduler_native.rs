@@ -19,20 +19,6 @@ use crate::{
     },
 };
 
-/// Sentinel returned by `dispatchWorkload`/`pumpWorkload` when the workload's
-/// promise is still pending after running to quiescence. The scheduler treats
-/// this as "parked": it stops pumping this isolate and re-pumps only when the
-/// isolate's wake pipe (`workloadWakeFd`) signals a completion. The pump never
-/// blocks waiting for external I/O.
-const PUMP_PENDING: &str = "{\"pumpPending\":true}";
-
-/// Sentinel returned when a workload's synchronous execution was forcibly
-/// unwound because a single pump slice exceeded its hard budget. The scheduler
-/// treats this as a hard-cancelled (terminated) workload — it is the runaway
-/// containment path, distinct from the cooperative `budget_yield` a well-behaved
-/// workload returns on its own.
-const PUMP_BUDGET_TERMINATED: &str = "{\"budgetTerminated\":true}";
-
 /// Process-global registry of budget targets, keyed by an opaque token.
 ///
 /// A tenant isolate is pumped synchronously on its scheduler thread; an
@@ -137,6 +123,12 @@ struct ParkedWorkload {
     thread_handle: v8::IsolateHandle,
     /// This workload's key in the process-global budget registry.
     budget_token: u64,
+    /// Pre-serialized `{pumpPending:true}` / `{budgetTerminated:true}` outcome
+    /// bytes, computed once while the isolate is healthy. The parked path is hot
+    /// (every I/O park returns it) and the terminated path runs on an isolate
+    /// whose execution is being unwound — so neither can call the JS serializer.
+    pending_bytes: Vec<u8>,
+    terminated_bytes: Vec<u8>,
     _state: Rc<RefCell<FinoState>>,
     _module: v8::Global<v8::Module>,
     isolate: v8::OwnedIsolate,
@@ -317,7 +309,7 @@ fn setup_workload(
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
 
-    let (context_global, dispatch_global, state_rc, module_global) = {
+    let (context_global, dispatch_global, state_rc, module_global, pending_bytes, terminated_bytes) = {
         let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
         let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
         let context = v8::Context::new(isolate_scope, Default::default());
@@ -336,8 +328,11 @@ fn setup_workload(
 
         let runner = format!(
             "import 'internal:bootstrap';\n\
-             import {{ deserialize as __finoDeserialize }} from 'internal:serializer';\n\
+             import {{ serialize as __finoSerialize, deserialize as __finoDeserialize }} from 'internal:serializer';\n\
              const __entryPromise = import({});\n\
+             globalThis.__finoSerializeOutcome = function __finoSerializeOutcome(value) {{\n\
+               return __finoSerialize(value)[0];\n\
+             }};\n\
              globalThis.__finoSchedulerHostOps = [];\n\
              globalThis.__finoSchedulerHostResolvers = new Map();\n\
              globalThis.__finoSchedulerNextHostOpId = 1;\n\
@@ -366,8 +361,7 @@ fn setup_workload(
                const __entry = await __entryPromise;\n\
                const __target = __entry.default;\n\
                if (typeof __target !== 'function') throw new Error('scheduler workload entry must default-export a function');\n\
-               const result = await __target(JSON.parse(json));\n\
-               return JSON.stringify(result);\n\
+               return await __target(JSON.parse(json));\n\
              }};\n",
             json_quote(&entry_path)
         );
@@ -416,11 +410,21 @@ fn setup_workload(
         let func = v8::Local::<v8::Function>::try_from(value)
             .map_err(|_| "scheduler workload dispatch is not a function".to_string())?;
 
+        // Pre-serialize the fixed park/terminate sentinels now, while the isolate
+        // is healthy — the pump can't run the JS serializer on these later (the
+        // parked path is hot, the terminated path is mid-unwind).
+        let pending = sentinel_outcome(scope, "pumpPending");
+        let pending_bytes = serialize_outcome(scope, context, pending)?;
+        let terminated = sentinel_outcome(scope, "budgetTerminated");
+        let terminated_bytes = serialize_outcome(scope, context, terminated)?;
+
         (
             v8::Global::new(scope, context),
             v8::Global::new(scope, func),
             get_state(scope),
             v8::Global::new(scope, module),
+            pending_bytes,
+            terminated_bytes,
         )
     };
 
@@ -439,6 +443,8 @@ fn setup_workload(
         async_state: Some(crate::async_rt::new_state()),
         thread_handle,
         budget_token,
+        pending_bytes,
+        terminated_bytes,
         _state: state_rc,
         _module: module_global,
     };
@@ -516,8 +522,14 @@ fn dispatch_workload(
     });
 
     match result {
-        Ok(json) => {
-            if let Some(value) = v8::String::new(scope, &json) {
+        // The pump outcome crosses back as internal:serializer bytes (a
+        // structured clone), so host-op args carrying binary — a tenant's
+        // `writeFile(path, bytes)` — travel as bytes rather than base64'd JSON.
+        Ok(bytes) => {
+            let backing = v8::ArrayBuffer::new_backing_store_from_vec(bytes).make_shared();
+            let array_buffer = v8::ArrayBuffer::with_backing_store(scope, &backing);
+            let len = array_buffer.byte_length();
+            if let Some(value) = v8::Uint8Array::new(scope, array_buffer, 0, len) {
                 rv.set(value.into());
             }
         }
@@ -529,7 +541,7 @@ fn dispatch_parked(
     workload: &mut ParkedWorkload,
     request_json: &str,
     hard_budget_micros: u64,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     // Arm the budget deadline before entering: if this synchronous pump slice
     // overruns its hard budget, the orchestrator's budget-watchdog service (via
     // `sweep_budgets`) terminates the isolate's execution from its own thread.
@@ -576,7 +588,7 @@ fn dispatch_parked(
 fn dispatch_entered_parked(
     workload: &mut ParkedWorkload,
     request_json: &str,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
     let context = v8::Local::new(isolate_scope, &workload.context);
     let scope = &mut v8::ContextScope::new(isolate_scope, context);
@@ -596,7 +608,7 @@ fn dispatch_entered_parked(
                     // hard-cancelled a synchronous runaway, not an ordinary throw.
                     if tc.has_terminated() {
                         workload.active_promise = None;
-                        return Ok(PUMP_BUDGET_TERMINATED.to_string());
+                        return Ok(workload.terminated_bytes.clone());
                     }
                     return Err(crate::realm::child::catch_message(tc)
                         .unwrap_or_else(|| "scheduler workload dispatch threw".to_string()));
@@ -607,10 +619,8 @@ fn dispatch_entered_parked(
         if let Ok(promise) = v8::Local::<v8::Promise>::try_from(value) {
             workload.active_promise = Some(v8::Global::new(scope, promise));
         } else {
-            return value
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .ok_or_else(|| "scheduler workload result is not stringifiable".to_string());
+            // A synchronous (non-Promise) return settles immediately.
+            return serialize_outcome(scope, context, value);
         }
     }
 
@@ -623,13 +633,13 @@ fn dispatch_entered_parked(
     // hard-cancel rather than reading a half-settled promise.
     if scope.is_execution_terminating() {
         workload.active_promise = None;
-        return Ok(PUMP_BUDGET_TERMINATED.to_string());
+        return Ok(workload.terminated_bytes.clone());
     }
 
     // A host operation requested during the pump takes priority: the scheduler
     // performs it and calls back through `completeHostOperation`.
     if let Some(host_op) = take_host_operation(scope, context) {
-        return Ok(host_op);
+        return serialize_outcome(scope, context, host_op);
     }
 
     let promise_global = workload.active_promise.as_ref().unwrap();
@@ -638,10 +648,7 @@ fn dispatch_entered_parked(
         v8::PromiseState::Fulfilled => {
             let result = promise.result(scope);
             workload.active_promise = None;
-            result
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .ok_or_else(|| "scheduler workload result is not stringifiable".to_string())
+            serialize_outcome(scope, context, result)
         }
         v8::PromiseState::Rejected => {
             let result = promise.result(scope);
@@ -651,32 +658,78 @@ fn dispatch_entered_parked(
         // Parked on external I/O (facade op / async FFI / injected completion).
         // Return control to the scheduler, which re-pumps when the isolate's
         // wake pipe signals a completion. No sleeping, no spinning.
-        v8::PromiseState::Pending => Ok(PUMP_PENDING.to_string()),
+        v8::PromiseState::Pending => Ok(workload.pending_bytes.clone()),
     }
 }
 
-/// Drain every operation a workload queued this pump and clear the queue, so a
-/// tenant's concurrent facade calls (e.g. `Promise.all([read(a), read(b)])`) are
-/// performed in parallel by the scheduler rather than one per pump cycle.
-fn take_host_operation(
+/// Build a `{ <flag>: true }` control object — the pump's parked/terminated
+/// sentinels the scheduler branches on (`pumpPending`, `budgetTerminated`). These
+/// travel back inside the serialized outcome rather than as JSON strings.
+fn sentinel_outcome<'s>(scope: &mut v8::HandleScope<'s>, flag: &str) -> v8::Local<'s, v8::Value> {
+    let obj = v8::Object::new(scope);
+    if let Some(key) = v8::String::new(scope, flag) {
+        let value = v8::Boolean::new(scope, true);
+        obj.set(scope, key.into(), value.into());
+    }
+    obj.into()
+}
+
+/// Serialize a pump-outcome value with `internal:serializer` (via the runner's
+/// `__finoSerializeOutcome`), so the outcome — including any host-op args that
+/// carry binary — crosses back to the scheduler as structured-clone bytes with
+/// no JSON/base64 round trip.
+fn serialize_outcome(
     scope: &mut v8::HandleScope,
     context: v8::Local<v8::Context>,
-) -> Option<String> {
+    value: v8::Local<v8::Value>,
+) -> Result<Vec<u8>, String> {
+    let key = v8::String::new(scope, "__finoSerializeOutcome")
+        .ok_or_else(|| "failed to allocate serializer key".to_string())?;
+    let func_value = context
+        .global(scope)
+        .get(scope, key.into())
+        .ok_or_else(|| "scheduler outcome serializer missing".to_string())?;
+    let func = v8::Local::<v8::Function>::try_from(func_value)
+        .map_err(|_| "scheduler outcome serializer is not a function".to_string())?;
+    let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
+    let result = {
+        let tc = &mut v8::TryCatch::new(scope);
+        func.call(tc, undef, &[value]).ok_or_else(|| {
+            crate::realm::child::catch_message(tc)
+                .unwrap_or_else(|| "scheduler outcome serialization threw".to_string())
+        })?
+    };
+    let view = v8::Local::<v8::ArrayBufferView>::try_from(result)
+        .map_err(|_| "scheduler outcome serializer did not return bytes".to_string())?;
+    let mut buf = vec![0u8; view.byte_length()];
+    view.copy_contents(&mut buf);
+    Ok(buf)
+}
+
+/// Drain every operation a workload queued this pump and swap in a fresh queue,
+/// so a tenant's concurrent facade calls (e.g. `Promise.all([read(a), read(b)])`)
+/// are performed in parallel by the scheduler rather than one per pump cycle. The
+/// captured ops keep their contents (including binary args) for serialization.
+fn take_host_operation<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    context: v8::Local<v8::Context>,
+) -> Option<v8::Local<'s, v8::Value>> {
     let key = v8::String::new(scope, "__finoSchedulerHostOps")?;
-    let ops_value = context.global(scope).get(scope, key.into())?;
+    let global = context.global(scope);
+    let ops_value = global.get(scope, key.into())?;
     let ops = v8::Local::<v8::Array>::try_from(ops_value).ok()?;
     if ops.length() == 0 {
         return None;
     }
-    let ops_json = v8::json::stringify(scope, ops.into())?;
-    // Truncate the queue in place now that we've captured its contents.
-    let length_key = v8::String::new(scope, "length")?;
-    let zero = v8::Integer::new(scope, 0);
-    ops.set(scope, length_key.into(), zero.into())?;
-    Some(format!(
-        "{{\"hostOperations\":{}}}",
-        ops_json.to_rust_string_lossy(scope)
-    ))
+    // Swap in a fresh queue rather than truncating in place: the captured `ops`
+    // array stays referenced by the envelope (so it keeps its contents through
+    // serialization) while the workload's subsequent ops accumulate separately.
+    let fresh = v8::Array::new(scope, 0);
+    global.set(scope, key.into(), fresh.into())?;
+    let envelope = v8::Object::new(scope);
+    let ops_key = v8::String::new(scope, "hostOperations")?;
+    envelope.set(scope, ops_key.into(), ops.into())?;
+    Some(envelope.into())
 }
 
 fn complete_entered_host_operation(

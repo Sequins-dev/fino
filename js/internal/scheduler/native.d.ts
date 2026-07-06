@@ -1,5 +1,5 @@
 export function createWorkload(entryPath: string, heapLimitBytes?: number): number;
-export function dispatchWorkload(handle: number, requestJson: string, hardBudgetMicros?: number): string;
+export function dispatchWorkload(handle: number, requestJson: string, hardBudgetMicros?: number): Uint8Array;
 export function completeHostOperation(handle: number, operationId: number, ok: boolean, payload: Uint8Array): void;
 export function terminateWorkload(handle: number): void;
 /**

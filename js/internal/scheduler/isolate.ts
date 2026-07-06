@@ -13,6 +13,7 @@
 * @internal
 */
 import { createWorkload, dispatchWorkload, completeHostOperation, terminateWorkload, workloadWakeFd } from 'internal:scheduler-native';
+import { deserialize } from 'internal:serializer';
 
 /** Sentinel the native pump returns when the isolate is parked on external I/O. */
 export const PUMP_PENDING = 'pumpPending';
@@ -25,7 +26,8 @@ export const PUMP_PENDING = 'pumpPending';
 *   completion is injected. Never blocks.
 * - `hostOperation` — the isolate requested a privileged operation the scheduler
 *   must perform on its behalf, then feed back via {@link Isolate.complete}.
-* - `settled` — the dispatch resolved; `value` is the raw JSON result string.
+* - `settled` — the dispatch resolved; `value` is the workload's returned result,
+*   deserialized from the pump's internal:serializer bytes (binary preserved).
 */
 /** One privileged operation the scheduler performs on a workload's behalf. */
 export interface HostOperation {
@@ -89,7 +91,7 @@ export class Isolate {
   * accounting budget the workload reads from its dispatch request.
   */
   pump(requestJson: string, hardBudgetMicros = 0): PumpOutcome {
-    const raw = JSON.parse(dispatchWorkload(this.#handle, requestJson, hardBudgetMicros));
+    const raw = deserialize(dispatchWorkload(this.#handle, requestJson, hardBudgetMicros));
     if (isHostOperationsEnvelope(raw)) return { kind: 'hostOperations', operations: raw.hostOperations };
     if (isPumpPending(raw)) return { kind: 'pending' };
     if (isBudgetTerminated(raw)) return { kind: 'budgetTerminated' };

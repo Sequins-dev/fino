@@ -17,7 +17,6 @@
 import { readable, timeout } from 'internal:runtime/loop';
 import { getRealmData } from 'internal:realm-bridge';
 import { DiskFileSystem, DT_DIR, DT_REG, DT_UNKNOWN, type File, type Entry, type Stat } from 'fino:file';
-import { decodeBinary } from './facade-ops.ts';
 import { serialize } from 'internal:serializer';
 import { Isolate, type HostOperation } from './isolate.ts';
 import { coalesceWake, firstWake, removeWake } from './selection.ts';
@@ -124,6 +123,16 @@ function requireNumber(value: unknown, name: string): number {
   return n;
 }
 
+// Binary args (writeFile/pwrite/write payloads) arrive as Uint8Arrays — the
+// pump outcome is an internal:serializer structured clone, so bytes cross
+// intact rather than base64'd into JSON.
+function requireBytes(value: unknown, name: string): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  throw new TypeError(`${name} must be binary data`);
+}
+
 // Real file handles opened on behalf of tenant isolates, addressed by id.
 const openHandles = new Map<number, File>();
 let nextHandleId = 1;
@@ -156,7 +165,7 @@ async function runFileOp(method: string, args: Record<string, unknown>): Promise
     case 'readFile':
       return await hostFileSystem.readFile(requireString(args.path, 'path'));
     case 'writeFile':
-      await hostFileSystem.writeFile(requireString(args.path, 'path'), decodeBinary(args.data));
+      await hostFileSystem.writeFile(requireString(args.path, 'path'), requireBytes(args.data, 'data'));
       return null;
     case 'stat':
       return statFields(await hostFileSystem.stat(requireString(args.path, 'path')));
@@ -209,7 +218,7 @@ async function runFileHandleOp(method: string, args: Record<string, unknown>): P
     case 'pread':
       return await handle.pread(requireNumber(args.pos, 'pos'), requireNumber(args.len, 'len'));
     case 'pwrite':
-      return await handle.pwrite(requireNumber(args.pos, 'pos'), decodeBinary(args.data));
+      return await handle.pwrite(requireNumber(args.pos, 'pos'), requireBytes(args.data, 'data'));
     case 'bytes':
       return await handle.bytes();
     case 'size':
@@ -222,7 +231,7 @@ async function runFileHandleOp(method: string, args: Record<string, unknown>): P
       return null;
     case 'write': {
       const writer = handle.writer();
-      writer.write(decodeBinary(args.data));
+      writer.write(requireBytes(args.data, 'data'));
       await writer.flush();
       return null;
     }

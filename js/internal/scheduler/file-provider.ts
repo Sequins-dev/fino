@@ -16,7 +16,7 @@ import { FileSystem } from '../file/provider.ts';
 import { Stat } from '../file/stat.ts';
 import { Entry, FileEntry, DirEntry } from '../file/entry.ts';
 import type { Path } from 'fino:file/path';
-import { facadeOp, encodeBinary } from './facade-ops.ts';
+import { facadeOp } from './facade-ops.ts';
 
 export { FileSystem } from '../file/provider.ts';
 export { Stat } from '../file/stat.ts';
@@ -61,7 +61,7 @@ class SchedulerFile {
   }
 
   async pwrite(pos: number | bigint, data: Uint8Array): Promise<number> {
-    return await facadeOp('file-handle', 'pwrite', { id: this.#id, pos: Number(pos), data: encodeBinary(data) }) as number;
+    return await facadeOp('file-handle', 'pwrite', { id: this.#id, pos: Number(pos), data }) as number;
   }
 
   async size(): Promise<bigint> {
@@ -94,7 +94,7 @@ class SchedulerFile {
     if (this.#writeBuffer.length === 0) return;
     const data = Uint8Array.from(this.#writeBuffer);
     this.#writeBuffer = [];
-    await facadeOp('file-handle', 'write', { id: this.#id, data: encodeBinary(data) });
+    await facadeOp('file-handle', 'write', { id: this.#id, data });
   }
 
   async close(): Promise<void> {
@@ -222,7 +222,7 @@ export class SchedulerFileSystem extends FileSystem {
       : ArrayBuffer.isView(data)
         ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
         : new Uint8Array(data as ArrayBuffer);
-    await facadeOp('file', 'writeFile', { path: pathString(path), data: encodeBinary(bytes) });
+    await facadeOp('file', 'writeFile', { path: pathString(path), data: bytes });
   }
 }
 

@@ -8,8 +8,9 @@
 * promise stays parked (the scheduler pumps other isolates meanwhile) until the
 * completion arrives.
 *
-* Values cross the isolate boundary as JSON, so binary payloads (file bytes)
-* are wrapped with {@link encodeBinary} / {@link decodeBinary} as base64.
+* Values cross the isolate boundary as an `internal:serializer` structured
+* clone (both the request args and the injected result), so binary payloads
+* (file bytes) travel as `Uint8Array`s directly — no JSON, no base64.
 *
 * @internal
 */
@@ -39,29 +40,4 @@ function bridge(): SchedulerBridge {
 */
 export function facadeOp(provider: string, method: string, args: Record<string, unknown> = {}): Promise<unknown> {
   return bridge().__finoSchedulerHostOp(`${provider}:${method}`, args);
-}
-
-const B64 = '__finoU8Base64';
-
-/** Wrap bytes for JSON transport as `{ [B64]: "<base64>" }`. */
-export function encodeBinary(bytes: Uint8Array): Record<string, string> {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i] as number);
-  return { [B64]: btoa(binary) };
-}
-
-/** Reverse {@link encodeBinary}; returns the bytes for a wrapped value. */
-export function decodeBinary(value: unknown): Uint8Array {
-  const wrapped = value as Record<string, unknown> | null;
-  const b64 = wrapped?.[B64];
-  if (typeof b64 !== 'string') throw new TypeError('expected an encoded binary payload');
-  const binary = atob(b64);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-  return out;
-}
-
-/** True when `value` is a wrapped binary payload from {@link encodeBinary}. */
-export function isEncodedBinary(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && typeof (value as Record<string, unknown>)[B64] === 'string';
 }
