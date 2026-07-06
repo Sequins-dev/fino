@@ -16,6 +16,7 @@
 */
 import { readable, timeout } from 'internal:runtime/loop';
 import { getRealmData } from 'internal:realm-bridge';
+import { registerShutdownHook } from 'internal:shutdown';
 import { DiskFileSystem, DT_DIR, DT_REG, DT_UNKNOWN, type File, type Entry, type Stat } from 'fino:file';
 import { serialize } from 'internal:serializer';
 import { Isolate, type HostOperation } from './isolate.ts';
@@ -315,6 +316,8 @@ class ShardScheduler {
   #held = new Map<string, HeldWorkload>();
   #runnable = new Set<string>();
   #ready = new Signal();
+  /** Notified when the shard is asked to stop, so the heartbeat wait unblocks at once. */
+  #stopped = new Signal();
   #running = true;
   #claimed = 0;
   #dispatches = 0;
@@ -335,6 +338,10 @@ class ShardScheduler {
   async run(): Promise<SchedulerShardSummary> {
     this.#port.addEventListener('message', (event) => this.#onControl(event.data as SchedulerControlMessage));
     this.#port.start?.();
+    // Also stop on realm teardown: a hard `terminate()` (e.g. recovery killing a
+    // shard) does not deliver a `shutdown` control message, so without this the
+    // heartbeat loop would keep re-arming its timer and hold the thread alive.
+    registerShutdownHook(() => this.#stop());
     const heartbeat = this.#heartbeatLoop();
     await this.#dispatchLoop();
     await heartbeat;
@@ -361,10 +368,17 @@ class ShardScheduler {
         this.#drain(message.workloadId);
         break;
       case 'shutdown':
-        this.#running = false;
-        this.#ready.notify();
+        this.#stop();
         break;
     }
+  }
+
+  /** Stop the scheduler: wake the dispatch loop and unblock the heartbeat so both exit. Idempotent. */
+  #stop(): void {
+    if (!this.#running) return;
+    this.#running = false;
+    this.#ready.notify();
+    this.#stopped.notify();
   }
 
   #place(lease: LeaseRecord): void {
@@ -628,7 +642,11 @@ class ShardScheduler {
   /** Slow liveness tick — proves the thread is alive without polling for work. */
   async #heartbeatLoop(): Promise<void> {
     while (this.#running) {
-      await timeout(this.#heartbeatMs);
+      // Race the interval against the stop signal and cancel the timer once the
+      // wait ends, so a stop never leaves a pending timer holding the loop alive.
+      const tick = timeout(this.#heartbeatMs);
+      await Promise.race([tick, this.#stopped.wait()]);
+      tick.cancel();
       if (!this.#running) break;
       this.#port.postMessage({ report: 'heartbeat', shardId: this.#shardId, summary: summarize(this.#shardId, this.#held, this.#dispatches) });
     }
