@@ -101,6 +101,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(crate::reactor::create_module),
     ),
     (
+        "internal:reactor-engine",
+        BuiltinKind::Synthetic(crate::reactor::engine::create_module),
+    ),
+    (
         "internal:process",
         BuiltinKind::Synthetic(platform::create_module),
     ),
@@ -611,23 +615,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:orchestrator/budget-watchdog",
         "internal/orchestrator/budget-watchdog"
     ),
-    source_builtin!("internal:scheduler", "internal/scheduler/index"),
+    // Scheduler data model retained for the orchestrator; the TS ShardScheduler
+    // + facade were retired in favour of the native reactor engine.
     source_builtin!("internal:scheduler/types", "internal/scheduler/types"),
-    source_builtin!(
-        "internal:scheduler/selection",
-        "internal/scheduler/selection"
-    ),
     source_builtin!("internal:scheduler/workload", "internal/scheduler/workload"),
-    source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
-    source_builtin!(
-        "internal:scheduler/facade-ops",
-        "internal/scheduler/facade-ops"
-    ),
-    source_builtin!(
-        "internal:scheduler/file-provider",
-        "internal/scheduler/file-provider"
-    ),
-    source_builtin!("internal:scheduler/shard", "internal/scheduler/shard"),
     source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
     source_builtin!("internal:jobs/store", "internal/jobs/store"),
     source_builtin!("internal:jobs/runner", "internal/jobs/runner"),
@@ -1007,17 +998,19 @@ pub fn resolve_module_callback<'s>(
     });
 
     if spec.starts_with("fino:") || spec.starts_with("internal:") {
-        // This pre-check enforces Block rules even for builtins already present
-        // in the realm's cache (get_or_load_builtin returns cached modules
-        // before re-checking rules). It must apply the same builtin-referrer
-        // exemption as get_or_load_builtin and the dynamic-import path:
-        // builtins may always import other builtins, regardless of
-        // user-specified realm restrictions — otherwise a child realm's own
-        // bootstrap chain (e.g. internal:bootstrap -> internal:async-context)
-        // would be denied under a catch-all Block.
+        // Enforce Block rules even for builtins already present in the realm's
+        // cache (get_or_load_builtin returns cached modules before re-checking
+        // rules). A cached module was already resolved through an allowed path,
+        // so honor that: only re-block a spec that is NOT yet cached. This
+        // applies the same builtin-referrer exemption as get_or_load_builtin —
+        // builtins may always import other builtins regardless of user realm
+        // restrictions, so a child realm's own bootstrap chain (and any module
+        // it legitimately pre-loaded) is never denied under a catch-all Block.
         let blocked = {
             let st = state_rc.borrow();
-            if matches!(
+            if st.builtin_cache.contains_key(spec.as_str()) {
+                false
+            } else if matches!(
                 crate::state::resolve_directive(&st.import_rules, from_spec.as_deref(), &spec),
                 Some(ImportDirective::Block)
             ) {

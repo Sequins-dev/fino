@@ -19,6 +19,8 @@
 
 use ::v8;
 
+pub mod engine;
+
 /// Build the `internal:reactor-native` synthetic module.
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let names = [
@@ -297,6 +299,10 @@ mod imp {
         let fd = arg_i32(scope, &args, 0);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
+        if crate::reactor::engine::engine_io_active() {
+            engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Readable);
+            return;
+        }
         with_reactor(|r| {
             r.reads.insert(fd as u64, PendingRead::Readiness(g));
             r.queue(
@@ -309,6 +315,26 @@ mod imp {
         });
     }
 
+    /// Register a bare-readiness op (readable/writable) with the reactor engine.
+    fn engine_register_readiness(
+        g: v8::Global<v8::PromiseResolver>,
+        fd: i32,
+        kind: crate::reactor::engine::IoKind,
+    ) {
+        let resolver_id = crate::async_rt::push_resolver(g);
+        crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Io(
+            crate::reactor::engine::PendingIoReg {
+                fd,
+                kind,
+                resolver_id,
+                buffer: None,
+                buf_ptr: std::ptr::null_mut(),
+                len: 0,
+                written: 0,
+            },
+        ));
+    }
+
     pub fn writable(
         scope: &mut v8::HandleScope,
         args: v8::FunctionCallbackArguments,
@@ -317,6 +343,10 @@ mod imp {
         let fd = arg_i32(scope, &args, 0);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
+        if crate::reactor::engine::engine_io_active() {
+            engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Writable);
+            return;
+        }
         with_reactor(|r| {
             r.writes.insert(fd as u64, PendingWrite::Readiness(g));
             r.queue(
@@ -374,6 +404,24 @@ mod imp {
             Some(g) => g,
             None => return,
         };
+        // Engine mode: register with the reactor engine (isolate-tagged, completed
+        // off-isolate and resolved during the next pump) rather than the inline
+        // per-thread reactor. The buffer is realm-provided; we retain it for liveness.
+        if crate::reactor::engine::engine_io_active() {
+            let resolver_id = crate::async_rt::push_resolver(g_res);
+            crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Io(
+                crate::reactor::engine::PendingIoReg {
+                    fd,
+                    kind: crate::reactor::engine::IoKind::Read,
+                    resolver_id,
+                    buffer: Some(g_ab),
+                    buf_ptr: ptr,
+                    len,
+                    written: 0,
+                },
+            ));
+            return;
+        }
         with_reactor(|r| {
             r.reads.insert(
                 fd as u64,
@@ -427,6 +475,24 @@ mod imp {
                     Some(g) => g,
                     None => return,
                 };
+                // Engine mode: register the remaining write with the reactor engine.
+                if crate::reactor::engine::engine_io_active() {
+                    let resolver_id = crate::async_rt::push_resolver(g_res);
+                    crate::reactor::engine::engine_io_register(
+                        crate::reactor::engine::EngineReg::Io(
+                            crate::reactor::engine::PendingIoReg {
+                                fd,
+                                kind: crate::reactor::engine::IoKind::Write,
+                                resolver_id,
+                                buffer: Some(g_ab),
+                                buf_ptr: ptr,
+                                len,
+                                written,
+                            },
+                        ),
+                    );
+                    return;
+                }
                 with_reactor(|r| {
                     r.writes.insert(
                         fd as u64,
@@ -517,19 +583,30 @@ mod imp {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let g = v8::Global::new(scope, resolver);
-        let id = with_reactor(|r| {
-            let id = r.next_timer_id;
-            r.next_timer_id += 1;
-            r.timers.insert(id, g);
-            r.queue(
-                id,
-                libc::EVFILT_TIMER,
-                libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT,
-                0,
-                ms as isize,
-            );
-            id
-        });
+        let id = if crate::reactor::engine::engine_io_active() {
+            let timer_id = crate::reactor::engine::engine_next_timer_id();
+            let resolver_id = crate::async_rt::push_resolver(g);
+            crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Timer {
+                timer_id,
+                ms,
+                resolver_id,
+            });
+            timer_id
+        } else {
+            with_reactor(|r| {
+                let id = r.next_timer_id;
+                r.next_timer_id += 1;
+                r.timers.insert(id, g);
+                r.queue(
+                    id,
+                    libc::EVFILT_TIMER,
+                    libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT,
+                    0,
+                    ms as isize,
+                );
+                id
+            })
+        };
         let out = v8::Object::new(scope);
         let k_id = v8::String::new(scope, "id").unwrap();
         let v_id = num(scope, id as f64);
@@ -545,6 +622,12 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let id = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
+        if crate::reactor::engine::engine_io_active() {
+            crate::reactor::engine::engine_io_register(
+                crate::reactor::engine::EngineReg::CancelTimer { timer_id: id },
+            );
+            return;
+        }
         with_reactor(|r| {
             if r.timers.remove(&id).is_some() {
                 r.queue(id, libc::EVFILT_TIMER, libc::EV_DELETE, 0, 0);

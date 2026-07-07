@@ -18,7 +18,7 @@ export default async function schedulerHandleBinaryWorker(request: {
   await positional.close();
 
   const buffered = await fs.open(request.data.writePath, 'w');
-  buffered.write(payload);
+  buffered.writer().write(payload);
   await buffered.close();
 
   return { result: 'terminated', costMicros: 1 };

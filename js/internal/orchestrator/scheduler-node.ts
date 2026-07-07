@@ -13,68 +13,40 @@
 *
 * @internal
 */
-import { ImportMap, Realm } from '../../realm/index.ts';
+import * as engine from 'internal:reactor-engine';
+import * as loop from 'internal:runtime/loop';
 import { NodeIsolateCollection, type NodeWorkloadSpec, type ReleaseReason } from './node.ts';
 import { BudgetWatchdog } from './budget-watchdog.ts';
-import type { PendingMessage, SchedulerControlMessage, SchedulerReport, SchedulerShardSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
+import type { LeaseRecord, PriorityClass, SchedulerShardSummary, ShardLoadSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
 
-const SCHEDULER_ENTRY = `
-  import { runSchedulerShard } from 'internal:scheduler/shard';
-  await runSchedulerShard();
-`;
+/** Priority class → the engine's numeric priority (compareRunnable). */
+const PRIORITY_CLASS: Record<PriorityClass, number> = { interactive: 0, service: 1, background: 2 };
 
-const SHARD_INHERIT: string[] = [
-  'fino:*',
-  'internal:*',
-  'internal:scheduler/shard',
-  'internal:scheduler/selection',
-  'internal:scheduler/types',
-  'internal:scheduler/isolate',
-  'internal:scheduler/facade-ops',
-  'internal:scheduler/file-provider',
-  'internal:scheduler-native',
-  'internal:runtime/loop',
-  'internal:realm-bridge'
-];
-
-interface RealmPort {
-  postMessage(value: unknown): void;
-  addEventListener(type: 'message', handler: (event: { data: unknown }) => void): void;
-  start?(): void;
-}
-
-interface SchedulerRealm {
-  port: RealmPort;
-  run(): Promise<void>;
-  terminate(): void;
-}
-
-interface ShardHandle {
-  realm: SchedulerRealm;
-  port: RealmPort;
-  done: Promise<void>;
+/** A native reactor engine thread, plus liveness bookkeeping. */
+interface ReactorHandle {
+  reactorId: number;
   summary: SchedulerShardSummary;
-  /** Wall-clock (ms) of this shard's last report; a stale value means it hung. */
+  /** Wall-clock (ms) of this reactor's last report. */
   lastReport: number;
-  /** True once the shard has been declared dead and its workloads recovered. */
+  /** True once declared dead and its workloads recovered. */
   dead: boolean;
 }
 
-const DEFAULT_HEARTBEAT_MS = 250;
-
-/** Must match the shard's own default heartbeat cadence (js/internal/scheduler/shard.ts). */
-const DEFAULT_SHARD_HEARTBEAT_MS = 1_500;
-
-/** How long to wait for a shard's run() to settle on shutdown before forcing it. */
-const SHARD_JOIN_TIMEOUT_MS = 2_000;
+/** One engine report drained from a reactor's report channel. */
+interface EngineReport {
+  type: 'released' | 'syncHeavy' | 'load' | 'drained';
+  workloadId?: number;
+  reason?: string;
+  cpuMicros?: number;
+  held?: number;
+  runnable?: number;
+  debtBand?: number;
+  /** Drained: the migrated mailbox as JSON (`[{sequence,data}]`). */
+  snapshot?: string;
+}
 
 /** Release reasons that re-place a workload rather than terminating it. */
 const RE_PLACING_REASONS = new Set<string>(['rebalanced', 'renew_failed']);
-
-/** A promise that resolves after `ms` on the orchestrator loop. */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** How many scheduler threads to boot and how much each may hold. */
 export interface SchedulerNodeOptions {
@@ -111,13 +83,17 @@ export class SchedulerNode {
   #heartbeatMs?: number;
   #syncSliceThresholdMicros?: number;
   #heapLimitBytes?: number;
-  #shards = new Map<string, ShardHandle>();
+  #reactors = new Map<string, ReactorHandle>();
   #watchdog = new BudgetWatchdog();
   #started = false;
   #shuttingDown = false;
   #released = new Map<WorkloadId, (reason: string) => void>();
   #pendingHandoff = new Map<WorkloadId, string | undefined>();
-  #supervisor: { cancel(): void } | null = null;
+  // The engine keys workloads by a numeric id; the orchestrator by a string
+  // WorkloadId. Maintain a bijection so control + reports translate cleanly.
+  #engineIdSeq = 1;
+  #toEngineId = new Map<WorkloadId, number>();
+  #fromEngineId = new Map<number, WorkloadId>();
 
   constructor(options: SchedulerNodeOptions = {}) {
     const shardCount = options.shardCount ?? 2;
@@ -157,59 +133,58 @@ export class SchedulerNode {
     return [...this.#shardIds];
   }
 
-  /** Boot the scheduler threads and start runaway containment. Idempotent. */
+  /** Boot the native reactor threads and start runaway containment. Idempotent. */
   start(): void {
     if (this.#started) return;
     this.#started = true;
     this.#watchdog.start();
     for (const shardId of this.#shardIds) {
       const config = {
-        shardId,
-        capacity: this.#capacity,
-        ...this.#budgetMicros !== undefined ? { budgetMicros: this.#budgetMicros } : {},
         ...this.#hardBudgetMicros !== undefined ? { hardBudgetMicros: this.#hardBudgetMicros } : {},
-        ...this.#heartbeatMs !== undefined ? { heartbeatMs: this.#heartbeatMs } : {},
-        ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceThresholdMicros: this.#syncSliceThresholdMicros } : {},
+        ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceMicros: this.#syncSliceThresholdMicros } : {},
         ...this.#heapLimitBytes !== undefined ? { heapLimitBytes: this.#heapLimitBytes } : {}
       };
-      // Run (not call) the shard entry, so the shard's port reports never
-      // collide with a call response; config is handed over as realm data.
-      const realm = Realm.fromSource(SCHEDULER_ENTRY, {
-        thread: true,
-        data: config,
-        overrides: ImportMap.deny(SHARD_INHERIT.map((pattern) => ({ pattern, directive: 'inherit' as const })))
-      });
-      const schedulerRealm = realm as unknown as SchedulerRealm;
-      const port = schedulerRealm.port;
-      port.addEventListener('message', (event) => this.#onReport(shardId, event.data as SchedulerReport));
-      port.start?.();
-      const done = schedulerRealm.run();
-      // A shard's run() settling while the node is up means its thread died —
-      // recover its workloads onto the survivors.
-      void done.then(() => this.#onShardExit(shardId), () => this.#onShardExit(shardId));
-      this.#shards.set(shardId, { realm: schedulerRealm, port, done, summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 }, lastReport: Date.now(), dead: false });
+      const reactorId = engine.spawnReactor(config);
+      this.#reactors.set(shardId, { reactorId, summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 }, lastReport: Date.now(), dead: false });
+      void this.#pumpReports(shardId, reactorId);
     }
-    this.#supervisor = this.#superviseHeartbeats();
   }
 
   /**
-  * A dead scheduler thread (crash, or its run() settling unexpectedly) — recover
-  * its workloads onto the surviving threads. A no-op during shutdown or if the
-  * shard was already recovered.
+  * Drain a reactor's report channel on the orchestrator loop for the reactor's
+  * lifetime. `reportFd` is readable when a report is queued; on the reactor's
+  * shutdown its write end closes, so `readable` resolves (EOF) and the loop sees
+  * the reactor gone and exits.
   */
-  #onShardExit(shardId: string): void {
+  async #pumpReports(shardId: string, reactorId: number): Promise<void> {
+    const fd = engine.reportFd(reactorId);
+    while (this.#reactors.has(shardId) && !this.#shuttingDown) {
+      await loop.readable(fd);
+      if (!this.#reactors.has(shardId)) break;
+      const reports = engine.drainReports(reactorId) as EngineReport[];
+      for (const report of reports) this.#onEngineReport(shardId, report);
+      // A dead reactor thread closes its report pipe (EOF-readable) with nothing
+      // queued — recover its workloads onto the survivors.
+      if (reports.length === 0 && !engine.reactorAlive(reactorId)) {
+        this.#onReactorExit(shardId);
+        break;
+      }
+    }
+  }
+
+  /** A reactor thread died — recover its workloads. No-op during shutdown. */
+  #onReactorExit(shardId: string): void {
     if (this.#shuttingDown) return;
     this.#recover(shardId);
   }
 
   #recover(shardId: string): void {
-    const handle = this.#shards.get(shardId);
+    const handle = this.#reactors.get(shardId);
     if (handle === undefined || handle.dead) return;
     handle.dead = true;
-    this.#shards.delete(shardId);
-    // Stop placing new work on the dead thread, then re-place the workloads it
-    // was holding on survivors (from checkpoint if one exists, else respawned
-    // from the entry) and push + wake them.
+    this.#reactors.delete(shardId);
+    // Stop placing on the dead thread, re-place its workloads on survivors
+    // (from snapshot if any, else respawned from the entry), then place + wake.
     this.#collection.unregisterShard(shardId);
     const recovered = this.#collection.recoverShard(shardId);
     this.#activate();
@@ -218,80 +193,64 @@ export class SchedulerNode {
     }
   }
 
-  /**
-  * Backstop for a thread that hangs rather than crashing cleanly: if a shard
-  * stops reporting for far longer than its report cadence, treat it as dead.
-  * The threshold is deliberately generous so transient load or GC pauses never
-  * trigger a spurious recovery — the reliable signal is the `run()`-settle
-  * watcher; this only catches genuine multi-second hangs.
-  */
-  #superviseHeartbeats(): { cancel(): void } {
-    let cancelled = false;
-    const heartbeat = this.#heartbeatMs ?? DEFAULT_SHARD_HEARTBEAT_MS;
-    const period = Math.max(DEFAULT_HEARTBEAT_MS, heartbeat);
-    // Tolerate several missed heartbeats before declaring a thread dead, so a
-    // transient GC pause or scheduling hiccup never triggers a spurious recovery.
-    const stale = Math.max(5_000, heartbeat * 4);
-    const tick = (): void => {
-      if (cancelled || this.#shuttingDown) return;
-      const now = Date.now();
-      for (const [shardId, handle] of [...this.#shards]) {
-        if (!handle.dead && now - handle.lastReport > stale) this.#recover(shardId);
-      }
-      if (!cancelled) timer = setTimeout(tick, period);
-    };
-    let timer = setTimeout(tick, period);
-    return { cancel(): void { cancelled = true; clearTimeout(timer); } };
-  }
-
-  #onReport(shardId: string, message: SchedulerReport): void {
-    if (message === null || typeof message !== 'object') return;
-    const handle = this.#shards.get(shardId);
-    // Ignore reports from a shard already retired by recovery. Otherwise a late
-    // `released`/`drained` from a presumed-dead thread mutates collection state
-    // for a workload that has since been recovered onto a survivor (its new
-    // lease would be mis-released).
+  /** Fold one engine report into the authoritative collection. */
+  #onEngineReport(shardId: string, report: EngineReport): void {
+    const handle = this.#reactors.get(shardId);
     if (handle === undefined) return;
     handle.lastReport = Date.now();
-    if (message.report === 'load' || message.report === 'heartbeat') {
-      // `load` fires on resource change; `heartbeat` is the slow liveness tick.
-      // Both carry a fresh summary and both refresh `lastReport` (set above).
-      this.#collection.recordLoad(shardId, message.summary);
+    if (report.type === 'load') {
+      const summary: ShardLoadSummary = {
+        shardId,
+        heldLeases: report.held ?? 0,
+        runnableWorkloads: report.runnable ?? 0,
+        dispatches: 0,
+        debtMicros: 0
+      };
+      this.#collection.recordLoad(shardId, summary);
       return;
     }
-    if (message.report === 'summary') {
-      handle.summary = message.summary;
-      return;
-    }
-    if (message.report === 'syncHeavy') {
-      // A workload burned too much on-CPU time in one sync slice on a latency
-      // thread — migrate it to a batch thread so it stops janking its neighbors.
-      const current = this.#collection.placementOf(message.workloadId);
+    if (report.type === 'syncHeavy') {
+      // Migrate a sync-heavy workload off a latency thread onto a batch thread.
+      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
+      if (workloadId === undefined) return;
+      const current = this.#collection.placementOf(workloadId);
       if (current !== null && this.#collection.shardClassOf(current) === 'latency') {
         const batch = this.#collection.leastLoadedOfClass('batch');
-        if (batch !== null) this.handoff(message.workloadId, batch);
+        if (batch !== null) this.handoff(workloadId, batch);
       }
       return;
     }
-    if (message.report === 'drained') {
-      this.#completeHandoff(message.workloadId, message.pending);
+    if (report.type === 'drained') {
+      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
+      if (workloadId === undefined) return;
+      // The engine drained the tenant and serialized its mailbox; carry that
+      // JSON to the destination so it reconstructs the pending state.
+      let mailbox: unknown[] = [];
+      if (report.snapshot !== undefined && report.snapshot !== '') {
+        try {
+          const parsed = JSON.parse(report.snapshot);
+          if (Array.isArray(parsed)) mailbox = parsed;
+        } catch {
+          mailbox = [];
+        }
+      }
+      this.#completeHandoff(workloadId, { mailbox });
       return;
     }
-    if (message.report === 'released') {
-      const leaseId = this.#collection.leaseOf(message.workloadId);
-      if (leaseId !== null) this.#collection.release(leaseId, message.reason as ReleaseReason);
-      // A release freed a slot on this thread: assign any workload the allocator
-      // placed here but that couldn't be claimed while it was full (recovery /
-      // migration backlog), so nothing stays stranded waiting on a future deploy.
+    if (report.type === 'released') {
+      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
+      if (workloadId === undefined) return;
+      handle.summary.dispatches += 1;
+      handle.summary.released += 1;
+      const reason = report.reason ?? 'released';
+      const leaseId = this.#collection.leaseOf(workloadId);
+      if (leaseId !== null) this.#collection.release(leaseId, reason as ReleaseReason);
       this.#activate();
-      // Resolve `whenReleased` only for a truly terminal outcome. A re-placing
-      // reason (`rebalanced`/`renew_failed`) is not the workload finishing, so
-      // it must not resolve a deploy waiter and shut down still-live work.
-      if (!RE_PLACING_REASONS.has(message.reason)) {
-        const resolve = this.#released.get(message.workloadId);
+      if (!RE_PLACING_REASONS.has(reason)) {
+        const resolve = this.#released.get(workloadId);
         if (resolve !== undefined) {
-          this.#released.delete(message.workloadId);
-          resolve(message.reason);
+          this.#released.delete(workloadId);
+          resolve(reason);
         }
       }
     }
@@ -307,10 +266,11 @@ export class SchedulerNode {
     if (shardId === null) return;
     this.#collection.drainForHandoff(workloadId);
     this.#pendingHandoff.set(workloadId, toShardId);
-    this.#push(shardId, { control: 'drain', workloadId });
+    const reactorId = this.#reactorFor(shardId);
+    if (reactorId !== null) engine.drain(reactorId, this.#engineId(workloadId));
   }
 
-  #completeHandoff(workloadId: WorkloadId, pending: { mailbox: PendingMessage[] }): void {
+  #completeHandoff(workloadId: WorkloadId, pending: { mailbox: unknown[] }): void {
     if (this.#collection.record(workloadId)?.state !== 'draining') return;
     this.#collection.completeHandoff(workloadId, { mailbox: pending.mailbox }, Date.now() * 1_000_000);
     const toShardId = this.#pendingHandoff.get(workloadId);
@@ -332,29 +292,59 @@ export class SchedulerNode {
     return workloadId;
   }
 
-  /** Claim every newly-placed workload for its thread and push it there. */
+  /** The reactor id hosting `shardId`, or null. */
+  #reactorFor(shardId: string): number | null {
+    const handle = this.#reactors.get(shardId);
+    return handle === undefined ? null : handle.reactorId;
+  }
+
+  /** Claim every newly-placed workload for its thread and place it on the engine. */
   #activate(): void {
     for (const shardId of this.#shardIds) {
+      const reactorId = this.#reactorFor(shardId);
+      if (reactorId === null) continue;
       for (const lease of this.#collection.claim(shardId, this.#capacity)) {
-        this.#push(shardId, { control: 'place', lease });
+        this.#placeOnEngine(reactorId, lease);
       }
     }
   }
 
-  /** Push a wake for a workload to its hosting thread. */
+  /** The engine's numeric id for a workload (assigning one on first use). */
+  #engineId(workloadId: WorkloadId): number {
+    let id = this.#toEngineId.get(workloadId);
+    if (id === undefined) {
+      id = this.#engineIdSeq++;
+      this.#toEngineId.set(workloadId, id);
+      this.#fromEngineId.set(id, workloadId);
+    }
+    return id;
+  }
+
+  /** Create + place a claimed workload on its reactor (parked until woken). */
+  #placeOnEngine(reactorId: number, lease: LeaseRecord): void {
+    const entryPath = lease.entryPath ?? '';
+    const dataJson = JSON.stringify(lease.data ?? {});
+    const priorityClass = PRIORITY_CLASS[lease.priority] ?? 1;
+    // A reclaimed handed-off workload carries a snapshot; hand its mailbox to the
+    // engine so the first activation reconstructs from `request.handoff`.
+    const handoffJson = lease.handoff !== undefined ? JSON.stringify(lease.handoff.mailbox ?? []) : '';
+    engine.place(reactorId, this.#engineId(lease.workloadId), entryPath, dataJson, priorityClass, 'place', '', handoffJson);
+  }
+
+  /** Wake a workload on its hosting reactor (each wake is one activation). */
   wake(workloadId: WorkloadId, wake: TenantWake): void {
     const shardId = this.#collection.placementOf(workloadId);
-    if (shardId !== null) this.#push(shardId, { control: 'wake', wake });
+    if (shardId === null) return;
+    const reactorId = this.#reactorFor(shardId);
+    if (reactorId !== null) engine.wake(reactorId, this.#engineId(workloadId), wake.reason, wake.sourceId);
   }
 
-  /** Push an immediate revocation for a workload to its hosting thread. */
+  /** Revoke a workload on its hosting reactor. */
   revoke(workloadId: WorkloadId, reason: string): void {
     const shardId = this.#collection.placementOf(workloadId);
-    if (shardId !== null) this.#push(shardId, { control: 'revoke', workloadId, reason });
-  }
-
-  #push(shardId: string, message: SchedulerControlMessage): void {
-    this.#shards.get(shardId)?.port.postMessage(message);
+    if (shardId === null) return;
+    const reactorId = this.#reactorFor(shardId);
+    if (reactorId !== null) engine.revoke(reactorId, this.#engineId(workloadId), reason);
   }
 
   /** Resolve with the release reason when a workload reaches a terminal state. */
@@ -365,40 +355,25 @@ export class SchedulerNode {
     return new Promise<string>((resolve) => this.#released.set(workloadId, resolve));
   }
 
-  /** Shut every thread down, stop containment, and return their final summaries. */
+  /** Shut every reactor down, stop containment, and return their final summaries. */
   async shutdown(): Promise<SchedulerShardSummary[]> {
     this.#shuttingDown = true;
-    this.#supervisor?.cancel();
-    this.#supervisor = null;
-    const handles = [...this.#shards.values()];
-    for (const handle of handles) handle.port.postMessage({ control: 'shutdown' });
-    try {
-      // Bound each join: posting `shutdown` asks the shard to settle its run(),
-      // but a wedged shard must not hang shutdown forever — which would also
-      // leave the budget-watchdog sweep loop spinning.
-      await Promise.all(handles.map((handle) =>
-        Promise.race([handle.done.catch(() => undefined), delay(SHARD_JOIN_TIMEOUT_MS)])
-      ));
-    } finally {
-      // Always dispose the realms and stop containment, even if a join stalled —
-      // posting `shutdown` does not itself tear the thread realm down, so without
-      // this the realm/port handles stay live and the process never quiesces.
-      for (const handle of handles) handle.realm.terminate();
-      await this.#watchdog.stop();
-    }
-    const summaries = handles.map((shard) => shard.summary);
-    this.#shards.clear();
+    const handles = [...this.#reactors.values()];
+    // Signal every reactor to stop; the report pumps exit when their reportFd
+    // hits EOF as each reactor thread closes its write end.
+    for (const handle of handles) engine.shutdown(handle.reactorId);
+    this.#reactors.clear();
+    await this.#watchdog.stop();
+    const summaries = handles.map((h) => h.summary);
     this.#released.clear();
     this.#started = false;
     this.#shuttingDown = false;
     return summaries;
   }
 
-  /**
-  * Test hook: forcibly kill a scheduler thread to exercise recovery. Its
-  * `run()` settles, which the node observes and recovers from.
-  */
+  /** Test hook: forcibly stop a reactor thread. */
   _killShard(shardId: string): void {
-    this.#shards.get(shardId)?.realm.terminate();
+    const reactorId = this.#reactorFor(shardId);
+    if (reactorId !== null) engine.shutdown(reactorId);
   }
 }

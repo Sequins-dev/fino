@@ -95,6 +95,18 @@ fn take_resolver(id: usize) -> Option<v8::Global<v8::PromiseResolver>> {
     RESOLVER_TABLE.with(|t| t.borrow_mut().get_mut(id)?.take())
 }
 
+/// Resolve a reactor-engine I/O completion: take the resolver stored by
+/// `push_resolver` and settle its promise with `result` (a byte count, negative
+/// for `-errno`). Called by the engine during a pump with the owning isolate
+/// entered. A no-op if the resolver was already taken (double completion).
+pub(crate) fn resolve_io_completion(scope: &mut v8::HandleScope, resolver_id: usize, result: f64) {
+    if let Some(g) = take_resolver(resolver_id) {
+        let resolver = v8::Local::new(scope, &g);
+        let val = v8::Number::new(scope, result);
+        resolver.resolve(scope, val.into());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-isolate async state (thread-local)
 // ---------------------------------------------------------------------------

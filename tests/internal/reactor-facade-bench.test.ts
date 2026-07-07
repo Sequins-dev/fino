@@ -1,24 +1,38 @@
 /**
-* Facade tax measurement: how much overhead the current multi-tenant scheduler
-* adds to file I/O versus a direct (non-scheduler) read loop.
+* Scheduler-tax measurement: how much overhead the multi-tenant scheduler adds
+* to file I/O versus a direct (non-scheduler) read loop, now that the native
+* reactor engine has replaced the old cross-isolate facade.
 *
-*   direct  — this realm reads the file N times with real fino:file.
-*   facade  — a scheduler tenant reads the same file N times through the
-*             file-provider facade (host-op round trip + internal:serializer
-*             clone of args and result per read).
+*   direct        — this realm reads the file N times with real fino:file.
+*   orchestrator  — a SchedulerNode tenant reads the same file N times: the
+*                   cold-path orchestrator (deploy/claim/report pump) driving the
+*                   native engine, which does the reads with direct tenant I/O.
+*   engine        — the same worker placed straight on the engine (no
+*                   orchestrator), isolating the raw per-thread reactor cost.
 *
-* The ratio is the per-op scheduler tax the reactor (Phase 2, direct tenant I/O
-* driven externally by the shard) is meant to eliminate — the gap to close back
-* to the direct baseline. Prints results; asserts both paths completed.
+* The historical facade added ~3.2x / +30 µs per op (72.6k → 23k reads/s) by
+* proxying every read cross-isolate with `internal:serializer` round-trips. Both
+* engine paths do direct I/O instead, so they should sit far closer to the direct
+* baseline. Prints results; asserts every path completed.
 */
 import { describe, it } from 'fino:test/test';
 import { SchedulerNode } from 'internal:orchestrator/scheduler-node';
 import { DiskFileSystem } from 'fino:file';
+import * as engine from 'internal:reactor-engine';
+import * as loop from 'internal:runtime/loop';
 
 const workerPath = new URL('./fixtures/scheduler-bench-read-worker.ts', import.meta.url).pathname;
 
-describe('scheduler facade tax — file reads', () => {
-  it('direct vs facade read loop', async (t) => {
+async function waitForEngineReleased(reactorId: number, workloadId: number): Promise<void> {
+  for (;;) {
+    await loop.readable(engine.reportFd(reactorId));
+    const reports = engine.drainReports(reactorId) as { type: string; workloadId?: number }[];
+    if (reports.some((r) => r.type === 'released' && r.workloadId === workloadId)) return;
+  }
+}
+
+describe('scheduler tax — file reads', () => {
+  it('direct vs orchestrator vs raw-engine read loop', async (t) => {
     const fs = new DiskFileSystem();
     const stamp = Math.floor(performance.now());
     const inputPath = `/tmp/fino-facade-bench-${stamp}.bin`;
@@ -31,38 +45,54 @@ describe('scheduler facade tax — file reads', () => {
     for (let i = 0; i < ITER; i++) await fs.readFile(inputPath);
     const directMs = performance.now() - d0;
 
-    // Scheduler tenant — same reads through the facade.
+    // Orchestrator tenant — SchedulerNode driving the engine, direct tenant I/O.
     const node = new SchedulerNode({ shardCount: 1, capacity: 2 });
     node.start();
-    let facadeMs = 0;
+    let orchMs = 0;
     try {
       const id = node.deploy({ tenantId: 'bench', entryPath: workerPath, data: { inputPath, iterations: ITER } });
       const released = node.whenReleased(id);
       const f0 = performance.now();
       node.wake(id, { workloadId: id, reason: 'message', sourceId: 'go' });
       await released;
-      facadeMs = performance.now() - f0;
+      orchMs = performance.now() - f0;
     } finally {
       await node.shutdown();
     }
 
+    // Raw engine tenant — same worker placed directly on the engine.
+    const rid = engine.spawnReactor({});
+    let engineMs = 0;
+    try {
+      const e0 = performance.now();
+      engine.place(rid, 1, workerPath, JSON.stringify({ inputPath, iterations: ITER }), 0, 'go', 'test');
+      engine.wake(rid, 1, 'go', 'test');
+      await waitForEngineReleased(rid, 1);
+      engineMs = performance.now() - e0;
+    } finally {
+      engine.shutdown(rid);
+    }
+
     const directOps = Math.round(ITER / (directMs / 1000));
-    const facadeOps = Math.round(ITER / (facadeMs / 1000));
-    const perOpUs = ((facadeMs - directMs) / ITER) * 1000;
+    const orchOps = Math.round(ITER / (orchMs / 1000));
+    const engineOps = Math.round(ITER / (engineMs / 1000));
+    const orchTaxUs = ((orchMs - directMs) / ITER) * 1000;
+    const engineTaxUs = ((engineMs - directMs) / ITER) * 1000;
     console.log(`\n  reads: ${ITER}`);
-    console.log(`  direct: ${directMs.toFixed(1)}ms  (${directOps} reads/s)`);
-    console.log(`  facade: ${facadeMs.toFixed(1)}ms  (${facadeOps} reads/s)`);
-    console.log(`  facade tax: ${(facadeMs / directMs).toFixed(1)}x slower, +${perOpUs.toFixed(1)}us/op\n`);
+    console.log(`  direct:       ${directMs.toFixed(1)}ms  (${directOps} reads/s)`);
+    console.log(`  orchestrator: ${orchMs.toFixed(1)}ms  (${orchOps} reads/s)  ${(orchMs / directMs).toFixed(1)}x, +${orchTaxUs.toFixed(1)}us/op`);
+    console.log(`  engine:       ${engineMs.toFixed(1)}ms  (${engineOps} reads/s)  ${(engineMs / directMs).toFixed(1)}x, +${engineTaxUs.toFixed(1)}us/op\n`);
 
     const summary =
       `reads=${ITER}\n` +
       `direct=${directMs.toFixed(1)}ms ${directOps}/s\n` +
-      `facade=${facadeMs.toFixed(1)}ms ${facadeOps}/s\n` +
-      `tax=${(facadeMs / directMs).toFixed(1)}x +${perOpUs.toFixed(1)}us/op\n`;
+      `orchestrator=${orchMs.toFixed(1)}ms ${orchOps}/s ${(orchMs / directMs).toFixed(1)}x\n` +
+      `engine=${engineMs.toFixed(1)}ms ${engineOps}/s ${(engineMs / directMs).toFixed(1)}x\n`;
     await fs.writeFile('/tmp/fino-facade-bench-result.txt', new TextEncoder().encode(summary));
 
     t.ok(directMs > 0, 'direct loop ran');
-    t.ok(facadeMs > 0, 'facade loop ran');
+    t.ok(orchMs > 0, 'orchestrator loop ran');
+    t.ok(engineMs > 0, 'engine loop ran');
 
     await fs.unlink(inputPath);
   });
