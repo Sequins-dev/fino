@@ -165,9 +165,10 @@ pub struct ReactorHandle {
 //
 // When a tenant runs on a reactor thread, its `internal:io` readAsync/writeAsync
 // ops (on a would-block) register here instead of on the per-thread inline
-// reactor. The reactor thread drains these after each pump, watches the fd on
-// its own kqueue, performs the syscall off-isolate on readiness, and resolves
-// the tenant's promise during the tenant's next pump (isolate entered).
+// reactor. The reactor thread drains these after each pump and submits them to
+// its completion `Poller` (io_uring performs the transfer in-kernel; the kqueue
+// backend synthesizes it on readiness), then resolves the tenant's promise
+// during the tenant's next pump (isolate entered).
 //
 // The buffer is realm-provided (the tenant's ArrayBuffer) — the reactor never
 // allocates the data buffer, only the small fixed-shape registration record.
@@ -249,18 +250,63 @@ pub(crate) fn engine_next_timer_id() -> u64 {
 }
 
 // ===========================================================================
-// macOS implementation (kqueue). The reactor loop lives here.
+// The reactor loop. Platform-independent: all I/O goes through the completion
+// `Poller` (io_uring on Linux, kqueue-emulating-completions on macOS).
 // ===========================================================================
-#[cfg(target_os = "macos")]
 mod imp {
     use super::*;
+    use crate::reactor::poll::{Op, Poller};
     use crate::scheduler_native::{
         ParkedWorkload, PumpOutcome, drop_parked, pump_drain_native, pump_native, setup_workload,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::time::Instant;
 
-    const MAX_EVENTS: usize = 256;
+    /// What a reactor completion resolves to. Every outstanding op — a tenant
+    /// read/write/readiness, a timer, the control pipe, or a per-workload wake
+    /// pipe — is keyed in `ops` by the `user_data` the `Poller` echoes back.
+    enum OpRecord {
+        /// A tenant read or bare readiness: resolve `resolver_id` with the
+        /// completion `res`. A short read is a valid result (the caller reads
+        /// what's available), so this resolves on the first completion. `_buffer`
+        /// keeps the realm's ArrayBuffer alive until the kernel is done with it.
+        Io {
+            owner: u64,
+            resolver_id: usize,
+            _buffer: Option<v8::Global<v8::ArrayBuffer>>,
+        },
+        /// A tenant write. `writeAsync`'s contract (`stream.ts` `doFlush`) is to
+        /// write the *whole* buffer before resolving — the caller does not loop
+        /// on partial writes. So a partial completion re-submits the remainder
+        /// (from `base + done`) and only a full drain, error, resolves the
+        /// promise (with the total bytes written). `base`/`len` are the original
+        /// buffer; `done` is how much has landed so far.
+        Write {
+            owner: u64,
+            resolver_id: usize,
+            _buffer: Option<v8::Global<v8::ArrayBuffer>>,
+            fd: RawFd,
+            base: u64,
+            len: u32,
+            done: u32,
+        },
+        /// A tenant timer: resolve `resolver_id` (value ignored).
+        Timer {
+            owner: u64,
+            resolver_id: usize,
+            timer_id: u64,
+        },
+        /// The control wake pipe: drain it, re-arm; `drain_control` does the work.
+        Control {
+            fd: RawFd,
+        },
+        /// A workload's wake pipe (background FFI completion): drain, mark the
+        /// workload runnable, re-arm.
+        Wake {
+            workload: u64,
+            fd: RawFd,
+        },
+    }
 
     /// A hosted isolate plus the scheduling state the run-queue orders by.
     struct EngineWorkload {
@@ -274,7 +320,6 @@ mod imp {
         /// Pending data for a fresh dispatch (consumed on first pump).
         data_json: String,
         sync_heavy_reported: bool,
-        wake_fd: RawFd,
         /// Reactor I/O completions landed while parked (resolver_id, result),
         /// resolved at the start of the next pump.
         ready_io: Vec<(usize, f64)>,
@@ -289,7 +334,10 @@ mod imp {
 
     struct ReactorThread {
         config: ReactorConfig,
-        kq: i32,
+        /// The single completion poller for this thread — io_uring on Linux,
+        /// kqueue-emulating-completions on macOS. The only I/O primitive the
+        /// engine touches; the platform difference lives entirely in `Poller`.
+        poller: Poller,
         control_rx: mpsc::Receiver<Control>,
         control_wake_read: RawFd,
         report_tx: mpsc::Sender<Report>,
@@ -297,27 +345,19 @@ mod imp {
         workloads: HashMap<u64, EngineWorkload>,
         /// Workloads with work ready to run (fresh wake, or a completion landed).
         runnable: HashSet<u64>,
-        /// Outstanding fd ops, keyed by (fd, is_write) → (owning workload, reg). A
-        /// split socket can have a read and a write outstanding on one fd at once.
-        io_pending: HashMap<(i32, bool), (u64, PendingIoReg)>,
-        /// Outstanding timers, keyed by timer id → (owning workload, resolver id).
-        timers: HashMap<u64, (u64, usize)>,
-        /// kqueue changes staged by tenant I/O ops, flushed into the same
-        /// `kevent()` that blocks for events — the inline reactor's pattern
-        /// (`reactor/mod.rs`). Arming and waiting in one call is atomic and lets
-        /// a failed registration surface inline as `EV_ERROR` (a change-only
-        /// `kevent()` with `nevents=0` has nowhere to report it).
-        pending_changes: Vec<libc::kevent>,
+        /// Every outstanding op, keyed by the `user_data` the `Poller` echoes on
+        /// completion. Covers tenant I/O, timers, the control pipe, and per-
+        /// workload wake pipes — a completion looks up its record here to route.
+        ops: HashMap<u64, OpRecord>,
+        /// Tenant timer id → its op's `user_data`, so `CancelTimer` can find and
+        /// cancel the outstanding timeout.
+        timer_to_op: HashMap<u64, u64>,
+        /// Monotonic source of `user_data` values.
+        next_op_id: u64,
         next_sequence: u64,
         last_load_signature: (u32, u32, u32),
         running: bool,
     }
-
-    /// udata marker for a reactor I/O fd event (distinct from workload wake fds,
-    /// whose udata is the workload id, and the control pipe's `CONTROL_IDENT`).
-    const IO_IDENT: u64 = u64::MAX - 1;
-    /// udata marker for an engine-mode timer event (`EVFILT_TIMER`).
-    const TIMER_IDENT: u64 = u64::MAX - 2;
 
     pub(super) fn run(
         config: ReactorConfig,
@@ -329,39 +369,35 @@ mod imp {
         crate::runtime::init_v8();
         // Mark this as an engine thread so tenant internal:io ops register here.
         ENGINE_IO.with(|c| *c.borrow_mut() = Some(Vec::new()));
-        let kq = unsafe { libc::kqueue() };
-        if kq < 0 {
-            return;
-        }
+        let poller = match Poller::new() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
         let mut engine = ReactorThread {
             config,
-            kq,
+            poller,
             control_rx,
             control_wake_read,
             report_tx,
             report_wake_write,
             workloads: HashMap::new(),
             runnable: HashSet::new(),
-            io_pending: HashMap::new(),
-            timers: HashMap::new(),
-            pending_changes: Vec::new(),
+            ops: HashMap::new(),
+            timer_to_op: HashMap::new(),
+            next_op_id: 1,
             next_sequence: 1,
             last_load_signature: (u32::MAX, u32::MAX, u32::MAX),
             running: true,
         };
-        // Persistent watch on the control wake pipe so a control send breaks the poll.
-        engine.watch_fd(control_wake_read, CONTROL_IDENT);
+        // Arm a persistent readiness op on the control wake pipe so a control
+        // send breaks the poll; it re-arms itself on every completion.
+        engine.arm_control();
         engine.loop_forever();
         // Teardown: dispose every hosted isolate.
         for (_, w) in engine.workloads.drain() {
             drop_parked(w.inner);
         }
-        unsafe { libc::close(kq) };
     }
-
-    /// udata sentinel for the control wake pipe (workload ids are the fd's udata
-    /// otherwise; control uses a value no workload id will collide with).
-    const CONTROL_IDENT: u64 = u64::MAX;
 
     impl ReactorThread {
         fn loop_forever(&mut self) {
@@ -380,26 +416,31 @@ mod imp {
             }
         }
 
-        fn watch_fd(&mut self, fd: RawFd, udata: u64) {
-            let ev = libc::kevent {
-                ident: fd as usize,
-                filter: libc::EVFILT_READ,
-                flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
-                fflags: 0,
-                data: 0,
-                udata: udata as *mut libc::c_void,
-            };
-            let zero = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            unsafe {
-                libc::kevent(self.kq, &ev, 1, std::ptr::null_mut(), 0, &zero);
-            }
+        /// Next `user_data`, monotonic per thread.
+        fn next_op(&mut self) -> u64 {
+            let id = self.next_op_id;
+            self.next_op_id += 1;
+            id
+        }
+
+        /// Arm (or re-arm) a readiness op on the control wake pipe.
+        fn arm_control(&mut self) {
+            let fd = self.control_wake_read;
+            let ud = self.next_op();
+            self.poller.submit(ud, Op::PollIn { fd });
+            self.ops.insert(ud, OpRecord::Control { fd });
+        }
+
+        /// Arm (or re-arm) a readiness op on a workload's wake pipe.
+        fn arm_wake(&mut self, workload: u64, fd: RawFd) {
+            let ud = self.next_op();
+            self.poller.submit(ud, Op::PollIn { fd });
+            self.ops.insert(ud, OpRecord::Wake { workload, fd });
         }
 
         fn drain_control(&mut self) {
-            // Empty the control wake pipe (level already consumed by EV_CLEAR).
+            // Empty the control wake pipe (its readiness op already re-armed on
+            // completion; this drains the bytes so it doesn't fire immediately).
             drain_pipe(self.control_wake_read);
             while let Ok(msg) = self.control_rx.try_recv() {
                 self.handle_control(msg);
@@ -491,7 +532,7 @@ mod imp {
             self.next_sequence += 1;
             // Watch the isolate's wake pipe so background completions re-pump it.
             if wake_fd >= 0 {
-                self.watch_fd(wake_fd, workload_id);
+                self.arm_wake(workload_id, wake_fd);
             }
             self.workloads.insert(
                 workload_id,
@@ -504,7 +545,6 @@ mod imp {
                     mid: false,
                     data_json,
                     sync_heavy_reported: false,
-                    wake_fd,
                     ready_io: Vec::new(),
                     wakes: VecDeque::new(),
                     handoff_json,
@@ -636,7 +676,11 @@ mod imp {
             }
         }
 
-        /// Drain the tenant's just-registered reactor ops onto our kqueue.
+        /// Drain the tenant's just-registered reactor ops and submit them to the
+        /// poller as completion-based operations. A fused read/write submits the
+        /// actual transfer (the kernel does it on io_uring; the kqueue backend
+        /// synthesizes it on readiness); a bare readiness submits a poll; a timer
+        /// submits a timeout. Every op is keyed in `ops` by its `user_data`.
         fn collect_io_registrations(&mut self, id: u64) {
             let regs: Vec<EngineReg> = ENGINE_IO
                 .with(|c| c.borrow_mut().as_mut().map(std::mem::take))
@@ -644,96 +688,219 @@ mod imp {
             for reg in regs {
                 match reg {
                     EngineReg::Io(io) => {
-                        let is_write = matches!(io.kind, IoKind::Write | IoKind::Writable);
-                        let filter = if is_write {
-                            libc::EVFILT_WRITE
-                        } else {
-                            libc::EVFILT_READ
-                        };
-                        self.kevent_add(io.fd as u64, filter, 0, IO_IDENT);
-                        self.io_pending.insert((io.fd, is_write), (id, io));
+                        let ud = self.next_op();
+                        match io.kind {
+                            IoKind::Write => {
+                                // Drain from where the sync fast path stopped.
+                                let base = io.buf_ptr as u64;
+                                let done = io.written as u32;
+                                let len = io.len as u32;
+                                self.poller.submit(
+                                    ud,
+                                    Op::Write {
+                                        fd: io.fd,
+                                        buf_ptr: base + done as u64,
+                                        len: len - done,
+                                        off: u64::MAX,
+                                    },
+                                );
+                                self.ops.insert(
+                                    ud,
+                                    OpRecord::Write {
+                                        owner: id,
+                                        resolver_id: io.resolver_id,
+                                        _buffer: io.buffer,
+                                        fd: io.fd,
+                                        base,
+                                        len,
+                                        done,
+                                    },
+                                );
+                            }
+                            _ => {
+                                let op = match io.kind {
+                                    IoKind::Read => Op::Read {
+                                        fd: io.fd,
+                                        buf_ptr: io.buf_ptr as u64,
+                                        len: io.len as u32,
+                                        off: u64::MAX,
+                                    },
+                                    IoKind::Readable => Op::PollIn { fd: io.fd },
+                                    IoKind::Writable => Op::PollOut { fd: io.fd },
+                                    IoKind::Write => unreachable!(),
+                                };
+                                self.poller.submit(ud, op);
+                                self.ops.insert(
+                                    ud,
+                                    OpRecord::Io {
+                                        owner: id,
+                                        resolver_id: io.resolver_id,
+                                        _buffer: io.buffer,
+                                    },
+                                );
+                            }
+                        }
                     }
                     EngineReg::Timer {
                         timer_id,
                         ms,
                         resolver_id,
                     } => {
-                        self.kevent_add(timer_id, libc::EVFILT_TIMER, ms as isize, TIMER_IDENT);
-                        self.timers.insert(timer_id, (id, resolver_id));
+                        let ud = self.next_op();
+                        self.poller.submit(ud, Op::Timeout { ms });
+                        self.ops.insert(
+                            ud,
+                            OpRecord::Timer {
+                                owner: id,
+                                resolver_id,
+                                timer_id,
+                            },
+                        );
+                        self.timer_to_op.insert(timer_id, ud);
                     }
                     EngineReg::CancelTimer { timer_id } => {
-                        if self.timers.remove(&timer_id).is_some() {
-                            self.kevent_delete(timer_id, libc::EVFILT_TIMER);
+                        if let Some(ud) = self.timer_to_op.remove(&timer_id) {
+                            self.poller.cancel(ud);
+                            self.ops.remove(&ud);
                         }
                     }
                 }
             }
         }
 
-        fn kevent_add(&mut self, ident: u64, filter: i16, data: isize, udata: u64) {
-            self.pending_changes.push(libc::kevent {
-                ident: ident as usize,
-                filter,
-                flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT,
-                fflags: 0,
-                data,
-                udata: udata as *mut libc::c_void,
-            });
-        }
-
-        fn kevent_delete(&mut self, ident: u64, filter: i16) {
-            self.pending_changes.push(libc::kevent {
-                ident: ident as usize,
-                filter,
-                flags: libc::EV_DELETE,
-                fflags: 0,
-                data: 0,
-                udata: std::ptr::null_mut(),
-            });
-        }
-
-        /// A fd op became ready: for fused read/write perform the syscall
-        /// off-isolate into the realm-provided buffer; for bare readiness just
-        /// resolve. Then queue the completion and mark the owner runnable.
-        fn complete_io(&mut self, owner: u64, avail: isize, reg: PendingIoReg) {
-            let result = match reg.kind {
-                IoKind::Write => {
-                    let n = unsafe {
-                        libc::write(
-                            reg.fd,
-                            reg.buf_ptr.add(reg.written) as *const libc::c_void,
-                            reg.len - reg.written,
-                        )
-                    };
-                    if n >= 0 {
-                        (reg.written + n as usize) as f64
+        /// Route one completion to its owner. `res` is the operation result: a
+        /// byte count for read/write, a bytes-available hint for readiness, or
+        /// (for a bare `PollOut`) 0; a negative value is `-errno`. The tenant's
+        /// promise resolver gets it verbatim during the next pump.
+        fn on_completion(&mut self, user_data: u64, res: i32) {
+            let rec = match self.ops.remove(&user_data) {
+                Some(r) => r,
+                None => return, // cancelled or belonged to a released workload
+            };
+            match rec {
+                OpRecord::Io {
+                    owner,
+                    resolver_id,
+                    _buffer,
+                } => {
+                    if let Some(w) = self.workloads.get_mut(&owner) {
+                        w.ready_io.push((resolver_id, res as f64));
+                    }
+                    self.runnable.insert(owner);
+                }
+                OpRecord::Write {
+                    owner,
+                    resolver_id,
+                    _buffer,
+                    fd,
+                    base,
+                    len,
+                    done,
+                } => {
+                    // Would-block (readiness lied / buffer filled between): re-arm
+                    // the same remainder rather than surfacing a spurious error.
+                    if res == -libc::EAGAIN {
+                        let ud = self.next_op();
+                        self.poller.submit(
+                            ud,
+                            Op::Write {
+                                fd,
+                                buf_ptr: base + done as u64,
+                                len: len - done,
+                                off: u64::MAX,
+                            },
+                        );
+                        self.ops.insert(
+                            ud,
+                            OpRecord::Write {
+                                owner,
+                                resolver_id,
+                                _buffer,
+                                fd,
+                                base,
+                                len,
+                                done,
+                            },
+                        );
+                    } else if res < 0 {
+                        // Real error: hand the tenant -errno.
+                        if let Some(w) = self.workloads.get_mut(&owner) {
+                            w.ready_io.push((resolver_id, res as f64));
+                        }
+                        self.runnable.insert(owner);
                     } else {
-                        -(errno() as f64)
+                        let new_done = done + res as u32;
+                        if new_done >= len {
+                            // Buffer fully drained: resolve with the total written.
+                            if let Some(w) = self.workloads.get_mut(&owner) {
+                                w.ready_io.push((resolver_id, new_done as f64));
+                            }
+                            self.runnable.insert(owner);
+                        } else {
+                            // Partial write: submit the remainder, keep draining.
+                            let ud = self.next_op();
+                            self.poller.submit(
+                                ud,
+                                Op::Write {
+                                    fd,
+                                    buf_ptr: base + new_done as u64,
+                                    len: len - new_done,
+                                    off: u64::MAX,
+                                },
+                            );
+                            self.ops.insert(
+                                ud,
+                                OpRecord::Write {
+                                    owner,
+                                    resolver_id,
+                                    _buffer,
+                                    fd,
+                                    base,
+                                    len,
+                                    done: new_done,
+                                },
+                            );
+                        }
                     }
                 }
-                IoKind::Read => {
-                    let n =
-                        unsafe { libc::read(reg.fd, reg.buf_ptr as *mut libc::c_void, reg.len) };
-                    if n >= 0 { n as f64 } else { -(errno() as f64) }
+                OpRecord::Timer {
+                    owner,
+                    resolver_id,
+                    timer_id,
+                } => {
+                    self.timer_to_op.remove(&timer_id);
+                    if let Some(w) = self.workloads.get_mut(&owner) {
+                        w.ready_io.push((resolver_id, 0.0));
+                    }
+                    self.runnable.insert(owner);
                 }
-                // Bare readiness: hand the tenant the bytes-available hint (readable)
-                // or a nominal 0 (writable). The tenant does its own syscall next.
-                IoKind::Readable => avail.max(0) as f64,
-                IoKind::Writable => 0.0,
-            };
-            let resolver_id = reg.resolver_id;
-            drop(reg);
-            if let Some(w) = self.workloads.get_mut(&owner) {
-                w.ready_io.push((resolver_id, result));
+                OpRecord::Control { fd } => {
+                    drain_pipe(fd);
+                    self.arm_control(); // handled by drain_control at loop top
+                }
+                OpRecord::Wake { workload, fd } => {
+                    drain_pipe(fd);
+                    if self.workloads.contains_key(&workload) {
+                        self.runnable.insert(workload);
+                        self.arm_wake(workload, fd);
+                    }
+                }
             }
-            self.runnable.insert(owner);
         }
 
         fn release(&mut self, id: u64, reason: String) {
-            // Drop this workload's outstanding registrations (and their liveness
-            // Globals) BEFORE disposing the isolate they belong to.
-            self.io_pending.retain(|_, (owner, _)| *owner != id);
-            self.timers.retain(|_, (owner, _)| *owner != id);
+            // Drop this workload's outstanding op records (and their liveness
+            // Globals) BEFORE disposing the isolate they belong to. Any still-in-
+            // flight completion for a removed op is ignored on arrival.
+            self.ops.retain(|_, rec| match rec {
+                OpRecord::Io { owner, .. }
+                | OpRecord::Write { owner, .. }
+                | OpRecord::Timer { owner, .. } => *owner != id,
+                OpRecord::Wake { workload, .. } => *workload != id,
+                OpRecord::Control { .. } => true,
+            });
+            let ops = &self.ops;
+            self.timer_to_op.retain(|_, ud| ops.contains_key(ud));
             if let Some(w) = self.workloads.remove(&id) {
                 self.runnable.remove(&id);
                 drop_parked(w.inner);
@@ -745,75 +912,13 @@ mod imp {
         }
 
         fn poll_block(&mut self) {
-            // Arm staged kqueue changes in the same call that reaps events — even
-            // when runnable, so a registration made this iteration is armed before
-            // we next pump (and a same-tick readiness edge isn't lost). Block only
-            // when nothing is runnable; otherwise poll non-blocking and return.
+            // Block on the poller only when nothing is runnable; otherwise reap
+            // whatever completions are already available and return so the pump
+            // loop keeps making progress. Newly submitted ops are flushed to the
+            // kernel inside `wait`.
             let block = self.runnable.is_empty();
-            let changes = std::mem::take(&mut self.pending_changes);
-            if !block && changes.is_empty() {
-                return;
-            }
-            let mut evbuf = [const { std::mem::MaybeUninit::<libc::kevent>::uninit() }; MAX_EVENTS];
-            let zero = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            let n = loop {
-                let n = unsafe {
-                    libc::kevent(
-                        self.kq,
-                        changes.as_ptr(),
-                        changes.len() as i32,
-                        evbuf.as_mut_ptr().cast::<libc::kevent>(),
-                        MAX_EVENTS as i32,
-                        if block { std::ptr::null() } else { &zero },
-                    )
-                };
-                if n < 0 && errno() == libc::EINTR {
-                    continue;
-                }
-                break n;
-            };
-            if n <= 0 {
-                return;
-            }
-            for slot in evbuf.iter().take(n as usize) {
-                let ev = unsafe { slot.assume_init_ref() };
-                let udata = ev.udata as u64;
-                // A failed changelist entry is reported inline as EV_ERROR.
-                if ev.flags & libc::EV_ERROR != 0 {
-                    continue;
-                }
-                if udata == CONTROL_IDENT {
-                    continue; // handled by drain_control at loop top
-                }
-                if udata == IO_IDENT {
-                    // A tenant's reactor I/O fd became ready. The filter tells the
-                    // direction; `ev.data` is the bytes-available hint (reads).
-                    let fd = ev.ident as i32;
-                    let is_write = ev.filter == libc::EVFILT_WRITE;
-                    let data = ev.data;
-                    if let Some((owner, reg)) = self.io_pending.remove(&(fd, is_write)) {
-                        self.complete_io(owner, data, reg);
-                    }
-                    continue;
-                }
-                if udata == TIMER_IDENT {
-                    let timer_id = ev.ident as u64;
-                    if let Some((owner, resolver_id)) = self.timers.remove(&timer_id) {
-                        if let Some(w) = self.workloads.get_mut(&owner) {
-                            w.ready_io.push((resolver_id, 0.0));
-                        }
-                        self.runnable.insert(owner);
-                    }
-                    continue;
-                }
-                // A workload's wake pipe fired (background completion) → runnable.
-                if self.workloads.contains_key(&udata) {
-                    drain_pipe(self.workloads[&udata].wake_fd);
-                    self.runnable.insert(udata);
-                }
+            for c in self.poller.wait(block) {
+                self.on_completion(c.user_data, c.res);
             }
         }
 
@@ -842,10 +947,6 @@ mod imp {
         }
     }
 
-    fn errno() -> i32 {
-        std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-    }
-
     fn drain_pipe(fd: RawFd) {
         if fd < 0 {
             return;
@@ -865,7 +966,6 @@ mod imp {
 // ===========================================================================
 
 /// Spawn a reactor thread and return the orchestrator-side handle.
-#[cfg(target_os = "macos")]
 pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
     let (control_tx, control_rx) = mpsc::channel::<Control>();
     let (report_tx, report_rx) = mpsc::channel::<Report>();
@@ -898,11 +998,6 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
         report_wake_read,
         join,
     })
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn spawn_reactor(_config: ReactorConfig) -> Result<ReactorHandle, String> {
-    Err("native reactor engine is only available on macOS in this build".to_string())
 }
 
 fn create_pipe() -> Result<(RawFd, RawFd), String> {

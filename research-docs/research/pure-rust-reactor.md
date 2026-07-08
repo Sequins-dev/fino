@@ -278,6 +278,24 @@ no host-op queue, no cross-isolate serialization, no scheduler-side proxy. What 
 4-serialize, 2-hop, 2-redispatch round trip per I/O becomes: the tenant issues a native
 `readAsync` (a V8 callback), the reactor completes it and marks the isolate runnable.
 
+### 4.5 One reactor type, every thread: main reactor + worker pool
+There is exactly **one** reactor implementation, and every OS thread that hosts isolates
+*is* one — there is no separate "engine" vs "reactor". The reactor is the per-thread
+substrate (§4.3); the orchestrator is only the cold-path policy that decides which
+reactor an isolate lives on.
+
+- The **main thread runs a reactor** whose hosted isolates are the orchestrator and its
+  service isolates. The orchestrator (cold-path TS) does not sit outside the model — it
+  is an isolate on the main reactor like any other.
+- It allocates workloads to a **pool of worker reactor threads**, each a reactor hosting
+  tenant isolates, and migrates a workload between them when a thread is overloaded or a
+  workload is sync-heavy.
+- Dispatch (place / wake / revoke / drain) crosses threads over a control channel; from
+  then on the *target* reactor owns that isolate's execution and all of its I/O.
+
+So the whole node is a set of identical reactors, one per thread, differing only in which
+isolates they host and whether one of those isolates happens to be the orchestrator.
+
 ## 5. Exact quiescence and rescheduling
 
 Because the reactor is the sole source of asynchrony (§4.1), it can maintain, per
@@ -392,6 +410,38 @@ step (`bootstrap.ts`), the JS `loop.ts` backend **including its timers**, the
 the TS `ShardScheduler` loop — becoming the single async substrate under every isolate.
 
 ## 10. Phased path
+
+### Status and correction (2026-07-07)
+
+Phase 0 shipped (`src/reactor/mod.rs`, kqueue, JS-driven). A first cut of Phase 2 shipped
+as `src/reactor/engine.rs` — a native per-thread multi-isolate scheduler with direct
+tenant I/O, the facade retired, and a full HTTP h1/h2/h3 server served *as a reactor
+tenant* (h2 ~4.7× faster than the main realm; h1/h3 at parity). But it **deviated from
+§4.3/§4.5** in three ways that must be corrected before it is *the* reactor:
+
+1. **Two pollers.** `engine.rs` grew its own `kqueue` (`ReactorThread`) instead of being
+   the one reactor; `reactor/mod.rs` still holds a second, near-identical one. There must
+   be ONE poller per thread (§4.3), backend-abstracted over kqueue and io_uring, that both
+   the main-thread reactor and the worker reactors *are*.
+2. **kqueue-only — no io_uring.** The engine's `mod imp` is `#[cfg(macos)]` with a
+   non-functional non-macOS stub, so the reactor is **useless on Linux** — the server
+   target. io_uring is a **required, co-equal backend from the start** (§4.3 always read
+   `kqueue`/`io_uring`), not deferred. Verified on Linux via the Apple `container` image
+   (root `Dockerfile`), matching `js/internal/runtime/io_uring.ts`'s raw-syscall approach
+   (no liburing).
+3. **Per-isolate wake pipes retained.** The engine still watches a self-pipe per isolate
+   for background completions; §5 eliminates these — the reactor is the sole completion
+   source and marks isolates runnable directly.
+
+**Corrected build:** extract one backend-abstracted `Poller` (`submit_read`/`submit_write`
+fused, `poll_readiness`, `add_timer`/`cancel_timer`; `wait(timeout) → [(user_data,
+result)]`) with kqueue and io_uring backends that hide the readiness-vs-completion
+difference; make the reactor own the Poller + the isolate run-queue + the pump loop and
+route `internal:io` dispatch to it; delete the second poller and the per-isolate wake
+pipes. Then the main thread runs a reactor hosting the orchestrator, and the worker pool
+are reactors of the same type (§4.5).
+
+### Original phase outline
 
 Each phase is independently valuable and de-risks the big cut.
 

@@ -20,6 +20,12 @@
 use ::v8;
 
 pub mod engine;
+/// Raw io_uring ring backing the reactor on Linux (empty on other platforms via
+/// its own `#![cfg(target_os = "linux")]`).
+pub(crate) mod io_uring;
+/// The reactor's completion-based poller: io_uring on Linux, a kqueue adapter on
+/// macOS, behind one `Poller` alias with the same submit/wait contract.
+pub(crate) mod poll;
 
 /// Build the `internal:reactor-native` synthetic module.
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
