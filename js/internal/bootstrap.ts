@@ -56,8 +56,8 @@
 *
 * @internal
 */
-import { tick, alive, loopFd, registerWakeSource, _nativeDrive, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
-import { drainMicrotasks, runLoop, runNativeLoop } from 'internal:async-context';
+import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
+import { runNativeLoop } from 'internal:async-context';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 import { env } from '../process.ts';
@@ -66,7 +66,7 @@ import { env } from '../process.ts';
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, setLoopFd } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
@@ -253,42 +253,29 @@ runtimeError.prepareStackTrace = function prepareStackTrace(err: Error, callSite
   if (!Array.isArray(callSites) || callSites.length === 0) return header;
   return header + '\n' + callSites.map(formatCallSite).join('\n');
 };
+// Child-realm steppers, registered by fino:realm when (and only when) it is
+// imported — a realm that never creates children pays nothing, and every
+// realm that does gets its own children advanced by its own host loop
+// (nested realms are not a special case).
+let _childSteppers: { step: () => void; alive: () => boolean } | null = null;
 /**
-* Optional hooks controlling how `driveLoop` polls and how it coordinates
-* with child Realms embedded in the caller's isolate.
+* Wire this realm's child-realm stepping into its host loop. Called by
+* `fino:realm` at module evaluation.
 *
 * @internal
 */
-interface DriveLoopOptions {
-  /** Called once per tick, after microtasks drain, to advance any embedded
-  *  child Realms sharing this isolate. */
-  stepChildren?: () => void;
-  /** Reports whether any child Realm still has pending work. While it
-  *  returns true the loop keeps running even after `isDone()` is true. */
-  childrenAlive?: () => boolean;
-  /** If true, always poll with timeout=0 (non-blocking). Used for child realms
-  *  that are driven by a parent loop — the parent controls sleeping. */
-  nonBlocking?: boolean;
+export function _registerChildSteppers(step: () => void, alive: () => boolean): void {
+  _childSteppers = { step, alive };
 }
 /**
-* Registers a step/onDone callback pair with the Rust host loop.
-*
-* The host loop calls the registered step function once per iteration until
-* it returns false, then calls `onDone` (e.g. to surface errors or clean up).
-* Each step polls the event loop backend (kqueue/io_uring) for I/O, timer,
-* and wake-pipe events, flushes inter-realm message ports, drains the
-* microtask queue, and — when `opts.stepChildren` is provided — advances any
-* embedded child Realms.
+* Hands this realm's loop policy to the Rust host loop, which drives the
+* reactor itself: pump to quiescence, flush ports, advance child realms,
+* then block until the next completion.
 *
 * `isDone` reports whether the caller's own work is complete, but a true
 * result alone does not stop the loop: the loop also keeps running while the
-* event loop still has live handles (pending timers, sockets, watchers,
-* Atomics waiters) or while `opts.childrenAlive?.()` reports live children.
-*
-* Polling is adaptive: after three consecutive empty ticks the poll blocks
-* for up to 25ms to avoid spinning, and any completed event resets the
-* backoff. `opts.nonBlocking` forces a zero timeout on every tick, for realms
-* whose sleeping is controlled by a parent loop.
+* reactor still has live handles (pending timers, sockets, watchers, Atomics
+* waiters) or while any child Realm is active.
 *
 * ```ts no_run
 * import { driveLoop } from 'internal:bootstrap';
@@ -300,43 +287,21 @@ interface DriveLoopOptions {
 *   () => {
 *     // loop finished
 *   },
-*   { nonBlocking: true },
 * );
 * ```
 *
 * @internal
 */
-export function driveLoop(isDone: () => boolean, onDone: () => void, opts?: DriveLoopOptions): void {
-  // Reactor-backed loop: Rust drives the pump itself (wait → dispatch → pump
-  // to quiescence) and calls only these thin policy hooks — no JS step
-  // function, no tick cadence here. `nonBlocking` realms (REPL) stay on the
-  // JS step, since their sleeping is controlled elsewhere.
-  if (_nativeDrive && !opts?.nonBlocking) {
-    runNativeLoop(isDone, onDone, {
-      flushPorts: _flushPorts,
-      stepChildren: opts?.stepChildren,
-      childrenAlive: opts?.childrenAlive
-    });
-    return;
-  }
-  let emptyTicks = 0;
-  function step() {
-    const loopAlive = alive();
-    const hasChildren = opts?.childrenAlive?.() ?? false;
-    if (isDone() && !loopAlive && !hasChildren) return false;
-    const timeout = opts?.nonBlocking ? 0 : emptyTicks >= 3 ? 25 : 0;
-    const count = tick(timeout);
-    _flushPorts();
-    drainMicrotasks();
-    opts?.stepChildren?.();
-    if (count === 0) {
-      emptyTicks++;
-    } else {
-      emptyTicks = 0;
+export function driveLoop(isDone: () => boolean, onDone: () => void): void {
+  runNativeLoop(isDone, onDone, {
+    flushPorts: _flushPorts,
+    stepChildren: function _stepChildHook() {
+      _childSteppers?.step();
+    },
+    childrenAlive: function _childrenAliveHook() {
+      return _childSteppers?.alive() ?? false;
     }
-    return true;
-  }
-  runLoop(step, onDone);
+  });
 }
 // ---------------------------------------------------------------------------
 // Child Realm auto-setup
@@ -407,12 +372,6 @@ if (_threadWakeReadFd < 0 && _childPort !== undefined) {
     }
   });
 }
-// Record this realm's pollable loop fd so an embedding parent can wake on
-// this realm's I/O and timer events instead of polling every ~25ms. Harmless
-// in the root realm (nothing reads it there).
-try {
-  (setLoopFd as (fd: number) => void)(loopFd());
-} catch {}
 if (_childEntry) {
   let _childDone = false;
   let _entryFailed = false;
@@ -676,12 +635,7 @@ if (_childEntry) {
       }
     }
     return done;
-    // A thread realm owns its OS thread and must BLOCK its poll when idle — a
-    // zero timeout would busy-spin at 100% CPU whenever any handle (e.g. a
-    // pending timer) keeps the loop alive. Only an embedded realm, whose
-    // sleeping is driven by the parent loop stepping it, uses a non-blocking
-    // poll. (`_threadWakeReadFd >= 0` ⇔ thread realm.)
-  }, function _childOnDone() {}, { nonBlocking: _threadWakeReadFd < 0 });
+  }, function _childOnDone() {});
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop
   // ---------------------------------------------------------------------------
@@ -801,5 +755,5 @@ if ((getReplMode as () => boolean)()) {
   });
   driveLoop(function _replIsDone() {
     return _replDone || isTerminated() as boolean;
-  }, function _replOnDone() {}, { nonBlocking: true });
+  }, function _replOnDone() {});
 }

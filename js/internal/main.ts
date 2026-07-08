@@ -55,17 +55,9 @@ if (argv[1] === '--sandbox-launcher') {
 }
 import root from '../commands/root.ts';
 import { runShutdownHooks } from './shutdown.ts';
-// Imported lazily to avoid a hard dependency that breaks when fino:realm is
-// not yet loaded. _stepChildren and _childrenAlive default to no-ops so the
-// root realm's driveLoop works even before any Realm is created.
-let _stepChildren: (() => void) | undefined;
-let _childrenAlive: (() => boolean) | undefined;
-import('fino:realm').then(function onRealmLoaded(m) {
-  _stepChildren = m._stepChildren as () => void;
-  _childrenAlive = m._childrenAlive as () => boolean;
-}, function _ignore() {
-  // fino:realm not registered yet during tests — safe to ignore
-});
+// Child-realm stepping needs no wiring here: fino:realm registers its
+// steppers with the bootstrap (_registerChildSteppers) when imported, in
+// every realm alike.
 function normalizeCliArgv(args: string[]): string[] {
   if (args[0] === '--bench') return ['bench', ...args.slice(1)];
   return args;
@@ -108,12 +100,5 @@ driveLoop(function isDone() {
   if (caughtError) {
     console.error(caughtError);
     exit(1);
-  }
-}, {
-  stepChildren: function stepChildren() {
-    _stepChildren?.();
-  },
-  childrenAlive: function childrenAlive() {
-    return _childrenAlive?.() ?? false;
   }
 });

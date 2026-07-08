@@ -36,6 +36,7 @@
 */
 import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
+import { _registerChildSteppers } from 'internal:bootstrap';
 import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { readable, removeRead } from 'internal:runtime/loop';
@@ -3027,3 +3028,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     this.terminate();
   }
 }
+
+// Wire this realm's child stepping into its host loop. Registered at module
+// evaluation so any realm that can create children — root, thread, embedded,
+// nested — gets its children advanced by its own loop, with no per-realm
+// wiring anywhere else.
+_registerChildSteppers(_stepChildren, _childrenAlive);
