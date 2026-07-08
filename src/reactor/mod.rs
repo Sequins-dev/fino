@@ -780,6 +780,9 @@ mod imp {
                 r.reactor.submit_timeout(ud, ms as u64);
                 r.ops.insert(ud, Pending::Timer(g));
                 r.timers += 1;
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!("[reactor] addTimer({ms}) -> ud {ud}");
+                }
                 ud
             })
         };
@@ -1177,6 +1180,9 @@ mod imp {
             }
             Pending::Timer(g) => {
                 with_reactor(|r| r.timers -= 1);
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!("[reactor] timer {ud} dispatched");
+                }
                 resolve_undef(scope, &g);
                 1
             }

@@ -222,7 +222,7 @@ pub fn resolve_directive<'a>(
 /// with `fino:` or `internal:` can import `internal:*`; everything else
 /// (user file-based modules, source overrides with arbitrary specifiers) cannot.
 pub fn default_import_rules() -> Vec<ImportRule> {
-    let mut rules = vec![
+    let rules = vec![
         ImportRule {
             from: None,
             pattern: ImportPattern::Prefix("internal:".to_string()),
@@ -255,19 +255,10 @@ pub fn default_import_rules() -> Vec<ImportRule> {
             directive: ImportDirective::Inherit,
         },
     ];
-    // Reactor loop rollout flag: remap every realm's event loop onto the
-    // reactor-backed drop-in (transitively — children inherit these rules),
-    // making the Rust host loop drive natively everywhere. Set
-    // FINO_REACTOR_LOOP=0 to keep the legacy JS-stepped loop.
-    if std::env::var("FINO_REACTOR_LOOP").is_ok_and(|v| v == "1") {
-        rules.push(ImportRule {
-            from: None,
-            pattern: ImportPattern::Exact("internal:runtime/loop".to_string()),
-            directive: ImportDirective::Remap {
-                target: "fino:net/loop-reactor".to_string(),
-            },
-        });
-    }
+    // NOTE: the FINO_REACTOR_LOOP rollout is a loader-level alias
+    // (loader.rs::reactor_loop_default), not an import rule — a later
+    // allow rule (e.g. the test harness's) would out-rank a rule here for
+    // its importers and split a realm across two loop implementations.
     rules
 }
 

@@ -1522,6 +1522,12 @@ fn settle_dynamic_import<'s, 'tc>(
     }
 }
 
+/// Whether the reactor-backed loop is the process default (rollout flag).
+fn reactor_loop_default() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("FINO_REACTOR_LOOP").is_ok_and(|v| v == "1"))
+}
+
 fn get_or_load_builtin<'s>(
     scope: &mut v8::HandleScope<'s>,
     spec: &str,
@@ -1537,6 +1543,18 @@ fn get_or_load_builtin_inner<'s>(
     visited: &mut std::collections::HashSet<String>,
 ) -> Option<v8::Local<'s, v8::Module>> {
     use crate::state::resolve_directive;
+
+    // Reactor loop rollout: alias the event-loop module onto the
+    // reactor-backed drop-in for EVERY importer, before any rule evaluation —
+    // a realm must never see two different loop implementations (a later
+    // allow rule, e.g. the test harness's, would otherwise out-rank a
+    // rule-based remap for its importers and split the loop in two).
+    if spec == "internal:runtime/loop"
+        && reactor_loop_default()
+        && !visited.contains("fino:net/loop-reactor")
+    {
+        return get_or_load_builtin_inner(scope, "fino:net/loop-reactor", from, visited);
+    }
 
     let state_rc = get_state(scope);
 
