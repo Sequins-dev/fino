@@ -66,7 +66,7 @@ import { env } from '../process.ts';
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, debugMark } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
@@ -586,7 +586,9 @@ if (_childEntry) {
   function _startChildShutdown() {
     if (_shutdownStarted) return;
     _shutdownStarted = true;
+    (debugMark as (m: string) => void)('child shutdown started');
     Promise.resolve(runShutdownHooks()).then(function _childShutdownOk() {
+      (debugMark as (m: string) => void)('child shutdown hooks done');
       _shutdownDone = true;
     }, function _childShutdownErr(err: unknown) {
       // Root-CLI parity: a shutdown-hook failure fails the run, but never

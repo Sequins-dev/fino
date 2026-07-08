@@ -94,14 +94,14 @@ fn eval_steps<'a>(
     Some(v8::undefined(scope).into())
 }
 
-/// Whether the current thread has any reactor work that must keep its realm
-/// alive (live handles + atomics waiters). Non-creating.
+/// Whether the given realm (FinoState pointer identity) has reactor work
+/// that must keep it alive (its live handles + atomics waiters). Non-creating.
 #[cfg(unix)]
-pub(crate) fn drive_live() -> bool {
-    imp::drive_live()
+pub(crate) fn drive_live(owner: usize) -> bool {
+    imp::drive_live(owner)
 }
 #[cfg(not(unix))]
-pub(crate) fn drive_live() -> bool {
+pub(crate) fn drive_live(_owner: usize) -> bool {
     false
 }
 
@@ -157,16 +157,22 @@ mod imp {
     const NOTE_ATTRIB: u32 = 0x8;
     const NOTE_RENAME: u32 = 0x20;
 
-    /// What a reactor completion (keyed by `user_data`) resolves to.
+    /// What a reactor completion (keyed by `user_data`) resolves to. Every
+    /// alive-counting record carries its `owner` — the realm (FinoState
+    /// pointer) that registered it — because same-thread realms share one
+    /// reactor while each realm's liveness must be its OWN: an embedded
+    /// child must be able to exit while its parent still holds handles.
     enum Pending {
         /// Bare readiness: resolve with the bytes-available hint.
         ReadReady {
+            owner: usize,
             fd: i32,
             resolver: v8::Global<v8::PromiseResolver>,
         },
         /// Fused read: the backend performed the transfer; resolve the count.
         /// `buffer` keeps the realm's ArrayBuffer alive until harvest.
         ReadFused {
+            owner: usize,
             fd: i32,
             resolver: v8::Global<v8::PromiseResolver>,
             buffer: v8::Global<v8::ArrayBuffer>,
@@ -175,6 +181,7 @@ mod imp {
         },
         /// Bare write-readiness: resolve (value ignored).
         WriteReady {
+            owner: usize,
             fd: i32,
             resolver: v8::Global<v8::PromiseResolver>,
         },
@@ -182,6 +189,7 @@ mod imp {
         /// completion resubmits until the whole buffer has drained
         /// (`writeAsync`'s contract is whole-buffer-or-error).
         WriteFused {
+            owner: usize,
             fd: i32,
             resolver: v8::Global<v8::PromiseResolver>,
             buffer: v8::Global<v8::ArrayBuffer>,
@@ -189,20 +197,20 @@ mod imp {
             len: usize,
             written: usize,
         },
-        Timer(v8::Global<v8::PromiseResolver>),
-        Proc(v8::Global<v8::PromiseResolver>),
+        Timer {
+            owner: usize,
+            resolver: v8::Global<v8::PromiseResolver>,
+        },
+        Proc {
+            owner: usize,
+            resolver: v8::Global<v8::PromiseResolver>,
+        },
         /// The armed WatchNext of the fs watch adapting `vnodes[fd]`.
-        VnodeNext {
-            fd: i32,
-        },
+        VnodeNext { fd: i32 },
         /// The armed WatchNext of the signal watch adapting `signals[signo]`.
-        SignalNext {
-            signo: i32,
-        },
+        SignalNext { signo: i32 },
         /// A persistent wake source: drain the fd and re-arm.
-        WakeSource {
-            fd: i32,
-        },
+        WakeSource { fd: i32 },
         /// A canceled op awaiting harvest. The reactor contract keeps every
         /// submitted pointer alive until the completion (CANCELED included) is
         /// harvested, so the buffer Global rides along until then.
@@ -212,6 +220,7 @@ mod imp {
     }
 
     struct VnodeEntry {
+        owner: usize,
         watch: WatchId,
         cb: v8::Global<v8::Function>,
     }
@@ -219,6 +228,23 @@ mod imp {
     struct SignalEntry {
         watch: WatchId,
         cb: v8::Global<v8::Function>,
+    }
+
+    /// Per-realm live-handle counts. Signals and wake sources are deliberately
+    /// excluded — they must not keep a realm alive (matching loop.ts).
+    #[derive(Default, Clone, Copy)]
+    struct HandleCounts {
+        reads: usize,
+        writes: usize,
+        timers: usize,
+        procs: usize,
+        vnodes: usize,
+    }
+
+    impl HandleCounts {
+        fn total(&self) -> usize {
+            self.reads + self.writes + self.timers + self.procs + self.vnodes
+        }
     }
 
     struct NativeReactor {
@@ -232,8 +258,8 @@ mod imp {
         write_ud_by_fd: HashMap<i32, u64>,
         vnodes: HashMap<i32, VnodeEntry>,
         signals: HashMap<i32, SignalEntry>,
-        timers: usize,
-        procs: usize,
+        /// Live-handle counts per owning realm (FinoState pointer identity).
+        alive_by_owner: HashMap<usize, HandleCounts>,
         scratch: Vec<Completion>,
     }
 
@@ -249,8 +275,7 @@ mod imp {
                 write_ud_by_fd: HashMap::new(),
                 vnodes: HashMap::new(),
                 signals: HashMap::new(),
-                timers: 0,
-                procs: 0,
+                alive_by_owner: HashMap::new(),
                 scratch: Vec::new(),
             }
         }
@@ -261,15 +286,23 @@ mod imp {
             ud
         }
 
-        fn live_handles(&self) -> usize {
-            // Signals and wake sources are deliberately excluded — they must
-            // not keep a realm alive (matching loop.ts's alive() accounting).
-            self.read_ud_by_fd.len()
-                + self.write_ud_by_fd.len()
-                + self.timers
-                + self.procs
-                + self.vnodes.len()
+        fn bump(&mut self, owner: usize, f: impl FnOnce(&mut HandleCounts)) {
+            let counts = self.alive_by_owner.entry(owner).or_default();
+            f(counts);
+            if counts.total() == 0 {
+                self.alive_by_owner.remove(&owner);
+            }
         }
+
+        fn counts_for(&self, owner: usize) -> HandleCounts {
+            self.alive_by_owner.get(&owner).copied().unwrap_or_default()
+        }
+    }
+
+    /// The current realm's identity: the FinoState allocation address. Stable
+    /// for a realm's lifetime; used to key per-realm handle accounting.
+    fn owner_of(scope: &mut v8::HandleScope) -> usize {
+        std::rc::Rc::as_ptr(&crate::state::get_state(scope)) as usize
     }
 
     thread_local! {
@@ -456,11 +489,20 @@ mod imp {
             engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Readable);
             return;
         }
+        let owner = owner_of(scope);
         with_reactor(|r| {
             let ud = r.alloc_ud();
             r.reactor.submit_poll_in(ud, Source::fd(fd));
-            r.ops.insert(ud, Pending::ReadReady { fd, resolver: g });
+            r.ops.insert(
+                ud,
+                Pending::ReadReady {
+                    owner,
+                    fd,
+                    resolver: g,
+                },
+            );
             r.read_ud_by_fd.insert(fd, ud);
+            r.bump(owner, |c| c.reads += 1);
         });
     }
 
@@ -496,11 +538,20 @@ mod imp {
             engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Writable);
             return;
         }
+        let owner = owner_of(scope);
         with_reactor(|r| {
             let ud = r.alloc_ud();
             r.reactor.submit_poll_out(ud, Source::fd(fd));
-            r.ops.insert(ud, Pending::WriteReady { fd, resolver: g });
+            r.ops.insert(
+                ud,
+                Pending::WriteReady {
+                    owner,
+                    fd,
+                    resolver: g,
+                },
+            );
             r.write_ud_by_fd.insert(fd, ud);
+            r.bump(owner, |c| c.writes += 1);
         });
     }
 
@@ -567,12 +618,17 @@ mod imp {
             ));
             return;
         }
-        with_reactor(|r| submit_fused_read(r, fd, g_res, g_ab, ptr, len));
+        let owner = owner_of(scope);
+        with_reactor(|r| {
+            submit_fused_read(r, owner, fd, g_res, g_ab, ptr, len);
+            r.bump(owner, |c| c.reads += 1);
+        });
     }
 
     /// Submit (or resubmit) the fused read op and index it by fd.
     fn submit_fused_read(
         r: &mut NativeReactor,
+        owner: usize,
         fd: i32,
         resolver: v8::Global<v8::PromiseResolver>,
         buffer: v8::Global<v8::ArrayBuffer>,
@@ -596,6 +652,7 @@ mod imp {
         r.ops.insert(
             ud,
             Pending::ReadFused {
+                owner,
                 fd,
                 resolver,
                 buffer,
@@ -660,7 +717,11 @@ mod imp {
                     );
                     return;
                 }
-                with_reactor(|r| submit_fused_write(r, fd, g_res, g_ab, ptr, len, written));
+                let owner = owner_of(scope);
+                with_reactor(|r| {
+                    submit_fused_write(r, owner, fd, g_res, g_ab, ptr, len, written);
+                    r.bump(owner, |c| c.writes += 1);
+                });
             }
         }
     }
@@ -668,6 +729,7 @@ mod imp {
     /// Submit (or resubmit) the remaining `[written, len)` of a fused write.
     fn submit_fused_write(
         r: &mut NativeReactor,
+        owner: usize,
         fd: i32,
         resolver: v8::Global<v8::PromiseResolver>,
         buffer: v8::Global<v8::ArrayBuffer>,
@@ -692,6 +754,7 @@ mod imp {
         r.ops.insert(
             ud,
             Pending::WriteFused {
+                owner,
                 fd,
                 resolver,
                 buffer,
@@ -780,11 +843,12 @@ mod imp {
             });
             timer_id
         } else {
+            let owner = owner_of(scope);
             with_reactor(|r| {
                 let ud = r.alloc_ud();
                 r.reactor.submit_timeout(ud, ms as u64);
-                r.ops.insert(ud, Pending::Timer(g));
-                r.timers += 1;
+                r.ops.insert(ud, Pending::Timer { owner, resolver: g });
+                r.bump(owner, |c| c.timers += 1);
                 if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                     eprintln!("[reactor] addTimer({ms}) -> ud {ud}");
                 }
@@ -815,10 +879,11 @@ mod imp {
         with_reactor(|r| {
             // Timer records carry no pointers, so eager removal is safe; the
             // CANCELED completion finds no record and is ignored.
-            if matches!(r.ops.get(&id), Some(Pending::Timer(_))) {
+            if matches!(r.ops.get(&id), Some(Pending::Timer { .. })) {
                 r.reactor.cancel(id);
-                r.ops.remove(&id);
-                r.timers -= 1;
+                if let Some(Pending::Timer { owner, .. }) = r.ops.remove(&id) {
+                    r.bump(owner, |c| c.timers -= 1);
+                }
             }
         });
     }
@@ -833,14 +898,15 @@ mod imp {
         let pid = arg_i32(scope, &args, 0);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
+        let owner = owner_of(scope);
         with_reactor(|r| {
             let ud = r.alloc_ud();
             // An already-exited pid completes with a synthesized error on the
             // next tick; dispatch resolves on ANY completion, so the caller can
             // always proceed to reap.
             r.reactor.submit_proc_exit(ud, pid.max(0) as u32);
-            r.ops.insert(ud, Pending::Proc(g));
-            r.procs += 1;
+            r.ops.insert(ud, Pending::Proc { owner, resolver: g });
+            r.bump(owner, |c| c.procs += 1);
             if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                 eprintln!("[reactor] proc({pid}) -> ud {ud}");
             }
@@ -865,9 +931,11 @@ mod imp {
             None => return,
         };
         let g = v8::Global::new(scope, cb);
+        let owner = owner_of(scope);
         with_reactor(|r| {
             if let Some(old) = r.vnodes.remove(&fd) {
                 let _ = r.reactor.remove_watch(old.watch);
+                r.bump(old.owner, |c| c.vnodes -= 1);
             }
             // Watch everything: watch.ts always subscribes ALL_NOTES, and the
             // requested-mask arg predates the portable event set.
@@ -875,7 +943,15 @@ mod imp {
                 let ud = r.alloc_ud();
                 r.reactor.submit_watch_next(ud, watch);
                 r.ops.insert(ud, Pending::VnodeNext { fd });
-                r.vnodes.insert(fd, VnodeEntry { watch, cb: g });
+                r.vnodes.insert(
+                    fd,
+                    VnodeEntry {
+                        owner,
+                        watch,
+                        cb: g,
+                    },
+                );
+                r.bump(owner, |c| c.vnodes += 1);
             }
         });
     }
@@ -890,6 +966,7 @@ mod imp {
             if let Some(entry) = r.vnodes.remove(&fd) {
                 // The armed WatchNext completes CANCELED; dispatch drops it.
                 let _ = r.reactor.remove_watch(entry.watch);
+                r.bump(entry.owner, |c| c.vnodes -= 1);
             }
         });
     }
@@ -969,8 +1046,21 @@ mod imp {
     fn cancel_indexed(r: &mut NativeReactor, ud: u64) {
         r.reactor.cancel(ud);
         let buffer = match r.ops.remove(&ud) {
-            Some(Pending::ReadFused { buffer, .. }) | Some(Pending::WriteFused { buffer, .. }) => {
+            Some(Pending::ReadFused { owner, buffer, .. }) => {
+                r.bump(owner, |c| c.reads -= 1);
                 Some(buffer)
+            }
+            Some(Pending::WriteFused { owner, buffer, .. }) => {
+                r.bump(owner, |c| c.writes -= 1);
+                Some(buffer)
+            }
+            Some(Pending::ReadReady { owner, .. }) => {
+                r.bump(owner, |c| c.reads -= 1);
+                None
+            }
+            Some(Pending::WriteReady { owner, .. }) => {
+                r.bump(owner, |c| c.writes -= 1);
+                None
             }
             _ => None,
         };
@@ -1010,7 +1100,8 @@ mod imp {
         _args: v8::FunctionCallbackArguments,
         mut rv: v8::ReturnValue,
     ) {
-        let live = with_reactor_opt(|r| r.live_handles() > 0).unwrap_or(false);
+        let owner = owner_of(_scope);
+        let live = with_reactor_opt(|r| r.counts_for(owner).total() > 0).unwrap_or(false);
         rv.set_bool(live);
     }
 
@@ -1019,16 +1110,15 @@ mod imp {
         _args: v8::FunctionCallbackArguments,
         mut rv: v8::ReturnValue,
     ) {
-        let (reads, writes, timers, procs, vnodes) = with_reactor_opt(|r| {
-            (
-                r.read_ud_by_fd.len(),
-                r.write_ud_by_fd.len(),
-                r.timers,
-                r.procs,
-                r.vnodes.len(),
-            )
-        })
-        .unwrap_or((0, 0, 0, 0, 0));
+        let owner = owner_of(scope);
+        let counts = with_reactor_opt(|r| r.counts_for(owner)).unwrap_or_default();
+        let (reads, writes, timers, procs, vnodes) = (
+            counts.reads,
+            counts.writes,
+            counts.timers,
+            counts.procs,
+            counts.vnodes,
+        );
         let obj = v8::Object::new(scope);
         for (name, val) in [
             ("reads", reads),
@@ -1071,11 +1161,12 @@ mod imp {
         dispatched
     }
 
-    /// Live-handle predicate for the native host loop: reactor handles that
-    /// must keep the realm alive, plus Atomics.waitAsync waiters (which settle
-    /// cross-thread with no reactor registration).
-    pub(crate) fn drive_live() -> bool {
-        with_reactor_opt(|r| r.live_handles() > 0).unwrap_or(false)
+    /// Live-handle predicate for the native host loop: THIS REALM's reactor
+    /// handles (same-thread realms share the reactor, but each realm's
+    /// liveness is its own), plus Atomics.waitAsync waiters (which settle
+    /// cross-thread with no reactor registration; thread-scoped).
+    pub(crate) fn drive_live(owner: usize) -> bool {
+        with_reactor_opt(|r| r.counts_for(owner).total() > 0).unwrap_or(false)
             || ATOMICS_WAITERS.with(|c| c.get()) > 0
     }
 
@@ -1157,17 +1248,28 @@ mod imp {
             None => return 0,
         };
         match pending {
-            Pending::ReadReady { fd, resolver } => {
+            Pending::ReadReady {
+                owner,
+                fd,
+                resolver,
+            } => {
                 unindex(fd, ud, true);
+                with_reactor(|r| r.bump(owner, |c| c.reads -= 1));
                 resolve_num(scope, &resolver, if res > 0 { res as f64 } else { 0.0 });
                 1
             }
-            Pending::WriteReady { fd, resolver } => {
+            Pending::WriteReady {
+                owner,
+                fd,
+                resolver,
+            } => {
                 unindex(fd, ud, false);
+                with_reactor(|r| r.bump(owner, |c| c.writes -= 1));
                 resolve_undef(scope, &resolver);
                 1
             }
             Pending::ReadFused {
+                owner,
                 fd,
                 resolver,
                 buffer,
@@ -1175,15 +1277,17 @@ mod imp {
                 len,
             } => {
                 if res == -libc::EAGAIN {
-                    // Spurious readiness — re-arm the same read.
-                    with_reactor(|r| submit_fused_read(r, fd, resolver, buffer, ptr, len));
+                    // Spurious readiness — re-arm the same read (count carries).
+                    with_reactor(|r| submit_fused_read(r, owner, fd, resolver, buffer, ptr, len));
                     return 0;
                 }
                 unindex(fd, ud, true);
+                with_reactor(|r| r.bump(owner, |c| c.reads -= 1));
                 resolve_num(scope, &resolver, res as f64);
                 1
             }
             Pending::WriteFused {
+                owner,
                 fd,
                 resolver,
                 buffer,
@@ -1193,44 +1297,46 @@ mod imp {
             } => {
                 if res == -libc::EAGAIN {
                     with_reactor(|r| {
-                        submit_fused_write(r, fd, resolver, buffer, base, len, written)
+                        submit_fused_write(r, owner, fd, resolver, buffer, base, len, written)
                     });
                     return 0;
                 }
                 if res < 0 {
                     unindex(fd, ud, false);
+                    with_reactor(|r| r.bump(owner, |c| c.writes -= 1));
                     resolve_num(scope, &resolver, res as f64);
                     return 1;
                 }
                 let new_written = written + res as usize;
                 if new_written >= len {
                     unindex(fd, ud, false);
+                    with_reactor(|r| r.bump(owner, |c| c.writes -= 1));
                     resolve_num(scope, &resolver, new_written as f64);
                     1
                 } else {
-                    // Partial write: keep draining the remainder.
+                    // Partial write: keep draining the remainder (count carries).
                     with_reactor(|r| {
-                        submit_fused_write(r, fd, resolver, buffer, base, len, new_written)
+                        submit_fused_write(r, owner, fd, resolver, buffer, base, len, new_written)
                     });
                     0
                 }
             }
-            Pending::Timer(g) => {
-                with_reactor(|r| r.timers -= 1);
+            Pending::Timer { owner, resolver } => {
+                with_reactor(|r| r.bump(owner, |c| c.timers -= 1));
                 if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                     eprintln!("[reactor] timer {ud} dispatched");
                 }
-                resolve_undef(scope, &g);
+                resolve_undef(scope, &resolver);
                 1
             }
-            Pending::Proc(g) => {
+            Pending::Proc { owner, resolver } => {
                 // Any completion — including "already exited / not visible"
                 // errors — means the caller can proceed to reap.
-                with_reactor(|r| r.procs -= 1);
+                with_reactor(|r| r.bump(owner, |c| c.procs -= 1));
                 if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                     eprintln!("[reactor] proc ud {ud} dispatched res={res}");
                 }
-                resolve_undef(scope, &g);
+                resolve_undef(scope, &resolver);
                 1
             }
             Pending::VnodeNext { fd } => dispatch_vnode(scope, fd, res),
@@ -1289,6 +1395,7 @@ mod imp {
             with_reactor(|r| {
                 if let Some(entry) = r.vnodes.remove(&fd) {
                     let _ = r.reactor.remove_watch(entry.watch);
+                    r.bump(entry.owner, |c| c.vnodes -= 1);
                 }
             });
             return 0;

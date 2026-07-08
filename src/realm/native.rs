@@ -384,6 +384,15 @@ fn step_context(
             }
         }
         if reload_requested {
+            if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                eprintln!(
+                    "[reload] stepContext observed reload at {:?}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                );
+            }
             rv.set(v8::null(scope).into());
             return;
         }

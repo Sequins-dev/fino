@@ -375,7 +375,17 @@ pub(crate) fn native_drive_step_nowait(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
-    native_drive_step_inner(scope, state_rc, false)
+    let cont = native_drive_step_inner(scope, state_rc, false);
+    if !cont && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+        eprintln!(
+            "[reload] embedded child step returned false at {:?}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+    }
+    cont
 }
 
 fn native_drive_step_inner(
@@ -454,11 +464,12 @@ fn native_drive_step_inner(
         return false;
     };
 
-    let live = crate::reactor::drive_live() || scope.has_pending_background_tasks();
+    let owner = std::rc::Rc::as_ptr(state_rc) as usize;
+    let live = crate::reactor::drive_live(owner) || scope.has_pending_background_tasks();
     if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
         eprintln!(
             "[native-drive] done={done} reactor_live={} bg_tasks={} children={children}",
-            crate::reactor::drive_live(),
+            crate::reactor::drive_live(owner),
             scope.has_pending_background_tasks(),
         );
     }
