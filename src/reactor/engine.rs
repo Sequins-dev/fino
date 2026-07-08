@@ -250,17 +250,18 @@ pub(crate) fn engine_next_timer_id() -> u64 {
 }
 
 // ===========================================================================
-// The reactor loop. Platform-independent: all I/O goes through the completion
-// `Poller` (io_uring on Linux, kqueue-emulating-completions on macOS).
+// The reactor loop. Platform-independent: all I/O goes through the cherenkov
+// completion `Reactor` (io_uring on Linux, kqueue-emulating-completions on
+// macOS, IOCP on Windows).
 // ===========================================================================
 mod imp {
     use super::*;
-    use crate::reactor::poll::{Op, Poller};
     use crate::scheduler_native::{
         ParkedWorkload, PumpOutcome, drop_parked, pump_drain_native, pump_native, setup_workload,
     };
+    use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source, err};
     use std::collections::{HashMap, HashSet, VecDeque};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     /// What a reactor completion resolves to. Every outstanding op — a tenant
     /// read/write/readiness, a timer, the control pipe, or a per-workload wake
@@ -297,15 +298,10 @@ mod imp {
             timer_id: u64,
         },
         /// The control wake pipe: drain it, re-arm; `drain_control` does the work.
-        Control {
-            fd: RawFd,
-        },
+        Control { fd: RawFd },
         /// A workload's wake pipe (background FFI completion): drain, mark the
         /// workload runnable, re-arm.
-        Wake {
-            workload: u64,
-            fd: RawFd,
-        },
+        Wake { workload: u64, fd: RawFd },
     }
 
     /// A hosted isolate plus the scheduling state the run-queue orders by.
@@ -334,10 +330,10 @@ mod imp {
 
     struct ReactorThread {
         config: ReactorConfig,
-        /// The single completion poller for this thread — io_uring on Linux,
-        /// kqueue-emulating-completions on macOS. The only I/O primitive the
-        /// engine touches; the platform difference lives entirely in `Poller`.
-        poller: Poller,
+        /// The single completion reactor for this thread (cherenkov: io_uring on
+        /// Linux, kqueue-emulating-completions on macOS, IOCP on Windows). The
+        /// only I/O primitive the engine touches.
+        reactor: Reactor,
         control_rx: mpsc::Receiver<Control>,
         control_wake_read: RawFd,
         report_tx: mpsc::Sender<Report>,
@@ -345,10 +341,15 @@ mod imp {
         workloads: HashMap<u64, EngineWorkload>,
         /// Workloads with work ready to run (fresh wake, or a completion landed).
         runnable: HashSet<u64>,
-        /// Every outstanding op, keyed by the `user_data` the `Poller` echoes on
+        /// Every outstanding op, keyed by the `user_data` the reactor echoes on
         /// completion. Covers tenant I/O, timers, the control pipe, and per-
         /// workload wake pipes — a completion looks up its record here to route.
         ops: HashMap<u64, OpRecord>,
+        /// Canceled ops whose records carry pointers (tenant buffers): the
+        /// reactor contract keeps every submitted pointer alive until the op's
+        /// completion is harvested, cancellation included, so these are parked
+        /// here until their CANCELED completion arrives.
+        doomed: HashMap<u64, OpRecord>,
         /// Tenant timer id → its op's `user_data`, so `CancelTimer` can find and
         /// cancel the outstanding timeout.
         timer_to_op: HashMap<u64, u64>,
@@ -357,6 +358,8 @@ mod imp {
         next_sequence: u64,
         last_load_signature: (u32, u32, u32),
         running: bool,
+        /// Reusable completion buffer for `Reactor::wait`.
+        scratch: Vec<Completion>,
     }
 
     pub(super) fn run(
@@ -369,13 +372,13 @@ mod imp {
         crate::runtime::init_v8();
         // Mark this as an engine thread so tenant internal:io ops register here.
         ENGINE_IO.with(|c| *c.borrow_mut() = Some(Vec::new()));
-        let poller = match Poller::new() {
-            Ok(p) => p,
+        let reactor = match Reactor::new() {
+            Ok(r) => r,
             Err(_) => return,
         };
         let mut engine = ReactorThread {
             config,
-            poller,
+            reactor,
             control_rx,
             control_wake_read,
             report_tx,
@@ -383,17 +386,25 @@ mod imp {
             workloads: HashMap::new(),
             runnable: HashSet::new(),
             ops: HashMap::new(),
+            doomed: HashMap::new(),
             timer_to_op: HashMap::new(),
             next_op_id: 1,
             next_sequence: 1,
             last_load_signature: (u32::MAX, u32::MAX, u32::MAX),
             running: true,
+            scratch: Vec::new(),
         };
         // Arm a persistent readiness op on the control wake pipe so a control
         // send breaks the poll; it re-arms itself on every completion.
         engine.arm_control();
         engine.loop_forever();
-        // Teardown: dispose every hosted isolate.
+        // Teardown: quiesce every in-flight op (tenant buffers must outlive
+        // their completions), then dispose every hosted isolate.
+        let ids: Vec<u64> = engine.workloads.keys().copied().collect();
+        for id in ids {
+            engine.cancel_owned(id);
+        }
+        engine.drain_doomed();
         for (_, w) in engine.workloads.drain() {
             drop_parked(w.inner);
         }
@@ -427,14 +438,14 @@ mod imp {
         fn arm_control(&mut self) {
             let fd = self.control_wake_read;
             let ud = self.next_op();
-            self.poller.submit(ud, Op::PollIn { fd });
+            self.reactor.submit_poll_in(ud, Source::fd(fd));
             self.ops.insert(ud, OpRecord::Control { fd });
         }
 
         /// Arm (or re-arm) a readiness op on a workload's wake pipe.
         fn arm_wake(&mut self, workload: u64, fd: RawFd) {
             let ud = self.next_op();
-            self.poller.submit(ud, Op::PollIn { fd });
+            self.reactor.submit_poll_in(ud, Source::fd(fd));
             self.ops.insert(ud, OpRecord::Wake { workload, fd });
         }
 
@@ -473,13 +484,8 @@ mod imp {
                     workload_id,
                     reason,
                 } => {
-                    if let Some(w) = self.workloads.remove(&workload_id) {
-                        self.runnable.remove(&workload_id);
-                        drop_parked(w.inner);
-                        self.report(Report::Released {
-                            workload_id,
-                            reason,
-                        });
+                    if self.workloads.contains_key(&workload_id) {
+                        self.release(workload_id, reason);
                     }
                 }
                 Control::Drain { workload_id } => {
@@ -492,6 +498,10 @@ mod imp {
                         let hard = self.config.hard_budget_micros;
                         let snapshot = pump_drain_native(&mut w.inner, "{\"drain\":true}", hard)
                             .unwrap_or_else(|| "[]".to_string());
+                        // Quiesce outstanding ops before disposing the isolate
+                        // that owns their buffers.
+                        self.cancel_owned(workload_id);
+                        self.drain_doomed();
                         drop_parked(w.inner);
                         self.report(Report::Drained {
                             workload_id,
@@ -695,15 +705,21 @@ mod imp {
                                 let base = io.buf_ptr as u64;
                                 let done = io.written as u32;
                                 let len = io.len as u32;
-                                self.poller.submit(
-                                    ud,
-                                    Op::Write {
-                                        fd: io.fd,
-                                        buf_ptr: base + done as u64,
-                                        len: len - done,
-                                        off: u64::MAX,
-                                    },
-                                );
+                                // SAFETY: the tenant's ArrayBuffer is retained in
+                                // the OpRecord (`_buffer`) until this op's
+                                // completion is harvested, so the pointer stays
+                                // valid for the kernel's whole use of it.
+                                unsafe {
+                                    self.reactor.submit(
+                                        ud,
+                                        Op::Write {
+                                            src: Source::fd(io.fd),
+                                            buf: (base + done as u64) as *const u8,
+                                            len: len - done,
+                                            off: CURRENT_POS,
+                                        },
+                                    );
+                                }
                                 self.ops.insert(
                                     ud,
                                     OpRecord::Write {
@@ -720,16 +736,23 @@ mod imp {
                             _ => {
                                 let op = match io.kind {
                                     IoKind::Read => Op::Read {
-                                        fd: io.fd,
-                                        buf_ptr: io.buf_ptr as u64,
+                                        src: Source::fd(io.fd),
+                                        buf: io.buf_ptr,
                                         len: io.len as u32,
-                                        off: u64::MAX,
+                                        off: CURRENT_POS,
                                     },
-                                    IoKind::Readable => Op::PollIn { fd: io.fd },
-                                    IoKind::Writable => Op::PollOut { fd: io.fd },
+                                    IoKind::Readable => Op::PollIn {
+                                        src: Source::fd(io.fd),
+                                    },
+                                    IoKind::Writable => Op::PollOut {
+                                        src: Source::fd(io.fd),
+                                    },
                                     IoKind::Write => unreachable!(),
                                 };
-                                self.poller.submit(ud, op);
+                                // SAFETY: fused-read buffers are retained in the
+                                // OpRecord until harvest; readiness ops carry no
+                                // pointers.
+                                unsafe { self.reactor.submit(ud, op) };
                                 self.ops.insert(
                                     ud,
                                     OpRecord::Io {
@@ -747,7 +770,7 @@ mod imp {
                         resolver_id,
                     } => {
                         let ud = self.next_op();
-                        self.poller.submit(ud, Op::Timeout { ms });
+                        self.reactor.submit_timeout(ud, ms.max(0) as u64);
                         self.ops.insert(
                             ud,
                             OpRecord::Timer {
@@ -760,7 +783,10 @@ mod imp {
                     }
                     EngineReg::CancelTimer { timer_id } => {
                         if let Some(ud) = self.timer_to_op.remove(&timer_id) {
-                            self.poller.cancel(ud);
+                            // Timer records carry no pointers, so eager removal
+                            // is safe; the CANCELED completion finds no record
+                            // and is ignored.
+                            self.reactor.cancel(ud);
                             self.ops.remove(&ud);
                         }
                     }
@@ -773,6 +799,11 @@ mod imp {
         /// (for a bare `PollOut`) 0; a negative value is `-errno`. The tenant's
         /// promise resolver gets it verbatim during the next pump.
         fn on_completion(&mut self, user_data: u64, res: i32) {
+            // A doomed op's completion (CANCELED or a racing result) only exists
+            // to release the record — the buffer it retained is now safe to drop.
+            if self.doomed.remove(&user_data).is_some() {
+                return;
+            }
             let rec = match self.ops.remove(&user_data) {
                 Some(r) => r,
                 None => return, // cancelled or belonged to a released workload
@@ -799,17 +830,23 @@ mod imp {
                 } => {
                     // Would-block (readiness lied / buffer filled between): re-arm
                     // the same remainder rather than surfacing a spurious error.
+                    // Resubmitting after harvest is slot-legal: the completed
+                    // op's (fd, direction) slot was released at harvest.
                     if res == -libc::EAGAIN {
                         let ud = self.next_op();
-                        self.poller.submit(
-                            ud,
-                            Op::Write {
-                                fd,
-                                buf_ptr: base + done as u64,
-                                len: len - done,
-                                off: u64::MAX,
-                            },
-                        );
+                        // SAFETY: `_buffer` moves into the new record, keeping
+                        // the tenant's ArrayBuffer alive until the new harvest.
+                        unsafe {
+                            self.reactor.submit(
+                                ud,
+                                Op::Write {
+                                    src: Source::fd(fd),
+                                    buf: (base + done as u64) as *const u8,
+                                    len: len - done,
+                                    off: CURRENT_POS,
+                                },
+                            );
+                        }
                         self.ops.insert(
                             ud,
                             OpRecord::Write {
@@ -839,15 +876,19 @@ mod imp {
                         } else {
                             // Partial write: submit the remainder, keep draining.
                             let ud = self.next_op();
-                            self.poller.submit(
-                                ud,
-                                Op::Write {
-                                    fd,
-                                    buf_ptr: base + new_done as u64,
-                                    len: len - new_done,
-                                    off: u64::MAX,
-                                },
-                            );
+                            // SAFETY: `_buffer` moves into the new record,
+                            // keeping the buffer alive until the new harvest.
+                            unsafe {
+                                self.reactor.submit(
+                                    ud,
+                                    Op::Write {
+                                        src: Source::fd(fd),
+                                        buf: (base + new_done as u64) as *const u8,
+                                        len: len - new_done,
+                                        off: CURRENT_POS,
+                                    },
+                                );
+                            }
                             self.ops.insert(
                                 ud,
                                 OpRecord::Write {
@@ -875,10 +916,18 @@ mod imp {
                     self.runnable.insert(owner);
                 }
                 OpRecord::Control { fd } => {
+                    // A BUSY completion means something else already watches this
+                    // fd — re-arming would spin on BUSY forever.
+                    if res == err::BUSY {
+                        return;
+                    }
                     drain_pipe(fd);
                     self.arm_control(); // handled by drain_control at loop top
                 }
                 OpRecord::Wake { workload, fd } => {
+                    if res == err::BUSY {
+                        return;
+                    }
                     drain_pipe(fd);
                     if self.workloads.contains_key(&workload) {
                         self.runnable.insert(workload);
@@ -888,19 +937,72 @@ mod imp {
             }
         }
 
-        fn release(&mut self, id: u64, reason: String) {
-            // Drop this workload's outstanding op records (and their liveness
-            // Globals) BEFORE disposing the isolate they belong to. Any still-in-
-            // flight completion for a removed op is ignored on arrival.
-            self.ops.retain(|_, rec| match rec {
-                OpRecord::Io { owner, .. }
-                | OpRecord::Write { owner, .. }
-                | OpRecord::Timer { owner, .. } => *owner != id,
-                OpRecord::Wake { workload, .. } => *workload != id,
-                OpRecord::Control { .. } => true,
-            });
+        /// Cancel every op this workload owns. Pointer-free records (timers,
+        /// readiness, wake watches) are dropped eagerly — their CANCELED
+        /// completion finds no record and is ignored. Pointer-carrying records
+        /// (fused reads, writes) retain the tenant's ArrayBuffer and move to
+        /// `doomed`: the reactor may still hand their pointers to the kernel
+        /// until the CANCELED completion is harvested, so the buffer — and the
+        /// isolate that owns its memory — must stay alive until then.
+        fn cancel_owned(&mut self, id: u64) {
+            let owned: Vec<u64> = self
+                .ops
+                .iter()
+                .filter(|(_, rec)| match rec {
+                    OpRecord::Io { owner, .. }
+                    | OpRecord::Write { owner, .. }
+                    | OpRecord::Timer { owner, .. } => *owner == id,
+                    OpRecord::Wake { workload, .. } => *workload == id,
+                    OpRecord::Control { .. } => false,
+                })
+                .map(|(ud, _)| *ud)
+                .collect();
+            for ud in owned {
+                self.reactor.cancel(ud);
+                let rec = self.ops.remove(&ud).unwrap();
+                let has_pointers = match &rec {
+                    OpRecord::Io { _buffer, .. } => _buffer.is_some(),
+                    OpRecord::Write { .. } => true,
+                    _ => false,
+                };
+                if has_pointers {
+                    self.doomed.insert(ud, rec);
+                }
+            }
             let ops = &self.ops;
             self.timer_to_op.retain(|_, ud| ops.contains_key(ud));
+        }
+
+        /// Wait until every doomed op's completion has been harvested (so its
+        /// retained buffer can be dropped with its isolate still alive).
+        /// Cancellation completes promptly on every backend; the deadline is a
+        /// defensive bound, not an expected path.
+        fn drain_doomed(&mut self) {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !self.doomed.is_empty() {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "reactor engine: {} canceled op(s) unharvested at teardown",
+                        self.doomed.len()
+                    );
+                    self.doomed.clear();
+                    break;
+                }
+                let mut buf = std::mem::take(&mut self.scratch);
+                buf.clear();
+                let _ = self.reactor.wait(Some(Duration::from_millis(10)), &mut buf);
+                for c in &buf {
+                    self.on_completion(c.user_data, c.res);
+                }
+                self.scratch = buf;
+            }
+        }
+
+        fn release(&mut self, id: u64, reason: String) {
+            // Quiesce this workload's outstanding ops BEFORE disposing the
+            // isolate their buffers belong to.
+            self.cancel_owned(id);
+            self.drain_doomed();
             if let Some(w) = self.workloads.remove(&id) {
                 self.runnable.remove(&id);
                 drop_parked(w.inner);
@@ -912,14 +1014,22 @@ mod imp {
         }
 
         fn poll_block(&mut self) {
-            // Block on the poller only when nothing is runnable; otherwise reap
+            // Block on the reactor only when nothing is runnable; otherwise reap
             // whatever completions are already available and return so the pump
             // loop keeps making progress. Newly submitted ops are flushed to the
             // kernel inside `wait`.
-            let block = self.runnable.is_empty();
-            for c in self.poller.wait(block) {
+            let timeout = if self.runnable.is_empty() {
+                None
+            } else {
+                Some(Duration::ZERO)
+            };
+            let mut buf = std::mem::take(&mut self.scratch);
+            buf.clear();
+            let _ = self.reactor.wait(timeout, &mut buf);
+            for c in &buf {
                 self.on_completion(c.user_data, c.res);
             }
+            self.scratch = buf;
         }
 
         fn report_load_if_changed(&mut self) {
