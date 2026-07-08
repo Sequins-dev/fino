@@ -56,8 +56,8 @@
 *
 * @internal
 */
-import { tick, alive, loopFd, registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
-import { drainMicrotasks, runLoop } from 'internal:async-context';
+import { tick, alive, loopFd, registerWakeSource, _nativeDrive, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
+import { drainMicrotasks, runLoop, runNativeLoop } from 'internal:async-context';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 import { env } from '../process.ts';
@@ -307,6 +307,18 @@ interface DriveLoopOptions {
 * @internal
 */
 export function driveLoop(isDone: () => boolean, onDone: () => void, opts?: DriveLoopOptions): void {
+  // Reactor-backed loop: Rust drives the pump itself (wait → dispatch → pump
+  // to quiescence) and calls only these thin policy hooks — no JS step
+  // function, no tick cadence here. `nonBlocking` realms (REPL) stay on the
+  // JS step, since their sleeping is controlled elsewhere.
+  if (_nativeDrive && !opts?.nonBlocking) {
+    runNativeLoop(isDone, onDone, {
+      flushPorts: _flushPorts,
+      stepChildren: opts?.stepChildren,
+      childrenAlive: opts?.childrenAlive
+    });
+    return;
+  }
   let emptyTicks = 0;
   function step() {
     const loopAlive = alive();

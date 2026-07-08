@@ -226,6 +226,12 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         let should_continue = 'step: {
             let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
+            // Native drive: the realm's loop is reactor-backed, so Rust owns
+            // the pump cadence and calls only thin JS policy hooks.
+            if state_rc.borrow().native_loop.is_some() {
+                break 'step crate::runtime::native_drive_step(scope, &state_rc);
+            }
+
             let loop_step_fn = match state_rc.borrow().loop_step_fn.clone() {
                 Some(f) => f,
                 None => break 'main,

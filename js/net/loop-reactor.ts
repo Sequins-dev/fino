@@ -46,8 +46,19 @@ export interface CancelablePromise extends Promise<void> {
   cancel(): void;
 }
 
+/**
+* Marks this loop as reactor-backed: the Rust host loop drives the pump
+* itself (bootstrap registers policy hooks via `runNativeLoop` instead of a
+* JS step function).
+*
+* @internal
+*/
+export const _nativeDrive = true;
+
 // Atomics.waitAsync settles from another thread with no reactor registration,
 // so — as in loop.ts — it is tracked with a JS counter that feeds alive().
+// The count is mirrored natively (trackAtomicsWaiter) because under native
+// drive the Rust loop needs it to bound its reactor wait.
 let _atomicsWaiters = 0;
 
 // ---------------------------------------------------------------------------
@@ -94,10 +105,12 @@ export function _activeHandleCounts(): {
 
 export function _trackAtomicsWaiter(): void {
   _atomicsWaiters++;
+  native.trackAtomicsWaiter();
 }
 
 export function _untrackAtomicsWaiter(): void {
   _atomicsWaiters--;
+  native.untrackAtomicsWaiter();
 }
 
 // ---------------------------------------------------------------------------

@@ -45,6 +45,8 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "addSignal",
         "removeSignal",
         "activeHandleCounts",
+        "trackAtomicsWaiter",
+        "untrackAtomicsWaiter",
     ];
     let export_names: Vec<v8::Local<v8::String>> = names
         .iter()
@@ -85,7 +87,47 @@ fn eval_steps<'a>(
     export!("addSignal", imp::add_signal);
     export!("removeSignal", imp::remove_signal);
     export!("activeHandleCounts", imp::active_handle_counts);
+    export!("trackAtomicsWaiter", imp::track_atomics_waiter);
+    export!("untrackAtomicsWaiter", imp::untrack_atomics_waiter);
     Some(v8::undefined(scope).into())
+}
+
+/// Whether the current thread has any reactor work that must keep its realm
+/// alive (live handles + atomics waiters). Non-creating.
+#[cfg(unix)]
+pub(crate) fn drive_live() -> bool {
+    imp::drive_live()
+}
+#[cfg(not(unix))]
+pub(crate) fn drive_live() -> bool {
+    false
+}
+
+/// Whether the native host loop must use a bounded wait instead of blocking.
+#[cfg(unix)]
+pub(crate) fn drive_needs_poll() -> bool {
+    imp::drive_needs_poll()
+}
+#[cfg(not(unix))]
+pub(crate) fn drive_needs_poll() -> bool {
+    false
+}
+
+/// Wait on this thread's reactor and dispatch completions; see
+/// `imp::wait_and_dispatch`.
+#[cfg(unix)]
+pub(crate) fn drive_wait_and_dispatch(
+    scope: &mut v8::HandleScope,
+    timeout: Option<std::time::Duration>,
+) -> i32 {
+    imp::wait_and_dispatch(scope, timeout)
+}
+#[cfg(not(unix))]
+pub(crate) fn drive_wait_and_dispatch(
+    _scope: &mut v8::HandleScope,
+    _timeout: Option<std::time::Duration>,
+) -> i32 {
+    0
 }
 
 // ===========================================================================
@@ -993,24 +1035,20 @@ mod imp {
 
     // --- the poll+dispatch core ------------------------------------------
 
-    pub fn tick(
-        scope: &mut v8::HandleScope,
-        args: v8::FunctionCallbackArguments,
-        mut rv: v8::ReturnValue,
-    ) {
-        let timeout_ms = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
+    /// Wait on the thread's reactor (up to `timeout`, `None` = block until
+    /// something happens) and dispatch every harvested completion. Returns the
+    /// dispatched count, or 0 when no reactor exists on this thread. Rust-side
+    /// core of `tick()`, also driven directly by the native host loop.
+    pub(crate) fn wait_and_dispatch(scope: &mut v8::HandleScope, timeout: Option<Duration>) -> i32 {
         // Non-creating: a thread with no reactor has nothing to wait for.
         let completions = with_reactor_opt(|r| {
             let mut buf = std::mem::take(&mut r.scratch);
             buf.clear();
-            let _ = r
-                .reactor
-                .wait(Some(Duration::from_millis(timeout_ms)), &mut buf);
+            let _ = r.reactor.wait(timeout, &mut buf);
             buf
         });
         let Some(completions) = completions else {
-            rv.set_int32(0);
-            return;
+            return 0;
         };
         // Dispatch OUTSIDE the RefCell borrow: resolvers run JS synchronously
         // (via microtask checkpoints later) and callbacks re-enter the reactor.
@@ -1019,6 +1057,51 @@ mod imp {
             dispatched += dispatch(scope, c.user_data, c.res);
         }
         with_reactor_opt(|r| r.scratch = completions);
+        dispatched
+    }
+
+    /// Live-handle predicate for the native host loop: reactor handles that
+    /// must keep the realm alive, plus Atomics.waitAsync waiters (which settle
+    /// cross-thread with no reactor registration).
+    pub(crate) fn drive_live() -> bool {
+        with_reactor_opt(|r| r.live_handles() > 0).unwrap_or(false)
+            || ATOMICS_WAITERS.with(|c| c.get()) > 0
+    }
+
+    /// Whether the native host loop must poll instead of blocking: an
+    /// Atomics.waitAsync resolution posts a V8 foreground task without waking
+    /// the reactor, so it is only observed by a bounded re-pump.
+    pub(crate) fn drive_needs_poll() -> bool {
+        ATOMICS_WAITERS.with(|c| c.get()) > 0
+    }
+
+    thread_local! {
+        static ATOMICS_WAITERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub fn track_atomics_waiter(
+        _scope: &mut v8::HandleScope,
+        _args: v8::FunctionCallbackArguments,
+        _rv: v8::ReturnValue,
+    ) {
+        ATOMICS_WAITERS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub fn untrack_atomics_waiter(
+        _scope: &mut v8::HandleScope,
+        _args: v8::FunctionCallbackArguments,
+        _rv: v8::ReturnValue,
+    ) {
+        ATOMICS_WAITERS.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+
+    pub fn tick(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        mut rv: v8::ReturnValue,
+    ) {
+        let timeout_ms = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
+        let dispatched = wait_and_dispatch(scope, Some(Duration::from_millis(timeout_ms)));
         rv.set_int32(dispatched);
     }
 
@@ -1283,4 +1366,6 @@ mod imp {
     stub!(add_signal);
     stub!(remove_signal);
     stub!(active_handle_counts);
+    stub!(track_atomics_waiter);
+    stub!(untrack_atomics_waiter);
 }

@@ -307,6 +307,22 @@ pub enum ChildRealmSlot {
     Failed(Option<String>),
 }
 
+/// Thin JS policy hooks for a natively-driven realm (registered via
+/// `runNativeLoop`). The Rust host loop owns the drive mechanics — reactor
+/// wait/dispatch, microtask pumping, port flushing cadence — and calls these
+/// only for the decisions that are genuinely realm policy.
+pub struct NativeLoopHooks {
+    /// Realm-level "my entry/lifecycle is finished" predicate. The loop exits
+    /// only when this is true AND the reactor is quiescent AND no children.
+    pub is_done_fn: v8::Global<v8::Function>,
+    /// Flush queued MessagePort deliveries (macrotask semantics).
+    pub flush_ports_fn: Option<v8::Global<v8::Function>>,
+    /// Advance child realms (embedded stepping + lifecycle resolution).
+    pub step_children_fn: Option<v8::Global<v8::Function>>,
+    /// Whether any child realms are still active.
+    pub children_alive_fn: Option<v8::Global<v8::Function>>,
+}
+
 /// All per-run state, stored in the V8 context slot so every Rust callback can
 /// access it without passing extra arguments.
 pub struct FinoState {
@@ -365,6 +381,10 @@ pub struct FinoState {
     pub loop_step_fn: Option<v8::Global<v8::Function>>,
     /// Called by Rust after the event loop exits to run the post-loop error check.
     pub on_done_fn: Option<v8::Global<v8::Function>>,
+    /// Native-drive policy hooks (set by runNativeLoop() when the realm's loop
+    /// is reactor-backed). When present the host loop drives the reactor
+    /// itself — no JS step function — and calls these thin policy callbacks.
+    pub native_loop: Option<NativeLoopHooks>,
 
     // ---------------------------------------------------------------------------
     // Pending synchronous call (set by JS scheduleSync() from internal:async-context)
@@ -531,6 +551,7 @@ impl FinoState {
             transpile_fn: None,
             loop_step_fn: None,
             on_done_fn: None,
+            native_loop: None,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
@@ -595,6 +616,7 @@ impl FinoState {
             transpile_fn: None,
             loop_step_fn: None,
             on_done_fn: None,
+            native_loop: None,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),

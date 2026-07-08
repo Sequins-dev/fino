@@ -297,6 +297,13 @@ export function alive(): boolean {
   return _reads.size > 0 || _writes.size > 0 || _timers.size > 0 || _procs.size > 0 || _completions.size > 0 || _vnodes.size > 0 || hasPendingV8Tasks() || _atomicsWaiters > 0;
 }
 /**
+* This loop is JS-stepped (bootstrap's driveLoop registers a step function);
+* the reactor-backed drop-in overrides this to opt into native drive.
+*
+* @internal
+*/
+export const _nativeDrive = false;
+/**
 * Return a snapshot of the loop's live handle counts for diagnostics and tests.
 *
 * Unlike `alive()`, which collapses everything into a single boolean, this

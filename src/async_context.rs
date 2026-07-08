@@ -30,6 +30,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "hasPendingV8Tasks",
         "scheduleSync",
         "runLoop",
+        "runNativeLoop",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -75,6 +76,7 @@ fn eval_steps<'a>(
     set_fn!("hasPendingV8Tasks", has_pending_v8_tasks);
     set_fn!("scheduleSync", schedule_sync);
     set_fn!("runLoop", run_loop);
+    set_fn!("runNativeLoop", run_native_loop);
 
     Some(v8::undefined(scope).into())
 }
@@ -145,6 +147,50 @@ fn schedule_sync(
     }
 
     rv.set(promise.into());
+}
+
+/// Called by the bootstrap with `(isDone, onDone, hooks?)` when the realm's
+/// loop module is reactor-backed: the Rust host loop drives the reactor itself
+/// (wait → dispatch → pump to quiescence → reclassify) and calls only these
+/// thin policy callbacks. `hooks` is an optional object with `flushPorts`,
+/// `stepChildren`, and `childrenAlive` functions.
+fn run_native_loop(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Ok(is_done) = v8::Local::<v8::Function>::try_from(args.get(0)) else {
+        return;
+    };
+    let on_done = v8::Local::<v8::Function>::try_from(args.get(1)).ok();
+
+    let mut flush_ports_fn = None;
+    let mut step_children_fn = None;
+    let mut children_alive_fn = None;
+    if let Ok(hooks) = v8::Local::<v8::Object>::try_from(args.get(2)) {
+        let mut hook = |scope: &mut v8::HandleScope, name: &str| {
+            v8::String::new(scope, name)
+                .and_then(|k| hooks.get(scope, k.into()))
+                .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+                .map(|f| v8::Global::new(scope, f))
+        };
+        flush_ports_fn = hook(scope, "flushPorts");
+        step_children_fn = hook(scope, "stepChildren");
+        children_alive_fn = hook(scope, "childrenAlive");
+    }
+
+    let state_rc = get_state(scope);
+    let mut st = state_rc.borrow_mut();
+    st.native_loop = Some(crate::state::NativeLoopHooks {
+        is_done_fn: v8::Global::new(scope, is_done),
+        flush_ports_fn,
+        step_children_fn,
+        children_alive_fn,
+    });
+    st.on_done_fn = on_done.map(|f| v8::Global::new(scope, f));
+    if loop_debug_enabled() {
+        eprintln!("[async-context] runNativeLoop registered");
+    }
 }
 
 /// Called by `internal/main.ts` with `(step, onDone)` to hand off host-safe loop

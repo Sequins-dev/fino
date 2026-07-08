@@ -94,6 +94,17 @@ pub fn step_child_context(
 ) -> bool {
     let child_scope = &mut v8::ContextScope::new(scope, child_context);
 
+    // Native-driven embedded child: pump + policy hooks only — the parent
+    // owns the thread's wait cadence, and the shared reactor dispatches the
+    // child's completions into its per-context resolvers.
+    {
+        let state_rc = get_state(child_scope);
+        let native = state_rc.borrow().native_loop.is_some();
+        if native {
+            return crate::runtime::native_drive_step_nowait(child_scope, &state_rc);
+        }
+    }
+
     // Extract loop_step_fn.
     let loop_step_fn = {
         let state_rc = get_state(child_scope);

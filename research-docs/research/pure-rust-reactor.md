@@ -436,6 +436,69 @@ Benchmarks after the swap (2026-07-09, macOS): h1 trivial-handler at parity in
 both the baseline realm (~98k req/s old vs new) and the reactor realm (~84k
 both); h2 40.1k → 39.7k req/s; h3 44.0k → 43.3k req/s — parity within noise.
 
+### Next: no standalone realms — every isolate-hosting thread IS a reactor
+
+The remaining gap to §4.5, made explicit (2026-07-09): the current tree still
+has two hosting models. Engine threads are the target model — a pure-Rust pump
+loop (`engine.rs::loop_forever`) drives hosted isolates to quiescence, routes
+completions by owner, and picks the next runnable tenant; tenant code never
+drives anything. But the root realm and `Realm({thread:true})` realms are
+still **JS-stepped**: bootstrap's `driveLoop` hands a step function to the
+host loop (`runLoop` → `runtime.rs` calls it each iteration), the step calls
+`loop.tick()`, checks `alive()`, steps embedded children, and decides
+doneness — even when the loop underneath is the reactor. `spin()`/`run()` are
+the fully-manual corner of that mode (test-only), and carry an inherent
+silent-deadlock hazard (drain-inside-drain is a V8 re-entrancy no-op) that the
+engine model cannot even express.
+
+**Target restated:** there is no such thing as a standalone realm. The main
+thread starts a reactor; the root realm (which hosts the orchestrator) is an
+isolate deployed onto it; the orchestrator creates a pool of further reactor
+threads and deploys workloads into them. One reactor-thread loop type
+everywhere, differing only in which isolates it hosts.
+
+**Design for the cutover (builds on what exists — mostly subtraction):**
+
+1. **Two workload styles on one reactor-thread loop.** Generalize the engine's
+   loop to host both the existing dispatch tenants (`pump_native` activation
+   protocol) and *module realms*: evaluate an entry module as the first
+   activation, then pump by the §5 arithmetic — runnable while completions or
+   microtasks are pending, parked while `outstanding > 0`, done when both hit
+   zero (plus fino-level liveness: atomics waiters, open ports). The engine's
+   `OpRecord.owner` bookkeeping already provides the per-isolate `ready`/
+   `outstanding` numbers; embedded children share the parent isolate and pump
+   with it (per-context Globals + the existing child-context drains route
+   correctly).
+2. **Main-thread inversion.** `runtime.rs::run` stops calling a JS step fn and
+   becomes the main reactor loop hosting the root isolate: wait → dispatch →
+   `pump_and_checkpoint` → reclassify → block until the next timer deadline.
+   `alive()` moves fully native (the reactor's own handle counters +
+   `hasPendingV8Tasks` + a native atomics-waiter counter replacing the JS one).
+   The idle-exit / onDone protocol moves into the loop.
+3. **Thread realms become deployments.** `Realm({thread:true})` spawns (or is
+   placed onto) a reactor thread running the same loop, hosting one module
+   realm. `realm/thread.rs`'s bespoke host loop is deleted; ThreadPort keeps
+   its data pipes, wakes become Notifier posts.
+4. **Bootstrap stops driving.** When the realm's loop is native-driven, the
+   bootstrap never registers a step function — `driveLoop`, `runLoop`,
+   `tick`, `alive`, `registerWakeSource`, `spin`, and `run` disappear from the
+   reactor loop's surface (the loop contract keeps only the I/O/timer/watch
+   registration API that stream/file/watch/process consume). The
+   `scheduleSync` shim (which exists to hoist test bodies out of the microtask
+   checkpoint so `spin` could work) loses its reason to exist.
+5. **Retirement (Phase 3 proper).** `loop.ts` + the kqueue/io_uring/linux/poll
+   JS backends, the raw-ring `submit()` contract, and the wake-source pipe
+   path all become dead once the default flips. During transition the legacy
+   JS-stepped path stays behind the existing loop module seam: a realm whose
+   loop is `loop.ts` keeps registering its step fn; a native-driven realm
+   simply never does.
+
+**Order (prove-in-isolation, then flip):** (a) native-drive thread realms that
+are already reactor-remapped — delete their JS stepping; (b) boot the root
+realm on the main reactor behind a flag, run the full suite, flip the default;
+(c) converge `Realm({thread:true})` and the orchestrator pool onto one
+reactor-thread spawn; (d) retire the legacy loop stack.
+
 ### Original status and correction (2026-07-07)
 
 Phase 0 shipped (`src/reactor/mod.rs`, kqueue, JS-driven). A first cut of Phase 2 shipped

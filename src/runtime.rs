@@ -189,6 +189,12 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         let should_continue = 'step: {
             let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
+            // Native drive: the realm's loop is reactor-backed, so Rust owns
+            // the pump cadence and calls only thin JS policy hooks.
+            if state_rc.borrow().native_loop.is_some() {
+                break 'step native_drive_step(scope, &state_rc);
+            }
+
             // Extract stored JS step callback without holding the borrow during call.
             let loop_step_fn = match state_rc.borrow().loop_step_fn.clone() {
                 Some(f) => f,
@@ -210,50 +216,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
                 // The wake pipe wakes kqueue, but we drain here (not via a
                 // JS-level readable() handler) to avoid keeping the loop alive.
                 pump_and_checkpoint(scope);
-
-                // Handle any pending synchronous call scheduled by JS via
-                // scheduleSync() (internal:async-context). We call the function
-                // here (outside perform_checkpoint) so that
-                // is_running_microtasks_ is false, allowing spin() →
-                // drainMicrotasks() to actually drain the queue.
-                let (maybe_fn, maybe_resolver) = {
-                    let mut st = state_rc.borrow_mut();
-                    (st.sync_call_fn.take(), st.sync_call_resolver.take())
-                };
-
-                if let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) {
-                    // Call fn() and capture result/exception as globals so TryCatch can drop.
-                    let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
-                        let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                        let tc = &mut v8::TryCatch::new(scope);
-                        let fn_local = v8::Local::new(tc, &fn_ref);
-                        match fn_local.call(tc, undef, &[]) {
-                            Some(result) => Ok(v8::Global::new(tc, result)),
-                            None => {
-                                let exc =
-                                    tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                                Err(v8::Global::new(tc, exc))
-                            }
-                        }
-                    }; // TryCatch dropped here, borrow on scope released
-
-                    // Resolve or reject the promise resolver (requires scope, now free).
-                    match call_result {
-                        Ok(result_ref) => {
-                            let resolver_local = v8::Local::new(scope, &resolver_ref);
-                            let result_local = v8::Local::new(scope, &result_ref);
-                            let _ = resolver_local.resolve(scope, result_local);
-                        }
-                        Err(exc_ref) => {
-                            let resolver_local = v8::Local::new(scope, &resolver_ref);
-                            let exc_local = v8::Local::new(scope, &exc_ref);
-                            let _ = resolver_local.reject(scope, exc_local);
-                        }
-                    }
-
-                    // Drain foreground tasks + microtasks produced by resolving the promise.
-                    pump_and_checkpoint(scope);
-                }
+                service_sync_call(scope, &state_rc);
             }
 
             break 'step should_continue;
@@ -338,6 +301,152 @@ fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
             break;
         }
     }
+}
+
+/// Service a pending synchronous call scheduled by JS via `scheduleSync()`
+/// (internal:async-context). The function runs here — outside any microtask
+/// checkpoint — so `is_running_microtasks_` is false and a re-entrant
+/// `drainMicrotasks()` inside it actually drains the queue.
+pub(crate) fn service_sync_call(
+    scope: &mut v8::HandleScope,
+    state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
+) {
+    let (maybe_fn, maybe_resolver) = {
+        let mut st = state_rc.borrow_mut();
+        (st.sync_call_fn.take(), st.sync_call_resolver.take())
+    };
+    let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) else {
+        return;
+    };
+    // Call fn() and capture result/exception as globals so TryCatch can drop.
+    let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
+        let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
+        let tc = &mut v8::TryCatch::new(scope);
+        let fn_local = v8::Local::new(tc, &fn_ref);
+        match fn_local.call(tc, undef, &[]) {
+            Some(result) => Ok(v8::Global::new(tc, result)),
+            None => {
+                let exc = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
+                Err(v8::Global::new(tc, exc))
+            }
+        }
+    }; // TryCatch dropped here, borrow on scope released
+    match call_result {
+        Ok(result_ref) => {
+            let resolver_local = v8::Local::new(scope, &resolver_ref);
+            let result_local = v8::Local::new(scope, &result_ref);
+            let _ = resolver_local.resolve(scope, result_local);
+        }
+        Err(exc_ref) => {
+            let resolver_local = v8::Local::new(scope, &resolver_ref);
+            let exc_local = v8::Local::new(scope, &exc_ref);
+            let _ = resolver_local.reject(scope, exc_local);
+        }
+    }
+    // Drain foreground tasks + microtasks produced by resolving the promise.
+    pump_and_checkpoint(scope);
+}
+
+/// Call a no-arg JS policy hook; `None` means it threw (the loop should exit,
+/// matching the legacy behavior where a throwing step() ended the loop).
+fn call_hook(scope: &mut v8::HandleScope, g: &v8::Global<v8::Function>) -> Option<bool> {
+    let tc = &mut v8::TryCatch::new(scope);
+    let undef: v8::Local<v8::Value> = v8::undefined(tc).into();
+    let f = v8::Local::new(tc, g);
+    f.call(tc, undef, &[]).map(|v| v.boolean_value(tc))
+}
+
+/// One iteration of the native host loop for a reactor-backed realm: pump
+/// everything ready to a fixed point, run the thin JS policy hooks, decide
+/// doneness (§5 of the reactor doc: realm policy done AND reactor quiescent
+/// AND no children), then block on the reactor until the next completion.
+/// Returns false when the realm is finished (or a policy hook threw).
+pub(crate) fn native_drive_step(
+    scope: &mut v8::HandleScope,
+    state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
+) -> bool {
+    native_drive_step_inner(scope, state_rc, true)
+}
+
+/// Native-drive iteration without the trailing reactor wait — for embedded
+/// children stepped by their parent, which owns the thread's wait cadence.
+pub(crate) fn native_drive_step_nowait(
+    scope: &mut v8::HandleScope,
+    state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
+) -> bool {
+    native_drive_step_inner(scope, state_rc, false)
+}
+
+fn native_drive_step_inner(
+    scope: &mut v8::HandleScope,
+    state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
+    wait: bool,
+) -> bool {
+    use std::time::Duration;
+
+    pump_and_checkpoint(scope);
+
+    let (is_done, flush_ports, step_children, children_alive) = {
+        let st = state_rc.borrow();
+        let Some(h) = st.native_loop.as_ref() else {
+            return false;
+        };
+        (
+            h.is_done_fn.clone(),
+            h.flush_ports_fn.clone(),
+            h.step_children_fn.clone(),
+            h.children_alive_fn.clone(),
+        )
+    };
+
+    // Port deliveries are macrotasks; child realms advance between pumps.
+    if let Some(f) = &flush_ports
+        && call_hook(scope, f).is_none()
+    {
+        return false;
+    }
+    if let Some(f) = &step_children
+        && call_hook(scope, f).is_none()
+    {
+        return false;
+    }
+    pump_and_checkpoint(scope);
+
+    // Deferred sync work (scheduleSync) runs outside any checkpoint.
+    service_sync_call(scope, state_rc);
+
+    let Some(done) = call_hook(scope, &is_done) else {
+        return false;
+    };
+    let children = match &children_alive {
+        Some(f) => match call_hook(scope, f) {
+            Some(b) => b,
+            None => return false,
+        },
+        None => false,
+    };
+    let live = crate::reactor::drive_live() || scope.has_pending_background_tasks();
+    if done && !live && !children {
+        return false;
+    }
+
+    if wait {
+        // Block until a completion — the reactor is the wake source for all
+        // asynchrony. Bound the wait only where progress can happen without
+        // one: child realms are advanced by the stepChildren hook, and
+        // Atomics resolutions / V8 background tasks post foreground work
+        // without touching the reactor.
+        let timeout = if children
+            || crate::reactor::drive_needs_poll()
+            || scope.has_pending_background_tasks()
+        {
+            Some(Duration::from_millis(25))
+        } else {
+            None
+        };
+        crate::reactor::drive_wait_and_dispatch(scope, timeout);
+    }
+    true
 }
 
 fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {
