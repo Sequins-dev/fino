@@ -310,13 +310,13 @@ fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
 pub(crate) fn service_sync_call(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
-) {
+) -> bool {
     let (maybe_fn, maybe_resolver) = {
         let mut st = state_rc.borrow_mut();
         (st.sync_call_fn.take(), st.sync_call_resolver.take())
     };
     let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) else {
-        return;
+        return false;
     };
     // Call fn() and capture result/exception as globals so TryCatch can drop.
     let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
@@ -345,6 +345,7 @@ pub(crate) fn service_sync_call(
     }
     // Drain foreground tasks + microtasks produced by resolving the promise.
     pump_and_checkpoint(scope);
+    true
 }
 
 /// Call a no-arg JS policy hook; `None` means it threw (the loop should exit,
@@ -384,8 +385,6 @@ fn native_drive_step_inner(
 ) -> bool {
     use std::time::Duration;
 
-    pump_and_checkpoint(scope);
-
     let (is_done, flush_ports, step_children, children_alive) = {
         let st = state_rc.borrow();
         let Some(h) = st.native_loop.as_ref() else {
@@ -398,35 +397,69 @@ fn native_drive_step_inner(
             h.children_alive_fn.clone(),
         )
     };
+    let evaluate = |scope: &mut v8::HandleScope| -> Option<(bool, bool)> {
+        let done = call_hook(scope, &is_done)?;
+        let children = match &children_alive {
+            Some(f) => call_hook(scope, f)?,
+            None => false,
+        };
+        Some((done, children))
+    };
 
-    // Port deliveries are macrotasks; child realms advance between pumps.
-    if let Some(f) = &flush_ports
-        && call_hook(scope, f).is_none()
-    {
-        return false;
+    // Settle to true quiescence before deciding anything: the policy hooks
+    // and scheduleSync'd functions each run JS that can schedule more work
+    // (`isDone()`'s first true-ward call starts wind-down microtasks; a test
+    // body queues the next scheduleSync). Blocking with any of it pending
+    // would strand the loop — nothing about it wakes the reactor.
+    loop {
+        pump_and_checkpoint(scope);
+        // Port deliveries are macrotasks; child realms advance between pumps.
+        // Same-isolate port queues never touch the reactor, so the flush hook
+        // reports delivery and the settle loop re-passes while it progresses.
+        let mut flushed = false;
+        if let Some(f) = &flush_ports {
+            match call_hook(scope, f) {
+                Some(d) => flushed = d,
+                None => return false,
+            }
+        }
+        if let Some(f) = &step_children
+            && call_hook(scope, f).is_none()
+        {
+            return false;
+        }
+        pump_and_checkpoint(scope);
+
+        // Deferred sync work (scheduleSync) runs outside any checkpoint.
+        let serviced = service_sync_call(scope, state_rc);
+
+        // Evaluated for its side effects: isDone()'s first true-ward call
+        // starts wind-down work whose microtasks the next pump absorbs.
+        if evaluate(scope).is_none() {
+            return false;
+        }
+        pump_and_checkpoint(scope);
+
+        let sync_pending = state_rc.borrow().sync_call_fn.is_some();
+        if !flushed && !serviced && !sync_pending {
+            break;
+        }
     }
-    if let Some(f) = &step_children
-        && call_hook(scope, f).is_none()
-    {
-        return false;
-    }
-    pump_and_checkpoint(scope);
-
-    // Deferred sync work (scheduleSync) runs outside any checkpoint.
-    service_sync_call(scope, state_rc);
-
-    let Some(done) = call_hook(scope, &is_done) else {
+    // Sample the exit inputs only now, after the last pump, so a wind-down
+    // that completed inside the settle loop is observed.
+    let Some((done, children)) = evaluate(scope) else {
         return false;
     };
-    let children = match &children_alive {
-        Some(f) => match call_hook(scope, f) {
-            Some(b) => b,
-            None => return false,
-        },
-        None => false,
-    };
+
     let live = crate::reactor::drive_live() || scope.has_pending_background_tasks();
-    if done && !live && !children {
+    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+        eprintln!(
+            "[native-drive] done={done} reactor_live={} bg_tasks={} children={children}",
+            crate::reactor::drive_live(),
+            scope.has_pending_background_tasks(),
+        );
+    }
+    if done && !children && !live {
         return false;
     }
 

@@ -643,9 +643,9 @@ export class MessagePort extends EventTarget {
   *
   * @internal
   */
-  _drain(): void {
-    if (!this.#started) return;
-    if (this.#transitHandle !== null) return;
+  _drain(): boolean {
+    if (!this.#started) return false;
+    if (this.#transitHandle !== null) return false;
     const pending = this.#queue.splice(0);
     for (const item of pending) {
       const event = new MessageEvent('message', {
@@ -655,6 +655,7 @@ export class MessagePort extends EventTarget {
       _markEventTrusted(event);
       this.dispatchEvent(event);
     }
+    return pending.length > 0;
   }
   // ---------------------------------------------------------------------------
   // Private helpers
@@ -752,8 +753,11 @@ export class MessageChannel {
 // ---------------------------------------------------------------------------
 /**
 * Dispatch all queued messages on every started MessagePort in this context.
-* Called from driveLoop between tick() and drainMicrotasks() so that port
-* messages are treated as tasks that run before the microtask checkpoint.
+* Called from the loop drive between tick() and the microtask drain so that
+* port messages are treated as tasks that run before the checkpoint. Returns
+* whether anything was delivered — the native host loop keeps pumping while
+* port queues make progress, since same-isolate ports never touch the
+* reactor and would otherwise never wake it.
 *
 * ```typescript no_run
 * _flushPorts();
@@ -761,8 +765,10 @@ export class MessageChannel {
 *
 * @internal
 */
-export function _flushPorts(): void {
+export function _flushPorts(): boolean {
+  let delivered = false;
   for (const port of _activePorts) {
-    port._drain();
+    if (port._drain()) delivered = true;
   }
+  return delivered;
 }

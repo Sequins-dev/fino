@@ -168,7 +168,7 @@ fn run_native_loop(
     let mut step_children_fn = None;
     let mut children_alive_fn = None;
     if let Ok(hooks) = v8::Local::<v8::Object>::try_from(args.get(2)) {
-        let mut hook = |scope: &mut v8::HandleScope, name: &str| {
+        let hook = |scope: &mut v8::HandleScope, name: &str| {
             v8::String::new(scope, name)
                 .and_then(|k| hooks.get(scope, k.into()))
                 .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
