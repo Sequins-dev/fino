@@ -304,6 +304,13 @@ export function alive(): boolean {
 */
 export const _nativeDrive = false;
 /**
+* Set `fd` to non-blocking mode via the native reactor module (fcntl is
+* variadic, which the JS FFI silently miscalls on ARM64 Darwin).
+*
+* @internal
+*/
+export { setNonblocking } from 'internal:reactor-native';
+/**
 * Return a snapshot of the loop's live handle counts for diagnostics and tests.
 *
 * Unlike `alive()`, which collapses everything into a single boolean, this

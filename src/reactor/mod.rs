@@ -47,6 +47,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "activeHandleCounts",
         "trackAtomicsWaiter",
         "untrackAtomicsWaiter",
+        "setNonblocking",
     ];
     let export_names: Vec<v8::Local<v8::String>> = names
         .iter()
@@ -89,6 +90,7 @@ fn eval_steps<'a>(
     export!("activeHandleCounts", imp::active_handle_counts);
     export!("trackAtomicsWaiter", imp::track_atomics_waiter);
     export!("untrackAtomicsWaiter", imp::untrack_atomics_waiter);
+    export!("setNonblocking", imp::set_nonblocking);
     Some(v8::undefined(scope).into())
 }
 
@@ -1088,6 +1090,35 @@ mod imp {
         static ATOMICS_WAITERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
+    /// Set an fd to non-blocking mode. A native loop primitive because the
+    /// fused read/write fast paths REQUIRE non-blocking fds — and because
+    /// `fcntl(2)` is variadic, which the JS FFI silently miscalls on ARM64
+    /// Darwin (the third argument rides the variadic ABI): the JS-side
+    /// `fcntl(F_SETFL, …)` helpers returned success while setting nothing.
+    pub fn set_nonblocking(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _rv: v8::ReturnValue,
+    ) {
+        let fd = arg_i32(scope, &args, 0);
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 {
+                let msg =
+                    v8::String::new(scope, &format!("fcntl(F_GETFL) failed on fd {fd}")).unwrap();
+                let exc = v8::Exception::error(scope, msg);
+                scope.throw_exception(exc);
+                return;
+            }
+            if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                let msg =
+                    v8::String::new(scope, &format!("fcntl(F_SETFL) failed on fd {fd}")).unwrap();
+                let exc = v8::Exception::error(scope, msg);
+                scope.throw_exception(exc);
+            }
+        }
+    }
+
     pub fn track_atomics_waiter(
         _scope: &mut v8::HandleScope,
         _args: v8::FunctionCallbackArguments,
@@ -1383,4 +1414,5 @@ mod imp {
     stub!(active_handle_counts);
     stub!(track_atomics_waiter);
     stub!(untrack_atomics_waiter);
+    stub!(set_nonblocking);
 }

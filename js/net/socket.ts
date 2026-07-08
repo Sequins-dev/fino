@@ -1079,10 +1079,9 @@ export function socket(family: number = AF_INET, type: number = SOCK_STREAM, pro
 * ```
 */
 export function setNonblocking(fd: number): void {
-  const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
-  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed: errno=${getErrno()}`);
-  const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  if (rc < 0) throw new Error(`fcntl(F_SETFL, O_NONBLOCK) failed: errno=${getErrno()}`);
+  // Native — fcntl(2) is variadic, which the JS FFI silently miscalls on
+  // ARM64 Darwin (F_SETFL "succeeded" without setting O_NONBLOCK).
+  (loop as unknown as { setNonblocking(fd: number): void }).setNonblocking(fd);
 }
 /**
 * Set socket option. Value can be a boolean/number (written as 4-byte int)

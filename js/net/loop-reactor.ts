@@ -200,6 +200,17 @@ export function registerWakeSource(fd: number): void {
   native.registerWakeSource(fd);
 }
 
+/**
+* Set `fd` to non-blocking mode. Native because `fcntl(2)` is variadic —
+* the JS FFI silently miscalls it on ARM64 Darwin — and because non-blocking
+* fds are a hard precondition of the fused read/write fast paths.
+*
+* @internal
+*/
+export function setNonblocking(fd: number): void {
+  native.setNonblocking(fd);
+}
+
 export function removeRead(fd: number): void {
   native.removeRead(fd);
 }
