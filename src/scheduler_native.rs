@@ -126,14 +126,18 @@ pub(crate) struct ParkedWorkload {
 }
 
 impl ParkedWorkload {
-    /// Read end of this isolate's wake pipe. The reactor engine watches this fd on
-    /// its kqueue so a background FFI completion for this isolate re-pumps it.
-    /// Returns -1 if the isolate has no async state (never after construction).
-    pub(crate) fn wake_read_fd(&self) -> std::os::fd::RawFd {
+    /// Route this isolate's background wakes (FFI completions, callback
+    /// trampolines, view releases) into a reactor as Notifier posts tagged
+    /// `user_data`. First install wins; returns false if already claimed.
+    pub(crate) fn install_wake_notifier(
+        &self,
+        notifier: cherenkov::Notifier,
+        user_data: u64,
+    ) -> bool {
         self.async_state
             .as_ref()
-            .map(|st| st.wake_read)
-            .unwrap_or(-1)
+            .map(|st| st.wake_sink.install_notifier(notifier, user_data))
+            .unwrap_or(false)
     }
 }
 

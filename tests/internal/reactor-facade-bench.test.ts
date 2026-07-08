@@ -19,13 +19,12 @@ import { describe, it } from 'fino:test/test';
 import { SchedulerNode } from 'internal:orchestrator/scheduler-node';
 import { DiskFileSystem } from 'fino:file';
 import * as engine from 'internal:reactor-engine';
-import * as loop from 'internal:runtime/loop';
 
 const workerPath = new URL('./fixtures/scheduler-bench-read-worker.ts', import.meta.url).pathname;
 
 async function waitForEngineReleased(reactorId: number, workloadId: number): Promise<void> {
   for (;;) {
-    await loop.readable(engine.reportFd(reactorId));
+    await engine.nextReport(reactorId);
     const reports = engine.drainReports(reactorId) as { type: string; workloadId?: number }[];
     if (reports.some((r) => r.type === 'released' && r.workloadId === workloadId)) return;
   }

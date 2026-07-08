@@ -8,17 +8,33 @@
 //! no per-slice `internal:serializer` round trip.
 //!
 //! The orchestrator (main thread, TS) drives a pool of these threads through a
-//! cross-thread control/report channel (mpsc + wake pipe, mirroring
-//! `src/realm/thread.rs`). Control: place / wake / revoke / drain / shutdown.
-//! Reports: released / sync-heavy / load / drained.
+//! cross-thread control/report channel: an mpsc for the messages, cherenkov
+//! Notifier posts for the wakes (control pokes post into the engine's reactor;
+//! reports wake the orchestrator through its isolate wake sink). Control:
+//! place / wake / revoke / drain / shutdown. Reports: released / sync-heavy /
+//! load / drained.
 //!
 //! Isolate-tagged direct I/O (replacing the facade) layers on top of this loop —
 //! see `reactor/io.rs` — so a parked isolate's reactor I/O completions mark it
 //! runnable here. This module owns the execution + scheduling half.
 
+use std::cell::Cell;
 use std::os::fd::RawFd;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
+
+/// Notifier post tags for the engine's reactor: ops use a monotonic counter
+/// with bit 63 clear; posts set bit 63. Bit 62 distinguishes a per-workload
+/// wake (low bits = workload id, a JS number ≤ 2^53) from a control poke.
+const POST_FLAG: u64 = 1 << 63;
+const POST_WAKE_BIT: u64 = 1 << 62;
+const POST_CONTROL: u64 = POST_FLAG;
+
+/// The post tag a tenant's background FFI wakes carry into the engine reactor.
+fn post_wake(workload_id: u64) -> u64 {
+    POST_FLAG | POST_WAKE_BIT | workload_id
+}
 
 use crate::state::{ImportDirective, ImportPattern, ImportRule, ProcessEnv, default_import_rules};
 
@@ -151,12 +167,18 @@ pub enum Report {
 #[allow(dead_code)]
 pub struct ReactorHandle {
     pub control_tx: mpsc::Sender<Control>,
-    /// Written (1 byte) after a control send to break the reactor's poll block.
-    pub control_wake_write: RawFd,
+    /// Posted (`POST_CONTROL`) after a control send to break the reactor's wait.
+    pub control_notify: cherenkov::Notifier,
     pub report_rx: mpsc::Receiver<Report>,
-    /// Read end the orchestrator registers on its own loop; readable when a
-    /// report is queued.
-    pub report_wake_read: RawFd,
+    /// Bumped by the engine thread once per queued report — and once at thread
+    /// exit, so a dead engine still wakes its report pump. The orchestrator's
+    /// drain hook resolves `report_waiter` whenever it advances past
+    /// `report_seen`.
+    pub report_seq: Arc<AtomicU64>,
+    /// Last `report_seq` value a resolved `nextReport()` consumed.
+    pub report_seen: Cell<u64>,
+    /// The armed `nextReport()` resolver, if the report pump is parked.
+    pub report_waiter: RefCell<Option<v8::Global<v8::PromiseResolver>>>,
     pub join: JoinHandle<()>,
 }
 
@@ -259,7 +281,7 @@ mod imp {
     use crate::scheduler_native::{
         ParkedWorkload, PumpOutcome, drop_parked, pump_drain_native, pump_native, setup_workload,
     };
-    use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source, err};
+    use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source};
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::time::{Duration, Instant};
 
@@ -297,11 +319,6 @@ mod imp {
             resolver_id: usize,
             timer_id: u64,
         },
-        /// The control wake pipe: drain it, re-arm; `drain_control` does the work.
-        Control { fd: RawFd },
-        /// A workload's wake pipe (background FFI completion): drain, mark the
-        /// workload runnable, re-arm.
-        Wake { workload: u64, fd: RawFd },
     }
 
     /// A hosted isolate plus the scheduling state the run-queue orders by.
@@ -335,15 +352,19 @@ mod imp {
         /// only I/O primitive the engine touches.
         reactor: Reactor,
         control_rx: mpsc::Receiver<Control>,
-        control_wake_read: RawFd,
         report_tx: mpsc::Sender<Report>,
-        report_wake_write: RawFd,
+        /// Bumped once per queued report; the orchestrator's drain hook turns
+        /// an advance into a `nextReport()` resolution.
+        report_seq: Arc<AtomicU64>,
+        /// The orchestrator isolate's wake sink — the same channel background
+        /// FFI threads use, so a report wakes either loop flavor.
+        orch_wake: crate::async_rt::WakeSink,
         workloads: HashMap<u64, EngineWorkload>,
         /// Workloads with work ready to run (fresh wake, or a completion landed).
         runnable: HashSet<u64>,
-        /// Every outstanding op, keyed by the `user_data` the reactor echoes on
-        /// completion. Covers tenant I/O, timers, the control pipe, and per-
-        /// workload wake pipes — a completion looks up its record here to route.
+        /// Every outstanding op (tenant I/O and timers), keyed by the
+        /// `user_data` the reactor echoes on completion. Control pokes and
+        /// per-workload wakes are Notifier posts, not ops — they route by tag.
         ops: HashMap<u64, OpRecord>,
         /// Canceled ops whose records carry pointers (tenant buffers): the
         /// reactor contract keeps every submitted pointer alive until the op's
@@ -365,24 +386,21 @@ mod imp {
     pub(super) fn run(
         config: ReactorConfig,
         control_rx: mpsc::Receiver<Control>,
-        control_wake_read: RawFd,
         report_tx: mpsc::Sender<Report>,
-        report_wake_write: RawFd,
+        report_seq: Arc<AtomicU64>,
+        orch_wake: crate::async_rt::WakeSink,
+        reactor: Reactor,
     ) {
         crate::runtime::init_v8();
         // Mark this as an engine thread so tenant internal:io ops register here.
         ENGINE_IO.with(|c| *c.borrow_mut() = Some(Vec::new()));
-        let reactor = match Reactor::new() {
-            Ok(r) => r,
-            Err(_) => return,
-        };
         let mut engine = ReactorThread {
             config,
             reactor,
             control_rx,
-            control_wake_read,
             report_tx,
-            report_wake_write,
+            report_seq,
+            orch_wake,
             workloads: HashMap::new(),
             runnable: HashSet::new(),
             ops: HashMap::new(),
@@ -394,9 +412,6 @@ mod imp {
             running: true,
             scratch: Vec::new(),
         };
-        // Arm a persistent readiness op on the control wake pipe so a control
-        // send breaks the poll; it re-arms itself on every completion.
-        engine.arm_control();
         engine.loop_forever();
         // Teardown: quiesce every in-flight op (tenant buffers must outlive
         // their completions), then dispose every hosted isolate.
@@ -434,25 +449,9 @@ mod imp {
             id
         }
 
-        /// Arm (or re-arm) a readiness op on the control wake pipe.
-        fn arm_control(&mut self) {
-            let fd = self.control_wake_read;
-            let ud = self.next_op();
-            self.reactor.submit_poll_in(ud, Source::fd(fd));
-            self.ops.insert(ud, OpRecord::Control { fd });
-        }
-
-        /// Arm (or re-arm) a readiness op on a workload's wake pipe.
-        fn arm_wake(&mut self, workload: u64, fd: RawFd) {
-            let ud = self.next_op();
-            self.reactor.submit_poll_in(ud, Source::fd(fd));
-            self.ops.insert(ud, OpRecord::Wake { workload, fd });
-        }
-
         fn drain_control(&mut self) {
-            // Empty the control wake pipe (its readiness op already re-armed on
-            // completion; this drains the bytes so it doesn't fire immediately).
-            drain_pipe(self.control_wake_read);
+            // A POST_CONTROL completion broke the wait; the messages are in
+            // the mpsc, nothing to drain but the channel itself.
             while let Ok(msg) = self.control_rx.try_recv() {
                 self.handle_control(msg);
             }
@@ -537,13 +536,13 @@ mod imp {
                     return;
                 }
             };
-            let wake_fd = inner.wake_read_fd();
             let seq = self.next_sequence;
             self.next_sequence += 1;
-            // Watch the isolate's wake pipe so background completions re-pump it.
-            if wake_fd >= 0 {
-                self.arm_wake(workload_id, wake_fd);
-            }
+            // Route the isolate's background wakes (FFI completions, callback
+            // trampolines, view releases) into this reactor as posts tagged
+            // with the workload id. Installed before the first pump, so the
+            // tenant's own bootstrap finds the sink already claimed.
+            inner.install_wake_notifier(self.reactor.notifier(), post_wake(workload_id));
             self.workloads.insert(
                 workload_id,
                 EngineWorkload {
@@ -915,35 +914,34 @@ mod imp {
                     }
                     self.runnable.insert(owner);
                 }
-                OpRecord::Control { fd } => {
-                    // A BUSY completion means something else already watches this
-                    // fd — re-arming would spin on BUSY forever.
-                    if res == err::BUSY {
-                        return;
-                    }
-                    drain_pipe(fd);
-                    self.arm_control(); // handled by drain_control at loop top
-                }
-                OpRecord::Wake { workload, fd } => {
-                    if res == err::BUSY {
-                        return;
-                    }
-                    drain_pipe(fd);
-                    if self.workloads.contains_key(&workload) {
-                        self.runnable.insert(workload);
-                        self.arm_wake(workload, fd);
-                    }
-                }
             }
         }
 
+        /// Route one harvest: Notifier posts by tag, ops through their record.
+        fn route(&mut self, user_data: u64, res: i32) {
+            if user_data & POST_FLAG != 0 {
+                if user_data & POST_WAKE_BIT != 0 {
+                    // A tenant's background wake: mark it runnable. Stale posts
+                    // for released workloads fall through harmlessly.
+                    let id = user_data & !(POST_FLAG | POST_WAKE_BIT);
+                    if self.workloads.contains_key(&id) {
+                        self.runnable.insert(id);
+                    }
+                }
+                // POST_CONTROL: the wait broke; drain_control() at the top of
+                // the loop empties the mpsc.
+                return;
+            }
+            self.on_completion(user_data, res);
+        }
+
         /// Cancel every op this workload owns. Pointer-free records (timers,
-        /// readiness, wake watches) are dropped eagerly — their CANCELED
-        /// completion finds no record and is ignored. Pointer-carrying records
-        /// (fused reads, writes) retain the tenant's ArrayBuffer and move to
-        /// `doomed`: the reactor may still hand their pointers to the kernel
-        /// until the CANCELED completion is harvested, so the buffer — and the
-        /// isolate that owns its memory — must stay alive until then.
+        /// readiness) are dropped eagerly — their CANCELED completion finds no
+        /// record and is ignored. Pointer-carrying records (fused reads,
+        /// writes) retain the tenant's ArrayBuffer and move to `doomed`: the
+        /// reactor may still hand their pointers to the kernel until the
+        /// CANCELED completion is harvested, so the buffer — and the isolate
+        /// that owns its memory — must stay alive until then.
         fn cancel_owned(&mut self, id: u64) {
             let owned: Vec<u64> = self
                 .ops
@@ -952,8 +950,6 @@ mod imp {
                     OpRecord::Io { owner, .. }
                     | OpRecord::Write { owner, .. }
                     | OpRecord::Timer { owner, .. } => *owner == id,
-                    OpRecord::Wake { workload, .. } => *workload == id,
-                    OpRecord::Control { .. } => false,
                 })
                 .map(|(ud, _)| *ud)
                 .collect();
@@ -992,7 +988,7 @@ mod imp {
                 buf.clear();
                 let _ = self.reactor.wait(Some(Duration::from_millis(10)), &mut buf);
                 for c in &buf {
-                    self.on_completion(c.user_data, c.res);
+                    self.route(c.user_data, c.res);
                 }
                 self.scratch = buf;
             }
@@ -1027,7 +1023,7 @@ mod imp {
             buf.clear();
             let _ = self.reactor.wait(timeout, &mut buf);
             for c in &buf {
-                self.on_completion(c.user_data, c.res);
+                self.route(c.user_data, c.res);
             }
             self.scratch = buf;
         }
@@ -1049,24 +1045,10 @@ mod imp {
 
         fn report(&mut self, report: Report) {
             let _ = self.report_tx.send(report);
-            // Wake the orchestrator's loop so it drains the report promptly.
-            let byte = [1u8];
-            unsafe {
-                libc::write(self.report_wake_write, byte.as_ptr() as *const _, 1);
-            }
-        }
-    }
-
-    fn drain_pipe(fd: RawFd) {
-        if fd < 0 {
-            return;
-        }
-        let mut buf = [0u8; 64];
-        loop {
-            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-            if n <= 0 {
-                break;
-            }
+            // Wake the orchestrator's loop so it drains the report promptly:
+            // bump the sequence its drain hook compares, then wake its sink.
+            self.report_seq.fetch_add(1, Ordering::Release);
+            self.orch_wake.wake();
         }
     }
 }
@@ -1075,13 +1057,21 @@ mod imp {
 // Public spawn API + shared tenant setup.
 // ===========================================================================
 
-/// Spawn a reactor thread and return the orchestrator-side handle.
+/// Spawn a reactor thread and return the orchestrator-side handle. The
+/// reactor is created here (on the spawning thread) so its Notifier exists
+/// before the thread runs, then moved in — it is `Send` by design.
 pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
     let (control_tx, control_rx) = mpsc::channel::<Control>();
     let (report_tx, report_rx) = mpsc::channel::<Report>();
-    let (control_wake_read, control_wake_write) = create_pipe()?;
-    let (report_wake_read, report_wake_write) = create_pipe()?;
+    let reactor =
+        cherenkov::Reactor::new().map_err(|e| format!("reactor engine: init failed: {e}"))?;
+    let control_notify = reactor.notifier();
+    let report_seq = Arc::new(AtomicU64::new(0));
+    let orch_wake = crate::async_rt::wake_sink()
+        .ok_or_else(|| "reactor engine: async runtime not initialised".to_string())?;
 
+    let thread_seq = Arc::clone(&report_seq);
+    let thread_wake = orch_wake.clone();
     let join = std::thread::Builder::new()
         .name("reactor".to_string())
         .spawn(move || {
@@ -1089,41 +1079,28 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
                 imp::run(
                     config,
                     control_rx,
-                    control_wake_read,
                     report_tx,
-                    report_wake_write,
+                    Arc::clone(&thread_seq),
+                    thread_wake.clone(),
+                    reactor,
                 );
             }));
-            unsafe {
-                libc::close(control_wake_read);
-                libc::close(report_wake_write);
-            }
+            // Death signal (normal exit or panic): one final bump + wake so
+            // the orchestrator's report pump re-checks reactorAlive.
+            thread_seq.fetch_add(1, Ordering::Release);
+            thread_wake.wake();
         })
         .map_err(|e| format!("failed to spawn reactor thread: {e}"))?;
 
     Ok(ReactorHandle {
         control_tx,
-        control_wake_write,
+        control_notify,
         report_rx,
-        report_wake_read,
+        report_seq,
+        report_seen: Cell::new(0),
+        report_waiter: RefCell::new(None),
         join,
     })
-}
-
-fn create_pipe() -> Result<(RawFd, RawFd), String> {
-    let mut fds = [0i32; 2];
-    let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(format!(
-            "pipe() failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    unsafe {
-        libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-    }
-    Ok((fds[0], fds[1]))
 }
 
 // ===========================================================================
@@ -1149,7 +1126,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "revoke",
         "drain",
         "shutdown",
-        "reportFd",
+        "nextReport",
         "drainReports",
         "reactorAlive",
     ];
@@ -1180,7 +1157,7 @@ fn eval_steps<'a>(
     export!("revoke", cb_revoke);
     export!("drain", cb_drain);
     export!("shutdown", cb_shutdown);
-    export!("reportFd", cb_report_fd);
+    export!("nextReport", cb_next_report);
     export!("drainReports", cb_drain_reports);
     export!("reactorAlive", cb_reactor_alive);
     Some(v8::undefined(scope).into())
@@ -1214,14 +1191,11 @@ fn with_reactor<R>(id: usize, f: impl FnOnce(&ReactorHandle) -> R) -> Option<R> 
     REACTORS.with(|r| r.borrow().get(id).and_then(|h| h.as_ref()).map(f))
 }
 
-/// Send a control message and poke the reactor's wake pipe so it acts promptly.
+/// Send a control message and post into the reactor so it acts promptly.
 fn send_control(id: usize, msg: Control) {
     with_reactor(id, |h| {
         if h.control_tx.send(msg).is_ok() {
-            let b = [1u8];
-            unsafe {
-                libc::write(h.control_wake_write, b.as_ptr() as *const _, 1);
-            }
+            h.control_notify.post(POST_CONTROL, 0);
         }
     });
 }
@@ -1356,14 +1330,69 @@ fn cb_shutdown(
     send_control(id, Control::Shutdown);
 }
 
-fn cb_report_fd(
+/// `nextReport(reactorId)`: a promise resolved when the reactor thread posts
+/// its next load report — or immediately, if reports (or the thread's death)
+/// arrived while unarmed, so no wake is ever lost. Replaces the report wake
+/// pipe the orchestrator used to `readable()` on.
+fn cb_next_report(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let id = arg_u64(scope, &args, 0) as usize;
-    let fd = with_reactor(id, |h| h.report_wake_read).unwrap_or(-1);
-    rv.set(v8::Integer::new(scope, fd).into());
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    rv.set(promise.into());
+    let resolve_now = REACTORS.with(|r| {
+        let borrow = r.borrow();
+        let Some(h) = borrow.get(id).and_then(|h| h.as_ref()) else {
+            // Unknown reactor: resolve so the caller's loop re-checks and exits.
+            return true;
+        };
+        let seq = h.report_seq.load(Ordering::Acquire);
+        if seq != h.report_seen.get() || h.join.is_finished() {
+            h.report_seen.set(seq);
+            true
+        } else {
+            *h.report_waiter.borrow_mut() = Some(v8::Global::new(scope, resolver));
+            false
+        }
+    });
+    if resolve_now {
+        let undef = v8::undefined(scope).into();
+        resolver.resolve(scope, undef);
+    }
+}
+
+/// Resolve armed `nextReport()` waiters whose reactors have advanced (a new
+/// report, or thread death). Called from `async_rt::drain_all` on every pump —
+/// cheap on non-orchestrator threads (their registry is empty).
+pub(crate) fn drain_report_wakes(scope: &mut v8::HandleScope) -> bool {
+    let waiters: Vec<v8::Global<v8::PromiseResolver>> = REACTORS.with(|r| {
+        let borrow = r.borrow();
+        let mut out = Vec::new();
+        for h in borrow.iter().flatten() {
+            let seq = h.report_seq.load(Ordering::Acquire);
+            if (seq != h.report_seen.get() || h.join.is_finished())
+                && let Some(g) = h.report_waiter.borrow_mut().take()
+            {
+                // Only consume the advance when a waiter is armed — otherwise
+                // the next nextReport() resolves immediately off the delta.
+                h.report_seen.set(seq);
+                out.push(g);
+            }
+        }
+        out
+    });
+    if waiters.is_empty() {
+        return false;
+    }
+    for g in &waiters {
+        let resolver = v8::Local::new(scope, g);
+        let undef = v8::undefined(scope).into();
+        resolver.resolve(scope, undef);
+    }
+    true
 }
 
 fn cb_reactor_alive(
@@ -1382,22 +1411,12 @@ fn cb_drain_reports(
     mut rv: v8::ReturnValue,
 ) {
     let id = arg_u64(scope, &args, 0) as usize;
-    // Drain the report pipe (level) and collect queued reports.
     let reports: Vec<Report> = REACTORS.with(|r| {
         let borrow = r.borrow();
         let handle = match borrow.get(id).and_then(|h| h.as_ref()) {
             Some(h) => h,
             None => return Vec::new(),
         };
-        // Empty the wake pipe so the next report re-arms the orchestrator's watch.
-        let mut buf = [0u8; 64];
-        loop {
-            let n =
-                unsafe { libc::read(h_report_fd(handle), buf.as_mut_ptr() as *mut _, buf.len()) };
-            if n <= 0 {
-                break;
-            }
-        }
         let mut out = Vec::new();
         while let Ok(report) = handle.report_rx.try_recv() {
             out.push(report);
@@ -1411,10 +1430,6 @@ fn cb_drain_reports(
         arr.set_index(scope, i as u32, obj.into());
     }
     rv.set(arr.into());
-}
-
-fn h_report_fd(handle: &ReactorHandle) -> RawFd {
-    handle.report_wake_read
 }
 
 /// Encode `s` as a JSON string literal (quotes + minimal escaping) for splicing

@@ -8,7 +8,6 @@
 */
 import { describe, it } from 'fino:test/test';
 import * as engine from 'internal:reactor-engine';
-import * as loop from 'internal:runtime/loop';
 import { DiskFileSystem } from 'fino:file';
 
 const worker = new URL('./fixtures/reactor-compute-worker.ts', import.meta.url).pathname;
@@ -22,8 +21,7 @@ interface EngineReport {
 }
 
 async function nextReports(reactorId: number): Promise<EngineReport[]> {
-  const fd = engine.reportFd(reactorId);
-  await loop.readable(fd);
+  await engine.nextReport(reactorId);
   return engine.drainReports(reactorId) as EngineReport[];
 }
 

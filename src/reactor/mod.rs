@@ -148,11 +148,17 @@ mod imp {
         Timer(v8::Global<v8::PromiseResolver>),
         Proc(v8::Global<v8::PromiseResolver>),
         /// The armed WatchNext of the fs watch adapting `vnodes[fd]`.
-        VnodeNext { fd: i32 },
+        VnodeNext {
+            fd: i32,
+        },
         /// The armed WatchNext of the signal watch adapting `signals[signo]`.
-        SignalNext { signo: i32 },
+        SignalNext {
+            signo: i32,
+        },
         /// A persistent wake source: drain the fd and re-arm.
-        WakeSource { fd: i32 },
+        WakeSource {
+            fd: i32,
+        },
         /// A canceled op awaiting harvest. The reactor contract keeps every
         /// submitted pointer alive until the completion (CANCELED included) is
         /// harvested, so the buffer Global rides along until then.
@@ -882,6 +888,21 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
+        // The isolate's async-runtime wake pipe upgrades to a Notifier post:
+        // background FFI threads then post straight into this thread's reactor
+        // instead of writing pipe bytes. If a reactor already claimed the sink
+        // (the engine claims a tenant's before its bootstrap runs), there is
+        // nothing to arm — and no reactor must be created on that thread.
+        if fd == crate::async_rt::get_wake_read_fd() {
+            if crate::async_rt::wake_notifier_installed() {
+                return;
+            }
+            with_reactor(|r| {
+                let notifier = r.reactor.notifier();
+                crate::async_rt::install_wake_notifier(notifier, POST_FFI_WAKE);
+            });
+            return;
+        }
         with_reactor(|r| {
             let ud = r.alloc_ud();
             r.reactor.submit_poll_in(ud, Source::fd(fd));
@@ -1145,13 +1166,24 @@ mod imp {
         }
         let cb = with_reactor(|r| r.vnodes.get(&fd).map(|e| e.cb.clone()));
         let Some(g) = cb else { return 0 };
-        let func = v8::Local::new(scope, &g);
-        let recv = v8::undefined(scope).into();
-        let arg = v8::Object::new(scope);
-        let k = v8::String::new(scope, "fflags").unwrap();
-        let v = num(scope, fs_to_note(res) as f64);
-        arg.set(scope, k.into(), v);
-        func.call(scope, recv, &[arg.into()]);
+        {
+            let tc = &mut v8::TryCatch::new(scope);
+            let func = v8::Local::new(tc, &g);
+            let recv = v8::undefined(tc).into();
+            let arg = v8::Object::new(tc);
+            let k = v8::String::new(tc, "fflags").unwrap();
+            let v = num(tc, fs_to_note(res) as f64);
+            arg.set(tc, k.into(), v);
+            // A throwing callback must not poison the rest of the dispatch
+            // batch (a pending exception silently breaks later resolves).
+            if func.call(tc, recv, &[arg.into()]).is_none() && tc.has_caught() {
+                let msg = tc
+                    .exception()
+                    .map(|e| e.to_rust_string_lossy(tc))
+                    .unwrap_or_else(|| "unknown exception".into());
+                eprintln!("fino: vnode callback threw: {msg}");
+            }
+        }
         // Re-arm only if the entry survived the callback (which may have
         // called removeVnode synchronously — watch.ts's delete handler does).
         with_reactor(|r| {
@@ -1179,9 +1211,18 @@ mod imp {
         let Some(g) = cb else { return 0 };
         // One callback per completion, however many deliveries coalesced —
         // matching kqueue EV_CLEAR semantics the JS contract was built on.
-        let func = v8::Local::new(scope, &g);
-        let recv = v8::undefined(scope).into();
-        func.call(scope, recv, &[]);
+        {
+            let tc = &mut v8::TryCatch::new(scope);
+            let func = v8::Local::new(tc, &g);
+            let recv = v8::undefined(tc).into();
+            if func.call(tc, recv, &[]).is_none() && tc.has_caught() {
+                let msg = tc
+                    .exception()
+                    .map(|e| e.to_rust_string_lossy(tc))
+                    .unwrap_or_else(|| "unknown exception".into());
+                eprintln!("fino: signal callback threw: {msg}");
+            }
+        }
         with_reactor(|r| {
             if let Some(watch) = r.signals.get(&signo).map(|e| e.watch) {
                 let ud = r.alloc_ud();

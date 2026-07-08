@@ -373,8 +373,8 @@ pub fn ffi_call_async<'s>(
     let promise = resolver.get_promise(scope);
     let global_resolver = v8::Global::new(scope, resolver);
 
-    // Get the completion queue and wake pipe from the isolate async state.
-    let (completions, wake_write) = match crate::async_rt::completion_handle() {
+    // Get the completion queue and wake sink from the isolate async state.
+    let (completions, wake) = match crate::async_rt::completion_handle() {
         Some(h) => h,
         None => {
             let msg = v8::String::new(scope, "async FFI: runtime not initialised")?;
@@ -407,8 +407,8 @@ pub fn ffi_call_async<'s>(
                 resolver_id,
                 result,
             });
-        // Wake the main thread's event loop (kqueue/io_uring readable on pipe).
-        unsafe { libc::write(wake_write, b"\x01".as_ptr() as *const c_void, 1) };
+        // Wake the isolate's event loop (Notifier post or wake-pipe byte).
+        wake.wake();
     });
 
     Some(promise)

@@ -14,7 +14,6 @@
 * @internal
 */
 import * as engine from 'internal:reactor-engine';
-import * as loop from 'internal:runtime/loop';
 import { NodeIsolateCollection, type NodeWorkloadSpec, type ReleaseReason } from './node.ts';
 import { BudgetWatchdog } from './budget-watchdog.ts';
 import type { LeaseRecord, PriorityClass, SchedulerShardSummary, ShardLoadSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
@@ -152,18 +151,17 @@ export class SchedulerNode {
 
   /**
   * Drain a reactor's report channel on the orchestrator loop for the reactor's
-  * lifetime. `reportFd` is readable when a report is queued; on the reactor's
-  * shutdown its write end closes, so `readable` resolves (EOF) and the loop sees
-  * the reactor gone and exits.
+  * lifetime. `nextReport` resolves when the engine thread posts a report wake —
+  * and once more when the thread exits, so the loop sees the reactor gone
+  * (empty drain + not alive) and exits.
   */
   async #pumpReports(shardId: string, reactorId: number): Promise<void> {
-    const fd = engine.reportFd(reactorId);
     while (this.#reactors.has(shardId) && !this.#shuttingDown) {
-      await loop.readable(fd);
+      await engine.nextReport(reactorId);
       if (!this.#reactors.has(shardId)) break;
       const reports = engine.drainReports(reactorId) as EngineReport[];
       for (const report of reports) this.#onEngineReport(shardId, report);
-      // A dead reactor thread closes its report pipe (EOF-readable) with nothing
+      // A dead reactor thread wakes its pump one final time with nothing
       // queued — recover its workloads onto the survivors.
       if (reports.length === 0 && !engine.reactorAlive(reactorId)) {
         this.#onReactorExit(shardId);
@@ -359,8 +357,8 @@ export class SchedulerNode {
   async shutdown(): Promise<SchedulerShardSummary[]> {
     this.#shuttingDown = true;
     const handles = [...this.#reactors.values()];
-    // Signal every reactor to stop; the report pumps exit when their reportFd
-    // hits EOF as each reactor thread closes its write end.
+    // Signal every reactor to stop; the report pumps exit on the final wake
+    // each reactor thread posts as it dies.
     for (const handle of handles) engine.shutdown(handle.reactorId);
     this.#reactors.clear();
     await this.#watchdog.stop();
