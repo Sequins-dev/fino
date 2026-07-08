@@ -505,10 +505,10 @@ creating one means handing that config to an **allocator**, which picks a
 reactor and lets *that reactor* do the construction and execution. The
 embedded/thread/process constructor modes stop being different creation
 paths, and `thread:`/`remote:` disappear from the API entirely — placement
-is automatic. The one knob is an optional `reactor` option naming an
-explicit reactor to allocate to, itself advisory (ignored when that reactor
-is overloaded); internally it defaults to delegated selection by the
-orchestrator. The engine's
+is automatic, with no placement option in the Realm API. (Later work will
+define an interface exposing the orchestrator to each realm, and possibly
+reactor type information as a TS construct; explicit reactor addressing
+waits for that.) The engine's
 `Control::Place` + handoff-snapshot machinery is the local allocator; the
 cluster transport ships the same config to another node, which allocates it
 onto one of its reactors and runs it there (multi-node-distribution.md's
