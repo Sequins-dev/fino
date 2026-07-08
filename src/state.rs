@@ -390,6 +390,12 @@ pub struct FinoState {
     /// is reactor-backed). When present the host loop drives the reactor
     /// itself — no JS step function — and calls these thin policy callbacks.
     pub native_loop: Option<NativeLoopHooks>,
+    /// Consecutive native-drive iterations with no activity (no completions
+    /// dispatched, nothing flushed, no sync calls). Drives the bounded-wait
+    /// backoff: hot re-pass while work flows, sleep only once quiet — child
+    /// realms advance one step per iteration, so a multi-turn ladder (e.g. a
+    /// respawning realm's module loads) must not pay a sleep per rung.
+    pub native_empty_ticks: u32,
 
     // ---------------------------------------------------------------------------
     // Pending synchronous call (set by JS scheduleSync() from internal:async-context)
@@ -557,6 +563,7 @@ impl FinoState {
             loop_step_fn: None,
             on_done_fn: None,
             native_loop: None,
+            native_empty_ticks: 0,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
@@ -622,6 +629,7 @@ impl FinoState {
             loop_step_fn: None,
             on_done_fn: None,
             native_loop: None,
+            native_empty_ticks: 0,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),

@@ -411,6 +411,7 @@ fn native_drive_step_inner(
     // (`isDone()`'s first true-ward call starts wind-down microtasks; a test
     // body queues the next scheduleSync). Blocking with any of it pending
     // would strand the loop — nothing about it wakes the reactor.
+    let mut activity = false;
     loop {
         pump_and_checkpoint(scope);
         // Port deliveries are macrotasks; child realms advance between pumps.
@@ -441,9 +442,11 @@ fn native_drive_step_inner(
         pump_and_checkpoint(scope);
 
         let sync_pending = state_rc.borrow().sync_call_fn.is_some();
-        if !flushed && !serviced && !sync_pending {
-            break;
+        if flushed || serviced || sync_pending {
+            activity = true;
+            continue;
         }
+        break;
     }
     // Sample the exit inputs only now, after the last pump, so a wind-down
     // that completed inside the settle loop is observed.
@@ -468,16 +471,30 @@ fn native_drive_step_inner(
         // asynchrony. Bound the wait only where progress can happen without
         // one: child realms are advanced by the stepChildren hook, and
         // Atomics resolutions / V8 background tasks post foreground work
-        // without touching the reactor.
-        let timeout = if children
-            || crate::reactor::drive_needs_poll()
-            || scope.has_pending_background_tasks()
-        {
-            Some(Duration::from_millis(25))
+        // without touching the reactor. Bounded waits back off adaptively
+        // (hot re-pass while work flows, 25ms once quiet): an embedded child
+        // advances one legacy step per iteration, so a multi-turn ladder —
+        // e.g. a respawning realm loading its module graph — must not pay a
+        // sleep per rung.
+        let bounded =
+            children || crate::reactor::drive_needs_poll() || scope.has_pending_background_tasks();
+        let timeout = if bounded {
+            let quiet = state_rc.borrow().native_empty_ticks;
+            Some(if quiet >= 3 {
+                Duration::from_millis(25)
+            } else {
+                Duration::ZERO
+            })
         } else {
             None
         };
-        crate::reactor::drive_wait_and_dispatch(scope, timeout);
+        let dispatched = crate::reactor::drive_wait_and_dispatch(scope, timeout);
+        let mut st = state_rc.borrow_mut();
+        if dispatched > 0 || activity {
+            st.native_empty_ticks = 0;
+        } else {
+            st.native_empty_ticks = st.native_empty_ticks.saturating_add(1);
+        }
     }
     true
 }
