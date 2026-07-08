@@ -84,9 +84,9 @@ app.route('/users/:id')
   .get()
   .handle((ctx) => Response.json({ id: ctx.params.id }));
 
-app.get('/__ready', () => new Response('ready'));
+app.get('/__ready').handle(() => new Response('ready'));
 
-app.post('/__profile/start', () => {
+app.post('/__profile/start').handle(() => {
   if (!profiling) {
     startProfiling(profileTitle);
     profiling = true;
@@ -94,7 +94,7 @@ app.post('/__profile/start', () => {
   return new Response('started');
 });
 
-app.post('/__profile/stop', async (ctx) => {
+app.post('/__profile/stop').handle(async (ctx) => {
   if (!profiling) return new Response('not profiling', { status: 409 });
   const bytes = stopProfiling(profileTitle);
   profiling = false;
@@ -103,7 +103,7 @@ app.post('/__profile/stop', async (ctx) => {
   return new Response(String(bytes.byteLength));
 });
 
-app.post('/__shutdown', () => {
+app.post('/__shutdown').handle(() => {
   setTimeout(() => {
     void server.close();
   }, 0);

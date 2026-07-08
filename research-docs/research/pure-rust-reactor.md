@@ -411,7 +411,32 @@ the TS `ShardScheduler` loop — becoming the single async substrate under every
 
 ## 10. Phased path
 
-### Status and correction (2026-07-07)
+### Status: corrections landed via cherenkov (2026-07-09)
+
+All three deviations below are resolved. The poller was extracted into the
+standalone **cherenkov** crate (`~/Code/rust/cherenkov` — completion reactor
+with kqueue/io_uring/IOCP backends, Notifier cross-thread posts, fs/signal
+watch subsystem), and fino migrated onto it:
+
+1. **One reactor type everywhere.** `src/reactor/engine.rs` and
+   `src/reactor/mod.rs` both run on `cherenkov::Reactor`; the in-tree
+   `poll.rs`/`io_uring.rs` are deleted.
+2. **Cross-platform.** `internal:reactor-native` is `#[cfg(unix)]` — Linux
+   gets the reactor loop through the same code path as macOS.
+3. **Wake pipes eliminated.** Every cross-thread wake is a Notifier post: the
+   isolate wake sink (`async_rt::WakeSink`) upgrades from its self-pipe to a
+   post when a reactor claims it (remapped realms at bootstrap; engine tenants
+   at placement, tagged by workload id); the engine's control pipe became a
+   `POST_CONTROL` post and its report pipe a sequence counter + orchestrator
+   wake surfaced as `nextReport(reactorId)`. Pipes remain only where they
+   carry data (ThreadPort messaging) and as the default-loop realms' wake
+   channel.
+
+Benchmarks after the swap (2026-07-09, macOS): h1 trivial-handler at parity in
+both the baseline realm (~98k req/s old vs new) and the reactor realm (~84k
+both); h2 40.1k → 39.7k req/s; h3 44.0k → 43.3k req/s — parity within noise.
+
+### Original status and correction (2026-07-07)
 
 Phase 0 shipped (`src/reactor/mod.rs`, kqueue, JS-driven). A first cut of Phase 2 shipped
 as `src/reactor/engine.rs` — a native per-thread multi-isolate scheduler with direct

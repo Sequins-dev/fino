@@ -195,16 +195,10 @@ export function removeWrite(fd: number): void {
   native.removeWrite(fd);
 }
 
-/**
-* Generic io_uring-style completion submission. The reactor's macOS kqueue
-* backend has no completion queue (file I/O uses `fileReadAsync`/`readable`), so
-* this is unsupported — mirroring `loop.ts`'s behavior on macOS.
-*/
-export function submit(_submitter: (raw: object, id: number) => void): Promise<{
-  res: number;
-}> {
-  throw new Error('submit() is not supported on the reactor backend');
-}
+// NOTE: no `submit` export. The raw-ring submission contract belongs to the
+// default loop's io_uring backend; consumers (internal:file/bindings) probe
+// `typeof loop.submit === 'function'` and use the fused readAsync/fileRead
+// paths here instead.
 
 // ---------------------------------------------------------------------------
 // Synchronous spinning

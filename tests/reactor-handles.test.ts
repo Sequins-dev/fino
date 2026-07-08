@@ -91,6 +91,10 @@ describe('native reactor — watch handles (direct drive)', () => {
       appendFileSync(path, 'bb');
       await spinUntil(() => (mask & NOTE_WRITE) !== 0, 'a NOTE_WRITE vnode event');
 
+      // Close our fd before the unlink: Linux inotify defers IN_DELETE_SELF
+      // until the inode is truly gone (no remaining open fds). The watch is
+      // path-based natively, so by now the fd is only the removeVnode key.
+      libc.symbols.close(wfd);
       libc.symbols.unlink(cstr(path));
       await spinUntil(() => (mask & NOTE_DELETE) !== 0, 'a NOTE_DELETE vnode event');
 
@@ -99,8 +103,6 @@ describe('native reactor — watch handles (direct drive)', () => {
       await rloop.timeout(50);
       if (events !== seen) throw new Error('vnode events after removeVnode');
     });
-
-    libc.symbols.close(wfd);
     t.ok((mask & NOTE_WRITE) !== 0, 'append surfaced as NOTE_WRITE');
     t.ok((mask & NOTE_DELETE) !== 0, 'unlink surfaced as NOTE_DELETE');
   });

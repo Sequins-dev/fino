@@ -161,7 +161,10 @@ export let loopModule: LoopModule | null = null;
 */
 export let asyncOps: AsyncOpsModule | null = null;
 loopModule = await import('internal:runtime/loop');
-if (!isDarwin) {
+// Gate on the loop's actual capability, not the platform: the reactor-backed
+// loop (fino:net/loop-reactor remap) has no raw-ring submit() — file I/O
+// there uses the fused readAsync/fileRead paths instead, on every platform.
+if (!isDarwin && typeof (loopModule as { submit?: unknown }).submit === 'function') {
   asyncOps = await import('internal:runtime/loop-backend');
 }
 const errnoFn = isDarwin ? '__error' : '__errno_location';
