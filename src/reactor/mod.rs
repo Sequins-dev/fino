@@ -602,6 +602,9 @@ mod imp {
             },
         );
         r.read_ud_by_fd.insert(fd, ud);
+        if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+            eprintln!("[reactor] fused read fd {fd} -> ud {ud}");
+        }
     }
 
     pub fn write_async(
@@ -836,6 +839,9 @@ mod imp {
             r.reactor.submit_proc_exit(ud, pid.max(0) as u32);
             r.ops.insert(ud, Pending::Proc(g));
             r.procs += 1;
+            if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                eprintln!("[reactor] proc({pid}) -> ud {ud}");
+            }
         });
     }
 
@@ -1190,6 +1196,9 @@ mod imp {
                 // Any completion — including "already exited / not visible"
                 // errors — means the caller can proceed to reap.
                 with_reactor(|r| r.procs -= 1);
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!("[reactor] proc ud {ud} dispatched res={res}");
+                }
                 resolve_undef(scope, &g);
                 1
             }
