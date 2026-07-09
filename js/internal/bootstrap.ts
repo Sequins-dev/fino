@@ -58,6 +58,7 @@
 */
 import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
 import { runNativeLoop } from 'internal:async-context';
+import { _stepRegisteredChildren, _registeredChildrenAlive } from 'internal:child-steppers';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 import { env } from '../process.ts';
@@ -253,20 +254,6 @@ runtimeError.prepareStackTrace = function prepareStackTrace(err: Error, callSite
   if (!Array.isArray(callSites) || callSites.length === 0) return header;
   return header + '\n' + callSites.map(formatCallSite).join('\n');
 };
-// Child-realm steppers, registered by fino:realm when (and only when) it is
-// imported — a realm that never creates children pays nothing, and every
-// realm that does gets its own children advanced by its own host loop
-// (nested realms are not a special case).
-let _childSteppers: { step: () => void; alive: () => boolean } | null = null;
-/**
-* Wire this realm's child-realm stepping into its host loop. Called by
-* `fino:realm` at module evaluation.
-*
-* @internal
-*/
-export function _registerChildSteppers(step: () => void, alive: () => boolean): void {
-  _childSteppers = { step, alive };
-}
 /**
 * Hands this realm's loop policy to the Rust host loop, which drives the
 * reactor itself: pump to quiescence, flush ports, advance child realms,
@@ -295,12 +282,8 @@ export function _registerChildSteppers(step: () => void, alive: () => boolean): 
 export function driveLoop(isDone: () => boolean, onDone: () => void): void {
   runNativeLoop(isDone, onDone, {
     flushPorts: _flushPorts,
-    stepChildren: function _stepChildHook() {
-      _childSteppers?.step();
-    },
-    childrenAlive: function _childrenAliveHook() {
-      return _childSteppers?.alive() ?? false;
-    }
+    stepChildren: _stepRegisteredChildren,
+    childrenAlive: _registeredChildrenAlive
   });
 }
 // ---------------------------------------------------------------------------

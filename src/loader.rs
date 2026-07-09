@@ -134,6 +134,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
+    source_builtin!("internal:child-steppers", "internal/child-steppers"),
     source_builtin!("fino:realm", "realm/index"),
     source_builtin!("fino:module", "module"),
     source_builtin!("fino:realm/pool", "realm/pool"),
@@ -1472,8 +1473,21 @@ fn settle_dynamic_import<'s, 'tc>(
     resolver: v8::Local<'s, v8::PromiseResolver>,
 ) {
     if let Some(m) = module {
+        if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+            eprintln!("[loader] dyn-import settle: status={:?}", m.get_status());
+        }
         match instantiate_and_evaluate(tc, m) {
             Some(eval_result) if !tc.has_caught() => {
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!(
+                        "[loader] dyn-import evaluated: status={:?} is_promise={} promise_state={:?}",
+                        m.get_status(),
+                        eval_result.is_promise(),
+                        v8::Local::<v8::Promise>::try_from(eval_result)
+                            .ok()
+                            .map(|p| p.state()),
+                    );
+                }
                 let namespace = m.get_module_namespace();
                 if let Ok(eval_promise) = v8::Local::<v8::Promise>::try_from(eval_result) {
                     // TLA: defer resolution until the eval Promise settles.
@@ -1555,7 +1569,16 @@ fn get_or_load_builtin_inner<'s>(
         st.builtin_cache.get(spec).map(|m| v8::Local::new(scope, m))
     };
     if let Some(m) = cached {
+        if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+            eprintln!(
+                "[loader] cache hit {spec} from={from:?} status={:?}",
+                m.get_status()
+            );
+        }
         return Some(m);
+    }
+    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+        eprintln!("[loader] load builtin {spec} from={from:?}");
     }
 
     // 2. Evaluate the import rule list (last-match-wins).
@@ -1823,6 +1846,13 @@ pub fn register_source_map_from_json(
 
 /// Register a module's script_id as a builtin so `internal:*` imports are
 /// allowed from it.
+///
+/// This does NOT insert the module into the builtin cache: directly-evaluated
+/// harness modules (`internal:bootstrap`, `internal:main`) must never be
+/// linked into loader-instantiated graphs — V8 wedges evaluating a graph that
+/// links a module evaluated by a foreign instantiation pass. Builtins that
+/// need harness state import a dedicated registry module instead (see
+/// `internal:child-steppers`).
 pub fn register_as_builtin(scope: &mut v8::HandleScope, module: v8::Local<v8::Module>, spec: &str) {
     if let Some(id) = module.script_id() {
         get_state(scope)

@@ -477,9 +477,10 @@ fn native_drive_step_inner(
     let live = crate::reactor::drive_live(owner) || scope.has_pending_background_tasks();
     if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
         eprintln!(
-            "[native-drive] done={done} reactor_live={} bg_tasks={} children={children}",
+            "[native-drive] done={done} reactor_live={} bg_tasks={} children={children} counts={}",
             crate::reactor::drive_live(owner),
             scope.has_pending_background_tasks(),
+            crate::reactor::drive_counts_debug(owner),
         );
     }
     if done && !children && !live {

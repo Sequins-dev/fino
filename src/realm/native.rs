@@ -346,7 +346,10 @@ fn step_context(
             }
             Some(ChildRealmSlot::Failed(maybe_msg)) => {
                 if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                    eprintln!("[step_context] handle {handle} FAILED slot (msg={:?})", maybe_msg);
+                    eprintln!(
+                        "[step_context] handle {handle} FAILED slot (msg={:?})",
+                        maybe_msg
+                    );
                 }
                 // Throw a JS Error so _stepChildren propagates it via child.reject().
                 if let Some(msg) = maybe_msg.as_deref() {

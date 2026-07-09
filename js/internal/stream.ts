@@ -1358,6 +1358,20 @@ export class FdReader extends BufferedBytesReader {
     return this.#fd;
   }
   /**
+  * Close the reader, deregistering any armed loop read first.
+  *
+  * Closing an fd with an in-flight read silently drops the kernel
+  * registration (kqueue removes the knote on close), so the loop's handle —
+  * and this realm's liveness — would leak forever without the explicit
+  * deregistration.
+  *
+  * @returns A promise that resolves after cleanup.
+  */
+  override async close(): Promise<void> {
+    if (!this.closed && this.#fd >= 0) loop.removeRead(this.#fd);
+    await super.close();
+  }
+  /**
   * Pull one descriptor chunk for the buffered reader.
   *
   * The method waits for readability when needed, copies read bytes out of the
@@ -2186,6 +2200,25 @@ export class FdWriter extends BufferedBytesWriter {
   */
   get fd(): number {
     return this.#fd;
+  }
+  /**
+  * Close the writer, deregistering any armed loop write after the final
+  * flush. Closing an fd with an in-flight write silently drops the kernel
+  * registration (kqueue removes the knote on close), so the loop's handle —
+  * and this realm's liveness — would leak forever without the explicit
+  * deregistration.
+  *
+  * @returns A promise that resolves after cleanup.
+  */
+  override async close(): Promise<void> {
+    if (this.closed) return;
+    // Attempt the normal final flush first; an abortive close (peer gone)
+    // may leave a write armed, which the deregistration below reaps.
+    try {
+      await this.flush();
+    } catch {}
+    if (this.#fd >= 0) loop.removeWrite(this.#fd);
+    await super.close();
   }
   /**
   * Synchronous flush of the coalesce buffer via write(2). Used in contexts

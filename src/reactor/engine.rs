@@ -378,6 +378,8 @@ mod imp {
         next_op_id: u64,
         next_sequence: u64,
         last_load_signature: (u32, u32, u32),
+        /// When the last Load report was posted (coalescing floor).
+        last_load_report: Instant,
         running: bool,
         /// Reusable completion buffer for `Reactor::wait`.
         scratch: Vec<Completion>,
@@ -409,6 +411,7 @@ mod imp {
             next_op_id: 1,
             next_sequence: 1,
             last_load_signature: (u32::MAX, u32::MAX, u32::MAX),
+            last_load_report: Instant::now(),
             running: true,
             scratch: Vec::new(),
         };
@@ -1033,14 +1036,25 @@ mod imp {
             let runnable = self.runnable.len() as u32;
             let debt_band = if runnable == 0 { 0 } else { 1 };
             let sig = (held, runnable, debt_band);
-            if sig != self.last_load_signature {
-                self.last_load_signature = sig;
-                self.report(Report::Load {
-                    held,
-                    runnable,
-                    debt_band,
-                });
+            if sig == self.last_load_signature {
+                return;
             }
+            // Load is advisory telemetry, and `runnable` oscillates on every
+            // hot pump — unthrottled, each flip posts a wake that spins the
+            // orchestrator's report pump (the legacy 25ms poll absorbed this
+            // by accident). Coalesce to ≥10ms unless `held` changed, which
+            // placement decisions actually depend on.
+            let held_changed = held != self.last_load_signature.0;
+            if !held_changed && self.last_load_report.elapsed() < Duration::from_millis(10) {
+                return;
+            }
+            self.last_load_signature = sig;
+            self.last_load_report = Instant::now();
+            self.report(Report::Load {
+                held,
+                runnable,
+                debt_band,
+            });
         }
 
         fn report(&mut self, report: Report) {

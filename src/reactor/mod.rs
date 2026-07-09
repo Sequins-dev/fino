@@ -105,6 +105,16 @@ pub(crate) fn drive_live(_owner: usize) -> bool {
     false
 }
 
+/// Debug string of the given realm's live-handle counters (FINO_LOOP_DEBUG).
+#[cfg(unix)]
+pub(crate) fn drive_counts_debug(owner: usize) -> String {
+    imp::drive_counts_debug(owner)
+}
+#[cfg(not(unix))]
+pub(crate) fn drive_counts_debug(_owner: usize) -> String {
+    String::new()
+}
+
 /// Whether the native host loop must use a bounded wait instead of blocking.
 #[cfg(unix)]
 pub(crate) fn drive_needs_poll() -> bool {
@@ -491,6 +501,24 @@ mod imp {
         }
         let owner = owner_of(scope);
         with_reactor(|r| {
+            // Loop contract: a second readable() on an fd with a pending
+            // watch replaces the earlier watch, whose promise is never
+            // settled. Cancel-and-resubmit (rather than swapping resolvers on
+            // the old op) so the kernel registration is FRESH — the indexed
+            // op may be a ghost whose knote vanished when a previous holder
+            // of this fd number closed it.
+            if let Some(ud) = r.read_ud_by_fd.remove(&fd) {
+                if matches!(r.ops.get(&ud), Some(Pending::ReadReady { .. })) {
+                    cancel_indexed(r, ud);
+                    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                        eprintln!("[reactor] readable fd {fd} superseded ud {ud}");
+                    }
+                } else {
+                    // Fused op in flight: leave it indexed; the fresh poll
+                    // below reports EBUSY exactly as before.
+                    r.read_ud_by_fd.insert(fd, ud);
+                }
+            }
             let ud = r.alloc_ud();
             r.reactor.submit_poll_in(ud, Source::fd(fd));
             r.ops.insert(
@@ -503,6 +531,9 @@ mod imp {
             );
             r.read_ud_by_fd.insert(fd, ud);
             r.bump(owner, |c| c.reads += 1);
+            if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                eprintln!("[reactor] readable fd {fd} -> ud {ud}");
+            }
         });
     }
 
@@ -540,6 +571,15 @@ mod imp {
         }
         let owner = owner_of(scope);
         with_reactor(|r| {
+            // Same supersede contract as readable(): the latest writable()
+            // waiter owns the (fresh) kernel registration.
+            if let Some(ud) = r.write_ud_by_fd.remove(&fd) {
+                if matches!(r.ops.get(&ud), Some(Pending::WriteReady { .. })) {
+                    cancel_indexed(r, ud);
+                } else {
+                    r.write_ud_by_fd.insert(fd, ud);
+                }
+            }
             let ud = r.alloc_ud();
             r.reactor.submit_poll_out(ud, Source::fd(fd));
             r.ops.insert(
@@ -883,6 +923,9 @@ mod imp {
                 r.reactor.cancel(id);
                 if let Some(Pending::Timer { owner, .. }) = r.ops.remove(&id) {
                     r.bump(owner, |c| c.timers -= 1);
+                    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                        eprintln!("[reactor] timer {id} canceled");
+                    }
                 }
             }
         });
@@ -1044,6 +1087,9 @@ mod imp {
     /// its CANCELED completion is harvested. The promise stays unsettled
     /// forever — the documented loop contract for removal.
     fn cancel_indexed(r: &mut NativeReactor, ud: u64) {
+        if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+            eprintln!("[reactor] cancel_indexed ud {ud}");
+        }
         r.reactor.cancel(ud);
         let buffer = match r.ops.remove(&ud) {
             Some(Pending::ReadFused { owner, buffer, .. }) => {
@@ -1153,6 +1199,23 @@ mod imp {
         };
         // Dispatch OUTSIDE the RefCell borrow: resolvers run JS synchronously
         // (via microtask checkpoints later) and callbacks re-enter the reactor.
+        if std::env::var_os("FINO_LOOP_DEBUG").is_some() && !completions.is_empty() {
+            thread_local! {
+                static WAIT_TRACES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+            }
+            let n = WAIT_TRACES.with(|c| {
+                let n = c.get();
+                c.set(n + 1);
+                n
+            });
+            if n < 500 || n.is_multiple_of(100_000) {
+                let uds: Vec<String> = completions
+                    .iter()
+                    .map(|c| format!("{:#x}:{}", c.user_data, c.res))
+                    .collect();
+                eprintln!("[reactor] wait -> [{}] (n={n})", uds.join(","));
+            }
+        }
         let mut dispatched = 0i32;
         for c in &completions {
             dispatched += dispatch(scope, c.user_data, c.res);
@@ -1168,6 +1231,45 @@ mod imp {
     pub(crate) fn drive_live(owner: usize) -> bool {
         with_reactor_opt(|r| r.counts_for(owner).total() > 0).unwrap_or(false)
             || ATOMICS_WAITERS.with(|c| c.get()) > 0
+    }
+
+    pub(crate) fn drive_counts_debug(owner: usize) -> String {
+        let atomics = ATOMICS_WAITERS.with(|c| c.get());
+        with_reactor_opt(|r| {
+            let c = r.counts_for(owner);
+            let ops: Vec<String> = r
+                .ops
+                .iter()
+                .map(|(ud, p)| {
+                    let (kind, own, fd) = match p {
+                        Pending::ReadReady { owner, fd, .. } => ("rr", *owner, *fd),
+                        Pending::ReadFused { owner, fd, .. } => ("rf", *owner, *fd),
+                        Pending::WriteReady { owner, fd, .. } => ("wr", *owner, *fd),
+                        Pending::WriteFused { owner, fd, .. } => ("wf", *owner, *fd),
+                        Pending::Timer { owner, .. } => ("t", *owner, -1),
+                        Pending::Proc { owner, .. } => ("p", *owner, -1),
+                        Pending::VnodeNext { fd } => ("v", 0, *fd),
+                        Pending::SignalNext { signo } => ("s", 0, *signo),
+                        Pending::WakeSource { fd } => ("wk", 0, *fd),
+                        Pending::Dead { .. } => ("d", 0, -1),
+                    };
+                    format!(
+                        "{ud}:{kind}:fd{fd}:{}",
+                        if own == owner { "own" } else { "oth" }
+                    )
+                })
+                .collect();
+            format!(
+                "r{}w{}t{}p{}v{}a{atomics} ops=[{}]",
+                c.reads,
+                c.writes,
+                c.timers,
+                c.procs,
+                c.vnodes,
+                ops.join(",")
+            )
+        })
+        .unwrap_or_else(|| format!("none/a{atomics}"))
     }
 
     /// Whether the native host loop must poll instead of blocking: an
@@ -1255,6 +1357,9 @@ mod imp {
             } => {
                 unindex(fd, ud, true);
                 with_reactor(|r| r.bump(owner, |c| c.reads -= 1));
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!("[reactor] readable fd {fd} ud {ud} dispatched res={res}");
+                }
                 resolve_num(scope, &resolver, if res > 0 { res as f64 } else { 0.0 });
                 1
             }
@@ -1277,6 +1382,22 @@ mod imp {
                 len,
             } => {
                 if res == -libc::EAGAIN {
+                    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                        thread_local! {
+                            static EAGAIN_TRACES: std::cell::Cell<u32> =
+                                const { std::cell::Cell::new(0) };
+                        }
+                        let n = EAGAIN_TRACES.with(|c| {
+                            let n = c.get();
+                            c.set(n + 1);
+                            n
+                        });
+                        if n < 200 || n.is_multiple_of(100_000) {
+                            eprintln!(
+                                "[reactor] fused read fd {fd} EAGAIN-resubmit at ud {ud} (n={n})"
+                            );
+                        }
+                    }
                     // Spurious readiness — re-arm the same read (count carries).
                     with_reactor(|r| submit_fused_read(r, owner, fd, resolver, buffer, ptr, len));
                     return 0;

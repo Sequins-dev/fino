@@ -2326,6 +2326,12 @@ export class Socket {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    // Deregister any armed loop ops first: closing an fd with an in-flight
+    // read/write silently drops the kernel registration (kqueue removes the
+    // knote on close), leaking the loop handle — and this realm's liveness —
+    // forever.
+    loop.removeRead(this.#fd);
+    loop.removeWrite(this.#fd);
     shutdown(this.#fd, SHUT_RDWR);
     close(this.#fd);
   }

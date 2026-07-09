@@ -871,8 +871,13 @@ export class RealmPool<F extends RealmFn = RealmFn> {
       }
     }
     // Wait for in-flight tasks to settle, but enforce a close timeout so a
-    // wedged worker cannot block shutdown indefinitely.
-    const drainResult = await Promise.race([Promise.allSettled(drains).then(() => 'settled' as const), new Promise<'timeout'>((res) => setTimeout(() => res('timeout'), this.#closeTimeout))]);
+    // wedged worker cannot block shutdown indefinitely. The timer must be
+    // cleared when drains win the race or it holds the loop open.
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    const drainResult = await Promise.race([Promise.allSettled(drains).then(() => 'settled' as const), new Promise<'timeout'>((res) => {
+      closeTimer = setTimeout(() => res('timeout'), this.#closeTimeout);
+    })]);
+    if (closeTimer !== null) clearTimeout(closeTimer);
     if (drainResult === 'timeout') {
       // Force-reject any calls still pending so callers don't hang.
       for (const w of this.#workers) {
