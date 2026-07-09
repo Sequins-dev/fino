@@ -345,6 +345,9 @@ fn step_context(
                 return;
             }
             Some(ChildRealmSlot::Failed(maybe_msg)) => {
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!("[step_context] handle {handle} FAILED slot (msg={:?})", maybe_msg);
+                }
                 // Throw a JS Error so _stepChildren propagates it via child.reject().
                 if let Some(msg) = maybe_msg.as_deref() {
                     let s = v8::String::new(scope, msg).unwrap_or_else(|| {
@@ -357,6 +360,9 @@ fn step_context(
                 return;
             }
             None => {
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!("[step_context] handle {handle} NO slot");
+                }
                 rv.set(v8::Boolean::new(scope, false).into());
                 return;
             }
@@ -364,6 +370,9 @@ fn step_context(
     };
 
     let should_continue = super::step_child_context(scope, child_context);
+    if !should_continue && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+        eprintln!("[step_context] handle {handle} child step false");
+    }
 
     // When the child exits, check entry error and reload flag.
     // - entry_error present → throw (Realm.run() rejects)

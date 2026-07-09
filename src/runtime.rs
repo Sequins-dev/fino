@@ -354,7 +354,16 @@ fn call_hook(scope: &mut v8::HandleScope, g: &v8::Global<v8::Function>) -> Optio
     let tc = &mut v8::TryCatch::new(scope);
     let undef: v8::Local<v8::Value> = v8::undefined(tc).into();
     let f = v8::Local::new(tc, g);
-    f.call(tc, undef, &[]).map(|v| v.boolean_value(tc))
+    let out = f.call(tc, undef, &[]).map(|v| v.boolean_value(tc));
+    if out.is_none() && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+        let msg = tc
+            .exception()
+            .and_then(|e| e.to_string(tc))
+            .map(|s| s.to_rust_string_lossy(tc))
+            .unwrap_or_default();
+        eprintln!("[native-drive] policy hook threw: {msg}");
+    }
+    out
 }
 
 /// One iteration of the native host loop for a reactor-backed realm: pump

@@ -37,7 +37,7 @@
 import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { _registerChildSteppers } from 'internal:bootstrap';
-import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
+import { MessagePort, MessageChannel, _flushPorts, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
@@ -2304,6 +2304,11 @@ export function _stepChildren(): void {
     }
     if (stepResult !== true) {
       _disarmChildLoopWatch(child);
+      // Deliver any messages the child posted on its way out BEFORE settling
+      // its exit: a call-mode child posts its result and completes in the
+      // same step, and the result must win the race against the exit signal
+      // (`resolve()` rejects a pending call() with "exited before result").
+      _flushPorts();
       if (stepError !== undefined) {
         child.reject(stepError);
         _activeChildren.splice(i, 1);
