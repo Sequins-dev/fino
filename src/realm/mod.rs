@@ -82,90 +82,21 @@ pub fn process_pending_creates(scope: &mut v8::HandleScope<()>, state_rc: &Rc<Re
 
 /// Enter the child context and drive one step of its event loop.
 ///
-/// Mirrors the main host loop in `runtime.rs`:
-/// 1. Call `loop_step_fn()` → bool.
-/// 2. Service any pending `scheduleSync` call.
-/// 3. Pump + checkpoint (drain child microtasks).
-///
-/// Returns the bool from `loop_step_fn`, or `false` if no step fn is registered.
+/// The child's loop is reactor-backed: pump + policy hooks only — the parent
+/// owns the thread's wait cadence, and the shared reactor dispatches the
+/// child's completions into its per-context resolvers. Until bootstrap
+/// registers the hooks (module graph still loading), just pump.
 pub fn step_child_context(
     scope: &mut v8::HandleScope,
     child_context: v8::Local<v8::Context>,
 ) -> bool {
     let child_scope = &mut v8::ContextScope::new(scope, child_context);
-
-    // Native-driven embedded child: pump + policy hooks only — the parent
-    // owns the thread's wait cadence, and the shared reactor dispatches the
-    // child's completions into its per-context resolvers.
-    {
-        let state_rc = get_state(child_scope);
-        let native = state_rc.borrow().native_loop.is_some();
-        if native {
-            return crate::runtime::native_drive_step_nowait(child_scope, &state_rc);
-        }
-    }
-
-    // Extract loop_step_fn.
-    let loop_step_fn = {
-        let state_rc = get_state(child_scope);
-        state_rc.borrow().loop_step_fn.clone()
-    };
-
-    let Some(loop_step_fn) = loop_step_fn else {
-        // No step function yet — child bootstrap may still be running.
+    let state_rc = get_state(child_scope);
+    if state_rc.borrow().native_loop.is_none() {
         pump_and_checkpoint_in(child_scope);
         return true;
-    };
-
-    // Call step() → boolean.
-    let should_continue = {
-        let undef: v8::Local<v8::Value> = v8::undefined(child_scope).into();
-        v8::Local::new(child_scope, &loop_step_fn)
-            .call(child_scope, undef, &[])
-            .map(|v| v.boolean_value(child_scope))
-            .unwrap_or(false)
-    };
-
-    // Service any pending scheduleSync call (same pattern as runtime.rs host loop).
-    {
-        let state_rc = get_state(child_scope);
-        let (maybe_fn, maybe_resolver) = {
-            let mut st = state_rc.borrow_mut();
-            (st.sync_call_fn.take(), st.sync_call_resolver.take())
-        };
-
-        if let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) {
-            let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
-                let undef: v8::Local<v8::Value> = v8::undefined(child_scope).into();
-                let tc = &mut v8::TryCatch::new(child_scope);
-                let fn_local = v8::Local::new(tc, &fn_ref);
-                match fn_local.call(tc, undef, &[]) {
-                    Some(result) => Ok(v8::Global::new(tc, result)),
-                    None => {
-                        let exc = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                        Err(v8::Global::new(tc, exc))
-                    }
-                }
-            };
-
-            match call_result {
-                Ok(result_ref) => {
-                    let resolver_local = v8::Local::new(child_scope, &resolver_ref);
-                    let result_local = v8::Local::new(child_scope, &result_ref);
-                    let _ = resolver_local.resolve(child_scope, result_local);
-                }
-                Err(exc_ref) => {
-                    let resolver_local = v8::Local::new(child_scope, &resolver_ref);
-                    let exc_local = v8::Local::new(child_scope, &exc_ref);
-                    let _ = resolver_local.reject(child_scope, exc_local);
-                }
-            }
-
-            pump_and_checkpoint_in(child_scope);
-        }
     }
-
-    should_continue
+    crate::runtime::native_drive_step_nowait(child_scope, &state_rc)
 }
 
 /// Terminate all child Realms owned by the context at `scope`.

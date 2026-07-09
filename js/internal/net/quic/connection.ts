@@ -6,7 +6,7 @@
 
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
-import * as loop from '../../runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { lib as fileLib, cstr as fileCstr, O_CREAT, O_TRUNC, O_WRONLY } from '../../file/bindings.ts';
 import { EAGAIN, decodeAddr } from '../../../net/socket.ts';
 import { randBytes } from '../../openssl.ts';

@@ -31,23 +31,6 @@ enum BuiltinKind {
 
 type BuiltinEntry = (&'static str, BuiltinKind);
 
-#[cfg(target_os = "macos")]
-const LOOP_BACKEND_SRC: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/js/internal/runtime/kqueue.mjs"));
-#[cfg(target_os = "macos")]
-const LOOP_BACKEND_MAP: &str = include_str!(concat!(
-    env!("OUT_DIR"),
-    "/js/internal/runtime/kqueue.mjs.map"
-));
-#[cfg(not(target_os = "macos"))]
-const LOOP_BACKEND_SRC: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/js/internal/runtime/linux.mjs"));
-#[cfg(not(target_os = "macos"))]
-const LOOP_BACKEND_MAP: &str = include_str!(concat!(
-    env!("OUT_DIR"),
-    "/js/internal/runtime/linux.mjs.map"
-));
-
 macro_rules! source_builtin {
     ($specifier:literal, $path:literal) => {
         (
@@ -253,19 +236,6 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:synthetic-direct",
         "internal/runtime/synthetic-direct"
     ),
-    source_builtin!("internal:runtime/kqueue", "internal/runtime/kqueue"),
-    source_builtin!("internal:runtime/io_uring", "internal/runtime/io_uring"),
-    source_builtin!("internal:runtime/poll", "internal/runtime/poll"),
-    source_builtin!("internal:runtime/linux", "internal/runtime/linux"),
-    (
-        "internal:runtime/loop-backend",
-        BuiltinKind::Source {
-            code: LOOP_BACKEND_SRC,
-            source_map: LOOP_BACKEND_MAP,
-            path: "internal/runtime/loop-backend",
-        },
-    ),
-    source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
     source_builtin!("fino:process", "process"),
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:signals", "signals"),

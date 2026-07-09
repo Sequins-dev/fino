@@ -223,67 +223,16 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     // Host loop
     // -----------------------------------------------------------------------
     'main: loop {
-        let should_continue = 'step: {
+        let should_continue = {
             let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
-            // Native drive: the realm's loop is reactor-backed, so Rust owns
-            // the pump cadence and calls only thin JS policy hooks.
-            if state_rc.borrow().native_loop.is_some() {
-                break 'step crate::runtime::native_drive_step(scope, &state_rc);
+            // The realm's loop is reactor-backed: Rust owns the pump cadence
+            // and calls only thin JS policy hooks. No hooks means bootstrap
+            // never called driveLoop — nothing to run.
+            if state_rc.borrow().native_loop.is_none() {
+                break 'main;
             }
-
-            let loop_step_fn = match state_rc.borrow().loop_step_fn.clone() {
-                Some(f) => f,
-                None => break 'main,
-            };
-
-            let should_continue = {
-                let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                v8::Local::new(scope, &loop_step_fn)
-                    .call(scope, undef, &[])
-                    .map(|v| v.boolean_value(scope))
-                    .unwrap_or(false)
-            };
-
-            if should_continue {
-                // Drain async FFI completions on every iteration (mirrors runtime.rs).
-                pump_and_checkpoint(scope);
-
-                let (maybe_fn, maybe_resolver) = {
-                    let mut st = state_rc.borrow_mut();
-                    (st.sync_call_fn.take(), st.sync_call_resolver.take())
-                };
-
-                if let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) {
-                    let result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
-                        let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                        let tc = &mut v8::TryCatch::new(scope);
-                        let f = v8::Local::new(tc, &fn_ref);
-                        match f.call(tc, undef, &[]) {
-                            Some(r) => Ok(v8::Global::new(tc, r)),
-                            None => {
-                                let exc =
-                                    tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                                Err(v8::Global::new(tc, exc))
-                            }
-                        }
-                    };
-                    let res_local = v8::Local::new(scope, &resolver_ref);
-                    match result {
-                        Ok(r) => {
-                            let v = v8::Local::new(scope, &r);
-                            let _ = res_local.resolve(scope, v);
-                        }
-                        Err(e) => {
-                            let v = v8::Local::new(scope, &e);
-                            let _ = res_local.reject(scope, v);
-                        }
-                    }
-                    pump_and_checkpoint(scope);
-                }
-            }
-
-            break 'step should_continue;
+            crate::runtime::native_drive_step(scope, &state_rc)
         };
 
         if !should_continue {

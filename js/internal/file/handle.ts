@@ -27,7 +27,7 @@
 *
 * @internal
 */
-import { lib, isDarwin, loopModule, asyncOps, throwErrno, throwErrnoCode, _toPath, modeIsReadable, modeIsWritable, SEEK_CUR, O_CREAT, decodeUtf8, Pointer } from './bindings.ts';
+import { lib, isDarwin, loopModule, throwErrno, throwErrnoCode, _toPath, modeIsReadable, modeIsWritable, SEEK_CUR, O_CREAT, decodeUtf8, Pointer } from './bindings.ts';
 import { Stat } from './stat.ts';
 import { FdWriter } from '../stream.ts';
 import type { Path } from '../../file/path.ts';
@@ -215,14 +215,6 @@ export class File {
     const fd = this.#fd;
     const isClosed = (): boolean => this.#closed;
     const bufSize = 65536;
-    // macOS: capture file size once at reader() creation time for EOF detection.
-    // lseek(SEEK_CUR) is called per-iteration to get the current offset.
-    let fileSize: number | null = null;
-    if (!asyncOps) {
-      const statBuf = new ArrayBuffer(256);
-      lib.symbols.fstat(fd, statBuf);
-      fileSize = Stat.parse(statBuf).size;
-    }
     const iterable: AsyncIterable<Uint8Array> = { [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
       return { async next(): Promise<IteratorResult<Uint8Array>> {
         if (isClosed()) return {
@@ -230,47 +222,10 @@ export class File {
           value: undefined
         };
         const buf = new ArrayBuffer(bufSize);
-        let n: number;
-        if (asyncOps) {
-          const loop = loopModule;
-          const ops = asyncOps;
-          if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-          // Linux: io_uring IORING_OP_READ.
-          const result = await loop.submit(function submitAsyncRead(raw: object, id: number) {
-            ops.asyncRead(raw, fd, buf, bufSize, id);
-          });
-          n = result.res;
-          if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
-        } else {
-          const fused = loopModule as unknown as {
-            readAsync?: (fd: number, buf: ArrayBuffer, offset: number, len: number) => number | Promise<number>;
-          };
-          if (fused.readAsync !== undefined) {
-            // Reactor-backed loop (e.g. a reactor-engine tenant): the reactor
-            // reads directly into `buf`. A regular file takes the sync fast path
-            // (no readiness park, no lseek EOF dance) — read returns 0 at EOF.
-            const r = fused.readAsync(fd, buf, 0, bufSize);
-            n = typeof r === 'number' ? r : await r;
-          } else {
-            // macOS default loop: check EOF via lseek before calling readable()
-            // to avoid hanging (EVFILT_READ does not fire when offset == size).
-            const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-            if (fileSize !== null && offset >= fileSize) {
-              // Re-stat: the file may have grown since we last checked.
-              const refreshBuf = new ArrayBuffer(256);
-              lib.symbols.fstat(fd, refreshBuf);
-              fileSize = Stat.parse(refreshBuf).size;
-              if (offset >= fileSize) return {
-                done: true,
-                value: undefined
-              };
-            }
-            // Yield to the event loop. For a vnode with remaining data,
-            // EVFILT_READ fires immediately on the next tick.
-            await loopModule!.readable(fd);
-            n = Number(lib.symbols.read(fd, buf, bufSize));
-          }
-        }
+        // The reactor reads directly into `buf`. A regular file takes the
+        // sync fast path (no readiness park) — read returns 0 at EOF.
+        const r = loopModule.readAsync(fd, buf, 0, bufSize);
+        const n = typeof r === 'number' ? r : await r;
         if (n <= 0) return {
           done: true,
           value: undefined
@@ -325,11 +280,7 @@ export class File {
   async bytes(): Promise<Uint8Array> {
     if (this.#closed) throw new Error('File is closed');
     const fd = this.#fd;
-    // Linux io_uring keeps the chunked loop: its completions already yield, so it
-    // has no cascade GC pressure, and `asyncRead` cannot target a buffer offset.
-    if (asyncOps) return this.#bytesChunked();
-
-    // macOS: size the destination once from fstat and read straight into it, so a
+    // Size the destination once from fstat and read straight into it, so a
     // regular file needs a single allocation (the array returned to the caller)
     // and zero per-chunk scratch. Repeated 64 KiB scratch buffers were the
     // dominant external-memory-GC source under the reactor engine's non-yielding
@@ -360,33 +311,17 @@ export class File {
   }
   /**
   * Read `len` bytes from the descriptor into `out` starting at byte offset
-  * `pos`, filling the destination in place (no scratch allocation). Returns the
-  * byte count, or 0 at EOF. macOS-only helper for {@link bytes}.
-  *
-  * The destination was sized from fstat, so this only targets a regular file,
-  * which never blocks on macOS — so it reads straight through `read(2)` on the
-  * FFI fast-call path. It deliberately does NOT use the reactor's `readAsync`:
-  * that is a regular v8 callback (not a fast API call), and routing every file
-  * read through it costs engine tenants a ~1.6x per-read tax versus the fast
-  * FFI read for no benefit on a non-blocking regular file. Pipes/sockets/other
-  * would-block descriptors go through {@link #bytesChunked}, which keeps the
-  * reactor readiness park.
+  * `pos`, filling the destination in place (no scratch allocation) via the
+  * reactor's fused read. Returns the byte count, or 0 at EOF. Helper for
+  * {@link bytes}; pipes/sockets/other unsized descriptors go through
+  * {@link #bytesChunked}.
   *
   * @internal
   */
-  async #readMacInto(out: Uint8Array, pos: number, len: number, size: number): Promise<number> {
+  async #readMacInto(out: Uint8Array, pos: number, len: number, _size: number): Promise<number> {
     const fd = this.#fd;
-    const fused = loopModule as unknown as {
-      readAsync?: (fd: number, buf: ArrayBuffer, offset: number, len: number) => number | Promise<number>;
-    };
-    if (fused.readAsync !== undefined) {
-      const r = fused.readAsync(fd, out.buffer, out.byteOffset + pos, len);
-      return typeof r === 'number' ? r : await r;
-    }
-    const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-    if (offset >= size) return 0;
-    await loopModule!.readable(fd);
-    return Number(lib.symbols.read(fd, new Uint8Array(out.buffer, out.byteOffset + pos, len), len));
+    const r = loopModule.readAsync(fd, out.buffer, out.byteOffset + pos, len);
+    return typeof r === 'number' ? r : await r;
   }
   /**
   * Chunked read-to-EOF fallback: allocates a fresh buffer per chunk and
@@ -401,38 +336,10 @@ export class File {
     let total = 0;
     const bufSize = 65536;
     const fd = this.#fd;
-    let fileSize: number | null = null;
-    if (!asyncOps) {
-      const statBuf = new ArrayBuffer(256);
-      lib.symbols.fstat(fd, statBuf);
-      fileSize = Stat.parse(statBuf).size;
-    }
     while (true) {
       const buf = new ArrayBuffer(bufSize);
-      let n: number;
-      if (asyncOps) {
-        const loop = loopModule;
-        const ops = asyncOps;
-        if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-        const result = await loop.submit(function submitAsyncRead(raw: object, id: number) {
-          ops.asyncRead(raw, fd, buf, bufSize, id);
-        });
-        n = result.res;
-        if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
-      } else {
-        const fused = loopModule as unknown as {
-          readAsync?: (fd: number, buf: ArrayBuffer, offset: number, len: number) => number | Promise<number>;
-        };
-        if (fused.readAsync !== undefined) {
-          const r = fused.readAsync(fd, buf, 0, bufSize);
-          n = typeof r === 'number' ? r : await r;
-        } else {
-          const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-          if (fileSize !== null && offset >= fileSize) break;
-          await loopModule!.readable(fd);
-          n = Number(lib.symbols.read(fd, buf, bufSize));
-        }
-      }
+      const r = loopModule.readAsync(fd, buf, 0, bufSize);
+      const n = typeof r === 'number' ? r : await r;
       if (n <= 0) break;
       chunks.push(new Uint8Array(buf, 0, n));
       total += n;
@@ -640,17 +547,7 @@ export class File {
     if (this.#activeWriter !== null && !this.#activeWriter.closed) {
       await this.#activeWriter.flush();
     }
-    if (asyncOps) {
-      const loop = loopModule;
-      const ops = asyncOps;
-      if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-      const fd = this.#fd;
-      await loop.submit(function submitAsyncClose(raw: object, id: number) {
-        ops.asyncClose(raw, fd, id);
-      });
-    } else {
-      lib.symbols.close(this.#fd);
-    }
+    lib.symbols.close(this.#fd);
   }
   /**
   * Dispose hook that closes the handle when an `await using` binding goes out

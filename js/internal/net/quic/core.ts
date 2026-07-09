@@ -61,7 +61,7 @@ import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { atob } from '../../../globals/encoding.ts';
 import { encodeUtf8 } from '../../encoding.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
-import * as loop from '../../runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { topic } from '../../../context/topic.ts';
 import { lib as fileLib, cstr as fileCstr, O_APPEND, O_CREAT, O_TRUNC, O_WRONLY } from '../../file/bindings.ts';
 import { AF_INET, AF_INET6, EAGAIN, IPPROTO_IP, IPPROTO_IPV6, IPPROTO_UDP, IPV6_UNICAST_HOPS, IPV6_RECVTCLASS, IPV6_V6ONLY, IP_RECVTOS, IP_TTL, SOL_SOCKET, SO_RCVBUF, SO_REUSEPORT, SO_SNDBUF, SOCK_DGRAM, bind as socketBind, close as socketClose, createDatagramRecvBatch, decodeAddr, encodeAddr, getsockname, recvmsgEcn, recvfrom, sendmmsgBatch, sendmsgEcn, sendto, setNonblocking, setsockopt, socket } from '../../../net/socket.ts';

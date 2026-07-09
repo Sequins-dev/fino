@@ -5,7 +5,7 @@
 //! asynchronous operation an isolate is waiting on: fd readiness, fused
 //! read/write transfers, timers, process-exit, vnode and signal watches, plus
 //! persistent wake sources. It is the native equivalent of
-//! `internal:runtime/loop` + `internal:runtime/kqueue` fused into one layer:
+//! the old JS loop + poll backend fused into one layer:
 //! `tick()` performs the poll AND resolves the ready promises inline, so there
 //! is no JS dispatch loop and no per-readiness Promise created on the JS side.
 //!

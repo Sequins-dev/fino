@@ -34,7 +34,7 @@
 * await realm.terminate();
 * ```
 */
-import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { createContext, stepContext, terminateChild, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { _registerChildSteppers } from 'internal:child-steppers';
 import { MessagePort, MessageChannel, _flushPorts, type MessageEvent } from '../globals/messaging.ts';
@@ -2222,41 +2222,8 @@ interface ActiveChild {
   /** Called when the child exits with reload_requested. Returns the new handle
   *  to keep running, or null to stop watching (after terminate()). */
   onReload?: () => number | null;
-  /** Pollable loop fd of an embedded child, once armed as a parent-loop wake
-  *  source. Undefined until the child records it via setLoopFd(). */
-  loopFd?: number;
 }
 const _activeChildren: ActiveChild[] = [];
-// Embedded children run their loop only when the parent steps them, so the
-// parent must wake whenever the child's kqueue/io_uring has pending events —
-// otherwise child I/O and timers are quantized to the parent's idle sleep.
-// The child's loop fd polls readable when it has pending events; keeping a
-// one-shot read watch armed on it makes the parent's tick() return the moment
-// the child has work, and also holds the parent's loop alive while the child
-// runs.
-function _armChildLoopWatch(child: ActiveChild): void {
-  const fd = getChildLoopFd(child.handle) as number;
-  if (fd < 0) return;
-  child.loopFd = fd;
-  void (async function _childLoopWatch() {
-    try {
-      while (child.loopFd === fd) {
-        await readable(fd);
-        if (child.loopFd !== fd) break;
-        // Yield one microtask so stepping (later in this host-loop iteration)
-        // can drain the child before the watch re-arms.
-        await Promise.resolve();
-      }
-    } catch {}
-  })();
-}
-function _disarmChildLoopWatch(child: ActiveChild): void {
-  if (child.loopFd === undefined) return;
-  try {
-    removeRead(child.loopFd);
-  } catch {}
-  child.loopFd = undefined;
-}
 /**
 * Step all active child realms by one event-loop iteration.
 *
@@ -2303,7 +2270,6 @@ export function _stepChildren(): void {
       }
     }
     if (stepResult !== true) {
-      _disarmChildLoopWatch(child);
       // Deliver any messages the child posted on its way out BEFORE settling
       // its exit: a call-mode child posts its result and completes in the
       // same step, and the result must win the race against the exit signal
@@ -2324,8 +2290,6 @@ export function _stepChildren(): void {
         child.resolve();
         _activeChildren.splice(i, 1);
       }
-    } else if (child.kind === 'embedded' && child.loopFd === undefined) {
-      _armChildLoopWatch(child);
     }
   }
 }

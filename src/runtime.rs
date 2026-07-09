@@ -156,7 +156,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         }
 
         // First pump + checkpoint: runs internal/main.ts module body as a microtask.
-        // The module body calls runLoop(step, onDone) from internal:async-context,
+        // The module body calls runNativeLoop(...) from internal:async-context,
         // storing those callbacks in FinoState for the loop below.
         pump_and_checkpoint(scope);
 
@@ -186,40 +186,16 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     // Using a named loop label so `break` inside the inner block exits here.
     // -----------------------------------------------------------------------
     'main: loop {
-        let should_continue = 'step: {
+        let should_continue = {
             let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
-            // Native drive: the realm's loop is reactor-backed, so Rust owns
-            // the pump cadence and calls only thin JS policy hooks.
-            if state_rc.borrow().native_loop.is_some() {
-                break 'step native_drive_step(scope, &state_rc);
+            // The realm's loop is reactor-backed: Rust owns the pump cadence
+            // and calls only thin JS policy hooks. No hooks means bootstrap
+            // never called driveLoop (e.g. argv.length < 2) — nothing to run.
+            if state_rc.borrow().native_loop.is_none() {
+                break 'main;
             }
-
-            // Extract stored JS step callback without holding the borrow during call.
-            let loop_step_fn = match state_rc.borrow().loop_step_fn.clone() {
-                Some(f) => f,
-                // internal/main.ts never called runLoop (e.g. argv.length < 2).
-                None => break 'main,
-            };
-
-            // step() -> boolean
-            let should_continue = {
-                let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                v8::Local::new(scope, &loop_step_fn)
-                    .call(scope, undef, &[])
-                    .map(|v| v.boolean_value(scope))
-                    .unwrap_or(false)
-            };
-
-            if should_continue {
-                // Drain any completed async FFI calls on every loop iteration.
-                // The wake pipe wakes kqueue, but we drain here (not via a
-                // JS-level readable() handler) to avoid keeping the loop alive.
-                pump_and_checkpoint(scope);
-                service_sync_call(scope, &state_rc);
-            }
-
-            break 'step should_continue;
+            native_drive_step(scope, &state_rc)
         }; // ContextScope dropped — isolate_scope is free.
 
         if !should_continue {

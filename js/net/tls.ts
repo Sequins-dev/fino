@@ -64,7 +64,7 @@
 * ```
 */
 import * as openssl from '../internal/openssl.ts';
-import * as loop from '../internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.ts';
 import { Socket, connectTcp, close as closeFd, setNonblocking } from './socket.ts';
 import type { Address } from './socket.ts';

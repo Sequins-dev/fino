@@ -53,7 +53,7 @@ import { isConnectionTakeover } from './driver.ts';
 import type { ConnectionTakeover } from './driver.ts';
 import { h2Available } from '../../internal/net/http/h2/bindings.ts';
 import { H2ServerDriver } from '../../internal/net/http/h2/server.ts';
-import * as loop from '../../internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { topic } from '../../context/topic.ts';
 import { Scanner } from '../../parsing/scanner.ts';
 import { consumeRequestContext, otelRuntimeEvent, otelRuntimeTopic, runWithActiveContext } from '../../internal/opentelemetry/common.ts';

@@ -3,7 +3,6 @@
 */
 import { describe, it } from 'fino:test/test';
 import * as loop from 'internal:runtime/loop';
-import * as backend from 'internal:runtime/loop-backend';
 import * as fileBindings from 'internal:file/bindings';
 import * as sock from 'fino:net/socket';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -68,49 +67,6 @@ function closeAll(...fds: number[]): void {
     } catch {}
   }
 }
-describe('Backend contract', () => {
-  it('exposes the common readiness, timer, and wait surface', (t) => {
-    for (const name of [
-      'create',
-      'addRead',
-      'addWrite',
-      'removeRead',
-      'removeWrite',
-      'addTimer',
-      'removeTimer',
-      'wait',
-      'destroy'
-    ]) {
-      t.equal(typeof (backend as Record<string, unknown>)[name], 'function', `${name} is exported`);
-    }
-    t.equal(typeof backend.EVFILT_READ, 'number', 'read filter is exported');
-    t.equal(typeof backend.EVFILT_WRITE, 'number', 'write filter is exported');
-    t.equal(typeof backend.EVFILT_TIMER, 'number', 'timer filter is exported');
-    if (fileBindings.isDarwin) {
-      t.equal(typeof backend.EVFILT_PROC, 'number', 'macOS backend exports proc events');
-      t.equal(typeof backend.EVFILT_VNODE, 'number', 'macOS backend exports vnode events');
-      t.equal(backend.EVFILT_COMPLETION, undefined, 'macOS backend does not expose completion events');
-    } else {
-      t.equal(backend.EVFILT_PROC, undefined, 'Linux backend does not expose proc events');
-      t.equal(backend.EVFILT_VNODE, undefined, 'Linux backend does not expose vnode events');
-      t.equal(typeof backend.EVFILT_COMPLETION, 'number', 'Linux backend exposes completion events');
-    }
-  });
-  it('creates a platform backend handle with explicit Linux fallback kind', (t) => {
-    const raw = backend.create() as {
-      kind?: unknown;
-    };
-    try {
-      if (fileBindings.isDarwin) {
-        t.equal(typeof raw.fd, 'number', 'macOS backend handle owns a kqueue fd');
-      } else {
-        t.ok(raw.kind === 'io_uring' || raw.kind === 'poll', 'Linux backend selects io_uring or poll');
-      }
-    } finally {
-      backend.destroy(raw as never);
-    }
-  });
-});
 describe('Basic operations', () => {
   it('timeout() resolves after delay', (t) => {
     const t0 = Date.now();

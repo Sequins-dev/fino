@@ -94,17 +94,8 @@ pub(crate) fn tenant_import_rules() -> Vec<ImportRule> {
         pattern: ImportPattern::Prefix("fino:net".to_string()),
         directive: ImportDirective::Inherit,
     });
-    // Route all tenant I/O through the reactor: remap the event loop to the
-    // reactor-backed drop-in, so fino:file/fino:net readiness + fused read/write
-    // register with this engine thread (isolate-tagged) rather than a JS loop the
-    // engine never drives.
-    rules.push(ImportRule {
-        from: None,
-        pattern: ImportPattern::Exact("internal:runtime/loop".to_string()),
-        directive: ImportDirective::Remap {
-            target: "fino:net/loop-reactor".to_string(),
-        },
-    });
+    // (No loop remap needed: the loader aliases `internal:runtime/loop` to
+    // the reactor-backed implementation for every realm unconditionally.)
     rules
 }
 

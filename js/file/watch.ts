@@ -62,7 +62,7 @@
 */
 import { lib, cstr, isDarwin, O_RDONLY, DT_DIR } from '../internal/file/bindings.ts';
 import { DirEntry } from '../internal/file/entry.ts';
-import * as loopMod from '../internal/runtime/loop.ts';
+import * as loopMod from 'internal:runtime/loop';
 import { isDarwin as _watchIsDarwin, inotifyInit, inotifyAddWatch, inotifyRmWatch, inotifyRead, inotifyClose, parseEvents, IN_MODIFY, IN_ATTRIB, IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_MOVED_FROM, IN_MOVED_TO, IN_MOVE_SELF, IN_ISDIR, IN_IGNORED, IN_ALL_CHANGES } from '../internal/file/watch-bindings.ts';
 // ---------------------------------------------------------------------------
 // macOS NOTE_* constants (kqueue EVFILT_VNODE fflags)

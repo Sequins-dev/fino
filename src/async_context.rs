@@ -7,7 +7,7 @@
 //! - `getCPED` / `setCPED`: V8 Torque builtins extracted from the extras binding
 //!   object. These compile to direct CPED memory loads/stores on the V8 isolate
 //!   and can be inlined by TurboFan/Maglev — no native barrier crossing.
-//! - `drainMicrotasks`, `hasPendingV8Tasks`, `scheduleSync`, `runLoop`: host loop
+//! - `drainMicrotasks`, `hasPendingV8Tasks`, `scheduleSync`, `runNativeLoop`: host loop
 //!   primitives that must remain in Rust.
 
 use ::v8;
@@ -29,7 +29,6 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "drainMicrotasks",
         "hasPendingV8Tasks",
         "scheduleSync",
-        "runLoop",
         "runNativeLoop",
     ]
     .iter()
@@ -75,7 +74,6 @@ fn eval_steps<'a>(
     set_fn!("drainMicrotasks", drain_microtasks);
     set_fn!("hasPendingV8Tasks", has_pending_v8_tasks);
     set_fn!("scheduleSync", schedule_sync);
-    set_fn!("runLoop", run_loop);
     set_fn!("runNativeLoop", run_native_loop);
 
     Some(v8::undefined(scope).into())
@@ -191,22 +189,4 @@ fn run_native_loop(
     if loop_debug_enabled() {
         eprintln!("[async-context] runNativeLoop registered");
     }
-}
-
-/// Called by `internal/main.ts` with `(step, onDone)` to hand off host-safe loop
-/// stepping to Rust. JS owns scheduling policy; Rust only calls `step()`
-/// outside checkpoints and services deferred sync work between calls.
-fn run_loop(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let state_rc = get_state(scope);
-    let mut st = state_rc.borrow_mut();
-    st.loop_step_fn = v8::Local::<v8::Function>::try_from(args.get(0))
-        .ok()
-        .map(|f| v8::Global::new(scope, f));
-    st.on_done_fn = v8::Local::<v8::Function>::try_from(args.get(1))
-        .ok()
-        .map(|f| v8::Global::new(scope, f));
 }

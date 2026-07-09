@@ -56,7 +56,7 @@
 *
 * @internal
 */
-import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
+import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from 'internal:runtime/loop';
 import { runNativeLoop } from 'internal:async-context';
 import { _stepRegisteredChildren, _registeredChildrenAlive } from 'internal:child-steppers';
 import { wakeFd } from 'internal:async-runtime';

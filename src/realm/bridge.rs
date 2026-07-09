@@ -21,7 +21,6 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getReplMode",
         "getRealmData",
         "getRealmBootstrapData",
-        "setLoopFd",
         "debugMark",
     ]
     .iter()
@@ -57,7 +56,6 @@ fn eval_steps<'a>(
     set_fn!("getReplMode", get_repl_mode);
     set_fn!("getRealmData", get_realm_data);
     set_fn!("getRealmBootstrapData", get_realm_bootstrap_data);
-    set_fn!("setLoopFd", set_loop_fd);
     set_fn!("debugMark", debug_mark);
 
     Some(v8::undefined(scope).into())
@@ -140,19 +138,6 @@ fn get_realm_bootstrap_data(
         }
         None => rv.set(v8::undefined(scope).into()),
     }
-}
-
-/// Record this realm's pollable event-loop fd so the parent's loop can wake
-/// on the child's I/O and timer events (read back through
-/// `internal:realm-native.getChildLoopFd`).
-fn set_loop_fd(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let fd = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-    let state_rc = get_state(scope);
-    state_rc.borrow_mut().loop_fd = Some(fd);
 }
 
 /// Returns the MessagePort object passed to this child Realm at creation time,

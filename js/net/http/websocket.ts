@@ -110,7 +110,7 @@ import { Headers, _headerTokenList, _parseHeaders, _parseResponseLine } from './
 import { Socket } from '../socket.ts';
 import { TlsSocket } from '../tls.ts';
 import { lookup } from '../dns.ts';
-import * as loop from '../../internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { EventTarget, Event } from '../../globals/eventtarget.ts';
 import { MessageEvent } from '../../globals/messaging.ts';
 import { URL } from '../../globals/url.ts';

@@ -46,15 +46,6 @@ export interface CancelablePromise extends Promise<void> {
   cancel(): void;
 }
 
-/**
-* Marks this loop as reactor-backed: the Rust host loop drives the pump
-* itself (bootstrap registers policy hooks via `runNativeLoop` instead of a
-* JS step function).
-*
-* @internal
-*/
-export const _nativeDrive = true;
-
 // Atomics.waitAsync settles from another thread with no reactor registration,
 // so — as in loop.ts — it is tracked with a JS counter that feeds alive().
 // The count is mirrored natively (trackAtomicsWaiter) because under native
@@ -67,11 +58,6 @@ let _atomicsWaiters = 0;
 /** Poll the reactor for ready events, resolve them, and return the count. */
 export function tick(timeoutMs: number): number {
   return native.tick(timeoutMs);
-}
-
-/** The reactor's kqueue fd (polls readable when the reactor has events). */
-export function loopFd(): number {
-  return native.loopFd();
 }
 
 /** Whether the reactor still has work that could settle. */
@@ -235,11 +221,6 @@ export function removeRead(fd: number): void {
 export function removeWrite(fd: number): void {
   native.removeWrite(fd);
 }
-
-// NOTE: no `submit` export. The raw-ring submission contract belongs to the
-// default loop's io_uring backend; consumers (internal:file/bindings) probe
-// `typeof loop.submit === 'function'` and use the fused readAsync/fileRead
-// paths here instead.
 
 // ---------------------------------------------------------------------------
 // Synchronous spinning

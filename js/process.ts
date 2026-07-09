@@ -100,7 +100,7 @@ import { seatbeltAvailable } from './internal/security/sandbox/seatbelt.ts';
 import type { SandboxPolicy } from './internal/security/sandbox/plan.ts';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { FdReader, FdWriter } from './internal/stream.ts';
-import * as loop from './internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { topic, Topic } from './context/topic.ts';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
