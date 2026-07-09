@@ -90,17 +90,21 @@ describe('Basic operations', () => {
     const elapsed = Date.now() - t0;
     t.ok(elapsed < 500, 'short timeout was not delayed by cancelled timers (' + elapsed + 'ms)');
   });
-  it('cancelled timers stop keeping the loop alive without settling', (t) => {
+  it('cancelled timers stop counting toward loop liveness without settling', (t) => {
+    // Assert the timer-specific count: the realm's port watch keeps a
+    // baseline read handle armed for its whole life, so bare alive() is
+    // realm-infrastructure-dependent.
+    const before = loop._activeHandleCounts().timers;
     let resolved = false;
     const timer = loop.timeout(1e4);
     timer.then(() => {
       resolved = true;
     });
-    t.equal(loop.alive(), true, 'pending timer keeps the loop alive');
+    t.equal(loop._activeHandleCounts().timers, before + 1, 'pending timer counts toward liveness');
     timer.cancel();
     wait(Promise.resolve());
     t.equal(resolved, false, 'cancelled timer promise stays unsettled');
-    t.equal(loop.alive(), false, 'cancelled timer no longer keeps the loop alive');
+    t.equal(loop._activeHandleCounts().timers, before, 'cancelled timer no longer counts');
   });
 });
 describe('I/O watchers', () => {
@@ -247,8 +251,11 @@ describe('Backend-specific loop hooks', () => {
   it('registerWakeSource does not keep the loop alive and wakes tick()', (t) => {
     const { server, client, peer } = connectedPair();
     try {
+      const before = loop._activeHandleCounts();
       loop.registerWakeSource(peer);
-      t.equal(loop.alive(), false, 'wake source alone does not keep loop alive');
+      const after = loop._activeHandleCounts();
+      t.equal(after.reads, before.reads, 'wake source does not count as a read handle');
+      t.equal(after.timers, before.timers, 'wake source does not count as a timer');
       sock.send(client, encodeUtf8('wake'), 0);
       const dispatched = loop.tick(100);
       t.ok(dispatched >= 1, 'wake source produced a backend event');

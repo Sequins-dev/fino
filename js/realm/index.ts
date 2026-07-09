@@ -34,10 +34,10 @@
 * await realm.terminate();
 * ```
 */
-import { createContext, stepContext, terminateChild, createThreadContext, stepThreadContext, getRealmPortInfo, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { createContext, stepContext, terminateChild, createThreadContext, stepThreadContext, getRealmPortInfo, mergeChildRules, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { _registerChildSteppers } from 'internal:child-steppers';
-import { allocatePlacement } from 'internal:realm/allocate';
+import { allocatePlacement, placePooledRealm, type PooledRealm } from 'internal:realm/allocate';
 import { MessagePort, MessageChannel, _flushPorts, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { readable, removeRead } from 'internal:runtime/loop';
@@ -2188,7 +2188,7 @@ export class ProcessPort extends BaseTransportPort {
 // ---------------------------------------------------------------------------
 // Active children tracking
 // ---------------------------------------------------------------------------
-type RealmKind = 'embedded' | 'thread' | 'process' | 'remote';
+type RealmKind = 'embedded' | 'thread' | 'process' | 'remote' | 'pool';
 let _nextPortHandle = 0;
 let _nextSourceRealmId = 0;
 interface ActiveChild {
@@ -2221,7 +2221,7 @@ const _activeChildren: ActiveChild[] = [];
 export function _stepChildren(): void {
   for (let i = _activeChildren.length - 1; i >= 0; i--) {
     const child = _activeChildren[i]!;
-    if (child.kind === 'remote') continue;
+    if (child.kind === 'remote' || child.kind === 'pool') continue;
     // Step returns: true = alive, false = clean exit, null = reload requested
     let stepResult: boolean | null;
     let stepError: unknown = undefined;
@@ -2490,6 +2490,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   * @internal
   */
   #watchTerminated = false;
+  /** Pool placement record when the allocator hosted this realm on the node pool. */
+  #pooled: PooledRealm | null = null;
   // For thread/process watch mode: tracks the current child's port so that
   // terminate() reaches the most-recently-spawned child, not the original one.
   /**
@@ -2682,9 +2684,29 @@ export class Realm<F extends RealmFn = RealmFn> {
       // config property that forces embedded placement.
       const placement = allocatePlacement({
         entry: opts.entry,
-        requiresSameIsolate: opts.input !== undefined && opts.output !== undefined || repl
+        requiresSameIsolate: opts.input !== undefined && opts.output !== undefined || repl,
+        watch
       });
-      if (placement.kind === 'thread') {
+      let pooled: PooledRealm | null = null;
+      if (placement.kind === 'pool') {
+        // Pool placement ships the realm's COMPLETE ruleset: merge the
+        // child-specific rules into this realm's own (defaults included),
+        // with the narrowing check applied here in the parent — the engine
+        // thread has no parent context to merge against.
+        const mergedRules = mergeChildRules(serializedRules) as string;
+        pooled = placePooledRealm({
+          entry: opts.entry,
+          rulesJson: mergedRules,
+          ...serializedData !== undefined ? { realmData: serializedData } : {},
+          ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {}
+        });
+      }
+      if (pooled !== null) {
+        this.#kind = 'pool';
+        this.#handle = -1;
+        this.#pooled = pooled;
+        this.port = new ThreadPort(pooled.portWakeFd, pooled.portHandle);
+      } else if (placement.kind !== 'embedded') {
         this.#kind = 'thread';
         const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
         this.#handle = handle;
@@ -2808,6 +2830,31 @@ export class Realm<F extends RealmFn = RealmFn> {
         });
       }));
     }
+    if (this.#kind === 'pool') {
+      const pooled = this.#pooled!;
+      const port = this.port;
+      return new Promise<void>((resolve, reject) => {
+        const entry: ActiveChild = {
+          handle: -1,
+          kind: 'pool',
+          resolve: () => {},
+          reject: () => {}
+        };
+        _activeChildren.push(entry);
+        pooled.released.then((reason) => {
+          const idx = _activeChildren.indexOf(entry);
+          if (idx >= 0) _activeChildren.splice(idx, 1);
+          try {
+            (port as { close(): void }).close();
+          } catch {}
+          if (reason.startsWith('failed')) {
+            reject(new Error(reason.replace(/^failed: ?/, '') || reason));
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
     if (this.#watchOpts !== null) {
       return new Promise<void>((resolve, reject) => {
         const self = this;
@@ -2914,6 +2961,46 @@ export class Realm<F extends RealmFn = RealmFn> {
           args
         });
       }));
+    } else if (kind === 'pool') {
+      const pooled = this.#pooled!;
+      base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
+        let settled = false;
+        const entry: ActiveChild = {
+          handle: -1,
+          kind: 'pool',
+          resolve: () => {},
+          reject: () => {}
+        };
+        _activeChildren.push(entry);
+        pooled.released.then((reason) => {
+          // Give an in-flight result message the same grace remote realms
+          // get: the child posts its result and exits in one step, and the
+          // result must win the race against the release report.
+          setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            const idx = _activeChildren.indexOf(entry);
+            if (idx >= 0) _activeChildren.splice(idx, 1);
+            reject(new Error(reason.startsWith('failed') ? reason.replace(/^failed: ?/, '') : 'Realm exited before returning a call result'));
+          }, 25);
+        });
+        const handler = (ev: Event) => {
+          if (settled) return;
+          settled = true;
+          const data = (ev as MessageEvent).data;
+          this.port.removeEventListener('message', handler);
+          this.port.close();
+          const idx = _activeChildren.indexOf(entry);
+          if (idx >= 0) _activeChildren.splice(idx, 1);
+          _resolveCallResponse(data, resolve, reject);
+        };
+        this.port.addEventListener('message', handler);
+        this.port.start();
+        this.port.postMessage({
+          __call: true,
+          args
+        });
+      });
     } else {
       base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
         _activeChildren.push({
@@ -2972,6 +3059,16 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (this.#kind === 'remote') {
       this.port.postMessage({ __terminate: true });
       this.port.close();
+    } else if (this.#kind === 'pool') {
+      const port = this.port as ThreadPort;
+      if (port.closed) {
+        // The graceful channel is gone (e.g. call() already closed it after
+        // its result): hard-kill through the node.
+        this.#pooled?.revoke('terminated');
+      } else {
+        port.postMessage({ __terminate: true });
+        port.close();
+      }
     } else if (this.#kind === 'thread' || this.#kind === 'process') {
       // After a watch-mode reload, this.port still points to the first child's
       // port.  Use #activeChildPort when set (updated by #spawnChild on reload)

@@ -107,7 +107,9 @@ fn sweep_budgets() -> u32 {
 
 pub(crate) struct ParkedWorkload {
     context: v8::Global<v8::Context>,
-    dispatch_fn: v8::Global<v8::Function>,
+    /// The tenant dispatch entry point; `None` for realm workloads, which
+    /// are driven through their native loop hooks instead.
+    dispatch_fn: Option<v8::Global<v8::Function>>,
     active_promise: Option<v8::Global<v8::Promise>>,
     /// This isolate's own async state (executor + FFI-completion queue + wake
     /// pipe). Swapped into the thread-local around every enter/pump so the
@@ -149,6 +151,9 @@ pub(crate) enum PumpOutcome {
     Settled { result: String, cost_micros: f64 },
     /// Still awaiting outstanding async work; the isolate stays parked.
     Pending,
+    /// Still running, but progress can happen without an engine-visible
+    /// completion (dedicated-thread children): re-pump on a short timer.
+    PendingPoll,
     /// Execution was terminated (budget kill or heap-limit containment).
     Terminated,
     /// The activation rejected; the string carries the error message.
@@ -329,7 +334,7 @@ pub(crate) fn setup_workload(
     let mut workload = ParkedWorkload {
         isolate,
         context: context_global,
-        dispatch_fn: dispatch_global,
+        dispatch_fn: Some(dispatch_global),
         active_promise: None,
         async_state: Some(crate::async_rt::new_state()),
         thread_handle,
@@ -341,6 +346,218 @@ pub(crate) fn setup_workload(
         workload.isolate.exit();
     }
     Ok(workload)
+}
+
+/// Construct a REALM workload: a full child realm (uniform bootstrap, port
+/// channel, import-rule inheritance, entry auto-import) hosted as a parked
+/// isolate on an engine thread. The realm's `driveLoop` registers native
+/// hooks at bootstrap; `pump_realm_native` drives them per slice. This is
+/// the same construction `run_child_isolate` performs for a dedicated
+/// thread realm — placement is the only difference.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn setup_realm_workload(
+    entry_path: String,
+    process_env: ProcessEnv,
+    package_map_json: Option<String>,
+    heap_limit_bytes: usize,
+    import_rules: Vec<ImportRule>,
+    realm_data: Option<String>,
+    realm_bootstrap_data: Option<String>,
+    port_half: (u32, i32),
+) -> Result<ParkedWorkload, String> {
+    crate::runtime::init_v8();
+
+    let heap_limit = if heap_limit_bytes == 0 {
+        DEFAULT_HEAP_LIMIT_BYTES
+    } else {
+        heap_limit_bytes
+    };
+    let mut params = v8::CreateParams::default();
+    params = params.heap_limits(0, heap_limit);
+    params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
+
+    let mut isolate = v8::Isolate::new(params);
+    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+    isolate.set_allow_atomics_wait(true);
+    isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
+    isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
+
+    // The realm's bootstrap starts its entry import during evaluation —
+    // FFI callbacks, async calls, and the wake pipe must find THIS
+    // workload's async state, not whatever the engine thread had.
+    let async_state = crate::async_rt::new_state();
+    let saved_state = crate::async_rt::swap_state(Some(async_state));
+
+    let (context_global, state_rc, module_global) = {
+        let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
+        let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
+        let context = v8::Context::new(isolate_scope, Default::default());
+        context.set_microtask_queue(&root_queue);
+        let scope = &mut v8::ContextScope::new(isolate_scope, context);
+        let state = FinoState::new_child(
+            process_env,
+            package_map_json,
+            root_queue,
+            import_rules,
+            Some(entry_path),
+            None,
+            Some(port_half),
+            false, // watch mode is a dedicated-thread feature for now
+            false,
+            realm_data,
+            realm_bootstrap_data,
+            None,
+        );
+        context.set_slot(Rc::new(RefCell::new(state)));
+
+        let initial_frame = v8::Array::new(scope, 0);
+        scope.set_continuation_preserved_embedder_data(initial_frame.into());
+
+        let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs"));
+        let bootstrap_map =
+            include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
+        let module = {
+            let tc = &mut v8::TryCatch::new(scope);
+            loader::register_source_map_from_json(tc, "internal/bootstrap.mjs", bootstrap_map);
+            match loader::compile_source_module(
+                tc,
+                bootstrap_src,
+                "internal/bootstrap.mjs",
+                Some(bootstrap_map),
+            ) {
+                Some(m) => m,
+                None => {
+                    crate::async_rt::swap_state(saved_state);
+                    return Err(crate::realm::child::catch_message(tc)
+                        .unwrap_or_else(|| "failed to compile realm bootstrap".to_string()));
+                }
+            }
+        };
+        loader::register_as_builtin(scope, module, "internal:bootstrap");
+        {
+            let tc = &mut v8::TryCatch::new(scope);
+            if module
+                .instantiate_module(tc, loader::resolve_module_callback)
+                .is_none()
+            {
+                crate::async_rt::swap_state(saved_state);
+                return Err(crate::realm::child::catch_message(tc)
+                    .unwrap_or_else(|| "failed to instantiate realm bootstrap".to_string()));
+            }
+        }
+        {
+            let tc = &mut v8::TryCatch::new(scope);
+            if module.evaluate(tc).is_none() {
+                crate::async_rt::swap_state(saved_state);
+                return Err(crate::realm::child::catch_message(tc)
+                    .unwrap_or_else(|| "failed to evaluate realm bootstrap".to_string()));
+            }
+        }
+        crate::realm::child::pump_and_checkpoint(scope);
+        if module.get_status() == v8::ModuleStatus::Errored {
+            let exc = module.get_exception();
+            let msg = js_string(scope, exc);
+            crate::async_rt::swap_state(saved_state);
+            return Err(msg);
+        }
+
+        (
+            v8::Global::new(scope, context),
+            get_state(scope),
+            v8::Global::new(scope, module),
+        )
+    };
+
+    let async_state = crate::async_rt::swap_state(saved_state);
+
+    let thread_handle = isolate.thread_safe_handle();
+    let budget_token = register_budget_target(thread_handle.clone());
+    isolate
+        .add_near_heap_limit_callback(heap_limit_callback, budget_token as *mut std::ffi::c_void);
+    let mut workload = ParkedWorkload {
+        isolate,
+        context: context_global,
+        dispatch_fn: None,
+        active_promise: None,
+        async_state,
+        thread_handle,
+        budget_token,
+        _state: state_rc,
+        _module: module_global,
+    };
+    unsafe {
+        workload.isolate.exit();
+    }
+    Ok(workload)
+}
+
+/// Pump a realm workload one slice: resolve parked engine-I/O completions,
+/// then drive the realm's native loop hooks once (the non-waiting embedded
+/// step — the engine owns the thread's wait cadence). `Pending` while the
+/// realm continues; `Settled` when its policy hooks report done (with the
+/// entry error as `Rejected` if one was recorded).
+pub(crate) fn pump_realm_native(
+    workload: &mut ParkedWorkload,
+    hard_budget_micros: u64,
+    io_completions: &[(usize, f64)],
+) -> PumpOutcome {
+    let budgeted = hard_budget_micros > 0;
+    if budgeted {
+        let now = Instant::now();
+        let deadline = now
+            .checked_add(Duration::from_micros(hard_budget_micros))
+            .unwrap_or_else(|| now + Duration::from_secs(24 * 60 * 60));
+        arm_budget(workload.budget_token, deadline);
+    }
+    let saved = crate::async_rt::swap_state(workload.async_state.take());
+    unsafe {
+        workload.isolate.enter();
+    }
+    let outcome = {
+        let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
+        let context = v8::Local::new(isolate_scope, &workload.context);
+        let scope = &mut v8::ContextScope::new(isolate_scope, context);
+        for &(resolver_id, result) in io_completions {
+            crate::async_rt::resolve_io_completion(scope, resolver_id, result);
+        }
+        // Realm workloads arm vnode/signal/proc watches inline on the
+        // thread-local reactor (synchronous arming is part of the loop
+        // contract); dispatch anything it has completed. Resolvers and
+        // callbacks are per-context Globals, so a zero-timeout pass here
+        // settles them regardless of which sibling realm they belong to.
+        crate::reactor::drive_wait_and_dispatch(scope, Some(std::time::Duration::ZERO));
+        let state_rc = get_state(scope);
+        if crate::runtime::native_drive_step_nowait(scope, &state_rc) {
+            // Children on their own threads and thread-local reactor watches
+            // (vnode/signal/proc) make progress the engine cannot observe;
+            // ask for a poll cadence while either exists.
+            if crate::runtime::native_drive_children_alive(scope, &state_rc)
+                || crate::reactor::thread_reactor_pending()
+            {
+                PumpOutcome::PendingPoll
+            } else {
+                PumpOutcome::Pending
+            }
+        } else {
+            let err = state_rc.borrow().entry_error.clone();
+            match err {
+                Some(e) => PumpOutcome::Rejected(e),
+                None => PumpOutcome::Settled {
+                    result: "exited".to_string(),
+                    cost_micros: 0.0,
+                },
+            }
+        }
+    };
+    unsafe {
+        workload.isolate.exit();
+    }
+    workload.async_state = crate::async_rt::swap_state(saved);
+    if budgeted {
+        clear_budget(workload.budget_token);
+        workload.thread_handle.cancel_terminate_execution();
+    }
+    outcome
 }
 
 /// Pump an entered/parked workload one slice and classify the outcome natively.
@@ -419,7 +636,8 @@ fn drain_entered(workload: &mut ParkedWorkload, request_json: &str) -> Option<St
     let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
     // Fresh dispatch of `{drain:true}` — the drain path never awaits I/O.
-    let func = v8::Local::new(scope, &workload.dispatch_fn);
+    // (Realm workloads have no dispatch protocol and no drain snapshot.)
+    let func = v8::Local::new(scope, workload.dispatch_fn.as_ref()?);
     let arg = v8::String::new(scope, request_json)?;
     let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
     let value = {
@@ -485,7 +703,10 @@ fn pump_entered_native(
     }
 
     if workload.active_promise.is_none() {
-        let func = v8::Local::new(scope, &workload.dispatch_fn);
+        let Some(dispatch) = workload.dispatch_fn.as_ref() else {
+            return PumpOutcome::Rejected("realm workload pumped as tenant".to_string());
+        };
+        let func = v8::Local::new(scope, dispatch);
         let arg = match v8::String::new(scope, request_json) {
             Some(s) => s,
             None => return PumpOutcome::Rejected("failed to allocate request".to_string()),

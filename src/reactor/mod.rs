@@ -107,6 +107,19 @@ pub(crate) fn drive_live(_owner: usize) -> bool {
     false
 }
 
+/// Whether this thread's own reactor holds any work (ops or watches). On an
+/// engine thread, realm workloads arm vnode/signal/proc watches inline on
+/// the thread-local reactor — its completions are dispatched by the pumps,
+/// so the engine bounds its wait while any exist.
+#[cfg(unix)]
+pub(crate) fn thread_reactor_pending() -> bool {
+    imp::thread_reactor_pending()
+}
+#[cfg(not(unix))]
+pub(crate) fn thread_reactor_pending() -> bool {
+    false
+}
+
 /// Debug string of the given realm's live-handle counters (FINO_LOOP_DEBUG).
 #[cfg(unix)]
 pub(crate) fn drive_counts_debug(owner: usize) -> String {
@@ -375,7 +388,7 @@ mod imp {
     /// reports directory-child churn as a write on the directory, and
     /// watch.ts rescans on it); OVERFLOW likewise — "something changed,
     /// rescan" is the correct recovery.
-    fn fs_to_note(mask: i32) -> u32 {
+    pub(crate) fn fs_to_note(mask: i32) -> u32 {
         let mut out = 0u32;
         if mask & fs_event::MODIFY != 0 {
             out |= NOTE_WRITE;
@@ -1079,6 +1092,13 @@ mod imp {
             if crate::async_rt::wake_notifier_installed() {
                 return;
             }
+            // On an engine thread the ENGINE claims the workload's sink right
+            // after setup (post_wake-tagged); installing a notifier here
+            // would win the first-install race with one from a stray
+            // thread-local reactor nobody waits on.
+            if crate::reactor::engine::engine_io_active() {
+                return;
+            }
             with_reactor(|r| {
                 let notifier = r.reactor.notifier();
                 crate::async_rt::install_wake_notifier(notifier, POST_FFI_WAKE);
@@ -1128,6 +1148,12 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
+        if crate::reactor::engine::engine_io_active() {
+            crate::reactor::engine::engine_io_register(
+                crate::reactor::engine::EngineReg::RemoveRead { fd },
+            );
+            return;
+        }
         with_reactor(|r| {
             if let Some(ud) = r.read_ud_by_fd.remove(&fd) {
                 cancel_indexed(r, ud);
@@ -1141,6 +1167,12 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
+        if crate::reactor::engine::engine_io_active() {
+            crate::reactor::engine::engine_io_register(
+                crate::reactor::engine::EngineReg::RemoveWrite { fd },
+            );
+            return;
+        }
         with_reactor(|r| {
             if let Some(ud) = r.write_ud_by_fd.remove(&fd) {
                 cancel_indexed(r, ud);
@@ -1156,7 +1188,13 @@ mod imp {
         mut rv: v8::ReturnValue,
     ) {
         let owner = owner_of(_scope);
-        let live = with_reactor_opt(|r| r.counts_for(owner).total() > 0).unwrap_or(false);
+        let mut live = with_reactor_opt(|r| r.counts_for(owner).total() > 0).unwrap_or(false);
+        // An engine-hosted realm's io/timers live in the ENGINE's op table,
+        // not this thread's reactor.
+        if !live && crate::reactor::engine::engine_io_active() {
+            let (io, timers) = crate::reactor::engine::engine_current_counts();
+            live = io > 0 || timers > 0;
+        }
         rv.set_bool(live);
     }
 
@@ -1167,13 +1205,18 @@ mod imp {
     ) {
         let owner = owner_of(scope);
         let counts = with_reactor_opt(|r| r.counts_for(owner)).unwrap_or_default();
-        let (reads, writes, timers, procs, vnodes) = (
+        let (mut reads, writes, mut timers, procs, vnodes) = (
             counts.reads,
             counts.writes,
             counts.timers,
             counts.procs,
             counts.vnodes,
         );
+        if crate::reactor::engine::engine_io_active() {
+            let (io, engine_timers) = crate::reactor::engine::engine_current_counts();
+            reads += io as usize;
+            timers += engine_timers as usize;
+        }
         let obj = v8::Object::new(scope);
         for (name, val) in [
             ("reads", reads),
@@ -1240,6 +1283,10 @@ mod imp {
     pub(crate) fn drive_live(owner: usize) -> bool {
         with_reactor_opt(|r| r.counts_for(owner).total() > 0).unwrap_or(false)
             || ATOMICS_WAITERS.with(|c| c.get()) > 0
+    }
+
+    pub(crate) fn thread_reactor_pending() -> bool {
+        with_reactor_opt(|r| !r.ops.is_empty() || r.reactor.pending() > 0).unwrap_or(false)
     }
 
     pub(crate) fn drive_counts_debug(owner: usize) -> String {

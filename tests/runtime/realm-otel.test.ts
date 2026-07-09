@@ -22,7 +22,7 @@ const T_POOL_CALL_END = 'otel:runtime:realm_pool:call:end';
 // Realm lifecycle topics
 // ---------------------------------------------------------------------------
 describe('Realm OTel topics', () => {
-  it('fino.realm.spawn.start fires when a thread realm is constructed', (t) => {
+  it('fino.realm.spawn.start fires when a realm is allocated', (t) => {
     const spawnTopic = topic(T_REALM_SPAWN);
     const iter = spawnTopic[Symbol.asyncIterator]();
     const pending = iter.next();
@@ -35,7 +35,7 @@ describe('Realm OTel topics', () => {
         kind?: string;
         entry?: string;
       };
-      t.equal(data.kind, 'thread', 'kind is "thread"');
+      t.ok(data.kind === 'pool' || data.kind === 'thread', `kind is an allocation outcome (got ${data.kind})`);
       t.ok(typeof data.entry === 'string' && data.entry.length > 0, 'entry path included');
       realm.terminate();
       realm.port.close();
@@ -59,7 +59,7 @@ describe('Realm OTel topics', () => {
       operation?: string;
       phase?: string;
     };
-    t.equal(data.kind, 'thread', 'call event carries kind');
+    t.ok(data.kind === 'pool' || data.kind === 'thread', 'kind is an allocation outcome');
     t.equal(data.topic, T_REALM_CALL, 'event.topic matches subscription name');
     t.equal(data.domain, 'realm', 'event.domain is "realm"');
     t.equal(data.operation, 'call', 'event.operation is "call"');
@@ -81,7 +81,7 @@ describe('Realm OTel topics', () => {
       topic?: string;
       phase?: string;
     };
-    t.equal(data.kind, 'thread', 'end event carries kind');
+    t.ok(data.kind === 'pool' || data.kind === 'thread', 'kind is an allocation outcome');
     t.ok(typeof data.durationMs === 'number' && data.durationMs >= 0, 'durationMs is non-negative');
     t.equal(data.topic, T_REALM_END, 'end event.topic matches');
     t.equal(data.phase, 'end', 'end event.phase is "end"');

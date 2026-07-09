@@ -46,6 +46,10 @@ export abstract class BaseTransportPort extends EventTarget {
   * @internal
   */
   #onmessage: ((ev: Event) => void) | null = null;
+  /** Whether close() has run. */
+  get closed(): boolean {
+    return this._closed;
+  }
   /**
   * Start delivery for this transport-backed port.
   *

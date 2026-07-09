@@ -18,6 +18,19 @@ import { NodeIsolateCollection, type NodeWorkloadSpec, type ReleaseReason } from
 import { BudgetWatchdog } from './budget-watchdog.ts';
 import type { LeaseRecord, PriorityClass, SchedulerShardSummary, ShardLoadSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
 
+/** A realm workload's placement config: the serialized realm. */
+export interface RealmWorkloadSpec {
+  entryPath: string;
+  /** The realm's complete serialized import rules (parent-inherited). */
+  rulesJson: string;
+  /** JSON-serialized RealmOptions.data, if any. */
+  realmData?: string;
+  /** Runtime-owned bootstrap metadata JSON, if any. */
+  bootstrapData?: string;
+  priority?: PriorityClass;
+  tenantId?: string;
+}
+
 /** Priority class → the engine's numeric priority (compareRunnable). */
 const PRIORITY_CLASS: Record<PriorityClass, number> = { interactive: 0, service: 1, background: 2 };
 
@@ -88,6 +101,13 @@ export class SchedulerNode {
   #shuttingDown = false;
   #released = new Map<WorkloadId, (reason: string) => void>();
   #pendingHandoff = new Map<WorkloadId, string | undefined>();
+  // Realm workloads: their full configs (for placement) and the parent-side
+  // channel halves handed back to the Realm objects that own them.
+  #realmSpecs = new Map<WorkloadId, RealmWorkloadSpec>();
+  #realmPorts = new Map<WorkloadId, {
+    portHandle: number;
+    portWakeFd: number;
+  }>();
   // The engine keys workloads by a numeric id; the orchestrator by a string
   // WorkloadId. Maintain a bijection so control + reports translate cleanly.
   #engineIdSeq = 1;
@@ -243,8 +263,10 @@ export class SchedulerNode {
       const reason = report.reason ?? 'released';
       const leaseId = this.#collection.leaseOf(workloadId);
       if (leaseId !== null) this.#collection.release(leaseId, reason as ReleaseReason);
+      const isRealm = this.#realmSpecs.delete(workloadId);
+      this.#realmPorts.delete(workloadId);
       this.#activate();
-      if (!RE_PLACING_REASONS.has(reason)) {
+      if (isRealm || !RE_PLACING_REASONS.has(reason)) {
         const resolve = this.#released.get(workloadId);
         if (resolve !== undefined) {
           this.#released.delete(workloadId);
@@ -290,6 +312,40 @@ export class SchedulerNode {
     return workloadId;
   }
 
+  /**
+  * Place a REALM workload — a full child realm hosted on a scheduler thread.
+  * Returns the workload id plus the parent-side channel half (the caller
+  * constructs the Realm's port over it), or `null` when the node has no
+  * capacity — the caller falls back to a dedicated thread.
+  */
+  deployRealm(spec: RealmWorkloadSpec): {
+    workloadId: WorkloadId;
+    portHandle: number;
+    portWakeFd: number;
+  } | null {
+    let workloadId: WorkloadId;
+    try {
+      workloadId = this.#collection.deploy({
+        tenantId: spec.tenantId ?? 'realm',
+        entryPath: spec.entryPath,
+        ...spec.priority !== undefined ? { priority: spec.priority } : {}
+      });
+    } catch {
+      return null;
+    }
+    this.#realmSpecs.set(workloadId, spec);
+    this.#activate();
+    const port = this.#realmPorts.get(workloadId);
+    if (port === undefined) {
+      // No live reactor claimed it (all threads down): undo the record.
+      this.#realmSpecs.delete(workloadId);
+      const leaseId = this.#collection.leaseOf(workloadId);
+      if (leaseId !== null) this.#collection.release(leaseId, 'revoked');
+      return null;
+    }
+    return { workloadId, ...port };
+  }
+
   /** The reactor id hosting `shardId`, or null. */
   #reactorFor(shardId: string): number | null {
     const handle = this.#reactors.get(shardId);
@@ -321,8 +377,17 @@ export class SchedulerNode {
   /** Create + place a claimed workload on its reactor (parked until woken). */
   #placeOnEngine(reactorId: number, lease: LeaseRecord): void {
     const entryPath = lease.entryPath ?? '';
-    const dataJson = JSON.stringify(lease.data ?? {});
     const priorityClass = PRIORITY_CLASS[lease.priority] ?? 1;
+    const realmSpec = this.#realmSpecs.get(lease.workloadId);
+    if (realmSpec !== undefined) {
+      const info = engine.placeRealm(reactorId, this.#engineId(lease.workloadId), entryPath, realmSpec.rulesJson, realmSpec.realmData ?? '', realmSpec.bootstrapData ?? '', priorityClass) as {
+        portHandle: number;
+        portWakeFd: number;
+      };
+      this.#realmPorts.set(lease.workloadId, info);
+      return;
+    }
+    const dataJson = JSON.stringify(lease.data ?? {});
     // A reclaimed handed-off workload carries a snapshot; hand its mailbox to the
     // engine so the first activation reconstructs from `request.handoff`.
     const handoffJson = lease.handoff !== undefined ? JSON.stringify(lease.handoff.mailbox ?? []) : '';
@@ -363,6 +428,10 @@ export class SchedulerNode {
     this.#reactors.clear();
     await this.#watchdog.stop();
     const summaries = handles.map((h) => h.summary);
+    // Settle outstanding released-waiters rather than dangling them: their
+    // workloads die with the reactors, and a waiter that never resolves
+    // holds its supervisor (a parent realm's run() entry) open forever.
+    for (const resolve of this.#released.values()) resolve('shutdown');
     this.#released.clear();
     this.#started = false;
     this.#shuttingDown = false;

@@ -17,6 +17,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "createThreadContext",
         "stepThreadContext",
         "getRealmPortInfo",
+        "mergeChildRules",
         // Process realm
         "createProcessContext",
         "stepProcessContext",
@@ -53,6 +54,7 @@ fn eval_steps<'a>(
     set_fn!("createThreadContext", create_thread_context);
     set_fn!("stepThreadContext", step_thread_context);
     set_fn!("getRealmPortInfo", get_realm_port_info);
+    set_fn!("mergeChildRules", merge_child_rules);
     set_fn!("createProcessContext", create_process_context);
     set_fn!("stepProcessContext", step_process_context);
     set_fn!("processPortSend", process_port_send);
@@ -574,6 +576,40 @@ fn step_thread_context(
         }
     }
     rv.set(v8::Boolean::new(scope, still_running).into());
+}
+
+/// JS: `mergeChildRules(rulesJson: string): string`
+///
+/// Merge child-specific import rules into the calling realm's own rules —
+/// defaults included — with the capability-narrowing check applied, exactly
+/// as dedicated-thread creation does natively. Pool placement ships the
+/// MERGED result: the hosting engine thread has no parent context to merge
+/// against. Throws on a narrowing violation.
+fn merge_child_rules(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let merged = match parse_and_merge_rules(scope, args.get(0)) {
+        Ok(rules) => rules,
+        Err(e) => {
+            let msg = v8::String::new(scope, &e).unwrap();
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
+        }
+    };
+    match serde_json::to_string(&merged) {
+        Ok(json) => {
+            let out = v8::String::new(scope, &json).unwrap();
+            rv.set(out.into());
+        }
+        Err(e) => {
+            let msg = v8::String::new(scope, &format!("mergeChildRules: {e}")).unwrap();
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+        }
+    }
 }
 
 /// JS: `getRealmPortInfo(handle: number): { handle, wakeReadFd } | undefined`

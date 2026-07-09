@@ -496,6 +496,23 @@ fn native_drive_step_inner(
     true
 }
 
+/// Whether the realm's registered children-alive policy hook reports any
+/// active child realms. Engine-hosted realms with dedicated-thread children
+/// need a poll cadence — a child's own thread exiting posts nothing to the
+/// engine, so the engine re-pumps on a timer while this is true.
+pub(crate) fn native_drive_children_alive(
+    scope: &mut v8::HandleScope,
+    state_rc: &Rc<RefCell<FinoState>>,
+) -> bool {
+    let hook = state_rc
+        .borrow()
+        .native_loop
+        .as_ref()
+        .and_then(|h| h.children_alive_fn.clone());
+    let Some(hook) = hook else { return false };
+    call_hook(scope, &hook).unwrap_or(false)
+}
+
 fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {
     if !tc.has_caught() {
         return None;

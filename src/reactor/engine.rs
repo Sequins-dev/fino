@@ -126,6 +126,22 @@ pub enum Control {
         /// `request.handoff`, or `None` for a fresh placement.
         handoff_json: Option<String>,
     },
+    /// Create + place a REALM workload on this thread and mark it runnable:
+    /// a full child realm (uniform bootstrap, port channel, rule
+    /// inheritance) whose native loop hooks the engine pumps.
+    PlaceRealm {
+        workload_id: u64,
+        entry_path: String,
+        /// The realm's complete serialized import rules (parent-inherited).
+        rules_json: String,
+        /// JSON-serialized RealmOptions.data, if any.
+        realm_data: Option<String>,
+        /// Runtime-owned bootstrap metadata, if any.
+        realm_bootstrap_data: Option<String>,
+        priority_class: u8,
+        /// The child-side channel half (transit handle + wake-pipe read fd).
+        port_half: (u32, i32),
+    },
     /// Deliver a wake to an already-placed workload (marks it runnable).
     Wake { workload_id: u64, wake: Wake },
     /// Terminate + release a workload.
@@ -226,6 +242,16 @@ pub(crate) enum EngineReg {
     CancelTimer {
         timer_id: u64,
     },
+    /// Abandon the pending read-side watch on `fd` (loop `removeRead`): the
+    /// promise is never settled, and the engine's armed op is canceled so a
+    /// reused fd number can arm a fresh watch.
+    RemoveRead {
+        fd: i32,
+    },
+    /// Abandon the pending write-side watch on `fd` (loop `removeWrite`).
+    RemoveWrite {
+        fd: i32,
+    },
 }
 
 thread_local! {
@@ -234,6 +260,31 @@ thread_local! {
     static ENGINE_IO: RefCell<Option<Vec<EngineReg>>> = const { RefCell::new(None) };
     /// Monotonic timer id source for engine-mode timers.
     static ENGINE_TIMER_SEQ: RefCell<u64> = const { RefCell::new(1) };
+    /// The pumping workload's engine-held handle counts `(io, timers)`,
+    /// snapshotted before each pump so the loop's `alive()` introspection can
+    /// answer for the CURRENT realm rather than for the thread.
+    static ENGINE_CURRENT_COUNTS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+}
+
+/// The pumping workload's engine-held `(io, timers)` counts plus the net
+/// effect of registrations queued during the current pump. Zero off-engine.
+pub(crate) fn engine_current_counts() -> (u32, u32) {
+    let (mut io, mut timers) = ENGINE_CURRENT_COUNTS.with(|c| c.get());
+    ENGINE_IO.with(|c| {
+        if let Some(regs) = c.borrow().as_ref() {
+            for reg in regs {
+                match reg {
+                    EngineReg::Io(_) => io += 1,
+                    EngineReg::Timer { .. } => timers += 1,
+                    EngineReg::CancelTimer { .. } => timers = timers.saturating_sub(1),
+                    EngineReg::RemoveRead { .. } | EngineReg::RemoveWrite { .. } => {
+                        io = io.saturating_sub(1)
+                    }
+                }
+            }
+        }
+    });
+    (io, timers)
 }
 
 /// Whether the current thread is a reactor engine thread (so `internal:io` ops
@@ -270,7 +321,8 @@ pub(crate) fn engine_next_timer_id() -> u64 {
 mod imp {
     use super::*;
     use crate::scheduler_native::{
-        ParkedWorkload, PumpOutcome, drop_parked, pump_drain_native, pump_native, setup_workload,
+        ParkedWorkload, PumpOutcome, drop_parked, pump_drain_native, pump_native,
+        pump_realm_native, setup_realm_workload, setup_workload,
     };
     use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source};
     use std::collections::{HashMap, HashSet, VecDeque};
@@ -288,6 +340,9 @@ mod imp {
             owner: u64,
             resolver_id: usize,
             _buffer: Option<v8::Global<v8::ArrayBuffer>>,
+            fd: RawFd,
+            /// Read-direction op (fused read / read-readiness) vs writability.
+            dir_read: bool,
         },
         /// A tenant write. `writeAsync`'s contract (`stream.ts` `doFlush`) is to
         /// write the *whole* buffer before resolving — the caller does not loop
@@ -310,12 +365,18 @@ mod imp {
             resolver_id: usize,
             timer_id: u64,
         },
+        /// A realm-workload poll tick: just re-mark the owner runnable
+        /// (progress may have happened on a child's own thread).
+        RePoll { owner: u64 },
     }
 
     /// A hosted isolate plus the scheduling state the run-queue orders by.
     struct EngineWorkload {
         id: u64,
         inner: ParkedWorkload,
+        /// A realm workload: pumped through its native loop hooks rather than
+        /// the tenant dispatch protocol.
+        realm: bool,
         priority_class: u8,
         debt_micros: f64,
         sequence: u64,
@@ -362,6 +423,10 @@ mod imp {
         /// completion is harvested, cancellation included, so these are parked
         /// here until their CANCELED completion arrives.
         doomed: HashMap<u64, OpRecord>,
+        /// Latest armed read-side / write-side op per fd — the loop allows
+        /// one watch per direction per fd, superseded by the newest waiter.
+        read_ud_by_fd: HashMap<i32, u64>,
+        write_ud_by_fd: HashMap<i32, u64>,
         /// Tenant timer id → its op's `user_data`, so `CancelTimer` can find and
         /// cancel the outstanding timeout.
         timer_to_op: HashMap<u64, u64>,
@@ -398,6 +463,8 @@ mod imp {
             runnable: HashSet::new(),
             ops: HashMap::new(),
             doomed: HashMap::new(),
+            read_ud_by_fd: HashMap::new(),
+            write_ud_by_fd: HashMap::new(),
             timer_to_op: HashMap::new(),
             next_op_id: 1,
             next_sequence: 1,
@@ -466,6 +533,23 @@ mod imp {
                     data_json,
                     priority_class,
                     handoff_json,
+                ),
+                Control::PlaceRealm {
+                    workload_id,
+                    entry_path,
+                    rules_json,
+                    realm_data,
+                    realm_bootstrap_data,
+                    priority_class,
+                    port_half,
+                } => self.place_realm(
+                    workload_id,
+                    entry_path,
+                    rules_json,
+                    realm_data,
+                    realm_bootstrap_data,
+                    priority_class,
+                    port_half,
                 ),
                 Control::Wake { workload_id, wake } => {
                     if let Some(w) = self.workloads.get_mut(&workload_id) {
@@ -542,6 +626,7 @@ mod imp {
                 EngineWorkload {
                     id: workload_id,
                     inner,
+                    realm: false,
                     priority_class,
                     debt_micros: 0.0,
                     sequence: seq,
@@ -555,6 +640,75 @@ mod imp {
             );
             // Placed but parked: the orchestrator sends an explicit Wake to run it
             // (each activation corresponds to a wake, matching SchedulerNode).
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn place_realm(
+            &mut self,
+            workload_id: u64,
+            entry_path: String,
+            rules_json: String,
+            realm_data: Option<String>,
+            realm_bootstrap_data: Option<String>,
+            priority_class: u8,
+            port_half: (u32, i32),
+        ) {
+            let import_rules: Vec<crate::state::ImportRule> =
+                match serde_json::from_str(&rules_json) {
+                    Ok(rules) => rules,
+                    Err(err) => {
+                        self.report(Report::Released {
+                            workload_id,
+                            reason: format!("setup_failed: bad rules: {err}"),
+                        });
+                        return;
+                    }
+                };
+            let inner = match setup_realm_workload(
+                entry_path,
+                self.config.process_env.clone(),
+                self.config.package_map_json.clone(),
+                self.config.heap_limit_bytes,
+                import_rules,
+                realm_data,
+                realm_bootstrap_data,
+                port_half,
+            ) {
+                Ok(w) => w,
+                Err(err) => {
+                    self.report(Report::Released {
+                        workload_id,
+                        reason: format!("setup_failed: {err}"),
+                    });
+                    return;
+                }
+            };
+            let seq = self.next_sequence;
+            self.next_sequence += 1;
+            inner.install_wake_notifier(self.reactor.notifier(), post_wake(workload_id));
+            self.workloads.insert(
+                workload_id,
+                EngineWorkload {
+                    id: workload_id,
+                    inner,
+                    realm: true,
+                    priority_class,
+                    debt_micros: 0.0,
+                    sequence: seq,
+                    mid: false,
+                    data_json: String::new(),
+                    sync_heavy_reported: false,
+                    ready_io: Vec::new(),
+                    wakes: VecDeque::new(),
+                    handoff_json: None,
+                },
+            );
+            // The realm's bootstrap armed its port watch and wake source
+            // during setup — claim those registrations before another
+            // workload's pump sweeps the thread-local.
+            self.collect_io_registrations(workload_id);
+            // A realm runs immediately: its entry import is already pending.
+            self.runnable.insert(workload_id);
         }
 
         fn pump_runnable(&mut self) {
@@ -587,7 +741,73 @@ mod imp {
                 .then(wa.id.cmp(&wb.id))
         }
 
+        fn set_current_counts(&self, id: u64) {
+            let mut io = 0u32;
+            let mut timers = 0u32;
+            for rec in self.ops.values() {
+                match rec {
+                    OpRecord::Io { owner, .. } | OpRecord::Write { owner, .. } if *owner == id => {
+                        io += 1
+                    }
+                    OpRecord::Timer { owner, .. } if *owner == id => timers += 1,
+                    _ => {}
+                }
+            }
+            ENGINE_CURRENT_COUNTS.with(|c| c.set((io, timers)));
+        }
+
+        fn pump_one_realm(&mut self, id: u64) {
+            self.set_current_counts(id);
+            let hard = self.config.hard_budget_micros;
+            let io_completions: Vec<(usize, f64)> = {
+                let w = match self.workloads.get_mut(&id) {
+                    Some(w) => w,
+                    None => return,
+                };
+                std::mem::take(&mut w.ready_io)
+            };
+            let t0 = Instant::now();
+            let outcome = {
+                let w = self.workloads.get_mut(&id).unwrap();
+                // Wakes carry no payload for realms — messages travel the
+                // port channel; the wake only requests a pump.
+                w.wakes.clear();
+                pump_realm_native(&mut w.inner, hard, &io_completions)
+            };
+            let slice_micros = t0.elapsed().as_micros() as f64;
+            self.collect_io_registrations(id);
+            {
+                let w = self.workloads.get_mut(&id).unwrap();
+                w.debt_micros += slice_micros;
+                if !w.sync_heavy_reported && slice_micros > self.config.sync_slice_micros as f64 {
+                    w.sync_heavy_reported = true;
+                    self.report(Report::SyncHeavy {
+                        workload_id: id,
+                        cpu_micros: slice_micros,
+                    });
+                }
+            }
+            match outcome {
+                PumpOutcome::Pending => {}
+                PumpOutcome::PendingPoll => {
+                    // A dedicated-thread child's progress posts nothing here:
+                    // re-pump this realm on a short cadence while it waits.
+                    let ud = self.next_op();
+                    self.reactor.submit_timeout(ud, 25);
+                    self.ops.insert(ud, OpRecord::RePoll { owner: id });
+                }
+                PumpOutcome::Settled { result, .. } => self.release(id, result),
+                PumpOutcome::Terminated => self.release(id, "terminated".to_string()),
+                PumpOutcome::Rejected(msg) => self.release(id, format!("failed: {msg}")),
+            }
+        }
+
         fn pump_one(&mut self, id: u64) {
+            if self.workloads.get(&id).map(|w| w.realm) == Some(true) {
+                self.pump_one_realm(id);
+                return;
+            }
+            self.set_current_counts(id);
             let request = {
                 let w = match self.workloads.get_mut(&id) {
                     Some(w) => w,
@@ -646,7 +866,7 @@ mod imp {
             }
 
             match outcome {
-                PumpOutcome::Pending => {
+                PumpOutcome::Pending | PumpOutcome::PendingPoll => {
                     // Parked on outstanding async work; wake pipe / reactor I/O
                     // completion will re-mark it runnable via poll.
                 }
@@ -713,6 +933,7 @@ mod imp {
                                         },
                                     );
                                 }
+                                self.write_ud_by_fd.insert(io.fd, ud);
                                 self.ops.insert(
                                     ud,
                                     OpRecord::Write {
@@ -727,6 +948,27 @@ mod imp {
                                 );
                             }
                             _ => {
+                                let dir_read = !matches!(io.kind, IoKind::Writable);
+                                // Supersede: the newest bare-readiness waiter
+                                // owns the fd's watch — cancel a previous POLL
+                                // op (its promise never settles; a stale one
+                                // may even be a ghost of a closed fd number).
+                                // Fused ops with kernel-owned buffers are not
+                                // superseded.
+                                let index = if dir_read {
+                                    &mut self.read_ud_by_fd
+                                } else {
+                                    &mut self.write_ud_by_fd
+                                };
+                                if let Some(old) = index.get(&io.fd).copied()
+                                    && matches!(
+                                        self.ops.get(&old),
+                                        Some(OpRecord::Io { _buffer: None, .. })
+                                    )
+                                {
+                                    self.reactor.cancel(old);
+                                    self.ops.remove(&old);
+                                }
                                 let op = match io.kind {
                                     IoKind::Read => Op::Read {
                                         src: Source::fd(io.fd),
@@ -746,12 +988,19 @@ mod imp {
                                 // OpRecord until harvest; readiness ops carry no
                                 // pointers.
                                 unsafe { self.reactor.submit(ud, op) };
+                                if dir_read {
+                                    self.read_ud_by_fd.insert(io.fd, ud);
+                                } else {
+                                    self.write_ud_by_fd.insert(io.fd, ud);
+                                }
                                 self.ops.insert(
                                     ud,
                                     OpRecord::Io {
                                         owner: id,
                                         resolver_id: io.resolver_id,
                                         _buffer: io.buffer,
+                                        fd: io.fd,
+                                        dir_read,
                                     },
                                 );
                             }
@@ -783,6 +1032,31 @@ mod imp {
                             self.ops.remove(&ud);
                         }
                     }
+                    EngineReg::RemoveRead { fd } => self.remove_watch(fd, true),
+                    EngineReg::RemoveWrite { fd } => self.remove_watch(fd, false),
+                }
+            }
+        }
+
+        /// Abandon the indexed watch on `fd` (loop removeRead/removeWrite):
+        /// cancel the armed op; pointer-carrying records are doomed until
+        /// their CANCELED completion is harvested.
+        fn remove_watch(&mut self, fd: i32, dir_read: bool) {
+            let index = if dir_read {
+                &mut self.read_ud_by_fd
+            } else {
+                &mut self.write_ud_by_fd
+            };
+            let Some(ud) = index.remove(&fd) else { return };
+            self.reactor.cancel(ud);
+            if let Some(rec) = self.ops.remove(&ud) {
+                let has_pointers = match &rec {
+                    OpRecord::Io { _buffer, .. } => _buffer.is_some(),
+                    OpRecord::Write { .. } => true,
+                    _ => false,
+                };
+                if has_pointers {
+                    self.doomed.insert(ud, rec);
                 }
             }
         }
@@ -806,7 +1080,17 @@ mod imp {
                     owner,
                     resolver_id,
                     _buffer,
+                    fd,
+                    dir_read,
                 } => {
+                    let index = if dir_read {
+                        &mut self.read_ud_by_fd
+                    } else {
+                        &mut self.write_ud_by_fd
+                    };
+                    if index.get(&fd) == Some(&user_data) {
+                        index.remove(&fd);
+                    }
                     if let Some(w) = self.workloads.get_mut(&owner) {
                         w.ready_io.push((resolver_id, res as f64));
                     }
@@ -908,6 +1192,11 @@ mod imp {
                     }
                     self.runnable.insert(owner);
                 }
+                OpRecord::RePoll { owner } => {
+                    if self.workloads.contains_key(&owner) {
+                        self.runnable.insert(owner);
+                    }
+                }
             }
         }
 
@@ -943,7 +1232,8 @@ mod imp {
                 .filter(|(_, rec)| match rec {
                     OpRecord::Io { owner, .. }
                     | OpRecord::Write { owner, .. }
-                    | OpRecord::Timer { owner, .. } => *owner == id,
+                    | OpRecord::Timer { owner, .. }
+                    | OpRecord::RePoll { owner } => *owner == id,
                 })
                 .map(|(ud, _)| *ud)
                 .collect();
@@ -1127,6 +1417,8 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
     let names = [
         "spawnReactor",
         "place",
+        "placeRealm",
+        "isEngineThread",
         "wake",
         "revoke",
         "drain",
@@ -1158,6 +1450,8 @@ fn eval_steps<'a>(
     }
     export!("spawnReactor", cb_spawn_reactor);
     export!("place", cb_place);
+    export!("placeRealm", cb_place_realm);
+    export!("isEngineThread", cb_is_engine_thread);
     export!("wake", cb_wake);
     export!("revoke", cb_revoke);
     export!("drain", cb_drain);
@@ -1283,6 +1577,80 @@ fn cb_place(
             handoff_json,
         },
     );
+}
+
+/// JS: `isEngineThread(): boolean` — whether this realm is hosted on an
+/// engine (scheduler) thread. Engine-hosted realms must not spawn reactors
+/// of their own; the allocator uses this to fall back to dedicated threads.
+fn cb_is_engine_thread(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::Boolean::new(scope, engine_io_active()).into());
+}
+
+/// JS: `placeRealm(reactorId, workloadId, entryPath, rulesJson, realmData |
+/// '', bootstrapData | '', priorityClass) → { portHandle, portWakeFd }`
+///
+/// Creates the realm's channel pair on the calling (orchestrator) thread,
+/// ships the child half to the engine thread inside the PlaceRealm control,
+/// and returns the parent half — the caller constructs the Realm's port
+/// over it exactly as it would for a dedicated-thread realm.
+fn cb_place_realm(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let id = arg_u64(scope, &args, 0) as usize;
+    let workload_id = arg_u64(scope, &args, 1);
+    let entry_path = arg_str(scope, &args, 2);
+    let rules_json = arg_str(scope, &args, 3);
+    let realm_data = {
+        let s = arg_str(scope, &args, 4);
+        if s.is_empty() { None } else { Some(s) }
+    };
+    let realm_bootstrap_data = {
+        let s = arg_str(scope, &args, 5);
+        if s.is_empty() { None } else { Some(s) }
+    };
+    let priority_class = arg_u64(scope, &args, 6) as u8;
+
+    let (parent_half, child_half) = match crate::realm::transit::create_halves() {
+        Ok(pair) => pair,
+        Err(e) => {
+            let msg = v8::String::new(scope, &format!("placeRealm: {e}")).unwrap();
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
+        }
+    };
+    let parent_wake_fd = parent_half.wake_read_fd;
+    let child_wake_fd = child_half.wake_read_fd;
+    let parent_handle = crate::realm::transit::register_half(parent_half);
+    let child_handle = crate::realm::transit::register_half(child_half);
+
+    send_control(
+        id,
+        Control::PlaceRealm {
+            workload_id,
+            entry_path,
+            rules_json,
+            realm_data,
+            realm_bootstrap_data,
+            priority_class,
+            port_half: (child_handle, child_wake_fd),
+        },
+    );
+
+    let obj = v8::Object::new(scope);
+    let k = v8::String::new(scope, "portHandle").unwrap();
+    let v = v8::Number::new(scope, parent_handle as f64);
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "portWakeFd").unwrap();
+    let v = v8::Number::new(scope, parent_wake_fd as f64);
+    obj.set(scope, k.into(), v.into());
+    rv.set(obj.into());
 }
 
 fn cb_wake(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
