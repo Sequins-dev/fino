@@ -55,7 +55,8 @@
 import type { ClusterTransport } from './transport.ts';
 import { type ClusterMessage, type SerializedSpawnConfig, type PeerInfo, encode, decode, nodeIdFromId } from './protocol.ts';
 import { serialize, deserialize } from 'internal:serializer';
-import { createThreadContext, stepThreadContext, getThreadPortWakeReadFd, threadPortSend, threadPortRecv } from 'internal:realm-native';
+import { createThreadContext, stepThreadContext, getRealmPortInfo } from 'internal:realm-native';
+import { transitSend, transitRecv } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { BaseTransportPort } from 'internal:realm/transport-port';
 const HEARTBEAT_MS = 2500;
@@ -88,6 +89,8 @@ interface RealmRelay {
   childPortId: string;
   parentPortId: string;
   threadHandle: number;
+  /** Transit-registry handle of the parent-side channel half. */
+  portHandle: number;
   wakeReadFd: number;
   closed: boolean;
   pendingSends: Promise<void>[];
@@ -463,7 +466,7 @@ export class ClusterClient {
         const relay = this.#relays.get(msg.realmId);
         if (relay && !relay.closed) {
           relay.closed = true;
-          this.#sendToThread(relay.threadHandle, { __terminate: true });
+          this.#sendToThread(relay.portHandle, { __terminate: true });
           break;
         }
         const handler = this.#exitHandlers.get(msg.realmId);
@@ -506,7 +509,7 @@ export class ClusterClient {
             const [mainBuf, ...stores] = parts;
             if (mainBuf) {
               const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(mainBuf, stores.length > 0 ? stores : undefined);
-              this.#sendToThread(relay.threadHandle, value);
+              this.#sendToThread(relay.portHandle, value);
             }
           } catch (err: unknown) {
             console.error(`fino:cluster PORT_MSG decode error (relay): ${err}`);
@@ -533,12 +536,16 @@ export class ClusterClient {
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
     const bootstrapData = msg.config.bootstrapData === undefined ? undefined : JSON.stringify(msg.config.bootstrapData);
     const handle = createThreadContext(msg.config.root ?? '', msg.config.entry, JSON.stringify(msg.config.rules), false, undefined, bootstrapData) as number;
-    const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
+    const portInfo = getRealmPortInfo(handle) as {
+      handle: number;
+      wakeReadFd: number;
+    };
     const relay: RealmRelay = {
       childPortId,
       parentPortId: msg.parentPortId,
       threadHandle: handle,
-      wakeReadFd,
+      portHandle: portInfo.handle,
+      wakeReadFd: portInfo.wakeReadFd,
       closed: false,
       pendingSends: []
     };
@@ -640,8 +647,8 @@ export class ClusterClient {
   * @internal
   */
   #drainInbound(relay: RealmRelay, finalize: () => void): void {
-    // threadPortRecv returns [[Uint8Array[], portInfos[]], ...]
-    const messages = (threadPortRecv as (h: number) => unknown)(relay.threadHandle) as any[];
+    // transitRecv returns [[Uint8Array[], portInfos[]], ...]
+    const messages = (transitRecv as (h: number) => unknown)(relay.portHandle) as any[];
     for (const [byteArr] of messages) {
       try {
         const parts = byteArr as Uint8Array[];
@@ -685,9 +692,9 @@ export class ClusterClient {
   *
   * @internal
   */
-  #sendToThread(handle: number, value: unknown): void {
+  #sendToThread(portHandle: number, value: unknown): void {
     const bytes = (serialize as (v: unknown) => Uint8Array[])(value)[0]!;
-    (threadPortSend as (h: number, b: Uint8Array, s: Uint8Array[], p: unknown[]) => void)(handle, bytes, [], []);
+    (transitSend as (h: number, b: Uint8Array, s: Uint8Array[], p: unknown[]) => void)(portHandle, bytes, [], []);
   }
 }
 // ---------------------------------------------------------------------------

@@ -48,7 +48,6 @@
 import { Event, EventTarget, _markEventTrusted } from './eventtarget.ts';
 import { DOMException, _structuredCloneWithTransferMap } from './encoding.ts';
 import { serialize, deserialize } from 'internal:serializer';
-import { getWakeReadFd } from 'internal:thread-port';
 import { transitSend, transitRecv } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 // ---------------------------------------------------------------------------
@@ -544,6 +543,7 @@ export class MessagePort extends EventTarget {
   * ```
   */
   close(): void {
+    if (this.#closed) return;
     this.#closed = true;
     this.#started = false;
     _activePorts.delete(this);

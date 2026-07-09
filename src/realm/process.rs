@@ -421,24 +421,23 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
     // Prevent grandchildren from inheriting the socket.
     unsafe { libc::fcntl(socket_fd, libc::F_SETFD, libc::FD_CLOEXEC) };
 
-    // Bridge: socket ↔ mpsc + wake pipe (so native_recv / native_send work unchanged).
-    let (reader_tx, channel_rx) = mpsc::channel::<ThreadMessage>();
-    let (channel_tx, writer_rx) = mpsc::channel::<ThreadMessage>();
-    let mut wfds = [0i32; 2];
-    unsafe { libc::pipe(wfds.as_mut_ptr()) };
-    let (wake_read, wake_write) = (wfds[0], wfds[1]);
-    unsafe {
-        libc::fcntl(wake_read, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(wake_write, libc::F_SETFL, libc::O_NONBLOCK);
-    }
+    // Bridge: socket ↔ a realm channel. The child's realmPort is a transit
+    // half exactly like a thread realm's; the bridge threads hold the other
+    // (unregistered) half and shuttle it over the socket.
+    let (bridge_half, child_half) = crate::realm::transit::create_halves()
+        .map_err(|e| format!("process realm channel: {e}"))?;
+    let child_wake_read = child_half.wake_read_fd;
+    let child_handle = crate::realm::transit::register_half(child_half);
 
+    let bridge_tx = bridge_half.tx.clone();
+    let bridge_wake_write = bridge_half.partner_wake_write_fd;
     std::thread::spawn(move || {
         loop {
             match read_message(socket_fd) {
                 Ok(msg) => {
-                    let _ = reader_tx.send(msg);
+                    let _ = bridge_tx.send(msg);
                     let b = [1u8];
-                    unsafe { libc::write(wake_write, b.as_ptr() as _, 1) };
+                    unsafe { libc::write(bridge_wake_write, b.as_ptr() as _, 1) };
                 }
                 Err(_) => break,
             }
@@ -446,7 +445,9 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
     });
 
     let writer_handle = std::thread::spawn(move || {
-        while let Ok(msg) = writer_rx.recv() {
+        // Owns the bridge half; recv() unblocks with Err when the child's
+        // half is dropped at realm teardown.
+        while let Ok(msg) = bridge_half.rx.recv() {
             if write_message(socket_fd, &msg).is_err() {
                 break;
             }
@@ -463,10 +464,7 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         package_map_json: config.package_map_json,
         import_rules: config.import_rules,
         entry_path: config.entry_path,
-        channel_rx,
-        channel_tx,
-        wake_read_fd: wake_read,
-        wake_write_fd: None, // parent wakes via the socket; bridge handles it
+        port_half: (child_handle, child_wake_read),
         timing_label: "process-realm",
         watch_mode: config.watch_mode,
         realm_data: config.realm_data,

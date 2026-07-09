@@ -16,9 +16,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "terminateChild",
         "createThreadContext",
         "stepThreadContext",
-        "threadPortSend",
-        "threadPortRecv",
-        "getThreadPortWakeReadFd",
+        "getRealmPortInfo",
         // Process realm
         "createProcessContext",
         "stepProcessContext",
@@ -54,9 +52,7 @@ fn eval_steps<'a>(
     set_fn!("terminateChild", terminate_child);
     set_fn!("createThreadContext", create_thread_context);
     set_fn!("stepThreadContext", step_thread_context);
-    set_fn!("threadPortSend", thread_port_send);
-    set_fn!("threadPortRecv", thread_port_recv);
-    set_fn!("getThreadPortWakeReadFd", get_thread_port_wake_read_fd);
+    set_fn!("getRealmPortInfo", get_realm_port_info);
     set_fn!("createProcessContext", create_process_context);
     set_fn!("stepProcessContext", step_process_context);
     set_fn!("processPortSend", process_port_send);
@@ -580,156 +576,37 @@ fn step_thread_context(
     rv.set(v8::Boolean::new(scope, still_running).into());
 }
 
-/// JS: `threadPortSend(handle: number, bytes: Uint8Array, stores?: Uint8Array[]): void`
+/// JS: `getRealmPortInfo(handle: number): { handle, wakeReadFd } | undefined`
 ///
-/// Sends a serialized message (and optional transfer stores) to the thread
-/// realm identified by `handle`.
-fn thread_port_send(
+/// Returns the parent-side channel half of the thread realm identified by
+/// `handle`: the transit-registry handle its ThreadPort messages through
+/// (`transitSend`/`transitRecv`) and the wake-pipe read fd it watches.
+fn get_realm_port_info(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    mut rv: v8::ReturnValue,
 ) {
-    use thread::ThreadMessage;
-
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let bytes_arg = args.get(1);
-
-    let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
-        let msg = v8::String::new(
-            scope,
-            "threadPortSend: second argument must be a Uint8Array",
-        )
-        .unwrap();
-        let exc = v8::Exception::type_error(scope, msg);
-        scope.throw_exception(exc);
+    let info = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        st.thread_contexts
+            .get(handle)
+            .and_then(|s| s.as_ref())
+            .map(|h| (h.port_handle, h.port_wake_read_fd))
+    };
+    let Some((port_handle, wake_read_fd)) = info else {
+        rv.set(v8::undefined(scope).into());
         return;
     };
-
-    // Copy main bytes.
-    let data: Vec<u8> = {
-        let Some(ab) = u8a.buffer(scope) else { return };
-        let Some(data_ptr) = ab.data() else { return };
-        let offset = u8a.byte_offset();
-        let len = u8a.byte_length();
-        // SAFETY: data_ptr into live V8 ArrayBuffer, slice doesn't outlive this frame.
-        unsafe {
-            std::slice::from_raw_parts((data_ptr.as_ptr() as *const u8).add(offset), len).to_vec()
-        }
-    };
-
-    // Copy transfer stores (optional third arg — Array of Uint8Array).
-    let transfer_stores: Vec<Vec<u8>> =
-        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(2)) {
-            let count = arr.length();
-            let mut stores = Vec::with_capacity(count as usize);
-            for i in 0..count {
-                let idx = v8::Integer::new(scope, i as i32);
-                if let Some(elem) = arr.get(scope, idx.into())
-                    && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
-                {
-                    let Some(sab) = su8a.buffer(scope) else {
-                        continue;
-                    };
-                    let Some(sptr) = sab.data() else { continue };
-                    let soff = su8a.byte_offset();
-                    let slen = su8a.byte_length();
-                    // SAFETY: same as above.
-                    let raw = unsafe {
-                        std::slice::from_raw_parts((sptr.as_ptr() as *const u8).add(soff), slen)
-                            .to_vec()
-                    };
-                    stores.push(raw);
-                }
-            }
-            stores
-        } else {
-            Vec::new()
-        };
-
-    // Port transfer infos (optional fourth arg — Array of [handle, wakeReadFd]).
-    let transfer_ports = thread::extract_port_infos(scope, args.get(3));
-
-    let thread_msg = ThreadMessage {
-        data,
-        transfer_stores,
-        transfer_ports,
-    };
-
-    let (maybe_tx, maybe_wake_write) = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        match st.thread_contexts.get(handle).and_then(|s| s.as_ref()) {
-            Some(h) => (Some(h.tx.clone()), Some(h.child_wake_write)),
-            None => (None, None),
-        }
-    };
-
-    if let (Some(tx), Some(wake_write)) = (maybe_tx, maybe_wake_write) {
-        let _ = tx.send(thread_msg);
-        let byte: [u8; 1] = [1];
-        // SAFETY: wake_write is a valid open fd owned by this handle.
-        unsafe { libc::write(wake_write, byte.as_ptr() as *const _, 1) };
-    }
-}
-
-/// JS: `threadPortRecv(handle: number): [Uint8Array, ...Uint8Array[]][]`
-///
-/// Non-blocking drain of the channel from the thread realm identified by
-/// `handle`. Returns a JS Array of inner Arrays: each inner Array has the main
-/// bytes at `[0]` and transfer-store bytes at `[1..]`.
-fn thread_port_recv(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    use thread::ThreadMessage;
-
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-
-    let (messages, maybe_wake_read) = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        match st.thread_contexts.get(handle).and_then(|s| s.as_ref()) {
-            Some(h) => {
-                let mut msgs: Vec<ThreadMessage> = Vec::new();
-                while let Ok(msg) = h.rx.try_recv() {
-                    msgs.push(msg);
-                }
-                (msgs, Some(h.parent_wake_read))
-            }
-            None => (Vec::new(), None),
-        }
-    };
-
-    // Drain wake bytes so the fd doesn't stay permanently readable.
-    if let Some(wake_read) = maybe_wake_read {
-        let mut discard = [0u8; 256];
-        // SAFETY: discard is a valid buffer; wake_read is a valid open fd.
-        unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
-    }
-
-    rv.set(transit::build_message_array(scope, messages).into());
-}
-
-/// JS: `getThreadPortWakeReadFd(handle: number): number`
-///
-/// Returns the parent-side wake-pipe read fd for `loop.readable()` registration,
-/// or -1 if the handle is not found.
-fn get_thread_port_wake_read_fd(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let state_rc = get_state(scope);
-    let st = state_rc.borrow();
-    let fd = st
-        .thread_contexts
-        .get(handle)
-        .and_then(|s| s.as_ref())
-        .map(|h| h.parent_wake_read)
-        .unwrap_or(-1);
-    rv.set(v8::Integer::new(scope, fd).into());
+    let obj = v8::Object::new(scope);
+    let k = v8::String::new(scope, "handle").unwrap();
+    let v = v8::Number::new(scope, port_handle as f64);
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "wakeReadFd").unwrap();
+    let v = v8::Number::new(scope, wake_read_fd as f64);
+    obj.set(scope, k.into(), v.into());
+    rv.set(obj.into());
 }
 
 // ---------------------------------------------------------------------------

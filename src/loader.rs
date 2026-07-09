@@ -56,10 +56,6 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(realm::serializer::create_module),
     ),
     (
-        "internal:thread-port",
-        BuiltinKind::Synthetic(realm::thread::create_thread_port_module),
-    ),
-    (
         "internal:transit-port",
         BuiltinKind::Synthetic(realm::transit::create_module),
     ),

@@ -510,23 +510,15 @@ pub struct FinoState {
     pub inspector_state: Option<*mut std::ffi::c_void>,
 
     // ---------------------------------------------------------------------------
-    // Thread Realm channels (populated only in thread-realm Isolates)
+    // Realm port channel (populated in every non-embedded child realm)
     // ---------------------------------------------------------------------------
-    // `allow(dead_code)`: used by thread-realm native send/recv functions.
-    #[allow(dead_code)]
-    /// Receives serialized messages sent from the partner Isolate.
-    pub channel_rx: Option<std::sync::mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
-    #[allow(dead_code)]
-    /// Sends serialized messages to the partner Isolate.
-    pub channel_tx: Option<std::sync::mpsc::Sender<crate::realm::thread::ThreadMessage>>,
-    #[allow(dead_code)]
-    /// Own wake-pipe read end — registered with the event loop; readable when
-    /// the partner has deposited a message in `channel_rx`.
-    pub wake_read_fd: Option<std::os::unix::io::RawFd>,
-    #[allow(dead_code)]
-    /// Partner's wake-pipe write end — write 1 byte here after each
-    /// `channel_tx.send()` to unblock the partner's event-loop wait.
-    pub wake_write_fd: Option<std::os::unix::io::RawFd>,
+    /// The transit-registry handle of this realm's own channel half. One
+    /// mechanism for every placement: thread realms, process realms
+    /// (socket-bridged), and pool-hosted realms all message through it.
+    pub port_transit_handle: Option<u32>,
+    /// The half's wake-pipe read fd — the bootstrap's port watch registers
+    /// it with the loop.
+    pub port_wake_read_fd: Option<std::os::unix::io::RawFd>,
 }
 
 impl FinoState {
@@ -571,10 +563,8 @@ impl FinoState {
             entry_error: None,
             port: None,
             inspector_state: None,
-            channel_rx: None,
-            channel_tx: None,
-            wake_read_fd: None,
-            wake_write_fd: None,
+            port_transit_handle: None,
+            port_wake_read_fd: None,
             thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }
@@ -591,10 +581,7 @@ impl FinoState {
         import_rules: Vec<ImportRule>,
         entry_path: Option<String>,
         port: Option<v8::Global<v8::Value>>,
-        channel_rx: Option<std::sync::mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
-        channel_tx: Option<std::sync::mpsc::Sender<crate::realm::thread::ThreadMessage>>,
-        wake_read_fd: Option<std::os::unix::io::RawFd>,
-        wake_write_fd: Option<std::os::unix::io::RawFd>,
+        port_half: Option<(u32, std::os::unix::io::RawFd)>,
         watch_mode: bool,
         repl_mode: bool,
         realm_data: Option<String>,
@@ -635,10 +622,8 @@ impl FinoState {
             entry_error: None,
             port,
             inspector_state: None,
-            channel_rx,
-            channel_tx,
-            wake_read_fd,
-            wake_write_fd,
+            port_transit_handle: port_half.map(|(h, _)| h),
+            port_wake_read_fd: port_half.map(|(_, fd)| fd),
             thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }

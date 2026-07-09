@@ -4,7 +4,7 @@
 * When a facade proxy module calls `call(specifier, method, args)`, this module:
 *   1. Allocates a request id and stores a Promise resolver in `_pending`.
 *   2. Serialises `{__rpc_req, specifier, method, reqId, args}` and sends it to
-*      the parent via the realm's native channel (nativeSend).
+*      the parent via the realm's port channel.
 *   3. Returns the Promise.
 *
 * When the parent sends back `{__rpc_res, reqId, result|error}`, the port drain
@@ -25,7 +25,7 @@
 * allocated from a single monotonic counter across scalar, stream, and sink
 * calls, which lets one drain path disambiguate a response by its id.
 *
-* Only available in thread and process child Realms (where `nativeSend` has a live
+* Only available in child Realms (where the realm port has a live
 * channel_tx). Embedded child Realms are not a primary facade target.
 *
 * This is an internal transport primitive; application code should use the
@@ -45,19 +45,15 @@
 *
 * @internal
 */
-import { nativeSend } from 'internal:thread-port';
 import { serialize } from 'internal:serializer';
 // ---------------------------------------------------------------------------
 // Transport selection
 //
-// For thread and process child realms, `globalThis.realmPort` is a ThreadPort
-// whose `.postMessage()` routes through the Rust native channel (same as
-// calling nativeSend directly).  For embedded realms it is a MessagePort
-// backed by an in-process IntraPort queue.  Using `.postMessage()` uniformly
-// means parent-rpc works for all realm kinds without special-casing.
-//
-// Fallback: if realmPort is not set yet (shouldn't happen in normal operation),
-// we call nativeSend directly so thread/process realms always work.
+// `globalThis.realmPort` is this realm's channel to its parent — a ThreadPort
+// over a transit half for allocated/process realms, a MessagePort for
+// embedded ones. Using `.postMessage()` uniformly means parent-rpc works for
+// all realm kinds without special-casing. The bootstrap sets realmPort before
+// any user code runs.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Pending scalar call registry
@@ -116,22 +112,17 @@ const _pendingStreams = new Map<number, _StreamQueue>();
 // Lazy locals (avoid import-time side-effects)
 // ---------------------------------------------------------------------------
 const _ser = serialize;
-const _send = nativeSend;
 // ---------------------------------------------------------------------------
 // Internal send helper
 // ---------------------------------------------------------------------------
 function _sendMsg(msg: unknown): void {
-  // Prefer the realm port (works for all realm types including embedded).
   const port = (globalThis as Record<string, unknown>).realmPort as {
     postMessage(m: unknown): void;
   } | undefined;
-  if (port) {
-    port.postMessage(msg);
-    return;
+  if (port === undefined) {
+    throw new Error('parent-rpc: realmPort is not available in this realm');
   }
-  // Fallback: direct native send for thread/process realms before realmPort is set.
-  const bytes = (_ser as (v: unknown) => Uint8Array[])(msg)[0]!;
-  (_send as (b: Uint8Array, s: Uint8Array[], p: unknown[]) => void)(bytes, [], []);
+  port.postMessage(msg);
 }
 // ---------------------------------------------------------------------------
 // Public API — scalar calls

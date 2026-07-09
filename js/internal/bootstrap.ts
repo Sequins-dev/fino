@@ -67,7 +67,7 @@ import { env } from '../process.ts';
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, debugMark } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, getPortInfo, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, debugMark } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
@@ -75,7 +75,6 @@ import { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, cle
 import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, CryptoKey, crypto, cryptoAvailable, tlsAvailable, fetch, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, _flushPorts, BroadcastChannel } from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
 import { ThreadPort } from 'internal:realm/transport-port';
-import { getWakeReadFd } from 'internal:thread-port';
 interface StackFrame {
   getFileName?(): string | null;
   getScriptNameOrSourceURL?(): string | null;
@@ -300,11 +299,14 @@ export function driveLoop(isDone: () => boolean, onDone: () => void): void {
 // If the entry has no default function export, the child stays alive (for
 // multi-event messaging) until the parent calls terminate().
 const _childEntry = getEntryPath() as string | undefined;
-// Construct the correct port type for this realm context:
-// - Thread realms: wake_read_fd >= 0 → construct a ThreadPort backed by native channels
-// - Embedded realms: use the IntraPort passed by the parent via realm-bridge
-const _threadWakeReadFd = getWakeReadFd() as number;
-const _childPort: MessagePort | ThreadPort | undefined = _threadWakeReadFd >= 0 ? new ThreadPort(_threadWakeReadFd) : getPort() as MessagePort | undefined;
+// Construct this realm's port to its parent. Every non-embedded child has a
+// channel half (transit handle + wake fd) regardless of placement — thread,
+// process, or pool-hosted; embedded children get a same-isolate MessagePort.
+const _portInfo = (getPortInfo as () => {
+  handle: number;
+  wakeReadFd: number;
+} | undefined)();
+const _childPort: MessagePort | ThreadPort | undefined = _portInfo !== undefined ? new ThreadPort(_portInfo.wakeReadFd, _portInfo.handle) : getPort() as MessagePort | undefined;
 // Expose the child port as `realmPort` on globalThis so entry modules can
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
@@ -312,7 +314,7 @@ const _childPort: MessagePort | ThreadPort | undefined = _threadWakeReadFd >= 0 
 // that __rpc_res / __rpc_chunk / __rpc_end / __rpc_err envelopes from the parent
 // reach the pending-call registry in internal:parent-rpc.
 // Thread/process realms get this for free from BaseTransportPort._dispatchMessage.
-if (_threadWakeReadFd < 0 && _childPort !== undefined) {
+if (_portInfo === undefined && _childPort !== undefined) {
   const _embeddedPort = _childPort as MessagePort;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (_embeddedPort as any).addEventListener('message', function _rpcResponseHandler(ev: Event) {

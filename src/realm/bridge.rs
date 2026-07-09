@@ -14,6 +14,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getEntryPath",
         "isTerminated",
         "getPort",
+        "getPortInfo",
         "setEntryError",
         "getLoadedFsPaths",
         "requestReload",
@@ -49,6 +50,7 @@ fn eval_steps<'a>(
     set_fn!("getEntryPath", get_entry_path);
     set_fn!("isTerminated", is_terminated);
     set_fn!("getPort", get_port);
+    set_fn!("getPortInfo", get_port_info);
     set_fn!("setEntryError", set_entry_error);
     set_fn!("getLoadedFsPaths", get_loaded_fs_paths);
     set_fn!("requestReload", request_reload);
@@ -153,6 +155,35 @@ fn get_port(
         Some(p) => rv.set(v8::Local::new(scope, p)),
         None => rv.set(v8::undefined(scope).into()),
     }
+}
+
+/// Returns this realm's own channel half — `{ handle, wakeReadFd }` for the
+/// transit-registry half its realmPort messages through — or `undefined` in
+/// the root realm and embedded children (which use a same-isolate
+/// MessagePort via `getPort()`).
+fn get_port_info(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let info = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        st.port_transit_handle
+            .and_then(|h| st.port_wake_read_fd.map(|fd| (h, fd)))
+    };
+    let Some((handle, fd)) = info else {
+        rv.set(v8::undefined(scope).into());
+        return;
+    };
+    let obj = v8::Object::new(scope);
+    let k = v8::String::new(scope, "handle").unwrap();
+    let v = v8::Number::new(scope, handle as f64);
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "wakeReadFd").unwrap();
+    let v = v8::Number::new(scope, fd as f64);
+    obj.set(scope, k.into(), v.into());
+    rv.set(obj.into());
 }
 
 /// Records an entry-module error string in the realm's FinoState.

@@ -34,7 +34,7 @@
 * await realm.terminate();
 * ```
 */
-import { createContext, stepContext, terminateChild, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { createContext, stepContext, terminateChild, createThreadContext, stepThreadContext, getRealmPortInfo, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { _registerChildSteppers } from 'internal:child-steppers';
 import { allocatePlacement } from 'internal:realm/allocate';
@@ -2688,8 +2688,11 @@ export class Realm<F extends RealmFn = RealmFn> {
         this.#kind = 'thread';
         const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
         this.#handle = handle;
-        const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
-        this.port = new ThreadPort(wakeReadFd, handle);
+        const portInfo = getRealmPortInfo(handle) as {
+          handle: number;
+          wakeReadFd: number;
+        };
+        this.port = new ThreadPort(portInfo.wakeReadFd, portInfo.handle);
       } else {
         this.#kind = 'embedded';
         let parentPort: MessagePort;
@@ -2759,7 +2762,11 @@ export class Realm<F extends RealmFn = RealmFn> {
       return h;
     } else if (this.#kind === 'thread') {
       const h = createThreadContext(opts.root ?? '', opts.entry, rules, true, data, bootstrapData) as number;
-      this.#activeChildPort = new ThreadPort(getThreadPortWakeReadFd(h) as number, h);
+      const info = getRealmPortInfo(h) as {
+        handle: number;
+        wakeReadFd: number;
+      };
+      this.#activeChildPort = new ThreadPort(info.wakeReadFd, info.handle);
       return h;
     } else {
       const { port2: childPort } = new MessageChannel();

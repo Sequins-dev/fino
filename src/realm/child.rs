@@ -9,12 +9,11 @@ use std::{
     cell::RefCell,
     os::unix::io::RawFd,
     rc::Rc,
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use ::v8;
 
-use super::thread::ThreadMessage;
 use crate::{
     loader, realm,
     state::{FinoState, ImportRule, ProcessEnv, get_state, root_queue_ptr},
@@ -34,15 +33,10 @@ pub struct ChildConfig {
     pub package_map_json: Option<String>,
     pub import_rules: Vec<ImportRule>,
     pub entry_path: String,
-    /// Receives messages sent from the partner (parent).
-    pub channel_rx: mpsc::Receiver<ThreadMessage>,
-    /// Sends messages to the partner (parent).
-    pub channel_tx: mpsc::Sender<ThreadMessage>,
-    /// Own wake-pipe/socket read end — registered with the event loop.
-    pub wake_read_fd: RawFd,
-    /// Partner's wake-pipe write end, or `None` when the send path wakes the
-    /// partner via a different mechanism (e.g., writing to a socket).
-    pub wake_write_fd: Option<RawFd>,
+    /// This realm's port channel half: transit-registry handle plus its
+    /// wake-pipe read fd. The bootstrap constructs the child's realmPort
+    /// over it — the same mechanism for every placement.
+    pub port_half: (u32, RawFd),
     /// Label used in `FINO_REALM_TIMING` output (e.g. "thread-realm").
     pub timing_label: &'static str,
     /// Whether the realm was started with watch mode enabled.
@@ -119,10 +113,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             config.import_rules,
             Some(config.entry_path),
             None,
-            Some(config.channel_rx),
-            Some(config.channel_tx),
-            Some(config.wake_read_fd),
-            config.wake_write_fd,
+            Some(config.port_half),
             config.watch_mode,
             false, // thread/process realms don't support repl mode
             config.realm_data,
@@ -263,11 +254,13 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             unsafe { crate::inspector_module::dispose_inspector(ptr) };
         }
 
-        // Explicitly release channel_tx before the isolate is disposed. V8 does
-        // not run GC on dispose, so the context slot (Rc<FinoState>) — and
-        // channel_tx inside it — would otherwise leak.  Dropping it here signals
-        // the writer bridge thread (process realm) to exit after flushing.
-        state_rc.borrow_mut().channel_tx.take();
+        // Drop this realm's channel half before the isolate is disposed:
+        // removal closes its pipe ends and hangs up the mpsc, which is how
+        // the partner (parent port, or a process realm's writer bridge
+        // thread) observes disconnection.
+        if let Some(handle) = state_rc.borrow_mut().port_transit_handle.take() {
+            drop(crate::realm::transit::remove_half(handle));
+        }
 
         let bm = v8::Local::new(scope, &bootstrap_module_global);
         if bm.get_status() == v8::ModuleStatus::Errored {

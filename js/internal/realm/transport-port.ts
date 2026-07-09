@@ -11,9 +11,7 @@
 import { EventTarget, _markEventTrusted } from '../../globals/eventtarget.ts';
 import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
-import { nativeSend, nativeRecv } from 'internal:thread-port';
-import { threadPortSend, threadPortRecv } from 'internal:realm-native';
-import { createTransitChannel } from 'internal:transit-port';
+import { createTransitChannel, transitSend, transitRecv, transitClose } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 
@@ -60,9 +58,12 @@ export abstract class BaseTransportPort extends EventTarget {
     this._onStart();
   }
   /**
-  * Close this port and stop delivery.
+  * Close this port and stop delivery. Idempotent: a second close() must not
+  * re-run _onClose — the fd numbers it releases may already belong to a new
+  * port, and deregistering them again would sever that port's watch.
   */
   close(): void {
+    if (this._closed) return;
     this._closed = true;
     this._started = false;
     this._onClose();
@@ -169,11 +170,10 @@ export abstract class BaseTransportPort extends EventTarget {
 }
 
 /**
-* Drain one batch of messages from a thread-port receive queue.
+* Drain one batch of messages from a transit channel half.
 */
-function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, number][]][] {
-  const raw = handle !== null ? (threadPortRecv as (h: number) => unknown)(handle) : (nativeRecv as () => unknown)();
-  return raw as [Uint8Array[], [number, number][]][];
+function _recvThreadMessages(handle: number): [Uint8Array[], [number, number][]][] {
+  return (transitRecv as (h: number) => unknown)(handle) as [Uint8Array[], [number, number][]][];
 }
 
 /**
@@ -189,19 +189,19 @@ function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, num
 export class ThreadPort extends BaseTransportPort {
   /**
   * Wake-pipe read fd registered with loop.readable(); becomes readable when
-  * the partner thread sends a message.
+  * the partner sends a message.
   *
   * @internal
   */
   #wakeReadFd: number;
   /**
-  * Thread context handle. Non-null on the parent side, which routes through
-  * handle-indexed native ops; null on the child side, which uses the FinoState
-  * channel.
+  * Transit-registry handle of this side's channel half. The same mechanism
+  * carries every cross-isolate realm port — parent side, child side, and
+  * transferred MessagePorts — regardless of the realm's placement.
   *
   * @internal
   */
-  #handle: number | null;
+  #handle: number;
   /**
   * Current onmessageerror handler.
   *
@@ -213,10 +213,10 @@ export class ThreadPort extends BaseTransportPort {
   *
   * @internal
   */
-  constructor(wakeReadFd: number, handle?: number) {
+  constructor(wakeReadFd: number, handle: number) {
     super();
     this.#wakeReadFd = wakeReadFd;
-    this.#handle = handle ?? null;
+    this.#handle = handle;
   }
   /**
   * Serialize and send a message to the opposite thread endpoint.
@@ -247,11 +247,7 @@ export class ThreadPort extends BaseTransportPort {
     const serResult = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(message, transferABs.length > 0 ? transferABs : undefined);
     const data = serResult[0];
     const stores = serResult.length > 1 ? serResult.slice(1) : [] as Uint8Array[];
-    if (this.#handle !== null) {
-      (threadPortSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(this.#handle, data, stores, portInfos);
-    } else {
-      (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(data, stores, portInfos);
-    }
+    (transitSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(this.#handle, data, stores, portInfos);
   }
   /**
   * Start watching the wake fd for incoming messages.
@@ -268,6 +264,9 @@ export class ThreadPort extends BaseTransportPort {
   */
   protected override _onClose(): void {
     removeRead(this.#wakeReadFd);
+    // Drop this side's channel half: closes its pipe ends so the partner
+    // observes disconnection, and releases the mpsc pair.
+    (transitClose as (h: number) => void)(this.#handle);
   }
   /**
   * Message error handler property.
