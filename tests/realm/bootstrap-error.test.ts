@@ -18,7 +18,6 @@ describe('Realm bootstrap errors', () => {
   });
   it('thread realm: Realm.run() rejects on top-level throw', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: fixture
     });
     try {

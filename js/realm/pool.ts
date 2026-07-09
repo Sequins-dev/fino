@@ -185,7 +185,7 @@ export interface PoolOptions {
   * });
   * ```
   */
-  realm?: Omit<RealmOptions, 'entry' | 'thread'>;
+  realm?: Omit<RealmOptions, 'entry'>;
   /**
   * Per-task timeout in milliseconds.
   *
@@ -412,7 +412,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   *
   * @internal
   */
-  #baseRealm: Omit<RealmOptions, 'entry' | 'thread'>;
+  #baseRealm: Omit<RealmOptions, 'entry'>;
   /**
   * Whether the pool runs in exclusive mode (one task per worker run).
   *
@@ -514,8 +514,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   #spawnWorker(slotIndex: number): PoolWorker {
     const realm = new Realm({
       ...this.#baseRealm,
-      entry: this.#entry,
-      thread: true
+      entry: this.#entry
     });
     const worker: PoolWorker = {
       realm,

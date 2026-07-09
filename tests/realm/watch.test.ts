@@ -70,12 +70,12 @@ describe('Realm watch mode', () => {
     }
     await rm(TEST_DIR);
   });
-  it('watch: true with remote: true throws', (t) => {
+  it('watch: true is rejected for remote realms', (t) => {
     t.throws(() => new Realm({
       entry: '/irrelevant.ts',
       watch: true,
       remote: true
-    }), /watch/i, 'constructing with watch + remote throws');
+    } as ConstructorParameters<typeof Realm>[0]), /watch/i, 'constructing with watch + remote throws');
   });
   it('embedded realm reloads when entry file changes', async (t) => {
     const dir = TEST_DIR + '/embed-entry';
@@ -211,7 +211,6 @@ describe('Realm watch mode', () => {
     const counterPath = dir + '/counter.txt';
     await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
-      thread: true,
       entry: entryPath,
       watch: true
     });

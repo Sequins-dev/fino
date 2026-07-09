@@ -290,8 +290,9 @@ export class ThreadPort extends BaseTransportPort {
   */
   async #watchLoop(): Promise<void> {
     while (!this._closed) {
-      await readable(this.#wakeReadFd);
+      const n = await readable(this.#wakeReadFd);
       if (this._closed) break;
+      if (typeof n === 'number' && n < 0) break;
       this._drain();
     }
   }

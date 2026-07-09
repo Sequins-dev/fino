@@ -70,7 +70,6 @@ describe('embedded realm shares async executor', () => {
 describe('thread realm has its own async executor', () => {
   it('async FFI works inside a thread realm', async (t) => {
     const realm = new Realm<typeof asyncFfiChild>({
-      thread: true,
       entry: ENTRY
     });
     const pid = await realm.call(1e4);
@@ -85,14 +84,12 @@ describe('thread realm has its own async executor', () => {
     const sleepUs = 1e6;
     const sequential = await elapsed(async () => {
       const realm = new Realm<typeof asyncFfiChild>({
-        thread: true,
         entry: ENTRY
       });
       await realm.call(sleepUs);
       await libAsync.symbols.usleep(sleepUs);
     });
     const realm = new Realm<typeof asyncFfiChild>({
-      thread: true,
       entry: ENTRY
     });
     let childPid = 0;

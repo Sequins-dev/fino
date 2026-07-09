@@ -54,6 +54,7 @@
 * ```
 */
 import { DEFAULT_CLUSTER_PATH, WebTransportSeedTransport, WebTransportWorkerTransport, type WebTransportWorkerConnectOptions } from 'internal:cluster/webtransport-transport';
+import { Realm, type RealmOptions, type RealmFn } from 'fino:realm';
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
@@ -382,6 +383,27 @@ function clusterSelfJoinHost(hostname: string | undefined): string {
 */
 export function getCluster(): ClusterClient | null {
   return _client;
+}
+/**
+* Spawn a realm on a remote cluster node.
+*
+* The realm config is serialized and shipped through the seed, which selects
+* a worker node and constructs the realm there; messaging flows over the
+* cluster PORT_MSG protocol. Requires an active cluster (`startCluster()` or
+* `joinCluster()`). This is the cross-node arm of realm allocation — local
+* realms need no placement API at all, and once allocators exchange load
+* across nodes this entry point folds into automatic placement too.
+*
+* ```ts no_run
+* import { startCluster, spawnRealm } from 'fino:cluster';
+*
+* await startCluster({ port: 9999, nodeId: 'seed-a' });
+* const realm = spawnRealm({ entry: './worker.ts' });
+* const result = await realm.call('job-1');
+* ```
+*/
+export function spawnRealm<F extends RealmFn = RealmFn>(opts: RealmOptions): Realm<F> {
+  return new Realm<F>({ ...opts, remote: true } as RealmOptions);
 }
 /**
 * Disconnect from the cluster. Active remote realms are not terminated.

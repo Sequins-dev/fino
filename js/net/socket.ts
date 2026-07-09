@@ -2413,8 +2413,9 @@ export class Socket {
     async function acceptOne() {
       while (true) {
         if (serverClosed) return null;
-        await loop.readable(serverFd);
+        const n = await loop.readable(serverFd);
         if (serverClosed) return null;
+        if (typeof n === 'number' && n < 0) return null;
         const result = accept(serverFd);
         if (result !== null) {
           if (!isKnownAddress(result.addr)) {

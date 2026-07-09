@@ -12,16 +12,15 @@ import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
 describe('Thread Realm basics', () => {
-  it('rejects multiple isolated mode flags at construction', (t) => {
+  it('rejects process isolation for remote realms at construction', (t) => {
     t.throws(() => new Realm({
-      thread: true,
       process: true,
+      remote: true,
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname
-    }), /thread.*process.*remote|isolated mode/i, 'thread and process cannot both be enabled');
+    } as ConstructorParameters<typeof Realm>[0]), /process isolation is not supported for remote/i, 'process and remote cannot both be enabled');
   });
   it('spawns a thread realm that runs to completion', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname
     });
     // hello.ts has no default function — it completes after module evaluation.
@@ -30,7 +29,6 @@ describe('Thread Realm basics', () => {
   });
   it('call() invokes the default-export function in a thread realm', async (t) => {
     const realm = new Realm<typeof echoFn>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     const result = await realm.call('hello from thread');
@@ -38,7 +36,6 @@ describe('Thread Realm basics', () => {
   });
   it('call() passes multiple arguments to the thread realm function', async (t) => {
     const realm = new Realm<typeof sumFn>({
-      thread: true,
       entry: new URL('./fixtures/multi-arg-fn.ts', import.meta.url).pathname
     });
     const result = await realm.call(1, 2, 3, 4);
@@ -46,7 +43,6 @@ describe('Thread Realm basics', () => {
   });
   it('call() propagates errors thrown inside the thread realm', async (t) => {
     const realm = new Realm<typeof errorFn>({
-      thread: true,
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname
     });
     try {
@@ -64,7 +60,6 @@ describe('Thread Realm basics', () => {
       z: boolean;
     };
     const realm = new Realm<(input: Payload) => Payload>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     const input: Payload = {
@@ -81,7 +76,6 @@ describe('Thread Realm basics', () => {
   it('Map is preserved as Map through realm.call() (not converted to plain object)', async (t) => {
     type MapFn = (m: Map<string, number>) => Map<string, number>;
     const realm = new Realm<MapFn>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     const input = new Map<string, number>([['alpha', 1], ['beta', 2]]);
@@ -94,7 +88,6 @@ describe('Thread Realm basics', () => {
   it('Set is preserved as Set through realm.call()', async (t) => {
     type SetFn = (s: Set<string>) => Set<string>;
     const realm = new Realm<SetFn>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     const input = new Set([
@@ -109,7 +102,6 @@ describe('Thread Realm basics', () => {
   });
   it('Error subclass name and message are preserved through realm.call()', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/type-error-fn.ts', import.meta.url).pathname
     });
     try {
@@ -123,7 +115,6 @@ describe('Thread Realm basics', () => {
   });
   it('terminate() stops a thread realm', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname
     });
     const runPromise = realm.run();

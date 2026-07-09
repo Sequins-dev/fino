@@ -616,8 +616,9 @@ export class ClusterClient {
     // (e.g., fd closed externally), ensuring REALM_EXIT is always sent.
     try {
       while (!relay.closed) {
-        await readable(wakeReadFd);
+        const n = await readable(wakeReadFd);
         if (relay.closed) break;
+        if (typeof n === 'number' && n < 0) break;
         this.#drainInbound(relay, finalize);
       }
     } finally {

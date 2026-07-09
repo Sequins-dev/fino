@@ -675,8 +675,9 @@ export class MessagePort extends EventTarget {
     const self = this;
     (async () => {
       while (!self.#closed && self.#transitHandle !== null) {
-        await readable(fd);
+        const n = await readable(fd);
         if (self.#closed || self.#transitHandle === null) break;
+        if (typeof n === 'number' && n < 0) break;
         const msgs = ((transitRecv as (h: number) => [[Uint8Array[], [number, number][]]])(handle) as unknown) as [[Uint8Array[], [number, number][]]];
         for (const [byteArr, portArr] of msgs as any[]) {
           try {

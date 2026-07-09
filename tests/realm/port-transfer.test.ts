@@ -162,7 +162,6 @@ describe('MessagePort transfer', () => {
   });
   it('cross-Isolate: port transferred to thread realm receives message', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/port-echo-transfer.ts', import.meta.url).pathname
     });
     realm.run().catch(() => {    /* terminated after test */});

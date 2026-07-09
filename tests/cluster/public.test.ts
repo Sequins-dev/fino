@@ -4,7 +4,7 @@
 import { describe, it } from 'fino:test/test';
 import { Process, cwd, env, execPath } from 'fino:process';
 import { Realm } from 'fino:realm';
-import { startCluster, joinCluster, leaveCluster } from 'fino:cluster';
+import { startCluster, joinCluster, leaveCluster, spawnRealm } from 'fino:cluster';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
@@ -76,9 +76,8 @@ describe('fino:cluster public WebTransport integration', () => {
     let worker: Process | null = null;
     try {
       worker = await waitForWorker(port);
-      const realm = new Realm<(name: string) => string>({
-        entry: remoteCallEntry,
-        remote: true
+      const realm = spawnRealm<(name: string) => string>({
+        entry: remoteCallEntry
       });
       const result = await withTimeout(realm.call('ok'), 3e3, 'remote Realm.call');
       t.equal(result, 'remote:ok', 'remote realm call returned worker result');
@@ -150,9 +149,8 @@ describe('fino:cluster public WebTransport integration', () => {
     let worker: Process | null = null;
     try {
       worker = await waitForWorker(port);
-      const realm = new Realm({
-        entry: longRunningEntry,
-        remote: true
+      const realm = spawnRealm({
+        entry: longRunningEntry
       });
       const running = withTimeout(realm.run(), 3e3, 'remote Realm.run terminate');
       await loop.timeout(20);
@@ -179,9 +177,8 @@ describe('fino:cluster public WebTransport integration', () => {
     let worker: Process | null = null;
     try {
       worker = await waitForWorker(port);
-      const realm = new Realm<() => Promise<never>>({
-        entry: neverFnEntry,
-        remote: true
+      const realm = spawnRealm<() => Promise<never>>({
+        entry: neverFnEntry
       });
       const pending = withTimeout(realm.call(), 3e3, 'remote Realm.call worker loss');
       await loop.timeout(50);
@@ -208,9 +205,8 @@ describe('fino:cluster public WebTransport integration', () => {
     let worker: Process | null = null;
     try {
       worker = await waitForWorker(port);
-      const realm = new Realm<() => Promise<never>>({
-        entry: neverFnEntry,
-        remote: true
+      const realm = spawnRealm<() => Promise<never>>({
+        entry: neverFnEntry
       });
       const pending = realm.call();
       await loop.timeout(20);

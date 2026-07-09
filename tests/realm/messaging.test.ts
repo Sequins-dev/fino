@@ -28,11 +28,14 @@ describe('Realm messaging', () => {
       responses.push(ev.data as string);
     };
     const p = realm.run();
-    // Give child time to set up its onmessage handler
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    // Post immediately: the child buffers messages that arrive while its
+    // entry module is still loading and replays them to its first listener.
     realm.port.postMessage('hello');
     realm.port.postMessage('world');
-    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const deadline = Date.now() + 5e3;
+    while (responses.length < 2 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
     t.equal(responses.length, 2, 'received both responses');
     t.equal(responses[0], 'echo:hello', 'first response correct');
     t.equal(responses[1], 'echo:world', 'second response correct');
@@ -40,39 +43,28 @@ describe('Realm messaging', () => {
     await p;
     t.ok(true, 'realm terminated cleanly');
   });
-  it('realm.port is a MessagePort', async (t) => {
+  it('realm.port presents the MessagePort surface', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
-    t.ok(realm.port instanceof MessagePort, 'realm.port is a MessagePort');
+    t.equal(typeof realm.port.postMessage, 'function', 'port has postMessage');
+    t.equal(typeof realm.port.addEventListener, 'function', 'port has addEventListener');
+    t.equal(typeof realm.port.start, 'function', 'port has start');
+    t.equal(typeof realm.port.close, 'function', 'port has close');
     realm.terminate();
   });
-  it('embedded child exposes fino:realm/self.port and realmPort', async (t) => {
-    const realm = new Realm({ entry: new URL('./fixtures/self-port-report.ts', import.meta.url).pathname });
-    const first = readFirstMessage(realm) as Promise<PortReport>;
-    const run = realm.run();
-    const report = await first;
-    t.equal(report.selfPort, true, 'embedded child exposes fino:realm/self.port');
-    t.equal(report.realmPort, true, 'embedded child also exposes bootstrap realmPort');
-    t.equal(report.samePort, true, 'embedded child self port and realmPort are the same object');
-    t.equal(report.constructorName, 'MessagePort', 'embedded child active port is MessagePort');
-    realm.terminate();
-    await run;
-  });
-  it('thread child uses bootstrap realmPort and leaves fino:realm/self.port undefined', async (t) => {
+  it('allocated child exposes fino:realm/self.port as the bootstrap realmPort', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/self-port-report.ts', import.meta.url).pathname
     });
     const first = readFirstMessage(realm) as Promise<PortReport>;
     const run = realm.run().catch(() => {    /* terminated after test */});
     const report = await first;
-    t.equal(report.selfPort, false, 'thread child does not expose fino:realm/self.port');
-    t.equal(report.realmPort, true, 'thread child exposes bootstrap realmPort');
-    t.equal(report.samePort, false, 'thread child has no self port to compare');
-    t.equal(report.constructorName, 'ThreadPort', 'thread child active port is ThreadPort');
+    t.equal(report.selfPort, true, 'child exposes fino:realm/self.port');
+    t.equal(report.realmPort, true, 'child exposes bootstrap realmPort');
+    t.equal(report.samePort, true, 'self port and realmPort are the same object');
     realm.terminate();
     await run;
   });
-  it('process child uses bootstrap realmPort and leaves fino:realm/self.port undefined', async (t) => {
+  it('process child exposes fino:realm/self.port as the bootstrap realmPort', async (t) => {
     const realm = new Realm({
       process: true,
       entry: new URL('./fixtures/self-port-report.ts', import.meta.url).pathname
@@ -80,10 +72,9 @@ describe('Realm messaging', () => {
     const first = readFirstMessage(realm) as Promise<PortReport>;
     const run = realm.run().catch(() => {    /* terminated after test */});
     const report = await first;
-    t.equal(report.selfPort, false, 'process child does not expose fino:realm/self.port');
+    t.equal(report.selfPort, true, 'process child exposes fino:realm/self.port');
     t.equal(report.realmPort, true, 'process child exposes bootstrap realmPort');
-    t.equal(report.samePort, false, 'process child has no self port to compare');
-    t.equal(report.constructorName, 'ThreadPort', 'process child active port uses the transport-backed ThreadPort wrapper');
+    t.equal(report.samePort, true, 'self port and realmPort are the same object');
     realm.terminate();
     await run;
   });

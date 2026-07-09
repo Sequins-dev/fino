@@ -1390,7 +1390,10 @@ mod imp {
                 if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                     eprintln!("[reactor] readable fd {fd} ud {ud} dispatched res={res}");
                 }
-                resolve_num(scope, &resolver, if res > 0 { res as f64 } else { 0.0 });
+                // Errors (e.g. EBADF after the fd's owner closed it) resolve
+                // as the negated errno — resolving 0 would read as readiness
+                // and send watch loops into a rearm spin on a dead fd.
+                resolve_num(scope, &resolver, res as f64);
                 1
             }
             Pending::WriteReady {

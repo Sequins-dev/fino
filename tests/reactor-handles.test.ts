@@ -149,7 +149,6 @@ describe('native reactor — watch handles (direct drive)', () => {
 describe('native reactor — handle sweep in a remapped realm', () => {
   it('watch + signal + child exit + async FFI wake all ride the reactor', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/reactor-handles-worker.ts', import.meta.url).pathname,
       overrides: ImportMap.inherit([
         {

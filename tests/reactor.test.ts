@@ -100,7 +100,6 @@ describe('native reactor — direct drive', () => {
 describe('native reactor — ImportMap remap', () => {
   it('a realm remapped onto the reactor runs and self-exits', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/reactor-remap-worker.ts', import.meta.url).pathname,
       overrides: ImportMap.inherit([
         {

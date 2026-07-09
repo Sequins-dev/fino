@@ -31,7 +31,6 @@ describe('Realm lifecycle', () => {
   });
   it('keeps RealmOptions.data separate from OTLP endpoint metadata', async (t) => {
     const realm = new Realm<typeof realmDataFn>({
-      thread: true,
       entry: new URL('./fixtures/realm-data-fn.ts', import.meta.url).pathname,
       data: { role: 'worker' },
       otlpEndpoint: 'http://collector.example:4318/base'

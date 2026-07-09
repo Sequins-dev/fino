@@ -30,19 +30,17 @@ async function runChild(realm: Realm): Promise<void> {
   ]);
 }
 
-await runChild(new Realm({ entry, thread: true }));
+await runChild(new Realm({ entry }));
 console.log('child:inherited:done');
 
 await runChild(new Realm({
   entry,
-  thread: true,
   otlpEndpoint: 'http://override-collector.example:4318/override'
 }));
 console.log('child:override:done');
 
 await runChild(new Realm({
   entry,
-  thread: true,
   otlpEndpoint: false
 }));
 console.log('child:disabled:done');

@@ -28,7 +28,6 @@ describe('Realm OTel topics', () => {
     const pending = iter.next();
     const realm = new Realm({
       entry: new URL('../realm/fixtures/echo-fn.ts', import.meta.url).pathname,
-      thread: true
     });
     return pending.then((ev) => {
       iter.return!();
@@ -47,7 +46,6 @@ describe('Realm OTel topics', () => {
     const iter = callTopic[Symbol.asyncIterator]();
     const realm = new Realm<typeof echoFn>({
       entry: new URL('../realm/fixtures/echo-fn.ts', import.meta.url).pathname,
-      thread: true
     });
     const pendingEvent = iter.next();
     const result = await realm.call('hello');
@@ -72,7 +70,6 @@ describe('Realm OTel topics', () => {
     const iter = endTopic[Symbol.asyncIterator]();
     const realm = new Realm<typeof echoFn>({
       entry: new URL('../realm/fixtures/echo-fn.ts', import.meta.url).pathname,
-      thread: true
     });
     const pendingEnd = iter.next();
     await realm.call('world');
@@ -94,7 +91,6 @@ describe('Realm OTel topics', () => {
     const iter = endTopic[Symbol.asyncIterator]();
     const realm = new Realm<typeof errorFn>({
       entry: new URL('../realm/fixtures/error-fn.ts', import.meta.url).pathname,
-      thread: true
     });
     const pendingEnd = iter.next();
     try {

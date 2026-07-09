@@ -37,6 +37,7 @@
 import { createContext, stepContext, terminateChild, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { _registerChildSteppers } from 'internal:child-steppers';
+import { allocatePlacement } from 'internal:realm/allocate';
 import { MessagePort, MessageChannel, _flushPorts, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { readable, removeRead } from 'internal:runtime/loop';
@@ -1737,7 +1738,7 @@ export interface RealmProviders {
 * ```ts no_run
 * import { Realm, type RealmOptions } from 'fino:realm';
 *
-* const options: RealmOptions = { entry: './worker.ts', thread: true };
+* const options: RealmOptions = { entry: './worker.ts' };
 * const realm = new Realm(options);
 * ```
 */
@@ -1811,21 +1812,11 @@ export interface RealmOptions {
   */
   blocked?: string[];
   /**
-  * If true, spawn the child Realm on a separate OS thread with its own
-  * V8 Isolate. Messaging uses V8 ValueSerializer over Rust mpsc channels
-  * instead of same-Isolate structured clone.
-  *
-  * ```ts no_run
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const options: RealmOptions = { entry: './worker.ts', thread: true };
-  * ```
-  */
-  thread?: boolean;
-  /**
   * If true, spawn the child Realm as a separate OS process for hard crash
-  * isolation. Messaging uses framed binary over a Unix socketpair.
-  * Mutually exclusive with `thread`.
+  * isolation and OS-level sandbox enforcement. Messaging uses framed binary
+  * over a Unix socketpair. This is an isolation boundary the allocator must
+  * honor, not a placement hint — plain realms are placed on a reactor by
+  * the allocator automatically.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -1835,23 +1826,9 @@ export interface RealmOptions {
   */
   process?: boolean;
   /**
-  * If true, spawn the child Realm on a remote cluster node. Requires a
-  * prior call to `startCluster()` or `joinCluster()` from `fino:cluster`.
-  * Messaging uses the cluster PORT_MSG protocol over WebTransport.
-  * Mutually exclusive with `thread` and `process`.
-  *
-  * ```ts no_run
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const options: RealmOptions = { entry: './worker.ts', remote: true };
-  * ```
-  */
-  remote?: boolean;
-  /**
   * If true, automatically restart the child Realm whenever any file it
   * imported changes on disk. The JS `Realm` instance is stable across
   * reloads; only the underlying V8 context / thread / process is replaced.
-  * Not supported with `remote: true`.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -2178,8 +2155,9 @@ export class ProcessPort extends BaseTransportPort {
   */
   async #watchLoop(): Promise<void> {
     while (!this._closed) {
-      await readable(this.#wakeReadFd);
+      const n = await readable(this.#wakeReadFd);
       if (this._closed) break;
+      if (typeof n === 'number' && n < 0) break;
       this._drain();
     }
   }
@@ -2617,7 +2595,6 @@ export class Realm<F extends RealmFn = RealmFn> {
   *
   * const realm = new Realm({
   *   entry: './worker.ts',
-  *   thread: true,
   *   overrides: ImportMap.inherit([]),
   * });
   * ```
@@ -2625,21 +2602,17 @@ export class Realm<F extends RealmFn = RealmFn> {
   * @param opts Realm construction and loader options.
   */
   constructor(opts: RealmOptions) {
-    const isolatedModes = [
-      opts.thread,
-      opts.process,
-      opts.remote
-    ].filter(Boolean).length;
-    if (isolatedModes > 1) {
-      throw new Error('fino:realm — exactly one isolated mode may be enabled: thread, process, or remote');
+    const isRemote = (opts as { remote?: boolean }).remote === true;
+    if (opts.process && isRemote) {
+      throw new Error('fino:realm — process isolation is not supported for remote realms');
     }
-    if (opts.watch && opts.remote) {
-      throw new Error('fino:realm — watch: true is not supported with remote: true');
+    if (opts.watch && isRemote) {
+      throw new Error('fino:realm — watch: true is not supported for remote realms');
     }
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;
-    if (repl && (opts.thread || opts.process || opts.remote || opts.watch)) {
-      throw new Error('fino:realm — repl: true is only supported for embedded realms (not thread, process, remote, or watch)');
+    if (repl && (opts.process || isRemote || opts.watch)) {
+      throw new Error('fino:realm — repl: true is not supported with process, remote, or watch realms');
     }
     // Build the child-specific rule list from overrides / legacy providers+blocked.
     const rules: ImportRule[] = [];
@@ -2669,17 +2642,18 @@ export class Realm<F extends RealmFn = RealmFn> {
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
     const serializedData = serializeRealmData(opts.data);
     const serializedBootstrapData = serializeRealmBootstrapData(opts);
-    if (opts.remote && serializedData !== undefined) {
-      throw new Error('fino:realm — data is not supported with remote: true');
+    const remote = isRemote;
+    if (remote && serializedData !== undefined) {
+      throw new Error('fino:realm — data is not supported for remote realms');
     }
     if (opts.watch) {
       this.#watchOpts = opts;
       this.#watchSerializedRules = serializedRules;
     }
-    if (opts.remote) {
+    if (remote) {
       const cluster = getCluster();
       if (!cluster) {
-        throw new Error('fino:realm — remote: true requires an active cluster; call startCluster() or joinCluster() first');
+        throw new Error('fino:realm — remote realms require an active cluster; call startCluster() or joinCluster() first');
       }
       this.#kind = 'remote';
       this.#handle = -1;
@@ -2702,26 +2676,35 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
-    } else if (opts.thread) {
-      this.#kind = 'thread';
-      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
-      this.#handle = handle;
-      const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
-      this.port = new ThreadPort(wakeReadFd, handle);
     } else {
-      this.#kind = 'embedded';
-      let parentPort: MessagePort;
-      let childPort: MessagePort;
-      if (opts.input !== undefined && opts.output !== undefined) {
-        parentPort = opts.input;
-        childPort = opts.output;
+      // No placement options: the allocator decides where the realm runs.
+      // Same-isolate coupling (live port handoff, REPL wiring) is the one
+      // config property that forces embedded placement.
+      const placement = allocatePlacement({
+        entry: opts.entry,
+        requiresSameIsolate: opts.input !== undefined && opts.output !== undefined || repl
+      });
+      if (placement.kind === 'thread') {
+        this.#kind = 'thread';
+        const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
+        this.#handle = handle;
+        const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
+        this.port = new ThreadPort(wakeReadFd, handle);
       } else {
-        const channel = new MessageChannel();
-        parentPort = channel.port1;
-        childPort = channel.port2;
+        this.#kind = 'embedded';
+        let parentPort: MessagePort;
+        let childPort: MessagePort;
+        if (opts.input !== undefined && opts.output !== undefined) {
+          parentPort = opts.input;
+          childPort = opts.output;
+        } else {
+          const channel = new MessageChannel();
+          parentPort = channel.port1;
+          childPort = channel.port2;
+        }
+        this.port = parentPort;
+        this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl, serializedData, serializedBootstrapData) as number;
       }
-      this.port = parentPort;
-      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl, serializedData, serializedBootstrapData) as number;
     }
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
@@ -2774,7 +2757,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       const h = createProcessContext(opts.root ?? '', opts.entry, rules, true, data, bootstrapData) as number;
       this.#activeChildPort = new ProcessPort(getProcessSocketFd(h) as number, h);
       return h;
-    } else if (opts.thread) {
+    } else if (this.#kind === 'thread') {
       const h = createThreadContext(opts.root ?? '', opts.entry, rules, true, data, bootstrapData) as number;
       this.#activeChildPort = new ThreadPort(getThreadPortWakeReadFd(h) as number, h);
       return h;
@@ -2837,11 +2820,24 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     }
     return new Promise<void>((resolve, reject) => {
+      const port = this.port;
+      // The child owns the channel's other end; once its exit is observed
+      // the port is dead — close it so its wake-fd watch leaves the loop.
       _activeChildren.push({
         handle: this.#handle,
         kind: this.#kind,
-        resolve,
-        reject
+        resolve: () => {
+          try {
+            (port as { close(): void }).close();
+          } catch {}
+          resolve();
+        },
+        reject: (err: unknown) => {
+          try {
+            (port as { close(): void }).close();
+          } catch {}
+          reject(err);
+        }
       });
     });
   }
@@ -2960,7 +2956,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   * ```ts no_run
   * import { Realm } from 'fino:realm';
   *
-  * const realm = new Realm({ entry: './worker.ts', thread: true });
+  * const realm = new Realm({ entry: './worker.ts' });
   * realm.terminate();
   * ```
   */

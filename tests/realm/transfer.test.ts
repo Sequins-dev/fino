@@ -21,7 +21,6 @@ function unsupportedValues(): unknown[] {
 describe('ArrayBuffer transfer via ThreadPort', () => {
   it('detaches the sender ArrayBuffer after postMessage with transfer list', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     realm.run().catch(() => {    /* terminated after test */});
@@ -56,7 +55,6 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
   });
   it('detaches multiple ArrayBuffers in one postMessage', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     realm.run().catch(() => {    /* terminated after test */});
@@ -75,7 +73,6 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
   });
   it('rejects ReadableStream transfer entries explicitly', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     realm.run().catch(() => {    /* terminated after test */});
@@ -88,7 +85,6 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
   });
   it('rejects unsupported structured-clone payloads synchronously', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     realm.run().catch(() => {    /* terminated after test */});

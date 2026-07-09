@@ -370,11 +370,21 @@ if (_childEntry) {
   const _earlyPoolCalls: unknown[] = [];
   let _earlyCall: unknown = null;
   let _callHandlerInstalled = false;
+  // Messages the parent posts while this realm is still loading its entry
+  // module would dispatch to no listener and be lost — the parent cannot
+  // know how long the module graph takes on this placement. Buffer them and
+  // replay once the entry registers its first message listener.
+  const _earlyUserMessages: unknown[] = [];
+  let _userListenerSeen = false;
+  let _replaying = false;
   if (_childPort !== undefined) {
     _childPort.start();
     _childPort.addEventListener('message', function _terminateHandler(ev) {
       const msg = (ev as MessageEvent).data;
-      if (!msg || typeof msg !== 'object') return;
+      if (!msg || typeof msg !== 'object') {
+        if (!_userListenerSeen && !_replaying) _earlyUserMessages.push(msg);
+        return;
+      }
       if ((msg as {
         __terminate?: boolean;
       }).__terminate === true) {
@@ -390,8 +400,38 @@ if (_childEntry) {
       }).__pool_call) {
         // Queue early pool calls until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyPoolCalls.push(msg);
+      } else if (!_userListenerSeen && !_replaying && !(msg as {
+        __call?: boolean;
+        __pool_call?: boolean;
+      }).__call && !(msg as {
+        __pool_call?: boolean;
+      }).__pool_call) {
+        _earlyUserMessages.push(msg);
       }
     });
+    const _origAddEventListener = _childPort.addEventListener.bind(_childPort);
+    (_childPort as {
+      addEventListener: typeof _childPort.addEventListener;
+    }).addEventListener = function _bufferedAddEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      const result = _origAddEventListener(type as never, listener as never, options as never);
+      if (type === 'message' && !_userListenerSeen) {
+        _userListenerSeen = true;
+        const replay = _earlyUserMessages.splice(0);
+        if (replay.length > 0) {
+          Promise.resolve().then(() => {
+            _replaying = true;
+            try {
+              for (const m of replay) {
+                _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+              }
+            } finally {
+              _replaying = false;
+            }
+          });
+        }
+      }
+      return result;
+    } as typeof _childPort.addEventListener;
   }
   // CLI OTel providers are context-scoped, so the spawner cannot install them
   // across the realm boundary - the child must wrap its own entry import.

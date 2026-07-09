@@ -221,7 +221,6 @@ describe('BroadcastChannel', () => {
   it('delivers messages between parent and thread Realm subscribers', async (t) => {
     const name = uniqueName('thread-broadcast');
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/broadcast-channel-peer.ts', import.meta.url).pathname
     });
     const run = realm.run().catch(() => undefined);

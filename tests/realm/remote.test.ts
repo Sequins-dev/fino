@@ -4,7 +4,7 @@
 import { after, describe, it } from 'fino:test/test';
 import { Process, cwd, execPath } from 'fino:process';
 import { Facade, ImportMap, Realm, SystemDnsConfig, SystemNetConfig } from 'fino:realm';
-import { startCluster, leaveCluster } from 'fino:cluster';
+import { startCluster, leaveCluster, spawnRealm } from 'fino:cluster';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
@@ -100,19 +100,17 @@ describe('Realm remote mode', () => {
       sharedClusterStarted = false;
     }
   });
-  it('remote: true requires an active cluster', async (t) => {
+  it('remote realms require an active cluster', async (t) => {
     await t.rejects(async () => {
-      new Realm({
-        entry: fixture('hello.ts'),
-        remote: true
+      spawnRealm({
+        entry: fixture('hello.ts')
       });
-    }, /remote: true requires an active cluster/);
+    }, /remote realms require an active cluster/);
   });
   it('call() returns values through the cluster transport', async (t) => {
     await withRemoteWorker(async () => {
-      const realm = new Realm<typeof echoFn>({
-        entry: fixture('echo-fn.ts'),
-        remote: true
+      const realm = spawnRealm<typeof echoFn>({
+        entry: fixture('echo-fn.ts')
       });
       const result = await withTimeout(realm.call('remote-ok'), 3e3, 'remote call');
       t.equal(result, 'remote-ok', 'remote call result propagated');
@@ -120,27 +118,24 @@ describe('Realm remote mode', () => {
   });
   it('call() propagates child function errors', async (t) => {
     await withRemoteWorker(async () => {
-      const realm = new Realm<typeof errorFn>({
-        entry: fixture('error-fn.ts'),
-        remote: true
+      const realm = spawnRealm<typeof errorFn>({
+        entry: fixture('error-fn.ts')
       });
       await t.rejects(() => withTimeout(realm.call('boom'), 3e3, 'remote call error'), /deliberate error/);
     });
   });
   it('run() rejects bootstrap errors from the remote worker', async (t) => {
     await withRemoteWorker(async () => {
-      const realm = new Realm({
-        entry: fixture('throw-at-toplevel.ts'),
-        remote: true
+      const realm = spawnRealm({
+        entry: fixture('throw-at-toplevel.ts')
       });
       await t.rejects(() => withTimeout(realm.run(), 3e3, 'remote bootstrap error'), /deliberate top-level error/);
     });
   });
   it('terminate() settles a running remote realm', async (t) => {
     await withRemoteWorker(async () => {
-      const realm = new Realm({
-        entry: fixture('long-running.ts'),
-        remote: true
+      const realm = spawnRealm({
+        entry: fixture('long-running.ts')
       });
       const running = withTimeout(realm.run(), 3e3, 'remote terminate');
       await loop.timeout(20);
@@ -152,9 +147,8 @@ describe('Realm remote mode', () => {
   it('remote facades support scalar calls', async (t) => {
     await withRemoteWorker(async () => {
       const facade = new Facade('fino:test-facade', ['greet']).handle('greet', async (name) => `hello ${name}`);
-      const realm = new Realm<typeof facadeCallFn>({
+      const realm = spawnRealm<typeof facadeCallFn>({
         entry: fixture('facade-call.ts'),
-        remote: true,
         overrides: ImportMap.deny([{
           pattern: 'fino:test-facade',
           directive: facade
@@ -170,9 +164,8 @@ describe('Realm remote mode', () => {
         yield 'remote-alpha';
         yield 'remote-beta';
       });
-      const realm = new Realm<typeof facadeStreamFn>({
+      const realm = spawnRealm<typeof facadeStreamFn>({
         entry: fixture('facade-stream-fn.ts'),
-        remote: true,
         overrides: ImportMap.deny([{
           pattern: 'fino:test-facade',
           directive: facade
@@ -192,9 +185,8 @@ describe('Realm remote mode', () => {
           joined: received.join('')
         };
       });
-      const realm = new Realm<typeof facadeSinkFn>({
+      const realm = spawnRealm<typeof facadeSinkFn>({
         entry: fixture('facade-sink-fn.ts'),
-        remote: true,
         overrides: ImportMap.deny([{
           pattern: 'fino:test-facade',
           directive: facade
@@ -210,15 +202,13 @@ describe('Realm remote mode', () => {
   });
   it('remote import overrides and legacy provider options serialize to the worker', async (t) => {
     await withRemoteWorker(async () => {
-      const blocked = new Realm({
+      const blocked = spawnRealm({
         entry: fixture('import-ffi.ts'),
-        remote: true,
         blocked: ['fino:ffi']
       });
       await withTimeout(blocked.run(), 3e3, 'remote blocked import');
-      const allowed = new Realm({
+      const allowed = spawnRealm({
         entry: fixture('import-allowed.ts'),
-        remote: true,
         overrides: ImportMap.inherit([{
           pattern: 'fino:ffi',
           directive: 'inherit'
