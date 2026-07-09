@@ -48,6 +48,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "trackAtomicsWaiter",
         "untrackAtomicsWaiter",
         "setNonblocking",
+        "openSync",
     ];
     let export_names: Vec<v8::Local<v8::String>> = names
         .iter()
@@ -91,6 +92,7 @@ fn eval_steps<'a>(
     export!("trackAtomicsWaiter", imp::track_atomics_waiter);
     export!("untrackAtomicsWaiter", imp::untrack_atomics_waiter);
     export!("setNonblocking", imp::set_nonblocking);
+    export!("openSync", imp::open_sync);
     Some(v8::undefined(scope).into())
 }
 
@@ -982,19 +984,26 @@ mod imp {
             }
             // Watch everything: watch.ts always subscribes ALL_NOTES, and the
             // requested-mask arg predates the portable event set.
-            if let Ok(watch) = r.reactor.add_fs_watch(&path, fs_event::ALL) {
-                let ud = r.alloc_ud();
-                r.reactor.submit_watch_next(ud, watch);
-                r.ops.insert(ud, Pending::VnodeNext { fd });
-                r.vnodes.insert(
-                    fd,
-                    VnodeEntry {
-                        owner,
-                        watch,
-                        cb: g,
-                    },
-                );
-                r.bump(owner, |c| c.vnodes += 1);
+            match r.reactor.add_fs_watch(&path, fs_event::ALL) {
+                Err(e) => {
+                    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                        eprintln!("[reactor] addVnode fd {fd} path {path:?} failed: {e}");
+                    }
+                }
+                Ok(watch) => {
+                    let ud = r.alloc_ud();
+                    r.reactor.submit_watch_next(ud, watch);
+                    r.ops.insert(ud, Pending::VnodeNext { fd });
+                    r.vnodes.insert(
+                        fd,
+                        VnodeEntry {
+                            owner,
+                            watch,
+                            cb: g,
+                        },
+                    );
+                    r.bump(owner, |c| c.vnodes += 1);
+                }
             }
         });
     }
@@ -1283,6 +1292,27 @@ mod imp {
         static ATOMICS_WAITERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
+    /// Variadic-safe `open(2)`: the mode argument rides the variadic ABI,
+    /// which the JS FFI silently miscalls on ARM64 Darwin — files created
+    /// through a fixed-arg FFI `open` get garbage permission bits. Returns
+    /// the fd, or the negated errno on failure.
+    pub fn open_sync(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        mut rv: v8::ReturnValue,
+    ) {
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let flags = arg_i32(scope, &args, 1);
+        let mode = args.get(2).integer_value(scope).unwrap_or(0).max(0) as libc::c_uint;
+        let Ok(cpath) = std::ffi::CString::new(path) else {
+            rv.set(num(scope, -(libc::EINVAL as f64)));
+            return;
+        };
+        let fd = unsafe { libc::open(cpath.as_ptr(), flags, mode) };
+        let res = if fd < 0 { -errno() } else { fd };
+        rv.set(num(scope, res as f64));
+    }
+
     /// Set an fd to non-blocking mode. A native loop primitive because the
     /// fused read/write fast paths REQUIRE non-blocking fds — and because
     /// `fcntl(2)` is variadic, which the JS FFI silently miscalls on ARM64
@@ -1370,7 +1400,11 @@ mod imp {
             } => {
                 unindex(fd, ud, false);
                 with_reactor(|r| r.bump(owner, |c| c.writes -= 1));
-                resolve_undef(scope, &resolver);
+                // cherenkov's PollOut harvest reads SO_ERROR (clearing it) and
+                // reports it as `res` — a caller's own getsockopt would see 0,
+                // so the error MUST travel through the resolution value:
+                // 0 = writable, negative = the socket's pending errno.
+                resolve_num(scope, &resolver, res as f64);
                 1
             }
             Pending::ReadFused {
@@ -1404,6 +1438,9 @@ mod imp {
                 }
                 unindex(fd, ud, true);
                 with_reactor(|r| r.bump(owner, |c| c.reads -= 1));
+                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
+                    eprintln!("[reactor] fused read fd {fd} ud {ud} dispatched res={res}");
+                }
                 resolve_num(scope, &resolver, res as f64);
                 1
             }

@@ -2102,14 +2102,28 @@ export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Prom
     if (opts.noDelay && family !== AF_UNIX) {
       setsockopt(fd, IPPROTO_TCP_LEVEL, TCP_NODELAY, true);
     }
-    // Non-blocking connect returns immediately (EINPROGRESS).
-    // Wait for writable, then check SO_ERROR for the actual result.
-    connect(fd, addr);
-    await loop.writable(fd);
-    const errBuf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
-    const errno = new DataView(errBuf).getInt32(0, true);
-    if (errno !== 0) {
-      throw new Error('connect() failed: errno=' + errno);
+    // Non-blocking connect usually returns EINPROGRESS; wait for writable,
+    // then check SO_ERROR for the handshake result. An immediate failure
+    // (loopback ECONNREFUSED fails synchronously on macOS, which also leaves
+    // SO_ERROR clear) must be thrown here — waiting would misread a dead
+    // socket's writability as success.
+    const rc = connect(fd, addr);
+    if (rc < 0 && rc !== EINPROGRESS) {
+      throw new Error('connect() failed: errno=' + -rc);
+    }
+    if (rc === EINPROGRESS) {
+      // The loop's writable() resolves the socket's pending error (negated)
+      // when the poll consumed SO_ERROR itself; fall back to getsockopt for
+      // resolutions that carry no value.
+      const werr = (await loop.writable(fd)) as unknown as number | undefined;
+      if (typeof werr === 'number' && werr < 0) {
+        throw new Error('connect() failed: errno=' + -werr);
+      }
+      const errBuf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
+      const errno = new DataView(errBuf).getInt32(0, true);
+      if (errno !== 0) {
+        throw new Error('connect() failed: errno=' + errno);
+      }
     }
     return fd;
   } catch (err) {

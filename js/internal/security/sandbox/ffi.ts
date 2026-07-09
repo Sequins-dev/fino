@@ -29,6 +29,7 @@
 * @internal
 */
 import { dlopen, Pointer } from 'fino:ffi';
+import { openSync } from 'internal:runtime/loop';
 import { os } from 'internal:process';
 const isLinux = os === 'linux';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
@@ -356,7 +357,7 @@ export function readFileBytesSync(path: string, maxBytes: number): Uint8Array | 
 */
 export function writeFileSync(path: string, content: string, create = false): number {
   const flags = O_WRONLY | (create ? O_CREAT | O_TRUNC : 0);
-  const fd = Number(libc.symbols.open(cstr(path), flags, 0o644));
+  const fd = openSync(path, flags, 0o644);
   if (fd < 0) return errno();
   try {
     const bytes = new TextEncoder().encode(content);

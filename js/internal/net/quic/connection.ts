@@ -2354,7 +2354,7 @@ export class QuicConnection extends EventTarget {
     if (output.directory !== undefined && output.directory.length > 0) {
       fileLib.symbols.mkdir(fileCstr(output.directory), 493);
     }
-    const fd = Number(fileLib.symbols.open(fileCstr(output.path), O_WRONLY | O_CREAT | O_TRUNC, 420));
+    const fd = loop.openSync(output.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644);
     if (fd < 0) throw new Error(`qlog open failed: ${fd}`);
     fileLib.symbols.fchmod(fd, 420);
     this.#qlogOpened = true;

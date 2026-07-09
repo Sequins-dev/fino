@@ -382,6 +382,13 @@ export class H1ServerDriver implements ServerDriver {
     let stopAfterSeq = Number.POSITIVE_INFINITY;
     let notifier: (() => void) | null = null;
     let bodyDrainCount = 0;
+    // Requests carrying an Upgrade header whose handler has not yet decided
+    // between a Response and a ConnectionTakeover. Read-ahead must not arm
+    // while one is outstanding: a takeover hands the socket to the upgraded
+    // protocol's own read pump, and the loop allows only one armed read per
+    // fd — a parser read-ahead armed past the upgrade point would collide
+    // with (and kill) the upgraded connection.
+    let pendingUpgradeDecisions = 0;
     const maxConcurrent = opts.maxConcurrent;
     function notify() {
       const resolve = notifier;
@@ -395,7 +402,7 @@ export class H1ServerDriver implements ServerDriver {
       return pending.has(nextWriteSeq);
     }
     function shouldReadMore() {
-      return !parserDone && !connectionFailed && bodyDrainCount === 0 && nextSeq < stopAfterSeq && queuedCount() < maxConcurrent;
+      return !parserDone && !connectionFailed && bodyDrainCount === 0 && pendingUpgradeDecisions === 0 && nextSeq < stopAfterSeq && queuedCount() < maxConcurrent;
     }
     function shouldStop() {
       return connectionFailed || parserDone && inFlight === 0 && pending.size === 0 && !readPumpActive && !flushActive;
@@ -515,6 +522,8 @@ export class H1ServerDriver implements ServerDriver {
           }
           const _requestContext = otelActive ? consumeRequestContext(requestId) : null;
           if (req.hasBody) bodyDrainCount++;
+          const mayUpgrade = req.headers.has('upgrade');
+          if (mayUpgrade) pendingUpgradeDecisions++;
           const _handleAsync = async () => {
             let res: Response | ConnectionTakeover;
             let handlerError: unknown = null;
@@ -540,6 +549,7 @@ export class H1ServerDriver implements ServerDriver {
                 }));
               }
             }
+            if (mayUpgrade) pendingUpgradeDecisions--;
             if (isConnectionTakeover(res)) {
               if (seq < stopAfterSeq) stopAfterSeq = seq;
               parserDone = true;

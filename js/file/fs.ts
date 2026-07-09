@@ -221,14 +221,11 @@ export class DiskFileSystem extends FileSystem {
       fd = result.res;
       if (fd < 0) throwErrnoCode('open', s, fd);
     } else {
-      // macOS: synchronous open(2).
-      // Note: libffi on macOS ARM64 may not correctly pass the mode argument
-      // to the variadic open(2) syscall. Use fchmod to ensure newly-created
-      // files get standard permissions (rw-r--r--) regardless.
-      fd = lib.symbols.open(cstr(s), flags, 438);
-      if (fd < 0) throwErrno('open', s);
+      // macOS: synchronous open(2) via the loop's variadic-safe native shim
+      // (the FFI silently drops the mode argument on ARM64 Darwin).
+      fd = (loopModule as { openSync(p: string, f: number, m: number): number }).openSync(s, flags, 0o644);
+      if (fd < 0) throwErrnoCode('open', s, fd);
     }
-    if (flags & O_CREAT) lib.symbols.fchmod(fd, 420);
     return new File(fd, this, p, mode);
   }
   /**
@@ -243,9 +240,8 @@ export class DiskFileSystem extends FileSystem {
     const p = _toPath(path);
     const s = p.toString();
     const flags = modeToFlags(mode);
-    const fd = lib.symbols.open(cstr(s), flags, 438);
-    if (fd < 0) throwErrno('open', s);
-    if (flags & O_CREAT) lib.symbols.fchmod(fd, 420);
+    const fd = (loopModule as { openSync(p: string, f: number, m: number): number }).openSync(s, flags, 0o644);
+    if (fd < 0) throwErrnoCode('open', s, fd);
     return new File(fd, this, p, mode);
   }
   /**

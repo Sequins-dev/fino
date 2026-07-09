@@ -2773,7 +2773,7 @@ export function writeAllFd(fd: number, data: Uint8Array): void {
 }
 export function appendKeylogLine(options: QuicKeylogOptions, line: string): void {
   if (options === false) return;
-  const fd = Number(fileLib.symbols.open(fileCstr(options.path), O_WRONLY | O_CREAT | O_APPEND, 384));
+  const fd = loop.openSync(options.path, O_WRONLY | O_CREAT | O_APPEND, 0o600);
   if (fd < 0) return;
   try {
     fileLib.symbols.fchmod(fd, 384);

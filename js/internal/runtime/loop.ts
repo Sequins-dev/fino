@@ -309,7 +309,7 @@ export const _nativeDrive = false;
 *
 * @internal
 */
-export { setNonblocking } from 'internal:reactor-native';
+export { setNonblocking, openSync } from 'internal:reactor-native';
 /**
 * Return a snapshot of the loop's live handle counts for diagnostics and tests.
 *

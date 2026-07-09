@@ -121,9 +121,14 @@ export function readable(fd: number): Promise<number> {
   return native.readable(fd);
 }
 
-/** Resolve when `fd` is writable. */
-export function writable(fd: number): Promise<void> {
-  return native.writable(fd);
+/**
+* Resolve when `fd` is writable. Resolves `0` when genuinely writable, or the
+* negated pending socket error (e.g. a failed connect's `-ECONNREFUSED`) —
+* the reactor's poll consumes `SO_ERROR`, so a caller's own `getsockopt`
+* afterwards would read `0`.
+*/
+export function writable(fd: number): Promise<number> {
+  return native.writable(fd) as unknown as Promise<number>;
 }
 
 /**
@@ -209,6 +214,18 @@ export function registerWakeSource(fd: number): void {
 */
 export function setNonblocking(fd: number): void {
   native.setNonblocking(fd);
+}
+
+/**
+* Variadic-safe `open(2)`: the mode argument rides the variadic ABI, which
+* the JS FFI silently miscalls on ARM64 Darwin — files created through a
+* fixed-arg FFI `open` get garbage permission bits. Returns the fd, or the
+* negated errno on failure.
+*
+* @internal
+*/
+export function openSync(path: string, flags: number, mode: number = 0): number {
+  return native.openSync(path, flags, mode);
 }
 
 export function removeRead(fd: number): void {
