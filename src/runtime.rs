@@ -331,6 +331,12 @@ fn call_hook(scope: &mut v8::HandleScope, g: &v8::Global<v8::Function>) -> Optio
     let undef: v8::Local<v8::Value> = v8::undefined(tc).into();
     let f = v8::Local::new(tc, g);
     let out = f.call(tc, undef, &[]).map(|v| v.boolean_value(tc));
+    if out.is_none() && tc.has_terminated() {
+        // Budget/heap containment killed execution; record it — the flag on
+        // the isolate clears once the stack unwinds, but the engine's pump
+        // must classify this slice as Terminated.
+        crate::state::get_state(tc).borrow_mut().saw_termination = true;
+    }
     if out.is_none() && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
         let msg = tc
             .exception()

@@ -1,18 +1,16 @@
 //! Native per-thread reactor engine.
 //!
-//! A reactor thread hosts N tenant isolates and pumps them in priority order,
-//! owning the scheduling loop that used to live in `js/internal/scheduler/shard.ts`.
-//! It replaces the TS `ShardScheduler`: instead of a thread realm running JS that
-//! calls `dispatchWorkload` once per slice, the reactor loop drives
-//! `scheduler_native::pump_native` directly and classifies outcomes natively —
-//! no per-slice `internal:serializer` round trip.
+//! A reactor thread hosts N realm workloads and pumps them in priority order.
+//! Every workload — tenant or full child realm — is constructed through the one
+//! realm bootstrap (`scheduler_native::setup_realm_workload`) and driven through
+//! its native loop hooks; tenant activations arrive as `__tenant_dispatch`
+//! messages over the workload's port, not as a separate dispatch protocol.
 //!
 //! The orchestrator (main thread, TS) drives a pool of these threads through a
 //! cross-thread control/report channel: an mpsc for the messages, cherenkov
 //! Notifier posts for the wakes (control pokes post into the engine's reactor;
 //! reports wake the orchestrator through its isolate wake sink). Control:
-//! place / wake / revoke / drain / shutdown. Reports: released / sync-heavy /
-//! load / drained.
+//! place / revoke / shutdown. Reports: released / sync-heavy / load.
 //!
 //! Isolate-tagged direct I/O (replacing the facade) layers on top of this loop —
 //! see `reactor/io.rs` — so a parked isolate's reactor I/O completions mark it
@@ -99,33 +97,8 @@ pub(crate) fn tenant_import_rules() -> Vec<ImportRule> {
     rules
 }
 
-/// A tenant wake delivered by the orchestrator (why the workload should run).
-/// `reason`/`source_id` carry wake identity for coalescing/consumption — used by
-/// the wake-ordering path landing with direct I/O; retained now to keep the
-/// control wire shape stable.
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct Wake {
-    pub reason: String,
-    pub source_id: String,
-}
-
 /// Control messages: orchestrator (main thread) → reactor thread.
-#[allow(dead_code)] // `wake` payloads are consumed by the wake-ordering path (direct-I/O increment)
 pub enum Control {
-    /// Create + place a tenant isolate on this thread and mark it runnable.
-    Place {
-        workload_id: u64,
-        entry_path: String,
-        /// The tenant `request.data` payload as JSON (passed to the entry fn).
-        data_json: String,
-        /// Priority class: 0 interactive, 1 service, 2 background.
-        priority_class: u8,
-        wake: Wake,
-        /// A migration snapshot (mailbox JSON) handed to the first activation as
-        /// `request.handoff`, or `None` for a fresh placement.
-        handoff_json: Option<String>,
-    },
     /// Create + place a REALM workload on this thread and mark it runnable:
     /// a full child realm (uniform bootstrap, port channel, rule
     /// inheritance) whose native loop hooks the engine pumps.
@@ -142,18 +115,13 @@ pub enum Control {
         /// The child-side channel half (transit handle + wake-pipe read fd).
         port_half: (u32, i32),
     },
-    /// Deliver a wake to an already-placed workload (marks it runnable).
-    Wake { workload_id: u64, wake: Wake },
     /// Terminate + release a workload.
     Revoke { workload_id: u64, reason: String },
-    /// Drain a workload to quiescence and hand its snapshot back (migration).
-    Drain { workload_id: u64 },
     /// Stop the reactor loop and dispose all hosted isolates.
     Shutdown,
 }
 
 /// Report messages: reactor thread → orchestrator (main thread).
-#[allow(dead_code)] // `snapshot` carries the migration payload (migration v2)
 pub enum Report {
     /// A workload reached a terminal state (settled terminal / rejected / revoked).
     Released { workload_id: u64, reason: String },
@@ -165,8 +133,6 @@ pub enum Report {
         runnable: u32,
         debt_band: u32,
     },
-    /// A drain completed; the snapshot bytes carry the migrated mailbox/state.
-    Drained { workload_id: u64, snapshot: Vec<u8> },
 }
 
 /// Orchestrator-side handle to a spawned reactor thread. `join` is held for the
@@ -321,11 +287,10 @@ pub(crate) fn engine_next_timer_id() -> u64 {
 mod imp {
     use super::*;
     use crate::scheduler_native::{
-        ParkedWorkload, PumpOutcome, drop_parked, pump_drain_native, pump_native,
-        pump_realm_native, setup_realm_workload, setup_workload,
+        ParkedWorkload, PumpOutcome, drop_parked, pump_realm_native, setup_realm_workload,
     };
     use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source};
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
 
     /// What a reactor completion resolves to. Every outstanding op — a tenant
@@ -376,25 +341,13 @@ mod imp {
         inner: ParkedWorkload,
         /// A realm workload: pumped through its native loop hooks rather than
         /// the tenant dispatch protocol.
-        realm: bool,
         priority_class: u8,
         debt_micros: f64,
         sequence: u64,
-        /// A dispatch activation is in flight (continue with an empty request).
-        mid: bool,
-        /// Pending data for a fresh dispatch (consumed on first pump).
-        data_json: String,
         sync_heavy_reported: bool,
         /// Reactor I/O completions landed while parked (resolver_id, result),
         /// resolved at the start of the next pump.
         ready_io: Vec<(usize, f64)>,
-        /// Queued wakes not yet serviced, each `(reason, source_id)`. A fresh
-        /// activation pops one and passes it as `request.wake`, so N wakes still
-        /// produce N activations (a resident tenant handles one message per wake).
-        wakes: VecDeque<(String, String)>,
-        /// A handoff snapshot (mailbox JSON) to hand the first activation after a
-        /// migration, as `request.handoff`. Consumed on the first fresh dispatch.
-        handoff_json: Option<String>,
     }
 
     struct ReactorThread {
@@ -520,20 +473,6 @@ mod imp {
 
         fn handle_control(&mut self, msg: Control) {
             match msg {
-                Control::Place {
-                    workload_id,
-                    entry_path,
-                    data_json,
-                    priority_class,
-                    wake: _,
-                    handoff_json,
-                } => self.place(
-                    workload_id,
-                    entry_path,
-                    data_json,
-                    priority_class,
-                    handoff_json,
-                ),
                 Control::PlaceRealm {
                     workload_id,
                     entry_path,
@@ -551,12 +490,6 @@ mod imp {
                     priority_class,
                     port_half,
                 ),
-                Control::Wake { workload_id, wake } => {
-                    if let Some(w) = self.workloads.get_mut(&workload_id) {
-                        w.wakes.push_back((wake.reason, wake.source_id));
-                        self.runnable.insert(workload_id);
-                    }
-                }
                 Control::Revoke {
                     workload_id,
                     reason,
@@ -565,81 +498,8 @@ mod imp {
                         self.release(workload_id, reason);
                     }
                 }
-                Control::Drain { workload_id } => {
-                    // Drain-to-snapshot: pump a `{drain:true}` request so the tenant
-                    // serializes its mailbox, capture that JSON as the migration
-                    // snapshot, then terminate. The destination reconstructs from it.
-                    // (The live-migration completion-forwarding model layers on later.)
-                    if let Some(mut w) = self.workloads.remove(&workload_id) {
-                        self.runnable.remove(&workload_id);
-                        let hard = self.config.hard_budget_micros;
-                        let snapshot = pump_drain_native(&mut w.inner, "{\"drain\":true}", hard)
-                            .unwrap_or_else(|| "[]".to_string());
-                        // Quiesce outstanding ops before disposing the isolate
-                        // that owns their buffers.
-                        self.cancel_owned(workload_id);
-                        self.drain_doomed();
-                        drop_parked(w.inner);
-                        self.report(Report::Drained {
-                            workload_id,
-                            snapshot: snapshot.into_bytes(),
-                        });
-                    }
-                }
                 Control::Shutdown => self.running = false,
             }
-        }
-
-        fn place(
-            &mut self,
-            workload_id: u64,
-            entry_path: String,
-            data_json: String,
-            priority_class: u8,
-            handoff_json: Option<String>,
-        ) {
-            let inner = match setup_workload(
-                entry_path,
-                self.config.process_env.clone(),
-                self.config.package_map_json.clone(),
-                self.config.heap_limit_bytes,
-                super::tenant_import_rules(),
-            ) {
-                Ok(w) => w,
-                Err(err) => {
-                    self.report(Report::Released {
-                        workload_id,
-                        reason: format!("setup_failed: {err}"),
-                    });
-                    return;
-                }
-            };
-            let seq = self.next_sequence;
-            self.next_sequence += 1;
-            // Route the isolate's background wakes (FFI completions, callback
-            // trampolines, view releases) into this reactor as posts tagged
-            // with the workload id. Installed before the first pump, so the
-            // tenant's own bootstrap finds the sink already claimed.
-            inner.install_wake_notifier(self.reactor.notifier(), post_wake(workload_id));
-            self.workloads.insert(
-                workload_id,
-                EngineWorkload {
-                    id: workload_id,
-                    inner,
-                    realm: false,
-                    priority_class,
-                    debt_micros: 0.0,
-                    sequence: seq,
-                    mid: false,
-                    data_json,
-                    sync_heavy_reported: false,
-                    ready_io: Vec::new(),
-                    wakes: VecDeque::new(),
-                    handoff_json,
-                },
-            );
-            // Placed but parked: the orchestrator sends an explicit Wake to run it
-            // (each activation corresponds to a wake, matching SchedulerNode).
         }
 
         #[allow(clippy::too_many_arguments)]
@@ -653,7 +513,11 @@ mod imp {
             priority_class: u8,
             port_half: (u32, i32),
         ) {
-            let import_rules: Vec<crate::state::ImportRule> =
+            // Realm placements ship their complete parent-merged ruleset;
+            // tenant workloads ship none and get the tenant sandbox.
+            let import_rules: Vec<crate::state::ImportRule> = if rules_json.is_empty() {
+                super::tenant_import_rules()
+            } else {
                 match serde_json::from_str(&rules_json) {
                     Ok(rules) => rules,
                     Err(err) => {
@@ -663,7 +527,8 @@ mod imp {
                         });
                         return;
                     }
-                };
+                }
+            };
             let inner = match setup_realm_workload(
                 entry_path,
                 self.config.process_env.clone(),
@@ -691,16 +556,11 @@ mod imp {
                 EngineWorkload {
                     id: workload_id,
                     inner,
-                    realm: true,
                     priority_class,
                     debt_micros: 0.0,
                     sequence: seq,
-                    mid: false,
-                    data_json: String::new(),
                     sync_heavy_reported: false,
                     ready_io: Vec::new(),
-                    wakes: VecDeque::new(),
-                    handoff_json: None,
                 },
             );
             // The realm's bootstrap armed its port watch and wake source
@@ -756,7 +616,7 @@ mod imp {
             ENGINE_CURRENT_COUNTS.with(|c| c.set((io, timers)));
         }
 
-        fn pump_one_realm(&mut self, id: u64) {
+        fn pump_one(&mut self, id: u64) {
             self.set_current_counts(id);
             let hard = self.config.hard_budget_micros;
             let io_completions: Vec<(usize, f64)> = {
@@ -769,9 +629,6 @@ mod imp {
             let t0 = Instant::now();
             let outcome = {
                 let w = self.workloads.get_mut(&id).unwrap();
-                // Wakes carry no payload for realms — messages travel the
-                // port channel; the wake only requests a pump.
-                w.wakes.clear();
                 pump_realm_native(&mut w.inner, hard, &io_completions)
             };
             let slice_micros = t0.elapsed().as_micros() as f64;
@@ -796,106 +653,9 @@ mod imp {
                     self.reactor.submit_timeout(ud, 25);
                     self.ops.insert(ud, OpRecord::RePoll { owner: id });
                 }
-                PumpOutcome::Settled { result, .. } => self.release(id, result),
+                PumpOutcome::Settled { result } => self.release(id, result),
                 PumpOutcome::Terminated => self.release(id, "terminated".to_string()),
                 PumpOutcome::Rejected(msg) => self.release(id, format!("failed: {msg}")),
-            }
-        }
-
-        fn pump_one(&mut self, id: u64) {
-            if self.workloads.get(&id).map(|w| w.realm) == Some(true) {
-                self.pump_one_realm(id);
-                return;
-            }
-            self.set_current_counts(id);
-            let request = {
-                let w = match self.workloads.get_mut(&id) {
-                    Some(w) => w,
-                    None => return,
-                };
-                if w.mid {
-                    "{}".to_string()
-                } else {
-                    w.mid = true;
-                    // A fresh activation: hand it the migration snapshot if this is
-                    // the first run after a handoff, else the next queued wake.
-                    if let Some(mailbox) = w.handoff_json.take() {
-                        format!(
-                            "{{\"workloadId\":{},\"data\":{},\"handoff\":{{\"mailbox\":{}}}}}",
-                            id, w.data_json, mailbox
-                        )
-                    } else if let Some((reason, source_id)) = w.wakes.pop_front() {
-                        format!(
-                            "{{\"workloadId\":{},\"data\":{},\"wake\":{{\"reason\":{},\"sourceId\":{}}}}}",
-                            id,
-                            w.data_json,
-                            json_string(&reason),
-                            json_string(&source_id)
-                        )
-                    } else {
-                        format!("{{\"workloadId\":{},\"data\":{}}}", id, w.data_json)
-                    }
-                }
-            };
-            let hard = self.config.hard_budget_micros;
-            let io_completions: Vec<(usize, f64)> = {
-                let w = self.workloads.get_mut(&id).unwrap();
-                std::mem::take(&mut w.ready_io)
-            };
-            let t0 = Instant::now();
-            let outcome = {
-                let w = self.workloads.get_mut(&id).unwrap();
-                pump_native(&mut w.inner, &request, hard, &io_completions)
-            };
-            let slice_micros = t0.elapsed().as_micros() as f64;
-
-            // Pick up any reactor I/O ops the tenant registered during this pump.
-            self.collect_io_registrations(id);
-
-            // Sync-heavy: a slice never awaits, so wall-clock == on-CPU time.
-            {
-                let w = self.workloads.get_mut(&id).unwrap();
-                if !w.sync_heavy_reported && slice_micros > self.config.sync_slice_micros as f64 {
-                    w.sync_heavy_reported = true;
-                    let cpu = slice_micros;
-                    self.report(Report::SyncHeavy {
-                        workload_id: id,
-                        cpu_micros: cpu,
-                    });
-                }
-            }
-
-            match outcome {
-                PumpOutcome::Pending | PumpOutcome::PendingPoll => {
-                    // Parked on outstanding async work; wake pipe / reactor I/O
-                    // completion will re-mark it runnable via poll.
-                }
-                PumpOutcome::Settled {
-                    result,
-                    cost_micros,
-                } => {
-                    let (terminal, rerun) = {
-                        let w = self.workloads.get_mut(&id).unwrap();
-                        w.mid = false;
-                        if result == "idle" {
-                            // Paid down debt; the wake this activation served was
-                            // already dequeued at request-build. Re-run if more remain.
-                            w.debt_micros = (w.debt_micros - cost_micros).max(0.0);
-                            (false, !w.wakes.is_empty())
-                        } else {
-                            w.debt_micros += cost_micros;
-                            (true, false)
-                        }
-                    };
-                    if terminal {
-                        self.release(id, result);
-                    } else if rerun {
-                        // More queued wakes: run the next activation.
-                        self.runnable.insert(id);
-                    }
-                }
-                PumpOutcome::Terminated => self.release(id, "terminated".to_string()),
-                PumpOutcome::Rejected(_msg) => self.release(id, "failed".to_string()),
             }
         }
 
@@ -1416,12 +1176,9 @@ thread_local! {
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let names = [
         "spawnReactor",
-        "place",
         "placeRealm",
         "isEngineThread",
-        "wake",
         "revoke",
-        "drain",
         "shutdown",
         "nextReport",
         "drainReports",
@@ -1449,12 +1206,9 @@ fn eval_steps<'a>(
         }};
     }
     export!("spawnReactor", cb_spawn_reactor);
-    export!("place", cb_place);
     export!("placeRealm", cb_place_realm);
     export!("isEngineThread", cb_is_engine_thread);
-    export!("wake", cb_wake);
     export!("revoke", cb_revoke);
-    export!("drain", cb_drain);
     export!("shutdown", cb_shutdown);
     export!("nextReport", cb_next_report);
     export!("drainReports", cb_drain_reports);
@@ -1481,6 +1235,9 @@ fn obj_u64(
 ) -> u64 {
     v8::String::new(scope, key)
         .and_then(|k| obj.get(scope, k.into()))
+        // A missing key reads as `undefined`, and ToInteger(undefined) is 0 —
+        // which would silently zero the default. Absent means default.
+        .filter(|v| !v.is_null_or_undefined())
         .and_then(|v| v.integer_value(scope))
         .map(|n| n.max(0) as u64)
         .unwrap_or(default)
@@ -1544,39 +1301,6 @@ fn cb_spawn_reactor(
             scope.throw_exception(exc);
         }
     }
-}
-
-fn cb_place(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let id = arg_u64(scope, &args, 0) as usize;
-    let workload_id = arg_u64(scope, &args, 1);
-    let entry_path = arg_str(scope, &args, 2);
-    let data_json = arg_str(scope, &args, 3);
-    let priority_class = arg_u64(scope, &args, 4) as u8;
-    let reason = arg_str(scope, &args, 5);
-    let source_id = arg_str(scope, &args, 6);
-    // Optional arg 7: a migration snapshot (mailbox JSON) for the first activation.
-    // Absent on a fresh placement (only present on a reclaimed handoff).
-    let handoff_json = if args.get(7).is_string() {
-        let s = arg_str(scope, &args, 7);
-        if s.is_empty() { None } else { Some(s) }
-    } else {
-        None
-    };
-    send_control(
-        id,
-        Control::Place {
-            workload_id,
-            entry_path,
-            data_json,
-            priority_class,
-            wake: Wake { reason, source_id },
-            handoff_json,
-        },
-    );
 }
 
 /// JS: `isEngineThread(): boolean` — whether this realm is hosted on an
@@ -1653,20 +1377,6 @@ fn cb_place_realm(
     rv.set(obj.into());
 }
 
-fn cb_wake(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let id = arg_u64(scope, &args, 0) as usize;
-    let workload_id = arg_u64(scope, &args, 1);
-    let reason = arg_str(scope, &args, 2);
-    let source_id = arg_str(scope, &args, 3);
-    send_control(
-        id,
-        Control::Wake {
-            workload_id,
-            wake: Wake { reason, source_id },
-        },
-    );
-}
-
 fn cb_revoke(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1682,16 +1392,6 @@ fn cb_revoke(
             reason,
         },
     );
-}
-
-fn cb_drain(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let id = arg_u64(scope, &args, 0) as usize;
-    let workload_id = arg_u64(scope, &args, 1);
-    send_control(id, Control::Drain { workload_id });
 }
 
 fn cb_shutdown(
@@ -1805,26 +1505,6 @@ fn cb_drain_reports(
     rv.set(arr.into());
 }
 
-/// Encode `s` as a JSON string literal (quotes + minimal escaping) for splicing
-/// into a hand-built request object.
-pub(crate) fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 fn set_str(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::String::new(scope, val).unwrap();
@@ -1865,16 +1545,6 @@ fn report_to_js<'s>(scope: &mut v8::HandleScope<'s>, report: Report) -> v8::Loca
             set_num(scope, obj, "held", held as f64);
             set_num(scope, obj, "runnable", runnable as f64);
             set_num(scope, obj, "debtBand", debt_band as f64);
-        }
-        Report::Drained {
-            workload_id,
-            snapshot,
-        } => {
-            set_str(scope, obj, "type", "drained");
-            set_num(scope, obj, "workloadId", workload_id as f64);
-            // The snapshot is UTF-8 mailbox JSON; hand it back as a string so the
-            // orchestrator can carry it to the destination's `handoff` request.
-            set_str(scope, obj, "snapshot", &String::from_utf8_lossy(&snapshot));
         }
     }
     obj

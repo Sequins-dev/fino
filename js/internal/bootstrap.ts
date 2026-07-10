@@ -399,15 +399,21 @@ if (_childEntry) {
         _earlyCall = msg;
       } else if (!_callHandlerInstalled && (msg as {
         __pool_call?: boolean;
+        __tenant_dispatch?: boolean;
       }).__pool_call) {
         // Queue early pool calls until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyPoolCalls.push(msg);
+      } else if (!_callHandlerInstalled && (msg as {
+        __tenant_dispatch?: boolean;
+      }).__tenant_dispatch) {
+        _earlyPoolCalls.push(msg);
       } else if (!_userListenerSeen && !_replaying && !(msg as {
         __call?: boolean;
-        __pool_call?: boolean;
       }).__call && !(msg as {
         __pool_call?: boolean;
-      }).__pool_call) {
+      }).__pool_call && !(msg as {
+        __tenant_dispatch?: boolean;
+      }).__tenant_dispatch) {
         _earlyUserMessages.push(msg);
       }
     });
@@ -492,6 +498,9 @@ if (_childEntry) {
       // Track which invocation mode this worker is in so the two modes cannot
       // interfere with each other.
       let _isPoolMode = false;
+      // Serializes tenant activations: the scheduler model is one activation
+      // at a time per workload, in wake order.
+      let _tenantChain: Promise<unknown> = Promise.resolve();
       _childPort.addEventListener('message', function _callHandler(ev) {
         const msg = (ev as MessageEvent).data;
         if (!msg || typeof msg !== 'object') return;
@@ -515,6 +524,31 @@ if (_childEntry) {
               stack: err instanceof Error ? err.stack : undefined
             });
             _childDone = true;
+          });
+        } else if ((msg as {
+          __tenant_dispatch?: boolean;
+        }).__tenant_dispatch) {
+          // Tenant mode: one activation per dispatch, strictly serialized,
+          // module state alive across activations (the scheduler workload
+          // model). The realm stays resident until revoked.
+          (ev as MessageEvent).stopImmediatePropagation?.();
+          _isPoolMode = true;
+          const _request = (msg as {
+            request?: unknown;
+          }).request ?? {};
+          _tenantChain = _tenantChain.then(function _tenantActivate() {
+            return new Promise<unknown>((res) => res(_fn(_request))).then(function _tenantOk(result: unknown) {
+              _childPort!.postMessage({
+                __tenant_result: true,
+                result
+              });
+            }, function _tenantErr(err: unknown) {
+              _childPort!.postMessage({
+                __tenant_error: true,
+                message: String(err),
+                stack: err instanceof Error ? err.stack : undefined
+              });
+            });
           });
         } else if ((msg as {
           __pool_call?: boolean;

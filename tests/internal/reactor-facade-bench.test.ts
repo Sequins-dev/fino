@@ -19,6 +19,7 @@ import { describe, it } from 'fino:test/test';
 import { SchedulerNode } from 'internal:orchestrator/scheduler-node';
 import { DiskFileSystem } from 'fino:file';
 import * as engine from 'internal:reactor-engine';
+import { ThreadPort } from 'internal:realm/transport-port';
 
 const workerPath = new URL('./fixtures/scheduler-bench-read-worker.ts', import.meta.url).pathname;
 
@@ -59,15 +60,31 @@ describe('scheduler tax — file reads', () => {
       await node.shutdown();
     }
 
-    // Raw engine tenant — same worker placed directly on the engine.
+    // Raw engine tenant — same worker placed directly on the engine through
+    // the one realm construction path, dispatched over its port.
     const rid = engine.spawnReactor({});
     let engineMs = 0;
     try {
       const e0 = performance.now();
-      engine.place(rid, 1, workerPath, JSON.stringify({ inputPath, iterations: ITER }), 0, 'go', 'test');
-      engine.wake(rid, 1, 'go', 'test');
+      const info = engine.placeRealm(rid, 1, workerPath, '', '', '', 1) as {
+        portHandle: number;
+        portWakeFd: number;
+      };
+      const port = new ThreadPort(info.portWakeFd, info.portHandle);
+      port.addEventListener('message', (ev) => {
+        const msg = (ev as { data?: { __tenant_result?: boolean; result?: { result?: string } } }).data;
+        if (msg?.__tenant_result && msg.result?.result === 'terminated') {
+          engine.revoke(rid, 1, 'terminated');
+        }
+      });
+      port.start();
+      port.postMessage({
+        __tenant_dispatch: true,
+        request: { workloadId: 1, data: { inputPath, iterations: ITER }, wake: { reason: 'go', sourceId: 'test' } }
+      });
       await waitForEngineReleased(rid, 1);
       engineMs = performance.now() - e0;
+      port.close();
     } finally {
       engine.shutdown(rid);
     }

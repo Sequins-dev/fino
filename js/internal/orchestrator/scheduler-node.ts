@@ -3,17 +3,20 @@
 * drives them over a push control channel.
 *
 * A `SchedulerNode` registers N scheduler threads with a {@link
-* NodeIsolateCollection}, boots each as a long-lived explicit-thread realm
-* running `internal:scheduler/shard`, and coordinates them entirely by pushing
-* control messages (`place` / `wake` / `revoke` / `drain` / `shutdown`) over each
-* realm's port — no per-tick polling. Scheduler threads push `released` and
-* `load` reports back over the same channel, which the node folds into the one
-* authoritative collection. App code never reaches this: it deploys a workload
-* and the orchestrator decides which thread hosts it.
+* NodeIsolateCollection} and boots each as a native reactor engine thread.
+* Every workload — tenant or full child realm — is constructed on its engine
+* through the one realm path (`placeRealm`); tenant activations are dispatched
+* as `__tenant_dispatch` messages over a node-held port, and the results
+* (`idle` / `terminated` / `drained`) are classified here. Engine threads push
+* `released` / `syncHeavy` / `load` reports back over the report channel, which
+* the node folds into the one authoritative collection. App code never reaches
+* this: it deploys a workload and the orchestrator decides which thread hosts
+* it.
 *
 * @internal
 */
 import * as engine from 'internal:reactor-engine';
+import { ThreadPort } from 'internal:realm/transport-port';
 import { NodeIsolateCollection, type NodeWorkloadSpec, type ReleaseReason } from './node.ts';
 import { BudgetWatchdog } from './budget-watchdog.ts';
 import type { LeaseRecord, PriorityClass, SchedulerShardSummary, ShardLoadSummary, TenantWake, WorkloadId } from '../scheduler/types.ts';
@@ -46,15 +49,13 @@ interface ReactorHandle {
 
 /** One engine report drained from a reactor's report channel. */
 interface EngineReport {
-  type: 'released' | 'syncHeavy' | 'load' | 'drained';
+  type: 'released' | 'syncHeavy' | 'load';
   workloadId?: number;
   reason?: string;
   cpuMicros?: number;
   held?: number;
   runnable?: number;
   debtBand?: number;
-  /** Drained: the migrated mailbox as JSON (`[{sequence,data}]`). */
-  snapshot?: string;
 }
 
 /** Release reasons that re-place a workload rather than terminating it. */
@@ -100,7 +101,16 @@ export class SchedulerNode {
   #started = false;
   #shuttingDown = false;
   #released = new Map<WorkloadId, (reason: string) => void>();
-  #pendingHandoff = new Map<WorkloadId, string | undefined>();
+  #pendingHandoff = new Map<WorkloadId, {
+    toShardId?: string;
+  }>();
+  // Node-held parent ports for tenant workloads: activations are dispatched
+  // as `__tenant_dispatch` messages over the realm channel, results come
+  // back as `__tenant_result` — the engine only pumps the realm.
+  #tenantPorts = new Map<WorkloadId, ThreadPort>();
+  // A restored mailbox to hand the workload's next activation as
+  // `request.handoff` (reclaimed handoffs and dead-shard recovery).
+  #pendingRestore = new Map<WorkloadId, unknown[]>();
   // Realm workloads: their full configs (for placement) and the parent-side
   // channel halves handed back to the Realm objects that own them.
   #realmSpecs = new Map<WorkloadId, RealmWorkloadSpec>();
@@ -238,23 +248,6 @@ export class SchedulerNode {
       }
       return;
     }
-    if (report.type === 'drained') {
-      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
-      if (workloadId === undefined) return;
-      // The engine drained the tenant and serialized its mailbox; carry that
-      // JSON to the destination so it reconstructs the pending state.
-      let mailbox: unknown[] = [];
-      if (report.snapshot !== undefined && report.snapshot !== '') {
-        try {
-          const parsed = JSON.parse(report.snapshot);
-          if (Array.isArray(parsed)) mailbox = parsed;
-        } catch {
-          mailbox = [];
-        }
-      }
-      this.#completeHandoff(workloadId, { mailbox });
-      return;
-    }
     if (report.type === 'released') {
       const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
       if (workloadId === undefined) return;
@@ -265,6 +258,13 @@ export class SchedulerNode {
       if (leaseId !== null) this.#collection.release(leaseId, reason as ReleaseReason);
       const isRealm = this.#realmSpecs.delete(workloadId);
       this.#realmPorts.delete(workloadId);
+      if (!RE_PLACING_REASONS.has(reason)) {
+        const port = this.#tenantPorts.get(workloadId);
+        if (port !== undefined) {
+          port.close();
+          this.#tenantPorts.delete(workloadId);
+        }
+      }
       this.#activate();
       if (isRealm || !RE_PLACING_REASONS.has(reason)) {
         const resolve = this.#released.get(workloadId);
@@ -277,23 +277,34 @@ export class SchedulerNode {
   }
 
   /**
-  * Begin handing a workload off to another thread: mark it draining and push a
-  * `drain` to its current holder, which quiesces it and reports a snapshot. The
-  * move completes in {@link #completeHandoff} when that report arrives.
+  * Begin handing a workload off to another thread: mark it draining and
+  * dispatch a `drain: true` activation over its port, which quiesces it and
+  * returns its mailbox as a `drained` result. The move completes in
+  * {@link #onTenantResult} when that result arrives.
   */
   handoff(workloadId: WorkloadId, toShardId?: string): void {
     const shardId = this.#collection.placementOf(workloadId);
     if (shardId === null) return;
+    const port = this.#tenantPorts.get(workloadId);
+    if (port === undefined) return;
     this.#collection.drainForHandoff(workloadId);
-    this.#pendingHandoff.set(workloadId, toShardId);
-    const reactorId = this.#reactorFor(shardId);
-    if (reactorId !== null) engine.drain(reactorId, this.#engineId(workloadId));
+    this.#pendingHandoff.set(workloadId, { ...toShardId !== undefined ? { toShardId } : {} });
+    // Ask the workload to serialize its state: the `drained` result carries
+    // the mailbox and completes the move in #onTenantResult.
+    port.postMessage({
+      __tenant_dispatch: true,
+      request: {
+        workloadId,
+        data: this.#collection.entryDataOf(workloadId) ?? {},
+        drain: true
+      }
+    });
   }
 
   #completeHandoff(workloadId: WorkloadId, pending: { mailbox: unknown[] }): void {
     if (this.#collection.record(workloadId)?.state !== 'draining') return;
     this.#collection.completeHandoff(workloadId, { mailbox: pending.mailbox }, Date.now() * 1_000_000);
-    const toShardId = this.#pendingHandoff.get(workloadId);
+    const toShardId = this.#pendingHandoff.get(workloadId)?.toShardId;
     this.#pendingHandoff.delete(workloadId);
     this.#collection.placeHandoff(workloadId, toShardId);
     // Push the reconstructed workload to its destination and wake it so it
@@ -374,32 +385,115 @@ export class SchedulerNode {
     return id;
   }
 
-  /** Create + place a claimed workload on its reactor (parked until woken). */
+  /**
+  * Create + place a claimed workload on its reactor. Every workload is a
+  * realm — one construction path. Tenant workloads additionally get a
+  * node-held port: the node dispatches activations over it and classifies
+  * the results.
+  */
   #placeOnEngine(reactorId: number, lease: LeaseRecord): void {
+    const workloadId = lease.workloadId;
     const entryPath = lease.entryPath ?? '';
     const priorityClass = PRIORITY_CLASS[lease.priority] ?? 1;
-    const realmSpec = this.#realmSpecs.get(lease.workloadId);
+    const realmSpec = this.#realmSpecs.get(workloadId);
     if (realmSpec !== undefined) {
-      const info = engine.placeRealm(reactorId, this.#engineId(lease.workloadId), entryPath, realmSpec.rulesJson, realmSpec.realmData ?? '', realmSpec.bootstrapData ?? '', priorityClass) as {
+      const info = engine.placeRealm(reactorId, this.#engineId(workloadId), entryPath, realmSpec.rulesJson, realmSpec.realmData ?? '', realmSpec.bootstrapData ?? '', priorityClass) as {
         portHandle: number;
         portWakeFd: number;
       };
-      this.#realmPorts.set(lease.workloadId, info);
+      this.#realmPorts.set(workloadId, info);
       return;
     }
-    const dataJson = JSON.stringify(lease.data ?? {});
-    // A reclaimed handed-off workload carries a snapshot; hand its mailbox to the
-    // engine so the first activation reconstructs from `request.handoff`.
-    const handoffJson = lease.handoff !== undefined ? JSON.stringify(lease.handoff.mailbox ?? []) : '';
-    engine.place(reactorId, this.#engineId(lease.workloadId), entryPath, dataJson, priorityClass, 'place', '', handoffJson);
+    // Tenant workload: realm construction with the tenant sandbox rules
+    // (empty rules_json → the engine applies its tenant defaults).
+    const info = engine.placeRealm(reactorId, this.#engineId(workloadId), entryPath, '', '', '', priorityClass) as {
+      portHandle: number;
+      portWakeFd: number;
+    };
+    const old = this.#tenantPorts.get(workloadId);
+    if (old !== undefined) old.close();
+    const port = new ThreadPort(info.portWakeFd, info.portHandle);
+    port.addEventListener('message', (ev) => {
+      const data = (ev as {
+        data?: unknown;
+      }).data;
+      this.#onTenantResult(workloadId, data);
+    });
+    port.start();
+    this.#tenantPorts.set(workloadId, port);
+    // A reclaimed handed-off workload carries a snapshot; hand its mailbox
+    // to the next activation as `request.handoff`.
+    if (lease.handoff !== undefined) {
+      this.#pendingRestore.set(workloadId, (lease.handoff.mailbox ?? []) as unknown[]);
+    }
   }
 
-  /** Wake a workload on its hosting reactor (each wake is one activation). */
+  /** Classify a tenant activation result delivered over the workload's port. */
+  #onTenantResult(workloadId: WorkloadId, data: unknown): void {
+    if (!data || typeof data !== 'object') return;
+    const msg = data as {
+      __tenant_result?: boolean;
+      __tenant_error?: boolean;
+      result?: {
+        result?: string;
+        mailbox?: unknown[];
+      };
+      message?: string;
+    };
+    if (msg.__tenant_error) {
+      this.revoke(workloadId, 'failed');
+      return;
+    }
+    if (!msg.__tenant_result) return;
+    const outcome = msg.result?.result ?? 'idle';
+    if (outcome === 'terminated') {
+      this.revoke(workloadId, 'terminated');
+    } else if (outcome === 'drained') {
+      if (this.#pendingHandoff.has(workloadId)) {
+        // Remove the drained source realm from its engine, then retire its
+        // engine id: the source's Released report must map to nothing so it
+        // cannot touch the fresh lease the re-placement takes below.
+        const sourceShard = this.#collection.placementOf(workloadId);
+        const sourceReactor = sourceShard !== null ? this.#reactorFor(sourceShard) : null;
+        const engineId = this.#toEngineId.get(workloadId);
+        if (sourceReactor !== null && engineId !== undefined) {
+          engine.revoke(sourceReactor, engineId, 'rebalanced');
+        }
+        if (engineId !== undefined) {
+          this.#toEngineId.delete(workloadId);
+          this.#fromEngineId.delete(engineId);
+        }
+        this.#tenantPorts.get(workloadId)?.close();
+        this.#tenantPorts.delete(workloadId);
+        // completeHandoff drops the old lease itself (the record is still
+        // `draining` here) and re-places on the destination shard.
+        this.#completeHandoff(workloadId, { mailbox: (msg.result?.mailbox ?? []) as unknown[] });
+      }
+    }
+    // 'idle': parked until the next wake — nothing to do.
+  }
+
+  /**
+  * Wake a workload: dispatch one activation over its port. The message's
+  * wake byte is itself what makes the hosting reactor pump the realm.
+  */
   wake(workloadId: WorkloadId, wake: TenantWake): void {
-    const shardId = this.#collection.placementOf(workloadId);
-    if (shardId === null) return;
-    const reactorId = this.#reactorFor(shardId);
-    if (reactorId !== null) engine.wake(reactorId, this.#engineId(workloadId), wake.reason, wake.sourceId);
+    const port = this.#tenantPorts.get(workloadId);
+    if (port === undefined) return;
+    const request: Record<string, unknown> = {
+      workloadId,
+      data: this.#collection.entryDataOf(workloadId) ?? {},
+      wake: { reason: wake.reason, sourceId: wake.sourceId }
+    };
+    const restore = this.#pendingRestore.get(workloadId);
+    if (restore !== undefined) {
+      this.#pendingRestore.delete(workloadId);
+      request.handoff = { mailbox: restore };
+    }
+    port.postMessage({
+      __tenant_dispatch: true,
+      request
+    });
   }
 
   /** Revoke a workload on its hosting reactor. */
@@ -433,6 +527,8 @@ export class SchedulerNode {
     // holds its supervisor (a parent realm's run() entry) open forever.
     for (const resolve of this.#released.values()) resolve('shutdown');
     this.#released.clear();
+    for (const port of this.#tenantPorts.values()) port.close();
+    this.#tenantPorts.clear();
     this.#started = false;
     this.#shuttingDown = false;
     return summaries;

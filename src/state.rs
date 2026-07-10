@@ -519,6 +519,12 @@ pub struct FinoState {
     /// The half's wake-pipe read fd — the bootstrap's port watch registers
     /// it with the loop.
     pub port_wake_read_fd: Option<std::os::unix::io::RawFd>,
+
+    /// A policy hook observed `TryCatch::has_terminated` — execution was
+    /// killed (budget/heap containment). The engine's realm pump takes this
+    /// to classify the slice as Terminated; V8's own terminating flag clears
+    /// once the stack unwinds, so the observation must be recorded.
+    pub saw_termination: bool,
 }
 
 impl FinoState {
@@ -565,6 +571,7 @@ impl FinoState {
             inspector_state: None,
             port_transit_handle: None,
             port_wake_read_fd: None,
+            saw_termination: false,
             thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }
@@ -624,6 +631,7 @@ impl FinoState {
             inspector_state: None,
             port_transit_handle: port_half.map(|(h, _)| h),
             port_wake_read_fd: port_half.map(|(_, fd)| fd),
+            saw_termination: false,
             thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }

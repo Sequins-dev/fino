@@ -91,6 +91,11 @@ export class NodeIsolateCollection {
   #nextWorkload = 0;
   #nextLease = 0;
 
+  /** The deployment `data` payload recorded for a workload, if any. */
+  entryDataOf(workloadId: WorkloadId): unknown {
+    return this.#entries.get(workloadId)?.data;
+  }
+
   /** The node's workload allocator (thread roster, load view, placement policy). */
   allocator(): WorkloadAllocator {
     return this.#allocator;

@@ -134,7 +134,7 @@ describe('scheduler node', () => {
     const out = `${root}/survivor.txt`;
     // A generous hard budget so the runaway watchdog can't be what stops the hog
     // — only the heap-limit callback can. One thread hosts both.
-    const node = new SchedulerNode({ shardCount: 1, capacity: 2, heapLimitBytes: 32 * 1024 * 1024, hardBudgetMicros: 60_000_000 });
+    const node = new SchedulerNode({ shardCount: 1, capacity: 2, heapLimitBytes: 96 * 1024 * 1024, hardBudgetMicros: 60_000_000 });
     node.start();
     try {
       const hog = node.deploy({ tenantId: 'hog', entryPath: heapHog, data: {} });
