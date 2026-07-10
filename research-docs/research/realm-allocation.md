@@ -19,15 +19,14 @@ const realm = new Realm({ entry: './worker.ts', overrides });
 await realm.run();          // executes wherever the allocator placed it
 ```
 
-Everything the reactor migration built points here: realm configs are already
-serializable (builder classes with toJSON/fromJSON), every thread already runs
-the same reactor loop, realm liveness is already owner-tagged bookkeeping on a
-shared per-thread reactor, and all realm communication already flows through
-one MessagePort-shaped channel regardless of kind. Placement is the last
-API-visible seam, and the allocator that should own it already exists:
-`internal:orchestrator/allocator`'s `WorkloadAllocator` is the node's single
-placement authority, with capacity, affinity, and colocation policy, and was
-deliberately shaped so a cluster-level allocator can federate node-local ones.
+The reactor work now implements this model: realm configs are serializable,
+every scheduler thread runs the same native reactor loop, realm liveness and
+I/O are owner-tagged, and all realm communication flows through one
+MessagePort-shaped transit channel. Placement is owned by
+`internal:orchestrator/allocator`'s `WorkloadAllocator`, the node's single
+placement authority with capacity, affinity, and colocation policy. It was
+deliberately kept node-local so a cluster allocator can choose a node without
+learning its reactor IDs.
 
 ## Placement becomes an outcome, not an option
 
@@ -61,18 +60,23 @@ first allocation lazily starts the node's allocation service on that reactor —
 the orchestrator — which owns a bounded pool of reactor threads and deploys
 realm configs into them.
 
-Placement policy, v1 (deliberately boring):
+Current placement and offload policy:
 
-1. **Pool width** defaults to `min(navigator.hardwareConcurrency, 8)` reactor
-   threads, spawned on demand, never on the caller's thread.
-2. **Fresh realms** go to the least-occupied pooled reactor. Under-cap that
-   means a dedicated thread per realm — exactly what `thread: true` produced,
-   so existing behavior and performance are preserved by default.
-3. **Over cap**, realms multiplex: a pooled reactor thread hosts several realm
-   contexts, each its own isolate-independent context with owner-tagged
-   liveness on the shared reactor. (Same-thread multi-realm hosting is what
-   the reactor's per-realm accounting was built for.)
-4. **The caller's thread is never a target.** Parents stay latency-clean; a
+1. **The lazy realm pool** starts two latency reactors with capacity one and
+   falls back to a dedicated reactor when the pool cannot admit a realm.
+2. **Replicated by default.** `RealmOptions.scaling` defaults to independent
+   replicable heaps with `min: 1`; `mode: 'bound'` fixes the realm at one
+   caller-state-bound isolate and places it directly on a lower-priority batch
+   reactor.
+3. **Fresh replicated realms** go to the least-loaded latency reactor with
+   capacity. Cluster selection prefers another node when its load is equal or
+   lower, and replica splits spread across nodes before filling more reactors.
+4. **Local mobility defaults on.** `localMobility: 'pinned'` and hard affinity
+   opt out; otherwise a pooled realm may move between reactor threads.
+5. **Blocking isolation** uses repeated native slice reports, actual debt, and
+   capacity reservations. A lower-priority batch reactor is created on demand,
+   receives the same live V8 isolate, and retires after its idle timeout.
+6. **The caller's thread is never a target.** Parents stay latency-clean; a
    parent that wants sync coupling with a child is the internal embedded path,
    not an allocator outcome.
 
@@ -80,16 +84,24 @@ The `WorkloadAllocator` already models this: shards with capacity and class
 (`latency`/`batch`), occupancy read-back, affinity/preference requests. Realm
 allocation introduces one new workload kind (`realm`) beside `app`/`job-pool`/
 `tenant`, and the pool's shard roster *is* the reactor-thread pool. The
-orchestrator's existing load reports drive rebalancing later: a realm that
-turns out blocking-heavy gets drained and respawned onto a `batch` shard —
-and eventually onto another node — using the same child-initiated
-drain+respawn machinery watch-mode reloads use.
+orchestrator's load reports drive rebalancing now: a blocking-heavy realm exits
+its isolate at a pump boundary, transfers exclusive ownership under V8's
+cross-thread locking contract, and resumes on a `batch` shard without module
+re-evaluation or port replacement. Pending readiness and timers are rearmed on
+the destination; already-submitted pointer-backed operations may drain on the
+source and forward their plain completion result.
 
-When a cluster is active, the allocator gains remote shards: placement can pick
-a peer node, serialize the config (it already is serializable), and allocate it
-to that node's allocator, which runs it on one of *its* reactors. `remote:
-true` stops being an API option because it stops being special: it is the same
-decision with a longer wire.
+When a cluster is active, cluster placement chooses a node and that node's
+allocator independently chooses a local shard. Reactor IDs and live-isolate
+transfer remain node-private. Cross-node movement therefore uses a replacement
+attempt from serialized configuration or an explicit application checkpoint;
+it never treats a remote node as another `WorkloadAllocator` shard.
+
+The executable autoscaling policy uses queue age and runnable delay as leading
+signals, not CPU exhaustion: one second of sustained loop pressure may add one
+ready replica; below 10% busy with no queue for 30 seconds may drain one. Route
+withdrawal precedes listener closure, and referenced active tasks—not idle
+listeners or unreferenced timers—control final realm disposal.
 
 ## What converges
 
@@ -125,17 +137,15 @@ whatever realms it hosts."
    `createThreadContext` spawns a fresh thread). Pool width cap + least-loaded
    placement + `RealmPool` anti-affinity. This is where the allocator starts
    earning its keep.
-3. **Orchestrator unification.** Realm workloads become records in
-   `NodeIsolateCollection`; load reports feed rebalancing; blocking-heavy
-   realms drain to batch shards. Engine tenants construct through the same
-   path.
-4. **Cross-node.** Cluster-active allocators exchange load and ship configs —
-   the multi-node-distribution design's pull-based claiming, with the realm
-   config as the unit shipped.
+3. **Orchestrator unification — implemented.** Realm workloads are records in
+   `NodeIsolateCollection`; all engine tenants use the realm construction path;
+   blocking-heavy realms move live to batch shards.
+4. **Cross-node — pending.** The cluster control plane assigns a node and ships
+   configuration; the destination admits through its unchanged local allocator.
 
-Phase 1 is small and mechanical; phase 2 is the first real native work
-(context-on-existing-thread); phases 3–4 ride designs that already exist
-(realm-loop-orchestration.md, multi-node-distribution.md).
+Phases 1–3 are represented on the current branch. Phase 4 follows
+`multi-node-distribution.md` and deliberately uses replacement across nodes
+while preferring live transfer within a reasonably balanced node.
 
 ## Open questions
 

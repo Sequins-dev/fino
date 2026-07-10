@@ -132,7 +132,7 @@ describe('SeedServer — HELLO / WELCOME', () => {
 });
 describe('SeedServer — SPAWN routing', () => {
   afterEach(stopActiveSeed);
-  it('SPAWN with no eligible peer → SPAWN_ACK { ok: false }', async (t) => {
+  it('SPAWN on a single-node cluster is admitted back to the requester', async (t) => {
     const { transport } = await makeSeed();
     // Only one node — no other peers
     transport.inject('worker-1', {
@@ -154,10 +154,34 @@ describe('SeedServer — SPAWN routing', () => {
         rules: []
       }
     });
-    const acks = transport.sentOfType('SPAWN_ACK');
-    t.equal(acks.length, 1, 'one SPAWN_ACK sent');
-    t.ok(!acks[0]!.ok, 'SPAWN_ACK ok=false when no eligible worker');
-    t.ok(typeof acks[0]!.error === 'string', 'SPAWN_ACK error message set');
+    const spawn = transport.sent.find((sent) => sent.msg.t === 'SPAWN');
+    t.equal(spawn?.to, 'worker-1', 'the local node remains an eligible fallback');
+  });
+  it('keeps a spawn local when every remote node is more loaded', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: .1, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: .2, memory: 0 } });
+    transport.sent = [];
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'req-local',
+      parentPortId: 'worker-1/p-local',
+      config: { entry: './fn.ts', root: '/app', rules: [] }
+    });
+    t.equal(transport.sent.find((sent) => sent.msg.t === 'SPAWN')?.to, 'worker-1');
+  });
+  it('prefers a remote node when its load equals local', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: .1, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: .1, memory: 0 } });
+    transport.sent = [];
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'req-equal',
+      parentPortId: 'worker-1/p-equal',
+      config: { entry: './fn.ts', root: '/app', rules: [] }
+    });
+    t.equal(transport.sent.find((sent) => sent.msg.t === 'SPAWN')?.to, 'worker-2');
   });
   it('SPAWN with two peers → forwarded to peer, SPAWN_ACK routed back to requester', async (t) => {
     const { transport } = await makeSeed();

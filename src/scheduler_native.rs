@@ -136,6 +136,9 @@ pub(crate) struct ParkedWorkload {
     _state: Rc<RefCell<FinoState>>,
     _module: v8::Global<v8::Module>,
     isolate: v8::OwnedIsolate,
+    /// Set after the isolate crosses an OS-thread boundary. Subsequent entries
+    /// use V8's Locker to signal and serialize thread ownership.
+    moved_between_threads: bool,
 }
 
 impl ParkedWorkload {
@@ -151,6 +154,10 @@ impl ParkedWorkload {
             .as_ref()
             .map(|st| st.wake_sink.install_notifier(notifier, user_data))
             .unwrap_or(false)
+    }
+
+    pub(crate) fn mark_moved_between_threads(&mut self) {
+        self.moved_between_threads = true;
     }
 }
 
@@ -370,6 +377,7 @@ pub(crate) fn setup_realm_workload(
         budget_token,
         _state: state_rc,
         _module: module_global,
+        moved_between_threads: false,
     };
     unsafe {
         workload.isolate.exit();
@@ -397,6 +405,9 @@ pub(crate) fn pump_realm_native(
     }
     let budget_token = workload.budget_token;
     let saved = crate::async_rt::swap_state(workload.async_state.take());
+    let _locker = workload
+        .moved_between_threads
+        .then(|| crate::v8_threading::IsolateLocker::new(&mut workload.isolate));
     unsafe {
         workload.isolate.enter();
     }

@@ -213,7 +213,14 @@ describe('scheduler node', () => {
       const first = node.collection().placementOf(id);
       t.equal(node.collection().shardClassOf(first ?? ''), 'latency', 'starts on a latency thread');
       // The heavy sync slice trips the on-CPU threshold and triggers migration.
-      wakeFor(node, id, 'go');
+      wakeFor(node, id, 'sample-1');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      t.equal(node.collection().shardClassOf(node.collection().placementOf(id) ?? ''), 'latency', 'one blocking sample does not move a realm');
+      for (let sample = 2; sample <= 4; sample++) {
+        if (node.collection().shardClassOf(node.collection().placementOf(id) ?? '') === 'batch') break;
+        wakeFor(node, id, `sample-${sample}`);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
       let landed: string | null = null;
       for (let i = 0; i < 200; i++) {
         landed = node.collection().placementOf(id);
@@ -221,6 +228,118 @@ describe('scheduler node', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       t.equal(node.collection().shardClassOf(landed ?? ''), 'batch', 'migrated to a batch thread');
+      const released = node.whenReleased(id);
+      node.revoke(id, 'test-done');
+      await released;
+    } finally {
+      await node.shutdown();
+    }
+  });
+
+  it('spawns batch capacity on demand for a blocking workload', async (t) => {
+    const node = new SchedulerNode({
+      shardCount: 1,
+      capacity: 2,
+      syncSliceThresholdMicros: 10_000,
+      batchPool: { minThreads: 0, maxThreads: 1, idleTimeoutMs: 30_000 }
+    });
+    node.start();
+    try {
+      t.equal(node.shardIds().some((id) => id.startsWith('batch-')), false, 'no batch reactor is warm');
+      const id = node.deploy({ tenantId: 'compute', entryPath: syncHeavy, data: { busyMs: 80 } });
+      wakeFor(node, id, 'sample-1');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      for (let sample = 2; sample <= 4; sample++) {
+        if (node.collection().shardClassOf(node.collection().placementOf(id) ?? '') === 'batch') break;
+        wakeFor(node, id, `sample-${sample}`);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+      let landed: string | null = null;
+      for (let i = 0; i < 200; i++) {
+        landed = node.collection().placementOf(id);
+        if (landed !== null && node.collection().shardClassOf(landed) === 'batch') break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      t.equal(node.collection().shardClassOf(landed ?? ''), 'batch', 'an on-demand batch reactor received the isolate');
+      t.equal(node.shardIds().filter((id) => id.startsWith('batch-')).length, 1, 'provisioning respected the maximum');
+      const released = node.whenReleased(id);
+      node.revoke(id, 'test-done');
+      await released;
+    } finally {
+      await node.shutdown();
+    }
+  });
+
+  it('provisions lower-priority capacity before admitting a bound workload', async (t) => {
+    const node = new SchedulerNode({
+      shardCount: 1,
+      capacity: 2,
+      batchPool: { minThreads: 0, maxThreads: 1, idleTimeoutMs: 30_000 }
+    });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'stateful', entryPath: longlived, replication: 'bound' });
+      const shard = node.collection().placementOf(id);
+      t.equal(node.collection().shardClassOf(shard ?? ''), 'batch', 'bound work never starts on a latency reactor');
+      t.equal(node.collection().replicationOf(id), 'bound');
+      const released = node.whenReleased(id);
+      node.revoke(id, 'test-done');
+      await released;
+    } finally {
+      await node.shutdown();
+    }
+  });
+
+  it('retires an on-demand batch reactor after its idle timeout', async (t) => {
+    const node = new SchedulerNode({
+      shardCount: 1,
+      capacity: 2,
+      syncSliceThresholdMicros: 10_000,
+      batchPool: { minThreads: 0, maxThreads: 1, idleTimeoutMs: 25 }
+    });
+    node.start();
+    try {
+      const id = node.deploy({ tenantId: 'compute', entryPath: syncHeavy, data: { busyMs: 50 } });
+      wakeFor(node, id, 'sample-1');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      wakeFor(node, id, 'sample-2');
+      for (let i = 0; i < 100; i++) {
+        const shard = node.collection().placementOf(id);
+        if (shard !== null && node.collection().shardClassOf(shard) === 'batch') break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const released = node.whenReleased(id);
+      node.revoke(id, 'test-done');
+      await released;
+      for (let i = 0; i < 100 && node.shardIds().some((shard) => shard.startsWith('batch-')); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      t.equal(node.shardIds().some((shard) => shard.startsWith('batch-')), false, 'the cold batch pool returned to zero threads');
+    } finally {
+      await node.shutdown();
+    }
+  });
+
+  it('does not offload an affinity-pinned blocking workload', async (t) => {
+    const node = new SchedulerNode({
+      shardCount: 1,
+      batchThreads: 1,
+      capacity: 2,
+      syncSliceThresholdMicros: 10_000
+    });
+    node.start();
+    try {
+      const id = node.deploy({
+        tenantId: 'core',
+        entryPath: syncHeavy,
+        affinity: 'shard-0',
+        data: { busyMs: 40 }
+      });
+      wakeFor(node, id, 'go');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      t.equal(node.collection().placementOf(id), 'shard-0', 'hard affinity prevented automatic movement');
+      const outcome = await node.move(id, 'batch-0');
+      t.equal(outcome.status, 'deferred', 'manual movement respects the same pin');
       const released = node.whenReleased(id);
       node.revoke(id, 'test-done');
       await released;
@@ -357,7 +476,7 @@ describe('scheduler node', () => {
     await fs.rmdir(root).catch(() => undefined);
   });
 
-  it('hands a live workload off to another thread, preserving its pending state', async (t) => {
+  it('moves a stateful workload without reconstructing its module mailbox', async (t) => {
     const fs = new DiskFileSystem();
     const root = tmpRoot('handoff');
     await fs.mkdir(root);
@@ -366,7 +485,8 @@ describe('scheduler node', () => {
     const node = new SchedulerNode({ shardCount: 2, capacity: 4 });
     node.start();
     try {
-      const id = node.deploy({ tenantId: 'acme', entryPath: handoffWorker, affinity: 'shard-0', data: { outputPath: out, seedPath: seed } });
+      const id = node.deploy({ tenantId: 'acme', entryPath: handoffWorker, data: { outputPath: out, seedPath: seed } });
+      t.equal(node.collection().placementOf(id), 'shard-0', 'fresh placement begins on shard-0');
       const released = node.whenReleased(id);
       // Two wakes accumulate a mailbox in the live isolate on shard-0.
       wakeFor(node, id, 'seed-1');
@@ -377,16 +497,77 @@ describe('scheduler node', () => {
         if (seen === '["seed-1","seed-2"]') break;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      // Now hand the live workload to shard-1.
-      node.handoff(id, 'shard-1');
+      const moved = await node.move(id, 'shard-1');
+      t.equal(moved.status, 'moved', `the same isolate attached on shard-1 (${JSON.stringify(moved)})`);
+      wakeFor(node, id, 'after-move');
       await released;
-      // The destination isolate reconstructed the mailbox from the snapshot.
-      t.deepEqual(JSON.parse(new TextDecoder().decode(await fs.readFile(out))), ['seed-1', 'seed-2', 'reconstructed'], 'pending mailbox survived the cross-thread handoff');
+      t.deepEqual(JSON.parse(new TextDecoder().decode(await fs.readFile(out))), ['seed-1', 'seed-2', 'after-move', 'live-isolate'], 'module memory survived the live move');
     } finally {
       await node.shutdown();
       await fs.unlink(out).catch(() => undefined);
       await fs.unlink(seed).catch(() => undefined);
       await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('moves an ordinary live workload without an application drain protocol', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = tmpRoot('live-move');
+    await fs.mkdir(root);
+    const out = `${root}/count.txt`;
+    const node = new SchedulerNode({ shardCount: 2, capacity: 4 });
+    node.start();
+    try {
+      const id = node.deploy({
+        tenantId: 'acme',
+        entryPath: longlived,
+        data: { outputPath: out, until: 2 }
+      });
+      t.equal(node.collection().placementOf(id), 'shard-0', 'fresh placement starts on the first latency shard');
+      const released = node.whenReleased(id);
+      wakeFor(node, id, 'before-move');
+      for (let i = 0; i < 100; i++) {
+        const count = await fs.readFile(out).then((b) => new TextDecoder().decode(b)).catch(() => '');
+        if (count === '1') break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const outcome = await node.move(id, 'shard-1');
+      t.equal(outcome.status, 'moved', 'the node committed a live-isolate move');
+      t.equal(node.collection().placementOf(id), 'shard-1', 'placement follows the attached isolate');
+      wakeFor(node, id, 'after-move');
+      await released;
+      t.equal(new TextDecoder().decode(await fs.readFile(out)), '2', 'module state survived without checkpoint hooks');
+    } finally {
+      await node.shutdown();
+      await fs.unlink(out).catch(() => undefined);
+      await fs.rmdir(root).catch(() => undefined);
+    }
+  });
+
+  it('reserves destination capacity before concurrent live moves', async (t) => {
+    const node = new SchedulerNode({ shardCount: 3, capacity: 1 });
+    node.start();
+    try {
+      const first = node.deploy({ tenantId: 'a', entryPath: longlived, data: { outputPath: '/tmp/fino-move-reserve-a' } });
+      const second = node.deploy({ tenantId: 'b', entryPath: longlived, data: { outputPath: '/tmp/fino-move-reserve-b' } });
+      t.equal(node.collection().placementOf(first), 'shard-0', 'first source is shard-0');
+      t.equal(node.collection().placementOf(second), 'shard-1', 'second source is shard-1');
+
+      const [a, b] = await Promise.race([
+        Promise.all([
+          node.move(first, 'shard-2'),
+          node.move(second, 'shard-2')
+        ]),
+        new Promise<Array<{ status: string }>>((resolve) => setTimeout(() => resolve([{ status: 'timeout' }, { status: 'timeout' }]), 1_000))
+      ]);
+      t.equal([a.status, b.status].filter((status) => status === 'moved').length, 1, 'one move consumed the only slot');
+      t.equal([a.status, b.status].filter((status) => status === 'deferred').length, 1, 'the competing move was deferred before detach');
+    } finally {
+      await node.shutdown();
+      const fs = new DiskFileSystem();
+      await fs.unlink('/tmp/fino-move-reserve-a').catch(() => undefined);
+      await fs.unlink('/tmp/fino-move-reserve-b').catch(() => undefined);
     }
   });
 });

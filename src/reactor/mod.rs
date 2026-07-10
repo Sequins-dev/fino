@@ -34,6 +34,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "fileRead",
         "addTimer",
         "cancelTimer",
+        "setTimerRef",
         "tick",
         "alive",
         "registerWakeSource",
@@ -78,6 +79,7 @@ fn eval_steps<'a>(
     export!("fileRead", imp::file_read);
     export!("addTimer", imp::add_timer);
     export!("cancelTimer", imp::cancel_timer);
+    export!("setTimerRef", imp::set_timer_ref);
     export!("tick", imp::tick);
     export!("alive", imp::alive);
     export!("registerWakeSource", imp::register_wake_source);
@@ -225,6 +227,7 @@ mod imp {
         Timer {
             owner: usize,
             resolver: v8::Global<v8::PromiseResolver>,
+            referenced: bool,
         },
         Proc {
             owner: usize,
@@ -464,6 +467,19 @@ mod imp {
         }
     }
 
+    fn buffer_backing_store(
+        scope: &mut v8::HandleScope,
+        val: v8::Local<v8::Value>,
+    ) -> Option<v8::SharedRef<v8::BackingStore>> {
+        if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(val) {
+            Some(ab.get_backing_store())
+        } else if let Ok(ta) = v8::Local::<v8::TypedArray>::try_from(val) {
+            Some(ta.buffer(scope)?.get_backing_store())
+        } else {
+            None
+        }
+    }
+
     fn ab_ptr(ab: v8::Local<v8::ArrayBuffer>, offset: usize) -> *mut u8 {
         let bs = ab.get_backing_store();
         match bs.data() {
@@ -660,12 +676,16 @@ mod imp {
         // per-thread reactor. The buffer is realm-provided; we retain it for liveness.
         if crate::reactor::engine::engine_io_active() {
             let resolver_id = crate::async_rt::push_resolver(g_res);
+            let backing_store = match buffer_backing_store(scope, val) {
+                Some(store) => store,
+                None => return,
+            };
             crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Io(
                 crate::reactor::engine::PendingIoReg {
                     fd,
                     kind: crate::reactor::engine::IoKind::Read,
                     resolver_id,
-                    buffer: Some(g_ab),
+                    buffer: Some(backing_store),
                     buf_ptr: ptr,
                     len,
                     written: 0,
@@ -757,13 +777,17 @@ mod imp {
                 // Engine mode: register the remaining write with the reactor engine.
                 if crate::reactor::engine::engine_io_active() {
                     let resolver_id = crate::async_rt::push_resolver(g_res);
+                    let backing_store = match buffer_backing_store(scope, val) {
+                        Some(store) => store,
+                        None => return,
+                    };
                     crate::reactor::engine::engine_io_register(
                         crate::reactor::engine::EngineReg::Io(
                             crate::reactor::engine::PendingIoReg {
                                 fd,
                                 kind: crate::reactor::engine::IoKind::Write,
                                 resolver_id,
-                                buffer: Some(g_ab),
+                                buffer: Some(backing_store),
                                 buf_ptr: ptr,
                                 len,
                                 written,
@@ -902,7 +926,14 @@ mod imp {
             with_reactor(|r| {
                 let ud = r.alloc_ud();
                 r.reactor.submit_timeout(ud, ms as u64);
-                r.ops.insert(ud, Pending::Timer { owner, resolver: g });
+                r.ops.insert(
+                    ud,
+                    Pending::Timer {
+                        owner,
+                        resolver: g,
+                        referenced: true,
+                    },
+                );
                 r.bump(owner, |c| c.timers += 1);
                 if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                     eprintln!("[reactor] addTimer({ms}) -> ud {ud}");
@@ -936,12 +967,55 @@ mod imp {
             // CANCELED completion finds no record and is ignored.
             if matches!(r.ops.get(&id), Some(Pending::Timer { .. })) {
                 r.reactor.cancel(id);
-                if let Some(Pending::Timer { owner, .. }) = r.ops.remove(&id) {
-                    r.bump(owner, |c| c.timers -= 1);
+                if let Some(Pending::Timer {
+                    owner, referenced, ..
+                }) = r.ops.remove(&id)
+                {
+                    if referenced {
+                        r.bump(owner, |c| c.timers -= 1);
+                    }
                     if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                         eprintln!("[reactor] timer {id} canceled");
                     }
                 }
+            }
+        });
+    }
+
+    pub fn set_timer_ref(
+        scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments,
+        _rv: v8::ReturnValue,
+    ) {
+        let id = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
+        let referenced = args.get(1).boolean_value(scope);
+        if crate::reactor::engine::engine_io_active() {
+            crate::reactor::engine::engine_io_register(
+                crate::reactor::engine::EngineReg::SetTimerRef {
+                    timer_id: id,
+                    referenced,
+                },
+            );
+            return;
+        }
+        with_reactor(|r| {
+            let Some(Pending::Timer {
+                owner,
+                referenced: current,
+                ..
+            }) = r.ops.get_mut(&id)
+            else {
+                return;
+            };
+            if *current == referenced {
+                return;
+            }
+            let owner = *owner;
+            *current = referenced;
+            if referenced {
+                r.bump(owner, |c| c.timers += 1);
+            } else {
+                r.bump(owner, |c| c.timers -= 1);
             }
         });
     }
@@ -1529,8 +1603,14 @@ mod imp {
                     0
                 }
             }
-            Pending::Timer { owner, resolver } => {
-                with_reactor(|r| r.bump(owner, |c| c.timers -= 1));
+            Pending::Timer {
+                owner,
+                resolver,
+                referenced,
+            } => {
+                if referenced {
+                    with_reactor(|r| r.bump(owner, |c| c.timers -= 1));
+                }
                 if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
                     eprintln!("[reactor] timer {ud} dispatched");
                 }
@@ -1727,6 +1807,7 @@ mod imp {
     stub!(add_signal);
     stub!(remove_signal);
     stub!(active_handle_counts);
+    stub!(set_timer_ref);
     stub!(track_atomics_waiter);
     stub!(untrack_atomics_waiter);
     stub!(set_nonblocking);

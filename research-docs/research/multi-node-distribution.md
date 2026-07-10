@@ -1,652 +1,974 @@
-# Multi-Node Distribution: The Cluster as a Lifted Node Scheduler
+# Multi-Node Distribution: Reactor Nodes over an Authenticated QUIC Mesh
 
-> Status: concrete cluster-level design. This document defines how many Fino
-> nodes form one symmetric, self-organizing runtime that replicates tenants
-> across nodes, balances them by resource cost, and routes traffic to the right
-> replica. It is the cluster-level analog of `realm-loop-orchestration.md`:
-> where that document defines how one node fairly hosts many tenant isolates
-> across scheduler threads, this one defines how many nodes host many tenants
-> across the cluster.
+> Status: concrete end-state design with staged delivery. This document defines
+> how Fino nodes discover and authenticate one another, replicate durable
+> cluster intent, place reactor and process workloads, and route application
+> traffic directly over QUIC. The first production target is a VPC or LAN where
+> every node can accept inbound UDP/QUIC traffic.
 >
-> It **supersedes** the single-leader control-plane sketch in
-> `multi-tenant-runtime.md` §3 (a small seed quorum with one elected leader that
-> schedules). The converged model here has **no steady-state leader**: nodes are
-> identical binaries that self-organize through a distributed hash table (DHT),
-> and the owner of a key is the authority for that key. The durable-vs-soft
-> state split from §3 is kept verbatim — it maps onto DHT key namespaces (§4).
+> This document aligns with the durable-intent versus soft-observation split in
+> `multi-tenant-runtime.md`. It replaces this document's earlier leaderless
+> DHT/SWIM design: durable deployment and fencing state use a small Raft quorum,
+> while high-rate workload traffic remains peer-to-peer and does not traverse
+> the control leader.
+
+Useful references:
+
+- [W3C WebTransport](https://www.w3.org/TR/webtransport/)
+- [WebTransport over HTTP/3, draft-15](https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3)
+- [QUIC, RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html)
+- [Multicast DNS, RFC 6762](https://www.rfc-editor.org/rfc/rfc6762.html)
+- [DNS-Based Service Discovery, RFC 6763](https://www.rfc-editor.org/rfc/rfc6763.html)
+- [Raft](https://raft.github.io/raft.pdf)
 
 ## 1. The thesis
 
-The whole design rests on one observation: **the cluster is the node-local
-scheduler lifted exactly one level.** Fino already has a maturing node-local
-multi-tenant scheduler (`realm-loop-orchestration.md`, implemented under
-`js/internal/orchestrator` and `js/internal/scheduler`). It places tenant
-*workloads* onto scheduler-thread *shards*, leases them with epoch-CAS, moves
-them between threads by drain → data-only snapshot → reconstruct, and recovers a
-dead thread's workloads onto survivors. Every one of those primitives has a
-cluster analog obtained by substituting *node* for *thread* and *DHT* for
-*single-writer registry*:
+The cluster and the node-local scheduler are **two layers, not the same
+scheduler repeated twice**.
 
-| Node-local | Cluster analog |
-|---|---|
-| `NodeIsolateCollection` records + leases (`node.ts`) | DHT ledger, sharded across nodes |
-| `WorkloadAllocator` placement chokepoint (`allocator.ts`) | `ClusterAllocator` federating node allocators by `node/shard` |
-| shard = scheduler thread | node |
-| `claim()` mints an epoch lease (`node.ts:183`) | key-owner CAS grant + fencing epoch |
-| `renew()` / `revoke()` epoch CAS | lease renew/revoke against the key owner |
-| `release('rebalanced')` re-places (`node.ts:255`) | return slot to `unclaimed`; a cooler node pulls it |
-| drain / handoff / snapshot-on-`claim` (`node.ts:312`/`330`/`358`) | cross-node drain → snapshot → respawn |
-| `recoverShard` + heartbeat supervision (`node.ts:378`, `scheduler-node.ts:228`) | node-down membership + K-replica re-pull |
-| sync-heavy latency→batch `handoff` (`scheduler-node.ts:266`) | escalation rung 1 (already local); cluster adds rung 2 |
-| least-loaded-of-class score (`allocator.ts:166`) | cost divergence vs the gossiped cluster mean |
+The cluster control plane chooses a node for a workload. That node admits the
+serialized workload through its existing `SchedulerNode`,
+`NodeIsolateCollection`, and `WorkloadAllocator`, which choose a reactor thread.
+Cluster code never addresses a reactor shard, and the node-local allocator never
+needs a remote backend.
 
-The design goal is therefore not to invent a distributed scheduler; it is to
-lift primitives that already work and are already tested. The bias throughout,
-per repo convention, is **reuse and extend, never duplicate.**
-
-The `WorkloadAllocator` doc comment already names the seam this document builds
-into (`allocator.ts:12-14`): *"a future cluster-level allocator federates one
-node-local allocator per node and routes by a node-qualified shard id, with this
-class unchanged as a backend."* This document is that federation.
-
-## 2. Design target and invariants
-
-- **Symmetric nodes, identical binaries.** No node has a special standing role.
-  There is no elected leader in steady state. The existing single seed
-  (`js/internal/cluster/seed.ts`) degrades to a *bootstrap rendezvous* — a way
-  for a brand-new node to find any one existing member — and is never on the
-  steady-state path.
-- **One DHT is the unified ledger and directory.** "What deployments exist,"
-  "what runs where," "which nodes exist and where they are," and "who holds this
-  singleton lease" are all keys in one distributed map, partitioned across nodes
-  so no node holds the whole dataset.
-- **The key owner is the authority for its key.** Placement, leasing, and the
-  claim-set arbitration for a key are done by the K nodes that own that key's
-  slice of the ring — the exact analog of the node-local collection being the
-  single writer for its workloads.
-- **Placement is pull, not push.** Desired state is written to the ledger; nodes
-  with spare capacity *claim* replica slots they are eligible for. No node
-  schedules another. This is `NodeIsolateCollection.claim()` (`node.ts:183`) one
-  level up.
-- **Per-component independent replication.** A tenant app is a set of
-  components; each component has its own replica policy and scales on its own.
-- **Cost-aware local shedding for balance.** Colocate linked realms by default;
-  a node whose cost-weighted load diverges from the cluster mean sheds its
-  costliest work, which a cooler node then pulls. Balance is emergent, not
-  centrally computed.
-- **Cross-node movement is drain + respawn, never memory migration.** Reuse the
-  node-local handoff snapshot verbatim.
-- **Capability narrowing stays Rust-enforced.** A tenant's I/O surface is its
-  import rules, and children can only narrow, never widen (`src/realm/native.rs`
-  `narrowing_check`). Cross-node placement and routing respect this boundary;
-  the resolver is capability-gated.
-
-The first reliable design is deliberately conservative in the same spirit as the
-node-local one: correctness must not depend on live memory migration, global
-consensus on the hot path, or a central scheduler. Those are explicitly out.
-
-## 3. Composition: federate the allocator, wrap the node
-
-Each node keeps its `SchedulerNode` unchanged: a private `NodeIsolateCollection`
-(records, leases, entries), a `WorkloadAllocator` (thread placement chokepoint),
-and N supervised scheduler threads (`latency` and optional `batch` classes),
-already long-lived, push-driven, heartbeat-supervised, and crash-recovering.
-
-Above it, a new per-node **`ClusterAgent`** runs as an ordinary orchestrator
-service (`provideService('cluster-agent', …)`, `js/internal/orchestrator/index.ts:189`),
-exactly like the jobs service, and supervises its claimed workloads through the
-existing `registerWorkload`/`releaseWorkload`. It owns membership, this node's
-DHT partition, the reconcile loop, and the cost/shed logic — the heavy
-management duties, deliberately off the node's hot path, mirroring how the
-orchestrator sits off the scheduler-thread hot path node-locally.
-
-Placement composes as a two-level allocator. A cluster-level **`ClusterAllocator`**
-federates the node-local `WorkloadAllocator`s and routes by a **node-qualified
-shard id** (`node/shard`), with `WorkloadAllocator` unchanged as the per-node
-backend. The pipeline for admitting one replica:
-
-```
-DHT replica-slot claim   →   ClusterAllocator   →   ClusterAgent   →   SchedulerNode.deploy(spec)   →   WorkloadAllocator
-  (this node eligible?)         (which node?)         (translate)         (admit the workload)             (which thread?)
+```text
+durable desired state
+        │
+        ▼
+Raft leader's PlacementReconciler ── chooses node + commits assignment epoch
+        │
+        ▼
+destination ClusterAgent ─────────── admits or rejects locally
+        │
+        ▼
+SchedulerNode ── NodeIsolateCollection ── WorkloadAllocator ── reactor thread
 ```
 
-The collection and allocator stay oblivious to the network. The cluster decides
-node granularity; the node-local allocator decides thread granularity. Crucially,
-one vocabulary serves both tiers:
+This boundary matters:
 
-- `colocateWith` on `NodeWorkloadSpec` (`node.ts:56`) expresses "keep this near
-  its sibling" at both the node tier (place the replica on the same node) and the
-  thread tier (place it on the same thread — ideally the same isolate for
-  same-tenant linked realms).
-- `profile: 'latency' | 'throughput'` from the deployment manifest maps onto the
-  node-local `ShardClass` (`latency` / `batch`), so a throughput component's
-  replicas naturally land on batch threads and a latency component's on latency
-  threads.
+- cluster placement reasons about node capacity, failure domains, capabilities,
+  and replica policy;
+- node placement reasons about shard capacity, latency/batch class, affinity,
+  runnable load, and budget debt;
+- the destination may reject an assignment if its observation was stale, in
+  which case the leader commits a new attempt elsewhere;
+- a node's internal shard IDs, leases, transit handles, and reactor operations
+  never become distributed state.
 
-`deployNode({detach})` remains the single-node fast path unchanged. A new
-`deployCluster(manifest)` writes a `DeployRecord` to the ledger and returns; the
-reconcile loops on every node do the rest. `runApp` (single embedded tenant)
-stays the development fast path and is untouched.
+Raft gives the few state transitions that require a single answer—deploy
+generations, assignments, controller membership, and singleton fences—a clear
+quorum boundary. QUIC/WebTransport gives the data plane independent streams and
+direct peer sessions. Discovery only supplies connection candidates; it is not
+membership and it is never trust.
 
-## 4. The DHT / ledger
+## 2. Current branch: what exists now
 
-### 4.1 Ring and ownership
+The design starts from the implementation on this branch, not the older
+node-local sketches.
 
-A consistent-hash ring keyed by `nodeId`, with virtual nodes per physical node
-for balance. For any key, `hash(key)` walks the ring clockwise; the first **K**
-distinct *physical* nodes are the key's **preference list**, and the head of that
-list is the **primary owner**. K is the ledger replication factor (default 3; 5
-for large clusters). Because records are small JSON, a membership change moves
-*records*, not workloads, and touches only ~K/N of the keyspace — the standard
-consistent-hashing property.
+### 2.1 Reactor and allocation state
 
-There is no stable cross-node hash in the tree today (`Scanner`,
-`protocol.ts:44`, is a lexer). A small deterministic `hash.ts` (FNV-1a /
-xxhash-class) is a prerequisite (§13).
+- The native reactor is the only event loop. Both the root runtime and child
+  realms use the `cherenkov`-backed reactor path; the legacy JS poller stack is
+  gone.
+- A scheduler shard is a native reactor engine thread. It owns its completion
+  reactor, runnable set, timers, owner-tagged I/O, budgets, and hosted V8
+  isolates.
+- Every scheduled unit is constructed as a full realm through
+  `placeRealm` → `setup_realm_workload`: one bootstrap, one import-rule path,
+  one transit channel, and one native pump path. The former parallel
+  scheduler-tenant construction path has been removed.
+- Every in-process cross-isolate realm port uses a transit half. Process realms
+  bridge an unregistered half across their socket while the child exposes the
+  same registered transit endpoint; pooled, dedicated-thread, and transferred
+  ports otherwise share the mechanism.
+- `Realm` no longer exposes thread placement. Normal realms pass through
+  `internal:realm/allocate`; the lazy node pool currently has two shards with
+  capacity one and falls back to a dedicated reactor thread when full or when a
+  configuration cannot yet be pooled.
+- `SchedulerNode` receives push reports for release, repeated sync-heavy
+  detection, and load with actual accumulated budget debt.
+  `NodeIsolateCollection` owns node-local records, placement, and atomic move
+  reservations; `WorkloadAllocator` chooses only a local shard and excludes
+  full destinations.
+- A pooled realm is locally movable unless `localMobility: 'pinned'` or hard
+  affinity says otherwise. At a pump boundary the source exits the V8 isolate,
+  transfers exclusive ownership under V8's `Locker` contract, and the
+  destination enters the same isolate. Module memory, pending promises, realm
+  identity, and the existing transit port survive unchanged.
+- Isolate-owned async resolver and FFI callback tables move with the isolate.
+  Pending readiness and timer registrations are rearmed on the destination;
+  pointer-backed operations retain thread-safe backing stores and may finish on
+  the source, forwarding only their plain completion result before detaching.
+- Blocking workloads move to lower-priority batch reactors. Batch capacity is
+  created on demand within a configured bound, runs with lower OS scheduling
+  priority as well as batch run-queue policy, and retires after its idle
+  timeout.
+- Realm scaling now has an executable policy core. Realms default to
+  `scaling.mode: 'replicated'`; `bound` realms are fixed at one isolate and are
+  admitted directly to the lower-priority batch pool. The current controller
+  implements one-second loop-pressure scale-up, a 10%-for-30-seconds scale-down
+  window, one pending action, availability bounds, directory-first cutover, and
+  referenced-task draining.
+- `fino:runtime` exposes `ref(handle)`, `unref(handle)`, and `hasRef(handle)`.
+  Numeric web timer IDs retain their web-compatible shape while native reactor
+  liveness counts only referenced timers; refable resource objects use the same
+  contract.
 
-### 4.2 Key namespaces and the durable/soft split
+### 2.2 Cluster prototype state
 
-The `multi-tenant-runtime.md` §3 distinction between *durable desired intent* and
-*soft observed state* maps directly onto namespaces:
+The cluster implementation is a working remote-realm prototype, not yet the
+substrate above:
 
-- `node:<id>` → `NodeRecord { addresses[], certHash, incarnation, load:
-  NodeLoad(extended §9), capacity{cores,memory}, capabilities[] (resolved native
-  libs), failureDomain{zone,node}, heartbeatSeq }`. **Soft**, LWW by
-  `incarnation`/`heartbeatSeq`. This is also the membership record and the DNS
-  A/AAAA equivalent.
-- `deploy:<tenant>/<app>` → `DeployRecord { version, generation, components{…} }`
-  (schema §7.1). **Durable desired intent**: monotonic `generation`,
-  quorum-committed, fail-closed on partition.
-- `service:<tenant>/<app>/<component>` → `ServiceRecord { generation, replicas:
-  [{ nodeId, portEndpoint, epoch, health, drainState, load }] }`. **Soft** —
-  this record *is* the route table / service directory (§11).
-- `lease:<…>` → `ClusterLeaseRecord { holder, epoch, kind: 'ordinary'|'singleton',
-  claimSet }` (§6).
-- `port:<id>` → realm ownership-tree entry, replacing the seed's centralized
-  `#portNodes` (`seed.ts:170`).
+- one trusted seed accepts WebTransport sessions from workers;
+- workers have one outbound session to the seed and ignore the destination
+  argument passed to `ClusterTransport.send`;
+- the seed owns membership, remote-spawn selection, the global realm-port tree,
+  heartbeats, failure cascades, and every `PORT_MSG` relay;
+- each message opens a new bidirectional WebTransport stream, and a single
+  per-connection promise queue serializes all sends;
+- payload byte parts are base64-encoded into JSON, then the protocol JSON is
+  encoded into another length-prefixed JSON frame;
+- an inbound `SPAWN` calls `createThreadContext` directly and drives the realm
+  with a zero-delay stepping interval, bypassing `SchedulerNode` and the node
+  allocator;
+- `NodeLoad` is sent as `{ cpu: 0, memory: 0 }`, so current remote placement is
+  not based on live resource information;
+- v1 spawn selection now includes the requesting node: a remote peer wins when
+  its advertised load is equal or lower, while a strictly healthier requester
+  remains local. This makes the desired bias observable today, but the zero/stale
+  HELLO samples still require the v2 observation stream before it is reliable;
+- `spawnRealm()` reaches a hidden internal remote `Realm` kind even though
+  `remote` has been removed from the public `RealmOptions` surface.
 
-### 4.3 Reusing `RealmRegistry` as a per-partition library
+The current tests strongly cover this star topology and node-local reactor
+behavior. They do not yet cover authenticated peer sessions, distributed
+placement, consensus, partitions, bounded network backpressure, or direct
+node-to-node routing.
 
-The seed's `RealmRegistry` (`registry.ts`) is a port-ownership tree with exactly
-the algorithms the DHT still needs: `register`, recursive `exit`, and a
-`nodeDown` cascade that captures parent edges before removal
-(`registry.ts:118-153`). It is kept as-is and instantiated **once per node over
-the `port:` keys that node owns** — the centralized seed tree becomes a
-per-partition tree. Death propagation (top-down) survives untouched; only its
-ownership scope narrows from "the whole cluster" to "this node's keyspace slice."
+### 2.3 Corrections to the previous design
 
-### 4.4 Replication, anti-entropy, and consistency per namespace
+Several earlier claims are deliberately removed:
 
-Each key is replicated to its K preference-list nodes. Reconciliation between
-replicas is Dynamo-style Merkle-range **anti-entropy** (periodic digest exchange
-reconciles divergent ranges), with a per-namespace merge rule:
+- `RealmRegistry` cannot be instantiated independently over hash-partitioned
+  port keys while preserving parent/child edges that cross partitions. The
+  distributed design instead keeps each ownership edge at its two endpoints.
+- A Dynamo-style last-writer-wins ledger cannot also provide a single safe
+  answer for deployment generations and singleton fences during a partition.
+- A directory epoch cannot fence writes by an isolated old primary. Fencing is
+  safe only when the stateful resource validates the token.
+- The old tenant drain/snapshot protocol is not the node-local movement
+  mechanism. Same-node movement transfers the live isolate and its reactor
+  ownership. A future cross-node checkpoint remains application data only and
+  cannot transparently preserve V8 heap state, sockets, file descriptors, or
+  submitted kernel operations.
+- Opening a stream per message does not create a persistent logical channel,
+  and a global send queue defeats the concurrency that QUIC streams provide.
+- Certificate hash pinning authenticates a WebTransport server, not its client.
+  Node-to-node sessions need an additional client identity proof.
 
-- `deploy:` — LWW by monotonic `generation` (desired intent; a multi-component
-  deploy spans keys, so it carries a per-`deploy:` generation and is
-  quorum-committed so two partitions cannot accept conflicting intent).
-- `service:` / `node:` — LWW by `epoch` / `incarnation` (observed state).
+## 3. Design invariants
 
-Read-repair on lookup keeps hot keys consistent between anti-entropy rounds.
+- **One binary, dynamic roles.** Every node runs a `ClusterAgent` and a local
+  execution substrate. Configured nodes additionally host Raft voters; one
+  voter is the current leader.
+- **Three voters by default.** A production cluster normally uses three voters;
+  five is available where two simultaneous voter failures must be tolerated. A
+  one-voter bootstrap is allowed but reported as degraded.
+- **Consensus is off the data path.** Application messages, facade RPC, service
+  calls, streams, and artifact transfers go directly between the nodes involved.
+- **Cluster placement stops at the node.** The cluster never chooses or names a
+  reactor thread. Local admission and shard placement remain node-private.
+- **Discovery is replaceable and untrusted.** Static endpoints and mDNS ship
+  first. Kubernetes, cloud registries, WAN rendezvous, and relays can implement
+  the same provider contract later.
+- **Every production node listens.** The initial network model assumes stable,
+  mutually routable private addresses and inbound QUIC reachability.
+- **Durable and ephemeral work differ.** Deployment replicas are reconciled
+  desired state. `spawnRealm()` children are parent-owned, non-durable work.
+- **Movement depends on the boundary.** Same-node relocation transfers the live
+  isolate between reactor threads. Cross-node relocation starts a new attempt,
+  makes it ready, switches routing, and drains the predecessor; heap migration
+  never crosses a process or machine boundary.
+- **Fences are end-to-end.** A singleton is safe only if every state mutation
+  reaches a resource that rejects stale fence tokens.
+- **Serving degrades more gracefully than mutation.** Loss of quorum pauses
+  deploys and new assignments; existing workloads and cached direct routes keep
+  serving where possible.
+- **Queues are bounded.** No network, control, port, or retry queue may grow
+  without a byte and item limit.
 
-### 4.5 Ownership rebalancing on join / leave
+## 4. Identity, enrollment, and discovery
 
-- **Join**: new virtual nodes insert into the ring; for each range the joining
-  node becomes newly responsible for, it pulls those records from the prior
-  owner. The prior owner stays authoritative until the pull completes
-  (read-repair covers the gap), so there is no availability hole.
-- **Leave / failure** (SWIM `CONFIRM`, §5): the next preference-list node
-  promotes to owner. For K-covered keys it *already holds a replica*, so no pull
-  is needed — this is exactly the node-local `recoverShard` recovering from a
-  checkpoint instead of a cold respawn (`node.ts:378`), one level up.
+### 4.1 Stable identity
 
-### 4.6 Bootstrap
+Each node owns a persisted signing key under its cluster state directory.
 
-`joinCluster` (`cluster.ts:328`) keeps its WebTransport connect, cert-pinning,
-and join-string flow. `HELLO`/`WELCOME` (`seed.ts:272`) become the *bootstrap
-handshake only*: `WELCOME` returns a membership seed set plus a ring snapshot,
-after which the node switches to SWIM gossip and never depends on the seed again.
-Steady state has no seed.
+- `NodeId` is derived from the public-key fingerprint and is stable across
+  restarts.
+- `nodeName` is an optional human-readable alias and is never used as an
+  authorization identity.
+- `NodeIncarnation` is a persisted counter incremented before each start. It
+  makes messages, endpoints, and attempts from a previous process instance
+  stale even when the `NodeId` is unchanged.
+- `ClusterId` is minted when the cluster is formed and included in every
+  discovery record, authentication transcript, durable record, and wire hello.
 
-## 5. Membership: SWIM
+The control state stores each enrolled node's public identity key, permitted
+roles, current/next TLS certificate hashes, and revocation state. Addresses and
+health remain soft observations.
 
-Replace the seed-centric `HELLO`/`HEARTBEAT`/`PEER_UP`/`PEER_DOWN`
-(`seed.ts:270`; client heartbeat `client.ts:356`) with SWIM:
+### 4.2 Bootstrap and enrollment
 
-- periodic randomized-peer `PING`; on timeout, indirect `PING_REQ` through *k*
-  relays; `SUSPECT` → `CONFIRM` gated by **incarnation numbers** so a node can
-  refute a false suspicion with `ALIVE`;
-- **dissemination piggybacked** on ping/ack (infection style), not seed
-  broadcast;
-- the extended `NodeLoad` (§9) rides `ACK`s — this is what finally retires the
-  hardcoded `cpu: 0` (`webtransport-transport.ts:295`).
+`startCluster()` creates the cluster identity, initial voter state, node
+identity, and one-time join credentials. The returned join material contains:
 
-New protocol messages extend the `ClusterMessage` union (`protocol.ts:242`):
-`PING`, `PING_REQ`, `ACK`, `SUSPECT`, `ALIVE`, `CONFIRM`. Locally-derived
-`PEER_UP`/`PEER_DOWN` are still emitted so `ClusterClient`'s membership map
-(`client.ts:419`) needs no change. SWIM needs direct peer sessions — the same
-direct-peer path the framing layer already scaffolds (`canonicalPortPair`,
-`webtransport-framing.ts:105`) and that the data plane builds in §11. A
-`CONFIRM(dead)` is the trigger that both promotes a successor owner (§4.5) and
-wakes every node's reconcile loop (§7).
+```text
+cluster id
+one or more controller candidates
+one-time or short-lived join token
+expected controller certificate hash(es)
+```
 
-## 6. Leases, fencing, and quorum
+`joinCluster()` first establishes a certificate-pinned WebTransport session to
+a controller candidate. It presents the join token and its public identity key,
+then signs a controller nonce to prove possession of the corresponding private
+key. The leader commits enrollment before returning the node record and current
+controller/directory snapshot. Join tokens are never advertised by discovery.
 
-`ClusterLeaseRecord` mirrors the node-local `LeaseRecord` (`scheduler/types.ts:69`)
-one level up. The **key owner is the lease authority**, in two tiers:
+Adding a Raft voter is a second, explicit operation using Raft joint-consensus
+membership change. An enrolled worker cannot promote itself merely by setting a
+local flag.
 
-- **Ordinary workload leases** — the lifted `claim()`: the owner mints
-  `epoch = ++counter`, grants unilaterally, records the holder, and
-  async-replicates the directory record to the K list. `renew` is a CAS on the
-  epoch; `revoke` bumps it; a stale holder's next `service:` write is rejected on
-  epoch mismatch — identical to `renew()` returning `false` after a `revoke()`
-  (`node.ts` lease methods). A brief cross-partition double-grant is *safe*
-  because ordinary components are active-active by design and the `service:`
-  directory plus fencing epoch prevent stale routing.
-- **Singleton / stateful-primary leases** — the owner performs a **quorum write**
-  to the preference list (R+W>K, e.g. W=2, R=2, K=3) before granting. Failover
-  reads the maximum epoch from a read quorum and grants `epoch+1`, fencing the
-  old holder the instant its next write presents a stale epoch. This is the only
-  place the cluster is more than the node-local mechanism, and it is contained to
-  the singleton tier.
+### 4.3 Discovery provider
 
-Prefer fencing epochs over wall-clock lease expiry — the node-local design uses
-pure epoch-CAS with no clock, and preserving that property avoids clock-skew
-correctness bugs.
+Discovery supplies candidates through one interface:
 
-New messages: `LEASE_CLAIM`, `LEASE_RENEW`, `LEASE_REVOKE`, `LEASE_GRANT` (names
-deliberately echo the node-local methods).
+```ts
+interface ClusterDiscoveryProvider {
+  watch(query: {
+    clusterId?: string;
+    role?: 'controller' | 'node';
+    signal?: AbortSignal;
+  }): AsyncIterable<ClusterDiscoveryEvent>;
 
-## 7. Pull-based claiming: the reconcile loop
+  publish?(record: ClusterDiscoveryRecord): Promise<AsyncDisposable>;
+}
 
-### 7.1 Desired-state schema
+type ClusterDiscoveryEvent =
+  | { type: 'up' | 'update'; record: ClusterDiscoveryRecord }
+  | { type: 'down'; nodeId: string };
 
-`DeployRecord.components[name]` follows the manifest shape from
-`multi-tenant-runtime.md` §4, stored per-component so each scales independently:
-
-```jsonc
-{
-  "entry": "src/api.ts",
-  "replicas": { "min": 2, "max": 20, "minHealthy": 2 },
-  "profile": "latency",                    // -> node-local ShardClass
-  "links": ["worker"],                     // colocation preference
-  "colocateWith": ["worker"],
-  "spread": { "failureDomains": ["node", "zone"] },
-  "antiAffinity": ["other-tenant-heavy"],
-  "grants": [{ "pattern": "fino:net/*" }], // requested capabilities
-  "ingress": [{ "host": "api.acme.example", "path": "/", "protocols": ["h2","h3"] }],
-  "costHints": { "baselineMicros": 200, "perRequestMicros": 40 },
-  "singleton": false
+interface ClusterDiscoveryRecord {
+  clusterId: string;
+  nodeId: string;
+  role: 'controller' | 'node';
+  host: string;
+  port: number;
+  path: string;
+  protocol: 'fino-cluster-v2';
+  certificateHashes: readonly string[];
 }
 ```
 
-### 7.2 The loop (every node, every tick)
+The initial providers are:
 
-```text
-for each component whose service: record shows healthy < minHealthy:
-  if this node satisfies the constraints (§7.3)
-     and has cost-weighted spare capacity (§9):
-    CAS-claim a replica slot against the claim-set key owner:
-      the owner atomically verifies { slot still open,
-        spread still satisfied if I join, anti-affinity ok }
-        -> assigns an epoch, adds me to the claimSet
-      success -> SchedulerNode.deploy(spec); write the service: replica
-                 endpoint, fenced by the epoch
-      CAS failure (raced) -> exponential backoff + jitter, re-read, retry
+- **Static discovery** from join material or configuration. This is always
+  supported and is the dependable baseline when multicast is unavailable.
+- **mDNS/DNS-SD discovery** using `_fino-cluster._udp.local`, backed by the
+  existing `Mdns.publish()` and continuous resolved `Mdns.browse()` APIs. SRV
+  carries the endpoint; TXT carries cluster ID, node ID, role, path, protocol,
+  and certificate hashes.
+
+Discovery events do not directly add or remove members. A candidate becomes a
+peer only after authentication and an enrolled node becomes unavailable only
+through the control plane's liveness policy. A future Kubernetes provider may
+watch Services, EndpointSlices, or pods, but Kubernetes never becomes a core
+runtime dependency.
+
+## 5. Authenticated QUIC/WebTransport mesh
+
+### 5.1 Session classes
+
+The design uses three session classes so tenant load cannot starve consensus:
+
+1. **Agent control session** — every worker maintains a persistent session to
+   the current leader for observations, assignments, acknowledgements, and
+   directory watches.
+2. **Raft session** — voters maintain persistent sessions to one another for log
+   replication, elections, and snapshots.
+3. **Peer data session** — opened on demand between nodes that exchange realm
+   port, service, artifact, or process-control traffic.
+
+Each session class uses a separate WebTransport session and, in Fino's client,
+a separately owned HTTP/3 connection. WebTransport streams have independent
+stream flow control, but QUIC also has connection-level flow and congestion
+control; merely adding another stream is not sufficient isolation for Raft.
+
+The peer session manager keeps at most one live session for a `(peer, class)`
+pair. If both nodes dial simultaneously, both authenticate first and then keep
+the session initiated by the lexicographically smaller `NodeId`; if only one
+valid session exists, it is used regardless of dial direction. Reconnect uses
+exponential backoff with jitter and a configured maximum.
+
+### 5.2 Mutual authentication
+
+TLS and `serverCertificateHashes` authenticate the accepting endpoint. The
+application protocol then authenticates the dialer:
+
+1. the acceptor sends a fresh random challenge plus its node ID, incarnation,
+   session class, and negotiated protocol/features;
+2. the dialer returns its own nonce and signs a canonical transcript containing
+   both nonces, both node IDs and incarnations, cluster ID, session class,
+   protocol version, and the acceptor certificate hash;
+3. the acceptor verifies the enrolled public key and returns its own signature
+   over the same transcript;
+4. both sides reject a wrong cluster, revoked identity, stale incarnation,
+   unsupported version, replayed nonce, wrong session role, or mismatched
+   certificate hash before accepting application streams.
+
+This does not rely on `WebTransport.exportKeyingMaterial()`, which the current
+Fino QUIC TLS backend does not support.
+
+Certificate rotation publishes current and next hashes together in committed
+node identity state. After peers acknowledge the next certificate, the leader
+commits removal of the old hash.
+
+### 5.3 Streams and framing
+
+`fino-cluster-v2` replaces the seed-oriented v1 protocol. A session starts with
+one persistent control stream and opens additional streams by purpose:
+
+```ts
+type ClusterStreamKind =
+  | 'control'
+  | 'raft'
+  | 'raft-snapshot'
+  | 'port'
+  | 'service'
+  | 'artifact';
 ```
 
-The **owner is the atomic CAS arbiter of the whole claim-set**: two nodes racing
-for the last failure-domain slot cannot both win, so spread and anti-affinity
-resolve atomically and losers back off. This is precisely node-local `claim()`
-sorting and capping candidates under one writer (`node.ts:183`), lifted to the
-cluster. **Under-replication** is detected by the `service:` key owner
-(`healthy < minHealthy` after SWIM removes a dead replica) and re-advertised as
-an open slot. **Backpressure** is honest: if no node has capacity, the slot stays
-`pending` — the direct analog of a node-local workload staying `unclaimed` when
-no thread has room. The aggregate `pending` backlog is the autoscale-up signal
-(§9).
-
-### 7.3 Constraint evaluation
-
-- **libs / capabilities**: `NodeRecord.capabilities ⊇ component.grants`. This ties
-  into the loader's import-rule dispatch (`src/loader.rs`) and native
-  `narrowing_check` (`src/realm/native.rs`): a node lacking a granted native
-  library cannot host the component and simply never claims it. Nodes probe their
-  candidate-path libraries at join and advertise the resolved set.
-- **memory**: `capacity.memory − in-use ≥ profile estimate` (from the cost
-  baseline, §9).
-- **spread / anti-affinity**: evaluated atomically at the owner (§7.2).
-- **cask / entry present**: gate the claim on "entry resolvable or cask
-  fetchable," so a later drain+respawn never targets a node lacking the code
-  (packaging is a separate concern — `multi-tenant-runtime.md` §5 — flagged, not
-  built here).
-
-After the cluster picks the node, the node-local allocator applies its own
-`affinity`/`preferShard`/`ShardClass` policy (`allocator.ts:128`) to pick the
-thread, honoring `colocateWith` at the thread tier.
-
-## 8. Cross-node drain + respawn
-
-Reuse the node-local handoff path verbatim (this is why realms are cheap to
-relocate):
-
-1. Source `ClusterAgent`: `collection.drainForHandoff(workloadId)` →
-   `completeHandoff(...)` yields a data-only `HandoffSnapshot` (`node.ts:312`/`330`;
-   `workload.ts:109`) — the record plus undelivered messages, unfired timers, and
-   in-flight facade ops, all serializable, no live handles.
-2. Ship it to the puller as a `HANDOFF_OFFER` payload over a direct-peer stream.
-3. Puller: inject the snapshot into `#snapshots` (a sibling of `placeHandoff`,
-   `node.ts:358`) and `deploy(spec)`; the first `claim()` hands the snapshot to
-   the destination thread for reconstruction — the collection already supports
-   snapshot-on-`claim`.
-
-The heap is never migrated: a clean drain preserves pending work; a hard node
-crash preserves whatever was last checkpointed and otherwise respawns from the
-record and entry — identical to the node-local `recoverShard` policy.
-
-## 9. Cost model, local shedding, and autoscaling
-
-### 9.1 Cost model
-
-Per component, `CostModel { baselineMicros (standing), perRequestMicros
-(marginal), empiricalCpuMicros (EWMA from telemetry), heapBytes }`, seeded from
-`costHints` and refined by the `multi-tenant-runtime.md` §2 telemetry (loop-idle
-timing, `getrusage`/thread-CPU via FFI, `get_heap_statistics()`). Stored in
-`service:` replica entries and aggregated into `node:` load.
-
-### 9.2 Extended `NodeLoad` (prerequisite)
-
-Extend the protocol `NodeLoad` (`protocol.ts:68`) to the §2 shape:
-`{ cpu, memory, capacity{cores,memory}, loopIdle, realms: Record<id, RealmLoad> }`.
-The node already push-reports its per-thread load on change
-(`scheduler-node.ts` `#onReport` load/heartbeat) — this feeds straight up onto
-SWIM acks. Until the §2 telemetry lands, the cost model runs on manifest hints
-only and divergence-based shedding is disabled; the reconcile loop still enforces
-`min`/`minHealthy` (graceful degradation).
-
-### 9.3 The escalation ladder
-
-As a node's load rises, response escalates:
-
-1. **Spread across threads — already built node-locally.** A workload overrunning
-   `syncSliceThresholdMicros` on a latency thread is migrated to a batch thread
-   (`scheduler-node.ts:266`), and a heap-cap overrun terminates rather than OOMs
-   the process. This rung ships today; the cluster inherits it for free.
-2. **Spread across nodes.** When a node's `costWeightedLoad − clusterMean >
-   threshold` (with hysteresis to prevent thrash), it picks its **highest
-   cost-per-traffic replica** (worst locality payoff), drains it via §8, and
-   returns the slot to `unclaimed`. A cooler node's reconcile loop then pulls it.
-   This is the node-local least-loaded-of-class logic (`allocator.ts:166`) at
-   cluster scale, and it is *local*: each node compares itself to the gossiped
-   mean and acts alone. Balance is emergent.
-
-### 9.4 Cluster autoscaling
-
-The same signals drive node-count autoscaling:
-
-- **Scale up**: a sustained aggregate `pending` slot backlog (no node could
-  satisfy `minHealthy`) means the cluster is out of capacity.
-- **Scale down**: sustained low ring-wide cost-weighted utilization means nodes
-  are idle; drain a node via §8 and remove it.
-
-Creating or destroying a node is environment-specific, so the agent emits a
-`CapacityDeficit` / `CapacitySurplus` signal to a pluggable **node-provisioner**
-hook (cloud API, k8s, bare-metal pool). The runtime ships the signal and a no-op
-default provisioner, not a cloud integration.
-
-## 10. Data plane, part 1: virtual DNS and the resolver
-
-Application realms should never use public DNS or raw node addresses to find
-cluster peers. They resolve virtual names through a capability-gated runtime
-resolver backed by the DHT directory (§4.2). One DHT serves both service and node
-location, so a full resolution is two cached hops.
-
-### 10.1 Name grammar
-
-Two surface forms, one canonical identity:
-
-- **URI form** (facade/port routing): `fino://<tenant>/<app>/<component>[/<instance>]`.
-- **DNS form** (HTTP/fetch): `<component>.<app>.<tenant>.fino` (reverse-label so
-  `.fino` is a pseudo-TLD zone). `fetch('http://api.billing.acme.fino/…')` →
-  component `api`, app `billing`, tenant `acme`.
-
-Both normalize to the DHT key `service:<tenant>/<app>/<component>`. Label parsing
-reuses the existing `Scanner` (a new `fino-name` format, mirroring the
-`cluster-id` format at `protocol.ts:413`) so validation is Rust-backed.
-
-### 10.2 Lookup and the two artifacts
-
-`resolveService(name, caller)` does the two-hop DHT read
-(`service → nodeIds → node → addresses`) behind an injectable
-`DirectorySnapshot` interface (so it stays deterministically testable) and
-produces:
-
-- a **`RouteTarget`** (`{ nodeId, portId, address, certHash, zone, cost,
-  drainState }`) for facade/port routing (§12) and the route picker (§11.1);
-- an **SRV projection** for the DNS surface. `SrvRecord` (`js/net/dns.ts:326`) is
-  reused unchanged: each replica maps to `{ priority: localityTier, weight:
-  spareCapacity, port: internalHttpPort, name: <nodeId>.node.fino }`, and the
-  node record projects to an A/AAAA `<nodeId>.node.fino → address`. Because the
-  tier is the SRV `priority`, the stock RFC-2782 consumer ordering *already*
-  prefers local replicas — the resolver emits standard records and the existing
-  `Resolver`/fetch path does the rest.
-
-### 10.3 Caching and invalidation
-
-A per-resolver LRU keyed by canonical service key, with a short soft TTL (1–2 s,
-serve-stale-and-refresh) and a hard TTL (10 s). **Drain and death beat cache
-freshness**: safety transitions are pushed as `ROUTE_INVALIDATE`/`ROUTE_DRAIN`
-(§11.2) that evict the entry *before* a caller can observe a draining replica.
-TTL only bounds non-safety-critical load/latency reordering. Negative results
-(unknown/denied) get a very short TTL and are shaped identically to
-not-found (§10.4).
-
-### 10.4 Capability gating
-
-The resolver is constructed with the caller realm's granted-name set (a token
-derived from its Rust-enforced import rules / tenant boundary). It rejects names
-outside the grant with an error **indistinguishable from not-found** (no tenant
-enumeration through names), returns a *logical* endpoint by default, and only
-populates physical topology fields (`nodeId`, `zone`) when the realm holds an
-explicit `cluster:topology` capability (operators, diagnostics). Trusting a
-caller with topology is opt-in, never the default programming model.
-
-## 11. Data plane, part 2: routing and direct-peer transport
-
-### 11.1 The route picker
-
-`pickRoute(serviceKey, caller)` chooses the cheapest healthy target in ascending
-locality-cost tiers, which map onto the SRV priority so the DNS and port surfaces
-make the same choice:
-
-1. **Same-thread** — a replica in the caller's own realm/thread: short-circuit
-   entirely, an in-process handle, no serialization. (The node-local colocation
-   from §3 makes this common for linked realms.)
-2. **Same-node** — a replica on the caller's node: the in-process thread-port
-   relay, never touching QUIC.
-3. **Same-zone** — direct peer WebTransport (§11.3).
-4. **Any healthy replica** — cross-zone direct peer.
-
-Health and cost inputs reuse the existing `NodeLoad` and per-replica
-`ShardLoadSummary` telemetry. **Spill**: if the cheapest replica is over budget
-(queue depth, loop-idle, draining), advance within the tier, then across tiers,
-bounded by hysteresis so a transient blip does not cascade cross-zone.
-**Backpressure**: if all replicas are over budget, apply the caller policy —
-`reject` (a typed `ClusterOverloaded` error) for RPC, a short bounded queue for
-fire-and-forget — never an unbounded buffer. Draining replicas are last-resort
-and only for idempotent retries; dead replicas are removed before the picker sees
-them (§11.2).
-
-### 11.2 Route-table maintenance
-
-- **Pull** the authoritative replica set from the DHT `service:` record (the
-  control plane owns the writes; the data plane reads and caches).
-- **Gossip** fast-changing, non-authoritative load (queue depth, loop-idle,
-  latency) by piggybacking `ShardLoadSummary` on heartbeats; best-effort,
-  TTL-bounded, never safety-critical.
-- **Push** safety transitions: `ROUTE_DRAIN` (two-phase: control plane marks
-  `draining` → push → callers stop picking it → after in-flight drains, remove)
-  and death via the existing `PEER_DOWN` cascade (`seed.ts:294`,
-  `#handleNodeDown`), reusing the `RealmRegistry` node→ports reverse index for
-  O(1) "which services just lost a replica."
-
-### 11.3 Direct-peer transport (getting `PORT_MSG` off the seed)
-
-Today every `PORT_MSG` relays through the seed even though the addressing is
-already peer-routable: `ClusterPort.sendPortMsg` computes `nodeIdFromId(toPort)`
-(`client.ts:305`) but the worker transport ignores it and writes to the seed
-(`webtransport-transport.ts:675`). The framing already anticipates direct peers:
-`canonicalPortPair` + `ClusterStreamMetadata {kind:'port', pair, a, b}`
-(`webtransport-framing.ts:80`) open one stream per port pair, demuxable without
-the seed.
-
-Add a `WebTransportPeerTransport`: one authenticated WebTransport session per peer
-pair (reusing the seed transport's `PeerConnection` map and per-connection send
-serialization), multiplexing logical channels over streams by extending
-`ClusterStreamMetadata` with `rpc` and `repl` kinds alongside `control` and
-`port`. The seed's remaining data-plane job shrinks to **introductions**
-(`PEER_INTRO_REQ` → `PEER_INTRO {nodeId, address, certHash}`) — and even those can
-come straight from the `node:` DHT record, making the seed a fallback rather than
-a requirement. The requester dials the peer directly with cert-hash pinning
-(exactly as `joinCluster`), completes a `HELLO`, and thereafter `PORT_MSG`/RPC
-flow peer-to-peer. **The seed relay stays as the correctness fallback** during
-session setup and for NAT'd peers, so the migration is incremental and lossless.
-
-### 11.4 Internal TLS authority
-
-Internal `fetch('http://…acme.fino/…')` resolves to a node address, then connects
-over the same authenticated transport: authority = `<nodeId>.node.fino`, verified
-against the DHT-published `certHash` (reuse `serverCertificateHashes` pinning),
-not a public CA. The `.fino` name is validated by cert-hash pinning from the node
-record. Cert rotation adds a rotation/epoch field to `node:` records (§13).
-
-## 12. Wiring into the existing DNS/fetch and facade paths
-
-### 12.1 The provider seam (a pure-refactor prerequisite)
-
-`fetch` imports `lookup` directly from `fino:net/dns`, which uses a module-private
-`_defaultResolver` (`js/globals/fetch.ts:107`; `js/net/dns.ts`), so the bound
-`internal:net/dns-provider` is never consulted today. Before any cluster routing
-can reach HTTP, refactor `lookup`/fetch to delegate to a bound `SystemDnsProvider`
-(a thin `DnsProvider` over the existing `Resolver` — no behavior change). This is
-the seam that makes "override the provider → reroute HTTP" true, and it is
-independently shippable.
-
-### 12.2 The cluster provider and its injection
-
-`ClusterDnsProvider extends DnsProvider` handles `*.fino` names via the resolver
-(§10) and delegates everything else to the wrapped `SystemDnsProvider` (so a
-tenant reaches both internal services and the public internet, gated by its net
-capability). It is injected at spawn via a `ClusterDnsConfig.toRules()` remap of
-`internal:net/dns-provider` (the loader dispatches that builtin and enforces
-narrowing in `src/realm/native.rs`, so a tenant physically cannot import a
-different provider). The capability grant (§10.4) is threaded through the config
-into the provider constructor.
-
-### 12.3 Facade / port routing over services
-
-A `ServiceClusterPort` (a variant of `ClusterPort`, `client.ts:712`) resolves its
-target lazily via the route picker instead of a fixed `_setChildPortId`. Because
-Facade RPC already rides `PORT_MSG` as opaque `__rpc_req`/`__rpc_res` payloads and
-`Facade._bind` accepts any port type, **service-targeted facade RPC needs no
-RPC-layer change** — the frames simply flow to whichever replica the picker chose.
-On `PEER_DOWN`/`REALM_EXIT`/`ROUTE_INVALIDATE` the port drops its cached target
-and re-resolves. In-flight RPC on a lost replica is retried against a new replica
-only if the facade method is flagged idempotent; non-idempotent calls surface the
-failure (at-most-once). That idempotency contract is a public-API decision worth
-settling explicitly.
-
-## 13. Risks and open questions
-
-- **Ring hash**: no stable cross-node hash exists in-tree — pick one
-  (FNV-1a/xxhash-class) in `hash.ts`.
-- **Desired-state consistency across keys**: a multi-component deploy spans keys;
-  guard with a per-`deploy:` monotonic generation + quorum so two partitions
-  cannot accept conflicting intent (`multi-tenant-runtime.md` §3).
-- **Split-brain**: singletons are protected by quorum (a minority cannot grant);
-  ordinary leases are owner-unilateral and may briefly double-grant across a
-  partition — acceptable because ordinary components are active-active and the
-  `service:` directory + fencing epoch prevent stale routing.
-- **Reconcile stampede**: many nodes chasing one open slot — the CAS arbiter plus
-  jittered backoff handles correctness; add owner-side rate limiting to blunt the
-  herd.
-- **Clock**: prefer fencing epochs over wall-clock lease expiry (node-local uses
-  no clock — preserve that property; bound skew only where singleton timeouts are
-  unavoidable).
-- **Prerequisites**: telemetry (`multi-tenant-runtime.md` §2) gates the cost
-  model and cross-node shedding; packaging/cask (§5) gates cross-node respawn and
-  the CLI deploy path.
-- **Data plane**: internal-TLS cert rotation (rotation/epoch on `node:` records);
-  cache-staleness vs drain (resolved by push-invalidation, not TTL);
-  capability-leakage through names (grant checks must be constant-ish time vs a
-  DHT miss); direct-peer NAT traversal (is seed-relay the permanent fallback, or
-  is a relay node elected?).
-- **Anti-entropy cost** at scale (Merkle over a large keyspace) — the standard
-  Dynamo tradeoff; tune range granularity.
-
-## 14. Implementation phases
-
-Each phase is independently shippable with a deterministic test harness over the
-loopback transport and a controlled clock, following `realm-loop-orchestration.md`
-§11–12. Control-plane and data-plane tracks are largely parallel.
-
-**Control plane**
-
-- **P0 — This document.** Retarget; note it supersedes `multi-tenant-runtime.md`
-  §3's leader model; pin the node-local→cluster mapping (§1).
-- **P1 — Ring + hash** (pure): stable ownership, K-preference list, minimal
-  reshuffle on join/leave.
-- **P2 — Ledger core** (single-owner, in-proc): namespaces, schemas, CAS, fencing
-  epoch; `RealmRegistry` per-partition for `port:`.
-- **P3 — SWIM membership** over loopback; convert bootstrap (HELLO/WELCOME) to
-  gossip, keep the join flow.
-- **P4 — Distributed ledger**: replicate to K, anti-entropy, join pulls range /
-  leave promotes successor, read-repair, partition behavior.
-- **P5 — Two-tier leases**: ordinary CAS + singleton quorum + failover
-  epoch-learning + fencing.
-- **P6 — Reconcile loop + pull claiming + `ClusterAllocator`**: `DeployRecord`,
-  claim-set CAS arbiter, constraint eval, backoff, under-replication;
-  `ClusterAllocator` federates node `WorkloadAllocator`s by `node/shard`;
-  `ClusterAgent` hosts it and drives `SchedulerNode.deploy`; `deployCluster`.
-- **P7 — Real `NodeLoad` telemetry** (depends on `multi-tenant-runtime.md` §2):
-  extended `NodeLoad` on gossip; feed up the node's push-reported load.
-- **P8 — Cost model + cross-node shedding + autoscale signal**: rung 2 of the
-  ladder (rung 1 already ships node-locally); `pending`-backlog →
-  `CapacityDeficit`, low-utilization → `CapacitySurplus`; pluggable
-  node-provisioner hook + no-op default.
-- **P9 — Cross-node drain + respawn**: `HANDOFF_OFFER`/`ACCEPT`, inbound-snapshot
-  injection, reconstruct; reuse the node-local handoff tests one level up.
-
-**Data plane** (DP0 lands anytime as a pure refactor; DP1–DP3 are pure logic with
-fakes; DP4–DP6 need P4's directory and P3's peer sessions)
-
-- **DP0 — Provider seam**: route `fino:net/dns`/fetch through a bound
-  `SystemDnsProvider` (no behavior change).
-- **DP1 — `ServiceResolver`** over an injectable `DirectorySnapshot`: name
-  grammar, two-hop, cache/TTL/invalidation, capability gate (denial ≡ not-found).
-- **DP2 — `ClusterDnsProvider` + `ClusterDnsConfig` injection** (`.fino`
-  resolves; else system DNS).
-- **DP3 — Route picker**: tiers + spill/hysteresis + backpressure over load fakes.
-- **DP4 — Direct-peer transport**: `WebTransportPeerTransport` + `PEER_INTRO` +
-  stream-kind demux, seed fallback retained; `PORT_MSG` parity relayed vs direct.
-- **DP5 — `ServiceClusterPort` + facade over service routing**: lazy resolution,
-  re-resolve on failure, idempotency policy.
-- **DP6 — Route-table maintenance**: load gossip + push invalidation + drain
-  handshake (draining replica evicted before the next pick; dead-node cascade).
-
-**P10 — CLI + surfacing**: `fino cluster start/join/status/nodes/deployments`,
-`fino deploy --replicas`; cask/packaging integration (flagged — separate
-concern).
-
-## 15. Naming
-
-Offered, not assumed, in the sherry lexicon `multi-tenant-runtime.md` already
-proposes (fino is a sherry; the vocabulary is honest about what each thing does):
-
-- **solera** — the scheduling/distribution system as a whole (a solera literally
-  distributes contents across barrels over time): the `ClusterAgent` +
-  `ClusterAllocator` + reconcile layer.
-- **cask** — the content-addressed deployment archive.
-- **bodega** — the replicated package store the casks live in.
-
-The DHT ledger, the resolver, and the route picker keep descriptive names in code
-for readability; the sherry names are for the user-facing surfaces if adopted.
+- `control` is long-lived, ordered, and limited to small lifecycle messages.
+- `raft` is long-lived and never shares a queue with node observations or tenant
+  data.
+- `raft-snapshot` and `artifact` use dedicated bulk streams.
+- `port` is one ordered stream for one logical realm-port pair. It lives until
+  either port closes, the owning attempt ends, or the session fails.
+- `service` is one stream per streaming call or bounded request group, according
+  to the service protocol.
+- WebTransport datagrams are optional and carry only disposable observations
+  such as latency probes. Assignments, heartbeats, exits, and route invalidation
+  always use reliable streams.
+
+Frames contain a fixed version/kind prefix, a bounded JSON control header, and
+zero or more raw length-prefixed byte parts. Realm serializer output is carried
+without base64 or a second JSON encoding. Initial limits are operator-tunable
+with conservative defaults:
+
+- 1 MiB maximum control frame;
+- 16 MiB maximum data message;
+- 16 MiB queued per logical channel;
+- 64 MiB queued across one peer data session.
+
+An oversized frame resets its stream. Repeated malformed or unauthorized
+frames close the session. Every decoder reconstructs known fields rather than
+forwarding unknown properties.
+
+### 5.4 Ordering, backpressure, and failure
+
+QUIC guarantees reliable ordered bytes within a stream, not across streams.
+Contracts that require order therefore use one stream. Independent ports and
+bulk transfers do not share application ordering.
+
+The current global connection queue is removed. Each logical channel awaits its
+own writer and accounts queued bytes. `ClusterPort.postMessage()` remains
+synchronous but throws a typed `ClusterBackpressureError` when accepting the
+serialized message would exceed its bound. Promise-based service calls expose
+backpressure by awaiting their writes.
+
+Session or stream loss rejects unacknowledged work. The transport never silently
+replays an arbitrary `PORT_MSG` or non-idempotent request. A service layer may
+retry only when its method contract is idempotent and the request ID supports
+deduplication.
+
+The seed relay may remain temporarily while v2 direct sessions are introduced,
+but it is not a production fallback or a permanent controller responsibility.
+NAT traversal and a dedicated relay service are future discovery/transport
+providers.
+
+## 6. Raft control plane
+
+### 6.1 Why consensus is narrow
+
+Raft is used only for state where two accepted answers would violate the API.
+It does not store heartbeats, queue depth, every port, every route sample, or
+application messages.
+
+Durable replicated state includes:
+
+```ts
+interface ClusterState {
+  identity: ClusterIdentityRecord;
+  nodes: Record<NodeId, NodeIdentityRecord>;
+  controllers: ControllerMembership;
+  deployments: Record<DeploymentKey, DeployRecord>;
+  assignments: Record<WorkloadKey, AssignmentRecord>;
+  singletonFences: Record<ResourceKey, FenceRecord>;
+  policy: ClusterPolicyRecord;
+}
+```
+
+- `DeployRecord` carries a monotonic revision and complete desired component
+  state.
+- `AssignmentRecord` carries the active and optional pending attempt for one
+  stable replica slot.
+- `FenceRecord` carries a token derived from a committed Raft term/index and the
+  active attempt allowed to use it.
+- node identity and controller membership are durable; node addresses, load,
+  and health are not.
+
+Each voter persists its Raft log, term/vote state, and snapshots under its local
+cluster state path. The exact Raft library and storage adapter require a
+separate implementation ADR; the semantics in this document are independent of
+that choice.
+
+### 6.2 Soft observation state
+
+Every agent streams a full observation on leader connection and deltas
+afterward:
+
+```ts
+interface NodeObservation {
+  nodeId: NodeId;
+  incarnation: number;
+  addresses: readonly PeerEndpoint[];
+  capacity: NodeCapacity;
+  capabilities: NodeCapabilities;
+  load: {
+    assigned: number;
+    runnable: number;
+    debtBand: number;
+  };
+  attempts: readonly AttemptObservation[];
+  sequence: number;
+}
+```
+
+The leader holds these observations in memory and publishes snapshots/deltas to
+agents, gateways, and diagnostics. A new leader starts empty; nodes reannounce
+without requiring a durable replay. Observations are accepted only from the
+authenticated node and only for its current incarnation and increasing
+sequence.
+
+The initial load model uses signals the reactor actually reports. CPU and RSS
+join only after real measurement exists; no protocol field is populated with a
+placeholder zero and then treated as placement truth.
+
+### 6.3 Failure and quorum behavior
+
+The agent control session supplies heartbeats and carries observations. A broken
+session is first `suspect`; reconnect within the grace window preserves the
+node's assignments. After the leader's monotonic timeout expires, the leader
+marks the node unavailable and proposes replacement assignments. Wall clocks
+are never compared between machines.
+
+On leader failure, agents discover or learn the new leader, reconnect, and send
+full observations. During election:
+
+- existing attempts continue running;
+- cached service routes continue carrying traffic;
+- direct peer sessions remain valid;
+- deploys, new assignments, membership changes, and singleton transitions wait
+  for a leader and quorum.
+
+A minority partition cannot commit new desired state or fences. Stateless work
+already running in that partition may continue serving through routes that can
+still reach it. A stateful old primary can be made safe only by presenting its
+fence to a store that rejects stale tokens.
+
+## 7. Workloads and placement
+
+### 7.1 Two workload lifetimes
+
+**Ephemeral realm allocation** is the behavior behind `spawnRealm()`:
+
+- it explicitly permits cluster placement but does not require a remote node;
+- the parent mints a stable `SpawnRequestId`; the leader chooses a node from
+  current observations and returns a short-lived, signed allocation ticket
+  without adding a durable deployment record;
+- the destination deduplicates that request ID for the ticket lifetime. An
+  uncertain or failed allocation rejects rather than transparently selecting a
+  second node, so user entry code is not accidentally started twice;
+- the destination admits it through `SchedulerNode.deployRealm()` and returns
+  the parent-side cluster port endpoint;
+- the parent owns a local lease renewed over the peer session using the host's
+  monotonic receipt time;
+- parent exit sends `OWNER_RELEASE`; loss of renewal or confirmed parent-node
+  death terminates the child;
+- it is never automatically restarted after host failure.
+
+Each host maintains a reverse index of ephemeral children by parent attempt or
+parent node. A child that terminates releases its own children, so structured
+concurrency cascades edge-by-edge without a global port tree.
+
+**Durable deployment replicas** come from committed `DeployRecord`s:
+
+- each component owns stable replica slots;
+- the reconciler ensures the requested number of healthy active attempts;
+- failed attempts are replaced according to restart and rollout policy;
+- their readiness endpoints materialize the service directory;
+- they may be realm workloads initially and process-sandbox workloads later.
+
+### 7.2 Execution specification
+
+The deployment schema is extensible over local executors:
+
+```ts
+type ExecutionSpec = {
+  kind: 'realm';
+  entry: string;
+  data?: unknown;
+  importRules: readonly unknown[];
+  isolation?: 'reactor' | 'process';
+} | {
+  kind: 'process';
+  command: string;
+  args?: readonly string[];
+  sandbox: ProcessSandboxSpec;
+};
+
+interface ComponentSpec {
+  execution: ExecutionSpec;
+  scaling?: {
+    mode?: 'replicated' | 'bound';
+    min?: number;
+    max?: number;
+  };
+  resources: { memoryBytes?: number; cpuWeight?: number; slots?: number };
+  placement?: {
+    require?: readonly string[];
+    spreadBy?: readonly ('node' | 'zone')[];
+    colocateWith?: readonly string[];
+    antiAffinity?: readonly string[];
+  };
+  restart: 'never' | 'on-failure' | 'always';
+}
+```
+
+The first distributed executor is `kind: 'realm', isolation: 'reactor'`.
+Process isolation and arbitrary sandboxed process execution reuse the same
+node-level assignment protocol later, but use a local process executor rather
+than a reactor shard.
+
+Omitted scaling means replicated, `min: 1`, and a dynamic maximum equal to the
+eligible reactor-thread count across the cluster. A configured maximum may be
+lower but never raises that physical ceiling. `bound` means exactly one
+caller-state-bound isolate; it may move live within its node but never splits.
+
+### 7.3 Placement algorithm
+
+The leader's `PlacementReconciler` evaluates candidates in two stages:
+
+1. hard filters: enrolled and live node, protocol compatibility, execution
+   kind, OS/architecture, required capabilities/native libraries, sandbox
+   support, memory/slot availability, and failure-domain constraints;
+2. spread replicas to nodes without a copy, then to reactors without a copy;
+3. score: loop pressure, existing assignments, remaining slots, locality,
+   colocation, anti-affinity, and deterministic `NodeId` tie-break. For an
+   ordinary new allocation, a remote node wins whenever its score is equal to
+   or lower than the requester.
+
+The leader commits:
+
+```ts
+interface AttemptId {
+  workloadKey: WorkloadKey;
+  nodeId: NodeId;
+  nodeIncarnation: number;
+  epoch: number;
+}
+
+interface AssignmentRecord {
+  active?: AttemptId;
+  pending?: AttemptId;
+  deploymentRevision: number;
+}
+```
+
+The destination agent checks the assignment against its current local capacity
+and either:
+
+- admits the serialized spec to `SchedulerNode` and reports `starting`; or
+- returns an admission NACK with a typed reason and a fresh observation.
+
+A NACK never causes local overcommit. The leader clears the stale pending
+attempt, increments the slot epoch, and chooses again. Once admitted, the node's
+allocator chooses the reactor shard exactly as it does for local work.
+
+## 8. Readiness, replacement, and fencing
+
+### 8.1 Attempt lifecycle
+
+```text
+assigned → admitted → starting → ready → active → draining → stopped
+                  └──────────────→ failed ────────────────┘
+```
+
+Every report names the full `AttemptId`. Reports from an old node incarnation,
+deployment revision, or epoch are ignored. A host may stop an attempt after
+learning it is stale, but stale cleanup is not required for correctness.
+
+### 8.2 Rolling replacement
+
+Relocation, rollout, and node drain all use replacement:
+
+1. commit `pending = successor AttemptId` while the predecessor remains active;
+2. the destination admits and starts the successor;
+3. readiness is observed and the leader commits the successor as active;
+4. directory watchers remove the predecessor from new routing and mark it
+   draining;
+5. the predecessor closes accepting handles, completes all referenced in-flight
+   work, and terminates. Scale-down has no automatic force timeout; explicit
+   operator cancellation remains available for stuck application work.
+
+If the successor fails before cutover, the predecessor remains active and a new
+pending epoch is selected. If the predecessor fails first, readiness policy
+decides whether the successor may be promoted immediately or another attempt is
+needed.
+
+This mechanism replaces the earlier cross-node handoff promise. Compatible
+tenant workloads may still use their mailbox snapshot during node-local shard
+movement. Cross-node continuity requires an explicit application checkpoint
+whose version and storage semantics are part of the component contract.
+
+### 8.3 Singleton/stateful-primary workloads
+
+The active primary receives a committed `FenceToken { term, index }`. The token
+must be included with every mutation to a fence-aware Fino service or external
+store. That resource remembers the greatest token it has accepted and rejects
+smaller tokens.
+
+Without such enforcement, Fino can provide best-effort single routing but must
+not claim split-brain-safe singleton execution. A network-isolated old primary
+can continue running after a new leader commits a replacement; only the stateful
+resource can make its writes harmless.
+
+## 9. Directory and data routing
+
+### 9.1 Service directory
+
+The service directory is a materialized soft view of:
+
+- committed active assignments and deployment revision;
+- current ready/health observations;
+- node peer endpoints and certificate hashes;
+- drain state and attempt epoch.
+
+```ts
+interface RouteTarget {
+  service: ServiceKey;
+  attempt: AttemptId;
+  endpoint: PeerEndpoint;
+  portId?: string;
+  health: 'ready' | 'degraded';
+  drain: 'active' | 'draining';
+  zone?: string;
+}
+```
+
+Agents watch a leader-provided directory snapshot and ordered deltas. They keep
+the last valid snapshot across elections. Cutover, drain, revocation, and
+confirmed node loss push invalidations; TTL is only a fallback for missed
+non-safety-critical updates.
+
+### 9.2 Route selection
+
+The route picker filters to the current deployment revision and attempt epoch,
+then prefers:
+
+1. same reactor/node when the target is local;
+2. same node through transit when it is in another local isolate;
+3. same zone through a peer data session;
+4. any ready non-draining replica.
+
+It spills when a target is draining, over its bounded queue, or unhealthy. If
+all targets are overloaded, promise-based RPC returns `ClusterOverloaded` or
+waits in a caller-bounded queue; fire-and-forget messages never enter an
+unbounded buffer.
+
+An in-flight failure retries only an idempotent operation with a stable request
+ID and receiver-side deduplication. Non-idempotent calls surface the failure.
+
+### 9.3 Logical names and DNS
+
+Logical service identity remains:
+
+```text
+fino://<tenant>/<app>/<component>
+<component>.<app>.<tenant>.fino
+```
+
+The first routing phase exposes logical service ports over the in-process
+directory API. DNS projection follows later, after `fino:net/dns` and `fetch`
+delegate through an injectable provider. `.fino` handling then projects the same
+directory rather than creating another source of truth. Capability denial is
+shaped like not-found and physical topology is hidden unless explicitly granted.
+
+## 10. Resource reporting, balancing, and scaling
+
+The initial scheduler uses real capacity and current reactor summaries:
+
+- configured realm/process slots;
+- assigned workload count;
+- runnable workload count;
+- accumulated scheduling debt in microseconds;
+- supported execution/isolation modes and native capabilities.
+
+Later telemetry adds process RSS, per-attempt heap, thread CPU, loop idle, queue
+depth, and request-rate EWMAs. Only measured fields participate in scoring.
+
+Autoscaling uses loop health as a leading signal rather than waiting for CPU
+saturation. Each replica reports active tasks, queue depth, oldest queue age,
+p95 runnable delay, and interval busy ratio. Sustained queued/runnable delay at
+half of the default 5 ms target for one second creates one successor. The
+successor must be ready before the service directory publishes it. Continuing
+pressure can request another replica only after that action completes.
+
+Scale-down selects one replica only after it has no queued work and remains
+below 10% busy for 30 seconds, while preserving `min`. Directory withdrawal is
+synchronous and authoritative; DNS is a projection of that same route set.
+Listener handles then stop accepting, admitted tasks retain references until
+completion, and unreferenced background resources do not delay disposal.
+
+Rebalancing first asks whether live same-node movement can isolate the offender
+on a less-busy latency reactor or a lower-priority batch reactor. This preserves
+the heap and avoids network transfer. A future cluster allocator should keep
+that local preference while the node is within roughly 20% of the least-loaded
+eligible node. Stronger node imbalance or unavailable local capacity escalates
+to the replacement protocol: a node may report pressure and stop accepting new
+work, but the leader commits the successor before the node drains a durable
+replica.
+
+Autoscaling is an output contract rather than a built-in cloud dependency:
+
+```ts
+type CapacitySignal =
+  | { type: 'deficit'; constraints: NodeRequirements; pending: number }
+  | { type: 'surplus'; candidates: readonly NodeId[] };
+```
+
+A provisioner plugin may translate the signal into cloud, bare-metal, or
+Kubernetes actions. The default is observability only. Nodes still join through
+the same discovery, enrollment, and control protocols.
+
+## 11. Public and internal surface changes
+
+The design permits breaking changes because no cluster API has been released.
+
+- `joinCluster()` gains a required listen/advertise endpoint, persisted identity
+  state path, bootstrap credential, and discovery-provider list. Every joined
+  production node is peer-dialable.
+- `startCluster()` forms the cluster and initial voter. It may publish mDNS and
+  returns join material. Additional voters are added through an explicit
+  committed operation.
+- `spawnRealm()` means "allow cluster placement," not "force another node."
+  The result may be local when local placement wins.
+- Durable applications use `deploy(manifest)`/CLI deployment rather than
+  `spawnRealm()`.
+- The v1 `ClusterMessage` union and seed-broadcast transport are retired.
+  Protocol v2 separates authentication, controller, Raft, allocation,
+  lifecycle, directory, and data-stream messages.
+- `ClusterTransport` remains injectable for deterministic tests, but its
+  contract becomes session-oriented and destination-aware; broadcasting is not
+  a seed-only primitive.
+- `ClusterAgent` becomes an orchestrator service that owns discovery, identity,
+  controller connection, peer sessions, directory cache, and local admission.
+- There is no `ClusterAllocator` that federates `WorkloadAllocator`s or exports
+  `node/shard` IDs. `PlacementReconciler` chooses a node and the destination
+  allocator stays unchanged behind admission.
+
+## 12. Implementation phases
+
+Each phase is independently testable and leaves a useful runtime state.
+
+### P0 — This document
+
+- replace the DHT/SWIM design;
+- record the reactor, allocation, transit, and cluster prototype accurately;
+- lock the consistency, identity, discovery, workload, routing, and failure
+  semantics above.
+
+### P1 — Discovery, identity, and protocol v2
+
+- add persisted node identities and cluster enrollment;
+- define the discovery-provider contract, static provider, and mDNS provider;
+- make joined nodes listen for WebTransport sessions;
+- implement certificate pinning plus signed peer authentication;
+- add protocol/feature negotiation, bounded v2 framing, session classes,
+  deduplication, and reconnect behavior.
+
+The existing seed remains the single controller during this phase, but it no
+longer establishes trust merely from `HELLO.nodeId`.
+
+### P2 — Direct peer ports and allocator convergence
+
+- replace per-message streams with persistent logical port streams and raw
+  binary serializer parts;
+- route `PORT_MSG` directly by authenticated node endpoint;
+- make inbound ephemeral allocations call `SchedulerNode.deployRealm()`;
+- delete cluster use of `createThreadContext`, `stepThreadContext`, the
+  zero-delay relay interval, and seed-owned port routing;
+- implement parent ownership renewal/release and edge-local death cascades;
+- retain seed relay only behind a temporary compatibility flag.
+
+### P3 — Raft quorum and control watches
+
+- integrate a proven Raft engine through a separately reviewed ADR;
+- persist log, vote/term state, and snapshots;
+- implement three-voter bootstrap expansion and joint membership change;
+- replicate cluster identity, node enrollment, deployments, assignments,
+  fences, and policy;
+- add agent observations, leader discovery, reconnect/reannounce, and directory
+  watches;
+- prove fail-closed mutation and continued direct serving during elections.
+
+### P4 — Durable deployment reconciliation
+
+- add manifest validation and stable component/replica identities;
+- implement node filtering/scoring, committed attempt epochs, local admission,
+  NACK/retry, readiness, restart policy, and under-replication recovery;
+- implement rolling replacement for deploys, moves, and node drain;
+- expose cluster status, nodes, deployments, attempts, and degraded quorum.
+
+### P5 — Service directory and routing
+
+- materialize service routes from assignments and observations;
+- implement attempt-aware cache invalidation, locality routing, drain behavior,
+  overload errors, and idempotent retry/deduplication;
+- add service-targeted ports/facades;
+- refactor DNS/fetch through the provider seam, then add `.fino` projection.
+
+### P6 — Telemetry, balancing, autoscaling, and process execution
+
+- replace coarse load with measured CPU/RSS/heap/idle/queue telemetry;
+- add pressure-aware replacement and autoscaling signals;
+- add `process` execution through the existing sandbox planning/launcher
+  substrate;
+- add optional provisioner and discovery plugins without changing core
+  scheduling.
+
+### P7 — Stateful services and explicit checkpoints
+
+- integrate fence validation into Fino-owned state services;
+- expose fence tokens to stateful workload APIs;
+- define an opt-in, versioned application checkpoint contract;
+- do not claim singleton safety or resumable migration until their end-to-end
+  tests pass.
+
+## 13. Verification and coverage map
+
+### 13.1 Existing baseline
+
+The current branch already covers the behavior it implements:
+
+| Requirement | Existing evidence | Status | Required action |
+|---|---|---|---|
+| v1 codec rejects malformed/extra fields | `tests/cluster/protocol.test.ts` | covered-v1 | replace with v2 family and limit tests |
+| seed spawn/port/death routing | `tests/cluster/seed.test.ts` | covered-v1 | retire as P2 removes the star router |
+| remote Realm call over WebTransport | `tests/cluster/public.test.ts`, `tests/realm/remote.test.ts` | partial | rerun through allocator-backed direct peers |
+| stream metadata framing | `tests/cluster/webtransport-framing.test.ts` | covered-v1 | add partial-frame, size, binary-part, and stream-kind coverage |
+| node-local placement/capacity | `tests/internal/orchestrator-node.test.ts` | covered | reuse unchanged behind admission |
+| live isolate movement, reservations, batch lifecycle, budgets | `tests/internal/scheduler-node.test.ts` | covered-local | retain as the preferred local pressure response |
+| cross-thread V8 state, timer/readiness/socket migration | `tests/internal/reactor-engine.test.ts` | covered-local | prove remote admission reaches this same execution path |
+| mDNS browse/publish/update/down | `tests/net/mdns.test.ts` | covered-substrate | add discovery-record filtering and secret-absence tests |
+| peer identity and session deduplication | none | missing | P1 focused security/session suite |
+| Raft election/quorum/persistence | none | missing | P3 deterministic network/storage harness |
+| direct peer ordering/backpressure | none | missing | P2 transport and slow-reader suite |
+| durable attempt recovery/cutover | none | missing | P4 reconciliation suite |
+
+### 13.2 Required focused tests
+
+- **Discovery:** static and mDNS `up/update/down`, wrong-cluster filtering,
+  duplicate suppression, cancellation, multicast unavailable fallback, and no
+  token/secret in published TXT data.
+- **Authentication:** correct join, wrong pin, wrong cluster, revoked node,
+  stale incarnation, replayed challenge, forged signature, role mismatch,
+  rotation overlap, protocol downgrade, simultaneous dial, reconnect, and
+  cleanup after failed authentication.
+- **Framing/transport:** fragmented/coalesced frames, unknown kind, oversized
+  header/data, raw ArrayBuffer parts, per-port order, independent port progress,
+  slow receiver bounds, stream reset, session loss, and no non-idempotent replay.
+- **Consensus:** election, leader loss, quorum loss, stale term, duplicate
+  request, log persistence, snapshot install, restart recovery, joint voter
+  change, and fail-closed mutation.
+- **Admission:** remote realm appears in `NodeIsolateCollection`, lands on a
+  reactor shard, respects capacity/capabilities, deduplicates an ephemeral
+  `SpawnRequestId`, fails an uncertain spawn without cross-node replay, NACKs
+  stale placement, rejects stale attempt reports, and never starts the legacy
+  stepping loop.
+- **Lifecycle:** parent release, missed ownership renewal, parent-node death,
+  multi-level cascade, durable host loss, restart policy, successor failure,
+  readiness cutover, drain timeout, and stale predecessor cleanup.
+- **Routing:** leader election with cached routes, pushed invalidation, locality,
+  drain exclusion, all-target overload, idempotent retry/dedupe, and
+  non-idempotent failure.
+- **Security/fencing:** stale route rejection and a partitioned old primary whose
+  write is rejected by a fence-aware test store.
+
+### 13.3 Specification dependency map
+
+| Specification requirement | Fino dependency | Design status |
+|---|---|---|
+| A WebTransport session can carry concurrent bidirectional/unidirectional streams and datagrams | existing `fino:net/http/webtransport` | implemented substrate; cluster v2 still missing |
+| Reliable stream bytes are ordered within a stream, while independent streams do not share ordering | port/control/Raft stream layout | adopted explicitly; requires P2 ordering tests |
+| QUIC applies both stream-level and connection-level flow control | separate controller/Raft/data connections | design requirement; requires saturation test |
+| Certificate hashes authenticate the server but not the client | pin plus signed peer transcript | client proof missing until P1 |
+| WebTransport over HTTP/3 uses negotiated session support and stream prefixes | existing HTTP/3 WebTransport stack | covered by network suites; v2 must not bypass it |
+| DNS-SD uses PTR discovery plus SRV/TXT service metadata | existing `Mdns.browse`/`publish` | implemented substrate; cluster record mapping missing |
+
+The cluster protocol itself has no external specification. Its v2 framing,
+authentication transcript, message families, limits, and failure behavior are
+therefore Fino-defined contracts and require direct protocol tests rather than
+an interoperability claim.
+
+### 13.4 Integration and performance gates
+
+A multi-process harness boots three voters plus multiple workers on unique
+loopback QUIC ports and proves:
+
+- join, enrollment, leader election, and direct peer connection;
+- workloads spread across nodes but use local reactor placement;
+- port and service traffic does not pass through the leader;
+- one controller can fail without ending application traffic;
+- loss of quorum blocks mutation while existing routes continue;
+- worker loss creates a new attempt and invalidates the old route;
+- graceful drain starts the successor before removing the predecessor.
+
+Performance gates compare direct versus v1-relayed port latency/throughput,
+verify that a tenant flood does not delay Raft heartbeats/elections, count
+sessions and streams, and hold memory within configured queue bounds under slow
+receivers.
+
+## 14. Explicit non-goals and later extensions
+
+- No production NAT traversal or always-available relay in the first network
+  model. Those belong behind future discovery and transport providers.
+- No dependency on Kubernetes. Kubernetes-aware discovery/provisioning is an
+  optional integration over the same contracts.
+- No DHT, SWIM, consistent-hash ring, Merkle anti-entropy, or per-key lease
+  authority in this design.
+- No transparent V8 heap, live handle, fd, socket, timer, or in-flight-I/O
+  migration.
+- No split-brain-safe singleton without a fence-aware state resource.
+- No cloud-specific autoscaler in core.
+- No CPU-cost placement based on hints or placeholder metrics.
+- No guarantee that an ephemeral `spawnRealm()` survives parent, host, or
+  control-plane loss.
+
+The existing sherry-flavored names remain optional user-facing vocabulary:
+`cask` for a content-addressed deployment archive and `bodega` for its replicated
+artifact store. Core implementation types remain descriptive (`ClusterAgent`,
+`PlacementReconciler`, `PeerSessionManager`, `DirectorySnapshot`) so the
+architecture is legible without the metaphor.

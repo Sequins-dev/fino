@@ -20,7 +20,7 @@ pub mod js_calls;
 use std::{
     cell::RefCell,
     os::unix::io::RawFd,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use ::v8;
@@ -43,8 +43,8 @@ struct WakeSinkInner {
     /// Write end of the isolate's self-pipe, owned here (closed on last drop)
     /// so background threads holding clones can never write a recycled fd.
     pipe_write: RawFd,
-    /// Installed at most once, ever — first install wins.
-    notifier: OnceLock<(cherenkov::Notifier, u64)>,
+    /// Current reactor route. A parked isolate may replace it when it moves.
+    notifier: RwLock<Option<(cherenkov::Notifier, u64)>>,
 }
 
 impl Drop for WakeSinkInner {
@@ -59,7 +59,7 @@ impl WakeSink {
     fn new(pipe_write: RawFd) -> WakeSink {
         WakeSink(Arc::new(WakeSinkInner {
             pipe_write,
-            notifier: OnceLock::new(),
+            notifier: RwLock::new(None),
         }))
     }
 
@@ -68,7 +68,7 @@ impl WakeSink {
     /// same shutdown-race envelope the raw pipe write always had (SIGPIPE is
     /// ignored process-wide; a failed write is harmless).
     pub fn wake(&self) {
-        if let Some((notifier, user_data)) = self.0.notifier.get()
+        if let Some((notifier, user_data)) = self.0.notifier.read().unwrap().as_ref()
             && notifier.post(*user_data, 0)
         {
             return;
@@ -78,15 +78,15 @@ impl WakeSink {
         }
     }
 
-    /// Upgrade the sink to a reactor Notifier post. First install wins; a
-    /// false return means another reactor already claimed this isolate's
-    /// wakes (e.g. the engine claimed a tenant's before its bootstrap ran).
+    /// Route the sink to a reactor Notifier post. Replacing the route is safe:
+    /// background producers hold this shared cell rather than a notifier copy.
     pub fn install_notifier(&self, notifier: cherenkov::Notifier, user_data: u64) -> bool {
-        self.0.notifier.set((notifier, user_data)).is_ok()
+        *self.0.notifier.write().unwrap() = Some((notifier, user_data));
+        true
     }
 
     pub fn notifier_installed(&self) -> bool {
-        self.0.notifier.get().is_some()
+        self.0.notifier.read().unwrap().is_some()
     }
 }
 
@@ -133,21 +133,17 @@ pub struct ViewRelease {
 pub type ViewReleaseQueue = Arc<Mutex<Vec<ViewRelease>>>;
 
 // ---------------------------------------------------------------------------
-// Thread-local resolver table — bridges non-Send v8::Global across threads
+// Isolate-owned resolver table — background work carries only numeric ids
 // ---------------------------------------------------------------------------
-
-thread_local! {
-    /// Stores `v8::Global<PromiseResolver>` values by index. The background
-    /// thread stores only the index (a plain `usize`) in `FfiCompletion`; the
-    /// main thread retrieves and consumes the resolver when draining.
-    static RESOLVER_TABLE: RefCell<Vec<Option<v8::Global<v8::PromiseResolver>>>> =
-        const { RefCell::new(Vec::new()) };
-}
 
 /// Store a resolver and return its slot index (called from the main thread).
 pub fn push_resolver(resolver: v8::Global<v8::PromiseResolver>) -> usize {
-    RESOLVER_TABLE.with(|t| {
-        let mut table = t.borrow_mut();
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let table = &mut state
+            .as_mut()
+            .expect("async_rt::init() not called")
+            .resolver_table;
         let id = table.len();
         table.push(Some(resolver));
         id
@@ -156,7 +152,14 @@ pub fn push_resolver(resolver: v8::Global<v8::PromiseResolver>) -> usize {
 
 /// Take a resolver by its slot index (called from the main thread during drain).
 fn take_resolver(id: usize) -> Option<v8::Global<v8::PromiseResolver>> {
-    RESOLVER_TABLE.with(|t| t.borrow_mut().get_mut(id)?.take())
+    STATE.with(|state| {
+        state
+            .borrow_mut()
+            .as_mut()?
+            .resolver_table
+            .get_mut(id)?
+            .take()
+    })
 }
 
 /// Resolve a reactor-engine I/O completion: take the resolver stored by
@@ -194,6 +197,11 @@ pub struct IsolateAsyncState {
     /// clone (pipe byte by default, Notifier post once a reactor claims it).
     /// Owns the pipe's write end.
     pub wake_sink: WakeSink,
+    /// Promise resolvers belong to the isolate, not the OS thread currently
+    /// pumping it. Keeping the table here lets a parked isolate migrate.
+    resolver_table: Vec<Option<v8::Global<v8::PromiseResolver>>>,
+    /// FFI callback handles follow the isolate for the same reason.
+    callback_table: Vec<Option<v8::Global<v8::Function>>>,
 }
 
 impl Drop for IsolateAsyncState {
@@ -235,7 +243,21 @@ pub fn new_state() -> IsolateAsyncState {
         view_releases: Arc::new(Mutex::new(Vec::new())),
         wake_read: fds[0],
         wake_sink: WakeSink::new(fds[1]),
+        resolver_table: Vec::new(),
+        callback_table: Vec::new(),
     }
+}
+
+pub(crate) fn with_callback_table<R>(
+    f: impl FnOnce(&mut Vec<Option<v8::Global<v8::Function>>>) -> R,
+) -> R {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        f(&mut state
+            .as_mut()
+            .expect("async_rt::init() not called")
+            .callback_table)
+    })
 }
 
 /// Swap the current thread-local async state, returning the previous one.

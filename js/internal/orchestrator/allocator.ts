@@ -146,9 +146,24 @@ export class WorkloadAllocator {
   * re-place a workload off a thread it must leave (`exclude`).
   */
   leastLoadedOfClass(shardClass: ShardClass, exclude?: ShardId): ShardId | null {
-    const pool = [...this.#shards.values()].filter((shard) => shard.shardClass === shardClass && shard.shardId !== exclude);
+    const pool = [...this.#shards.values()].filter((shard) =>
+      shard.shardClass === shardClass && shard.shardId !== exclude && this.hasRoom(shard.shardId)
+    );
     if (pool.length === 0) return null;
-    return this.#leastLoaded(exclude ?? null, shardClass);
+    let best = pool[0]!.shardId;
+    let bestKey = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pool.length; i++) {
+      const id = pool[(this.#roundRobin + i) % pool.length]!.shardId;
+      const load = this.#load.get(id);
+      const assigned = this.#occupancy.assignedCount(id);
+      const key = assigned * 1e6 + (load ? load.runnableWorkloads * 1e3 + Math.min(load.debtMicros, 999) : 0);
+      if (key < bestKey) {
+        bestKey = key;
+        best = id;
+      }
+    }
+    this.#roundRobin++;
+    return best;
   }
 
   /**

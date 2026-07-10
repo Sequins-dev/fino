@@ -316,6 +316,8 @@ export interface TenantDeployment {
   priority?: PriorityClass;
   /** Pin to a specific scheduler thread. Reserved for core services — ordinary app deployment omits it and lets the orchestrator place. */
   affinity?: ShardId;
+  /** Permit or prevent live movement between reactor threads on this node. */
+  localMobility?: 'movable' | 'pinned';
 }
 
 /**
@@ -403,7 +405,8 @@ export async function deployNode(deployments: TenantDeployment[], options: Deplo
       entryPath: deployment.entry,
       ...deployment.data !== undefined ? { data: deployment.data } : {},
       ...deployment.priority !== undefined ? { priority: deployment.priority } : {},
-      ...deployment.affinity !== undefined ? { affinity: deployment.affinity } : {}
+      ...deployment.affinity !== undefined ? { affinity: deployment.affinity } : {},
+      ...deployment.localMobility !== undefined ? { localMobility: deployment.localMobility } : {}
     });
     placements.push({ tenantId: deployment.tenantId, workloadId, thread: collection.placementOf(workloadId) });
     placed.push({ tenantId: deployment.tenantId, workloadId });

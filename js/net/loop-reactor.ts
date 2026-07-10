@@ -44,6 +44,9 @@ interface SpinOptions {
 */
 export interface CancelablePromise extends Promise<void> {
   cancel(): void;
+  ref(): CancelablePromise;
+  unref(): CancelablePromise;
+  hasRef(): boolean;
 }
 
 // Atomics.waitAsync settles from another thread with no reactor registration,
@@ -153,8 +156,26 @@ export function fileReadAsync(fd: number, buf: Uint8Array | ArrayBuffer, offset:
 export function timeout(ms: number): CancelablePromise {
   const { id, promise } = native.addTimer(ms);
   const p = promise as CancelablePromise;
+  let referenced = true;
   p.cancel = function cancelTimeout() {
     native.cancelTimer(id);
+  };
+  p.ref = function refTimeout() {
+    if (!referenced) {
+      referenced = true;
+      native.setTimerRef(id, true);
+    }
+    return p;
+  };
+  p.unref = function unrefTimeout() {
+    if (referenced) {
+      referenced = false;
+      native.setTimerRef(id, false);
+    }
+    return p;
+  };
+  p.hasRef = function hasTimerRef() {
+    return referenced;
   };
   return p;
 }

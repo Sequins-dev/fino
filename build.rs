@@ -13,6 +13,7 @@ use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
 fn main() {
     println!("cargo:rerun-if-changed=js/");
     println!("cargo:rerun-if-changed=src/profiler/binding.cc");
+    println!("cargo:rerun-if-changed=src/v8_threading/binding.cc");
 
     // Compile the CpuProfiler C++ shim against V8 headers.
     let v8_include = find_v8_include();
@@ -27,6 +28,7 @@ fn main() {
         .include(&v8_include)
         .include(&v8_src)
         .file("src/profiler/binding.cc")
+        .file("src/v8_threading/binding.cc")
         .compile("fino_profiler_binding");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();

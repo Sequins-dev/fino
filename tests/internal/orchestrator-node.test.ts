@@ -27,6 +27,28 @@ describe('node isolate collection placement', () => {
     t.equal(c.placementOf(id), 'shard-1');
   });
 
+  it('defaults local mobility on and honors explicit pins', (t) => {
+    const c = twoShards(4);
+    const movable = c.deploy({ tenantId: 'acme' });
+    const pinned = c.deploy({ tenantId: 'acme', localMobility: 'pinned' });
+    const affinity = c.deploy({ tenantId: 'core', affinity: 'shard-1' });
+    t.equal(c.isLocallyMovable(movable), true, 'ordinary pooled work is movable');
+    t.equal(c.isLocallyMovable(pinned), false, 'explicit local pin is honored');
+    t.equal(c.isLocallyMovable(affinity), false, 'hard affinity also implies a local pin');
+  });
+
+  it('defaults realms to replicated latency placement and isolates bound state on batch reactors', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('latency-0', 4, 'latency');
+    c.registerShard('batch-0', 4, 'batch');
+    const replicated = c.deploy({ tenantId: 'acme' });
+    const bound = c.deploy({ tenantId: 'acme', replication: 'bound' });
+    t.equal(c.replicationOf(replicated), 'replicated', 'omitted policy defaults to replicated');
+    t.equal(c.placementOf(replicated), 'latency-0', 'replicated work receives latency placement');
+    t.equal(c.replicationOf(bound), 'bound', 'bound state is recorded');
+    t.equal(c.placementOf(bound), 'batch-0', 'bound state is isolated on a lower-priority reactor');
+  });
+
   it('colocates a workload with a named sibling', (t) => {
     const c = twoShards();
     const a = c.deploy({ tenantId: 'acme', affinity: 'shard-1' });
@@ -151,6 +173,13 @@ describe('workload allocator', () => {
     alloc.recordLoad('batch-1', { shardId: 'batch-1', heldLeases: 0, runnableWorkloads: 0, dispatches: 0, debtMicros: 0 });
     t.equal(alloc.leastLoadedOfClass('batch'), 'batch-1', 'picked the idle batch thread');
     t.equal(alloc.leastLoadedOfClass('nonexistent' as 'batch'), null, 'empty class returns null');
+  });
+
+  it('excludes full threads from class migration targets', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('batch-full', 0, 'batch');
+    c.registerShard('batch-room', 1, 'batch');
+    t.equal(c.allocator().leastLoadedOfClass('batch'), 'batch-room', 'only a destination with capacity is eligible');
   });
 
   it('reports no room once a thread is at capacity', (t) => {

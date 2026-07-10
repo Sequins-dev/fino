@@ -15,10 +15,10 @@
 * the same {@link transition} state machine, so the orchestrator's coarse view
 * and the scheduler's fine view can never disagree about a workload's lifecycle.
 *
-* Revocation is immediate: the orchestrator pushes a `revoke`/`drain` control
-* message to the holding thread rather than waiting out a renewal window. A
-* revoked workload is re-placed and reclaimed fresh; state-preserving handoff of
-* a *running* isolate is the separate drain/snapshot flow.
+* Revocation is immediate: the orchestrator pushes control to the holding
+* thread rather than waiting out a renewal window. Planned same-node movement
+* keeps the active lease and transfers the live isolate; the data-only handoff
+* helpers below remain for replacement/recovery modeling.
 *
 * @internal
 */
@@ -62,6 +62,10 @@ export interface NodeWorkloadSpec {
   affinity?: ShardId;
   /** Prefer the thread already hosting this workload (same-tenant colocation). */
   colocateWith?: WorkloadId;
+  /** Local live-isolate mobility. Defaults to movable unless affinity is set. */
+  localMobility?: 'movable' | 'pinned';
+  /** Whether the workload may be independently replicated across isolates. */
+  replication?: 'replicated' | 'bound';
 }
 
 interface StoredLease {
@@ -82,11 +86,17 @@ interface StoredLease {
 */
 export class NodeIsolateCollection {
   #workloads = new Map<WorkloadId, TenantWorkloadRecord>();
-  #entries = new Map<WorkloadId, { entryPath?: string; data?: unknown }>();
+  #entries = new Map<WorkloadId, {
+    entryPath?: string;
+    data?: unknown;
+    locallyMovable: boolean;
+    replication: 'replicated' | 'bound';
+  }>();
   #placement = new Map<WorkloadId, ShardId>();
   #leases = new Map<LeaseId, StoredLease>();
   #workloadLease = new Map<WorkloadId, LeaseId>();
   #snapshots = new Map<WorkloadId, HandoffSnapshot>();
+  #moveReservations = new Map<ShardId, Set<WorkloadId>>();
   #allocator = new WorkloadAllocator({ assignedCount: (shardId) => this.#assignedCount(shardId) });
   #nextWorkload = 0;
   #nextLease = 0;
@@ -116,6 +126,11 @@ export class NodeIsolateCollection {
     return this.#allocator.leastLoadedOfClass(shardClass, exclude);
   }
 
+  /** Least-loaded registered thread other than `exclude`. */
+  leastLoaded(exclude?: ShardId): ShardId {
+    return this.#allocator.leastLoaded(exclude);
+  }
+
   /**
   * Remove a scheduler thread from placement consideration (e.g. after it dies).
   * Existing leases are cleaned up separately by {@link recoverShard}; this just
@@ -123,6 +138,7 @@ export class NodeIsolateCollection {
   */
   unregisterShard(shardId: ShardId): void {
     this.#allocator.unregisterShard(shardId);
+    this.#moveReservations.delete(shardId);
   }
 
   /** Every registered scheduler thread. */
@@ -147,7 +163,12 @@ export class NodeIsolateCollection {
       ...spec.priority !== undefined ? { priority: spec.priority } : {}
     });
     this.#workloads.set(workloadId, record);
-    this.#entries.set(workloadId, { entryPath: spec.entryPath, data: spec.data });
+    this.#entries.set(workloadId, {
+      entryPath: spec.entryPath,
+      data: spec.data,
+      locallyMovable: spec.localMobility !== 'pinned' && spec.affinity === undefined,
+      replication: spec.replication ?? 'replicated'
+    });
     const target = this.#choosePlacement(spec);
     this.#placement.set(workloadId, target);
     record.threadId = target;
@@ -158,6 +179,11 @@ export class NodeIsolateCollection {
     // Resolve same-tenant colocation to the sibling's current thread; the
     // allocator applies affinity/capacity/class policy and enforces capacity.
     const preferShard = spec.colocateWith !== undefined ? this.#shardOf(spec.colocateWith) : null;
+    if (spec.replication === 'bound' && spec.affinity === undefined) {
+      const batch = this.#allocator.leastLoadedOfClass('batch');
+      if (batch === null) throw new Error('cannot place bound workload: no batch reactor capacity');
+      return batch;
+    }
     return this.#allocator.choose({
       ...spec.affinity !== undefined ? { affinity: spec.affinity } : {},
       ...preferShard !== null ? { preferShard } : {},
@@ -248,6 +274,54 @@ export class NodeIsolateCollection {
     const leaseId = this.#workloadLease.get(workloadId);
     if (leaseId === undefined) return null;
     return this.#leases.get(leaseId) ?? null;
+  }
+
+  /**
+  * Commit a live isolate move after the destination reactor has attached it.
+  * Record state and lease identity remain unchanged; only the lease's owning
+  * shard changes. Capacity is checked at commit time.
+  */
+  moveLiveLease(workloadId: WorkloadId, toShardId: ShardId): { fromShardId: ShardId; toShardId: ShardId } {
+    if (!this.#allocator.hasShard(toShardId)) throw new Error(`unknown destination thread: ${toShardId}`);
+    const lease = this.#activeLease(workloadId);
+    if (lease === null) throw new Error(`workload has no active lease: ${workloadId}`);
+    const fromShardId = lease.shardId;
+    if (fromShardId === toShardId) return { fromShardId, toShardId };
+    const reserved = this.#moveReservations.get(toShardId)?.has(workloadId) === true;
+    if (!reserved && !this.#allocator.hasRoom(toShardId)) throw new Error(`destination thread at capacity: ${toShardId}`);
+    lease.shardId = toShardId;
+    this.releaseLiveMoveReservation(workloadId, toShardId);
+    const record = this.#workloads.get(workloadId);
+    if (record !== undefined) record.threadId = toShardId;
+    return { fromShardId, toShardId };
+  }
+
+  /** Atomically reserve one destination slot before a native isolate detaches. */
+  reserveLiveMove(workloadId: WorkloadId, toShardId: ShardId): boolean {
+    if (!this.#allocator.hasShard(toShardId)) return false;
+    let reservations = this.#moveReservations.get(toShardId);
+    if (reservations === undefined) {
+      reservations = new Set();
+      this.#moveReservations.set(toShardId, reservations);
+    }
+    if (reservations.has(workloadId)) return true;
+    const used = this.#assignedCount(toShardId) + reservations.size;
+    if (used >= this.#allocator.capacityOf(toShardId)) return false;
+    reservations.add(workloadId);
+    return true;
+  }
+
+  /** Release a destination reservation after commit, rollback, or cancellation. */
+  releaseLiveMoveReservation(workloadId: WorkloadId, toShardId: ShardId): void {
+    const reservations = this.#moveReservations.get(toShardId);
+    if (reservations === undefined) return;
+    reservations.delete(workloadId);
+    if (reservations.size === 0) this.#moveReservations.delete(toShardId);
+  }
+
+  /** Whether a shard currently has capacity reserved by an in-flight move. */
+  hasLiveMoveReservations(shardId: ShardId): boolean {
+    return (this.#moveReservations.get(shardId)?.size ?? 0) > 0;
   }
 
   /**
@@ -437,6 +511,16 @@ export class NodeIsolateCollection {
   /** The workload's record, if it is still in the collection. */
   record(workloadId: WorkloadId): TenantWorkloadRecord | undefined {
     return this.#workloads.get(workloadId);
+  }
+
+  /** Whether policy or an operator may move this isolate to another local reactor. */
+  isLocallyMovable(workloadId: WorkloadId): boolean {
+    return this.#entries.get(workloadId)?.locallyMovable === true;
+  }
+
+  /** Whether a workload may split into independent isolates or is state-bound. */
+  replicationOf(workloadId: WorkloadId): 'replicated' | 'bound' | null {
+    return this.#entries.get(workloadId)?.replication ?? null;
   }
 
   /** The workload's active lease id, if it holds one. */

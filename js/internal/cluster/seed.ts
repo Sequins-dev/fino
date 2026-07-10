@@ -420,27 +420,27 @@ export class SeedServer {
     }
   }
   /**
-  * Choose the spawn target: the peer with the lowest reported CPU load.
-  *
-  * The requesting node is excluded so spawns always land on a different node.
-  * Returns `null` when no other peer is connected, which callers turn into an
-  * immediate failed `SPAWN_ACK`. Load figures come from each peer's HELLO and
-  * are not refreshed afterwards, so placement is best-effort.
+  * Choose the spawn target from the requester and its peers. A remote node wins
+  * whenever its reported CPU load is equal to or lower than the requester;
+  * otherwise the less-loaded requester remains local. Returns `null` only when
+  * no admitted peer record exists. Load figures currently come from HELLO and
+  * remain best-effort until agent observations replace the v1 protocol.
   *
   * @internal
   */
-  #selectTarget(excludeNodeId: string): string | null {
-    // Pick the peer with the lowest CPU load; return null if no eligible peer.
-    let best: string | null = null;
-    let bestLoad = Infinity;
+  #selectTarget(requesterNodeId: string): string | null {
+    const local = this.#peers.get(requesterNodeId);
+    let remote: string | null = null;
+    let remoteLoad = Infinity;
     for (const [nId, peer] of this.#peers) {
-      if (nId === excludeNodeId) continue;
-      if (peer.load.cpu < bestLoad) {
-        best = nId;
-        bestLoad = peer.load.cpu;
+      if (nId === requesterNodeId) continue;
+      if (peer.load.cpu < remoteLoad || peer.load.cpu === remoteLoad && (remote === null || nId < remote)) {
+        remote = nId;
+        remoteLoad = peer.load.cpu;
       }
     }
-    return best;
+    if (remote !== null && (local === undefined || remoteLoad <= local.load.cpu)) return remote;
+    return local === undefined ? remote : requesterNodeId;
   }
   /**
   * Sweep for peers whose last heartbeat is older than the timeout.

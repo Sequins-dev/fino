@@ -44,6 +44,12 @@ describe('Realm lifecycle', () => {
       otlpEndpoint: ''
     }), /otlpEndpoint must be a non-empty string/, 'empty endpoint is rejected');
   });
+  it('validates realm scaling bounds before construction', (t) => {
+    const entry = new URL('./fixtures/hello.ts', import.meta.url).pathname;
+    t.throws(() => new Realm({ entry, scaling: { min: 0 } }), /minimum.*positive/i);
+    t.throws(() => new Realm({ entry, scaling: { min: 3, max: 2 } }), /minimum.*maximum/i);
+    t.throws(() => new Realm({ entry, scaling: { mode: 'bound', min: 2 } }), /bound.*one replica/i);
+  });
 });
 describe('Realm.fromSource', () => {
   it('runs source with static imports and top-level await', async (t) => {

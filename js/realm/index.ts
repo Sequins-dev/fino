@@ -221,6 +221,21 @@ function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
   if (!endpoint) return undefined;
   return JSON.stringify({ cliOtel: { endpoint } });
 }
+
+function validateScalingOptions(options: RealmScalingOptions | undefined): void {
+  if (options === undefined) return;
+  const min = options.min ?? 1;
+  if (!Number.isInteger(min) || min < 1) throw new TypeError('realm scaling minimum must be a positive integer');
+  if (options.max !== undefined && (!Number.isInteger(options.max) || options.max < 1)) {
+    throw new TypeError('realm scaling maximum must be a positive integer');
+  }
+  if (options.max !== undefined && min > options.max) {
+    throw new RangeError('realm scaling minimum cannot exceed maximum');
+  }
+  if (options.mode === 'bound' && (min !== 1 || options.max !== undefined && options.max !== 1)) {
+    throw new RangeError('a bound realm is fixed to one replica');
+  }
+}
 // ---------------------------------------------------------------------------
 // ImportMap - helper for building the child-specific rule list
 // ---------------------------------------------------------------------------
@@ -1730,10 +1745,11 @@ export interface RealmProviders {
 /**
 * Options for constructing and running a child realm.
 *
-* Exactly one of `thread`, `process`, or `remote` may be used for isolated
-* execution modes; enabling more than one throws during construction. Without
-* those flags, the realm is embedded in the current isolate with its own
-* context and module graph.
+* `process: true` requests an OS-process isolation boundary. Without it, the
+* allocator normally places the realm on the node's reactor pool and may fall
+* back to a dedicated reactor when the pool cannot admit it. Same-isolate
+* placement is reserved for configurations that require direct port coupling or
+* REPL behavior.
 *
 * ```ts no_run
 * import { Realm, type RealmOptions } from 'fino:realm';
@@ -1885,6 +1901,47 @@ export interface RealmOptions {
   */
   otlpEndpoint?: string | false;
   /**
+  * Whether a pool-hosted realm may move between reactor threads on the same
+  * node. The default is `movable`; use `pinned` only for native integrations
+  * that intentionally depend on OS-thread affinity.
+  *
+  * Local movement transfers the same V8 isolate at a pump boundary. It does
+  * not reconstruct the realm, reset module state, or change `realm.port`.
+  * Dedicated thread, process, and remote realms ignore this option.
+  *
+  * ```ts no_run
+  * import { Realm } from 'fino:realm';
+  *
+  * const realm = new Realm({
+  *   entry: './thread-affine-worker.ts',
+  *   localMobility: 'pinned',
+  * });
+  * ```
+  */
+  localMobility?: 'movable' | 'pinned';
+  /**
+  * Isolate replication and availability policy.
+  *
+  * Realms are `replicated` by default: the scheduler may construct independent
+  * isolates from the same entry, import rules, and initial `data`. Their heaps
+  * are not synchronized, so applications whose correctness depends on private
+  * mutable heap state must select `bound`.
+  *
+  * `min` defaults to `1`. `max` defaults to the live cluster reactor count and
+  * is always capped by eligible physical capacity. Bound realms require exactly
+  * one replica and run in the lower-priority isolated pool.
+  *
+  * ```ts no_run
+  * import { Realm } from 'fino:realm';
+  *
+  * const worker = new Realm({
+  *   entry: './request-worker.ts',
+  *   scaling: { mode: 'replicated', min: 2 },
+  * });
+  * ```
+  */
+  scaling?: RealmScalingOptions;
+  /**
   * Parent-side MessagePort for communication with the child.
   * Ignored when `thread: true` or `process: true`.
   *
@@ -1917,6 +1974,16 @@ export interface RealmOptions {
   * ```
   */
   output?: MessagePort;
+}
+
+/** Replication bounds for a logical Realm. */
+export interface RealmScalingOptions {
+  /** Independent heaps may replicate; `bound` preserves one caller-bound heap. Defaults to `replicated`. */
+  mode?: 'replicated' | 'bound';
+  /** Availability minimum. Defaults to one and must not exceed `max`. */
+  min?: number;
+  /** Optional ceiling; live eligible cluster reactor count remains the hard maximum. */
+  max?: number;
 }
 /**
 * Options for creating a Realm from in-memory entrypoint source.
@@ -2604,6 +2671,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   * @param opts Realm construction and loader options.
   */
   constructor(opts: RealmOptions) {
+    validateScalingOptions(opts.scaling);
     const isRemote = (opts as { remote?: boolean }).remote === true;
     if (opts.process && isRemote) {
       throw new Error('fino:realm — process isolation is not supported for remote realms');
@@ -2697,6 +2765,10 @@ export class Realm<F extends RealmFn = RealmFn> {
         pooled = placePooledRealm({
           entry: opts.entry,
           rulesJson: mergedRules,
+          ...opts.localMobility !== undefined ? { localMobility: opts.localMobility } : {},
+          replication: opts.scaling?.mode ?? 'replicated',
+          scalingMin: opts.scaling?.min ?? 1,
+          ...opts.scaling?.max !== undefined ? { scalingMax: opts.scaling.max } : {},
           ...serializedData !== undefined ? { realmData: serializedData } : {},
           ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {}
         });

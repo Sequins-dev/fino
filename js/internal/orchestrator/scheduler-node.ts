@@ -7,7 +7,7 @@
 * Every workload — tenant or full child realm — is constructed on its engine
 * through the one realm path (`placeRealm`); tenant activations are dispatched
 * as `__tenant_dispatch` messages over a node-held port, and the results
-* (`idle` / `terminated` / `drained`) are classified here. Engine threads push
+* (`idle` / `terminated`) are classified here. Engine threads push
 * `released` / `syncHeavy` / `load` reports back over the report channel, which
 * the node folds into the one authoritative collection. App code never reaches
 * this: it deploys a workload and the orchestrator decides which thread hosts
@@ -32,6 +32,14 @@ export interface RealmWorkloadSpec {
   bootstrapData?: string;
   priority?: PriorityClass;
   tenantId?: string;
+  /** Whether this live isolate may change local reactor threads. */
+  localMobility?: 'movable' | 'pinned';
+  /** Whether this realm can split into independent isolates. */
+  replication?: 'replicated' | 'bound';
+  /** Requested availability minimum for the future cluster reconciler. */
+  scalingMin?: number;
+  /** Optional requested replica ceiling. */
+  scalingMax?: number;
 }
 
 /** Priority class → the engine's numeric priority (compareRunnable). */
@@ -49,14 +57,20 @@ interface ReactorHandle {
 
 /** One engine report drained from a reactor's report channel. */
 interface EngineReport {
-  type: 'released' | 'syncHeavy' | 'load';
+  type: 'released' | 'syncHeavy' | 'load' | 'moved' | 'detached' | 'started';
   workloadId?: number;
   reason?: string;
   cpuMicros?: number;
   held?: number;
   runnable?: number;
   debtBand?: number;
+  debtMicros?: number;
 }
+
+/** Result of attempting to move one live isolate between local reactors. */
+export type MoveOutcome =
+  | { status: 'moved'; fromShardId: string; toShardId: string }
+  | { status: 'deferred'; reason: string };
 
 /** Release reasons that re-place a workload rather than terminating it. */
 const RE_PLACING_REASONS = new Set<string>(['rebalanced', 'renew_failed']);
@@ -65,8 +79,20 @@ const RE_PLACING_REASONS = new Set<string>(['rebalanced', 'renew_failed']);
 export interface SchedulerNodeOptions {
   /** Number of latency-sensitive scheduler threads. Defaults to 2. */
   shardCount?: number;
-  /** Number of lower-priority batch threads that absorb sync-heavy workloads. Defaults to 0. */
+  /**
+  * Number of lower-priority batch threads created at startup. Defaults to 0.
+  * @deprecated Use `batchPool.minThreads`; retained for existing internal callers.
+  */
   batchThreads?: number;
+  /** On-demand batch reactor pool. Defaults to zero warm and one maximum thread. */
+  batchPool?: {
+    /** Batch reactors created at startup. Defaults to 0. */
+    minThreads?: number;
+    /** Maximum batch reactors, including warm threads. Defaults to 1. */
+    maxThreads?: number;
+    /** Idle retirement delay in milliseconds. Defaults to 30 seconds. */
+    idleTimeoutMs?: number;
+  };
   /** Per-thread workload capacity. Defaults to 8. */
   capacity?: number;
   /** Cooperative accounting budget (µs) passed to each shard. */
@@ -77,7 +103,7 @@ export interface SchedulerNodeOptions {
   heartbeatMs?: number;
   /** @deprecated Load is reported on change now; ignored. */
   loadReportMs?: number;
-  /** Soft on-CPU limit (µs) per sync slice; overrunning migrates the workload to a batch thread. */
+  /** Soft blocking limit (µs) per pump slice; repeated overruns move a movable workload to batch. */
   syncSliceThresholdMicros?: number;
   /** Per-workload heap cap (bytes); nearing it terminates the workload rather than OOMing the process. */
   heapLimitBytes?: number;
@@ -96,21 +122,27 @@ export class SchedulerNode {
   #heartbeatMs?: number;
   #syncSliceThresholdMicros?: number;
   #heapLimitBytes?: number;
+  #batchMinThreads: number;
+  #batchMaxThreads: number;
+  #batchIdleTimeoutMs: number;
+  #batchSeq = 0;
+  #batchIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #reactors = new Map<string, ReactorHandle>();
   #watchdog = new BudgetWatchdog();
   #started = false;
   #shuttingDown = false;
   #released = new Map<WorkloadId, (reason: string) => void>();
-  #pendingHandoff = new Map<WorkloadId, {
-    toShardId?: string;
+  #pendingMoves = new Map<WorkloadId, {
+    fromShardId: string;
+    toShardId: string;
+    resolve(outcome: MoveOutcome): void;
   }>();
+  #blockingSamples = new Map<WorkloadId, number[]>();
+  #moveCooldownUntil = new Map<WorkloadId, number>();
   // Node-held parent ports for tenant workloads: activations are dispatched
   // as `__tenant_dispatch` messages over the realm channel, results come
   // back as `__tenant_result` — the engine only pumps the realm.
   #tenantPorts = new Map<WorkloadId, ThreadPort>();
-  // A restored mailbox to hand the workload's next activation as
-  // `request.handoff` (reclaimed handoffs and dead-shard recovery).
-  #pendingRestore = new Map<WorkloadId, unknown[]>();
   // Realm workloads: their full configs (for placement) and the parent-side
   // channel halves handed back to the Realm objects that own them.
   #realmSpecs = new Map<WorkloadId, RealmWorkloadSpec>();
@@ -135,10 +167,21 @@ export class SchedulerNode {
     this.#heartbeatMs = options.heartbeatMs;
     this.#syncSliceThresholdMicros = options.syncSliceThresholdMicros;
     this.#heapLimitBytes = options.heapLimitBytes;
-    const batchThreads = options.batchThreads ?? 0;
+    const batchThreads = options.batchPool?.minThreads ?? options.batchThreads ?? 0;
+    const maxBatchThreads = options.batchPool?.maxThreads ?? Math.max(1, batchThreads);
+    const batchIdleTimeoutMs = options.batchPool?.idleTimeoutMs ?? 30_000;
     if (!Number.isInteger(batchThreads) || batchThreads < 0) {
       throw new TypeError('batchThreads must be a non-negative integer');
     }
+    if (!Number.isInteger(maxBatchThreads) || maxBatchThreads < batchThreads) {
+      throw new TypeError('batchPool.maxThreads must be an integer no smaller than minThreads');
+    }
+    if (!Number.isFinite(batchIdleTimeoutMs) || batchIdleTimeoutMs < 0) {
+      throw new TypeError('batchPool.idleTimeoutMs must be a non-negative number');
+    }
+    this.#batchMinThreads = batchThreads;
+    this.#batchMaxThreads = maxBatchThreads;
+    this.#batchIdleTimeoutMs = batchIdleTimeoutMs;
     this.#shardIds = [];
     for (let i = 0; i < shardCount; i++) {
       const shardId = `shard-${i}`;
@@ -146,7 +189,7 @@ export class SchedulerNode {
       this.#collection.registerShard(shardId, this.#capacity, 'latency');
     }
     for (let i = 0; i < batchThreads; i++) {
-      const shardId = `batch-${i}`;
+      const shardId = `batch-${this.#batchSeq++}`;
       this.#shardIds.push(shardId);
       this.#collection.registerShard(shardId, this.#capacity, 'batch');
     }
@@ -167,16 +210,54 @@ export class SchedulerNode {
     if (this.#started) return;
     this.#started = true;
     this.#watchdog.start();
-    for (const shardId of this.#shardIds) {
-      const config = {
-        ...this.#hardBudgetMicros !== undefined ? { hardBudgetMicros: this.#hardBudgetMicros } : {},
-        ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceMicros: this.#syncSliceThresholdMicros } : {},
-        ...this.#heapLimitBytes !== undefined ? { heapLimitBytes: this.#heapLimitBytes } : {}
-      };
-      const reactorId = engine.spawnReactor(config);
-      this.#reactors.set(shardId, { reactorId, summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 }, lastReport: Date.now(), dead: false });
-      void this.#pumpReports(shardId, reactorId);
-    }
+    for (const shardId of this.#shardIds) this.#spawnShardReactor(shardId);
+  }
+
+  #spawnShardReactor(shardId: string): void {
+    const config = {
+      ...this.#hardBudgetMicros !== undefined ? { hardBudgetMicros: this.#hardBudgetMicros } : {},
+      ...this.#syncSliceThresholdMicros !== undefined ? { syncSliceMicros: this.#syncSliceThresholdMicros } : {},
+      ...this.#heapLimitBytes !== undefined ? { heapLimitBytes: this.#heapLimitBytes } : {},
+      reactorClass: this.#collection.shardClassOf(shardId) ?? 'latency'
+    };
+    const reactorId = engine.spawnReactor(config);
+    this.#reactors.set(shardId, { reactorId, summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 }, lastReport: Date.now(), dead: false });
+    void this.#pumpReports(shardId, reactorId);
+  }
+
+  #provisionBatchShard(): string | null {
+    const existing = this.#shardIds.filter((id) => this.#collection.shardClassOf(id) === 'batch');
+    if (existing.length >= this.#batchMaxThreads) return null;
+    const shardId = `batch-${this.#batchSeq++}`;
+    this.#shardIds.push(shardId);
+    this.#collection.registerShard(shardId, this.#capacity, 'batch');
+    if (this.#started) this.#spawnShardReactor(shardId);
+    return shardId;
+  }
+
+  #cancelBatchRetirement(shardId: string): void {
+    const timer = this.#batchIdleTimers.get(shardId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.#batchIdleTimers.delete(shardId);
+  }
+
+  #scheduleBatchRetirement(shardId: string): void {
+    if (this.#collection.shardClassOf(shardId) !== 'batch') return;
+    const batchCount = this.#shardIds.filter((id) => this.#collection.shardClassOf(id) === 'batch').length;
+    if (batchCount <= this.#batchMinThreads) return;
+    this.#cancelBatchRetirement(shardId);
+    const timer = setTimeout(() => {
+      this.#batchIdleTimers.delete(shardId);
+      if (this.#shuttingDown || this.#collection.heldBy(shardId) !== 0 || this.#collection.hasLiveMoveReservations(shardId)) return;
+      const remainingBatch = this.#shardIds.filter((id) => this.#collection.shardClassOf(id) === 'batch').length;
+      if (remainingBatch <= this.#batchMinThreads) return;
+      const handle = this.#reactors.get(shardId);
+      this.#reactors.delete(shardId);
+      this.#collection.unregisterShard(shardId);
+      this.#shardIds = this.#shardIds.filter((id) => id !== shardId);
+      if (handle !== undefined) engine.shutdown(handle.reactorId);
+    }, this.#batchIdleTimeoutMs);
+    this.#batchIdleTimers.set(shardId, timer);
   }
 
   /**
@@ -232,28 +313,59 @@ export class SchedulerNode {
         heldLeases: report.held ?? 0,
         runnableWorkloads: report.runnable ?? 0,
         dispatches: 0,
-        debtMicros: 0
+        debtMicros: report.debtMicros ?? 0
       };
       this.#collection.recordLoad(shardId, summary);
       return;
     }
+    if (report.type === 'started') return;
     if (report.type === 'syncHeavy') {
       // Migrate a sync-heavy workload off a latency thread onto a batch thread.
       const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
       if (workloadId === undefined) return;
       const current = this.#collection.placementOf(workloadId);
       if (current !== null && this.#collection.shardClassOf(current) === 'latency') {
-        const batch = this.#collection.leastLoadedOfClass('batch');
-        if (batch !== null) this.handoff(workloadId, batch);
+        const now = Date.now();
+        const samples = (this.#blockingSamples.get(workloadId) ?? []).filter((at) => now - at <= 1_000);
+        samples.push(now);
+        this.#blockingSamples.set(workloadId, samples);
+        if (samples.length < 2 || now < (this.#moveCooldownUntil.get(workloadId) ?? 0)) return;
+        this.#blockingSamples.delete(workloadId);
+        const batch = this.#collection.leastLoadedOfClass('batch') ?? this.#provisionBatchShard();
+        if (batch !== null) void this.move(workloadId, batch);
       }
       return;
     }
+    if (report.type === 'moved') {
+      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
+      if (workloadId === undefined) return;
+      const pending = this.#pendingMoves.get(workloadId);
+      if (pending === undefined || pending.toShardId !== shardId) return;
+      this.#pendingMoves.delete(workloadId);
+      this.#collection.moveLiveLease(workloadId, shardId);
+      this.#moveCooldownUntil.set(workloadId, Date.now() + 5_000);
+      pending.resolve({
+        status: 'moved',
+        fromShardId: pending.fromShardId,
+        toShardId: pending.toShardId
+      });
+      return;
+    }
+    if (report.type === 'detached') return;
     if (report.type === 'released') {
       const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
       if (workloadId === undefined) return;
+      const pendingMove = this.#pendingMoves.get(workloadId);
+      if (pendingMove !== undefined) {
+        this.#pendingMoves.delete(workloadId);
+        this.#collection.releaseLiveMoveReservation(workloadId, pendingMove.toShardId);
+        pendingMove.resolve({ status: 'deferred', reason: 'source-released' });
+      }
       handle.summary.dispatches += 1;
       handle.summary.released += 1;
       const reason = report.reason ?? 'released';
+      this.#blockingSamples.delete(workloadId);
+      this.#moveCooldownUntil.delete(workloadId);
       const leaseId = this.#collection.leaseOf(workloadId);
       if (leaseId !== null) this.#collection.release(leaseId, reason as ReleaseReason);
       const isRealm = this.#realmSpecs.delete(workloadId);
@@ -273,44 +385,45 @@ export class SchedulerNode {
           resolve(reason);
         }
       }
+      this.#scheduleBatchRetirement(shardId);
     }
   }
 
   /**
-  * Begin handing a workload off to another thread: mark it draining and
-  * dispatch a `drain: true` activation over its port, which quiesces it and
-  * returns its mailbox as a `drained` result. The move completes in
-  * {@link #onTenantResult} when that result arrives.
+  * Move an exited live isolate to another local reactor. The workload id,
+  * module heap, port, active lease, and pending async state remain unchanged.
   */
-  handoff(workloadId: WorkloadId, toShardId?: string): void {
-    const shardId = this.#collection.placementOf(workloadId);
-    if (shardId === null) return;
-    const port = this.#tenantPorts.get(workloadId);
-    if (port === undefined) return;
-    this.#collection.drainForHandoff(workloadId);
-    this.#pendingHandoff.set(workloadId, { ...toShardId !== undefined ? { toShardId } : {} });
-    // Ask the workload to serialize its state: the `drained` result carries
-    // the mailbox and completes the move in #onTenantResult.
-    port.postMessage({
-      __tenant_dispatch: true,
-      request: {
-        workloadId,
-        data: this.#collection.entryDataOf(workloadId) ?? {},
-        drain: true
+  move(workloadId: WorkloadId, toShardId?: string): Promise<MoveOutcome> {
+    const fromShardId = this.#collection.placementOf(workloadId);
+    if (fromShardId === null) return Promise.resolve({ status: 'deferred', reason: 'not-placed' });
+    if (!this.#collection.isLocallyMovable(workloadId)) {
+      return Promise.resolve({ status: 'deferred', reason: 'pinned' });
+    }
+    if (this.#pendingMoves.has(workloadId)) {
+      return Promise.resolve({ status: 'deferred', reason: 'move-in-progress' });
+    }
+    const target = toShardId ?? this.#collection.leastLoaded(fromShardId);
+    if (target === fromShardId) return Promise.resolve({ status: 'deferred', reason: 'already-placed' });
+    if (!this.#collection.reserveLiveMove(workloadId, target)) {
+      return Promise.resolve({ status: 'deferred', reason: 'destination-capacity' });
+    }
+    this.#cancelBatchRetirement(target);
+    const sourceReactor = this.#reactorFor(fromShardId);
+    const destinationReactor = this.#reactorFor(target);
+    if (sourceReactor === null || destinationReactor === null) {
+      this.#collection.releaseLiveMoveReservation(workloadId, target);
+      return Promise.resolve({ status: 'deferred', reason: 'reactor-unavailable' });
+    }
+    return new Promise<MoveOutcome>((resolve) => {
+      this.#pendingMoves.set(workloadId, { fromShardId, toShardId: target, resolve });
+      try {
+        engine.moveRealm(sourceReactor, destinationReactor, this.#engineId(workloadId));
+      } catch {
+        this.#pendingMoves.delete(workloadId);
+        this.#collection.releaseLiveMoveReservation(workloadId, target);
+        resolve({ status: 'deferred', reason: 'move-start-failed' });
       }
     });
-  }
-
-  #completeHandoff(workloadId: WorkloadId, pending: { mailbox: unknown[] }): void {
-    if (this.#collection.record(workloadId)?.state !== 'draining') return;
-    this.#collection.completeHandoff(workloadId, { mailbox: pending.mailbox }, Date.now() * 1_000_000);
-    const toShardId = this.#pendingHandoff.get(workloadId)?.toShardId;
-    this.#pendingHandoff.delete(workloadId);
-    this.#collection.placeHandoff(workloadId, toShardId);
-    // Push the reconstructed workload to its destination and wake it so it
-    // rebuilds from the snapshot the claim attached to its lease.
-    this.#activate();
-    this.wake(workloadId, { workloadId, reason: 'control', sourceId: 'handoff-resume' });
   }
 
   /**
@@ -318,6 +431,9 @@ export class SchedulerNode {
   * workload id. The workload runs once it receives a {@link wake}.
   */
   deploy(spec: NodeWorkloadSpec): WorkloadId {
+    if (spec.replication === 'bound' && this.#collection.leastLoadedOfClass('batch') === null) {
+      this.#provisionBatchShard();
+    }
     const workloadId = this.#collection.deploy(spec);
     this.#activate();
     return workloadId;
@@ -335,11 +451,16 @@ export class SchedulerNode {
     portWakeFd: number;
   } | null {
     let workloadId: WorkloadId;
+    if (spec.replication === 'bound' && this.#collection.leastLoadedOfClass('batch') === null) {
+      this.#provisionBatchShard();
+    }
     try {
       workloadId = this.#collection.deploy({
         tenantId: spec.tenantId ?? 'realm',
         entryPath: spec.entryPath,
-        ...spec.priority !== undefined ? { priority: spec.priority } : {}
+        ...spec.priority !== undefined ? { priority: spec.priority } : {},
+        ...spec.localMobility !== undefined ? { localMobility: spec.localMobility } : {},
+        ...spec.replication !== undefined ? { replication: spec.replication } : {}
       });
     } catch {
       return null;
@@ -421,11 +542,6 @@ export class SchedulerNode {
     });
     port.start();
     this.#tenantPorts.set(workloadId, port);
-    // A reclaimed handed-off workload carries a snapshot; hand its mailbox
-    // to the next activation as `request.handoff`.
-    if (lease.handoff !== undefined) {
-      this.#pendingRestore.set(workloadId, (lease.handoff.mailbox ?? []) as unknown[]);
-    }
   }
 
   /** Classify a tenant activation result delivered over the workload's port. */
@@ -448,27 +564,6 @@ export class SchedulerNode {
     const outcome = msg.result?.result ?? 'idle';
     if (outcome === 'terminated') {
       this.revoke(workloadId, 'terminated');
-    } else if (outcome === 'drained') {
-      if (this.#pendingHandoff.has(workloadId)) {
-        // Remove the drained source realm from its engine, then retire its
-        // engine id: the source's Released report must map to nothing so it
-        // cannot touch the fresh lease the re-placement takes below.
-        const sourceShard = this.#collection.placementOf(workloadId);
-        const sourceReactor = sourceShard !== null ? this.#reactorFor(sourceShard) : null;
-        const engineId = this.#toEngineId.get(workloadId);
-        if (sourceReactor !== null && engineId !== undefined) {
-          engine.revoke(sourceReactor, engineId, 'rebalanced');
-        }
-        if (engineId !== undefined) {
-          this.#toEngineId.delete(workloadId);
-          this.#fromEngineId.delete(engineId);
-        }
-        this.#tenantPorts.get(workloadId)?.close();
-        this.#tenantPorts.delete(workloadId);
-        // completeHandoff drops the old lease itself (the record is still
-        // `draining` here) and re-places on the destination shard.
-        this.#completeHandoff(workloadId, { mailbox: (msg.result?.mailbox ?? []) as unknown[] });
-      }
     }
     // 'idle': parked until the next wake — nothing to do.
   }
@@ -485,11 +580,6 @@ export class SchedulerNode {
       data: this.#collection.entryDataOf(workloadId) ?? {},
       wake: { reason: wake.reason, sourceId: wake.sourceId }
     };
-    const restore = this.#pendingRestore.get(workloadId);
-    if (restore !== undefined) {
-      this.#pendingRestore.delete(workloadId);
-      request.handoff = { mailbox: restore };
-    }
     port.postMessage({
       __tenant_dispatch: true,
       request
@@ -515,7 +605,16 @@ export class SchedulerNode {
   /** Shut every reactor down, stop containment, and return their final summaries. */
   async shutdown(): Promise<SchedulerShardSummary[]> {
     this.#shuttingDown = true;
+    for (const timer of this.#batchIdleTimers.values()) clearTimeout(timer);
+    this.#batchIdleTimers.clear();
     const handles = [...this.#reactors.values()];
+    for (const [workloadId, pending] of this.#pendingMoves) {
+      this.#collection.releaseLiveMoveReservation(workloadId, pending.toShardId);
+      pending.resolve({ status: 'deferred', reason: 'shutdown' });
+    }
+    this.#pendingMoves.clear();
+    this.#blockingSamples.clear();
+    this.#moveCooldownUntil.clear();
     // Signal every reactor to stop; the report pumps exit on the final wake
     // each reactor thread posts as it dies.
     for (const handle of handles) engine.shutdown(handle.reactorId);

@@ -1,17 +1,12 @@
 /**
 * A compute-heavy workload: its first activation burns a chunk of *synchronous*
 * on-CPU time (a busy loop, well under the hard runaway budget), which trips the
-* scheduler's soft on-CPU threshold and gets it migrated to a batch thread. It
-* supports drain (nothing to preserve) and, once reconstructed on the batch
-* thread, simply parks — so a test can observe where it landed.
+* scheduler's soft on-CPU threshold and gets its live isolate moved to a batch
+* thread. Module state and the realm channel remain unchanged.
 */
 export default async function schedulerSyncHeavyWorker(request: {
-  drain?: boolean;
-  handoff?: unknown;
   data: { busyMs: number };
-}): Promise<{ result: string; costMicros: number; mailbox?: unknown[] }> {
-  if (request.drain === true) return { result: 'drained', costMicros: 1, mailbox: [] };
-  if (request.handoff !== undefined) return { result: 'idle', costMicros: 1 };
+}): Promise<{ result: string; costMicros: number }> {
   const start = Date.now();
   let spin = 0;
   while (Date.now() - start < request.data.busyMs) spin = (spin + 1) % 1_000_000;

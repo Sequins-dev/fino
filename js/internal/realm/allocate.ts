@@ -141,11 +141,19 @@ export function placePooledRealm(config: {
   rulesJson: string;
   realmData?: string;
   bootstrapData?: string;
+  localMobility?: 'movable' | 'pinned';
+  replication?: 'replicated' | 'bound';
+  scalingMin?: number;
+  scalingMax?: number;
 }): PooledRealm | null {
   const node = ensureNode();
   const placed = node.deployRealm({
     entryPath: config.entry,
     rulesJson: config.rulesJson,
+    ...config.localMobility !== undefined ? { localMobility: config.localMobility } : {},
+    ...config.replication !== undefined ? { replication: config.replication } : {},
+    ...config.scalingMin !== undefined ? { scalingMin: config.scalingMin } : {},
+    ...config.scalingMax !== undefined ? { scalingMax: config.scalingMax } : {},
     ...config.realmData !== undefined ? { realmData: config.realmData } : {},
     ...config.bootstrapData !== undefined ? { bootstrapData: config.bootstrapData } : {}
   });
