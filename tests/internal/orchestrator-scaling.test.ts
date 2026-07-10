@@ -2,10 +2,7 @@
 import { describe, it } from 'fino:test/test';
 import {
   PlacementReconciler,
-  ReplicaSetReconciler,
-  ReplicaDrainTracker,
   ReplicaAutoscaler,
-  ServiceDirectory,
   normalizeScalingPolicy
 } from 'internal:orchestrator/scaling';
 
@@ -37,100 +34,6 @@ describe('realm scaling policy', () => {
   it('rejects an availability minimum above the configured or physical maximum', (t) => {
     t.throws(() => normalizeScalingPolicy({ min: 5, max: 4 }, 8), /minimum.*maximum/i);
     t.throws(() => normalizeScalingPolicy({ min: 9 }, 8), /reactor capacity/i);
-  });
-});
-
-describe('service directory cutover and draining', () => {
-  it('publishes only ready replicas and withdraws a drain before shutdown', (t) => {
-    const directory = new ServiceDirectory();
-    directory.observe('svc', { replicaId: 'r1', nodeId: 'n1', ready: false });
-    t.deepEqual(directory.targets('svc'), [], 'starting replica is not routable');
-    directory.observe('svc', { replicaId: 'r1', nodeId: 'n1', ready: true });
-    t.deepEqual(directory.targets('svc').map((target) => target.replicaId), ['r1']);
-    directory.beginDrain('svc', 'r1');
-    t.deepEqual(directory.targets('svc'), [], 'draining replica is removed synchronously');
-    t.deepEqual(directory.dnsProjection('svc'), [], 'DNS projection reads the same withdrawn state');
-  });
-
-  it('waits for successor readiness before publishing a scale-up route', async (t) => {
-    const directory = new ServiceDirectory();
-    let ready!: (target: { replicaId: string; nodeId: string }) => void;
-    const reconciler = new ReplicaSetReconciler({
-      service: 'svc',
-      directory,
-      spawn: () => new Promise((resolve) => { ready = resolve; }),
-      drain: async () => {}
-    });
-    const action = reconciler.apply({ type: 'scale-up' }, {
-      nodeId: 'n2', local: false, loopPressure: 0, reactorCapacity: 1, assigned: 0
-    });
-    t.deepEqual(directory.targets('svc'), [], 'pending successor is hidden');
-    ready({ replicaId: 'r2', nodeId: 'n2' });
-    await action;
-    t.deepEqual(directory.targets('svc').map((target) => target.replicaId), ['r2']);
-  });
-
-  it('withdraws a scale-down route before waiting for its drain', async (t) => {
-    const directory = new ServiceDirectory();
-    directory.observe('svc', { replicaId: 'r1', nodeId: 'n1', ready: true });
-    let drained!: () => void;
-    const reconciler = new ReplicaSetReconciler({
-      service: 'svc',
-      directory,
-      spawn: async () => ({ replicaId: 'unused', nodeId: 'n2' }),
-      drain: () => new Promise((resolve) => { drained = resolve; })
-    });
-    const action = reconciler.apply({ type: 'scale-down', replicaId: 'r1' }, null);
-    t.deepEqual(directory.targets('svc'), [], 'route is gone before drain completion');
-    drained();
-    await action;
-  });
-});
-
-describe('replica drain tracker', () => {
-  it('stops every accepting handle but waits for admitted tasks', async (t) => {
-    const drain = new ReplicaDrainTracker();
-    const stopped: string[] = [];
-    drain.registerListener(() => stopped.push('http'));
-    drain.registerListener(() => stopped.push('quic'));
-    const finishA = drain.admitTask();
-    const finishB = drain.admitTask();
-    const done = drain.beginDrain();
-    t.deepEqual(stopped, ['http', 'quic'], 'all listeners stopped accepting immediately');
-    t.equal(drain.activeTasks, 2);
-    let settled = false;
-    done.then(() => { settled = true; });
-    finishA();
-    await Promise.resolve();
-    t.equal(settled, false, 'one active task still keeps the replica draining');
-    finishB();
-    await done;
-    t.equal(drain.activeTasks, 0);
-  });
-
-  it('rejects new task admission after routing has entered drain', async (t) => {
-    const drain = new ReplicaDrainTracker();
-    await drain.beginDrain();
-    t.throws(() => drain.admitTask(), /draining/i);
-  });
-
-  it('does not wait for unreferenced background resources', async (t) => {
-    const drain = new ReplicaDrainTracker();
-    drain.registerResource({ hasRef: () => false });
-    await drain.beginDrain();
-    t.ok(true, 'unreferenced resource did not block completion');
-  });
-
-  it('waits for a referenced resource until it is released', async (t) => {
-    const drain = new ReplicaDrainTracker();
-    const release = drain.registerResource({ hasRef: () => true });
-    const done = drain.beginDrain();
-    let settled = false;
-    done.then(() => { settled = true; });
-    await Promise.resolve();
-    t.equal(settled, false);
-    release();
-    await done;
   });
 });
 

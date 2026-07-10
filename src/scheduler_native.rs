@@ -141,6 +141,14 @@ pub(crate) struct ParkedWorkload {
     moved_between_threads: bool,
 }
 
+/// Thread-local ownership retained while a reactor keeps one workload entered.
+/// Pump-local V8 scopes are still created and dropped for every slice; this
+/// token owns only the cross-slice async-state swap and optional V8 lock.
+pub(crate) struct ActiveWorkload {
+    saved_async_state: Option<crate::async_rt::IsolateAsyncState>,
+    _locker: Option<crate::v8_threading::IsolateLocker>,
+}
+
 impl ParkedWorkload {
     /// Route this isolate's background wakes (FFI completions, callback
     /// trampolines, view releases) into a reactor as Notifier posts tagged
@@ -158,6 +166,18 @@ impl ParkedWorkload {
 
     pub(crate) fn mark_moved_between_threads(&mut self) {
         self.moved_between_threads = true;
+    }
+
+    /// Return the thread-affine facility that currently prevents a live move.
+    pub(crate) fn move_blocker(&self) -> Option<&'static str> {
+        let state = self._state.borrow();
+        if state.cpu_profiler.is_some() {
+            return Some("cpu-profiler-active");
+        }
+        if state.inspector_state.is_some() {
+            return Some("inspector-active");
+        }
+        None
     }
 }
 
@@ -390,6 +410,32 @@ pub(crate) fn setup_realm_workload(
 /// step — the engine owns the thread's wait cadence). `Pending` while the
 /// realm continues; `Settled` when its policy hooks report done (with the
 /// entry error as `Rejected` if one was recorded).
+pub(crate) fn activate_realm_native(workload: &mut ParkedWorkload) -> ActiveWorkload {
+    let locker = workload
+        .moved_between_threads
+        .then(|| crate::v8_threading::IsolateLocker::new(&mut workload.isolate));
+    let saved_async_state = crate::async_rt::swap_state(workload.async_state.take());
+    unsafe {
+        workload.isolate.enter();
+    }
+    ActiveWorkload {
+        saved_async_state,
+        _locker: locker,
+    }
+}
+
+pub(crate) fn deactivate_realm_native(workload: &mut ParkedWorkload, active: ActiveWorkload) {
+    unsafe {
+        workload.isolate.exit();
+    }
+    let ActiveWorkload {
+        saved_async_state,
+        _locker,
+    } = active;
+    workload.async_state = crate::async_rt::swap_state(saved_async_state);
+    drop(_locker);
+}
+
 pub(crate) fn pump_realm_native(
     workload: &mut ParkedWorkload,
     hard_budget_micros: u64,
@@ -404,13 +450,6 @@ pub(crate) fn pump_realm_native(
         arm_budget(workload.budget_token, deadline);
     }
     let budget_token = workload.budget_token;
-    let saved = crate::async_rt::swap_state(workload.async_state.take());
-    let _locker = workload
-        .moved_between_threads
-        .then(|| crate::v8_threading::IsolateLocker::new(&mut workload.isolate));
-    unsafe {
-        workload.isolate.enter();
-    }
     let outcome = {
         let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
         let context = v8::Local::new(isolate_scope, &workload.context);
@@ -453,10 +492,6 @@ pub(crate) fn pump_realm_native(
             }
         }
     };
-    unsafe {
-        workload.isolate.exit();
-    }
-    workload.async_state = crate::async_rt::swap_state(saved);
     if budgeted {
         clear_budget(workload.budget_token);
         workload.thread_handle.cancel_terminate_execution();
@@ -473,13 +508,27 @@ pub(crate) fn drop_parked(mut workload: ParkedWorkload) {
     // load-bearing (it also keeps the near-heap-limit callback, keyed by the same
     // token, from firing on a freed isolate).
     unregister_budget_target(workload.budget_token);
-    // `Isolate::new` leaves the isolate entered on the creating thread and
-    // `setup_workload` exits it once; `OwnedIsolate::drop` must run from the
-    // entered state to exit + dispose cleanly, so re-enter before dropping.
-    unsafe {
-        workload.isolate.enter();
+    // `OwnedIsolate::drop` combines exit + Rust annex cleanup + V8 disposal.
+    // Once an isolate has crossed threads, V8 requires its final enter/exit to
+    // hold a Locker. The Locker destructor itself dereferences the isolate, so
+    // neutralize it before dropping the owner and free only its allocation
+    // after V8 has disposed the isolate.
+    if workload.moved_between_threads {
+        let locker = crate::v8_threading::IsolateLocker::new(&mut workload.isolate);
+        unsafe {
+            workload.isolate.enter();
+        }
+        let locker = locker.neutralize_for_isolate_dispose();
+        drop(workload);
+        unsafe {
+            locker.free_after_isolate_dispose();
+        }
+    } else {
+        unsafe {
+            workload.isolate.enter();
+        }
+        drop(workload);
     }
-    drop(workload);
 }
 
 /// `sweepBudgets()` — terminate every workload whose armed pump deadline has

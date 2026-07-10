@@ -130,6 +130,18 @@ describe('node isolate collection release', () => {
     t.equal(c.leaseOf(id), null);
   });
 
+  it('does not let an observable failed workload consume reactor capacity', (t) => {
+    const c = new NodeIsolateCollection();
+    c.registerShard('shard-0', 1);
+    const id = c.deploy({ tenantId: 'acme' });
+    const [lease] = c.claim('shard-0', 1);
+    c.release(lease!.leaseId, 'failed');
+
+    t.equal(c.record(id)?.state, 'failed');
+    t.equal(c.placementOf(id), null, 'failed record no longer owns a placement');
+    t.ok(c.deploy({ tenantId: 'replacement' }), 'capacity can admit a replacement');
+  });
+
   it('re-places a workload whose lease renewal failed', (t) => {
     const c = twoShards(4);
     const id = c.deploy({ tenantId: 'acme', affinity: 'shard-0' });

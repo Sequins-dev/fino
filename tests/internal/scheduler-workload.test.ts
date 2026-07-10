@@ -2,14 +2,12 @@
 * Tests for the tenant workload record and its state machine.
 */
 import { describe, it } from 'fino:test/test';
-import { LEGAL_TRANSITIONS, canTransition, transition, createWorkloadRecord, isTerminal, workloadStatusFor, noteWake } from 'internal:scheduler/workload';
+import { LEGAL_TRANSITIONS, canTransition, transition, createWorkloadRecord, isTerminal, workloadStatusFor } from 'internal:scheduler/workload';
 
-type TenantWorkloadState =
-  | 'unclaimed' | 'claimed' | 'idle' | 'runnable' | 'running'
-  | 'draining' | 'handoff_ready' | 'failed' | 'terminating' | 'dead';
+type TenantWorkloadState = 'unclaimed' | 'claimed' | 'failed' | 'terminating' | 'dead';
 
 const ALL_STATES: TenantWorkloadState[] = [
-  'unclaimed', 'claimed', 'idle', 'runnable', 'running', 'draining', 'handoff_ready', 'failed', 'terminating', 'dead'
+  'unclaimed', 'claimed', 'failed', 'terminating', 'dead'
 ];
 
 function record(state: TenantWorkloadState) {
@@ -24,8 +22,6 @@ describe('workload state machine', () => {
     t.equal(r.state, 'unclaimed');
     t.equal(r.priority, 'service');
     t.equal(r.threadId, null);
-    t.equal(r.budget.debtMicros, 0);
-    t.equal(r.lastPumpResult, null);
   });
 
   it('accepts every declared legal transition', (t) => {
@@ -50,9 +46,9 @@ describe('workload state machine', () => {
     }
   });
 
-  it('drives a full claim -> run -> drain -> handoff -> reclaim lifecycle', (t) => {
+  it('drives a claim -> failure -> reclaim lifecycle', (t) => {
     const r = record('unclaimed');
-    for (const next of ['claimed', 'idle', 'runnable', 'running', 'draining', 'handoff_ready', 'claimed'] as TenantWorkloadState[]) {
+    for (const next of ['claimed', 'failed', 'unclaimed', 'claimed'] as TenantWorkloadState[]) {
       t.equal(canTransition(r.state, next), true, `${r.state} -> ${next}`);
       transition(r, next);
     }
@@ -60,7 +56,7 @@ describe('workload state machine', () => {
   });
 
   it('drives a failure -> terminate -> dead path to a terminal state', (t) => {
-    const r = record('running');
+    const r = record('claimed');
     transition(r, 'failed');
     transition(r, 'terminating');
     transition(r, 'dead');
@@ -69,17 +65,10 @@ describe('workload state machine', () => {
   });
 
   it('maps scheduler states onto coarse orchestrator status', (t) => {
-    t.equal(workloadStatusFor('running'), 'running');
-    t.equal(workloadStatusFor('idle'), 'running');
+    t.equal(workloadStatusFor('claimed'), 'running');
     t.equal(workloadStatusFor('failed'), 'error');
     t.equal(workloadStatusFor('terminating'), 'terminated');
     t.equal(workloadStatusFor('dead'), 'terminated');
   });
 
-  it('records wakes and bumps counters', (t) => {
-    const r = record('idle');
-    noteWake(r, { workloadId: 'w', reason: 'io', sourceId: 's' });
-    t.equal(r.runnableReasons.length, 1);
-    t.equal(r.counters.recentWakeCount, 1);
-  });
 });

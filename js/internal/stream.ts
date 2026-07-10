@@ -68,9 +68,9 @@
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import * as loop from 'internal:runtime/loop';
-// Optional fused readiness+syscall ops. Present when the loop is backed by the
-// native reactor (fino:net/loop-reactor); absent on the default loop.ts, in
-// which case FdReader/FdWriter fall back to readable/writable + a libc syscall.
+// Optional fused readiness+syscall ops supplied by the native reactor loop.
+// FdReader/FdWriter retain a readable/writable + libc fallback for compatible
+// loop implementations that do not expose them.
 // They return a byte count SYNCHRONOUSLY when the syscall completes without
 // blocking (the common case), or a Promise<number> when it would block — so the
 // hot path pays no Promise/microtask.

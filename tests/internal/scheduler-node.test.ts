@@ -206,7 +206,7 @@ describe('scheduler node', () => {
   });
 
   it('migrates a sync-heavy workload off a latency thread onto a batch thread', async (t) => {
-    const node = new SchedulerNode({ shardCount: 1, batchThreads: 1, capacity: 4, syncSliceThresholdMicros: 30_000 });
+    const node = new SchedulerNode({ shardCount: 1, batchPool: { minThreads: 1 }, capacity: 4, syncSliceThresholdMicros: 30_000 });
     node.start();
     try {
       const id = node.deploy({ tenantId: 'compute', entryPath: syncHeavy, data: { busyMs: 80 } });
@@ -323,7 +323,7 @@ describe('scheduler node', () => {
   it('does not offload an affinity-pinned blocking workload', async (t) => {
     const node = new SchedulerNode({
       shardCount: 1,
-      batchThreads: 1,
+      batchPool: { minThreads: 1 },
       capacity: 2,
       syncSliceThresholdMicros: 10_000
     });

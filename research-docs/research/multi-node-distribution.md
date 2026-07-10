@@ -93,10 +93,11 @@ node-local sketches.
   reservations; `WorkloadAllocator` chooses only a local shard and excludes
   full destinations.
 - A pooled realm is locally movable unless `localMobility: 'pinned'` or hard
-  affinity says otherwise. At a pump boundary the source exits the V8 isolate,
-  transfers exclusive ownership under V8's `Locker` contract, and the
-  destination enters the same isolate. Module memory, pending promises, realm
-  identity, and the existing transit port survive unchanged.
+  affinity says otherwise. A reactor keeps its selected isolate entered across
+  slices and waits; it exits only when another isolate wins, the workload moves,
+  or it terminates. Movement transfers exclusive ownership under V8's `Locker`
+  contract, preserving module memory, pending promises, realm identity, and the
+  existing transit port.
 - Isolate-owned async resolver and FFI callback tables move with the isolate.
   Pending readiness and timer registrations are rearmed on the destination;
   pointer-backed operations retain thread-safe backing stores and may finish on
@@ -105,12 +106,12 @@ node-local sketches.
   created on demand within a configured bound, runs with lower OS scheduling
   priority as well as batch run-queue policy, and retires after its idle
   timeout.
-- Realm scaling now has an executable policy core. Realms default to
+- Realm scaling has a deterministic policy core. Realms default to
   `scaling.mode: 'replicated'`; `bound` realms are fixed at one isolate and are
-  admitted directly to the lower-priority batch pool. The current controller
-  implements one-second loop-pressure scale-up, a 10%-for-30-seconds scale-down
-  window, one pending action, availability bounds, directory-first cutover, and
-  referenced-task draining.
+  admitted directly to the lower-priority batch pool. The policy expresses the
+  one-second loop-pressure scale-up threshold, 10%-for-30-seconds scale-down
+  window, one pending action, and availability bounds. Replica construction,
+  directory/DNS cutover, and referenced-task draining remain cluster work.
 - `fino:runtime` exposes `ref(handle)`, `unref(handle)`, and `hasRef(handle)`.
   Numeric web timer IDs retain their web-compatible shape while native reactor
   liveness counts only referenced timers; refable resource objects use the same

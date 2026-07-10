@@ -11,14 +11,12 @@
 //!
 //! It is exposed to JS as the synthetic module `internal:reactor-native` and is
 //! wrapped by the `fino:net/loop-reactor` builtin, which presents the exact
-//! `internal:runtime/loop` API surface. A realm swaps the reactor in by
-//! remapping `internal:runtime/loop` to `fino:net/loop-reactor` via an
-//! `ImportMap` override — see `research-docs/research/pure-rust-reactor.md`.
+//! `internal:runtime/loop` API surface. The loader aliases that loop to the
+//! native implementation for every realm.
 //!
 //! The reactor is a per-thread `thread_local`, lazily created on first use, so
-//! same-thread realms that do not opt in never allocate one. Embedded realms
-//! share their thread's reactor: resolvers are per-context Globals, so the
-//! shared `tick` dispatches each realm's completions into the right context.
+//! embedded realms share their thread's reactor. Resolvers are per-context
+//! Globals, so a shared `tick` dispatches completions into the right context.
 
 use ::v8;
 

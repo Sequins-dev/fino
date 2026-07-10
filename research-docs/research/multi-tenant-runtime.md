@@ -110,9 +110,9 @@ per-realm view — that view *is* the cost model. The same stats module should
 register OTel observable gauges (the meter API exists, no runtime instruments
 do), so cluster scheduling and observability draw from one source.
 
-The node-local details behind loop share, runnable queues, isolate/context
-pooling, and facade-owned I/O belong in
-`realm-loop-orchestration.md`; this note only consumes the resulting summarized
+The node-local details behind runnable queues, sticky isolate ownership, and
+reactor-owned I/O belong in
+`pure-rust-reactor.md`; this note only consumes the resulting summarized
 load and capability signals for cross-node placement.
 
 ## 3. Coordination, membership, and the CLI
@@ -360,7 +360,7 @@ optimization under supervision, not a correctness assumption.
 
 Within a node, the details of whether linked realms share an isolate, run in
 separate contexts, or move across scheduler threads are delegated to
-`realm-loop-orchestration.md`.
+`pure-rust-reactor.md`.
 
 ### Virtual DNS and in-cluster routing
 
@@ -556,15 +556,14 @@ empirical cost model per app version ("billing-api@3.2.1 costs ~0.3 cores,
 ~180 MB, ~20% loop at steady state"), which beats manifest requests for
 second-and-later placements and enables rebalancing: when a node's loop idle
 collapses, the leader picks its cheapest-to-move realm and respawns it
-elsewhere. Restart-based rebalancing is honest about fino's model — realms
-are cheap to restart, so don't build live migration; build fast, graceful
-drain (child-initiated: node asks realm to finish in-flight work and exit
-with a "relocating" code).
+elsewhere. Same-node rebalancing transfers a live isolate; cross-node movement
+still requires fast, graceful drain and reconstruction because V8 heap state,
+file descriptors, and kernel operations cannot cross a process boundary.
 
 Scheduler v2 should split decisions cleanly. The control-plane leader chooses
 nodes and failure-domain spread. The node scheduler chooses local execution
 details and reports summarized capacity, load, and health back to the cluster.
-See `realm-loop-orchestration.md` for context/isolate/thread scheduling.
+See `pure-rust-reactor.md` for isolate/thread scheduling.
 
 ## 6. Syscall-level virtualization
 
@@ -743,7 +742,7 @@ Ordered by unblocking power, each step independently shippable:
 10. **Scheduler v2** — filter/score, lib/platform advertisement, empirical
    per-app cost model, linked-realm colocation, failure-domain spread,
    active-active scaling, and drain-based rebalancing.
-11. **Node-local loop scheduler** — developed in `realm-loop-orchestration.md`;
+11. **Node-local loop scheduler** — described in `pure-rust-reactor.md`;
    the cluster consumes its summarized load, capacity, and health signals.
 12. **dlopen shim prototype** — interposition table + importer-scoped
    passthrough; prove it on a virtual filesystem under `fino:file`-denied

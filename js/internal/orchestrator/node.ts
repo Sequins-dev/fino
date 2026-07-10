@@ -12,20 +12,18 @@
 * The collection is pure main-thread state driven only by the orchestrator loop,
 * so there is one writer and no shared mutable state across threads. Records are
 * the same `TenantWorkloadRecord`s the scheduler reasons about, driven through
-* the same {@link transition} state machine, so the orchestrator's coarse view
-* and the scheduler's fine view can never disagree about a workload's lifecycle.
+* one coarse ownership state machine; runnable execution state belongs to the
+* native reactor and is not duplicated here.
 *
 * Revocation is immediate: the orchestrator pushes control to the holding
 * thread rather than waiting out a renewal window. Planned same-node movement
-* keeps the active lease and transfers the live isolate; the data-only handoff
-* helpers below remain for replacement/recovery modeling.
+* keeps the active lease and transfers the live isolate.
 *
 * @internal
 */
-import { captureHandoff, createWorkloadRecord, reconstructRecord, transition, type PendingWork } from '../scheduler/workload.ts';
+import { createWorkloadRecord, transition } from '../scheduler/workload.ts';
 import { WorkloadAllocator, type ShardClass } from './allocator.ts';
 import type {
-  HandoffSnapshot,
   LeaseId,
   LeaseRecord,
   PriorityClass,
@@ -44,7 +42,7 @@ const PRIORITY_RANK: Record<PriorityClass, number> = {
 };
 
 /** How a released lease should be reconciled in the collection. */
-export type ReleaseReason = 'terminated' | 'shutdown' | 'failed' | 'renew_failed' | 'rebalanced';
+export type ReleaseReason = 'terminated' | 'shutdown' | 'failed' | 'renew_failed' | 'rebalanced' | 'revoked';
 
 /**
 * Request to place a workload on the node. `tenantId` and `entryPath` are the
@@ -68,34 +66,26 @@ export interface NodeWorkloadSpec {
   replication?: 'replicated' | 'bound';
 }
 
-interface StoredLease {
-  leaseId: LeaseId;
-  workloadId: WorkloadId;
-  shardId: ShardId;
-  priority: PriorityClass;
+interface StoredWorkload {
+  record: TenantWorkloadRecord;
   entryPath?: string;
   data?: unknown;
+  locallyMovable: boolean;
+  replication: 'replicated' | 'bound';
+  placement: ShardId | null;
+  leaseId: LeaseId | null;
 }
 
 /**
-* The node isolate collection: workload records, leases, and handoff snapshots
+* The node isolate collection: workload records and leases
 * for every tenant workload on one node. Placement — *which* thread hosts a
 * workload — and the thread roster/load view live in the {@link WorkloadAllocator}
 * this collection delegates to; the collection owns record lifecycle and exposes
 * per-thread occupancy back to the allocator.
 */
 export class NodeIsolateCollection {
-  #workloads = new Map<WorkloadId, TenantWorkloadRecord>();
-  #entries = new Map<WorkloadId, {
-    entryPath?: string;
-    data?: unknown;
-    locallyMovable: boolean;
-    replication: 'replicated' | 'bound';
-  }>();
-  #placement = new Map<WorkloadId, ShardId>();
-  #leases = new Map<LeaseId, StoredLease>();
-  #workloadLease = new Map<WorkloadId, LeaseId>();
-  #snapshots = new Map<WorkloadId, HandoffSnapshot>();
+  #workloads = new Map<WorkloadId, StoredWorkload>();
+  #leaseOwners = new Map<LeaseId, WorkloadId>();
   #moveReservations = new Map<ShardId, Set<WorkloadId>>();
   #allocator = new WorkloadAllocator({ assignedCount: (shardId) => this.#assignedCount(shardId) });
   #nextWorkload = 0;
@@ -103,7 +93,7 @@ export class NodeIsolateCollection {
 
   /** The deployment `data` payload recorded for a workload, if any. */
   entryDataOf(workloadId: WorkloadId): unknown {
-    return this.#entries.get(workloadId)?.data;
+    return this.#workloads.get(workloadId)?.data;
   }
 
   /** The node's workload allocator (thread roster, load view, placement policy). */
@@ -128,7 +118,7 @@ export class NodeIsolateCollection {
 
   /** Least-loaded registered thread other than `exclude`. */
   leastLoaded(exclude?: ShardId): ShardId {
-    return this.#allocator.leastLoaded(exclude);
+    return this.#allocator.leastLoaded(exclude ?? null);
   }
 
   /**
@@ -162,15 +152,16 @@ export class NodeIsolateCollection {
       isolateId,
       ...spec.priority !== undefined ? { priority: spec.priority } : {}
     });
-    this.#workloads.set(workloadId, record);
-    this.#entries.set(workloadId, {
-      entryPath: spec.entryPath,
-      data: spec.data,
-      locallyMovable: spec.localMobility !== 'pinned' && spec.affinity === undefined,
-      replication: spec.replication ?? 'replicated'
-    });
     const target = this.#choosePlacement(spec);
-    this.#placement.set(workloadId, target);
+    this.#workloads.set(workloadId, {
+      record,
+      ...spec.entryPath !== undefined ? { entryPath: spec.entryPath } : {},
+      ...spec.data !== undefined ? { data: spec.data } : {},
+      locallyMovable: spec.localMobility !== 'pinned' && spec.affinity === undefined,
+      replication: spec.replication ?? 'replicated',
+      placement: target,
+      leaseId: null
+    });
     record.threadId = target;
     return workloadId;
   }
@@ -192,16 +183,13 @@ export class NodeIsolateCollection {
   }
 
   #shardOf(workloadId: WorkloadId): ShardId | null {
-    const lease = this.#activeLease(workloadId);
-    if (lease !== null) return lease.shardId;
-    return this.#placement.get(workloadId) ?? null;
+    return this.#workloads.get(workloadId)?.placement ?? null;
   }
 
   /** Per-thread occupancy: workloads leased to or placed on a thread. The allocator reads this. */
   #assignedCount(shardId: ShardId): number {
     let count = 0;
-    for (const lease of this.#leases.values()) if (lease.shardId === shardId) count++;
-    for (const placed of this.#placement.values()) if (placed === shardId) count++;
+    for (const workload of this.#workloads.values()) if (workload.placement === shardId) count++;
     return count;
   }
 
@@ -218,47 +206,33 @@ export class NodeIsolateCollection {
     if (room === 0) return [];
 
     const candidates: WorkloadId[] = [];
-    for (const [workloadId, placed] of this.#placement) {
-      if (placed !== shardId) continue;
-      const record = this.#workloads.get(workloadId);
-      if (record?.state === 'unclaimed') candidates.push(workloadId);
+    for (const [workloadId, workload] of this.#workloads) {
+      if (workload.placement === shardId && workload.leaseId === null && workload.record.state === 'unclaimed') {
+        candidates.push(workloadId);
+      }
     }
     candidates.sort((a, b) => {
-      const ra = this.#workloads.get(a)!;
-      const rb = this.#workloads.get(b)!;
+      const ra = this.#workloads.get(a)!.record;
+      const rb = this.#workloads.get(b)!.record;
       const pr = PRIORITY_RANK[ra.priority] - PRIORITY_RANK[rb.priority];
       return pr !== 0 ? pr : a < b ? -1 : a > b ? 1 : 0;
     });
 
     const leases: LeaseRecord[] = [];
     for (const workloadId of candidates.slice(0, room)) {
-      const record = this.#workloads.get(workloadId)!;
-      const entry = this.#entries.get(workloadId) ?? {};
+      const workload = this.#workloads.get(workloadId)!;
+      const record = workload.record;
       const leaseId = `lease-${this.#nextLease++}`;
-      const stored: StoredLease = {
-        leaseId,
-        workloadId,
-        shardId,
-        priority: record.priority,
-        ...entry.entryPath !== undefined ? { entryPath: entry.entryPath } : {},
-        ...entry.data !== undefined ? { data: entry.data } : {}
-      };
-      this.#leases.set(leaseId, stored);
-      this.#workloadLease.set(workloadId, leaseId);
-      this.#placement.delete(workloadId);
+      workload.leaseId = leaseId;
+      this.#leaseOwners.set(leaseId, workloadId);
       record.threadId = shardId;
       transition(record, 'claimed');
-      // A reclaimed handed-off workload carries its snapshot so the destination
-      // can reconstruct pending work; hand it over exactly once.
-      const snapshot = this.#snapshots.get(workloadId);
-      this.#snapshots.delete(workloadId);
       leases.push({
         leaseId,
         workloadId,
         priority: record.priority,
-        ...stored.entryPath !== undefined ? { entryPath: stored.entryPath } : {},
-        ...stored.data !== undefined ? { data: stored.data } : {},
-        ...snapshot !== undefined ? { handoff: snapshot } : {}
+        ...workload.entryPath !== undefined ? { entryPath: workload.entryPath } : {},
+        ...workload.data !== undefined ? { data: workload.data } : {}
       });
     }
     return leases;
@@ -266,14 +240,10 @@ export class NodeIsolateCollection {
 
   #heldCount(shardId: ShardId): number {
     let count = 0;
-    for (const lease of this.#leases.values()) if (lease.shardId === shardId) count++;
+    for (const workload of this.#workloads.values()) {
+      if (workload.placement === shardId && workload.leaseId !== null) count++;
+    }
     return count;
-  }
-
-  #activeLease(workloadId: WorkloadId): StoredLease | null {
-    const leaseId = this.#workloadLease.get(workloadId);
-    if (leaseId === undefined) return null;
-    return this.#leases.get(leaseId) ?? null;
   }
 
   /**
@@ -283,16 +253,16 @@ export class NodeIsolateCollection {
   */
   moveLiveLease(workloadId: WorkloadId, toShardId: ShardId): { fromShardId: ShardId; toShardId: ShardId } {
     if (!this.#allocator.hasShard(toShardId)) throw new Error(`unknown destination thread: ${toShardId}`);
-    const lease = this.#activeLease(workloadId);
-    if (lease === null) throw new Error(`workload has no active lease: ${workloadId}`);
-    const fromShardId = lease.shardId;
+    const workload = this.#workloads.get(workloadId);
+    if (workload === undefined || workload.leaseId === null) throw new Error(`workload has no active lease: ${workloadId}`);
+    const fromShardId = workload.placement;
+    if (fromShardId === null) throw new Error(`workload has no active placement: ${workloadId}`);
     if (fromShardId === toShardId) return { fromShardId, toShardId };
     const reserved = this.#moveReservations.get(toShardId)?.has(workloadId) === true;
     if (!reserved && !this.#allocator.hasRoom(toShardId)) throw new Error(`destination thread at capacity: ${toShardId}`);
-    lease.shardId = toShardId;
+    workload.placement = toShardId;
     this.releaseLiveMoveReservation(workloadId, toShardId);
-    const record = this.#workloads.get(workloadId);
-    if (record !== undefined) record.threadId = toShardId;
+    workload.record.threadId = toShardId;
     return { fromShardId, toShardId };
   }
 
@@ -332,14 +302,13 @@ export class NodeIsolateCollection {
   * re-place the workload on another thread.
   */
   release(leaseId: LeaseId, reason: ReleaseReason): void {
-    const lease = this.#leases.get(leaseId);
-    if (lease === undefined) return;
-    this.#leases.delete(leaseId);
-    const { workloadId } = lease;
-    if (this.#workloadLease.get(workloadId) !== leaseId) return;
-    this.#workloadLease.delete(workloadId);
-    const record = this.#workloads.get(workloadId);
-    if (record === undefined) return;
+    const workloadId = this.#leaseOwners.get(leaseId);
+    if (workloadId === undefined) return;
+    this.#leaseOwners.delete(leaseId);
+    const workload = this.#workloads.get(workloadId);
+    if (workload === undefined || workload.leaseId !== leaseId) return;
+    workload.leaseId = null;
+    const record = workload.record;
 
     switch (reason) {
       case 'terminated':
@@ -347,133 +316,58 @@ export class NodeIsolateCollection {
         if (record.state !== 'terminating' && record.state !== 'dead') transition(record, 'terminating');
         transition(record, 'dead');
         this.#workloads.delete(workloadId);
-        this.#entries.delete(workloadId);
-        this.#placement.delete(workloadId);
-        this.#snapshots.delete(workloadId);
         break;
       }
       case 'failed': {
         if (record.state !== 'failed') transition(record, 'failed');
-        // No reconstruction from a failed workload; drop its snapshot.
-        this.#snapshots.delete(workloadId);
+        workload.placement = null;
+        record.threadId = null;
         break;
       }
       case 'renew_failed':
       case 'rebalanced': {
         if (record.state !== 'failed') transition(record, 'failed');
         transition(record, 'unclaimed');
-        const target = this.#allocator.leastLoaded(lease.shardId);
-        this.#placement.set(workloadId, target);
+        const target = this.#allocator.leastLoaded(workload.placement);
+        workload.placement = target;
         record.threadId = target;
         break;
       }
       default: {
         // Any operator- or caller-supplied reason (`operator`, a custom string)
         // is terminal: drop the record rather than leaving it — without this a
-        // custom revoke reason falls through and leaks the record in
-        // `#workloads`/`#entries`/`#placement` forever.
+        // custom revoke reason falls through and leaks its workload record.
         if (record.state !== 'terminating' && record.state !== 'dead') transition(record, 'terminating');
         transition(record, 'dead');
         this.#workloads.delete(workloadId);
-        this.#entries.delete(workloadId);
-        this.#placement.delete(workloadId);
-        this.#snapshots.delete(workloadId);
         break;
       }
     }
   }
 
   /**
-  * Begin draining a workload for handoff. It is walked to `draining` through the
-  * state machine; the holding thread — told to drain by the pushed control
-  * message — quiesces it and reports a snapshot via {@link completeHandoff}.
-  */
-  drainForHandoff(workloadId: WorkloadId): void {
-    const record = this.#workloads.get(workloadId);
-    if (record === undefined) throw new Error(`unknown workload: ${workloadId}`);
-    if (record.state === 'claimed') transition(record, 'idle');
-    if (record.state === 'idle' || record.state === 'runnable' || record.state === 'running') {
-      transition(record, 'draining');
-    }
-    if (record.state !== 'draining') {
-      throw new Error(`cannot drain workload in state ${record.state}: ${workloadId}`);
-    }
-  }
-
-  /**
-  * Record the drained workload's quiesced state as a handoff snapshot and move
-  * it to `handoff_ready`. The holding thread supplies the pending work
-  * (undelivered messages, unfired timers, in-flight facade ops); the entry and
-  * seed data come from the collection. Drops the workload's now-stale lease.
-  */
-  completeHandoff(workloadId: WorkloadId, pending: PendingWork, capturedAtNanos: number): HandoffSnapshot {
-    const record = this.#workloads.get(workloadId);
-    if (record === undefined) throw new Error(`unknown workload: ${workloadId}`);
-    if (record.state !== 'draining') throw new Error(`workload is not draining: ${workloadId}`);
-    const entry = this.#entries.get(workloadId) ?? {};
-    const snapshot = captureHandoff(record, {
-      ...entry.entryPath !== undefined ? { entryPath: entry.entryPath } : {},
-      ...entry.data !== undefined ? { data: entry.data } : {},
-      ...pending.mailbox !== undefined ? { mailbox: pending.mailbox } : {},
-      ...pending.timers !== undefined ? { timers: pending.timers } : {},
-      ...pending.facadeOps !== undefined ? { facadeOps: pending.facadeOps } : {}
-    }, capturedAtNanos);
-    transition(record, 'handoff_ready');
-    this.#snapshots.set(workloadId, snapshot);
-    const leaseId = this.#workloadLease.get(workloadId);
-    if (leaseId !== undefined) {
-      this.#leases.delete(leaseId);
-      this.#workloadLease.delete(workloadId);
-    }
-    return snapshot;
-  }
-
-  /**
-  * Place a handed-off (or recovered) workload for reclaiming. Moves it from
-  * `handoff_ready` back to `unclaimed` on `toShardId` (or the least-loaded
-  * thread other than where it was), keeping its snapshot so the next
-  * {@link claim} hands it to the destination for reconstruction.
-  */
-  placeHandoff(workloadId: WorkloadId, toShardId?: ShardId): ShardId {
-    const record = this.#workloads.get(workloadId);
-    if (record === undefined) throw new Error(`unknown workload: ${workloadId}`);
-    if (record.state !== 'handoff_ready') throw new Error(`workload is not handoff_ready: ${workloadId}`);
-    transition(record, 'unclaimed');
-    const target = toShardId !== undefined && this.#allocator.hasShard(toShardId)
-      ? toShardId
-      : this.#allocator.leastLoaded(record.threadId);
-    this.#placement.set(workloadId, target);
-    record.threadId = target;
-    return target;
-  }
-
-  /**
   * Recover every workload a failed scheduler thread was hosting. Each is rebuilt
-  * from its last handoff snapshot if one exists (drained cleanly before the
-  * failure), otherwise respawned from its record and entry — pending in-flight
-  * work is lost on a hard crash, but the workload comes back. Recovered
+  * fresh from its record and entry. Pending in-flight work is lost on a hard
+  * crash, but the workload comes back. Recovered
   * workloads are re-placed on the surviving threads. Returns their ids.
   */
   recoverShard(shardId: ShardId): WorkloadId[] {
     const victims: WorkloadId[] = [];
-    for (const lease of this.#leases.values()) {
-      if (lease.shardId === shardId) victims.push(lease.workloadId);
+    for (const [workloadId, workload] of this.#workloads) {
+      if (workload.placement === shardId && workload.leaseId !== null) victims.push(workloadId);
     }
     const recovered: WorkloadId[] = [];
     for (const workloadId of victims) {
-      const leaseId = this.#workloadLease.get(workloadId);
-      if (leaseId !== undefined) {
-        this.#leases.delete(leaseId);
-        this.#workloadLease.delete(workloadId);
+      const workload = this.#workloads.get(workloadId);
+      if (workload?.leaseId !== null && workload?.leaseId !== undefined) {
+        this.#leaseOwners.delete(workload.leaseId);
+        workload.leaseId = null;
       }
-      const snapshot = this.#snapshots.get(workloadId);
-      const record = snapshot !== undefined
-        ? reconstructRecord(snapshot)
-        : this.#respawnRecord(workloadId);
+      const record = this.#respawnRecord(workloadId);
       if (record === undefined) continue;
-      this.#workloads.set(workloadId, record);
+      workload!.record = record;
       const target = this.#allocator.leastLoaded(shardId);
-      this.#placement.set(workloadId, target);
+      workload!.placement = target;
       record.threadId = target;
       recovered.push(workloadId);
     }
@@ -481,7 +375,7 @@ export class NodeIsolateCollection {
   }
 
   #respawnRecord(workloadId: WorkloadId): TenantWorkloadRecord | undefined {
-    const previous = this.#workloads.get(workloadId);
+    const previous = this.#workloads.get(workloadId)?.record;
     if (previous === undefined) return undefined;
     const rebuilt = createWorkloadRecord({
       tenantId: previous.tenantId,
@@ -489,13 +383,7 @@ export class NodeIsolateCollection {
       isolateId: previous.isolateId,
       priority: previous.priority
     });
-    rebuilt.budget.debtMicros = previous.budget.debtMicros;
     return rebuilt;
-  }
-
-  /** The stored handoff snapshot for a workload awaiting reclaim, if any. */
-  snapshotOf(workloadId: WorkloadId): HandoffSnapshot | undefined {
-    return this.#snapshots.get(workloadId);
   }
 
   /** Record a thread's latest load summary for the allocator's placement decisions. */
@@ -510,22 +398,22 @@ export class NodeIsolateCollection {
 
   /** The workload's record, if it is still in the collection. */
   record(workloadId: WorkloadId): TenantWorkloadRecord | undefined {
-    return this.#workloads.get(workloadId);
+    return this.#workloads.get(workloadId)?.record;
   }
 
   /** Whether policy or an operator may move this isolate to another local reactor. */
   isLocallyMovable(workloadId: WorkloadId): boolean {
-    return this.#entries.get(workloadId)?.locallyMovable === true;
+    return this.#workloads.get(workloadId)?.locallyMovable === true;
   }
 
   /** Whether a workload may split into independent isolates or is state-bound. */
   replicationOf(workloadId: WorkloadId): 'replicated' | 'bound' | null {
-    return this.#entries.get(workloadId)?.replication ?? null;
+    return this.#workloads.get(workloadId)?.replication ?? null;
   }
 
   /** The workload's active lease id, if it holds one. */
   leaseOf(workloadId: WorkloadId): LeaseId | null {
-    return this.#workloadLease.get(workloadId) ?? null;
+    return this.#workloads.get(workloadId)?.leaseId ?? null;
   }
 
   /** Last reported load for a thread. */
@@ -541,8 +429,9 @@ export class NodeIsolateCollection {
   /** Every workload id currently placed on or leased to a thread. */
   workloadsOn(shardId: ShardId): WorkloadId[] {
     const ids: WorkloadId[] = [];
-    for (const lease of this.#leases.values()) if (lease.shardId === shardId) ids.push(lease.workloadId);
-    for (const [workloadId, placed] of this.#placement) if (placed === shardId) ids.push(workloadId);
+    for (const [workloadId, workload] of this.#workloads) {
+      if (workload.placement === shardId) ids.push(workloadId);
+    }
     return ids;
   }
 }

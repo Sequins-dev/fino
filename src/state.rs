@@ -255,8 +255,7 @@ pub fn default_import_rules() -> Vec<ImportRule> {
             directive: ImportDirective::Inherit,
         },
     ];
-    // NOTE: the FINO_REACTOR_LOOP rollout is a loader-level alias
-    // (loader.rs::reactor_loop_default), not an import rule — a later
+    // The native reactor is a loader-level alias, not an import rule — a later
     // allow rule (e.g. the test harness's) would out-rank a rule here for
     // its importers and split a realm across two loop implementations.
     rules

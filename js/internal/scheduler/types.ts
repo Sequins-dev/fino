@@ -20,28 +20,19 @@ export type WakeReason =
   | 'v8_task'
   | 'control';
 
-export type PumpResult = 'idle' | 'runnable' | 'budget_yield' | 'terminated' | 'failed';
-
 /**
-* Lifecycle state of a tenant workload in the node isolate collection. The legal
-* transitions between these states are enforced by `internal:scheduler/workload`.
+* Coarse ownership state maintained by the node collection. Fine-grained
+* runnable/running state belongs exclusively to the native reactor engine.
 */
 export type TenantWorkloadState =
   | 'unclaimed'
   | 'claimed'
-  | 'idle'
-  | 'runnable'
-  | 'running'
-  | 'draining'
-  | 'handoff_ready'
   | 'failed'
   | 'terminating'
   | 'dead';
 
 /**
-* The fine-grained scheduling record for one tenant workload. This is the
-* data-only twin of the orchestrator's coarse `Workload`; it carries everything
-* a scheduler needs to select, account for, hand off, and recover the workload.
+* Node-owned identity and placement state for one tenant workload.
 */
 export interface TenantWorkloadRecord {
   tenantId: string;
@@ -50,19 +41,6 @@ export interface TenantWorkloadRecord {
   threadId: ShardId | null;
   state: TenantWorkloadState;
   priority: PriorityClass;
-  budget: {
-    tickMicros: number;
-    debtMicros: number;
-    heapBytes: number;
-  };
-  runnableReasons: TenantWake[];
-  lastPumpResult: PumpResult | null;
-  counters: {
-    recentCpuMicros: number;
-    recentWakeCount: number;
-    hardBudgetViolations: number;
-    mailboxDepth: number;
-  };
 }
 
 export interface LeaseRecord {
@@ -71,48 +49,6 @@ export interface LeaseRecord {
   priority: PriorityClass;
   entryPath?: string;
   data?: unknown;
-  /** Present when this lease reclaims a handed-off workload; the destination reconstructs from it. */
-  handoff?: HandoffSnapshot;
-}
-
-/** An inbound message queued for a workload but not yet delivered. */
-export interface PendingMessage {
-  sequence: number;
-  data: unknown;
-}
-
-/** A timer a workload has armed but that has not yet fired. */
-export interface PendingTimer {
-  id: string;
-  dueAtNanos: number;
-  kind: 'timeout' | 'interval';
-  intervalNanos?: number;
-}
-
-/** A facade operation the workload had in flight when it was drained. */
-export interface PendingFacadeOp {
-  id: number;
-  provider: string;
-  method: string;
-  args: unknown;
-}
-
-/**
-* A data-only capture of a quiesced workload, sufficient to reconstruct it on
-* another scheduler thread (or after a thread failure) without migrating the V8
-* isolate's memory. It carries the fine-grained record plus the pending work —
-* undelivered messages, unfired timers, and in-flight facade operations — that
-* must survive the move. Everything here is plain, serializable data: no
-* closures, no live handles.
-*/
-export interface HandoffSnapshot {
-  record: TenantWorkloadRecord;
-  entryPath?: string;
-  data?: unknown;
-  mailbox: PendingMessage[];
-  timers: PendingTimer[];
-  facadeOps: PendingFacadeOp[];
-  capturedAtNanos: number;
 }
 
 export interface TenantWake {
@@ -124,26 +60,6 @@ export interface TenantWake {
   sequence?: number;
 }
 
-export interface RunnableWorkload {
-  workloadId: WorkloadId;
-  priority: PriorityClass;
-  wakes: TenantWake[];
-  debtMicros: number;
-  sequence: number;
-}
-
-export interface DispatchRequest {
-  workloadId: WorkloadId;
-  wake: TenantWake;
-  budgetMicros: number;
-  debtMicros: number;
-}
-
-export interface DispatchResult {
-  result: PumpResult;
-  costMicros?: number;
-}
-
 export interface ShardLoadSummary {
   shardId: ShardId;
   heldLeases: number;
@@ -152,55 +68,8 @@ export interface ShardLoadSummary {
   debtMicros: number;
 }
 
-export interface SchedulerShardConfig {
-  shardId: ShardId;
-  capacity: number;
-  budgetMicros?: number;
-  /** Hard per-pump-slice limit (µs) for runaway containment; overruns are terminated. */
-  hardBudgetMicros?: number;
-  /** Liveness-heartbeat cadence (ms). Resource `load` reports are event-driven; this
-   * slow tick only proves the thread is alive for the orchestrator's hang backstop. */
-  heartbeatMs?: number;
-  /** @deprecated Load is now reported on change, not polled; retained for the supervisor's stale threshold. */
-  loadReportMs?: number;
-  /** Soft on-CPU limit (µs) for one sync pump slice; overrunning flags the workload sync-heavy. Default 50ms. */
-  syncSliceThresholdMicros?: number;
-  /** Per-workload heap cap (bytes); nearing it terminates the workload rather than OOMing the process. */
-  heapLimitBytes?: number;
-}
-
-/**
-* Control messages the orchestrator pushes to a scheduler thread over its realm
-* port (`realm.port.postMessage`). The scheduler receives them as `message`
-* events on `globalThis.realmPort` and applies them to its held set — replacing
-* the per-tick `pollWakes` RPC. Revocation is immediate (no renewal window), and
-* draining is a distinct signal from revoking.
-*/
-export type SchedulerControlMessage =
-  | { control: 'place'; lease: LeaseRecord }
-  | { control: 'wake'; wake: TenantWake }
-  | { control: 'revoke'; workloadId: WorkloadId; reason: string }
-  | { control: 'drain'; workloadId: WorkloadId }
-  | { control: 'shutdown' };
-
-/**
-* Messages a scheduler thread pushes back to the orchestrator over the same
-* channel: terminal releases, handoff reports, event-driven `load` (posted only
-* when the shard's resource band changes, never on a timer), and a slow
-* `heartbeat` (liveness only, for the orchestrator's hang backstop).
-*/
-export type SchedulerReport =
-  | { report: 'released'; shardId: ShardId; workloadId: WorkloadId; reason: string }
-  | { report: 'drained'; shardId: ShardId; workloadId: WorkloadId; pending: { mailbox: PendingMessage[] } }
-  | { report: 'syncHeavy'; shardId: ShardId; workloadId: WorkloadId; cpuMicros: number }
-  | { report: 'load'; summary: ShardLoadSummary }
-  | { report: 'heartbeat'; shardId: ShardId; summary: ShardLoadSummary }
-  | { report: 'summary'; summary: SchedulerShardSummary };
-
 export interface SchedulerShardSummary {
   shardId: ShardId;
-  claimed: number;
   dispatches: number;
   released: number;
-  heldLeases: number;
 }

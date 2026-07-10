@@ -161,6 +161,11 @@ pub enum Report {
     Released { workload_id: u64, reason: String },
     /// A live isolate was attached after moving from another reactor.
     Moved { workload_id: u64 },
+    /// A live move was refused because the isolate owns thread-affine state.
+    MoveRejected {
+        workload_id: u64,
+        reason: &'static str,
+    },
     /// The source has no remaining operations or wake routes for a moved realm.
     Detached { workload_id: u64 },
     /// Reactor startup and best-effort OS-priority result.
@@ -342,11 +347,20 @@ pub(crate) fn engine_next_timer_id() -> u64 {
 mod imp {
     use super::*;
     use crate::scheduler_native::{
-        ParkedWorkload, PumpOutcome, drop_parked, pump_realm_native, setup_realm_workload,
+        ActiveWorkload, ParkedWorkload, PumpOutcome, activate_realm_native,
+        deactivate_realm_native, drop_parked, pump_realm_native, setup_realm_workload,
     };
     use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source};
     use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
+
+    pub(super) fn select_next_id(
+        _active: Option<u64>,
+        runnable: &HashSet<u64>,
+        mut compare: impl FnMut(u64, u64) -> std::cmp::Ordering,
+    ) -> Option<u64> {
+        runnable.iter().copied().min_by(|a, b| compare(*a, *b))
+    }
 
     /// What a reactor completion resolves to. Every outstanding op — a tenant
     /// read/write/readiness, a timer, the control pipe, or a per-workload wake
@@ -464,6 +478,9 @@ mod imp {
         /// FFI threads use, so a report wakes either loop flavor.
         orch_wake: crate::async_rt::WakeSink,
         workloads: HashMap<u64, EngineWorkload>,
+        /// The isolate currently entered on this thread. It stays active across
+        /// slices and waits until a different workload actually wins scheduling.
+        active: Option<(u64, ActiveWorkload)>,
         /// Routes retained while this reactor drains operations submitted before
         /// their owning isolate moved to another thread.
         forwarded: HashMap<u64, ForwardRoute>,
@@ -516,6 +533,7 @@ mod imp {
             report_seq,
             orch_wake,
             workloads: HashMap::new(),
+            active: None,
             forwarded: HashMap::new(),
             runnable: HashSet::new(),
             ops: HashMap::new(),
@@ -535,6 +553,7 @@ mod imp {
             priority_applied,
         });
         engine.loop_forever();
+        engine.deactivate_active();
         // Teardown: quiesce every in-flight op (tenant buffers must outlive
         // their completions), then dispose every hosted isolate.
         let ids: Vec<u64> = engine.workloads.keys().copied().collect();
@@ -678,6 +697,20 @@ mod imp {
             destination_tx: mpsc::Sender<Control>,
             destination_notify: cherenkov::Notifier,
         ) {
+            if let Some(reason) = self
+                .workloads
+                .get(&workload_id)
+                .and_then(|workload| workload.inner.move_blocker())
+            {
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason,
+                });
+                return;
+            }
+            if self.active_id() == Some(workload_id) {
+                self.deactivate_active();
+            }
             let Some(workload) = self.workloads.remove(&workload_id) else {
                 return;
             };
@@ -902,23 +935,47 @@ mod imp {
         }
 
         fn pump_runnable(&mut self) {
-            loop {
-                let mut batch: Vec<u64> = self.runnable.iter().copied().collect();
-                if batch.is_empty() {
+            while self.running {
+                // Select before changing V8 ownership. If the current isolate
+                // still wins, activation is a no-op and the next slice avoids
+                // an exit/lock/enter round trip.
+                let selected = select_next_id(self.active_id(), &self.runnable, |a, b| {
+                    self.compare_runnable(a, b)
+                });
+                let Some(id) = selected else {
                     break;
-                }
-                // Priority order: class → debt → sequence → id (compareRunnable).
-                batch.sort_by(|a, b| self.compare_runnable(*a, *b));
-                self.runnable.clear();
-                for id in batch {
-                    if !self.running {
-                        return;
-                    }
-                    self.pump_one(id);
-                }
-                // Loop again: pumps may have re-marked workloads runnable (settled
-                // with more work). New completions arrive via poll, not here.
+                };
+                self.runnable.remove(&id);
+                self.activate(id);
+                self.pump_one(id);
             }
+        }
+
+        fn active_id(&self) -> Option<u64> {
+            self.active.as_ref().map(|(id, _)| *id)
+        }
+
+        fn activate(&mut self, id: u64) {
+            if self.active_id() == Some(id) {
+                return;
+            }
+            self.deactivate_active();
+            let Some(workload) = self.workloads.get_mut(&id) else {
+                return;
+            };
+            let active = activate_realm_native(&mut workload.inner);
+            self.active = Some((id, active));
+        }
+
+        fn deactivate_active(&mut self) {
+            let Some((id, active)) = self.active.take() else {
+                return;
+            };
+            let workload = self
+                .workloads
+                .get_mut(&id)
+                .expect("active workload missing from reactor ownership");
+            deactivate_realm_native(&mut workload.inner, active);
         }
 
         fn compare_runnable(&self, a: u64, b: u64) -> std::cmp::Ordering {
@@ -951,6 +1008,7 @@ mod imp {
         }
 
         fn pump_one(&mut self, id: u64) {
+            debug_assert_eq!(self.active_id(), Some(id));
             self.set_current_counts(id);
             let hard = self.config.hard_budget_micros;
             let io_completions: Vec<(usize, f64)> = {
@@ -1427,6 +1485,9 @@ mod imp {
         }
 
         fn release(&mut self, id: u64, reason: String) {
+            if self.active_id() == Some(id) {
+                self.deactivate_active();
+            }
             // Quiesce this workload's outstanding ops BEFORE disposing the
             // isolate their buffers belong to.
             self.cancel_owned(id);
@@ -1499,6 +1560,37 @@ mod imp {
             self.report_seq.fetch_add(1, Ordering::Release);
             self.orch_wake.wake();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::imp::select_next_id;
+    use std::cmp::Ordering;
+    use std::collections::HashSet;
+
+    #[test]
+    fn keeps_active_workload_when_it_still_has_priority() {
+        let runnable = HashSet::from([7, 11]);
+        let selected = select_next_id(Some(7), &runnable, |a, b| a.cmp(&b));
+
+        assert_eq!(selected, Some(7));
+    }
+
+    #[test]
+    fn selects_a_different_workload_only_when_it_outranks_active() {
+        let runnable = HashSet::from([7, 11]);
+        let selected = select_next_id(Some(11), &runnable, |a, b| a.cmp(&b));
+
+        assert_eq!(selected, Some(7));
+    }
+
+    #[test]
+    fn leaves_idle_active_workload_entered_until_another_is_runnable() {
+        let runnable = HashSet::new();
+        let selected = select_next_id(Some(7), &runnable, |_a, _b| Ordering::Equal);
+
+        assert_eq!(selected, None);
     }
 }
 
@@ -1986,6 +2078,14 @@ fn report_to_js<'s>(scope: &mut v8::HandleScope<'s>, report: Report) -> v8::Loca
         Report::Moved { workload_id } => {
             set_str(scope, obj, "type", "moved");
             set_num(scope, obj, "workloadId", workload_id as f64);
+        }
+        Report::MoveRejected {
+            workload_id,
+            reason,
+        } => {
+            set_str(scope, obj, "type", "moveRejected");
+            set_num(scope, obj, "workloadId", workload_id as f64);
+            set_str(scope, obj, "reason", reason);
         }
         Report::Detached { workload_id } => {
             set_str(scope, obj, "type", "detached");

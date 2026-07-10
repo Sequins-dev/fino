@@ -57,7 +57,7 @@ interface ReactorHandle {
 
 /** One engine report drained from a reactor's report channel. */
 interface EngineReport {
-  type: 'released' | 'syncHeavy' | 'load' | 'moved' | 'detached' | 'started';
+  type: 'released' | 'syncHeavy' | 'load' | 'moved' | 'moveRejected' | 'detached' | 'started';
   workloadId?: number;
   reason?: string;
   cpuMicros?: number;
@@ -65,6 +65,13 @@ interface EngineReport {
   runnable?: number;
   debtBand?: number;
   debtMicros?: number;
+}
+
+interface WorkloadRuntime {
+  engineId: number;
+  realmSpec: RealmWorkloadSpec | undefined;
+  realmPort: { portHandle: number; portWakeFd: number } | undefined;
+  tenantPort: ThreadPort | undefined;
 }
 
 /** Result of attempting to move one live isolate between local reactors. */
@@ -79,11 +86,6 @@ const RE_PLACING_REASONS = new Set<string>(['rebalanced', 'renew_failed']);
 export interface SchedulerNodeOptions {
   /** Number of latency-sensitive scheduler threads. Defaults to 2. */
   shardCount?: number;
-  /**
-  * Number of lower-priority batch threads created at startup. Defaults to 0.
-  * @deprecated Use `batchPool.minThreads`; retained for existing internal callers.
-  */
-  batchThreads?: number;
   /** On-demand batch reactor pool. Defaults to zero warm and one maximum thread. */
   batchPool?: {
     /** Batch reactors created at startup. Defaults to 0. */
@@ -95,14 +97,8 @@ export interface SchedulerNodeOptions {
   };
   /** Per-thread workload capacity. Defaults to 8. */
   capacity?: number;
-  /** Cooperative accounting budget (µs) passed to each shard. */
-  budgetMicros?: number;
   /** Hard per-pump-slice runaway budget (µs) passed to each shard. */
   hardBudgetMicros?: number;
-  /** Liveness-heartbeat cadence (ms) for each shard; also sets the supervisor's stale threshold. */
-  heartbeatMs?: number;
-  /** @deprecated Load is reported on change now; ignored. */
-  loadReportMs?: number;
   /** Soft blocking limit (µs) per pump slice; repeated overruns move a movable workload to batch. */
   syncSliceThresholdMicros?: number;
   /** Per-workload heap cap (bytes); nearing it terminates the workload rather than OOMing the process. */
@@ -117,11 +113,9 @@ export class SchedulerNode {
   #collection = new NodeIsolateCollection();
   #shardIds: string[];
   #capacity: number;
-  #budgetMicros?: number;
-  #hardBudgetMicros?: number;
-  #heartbeatMs?: number;
-  #syncSliceThresholdMicros?: number;
-  #heapLimitBytes?: number;
+  #hardBudgetMicros: number | undefined;
+  #syncSliceThresholdMicros: number | undefined;
+  #heapLimitBytes: number | undefined;
   #batchMinThreads: number;
   #batchMaxThreads: number;
   #batchIdleTimeoutMs: number;
@@ -139,22 +133,11 @@ export class SchedulerNode {
   }>();
   #blockingSamples = new Map<WorkloadId, number[]>();
   #moveCooldownUntil = new Map<WorkloadId, number>();
-  // Node-held parent ports for tenant workloads: activations are dispatched
-  // as `__tenant_dispatch` messages over the realm channel, results come
-  // back as `__tenant_result` — the engine only pumps the realm.
-  #tenantPorts = new Map<WorkloadId, ThreadPort>();
-  // Realm workloads: their full configs (for placement) and the parent-side
-  // channel halves handed back to the Realm objects that own them.
-  #realmSpecs = new Map<WorkloadId, RealmWorkloadSpec>();
-  #realmPorts = new Map<WorkloadId, {
-    portHandle: number;
-    portWakeFd: number;
-  }>();
-  // The engine keys workloads by a numeric id; the orchestrator by a string
-  // WorkloadId. Maintain a bijection so control + reports translate cleanly.
+  // One authoritative runtime record per workload. The reverse index exists
+  // only because native reports carry the engine's numeric id.
+  #runtimes = new Map<WorkloadId, WorkloadRuntime>();
   #engineIdSeq = 1;
-  #toEngineId = new Map<WorkloadId, number>();
-  #fromEngineId = new Map<number, WorkloadId>();
+  #engineOwners = new Map<number, WorkloadId>();
 
   constructor(options: SchedulerNodeOptions = {}) {
     const shardCount = options.shardCount ?? 2;
@@ -162,24 +145,22 @@ export class SchedulerNode {
       throw new TypeError('shardCount must be a positive integer');
     }
     this.#capacity = options.capacity ?? 8;
-    this.#budgetMicros = options.budgetMicros;
     this.#hardBudgetMicros = options.hardBudgetMicros;
-    this.#heartbeatMs = options.heartbeatMs;
     this.#syncSliceThresholdMicros = options.syncSliceThresholdMicros;
     this.#heapLimitBytes = options.heapLimitBytes;
-    const batchThreads = options.batchPool?.minThreads ?? options.batchThreads ?? 0;
-    const maxBatchThreads = options.batchPool?.maxThreads ?? Math.max(1, batchThreads);
+    const minBatchThreads = options.batchPool?.minThreads ?? 0;
+    const maxBatchThreads = options.batchPool?.maxThreads ?? Math.max(1, minBatchThreads);
     const batchIdleTimeoutMs = options.batchPool?.idleTimeoutMs ?? 30_000;
-    if (!Number.isInteger(batchThreads) || batchThreads < 0) {
-      throw new TypeError('batchThreads must be a non-negative integer');
+    if (!Number.isInteger(minBatchThreads) || minBatchThreads < 0) {
+      throw new TypeError('batchPool.minThreads must be a non-negative integer');
     }
-    if (!Number.isInteger(maxBatchThreads) || maxBatchThreads < batchThreads) {
+    if (!Number.isInteger(maxBatchThreads) || maxBatchThreads < minBatchThreads) {
       throw new TypeError('batchPool.maxThreads must be an integer no smaller than minThreads');
     }
     if (!Number.isFinite(batchIdleTimeoutMs) || batchIdleTimeoutMs < 0) {
       throw new TypeError('batchPool.idleTimeoutMs must be a non-negative number');
     }
-    this.#batchMinThreads = batchThreads;
+    this.#batchMinThreads = minBatchThreads;
     this.#batchMaxThreads = maxBatchThreads;
     this.#batchIdleTimeoutMs = batchIdleTimeoutMs;
     this.#shardIds = [];
@@ -188,7 +169,7 @@ export class SchedulerNode {
       this.#shardIds.push(shardId);
       this.#collection.registerShard(shardId, this.#capacity, 'latency');
     }
-    for (let i = 0; i < batchThreads; i++) {
+    for (let i = 0; i < minBatchThreads; i++) {
       const shardId = `batch-${this.#batchSeq++}`;
       this.#shardIds.push(shardId);
       this.#collection.registerShard(shardId, this.#capacity, 'batch');
@@ -221,7 +202,7 @@ export class SchedulerNode {
       reactorClass: this.#collection.shardClassOf(shardId) ?? 'latency'
     };
     const reactorId = engine.spawnReactor(config);
-    this.#reactors.set(shardId, { reactorId, summary: { shardId, claimed: 0, dispatches: 0, released: 0, heldLeases: 0 }, lastReport: Date.now(), dead: false });
+    this.#reactors.set(shardId, { reactorId, summary: { shardId, dispatches: 0, released: 0 }, lastReport: Date.now(), dead: false });
     void this.#pumpReports(shardId, reactorId);
   }
 
@@ -321,7 +302,7 @@ export class SchedulerNode {
     if (report.type === 'started') return;
     if (report.type === 'syncHeavy') {
       // Migrate a sync-heavy workload off a latency thread onto a batch thread.
-      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
+      const workloadId = this.#engineOwners.get(report.workloadId ?? -1);
       if (workloadId === undefined) return;
       const current = this.#collection.placementOf(workloadId);
       if (current !== null && this.#collection.shardClassOf(current) === 'latency') {
@@ -337,7 +318,7 @@ export class SchedulerNode {
       return;
     }
     if (report.type === 'moved') {
-      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
+      const workloadId = this.#engineOwners.get(report.workloadId ?? -1);
       if (workloadId === undefined) return;
       const pending = this.#pendingMoves.get(workloadId);
       if (pending === undefined || pending.toShardId !== shardId) return;
@@ -351,9 +332,19 @@ export class SchedulerNode {
       });
       return;
     }
+    if (report.type === 'moveRejected') {
+      const workloadId = this.#engineOwners.get(report.workloadId ?? -1);
+      if (workloadId === undefined) return;
+      const pending = this.#pendingMoves.get(workloadId);
+      if (pending === undefined) return;
+      this.#pendingMoves.delete(workloadId);
+      this.#collection.releaseLiveMoveReservation(workloadId, pending.toShardId);
+      pending.resolve({ status: 'deferred', reason: report.reason ?? 'thread-affine-state' });
+      return;
+    }
     if (report.type === 'detached') return;
     if (report.type === 'released') {
-      const workloadId = this.#fromEngineId.get(report.workloadId ?? -1);
+      const workloadId = this.#engineOwners.get(report.workloadId ?? -1);
       if (workloadId === undefined) return;
       const pendingMove = this.#pendingMoves.get(workloadId);
       if (pendingMove !== undefined) {
@@ -368,14 +359,16 @@ export class SchedulerNode {
       this.#moveCooldownUntil.delete(workloadId);
       const leaseId = this.#collection.leaseOf(workloadId);
       if (leaseId !== null) this.#collection.release(leaseId, reason as ReleaseReason);
-      const isRealm = this.#realmSpecs.delete(workloadId);
-      this.#realmPorts.delete(workloadId);
+      const runtime = this.#runtimes.get(workloadId);
+      const isRealm = runtime?.realmSpec !== undefined;
+      if (runtime !== undefined) runtime.realmPort = undefined;
       if (!RE_PLACING_REASONS.has(reason)) {
-        const port = this.#tenantPorts.get(workloadId);
+        const port = runtime?.tenantPort;
         if (port !== undefined) {
           port.close();
-          this.#tenantPorts.delete(workloadId);
         }
+        if (runtime !== undefined) this.#engineOwners.delete(runtime.engineId);
+        this.#runtimes.delete(workloadId);
       }
       this.#activate();
       if (isRealm || !RE_PLACING_REASONS.has(reason)) {
@@ -465,12 +458,14 @@ export class SchedulerNode {
     } catch {
       return null;
     }
-    this.#realmSpecs.set(workloadId, spec);
+    this.#runtime(workloadId).realmSpec = spec;
     this.#activate();
-    const port = this.#realmPorts.get(workloadId);
+    const port = this.#runtimes.get(workloadId)?.realmPort;
     if (port === undefined) {
       // No live reactor claimed it (all threads down): undo the record.
-      this.#realmSpecs.delete(workloadId);
+      const runtime = this.#runtimes.get(workloadId);
+      if (runtime !== undefined) this.#engineOwners.delete(runtime.engineId);
+      this.#runtimes.delete(workloadId);
       const leaseId = this.#collection.leaseOf(workloadId);
       if (leaseId !== null) this.#collection.release(leaseId, 'revoked');
       return null;
@@ -497,13 +492,17 @@ export class SchedulerNode {
 
   /** The engine's numeric id for a workload (assigning one on first use). */
   #engineId(workloadId: WorkloadId): number {
-    let id = this.#toEngineId.get(workloadId);
-    if (id === undefined) {
-      id = this.#engineIdSeq++;
-      this.#toEngineId.set(workloadId, id);
-      this.#fromEngineId.set(id, workloadId);
-    }
-    return id;
+    return this.#runtime(workloadId).engineId;
+  }
+
+  #runtime(workloadId: WorkloadId): WorkloadRuntime {
+    let runtime = this.#runtimes.get(workloadId);
+    if (runtime !== undefined) return runtime;
+    const engineId = this.#engineIdSeq++;
+    runtime = { engineId, realmSpec: undefined, realmPort: undefined, tenantPort: undefined };
+    this.#runtimes.set(workloadId, runtime);
+    this.#engineOwners.set(engineId, workloadId);
+    return runtime;
   }
 
   /**
@@ -516,13 +515,14 @@ export class SchedulerNode {
     const workloadId = lease.workloadId;
     const entryPath = lease.entryPath ?? '';
     const priorityClass = PRIORITY_CLASS[lease.priority] ?? 1;
-    const realmSpec = this.#realmSpecs.get(workloadId);
+    const runtime = this.#runtime(workloadId);
+    const realmSpec = runtime.realmSpec;
     if (realmSpec !== undefined) {
       const info = engine.placeRealm(reactorId, this.#engineId(workloadId), entryPath, realmSpec.rulesJson, realmSpec.realmData ?? '', realmSpec.bootstrapData ?? '', priorityClass) as {
         portHandle: number;
         portWakeFd: number;
       };
-      this.#realmPorts.set(workloadId, info);
+      runtime.realmPort = info;
       return;
     }
     // Tenant workload: realm construction with the tenant sandbox rules
@@ -531,7 +531,7 @@ export class SchedulerNode {
       portHandle: number;
       portWakeFd: number;
     };
-    const old = this.#tenantPorts.get(workloadId);
+    const old = runtime.tenantPort;
     if (old !== undefined) old.close();
     const port = new ThreadPort(info.portWakeFd, info.portHandle);
     port.addEventListener('message', (ev) => {
@@ -541,7 +541,7 @@ export class SchedulerNode {
       this.#onTenantResult(workloadId, data);
     });
     port.start();
-    this.#tenantPorts.set(workloadId, port);
+    runtime.tenantPort = port;
   }
 
   /** Classify a tenant activation result delivered over the workload's port. */
@@ -573,7 +573,7 @@ export class SchedulerNode {
   * wake byte is itself what makes the hosting reactor pump the realm.
   */
   wake(workloadId: WorkloadId, wake: TenantWake): void {
-    const port = this.#tenantPorts.get(workloadId);
+    const port = this.#runtimes.get(workloadId)?.tenantPort;
     if (port === undefined) return;
     const request: Record<string, unknown> = {
       workloadId,
@@ -626,8 +626,9 @@ export class SchedulerNode {
     // holds its supervisor (a parent realm's run() entry) open forever.
     for (const resolve of this.#released.values()) resolve('shutdown');
     this.#released.clear();
-    for (const port of this.#tenantPorts.values()) port.close();
-    this.#tenantPorts.clear();
+    for (const runtime of this.#runtimes.values()) runtime.tenantPort?.close();
+    this.#runtimes.clear();
+    this.#engineOwners.clear();
     this.#started = false;
     this.#shuttingDown = false;
     return summaries;
