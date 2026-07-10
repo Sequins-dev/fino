@@ -172,6 +172,17 @@ function _openMode(flags: number): string {
 *
 * @internal
 */
+/**
+* Every currently-registered VFS, pinned so its struct buffers and callback
+* trampolines cannot be garbage-collected while sqlite's global `vfsList`
+* still links the raw struct address. Without this, a leaked registration
+* (a `Database` dropped without `close()`) leaves `vfsList` pointing into
+* freed memory and a later `sqlite3_vfs_register` walks it and crashes.
+*
+* @internal
+*/
+const REGISTERED_VFS = new Set<FinoVFS>();
+
 export class FinoVFS {
   /**
   * The provider every VFS file operation is delegated to.
@@ -828,6 +839,7 @@ export class FinoVFS {
     const ptr = Pointer.of(new Uint8Array(this.#vfsBuf));
     const rc = sq.symbols.sqlite3_vfs_register(ptr, makeDflt ? 1 : 0) as number;
     if (rc !== SQLITE_OK) throw new Error(`sqlite3_vfs_register failed: ${rc}`);
+    REGISTERED_VFS.add(this);
   }
   /**
   * Unregister this VFS from sqlite and free all callbacks.
@@ -848,6 +860,7 @@ export class FinoVFS {
     sq.symbols.sqlite3_vfs_unregister(ptr);
     for (const cb of this.#callbacks) cb.close();
     this.#callbacks.length = 0;
+    REGISTERED_VFS.delete(this);
   }
   /**
   * The registered VFS name, for use as the `zVfs` argument to `sqlite3_open_v2`.
