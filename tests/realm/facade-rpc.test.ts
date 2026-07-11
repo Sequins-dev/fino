@@ -5,7 +5,7 @@
 * The call is forwarded via `internal:parent-rpc` and settled when the
 * parent's handler returns.
 *
-* These tests cover thread-realm facades; process realm facades follow
+* These tests cover reactor-realm facades; process realm facades follow
 * the same path through a different transport.
 */
 import { describe, it } from 'fino:test/test';
@@ -16,7 +16,30 @@ import type facadeStreamFn from './fixtures/facade-stream-fn.ts';
 import type facadeStreamErrorFn from './fixtures/facade-stream-error-fn.ts';
 import type facadeHandleFn from './fixtures/facade-handle-fn.ts';
 import type facadeSinkFn from './fixtures/facade-sink-fn.ts';
-describe('Facade RPC — thread realm', () => {
+describe('Facade RPC — reactor realm', () => {
+  it('binds facade RPC on every scaled replica', async (t) => {
+    const facade = new Facade('fino:test-facade', ['greet']).handle('greet', async (name) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      return `hello ${name}`;
+    });
+    using realm = new Realm<typeof facadeCallFn>({
+      entry: new URL('./fixtures/facade-call.ts', import.meta.url).pathname,
+      overrides: ImportMap.deny([{
+        pattern: 'internal:runtime/loop',
+        directive: 'inherit'
+      }, {
+        pattern: 'fino:test-facade',
+        directive: facade
+      }]),
+      scaling: { min: 1, max: 2, scaleUpWindowMs: 5 }
+    });
+    const calls = Promise.all([realm.call(), realm.call()]);
+    const result = await Promise.race([
+      calls,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('scaled facade call timed out')), 3_000))
+    ]);
+    t.deepEqual(result, ['hello world', 'hello world']);
+  });
   it('basic call-response round-trip', async (t) => {
     const facade = new Facade('fino:test-facade', ['greet']).handle('greet', async (name) => `hello ${name}`);
     const realm = new Realm<typeof facadeCallFn>({
@@ -159,74 +182,9 @@ describe('Facade RPC — thread realm', () => {
   });
 });
 // ---------------------------------------------------------------------------
-// C2 — embedded realm (same V8 isolate, MessagePort transport)
-// ---------------------------------------------------------------------------
-describe('Facade RPC — embedded realm', () => {
-  it('basic call-response round-trip via IntraPort', async (t) => {
-    const facade = new Facade('fino:test-facade', ['greet']).handle('greet', async (name) => `hello ${name}`);
-    const realm = new Realm<typeof facadeCallFn>({
-      overrides: ImportMap.deny([{
-        pattern: 'internal:runtime/loop',
-        directive: 'inherit'
-      }, {
-        pattern: 'fino:test-facade',
-        directive: facade
-      }]),
-      entry: new URL('./fixtures/facade-call.ts', import.meta.url).pathname
-    });
-    const result = await realm.call();
-    t.equal(result, 'hello world', 'embedded realm facade returned correct greeting');
-  });
-  it('handler error propagates through embedded realm facade', async (t) => {
-    const facade = new Facade('fino:test-facade', ['greet']).handle('greet', async () => {
-      throw new Error('embedded boom');
-    });
-    const realm = new Realm<typeof facadeCallFn>({
-      overrides: ImportMap.deny([{
-        pattern: 'internal:runtime/loop',
-        directive: 'inherit'
-      }, {
-        pattern: 'fino:test-facade',
-        directive: facade
-      }]),
-      entry: new URL('./fixtures/facade-call.ts', import.meta.url).pathname
-    });
-    try {
-      await realm.call();
-      t.fail('should have rejected');
-    } catch (err) {
-      t.ok(err instanceof Error, 'rejects with Error');
-      t.ok((err as Error).message.includes('embedded boom'), 'error message propagated');
-    }
-  });
-  it('streaming handler delivers chunks via IntraPort', async (t) => {
-    const facade = new Facade('fino:test-facade', []).stream('chunks', async function* () {
-      yield 'one';
-      yield 'two';
-      yield 'three';
-    });
-    const realm = new Realm<typeof facadeStreamFn>({
-      overrides: ImportMap.deny([{
-        pattern: 'internal:runtime/loop',
-        directive: 'inherit'
-      }, {
-        pattern: 'fino:test-facade',
-        directive: facade
-      }]),
-      entry: new URL('./fixtures/facade-stream-fn.ts', import.meta.url).pathname
-    });
-    const result = await realm.call() as unknown[];
-    t.deepEqual(result, [
-      'one',
-      'two',
-      'three'
-    ], 'all chunks delivered via IntraPort');
-  });
-});
-// ---------------------------------------------------------------------------
 // FacadeHandle — stateful handle protocol
 // ---------------------------------------------------------------------------
-describe('Facade RPC — FacadeHandle (thread realm)', () => {
+describe('Facade RPC — FacadeHandle (reactor realm)', () => {
   it('handle with scalar and streaming methods round-trips correctly', async (t) => {
     const facade = new Facade('fino:test-facade', ['openHandle']).handle('openHandle', async (key: unknown) => {
       return new FacadeHandle({
@@ -313,7 +271,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
 // ---------------------------------------------------------------------------
 // callSink — write stream (child→parent, QUIC client-initiated stream model)
 // ---------------------------------------------------------------------------
-describe('Facade RPC — callSink / sendStream (thread realm)', () => {
+describe('Facade RPC — callSink / sendStream (reactor realm)', () => {
   it('sink delivers all chunks to the parent handler without per-chunk ack', async (t) => {
     const received: string[] = [];
     const facade = new Facade('fino:test-facade', []).sendStream('writeChunks', async (_args, source) => {

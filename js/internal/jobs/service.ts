@@ -42,8 +42,7 @@
 import { JobsStore, backoffDelayMs, type JobRecord, type JobRetryPolicy, type JobStatus, type QueueStats, type ScheduleRecord } from './store.ts';
 import { parseCron, nextOccurrence } from './cron.ts';
 import { collectTasks, dispatchJob, type JobsWireCall, type JobsWireResult } from './runner.ts';
-import { RealmPool } from '../../realm/pool.ts';
-import { Facade, type ImportRule, type RealmOptions } from '../../realm/index.ts';
+import { Facade, Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
 import type { Task } from '../../task.ts';
 import type { WorkflowState, WorkflowStore, WorkflowWait } from '../../workflow.ts';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.ts';
@@ -624,8 +623,7 @@ export class JobsService {
     return processor;
   }
   /**
-  * Register a pool processor backed by an exclusive `RealmPool` of worker
-  * realms.
+  * Register a processor backed by a locally scaled logical `Realm`.
   *
   * The `entry` module must default-export a `Task`; the pool is queried for
   * its task names on startup and rejects if the entry does not report them.
@@ -670,32 +668,29 @@ export class JobsService {
         directive: facade
       }
     ];
-    const pool = new RealmPool({
+    const size = opts.size ?? 1;
+    const realm = new Realm({
       entry: opts.entry,
-      size: opts.size ?? 1,
-      exclusive: true,
-      timeout: 0,
-      realm: {
-        ...opts.realm ?? {},
-        overrides: rules
-      }
+      ...opts.realm ?? {},
+      overrides: rules,
+      scaling: { mode: 'replicated', min: size, max: size }
     });
     let taskNames: string[];
     try {
-      taskNames = await pool.call({ kind: 'tasks' }) as string[];
+      taskNames = await realm.call({ kind: 'tasks' }) as string[];
       if (!Array.isArray(taskNames) || taskNames.some((n) => typeof n !== 'string')) {
         throw new Error(`worker entry "${opts.entry}" did not report its task names — it must default-export a Task`);
       }
     } catch (err) {
-      await pool.close();
+      realm.terminate();
       throw err;
     }
     const processor: JobProcessor = {
       kind: 'pool',
       taskNames,
-      capacity: pool.size,
-      run: (call) => pool.call(call) as Promise<JobsWireResult>,
-      close: () => pool.close()
+      capacity: size,
+      run: (call) => realm.call(call) as Promise<JobsWireResult>,
+      close: () => { realm.terminate(); }
     };
     this.#addProcessor(processor);
     return processor;

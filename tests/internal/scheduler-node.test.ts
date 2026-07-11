@@ -30,6 +30,14 @@ function wakeFor(node: SchedulerNode, workloadId: WorkloadId, sourceId: string):
 }
 
 describe('scheduler node', () => {
+  it('sizes the default reactor set to hardware and reserves one batch reactor', async (t) => {
+    const node = new SchedulerNode();
+    const expected = Math.max(1, navigator.hardwareConcurrency || 1);
+    t.equal(node.shardIds().length, expected);
+    const batch = node.shardIds().filter((id) => node.collection().shardClassOf(id) === 'batch');
+    t.equal(batch.length, expected > 1 ? 1 : 0);
+    await node.shutdown();
+  });
   it('places run-once workloads across threads and runs them to completion', async (t) => {
     const fs = new DiskFileSystem();
     const root = tmpRoot('runonce');

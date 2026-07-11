@@ -1,9 +1,5 @@
 /**
-* Tests for fino:realm — thread Realm (thread: true).
-*
-* Thread realms run in a separate V8 Isolate on an OS thread. Messaging uses
-* V8 ValueSerializer over Rust mpsc channels instead of same-Isolate
-* structured clone.
+* Tests for scheduler-hosted reactor Realms.
 */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
@@ -11,37 +7,30 @@ import { Realm } from 'fino:realm';
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
-describe('Thread Realm basics', () => {
-  it('rejects process isolation for remote realms at construction', (t) => {
-    t.throws(() => new Realm({
-      process: true,
-      remote: true,
-      entry: new URL('./fixtures/hello.ts', import.meta.url).pathname
-    } as ConstructorParameters<typeof Realm>[0]), /process isolation is not supported for remote/i, 'process and remote cannot both be enabled');
-  });
-  it('spawns a thread realm that runs to completion', async (t) => {
+describe('Reactor Realm basics', () => {
+  it('runs a reactor realm to completion', async (t) => {
     const realm = new Realm({
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname
     });
     // hello.ts has no default function — it completes after module evaluation.
     await realm.run();
-    t.ok(true, 'thread realm ran to completion');
+    t.ok(true, 'reactor realm ran to completion');
   });
-  it('call() invokes the default-export function in a thread realm', async (t) => {
+  it('call() invokes the default-export function in a reactor realm', async (t) => {
     const realm = new Realm<typeof echoFn>({
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     const result = await realm.call('hello from thread');
     t.equal(result, 'hello from thread', 'echo result matches input');
   });
-  it('call() passes multiple arguments to the thread realm function', async (t) => {
+  it('call() passes multiple arguments to the reactor realm function', async (t) => {
     const realm = new Realm<typeof sumFn>({
       entry: new URL('./fixtures/multi-arg-fn.ts', import.meta.url).pathname
     });
     const result = await realm.call(1, 2, 3, 4);
     t.equal(result, 10, 'sum of 1+2+3+4 is 10');
   });
-  it('call() propagates errors thrown inside the thread realm', async (t) => {
+  it('call() propagates errors thrown inside the reactor realm', async (t) => {
     const realm = new Realm<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname
     });
@@ -113,7 +102,7 @@ describe('Thread Realm basics', () => {
       t.ok((err as Error).message.includes('expected a string'), 'message content preserved');
     }
   });
-  it('terminate() stops a thread realm', async (t) => {
+  it('terminate() stops a reactor realm', async (t) => {
     const realm = new Realm({
       entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname
     });
@@ -122,6 +111,6 @@ describe('Thread Realm basics', () => {
     await new Promise<void>((res) => setTimeout(res, 10));
     realm.terminate();
     await runPromise;
-    t.ok(true, 'thread realm terminated successfully');
+    t.ok(true, 'reactor realm terminated successfully');
   });
 });

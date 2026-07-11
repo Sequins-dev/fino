@@ -1,21 +1,11 @@
-//! Shared V8 isolate bootstrap + host loop for isolated child Realms.
-//!
-//! Both thread Realms and process Realms run the same sequence: create a fresh
-//! V8 Isolate, evaluate `internal/bootstrap.mjs`, drive the host loop, then teardown.
-//! This module houses that shared code so neither `thread.rs` nor `process.rs`
-//! duplicates it.
+//! V8 isolate bootstrap and host loop for process-isolated Realms.
 
-use std::{
-    cell::RefCell,
-    os::unix::io::RawFd,
-    rc::Rc,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{cell::RefCell, os::unix::io::RawFd, rc::Rc};
 
 use ::v8;
 
 use crate::{
-    loader, realm,
+    loader,
     state::{FinoState, ImportRule, ProcessEnv, get_state, root_queue_ptr},
 };
 
@@ -25,8 +15,7 @@ use crate::{
 
 /// All non-V8 inputs needed to bootstrap a child Isolate.
 ///
-/// Callers construct this from their realm-type-specific setup (wake-pipes for
-/// thread realms; socket bridge for process realms) and hand it to
+/// The process host constructs this around its socket bridge and hands it to
 /// `run_child_isolate`.
 pub struct ChildConfig {
     pub process_env: ProcessEnv,
@@ -37,7 +26,7 @@ pub struct ChildConfig {
     /// wake-pipe read fd. The bootstrap constructs the child's realmPort
     /// over it — the same mechanism for every placement.
     pub port_half: (u32, RawFd),
-    /// Label used in `FINO_REALM_TIMING` output (e.g. "thread-realm").
+    /// Label used in `FINO_REALM_TIMING` output.
     pub timing_label: &'static str,
     /// Whether the realm was started with watch mode enabled.
     pub watch_mode: bool,
@@ -45,10 +34,6 @@ pub struct ChildConfig {
     pub realm_data: Option<String>,
     /// Runtime-owned bootstrap metadata, if any.
     pub realm_bootstrap_data: Option<String>,
-    /// For thread realms: shared atomic that `requestReload()` writes so the
-    /// parent can observe the reload intent without a V8 context-scope.
-    /// `None` for embedded and process realms.
-    pub reload_requested_signal: Option<Arc<AtomicBool>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +103,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             false, // thread/process realms don't support repl mode
             config.realm_data,
             config.realm_bootstrap_data,
-            config.reload_requested_signal,
         );
         context.set_slot(Rc::new(RefCell::new(state)));
 
@@ -229,7 +213,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         if !should_continue {
             break 'main;
         }
-        realm::process_pending_creates(isolate_scope, &state_rc);
     }
 
     // -----------------------------------------------------------------------
@@ -237,7 +220,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     // -----------------------------------------------------------------------
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
-        realm::terminate_all_children(scope);
 
         let on_done_fn = state_rc.borrow().on_done_fn.clone();
         if let Some(f) = on_done_fn {

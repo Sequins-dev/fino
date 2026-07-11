@@ -21,6 +21,13 @@ async function readFirstMessage(realm: Realm, timeoutMs = 5e3): Promise<unknown>
   });
 }
 describe('Realm messaging', () => {
+  it('delivers a final message before run() settles', async (t) => {
+    const realm = new Realm({ entry: new URL('./fixtures/post-and-exit.ts', import.meta.url).pathname });
+    let received: unknown;
+    realm.port.onmessage = (event) => { received = event.data; };
+    await realm.run();
+    t.equal(received, 'final-message', 'the terminal pump drained the child port before release');
+  });
   it('parent and child can exchange messages via realm.port', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/messaging-echo.ts', import.meta.url).pathname });
     const responses: string[] = [];

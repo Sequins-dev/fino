@@ -1,10 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    path::PathBuf,
-    rc::Rc,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 
 pub use crate::async_rt::bridge::PendingResolution;
 
@@ -48,18 +42,10 @@ impl SourceMapCache {
     }
 }
 
-/// An owned child Realm (V8 Context) running in the same Isolate.
-///
-/// The parent's `FinoState.child_contexts` owns these. When the parent's
-/// loop exits, it terminates all children before calling `on_done_fn`.
-pub struct ChildRealm {
-    pub context: v8::Global<v8::Context>,
-}
-
 /// Virtualised process-level identity for a Realm.
 ///
 /// Collected once from the real environment in `main.rs` and stored on the
-/// root `FinoState`. Child and thread realms inherit this by default; it can
+/// root `FinoState`. Scheduled and process-isolated realms inherit this by default; it can
 /// be overridden at creation time to produce fully isolated sandboxes.
 #[derive(Clone)]
 pub struct ProcessEnv {
@@ -261,70 +247,16 @@ pub fn default_import_rules() -> Vec<ImportRule> {
     rules
 }
 
-// ---------------------------------------------------------------------------
-// Pending realm creation
-// ---------------------------------------------------------------------------
-
-/// A deferred request to create a child Realm.
-///
-/// `native_create_context` queues one of these instead of calling
-/// `create_child_context` directly, because context creation requires a
-/// `HandleScope<()>` (unbound) which is unavailable inside a JS callback.
-/// The host loop drains `pending_creates` between iterations where
-/// `isolate_scope` (`HandleScope<()>`) is accessible.
-pub struct PendingRealm {
-    /// Pre-allocated slot index in `FinoState::child_contexts`.
-    pub handle_idx: usize,
-    pub process_env: ProcessEnv,
-    pub entry_path: String,
-    pub import_rules: Vec<ImportRule>,
-    pub package_map_json: Option<String>,
-    /// The child's MessagePort object (created in parent context).
-    /// Stored here so it can be set into the child's FinoState after context
-    /// creation, and later read via `internal:realm-bridge.getPort()`.
-    pub port: Option<v8::Global<v8::Value>>,
-    /// Whether this embedded child realm runs with watch mode enabled.
-    pub watch_mode: bool,
-
-    /// Whether this embedded child realm runs in REPL mode. Exposed to JS via
-    /// `internal:realm-bridge.getReplMode()` so `internal/bootstrap.ts` can activate
-    /// the REPL message loop instead of importing an entry module.
-    pub repl_mode: bool,
-
-    /// JSON-serialized `RealmOptions.data` payload, exposed to the child via
-    /// `internal:realm-bridge.getRealmData()`.
-    pub realm_data: Option<String>,
-
-    /// JSON-serialized runtime bootstrap metadata, separate from user data.
-    pub realm_bootstrap_data: Option<String>,
-}
-
-/// Slot in the parent's `child_contexts` Vec.
-pub enum ChildRealmSlot {
-    /// Creation queued but not yet processed by `process_pending_creates`.
-    Pending,
-    /// Created and running — step returns the child's loop bool.
-    Active(ChildRealm),
-    /// Creation or bootstrap failed. `stepContext` throws a JS Error with the
-    /// message (if any) and returns false so `Realm.run()` rejects rather than
-    /// silently resolving. `None` = no message available (legacy path).
-    Failed(Option<String>),
-}
-
 /// Thin JS policy hooks for a natively-driven realm (registered via
 /// `runNativeLoop`). The Rust host loop owns the drive mechanics — reactor
 /// wait/dispatch, microtask pumping, port flushing cadence — and calls these
 /// only for the decisions that are genuinely realm policy.
 pub struct NativeLoopHooks {
     /// Realm-level "my entry/lifecycle is finished" predicate. The loop exits
-    /// only when this is true AND the reactor is quiescent AND no children.
+    /// only when this is true and the reactor is quiescent.
     pub is_done_fn: v8::Global<v8::Function>,
     /// Flush queued MessagePort deliveries (macrotask semantics).
     pub flush_ports_fn: Option<v8::Global<v8::Function>>,
-    /// Advance child realms (embedded stepping + lifecycle resolution).
-    pub step_children_fn: Option<v8::Global<v8::Function>>,
-    /// Whether any child realms are still active.
-    pub children_alive_fn: Option<v8::Global<v8::Function>>,
 }
 
 /// All per-run state, stored in the V8 context slot so every Rust callback can
@@ -430,25 +362,6 @@ pub struct FinoState {
     // ---------------------------------------------------------------------------
     // Child Realm management
     // ---------------------------------------------------------------------------
-    /// Child Realm slot table. Indexed by the handle returned to JS.
-    ///
-    /// - `Pending` — slot allocated by `native_create_context`; the host loop
-    ///   will call `process_pending_creates` to upgrade it to `Active`.
-    /// - `Active` — context created and running.
-    /// - `Failed` — creation failed; `stepContext` returns false immediately.
-    pub child_contexts: Vec<ChildRealmSlot>,
-
-    /// Deferred context-creation requests drained between host-loop iterations
-    /// when a bare `HandleScope<()>` is available.
-    pub pending_creates: Vec<PendingRealm>,
-
-    /// Live thread realm handles indexed by the JS handle returned from
-    /// `createThreadContext`. Slot is `None` when the thread has exited and the
-    /// handle has been reaped.
-    // `allow(dead_code)`: used by `realm.rs` native functions via `crate::state`.
-    #[allow(dead_code)]
-    pub thread_contexts: Vec<Option<crate::realm::thread::ThreadRealmHandle>>,
-
     /// Live process realm handles indexed by the JS handle returned from
     /// `createProcessContext`.
     #[allow(dead_code)]
@@ -487,14 +400,9 @@ pub struct FinoState {
     /// Runtime-owned bootstrap metadata, separate from `RealmOptions.data`.
     pub realm_bootstrap_data: Option<String>,
 
-    /// Shared atomic for thread realms: `requestReload()` writes `true` here
-    /// so the parent's `ThreadRealmHandle` can observe the reload intent
-    /// without entering the child's V8 context. `None` for embedded/process.
-    pub reload_requested_signal: Option<Arc<AtomicBool>>,
-
     /// Error recorded by the child's entry module if it threw at top level.
-    /// Set via `internal:realm-bridge.setEntryError()`; read by the parent
-    /// in `step_context` to reject `Realm.run()` instead of resolving silently.
+    /// Set via `internal:realm-bridge.setEntryError()` and read by the owning
+    /// scheduler/process host to reject `Realm.run()` instead of resolving.
     pub entry_error: Option<String>,
 
     /// The child's MessagePort object, passed by the parent at creation time.
@@ -509,11 +417,11 @@ pub struct FinoState {
     pub inspector_state: Option<*mut std::ffi::c_void>,
 
     // ---------------------------------------------------------------------------
-    // Realm port channel (populated in every non-embedded child realm)
+    // Realm port channel
     // ---------------------------------------------------------------------------
     /// The transit-registry handle of this realm's own channel half. One
-    /// mechanism for every placement: thread realms, process realms
-    /// (socket-bridged), and pool-hosted realms all message through it.
+    /// mechanism for every placement: reactor realms and socket-bridged
+    /// process realms both message through it.
     pub port_transit_handle: Option<u32>,
     /// The half's wake-pipe read fd — the bootstrap's port watch registers
     /// it with the loop.
@@ -555,8 +463,6 @@ impl FinoState {
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
             entry_path: None,
             terminated: false,
             reload_requested: false,
@@ -564,19 +470,17 @@ impl FinoState {
             repl_mode: false,
             realm_data: None,
             realm_bootstrap_data: None,
-            reload_requested_signal: None,
             entry_error: None,
             port: None,
             inspector_state: None,
             port_transit_handle: None,
             port_wake_read_fd: None,
             saw_termination: false,
-            thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }
     }
 
-    /// Create a child-Realm state (embedded, thread, or process).
+    /// Create state for a scheduler-hosted or process-isolated realm.
     ///
     /// Fields that differ from `new_root` are taken as parameters; all
     /// module-cache and callback fields start empty/None.
@@ -592,7 +496,6 @@ impl FinoState {
         repl_mode: bool,
         realm_data: Option<String>,
         realm_bootstrap_data: Option<String>,
-        reload_requested_signal: Option<Arc<AtomicBool>>,
     ) -> Self {
         Self {
             process_env,
@@ -615,8 +518,6 @@ impl FinoState {
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
             entry_path,
             terminated: false,
             reload_requested: false,
@@ -624,14 +525,12 @@ impl FinoState {
             repl_mode,
             realm_data,
             realm_bootstrap_data,
-            reload_requested_signal,
             entry_error: None,
             port,
             inspector_state: None,
             port_transit_handle: port_half.map(|(h, _)| h),
             port_wake_read_fd: port_half.map(|(_, fd)| fd),
             saw_termination: false,
-            thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }
     }
@@ -837,18 +736,6 @@ mod tests {
                 Some("/app/main.ts"),
                 "internal:opentelemetry/bootstrap"
             ),
-            Some(&ImportDirective::Block)
-        ));
-    }
-
-    #[test]
-    fn child_block_rule_restricts_bootstrap_dynamic_public_import() {
-        let mut rules = default_import_rules();
-        rules.push(rule("*", ImportDirective::Block));
-        rules.push(rule("fino:realm/pool", ImportDirective::Block));
-
-        assert!(matches!(
-            resolve_directive(&rules, Some("internal/bootstrap.mjs"), "fino:realm/pool"),
             Some(&ImportDirective::Block)
         ));
     }

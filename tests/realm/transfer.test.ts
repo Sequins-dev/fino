@@ -9,7 +9,6 @@
 */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
-import { RealmPool } from 'fino:realm/pool';
 import type echoFn from './fixtures/echo-fn.ts';
 function unsupportedValues(): unknown[] {
   return [
@@ -36,22 +35,15 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
     t.equal(buf.byteLength, 0, 'sender ArrayBuffer is detached after transfer');
     realm.terminate();
   });
-  it('round-trips an ArrayBuffer through a pool call (copy path)', async (t) => {
-    // Use the pool echo call() to verify the data arrives on the child side
-    // correctly. Pool call() uses structured clone (no transfer), so the AB
-    // is copied — but the content must match exactly.
-    const pool = new RealmPool<typeof echoFn>({
-      entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
-      size: 1
-    });
+  it('round-trips an ArrayBuffer through a realm call (copy path)', async (t) => {
+    using realm = new Realm<typeof echoFn>({ entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname });
     const buf = new ArrayBuffer(4);
     new Uint8Array(buf)[0] = 123;
     new Uint8Array(buf)[3] = 200;
-    const result = await pool.call((buf as unknown) as string);
+    const result = await realm.call((buf as unknown) as string);
     t.ok(result instanceof ArrayBuffer, 'result is an ArrayBuffer');
     t.equal(new Uint8Array((result as unknown) as ArrayBuffer)[0], 123, 'first byte correct');
     t.equal(new Uint8Array((result as unknown) as ArrayBuffer)[3], 200, 'last byte correct');
-    await pool.close();
   });
   it('detaches multiple ArrayBuffers in one postMessage', async (t) => {
     const realm = new Realm({
@@ -78,7 +70,7 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
     realm.run().catch(() => {    /* terminated after test */});
     realm.port.start();
     try {
-      t.throws(() => realm.port.postMessage('stream transfer', [new ReadableStream() as any]), /transfer|ArrayBuffer|MessagePort|ReadableStream/i, 'thread realm stream transfer rejects synchronously');
+      t.throws(() => realm.port.postMessage('stream transfer', [new ReadableStream() as any]), /transfer|ArrayBuffer|MessagePort|ReadableStream/i, 'reactor realm stream transfer rejects synchronously');
     } finally {
       realm.terminate();
     }
@@ -91,7 +83,7 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
     realm.port.start();
     try {
       for (const value of unsupportedValues()) {
-        t.throws(() => realm.port.postMessage({ value }), null, 'thread realm rejects unsupported structured-clone payload');
+        t.throws(() => realm.port.postMessage({ value }), null, 'reactor realm rejects unsupported structured-clone payload');
       }
     } finally {
       realm.terminate();

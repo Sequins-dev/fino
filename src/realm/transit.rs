@@ -9,7 +9,7 @@
 //! The JS side:
 //! - Calls `createTransitChannel()` to get two handles + wake-read fds.
 //! - Upgrades the partner port (P2) with the P2-half handle.
-//! - Ships the Q-half info (`{ handle, wakeReadFd }`) in the `ThreadMessage`.
+//! - Ships the Q-half info (`{ handle, wakeReadFd }`) in the `RealmMessage`.
 //! - On the receiver, creates a new `MessagePort` in transit mode using the
 //!   Q-half handle and wake-read fd.
 //!
@@ -30,15 +30,15 @@ use std::{
 
 use ::v8;
 
-use crate::realm::thread::ThreadMessage;
+use crate::realm::message::RealmMessage;
 
 // ---------------------------------------------------------------------------
 // Global registry
 // ---------------------------------------------------------------------------
 
 pub struct TransitHalf {
-    pub tx: mpsc::Sender<ThreadMessage>,
-    pub rx: mpsc::Receiver<ThreadMessage>,
+    pub tx: mpsc::Sender<RealmMessage>,
+    pub rx: mpsc::Receiver<RealmMessage>,
     /// Own wake-pipe read end — the JS side watches this via `loop.readable()`.
     pub wake_read_fd: RawFd,
     /// Partner's wake-pipe write end — written after each send to unblock partner.
@@ -111,8 +111,8 @@ fn create_pipe() -> Result<(RawFd, RawFd), String> {
 /// addressable from JS, or hold it directly (e.g. a process realm's socket
 /// bridge threads).
 pub fn create_halves() -> Result<(TransitHalf, TransitHalf), String> {
-    let (a_to_b_tx, a_to_b_rx) = mpsc::channel::<ThreadMessage>();
-    let (b_to_a_tx, b_to_a_rx) = mpsc::channel::<ThreadMessage>();
+    let (a_to_b_tx, a_to_b_rx) = mpsc::channel::<RealmMessage>();
+    let (b_to_a_tx, b_to_a_rx) = mpsc::channel::<RealmMessage>();
 
     // Pipe A: A writes here to wake B; B reads here.
     let (b_wake_read, a_wake_write) = create_pipe()?;
@@ -290,9 +290,9 @@ fn native_transit_send(
             Vec::new()
         };
 
-    let transfer_ports = crate::realm::thread::extract_port_infos(scope, args.get(3));
+    let transfer_ports = crate::realm::message::extract_port_infos(scope, args.get(3));
 
-    let msg = ThreadMessage {
+    let msg = RealmMessage {
         data,
         transfer_stores,
         transfer_ports,
@@ -386,7 +386,7 @@ fn native_transit_close(
 }
 
 // ---------------------------------------------------------------------------
-// Shared helper: build the JS return value for a batch of ThreadMessages.
+// Shared helper: build the JS return value for a batch of RealmMessages.
 //
 // Returns: `[[Uint8Array[], [number, number][]], ...]`
 //   outer[i][0] = Uint8Array[] (mainBytes at [0], storeBytes at [1..])
@@ -395,7 +395,7 @@ fn native_transit_close(
 
 pub fn build_message_array<'s>(
     scope: &mut v8::HandleScope<'s>,
-    messages: Vec<ThreadMessage>,
+    messages: Vec<RealmMessage>,
 ) -> v8::Local<'s, v8::Array> {
     let outer = v8::Array::new(scope, messages.len() as i32);
     for (i, msg) in messages.into_iter().enumerate() {

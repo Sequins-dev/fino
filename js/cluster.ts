@@ -1,82 +1,39 @@
 /**
 * fino:cluster - public API for cluster participation.
 *
-* Cluster transport uses WebTransport over HTTP/3, with realm port payloads
-* modeled after HTML channel messaging where the cluster serializer supports
-* the same value shape.
+* Cluster membership uses WebTransport over HTTP/3. This module establishes
+* the peer view consumed by cluster services; realm allocation remains owned
+* by the reactor scheduler.
 *
 * Learn more:
 *
 * - WebTransport: https://www.w3.org/TR/webtransport/
-* - HTML channel messaging: https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging
-*
 * A node joins the cluster in one of two roles:
 *
 * `startCluster({ port })` - Start a seed server on the given port AND
 *   participate as a worker. The calling node becomes both the coordinator
 *   and an execution target. This is the entry point for the first node.
 *
-* `joinCluster({ seed })` - Connect to an existing seed node. The calling
-*   node becomes a worker: it accepts realm spawns and hosts them locally.
-*   It can also spawn remote realms onto other workers.
-*
-* After either call, `new Realm({ ..., remote: true })` routes through the
-* active cluster client to spawn onto a remote worker.
+* `joinCluster({ seed })` - Connect to an existing seed node and join its
+*   membership view.
 *
 * Only one cluster connection per process is supported. Calling either
 * function when already connected throws.
 *
-* Current release scope uses one trusted seed node. Seed election and cluster
-* authentication are not implemented in this release. Direct peer-to-peer
-* `PORT_MSG` delivery remains deferred; control-plane and data-plane messages
-* route through the seed-backed WebTransport cluster.
-*
-* Remote realm messaging conformance:
-*
-* | Topic | Current behavior |
-* | --- | --- |
-* | Trust model | A single trusted seed routes membership, spawn, and port traffic. Hostile-peer handling, authentication failures, seed election, and peer authorization are unsupported. |
-* | Spawn routing | `Realm({ remote: true })` sends `SPAWN` through the seed, which selects a worker and returns `SPAWN_ACK`; failures reject the pending spawn. |
-* | Port routing | `PORT_MSG` frames route through the seed by destination port ID. Direct peer-to-peer port delivery and transport negotiation are not part of the public protocol. |
-* | Ordering | Messages sent over one routed port pair are delivered in send order by the reliable WebTransport stream path used for each `PORT_MSG`; the API does not promise global ordering across unrelated ports. |
-* | Transfers | `ArrayBuffer` transfer stores are preserved through the serializer and cluster payload. `MessagePort` and other live handle transfers are rejected for remote realms. |
-* | Close and errors | Local port close unregisters the parent-side port, remote realm exit rejects or resolves the waiting `run()` / `call()`, and connection close rejects pending spawns and active remote calls. |
+* Current release scope uses one trusted seed node. Seed election, cluster
+* authentication, and distributed scheduler coordination remain future work.
 *
 * @example
 * ```ts no_run
 * import { startCluster, leaveCluster } from 'fino:cluster';
-* import { Realm } from 'fino:realm';
-*
 * await startCluster({ port: 9999, nodeId: 'seed-a', tls: { cert: './cert.pem', key: './key.pem' } });
-* const realm = new Realm({ entry: './worker.ts', remote: true });
-* await realm.call('healthcheck');
 * leaveCluster();
 * ```
 */
 import { DEFAULT_CLUSTER_PATH, WebTransportSeedTransport, WebTransportWorkerTransport, type WebTransportWorkerConnectOptions } from 'internal:cluster/webtransport-transport';
-import { Realm, type RealmOptions, type RealmFn } from 'fino:realm';
 import { SeedServer } from 'internal:cluster/seed';
-import { ClusterClient, ClusterPort } from 'internal:cluster/client';
+import { ClusterClient } from 'internal:cluster/client';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
-/**
-* Transport port that routes realm channel messages through the cluster.
-*
-* This is an internal support export for `fino:realm`, which binds a
-* `ClusterPort` to each `Realm({ remote: true })` so structured messages
-* flow over the seed-routed WebTransport connection. Application code should
-* not construct one directly — use `startCluster()` / `joinCluster()` and
-* spawn remote realms instead.
-*
-* ```ts no_run
-* import { startCluster } from 'fino:cluster';
-* import { Realm } from 'fino:realm';
-*
-* await startCluster({ port: 9999, tls: { cert: './cert.pem', key: './key.pem' } });
-* const realm = new Realm({ entry: './worker.ts', remote: true });
-* realm.port.postMessage({ hello: 'cluster' });
-* ```
-*/
-export { ClusterPort };
 // ---------------------------------------------------------------------------
 // Module-level active cluster state
 // ---------------------------------------------------------------------------
@@ -265,9 +222,9 @@ export interface JoinClusterOptions {
 /**
 * Start the cluster seed server and participate as a worker on this node.
 *
-* The seed is the current routing hub: it routes SPAWN requests, tracks realm
-* ownership, propagates deaths, and forwards PORT_MSG frames to the node that
-* owns the destination port. Direct peer-to-peer delivery is deferred.
+* The seed is the current membership hub. Realm placement is not performed by
+* this API; the scheduler will consume membership when distributed allocation
+* is added.
 *
 * This call returns immediately after the seed starts listening. The event
 * loop keeps the server alive as long as there are connected peers.
@@ -311,8 +268,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
 /**
 * Connect to an existing seed and register this node as a worker.
 *
-* After this call the node accepts remote realm spawns and can spawn realms
-* onto other nodes in the cluster.
+* After this call the node receives membership updates from the seed.
 *
 * Throws if this process is already connected or if the seed URL cannot be
 * reached, and throws a `TypeError` when the seed URL does not use the
@@ -364,8 +320,7 @@ function clusterSelfJoinHost(hostname: string | undefined): string {
   return hostname;
 }
 /**
-* Return the active cluster client, or null if not connected.
-* Used by `fino:realm` to route `remote: true` realm creation.
+* Return the active cluster membership client, or null if not connected.
 *
 * This is an internal support hook for `fino:realm`; application code usually
 * does not need the client directly. The return value is `null` before
@@ -385,32 +340,10 @@ export function getCluster(): ClusterClient | null {
   return _client;
 }
 /**
-* Spawn a realm on a remote cluster node.
-*
-* The realm config is serialized and shipped through the seed, which selects
-* a worker node and constructs the realm there; messaging flows over the
-* cluster PORT_MSG protocol. Requires an active cluster (`startCluster()` or
-* `joinCluster()`). This is the cross-node arm of realm allocation — local
-* realms need no placement API at all, and once allocators exchange load
-* across nodes this entry point folds into automatic placement too.
-*
-* ```ts no_run
-* import { startCluster, spawnRealm } from 'fino:cluster';
-*
-* await startCluster({ port: 9999, nodeId: 'seed-a' });
-* const realm = spawnRealm({ entry: './worker.ts' });
-* const result = await realm.call('job-1');
-* ```
-*/
-export function spawnRealm<F extends RealmFn = RealmFn>(opts: RealmOptions): Realm<F> {
-  return new Realm<F>({ ...opts, remote: true } as RealmOptions);
-}
-/**
-* Disconnect from the cluster. Active remote realms are not terminated.
+* Disconnect from the cluster.
 *
 * The call is synchronous and idempotent. It stops the active worker client and
-* seed server, if present, then clears module-level cluster state. Remote
-* realm users should terminate or await their realms separately.
+* seed server, if present, then clears module-level cluster state.
 *
 * ```ts no_run
 * import { startCluster, leaveCluster } from 'fino:cluster';

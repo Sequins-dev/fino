@@ -1,13 +1,12 @@
 //! Per-isolate async executor + thread-pool offload for blocking FFI calls.
 //!
 //! Architecture:
-//! - One `LocalExecutor` per V8 isolate (stored in a thread-local). Same-thread
-//!   embedded child realms share the executor — they're cooperative and can't
-//!   run in parallel anyway.
+//! - One `LocalExecutor` per V8 isolate, swapped into thread-local ownership
+//!   whenever a reactor activates that isolate.
 //! - A process-global blocking pool (`blocking` crate) for sync→async FFI offload.
 //! - A [`WakeSink`] per isolate: background threads call `wake()` when FFI work
-//!   completes. Default-loop realms get a self-pipe byte (JS registers the read
-//!   end as a wake source); reactor-backed realms upgrade the sink in place to
+//!   completes. Root/process hosts may use a self-pipe byte; reactor realms
+//!   upgrade the sink in place to
 //!   a cherenkov Notifier post — no pipe traffic at all.
 //! - Per-realm `pending_resolutions` (in `FinoState`): futures push completed
 //!   `JsValueRepr` + resolver here; `drain_pending` converts + resolves them
@@ -32,8 +31,7 @@ pub use bridge::PendingResolution;
 // ---------------------------------------------------------------------------
 
 /// How a background thread wakes an isolate's event loop. Every isolate starts
-/// with its self-pipe as the sink (the default `loop.ts` realms poll its read
-/// end); a reactor-backed realm upgrades the sink once, in place, to a
+/// with its self-pipe as the sink; a reactor-backed realm upgrades it once to a
 /// cherenkov [`Notifier`](cherenkov::Notifier) post — clones already captured
 /// by background threads pick the upgrade up through the shared `OnceLock`.
 #[derive(Clone)]
@@ -502,32 +500,12 @@ fn drain_ffi_completions(scope: &mut v8::HandleScope) -> bool {
     true
 }
 
-/// Drain pending_resolutions from the root realm and all embedded children.
+/// Drain pending resolutions for one reactor-hosted realm.
 fn drain_pending_resolutions(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
-    let mut progress = false;
-    progress |= drain_pending_for(scope, state_rc);
-    // Walk embedded child contexts.
-    let child_count = state_rc.borrow().child_contexts.len();
-    for i in 0..child_count {
-        let maybe_ctx = {
-            let st = state_rc.borrow();
-            match &st.child_contexts[i] {
-                crate::state::ChildRealmSlot::Active(child) => {
-                    Some(v8::Local::new(scope, &child.context))
-                }
-                _ => None,
-            }
-        };
-        if let Some(ctx) = maybe_ctx {
-            let child_scope = &mut v8::ContextScope::new(scope, ctx);
-            let child_state = crate::state::get_state(child_scope);
-            progress |= drain_pending_for(child_scope, &child_state);
-        }
-    }
-    progress
+    drain_pending_for(scope, state_rc)
 }
 
 /// Drain pending_resolutions from a single realm's FinoState.

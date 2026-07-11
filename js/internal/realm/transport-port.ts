@@ -176,12 +176,12 @@ export abstract class BaseTransportPort extends EventTarget {
 /**
 * Drain one batch of messages from a transit channel half.
 */
-function _recvThreadMessages(handle: number): [Uint8Array[], [number, number][]][] {
+function _recvTransitMessages(handle: number): [Uint8Array[], [number, number][]][] {
   return (transitRecv as (h: number) => unknown)(handle) as [Uint8Array[], [number, number][]][];
 }
 
 /**
-* MessagePort-compatible endpoint for cross-thread realm messaging.
+* MessagePort-compatible endpoint for reactor-realm transit messaging.
 *
 * ThreadPort is constructed by realm bootstrap and realm internals. It is not a
 * web global; application code should treat `Realm.port` as a port-like object
@@ -305,12 +305,70 @@ export class ThreadPort extends BaseTransportPort {
   * @internal
   */
   _drain(): void {
-    const messages = _recvThreadMessages(this.#handle);
+    const messages = _recvTransitMessages(this.#handle);
     for (const [byteArr, portArr] of messages as any[]) {
       const [buf, ...stores] = byteArr as Uint8Array[];
       if (!buf) continue;
       const ports = (portArr as [number, number][]).map(([h, wfd]) => MessagePort._fromTransit(h, wfd));
       this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
     }
+  }
+}
+
+/**
+* Stable logical endpoint whose physical reactor port is supplied by the node
+* allocator asynchronously. Messages posted during allocation are retained in
+* order and flushed once the placement reply arrives.
+*
+* @internal
+*/
+export class DeferredTransportPort extends BaseTransportPort {
+  #port: BaseTransportPort | null = null;
+  #pending: Array<[unknown, Transferable[] | StructuredSerializeOptions | undefined]> = [];
+  readonly ready: Promise<BaseTransportPort>;
+
+  constructor(port: BaseTransportPort | Promise<BaseTransportPort>) {
+    super();
+    this.ready = Promise.resolve(port);
+    this.replace(port);
+  }
+
+  /** Replace the physical replica endpoint without changing public identity. @internal */
+  replace(next: BaseTransportPort | Promise<BaseTransportPort>): void {
+    if (next instanceof Promise) void next.then((port) => this.#attach(port));
+    else this.#attach(next);
+  }
+
+  #attach(port: BaseTransportPort): void {
+    this.#port = port;
+    port.addEventListener('message', (event) => {
+      const source = event as MessageEvent;
+      this.dispatchEvent(new MessageEvent('message', { data: source.data, ports: source.ports }));
+    });
+    port.addEventListener('messageerror', (event) => this.dispatchEvent(event));
+    if (this._closed) {
+      port.close();
+      return;
+    }
+    if (this._started) port.start();
+    for (const [message, transfer] of this.#pending.splice(0)) port.postMessage(message, transfer);
+  }
+
+  postMessage(message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
+    if (this._closed) return;
+    if (this.#port === null) {
+      this.#pending.push([message, transferOrOptions]);
+      return;
+    }
+    this.#port.postMessage(message, transferOrOptions);
+  }
+
+  protected override _onStart(): void {
+    this.#port?.start();
+  }
+
+  protected override _onClose(): void {
+    this.#pending.length = 0;
+    this.#port?.close();
   }
 }

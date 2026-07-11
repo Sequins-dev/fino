@@ -189,7 +189,7 @@ pub(crate) enum PumpOutcome {
     /// Still awaiting outstanding async work; the isolate stays parked.
     Pending,
     /// Still running, but progress can happen without an engine-visible
-    /// completion (dedicated-thread children): re-pump on a short timer.
+    /// completion: re-pump on a short timer.
     PendingPoll,
     /// Execution was terminated (budget kill or heap-limit containment).
     Terminated,
@@ -263,8 +263,8 @@ unsafe extern "C" fn heap_limit_callback(
 /// channel, import-rule inheritance, entry auto-import) hosted as a parked
 /// isolate on an engine thread. The realm's `driveLoop` registers native
 /// hooks at bootstrap; `pump_realm_native` drives them per slice. This is
-/// the same construction `run_child_isolate` performs for a dedicated
-/// thread realm — placement is the only difference.
+/// the same bootstrap used by the process-isolated host; placement and IPC are
+/// the only differences.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn setup_realm_workload(
     entry_path: String,
@@ -274,6 +274,8 @@ pub(crate) fn setup_realm_workload(
     import_rules: Vec<ImportRule>,
     realm_data: Option<String>,
     realm_bootstrap_data: Option<String>,
+    watch_mode: bool,
+    repl_mode: bool,
     port_half: (u32, i32),
 ) -> Result<ParkedWorkload, String> {
     crate::runtime::init_v8();
@@ -321,11 +323,10 @@ pub(crate) fn setup_realm_workload(
             Some(entry_path),
             None,
             Some(port_half),
-            false, // watch mode is a dedicated-thread feature for now
-            false,
+            watch_mode,
+            repl_mode,
             realm_data,
             realm_bootstrap_data,
-            None,
         );
         context.set_slot(Rc::new(RefCell::new(state)));
 
@@ -475,15 +476,19 @@ pub(crate) fn pump_realm_native(
             // Children on their own threads and thread-local reactor watches
             // (vnode/signal/proc) make progress the engine cannot observe;
             // ask for a poll cadence while either exists.
-            if crate::runtime::native_drive_children_alive(scope, &state_rc)
-                || crate::reactor::thread_reactor_pending()
-            {
+            if crate::reactor::thread_reactor_pending() {
                 PumpOutcome::PendingPoll
             } else {
                 PumpOutcome::Pending
             }
         } else {
-            let err = state_rc.borrow().entry_error.clone();
+            let state = state_rc.borrow();
+            if state.reload_requested {
+                return PumpOutcome::Settled {
+                    result: "reload".to_string(),
+                };
+            }
+            let err = state.entry_error.clone();
             match err {
                 Some(e) => PumpOutcome::Rejected(e),
                 None => PumpOutcome::Settled {

@@ -128,6 +128,8 @@ pub(crate) enum Control {
         realm_data: Option<String>,
         /// Runtime-owned bootstrap metadata, if any.
         realm_bootstrap_data: Option<String>,
+        watch_mode: bool,
+        repl_mode: bool,
         priority_class: u8,
         /// The child-side channel half (transit handle + wake-pipe read fd).
         port_half: (u32, i32),
@@ -642,6 +644,8 @@ mod imp {
                     rules_json,
                     realm_data,
                     realm_bootstrap_data,
+                    watch_mode,
+                    repl_mode,
                     priority_class,
                     port_half,
                 } => self.place_realm(
@@ -650,6 +654,8 @@ mod imp {
                     rules_json,
                     realm_data,
                     realm_bootstrap_data,
+                    watch_mode,
+                    repl_mode,
                     priority_class,
                     port_half,
                 ),
@@ -873,6 +879,8 @@ mod imp {
             rules_json: String,
             realm_data: Option<String>,
             realm_bootstrap_data: Option<String>,
+            watch_mode: bool,
+            repl_mode: bool,
             priority_class: u8,
             port_half: (u32, i32),
         ) {
@@ -900,6 +908,8 @@ mod imp {
                 import_rules,
                 realm_data,
                 realm_bootstrap_data,
+                watch_mode,
+                repl_mode,
                 port_half,
             ) {
                 Ok(w) => w,
@@ -1043,7 +1053,7 @@ mod imp {
             match outcome {
                 PumpOutcome::Pending => {}
                 PumpOutcome::PendingPoll => {
-                    // A dedicated-thread child's progress posts nothing here:
+                    // Progress can occur without an engine-visible completion;
                     // re-pump this realm on a short cadence while it waits.
                     let ud = self.next_op();
                     self.reactor.submit_timeout(ud, 25);
@@ -1826,12 +1836,12 @@ fn cb_is_engine_thread(
 }
 
 /// JS: `placeRealm(reactorId, workloadId, entryPath, rulesJson, realmData |
-/// '', bootstrapData | '', priorityClass) → { portHandle, portWakeFd }`
+/// '', bootstrapData | '', priorityClass, watch, repl) → { portHandle, portWakeFd }`
 ///
 /// Creates the realm's channel pair on the calling (orchestrator) thread,
 /// ships the child half to the engine thread inside the PlaceRealm control,
 /// and returns the parent half — the caller constructs the Realm's port
-/// over it exactly as it would for a dedicated-thread realm.
+/// over it through the standard reactor-realm transport.
 fn cb_place_realm(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1850,6 +1860,8 @@ fn cb_place_realm(
         if s.is_empty() { None } else { Some(s) }
     };
     let priority_class = arg_u64(scope, &args, 6) as u8;
+    let watch_mode = args.get(7).boolean_value(scope);
+    let repl_mode = args.get(8).boolean_value(scope);
 
     let (parent_half, child_half) = match crate::realm::transit::create_halves() {
         Ok(pair) => pair,
@@ -1873,6 +1885,8 @@ fn cb_place_realm(
             rules_json,
             realm_data,
             realm_bootstrap_data,
+            watch_mode,
+            repl_mode,
             priority_class,
             port_half: (child_handle, child_wake_fd),
         },

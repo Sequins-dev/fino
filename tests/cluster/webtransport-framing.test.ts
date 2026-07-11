@@ -1,13 +1,10 @@
 import { describe, it } from 'fino:test/test';
-import { canonicalPortPair, decodeClusterStreamFrame, encodeClusterStreamFrame, type ClusterStreamMetadata } from 'internal:cluster/webtransport-framing';
+import { decodeClusterStreamFrame, encodeClusterStreamFrame, type ClusterStreamMetadata } from 'internal:cluster/webtransport-framing';
 describe('cluster WebTransport stream framing', () => {
   it('round-trips length-prefixed JSON metadata frames', (t) => {
     const meta: ClusterStreamMetadata = {
       v: 1,
-      kind: 'port',
-      pair: 'a/1|b/2',
-      a: 'a/1',
-      b: 'b/2'
+      kind: 'control'
     };
     const encoded = encodeClusterStreamFrame(meta);
     const decoded = decodeClusterStreamFrame(encoded);
@@ -30,9 +27,5 @@ describe('cluster WebTransport stream framing', () => {
       255
     ]);
     t.throws(() => decodeClusterStreamFrame(malformed), /invalid/i, 'non-UTF8 or non-JSON payload is rejected');
-  });
-  it('builds canonical port pair keys independent of direction', (t) => {
-    t.equal(canonicalPortPair('node-b/p2', 'node-a/p1'), 'node-a/p1|node-b/p2');
-    t.equal(canonicalPortPair('node-a/p1', 'node-b/p2'), 'node-a/p1|node-b/p2');
   });
 });

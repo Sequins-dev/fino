@@ -14,9 +14,9 @@
 //! `internal:runtime/loop` API surface. The loader aliases that loop to the
 //! native implementation for every realm.
 //!
-//! The reactor is a per-thread `thread_local`, lazily created on first use, so
-//! embedded realms share their thread's reactor. Resolvers are per-context
-//! Globals, so a shared `tick` dispatches completions into the right context.
+//! The reactor is a per-thread `thread_local`, lazily created on first use.
+//! Scheduler engines attach realm-owned resolver state to the reactor that
+//! currently owns the isolate.
 
 use ::v8;
 
@@ -183,10 +183,9 @@ mod imp {
     const NOTE_RENAME: u32 = 0x20;
 
     /// What a reactor completion (keyed by `user_data`) resolves to. Every
-    /// alive-counting record carries its `owner` — the realm (FinoState
-    /// pointer) that registered it — because same-thread realms share one
-    /// reactor while each realm's liveness must be its OWN: an embedded
-    /// child must be able to exit while its parent still holds handles.
+    /// alive-counting record carries its `owner` — the realm (`FinoState`
+    /// pointer) that registered it — so each scheduled realm's liveness is
+    /// independent.
     enum Pending {
         /// Bare readiness: resolve with the bytes-available hint.
         ReadReady {
@@ -1349,8 +1348,7 @@ mod imp {
     }
 
     /// Live-handle predicate for the native host loop: THIS REALM's reactor
-    /// handles (same-thread realms share the reactor, but each realm's
-    /// liveness is its own), plus Atomics.waitAsync waiters (which settle
+    /// handles owned by this realm, plus Atomics.waitAsync waiters (which settle
     /// cross-thread with no reactor registration; thread-scoped).
     pub(crate) fn drive_live(owner: usize) -> bool {
         with_reactor_opt(|r| r.counts_for(owner).total() > 0).unwrap_or(false)

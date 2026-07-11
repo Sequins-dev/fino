@@ -1,12 +1,12 @@
 /**
 * Tests for MessagePort transfer across same-Isolate and cross-Isolate
-* (thread realm) boundaries.
+* (reactor realm) boundaries.
 *
 * Same-Isolate: port passed via realm.port.postMessage to an embedded child;
 * child uses it to communicate directly with a third party.
 *
-* Cross-Isolate: port transferred via thread realm's ThreadPort; the
-* thread realm receives the port and posts a message back through it.
+* Cross-Isolate: port transferred via the reactor realm's transit port; the
+* realm receives the port and posts a message back through it.
 */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
@@ -160,16 +160,16 @@ describe('MessagePort transfer', () => {
       channel.port2.close();
     }
   });
-  it('cross-Isolate: port transferred to thread realm receives message', async (t) => {
+  it('cross-Isolate: port transferred to reactor realm receives message', async (t) => {
     const realm = new Realm({
       entry: new URL('./fixtures/port-echo-transfer.ts', import.meta.url).pathname
     });
     realm.run().catch(() => {    /* terminated after test */});
-    // Create a channel; transfer port1 to the thread realm via realm.port
+    // Create a channel; transfer port1 to the reactor realm via realm.port
     const { port1, port2 } = new MessageChannel();
     realm.port.start();
     realm.port.postMessage('use this port', [port1]);
-    // port2 should receive the message the thread realm sends through port1
+    // port2 should receive the message the reactor realm sends through port1
     const reply = await new Promise<string>((resolve, reject) => {
       const tid = setTimeout(() => reject(new Error('timeout')), 5e3);
       port2.onmessage = (ev) => {
@@ -177,7 +177,7 @@ describe('MessagePort transfer', () => {
         resolve(ev.data as string);
       };
     });
-    t.equal(reply, 'echo from thread', 'thread realm sent message via transferred port');
+    t.equal(reply, 'echo from thread', 'reactor realm sent message via transferred port');
     realm.terminate();
     port2.close();
   });

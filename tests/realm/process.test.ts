@@ -10,6 +10,7 @@ import { Realm, ImportMap } from 'fino:realm';
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
+import type scalingFn from './fixtures/scaling-fn.ts';
 describe('Process Realm basics', () => {
   it('spawns a process realm that runs to completion', async (t) => {
     const realm = new Realm({
@@ -151,7 +152,7 @@ describe('Process Realm — serialization of complex types over IPC', () => {
   });
 });
 describe('Process Realm call() + run() ordering', () => {
-  it('run() resolves after call() has completed', async (t) => {
+  it('run() resolves after a completed call is explicitly terminated', async (t) => {
     const realm = new Realm<typeof echoFn>({
       process: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
@@ -159,20 +160,38 @@ describe('Process Realm call() + run() ordering', () => {
     const runPromise = realm.run();
     const result = await realm.call('ordering-check');
     t.equal(result, 'ordering-check', 'call() returned the correct result');
-    // run() should settle once the realm exits (after call completes)
+    realm.terminate();
     await runPromise;
-    t.ok(true, 'run() resolved cleanly after call() completed');
+    t.ok(true, 'run() resolved cleanly after termination');
   });
 });
-describe('Process Realm call() after realm has exited', () => {
+describe('Process Realm repeated calls and exit', () => {
+  it('reuses one process-isolated realm for sequential calls', async (t) => {
+    using realm = new Realm<typeof echoFn>({
+      process: true,
+      entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
+    });
+    t.equal(await realm.call('first'), 'first');
+    t.equal(await realm.call('second'), 'second');
+  });
+  it('reconstructs an unreferenced process realm after idle drain', async (t) => {
+    using realm = new Realm<typeof scalingFn>({
+      process: true,
+      entry: new URL('./fixtures/scaling-fn.ts', import.meta.url).pathname
+    });
+    const before = await realm.call(0);
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const after = await realm.call(0);
+    t.notEqual(after, before, 'idle process isolate was replaced');
+  });
   it('call() on an already-exited realm rejects rather than hanging', async (t) => {
     const realm = new Realm<typeof echoFn>({
       process: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
-    // Complete one call so the realm runs and exits cleanly.
     const runPromise = realm.run();
     await realm.call('before-exit');
+    realm.terminate();
     await runPromise;
     // Now the realm has exited. A subsequent call should reject promptly.
     const settled = await Promise.race([realm.call('after-exit').then(() => 'resolved', () => 'rejected'), new Promise<string>((res) => setTimeout(() => res('timeout'), 2e3))]);

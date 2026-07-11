@@ -7,13 +7,12 @@
 * the native reactor, which owns the kqueue and resolves promises itself. There
 * is no JS dispatch loop and no per-readiness Promise created on the JS side.
 *
-* It is not loaded by default. A realm opts into the reactor by remapping
-* `internal:runtime/loop` to this module via an `ImportMap` override:
+* The runtime uses this native reactor implementation for scheduled realms.
+* It can also be selected explicitly through an import remap:
 *
 * ```ts no_run
 * import { Realm, ImportMap } from 'fino:realm';
 * new Realm({
-*   thread: true,
 *   overrides: ImportMap.inherit([
 *     { pattern: 'internal:runtime/loop',
 *       directive: { type: 'remap', target: 'fino:net/loop-reactor' } },
@@ -23,8 +22,7 @@
 * ```
 *
 * The remap is transitive, so every socket, TLS, and file module in that realm
-* — plus `driveLoop` in the bootstrap — runs on the reactor. All other realms
-* keep the JS `loop.ts`. See `research-docs/research/pure-rust-reactor.md`.
+* uses the same reactor. See `research-docs/research/pure-rust-reactor.md`.
 *
 * @internal
 */

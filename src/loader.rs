@@ -113,11 +113,9 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
-    source_builtin!("internal:child-steppers", "internal/child-steppers"),
     source_builtin!("fino:realm", "realm/index"),
     source_builtin!("fino:runtime", "runtime"),
     source_builtin!("fino:module", "module"),
-    source_builtin!("fino:realm/pool", "realm/pool"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
     source_builtin!(
@@ -355,7 +353,6 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:cluster/webtransport-transport",
         "internal/cluster/webtransport-transport"
     ),
-    source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
     source_builtin!("internal:cluster/client", "internal/cluster/client"),
     source_builtin!("fino:cluster", "cluster"),
@@ -1823,8 +1820,7 @@ pub fn register_source_map_from_json(
 /// harness modules (`internal:bootstrap`, `internal:main`) must never be
 /// linked into loader-instantiated graphs — V8 wedges evaluating a graph that
 /// links a module evaluated by a foreign instantiation pass. Builtins that
-/// need harness state import a dedicated registry module instead (see
-/// `internal:child-steppers`).
+/// need harness state must use an internal bridge rather than the loader cache.
 pub fn register_as_builtin(scope: &mut v8::HandleScope, module: v8::Local<v8::Module>, spec: &str) {
     if let Some(id) = module.script_id() {
         get_state(scope)

@@ -41,8 +41,6 @@ run skills, plugins, and untrusted code with only the imports you grant.
   module the child imports.
 - [Import Capabilities](./realm/capabilities.md) — the import rule system that
   shapes what a child may load.
-- [Realm Pools](./realm/pools.md) — dispatching repeated tasks across warm
-  thread realms.
 
 ## Serve an Application
 

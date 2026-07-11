@@ -5,7 +5,7 @@
 */
 import { describe, it } from 'fino:test/test';
 import { Jobs } from 'fino:jobs';
-import { RealmPool } from 'fino:realm/pool';
+import { Realm } from 'fino:realm';
 import { sqliteAvailable } from 'fino:database/sqlite';
 import { env, exit } from 'fino:process';
 import type { JobsWireResult } from 'internal:jobs/runner';
@@ -76,16 +76,15 @@ describe('fino:jobs pool processors', () => {
     t.equal(done.result, 'second-try', 'retry ran in a fresh realm and saw the marker');
     t.equal(done.attempts, 2, 'exactly two attempts consumed');
   });
-  it('a plain RealmPool accepts a Task-file entry directly', async (t) => {
-    const pool = new RealmPool({
+  it('a logical Realm accepts a Task-file entry directly', async (t) => {
+    const realm = new Realm({
       entry: workerEntry,
-      size: 1,
-      exclusive: true
+      scaling: { mode: 'bound' }
     });
     try {
-      const names = await pool.call({ kind: 'tasks' }) as string[];
+      const names = await realm.call({ kind: 'tasks' }) as string[];
       t.ok(names.includes('pool-double'), 'worker reports its task registry');
-      const result = await pool.call({
+      const result = await realm.call({
         kind: 'run',
         jobId: 'adhoc-1',
         task: 'pool-double',
@@ -95,7 +94,7 @@ describe('fino:jobs pool processors', () => {
       t.ok('ok' in result && result.ok, 'dispatcher executed the task');
       t.equal((result as { output: unknown }).output, 10, 'result came back over the pool wire');
     } finally {
-      await pool.close();
+      realm.terminate();
     }
   });
 });

@@ -50,6 +50,14 @@ describe('Realm lifecycle', () => {
     t.throws(() => new Realm({ entry, scaling: { min: 3, max: 2 } }), /minimum.*maximum/i);
     t.throws(() => new Realm({ entry, scaling: { mode: 'bound', min: 2 } }), /bound.*one replica/i);
   });
+  it('exposes refable logical-deployment lifecycle', (t) => {
+    using realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
+    t.equal(realm.hasRef(), false, 'an idle logical realm is not referenced');
+    t.equal(realm.ref(), realm, 'ref returns the realm');
+    t.equal(realm.hasRef(), true);
+    t.equal(realm.unref(), realm, 'unref returns the realm');
+    t.equal(realm.hasRef(), false);
+  });
 });
 describe('Realm.fromSource', () => {
   it('runs source with static imports and top-level await', async (t) => {

@@ -9,13 +9,8 @@
 * `broadcastExcept()`) so `SeedServer` can route on it. Sessions negotiate the
 * `fino-cluster-v1` WebTransport protocol.
 *
-* Every message travels on its own short-lived reliable bidirectional stream.
-* The first frame on a stream is a `ClusterStreamMetadata` JSON frame that
-* tags the stream as control-plane or as data for one logical port pair (see
-* `internal:cluster/webtransport-framing`); message frames follow. Each
-* `PORT_MSG` uses a separate stream tagged with the canonical logical port
-* pair, so one noisy realm link does not share stream ordering with the
-* control plane. Sends to a given peer connection are serialized through a
+* Every message travels on a short-lived reliable bidirectional control
+* stream. Sends to a given peer connection are serialized through a
 * per-connection promise queue so writes complete in submission order.
 *
 * `fino:cluster` composes these transports with `SeedServer` and
@@ -45,8 +40,8 @@ import { HttpClient } from 'fino:net/http/client';
 import type { WebTransport, WebTransportBidirectionalStream, WebTransportHash } from 'fino:net/http/webtransport';
 import { Response } from 'internal:net/http/wire';
 import type { ClusterTransport } from './transport.ts';
-import { decode, encode, nodeIdFromId, type ClusterMessage } from './protocol.ts';
-import { canonicalPortPair, ClusterStreamFrameReader, encodeClusterStreamFrame, type ClusterStreamMetadata } from './webtransport-framing.ts';
+import { decode, encode, type ClusterMessage } from './protocol.ts';
+import { ClusterStreamFrameReader, encodeClusterStreamFrame, type ClusterStreamMetadata } from './webtransport-framing.ts';
 /**
 * Default HTTP/3 path the cluster WebTransport endpoint is served and dialed on.
 *
@@ -192,11 +187,6 @@ function normalizeSeedUrl(seed: string | URL): URL {
   if (url.pathname === '/') url.pathname = DEFAULT_CLUSTER_PATH;
   return url;
 }
-function isPortMessage(msg: ClusterMessage): msg is Extract<ClusterMessage, {
-  t: 'PORT_MSG';
-}> {
-  return msg.t === 'PORT_MSG';
-}
 function frameMessage(msg: ClusterMessage): Uint8Array {
   return encodeClusterStreamFrame(encode(msg));
 }
@@ -260,27 +250,7 @@ function isMetadata(value: unknown): value is ClusterStreamMetadata {
   if (value === null || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   if (record.v !== 1) return false;
-  if (record.kind === 'control') return true;
-  return record.kind === 'port' && typeof record.pair === 'string' && typeof record.a === 'string' && typeof record.b === 'string';
-}
-async function sendPortMessage(wt: WebTransport, msg: Extract<ClusterMessage, {
-  t: 'PORT_MSG';
-}>): Promise<void> {
-  const fromPort = msg.fromPort;
-  const toPort = msg.toPort;
-  const pair = canonicalPortPair(fromPort, toPort);
-  const stream = await wt.createBidirectionalStream();
-  const writer = stream.writable.getWriter();
-  const metadata = {
-    v: 1,
-    kind: 'port',
-    pair,
-    a: fromPort,
-    b: toPort
-  } satisfies ClusterStreamMetadata;
-  await writeFrame(writer, metadata);
-  await writeMessage(writer, msg);
-  closeWriter(writer);
+  return record.kind === 'control';
 }
 async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promise<void> {
   const stream = await wt.createBidirectionalStream();
@@ -388,9 +358,7 @@ export class WebTransportSeedTransport implements ClusterTransport {
   * Send a message to the connected worker identified by `to`.
   *
   * Resolves once the message has been written on a fresh bidirectional stream.
-  * `PORT_MSG` values travel on their own stream tagged with the canonical
-  * logical port pair; all other messages go on a control-tagged stream. If no
-  * worker with that node ID is currently connected the send is dropped
+  * If no worker with that node ID is currently connected the send is dropped
   * silently and resolves immediately — peer loss is reported separately via a
   * synthetic `PEER_DOWN`. Control-write failures are logged rather than
   * surfaced to the caller so a single bad connection cannot reject the router's
@@ -403,9 +371,6 @@ export class WebTransportSeedTransport implements ClusterTransport {
   send(to: string, msg: ClusterMessage): Promise<void> {
     const conn = this.#connections.get(to);
     if (conn === undefined) return Promise.resolve();
-    if (isPortMessage(msg)) {
-      return enqueueConnectionSend(conn, () => sendPortMessage(conn.wt, msg));
-    }
     return enqueueConnectionSend(conn, () => sendControlMessage(conn.wt, msg)).catch((err: unknown) => {
       console.error(`fino:cluster seed control write failed: ${err}`);
     });
@@ -662,8 +627,7 @@ export class WebTransportWorkerTransport implements ClusterTransport {
   * Send a message to the seed. The `_to` argument is ignored.
   *
   * A worker has a single upstream connection, so every send goes to the seed
-  * regardless of the destination passed. `PORT_MSG` values travel on their own
-  * port-tagged stream; other messages go on a control stream. Sends are
+  * regardless of the destination passed. Messages use control streams. Sends are
   * serialized through a per-transport queue so writes complete in order. If the
   * session is not connected the send is dropped and resolves immediately.
   * Control-write failures are logged rather than surfaced to the caller.
@@ -673,11 +637,6 @@ export class WebTransportWorkerTransport implements ClusterTransport {
   * ```
   */
   send(_to: string, msg: ClusterMessage): Promise<void> {
-    if (isPortMessage(msg)) {
-      const wt = this.#wt;
-      if (wt === null) return Promise.resolve();
-      return this.#enqueue(() => sendPortMessage(wt, msg));
-    }
     const wt = this.#wt;
     if (wt === null) return Promise.resolve();
     return this.#enqueue(() => sendControlMessage(wt, msg)).catch((err: unknown) => {
@@ -774,9 +733,9 @@ export class WebTransportWorkerTransport implements ClusterTransport {
     }
   }
   #readStream(stream: WebTransportBidirectionalStream, writer?: StreamWriter, initialMetadata: ClusterStreamMetadata | null = null): void {
-    void readClusterStream(stream, () => {}, (metadata, msg) => {
+    void readClusterStream(stream, () => {}, (_metadata, msg) => {
       if (msg.t === 'WELCOME') this.#seedNodeId = msg.nodeId;
-      const from = metadata.kind === 'port' && isPortMessage(msg) ? nodeIdFromId(msg.fromPort) : this.#seedNodeId;
+      const from = this.#seedNodeId;
       if (this.#handlers.length === 0) {
         this.#pending.push({
           from,

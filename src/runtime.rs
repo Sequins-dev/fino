@@ -5,7 +5,7 @@ use std::{cell::RefCell, rc::Rc, sync::OnceLock};
 use ::v8;
 
 use crate::{
-    loader, realm,
+    loader,
     state::{FinoState, ProcessEnv},
 };
 
@@ -66,9 +66,8 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
 
-    // isolate_scope is a bare HandleScope<()>; we re-enter context via
-    // ContextScope on each loop iteration so this scope stays free for use
-    // by process_pending_creates between iterations.
+    // isolate_scope is a bare HandleScope<()>; the root context is re-entered
+    // for each host-loop iteration.
     let isolate_scope = &mut v8::HandleScope::new(isolate);
 
     // Create root microtask queue.
@@ -83,8 +82,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     // created in).
     let main_module_global: v8::Global<v8::Module>;
 
-    // Keep a clone of state_rc so we can call process_pending_creates between
-    // iterations without re-entering the context.
+    // Keep the root state across ContextScope iterations.
     let state_rc: Rc<RefCell<FinoState>>;
 
     // -----------------------------------------------------------------------
@@ -177,11 +175,9 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     // -----------------------------------------------------------------------
     // Host loop.
     //
-    // Each iteration:
-    //   1. Re-enter the root context (ContextScope) and call the JS step fn.
-    //   2. Drop the ContextScope so isolate_scope is free.
-    //   3. Call process_pending_creates(isolate_scope, &state_rc) to create
-    //      any child contexts queued during the JS step.
+    // Each iteration re-enters the root context and calls its native loop
+    // policy hooks. Child realms are owned by scheduler reactors, so the root
+    // host has no child-context stepping phase.
     //
     // Using a named loop label so `break` inside the inner block exits here.
     // -----------------------------------------------------------------------
@@ -203,7 +199,6 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         }
 
         // Create any child contexts queued during the JS step.
-        realm::process_pending_creates(isolate_scope, &state_rc);
     }
 
     // -----------------------------------------------------------------------
@@ -215,7 +210,6 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         // Terminate all child Realms (structured concurrency: parent loop done →
         // signal termination to all children, then step each once so they observe
         // the flag and call their on_done_fn if any).
-        realm::terminate_all_children(scope);
 
         // Call onDone() — runs the post-loop error check from internal/main.ts (e.g.
         // `if (caughtError) { exit(1); }`).  If onDone calls exit(), we never
@@ -386,26 +380,14 @@ fn native_drive_step_inner(
 ) -> bool {
     use std::time::Duration;
 
-    let (is_done, flush_ports, step_children, children_alive) = {
+    let (is_done, flush_ports) = {
         let st = state_rc.borrow();
         let Some(h) = st.native_loop.as_ref() else {
             return false;
         };
-        (
-            h.is_done_fn.clone(),
-            h.flush_ports_fn.clone(),
-            h.step_children_fn.clone(),
-            h.children_alive_fn.clone(),
-        )
+        (h.is_done_fn.clone(), h.flush_ports_fn.clone())
     };
-    let evaluate = |scope: &mut v8::HandleScope| -> Option<(bool, bool)> {
-        let done = call_hook(scope, &is_done)?;
-        let children = match &children_alive {
-            Some(f) => call_hook(scope, f)?,
-            None => false,
-        };
-        Some((done, children))
-    };
+    let evaluate = |scope: &mut v8::HandleScope| call_hook(scope, &is_done);
 
     // Settle to true quiescence before deciding anything: the policy hooks
     // and scheduleSync'd functions each run JS that can schedule more work
@@ -415,7 +397,7 @@ fn native_drive_step_inner(
     let mut activity = false;
     loop {
         pump_and_checkpoint(scope);
-        // Port deliveries are macrotasks; child realms advance between pumps.
+        // Port deliveries are macrotasks.
         // Same-isolate port queues never touch the reactor, so the flush hook
         // reports delivery and the settle loop re-passes while it progresses.
         let mut flushed = false;
@@ -424,11 +406,6 @@ fn native_drive_step_inner(
                 Some(d) => flushed = d,
                 None => return false,
             }
-        }
-        if let Some(f) = &step_children
-            && call_hook(scope, f).is_none()
-        {
-            return false;
         }
         pump_and_checkpoint(scope);
 
@@ -451,7 +428,7 @@ fn native_drive_step_inner(
     }
     // Sample the exit inputs only now, after the last pump, so a wind-down
     // that completed inside the settle loop is observed.
-    let Some((done, children)) = evaluate(scope) else {
+    let Some(done) = evaluate(scope) else {
         return false;
     };
 
@@ -459,28 +436,26 @@ fn native_drive_step_inner(
     let live = crate::reactor::drive_live(owner) || scope.has_pending_background_tasks();
     if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
         eprintln!(
-            "[native-drive] done={done} reactor_live={} bg_tasks={} children={children} counts={}",
+            "[native-drive] done={done} reactor_live={} bg_tasks={} counts={}",
             crate::reactor::drive_live(owner),
             scope.has_pending_background_tasks(),
             crate::reactor::drive_counts_debug(owner),
         );
     }
-    if done && !children && !live {
+    if done && !live {
         return false;
     }
 
     if wait {
         // Block until a completion — the reactor is the wake source for all
         // asynchrony. Bound the wait only where progress can happen without
-        // one: child realms are advanced by the stepChildren hook, and
-        // Atomics resolutions / V8 background tasks post foreground work
+        // one: Atomics resolutions / V8 background tasks post foreground work
         // without touching the reactor. Bounded waits back off adaptively
         // (hot re-pass while work flows, 25ms once quiet): an embedded child
         // advances one legacy step per iteration, so a multi-turn ladder —
         // e.g. a respawning realm loading its module graph — must not pay a
         // sleep per rung.
-        let bounded =
-            children || crate::reactor::drive_needs_poll() || scope.has_pending_background_tasks();
+        let bounded = crate::reactor::drive_needs_poll() || scope.has_pending_background_tasks();
         let timeout = if bounded {
             let quiet = state_rc.borrow().native_empty_ticks;
             Some(if quiet >= 3 {
@@ -500,23 +475,6 @@ fn native_drive_step_inner(
         }
     }
     true
-}
-
-/// Whether the realm's registered children-alive policy hook reports any
-/// active child realms. Engine-hosted realms with dedicated-thread children
-/// need a poll cadence — a child's own thread exiting posts nothing to the
-/// engine, so the engine re-pumps on a timer while this is true.
-pub(crate) fn native_drive_children_alive(
-    scope: &mut v8::HandleScope,
-    state_rc: &Rc<RefCell<FinoState>>,
-) -> bool {
-    let hook = state_rc
-        .borrow()
-        .native_loop
-        .as_ref()
-        .and_then(|h| h.children_alive_fn.clone());
-    let Some(hook) = hook else { return false };
-    call_hook(scope, &hook).unwrap_or(false)
 }
 
 fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {

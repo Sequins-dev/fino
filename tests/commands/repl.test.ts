@@ -120,10 +120,9 @@ describe('REPL realm', () => {
       t.equal(res['value'], 99, 'awaited value correct');
     });
   });
-  it('rejects repl combined with process, remote, or watch', async (t) => {
+  it('rejects repl combined with process or watch', async (t) => {
     for (const option of [
       'process',
-      'remote',
       'watch'
     ] as const) {
       t.throws(() => new Realm({

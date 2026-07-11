@@ -260,9 +260,6 @@ fn request_reload(
                 .as_millis()
         );
     }
-    if let Some(ref signal) = st.reload_requested_signal {
-        signal.store(true, Ordering::Release);
-    }
     // For process realm children: set the process-wide flag so run_process_child
     // exits with code 75.  This is a no-op in the parent process.
     crate::realm::process::CHILD_RELOAD_REQUESTED.store(true, Ordering::Release);

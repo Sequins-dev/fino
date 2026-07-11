@@ -1,22 +1,16 @@
 //! `internal:realm-native` — parent-side Realm operations.
 //!
-//! Exposes the JS API used by the parent context to create, step, and terminate
-//! child Realms (both same-Isolate and thread-based).
+//! Exposes import-rule merging plus process-isolated Realm creation, lifecycle,
+//! and IPC operations. Ordinary realms are owned directly by scheduler engines.
 
 use ::libc;
 use ::v8;
 
-use super::{process, thread, transit};
-use crate::state::{ChildRealmSlot, ImportRule, get_state, resolve_directive};
+use super::{process, transit};
+use crate::state::{ImportRule, get_state, resolve_directive};
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
-        "createContext",
-        "stepContext",
-        "terminateChild",
-        "createThreadContext",
-        "stepThreadContext",
-        "getRealmPortInfo",
         "mergeChildRules",
         // Process realm
         "createProcessContext",
@@ -48,12 +42,6 @@ fn eval_steps<'a>(
         }};
     }
 
-    set_fn!("createContext", create_context);
-    set_fn!("stepContext", step_context);
-    set_fn!("terminateChild", terminate_child);
-    set_fn!("createThreadContext", create_thread_context);
-    set_fn!("stepThreadContext", step_thread_context);
-    set_fn!("getRealmPortInfo", get_realm_port_info);
     set_fn!("mergeChildRules", merge_child_rules);
     set_fn!("createProcessContext", create_process_context);
     set_fn!("stepProcessContext", step_process_context);
@@ -213,378 +201,12 @@ fn optional_string_arg(scope: &mut v8::HandleScope, arg: v8::Local<v8::Value>) -
     }
 }
 
-/// JS: `createContext(root, entryPath, serializedRules[, port]) -> number`
-///
-/// Queues a pending child-context creation and returns the pre-allocated
-/// handle index. Actual context construction is deferred to
-/// `process_pending_creates`, which the host loop calls between iterations
-/// when a bare `HandleScope<()>` is available.
-///
-/// Arguments:
-/// - `root` — filesystem root for the child (inherits from parent if empty).
-/// - `entryPath` — absolute path to the entry module to import in the child.
-/// - `serializedRules` — JSON string: `ImportRule[]` (child-specific rules to
-///   merge with the parent's rules). Empty/null = inherit parent's rules as-is.
-/// - `port` (optional) — the child's MessagePort object (created in the parent
-///   context). Stored in the child's FinoState and returned by `getPort()`.
-fn create_context(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    use crate::state::PendingRealm;
-
-    let root_arg = args.get(0);
-    let entry_arg = args.get(1);
-    let rules_arg = args.get(2);
-    let port_arg = args.get(3);
-
-    // --- Build process_env: inherit from parent, override root if provided ---
-    let mut process_env = get_state(scope).borrow().process_env.clone();
-    {
-        let s = root_arg
-            .to_string(scope)
-            .map(|s| s.to_rust_string_lossy(scope))
-            .unwrap_or_default();
-        if !s.is_empty() {
-            process_env.root = std::path::PathBuf::from(s);
-        }
-    };
-
-    // --- Parse entry path ---
-    // V8's to_string() on undefined produces "undefined", so check first.
-    let entry_path: String = if entry_arg.is_undefined() || entry_arg.is_null() {
-        String::new()
-    } else {
-        entry_arg
-            .to_string(scope)
-            .map(|s| s.to_rust_string_lossy(scope))
-            .unwrap_or_default()
-    };
-
-    // --- Parse and merge import rules ---
-    let import_rules = match parse_and_merge_rules(scope, rules_arg) {
-        Ok(r) => r,
-        Err(e) => {
-            let msg = v8::String::new(scope, &format!("createContext: {e}")).unwrap();
-            let exc = v8::Exception::error(scope, msg);
-            scope.throw_exception(exc);
-            return;
-        }
-    };
-
-    let package_map_json = resolve_child_package_map(scope, &process_env.root);
-
-    // --- Capture the optional port object as a Global before borrowing state ---
-    let port_global: Option<v8::Global<v8::Value>> =
-        if port_arg.is_undefined() || port_arg.is_null() {
-            None
-        } else {
-            Some(v8::Global::new(scope, port_arg))
-        };
-
-    // --- Parse optional watch flag (5th arg) and repl flag (6th arg) ---
-    let watch_mode = args.get(4).boolean_value(scope);
-    let repl_mode = args.get(5).boolean_value(scope);
-
-    // --- Parse optional realm data JSON (7th arg) and bootstrap metadata (8th arg) ---
-    let realm_data = optional_string_arg(scope, args.get(6));
-    let realm_bootstrap_data = optional_string_arg(scope, args.get(7));
-
-    // --- Queue the pending create; pre-allocate a Pending slot ---
-    let handle_idx = {
-        let state_rc = get_state(scope);
-        let mut st = state_rc.borrow_mut();
-        let idx = st.child_contexts.len();
-        st.child_contexts.push(ChildRealmSlot::Pending);
-        st.pending_creates.push(PendingRealm {
-            handle_idx: idx,
-            process_env,
-            entry_path,
-            import_rules,
-            package_map_json,
-            port: port_global,
-            watch_mode,
-            repl_mode,
-            realm_data,
-            realm_bootstrap_data,
-        });
-        idx
-    };
-
-    rv.set(v8::Integer::new(scope, handle_idx as i32).into());
-}
-
-/// JS: `stepContext(handle: number): boolean`
-///
-/// Enters the child context, calls its `loop_step_fn`, services any pending
-/// `scheduleSync` call, and drains the child's microtask queue. Returns the
-/// bool result of the child's step function (false = child loop exited).
-///
-/// Returns `true` for `Pending` slots (creation deferred; realm still alive).
-/// Returns `false` for `Failed` slots or out-of-range handles.
-fn step_context(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-
-    let child_context = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        match st.child_contexts.get(handle) {
-            Some(ChildRealmSlot::Active(c)) => v8::Local::new(scope, &c.context),
-            Some(ChildRealmSlot::Pending) => {
-                // Not yet created — report alive so JS keeps waiting.
-                rv.set(v8::Boolean::new(scope, true).into());
-                return;
-            }
-            Some(ChildRealmSlot::Failed(maybe_msg)) => {
-                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                    eprintln!(
-                        "[step_context] handle {handle} FAILED slot (msg={:?})",
-                        maybe_msg
-                    );
-                }
-                // Throw a JS Error so _stepChildren propagates it via child.reject().
-                if let Some(msg) = maybe_msg.as_deref() {
-                    let s = v8::String::new(scope, msg).unwrap_or_else(|| {
-                        v8::String::new(scope, "child realm creation failed").unwrap()
-                    });
-                    let exc = v8::Exception::error(scope, s);
-                    scope.throw_exception(exc);
-                }
-                rv.set(v8::Boolean::new(scope, false).into());
-                return;
-            }
-            None => {
-                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                    eprintln!("[step_context] handle {handle} NO slot");
-                }
-                rv.set(v8::Boolean::new(scope, false).into());
-                return;
-            }
-        }
-    };
-
-    let should_continue = super::step_child_context(scope, child_context);
-    if !should_continue && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-        eprintln!("[step_context] handle {handle} child step false");
-    }
-
-    // When the child exits, check entry error and reload flag.
-    // - entry_error present → throw (Realm.run() rejects)
-    // - reload_requested → return null (signals JS to respawn)
-    // - otherwise → return false (clean exit)
-    if !should_continue {
-        let (entry_error, reload_requested) = {
-            let child_scope = &mut v8::ContextScope::new(scope, child_context);
-            let st = get_state(child_scope);
-            let st = st.borrow();
-            (st.entry_error.clone(), st.reload_requested)
-        };
-        if let Some(msg) = entry_error {
-            if let Some(s) = v8::String::new(scope, &msg) {
-                let exc = v8::Exception::error(scope, s);
-                scope.throw_exception(exc);
-                return;
-            }
-        }
-        if reload_requested {
-            if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                eprintln!(
-                    "[reload] stepContext observed reload at {:?}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis()
-                );
-            }
-            rv.set(v8::null(scope).into());
-            return;
-        }
-    }
-
-    rv.set(v8::Boolean::new(scope, should_continue).into());
-}
-
-/// JS: `terminateChild(handle: number): void`
-///
-/// Sets `terminated = true` on the child's FinoState. The child's `isDone`
-/// callback (which calls `isTerminated()`) will return true on the next step,
-/// causing the child's loop to exit. Pending and failed slots are ignored.
-fn terminate_child(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-
-    let child_context = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        match st.child_contexts.get(handle) {
-            Some(ChildRealmSlot::Active(c)) => v8::Local::new(scope, &c.context),
-            _ => return,
-        }
-    };
-
-    // Enter the child context briefly to access its FinoState.
-    let child_scope = &mut v8::ContextScope::new(scope, child_context);
-    let child_state = get_state(child_scope);
-    child_state.borrow_mut().terminated = true;
-}
-
-// ---------------------------------------------------------------------------
-// Thread realm callbacks
-// ---------------------------------------------------------------------------
-
-/// JS: `createThreadContext(root, entryPath, serializedRules): number`
-///
-/// Spawns a new OS thread with its own `v8::Isolate` running `internal/bootstrap.mjs`.
-/// Returns a handle index into the parent's `thread_contexts` Vec.
-fn create_thread_context(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let root_arg = args.get(0);
-    let entry_arg = args.get(1);
-    let rules_arg = args.get(2);
-
-    // --- Build process_env: inherit from parent, override root if provided ---
-    let mut process_env = get_state(scope).borrow().process_env.clone();
-    {
-        let s = root_arg
-            .to_string(scope)
-            .map(|s| s.to_rust_string_lossy(scope))
-            .unwrap_or_default();
-        if !s.is_empty() {
-            process_env.root = std::path::PathBuf::from(s);
-        }
-    };
-
-    // --- Parse entry path ---
-    let entry_path: String = entry_arg
-        .to_string(scope)
-        .map(|s| s.to_rust_string_lossy(scope))
-        .unwrap_or_default();
-
-    // --- Parse and merge import rules ---
-    let import_rules = match parse_and_merge_rules(scope, rules_arg) {
-        Ok(r) => r,
-        Err(e) => {
-            let msg = v8::String::new(scope, &format!("createThreadContext: {e}")).unwrap();
-            let exc = v8::Exception::error(scope, msg);
-            scope.throw_exception(exc);
-            return;
-        }
-    };
-
-    let package_map_json = resolve_child_package_map(scope, &process_env.root);
-
-    // --- Parse optional watch flag (4th arg), realm data JSON (5th arg),
-    // and bootstrap metadata (6th arg) ---
-    let watch_mode = args.get(3).boolean_value(scope);
-    let realm_data = optional_string_arg(scope, args.get(4));
-    let realm_bootstrap_data = optional_string_arg(scope, args.get(5));
-
-    // --- Spawn the thread realm ---
-    let spawn_config = thread::SpawnConfig {
-        process_env,
-        entry_path,
-        import_rules,
-        package_map_json,
-        watch_mode,
-        realm_data,
-        realm_bootstrap_data,
-    };
-
-    let handle = match thread::spawn_thread_realm(spawn_config) {
-        Ok(h) => h,
-        Err(e) => {
-            let msg = v8::String::new(scope, &format!("createThreadContext: {e}")).unwrap();
-            let exc = v8::Exception::error(scope, msg);
-            scope.throw_exception(exc);
-            return;
-        }
-    };
-
-    // Store handle and return index.
-    let idx = {
-        let state_rc = get_state(scope);
-        let mut st = state_rc.borrow_mut();
-        let i = st.thread_contexts.len();
-        st.thread_contexts.push(Some(handle));
-        i
-    };
-
-    rv.set(v8::Integer::new(scope, idx as i32).into());
-}
-
-/// JS: `stepThreadContext(handle: number): boolean`
-///
-/// Returns `true` while the thread is still running, `false` once it exits.
-fn step_thread_context(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let state_rc = get_state(scope);
-
-    // Read done/reload/error under a short immutable borrow.
-    let (still_running, reload_requested, maybe_err) = {
-        let st = state_rc.borrow();
-        let h = st.thread_contexts.get(handle).and_then(|s| s.as_ref());
-        let running = h
-            .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
-            .unwrap_or(false);
-        let reload = if !running {
-            h.map(|h| {
-                h.reload_requested
-                    .load(std::sync::atomic::Ordering::Acquire)
-            })
-            .unwrap_or(false)
-        } else {
-            false
-        };
-        let err = if !running {
-            h.and_then(|h| h.error.lock().ok()?.clone())
-        } else {
-            None
-        };
-        (running, reload, err)
-    };
-
-    if !still_running {
-        // Release the handle slot so the ThreadRealmHandle is dropped (joins the thread).
-        if let Some(slot) = state_rc.borrow_mut().thread_contexts.get_mut(handle) {
-            *slot = None;
-        }
-        if let Some(err_msg) = maybe_err {
-            let msg = v8::String::new(scope, &err_msg)
-                .unwrap_or_else(|| v8::String::new(scope, "thread realm error").unwrap());
-            let exc = v8::Exception::error(scope, msg);
-            scope.throw_exception(exc);
-            return;
-        }
-        if reload_requested {
-            rv.set(v8::null(scope).into());
-            return;
-        }
-    }
-    rv.set(v8::Boolean::new(scope, still_running).into());
-}
-
 /// JS: `mergeChildRules(rulesJson: string): string`
 ///
 /// Merge child-specific import rules into the calling realm's own rules —
-/// defaults included — with the capability-narrowing check applied, exactly
-/// as dedicated-thread creation does natively. Pool placement ships the
-/// MERGED result: the hosting engine thread has no parent context to merge
-/// against. Throws on a narrowing violation.
+/// defaults included — with the capability-narrowing check applied. Scheduler
+/// placement ships the merged result because the hosting engine has no parent
+/// context to merge against. Throws on a narrowing violation.
 fn merge_child_rules(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -610,39 +232,6 @@ fn merge_child_rules(
             scope.throw_exception(exc);
         }
     }
-}
-
-/// JS: `getRealmPortInfo(handle: number): { handle, wakeReadFd } | undefined`
-///
-/// Returns the parent-side channel half of the thread realm identified by
-/// `handle`: the transit-registry handle its ThreadPort messages through
-/// (`transitSend`/`transitRecv`) and the wake-pipe read fd it watches.
-fn get_realm_port_info(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let info = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        st.thread_contexts
-            .get(handle)
-            .and_then(|s| s.as_ref())
-            .map(|h| (h.port_handle, h.port_wake_read_fd))
-    };
-    let Some((port_handle, wake_read_fd)) = info else {
-        rv.set(v8::undefined(scope).into());
-        return;
-    };
-    let obj = v8::Object::new(scope);
-    let k = v8::String::new(scope, "handle").unwrap();
-    let v = v8::Number::new(scope, port_handle as f64);
-    obj.set(scope, k.into(), v.into());
-    let k = v8::String::new(scope, "wakeReadFd").unwrap();
-    let v = v8::Number::new(scope, wake_read_fd as f64);
-    obj.set(scope, k.into(), v.into());
-    rv.set(obj.into());
 }
 
 // ---------------------------------------------------------------------------
@@ -777,7 +366,7 @@ fn process_port_send(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    use thread::ThreadMessage;
+    use super::message::RealmMessage;
 
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let bytes_arg = args.get(1);
@@ -821,7 +410,7 @@ fn process_port_send(
         Vec::new()
     };
 
-    let msg = ThreadMessage {
+    let msg = RealmMessage {
         data,
         transfer_stores,
         transfer_ports: Vec::new(),
@@ -846,7 +435,7 @@ fn process_port_recv(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    use thread::ThreadMessage;
+    use super::message::RealmMessage;
 
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
 
@@ -855,7 +444,7 @@ fn process_port_recv(
         let st = state_rc.borrow();
         match st.process_contexts.get(handle).and_then(|s| s.as_ref()) {
             Some(h) => {
-                let mut msgs: Vec<ThreadMessage> = Vec::new();
+                let mut msgs: Vec<RealmMessage> = Vec::new();
                 while let Ok(msg) = h.rx.try_recv() {
                     msgs.push(msg);
                 }

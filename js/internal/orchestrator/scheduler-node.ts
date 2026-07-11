@@ -30,6 +30,10 @@ export interface RealmWorkloadSpec {
   realmData?: string;
   /** Runtime-owned bootstrap metadata JSON, if any. */
   bootstrapData?: string;
+  /** Restart the logical deployment when its loaded files change. */
+  watch?: boolean;
+  /** Bootstrap the replica as a REPL evaluator. */
+  repl?: boolean;
   priority?: PriorityClass;
   tenantId?: string;
   /** Whether this live isolate may change local reactor threads. */
@@ -140,7 +144,9 @@ export class SchedulerNode {
   #engineOwners = new Map<number, WorkloadId>();
 
   constructor(options: SchedulerNodeOptions = {}) {
-    const shardCount = options.shardCount ?? 2;
+    const hardwareThreads = Math.max(1, navigator.hardwareConcurrency || 1);
+    const defaultBatchThreads = options.shardCount === undefined && hardwareThreads > 1 ? 1 : 0;
+    const shardCount = options.shardCount ?? hardwareThreads - defaultBatchThreads;
     if (!Number.isInteger(shardCount) || shardCount < 1) {
       throw new TypeError('shardCount must be a positive integer');
     }
@@ -148,7 +154,7 @@ export class SchedulerNode {
     this.#hardBudgetMicros = options.hardBudgetMicros;
     this.#syncSliceThresholdMicros = options.syncSliceThresholdMicros;
     this.#heapLimitBytes = options.heapLimitBytes;
-    const minBatchThreads = options.batchPool?.minThreads ?? 0;
+    const minBatchThreads = options.batchPool?.minThreads ?? defaultBatchThreads;
     const maxBatchThreads = options.batchPool?.maxThreads ?? Math.max(1, minBatchThreads);
     const batchIdleTimeoutMs = options.batchPool?.idleTimeoutMs ?? 30_000;
     if (!Number.isInteger(minBatchThreads) || minBatchThreads < 0) {
@@ -518,7 +524,7 @@ export class SchedulerNode {
     const runtime = this.#runtime(workloadId);
     const realmSpec = runtime.realmSpec;
     if (realmSpec !== undefined) {
-      const info = engine.placeRealm(reactorId, this.#engineId(workloadId), entryPath, realmSpec.rulesJson, realmSpec.realmData ?? '', realmSpec.bootstrapData ?? '', priorityClass) as {
+      const info = engine.placeRealm(reactorId, this.#engineId(workloadId), entryPath, realmSpec.rulesJson, realmSpec.realmData ?? '', realmSpec.bootstrapData ?? '', priorityClass, realmSpec.watch === true, realmSpec.repl === true) as {
         portHandle: number;
         portWakeFd: number;
       };
@@ -527,7 +533,7 @@ export class SchedulerNode {
     }
     // Tenant workload: realm construction with the tenant sandbox rules
     // (empty rules_json → the engine applies its tenant defaults).
-    const info = engine.placeRealm(reactorId, this.#engineId(workloadId), entryPath, '', '', '', priorityClass) as {
+    const info = engine.placeRealm(reactorId, this.#engineId(workloadId), entryPath, '', '', '', priorityClass, false, false) as {
       portHandle: number;
       portWakeFd: number;
     };

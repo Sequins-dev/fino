@@ -5,7 +5,7 @@
 * (which pumps the reactor's own kqueue), exercising the native readiness,
 * fused transfer, and timer paths with raw sockets.
 *
-* Part B proves the ImportMap remap wiring end-to-end: a thread realm that
+* Part B proves the ImportMap remap wiring end-to-end: a reactor realm that
 * swaps `internal:runtime/loop` for the reactor runs a self-contained socket
 * echo + timer and self-exits — so `realm.run()` resolves.
 */

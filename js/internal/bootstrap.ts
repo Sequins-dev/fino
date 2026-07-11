@@ -58,7 +58,6 @@
 */
 import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from 'internal:runtime/loop';
 import { runNativeLoop } from 'internal:async-context';
-import { _stepRegisteredChildren, _registeredChildrenAlive } from 'internal:child-steppers';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 import { env } from '../process.ts';
@@ -69,8 +68,6 @@ import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
 import { getEntryPath, isTerminated, getPort, getPortInfo, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, debugMark } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
-// fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
-// non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask, Performance, performance } from '../globals/time.ts';
 import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, CryptoKey, crypto, cryptoAvailable, tlsAvailable, fetch, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, _flushPorts, BroadcastChannel } from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
@@ -280,9 +277,7 @@ runtimeError.prepareStackTrace = function prepareStackTrace(err: Error, callSite
 */
 export function driveLoop(isDone: () => boolean, onDone: () => void): void {
   runNativeLoop(isDone, onDone, {
-    flushPorts: _flushPorts,
-    stepChildren: _stepRegisteredChildren,
-    childrenAlive: _registeredChildrenAlive
+    flushPorts: _flushPorts
   });
 }
 // ---------------------------------------------------------------------------
@@ -362,14 +357,13 @@ if (_childEntry) {
   let _entryFailed = false;
   // Set when the parent sends { __terminate: true } via the port.  Used in
   // watch mode (where _childDone is not checked) so thread/process realm
-  // terminate() unblocks _childIsDone() the same way terminateChild() does
-  // for embedded realms.
+  // terminate() unblocks _childIsDone() during watch mode.
   let _externalTerminate = false;
   // Start the port early so messages (including __terminate) arrive during
   // module loading, before the entry module's own listener is added.
-  // __call and __pool_call messages that arrive before the entry module finishes
+  // Calls and scheduler dispatches that arrive before the entry module finishes
   // loading are queued here and replayed once the _callHandler is installed.
-  const _earlyPoolCalls: unknown[] = [];
+  const _earlyDispatches: unknown[] = [];
   let _earlyCall: unknown = null;
   let _callHandlerInstalled = false;
   // Messages the parent posts while this realm is still loading its entry
@@ -398,20 +392,12 @@ if (_childEntry) {
         // Queue early __call until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyCall = msg;
       } else if (!_callHandlerInstalled && (msg as {
-        __pool_call?: boolean;
-        __tenant_dispatch?: boolean;
-      }).__pool_call) {
-        // Queue early pool calls until _callHandler is ready; flag prevents re-queuing during replay.
-        _earlyPoolCalls.push(msg);
-      } else if (!_callHandlerInstalled && (msg as {
         __tenant_dispatch?: boolean;
       }).__tenant_dispatch) {
-        _earlyPoolCalls.push(msg);
+        _earlyDispatches.push(msg);
       } else if (!_userListenerSeen && !_replaying && !(msg as {
         __call?: boolean;
       }).__call && !(msg as {
-        __pool_call?: boolean;
-      }).__pool_call && !(msg as {
         __tenant_dispatch?: boolean;
       }).__tenant_dispatch) {
         _earlyUserMessages.push(msg);
@@ -507,23 +493,28 @@ if (_childEntry) {
         if ((msg as {
           __call?: boolean;
         }).__call && !_isPoolMode) {
-          // Single-invocation call() mode: invoke once, post result, terminate.
+          // Logical Realm call mode: correlated invocations may reuse this
+          // replica until the allocator asks it to drain.
           // Stop propagation so user code never sees internal __call envelopes.
           (ev as MessageEvent).stopImmediatePropagation?.();
           const _args = (msg as {
             args?: unknown[];
           }).args ?? [];
+          const _correlationId = (msg as { correlationId?: number }).correlationId;
           new Promise<unknown>((res) => res(_fn(..._args))).then(function _callOk(result: unknown) {
-            _childPort!.postMessage(result);
-            _childDone = true;
+            _childPort!.postMessage({
+              __call_result: true,
+              correlationId: _correlationId,
+              result
+            });
           }, function _callErr(err: unknown) {
             _childPort!.postMessage({
               __call_error: true,
+              correlationId: _correlationId,
               message: String(err),
               name: err instanceof Error ? err.name : undefined,
               stack: err instanceof Error ? err.stack : undefined
             });
-            _childDone = true;
           });
         } else if ((msg as {
           __tenant_dispatch?: boolean;
@@ -550,52 +541,8 @@ if (_childEntry) {
               });
             });
           });
-        } else if ((msg as {
-          __pool_call?: boolean;
-        }).__pool_call) {
-          // Pool mode: multi-invocation with correlation ID. Worker stays alive.
-          // Stop propagation so user code never sees internal __pool_call envelopes.
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          _isPoolMode = true;
-          const _pmsg = msg as {
-            __pool_call: boolean;
-            correlationId: number;
-            args?: unknown[];
-          };
-          const _corrId = _pmsg.correlationId;
-          const _args = _pmsg.args ?? [];
-          // Lazily import fino:realm/pool so non-pool realms avoid the evaluation cost.
-          import('fino:realm/pool').then(
-            function _poolImport({ correlationIdContext }) {
-              correlationIdContext.runWithValue(String(_corrId), function _poolInvoke() {
-                new Promise<unknown>((res) => res(_fn(..._args))).then(function _poolCallOk(result: unknown) {
-                  _childPort!.postMessage({
-                    __pool_result: true,
-                    correlationId: _corrId,
-                    result
-                  });
-                }, function _poolCallErr(err: unknown) {
-                  _childPort!.postMessage({
-                    __pool_error: true,
-                    correlationId: _corrId,
-                    message: String(err),
-                    stack: err instanceof Error ? err.stack : undefined
-                  });
-                });
-              });
-            },
-            // If the pool module itself fails to load, surface the error as __pool_error
-            // so the parent dispatcher rejects rather than hanging indefinitely.
-            function _poolImportFailed(err: unknown) {
-              _childPort!.postMessage({
-                __pool_error: true,
-                correlationId: _corrId,
-                message: 'fino:realm/pool module failed to load: ' + String(err)
-              });
-            }
-          );
         }
-        // Other messages (not __call / __pool_call / __terminate) pass through
+        // Other messages pass through
         // to user-registered listeners unchanged.
       });
       // Mark the handler as installed so _terminateHandler stops queuing early messages.
@@ -606,7 +553,7 @@ if (_childEntry) {
         _toReplay.push(_earlyCall);
         _earlyCall = null;
       }
-      _toReplay.push(..._earlyPoolCalls.splice(0));
+      _toReplay.push(..._earlyDispatches.splice(0));
       if (_toReplay.length > 0) {
         Promise.resolve().then(() => {
           for (const m of _toReplay) {
@@ -664,9 +611,8 @@ if (_childEntry) {
   driveLoop(function _childIsDone() {
     // In watch mode the realm stays alive after the entry completes so the
     // file-watcher loop can keep driving kqueue/inotify events.  Exit is
-    // triggered by: requestReload() (sets state.terminated), terminateChild()
-    // for embedded realms (same), or { __terminate: true } over the port for
-    // thread/process realms (sets _externalTerminate).
+    // triggered by requestReload() (sets state.terminated) or a
+    // { __terminate: true } port message (sets _externalTerminate).
     const entryDone = _watchMode ? _externalTerminate || isTerminated() as boolean : _childDone || isTerminated() as boolean;
     if (entryDone && !_shutdownStarted) _startChildShutdown();
     // Close the receive port as soon as we begin winding down — do NOT wait for
