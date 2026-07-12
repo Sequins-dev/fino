@@ -57,6 +57,7 @@ import { DiskFileSystem } from 'fino:file';
 import type { FileSystem } from 'internal:file/provider';
 import { sqliteAvailable, requireSqlite, cstr, readCStr, dbErrMsg, SQLITE_OK, SQLITE_ROW, SQLITE_DONE, SQLITE_INTEGER, SQLITE_FLOAT, SQLITE3_TEXT, SQLITE_BLOB, SQLITE_NULL, SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE, SQLITE_OPEN_FULLMUTEX } from 'internal:database/sqlite/bindings';
 import { FinoVFS } from 'internal:database/sqlite/vfs';
+import { registerShutdownHook } from 'internal:shutdown';
 /**
 * `true` when the SQLite native bindings are available in this runtime.
 *
@@ -650,6 +651,9 @@ export class Statement {
 * Open connections with `Database.open()`. The connection owns a native
 * `sqlite3*` pointer and a per-connection VFS registration; call `close()` when
 * finished. Close finalizes any statements that were not explicitly finalized.
+* If the connection remains open when its Realm shuts down, Fino closes it
+* before disposing the Realm isolate so SQLite cannot retain VFS pointers into
+* released isolate memory.
 * Methods throw after the connection has been closed.
 *
 * ```ts no_run
@@ -705,6 +709,15 @@ export class Database {
   */
   #statements = new Set<Statement>();
   /**
+  * Isolate-local shutdown registration that closes this database before its
+  * Realm is disposed. Explicit `close()` removes the registration.
+  *
+  * @internal
+  */
+  readonly #shutdownHook: {
+    dispose(): void;
+  };
+  /**
   * Tail of the per-connection operation queue.
   *
   * Statement stepping is offloaded to the blocking thread pool, and a
@@ -726,6 +739,7 @@ export class Database {
     this.#ptr = ptr;
     this.#vfs = vfs;
     this.#safeIntegers = safeIntegers;
+    this.#shutdownHook = registerShutdownHook(() => this.close());
   }
   /**
   * Internal sqlite3 pointer for statement helpers.
@@ -1055,7 +1069,8 @@ export class Database {
   *
   * Calling `close()` more than once is allowed. The close runs after any
   * in-flight queued operations, and any statements created by this connection
-  * are finalized before the native database handle is closed.
+  * are finalized before the native database handle is closed. Closing also
+  * removes the automatic Realm-shutdown cleanup registered by `open()`.
   *
   * ```ts no_run
   * import { Database } from 'fino:database/sqlite';
@@ -1073,6 +1088,7 @@ export class Database {
       await requireSqlite().symbols.sqlite3_close_v2(this.#ptr);
       if (this.#vfs) this.#vfs.unregister();
     });
+    this.#shutdownHook.dispose();
   }
   /**
   * Alias for `close()`, letting a connection participate in `await using`

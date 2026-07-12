@@ -907,11 +907,24 @@ describe('Integration', () => {
       ipv6Dns.close();
     }
   });
-  it('lookup — example.com family 4', async (t) => {
-    const result = await lookup('example.com');
-    t.ok(typeof result.address === 'string', 'has address');
-    t.equal(result.family, 4, 'family = 4');
-    t.ok(/^\d+\.\d+\.\d+\.\d+$/.test(result.address), 'address is IPv4');
+  it('lookup — hostname defaults to an A query and family 4', async (t) => {
+    const prototype = Resolver.prototype as unknown as {
+      resolve(name: string, rrtype?: string): Promise<unknown[]>;
+    };
+    const originalResolve = prototype.resolve;
+    let query: { name: string; rrtype?: string } | undefined;
+    prototype.resolve = async (name, rrtype) => {
+      query = { name, rrtype };
+      return ['127.0.0.42'];
+    };
+    try {
+      const result = await lookup('example.test');
+      t.deepEqual(query, { name: 'example.test', rrtype: 'A' }, 'lookup requests an A record');
+      t.equal(result.address, '127.0.0.42', 'returns the resolved IPv4 address');
+      t.equal(result.family, 4, 'family = 4');
+    } finally {
+      prototype.resolve = originalResolve;
+    }
   });
   it('lookup — localhost resolves without DNS I/O', async (t) => {
     const result = await lookup('localhost');

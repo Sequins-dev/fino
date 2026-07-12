@@ -29,6 +29,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:database/sqlite` | `benchmarks/database/sqlite.bench.ts` |
 | `fino:stream` | `benchmarks/stream.bench.ts` |
 | `fino:process` | `benchmarks/process.bench.ts` |
+| `fino:runtime` | not yet benchmarked |
 | `fino:context` | `benchmarks/context/index.bench.ts` |
 | `fino:ui` | `benchmarks/ui.bench.ts` |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |

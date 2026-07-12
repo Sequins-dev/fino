@@ -146,6 +146,7 @@ function ensureNode(): SchedulerNode {
       // scheduled realms (created but never run/terminated) must not hold the
       // process open.
       registerShutdownHook(() => {
+        _shutdownHookRegistered = false;
         const node = _node;
         _node = null;
         _liveRealms = 0;
@@ -170,8 +171,9 @@ function ensureNode(): SchedulerNode {
 * fresh placement; a genuinely idle process pays one 50ms tail.
 */
 function releaseRealmRef(node: SchedulerNode): void {
+  if (_node !== node) return;
   _liveRealms--;
-  if (_liveRealms > 0 || _node !== node) return;
+  if (_liveRealms > 0) return;
   if (_idleShutdownTimer !== null) clearTimeout(_idleShutdownTimer);
   _idleShutdownTimer = setTimeout(() => {
     _idleShutdownTimer = null;

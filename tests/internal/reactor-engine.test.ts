@@ -212,39 +212,44 @@ describe('native reactor engine', () => {
       portWakeFd: number;
     };
     const port = new ThreadPort(info.portWakeFd, info.portHandle);
-    port.start();
-    port.postMessage({ __tenant_dispatch: true, request: { data: { addressPath, outputPath } } });
-    let listenPort = 0;
-    for (let i = 0; i < 100; i++) {
-      listenPort = await fs.readFile(addressPath).then((b) => Number(new TextDecoder().decode(b))).catch(() => 0);
-      if (listenPort > 0) break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      port.start();
+      port.postMessage({ __tenant_dispatch: true, request: { data: { addressPath, outputPath } } });
+      let listenPort = 0;
+      for (let i = 0; i < 100; i++) {
+        listenPort = await fs.readFile(addressPath).then((b) => Number(new TextDecoder().decode(b))).catch(() => 0);
+        if (listenPort > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      engine.moveRealm(source, destination, workloadId);
+      await waitForReport(destination, (r) => r.type === 'moved');
+      const detached = await waitForReportWithin(source, (r) => r.type === 'detached', 500);
+      engine.shutdown(source);
+      while (engine.reactorAlive(source)) await new Promise((resolve) => setTimeout(resolve, 1));
+
+      const client = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: listenPort });
+      const [reader, writer] = client.split();
+      await writer.write(new TextEncoder().encode('after-move'));
+      writer.close();
+      reader.close();
+      let output = '';
+      for (let i = 0; i < 200; i++) {
+        output = await fs.readFile(outputPath).then((b) => new TextDecoder().decode(b)).catch(() => '');
+        if (output !== '') break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      t.ok(detached, 'the source detached while accept was pending');
+      t.equal(output, 'after-move', 'the destination completed the inherited accept');
+    } finally {
+      engine.revoke(destination, workloadId, 'terminated');
+      port.close();
+      engine.shutdown(source);
+      engine.shutdown(destination);
+      await fs.unlink(addressPath).catch(() => undefined);
+      await fs.unlink(outputPath).catch(() => undefined);
     }
-
-    engine.moveRealm(source, destination, workloadId);
-    await waitForReport(destination, (r) => r.type === 'moved');
-    const detached = await waitForReportWithin(source, (r) => r.type === 'detached', 500);
-    engine.shutdown(source);
-    while (engine.reactorAlive(source)) await new Promise((resolve) => setTimeout(resolve, 1));
-
-    const client = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: listenPort });
-    const [, writer] = client.split();
-    await writer.write(new TextEncoder().encode('after-move'));
-    writer.close();
-    let output = '';
-    for (let i = 0; i < 200; i++) {
-      output = await fs.readFile(outputPath).then((b) => new TextDecoder().decode(b)).catch(() => '');
-      if (output !== '') break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-
-    engine.revoke(destination, workloadId, 'terminated');
-    port.close();
-    engine.shutdown(destination);
-    await fs.unlink(addressPath).catch(() => undefined);
-    await fs.unlink(outputPath).catch(() => undefined);
-    t.ok(detached, 'the source detached while accept was pending');
-    t.equal(output, 'after-move', 'the destination completed the inherited accept');
   });
 
   it('places a compute tenant, pumps it, and releases on terminate', async (t) => {
