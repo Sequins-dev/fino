@@ -108,8 +108,8 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
     (
-        "internal:scheduler-native",
-        BuiltinKind::Synthetic(crate::scheduler_native::create_module),
+        "internal:reactor/workload",
+        BuiltinKind::Synthetic(crate::reactor::workload::create_module),
     ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
@@ -254,7 +254,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/dns-wire", "internal/net/dns-wire"),
     source_builtin!("internal:net/dnssec", "internal/net/dnssec"),
     source_builtin!("fino:net/socket", "net/socket"),
-    source_builtin!("fino:net/loop-reactor", "net/loop-reactor"),
+    source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
     source_builtin!("fino:net/tls", "net/tls"),
     source_builtin!("fino:net/dns", "net/dns"),
     source_builtin!("fino:net/mdns", "net/mdns"),
@@ -1520,15 +1520,6 @@ fn get_or_load_builtin_inner<'s>(
     visited: &mut std::collections::HashSet<String>,
 ) -> Option<v8::Local<'s, v8::Module>> {
     use crate::state::resolve_directive;
-
-    // The event loop IS the reactor: alias the loop module onto the
-    // reactor-backed implementation for EVERY importer, before any rule
-    // evaluation — a realm must never see two different loop implementations
-    // (a later allow rule, e.g. the test harness's, would otherwise out-rank
-    // a rule-based remap for its importers and split the loop in two).
-    if spec == "internal:runtime/loop" && !visited.contains("fino:net/loop-reactor") {
-        return get_or_load_builtin_inner(scope, "fino:net/loop-reactor", from, visited);
-    }
 
     let state_rc = get_state(scope);
 

@@ -1,17 +1,16 @@
 /**
-* Native reactor (fino:net/loop-reactor over internal:reactor-native).
+* Native reactor (`internal:runtime/loop` over `internal:reactor-native`).
 *
 * Part A drives the reactor directly in the main realm via `rloop.run`/`spin`
 * (which pumps the reactor's own kqueue), exercising the native readiness,
 * fused transfer, and timer paths with raw sockets.
 *
-* Part B proves the ImportMap remap wiring end-to-end: a reactor realm that
-* swaps `internal:runtime/loop` for the reactor runs a self-contained socket
-* echo + timer and self-exits — so `realm.run()` resolves.
+* Part B proves a reactor realm runs a self-contained socket echo and timer,
+* then self-exits so `realm.run()` resolves.
 */
 import { describe, it } from 'fino:test/test';
-import { Realm, ImportMap } from 'fino:realm';
-import * as rloop from 'fino:net/loop-reactor';
+import { Realm } from 'fino:realm';
+import * as rloop from 'internal:runtime/loop';
 import * as sock from 'fino:net/socket';
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -97,18 +96,12 @@ describe('native reactor — direct drive', () => {
   });
 });
 
-describe('native reactor — ImportMap remap', () => {
-  it('a realm remapped onto the reactor runs and self-exits', async (t) => {
+describe('native reactor — realm integration', () => {
+  it('a realm runs on the reactor and self-exits', async (t) => {
     const realm = new Realm({
-      entry: new URL('./fixtures/reactor-remap-worker.ts', import.meta.url).pathname,
-      overrides: ImportMap.inherit([
-        {
-          pattern: 'internal:runtime/loop',
-          directive: { type: 'remap', target: 'fino:net/loop-reactor' }
-        }
-      ])
+      entry: new URL('./fixtures/reactor-worker.ts', import.meta.url).pathname
     });
     await realm.run();
-    t.ok(true, 'remapped realm completed its socket echo + timer and exited');
+    t.ok(true, 'realm completed its socket echo + timer and exited');
   });
 });

@@ -1,28 +1,11 @@
 /**
-* fino:net/loop-reactor — a drop-in `internal:runtime/loop` backed by the
-* native reactor (`internal:reactor-native`).
+* internal:runtime/loop — the native reactor-backed runtime loop.
 *
-* This module presents the exact public API of `internal:runtime/loop`, but
-* delegates readiness, fused transfers, timers, and the poll/dispatch core to
-* the native reactor, which owns the kqueue and resolves promises itself. There
-* is no JS dispatch loop and no per-readiness Promise created on the JS side.
-*
-* The runtime uses this native reactor implementation for scheduled realms.
-* It can also be selected explicitly through an import remap:
-*
-* ```ts no_run
-* import { Realm, ImportMap } from 'fino:realm';
-* new Realm({
-*   overrides: ImportMap.inherit([
-*     { pattern: 'internal:runtime/loop',
-*       directive: { type: 'remap', target: 'fino:net/loop-reactor' } },
-*   ]),
-*   entry: '/path/to/server.ts',
-* });
-* ```
-*
-* The remap is transitive, so every socket, TLS, and file module in that realm
-* uses the same reactor. See `research-docs/research/pure-rust-reactor.md`.
+* This is the single internal loop implementation used by every realm. It
+* delegates readiness, fused transfers, timers, and poll/dispatch work to
+* `internal:reactor-native`, which owns the platform poller and resolves
+* promises itself. Application modules must not import this implementation
+* detail directly.
 *
 * @internal
 */

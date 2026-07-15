@@ -1,4 +1,8 @@
-//! `internal:scheduler-native` — parked workload isolates for scheduler shards.
+//! Reactor-owned V8 workload lifecycle and execution-budget containment.
+//!
+//! This module constructs, enters, pumps, parks, moves, and disposes isolates.
+//! Scheduling policy and reactor-thread control live in [`super::engine`]; I/O
+//! ownership and Cherenkov integration live in [`super::io`].
 
 use std::{
     cell::RefCell,
@@ -18,12 +22,12 @@ use crate::{
 
 /// Process-global registry of budget targets, keyed by an opaque token.
 ///
-/// A tenant isolate is pumped synchronously on its scheduler thread; an
-/// unbounded synchronous loop in tenant code would otherwise block that thread
+/// A realm isolate is pumped synchronously on its reactor thread; an
+/// unbounded synchronous loop in realm code would otherwise block that thread
 /// forever, and only V8 `terminate_execution` fired from *another* thread can
 /// break it. This registry is the minimal native glue that makes that possible:
 /// it holds each workload's thread-safe `IsolateHandle` and its currently-armed
-/// pump deadline (if any). The scheduler thread arms a deadline just before a
+/// pump deadline (if any). The reactor thread arms a deadline just before a
 /// synchronous pump and clears it just after (cheap, in-process, no messaging).
 ///
 /// The *policy* — when to check, how often, what to do — lives in the TypeScript
@@ -50,7 +54,7 @@ fn budget_registry() -> &'static Mutex<HashMap<u64, BudgetTarget>> {
 /// Lock the process-global budget registry, tolerating poisoning. The registry
 /// holds only plain data (`IsolateHandle` + deadline), so a panic that poisoned
 /// it while held cannot have left a torn invariant worth propagating — recover
-/// the guard instead of unwrapping, so a single failure on one scheduler thread
+/// the guard instead of unwrapping, so a single failure on one reactor thread
 /// cannot cascade into every `arm`/`clear`/`sweep` on all threads panicking.
 fn lock_registry() -> std::sync::MutexGuard<'static, HashMap<u64, BudgetTarget>> {
     budget_registry().lock().unwrap_or_else(|e| e.into_inner())
@@ -124,8 +128,8 @@ pub(crate) struct ParkedWorkload {
     context: v8::Global<v8::Context>,
     /// This isolate's own async state (executor + FFI-completion queue + wake
     /// pipe). Swapped into the thread-local around every enter/pump so the
-    /// isolate's async work never mixes with the scheduler's own isolate or
-    /// sibling tenant isolates on the same thread.
+    /// isolate's async work never mixes with the orchestrator's isolate or
+    /// sibling realm isolates on the same thread.
     async_state: Option<crate::async_rt::IsolateAsyncState>,
     /// Thread-safe handle to this isolate. Used locally to clear a stray
     /// termination flag after a budget kill; the budget registry holds a clone
@@ -188,13 +192,25 @@ pub(crate) enum PumpOutcome {
     Settled { result: String },
     /// Still awaiting outstanding async work; the isolate stays parked.
     Pending,
-    /// Still running, but progress can happen without an engine-visible
-    /// completion: re-pump on a short timer.
+    /// V8 has work that does not provide a Cherenkov wake source (currently
+    /// Atomics.waitAsync), so the engine must perform a bounded re-pump.
     PendingPoll,
     /// Execution was terminated (budget kill or heap-limit containment).
     Terminated,
     /// The activation rejected; the string carries the error message.
     Rejected(String),
+}
+
+/// A Cherenkov completion routed back to the isolate that owns its JS state.
+pub(crate) enum ReactorEvent {
+    Resolve {
+        resolver_id: usize,
+        result: f64,
+    },
+    Callback {
+        callback_id: usize,
+        fflags: Option<u32>,
+    },
 }
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
@@ -208,7 +224,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         .map(|n| v8::String::new(scope, n).unwrap())
         .collect();
 
-    let module_name = v8::String::new(scope, "internal:scheduler-native").unwrap();
+    let module_name = v8::String::new(scope, "internal:reactor/workload").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
 }
 
@@ -407,8 +423,8 @@ pub(crate) fn setup_realm_workload(
 }
 
 /// Pump a realm workload one slice: resolve parked engine-I/O completions,
-/// then drive the realm's native loop hooks once (the non-waiting embedded
-/// step — the engine owns the thread's wait cadence). `Pending` while the
+/// then drive the realm's native loop hooks once without blocking (the engine
+/// owns the thread's wait cadence). `Pending` while the
 /// realm continues; `Settled` when its policy hooks report done (with the
 /// entry error as `Rejected` if one was recorded).
 pub(crate) fn activate_realm_native(workload: &mut ParkedWorkload) -> ActiveWorkload {
@@ -440,7 +456,7 @@ pub(crate) fn deactivate_realm_native(workload: &mut ParkedWorkload, active: Act
 pub(crate) fn pump_realm_native(
     workload: &mut ParkedWorkload,
     hard_budget_micros: u64,
-    io_completions: &[(usize, f64)],
+    reactor_events: &[ReactorEvent],
 ) -> PumpOutcome {
     let budgeted = hard_budget_micros > 0;
     if budgeted {
@@ -455,17 +471,20 @@ pub(crate) fn pump_realm_native(
         let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
         let context = v8::Local::new(isolate_scope, &workload.context);
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
-        for &(resolver_id, result) in io_completions {
-            crate::async_rt::resolve_io_completion(scope, resolver_id, result);
+        for event in reactor_events {
+            match *event {
+                ReactorEvent::Resolve {
+                    resolver_id,
+                    result,
+                } => crate::async_rt::resolve_io_completion(scope, resolver_id, result),
+                ReactorEvent::Callback {
+                    callback_id,
+                    fflags,
+                } => invoke_reactor_callback(scope, callback_id, fflags),
+            }
         }
-        // Realm workloads arm vnode/signal/proc watches inline on the
-        // thread-local reactor (synchronous arming is part of the loop
-        // contract); dispatch anything it has completed. Resolvers and
-        // callbacks are per-context Globals, so a zero-timeout pass here
-        // settles them regardless of which sibling realm they belong to.
-        crate::reactor::drive_wait_and_dispatch(scope, Some(std::time::Duration::ZERO));
         let state_rc = get_state(scope);
-        let cont = crate::runtime::native_drive_step_nowait(scope, &state_rc);
+        let cont = crate::runtime::native_drive_step_nonblocking(scope, &state_rc);
         let terminated = std::mem::take(&mut state_rc.borrow_mut().saw_termination)
             || scope.is_execution_terminating()
             || take_killed(budget_token);
@@ -473,10 +492,7 @@ pub(crate) fn pump_realm_native(
             // Budget kill or heap-limit containment landed mid-slice.
             PumpOutcome::Terminated
         } else if cont {
-            // Children on their own threads and thread-local reactor watches
-            // (vnode/signal/proc) make progress the engine cannot observe;
-            // ask for a poll cadence while either exists.
-            if crate::reactor::thread_reactor_pending() {
+            if crate::reactor::drive_needs_poll() {
                 PumpOutcome::PendingPoll
             } else {
                 PumpOutcome::Pending
@@ -502,6 +518,34 @@ pub(crate) fn pump_realm_native(
         workload.thread_handle.cancel_terminate_execution();
     }
     outcome
+}
+
+fn invoke_reactor_callback(scope: &mut v8::HandleScope, callback_id: usize, fflags: Option<u32>) {
+    let callback = crate::async_rt::with_callback_table(|table| {
+        table
+            .get(callback_id)
+            .and_then(|slot| slot.as_ref())
+            .cloned()
+    });
+    let Some(callback) = callback else { return };
+    let tc = &mut v8::TryCatch::new(scope);
+    let function = v8::Local::new(tc, &callback);
+    let receiver = v8::undefined(tc).into();
+    let mut args = Vec::with_capacity(fflags.is_some() as usize);
+    if let Some(fflags) = fflags {
+        let event = v8::Object::new(tc);
+        let key = v8::String::new(tc, "fflags").unwrap();
+        let value = v8::Number::new(tc, fflags as f64);
+        event.set(tc, key.into(), value.into());
+        args.push(event.into());
+    }
+    if function.call(tc, receiver, &args).is_none() && tc.has_caught() {
+        let message = tc
+            .exception()
+            .map(|error| error.to_rust_string_lossy(tc))
+            .unwrap_or_else(|| "unknown exception".to_string());
+        eprintln!("fino: reactor callback threw: {message}");
+    }
 }
 
 pub(crate) fn drop_parked(mut workload: ParkedWorkload) {

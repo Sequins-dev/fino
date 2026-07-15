@@ -14,7 +14,6 @@ mod protobuf;
 mod reactor;
 mod realm;
 mod runtime;
-mod scheduler_native;
 mod state;
 mod typescript_format;
 mod v8_threading;

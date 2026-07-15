@@ -354,16 +354,16 @@ pub(crate) fn native_drive_step(
     native_drive_step_inner(scope, state_rc, true)
 }
 
-/// Native-drive iteration without the trailing reactor wait — for embedded
-/// children stepped by their parent, which owns the thread's wait cadence.
-pub(crate) fn native_drive_step_nowait(
+/// Native-drive iteration without the trailing reactor wait. Reactor engines
+/// use this because the engine owns the thread's wait cadence.
+pub(crate) fn native_drive_step_nonblocking(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
     let cont = native_drive_step_inner(scope, state_rc, false);
     if !cont && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
         eprintln!(
-            "[reload] embedded child step returned false at {:?}",
+            "[reload] nonblocking realm step returned false at {:?}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()

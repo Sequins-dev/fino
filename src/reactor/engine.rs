@@ -2,7 +2,7 @@
 //!
 //! A reactor thread hosts N realm workloads and pumps them in priority order.
 //! Every workload — tenant or full child realm — is constructed through the one
-//! realm bootstrap (`scheduler_native::setup_realm_workload`) and driven through
+//! realm bootstrap (`workload::setup_realm_workload`) and driven through
 //! its native loop hooks; tenant activations arrive as `__tenant_dispatch`
 //! messages over the workload's port, not as a separate dispatch protocol.
 //!
@@ -17,7 +17,6 @@
 //! runnable here. This module owns the execution + scheduling half.
 
 use std::cell::Cell;
-use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
@@ -109,7 +108,7 @@ pub(crate) fn tenant_import_rules() -> Vec<ImportRule> {
         pattern: ImportPattern::Prefix("fino:net".to_string()),
         directive: ImportDirective::Inherit,
     });
-    // (No loop remap needed: the loader aliases `internal:runtime/loop` to
+    // (No loop selection needed: `internal:runtime/loop` is
     // the reactor-backed implementation for every realm unconditionally.)
     rules
 }
@@ -207,16 +206,13 @@ pub struct ReactorHandle {
 }
 
 // ===========================================================================
-// Engine-mode direct I/O registration.
+// Workload-to-engine I/O registration.
 //
-// When a tenant runs on a reactor thread, its `internal:io` readAsync/writeAsync
-// ops (on a would-block) register here instead of on the per-thread inline
-// reactor. The reactor thread drains these after each pump and submits them to
-// its completion `Poller` (io_uring performs the transfer in-kernel; the kqueue
-// backend synthesizes it on readiness), then resolves the tenant's promise
-// during the tenant's next pump (isolate entered).
+// A realm's `internal:io` operations register directly with the engine's shared
+// `RuntimeIo`. Completions carry workload-local resolver identifiers and are
+// delivered during that realm's next pump.
 //
-// The buffer is realm-provided (the tenant's ArrayBuffer) — the reactor never
+// The buffer is realm-provided (the workload's ArrayBuffer) — the reactor never
 // allocates the data buffer, only the small fixed-shape registration record.
 // ===========================================================================
 
@@ -232,7 +228,7 @@ pub(crate) enum IoKind {
     Writable,
 }
 
-/// One outstanding fd-keyed reactor op registered by a tenant during a pump.
+/// One outstanding fd-keyed reactor op registered by a workload during a pump.
 pub(crate) struct PendingIoReg {
     pub fd: i32,
     pub kind: IoKind,
@@ -248,7 +244,7 @@ pub(crate) struct PendingIoReg {
     pub written: usize,
 }
 
-/// A registration a tenant hands the engine during a pump.
+/// A registration a workload hands the engine during a pump.
 pub(crate) enum EngineReg {
     Io(PendingIoReg),
     Timer {
@@ -273,61 +269,104 @@ pub(crate) enum EngineReg {
     RemoveWrite {
         fd: i32,
     },
+    Proc {
+        pid: u32,
+        resolver_id: usize,
+    },
+    AddVnode {
+        fd: i32,
+        path: std::path::PathBuf,
+        callback_id: usize,
+    },
+    RemoveVnode {
+        fd: i32,
+    },
+    AddSignal {
+        signo: i32,
+        callback_id: usize,
+    },
+    RemoveSignal {
+        signo: i32,
+    },
 }
 
 thread_local! {
-    /// `Some` only on a reactor engine thread; tenants push registrations here
-    /// during a pump, and the engine drains them right after.
-    static ENGINE_IO: RefCell<Option<Vec<EngineReg>>> = const { RefCell::new(None) };
+    /// Direct access to the engine thread's I/O resources while a workload is
+    /// entered. `EngineResources` is boxed so this pointer remains stable;
+    /// callbacks touch only this disjoint allocation, never the borrowed
+    /// workload map.
+    static ENGINE_CONTEXT: Cell<(*mut imp::EngineResources, u64)> = const {
+        Cell::new((std::ptr::null_mut(), 0))
+    };
     /// Monotonic timer id source for engine-mode timers.
     static ENGINE_TIMER_SEQ: RefCell<u64> = const { RefCell::new(1) };
-    /// The pumping workload's engine-held handle counts `(io, timers)`,
-    /// snapshotted before each pump so the loop's `alive()` introspection can
-    /// answer for the CURRENT realm rather than for the thread.
-    static ENGINE_CURRENT_COUNTS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
 }
 
-/// The pumping workload's engine-held `(io, timers)` counts plus the net
-/// effect of registrations queued during the current pump. Zero off-engine.
-pub(crate) fn engine_current_counts() -> (u32, u32) {
-    let (mut io, mut timers) = ENGINE_CURRENT_COUNTS.with(|c| c.get());
-    ENGINE_IO.with(|c| {
-        if let Some(regs) = c.borrow().as_ref() {
-            for reg in regs {
-                match reg {
-                    EngineReg::Io(_) => io += 1,
-                    EngineReg::Timer { .. } => timers += 1,
-                    EngineReg::CancelTimer { .. } => timers = timers.saturating_sub(1),
-                    EngineReg::SetTimerRef { referenced, .. } => {
-                        if *referenced {
-                            timers += 1;
-                        } else {
-                            timers = timers.saturating_sub(1);
-                        }
-                    }
-                    EngineReg::RemoveRead { .. } | EngineReg::RemoveWrite { .. } => {
-                        io = io.saturating_sub(1)
-                    }
-                }
-            }
+#[derive(Clone, Copy)]
+pub(crate) struct EngineCounts {
+    pub reads: u32,
+    pub writes: u32,
+    pub timers: u32,
+    pub procs: u32,
+    pub vnodes: u32,
+}
+
+impl EngineCounts {
+    const ZERO: Self = Self {
+        reads: 0,
+        writes: 0,
+        timers: 0,
+        procs: 0,
+        vnodes: 0,
+    };
+
+    pub fn total(self) -> u32 {
+        self.reads + self.writes + self.timers + self.procs + self.vnodes
+    }
+}
+
+/// The pumping workload's engine-held handle counts. Zero off-engine.
+pub(crate) fn engine_current_counts() -> EngineCounts {
+    ENGINE_CONTEXT.with(|context| {
+        let (resources, owner) = context.get();
+        if resources.is_null() || owner == 0 {
+            EngineCounts::ZERO
+        } else {
+            // SAFETY: `run` installs the stable address of its boxed resources
+            // for this thread and clears it before that allocation is dropped.
+            unsafe { (*resources).counts(owner) }
         }
-    });
-    (io, timers)
+    })
 }
 
-/// Whether the current thread is a reactor engine thread (so `internal:io` ops
-/// register with the engine rather than the inline per-thread reactor).
+/// Whether the current thread is a reactor engine thread, so `internal:io`
+/// operations register with its shared reactor resources.
 pub(crate) fn engine_io_active() -> bool {
-    ENGINE_IO.with(|c| c.borrow().is_some())
+    ENGINE_CONTEXT.with(|context| !context.get().0.is_null())
 }
 
 /// Register an outstanding reactor op (called from an `internal:io` op during a
-/// pump). The engine picks it up after the pump.
+/// pump). Registration is immediate so watches are armed before JavaScript can
+/// trigger them later in the same pump.
 pub(crate) fn engine_io_register(reg: EngineReg) {
-    ENGINE_IO.with(|c| {
-        if let Some(v) = c.borrow_mut().as_mut() {
-            v.push(reg);
-        }
+    ENGINE_CONTEXT.with(|context| {
+        let (resources, owner) = context.get();
+        assert!(
+            !resources.is_null() && owner != 0,
+            "engine registration outside a workload pump"
+        );
+        // SAFETY: see `engine_current_counts`; the active pump borrows the
+        // separate workloads field, not `resources`.
+        unsafe { (*resources).apply_registration(owner, reg) };
+    });
+}
+
+/// Select which workload owns registrations made by the currently entered
+/// isolate. The engine resource pointer remains unchanged for the thread.
+fn set_engine_owner(owner: u64) {
+    ENGINE_CONTEXT.with(|context| {
+        let (resources, _) = context.get();
+        context.set((resources, owner));
     });
 }
 
@@ -348,11 +387,11 @@ pub(crate) fn engine_next_timer_id() -> u64 {
 // ===========================================================================
 mod imp {
     use super::*;
-    use crate::scheduler_native::{
+    use crate::reactor::workload::{
         ActiveWorkload, ParkedWorkload, PumpOutcome, activate_realm_native,
         deactivate_realm_native, drop_parked, pump_realm_native, setup_realm_workload,
     };
-    use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source};
+    use cherenkov::{Completion, Reactor, WatchId, err, fs_event};
     use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
 
@@ -362,50 +401,6 @@ mod imp {
         mut compare: impl FnMut(u64, u64) -> std::cmp::Ordering,
     ) -> Option<u64> {
         runnable.iter().copied().min_by(|a, b| compare(*a, *b))
-    }
-
-    /// What a reactor completion resolves to. Every outstanding op — a tenant
-    /// read/write/readiness, a timer, the control pipe, or a per-workload wake
-    /// pipe — is keyed in `ops` by the `user_data` the `Poller` echoes back.
-    enum OpRecord {
-        /// A tenant read or bare readiness: resolve `resolver_id` with the
-        /// completion `res`. A short read is a valid result (the caller reads
-        /// what's available), so this resolves on the first completion. `_buffer`
-        /// keeps the realm's ArrayBuffer alive until the kernel is done with it.
-        Io {
-            owner: u64,
-            resolver_id: usize,
-            _buffer: Option<v8::SharedRef<v8::BackingStore>>,
-            fd: RawFd,
-            /// Read-direction op (fused read / read-readiness) vs writability.
-            dir_read: bool,
-        },
-        /// A tenant write. `writeAsync`'s contract (`stream.ts` `doFlush`) is to
-        /// write the *whole* buffer before resolving — the caller does not loop
-        /// on partial writes. So a partial completion re-submits the remainder
-        /// (from `base + done`) and only a full drain, error, resolves the
-        /// promise (with the total bytes written). `base`/`len` are the original
-        /// buffer; `done` is how much has landed so far.
-        Write {
-            owner: u64,
-            resolver_id: usize,
-            _buffer: Option<v8::SharedRef<v8::BackingStore>>,
-            fd: RawFd,
-            base: u64,
-            len: u32,
-            done: u32,
-        },
-        /// A tenant timer: resolve `resolver_id` (value ignored).
-        Timer {
-            owner: u64,
-            resolver_id: usize,
-            timer_id: u64,
-            deadline: Instant,
-            referenced: bool,
-        },
-        /// A realm-workload poll tick: just re-mark the owner runnable
-        /// (progress may have happened on a child's own thread).
-        RePoll { owner: u64 },
     }
 
     /// A hosted isolate plus the scheduling state the run-queue orders by.
@@ -420,7 +415,7 @@ mod imp {
         last_sync_heavy_report: Option<Instant>,
         /// Reactor I/O completions landed while parked (resolver_id, result),
         /// resolved at the start of the next pump.
-        ready_io: Vec<(usize, f64)>,
+        ready_events: Vec<crate::reactor::workload::ReactorEvent>,
     }
 
     /// Exclusive ownership of an exited isolate while it crosses a native
@@ -428,22 +423,7 @@ mod imp {
     /// the single audited boundary that moves it after all V8 scopes are gone.
     pub(crate) struct TransferWorkload {
         workload: EngineWorkload,
-        operations: Vec<TransferredOp>,
-    }
-
-    enum TransferredOp {
-        Readiness {
-            resolver_id: usize,
-            fd: i32,
-            dir_read: bool,
-        },
-        Timer {
-            resolver_id: usize,
-            timer_id: u64,
-            deadline: Instant,
-            referenced: bool,
-        },
-        RePoll,
+        operations: Vec<crate::reactor::io::Transfer>,
     }
 
     // SAFETY: the source removes the workload from its maps before constructing
@@ -465,12 +445,190 @@ mod imp {
         }
     }
 
+    enum ExternalRecord {
+        Proc { owner: u64, resolver_id: usize },
+        VnodeNext { owner: u64, fd: i32 },
+        SignalNext { owner: u64, signo: i32 },
+        RePoll { owner: u64 },
+    }
+
+    struct VnodeEntry {
+        owner: u64,
+        watch: WatchId,
+        callback_id: usize,
+    }
+
+    struct SignalEntry {
+        owner: u64,
+        watch: WatchId,
+        callback_id: usize,
+    }
+
+    pub(super) struct EngineResources {
+        io: crate::reactor::io::RuntimeIo,
+        external: HashMap<u64, ExternalRecord>,
+        vnodes: HashMap<(u64, i32), VnodeEntry>,
+        signals: HashMap<(u64, i32), SignalEntry>,
+    }
+
+    impl EngineResources {
+        pub(super) fn counts(&self, owner: u64) -> EngineCounts {
+            let counts = self.io.counts(crate::reactor::io::Owner::Workload(owner));
+            EngineCounts {
+                reads: counts.reads,
+                writes: counts.writes,
+                timers: counts.timers,
+                procs: self
+                    .external
+                    .values()
+                    .filter(|record| {
+                        matches!(record, ExternalRecord::Proc { owner: id, .. } if *id == owner)
+                    })
+                    .count() as u32,
+                vnodes: self
+                    .vnodes
+                    .values()
+                    .filter(|entry| entry.owner == owner)
+                    .count() as u32,
+            }
+        }
+
+        pub(super) fn apply_registration(&mut self, owner_id: u64, reg: EngineReg) {
+            let owner = crate::reactor::io::Owner::Workload(owner_id);
+            match reg {
+                EngineReg::Io(io) => {
+                    let target = crate::reactor::io::Target::Workload {
+                        id: owner_id,
+                        resolver_id: io.resolver_id,
+                    };
+                    match io.kind {
+                        IoKind::Read => self.io.submit_read(
+                            owner,
+                            target,
+                            io.buffer.expect("engine read missing backing store"),
+                            io.fd,
+                            io.buf_ptr,
+                            io.len,
+                        ),
+                        IoKind::Write => self.io.submit_write(
+                            owner,
+                            target,
+                            io.buffer.expect("engine write missing backing store"),
+                            io.fd,
+                            io.buf_ptr,
+                            io.len,
+                            io.written,
+                        ),
+                        IoKind::Readable => self.io.submit_readiness(owner, target, io.fd, true),
+                        IoKind::Writable => self.io.submit_readiness(owner, target, io.fd, false),
+                    }
+                }
+                EngineReg::Timer {
+                    timer_id,
+                    ms,
+                    resolver_id,
+                } => self.io.submit_timer(
+                    owner,
+                    crate::reactor::io::Target::Workload {
+                        id: owner_id,
+                        resolver_id,
+                    },
+                    timer_id,
+                    ms.max(0) as u64,
+                    true,
+                ),
+                EngineReg::CancelTimer { timer_id } => self.io.cancel_timer(timer_id),
+                EngineReg::SetTimerRef {
+                    timer_id,
+                    referenced,
+                } => self.io.set_timer_ref(timer_id, referenced),
+                EngineReg::RemoveRead { fd } => self.io.remove_read(fd),
+                EngineReg::RemoveWrite { fd } => self.io.remove_write(fd),
+                EngineReg::Proc { pid, resolver_id } => {
+                    let op = self.io.next_external_id();
+                    self.io.submit_proc_exit(op, pid);
+                    self.external.insert(
+                        op,
+                        ExternalRecord::Proc {
+                            owner: owner_id,
+                            resolver_id,
+                        },
+                    );
+                }
+                EngineReg::AddVnode {
+                    fd,
+                    path,
+                    callback_id,
+                } => self.add_vnode(owner_id, fd, path, callback_id),
+                EngineReg::RemoveVnode { fd } => self.remove_vnode(owner_id, fd),
+                EngineReg::AddSignal { signo, callback_id } => {
+                    self.add_signal(owner_id, signo, callback_id)
+                }
+                EngineReg::RemoveSignal { signo } => self.remove_signal(owner_id, signo),
+            }
+        }
+
+        fn add_vnode(&mut self, owner: u64, fd: i32, path: std::path::PathBuf, callback_id: usize) {
+            self.remove_vnode(owner, fd);
+            let Ok(watch) = self.io.add_fs_watch(&path, fs_event::ALL) else {
+                crate::async_rt::js_calls::unregister_callback(callback_id);
+                return;
+            };
+            let op = self.io.next_external_id();
+            self.io.submit_watch_next(op, watch);
+            self.external
+                .insert(op, ExternalRecord::VnodeNext { owner, fd });
+            self.vnodes.insert(
+                (owner, fd),
+                VnodeEntry {
+                    owner,
+                    watch,
+                    callback_id,
+                },
+            );
+        }
+
+        fn remove_vnode(&mut self, owner: u64, fd: i32) {
+            if let Some(entry) = self.vnodes.remove(&(owner, fd)) {
+                let _ = self.io.remove_kernel_watch(entry.watch);
+                crate::async_rt::js_calls::unregister_callback(entry.callback_id);
+            }
+        }
+
+        fn add_signal(&mut self, owner: u64, signo: i32, callback_id: usize) {
+            self.remove_signal(owner, signo);
+            let Ok(watch) = self.io.add_signal_watch(signo) else {
+                crate::async_rt::js_calls::unregister_callback(callback_id);
+                return;
+            };
+            let op = self.io.next_external_id();
+            self.io.submit_watch_next(op, watch);
+            self.external
+                .insert(op, ExternalRecord::SignalNext { owner, signo });
+            self.signals.insert(
+                (owner, signo),
+                SignalEntry {
+                    owner,
+                    watch,
+                    callback_id,
+                },
+            );
+        }
+
+        fn remove_signal(&mut self, owner: u64, signo: i32) {
+            if let Some(entry) = self.signals.remove(&(owner, signo)) {
+                let _ = self.io.remove_kernel_watch(entry.watch);
+                crate::async_rt::js_calls::unregister_callback(entry.callback_id);
+            }
+        }
+    }
+
     struct ReactorThread {
         config: ReactorConfig,
         /// The single completion reactor for this thread (cherenkov: io_uring on
         /// Linux, kqueue-emulating-completions on macOS, IOCP on Windows). The
         /// only I/O primitive the engine touches.
-        reactor: Reactor,
+        resources: Box<EngineResources>,
         control_rx: mpsc::Receiver<Control>,
         report_tx: mpsc::Sender<Report>,
         /// Bumped once per queued report; the orchestrator's drain hook turns
@@ -488,24 +646,6 @@ mod imp {
         forwarded: HashMap<u64, ForwardRoute>,
         /// Workloads with work ready to run (fresh wake, or a completion landed).
         runnable: HashSet<u64>,
-        /// Every outstanding op (tenant I/O and timers), keyed by the
-        /// `user_data` the reactor echoes on completion. Control pokes and
-        /// per-workload wakes are Notifier posts, not ops — they route by tag.
-        ops: HashMap<u64, OpRecord>,
-        /// Canceled ops whose records carry pointers (tenant buffers): the
-        /// reactor contract keeps every submitted pointer alive until the op's
-        /// completion is harvested, cancellation included, so these are parked
-        /// here until their CANCELED completion arrives.
-        doomed: HashMap<u64, OpRecord>,
-        /// Latest armed read-side / write-side op per fd — the loop allows
-        /// one watch per direction per fd, superseded by the newest waiter.
-        read_ud_by_fd: HashMap<i32, u64>,
-        write_ud_by_fd: HashMap<i32, u64>,
-        /// Tenant timer id → its op's `user_data`, so `CancelTimer` can find and
-        /// cancel the outstanding timeout.
-        timer_to_op: HashMap<u64, u64>,
-        /// Monotonic source of `user_data` values.
-        next_op_id: u64,
         next_sequence: u64,
         last_load_signature: (u32, u32, u32),
         /// When the last Load report was posted (coalescing floor).
@@ -525,11 +665,14 @@ mod imp {
     ) {
         let priority_applied = apply_thread_priority(config.reactor_class);
         crate::runtime::init_v8();
-        // Mark this as an engine thread so tenant internal:io ops register here.
-        ENGINE_IO.with(|c| *c.borrow_mut() = Some(Vec::new()));
         let mut engine = ReactorThread {
             config,
-            reactor,
+            resources: Box::new(EngineResources {
+                io: crate::reactor::io::RuntimeIo::new(reactor),
+                external: HashMap::new(),
+                vnodes: HashMap::new(),
+                signals: HashMap::new(),
+            }),
             control_rx,
             report_tx,
             report_seq,
@@ -538,18 +681,15 @@ mod imp {
             active: None,
             forwarded: HashMap::new(),
             runnable: HashSet::new(),
-            ops: HashMap::new(),
-            doomed: HashMap::new(),
-            read_ud_by_fd: HashMap::new(),
-            write_ud_by_fd: HashMap::new(),
-            timer_to_op: HashMap::new(),
-            next_op_id: 1,
             next_sequence: 1,
             last_load_signature: (u32::MAX, u32::MAX, u32::MAX),
             last_load_report: Instant::now(),
             running: true,
             scratch: Vec::new(),
         };
+        ENGINE_CONTEXT.with(|context| {
+            context.set((&mut *engine.resources, 0));
+        });
         engine.report(Report::Started {
             reactor_class: engine.config.reactor_class,
             priority_applied,
@@ -566,6 +706,7 @@ mod imp {
         for (_, w) in engine.workloads.drain() {
             drop_parked(w.inner);
         }
+        ENGINE_CONTEXT.with(|context| context.set((std::ptr::null_mut(), 0)));
     }
 
     #[cfg(target_os = "macos")]
@@ -621,13 +762,6 @@ mod imp {
             }
         }
 
-        /// Next `user_data`, monotonic per thread.
-        fn next_op(&mut self) -> u64 {
-            let id = self.next_op_id;
-            self.next_op_id += 1;
-            id
-        }
-
         fn drain_control(&mut self) {
             // A POST_CONTROL completion broke the wait; the messages are in
             // the mpsc, nothing to drain but the channel itself.
@@ -675,12 +809,14 @@ mod imp {
                 Control::Attach { mut workload } => {
                     workload.workload.inner.mark_moved_between_threads();
                     let workload_id = workload.workload.id;
-                    workload
-                        .workload
-                        .inner
-                        .install_wake_notifier(self.reactor.notifier(), post_wake(workload_id));
+                    workload.workload.inner.install_wake_notifier(
+                        self.resources.io.notifier(),
+                        post_wake(workload_id),
+                    );
                     self.workloads.insert(workload_id, workload.workload);
-                    self.attach_operations(workload_id, workload.operations);
+                    self.resources
+                        .io
+                        .attach_workload(workload_id, workload.operations);
                     self.report(Report::Moved { workload_id });
                 }
                 Control::ForwardCompletion {
@@ -714,6 +850,18 @@ mod imp {
                 });
                 return;
             }
+            if self.resources.external.values().any(|record| match record {
+                ExternalRecord::Proc { owner, .. }
+                | ExternalRecord::VnodeNext { owner, .. }
+                | ExternalRecord::SignalNext { owner, .. }
+                | ExternalRecord::RePoll { owner } => *owner == workload_id,
+            }) {
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason: "reactor-watch-active",
+                });
+                return;
+            }
             if self.active_id() == Some(workload_id) {
                 self.deactivate_active();
             }
@@ -721,7 +869,7 @@ mod imp {
                 return;
             };
             self.runnable.remove(&workload_id);
-            let operations = self.detach_transferable_operations(workload_id);
+            let operations = self.resources.io.detach_workload(workload_id);
             let route = ForwardRoute {
                 tx: destination_tx,
                 notify: destination_notify,
@@ -734,141 +882,6 @@ mod imp {
                 },
             });
             self.finish_forwarding_if_drained(workload_id);
-        }
-
-        fn detach_transferable_operations(&mut self, owner: u64) -> Vec<TransferredOp> {
-            let ids: Vec<u64> = self
-                .ops
-                .iter()
-                .filter_map(|(id, record)| match record {
-                    OpRecord::Io {
-                        owner: id_owner,
-                        _buffer: None,
-                        ..
-                    }
-                    | OpRecord::Timer {
-                        owner: id_owner, ..
-                    }
-                    | OpRecord::RePoll { owner: id_owner }
-                        if *id_owner == owner =>
-                    {
-                        Some(*id)
-                    }
-                    _ => None,
-                })
-                .collect();
-            let mut transferred = Vec::with_capacity(ids.len());
-            for id in ids {
-                self.reactor.cancel(id);
-                let Some(record) = self.ops.remove(&id) else {
-                    continue;
-                };
-                match record {
-                    OpRecord::Io {
-                        resolver_id,
-                        fd,
-                        dir_read,
-                        ..
-                    } => {
-                        let index = if dir_read {
-                            &mut self.read_ud_by_fd
-                        } else {
-                            &mut self.write_ud_by_fd
-                        };
-                        if index.get(&fd) == Some(&id) {
-                            index.remove(&fd);
-                        }
-                        transferred.push(TransferredOp::Readiness {
-                            resolver_id,
-                            fd,
-                            dir_read,
-                        });
-                    }
-                    OpRecord::Timer {
-                        resolver_id,
-                        timer_id,
-                        deadline,
-                        referenced,
-                        ..
-                    } => {
-                        self.timer_to_op.remove(&timer_id);
-                        transferred.push(TransferredOp::Timer {
-                            resolver_id,
-                            timer_id,
-                            deadline,
-                            referenced,
-                        });
-                    }
-                    OpRecord::RePoll { .. } => transferred.push(TransferredOp::RePoll),
-                    OpRecord::Write { .. } => unreachable!(),
-                }
-            }
-            transferred
-        }
-
-        fn attach_operations(&mut self, owner: u64, operations: Vec<TransferredOp>) {
-            for operation in operations {
-                let id = self.next_op();
-                match operation {
-                    TransferredOp::Readiness {
-                        resolver_id,
-                        fd,
-                        dir_read,
-                    } => {
-                        let op = if dir_read {
-                            Op::PollIn {
-                                src: Source::fd(fd),
-                            }
-                        } else {
-                            Op::PollOut {
-                                src: Source::fd(fd),
-                            }
-                        };
-                        unsafe { self.reactor.submit(id, op) };
-                        if dir_read {
-                            self.read_ud_by_fd.insert(fd, id);
-                        } else {
-                            self.write_ud_by_fd.insert(fd, id);
-                        }
-                        self.ops.insert(
-                            id,
-                            OpRecord::Io {
-                                owner,
-                                resolver_id,
-                                _buffer: None,
-                                fd,
-                                dir_read,
-                            },
-                        );
-                    }
-                    TransferredOp::Timer {
-                        resolver_id,
-                        timer_id,
-                        deadline,
-                        referenced,
-                    } => {
-                        let remaining = deadline
-                            .saturating_duration_since(Instant::now())
-                            .as_millis() as u64;
-                        self.reactor.submit_timeout(id, remaining);
-                        self.ops.insert(
-                            id,
-                            OpRecord::Timer {
-                                owner,
-                                resolver_id,
-                                timer_id,
-                                deadline,
-                                referenced,
-                            },
-                        );
-                        self.timer_to_op.insert(timer_id, id);
-                    }
-                    TransferredOp::RePoll => {
-                        self.reactor.submit_timeout(id, 25);
-                        self.ops.insert(id, OpRecord::RePoll { owner });
-                    }
-                }
-            }
         }
 
         #[allow(clippy::too_many_arguments)]
@@ -900,7 +913,8 @@ mod imp {
                     }
                 }
             };
-            let inner = match setup_realm_workload(
+            set_engine_owner(workload_id);
+            let setup = setup_realm_workload(
                 entry_path,
                 self.config.process_env.clone(),
                 self.config.package_map_json.clone(),
@@ -911,9 +925,13 @@ mod imp {
                 watch_mode,
                 repl_mode,
                 port_half,
-            ) {
+            );
+            set_engine_owner(0);
+            let inner = match setup {
                 Ok(w) => w,
                 Err(err) => {
+                    self.cancel_owned(workload_id);
+                    self.drain_doomed();
                     self.report(Report::Released {
                         workload_id,
                         reason: format!("setup_failed: {err}"),
@@ -923,7 +941,7 @@ mod imp {
             };
             let seq = self.next_sequence;
             self.next_sequence += 1;
-            inner.install_wake_notifier(self.reactor.notifier(), post_wake(workload_id));
+            inner.install_wake_notifier(self.resources.io.notifier(), post_wake(workload_id));
             self.workloads.insert(
                 workload_id,
                 EngineWorkload {
@@ -933,13 +951,9 @@ mod imp {
                     debt_micros: 0.0,
                     sequence: seq,
                     last_sync_heavy_report: None,
-                    ready_io: Vec::new(),
+                    ready_events: Vec::new(),
                 },
             );
-            // The realm's bootstrap armed its port watch and wake source
-            // during setup — claim those registrations before another
-            // workload's pump sweeps the thread-local.
-            self.collect_io_registrations(workload_id);
             // A realm runs immediately: its entry import is already pending.
             self.runnable.insert(workload_id);
         }
@@ -998,43 +1012,24 @@ mod imp {
                 .then(wa.id.cmp(&wb.id))
         }
 
-        fn set_current_counts(&self, id: u64) {
-            let mut io = 0u32;
-            let mut timers = 0u32;
-            for rec in self.ops.values() {
-                match rec {
-                    OpRecord::Io { owner, .. } | OpRecord::Write { owner, .. } if *owner == id => {
-                        io += 1
-                    }
-                    OpRecord::Timer {
-                        owner,
-                        referenced: true,
-                        ..
-                    } if *owner == id => timers += 1,
-                    _ => {}
-                }
-            }
-            ENGINE_CURRENT_COUNTS.with(|c| c.set((io, timers)));
-        }
-
         fn pump_one(&mut self, id: u64) {
             debug_assert_eq!(self.active_id(), Some(id));
-            self.set_current_counts(id);
             let hard = self.config.hard_budget_micros;
-            let io_completions: Vec<(usize, f64)> = {
+            let reactor_events = {
                 let w = match self.workloads.get_mut(&id) {
                     Some(w) => w,
                     None => return,
                 };
-                std::mem::take(&mut w.ready_io)
+                std::mem::take(&mut w.ready_events)
             };
             let t0 = Instant::now();
+            set_engine_owner(id);
             let outcome = {
                 let w = self.workloads.get_mut(&id).unwrap();
-                pump_realm_native(&mut w.inner, hard, &io_completions)
+                pump_realm_native(&mut w.inner, hard, &reactor_events)
             };
+            set_engine_owner(0);
             let slice_micros = t0.elapsed().as_micros() as f64;
-            self.collect_io_registrations(id);
             {
                 let w = self.workloads.get_mut(&id).unwrap();
                 w.debt_micros += slice_micros;
@@ -1052,195 +1047,19 @@ mod imp {
             }
             match outcome {
                 PumpOutcome::Pending => {}
-                PumpOutcome::PendingPoll => {
-                    // Progress can occur without an engine-visible completion;
-                    // re-pump this realm on a short cadence while it waits.
-                    let ud = self.next_op();
-                    self.reactor.submit_timeout(ud, 25);
-                    self.ops.insert(ud, OpRecord::RePoll { owner: id });
-                }
+                PumpOutcome::PendingPoll => self.arm_repoll(id),
                 PumpOutcome::Settled { result } => self.release(id, result),
                 PumpOutcome::Terminated => self.release(id, "terminated".to_string()),
                 PumpOutcome::Rejected(msg) => self.release(id, format!("failed: {msg}")),
             }
         }
 
-        /// Drain the tenant's just-registered reactor ops and submit them to the
-        /// poller as completion-based operations. A fused read/write submits the
-        /// actual transfer (the kernel does it on io_uring; the kqueue backend
-        /// synthesizes it on readiness); a bare readiness submits a poll; a timer
-        /// submits a timeout. Every op is keyed in `ops` by its `user_data`.
-        fn collect_io_registrations(&mut self, id: u64) {
-            let regs: Vec<EngineReg> = ENGINE_IO
-                .with(|c| c.borrow_mut().as_mut().map(std::mem::take))
-                .unwrap_or_default();
-            for reg in regs {
-                match reg {
-                    EngineReg::Io(io) => {
-                        let ud = self.next_op();
-                        match io.kind {
-                            IoKind::Write => {
-                                // Drain from where the sync fast path stopped.
-                                let base = io.buf_ptr as u64;
-                                let done = io.written as u32;
-                                let len = io.len as u32;
-                                // SAFETY: the tenant's ArrayBuffer is retained in
-                                // the OpRecord (`_buffer`) until this op's
-                                // completion is harvested, so the pointer stays
-                                // valid for the kernel's whole use of it.
-                                unsafe {
-                                    self.reactor.submit(
-                                        ud,
-                                        Op::Write {
-                                            src: Source::fd(io.fd),
-                                            buf: (base + done as u64) as *const u8,
-                                            len: len - done,
-                                            off: CURRENT_POS,
-                                        },
-                                    );
-                                }
-                                self.write_ud_by_fd.insert(io.fd, ud);
-                                self.ops.insert(
-                                    ud,
-                                    OpRecord::Write {
-                                        owner: id,
-                                        resolver_id: io.resolver_id,
-                                        _buffer: io.buffer,
-                                        fd: io.fd,
-                                        base,
-                                        len,
-                                        done,
-                                    },
-                                );
-                            }
-                            _ => {
-                                let dir_read = !matches!(io.kind, IoKind::Writable);
-                                // Supersede: the newest bare-readiness waiter
-                                // owns the fd's watch — cancel a previous POLL
-                                // op (its promise never settles; a stale one
-                                // may even be a ghost of a closed fd number).
-                                // Fused ops with kernel-owned buffers are not
-                                // superseded.
-                                let index = if dir_read {
-                                    &mut self.read_ud_by_fd
-                                } else {
-                                    &mut self.write_ud_by_fd
-                                };
-                                if let Some(old) = index.get(&io.fd).copied()
-                                    && matches!(
-                                        self.ops.get(&old),
-                                        Some(OpRecord::Io { _buffer: None, .. })
-                                    )
-                                {
-                                    self.reactor.cancel(old);
-                                    self.ops.remove(&old);
-                                }
-                                let op = match io.kind {
-                                    IoKind::Read => Op::Read {
-                                        src: Source::fd(io.fd),
-                                        buf: io.buf_ptr,
-                                        len: io.len as u32,
-                                        off: CURRENT_POS,
-                                    },
-                                    IoKind::Readable => Op::PollIn {
-                                        src: Source::fd(io.fd),
-                                    },
-                                    IoKind::Writable => Op::PollOut {
-                                        src: Source::fd(io.fd),
-                                    },
-                                    IoKind::Write => unreachable!(),
-                                };
-                                // SAFETY: fused-read buffers are retained in the
-                                // OpRecord until harvest; readiness ops carry no
-                                // pointers.
-                                unsafe { self.reactor.submit(ud, op) };
-                                if dir_read {
-                                    self.read_ud_by_fd.insert(io.fd, ud);
-                                } else {
-                                    self.write_ud_by_fd.insert(io.fd, ud);
-                                }
-                                self.ops.insert(
-                                    ud,
-                                    OpRecord::Io {
-                                        owner: id,
-                                        resolver_id: io.resolver_id,
-                                        _buffer: io.buffer,
-                                        fd: io.fd,
-                                        dir_read,
-                                    },
-                                );
-                            }
-                        }
-                    }
-                    EngineReg::Timer {
-                        timer_id,
-                        ms,
-                        resolver_id,
-                    } => {
-                        let ud = self.next_op();
-                        self.reactor.submit_timeout(ud, ms.max(0) as u64);
-                        self.ops.insert(
-                            ud,
-                            OpRecord::Timer {
-                                owner: id,
-                                resolver_id,
-                                timer_id,
-                                deadline: Instant::now() + Duration::from_millis(ms.max(0) as u64),
-                                referenced: true,
-                            },
-                        );
-                        self.timer_to_op.insert(timer_id, ud);
-                    }
-                    EngineReg::CancelTimer { timer_id } => {
-                        if let Some(ud) = self.timer_to_op.remove(&timer_id) {
-                            // Timer records carry no pointers, so eager removal
-                            // is safe; the CANCELED completion finds no record
-                            // and is ignored.
-                            self.reactor.cancel(ud);
-                            self.ops.remove(&ud);
-                        }
-                    }
-                    EngineReg::SetTimerRef {
-                        timer_id,
-                        referenced,
-                    } => {
-                        if let Some(ud) = self.timer_to_op.get(&timer_id) {
-                            if let Some(OpRecord::Timer {
-                                referenced: current,
-                                ..
-                            }) = self.ops.get_mut(ud)
-                            {
-                                *current = referenced;
-                            }
-                        }
-                    }
-                    EngineReg::RemoveRead { fd } => self.remove_watch(fd, true),
-                    EngineReg::RemoveWrite { fd } => self.remove_watch(fd, false),
-                }
-            }
-        }
-
-        /// Abandon the indexed watch on `fd` (loop removeRead/removeWrite):
-        /// cancel the armed op; pointer-carrying records are doomed until
-        /// their CANCELED completion is harvested.
-        fn remove_watch(&mut self, fd: i32, dir_read: bool) {
-            let index = if dir_read {
-                &mut self.read_ud_by_fd
-            } else {
-                &mut self.write_ud_by_fd
-            };
-            let Some(ud) = index.remove(&fd) else { return };
-            self.reactor.cancel(ud);
-            if let Some(rec) = self.ops.remove(&ud) {
-                let has_pointers = match &rec {
-                    OpRecord::Io { _buffer, .. } => _buffer.is_some(),
-                    OpRecord::Write { .. } => true,
-                    _ => false,
-                };
-                if has_pointers {
-                    self.doomed.insert(ud, rec);
-                }
-            }
+        fn arm_repoll(&mut self, owner: u64) {
+            let op = self.resources.io.next_external_id();
+            self.resources.io.submit_external_timeout(op, 25);
+            self.resources
+                .external
+                .insert(op, ExternalRecord::RePoll { owner });
         }
 
         /// Route one completion to its owner. `res` is the operation result: a
@@ -1248,141 +1067,93 @@ mod imp {
         /// (for a bare `PollOut`) 0; a negative value is `-errno`. The tenant's
         /// promise resolver gets it verbatim during the next pump.
         fn on_completion(&mut self, user_data: u64, res: i32) {
-            // A doomed op's completion (CANCELED or a racing result) only exists
-            // to release the record — the buffer it retained is now safe to drop.
-            if self.doomed.remove(&user_data).is_some() {
-                return;
-            }
-            let rec = match self.ops.remove(&user_data) {
-                Some(r) => r,
-                None => return, // cancelled or belonged to a released workload
-            };
-            let owner_for_drain = match &rec {
-                OpRecord::Io { owner, .. }
-                | OpRecord::Write { owner, .. }
-                | OpRecord::Timer { owner, .. }
-                | OpRecord::RePoll { owner } => *owner,
-            };
-            match rec {
-                OpRecord::Io {
-                    owner,
-                    resolver_id,
-                    _buffer,
-                    fd,
-                    dir_read,
-                } => {
-                    let index = if dir_read {
-                        &mut self.read_ud_by_fd
-                    } else {
-                        &mut self.write_ud_by_fd
+            match self.resources.io.dispatch(user_data, res) {
+                crate::reactor::io::Dispatch::Resolved(resolved) => {
+                    let crate::reactor::io::Target::Workload { id, resolver_id } = resolved.target
+                    else {
+                        unreachable!("host completion on reactor engine")
                     };
-                    if index.get(&fd) == Some(&user_data) {
-                        index.remove(&fd);
-                    }
-                    self.deliver_completion(owner, resolver_id, res as f64);
+                    self.deliver_completion(id, resolver_id, resolved.result);
+                    self.finish_forwarding_if_drained(id);
                 }
-                OpRecord::Write {
-                    owner,
-                    resolver_id,
-                    _buffer,
-                    fd,
-                    base,
-                    len,
-                    done,
-                } => {
-                    // Would-block (readiness lied / buffer filled between): re-arm
-                    // the same remainder rather than surfacing a spurious error.
-                    // Resubmitting after harvest is slot-legal: the completed
-                    // op's (fd, direction) slot was released at harvest.
-                    if res == -libc::EAGAIN {
-                        let ud = self.next_op();
-                        // SAFETY: `_buffer` moves into the new record, keeping
-                        // the tenant's ArrayBuffer alive until the new harvest.
-                        unsafe {
-                            self.reactor.submit(
-                                ud,
-                                Op::Write {
-                                    src: Source::fd(fd),
-                                    buf: (base + done as u64) as *const u8,
-                                    len: len - done,
-                                    off: CURRENT_POS,
-                                },
-                            );
+                crate::reactor::io::Dispatch::Handled => {}
+                crate::reactor::io::Dispatch::External => {
+                    let Some(record) = self.resources.external.remove(&user_data) else {
+                        return;
+                    };
+                    match record {
+                        ExternalRecord::Proc { owner, resolver_id } => {
+                            self.deliver_completion(owner, resolver_id, 0.0);
                         }
-                        self.ops.insert(
-                            ud,
-                            OpRecord::Write {
-                                owner,
-                                resolver_id,
-                                _buffer,
-                                fd,
-                                base,
-                                len,
-                                done,
-                            },
-                        );
-                    } else if res < 0 {
-                        // Real error: hand the tenant -errno.
-                        self.deliver_completion(owner, resolver_id, res as f64);
-                    } else {
-                        let new_done = done + res as u32;
-                        if new_done >= len {
-                            // Buffer fully drained: resolve with the total written.
-                            self.deliver_completion(owner, resolver_id, new_done as f64);
-                        } else {
-                            // Partial write: submit the remainder, keep draining.
-                            let ud = self.next_op();
-                            // SAFETY: `_buffer` moves into the new record,
-                            // keeping the buffer alive until the new harvest.
-                            unsafe {
-                                self.reactor.submit(
-                                    ud,
-                                    Op::Write {
-                                        src: Source::fd(fd),
-                                        buf: (base + new_done as u64) as *const u8,
-                                        len: len - new_done,
-                                        off: CURRENT_POS,
-                                    },
-                                );
+                        ExternalRecord::VnodeNext { owner, fd } => {
+                            if res == err::CANCELED || res == err::BUSY {
+                                return;
                             }
-                            self.ops.insert(
-                                ud,
-                                OpRecord::Write {
-                                    owner,
-                                    resolver_id,
-                                    _buffer,
-                                    fd,
-                                    base,
-                                    len,
-                                    done: new_done,
+                            if res < 0 {
+                                self.resources.vnodes.remove(&(owner, fd));
+                                return;
+                            }
+                            let Some(entry) = self.resources.vnodes.get(&(owner, fd)) else {
+                                return;
+                            };
+                            let callback_id = entry.callback_id;
+                            let watch = entry.watch;
+                            self.deliver_event(
+                                owner,
+                                crate::reactor::workload::ReactorEvent::Callback {
+                                    callback_id,
+                                    fflags: Some(super::super::imp::fs_to_note(res)),
                                 },
                             );
+                            let op = self.resources.io.next_external_id();
+                            self.resources.io.submit_watch_next(op, watch);
+                            self.resources
+                                .external
+                                .insert(op, ExternalRecord::VnodeNext { owner, fd });
                         }
-                    }
-                }
-                OpRecord::Timer {
-                    owner,
-                    resolver_id,
-                    timer_id,
-                    ..
-                } => {
-                    self.timer_to_op.remove(&timer_id);
-                    self.deliver_completion(owner, resolver_id, 0.0);
-                }
-                OpRecord::RePoll { owner } => {
-                    if self.workloads.contains_key(&owner) {
-                        self.runnable.insert(owner);
-                    } else if let Some(route) = self.forwarded.get(&owner) {
-                        route.send(Control::ForwardWake { workload_id: owner });
+                        ExternalRecord::SignalNext { owner, signo } => {
+                            if res < 0 {
+                                if res != err::CANCELED && res != err::BUSY {
+                                    self.resources.signals.remove(&(owner, signo));
+                                }
+                                return;
+                            }
+                            let Some(entry) = self.resources.signals.get(&(owner, signo)) else {
+                                return;
+                            };
+                            let callback_id = entry.callback_id;
+                            let watch = entry.watch;
+                            self.deliver_event(
+                                owner,
+                                crate::reactor::workload::ReactorEvent::Callback {
+                                    callback_id,
+                                    fflags: None,
+                                },
+                            );
+                            let op = self.resources.io.next_external_id();
+                            self.resources.io.submit_watch_next(op, watch);
+                            self.resources
+                                .external
+                                .insert(op, ExternalRecord::SignalNext { owner, signo });
+                        }
+                        ExternalRecord::RePoll { owner } => {
+                            if self.workloads.contains_key(&owner) {
+                                self.runnable.insert(owner);
+                            }
+                        }
                     }
                 }
             }
-            self.finish_forwarding_if_drained(owner_for_drain);
         }
 
         fn deliver_completion(&mut self, owner: u64, resolver_id: usize, result: f64) {
             if let Some(workload) = self.workloads.get_mut(&owner) {
-                workload.ready_io.push((resolver_id, result));
+                workload
+                    .ready_events
+                    .push(crate::reactor::workload::ReactorEvent::Resolve {
+                        resolver_id,
+                        result,
+                    });
                 self.runnable.insert(owner);
             } else if let Some(route) = self.forwarded.get(&owner) {
                 route.send(Control::ForwardCompletion {
@@ -1393,21 +1164,21 @@ mod imp {
             }
         }
 
+        fn deliver_event(&mut self, owner: u64, event: crate::reactor::workload::ReactorEvent) {
+            if let Some(workload) = self.workloads.get_mut(&owner) {
+                workload.ready_events.push(event);
+                self.runnable.insert(owner);
+            }
+        }
+
         fn finish_forwarding_if_drained(&mut self, owner: u64) {
             if !self.forwarded.contains_key(&owner) {
                 return;
             }
-            let pending = self.ops.values().any(|record| match record {
-                OpRecord::Io { owner: id, .. }
-                | OpRecord::Write { owner: id, .. }
-                | OpRecord::Timer { owner: id, .. }
-                | OpRecord::RePoll { owner: id } => *id == owner,
-            }) || self.doomed.values().any(|record| match record {
-                OpRecord::Io { owner: id, .. }
-                | OpRecord::Write { owner: id, .. }
-                | OpRecord::Timer { owner: id, .. }
-                | OpRecord::RePoll { owner: id } => *id == owner,
-            });
+            let pending = self
+                .resources
+                .io
+                .has_owner(crate::reactor::io::Owner::Workload(owner));
             if !pending {
                 self.forwarded.remove(&owner);
                 self.report(Report::Detached { workload_id: owner });
@@ -1442,31 +1213,52 @@ mod imp {
         /// CANCELED completion is harvested, so the buffer — and the isolate
         /// that owns its memory — must stay alive until then.
         fn cancel_owned(&mut self, id: u64) {
-            let owned: Vec<u64> = self
-                .ops
+            self.resources
+                .io
+                .cancel_owner(crate::reactor::io::Owner::Workload(id));
+            let external: Vec<u64> = self
+                .resources
+                .external
                 .iter()
-                .filter(|(_, rec)| match rec {
-                    OpRecord::Io { owner, .. }
-                    | OpRecord::Write { owner, .. }
-                    | OpRecord::Timer { owner, .. }
-                    | OpRecord::RePoll { owner } => *owner == id,
+                .filter_map(|(op, record)| match record {
+                    ExternalRecord::Proc { owner, .. }
+                    | ExternalRecord::VnodeNext { owner, .. }
+                    | ExternalRecord::SignalNext { owner, .. }
+                    | ExternalRecord::RePoll { owner }
+                        if *owner == id =>
+                    {
+                        Some(*op)
+                    }
+                    _ => None,
                 })
-                .map(|(ud, _)| *ud)
                 .collect();
-            for ud in owned {
-                self.reactor.cancel(ud);
-                let rec = self.ops.remove(&ud).unwrap();
-                let has_pointers = match &rec {
-                    OpRecord::Io { _buffer, .. } => _buffer.is_some(),
-                    OpRecord::Write { .. } => true,
-                    _ => false,
-                };
-                if has_pointers {
-                    self.doomed.insert(ud, rec);
+            for op in external {
+                self.resources.io.cancel_external(op);
+                self.resources.external.remove(&op);
+            }
+            let vnode_keys: Vec<(u64, i32)> = self
+                .resources
+                .vnodes
+                .keys()
+                .filter(|(owner, _)| *owner == id)
+                .copied()
+                .collect();
+            for key in vnode_keys {
+                if let Some(entry) = self.resources.vnodes.remove(&key) {
+                    let _ = self.resources.io.remove_kernel_watch(entry.watch);
                 }
             }
-            let ops = &self.ops;
-            self.timer_to_op.retain(|_, ud| ops.contains_key(ud));
+            let signals: Vec<(u64, i32)> = self
+                .resources
+                .signals
+                .iter()
+                .filter_map(|(key, entry)| (entry.owner == id).then_some(*key))
+                .collect();
+            for key in signals {
+                if let Some(entry) = self.resources.signals.remove(&key) {
+                    let _ = self.resources.io.remove_kernel_watch(entry.watch);
+                }
+            }
         }
 
         /// Wait until every doomed op's completion has been harvested (so its
@@ -1475,18 +1267,21 @@ mod imp {
         /// defensive bound, not an expected path.
         fn drain_doomed(&mut self) {
             let deadline = Instant::now() + Duration::from_secs(1);
-            while !self.doomed.is_empty() {
+            while !self.resources.io.doomed_is_empty() {
                 if Instant::now() >= deadline {
                     eprintln!(
                         "reactor engine: {} canceled op(s) unharvested at teardown",
-                        self.doomed.len()
+                        self.resources.io.doomed_len()
                     );
-                    self.doomed.clear();
+                    self.resources.io.discard_doomed();
                     break;
                 }
                 let mut buf = std::mem::take(&mut self.scratch);
                 buf.clear();
-                let _ = self.reactor.wait(Some(Duration::from_millis(10)), &mut buf);
+                let _ = self
+                    .resources
+                    .io
+                    .wait(Some(Duration::from_millis(10)), &mut buf);
                 for c in &buf {
                     self.route(c.user_data, c.res);
                 }
@@ -1524,7 +1319,7 @@ mod imp {
             };
             let mut buf = std::mem::take(&mut self.scratch);
             buf.clear();
-            let _ = self.reactor.wait(timeout, &mut buf);
+            let _ = self.resources.io.wait(timeout, &mut buf);
             for c in &buf {
                 self.route(c.user_data, c.res);
             }

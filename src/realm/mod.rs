@@ -9,7 +9,7 @@
 //!   operations.
 //!
 //! Ordinary realms are constructed and owned by reactor engines in
-//! `scheduler_native`; this module contains their shared bridge, serializer,
+//! `reactor::workload`; this module contains their shared bridge, serializer,
 //! transit-port, broadcast, and synthetic-module support. Process-isolated
 //! realms reuse the bootstrap through `child` and bridge their transit channel
 //! over a Unix socket.

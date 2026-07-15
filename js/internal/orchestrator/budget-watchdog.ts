@@ -21,7 +21,7 @@
 *
 * @internal
 */
-import { sweepBudgets } from 'internal:scheduler-native';
+import { sweepBudgets } from 'internal:reactor/workload';
 import { timeout } from 'internal:runtime/loop';
 
 const DEFAULT_SWEEP_INTERVAL_MS = 20;

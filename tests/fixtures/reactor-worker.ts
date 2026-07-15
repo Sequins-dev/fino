@@ -1,7 +1,7 @@
 /**
-* Realm entry for the reactor ImportMap-remap test. This realm has
-* `internal:runtime/loop` remapped to `fino:net/loop-reactor`, so every timer
-* and socket operation below runs on the native reactor. It performs a
+* Realm entry for the reactor integration test. Every realm uses the
+* reactor-backed `internal:runtime/loop`, so each timer and socket operation
+* below runs on the native reactor. It performs a
 * self-contained TCP echo plus a timer and then returns; if the reactor works,
 * the realm goes idle and self-exits (its `run()` resolves in the parent).
 *
@@ -30,10 +30,10 @@ async function readAll(reader: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   return out;
 }
 
-// Timer through the remapped loop (setTimeout → loop.timeout → reactor).
+// Timer through the runtime loop (setTimeout → loop.timeout → reactor).
 await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
-// File read through the remapped loop (fino:file readiness rides the reactor).
+// File read through the runtime loop (fino:file readiness rides the reactor).
 const fs = new DiskFileSystem();
 const selfBytes = await fs.readFile(new URL(import.meta.url).pathname);
 if (selfBytes.byteLength === 0) throw new Error('reactor realm: file read returned no bytes');

@@ -40,7 +40,6 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:tty` | `benchmarks/tty.bench.ts` |
 | `fino:tty/tui` | `benchmarks/tty/tui.bench.ts` |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
-| `fino:net/loop-reactor` | infrastructure: reactor-backed `internal:runtime/loop` drop-in (remap target), exercised via the reactor engine and HTTP benchmarks |
 | `fino:net/tls` | `benchmarks/net/tls.bench.ts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.ts` |
 | `fino:net/mdns` | not yet benchmarked |

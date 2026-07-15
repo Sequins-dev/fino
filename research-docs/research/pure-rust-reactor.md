@@ -11,15 +11,15 @@ isolates, their owner-tagged I/O and timers, and the runnable queue. TypeScript
 orchestration chooses a reactor and sends coarse place, move, revoke, and
 shutdown controls; it is not in the pump hot path.
 
-`internal:runtime/loop` is unconditionally backed by
-`fino:net/loop-reactor`. There is no legacy-loop feature flag or per-realm
-opt-in. The root reactor stores V8 resolver globals directly. Tenant reactor
-engines retain isolate-owned resolver identifiers and backing stores because
+`internal:runtime/loop` is unconditionally backed by the native reactor.
+There is no legacy-loop feature flag or per-realm
+opt-in. The host loop stores V8 resolver globals directly. Reactor engines
+retain isolate-owned resolver identifiers and backing stores because
 their completions may arrive while another isolate is active.
 
 ## Sticky active isolate
 
-A tenant reactor keeps at most one isolate entered. It computes the next
+A reactor thread keeps at most one isolate entered. It computes the next
 priority winner before changing V8 ownership:
 
 1. If the active isolate is still the winner, the reactor creates fresh
@@ -71,5 +71,6 @@ already-freed isolate.
 - Scaling policy and placement decisions are pure contracts today. Replica
   construction, distributed directory publication, and DNS cutover belong to
   the future cluster reconciler.
-- Root and tenant reactors share Cherenkov, but retain separate operation
-  representations because their V8 ownership and completion lifetimes differ.
+- Host loops and reactor engines share `RuntimeIo` for readiness, transfers,
+  timers, cancellation, and liveness. Only final JS delivery differs: the host
+  holds V8 globals while an engine records workload-local resolver IDs.

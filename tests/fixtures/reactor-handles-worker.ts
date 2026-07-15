@@ -1,6 +1,6 @@
 /**
 * Realm entry for the reactor handle-coverage test. This realm has
-* `internal:runtime/loop` remapped to `fino:net/loop-reactor`, so file
+* `internal:runtime/loop` is reactor-backed, so file
 * watches, OS signals, child-process exit, and background FFI wakes below all
 * ride the native reactor. Throws on any failure (the parent's `run()`
 * rejects); self-exits when idle.

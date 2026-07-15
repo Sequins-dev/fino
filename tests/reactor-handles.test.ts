@@ -1,17 +1,17 @@
 /**
 * Native reactor handle coverage — vnode, signal, and proc paths, plus the
-* remapped-realm end-to-end sweep (watch + signal + child exit + async FFI
+* realm end-to-end sweep (watch + signal + child exit + async FFI
 * wake). tests/reactor.test.ts covers readiness, fused I/O, and timers.
 *
-* Part A drives `fino:net/loop-reactor` directly in the main realm. `spin`
+* Part A drives `internal:runtime/loop` directly in the main realm. `spin`
 * only works from a synchronous frame (inside a microtask continuation its
 * drainMicrotasks is a re-entrant no-op), so each test makes exactly one
 * `rloop.run(...)` call before any `await`, awaits inside it only through the
 * reactor (rloop.timeout), and mutates files with synchronous libc FFI.
 */
 import { describe, it } from 'fino:test/test';
-import * as rloop from 'fino:net/loop-reactor';
-import { ImportMap, Realm } from 'fino:realm';
+import * as rloop from 'internal:runtime/loop';
+import { Realm } from 'fino:realm';
 import { Process, SIGUSR2, kill, os, pid } from 'fino:process';
 import { dlopen } from 'fino:ffi';
 
@@ -146,18 +146,12 @@ describe('native reactor — watch handles (direct drive)', () => {
   });
 });
 
-describe('native reactor — handle sweep in a remapped realm', () => {
+describe('native reactor — handle sweep in a realm', () => {
   it('watch + signal + child exit + async FFI wake all ride the reactor', async (t) => {
     const realm = new Realm({
-      entry: new URL('./fixtures/reactor-handles-worker.ts', import.meta.url).pathname,
-      overrides: ImportMap.inherit([
-        {
-          pattern: 'internal:runtime/loop',
-          directive: { type: 'remap', target: 'fino:net/loop-reactor' }
-        }
-      ])
+      entry: new URL('./fixtures/reactor-handles-worker.ts', import.meta.url).pathname
     });
     await realm.run();
-    t.ok(true, 'remapped realm exercised every handle type and self-exited');
+    t.ok(true, 'realm exercised every handle type and self-exited');
   });
 });
