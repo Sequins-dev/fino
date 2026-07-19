@@ -16,10 +16,13 @@ describe('reactor-only Realm architecture', () => {
     const root = cwd();
     const realm = await readTextFile(`${root}/js/realm/index.ts`);
     const bootstrap = await readTextFile(`${root}/js/internal/bootstrap.ts`);
+    const bridge = await readTextFile(`${root}/src/realm/bridge.rs`);
     const native = await readTextFile(`${root}/src/realm/native.rs`);
     t.ok(!realm.includes('RealmKind'));
     t.ok(!realm.includes('_stepChildren'));
     t.ok(!bootstrap.includes('child-steppers'));
+    t.ok(!bootstrap.includes('getPort,'), 'bootstrap has no same-isolate port fallback');
+    t.ok(!bridge.includes('"getPort"'), 'the realm bridge only exposes transit-backed ports');
     t.ok(!native.includes('createThreadContext'));
     t.ok(!native.includes('stepContext'));
   });
@@ -35,5 +38,17 @@ describe('reactor-only Realm architecture', () => {
     t.ok(!protocol.includes("t: 'PORT_MSG'"));
     t.ok(!cluster.includes('spawnRealm'));
     t.ok(!cluster.includes('remote: true'));
+  });
+
+  it('keeps scheduling inside reactors and placement inside orchestration', async (t) => {
+    const root = cwd();
+    const orchestrator = await readTextFile(`${root}/js/internal/orchestrator/index.ts`);
+    const bootstrap = await readTextFile(`${root}/js/internal/bootstrap.ts`);
+    const realm = await readTextFile(`${root}/js/realm/index.ts`);
+    t.ok(!orchestrator.includes('SchedulerNode'), 'node orchestration is not named as a scheduler');
+    t.ok(orchestrator.includes('NodeOrchestrator'), 'node placement is explicitly orchestration');
+    t.ok(!orchestrator.includes('deployNode'), 'the obsolete tenant deployment entrypoint is gone');
+    t.ok(!bootstrap.includes('__tenant_dispatch'), 'realms have no tenant activation mode');
+    t.ok(realm.includes('class RealmDeployment'), 'replication is represented by a distinct deployment');
   });
 });

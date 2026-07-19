@@ -150,8 +150,7 @@ fn schedule_sync(
 /// Called by the bootstrap with `(isDone, onDone, hooks?)` when the realm's
 /// loop module is reactor-backed: the Rust host loop drives the reactor itself
 /// (wait → dispatch → pump to quiescence → reclassify) and calls only these
-/// thin policy callbacks. `hooks` is an optional object with `flushPorts`,
-/// `stepChildren`, and `childrenAlive` functions.
+/// thin policy callbacks. `hooks` may provide a `flushPorts` function.
 fn run_native_loop(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,

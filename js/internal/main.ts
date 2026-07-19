@@ -27,9 +27,8 @@
 * predicate first waits for the command promise to settle, then kicks off
 * shutdown hooks exactly once and only reports the loop finished after those
 * hooks resolve, guaranteeing cleanup runs before exit. `fino:realm` is imported
-* lazily so the root loop can also step and observe liveness of any child Realms
-* that were created, without hard-depending on the realm module being
-* registered (during tests it may not be).
+* The realm allocator registers its own shutdown hook lazily when it first
+* starts the node's reactor pool.
 *
 * ```ts no_run
 * import 'internal:main';
@@ -55,9 +54,6 @@ if (argv[1] === '--sandbox-launcher') {
 }
 import root from '../commands/root.ts';
 import { runShutdownHooks } from './shutdown.ts';
-// Child-realm stepping needs no wiring here: fino:realm registers its
-// steppers with the bootstrap (_registerChildSteppers) when imported, in
-// every realm alike.
 function normalizeCliArgv(args: string[]): string[] {
   if (args[0] === '--bench') return ['bench', ...args.slice(1)];
   return args;

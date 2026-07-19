@@ -1,101 +1,104 @@
-# Realm Allocation: One Realm, One Scheduler
+# Realm Allocation: Reactors Schedule, Orchestration Places
 
 ## Status
 
 The node-local design is implemented on this branch. Every ordinary `Realm`
-is a full V8 isolate owned and pumped by a scheduler reactor. There are no
-embedded realms, caller-selected thread realms, remote realm kinds, child
-steppers, or `RealmPool` execution path.
+is exactly one execution container: a V8 isolate owned and pumped by a reactor
+thread. There are no embedded realms, caller-selected thread realms, child
+steppers, or separate scheduling layer above the reactor.
 
-The only explicit execution boundary is `process: true`. It requests OS-level
-isolation; it is not a node or reactor placement hint.
+`process: true` is the only alternate execution boundary. It requests
+one-to-one OS-process isolation; it is not a reactor or node placement hint.
 
 ## Public model
 
+`Realm` is one container and preserves one module heap:
+
 ```ts
-const realm = new Realm({
+const realm = new Realm({ entry: './worker.ts' });
+const result = await realm.call(input);
+```
+
+`RealmDeployment` owns a scalable set of independent realms:
+
+```ts
+const workers = new RealmDeployment({
   entry: './worker.ts',
   scaling: { min: 1, max: 4 },
 });
 
-const result = await realm.call(input);
+const result = await workers.call(input);
 ```
 
-Callers describe the workload and its isolation requirements. They do not
-select a thread, shard, or node. `run()`, `call()`, `port`, watch, REPL,
-facades, import rules, and termination use the same scheduled construction
-path.
+Callers describe execution and isolation requirements. They never select a
+reactor or node. A `Realm` does not contain replica policy, admission queues,
+load observations, or placement state. A deployment does not schedule realm
+pump slices; it only decides when independent capacity is needed.
 
-## Node-local architecture
+## Node-local responsibilities
+
+The layers have intentionally narrow ownership:
 
 1. `Realm` serializes its entry, import rules, data, bootstrap metadata, watch
-   mode, mobility, and scaling policy.
-2. `internal:realm/allocate` submits that configuration to the node's single
-   `SchedulerNode`. A realm already running on an engine thread sends the
-   request back to the owning node rather than creating a nested scheduler.
-3. `SchedulerNode` creates a `NodeIsolateCollection` workload record and asks
-   `WorkloadAllocator` for an eligible latency or batch reactor.
-4. The reactor constructs the isolate with `setup_realm_workload`, owns its
-   async state and transit port, and pumps it through the native loop.
-5. Release, movement, containment, and load reports return to the same node
-   controller.
+   mode, and local-mobility constraint.
+2. `internal:realm/allocate` submits that description to the node's single
+   `NodeOrchestrator`. A realm already running on a reactor sends the request
+   back to the owning node rather than creating nested orchestration.
+3. `NodeOrchestrator` owns reactor lifecycle and uses `NodeRealmCollection` to
+   record placement, admission capacity, load summaries, and move reservations.
+4. The selected reactor constructs the isolate and directly schedules pump
+   slices across its assigned realms. TypeScript orchestration is never in this
+   hot path.
+5. Reactor lifecycle, load, movement, and containment reports return to the
+   node orchestrator.
 
-The reactor keeps its current isolate locked and entered while it remains the
-highest-priority runnable workload. It exits only to switch isolates, transfer
-ownership, or dispose the isolate.
+The reactor keeps its selected isolate locked and entered across consecutive
+slices. It exits only when another isolate wins, ownership moves, or the
+isolate is disposed.
 
 ## Same-node movement
 
-Same-node offload transfers the live isolate rather than reconstructing it.
-At a pump boundary the source reactor removes the workload from its runnable
-and ownership maps, transfers exclusive isolate ownership under V8 locking,
-and attaches it to the destination.
+Same-node offload transfers the live isolate rather than reconstructing it. At
+a pump boundary, the source reactor detaches the workload and transfers
+exclusive isolate ownership to the destination. Destination-compatible
+operations are rearmed there. Source-bound operations retain safe backing
+storage and forward plain completion results until they drain.
 
-Transferable timers and readiness registrations are rearmed on the destination.
-Already-submitted source operations retain safe backing storage, forward their
-plain completion result to the new owner, and then detach. The forwarding route
-is removed once the source has no outstanding operations for that workload.
+This preserves module state, promises, the logical port, and heap identity.
+Local movement is therefore preferred while node imbalance remains tolerable.
+Repeatedly blocking isolates move to lower-priority batch reactors, which are
+also given lower OS scheduling priority and can retire when idle.
 
-This preserves module state, promises, the logical port, and heap identity, so
-local movement is preferred while node imbalance remains tolerable. Blocking
-or CPU-heavy isolates move to lower-priority batch reactors; OS thread priority
-also keeps those reactors from competing equally with latency reactors.
+`localMobility: 'pinned'` is reserved for audited native integrations with real
+OS-thread affinity. It is not a performance tuning hint.
 
-## Replicas and liveness
+## Deployment admission and liveness
 
-`RealmOptions.scaling` describes independent isolate replicas:
+`RealmDeployment` owns independent replicas and admits at most one call or
+affine session to each replica at a time:
 
-- `mode: 'replicated'` is the default;
-- `mode: 'bound'` fixes the logical realm at one isolate;
-- `min` replicas warm eagerly while the realm is referenced;
-- a queued call that remains unhealthy for the scale-up window adds one
-  replica, up to `max`;
-- an excess idle replica drains after the scale-down window (30 seconds by
-  default; the cluster policy's quiet threshold is below 10% busy with no
-  queued work).
+- `min` replicas warm during construction;
+- sustained call-queue delay creates one replica at a time, up to `max`;
+- an excess replica with no admitted work retires after the quiet window;
+- `connect()` reserves a stable replica until its session closes;
+- `broadcast()` sends to every ready replica.
 
-Each call is assigned to one idle replica. Replicas have independent heaps; a
-workload that depends on private mutable heap state must use `bound`.
+Realms and deployments are referenced by default, but referenced status does
+not prevent natural completion. `unref()` allows otherwise-idle capacity to
+drain. Active calls, affine sessions, `run()`, and referenced resources inside
+the child keep their own work alive.
 
-`ref()`, `unref()`, and `hasRef()` control idle deployment liveness. Active
-calls and `run()` keep their own work alive. An unreferenced realm withdraws
-idle capacity and can be reconstructed by a later call; referencing it again
-rehydrates its availability minimum.
+## Failure semantics
 
-## Cluster boundary
+A hard reactor loss destroys its isolates. The orchestrator releases affected
+allocations and restores reactor capacity; it does not replay calls whose
+completion is unknown. A later `Realm.call()` can reconstruct its one physical
+container, while a deployment can admit later work to a surviving or newly
+created replica.
 
-The cluster allocator will choose a node, not a reactor. The destination node
-then runs the unchanged local admission path above. Reactor IDs, live isolate
-handles, native operations, and transit handles never cross the machine
-boundary.
+Moving a live isolate within the node is state preserving. Moving work across
+nodes is not: it must create a successor from serialized configuration, switch
+routing after readiness, and drain the predecessor.
 
-New workloads and new replicas should prefer a different node when that node's
-load is equal or lower. Existing live isolates should remain local or move
-between local reactors unless node imbalance or availability policy justifies
-the more expensive cross-node replacement.
-
-Cross-node movement therefore means construct successor, wait for readiness,
-switch routing, and drain predecessor. It cannot transparently transfer a V8
-heap, socket, file descriptor, or submitted kernel operation.
-
-See `multi-node-distribution.md` for the distributed control and data planes.
+See `multi-node-distribution.md` for the future distributed control and data
+planes.

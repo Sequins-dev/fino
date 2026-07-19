@@ -25,8 +25,8 @@
 * allocated from a single monotonic counter across scalar, stream, and sink
 * calls, which lets one drain path disambiguate a response by its id.
 *
-* Only available in child Realms (where the realm port has a live
-* channel_tx). Embedded child Realms are not a primary facade target.
+* Only available in child Realms, where the realm port has a live transit
+* channel to its parent.
 *
 * This is an internal transport primitive; application code should use the
 * `fino:realm` Facade proxy modules, which build on top of it.
@@ -49,11 +49,8 @@ import { serialize } from 'internal:serializer';
 // ---------------------------------------------------------------------------
 // Transport selection
 //
-// `globalThis.realmPort` is this realm's channel to its parent — a ThreadPort
-// over a transit half for allocated/process realms, a MessagePort for
-// embedded ones. Using `.postMessage()` uniformly means parent-rpc works for
-// all realm kinds without special-casing. The bootstrap sets realmPort before
-// any user code runs.
+// `globalThis.realmPort` is this realm's ThreadPort over a transit-channel
+// half. The bootstrap sets it before any user code runs.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Pending scalar call registry

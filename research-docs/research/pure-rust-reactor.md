@@ -66,7 +66,7 @@ already-freed isolate.
 ## Deliberate boundaries
 
 - Node-local scheduling does not know about remote nodes.
-- Cluster placement chooses a node; `SchedulerNode` admits it to a local
+- Cluster placement chooses a node; `NodeOrchestrator` admits it to a local
   reactor.
 - Scaling policy and placement decisions are pure contracts today. Replica
   construction, distributed directory publication, and DNS cutover belong to

@@ -97,7 +97,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             root_queue,
             config.import_rules,
             Some(config.entry_path),
-            None,
             Some(config.port_half),
             config.watch_mode,
             false, // thread/process realms don't support repl mode

@@ -33,8 +33,8 @@ run skills, plugins, and untrusted code with only the imports you grant.
 
 - [Realm Lifecycle](./realm/lifecycle.md) — creating, running, calling into,
   and reloading realms.
-- [Isolation Levels](./realm/isolation.md) — embedded, thread, process, and
-  remote modes and their trade-offs.
+- [Isolation and Placement](./realm/isolation.md) — reactor-hosted realms,
+  transparent placement, and process isolation.
 - [Messaging](./realm/realm-messaging.md) — ports and `BroadcastChannel`
   between parent and child.
 - [Facades](./realm/facades.md) — exposing parent-side logic as a virtual

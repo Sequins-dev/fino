@@ -337,7 +337,6 @@ pub(crate) fn setup_realm_workload(
             root_queue,
             import_rules,
             Some(entry_path),
-            None,
             Some(port_half),
             watch_mode,
             repl_mode,

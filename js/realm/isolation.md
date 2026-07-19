@@ -3,7 +3,7 @@ weight: 12
 ---
 # Isolation and Placement
 
-Ordinary Fino realms always run as scheduler-owned V8 isolates on reactor
+Ordinary Fino realms always run as V8 isolates on reactor
 threads. The allocator chooses the node and reactor; application code does not
 select embedded, thread, or remote modes.
 
@@ -15,11 +15,11 @@ const result = await realm.call(payload);
 ```
 
 This gives every realm an independent heap, module graph, global object,
-microtask queue, and event-loop ownership. The scheduler may move the live
+microtask queue, and event-loop ownership. Node orchestration may move the live
 isolate between reactor threads on the same node without rebuilding it.
 
 Use `localMobility: 'pinned'` only for native integrations that truly require
-OS-thread affinity. It prevents local movement and may reduce the scheduler's
+OS-thread affinity. It prevents local movement and may reduce orchestration's
 ability to contain blocking work.
 
 ## Process isolation
@@ -41,5 +41,5 @@ rules limit which runtime capabilities code can request. A process boundary
 contains crashes and can carry OS restrictions. Use both for adversarial code.
 
 Cluster placement is transparent. Joining a cluster does not change the Realm
-API or expose a remote mode; the distributed scheduler will place serializable
+API or expose a remote mode; cluster orchestration will place serializable
 realm configurations through the same node admission path.

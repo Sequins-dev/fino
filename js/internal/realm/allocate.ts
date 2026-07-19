@@ -6,16 +6,15 @@
 * This module is the chokepoint every non-process realm construction goes
 * through, so growing the policy never touches `Realm` itself.
 *
-* Current policy: every ordinary realm is placed on the node's scheduler
-* reactor set and recorded in its `NodeIsolateCollection`. Reactor-hosted
-* parents submit allocation requests back to the owning node over the internal
-* control channel instead of creating their own scheduler.
+* Every ordinary realm is placed by the node orchestrator. Reactor-hosted
+* parents submit allocation requests back to that owner over the internal
+* control channel instead of creating another orchestrator.
 *
 * See research-docs/research/realm-allocation.md.
 *
 * @internal
 */
-import { SchedulerNode } from 'internal:orchestrator/scheduler-node';
+import { NodeOrchestrator } from 'internal:orchestrator/node-orchestrator';
 import { isEngineThread } from 'internal:reactor-engine';
 import { registerShutdownHook } from 'internal:shutdown';
 
@@ -23,8 +22,8 @@ import { registerShutdownHook } from 'internal:shutdown';
 // The node pool
 // ---------------------------------------------------------------------------
 
-/** How many scheduler threads the lazily-started node boots. */
-let _node: SchedulerNode | null = null;
+/** Lazily initialized node orchestration state. */
+let _node: NodeOrchestrator | null = null;
 let _liveRealms = 0;
 let _idleShutdownTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -110,9 +109,9 @@ function closeControlChannel(): void {
   channel?.close();
 }
 
-function ensureNode(): SchedulerNode {
+function ensureNode(): NodeOrchestrator {
   if (_node === null) {
-    _node = new SchedulerNode({ capacity: 8 });
+    _node = new NodeOrchestrator({ capacity: 8 });
     _node.start();
     const channel = controlChannel();
     if (!_serverListening) channel.addEventListener('message', (event) => {
@@ -142,8 +141,8 @@ function ensureNode(): SchedulerNode {
     _serverListening = true;
     if (!_shutdownHookRegistered) {
       _shutdownHookRegistered = true;
-      // The host realm winding down takes its scheduler with it: orphaned
-      // scheduled realms (created but never run/terminated) must not hold the
+      // The host realm winding down takes its reactors with it: orphaned
+      // realms (created but never run/terminated) must not hold the
       // process open.
       registerShutdownHook(() => {
         _shutdownHookRegistered = false;
@@ -164,13 +163,13 @@ function ensureNode(): SchedulerNode {
 }
 
 /**
-* Idle shutdown: the node's scheduler threads, report pumps, and watchdog
+* Idle shutdown: the node's reactors, report pumps, and watchdog
 * interval hold the host realm alive, so the pool winds down when its last
 * realm releases. Debounced — back-to-back workloads (one test suite ending
 * as the next begins) reuse the node instead of racing a teardown against a
 * fresh placement; a genuinely idle process pays one 50ms tail.
 */
-function releaseRealmRef(node: SchedulerNode): void {
+function releaseRealmRef(node: NodeOrchestrator): void {
   if (_node !== node) return;
   _liveRealms--;
   if (_liveRealms > 0) return;
@@ -198,7 +197,7 @@ export interface ScheduledRealmAllocation {
 }
 
 /**
-* Place a realm config on the node scheduler. Returns `null` when all eligible
+* Place a realm config through the node orchestrator. Returns `null` when all eligible
 * reactors are at their admission limits.
 *
 * @internal
@@ -210,11 +209,7 @@ export interface RealmAllocationConfig {
   bootstrapData?: string;
   watch?: boolean;
   repl?: boolean;
-  tenantId?: string;
   localMobility?: 'movable' | 'pinned';
-  replication?: 'replicated' | 'bound';
-  scalingMin?: number;
-  scalingMax?: number;
 }
 
 export function placeScheduledRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
@@ -233,11 +228,7 @@ function placeLocalRealm(config: RealmAllocationConfig): ScheduledRealmAllocatio
   const placed = node.deployRealm({
     entryPath: config.entry,
     rulesJson: config.rulesJson,
-    ...config.tenantId !== undefined ? { tenantId: config.tenantId } : {},
     ...config.localMobility !== undefined ? { localMobility: config.localMobility } : {},
-    ...config.replication !== undefined ? { replication: config.replication } : {},
-    ...config.scalingMin !== undefined ? { scalingMin: config.scalingMin } : {},
-    ...config.scalingMax !== undefined ? { scalingMax: config.scalingMax } : {},
     ...config.realmData !== undefined ? { realmData: config.realmData } : {},
     ...config.bootstrapData !== undefined ? { bootstrapData: config.bootstrapData } : {},
     ...config.watch !== undefined ? { watch: config.watch } : {},

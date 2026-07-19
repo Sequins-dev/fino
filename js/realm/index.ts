@@ -5,9 +5,10 @@
 * microtask queue, and event loop. The parent's import rule list governs every
 * module resolution in the child; the child can layer overrides on top.
 *
-* Every ordinary realm is hosted by a reactor thread selected by the node
-* scheduler. `process: true` adds an OS-process isolation boundary while
-* preserving the same Realm API.
+* Every ordinary realm is hosted by a reactor thread selected by node
+* orchestration. `RealmDeployment` manages independent replicas without
+* changing the one-container meaning of `Realm`. `process: true` adds an
+* OS-process isolation boundary while preserving the same Realm API.
 *
 * The import rule list uses last-match-wins semantics. Declare a wildcard
 * first as the baseline and more specific patterns afterwards as overrides.
@@ -38,7 +39,8 @@ import { readable, removeRead } from 'internal:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
-import { normalizeScalingPolicy } from 'internal:orchestrator/scaling';
+import * as deployment from 'internal:orchestrator/deployment';
+import type { ReplicaLease } from 'internal:orchestrator/deployment';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
 const _topicRealmSpawn = topic(otelRuntimeTopic('realm', 'spawn', 'start'));
@@ -1724,11 +1726,9 @@ export interface RealmProviders {
 /**
 * Options for constructing and running a child realm.
 *
-* `process: true` requests an OS-process isolation boundary. Without it, the
-* allocator normally places the realm on the node's reactor pool and may fall
-* back to a dedicated reactor when the pool cannot admit it. Same-isolate
-* placement is reserved for configurations that require direct port coupling or
-* REPL behavior.
+* `process: true` requests an OS-process isolation boundary. Without it, node
+* orchestration places the realm on a reactor. Placement is intentionally not
+* exposed as a construction option.
 *
 * ```ts no_run
 * import { Realm, type RealmOptions } from 'fino:realm';
@@ -1809,9 +1809,9 @@ export interface RealmOptions {
   /**
   * If true, spawn the child Realm as a separate OS process for hard crash
   * isolation and OS-level sandbox enforcement. Messaging uses framed binary
-  * over a Unix socketpair. This is an isolation boundary the allocator must
-  * honor, not a placement hint — plain realms are placed on a reactor by
-  * the allocator automatically.
+  * over a Unix socketpair. This is an isolation boundary orchestration must
+  * honor, not a placement hint — plain realms are placed on a reactor
+  * automatically.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -1898,47 +1898,27 @@ export interface RealmOptions {
   * ```
   */
   localMobility?: 'movable' | 'pinned';
-  /**
-  * Isolate replication and availability policy.
-  *
-  * Realms are `replicated` by default: the scheduler may construct independent
-  * isolates from the same entry, import rules, and initial `data`. Their heaps
-  * are not synchronized, so applications whose correctness depends on private
-  * mutable heap state must select `bound`.
-  *
-  * `min` defaults to `1`. `max` defaults to the live cluster reactor count and
-  * is always capped by eligible physical capacity. Bound realms require exactly
-  * one replica and run in the lower-priority isolated pool.
-  *
-  * ```ts no_run
-  * import { Realm } from 'fino:realm';
-  *
-  * const worker = new Realm({
-  *   entry: './request-worker.ts',
-  *   scaling: { mode: 'replicated', min: 2 },
-  * });
-  * ```
-  */
-  scaling?: RealmScalingOptions;
 }
 
-/** Replication bounds for a logical Realm. */
-export interface RealmScalingOptions {
-  /** Independent heaps may replicate; `bound` preserves one caller-bound heap. Defaults to `replicated`. */
-  mode?: 'replicated' | 'bound';
+/** Replica bounds and stabilization windows for a `RealmDeployment`. */
+export interface RealmDeploymentScalingOptions {
   /** Availability minimum. Defaults to one and must not exceed `max`. */
   min?: number;
-  /** Optional ceiling; live eligible reactor count remains the hard maximum. */
+  /** Replica ceiling. Defaults to the host's available parallelism. */
   max?: number;
   /** Queue-pressure stabilization window before adding a replica. Defaults to 1 second. */
   scaleUpWindowMs?: number;
-  /** Busy-ratio ceiling for scale-down eligibility. Defaults to 10 percent. */
-  scaleDownBusyRatio?: number;
   /** Quiet stabilization window before draining an excess replica. Defaults to 30 seconds. */
   scaleDownWindowMs?: number;
-  /** Target runnable-loop delay used by cluster reconciliation. Defaults to 5 milliseconds. */
-  loopDelayTargetMs?: number;
 }
+
+/** Options for a replicated deployment of independent realms. */
+export type RealmDeploymentOptions = Omit<RealmOptions, 'process' | 'watch' | 'repl'> & {
+  /** Process isolation is one-to-one and therefore only supported by `Realm`. */
+  process?: never;
+  /** Replica-count and queue-pressure policy. */
+  scaling?: RealmDeploymentScalingOptions;
+};
 /**
 * Options for creating a Realm from in-memory entrypoint source.
 *
@@ -2229,13 +2209,10 @@ export class ProcessPort extends BaseTransportPort {
   }
 }
 let _nextSourceRealmId = 0;
-let _nextLogicalRealmId = 0;
 
-interface ScheduledReplica {
+interface ScheduledRealmInstance {
   allocation: ScheduledRealmAllocation;
   port: ThreadPort;
-  activeCalls: number;
-  idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface ProcessRealmConfig {
@@ -2293,7 +2270,7 @@ function _matchesCallResponse(data: unknown, correlationId: number): boolean {
 /**
 * Isolated child realm with its own module graph and communication port.
 *
-* Ordinary realms run on a scheduler-owned reactor thread. Process-isolated
+* Ordinary realms run on a reactor thread. Process-isolated
 * realms use the same API with a separate OS process boundary. Use `run()` for
 * entry modules with side effects and `call()` for callable entry modules.
 *
@@ -2307,7 +2284,7 @@ function _matchesCallResponse(data: unknown, correlationId: number): boolean {
 */
 export class Realm<F extends RealmFn = RealmFn> {
   /** Whether this logical Realm should keep its owner alive while idle. */
-  #referenced = false;
+  #referenced = true;
   #nextCallId = 0;
   #activeCalls = 0;
   #idleCallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2372,21 +2349,11 @@ export class Realm<F extends RealmFn = RealmFn> {
   * @internal
   */
   #watchTerminated = false;
-  /** Pool placement record when the allocator hosted this realm on the node pool. */
-  #primaryAllocation: ScheduledRealmAllocation | null = null;
-  #primaryReady: Promise<ScheduledRealmAllocation> | null = null;
+  /** The one physical scheduled execution container owned by this Realm. */
+  #scheduled: ScheduledRealmInstance | null = null;
+  #scheduledReady: Promise<ScheduledRealmInstance> | null = null;
+  #lastScheduledRelease: Promise<string> | null = null;
   #scheduledConfig: Parameters<typeof placeScheduledRealm>[0] | null = null;
-  #activeScheduledPort: ThreadPort | null = null;
-  #scheduledReplicas: ScheduledReplica[] = [];
-  #replicaWaiters: Array<() => void> = [];
-  #scalingMax: number;
-  #scalingMin: number;
-  #scaleUpWindowMs: number;
-  #scaleDownWindowMs: number;
-  #minimumReady: Promise<void> = Promise.resolve();
-  #logicalRealmId = _nextLogicalRealmId++;
-  #replicaSequence = 0;
-  #rehydrating: Promise<ScheduledReplica> | null = null;
   #terminated = false;
   #facades: Facade[] = [];
   #processConfig: ProcessRealmConfig | null = null;
@@ -2414,6 +2381,13 @@ export class Realm<F extends RealmFn = RealmFn> {
   * @internal
   */
   #activeChildPort: ProcessPort | null = null;
+  /**
+  * Resolves after this Realm's execution container has been allocated.
+  *
+  * Allocation failures reject this promise. Evaluation and call failures are
+  * reported by `run()` and `call()` instead.
+  */
+  readonly ready: Promise<void>;
   /**
   * Create a Realm whose entrypoint is in-memory module source.
   *
@@ -2502,19 +2476,9 @@ export class Realm<F extends RealmFn = RealmFn> {
   * @param opts Realm construction and loader options.
   */
   constructor(opts: RealmOptions) {
-    const localCapacity = Math.max(1, (navigator.hardwareConcurrency || 1) - ((navigator.hardwareConcurrency || 1) > 1 ? 1 : 0));
-    const policyCapacity = Math.max(localCapacity, opts.scaling?.min ?? 0, opts.scaling?.max ?? 0);
-    if (opts.scaling?.mode === 'bound' && (opts.scaling.min !== undefined && opts.scaling.min !== 1 || opts.scaling.max !== undefined && opts.scaling.max !== 1)) {
-      throw new RangeError('a bound realm is fixed to one replica');
+    if ('scaling' in opts) {
+      throw new TypeError('fino:realm — scaling belongs to RealmDeployment');
     }
-    if (opts.process && (opts.scaling?.min !== undefined && opts.scaling.min !== 1 || opts.scaling?.max !== undefined && opts.scaling.max !== 1)) {
-      throw new RangeError('a process-isolated realm currently requires exactly one replica');
-    }
-    const scaling = normalizeScalingPolicy(opts.process ? { ...opts.scaling, mode: 'bound' } : opts.scaling, policyCapacity);
-    this.#scalingMax = scaling.max;
-    this.#scalingMin = scaling.min;
-    this.#scaleUpWindowMs = scaling.scaleUpWindowMs;
-    this.#scaleDownWindowMs = scaling.scaleDownWindowMs;
     this.#processIsolated = opts.process === true;
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;
@@ -2563,37 +2527,30 @@ export class Realm<F extends RealmFn = RealmFn> {
       const processPort = this.#createProcessPort();
       this.#activeChildPort = processPort;
       this.port = new DeferredTransportPort(processPort);
+      this.ready = Promise.resolve();
     } else {
       const mergedRules = mergeChildRules(serializedRules) as string;
       const scheduledConfig: Parameters<typeof placeScheduledRealm>[0] = {
         entry: opts.entry,
         rulesJson: mergedRules,
         ...opts.localMobility !== undefined ? { localMobility: opts.localMobility } : {},
-        replication: opts.scaling?.mode ?? 'replicated',
-        scalingMin: opts.scaling?.min ?? 1,
-        ...opts.scaling?.max !== undefined ? { scalingMax: opts.scaling.max } : {},
         ...serializedData !== undefined ? { realmData: serializedData } : {},
         ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {},
         watch,
-        repl,
-        tenantId: `realm-${this.#logicalRealmId}-replica-${this.#replicaSequence++}`
+        repl
       };
-      const placement = placeScheduledRealm(scheduledConfig);
-      if (placement === null) throw new Error('fino:realm — local reactor capacity is exhausted');
       this.#handle = -1;
       this.#scheduledConfig = scheduledConfig;
-      const attachAllocation = (allocation: ScheduledRealmAllocation): ThreadPort => {
-        this.#primaryAllocation = allocation;
-        const port = new ThreadPort(allocation.portWakeFd, allocation.portHandle);
-        this.#bindFacadePort(port);
-        this.#activeScheduledPort = port;
-        this.#scheduledReplicas.push({ allocation, port, activeCalls: 0, idleTimer: null });
-        return port;
-      };
-      this.#primaryReady = Promise.resolve(placement);
-      const portReady = placement instanceof Promise ? this.#primaryReady.then(attachAllocation) : attachAllocation(placement);
-      this.#minimumReady = Promise.resolve(portReady).then(() => this.#ensureMinimumReplicas());
-      this.port = new DeferredTransportPort(portReady);
+      const created = this.#createScheduledInstance();
+      if (created instanceof Promise) {
+        const pending = created.finally(() => { this.#scheduledReady = null; });
+        this.#scheduledReady = pending;
+        this.ready = pending.then(() => undefined);
+        this.port = new DeferredTransportPort(pending.then((instance) => instance.port));
+      } else {
+        this.ready = Promise.resolve();
+        this.port = new DeferredTransportPort(created.port);
+      }
     }
     // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
     // the common case where no OTel subscriber is registered).
@@ -2671,34 +2628,26 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   run(): Promise<void> {
     if (!this.#processIsolated) {
+      if (this.#terminated) {
+        const released = this.#lastScheduledRelease;
+        if (released === null) return Promise.resolve();
+        return released.then((reason) => {
+          if (reason.startsWith('failed')) throw new Error(reason.replace(/^failed: ?/, '') || reason);
+        });
+      }
       return (async () => {
-        await this.#primaryReady;
         while (true) {
-          const allocation = this.#primaryAllocation!;
-          const port = this.#activeScheduledPort!;
-          const reason = await allocation.released;
+          const instance = await this.#ensureScheduledInstance();
+          const reason = await instance.allocation.released;
           // The terminal pump may post a final user message and release in the
           // same slice. Drain transit synchronously before closing the physical
           // endpoint so release cannot win that race.
-          port._drain();
-          port.close();
-          const previousIndex = this.#scheduledReplicas.findIndex((replica) => replica.allocation === allocation);
-          if (previousIndex >= 0) this.#scheduledReplicas.splice(previousIndex, 1);
+          instance.port._drain();
+          this.#detachScheduledInstance(instance);
           if (reason.startsWith('failed')) throw new Error(reason.replace(/^failed: ?/, '') || reason);
           if (reason !== 'reload' || this.#watchTerminated) return;
-          const next = placeScheduledRealm(this.#scheduledConfig!);
-          if (next === null) throw new Error('fino:realm — local reactor capacity is exhausted during reload');
-          this.#primaryReady = Promise.resolve(next);
-          this.#primaryAllocation = await this.#primaryReady;
-          this.#activeScheduledPort = new ThreadPort(this.#primaryAllocation.portWakeFd, this.#primaryAllocation.portHandle);
-          this.#bindFacadePort(this.#activeScheduledPort);
-          this.#scheduledReplicas.push({
-            allocation: this.#primaryAllocation,
-            port: this.#activeScheduledPort,
-            activeCalls: 0,
-            idleTimer: null
-          });
-          (this.port as DeferredTransportPort).replace(this.#activeScheduledPort);
+          const next = await this.#ensureScheduledInstance();
+          (this.port as DeferredTransportPort).replace(next.port);
         }
       })();
     }
@@ -2719,130 +2668,78 @@ export class Realm<F extends RealmFn = RealmFn> {
     return processPort.finished.then(() => undefined);
   }
 
-  async #spawnScheduledReplica(): Promise<ScheduledReplica> {
-    const config = {
-      ...this.#scheduledConfig!,
-      tenantId: `realm-${this.#logicalRealmId}-replica-${this.#replicaSequence++}`
-    };
-    const placement = placeScheduledRealm(config);
+  #createScheduledInstance(): ScheduledRealmInstance | Promise<ScheduledRealmInstance> {
+    const placement = placeScheduledRealm(this.#scheduledConfig!);
     if (placement === null) throw new Error('fino:realm — local reactor capacity is exhausted');
-    const allocation = await placement;
-    const replica: ScheduledReplica = {
+    if (placement instanceof Promise) return placement.then((allocation) => this.#attachScheduledAllocation(allocation));
+    return this.#attachScheduledAllocation(placement);
+  }
+
+  #attachScheduledAllocation(allocation: ScheduledRealmAllocation): ScheduledRealmInstance {
+    const instance: ScheduledRealmInstance = {
       allocation,
-      port: new ThreadPort(allocation.portWakeFd, allocation.portHandle),
-      activeCalls: 0,
-      idleTimer: null
+      port: new ThreadPort(allocation.portWakeFd, allocation.portHandle)
     };
-    this.#bindFacadePort(replica.port);
-    this.#scheduledReplicas.push(replica);
-    return replica;
+    this.#bindFacadePort(instance.port);
+    this.#scheduled = instance;
+    this.#lastScheduledRelease = allocation.released;
+    void allocation.released.then(() => this.#detachScheduledInstance(instance));
+    return instance;
   }
 
-  async #ensureMinimumReplicas(): Promise<void> {
-    if (this.#terminated || this.#processIsolated) return;
-    if (this.#scheduledReplicas.length === 0) {
-      const primary = await this.#spawnScheduledReplica();
-      this.#primaryAllocation = primary.allocation;
-      this.#primaryReady = Promise.resolve(primary.allocation);
-      this.#activeScheduledPort = primary.port;
-      (this.port as DeferredTransportPort).replace(primary.port);
-    }
-    while (!this.#terminated && this.#scheduledReplicas.length < this.#scalingMin) {
-      await this.#spawnScheduledReplica();
-    }
-  }
-
-  async #acquireScheduledReplica(): Promise<ScheduledReplica> {
+  async #ensureScheduledInstance(): Promise<ScheduledRealmInstance> {
     if (this.#terminated) throw new Error('Realm has been terminated');
-    if (this.#scheduledReplicas.length === 0) {
-      this.#rehydrating ??= this.#ensureMinimumReplicas().then(() => this.#scheduledReplicas[0]!).finally(() => { this.#rehydrating = null; });
-      this.#minimumReady = this.#rehydrating.then(() => undefined);
-      await this.#rehydrating;
-    } else {
-      await this.#minimumReady;
-    }
-    while (true) {
-      const idle = this.#scheduledReplicas.find((replica) => replica.activeCalls === 0);
-      if (idle !== undefined) {
-        if (idle.idleTimer !== null) {
-          clearTimeout(idle.idleTimer);
-          idle.idleTimer = null;
-        }
-        idle.activeCalls++;
-        return idle;
+    if (this.#scheduled !== null) return this.#scheduled;
+    if (this.#scheduledReady === null) {
+      const created = this.#createScheduledInstance();
+      if (!(created instanceof Promise)) {
+        (this.port as DeferredTransportPort).replace(created.port);
+        return created;
       }
-      if (this.#scheduledReplicas.length < this.#scalingMax) {
-        let capacityFreed = false;
-        await Promise.race([
-          new Promise<void>((resolve) => this.#replicaWaiters.push(() => {
-            capacityFreed = true;
-            resolve();
-          })),
-          new Promise<void>((resolve) => setTimeout(resolve, this.#scaleUpWindowMs))
-        ]);
-        if (capacityFreed) continue;
-        const replica = await this.#spawnScheduledReplica();
-        replica.activeCalls++;
-        return replica;
-      }
-      await new Promise<void>((resolve) => this.#replicaWaiters.push(resolve));
+      this.#scheduledReady = created.finally(() => { this.#scheduledReady = null; });
     }
+    const instance = await this.#scheduledReady;
+    (this.port as DeferredTransportPort).replace(instance.port);
+    return instance;
   }
 
-  #releaseScheduledReplica(replica: ScheduledReplica): void {
-    replica.activeCalls = Math.max(0, replica.activeCalls - 1);
-    const index = this.#scheduledReplicas.indexOf(replica);
-    if (replica.activeCalls === 0 && index >= this.#scalingMin && replica.idleTimer === null) {
-      replica.idleTimer = setTimeout(() => {
-        replica.idleTimer = null;
-        const currentIndex = this.#scheduledReplicas.indexOf(replica);
-        if (replica.activeCalls !== 0 || currentIndex < this.#scalingMin) return;
-        this.#scheduledReplicas.splice(currentIndex, 1);
-        this.#retireScheduledReplica(replica, 'scale-down');
-      }, this.#scaleDownWindowMs);
-    }
-    for (const wake of this.#replicaWaiters.splice(0)) wake();
-  }
-
-  #retireScheduledReplica(replica: ScheduledReplica, reason: string): void {
-    if (replica.idleTimer !== null) {
-      clearTimeout(replica.idleTimer);
-      replica.idleTimer = null;
-    }
-    if (replica.port.closed) replica.allocation.revoke(reason);
+  #retireScheduledInstance(instance: ScheduledRealmInstance, reason: string): void {
+    if (instance.port.closed) instance.allocation.revoke(reason);
     else {
-      replica.port.postMessage({ __terminate: true });
-      replica.port.close();
+      instance.port.postMessage({ __terminate: true });
+      instance.port.close();
     }
+    this.#detachScheduledInstance(instance);
+  }
+
+  #detachScheduledInstance(instance: ScheduledRealmInstance): void {
+    instance.port.close();
+    if (this.#scheduled === instance) this.#scheduled = null;
   }
 
   async #callScheduled(correlationId: number, args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
-    const replica = await this.#acquireScheduledReplica();
-    try {
-      return await new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        let settled = false;
-        replica.allocation.released.then((reason) => {
-          setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            reject(new Error(reason.startsWith('failed') ? reason.replace(/^failed: ?/, '') : 'Realm exited before returning a call result'));
-          }, 25);
-        });
-        const handler = (event: Event) => {
+    const instance = await this.#ensureScheduledInstance();
+    return new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
+      let settled = false;
+      instance.allocation.released.then((reason) => {
+        setTimeout(() => {
           if (settled) return;
-          const data = (event as MessageEvent).data;
-          if (!_matchesCallResponse(data, correlationId)) return;
           settled = true;
-          replica.port.removeEventListener('message', handler);
-          _resolveCallResponse(data, resolve, reject);
-        };
-        replica.port.addEventListener('message', handler);
-        replica.port.start();
-        replica.port.postMessage({ __call: true, correlationId, args });
+          reject(new Error(reason.startsWith('failed') ? reason.replace(/^failed: ?/, '') : 'Realm exited before returning a call result'));
+        }, 25);
       });
-    } finally {
-      this.#releaseScheduledReplica(replica);
-    }
+      const handler = (event: Event) => {
+        if (settled) return;
+        const data = (event as MessageEvent).data;
+        if (!_matchesCallResponse(data, correlationId)) return;
+        settled = true;
+        instance.port.removeEventListener('message', handler);
+        _resolveCallResponse(data, resolve, reject);
+      };
+      instance.port.addEventListener('message', handler);
+      instance.port.start();
+      instance.port.postMessage({ __call: true, correlationId, args });
+    });
   }
   /**
   * Call the child Realm's default-exported function with `args`.
@@ -2850,7 +2747,6 @@ export class Realm<F extends RealmFn = RealmFn> {
   * The call starts the realm, sends `{ __call: true, args }`, and resolves
   * with the returned value. It rejects if the realm exits before returning, if
   * the child serializes a call error, or if its reactor exits.
-  * The port is closed after the first response for non-streaming calls.
   *
   * ```ts no_run
   * import { Realm } from 'fino:realm';
@@ -2934,16 +2830,13 @@ export class Realm<F extends RealmFn = RealmFn> {
   }
   #drainIdleDeployment(): void {
     if (!this.#processIsolated) {
-      this.#drainIdleReplicas();
+      const instance = this.#scheduled;
+      if (instance !== null) this.#retireScheduledInstance(instance, 'idle');
       return;
     }
     const port = this.#activeChildPort;
     this.#activeChildPort = null;
     port?.postMessage({ __terminate: true });
-  }
-  #drainIdleReplicas(): void {
-    const replicas = this.#scheduledReplicas.splice(0);
-    for (const replica of replicas) this.#retireScheduledReplica(replica, 'idle');
   }
   /**
   * Signal the child realm to stop.
@@ -2963,28 +2856,29 @@ export class Realm<F extends RealmFn = RealmFn> {
     this.#terminated = true;
     this.#watchTerminated = true;
     if (!this.#processIsolated) {
-      void this.#primaryReady!.then(() => this.#drainIdleReplicas());
+      const scheduled = this.#scheduled;
+      if (scheduled !== null) this.#retireScheduledInstance(scheduled, 'terminated');
+      else void this.#scheduledReady?.then((instance) => this.#retireScheduledInstance(instance, 'terminated'));
     } else {
       this.#activeChildPort?.postMessage({ __terminate: true });
     }
   }
   /**
-  * Keep this logical Realm deployment warm and make it contribute to its
-  * owner's liveness. Active calls and `run()` are referenced independently;
-  * this flag controls otherwise-idle capacity.
+  * Keep this Realm's otherwise-idle execution container warm. Active calls and
+  * `run()` retain their own work independently.
   */
   ref(): this {
     this.#referenced = true;
-    if (!this.#processIsolated && this.#scheduledReplicas.length === 0 && !this.#terminated) {
-      this.#minimumReady = this.#ensureMinimumReplicas();
+    if (!this.#processIsolated && this.#scheduled === null && !this.#terminated) {
+      void this.#ensureScheduledInstance();
     } else if (this.#processIsolated && this.#activeChildPort === null && !this.#terminated) {
       this.#ensureProcessPort();
     }
     return this;
   }
   /**
-  * Allow an idle logical Realm deployment to drain without keeping its owner
-  * alive. In-flight calls and a pending `run()` still retain their own work.
+  * Allow this Realm's idle execution container to drain without keeping its
+  * owner alive. In-flight calls and a pending `run()` still retain their work.
   */
   unref(): this {
     this.#referenced = false;
@@ -3008,6 +2902,175 @@ export class Realm<F extends RealmFn = RealmFn> {
   * realm.port.postMessage('start');
   * ```
   */
+  [Symbol.dispose](): void {
+    this.terminate();
+  }
+}
+
+/**
+* A stable, replica-affine connection to a `RealmDeployment`.
+*
+* The session exclusively retains one physical realm until `close()` is called.
+* Local reactor migration does not change that realm or its module heap.
+*/
+export class RealmSession<F extends RealmFn = RealmFn> {
+  #lease: ReplicaLease<Realm<F>> | null;
+
+  /**
+  * Constructed internally by `RealmDeployment.connect()`.
+  *
+  * @internal
+  */
+  constructor(lease: ReplicaLease<Realm<F>>) {
+    this.#lease = lease;
+  }
+
+  /**
+  * Invoke the connected replica's default export.
+  *
+  * Calls reject after `close()` and otherwise have the same failure behavior
+  * as `Realm.call()`.
+  */
+  call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    if (this.#lease === null) return Promise.reject(new Error('RealmSession is closed'));
+    return this.#lease.value.call(...args);
+  }
+
+  /** Release the replica back to the deployment. Idempotent. */
+  close(): void {
+    this.#lease?.release();
+    this.#lease = null;
+  }
+
+  /** Close this session when leaving a `using` scope. */
+  [Symbol.dispose](): void {
+    this.close();
+  }
+}
+
+/**
+* A scalable deployment of independent `Realm` execution containers.
+*
+* `call()` load-balances across ready replicas, `broadcast()` posts to every
+* ready replica, and `connect()` reserves one stable replica for an affine
+* session. Replica heaps are independent; use a single `Realm` when state must
+* remain one-to-one.
+*
+* ```ts no_run
+* import { RealmDeployment } from 'fino:realm';
+*
+* using workers = new RealmDeployment({
+*   entry: './worker.ts',
+*   scaling: { min: 2, max: 8 },
+* });
+* const result = await workers.call({ job: 'thumbnail' });
+* ```
+*/
+export class RealmDeployment<F extends RealmFn = RealmFn> {
+  /**
+  * Resolves when the deployment's minimum number of replicas is ready.
+  *
+  * It rejects if a minimum replica cannot be allocated or initialized.
+  */
+  readonly ready: Promise<void>;
+  #controller: deployment.DeploymentController<Realm<F>>;
+  #realmOptions: RealmOptions;
+  #referenced = true;
+  #terminated = false;
+
+  /**
+  * Create a referenced deployment and begin warming its minimum replicas.
+  *
+  * Process isolation, watch mode, and REPL mode are intentionally unavailable
+  * because a deployment represents interchangeable independent replicas.
+  */
+  constructor(options: RealmDeploymentOptions) {
+    if ((options as { process?: boolean }).process === true) {
+      throw new TypeError('fino:realm — process isolation is only supported by Realm');
+    }
+    const { scaling, process: _process, ...realmOptions } = options;
+    this.#realmOptions = realmOptions;
+    this.#controller = new deployment.DeploymentController<Realm<F>>({
+      scaling,
+      create: async () => {
+        const realm = new Realm<F>(this.#realmOptions);
+        if (!this.#referenced) realm.unref();
+        await realm.ready;
+        return realm;
+      },
+      dispose: (realm) => realm.terminate()
+    });
+    this.ready = this.#controller.ready;
+  }
+
+  /**
+  * Route one invocation to an available replica.
+  *
+  * The call waits when every replica is admitted. Sustained waiting may add a
+  * replica up to `scaling.max`. It rejects after `terminate()` or when the
+  * selected realm fails.
+  */
+  async call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    const lease = await this.#controller.acquire();
+    try {
+      return await lease.value.call(...args);
+    } finally {
+      lease.release();
+    }
+  }
+
+  /**
+  * Post an independently serialized message to every ready replica.
+  *
+  * This does not create replicas beyond those already ready and does not wait
+  * for application-level acknowledgement.
+  */
+  async broadcast(message: unknown): Promise<void> {
+    const leases = await this.#controller.acquireAll();
+    try {
+      for (const lease of leases) lease.value.port.postMessage(message);
+    } finally {
+      for (const lease of leases) lease.release();
+    }
+  }
+
+  /**
+  * Reserve one stable replica until the returned session is closed.
+  *
+  * The returned session remains attached to the same realm even if node
+  * orchestration moves that realm between local reactor threads.
+  */
+  async connect(): Promise<RealmSession<F>> {
+    return new RealmSession(await this.#controller.acquire());
+  }
+
+  /** Keep idle deployment replicas allocated. */
+  ref(): this {
+    this.#referenced = true;
+    for (const realm of this.#controller.values()) realm.ref();
+    return this;
+  }
+
+  /** Allow idle replicas to retire without cancelling active work. */
+  unref(): this {
+    this.#referenced = false;
+    for (const realm of this.#controller.values()) realm.unref();
+    return this;
+  }
+
+  /** Return whether the deployment retains idle replicas. */
+  hasRef(): boolean {
+    return this.#referenced;
+  }
+
+  /** Terminate every replica and reject future admission. */
+  terminate(): void {
+    if (this.#terminated) return;
+    this.#terminated = true;
+    this.#controller.terminate();
+  }
+
+  /** Terminate this deployment when leaving a `using` scope. */
   [Symbol.dispose](): void {
     this.terminate();
   }

@@ -1,13 +1,13 @@
 /**
 * internal:orchestrator/budget-watchdog — the node's runaway-containment service.
 *
-* A tenant isolate is pumped synchronously on its scheduler thread, so an
-* unbounded synchronous loop in tenant code would pin that thread forever. The
+* A realm isolate is pumped synchronously on its reactor thread, so an
+* unbounded synchronous loop in realm code would pin that thread forever. The
 * only thing that can break it is V8 `terminate_execution` fired from *another*
 * thread — which is why containment is a system service that runs on the
-* orchestrator thread, not on the scheduler thread it is protecting.
+* orchestrator thread, not on the reactor thread it is protecting.
 *
-* The scheduler side is deliberately passive: each budgeted pump arms a deadline
+* The reactor side is deliberately passive: each budgeted pump arms a deadline
 * in a process-global native registry just before entering the isolate and
 * clears it just after (cheap, in-process, no cross-thread traffic). This
 * service owns the *policy* — how often to check and what to do — entirely in

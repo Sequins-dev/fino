@@ -1,10 +1,8 @@
 //! Native per-thread reactor engine.
 //!
 //! A reactor thread hosts N realm workloads and pumps them in priority order.
-//! Every workload — tenant or full child realm — is constructed through the one
-//! realm bootstrap (`workload::setup_realm_workload`) and driven through
-//! its native loop hooks; tenant activations arrive as `__tenant_dispatch`
-//! messages over the workload's port, not as a separate dispatch protocol.
+//! Every assigned realm is constructed through the same bootstrap
+//! (`workload::setup_realm_workload`) and driven through its native loop hooks.
 //!
 //! The orchestrator (main thread, TS) drives a pool of these threads through a
 //! cross-thread control/report channel: an mpsc for the messages, cherenkov
@@ -33,7 +31,7 @@ fn post_wake(workload_id: u64) -> u64 {
     POST_FLAG | POST_WAKE_BIT | workload_id
 }
 
-use crate::state::{ImportDirective, ImportPattern, ImportRule, ProcessEnv, default_import_rules};
+use crate::state::ProcessEnv;
 
 /// Per-thread reactor configuration (all cold-path, set at spawn).
 #[derive(Clone)]
@@ -65,52 +63,6 @@ impl ReactorClass {
             Self::Batch => "batch",
         }
     }
-}
-
-/// Import rules for a direct-I/O tenant isolate: block `fino:*` for the entry,
-/// but let builtins (`internal:*`/`fino:*` importers and the bootstrap) import
-/// `fino:*` so the runtime stitches itself together. Unlike the facade rules, it
-/// does NOT remap `fino:file` — tenant I/O bottoms out in the reactor directly
-/// (isolate-tagged `internal:io`), enforced by the OS sandbox + open()-capability.
-pub(crate) fn tenant_import_rules() -> Vec<ImportRule> {
-    let mut rules = default_import_rules();
-    rules.push(ImportRule {
-        from: None,
-        pattern: ImportPattern::Prefix("fino:".to_string()),
-        directive: ImportDirective::Block,
-    });
-    rules.push(ImportRule {
-        from: Some(ImportPattern::Prefix("internal:".to_string())),
-        pattern: ImportPattern::Prefix("fino:".to_string()),
-        directive: ImportDirective::Inherit,
-    });
-    rules.push(ImportRule {
-        from: Some(ImportPattern::Prefix("fino:".to_string())),
-        pattern: ImportPattern::Prefix("fino:".to_string()),
-        directive: ImportDirective::Inherit,
-    });
-    rules.push(ImportRule {
-        from: Some(ImportPattern::Exact("internal/bootstrap.mjs".to_string())),
-        pattern: ImportPattern::Prefix("fino:".to_string()),
-        directive: ImportDirective::Inherit,
-    });
-    // Grant the tenant entry direct file + network capability (the facade path
-    // remapped these away; direct I/O grants them, enforced by the OS sandbox +
-    // open()-time capability). Exact/prefix rules pushed after the fino:* block
-    // win under last-match-wins.
-    rules.push(ImportRule {
-        from: None,
-        pattern: ImportPattern::Exact("fino:file".to_string()),
-        directive: ImportDirective::Inherit,
-    });
-    rules.push(ImportRule {
-        from: None,
-        pattern: ImportPattern::Prefix("fino:net".to_string()),
-        directive: ImportDirective::Inherit,
-    });
-    // (No loop selection needed: `internal:runtime/loop` is
-    // the reactor-backed implementation for every realm unconditionally.)
-    rules
 }
 
 /// Control messages: orchestrator (main thread) → reactor thread.
@@ -866,6 +818,10 @@ mod imp {
                 self.deactivate_active();
             }
             let Some(workload) = self.workloads.remove(&workload_id) else {
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason: "realm-not-found",
+                });
                 return;
             };
             self.runnable.remove(&workload_id);
@@ -897,11 +853,7 @@ mod imp {
             priority_class: u8,
             port_half: (u32, i32),
         ) {
-            // Realm placements ship their complete parent-merged ruleset;
-            // tenant workloads ship none and get the tenant sandbox.
-            let import_rules: Vec<crate::state::ImportRule> = if rules_json.is_empty() {
-                super::tenant_import_rules()
-            } else {
+            let import_rules: Vec<crate::state::ImportRule> =
                 match serde_json::from_str(&rules_json) {
                     Ok(rules) => rules,
                     Err(err) => {
@@ -911,8 +863,7 @@ mod imp {
                         });
                         return;
                     }
-                }
-            };
+                };
             set_engine_owner(workload_id);
             let setup = setup_realm_workload(
                 entry_path,
@@ -1472,6 +1423,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "isEngineThread",
         "revoke",
         "shutdown",
+        "joinReactor",
         "nextReport",
         "drainReports",
         "reactorAlive",
@@ -1503,6 +1455,7 @@ fn eval_steps<'a>(
     export!("isEngineThread", cb_is_engine_thread);
     export!("revoke", cb_revoke);
     export!("shutdown", cb_shutdown);
+    export!("joinReactor", cb_join_reactor);
     export!("nextReport", cb_next_report);
     export!("drainReports", cb_drain_reports);
     export!("reactorAlive", cb_reactor_alive);
@@ -1549,6 +1502,12 @@ fn obj_string(
     value
         .to_string(scope)
         .map(|value| value.to_rust_string_lossy(scope))
+}
+
+fn obj_bool(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str) -> bool {
+    v8::String::new(scope, key)
+        .and_then(|key| obj.get(scope, key.into()))
+        .is_some_and(|value| value.boolean_value(scope))
 }
 
 fn with_reactor<R>(id: usize, f: impl FnOnce(&ReactorHandle) -> R) -> Option<R> {
@@ -1630,8 +1589,7 @@ fn cb_is_engine_thread(
     rv.set(v8::Boolean::new(scope, engine_io_active()).into());
 }
 
-/// JS: `placeRealm(reactorId, workloadId, entryPath, rulesJson, realmData |
-/// '', bootstrapData | '', priorityClass, watch, repl) → { portHandle, portWakeFd }`
+/// JS: `placeRealm(reactorId, placement) → { portHandle, portWakeFd }`
 ///
 /// Creates the realm's channel pair on the calling (orchestrator) thread,
 /// ships the child half to the engine thread inside the PlaceRealm control,
@@ -1643,20 +1601,20 @@ fn cb_place_realm(
     mut rv: v8::ReturnValue,
 ) {
     let id = arg_u64(scope, &args, 0) as usize;
-    let workload_id = arg_u64(scope, &args, 1);
-    let entry_path = arg_str(scope, &args, 2);
-    let rules_json = arg_str(scope, &args, 3);
-    let realm_data = {
-        let s = arg_str(scope, &args, 4);
-        if s.is_empty() { None } else { Some(s) }
+    let Ok(placement) = v8::Local::<v8::Object>::try_from(args.get(1)) else {
+        let message = v8::String::new(scope, "placeRealm requires a placement object").unwrap();
+        let exception = v8::Exception::type_error(scope, message);
+        scope.throw_exception(exception);
+        return;
     };
-    let realm_bootstrap_data = {
-        let s = arg_str(scope, &args, 5);
-        if s.is_empty() { None } else { Some(s) }
-    };
-    let priority_class = arg_u64(scope, &args, 6) as u8;
-    let watch_mode = args.get(7).boolean_value(scope);
-    let repl_mode = args.get(8).boolean_value(scope);
+    let workload_id = obj_u64(scope, placement, "realmId", 0);
+    let entry_path = obj_string(scope, placement, "entryPath").unwrap_or_default();
+    let rules_json = obj_string(scope, placement, "rulesJson").unwrap_or_default();
+    let realm_data = obj_string(scope, placement, "data");
+    let realm_bootstrap_data = obj_string(scope, placement, "bootstrapData");
+    let priority_class = obj_u64(scope, placement, "priority", 1) as u8;
+    let watch_mode = obj_bool(scope, placement, "watch");
+    let repl_mode = obj_bool(scope, placement, "repl");
 
     let (parent_half, child_half) = match crate::realm::transit::create_halves() {
         Ok(pair) => pair,
@@ -1751,6 +1709,17 @@ fn cb_shutdown(
 ) {
     let id = arg_u64(scope, &args, 0) as usize;
     send_control(id, Control::Shutdown);
+}
+
+fn cb_join_reactor(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let id = arg_u64(scope, &args, 0) as usize;
+    let handle = REACTORS.with(|reactors| reactors.borrow_mut().get_mut(id).and_then(Option::take));
+    let joined = handle.is_some_and(|handle| handle.join.join().is_ok());
+    rv.set_bool(joined);
 }
 
 /// `nextReport(reactorId)`: a promise resolved when the reactor thread posts

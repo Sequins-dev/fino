@@ -566,7 +566,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:workflow", "workflow"),
     source_builtin!("fino:task", "task"),
     source_builtin!("fino:task/durable", "task/durable"),
-    // orchestrator, scheduler + jobs
+    // orchestration + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
     source_builtin!("internal:orchestrator/node", "internal/orchestrator/node"),
     source_builtin!(
@@ -574,21 +574,18 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/orchestrator/scaling"
     ),
     source_builtin!(
-        "internal:orchestrator/allocator",
-        "internal/orchestrator/allocator"
+        "internal:orchestrator/deployment",
+        "internal/orchestrator/deployment"
     ),
+    source_builtin!("internal:orchestrator/types", "internal/orchestrator/types"),
     source_builtin!(
-        "internal:orchestrator/scheduler-node",
-        "internal/orchestrator/scheduler-node"
+        "internal:orchestrator/node-orchestrator",
+        "internal/orchestrator/node-orchestrator"
     ),
     source_builtin!(
         "internal:orchestrator/budget-watchdog",
         "internal/orchestrator/budget-watchdog"
     ),
-    // Scheduler data model retained for the orchestrator; the TS ShardScheduler
-    // + facade were retired in favour of the native reactor engine.
-    source_builtin!("internal:scheduler/types", "internal/scheduler/types"),
-    source_builtin!("internal:scheduler/workload", "internal/scheduler/workload"),
     source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
     source_builtin!("internal:jobs/store", "internal/jobs/store"),
     source_builtin!("internal:jobs/runner", "internal/jobs/runner"),

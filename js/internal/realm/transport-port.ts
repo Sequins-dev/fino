@@ -340,6 +340,7 @@ export class DeferredTransportPort extends BaseTransportPort {
   }
 
   #attach(port: BaseTransportPort): void {
+    if (this.#port === port) return;
     this.#port = port;
     port.addEventListener('message', (event) => {
       const source = event as MessageEvent;

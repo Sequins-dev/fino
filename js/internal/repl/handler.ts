@@ -6,8 +6,8 @@
 * realm owns the terminal; it forwards each line of typed input to the child as
 * an `{ __eval: true, id, code, port }` message, and this module evaluates the
 * code and posts a compact result or error envelope back over the same
-* `MessagePort`. Isolating evaluation in a child realm keeps user code from
-* touching the parent's globals while still sharing the process event loop.
+* realm port. Isolating evaluation in a child realm keeps user code from
+* touching the parent's globals while the reactor schedules it independently.
 *
 * Evaluation goes through `internal:inspector` rather than a bare `eval`, so the
 * input runs in REPL mode: bare declarations persist across turns, the final

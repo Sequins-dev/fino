@@ -77,10 +77,7 @@ describe('fino:jobs pool processors', () => {
     t.equal(done.attempts, 2, 'exactly two attempts consumed');
   });
   it('a logical Realm accepts a Task-file entry directly', async (t) => {
-    const realm = new Realm({
-      entry: workerEntry,
-      scaling: { mode: 'bound' }
-    });
+    const realm = new Realm({ entry: workerEntry });
     try {
       const names = await realm.call({ kind: 'tasks' }) as string[];
       t.ok(names.includes('pool-double'), 'worker reports its task registry');

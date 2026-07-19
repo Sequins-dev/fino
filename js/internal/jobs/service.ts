@@ -42,7 +42,7 @@
 import { JobsStore, backoffDelayMs, type JobRecord, type JobRetryPolicy, type JobStatus, type QueueStats, type ScheduleRecord } from './store.ts';
 import { parseCron, nextOccurrence } from './cron.ts';
 import { collectTasks, dispatchJob, type JobsWireCall, type JobsWireResult } from './runner.ts';
-import { Facade, Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
+import { Facade, RealmDeployment, type ImportRule, type RealmDeploymentOptions } from '../../realm/index.ts';
 import type { Task } from '../../task.ts';
 import type { WorkflowState, WorkflowStore, WorkflowWait } from '../../workflow.ts';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.ts';
@@ -652,7 +652,7 @@ export class JobsService {
   async workers(opts: {
     entry: string;
     size?: number;
-    realm?: Omit<RealmOptions, 'entry' | 'thread'>;
+    realm?: Omit<RealmDeploymentOptions, 'entry' | 'scaling'>;
   }): Promise<JobProcessor> {
     const workflowStore = this.#workflowStore;
     const facade = new Facade('fino:jobs/checkpoints', ['save', 'load', 'list', 'remove'])
@@ -669,28 +669,28 @@ export class JobsService {
       }
     ];
     const size = opts.size ?? 1;
-    const realm = new Realm({
+    const deployment = new RealmDeployment({
       entry: opts.entry,
       ...opts.realm ?? {},
       overrides: rules,
-      scaling: { mode: 'replicated', min: size, max: size }
+      scaling: { min: size, max: size }
     });
     let taskNames: string[];
     try {
-      taskNames = await realm.call({ kind: 'tasks' }) as string[];
+      taskNames = await deployment.call({ kind: 'tasks' }) as string[];
       if (!Array.isArray(taskNames) || taskNames.some((n) => typeof n !== 'string')) {
         throw new Error(`worker entry "${opts.entry}" did not report its task names — it must default-export a Task`);
       }
     } catch (err) {
-      realm.terminate();
+      deployment.terminate();
       throw err;
     }
     const processor: JobProcessor = {
       kind: 'pool',
       taskNames,
       capacity: size,
-      run: (call) => realm.call(call) as Promise<JobsWireResult>,
-      close: () => { realm.terminate(); }
+      run: (call) => deployment.call(call) as Promise<JobsWireResult>,
+      close: () => { deployment.terminate(); }
     };
     this.#addProcessor(processor);
     return processor;

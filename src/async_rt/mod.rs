@@ -218,11 +218,11 @@ thread_local! {
 /// Build a fresh, detached `IsolateAsyncState` (its own self-pipe + executor +
 /// queues) without installing it as the current thread-local state.
 ///
-/// Used to give a scheduler-hosted tenant isolate its *own* async state, stored
-/// alongside its isolate handle. The scheduler swaps it into the thread-local
+/// Used to give a reactor-hosted realm isolate its *own* async state, stored
+/// alongside its isolate handle. The reactor swaps it into the thread-local
 /// (via [`swap_state`]) around each pump so the isolate's FFI completions,
 /// executor, and wake pipe stay with that isolate — never shared with the
-/// scheduler's own isolate or sibling tenant isolates on the same thread.
+/// reactor's own state or sibling realm isolates on the same thread.
 pub fn new_state() -> IsolateAsyncState {
     let mut fds = [0i32; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };

@@ -2,7 +2,7 @@
 * Tests for fino:realm — call() function mode.
 */
 import { describe, it } from 'fino:test/test';
-import { Realm } from 'fino:realm';
+import { Realm, RealmDeployment } from 'fino:realm';
 import type echoFn from './fixtures/echo-fn.ts';
 import type asyncFn from './fixtures/async-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
@@ -80,7 +80,7 @@ describe('Realm call()', () => {
     t.equal(await realm.call('nested'), 'nested');
   });
   it('adds a replica when call queue delay stays unhealthy', async (t) => {
-    using realm = new Realm<typeof scalingFn>({
+    using realm = new RealmDeployment<typeof scalingFn>({
       entry: new URL('./fixtures/scaling-fn.ts', import.meta.url).pathname,
       scaling: { min: 1, max: 2 }
     });
@@ -90,7 +90,7 @@ describe('Realm call()', () => {
     t.notEqual(ids[0], ids[1], 'queued work ran on another isolate after the scale-up window');
   });
   it('warms the configured availability minimum', async (t) => {
-    using realm = new Realm<typeof scalingFn>({
+    using realm = new RealmDeployment<typeof scalingFn>({
       entry: new URL('./fixtures/scaling-fn.ts', import.meta.url).pathname,
       scaling: { min: 2, max: 2, scaleUpWindowMs: 1_500 }
     });
@@ -100,7 +100,7 @@ describe('Realm call()', () => {
     t.ok(performance.now() - started < 1_250, 'minimum replicas were ready without a scale-up wait');
   });
   it('drains a quiet replica above the minimum', async (t) => {
-    using realm = new Realm<typeof scalingFn>({
+    using realm = new RealmDeployment<typeof scalingFn>({
       entry: new URL('./fixtures/scaling-fn.ts', import.meta.url).pathname,
       scaling: { min: 1, max: 2, scaleUpWindowMs: 5, scaleDownWindowMs: 20 }
     }).ref();

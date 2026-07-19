@@ -1,6 +1,6 @@
 /**
 * Child realm fixture: performs async FFI calls and returns results.
-* Used to verify that embedded child realms share the parent's executor.
+* Used to verify async FFI calls from reactor-hosted child realms.
 */
 import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';

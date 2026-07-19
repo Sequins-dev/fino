@@ -176,7 +176,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     // Host loop.
     //
     // Each iteration re-enters the root context and calls its native loop
-    // policy hooks. Child realms are owned by scheduler reactors, so the root
+    // policy hooks. Child realms are owned by reactors, so the root
     // host has no child-context stepping phase.
     //
     // Using a named loop label so `break` inside the inner block exits here.
@@ -197,19 +197,13 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         if !should_continue {
             break 'main;
         }
-
-        // Create any child contexts queued during the JS step.
     }
 
     // -----------------------------------------------------------------------
-    // Teardown: terminate children, call onDone, dispose profiler.
+    // Teardown: call onDone and dispose realm-owned diagnostics.
     // -----------------------------------------------------------------------
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-        // Terminate all child Realms (structured concurrency: parent loop done →
-        // signal termination to all children, then step each once so they observe
-        // the flag and call their on_done_fn if any).
 
         // Call onDone() — runs the post-loop error check from internal/main.ts (e.g.
         // `if (caughtError) { exit(1); }`).  If onDone calls exit(), we never
@@ -344,8 +338,8 @@ fn call_hook(scope: &mut v8::HandleScope, g: &v8::Global<v8::Function>) -> Optio
 
 /// One iteration of the native host loop for a reactor-backed realm: pump
 /// everything ready to a fixed point, run the thin JS policy hooks, decide
-/// doneness (§5 of the reactor doc: realm policy done AND reactor quiescent
-/// AND no children), then block on the reactor until the next completion.
+/// doneness (§5 of the reactor doc: realm policy done AND reactor quiescent),
+/// then block on the reactor until the next completion.
 /// Returns false when the realm is finished (or a policy hook threw).
 pub(crate) fn native_drive_step(
     scope: &mut v8::HandleScope,
@@ -450,11 +444,8 @@ fn native_drive_step_inner(
         // Block until a completion — the reactor is the wake source for all
         // asynchrony. Bound the wait only where progress can happen without
         // one: Atomics resolutions / V8 background tasks post foreground work
-        // without touching the reactor. Bounded waits back off adaptively
-        // (hot re-pass while work flows, 25ms once quiet): an embedded child
-        // advances one legacy step per iteration, so a multi-turn ladder —
-        // e.g. a respawning realm loading its module graph — must not pay a
-        // sleep per rung.
+        // without touching the reactor. Bounded waits back off adaptively:
+        // hot re-pass while work flows, then 25ms once quiet.
         let bounded = crate::reactor::drive_needs_poll() || scope.has_pending_background_tasks();
         let timeout = if bounded {
             let quiet = state_rc.borrow().native_empty_ticks;

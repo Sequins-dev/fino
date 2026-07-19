@@ -402,12 +402,8 @@ pub struct FinoState {
 
     /// Error recorded by the child's entry module if it threw at top level.
     /// Set via `internal:realm-bridge.setEntryError()` and read by the owning
-    /// scheduler/process host to reject `Realm.run()` instead of resolving.
+    /// reactor/process host to reject `Realm.run()` instead of resolving.
     pub entry_error: Option<String>,
-
-    /// The child's MessagePort object, passed by the parent at creation time.
-    /// Read-only after bootstrap; accessed via `internal:realm-bridge.getPort()`.
-    pub port: Option<v8::Global<v8::Value>>,
 
     /// V8 inspector state for this realm. Created lazily by `internal:inspector`
     /// on first use. Stored as a raw pointer (pointing to a heap-allocated
@@ -471,7 +467,6 @@ impl FinoState {
             realm_data: None,
             realm_bootstrap_data: None,
             entry_error: None,
-            port: None,
             inspector_state: None,
             port_transit_handle: None,
             port_wake_read_fd: None,
@@ -480,7 +475,7 @@ impl FinoState {
         }
     }
 
-    /// Create state for a scheduler-hosted or process-isolated realm.
+    /// Create state for a reactor-hosted or process-isolated realm.
     ///
     /// Fields that differ from `new_root` are taken as parameters; all
     /// module-cache and callback fields start empty/None.
@@ -490,7 +485,6 @@ impl FinoState {
         root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
         import_rules: Vec<ImportRule>,
         entry_path: Option<String>,
-        port: Option<v8::Global<v8::Value>>,
         port_half: Option<(u32, std::os::unix::io::RawFd)>,
         watch_mode: bool,
         repl_mode: bool,
@@ -526,7 +520,6 @@ impl FinoState {
             realm_data,
             realm_bootstrap_data,
             entry_error: None,
-            port,
             inspector_state: None,
             port_transit_handle: port_half.map(|(h, _)| h),
             port_wake_read_fd: port_half.map(|(_, fd)| fd),

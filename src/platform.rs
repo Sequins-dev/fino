@@ -4,12 +4,19 @@ use crate::state::get_state;
 
 /// Build the `internal:process` synthetic module.
 ///
-/// Exports: `os`, `arch`, `args`, `env`, `execPath`.
+/// Exports: `os`, `arch`, `availableParallelism`, `args`, `env`, `execPath`.
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["os", "arch", "args", "env", "execPath"]
-        .iter()
-        .map(|n| v8::String::new(scope, n).unwrap())
-        .collect();
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "os",
+        "arch",
+        "availableParallelism",
+        "args",
+        "env",
+        "execPath",
+    ]
+    .iter()
+    .map(|n| v8::String::new(scope, n).unwrap())
+    .collect();
 
     let module_name = v8::String::new(scope, "internal:process").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
@@ -49,6 +56,16 @@ fn eval_steps<'a>(
     set_export(scope, module, "os", os_str.into())?;
     let arch_str = v8::String::new(scope, arch)?;
     set_export(scope, module, "arch", arch_str.into())?;
+    let available_parallelism = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let available_parallelism_value = v8::Number::new(scope, available_parallelism as f64);
+    set_export(
+        scope,
+        module,
+        "availableParallelism",
+        available_parallelism_value.into(),
+    )?;
 
     let state_rc = get_state(scope);
     let state = state_rc.borrow();

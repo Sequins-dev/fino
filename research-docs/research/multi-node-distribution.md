@@ -1,29 +1,31 @@
 # Multi-Node Distribution over the QUIC Mesh
 
-> Status: node-local realm scheduling, live same-node isolate movement, and
-> logical-realm scaling are implemented. The current QUIC/WebTransport cluster
-> layer provides seed-backed membership and heartbeats only. Distributed
+> Status: reactor scheduling, node-local placement, live same-node isolate
+> movement, and `RealmDeployment` scaling are implemented. The current
+> QUIC/WebTransport cluster layer provides seed-backed membership and
+> heartbeats only. Distributed
 > admission, authenticated peer sessions, replicated intent, service routing,
 > and cross-node replica reconciliation remain to be implemented.
 
-## 1. One scheduler model
+## 1. One execution model
 
-There is only one kind of ordinary realm. Every realm is a scheduler-owned V8
-isolate attached to a reactor thread on some node. A realm does not know its
-thread, shard, or node, and application code cannot request local or remote
-placement.
+There is only one kind of ordinary realm. Every realm is one V8 isolate
+attached to a reactor on some node. The reactor directly schedules its assigned
+realms; node and cluster orchestration only decide placement and movement. A
+realm does not know its reactor or node, and application code cannot request
+local or remote placement.
 
 ```text
-desired logical realm
+realm or replica request
         |
         v
-cluster placement ---- chooses node and assignment epoch
+cluster orchestration  chooses node and assignment epoch
         |
         v
-node admission -------- chooses latency/batch reactor
+node orchestration ---- chooses latency/batch reactor
         |
         v
-reactor engine -------- constructs or attaches isolate
+reactor --------------- constructs isolate and schedules its work
 ```
 
 The cluster layer must extend this model. It must not introduce a remote Realm
@@ -33,9 +35,11 @@ class, a cluster port type, or another realm-driving loop.
 
 ### Node-local substrate
 
-- `SchedulerNode` is the node's realm lifecycle authority.
-- `NodeIsolateCollection` owns workload records and move reservations.
-- `WorkloadAllocator` selects local latency or batch reactors.
+- `NodeOrchestrator` is the node's realm lifecycle authority.
+- `NodeRealmCollection` owns placement records, load summaries, capacity, and
+  move reservations.
+- `NodeOrchestrator` selects a local latency or batch reactor and owns reactor
+  lifecycle.
 - Reactor engines construct every scheduled unit through
   `setup_realm_workload` and the normal realm bootstrap.
 - A selected isolate stays locked and entered until a different isolate
@@ -43,12 +47,13 @@ class, a cluster port type, or another realm-driving loop.
 - Same-node movement transfers the live isolate. Destination-compatible
   operations are rearmed; source-bound operations forward completions until
   they drain.
-- Repeated blocking work moves to lower-priority batch reactors. Batch threads
+- Repeated blocking work moves to lower-priority batch reactors. Batch reactors
   have lower scheduling priority and retire when idle.
 - Nested realms submit allocation back to the owning node over an internal
   control channel.
-- Logical realms support correlated repeated calls, availability minima,
-  queue-pressure scale-out, quiet scale-down, and `ref()`/`unref()` liveness.
+- A `Realm` is one physical execution container. `RealmDeployment` composes
+  independent replicas with queue-pressure scale-out, quiet scale-down,
+  affine sessions, broadcast, and `ref()`/`unref()` liveness.
 
 ### Cluster substrate
 
@@ -61,8 +66,9 @@ class, a cluster port type, or another realm-driving loop.
 
 The former `SPAWN`, `SPAWN_ACK`, `PORT_MSG`, `REALM_EXIT`, `ClusterPort`, and
 `RealmRegistry` prototype has been removed. It bypassed node admission, called
-the old thread-context constructor directly, and stepped realms from the
-cluster client. Retaining it would create two incompatible schedulers.
+the old reactor-context constructor directly, and stepped realms from the
+cluster client. Retaining it would create a second, incompatible realm-driving
+loop.
 
 ## 3. Placement policy
 
@@ -103,7 +109,7 @@ Scale on latency pressure, not only CPU saturation. Each replica reports:
 - reactor class and admission headroom.
 
 One second of sustained leading pressure may create one successor, up to the
-logical realm's maximum. Only one scale action is in flight at a time.
+deployment's maximum. Only one scale action is in flight at a time.
 
 Scale-out sequence:
 
@@ -126,7 +132,8 @@ Scale-down sequence:
 4. Terminate the isolate and release its node assignment.
 
 `min` is an availability guarantee while the logical realm is referenced.
-`mode: 'bound'` disables replication and cross-node split.
+A plain `Realm` remains one-to-one and is never implicitly split. Only a
+`RealmDeployment` creates additional replicas.
 
 ## 5. Distributed control plane
 
@@ -139,7 +146,7 @@ by default) for:
 - service-directory generations;
 - controller membership and singleton fences.
 
-High-rate observations remain soft state and do not enter the Raft log. Agents
+High-rate observations remain soft state and do not enter the Raft log. Nodes
 periodically publish reactor capacity, queue pressure, memory pressure, current
 assignments, and readiness. Stale observations may cause an admission reject;
 the reconciler then selects another node and commits a new attempt.
@@ -201,15 +208,16 @@ external durable state or an explicit checkpoint contract.
 
 ## 9. Delivery stages
 
-1. **Completed: reactor-only realms.** Remove embedded/thread/remote kinds,
+1. **Completed: reactor-only realms.** Remove embedded/reactor/remote kinds,
    child stepping, `RealmPool`, and cluster-driven realm construction.
 2. **Completed: local movement.** Transfer live isolates at pump boundaries,
    rearm transferable operations, forward draining completions, and preserve
-   the active isolate across scheduler cycles.
-3. **Completed: local logical scaling.** Warm `min`, scale queued calls up,
+   the active isolate across reactor cycles.
+3. **Completed: local deployment scaling.** Warm `min`, scale queued calls up,
    drain quiet excess replicas, and implement deployment `ref()`/`unref()`.
-4. **Next: agent observations and admission RPC.** Export reactor health and
-   add an authenticated scheduler request/accept/reject protocol over the mesh.
+4. **Next: node observations and admission RPC.** Export reactor health and
+   add an authenticated orchestration request/accept/reject protocol over the
+   mesh.
 5. **Next: durable reconciliation.** Add Raft-backed realm specs, replica
    attempts, epochs, and make-before-break recovery.
 6. **Next: service directory and DNS.** Publish ready attempts, withdraw before

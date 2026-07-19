@@ -2,7 +2,7 @@
 * Tests for fino:realm — basic Realm construction and lifecycle.
 */
 import { describe, it } from 'fino:test/test';
-import { Realm, ImportMap } from 'fino:realm';
+import { Realm, RealmDeployment, ImportMap } from 'fino:realm';
 import type realmDataFn from './fixtures/realm-data-fn.ts';
 describe('Realm lifecycle', () => {
   it('creates and runs a child realm that exits naturally', async (t) => {
@@ -44,15 +44,14 @@ describe('Realm lifecycle', () => {
       otlpEndpoint: ''
     }), /otlpEndpoint must be a non-empty string/, 'empty endpoint is rejected');
   });
-  it('validates realm scaling bounds before construction', (t) => {
+  it('validates deployment scaling bounds before construction', (t) => {
     const entry = new URL('./fixtures/hello.ts', import.meta.url).pathname;
-    t.throws(() => new Realm({ entry, scaling: { min: 0 } }), /minimum.*positive/i);
-    t.throws(() => new Realm({ entry, scaling: { min: 3, max: 2 } }), /minimum.*maximum/i);
-    t.throws(() => new Realm({ entry, scaling: { mode: 'bound', min: 2 } }), /bound.*one replica/i);
+    t.throws(() => new RealmDeployment({ entry, scaling: { min: 0 } }), /minimum.*positive/i);
+    t.throws(() => new RealmDeployment({ entry, scaling: { min: 3, max: 2 } }), /minimum.*maximum/i);
   });
   it('exposes refable logical-deployment lifecycle', (t) => {
     using realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
-    t.equal(realm.hasRef(), false, 'an idle logical realm is not referenced');
+    t.equal(realm.hasRef(), true, 'a Realm is referenced by default');
     t.equal(realm.ref(), realm, 'ref returns the realm');
     t.equal(realm.hasRef(), true);
     t.equal(realm.unref(), realm, 'unref returns the realm');

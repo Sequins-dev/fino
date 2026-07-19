@@ -1,9 +1,6 @@
 /**
-* Tests for MessagePort transfer across same-Isolate and cross-Isolate
-* (reactor realm) boundaries.
-*
-* Same-Isolate: port passed via realm.port.postMessage to an embedded child;
-* child uses it to communicate directly with a third party.
+* Tests for MessagePort transfer within an isolate and across reactor-realm
+* isolate boundaries.
 *
 * Cross-Isolate: port transferred via the reactor realm's transit port; the
 * realm receives the port and posts a message back through it.

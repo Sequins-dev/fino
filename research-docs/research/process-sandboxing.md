@@ -6,7 +6,7 @@
 > spawn-time errors.
 
 This document is specifically about **child process containment**. It is not
-about realm import rules, embedded realm isolation, code-generation product
+about realm import rules, reactor-realm isolation, code-generation product
 surfaces, or broad multi-tenant runtime architecture.
 
 The unit being contained is a native child process launched by:

@@ -15,17 +15,19 @@ application did not write can run with exactly the modules it was granted and
 nothing else. The same primitive covers ordinary worker-style execution and
 reloadable application contexts.
 
-Every ordinary realm is a scheduler-owned V8 isolate on a reactor thread. The
-allocator chooses its reactor and, when clustering is enabled, its node. Use
-`process: true` only when an OS-process isolation boundary is required; it does
-not create a separate Realm API.
+Every ordinary realm is one V8 isolate hosted and scheduled by a reactor
+thread. Node orchestration chooses the reactor and, when clustering is enabled,
+cluster orchestration will first choose the node. `RealmDeployment` composes
+independent realm replicas when scaling is required. Use `process: true` only
+when an OS-process isolation boundary is required; it does not create a
+separate Realm API.
 
 The guides in this section:
 
 - [Realm Lifecycle](./realm/lifecycle.md) — creating realms, running them,
   calling into them, and controlling their lifetime, including watch mode for
   auto-reload on file changes.
-- [Isolation and Placement](./realm/isolation.md) — scheduler placement,
+- [Isolation and Placement](./realm/isolation.md) — orchestrated placement,
   local mobility, and optional process isolation.
 - [Messaging](./realm/realm-messaging.md) — exchanging messages between parent
   and child using ports and `BroadcastChannel`.

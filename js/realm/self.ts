@@ -2,9 +2,8 @@
 * fino:realm/self - child Realm's own communication port.
 *
 * `port` is this realm's channel to its parent — the same object the
-* bootstrap exposes as `globalThis.realmPort` — regardless of where the
-* allocator placed the realm (same-thread context or dedicated reactor
-* thread). In the root realm it is `undefined`.
+* bootstrap exposes as `globalThis.realmPort` — regardless of which reactor
+* node orchestration selected. In the root realm it is `undefined`.
 *
 * Module caching guarantees a single port instance per context. Importing
 * this module from both the entry module and the bootstrap always yields the
