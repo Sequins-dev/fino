@@ -272,6 +272,8 @@ export class ThreadPort extends BaseTransportPort {
     // observes disconnection, and releases the mpsc pair.
     (transitClose as (h: number) => void)(this.#handle);
   }
+  /** Called after each wake has drained the transit queue. @internal */
+  protected _afterDrain(): void {}
   /**
   * Message error handler property.
   */
@@ -297,6 +299,7 @@ export class ThreadPort extends BaseTransportPort {
       if (this._closed) break;
       if (typeof n === 'number' && n < 0) break;
       this._drain();
+      this._afterDrain();
     }
   }
   /**
@@ -325,34 +328,56 @@ export class ThreadPort extends BaseTransportPort {
 export class DeferredTransportPort extends BaseTransportPort {
   #port: BaseTransportPort | null = null;
   #pending: Array<[unknown, Transferable[] | StructuredSerializeOptions | undefined]> = [];
-  readonly ready: Promise<BaseTransportPort>;
+  #generation = 0;
+  #messageListener: ((event: Event) => void) | null = null;
+  #errorListener: ((event: Event) => void) | null = null;
 
   constructor(port: BaseTransportPort | Promise<BaseTransportPort>) {
     super();
-    this.ready = Promise.resolve(port);
     this.replace(port);
   }
 
   /** Replace the physical replica endpoint without changing public identity. @internal */
   replace(next: BaseTransportPort | Promise<BaseTransportPort>): void {
-    if (next instanceof Promise) void next.then((port) => this.#attach(port));
+    const generation = ++this.#generation;
+    if (next instanceof Promise) void next.then((port) => {
+      if (generation !== this.#generation || this._closed) {
+        if (this.#port !== port) port.close();
+        return;
+      }
+      this.#attach(port);
+    });
     else this.#attach(next);
   }
 
   #attach(port: BaseTransportPort): void {
     if (this.#port === port) return;
+    this.#detachCurrent();
     this.#port = port;
-    port.addEventListener('message', (event) => {
+    this.#messageListener = (event) => {
       const source = event as MessageEvent;
       this.dispatchEvent(new MessageEvent('message', { data: source.data, ports: source.ports }));
-    });
-    port.addEventListener('messageerror', (event) => this.dispatchEvent(event));
+    };
+    this.#errorListener = (event) => this.dispatchEvent(event);
+    port.addEventListener('message', this.#messageListener);
+    port.addEventListener('messageerror', this.#errorListener);
     if (this._closed) {
       port.close();
       return;
     }
     if (this._started) port.start();
     for (const [message, transfer] of this.#pending.splice(0)) port.postMessage(message, transfer);
+  }
+
+  #detachCurrent(): void {
+    const port = this.#port;
+    if (port === null) return;
+    if (this.#messageListener !== null) port.removeEventListener('message', this.#messageListener);
+    if (this.#errorListener !== null) port.removeEventListener('messageerror', this.#errorListener);
+    port.close();
+    this.#port = null;
+    this.#messageListener = null;
+    this.#errorListener = null;
   }
 
   postMessage(message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
@@ -369,7 +394,8 @@ export class DeferredTransportPort extends BaseTransportPort {
   }
 
   protected override _onClose(): void {
+    this.#generation++;
     this.#pending.length = 0;
-    this.#port?.close();
+    this.#detachCurrent();
   }
 }

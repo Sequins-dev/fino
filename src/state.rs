@@ -422,6 +422,9 @@ pub struct FinoState {
     /// The half's wake-pipe read fd — the bootstrap's port watch registers
     /// it with the loop.
     pub port_wake_read_fd: Option<std::os::unix::io::RawFd>,
+    /// Private allocator-control transit half for reactor-hosted realms.
+    pub allocation_transit_handle: Option<u32>,
+    pub allocation_wake_read_fd: Option<std::os::unix::io::RawFd>,
 
     /// A policy hook observed `TryCatch::has_terminated` — execution was
     /// killed (budget/heap containment). The engine's realm pump takes this
@@ -470,6 +473,8 @@ impl FinoState {
             inspector_state: None,
             port_transit_handle: None,
             port_wake_read_fd: None,
+            allocation_transit_handle: None,
+            allocation_wake_read_fd: None,
             saw_termination: false,
             process_contexts: Vec::new(),
         }
@@ -486,6 +491,7 @@ impl FinoState {
         import_rules: Vec<ImportRule>,
         entry_path: Option<String>,
         port_half: Option<(u32, std::os::unix::io::RawFd)>,
+        allocation_half: Option<(u32, std::os::unix::io::RawFd)>,
         watch_mode: bool,
         repl_mode: bool,
         realm_data: Option<String>,
@@ -523,6 +529,8 @@ impl FinoState {
             inspector_state: None,
             port_transit_handle: port_half.map(|(h, _)| h),
             port_wake_read_fd: port_half.map(|(_, fd)| fd),
+            allocation_transit_handle: allocation_half.map(|(h, _)| h),
+            allocation_wake_read_fd: allocation_half.map(|(_, fd)| fd),
             saw_termination: false,
             process_contexts: Vec::new(),
         }

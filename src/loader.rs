@@ -570,14 +570,13 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
     source_builtin!("internal:orchestrator/node", "internal/orchestrator/node"),
     source_builtin!(
-        "internal:orchestrator/scaling",
-        "internal/orchestrator/scaling"
-    ),
-    source_builtin!(
         "internal:orchestrator/deployment",
         "internal/orchestrator/deployment"
     ),
-    source_builtin!("internal:orchestrator/types", "internal/orchestrator/types"),
+    source_builtin!(
+        "internal:orchestrator/cluster-orchestrator",
+        "internal/orchestrator/cluster-orchestrator"
+    ),
     source_builtin!(
         "internal:orchestrator/node-orchestrator",
         "internal/orchestrator/node-orchestrator"

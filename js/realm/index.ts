@@ -30,17 +30,16 @@
 * await realm.terminate();
 * ```
 */
-import { mergeChildRules, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { mergeChildRules, createProcessContext, stepProcessContext } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { placeScheduledRealm, type ScheduledRealmAllocation } from 'internal:realm/allocate';
 import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, DeferredTransportPort, BaseTransportPort } from 'internal:realm/transport-port';
-import { readable, removeRead } from 'internal:runtime/loop';
-import { serialize as _ser } from 'internal:serializer';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
 import * as deployment from 'internal:orchestrator/deployment';
 import type { ReplicaLease } from 'internal:orchestrator/deployment';
+import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
 const _topicRealmSpawn = topic(otelRuntimeTopic('realm', 'spawn', 'start'));
@@ -1879,32 +1878,13 @@ export interface RealmOptions {
   * ```
   */
   otlpEndpoint?: string | false;
-  /**
-  * Whether a pool-hosted realm may move between reactor threads on the same
-  * node. The default is `movable`; use `pinned` only for native integrations
-  * that intentionally depend on OS-thread affinity.
-  *
-  * Local movement transfers the same V8 isolate at a pump boundary. It does
-  * not reconstruct the realm, reset module state, or change `realm.port`.
-  * Process-isolated realms ignore this option.
-  *
-  * ```ts no_run
-  * import { Realm } from 'fino:realm';
-  *
-  * const realm = new Realm({
-  *   entry: './thread-affine-worker.ts',
-  *   localMobility: 'pinned',
-  * });
-  * ```
-  */
-  localMobility?: 'movable' | 'pinned';
 }
 
 /** Replica bounds and stabilization windows for a `RealmDeployment`. */
 export interface RealmDeploymentScalingOptions {
   /** Availability minimum. Defaults to one and must not exceed `max`. */
   min?: number;
-  /** Replica ceiling. Defaults to the host's available parallelism. */
+  /** Replica ceiling. When omitted, follows aggregate eligible cluster capacity. */
   max?: number;
   /** Queue-pressure stabilization window before adding a replica. Defaults to 1 second. */
   scaleUpWindowMs?: number;
@@ -1996,55 +1976,12 @@ export type RealmFn = (...args: any[]) => any;
 * realm.port.start();
 * ```
 */
-export class ProcessPort extends BaseTransportPort {
+export class ProcessPort extends ThreadPort {
   /** Resolves when the process-hosted reactor exits or asks to reload. */
   readonly finished: Promise<'released' | 'reload'>;
   #resolveFinished!: (reason: 'released' | 'reload') => void;
   #rejectFinished!: (error: unknown) => void;
   #finished = false;
-  /**
-  * Private property `#wakeReadFd` used by `ProcessPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #wakeReadFd = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#wakeReadFd;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #wakeReadFd: number;
-  /**
-  * Private property `#handle` used by `ProcessPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handle = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#handle;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
   #handle: number;
   /**
   * Create a process transport port from native process realm handles.
@@ -2056,16 +1993,16 @@ export class ProcessPort extends BaseTransportPort {
   * ```ts no_run
   * import { ProcessPort } from 'fino:realm';
   *
-  * const port = new ProcessPort(wakeReadFd, nativeHandle);
+  * const port = new ProcessPort(wakeReadFd, transitHandle, nativeHandle);
   * port.start();
   * ```
   *
   * @param wakeReadFd Readable file descriptor used to wake the event loop.
-  * @param handle Native process realm handle.
+  * @param transitHandle Parent-side transit endpoint.
+  * @param handle Native process status handle.
   */
-  constructor(wakeReadFd: number, handle: number) {
-    super();
-    this.#wakeReadFd = wakeReadFd;
+  constructor(wakeReadFd: number, transitHandle: number, handle: number) {
+    super(wakeReadFd, transitHandle);
     this.#handle = handle;
     this.finished = new Promise((resolve, reject) => {
       this.#resolveFinished = resolve;
@@ -2098,79 +2035,10 @@ export class ProcessPort extends BaseTransportPort {
     if (unsupported !== undefined) {
       throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
     }
-    const transferABs = (rawTransfer?.filter((t) => t instanceof ArrayBuffer) ?? []) as ArrayBuffer[];
-    const serResult = (_ser as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(message, transferABs.length > 0 ? transferABs : undefined);
-    const data = serResult[0];
-    const stores = serResult.length > 1 ? serResult.slice(1) : [] as Uint8Array[];
-    (processPortSend as (h: number, b: Uint8Array, s: Uint8Array[]) => void)(this.#handle, data, stores);
+    super.postMessage(message, transferOrOpts);
   }
-  /**
-  * Start watching the native wake file descriptor.
-  *
-  * Called by `BaseTransportPort.start()`. Application code should call
-  * `start()` rather than invoking this hook directly.
-  *
-  * ```ts no_run
-  * import { Realm } from 'fino:realm';
-  *
-  * const realm = new Realm({ entry: './worker.ts', process: true });
-  * realm.port.start();
-  * ```
-  *
-  * @internal
-  */
-  protected override _onStart(): void {
-    this.#watchLoop();
-  }
-  /**
-  * Remove the wake file descriptor from the event loop when the port closes.
-  *
-  * Called by `BaseTransportPort.close()`. Closing more than once is handled by
-  * the base class.
-  *
-  * ```ts no_run
-  * import { Realm } from 'fino:realm';
-  *
-  * const realm = new Realm({ entry: './worker.ts', process: true });
-  * realm.port.close();
-  * ```
-  *
-  * @internal
-  */
-  protected override _onClose(): void {
-    removeRead(this.#wakeReadFd);
-  }
-  /**
-  * Private method `#watchLoop` used by `ProcessPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchLoop() {
-  *     return 'watchLoop';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#watchLoop();
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  async #watchLoop(): Promise<void> {
-    while (!this._closed) {
-      const n = await readable(this.#wakeReadFd);
-      if (this._closed) break;
-      if (typeof n === 'number' && n < 0) break;
-      this._drain();
-      this.#checkFinished();
-    }
+  protected override _afterDrain(): void {
+    this.#checkFinished();
   }
   #checkFinished(): void {
     if (this.#finished) return;
@@ -2182,29 +2050,6 @@ export class ProcessPort extends BaseTransportPort {
     } catch (error) {
       this.#finished = true;
       this.#rejectFinished(error);
-    }
-  }
-  /**
-  * Drain pending native messages and dispatch them as message events.
-  *
-  * This is used by the process-port watcher after the wake fd becomes
-  * readable. It is exposed for bridge integration; callers should normally use
-  * `start()` and event listeners instead.
-  *
-  * ```ts no_run
-  * import { ProcessPort } from 'fino:realm';
-  *
-  * const port = new ProcessPort(wakeReadFd, nativeHandle);
-  * port._drain();
-  * ```
-  *
-  * @internal
-  */
-  _drain(): void {
-    for (const [byteArr] of _recvProcessMessages(this.#handle) as any[]) {
-      const [buf, ...stores] = byteArr as Uint8Array[];
-      if (!buf) continue;
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined);
     }
   }
 }
@@ -2222,13 +2067,6 @@ interface ProcessRealmConfig {
   watch: boolean;
   data?: string;
   bootstrapData?: string;
-}
-// ---------------------------------------------------------------------------
-// Native bridge helpers
-// ---------------------------------------------------------------------------
-/** Drain one batch from a process-port receive queue: `[[mainBytes, ...stores], ...]`. */
-function _recvProcessMessages(handle: number): Uint8Array[][] {
-  return (processPortRecv as (h: number) => unknown)(handle) as Uint8Array[][];
 }
 // ---------------------------------------------------------------------------
 // call() response helpers
@@ -2264,6 +2102,53 @@ function _matchesCallResponse(data: unknown, correlationId: number): boolean {
   const message = data as { __call_result?: boolean; __call_error?: boolean; correlationId?: number };
   return (message.__call_result === true || message.__call_error === true) && message.correlationId === correlationId;
 }
+
+function _releaseFailure(reason: string): Error | null {
+  if (reason.startsWith('failed')) return new Error(reason.replace(/^failed: ?/, '') || reason);
+  if (/^(setup_failed|reactor-workload-panicked|reactor-recovery-failed)/.test(reason)) return new Error(reason);
+  return null;
+}
+
+/** Run one correlated call over either physical Realm transport. */
+function _callThroughPort<R>(
+  port: BaseTransportPort,
+  terminal: Promise<unknown>,
+  correlationId: number,
+  args: unknown[]
+): Promise<R> {
+  return new Promise<R>((resolve, reject) => {
+    let settled = false;
+    let terminalTimer: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      port.removeEventListener('message', handler);
+      if (terminalTimer !== null) clearTimeout(terminalTimer);
+    };
+    const settle = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      action();
+    };
+    const handler = (event: Event) => {
+      const data = (event as MessageEvent).data;
+      if (!_matchesCallResponse(data, correlationId)) return;
+      settle(() => _resolveCallResponse(data, resolve, reject));
+    };
+    terminal.then((value) => {
+      terminalTimer = setTimeout(() => settle(() => {
+        const failure = typeof value === 'string' ? _releaseFailure(value) : null;
+        reject(failure ?? new Error('Realm exited before returning a call result'));
+      }), 25);
+    }, (error) => settle(() => reject(error)));
+    port.addEventListener('message', handler);
+    port.start();
+    try {
+      port.postMessage({ __call: true, correlationId, args });
+    } catch (error) {
+      settle(() => reject(error));
+    }
+  });
+}
 // ---------------------------------------------------------------------------
 // Realm class
 // ---------------------------------------------------------------------------
@@ -2288,28 +2173,6 @@ export class Realm<F extends RealmFn = RealmFn> {
   #nextCallId = 0;
   #activeCalls = 0;
   #idleCallTimer: ReturnType<typeof setTimeout> | null = null;
-  /**
-  * Private property `#handle` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handle = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#handle;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #handle: number;
   readonly #processIsolated: boolean;
   /**
   * Parent-side port for general communication with the child realm.
@@ -2327,28 +2190,6 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   readonly port: MessagePort | BaseTransportPort;
   #watchMode = false;
-  /**
-  * Private property `#watchTerminated` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchTerminated = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#watchTerminated;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #watchTerminated = false;
   /** The one physical scheduled execution container owned by this Realm. */
   #scheduled: ScheduledRealmInstance | null = null;
   #scheduledReady: Promise<ScheduledRealmInstance> | null = null;
@@ -2533,13 +2374,11 @@ export class Realm<F extends RealmFn = RealmFn> {
       const scheduledConfig: Parameters<typeof placeScheduledRealm>[0] = {
         entry: opts.entry,
         rulesJson: mergedRules,
-        ...opts.localMobility !== undefined ? { localMobility: opts.localMobility } : {},
         ...serializedData !== undefined ? { realmData: serializedData } : {},
         ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {},
         watch,
         repl
       };
-      this.#handle = -1;
       this.#scheduledConfig = scheduledConfig;
       const created = this.#createScheduledInstance();
       if (created instanceof Promise) {
@@ -2586,9 +2425,12 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   #createProcessPort(): ProcessPort {
     const config = this.#processConfig!;
-    const handle = createProcessContext(config.root, config.entry, config.rules, config.watch, config.data, config.bootstrapData) as number;
-    this.#handle = handle;
-    const port = new ProcessPort(getProcessSocketFd(handle) as number, handle);
+    const info = createProcessContext(config.root, config.entry, config.rules, config.watch, config.data, config.bootstrapData) as {
+      handle: number;
+      portHandle: number;
+      portWakeFd: number;
+    };
+    const port = new ProcessPort(info.portWakeFd, info.portHandle, info.handle);
     this.#bindFacadePort(port);
     void port.finished.then(() => {
       port.close();
@@ -2632,7 +2474,8 @@ export class Realm<F extends RealmFn = RealmFn> {
         const released = this.#lastScheduledRelease;
         if (released === null) return Promise.resolve();
         return released.then((reason) => {
-          if (reason.startsWith('failed')) throw new Error(reason.replace(/^failed: ?/, '') || reason);
+          const failure = _releaseFailure(reason);
+          if (failure !== null) throw failure;
         });
       }
       return (async () => {
@@ -2644,8 +2487,9 @@ export class Realm<F extends RealmFn = RealmFn> {
           // endpoint so release cannot win that race.
           instance.port._drain();
           this.#detachScheduledInstance(instance);
-          if (reason.startsWith('failed')) throw new Error(reason.replace(/^failed: ?/, '') || reason);
-          if (reason !== 'reload' || this.#watchTerminated) return;
+          const failure = _releaseFailure(reason);
+          if (failure !== null) throw failure;
+          if (reason !== 'reload' || this.#terminated) return;
           const next = await this.#ensureScheduledInstance();
           (this.port as DeferredTransportPort).replace(next.port);
         }
@@ -2657,7 +2501,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         while (true) {
           port.start();
           const reason = await port.finished;
-          if (reason !== 'reload' || this.#watchTerminated) return;
+          if (reason !== 'reload' || this.#terminated) return;
           this.#activeChildPort = null;
           port = this.#ensureProcessPort();
         }
@@ -2719,27 +2563,7 @@ export class Realm<F extends RealmFn = RealmFn> {
 
   async #callScheduled(correlationId: number, args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
     const instance = await this.#ensureScheduledInstance();
-    return new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-      let settled = false;
-      instance.allocation.released.then((reason) => {
-        setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          reject(new Error(reason.startsWith('failed') ? reason.replace(/^failed: ?/, '') : 'Realm exited before returning a call result'));
-        }, 25);
-      });
-      const handler = (event: Event) => {
-        if (settled) return;
-        const data = (event as MessageEvent).data;
-        if (!_matchesCallResponse(data, correlationId)) return;
-        settled = true;
-        instance.port.removeEventListener('message', handler);
-        _resolveCallResponse(data, resolve, reject);
-      };
-      instance.port.addEventListener('message', handler);
-      instance.port.start();
-      instance.port.postMessage({ __call: true, correlationId, args });
-    });
+    return _callThroughPort(instance.port, instance.allocation.released, correlationId, args);
   }
   /**
   * Call the child Realm's default-exported function with `args`.
@@ -2772,35 +2596,12 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (!this.#processIsolated) {
       base = this.#callScheduled(correlationId, args);
     } else {
-      base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        let settled = false;
-        let processPort: ProcessPort;
-        try {
-          processPort = this.#ensureProcessPort();
-        } catch (error) {
-          reject(error);
-          return;
-        }
-        processPort.finished.then(() => {
-          setTimeout(() => {
-            if (!settled) reject(new Error('Realm exited before returning a call result'));
-          }, 25);
-        }, reject);
-        const handler = (ev: Event) => {
-          const data = (ev as MessageEvent).data;
-          if (!_matchesCallResponse(data, correlationId)) return;
-          settled = true;
-          processPort.removeEventListener('message', handler);
-          _resolveCallResponse(data, resolve, reject);
-        };
-        processPort.addEventListener('message', handler);
-        processPort.start();
-        processPort.postMessage({
-          __call: true,
-          correlationId,
-          args
-        });
-      });
+      try {
+        const processPort = this.#ensureProcessPort();
+        base = _callThroughPort(processPort, processPort.finished, correlationId, args);
+      } catch (error) {
+        base = Promise.reject(error);
+      }
     }
     const observed = base.then((result) => {
       this.#finishCall();
@@ -2822,6 +2623,9 @@ export class Realm<F extends RealmFn = RealmFn> {
   }
   #finishCall(): void {
     this.#activeCalls = Math.max(0, this.#activeCalls - 1);
+    this.#scheduleIdleRetirement();
+  }
+  #scheduleIdleRetirement(): void {
     if (this.#activeCalls !== 0 || this.#referenced || this.#watchMode) return;
     this.#idleCallTimer = setTimeout(() => {
       this.#idleCallTimer = null;
@@ -2854,7 +2658,6 @@ export class Realm<F extends RealmFn = RealmFn> {
   terminate(): void {
     if (this.#terminated) return;
     this.#terminated = true;
-    this.#watchTerminated = true;
     if (!this.#processIsolated) {
       const scheduled = this.#scheduled;
       if (scheduled !== null) this.#retireScheduledInstance(scheduled, 'terminated');
@@ -2882,7 +2685,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   unref(): this {
     this.#referenced = false;
-    if (this.#activeCalls === 0 && !this.#watchMode) this.#finishCall();
+    this.#scheduleIdleRetirement();
     return this;
   }
   /** Return whether this Realm has an explicit idle-liveness reference. */
@@ -2990,7 +2793,7 @@ export class RealmDeployment<F extends RealmFn = RealmFn> {
     }
     const { scaling, process: _process, ...realmOptions } = options;
     this.#realmOptions = realmOptions;
-    this.#controller = new deployment.DeploymentController<Realm<F>>({
+    this.#controller = clusterOrchestrator.createDeployment<Realm<F>>({
       scaling,
       create: async () => {
         const realm = new Realm<F>(this.#realmOptions);

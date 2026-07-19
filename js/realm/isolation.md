@@ -18,9 +18,8 @@ This gives every realm an independent heap, module graph, global object,
 microtask queue, and event-loop ownership. Node orchestration may move the live
 isolate between reactor threads on the same node without rebuilding it.
 
-Use `localMobility: 'pinned'` only for native integrations that truly require
-OS-thread affinity. It prevents local movement and may reduce orchestration's
-ability to contain blocking work.
+Movement eligibility is derived from native resources that truly require
+OS-thread affinity. Ordinary realms need no placement or mobility option.
 
 ## Process isolation
 

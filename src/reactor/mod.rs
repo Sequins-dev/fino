@@ -1437,4 +1437,5 @@ mod imp {
     stub!(track_atomics_waiter);
     stub!(untrack_atomics_waiter);
     stub!(set_nonblocking);
+    stub!(open_sync);
 }

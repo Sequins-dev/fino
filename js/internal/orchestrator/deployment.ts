@@ -8,8 +8,43 @@
 *
 * @internal
 */
-import { availableParallelism } from 'internal:process';
-import { normalizeDeploymentScalingPolicy, type DeploymentScalingPolicy } from 'internal:orchestrator/scaling';
+export interface DeploymentScalingPolicy {
+  min?: number;
+  max?: number;
+  scaleUpWindowMs?: number;
+  scaleDownWindowMs?: number;
+}
+
+interface NormalizedDeploymentScalingPolicy {
+  min: number;
+  max: number | null;
+  scaleUpWindowMs: number;
+  scaleDownWindowMs: number;
+}
+
+function normalizeDeploymentScalingPolicy(
+  policy: DeploymentScalingPolicy | undefined,
+  reactorCapacity: number
+): NormalizedDeploymentScalingPolicy {
+  if (!Number.isInteger(reactorCapacity) || reactorCapacity < 1) {
+    throw new TypeError('reactor capacity must be a positive integer');
+  }
+  const min = policy?.min ?? 1;
+  const max = policy?.max ?? null;
+  if (!Number.isInteger(min) || min < 1) throw new TypeError('scaling minimum must be a positive integer');
+  if (max !== null && (!Number.isInteger(max) || max < 1)) throw new TypeError('scaling maximum must be a positive integer');
+  if (max !== null && min > max) throw new RangeError('scaling minimum cannot exceed maximum');
+  if (min > reactorCapacity) throw new RangeError('scaling minimum exceeds eligible cluster capacity');
+  if (max !== null && max > reactorCapacity) throw new RangeError('scaling maximum exceeds eligible cluster capacity');
+  const scaleUpWindowMs = nonNegative(policy?.scaleUpWindowMs ?? 1_000, 'scale-up window');
+  const scaleDownWindowMs = nonNegative(policy?.scaleDownWindowMs ?? 30_000, 'scale-down window');
+  return { min, max, scaleUpWindowMs, scaleDownWindowMs };
+}
+
+function nonNegative(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) throw new TypeError(`${name} must be a non-negative finite number`);
+  return value;
+}
 
 interface ReplicaRecord<T> {
   value: T;
@@ -26,8 +61,12 @@ export interface ReplicaLease<T> {
 /** Construction and lifecycle hooks for a deployment controller. */
 export interface DeploymentControllerOptions<T> {
   scaling?: DeploymentScalingPolicy;
+  /** Current aggregate admission capacity of eligible cluster nodes. */
+  capacity(): number;
   create(): T | Promise<T>;
   dispose(value: T): void;
+  /** Called exactly once when the deployment releases orchestration. */
+  onTerminate?(): void;
 }
 
 /** Owns replica admission and scaling for one logical deployment. */
@@ -38,22 +77,29 @@ export class DeploymentController<T> {
   #create: () => T | Promise<T>;
   #dispose: (value: T) => void;
   #min: number;
-  #max: number;
+  #max: number | null;
+  #capacity: () => number;
   #scaleUpWindowMs: number;
   #scaleDownWindowMs: number;
   #scaleUp: Promise<ReplicaRecord<T>> | null = null;
   #closed = false;
+  #onTerminate: (() => void) | null;
 
   constructor(options: DeploymentControllerOptions<T>) {
-    const capacity = Math.max(1, availableParallelism, options.scaling?.min ?? 0, options.scaling?.max ?? 0);
+    const capacity = options.capacity();
     const policy = normalizeDeploymentScalingPolicy(options.scaling, capacity);
     this.#create = options.create;
     this.#dispose = options.dispose;
     this.#min = policy.min;
     this.#max = policy.max;
+    this.#capacity = options.capacity;
     this.#scaleUpWindowMs = policy.scaleUpWindowMs;
     this.#scaleDownWindowMs = policy.scaleDownWindowMs;
-    this.ready = this.#ensureMinimum();
+    this.#onTerminate = options.onTerminate ?? null;
+    this.ready = this.#ensureMinimum().catch((error) => {
+      this.terminate();
+      throw error;
+    });
   }
 
   /** Snapshot the currently allocated replica values. */
@@ -68,7 +114,7 @@ export class DeploymentController<T> {
     while (!this.#closed) {
       const idle = this.#records.find((record) => record.active === 0);
       if (idle !== undefined) return this.#lease(idle);
-      if (this.#records.length < this.#max) {
+      if (this.#records.length < this.#currentMaximum()) {
         const released = await this.#waitForRelease(this.#scaleUpWindowMs);
         if (released) continue;
         this.#scaleUp ??= this.#spawn().finally(() => { this.#scaleUp = null; });
@@ -95,6 +141,9 @@ export class DeploymentController<T> {
     for (const wake of this.#waiters) wake();
     this.#waiters.clear();
     for (const record of this.#records.splice(0)) this.#retire(record);
+    const onTerminate = this.#onTerminate;
+    this.#onTerminate = null;
+    onTerminate?.();
   }
 
   async #ensureMinimum(): Promise<void> {
@@ -152,6 +201,11 @@ export class DeploymentController<T> {
   #retire(record: ReplicaRecord<T>): void {
     if (record.idleTimer !== null) clearTimeout(record.idleTimer);
     this.#dispose(record.value);
+  }
+
+  #currentMaximum(): number {
+    const capacity = Math.max(0, Math.floor(this.#capacity()));
+    return this.#max === null ? capacity : Math.min(this.#max, capacity);
   }
 
   #waitForRelease(timeout?: number): Promise<boolean> {

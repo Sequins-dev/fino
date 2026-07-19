@@ -1,24 +1,15 @@
 /**
-* internal:orchestrator — node-level realm ownership.
+* internal:orchestrator — cluster and node-level realm ownership.
 *
-* Reactors schedule their assigned realms. The node orchestrator owns reactor
-* lifecycle and realm placement, while deployment controllers own replica
-* count and draining. This module also provides the root application entry
-* helper used by `fino run`.
+* Reactors schedule assigned realms. Cluster orchestration owns deployment
+* admission and node choice; each node orchestrator owns reactor lifecycle and
+* local placement. This module also provides the root application entry helper
+* used by `fino run`.
 *
 * @internal
 */
 import { Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
 import { createJobsControlFacade } from '../jobs/control.ts';
-
-export { NodeRealmCollection } from './node.ts';
-export type { RealmPlacementSpec, RealmRecord, ReactorClass } from './node.ts';
-export { NodeOrchestrator } from './node-orchestrator.ts';
-export type { NodeOrchestratorOptions, RealmWorkloadSpec, MoveOutcome } from './node-orchestrator.ts';
-export { DeploymentController } from './deployment.ts';
-export type { DeploymentControllerOptions, ReplicaLease } from './deployment.ts';
-export { BudgetWatchdog } from './budget-watchdog.ts';
-export type { BudgetWatchdogOptions } from './budget-watchdog.ts';
 
 /** Options for running a user entry script as the root application realm. */
 export interface AppOptions {

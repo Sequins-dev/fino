@@ -15,10 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{
-    loader,
-    state::{FinoState, ImportRule, ProcessEnv, get_state},
-};
+use crate::state::{FinoState, get_state};
 
 /// Process-global registry of budget targets, keyed by an opaque token.
 ///
@@ -154,18 +151,12 @@ pub(crate) struct ActiveWorkload {
 }
 
 impl ParkedWorkload {
-    /// Route this isolate's background wakes (FFI completions, callback
-    /// trampolines, view releases) into a reactor as Notifier posts tagged
-    /// `user_data`. First install wins; returns false if already claimed.
-    pub(crate) fn install_wake_notifier(
-        &self,
-        notifier: cherenkov::Notifier,
-        user_data: u64,
-    ) -> bool {
-        self.async_state
-            .as_ref()
-            .map(|st| st.wake_sink.install_notifier(notifier, user_data))
-            .unwrap_or(false)
+    /// Route this isolate's background wakes into the current reactor. Moves
+    /// intentionally replace the shared route seen by existing producers.
+    pub(crate) fn install_wake_notifier(&self, notifier: cherenkov::Notifier, user_data: u64) {
+        if let Some(state) = self.async_state.as_ref() {
+            state.wake_sink.install_notifier(notifier, user_data);
+        }
     }
 
     pub(crate) fn mark_moved_between_threads(&mut self) {
@@ -248,13 +239,6 @@ fn eval_steps<'a>(
     Some(v8::undefined(scope).into())
 }
 
-fn js_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String {
-    value
-        .to_string(scope)
-        .map(|s| s.to_rust_string_lossy(scope))
-        .unwrap_or_else(|| "unknown exception".to_string())
-}
-
 /// Default per-workload old-generation heap cap when the caller does not set one.
 const DEFAULT_HEAP_LIMIT_BYTES: usize = 1 << 30;
 
@@ -283,33 +267,21 @@ unsafe extern "C" fn heap_limit_callback(
 /// the only differences.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn setup_realm_workload(
-    entry_path: String,
-    process_env: ProcessEnv,
-    package_map_json: Option<String>,
-    heap_limit_bytes: usize,
-    import_rules: Vec<ImportRule>,
-    realm_data: Option<String>,
-    realm_bootstrap_data: Option<String>,
-    watch_mode: bool,
-    repl_mode: bool,
-    port_half: (u32, i32),
+    config: crate::realm::RealmExecutionConfig,
 ) -> Result<ParkedWorkload, String> {
     crate::runtime::init_v8();
 
-    let heap_limit = if heap_limit_bytes == 0 {
+    let heap_limit = if config.heap_limit_bytes == 0 {
         DEFAULT_HEAP_LIMIT_BYTES
     } else {
-        heap_limit_bytes
+        config.heap_limit_bytes
     };
     let mut params = v8::CreateParams::default();
     params = params.heap_limits(0, heap_limit);
     params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
 
     let mut isolate = v8::Isolate::new(params);
-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
-    isolate.set_allow_atomics_wait(true);
-    isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
-    isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
+    crate::realm::child::configure_realm_isolate(&mut isolate);
 
     // Containment must cover setup too: the full bootstrap is a real heap
     // load, and nearing the cap without a callback is a process-fatal OOM
@@ -325,94 +297,24 @@ pub(crate) fn setup_realm_workload(
     let async_state = crate::async_rt::new_state();
     let saved_state = crate::async_rt::swap_state(Some(async_state));
 
-    let (context_global, state_rc, module_global) = {
-        let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
-        let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
-        let context = v8::Context::new(isolate_scope, Default::default());
-        context.set_microtask_queue(&root_queue);
-        let scope = &mut v8::ContextScope::new(isolate_scope, context);
-        let state = FinoState::new_child(
-            process_env,
-            package_map_json,
-            root_queue,
-            import_rules,
-            Some(entry_path),
-            Some(port_half),
-            watch_mode,
-            repl_mode,
-            realm_data,
-            realm_bootstrap_data,
-        );
-        context.set_slot(Rc::new(RefCell::new(state)));
-
-        let initial_frame = v8::Array::new(scope, 0);
-        scope.set_continuation_preserved_embedder_data(initial_frame.into());
-
-        let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs"));
-        let bootstrap_map =
-            include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
-        let module = {
-            let tc = &mut v8::TryCatch::new(scope);
-            loader::register_source_map_from_json(tc, "internal/bootstrap.mjs", bootstrap_map);
-            match loader::compile_source_module(
-                tc,
-                bootstrap_src,
-                "internal/bootstrap.mjs",
-                Some(bootstrap_map),
-            ) {
-                Some(m) => m,
-                None => {
-                    crate::async_rt::swap_state(saved_state);
-                    return Err(crate::realm::child::catch_message(tc)
-                        .unwrap_or_else(|| "failed to compile realm bootstrap".to_string()));
-                }
-            }
-        };
-        loader::register_as_builtin(scope, module, "internal:bootstrap");
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            if module
-                .instantiate_module(tc, loader::resolve_module_callback)
-                .is_none()
-            {
-                crate::async_rt::swap_state(saved_state);
-                return Err(crate::realm::child::catch_message(tc)
-                    .unwrap_or_else(|| "failed to instantiate realm bootstrap".to_string()));
-            }
-        }
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            if module.evaluate(tc).is_none() {
-                crate::async_rt::swap_state(saved_state);
-                return Err(crate::realm::child::catch_message(tc)
-                    .unwrap_or_else(|| "failed to evaluate realm bootstrap".to_string()));
-            }
-        }
-        crate::realm::child::pump_and_checkpoint(scope);
-        if module.get_status() == v8::ModuleStatus::Errored {
-            let exc = module.get_exception();
-            let msg = js_string(scope, exc);
+    let realm = match crate::realm::child::bootstrap_realm(&mut isolate, config) {
+        Ok(realm) => realm,
+        Err(error) => {
             crate::async_rt::swap_state(saved_state);
-            return Err(msg);
+            return Err(error);
         }
-
-        (
-            v8::Global::new(scope, context),
-            get_state(scope),
-            v8::Global::new(scope, module),
-        )
     };
 
     let async_state = crate::async_rt::swap_state(saved_state);
 
     let mut workload = ParkedWorkload {
         isolate,
-        context: context_global,
+        context: realm.context,
         async_state,
         thread_handle,
         budget_token,
-        _state: state_rc,
-        _module: module_global,
+        _state: realm.state,
+        _module: realm.module,
         moved_between_threads: false,
     };
     unsafe {

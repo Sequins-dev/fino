@@ -78,9 +78,8 @@ impl WakeSink {
 
     /// Route the sink to a reactor Notifier post. Replacing the route is safe:
     /// background producers hold this shared cell rather than a notifier copy.
-    pub fn install_notifier(&self, notifier: cherenkov::Notifier, user_data: u64) -> bool {
+    pub fn install_notifier(&self, notifier: cherenkov::Notifier, user_data: u64) {
         *self.0.notifier.write().unwrap() = Some((notifier, user_data));
-        true
     }
 
     pub fn notifier_installed(&self) -> bool {
@@ -332,14 +331,12 @@ pub fn wake_sink() -> Option<WakeSink> {
     STATE.with(|s| s.borrow().as_ref().map(|st| st.wake_sink.clone()))
 }
 
-/// Upgrade the current isolate's wake sink to a reactor Notifier post.
-/// Returns false if a reactor already claimed it.
-pub fn install_wake_notifier(notifier: cherenkov::Notifier, user_data: u64) -> bool {
+/// Upgrade or reroute the current isolate's wake sink to a reactor post.
+pub fn install_wake_notifier(notifier: cherenkov::Notifier, user_data: u64) {
     STATE.with(|s| {
-        s.borrow()
-            .as_ref()
-            .map(|st| st.wake_sink.install_notifier(notifier, user_data))
-            .unwrap_or(false)
+        if let Some(state) = s.borrow().as_ref() {
+            state.wake_sink.install_notifier(notifier, user_data);
+        }
     })
 }
 

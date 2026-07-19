@@ -44,13 +44,11 @@ describe('cluster seed membership', () => {
     await active.start();
     transport.inject('node-1', {
       t: 'HELLO',
-      nodeId: 'node-1',
-      load: { cpu: .2, memory: 10 }
+      nodeId: 'node-1'
     });
     transport.inject('node-2', {
       t: 'HELLO',
-      nodeId: 'node-2',
-      load: { cpu: .1, memory: 20 }
+      nodeId: 'node-2'
     });
     t.ok(transport.listened);
     t.equal(transport.sent.filter(({ message }) => message.t === 'WELCOME').length, 2);
@@ -63,8 +61,7 @@ describe('cluster seed membership', () => {
     await active.start();
     transport.inject('node-1', {
       t: 'HELLO',
-      nodeId: 'node-1',
-      load: { cpu: 0, memory: 0 }
+      nodeId: 'node-1'
     });
     transport.sent = [];
     transport.inject('node-1', { t: 'PEER_DOWN', nodeId: 'node-1' });

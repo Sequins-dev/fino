@@ -6,6 +6,7 @@ import { mergeChildRules } from 'internal:realm-native';
 import { ThreadPort } from 'internal:realm/transport-port';
 
 const worker = new URL('../realm/fixtures/scaling-fn.ts', import.meta.url).pathname;
+const blockingWorker = new URL('../realm/fixtures/blocking-fn.ts', import.meta.url).pathname;
 
 function call(port: ThreadPort, correlationId: number, delay: number): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -72,8 +73,7 @@ describe('NodeOrchestrator', () => {
     orchestrator.start();
     const placement = orchestrator.deployRealm({
       entryPath: worker,
-      rulesJson: mergeChildRules('[]') as string,
-      localMobility: 'movable'
+      rulesJson: mergeChildRules('[]') as string
     });
     if (placement === null) throw new Error('realm was not placed');
     const port = new ThreadPort(placement.portWakeFd, placement.portHandle);
@@ -89,6 +89,68 @@ describe('NodeOrchestrator', () => {
     } finally {
       port.close();
       orchestrator.revoke(placement.workloadId, 'test-done');
+      await orchestrator.shutdown();
+    }
+  });
+
+  it('promotes a repeatedly blocking isolate to batch capacity', async (t) => {
+    const orchestrator = new NodeOrchestrator({
+      reactorCount: 1,
+      capacity: 2,
+      syncSliceThresholdMicros: 1_000,
+      batchPool: { minReactors: 0, maxReactors: 1, idleTimeoutMs: 10 }
+    });
+    orchestrator.start();
+    const placement = orchestrator.deployRealm({
+      entryPath: blockingWorker,
+      rulesJson: mergeChildRules('[]') as string
+    });
+    if (placement === null) throw new Error('realm was not placed');
+    const port = new ThreadPort(placement.portWakeFd, placement.portHandle);
+    try {
+      await call(port, 20, 10);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await call(port, 21, 10);
+      const destination = await eventually(() => {
+        const reactor = orchestrator.collection().placementOf(placement.workloadId);
+        return reactor !== null && orchestrator.collection().reactorClassOf(reactor) === 'batch'
+          ? reactor
+          : null;
+      });
+      t.match(destination, /^batch-/);
+    } finally {
+      port.close();
+      orchestrator.revoke(placement.workloadId, 'test-done');
+      await orchestrator.shutdown();
+    }
+  });
+
+  it('contains a hard-budget overrun without losing sibling isolates', async (t) => {
+    const orchestrator = new NodeOrchestrator({
+      reactorCount: 1,
+      capacity: 2,
+      hardBudgetMicros: 10_000
+    });
+    orchestrator.start();
+    const runaway = orchestrator.deployRealm({
+      entryPath: blockingWorker,
+      rulesJson: mergeChildRules('[]') as string
+    });
+    const survivor = orchestrator.deployRealm({
+      entryPath: worker,
+      rulesJson: mergeChildRules('[]') as string
+    });
+    if (runaway === null || survivor === null) throw new Error('realms were not placed');
+    const runawayPort = new ThreadPort(runaway.portWakeFd, runaway.portHandle);
+    const survivorPort = new ThreadPort(survivor.portWakeFd, survivor.portHandle);
+    try {
+      void call(runawayPort, 30, 1_000).catch(() => {});
+      t.equal(await orchestrator.whenReleased(runaway.workloadId), 'terminated');
+      t.equal(typeof await call(survivorPort, 31, 0), 'string');
+      t.equal(orchestrator.collection().placementOf(survivor.workloadId), 'reactor-0');
+    } finally {
+      runawayPort.close();
+      survivorPort.close();
       await orchestrator.shutdown();
     }
   });
@@ -114,5 +176,40 @@ describe('NodeOrchestrator', () => {
     } finally {
       await orchestrator.shutdown();
     }
+  });
+
+  it('replaces only the physical reactor after one isolate crashes', async (t) => {
+    const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 2 });
+    orchestrator.start();
+    const failed = orchestrator.deployRealm({
+      entryPath: worker,
+      rulesJson: mergeChildRules('[]') as string
+    });
+    const survivor = orchestrator.deployRealm({
+      entryPath: worker,
+      rulesJson: mergeChildRules('[]') as string
+    });
+    if (failed === null || survivor === null) throw new Error('realms were not placed');
+    const survivorPort = new ThreadPort(survivor.portWakeFd, survivor.portHandle);
+    try {
+      const heap = await call(survivorPort, 10, 0);
+      const generation = orchestrator._reactorGeneration('reactor-0');
+      orchestrator._crashRealm(failed.workloadId);
+
+      t.equal(await orchestrator.whenReleased(failed.workloadId), 'reactor-workload-panicked');
+      await eventually(() => orchestrator._reactorGeneration('reactor-0') > generation ? true : null);
+      t.equal(orchestrator.collection().placementOf(survivor.workloadId), 'reactor-0');
+      t.equal(await call(survivorPort, 11, 0), heap, 'survivor was moved intact, not reconstructed');
+    } finally {
+      survivorPort.close();
+      await orchestrator.shutdown();
+    }
+  });
+
+  it('is one-shot after shutdown', async (t) => {
+    const orchestrator = new NodeOrchestrator({ reactorCount: 1 });
+    orchestrator.start();
+    await orchestrator.shutdown();
+    t.throws(() => orchestrator.start(), /shut down|one-shot/i);
   });
 });

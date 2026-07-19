@@ -6,7 +6,17 @@
 *
 * @internal
 */
-import type { PriorityClass, ReactorLoadSummary, RealmId } from './types.ts';
+export type RealmId = string;
+export type ReactorId = string;
+export type PriorityClass = 'interactive' | 'service' | 'background';
+
+/** Coarse load reported by one reactor for placement decisions. */
+export interface ReactorLoadSummary {
+  reactorId: ReactorId;
+  heldRealms: number;
+  runnableRealms: number;
+  debtMicros: number;
+}
 
 export type ReactorClass = 'latency' | 'batch';
 
@@ -14,7 +24,6 @@ export type ReactorClass = 'latency' | 'batch';
 export interface RealmPlacementSpec {
   entryPath: string;
   priority?: PriorityClass;
-  localMobility?: 'movable' | 'pinned';
 }
 
 /** Authoritative placement record for one realm. */
@@ -23,7 +32,6 @@ export interface RealmRecord {
   reactorId: string;
   entryPath: string;
   priority: PriorityClass;
-  localMobility: 'movable' | 'pinned';
 }
 
 interface ReactorRecord {
@@ -63,8 +71,7 @@ export class NodeRealmCollection {
       id,
       reactorId,
       entryPath: spec.entryPath,
-      priority: spec.priority ?? 'service',
-      localMobility: spec.localMobility ?? 'movable'
+      priority: spec.priority ?? 'service'
     };
     this.#realms.set(id, record);
     return record;
@@ -81,10 +88,6 @@ export class NodeRealmCollection {
 
   placementOf(id: RealmId): string | null {
     return this.#realms.get(id)?.reactorId ?? null;
-  }
-
-  isLocallyMovable(id: RealmId): boolean {
-    return this.#realms.get(id)?.localMobility === 'movable';
   }
 
   reserveMove(id: RealmId, destination: string): boolean {

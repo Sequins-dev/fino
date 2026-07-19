@@ -8,13 +8,12 @@ describe('cluster membership protocol', () => {
   it('round-trips membership messages', (t) => {
     const hello = roundTrip({
       t: 'HELLO',
-      nodeId: 'node-1',
-      load: { cpu: .5, memory: 1024 }
+      nodeId: 'node-1'
     });
     const welcome = roundTrip({
       t: 'WELCOME',
       nodeId: 'seed',
-      peers: [{ nodeId: 'node-1', load: { cpu: .5, memory: 1024 } }]
+      peers: [{ nodeId: 'node-1' }]
     });
     t.equal(hello.t, 'HELLO');
     t.equal(welcome.t, 'WELCOME');
@@ -23,8 +22,7 @@ describe('cluster membership protocol', () => {
 
   it('rejects malformed and legacy realm messages', (t) => {
     t.throws(() => decode('null'), /protocol/);
-    t.throws(() => decode('{"t":"HELLO","nodeId":"bad/node","load":{"cpu":0,"memory":0}}'), /nodeId/);
-    t.throws(() => decode('{"t":"HELLO","nodeId":"node","load":{"cpu":2,"memory":0}}'), /cpu/);
+    t.throws(() => decode('{"t":"HELLO","nodeId":"bad/node"}'), /nodeId/);
     t.throws(() => decode('{"t":"SPAWN"}'), /unknown message type/);
     t.throws(() => decode('{"t":"PORT_MSG"}'), /unknown message type/);
   });
@@ -32,5 +30,6 @@ describe('cluster membership protocol', () => {
   it('drops unknown wire properties', (t) => {
     const message = decode('{"t":"HELLO","nodeId":"node","load":{"cpu":0,"memory":0},"token":"secret"}');
     t.equal((message as any).token, undefined);
+    t.equal((message as any).load, undefined);
   });
 });

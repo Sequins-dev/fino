@@ -2,15 +2,14 @@
 * Worker-side cluster membership client.
 *
 * This layer deliberately owns no realm lifecycle. Realm placement and
-* execution belong to the scheduler; the cluster client only maintains the
-* peer view that a future distributed scheduler adapter can consume.
+* execution belong to orchestration; the cluster client only maintains the
+* peer view that a future distributed allocator can consume.
 *
 * @internal
 */
 import type { ClusterTransport } from './transport.ts';
 import { type ClusterMessage, type PeerInfo } from './protocol.ts';
-
-const HEARTBEAT_MS = 2500;
+import { HEARTBEAT_INTERVAL_MS } from './protocol.ts';
 
 /**
 * Tracks cluster membership and sends liveness heartbeats to the seed.
@@ -47,7 +46,7 @@ export class ClusterClient {
         t: 'HEARTBEAT',
         ts: Date.now()
       });
-    }, HEARTBEAT_MS);
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   /** Stop heartbeats, clear membership, and close the transport. */

@@ -2,34 +2,28 @@
 * Cluster membership wire protocol.
 *
 * Realm scheduling is intentionally absent. These messages establish a live
-* peer view over the QUIC/WebTransport mesh; distributed scheduler messages
+* peer view over the QUIC/WebTransport mesh; distributed orchestration messages
 * will be introduced with the cluster allocator rather than as a second Realm
 * implementation.
 *
 * @internal
 */
 
-/** Resource load advertised by a cluster node. */
-export interface NodeLoad {
-  /** CPU utilization in the inclusive range `[0, 1]`. */
-  cpu: number;
-  /** Resident memory in bytes. */
-  memory: number;
-}
+/** Default membership heartbeat interval. @internal */
+export const HEARTBEAT_INTERVAL_MS = 2500;
+/** Default timeout for a silent member. @internal */
+export const HEARTBEAT_TIMEOUT_MS = 7500;
 
 /** One node in the seed's membership view. */
 export interface PeerInfo {
   /** Stable node identifier without `/`. */
   nodeId: string;
-  /** Most recently advertised node load. */
-  load: NodeLoad;
 }
 
 /** Messages exchanged by cluster membership transports. */
 export type ClusterMessage = {
   t: 'HELLO';
   nodeId: string;
-  load: NodeLoad;
 } | {
   t: 'WELCOME';
   nodeId: string;
@@ -69,8 +63,7 @@ export function decode(source: string): ClusterMessage {
     case 'HELLO':
       return {
         t: type,
-        nodeId: parseNodeId(requireString(value, 'nodeId')),
-        load: parseLoad(value.load)
+        nodeId: parseNodeId(requireString(value, 'nodeId'))
       };
     case 'WELCOME':
       return {
@@ -118,20 +111,10 @@ function parseNodeId(value: string): string {
   return value;
 }
 
-function parseLoad(value: unknown): NodeLoad {
-  if (!isRecord(value)) throw protocolError('load must be an object');
-  const cpu = requireFiniteNumber(value, 'cpu');
-  const memory = requireFiniteNumber(value, 'memory');
-  if (cpu < 0 || cpu > 1) throw protocolError('load.cpu must be between 0 and 1');
-  if (memory < 0) throw protocolError('load.memory must be non-negative');
-  return { cpu, memory };
-}
-
 function parsePeer(value: unknown): PeerInfo {
   if (!isRecord(value)) throw protocolError('peer must be an object');
   return {
-    nodeId: parseNodeId(requireString(value, 'nodeId')),
-    load: parseLoad(value.load)
+    nodeId: parseNodeId(requireString(value, 'nodeId'))
   };
 }
 

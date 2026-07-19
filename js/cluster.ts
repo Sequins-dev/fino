@@ -3,7 +3,7 @@
 *
 * Cluster membership uses WebTransport over HTTP/3. This module establishes
 * the peer view consumed by cluster services; realm allocation remains owned
-* by the reactor scheduler.
+* by orchestration, while reactors schedule their local execution slices.
 *
 * Learn more:
 *
@@ -21,7 +21,7 @@
 * function when already connected throws.
 *
 * Current release scope uses one trusted seed node. Seed election, cluster
-* authentication, and distributed scheduler coordination remain future work.
+* authentication, and distributed allocation remain future work.
 *
 * @example
 * ```ts no_run
@@ -259,9 +259,8 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   const workerTransport = new WebTransportWorkerTransport(nodeId);
   const selfJoinHost = clusterSelfJoinHost(opts.hostname);
   await workerTransport.connect(`https://${selfJoinHost}:${opts.port}${path}`, {
-    cpu: 0,
-    memory: 0
-  }, { tls: { rejectUnauthorized: false } });
+    tls: { rejectUnauthorized: false }
+  });
   _client = new ClusterClient(workerTransport, nodeId);
   _client.start();
 }
@@ -294,10 +293,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     quic: opts.quic,
     serverCertificateHashes: opts.serverCertificateHashes
   };
-  await transport.connect(seed, {
-    cpu: 0,
-    memory: 0
-  }, connectOptions);
+  await transport.connect(seed, connectOptions);
   _client = new ClusterClient(transport, nodeId);
   _client.start();
 }
@@ -322,7 +318,7 @@ function clusterSelfJoinHost(hostname: string | undefined): string {
 /**
 * Return the active cluster membership client, or null if not connected.
 *
-* This is an internal support hook for `fino:realm`; application code usually
+* This is an internal membership inspection hook. Application code usually
 * does not need the client directly. The return value is `null` before
 * `startCluster()` or `joinCluster()` succeeds and after `leaveCluster()` runs.
 *

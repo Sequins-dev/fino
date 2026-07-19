@@ -2,17 +2,14 @@
 * Seed-side cluster membership coordinator.
 *
 * The seed admits peers, distributes membership changes, and expires silent
-* nodes. It does not place or host realms; that responsibility belongs to the
-* reactor scheduler and its future distributed allocator adapter.
+* nodes. It does not place or host realms; that responsibility belongs to
+* orchestration and its future distributed allocator adapter.
 *
 * @internal
 */
 import type { ClusterSeedTransport } from './transport.ts';
-import type { ClusterMessage, NodeLoad } from './protocol.ts';
+import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, type ClusterMessage } from './protocol.ts';
 import { env } from 'internal:process';
-
-const HEARTBEAT_INTERVAL_MS = 2500;
-const HEARTBEAT_TIMEOUT_MS = 7500;
 
 function envMs(name: string, fallback: number): number {
   const value = Number(env[name]);
@@ -22,7 +19,7 @@ function envMs(name: string, fallback: number): number {
 /** Coordinates membership for nodes connected to the seed transport. */
 export class SeedServer {
   #transport: ClusterSeedTransport;
-  #peers = new Map<string, NodeLoad>();
+  #peers = new Set<string>();
   #lastSeen = new Map<string, number>();
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   #started = false;
@@ -63,16 +60,16 @@ export class SeedServer {
   #handle(from: string, message: ClusterMessage): void {
     switch (message.t) {
       case 'HELLO': {
-        this.#peers.set(from, message.load);
+        this.#peers.add(from);
         this.#lastSeen.set(from, Date.now());
         this.#transport.send(from, {
           t: 'WELCOME',
           nodeId: this.#transport.nodeId,
-          peers: [...this.#peers].map(([nodeId, load]) => ({ nodeId, load }))
+          peers: [...this.#peers].map((nodeId) => ({ nodeId }))
         });
         this.#transport.broadcastExcept(from, {
           t: 'PEER_UP',
-          peer: { nodeId: from, load: message.load }
+          peer: { nodeId: from }
         });
         break;
       }

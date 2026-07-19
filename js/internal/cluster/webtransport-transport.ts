@@ -28,7 +28,7 @@
 * seed.on((from, msg) => console.log(`seed saw ${msg.t} from ${from}`));
 *
 * const worker = new WebTransportWorkerTransport('worker-1');
-* await worker.connect('https://127.0.0.1:9999', { cpu: 0, memory: 0 }, {
+* await worker.connect('https://127.0.0.1:9999', {
 *   tls: { rejectUnauthorized: false },
 * });
 * ```
@@ -65,10 +65,6 @@ type ServerHandle = {
   close(): Promise<void>;
 };
 type Handler = (from: string, msg: ClusterMessage) => void;
-type LoadInfo = {
-  cpu: number;
-  memory: number;
-};
 type StreamWriter = WritableStreamDefaultWriter<Uint8Array>;
 /**
 * Configuration for a `WebTransportSeedTransport`'s HTTP/3 listener.
@@ -146,7 +142,7 @@ export interface WebTransportSeedOptions {
 *   quic: { maxIdleTimeout: 30_000 },
 * };
 * const worker = new WebTransportWorkerTransport('worker-1');
-* await worker.connect('https://seed.internal:4433', { cpu: 0, memory: 0 }, options);
+* await worker.connect('https://seed.internal:4433', options);
 * ```
 */
 export interface WebTransportWorkerConnectOptions {
@@ -400,7 +396,7 @@ export class WebTransportSeedTransport implements ClusterTransport {
   * ```ts no_run
   * seed.broadcastExcept('worker-a', {
   *   t: 'PEER_UP',
-  *   peer: { nodeId: 'worker-a', load: { cpu: 0, memory: 0 } },
+  *   peer: { nodeId: 'worker-a' },
   * });
   * ```
   */
@@ -524,7 +520,7 @@ export class WebTransportSeedTransport implements ClusterTransport {
 * exactly one upstream connection, so `send()` ignores its destination argument
 * and always writes to the seed, and `broadcast()` throws — fanning out is a
 * seed-only capability. After `connect()` opens the session it announces itself
-* with a `HELLO` carrying the worker's node ID and load, then reads inbound
+* with a `HELLO` carrying the worker's node ID, then reads inbound
 * streams for the life of the connection.
 *
 * Messages that arrive before any handler is registered are buffered and
@@ -537,7 +533,7 @@ export class WebTransportSeedTransport implements ClusterTransport {
 *
 * const worker = new WebTransportWorkerTransport('worker-1');
 * worker.on((from, msg) => console.log(`${from} -> worker: ${msg.t}`));
-* await worker.connect('https://seed.internal:4433', { cpu: 0, memory: 0 });
+* await worker.connect('https://seed.internal:4433');
 * await worker.send('__seed__', { t: 'HEARTBEAT', ts: Date.now() });
 * ```
 */
@@ -569,21 +565,18 @@ export class WebTransportWorkerTransport implements ClusterTransport {
   * `seed` may be an origin (`https://host:port`) or a full URL; a bare `/`
   * pathname is replaced with `DEFAULT_CLUSTER_PATH`. The scheme must be
   * `https:` — a non-https seed URL throws a `TypeError`. Resolves once the
-  * session is established and the `HELLO` (carrying `load`) has been sent;
+  * session is established and the `HELLO` has been sent;
   * after that, inbound streams from the seed drive the registered handlers.
   * Rejects if the HTTP/3 connection or WebTransport handshake fails.
   *
   * ```ts no_run
   * const worker = new WebTransportWorkerTransport('worker-1');
-  * await worker.connect('https://seed.internal:4433', { cpu: 0.2, memory: 0.5 }, {
+  * await worker.connect('https://seed.internal:4433', {
   *   tls: { ca: '/etc/cluster/ca.pem' },
   * });
   * ```
   */
-  async connect(seed: string | URL, load: LoadInfo = {
-    cpu: 0,
-    memory: 0
-  }, options: WebTransportWorkerConnectOptions = {}): Promise<void> {
+  async connect(seed: string | URL, options: WebTransportWorkerConnectOptions = {}): Promise<void> {
     const url = normalizeSeedUrl(seed);
     const client = new HttpClient({
       baseUrl: url.origin,
@@ -612,8 +605,7 @@ export class WebTransportWorkerTransport implements ClusterTransport {
     });
     await writeMessage(writer, {
       t: 'HELLO',
-      nodeId: this.nodeId,
-      load
+      nodeId: this.nodeId
     });
     closeWriter(writer);
     this.#control = null;
@@ -709,7 +701,7 @@ export class WebTransportWorkerTransport implements ClusterTransport {
   *
   * {
   *   using worker = new WebTransportWorkerTransport('worker-1');
-  *   await worker.connect('https://seed.internal:4433', { cpu: 0, memory: 0 });
+  *   await worker.connect('https://seed.internal:4433');
   * } // worker.close() runs at scope exit
   * ```
   */

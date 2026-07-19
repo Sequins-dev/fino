@@ -31,7 +31,7 @@ embryonic form:
    climbing is *full* for latency-sensitive work; Kubernetes cannot see that,
    fino can.
 
-What is missing, in order of severity: the scheduler's input is fake (§2), apps
+What is missing, in order of severity: orchestration has no load input (§2), apps
 cannot be delivered to nodes (§5), there is no CLI or auth story (§3), and none
 of the isolation machinery meters resources (§2, §7).
 
@@ -39,11 +39,10 @@ of the isolation machinery meters resources (§2, §7).
 
 ### Where we actually are
 
-The cluster protocol already carries a `NodeLoad { cpu, memory }` sample in
-HELLO/HEARTBEAT, and the seed already places spawns on the lowest-CPU node
-(`seed.ts:510`). But the sample is hardcoded — `cpu: 0` at
-`webtransport-transport.ts:295` — so placement today is effectively arbitrary.
-The scheduler's *shape* exists; its *senses* don't.
+The membership protocol intentionally carries identity and liveness only.
+Earlier placeholder `NodeLoad { cpu, memory }` values were removed because
+hardcoded zeroes falsely represented usable scheduling input. Distributed
+placement must wait for real metrics and an orchestration-owned allocator.
 
 And the senses genuinely don't exist anywhere: no loop timing, no
 rusage/getrusage binding, no heap statistics, no `process.memoryUsage`

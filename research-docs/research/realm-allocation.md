@@ -69,8 +69,8 @@ Local movement is therefore preferred while node imbalance remains tolerable.
 Repeatedly blocking isolates move to lower-priority batch reactors, which are
 also given lower OS scheduling priority and can retire when idle.
 
-`localMobility: 'pinned'` is reserved for audited native integrations with real
-OS-thread affinity. It is not a performance tuning hint.
+Local movement blockers are derived from audited native integrations with real
+OS-thread affinity. They are not a caller-facing performance tuning hint.
 
 ## Deployment admission and liveness
 

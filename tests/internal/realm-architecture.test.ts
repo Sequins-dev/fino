@@ -25,6 +25,10 @@ describe('reactor-only Realm architecture', () => {
     t.ok(!bridge.includes('"getPort"'), 'the realm bridge only exposes transit-backed ports');
     t.ok(!native.includes('createThreadContext'));
     t.ok(!native.includes('stepContext'));
+    t.ok(!native.includes('process_port_send'), 'process messaging reuses the transit transport');
+    t.ok(!native.includes('process_port_recv'), 'process receive draining reuses ThreadPort');
+    t.ok(realm.includes('class ProcessPort extends ThreadPort'), 'process status layers over the shared transit port');
+    t.ok(!realm.includes('localMobility'), 'placement mobility is derived from native resources');
   });
 
   it('does not retain the legacy remote-realm protocol', async (t) => {
@@ -43,12 +47,17 @@ describe('reactor-only Realm architecture', () => {
   it('keeps scheduling inside reactors and placement inside orchestration', async (t) => {
     const root = cwd();
     const orchestrator = await readTextFile(`${root}/js/internal/orchestrator/index.ts`);
+    const nodeOrchestrator = await readTextFile(`${root}/js/internal/orchestrator/node-orchestrator.ts`);
+    const engine = await readTextFile(`${root}/src/reactor/engine.rs`);
     const bootstrap = await readTextFile(`${root}/js/internal/bootstrap.ts`);
     const realm = await readTextFile(`${root}/js/realm/index.ts`);
     t.ok(!orchestrator.includes('SchedulerNode'), 'node orchestration is not named as a scheduler');
-    t.ok(orchestrator.includes('NodeOrchestrator'), 'node placement is explicitly orchestration');
+    t.ok(nodeOrchestrator.includes('export class NodeOrchestrator'), 'node placement is explicitly orchestration');
     t.ok(!orchestrator.includes('deployNode'), 'the obsolete tenant deployment entrypoint is gone');
     t.ok(!bootstrap.includes('__tenant_dispatch'), 'realms have no tenant activation mode');
     t.ok(realm.includes('class RealmDeployment'), 'replication is represented by a distinct deployment');
+    t.ok(!nodeOrchestrator.includes("type: 'started'"), 'startup telemetry is not orchestration wire surface');
+    t.ok(!nodeOrchestrator.includes('debtBand'), 'load wire shape contains only consumed metrics');
+    t.ok(!engine.includes('Report::Detached'), 'source drain remains internal to migration');
   });
 });

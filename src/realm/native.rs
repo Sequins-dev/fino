@@ -1,12 +1,11 @@
 //! `internal:realm-native` — parent-side Realm operations.
 //!
 //! Exposes import-rule merging plus process-isolated Realm creation, lifecycle,
-//! and IPC operations. Ordinary realms are owned directly by scheduler engines.
+//! and transport setup. Ordinary realms are owned directly by reactor engines.
 
-use ::libc;
 use ::v8;
 
-use super::{process, transit};
+use super::process;
 use crate::state::{ImportRule, get_state, resolve_directive};
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
@@ -15,9 +14,6 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         // Process realm
         "createProcessContext",
         "stepProcessContext",
-        "processPortSend",
-        "processPortRecv",
-        "getProcessSocketFd",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -45,9 +41,6 @@ fn eval_steps<'a>(
     set_fn!("mergeChildRules", merge_child_rules);
     set_fn!("createProcessContext", create_process_context);
     set_fn!("stepProcessContext", step_process_context);
-    set_fn!("processPortSend", process_port_send);
-    set_fn!("processPortRecv", process_port_recv);
-    set_fn!("getProcessSocketFd", get_process_socket_fd);
 
     Some(v8::undefined(scope).into())
 }
@@ -238,7 +231,7 @@ fn merge_child_rules(
 // Process realm callbacks
 // ---------------------------------------------------------------------------
 
-/// JS: `createProcessContext(root, entryPath, serializedRules) -> number`
+/// JS: `createProcessContext(root, entryPath, serializedRules) -> { handle, portHandle, portWakeFd }`
 fn create_process_context(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -298,6 +291,8 @@ fn create_process_context(
         }
     };
 
+    let port_handle = handle.port_handle;
+    let port_wake_read = handle.port_wake_read;
     let idx = {
         let state_rc = get_state(scope);
         let mut st = state_rc.borrow_mut();
@@ -305,7 +300,17 @@ fn create_process_context(
         st.process_contexts.push(Some(handle));
         i
     };
-    rv.set(v8::Integer::new(scope, idx as i32).into());
+    let result = v8::Object::new(scope);
+    for (key, value) in [
+        ("handle", idx as i32),
+        ("portHandle", port_handle as i32),
+        ("portWakeFd", port_wake_read),
+    ] {
+        let key = v8::String::new(scope, key).unwrap();
+        let value = v8::Integer::new(scope, value);
+        result.set(scope, key.into(), value.into());
+    }
+    rv.set(result.into());
 }
 
 /// JS: `stepProcessContext(handle: number) -> boolean`
@@ -341,7 +346,8 @@ fn step_process_context(
     };
 
     if !still_running {
-        // Release the handle slot so ProcessRealmHandle is dropped (closes socket, waitpid).
+        // Release the status handle. Socket bridge threads own their duplicated
+        // descriptors and finish independently; the JS port owns the transit half.
         if let Some(slot) = state_rc.borrow_mut().process_contexts.get_mut(handle) {
             *slot = None;
         }
@@ -358,126 +364,6 @@ fn step_process_context(
         }
     }
     rv.set(v8::Boolean::new(scope, still_running).into());
-}
-
-/// JS: `processPortSend(handle, bytes, stores?) -> void`
-fn process_port_send(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    use super::message::RealmMessage;
-
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let bytes_arg = args.get(1);
-    let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
-        return;
-    };
-
-    let data: Vec<u8> = {
-        let Some(ab) = u8a.buffer(scope) else { return };
-        let Some(ptr) = ab.data() else { return };
-        let off = u8a.byte_offset();
-        let len = u8a.byte_length();
-        unsafe { std::slice::from_raw_parts((ptr.as_ptr() as *const u8).add(off), len).to_vec() }
-    };
-
-    let transfer_stores: Vec<Vec<u8>> = if let Ok(arr) =
-        v8::Local::<v8::Array>::try_from(args.get(2))
-    {
-        let mut stores = Vec::with_capacity(arr.length() as usize);
-        for i in 0..arr.length() {
-            let idx = v8::Integer::new(scope, i as i32);
-            if let Some(elem) = arr.get(scope, idx.into())
-                && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
-            {
-                let Some(sab) = su8a.buffer(scope) else {
-                    continue;
-                };
-                let Some(sptr) = sab.data() else { continue };
-                let soff = su8a.byte_offset();
-                let slen = su8a.byte_length();
-                unsafe {
-                    stores.push(
-                        std::slice::from_raw_parts((sptr.as_ptr() as *const u8).add(soff), slen)
-                            .to_vec(),
-                    );
-                }
-            }
-        }
-        stores
-    } else {
-        Vec::new()
-    };
-
-    let msg = RealmMessage {
-        data,
-        transfer_stores,
-        transfer_ports: Vec::new(),
-    };
-
-    let maybe_tx = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        st.process_contexts
-            .get(handle)
-            .and_then(|s| s.as_ref())
-            .map(|h| h.tx.clone())
-    };
-    if let Some(tx) = maybe_tx {
-        let _ = tx.send(msg);
-    }
-}
-
-/// JS: `processPortRecv(handle: number) -> [Uint8Array, ...Uint8Array[]][]`
-fn process_port_recv(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    use super::message::RealmMessage;
-
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-
-    let (messages, maybe_wake_read) = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        match st.process_contexts.get(handle).and_then(|s| s.as_ref()) {
-            Some(h) => {
-                let mut msgs: Vec<RealmMessage> = Vec::new();
-                while let Ok(msg) = h.rx.try_recv() {
-                    msgs.push(msg);
-                }
-                (msgs, Some(h.parent_wake_read))
-            }
-            None => (Vec::new(), None),
-        }
-    };
-
-    if let Some(wake_read) = maybe_wake_read {
-        let mut discard = [0u8; 256];
-        unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
-    }
-
-    rv.set(transit::build_message_array(scope, messages).into());
-}
-
-/// JS: `getProcessSocketFd(handle: number) -> number`
-fn get_process_socket_fd(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let state_rc = get_state(scope);
-    let st = state_rc.borrow();
-    let fd = st
-        .process_contexts
-        .get(handle)
-        .and_then(|s| s.as_ref())
-        .map(|h| h.parent_wake_read)
-        .unwrap_or(-1);
-    rv.set(v8::Integer::new(scope, fd).into());
 }
 
 #[cfg(test)]

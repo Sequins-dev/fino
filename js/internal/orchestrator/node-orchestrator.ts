@@ -10,9 +10,8 @@
 */
 import * as engine from 'internal:reactor-engine';
 import { availableParallelism } from 'internal:process';
-import { NodeRealmCollection } from './node.ts';
+import { NodeRealmCollection, type PriorityClass, type ReactorLoadSummary, type RealmId } from './node.ts';
 import { BudgetWatchdog } from './budget-watchdog.ts';
-import type { PriorityClass, ReactorLoadSummary, RealmId } from './types.ts';
 
 /** A realm workload's placement config: the serialized realm. */
 export interface RealmWorkloadSpec {
@@ -28,8 +27,6 @@ export interface RealmWorkloadSpec {
   /** Bootstrap the replica as a REPL evaluator. */
   repl?: boolean;
   priority?: PriorityClass;
-  /** Whether this live isolate may change local reactor threads. */
-  localMobility?: 'movable' | 'pinned';
 }
 
 /** Priority class → the engine's numeric priority (compareRunnable). */
@@ -44,16 +41,20 @@ interface ReactorHandle {
 type EngineReport =
   | { type: 'released'; workloadId: number; reason: string }
   | { type: 'syncHeavy'; workloadId: number; cpuMicros: number }
-  | { type: 'load'; held: number; runnable: number; debtBand: number; debtMicros: number }
+  | { type: 'load'; held: number; runnable: number; debtMicros: number }
   | { type: 'moved'; workloadId: number }
-  | { type: 'moveRejected'; workloadId: number; reason: string }
-  | { type: 'detached'; workloadId: number }
-  | { type: 'started'; reactorClass: 'latency' | 'batch'; priorityApplied: boolean };
+  | { type: 'moveRejected'; workloadId: number; reason: string };
 
 interface WorkloadRuntime {
   engineId: number;
   realmSpec: RealmWorkloadSpec;
-  realmPort: { portHandle: number; portWakeFd: number } | undefined;
+}
+
+interface RealmPorts {
+  portHandle: number;
+  portWakeFd: number;
+  allocationPortHandle: number;
+  allocationPortWakeFd: number;
 }
 
 /** Result of attempting to move one live isolate between local reactors. */
@@ -103,14 +104,14 @@ export class NodeOrchestrator {
   #watchdog = new BudgetWatchdog();
   #started = false;
   #shuttingDown = false;
+  #closed = false;
   #released = new Map<RealmId, Set<(reason: string) => void>>();
   #pendingMoves = new Map<RealmId, {
     fromReactorId: string;
     toReactorId: string;
     resolve(outcome: MoveOutcome): void;
   }>();
-  #blockingSamples = new Map<RealmId, number[]>();
-  #moveCooldownUntil = new Map<RealmId, number>();
+  #previousBlockingSample = new Map<RealmId, number>();
   // One authoritative runtime record per workload. The reverse index exists
   // only because native reports carry the engine's numeric id.
   #runtimes = new Map<RealmId, WorkloadRuntime>();
@@ -166,8 +167,15 @@ export class NodeOrchestrator {
     return [...this.#reactorIds];
   }
 
+  /** Aggregate admission slots on latency reactors eligible for new realms. */
+  admissionCapacity(): number {
+    if (this.#closed) return 0;
+    return this.#reactorIds.filter((id) => this.#collection.reactorClassOf(id) === 'latency').length * this.#capacity;
+  }
+
   /** Boot the native reactor threads and start runaway containment. Idempotent. */
   start(): void {
+    if (this.#closed) throw new Error('NodeOrchestrator is one-shot and has been shut down');
     if (this.#started) return;
     this.#started = true;
     this.#watchdog.start();
@@ -291,9 +299,6 @@ export class NodeOrchestrator {
         return this.#onMoveRejectedReport(report);
       case 'released':
         return this.#onReleasedReport(reactorName, report);
-      case 'started':
-      case 'detached':
-        return;
     }
   }
 
@@ -317,13 +322,17 @@ export class NodeOrchestrator {
     const current = this.#collection.placementOf(workloadId);
     if (current === null || this.#collection.reactorClassOf(current) !== 'latency') return;
     const now = Date.now();
-    const samples = (this.#blockingSamples.get(workloadId) ?? []).filter((at) => now - at <= 1_000);
-    samples.push(now);
-    this.#blockingSamples.set(workloadId, samples);
-    if (samples.length < 2 || now < (this.#moveCooldownUntil.get(workloadId) ?? 0)) return;
-    this.#blockingSamples.delete(workloadId);
-    const batch = this.#collection.leastLoadedOfClass('batch') ?? this.#provisionBatchReactor();
-    if (batch !== null) void this.move(workloadId, batch);
+    const previous = this.#previousBlockingSample.get(workloadId);
+    if (previous === undefined || now - previous > 1_000) {
+      this.#previousBlockingSample.set(workloadId, now);
+      return;
+    }
+    this.#previousBlockingSample.delete(workloadId);
+    const existing = this.#collection.leastLoadedOfClass('batch');
+    const batch = existing ?? this.#provisionBatchReactor();
+    if (batch !== null) void this.move(workloadId, batch).then((outcome) => {
+      if (existing === null && outcome.status !== 'moved') this.#scheduleBatchRetirement(batch);
+    });
   }
 
   #onMovedReport(reactorName: string, report: EngineReport): void {
@@ -333,7 +342,6 @@ export class NodeOrchestrator {
     if (pending === undefined || pending.toReactorId !== reactorName) return;
     this.#pendingMoves.delete(workloadId);
     this.#collection.commitMove(workloadId, reactorName);
-    this.#moveCooldownUntil.set(workloadId, Date.now() + 5_000);
     pending.resolve({
       status: 'moved',
       fromReactorId: pending.fromReactorId,
@@ -361,11 +369,9 @@ export class NodeOrchestrator {
       pendingMove.resolve({ status: 'deferred', reason: 'source-released' });
     }
     const reason = report.reason;
-    this.#blockingSamples.delete(workloadId);
-    this.#moveCooldownUntil.delete(workloadId);
+    this.#previousBlockingSample.delete(workloadId);
     this.#collection.release(workloadId);
     const runtime = this.#runtimes.get(workloadId);
-    if (runtime !== undefined) runtime.realmPort = undefined;
     if (runtime !== undefined) this.#engineOwners.delete(runtime.engineId);
     this.#runtimes.delete(workloadId);
     this.#settleReleased(workloadId, reason);
@@ -379,9 +385,6 @@ export class NodeOrchestrator {
   move(workloadId: RealmId, toReactorId?: string): Promise<MoveOutcome> {
     const fromReactorId = this.#collection.placementOf(workloadId);
     if (fromReactorId === null) return Promise.resolve({ status: 'deferred', reason: 'not-placed' });
-    if (!this.#collection.isLocallyMovable(workloadId)) {
-      return Promise.resolve({ status: 'deferred', reason: 'pinned' });
-    }
     if (this.#pendingMoves.has(workloadId)) {
       return Promise.resolve({ status: 'deferred', reason: 'move-in-progress' });
     }
@@ -414,30 +417,30 @@ export class NodeOrchestrator {
   * Place a realm — a full child execution container hosted on a reactor.
   * Returns the workload id plus the parent-side channel half (the caller
   * constructs the Realm's port over it), or `null` when the node has no
-  * capacity — the caller falls back to a dedicated reactor.
+  * capacity.
   */
   deployRealm(spec: RealmWorkloadSpec): {
     workloadId: RealmId;
     portHandle: number;
     portWakeFd: number;
+    allocationPortHandle: number;
+    allocationPortWakeFd: number;
   } | null {
     let record;
     try {
       record = this.#collection.allocate({
         entryPath: spec.entryPath,
-        ...spec.priority !== undefined ? { priority: spec.priority } : {},
-        ...spec.localMobility !== undefined ? { localMobility: spec.localMobility } : {}
+        ...spec.priority !== undefined ? { priority: spec.priority } : {}
       });
     } catch {
       return null;
     }
     const workloadId = record.id;
     const engineId = this.#engineIdSeq++;
-    this.#runtimes.set(workloadId, { engineId, realmSpec: spec, realmPort: undefined });
+    this.#runtimes.set(workloadId, { engineId, realmSpec: spec });
     this.#engineOwners.set(engineId, workloadId);
-    this.#placeOnEngine(workloadId);
-    const port = this.#runtimes.get(workloadId)?.realmPort;
-    if (port === undefined) {
+    const port = this.#placeOnEngine(workloadId);
+    if (port === null) {
       const runtime = this.#runtimes.get(workloadId);
       if (runtime !== undefined) this.#engineOwners.delete(runtime.engineId);
       this.#runtimes.delete(workloadId);
@@ -459,12 +462,12 @@ export class NodeOrchestrator {
   }
 
   /** Construct one realm on its assigned reactor. */
-  #placeOnEngine(workloadId: RealmId): void {
+  #placeOnEngine(workloadId: RealmId): RealmPorts | null {
     const record = this.#collection.record(workloadId);
     const runtime = this.#runtimes.get(workloadId);
-    if (record === undefined || runtime === undefined) return;
+    if (record === undefined || runtime === undefined) return null;
     const reactorId = this.#reactorFor(record.reactorId);
-    if (reactorId === null) return;
+    if (reactorId === null) return null;
     const realmSpec = runtime.realmSpec;
     const info = engine.placeRealm(reactorId, {
       realmId: runtime.engineId,
@@ -475,11 +478,8 @@ export class NodeOrchestrator {
       priority: PRIORITY_CLASS[record.priority],
       watch: realmSpec.watch === true,
       repl: realmSpec.repl === true
-    }) as {
-      portHandle: number;
-      portWakeFd: number;
-    };
-    runtime.realmPort = info;
+    }) as RealmPorts;
+    return info;
   }
 
   /** Revoke a workload on its hosting reactor. */
@@ -512,6 +512,8 @@ export class NodeOrchestrator {
 
   /** Shut down and join every reactor, then stop runaway containment. */
   async shutdown(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
     this.#shuttingDown = true;
     for (const timer of this.#batchIdleTimers.values()) clearTimeout(timer);
     this.#batchIdleTimers.clear();
@@ -521,8 +523,7 @@ export class NodeOrchestrator {
       pending.resolve({ status: 'deferred', reason: 'shutdown' });
     }
     this.#pendingMoves.clear();
-    this.#blockingSamples.clear();
-    this.#moveCooldownUntil.clear();
+    this.#previousBlockingSample.clear();
     // Signal every reactor to stop; the report pumps exit on the final wake
     // each reactor posts as it dies.
     for (const handle of handles) engine.shutdown(handle.reactorId);
@@ -538,13 +539,25 @@ export class NodeOrchestrator {
     this.#released.clear();
     this.#runtimes.clear();
     this.#engineOwners.clear();
-    this.#started = false;
-    this.#shuttingDown = false;
   }
 
   /** Test hook: forcibly stop a reactor. */
   _killReactor(reactorName: string): void {
     const reactorId = this.#reactorFor(reactorName);
     if (reactorId !== null) engine.shutdown(reactorId);
+  }
+
+  /** Test hook: inject a panic at one realm's isolate boundary. */
+  _crashRealm(workloadId: RealmId): void {
+    const reactorName = this.#collection.placementOf(workloadId);
+    if (reactorName === null) return;
+    const reactorId = this.#reactorFor(reactorName);
+    if (reactorId !== null) engine.crashRealm(reactorId, this.#engineId(workloadId));
+  }
+
+  /** Test hook: read the physical-worker generation behind a logical reactor. */
+  _reactorGeneration(reactorName: string): number {
+    const reactorId = this.#reactorFor(reactorName);
+    return reactorId === null ? 0 : engine.reactorGeneration(reactorId) as number;
   }
 }

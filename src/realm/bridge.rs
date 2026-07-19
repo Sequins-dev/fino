@@ -15,6 +15,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getEntryPath",
         "isTerminated",
         "getPortInfo",
+        "getAllocationPortInfo",
         "setEntryError",
         "getLoadedFsPaths",
         "requestReload",
@@ -50,6 +51,7 @@ fn eval_steps<'a>(
     set_fn!("getEntryPath", get_entry_path);
     set_fn!("isTerminated", is_terminated);
     set_fn!("getPortInfo", get_port_info);
+    set_fn!("getAllocationPortInfo", get_allocation_port_info);
     set_fn!("setEntryError", set_entry_error);
     set_fn!("getLoadedFsPaths", get_loaded_fs_paths);
     set_fn!("requestReload", request_reload);
@@ -166,6 +168,33 @@ fn get_port_info(
     let k = v8::String::new(scope, "wakeReadFd").unwrap();
     let v = v8::Number::new(scope, fd as f64);
     obj.set(scope, k.into(), v.into());
+    rv.set(obj.into());
+}
+
+/// Returns the private allocator-control channel half for a reactor realm, or
+/// `undefined` outside reactor-hosted child contexts.
+fn get_allocation_port_info(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let info = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        st.allocation_transit_handle
+            .and_then(|handle| st.allocation_wake_read_fd.map(|fd| (handle, fd)))
+    };
+    let Some((handle, fd)) = info else {
+        rv.set(v8::undefined(scope).into());
+        return;
+    };
+    let obj = v8::Object::new(scope);
+    let key = v8::String::new(scope, "handle").unwrap();
+    let value = v8::Number::new(scope, handle as f64);
+    obj.set(scope, key.into(), value.into());
+    let key = v8::String::new(scope, "wakeReadFd").unwrap();
+    let value = v8::Number::new(scope, fd as f64);
+    obj.set(scope, key.into(), value.into());
     rv.set(obj.into());
 }
 

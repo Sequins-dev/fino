@@ -14,58 +14,53 @@
 *
 * @internal
 */
-import { NodeOrchestrator } from 'internal:orchestrator/node-orchestrator';
+import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
 import { isEngineThread } from 'internal:reactor-engine';
+import { getAllocationPortInfo } from 'internal:realm-bridge';
+import { ThreadPort } from 'internal:realm/transport-port';
 import { registerShutdownHook } from 'internal:shutdown';
 
-// ---------------------------------------------------------------------------
-// The node pool
-// ---------------------------------------------------------------------------
-
-/** Lazily initialized node orchestration state. */
-let _node: NodeOrchestrator | null = null;
-let _liveRealms = 0;
-let _idleShutdownTimer: ReturnType<typeof setTimeout> | null = null;
-
-let _shutdownHookRegistered = false;
-const ALLOCATOR_CHANNEL = 'fino:internal:realm-allocator';
-let _control: BroadcastChannel | null = null;
+let _control: ThreadPort | null = null;
 let _requestSeq = 0;
-const _pending = new Map<string, {
+const _pending = new Map<number, {
   resolve(value: ScheduledRealmAllocation): void;
   reject(error: unknown): void;
 }>();
-const _remoteReleased = new Map<string, (reason: string) => void>();
-const _served = new Map<string, ScheduledRealmAllocation>();
-let _serverListening = false;
+const _remoteReleased = new Map<number, (reason: string) => void>();
+let _controlShutdownHookRegistered = false;
 
 type AllocationMessage = {
   type: 'allocate';
-  requestId: string;
+  requestId: number;
   config: RealmAllocationConfig;
 } | {
   type: 'allocated';
-  requestId: string;
+  requestId: number;
   workloadId: string;
   portHandle: number;
   portWakeFd: number;
 } | {
   type: 'allocationFailed';
-  requestId: string;
+  requestId: number;
   error: string;
 } | {
   type: 'released';
-  requestId: string;
+  requestId: number;
   reason: string;
 } | {
   type: 'revoke';
-  requestId: string;
+  requestId: number;
   reason: string;
 };
 
-function controlChannel(): BroadcastChannel {
+function controlChannel(): ThreadPort {
   if (_control !== null) return _control;
-  const channel = new BroadcastChannel(ALLOCATOR_CHANNEL);
+  const info = (getAllocationPortInfo as () => {
+    handle: number;
+    wakeReadFd: number;
+  } | undefined)();
+  if (info === undefined) throw new Error('realm allocator control port is unavailable');
+  const channel = new ThreadPort(info.wakeReadFd, info.handle);
   channel.addEventListener('message', (event) => {
     const message = (event as MessageEvent<AllocationMessage>).data;
     if (message.type === 'allocated') {
@@ -98,90 +93,64 @@ function controlChannel(): BroadcastChannel {
       }
     }
   });
+  channel.start();
   _control = channel;
+  if (!_controlShutdownHookRegistered) {
+    _controlShutdownHookRegistered = true;
+    registerShutdownHook(() => {
+      _controlShutdownHookRegistered = false;
+      closeControlChannel(new Error('realm allocator control port shut down'));
+    });
+  }
   return channel;
 }
 
-function closeControlChannel(): void {
+function closeControlChannel(reason = new Error('realm allocator control port closed')): void {
   const channel = _control;
   _control = null;
-  _serverListening = false;
   channel?.close();
+  for (const pending of _pending.values()) pending.reject(reason);
+  _pending.clear();
+  for (const release of _remoteReleased.values()) release(reason.message);
+  _remoteReleased.clear();
 }
 
-function ensureNode(): NodeOrchestrator {
-  if (_node === null) {
-    _node = new NodeOrchestrator({ capacity: 8 });
-    _node.start();
-    const channel = controlChannel();
-    if (!_serverListening) channel.addEventListener('message', (event) => {
-      const message = (event as MessageEvent<AllocationMessage>).data;
-      if (message.type === 'allocate') {
-        const placed = placeLocalRealm(message.config);
-        if (placed === null) {
-          channel.postMessage({ type: 'allocationFailed', requestId: message.requestId, error: 'local reactor capacity is exhausted' } satisfies AllocationMessage);
-          return;
-        }
-        _served.set(message.requestId, placed);
-        channel.postMessage({
-          type: 'allocated',
-          requestId: message.requestId,
-          workloadId: placed.workloadId,
-          portHandle: placed.portHandle,
-          portWakeFd: placed.portWakeFd
-        } satisfies AllocationMessage);
-        void placed.released.then((reason) => {
-          _served.delete(message.requestId);
-          channel.postMessage({ type: 'released', requestId: message.requestId, reason } satisfies AllocationMessage);
-        });
-      } else if (message.type === 'revoke') {
-        _served.get(message.requestId)?.revoke(message.reason);
+/** Serve one realm's private allocation control port until that owner exits. */
+function serveAllocationPort(port: ThreadPort, ownerReleased: Promise<string>): void {
+  const served = new Map<number, ScheduledRealmAllocation>();
+  let closed = false;
+  port.addEventListener('message', (event) => {
+    const message = (event as MessageEvent<AllocationMessage>).data;
+    if (closed) return;
+    if (message.type === 'allocate') {
+      const placed = placeLocalRealm(message.config);
+      if (placed === null) {
+        port.postMessage({ type: 'allocationFailed', requestId: message.requestId, error: 'local reactor capacity is exhausted' } satisfies AllocationMessage);
+        return;
       }
-    });
-    _serverListening = true;
-    if (!_shutdownHookRegistered) {
-      _shutdownHookRegistered = true;
-      // The host realm winding down takes its reactors with it: orphaned
-      // realms (created but never run/terminated) must not hold the
-      // process open.
-      registerShutdownHook(() => {
-        _shutdownHookRegistered = false;
-        const node = _node;
-        _node = null;
-        _liveRealms = 0;
-        if (_idleShutdownTimer !== null) {
-          clearTimeout(_idleShutdownTimer);
-          _idleShutdownTimer = null;
-        }
-        closeControlChannel();
-        if (node !== null) return node.shutdown().then(() => undefined);
-        return undefined;
+      served.set(message.requestId, placed);
+      port.postMessage({
+        type: 'allocated',
+        requestId: message.requestId,
+        workloadId: placed.workloadId,
+        portHandle: placed.portHandle,
+        portWakeFd: placed.portWakeFd
+      } satisfies AllocationMessage);
+      void placed.released.then((reason) => {
+        served.delete(message.requestId);
+        if (!closed) port.postMessage({ type: 'released', requestId: message.requestId, reason } satisfies AllocationMessage);
       });
+    } else if (message.type === 'revoke') {
+      served.get(message.requestId)?.revoke(message.reason);
     }
-  }
-  return _node;
-}
-
-/**
-* Idle shutdown: the node's reactors, report pumps, and watchdog
-* interval hold the host realm alive, so the pool winds down when its last
-* realm releases. Debounced — back-to-back workloads (one test suite ending
-* as the next begins) reuse the node instead of racing a teardown against a
-* fresh placement; a genuinely idle process pays one 50ms tail.
-*/
-function releaseRealmRef(node: NodeOrchestrator): void {
-  if (_node !== node) return;
-  _liveRealms--;
-  if (_liveRealms > 0) return;
-  if (_idleShutdownTimer !== null) clearTimeout(_idleShutdownTimer);
-  _idleShutdownTimer = setTimeout(() => {
-    _idleShutdownTimer = null;
-    if (_liveRealms === 0 && _node === node) {
-      _node = null;
-      closeControlChannel();
-      void node.shutdown();
-    }
-  }, 50);
+  });
+  port.start();
+  void ownerReleased.then((reason) => {
+    closed = true;
+    for (const allocation of served.values()) allocation.revoke(`allocation-owner-released: ${reason}`);
+    served.clear();
+    port.close();
+  });
 }
 
 /** A pool-hosted realm placement, returned to `Realm`. */
@@ -209,12 +178,11 @@ export interface RealmAllocationConfig {
   bootstrapData?: string;
   watch?: boolean;
   repl?: boolean;
-  localMobility?: 'movable' | 'pinned';
 }
 
 export function placeScheduledRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
   if (isEngineThread()) {
-    const requestId = `realm-allocation-${_requestSeq++}`;
+    const requestId = _requestSeq++;
     const channel = controlChannel();
     const result = new Promise<ScheduledRealmAllocation>((resolve, reject) => _pending.set(requestId, { resolve, reject }));
     channel.postMessage({ type: 'allocate', requestId, config } satisfies AllocationMessage);
@@ -224,29 +192,23 @@ export function placeScheduledRealm(config: RealmAllocationConfig): ScheduledRea
 }
 
 function placeLocalRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | null {
-  const node = ensureNode();
-  const placed = node.deployRealm({
+  const placed = clusterOrchestrator.allocateRealm({
     entryPath: config.entry,
     rulesJson: config.rulesJson,
-    ...config.localMobility !== undefined ? { localMobility: config.localMobility } : {},
     ...config.realmData !== undefined ? { realmData: config.realmData } : {},
     ...config.bootstrapData !== undefined ? { bootstrapData: config.bootstrapData } : {},
     ...config.watch !== undefined ? { watch: config.watch } : {},
     ...config.repl !== undefined ? { repl: config.repl } : {}
   });
   if (placed === null) return null;
-  _liveRealms++;
-  if (_idleShutdownTimer !== null) {
-    clearTimeout(_idleShutdownTimer);
-    _idleShutdownTimer = null;
-  }
-  const released = node.whenReleased(placed.workloadId);
-  released.then(() => releaseRealmRef(node), () => releaseRealmRef(node));
+  const released = placed.released;
+  const allocationPort = new ThreadPort(placed.allocationPortWakeFd, placed.allocationPortHandle);
+  serveAllocationPort(allocationPort, released);
   return {
     workloadId: placed.workloadId,
     portHandle: placed.portHandle,
     portWakeFd: placed.portWakeFd,
     released,
-    revoke: (reason: string) => node.revoke(placed.workloadId, reason)
+    revoke: placed.revoke
   };
 }

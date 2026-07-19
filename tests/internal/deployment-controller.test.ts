@@ -1,0 +1,60 @@
+import { describe, it } from 'fino:test/test';
+import { DeploymentController } from 'internal:orchestrator/deployment';
+
+describe('DeploymentController orchestration capacity', () => {
+  it('rejects an explicit maximum above eligible cluster capacity', (t) => {
+    t.throws(() => new DeploymentController({
+      scaling: { min: 1, max: 2 },
+      capacity: () => 1,
+      create: () => ({ id: 1 }),
+      dispose: () => {}
+    }), /maximum exceeds.*capacity/i);
+  });
+
+  it('uses current eligible capacity when maximum is omitted', async (t) => {
+    let nextId = 0;
+    const controller = new DeploymentController({
+      scaling: { min: 1, scaleUpWindowMs: 0 },
+      capacity: () => 2,
+      create: () => ({ id: ++nextId }),
+      dispose: () => {}
+    });
+    await controller.ready;
+    const first = await controller.acquire();
+    const second = await controller.acquire();
+    t.notEqual(first.value.id, second.value.id);
+    first.release();
+    second.release();
+    controller.terminate();
+  });
+
+  it('releases orchestration when minimum creation fails', async (t) => {
+    let released = 0;
+    const controller = new DeploymentController({
+      capacity: () => 1,
+      create: () => Promise.reject(new Error('creation failed')),
+      dispose: () => {},
+      onTerminate: () => { released++; }
+    });
+    await t.rejects(() => controller.ready, /creation failed/);
+    t.equal(released, 1);
+    controller.terminate();
+    t.equal(released, 1, 'termination release is idempotent');
+  });
+
+  it('settles queued admission and an in-flight spawn during termination', async (t) => {
+    let finishCreate!: (value: { id: number }) => void;
+    const disposed: number[] = [];
+    const controller = new DeploymentController({
+      scaling: { min: 1, max: 2, scaleUpWindowMs: 0 },
+      capacity: () => 2,
+      create: () => new Promise<{ id: number }>((resolve) => { finishCreate = resolve; }),
+      dispose: (value) => disposed.push(value.id)
+    });
+    controller.terminate();
+    finishCreate({ id: 1 });
+    await t.rejects(() => controller.ready, /terminated/);
+    await t.rejects(() => controller.acquire(), /terminated/);
+    t.deepEqual(disposed, [1]);
+  });
+});

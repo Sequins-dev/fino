@@ -61,6 +61,30 @@ impl Drop for TransitHalf {
     }
 }
 
+impl TransitHalf {
+    /// Split an unregistered bridge half between its reader and writer
+    /// threads. The returned descriptors retain the same ownership contract
+    /// as the half: the caller must close both exactly once.
+    pub fn into_bridge_parts(
+        self,
+    ) -> (
+        mpsc::Sender<RealmMessage>,
+        mpsc::Receiver<RealmMessage>,
+        RawFd,
+        RawFd,
+    ) {
+        let half = std::mem::ManuallyDrop::new(self);
+        unsafe {
+            (
+                std::ptr::read(&half.tx),
+                std::ptr::read(&half.rx),
+                half.wake_read_fd,
+                half.partner_wake_write_fd,
+            )
+        }
+    }
+}
+
 // SAFETY: TransitHalf contains mpsc Sender/Receiver which are Send, and RawFd
 // which is Send.  All access is serialized through the global Mutex.
 unsafe impl Send for TransitHalf {}

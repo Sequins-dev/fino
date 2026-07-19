@@ -16,6 +16,52 @@ pub(crate) enum Owner {
     Workload(u64),
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_read_supersedes_and_retains_the_previous_kernel_buffer() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let mut io = RuntimeIo::create().unwrap();
+        let first = v8::ArrayBuffer::new_backing_store_from_vec(vec![0_u8; 8]).make_shared();
+        let first_ptr = first.data().unwrap().as_ptr().cast::<u8>();
+        io.submit_read(
+            Owner::Workload(1),
+            Target::Workload {
+                id: 1,
+                resolver_id: 1,
+            },
+            first,
+            fds[0],
+            first_ptr,
+            8,
+        );
+        let second = v8::ArrayBuffer::new_backing_store_from_vec(vec![0_u8; 8]).make_shared();
+        let second_ptr = second.data().unwrap().as_ptr().cast::<u8>();
+
+        io.submit_read(
+            Owner::Workload(1),
+            Target::Workload {
+                id: 1,
+                resolver_id: 2,
+            },
+            second,
+            fds[0],
+            second_ptr,
+            8,
+        );
+
+        assert_eq!(io.records.len(), 1);
+        assert_eq!(io.doomed.len(), 1);
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+}
+
 pub(crate) enum Target {
     Host(v8::Global<v8::PromiseResolver>),
     Workload { id: u64, resolver_id: usize },
@@ -141,6 +187,10 @@ impl RuntimeIo {
         self.reactor.notifier()
     }
 
+    pub fn pending(&self) -> usize {
+        self.reactor.pending()
+    }
+
     pub fn wait(
         &mut self,
         timeout: Option<Duration>,
@@ -192,21 +242,87 @@ impl RuntimeIo {
         self.reactor.cancel(id);
     }
 
-    pub fn submit_readiness(&mut self, owner: Owner, target: Target, fd: i32, read: bool) {
-        let index = if read {
-            &mut self.reads
-        } else {
-            &mut self.writes
-        };
-        if let Some(old) = index.get(&fd).copied()
-            && matches!(
-                self.records.get(&old),
-                Some(Record::Read { buffer: None, .. })
-            )
-        {
-            self.reactor.cancel(old);
-            self.records.remove(&old);
+    /// Cancel every adapter-owned operation before replacing a failed
+    /// thread's completion reactor. Records remain intact: canceled
+    /// operations are re-armed on the replacement, while operations whose
+    /// real completion won the race are dispatched before the swap.
+    pub fn cancel_all(&mut self) {
+        for id in self.records.keys().copied().collect::<Vec<_>>() {
+            self.reactor.cancel(id);
         }
+        for id in self.doomed.keys().copied().collect::<Vec<_>>() {
+            self.reactor.cancel(id);
+        }
+    }
+
+    pub fn is_live_record(&self, id: u64) -> bool {
+        self.records.contains_key(&id)
+    }
+
+    /// Replace the physical completion reactor and re-arm every operation
+    /// that was canceled solely for thread recovery. The old backend is
+    /// dropped before any pointer-carrying operation is submitted again.
+    pub fn replace_reactor(&mut self, reactor: Reactor) {
+        let old = std::mem::replace(&mut self.reactor, reactor);
+        drop(old);
+        self.doomed.clear();
+
+        for (&id, record) in &self.records {
+            match record {
+                Record::Read {
+                    buffer,
+                    fd,
+                    ptr,
+                    len,
+                    ..
+                } => {
+                    if buffer.is_some() {
+                        unsafe {
+                            self.reactor.submit(
+                                id,
+                                Op::Read {
+                                    src: Source::fd(*fd),
+                                    buf: *ptr,
+                                    len: *len,
+                                    off: CURRENT_POS,
+                                },
+                            );
+                        }
+                    } else if self.reads.get(fd) == Some(&id) {
+                        self.reactor.submit_poll_in(id, Source::fd(*fd));
+                    } else {
+                        self.reactor.submit_poll_out(id, Source::fd(*fd));
+                    }
+                }
+                Record::Write {
+                    fd,
+                    base,
+                    len,
+                    done,
+                    ..
+                } => unsafe {
+                    self.reactor.submit(
+                        id,
+                        Op::Write {
+                            src: Source::fd(*fd),
+                            buf: (*base + *done as u64) as *const u8,
+                            len: *len - *done,
+                            off: CURRENT_POS,
+                        },
+                    );
+                },
+                Record::Timer { deadline, .. } => self.reactor.submit_timeout(
+                    id,
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis() as u64,
+                ),
+            }
+        }
+    }
+
+    pub fn submit_readiness(&mut self, owner: Owner, target: Target, fd: i32, read: bool) {
+        self.supersede_fd(fd, read);
         let id = self.next_id();
         if read {
             self.reactor.submit_poll_in(id, Source::fd(fd));
@@ -237,6 +353,7 @@ impl RuntimeIo {
         ptr: *mut u8,
         len: usize,
     ) {
+        self.supersede_fd(fd, true);
         let id = self.next_id();
         unsafe {
             self.reactor.submit(
@@ -274,6 +391,7 @@ impl RuntimeIo {
         len: usize,
         done: usize,
     ) {
+        self.supersede_fd(fd, false);
         let id = self.next_id();
         let base = base as u64;
         let len = len as u32;
@@ -362,6 +480,24 @@ impl RuntimeIo {
     }
 
     fn remove_fd(&mut self, fd: i32, read: bool) {
+        let index = if read {
+            &mut self.reads
+        } else {
+            &mut self.writes
+        };
+        let Some(id) = index.remove(&fd) else { return };
+        self.reactor.cancel(id);
+        if let Some(record) = self.records.remove(&id)
+            && record.retains_kernel_pointer()
+        {
+            self.doomed.insert(id, record);
+        }
+    }
+
+    /// Enforce one live registration per descriptor and direction. Pointer
+    /// records move to `doomed` until Cherenkov confirms cancellation, keeping
+    /// their backing stores valid for the kernel.
+    fn supersede_fd(&mut self, fd: i32, read: bool) {
         let index = if read {
             &mut self.reads
         } else {

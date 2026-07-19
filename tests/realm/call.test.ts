@@ -69,6 +69,14 @@ describe('Realm call()', () => {
     t.equal(await realm.call('first'), 'first');
     t.equal(await realm.call('second'), 'second');
   });
+  it('unref does not retire a realm while concurrent calls are active', async (t) => {
+    using realm = new Realm<typeof scalingFn>({ entry: new URL('./fixtures/scaling-fn.ts', import.meta.url).pathname });
+    const first = realm.call(20);
+    const second = realm.call(100);
+    realm.unref();
+    const ids = await Promise.all([first, second]);
+    t.equal(ids[0], ids[1]);
+  });
   it('recreates replicas after an idle deployment drained', async (t) => {
     using realm = new Realm<typeof echoFn>({ entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname });
     t.equal(await realm.call('before-idle'), 'before-idle');
@@ -78,6 +86,13 @@ describe('Realm call()', () => {
   it('routes nested Realm allocation through the owning node', async (t) => {
     using realm = new Realm<typeof nestedFn>({ entry: new URL('./fixtures/nested-call.ts', import.meta.url).pathname });
     t.equal(await realm.call('nested'), 'nested');
+  });
+  it('isolates concurrent nested allocation control channels by requester', async (t) => {
+    const entry = new URL('./fixtures/nested-instance.ts', import.meta.url).pathname;
+    using first = new Realm<() => Promise<string>>({ entry });
+    using second = new Realm<() => Promise<string>>({ entry });
+    const ids = await Promise.all([first.call(), second.call()]);
+    t.notEqual(ids[0], ids[1], 'each requester received its own child allocation');
   });
   it('adds a replica when call queue delay stays unhealthy', async (t) => {
     using realm = new RealmDeployment<typeof scalingFn>({
