@@ -461,7 +461,7 @@ export class NodeOrchestrator {
     if (!existing) this.#provisionBatchReactor();
   }
 
-  deployRealm(spec: RealmWorkloadSpec): {
+  allocateRealm(spec: RealmWorkloadSpec): {
     workloadId: RealmId;
     portHandle: number;
     portWakeFd: number;

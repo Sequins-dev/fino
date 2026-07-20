@@ -114,7 +114,7 @@ function serveAllocationPort(port: ThreadPort, ownerReleased: Promise<string>): 
     const message = (event as MessageEvent<AllocationMessage>).data;
     if (closed) return;
     if (message.type === 'allocate') {
-      const placed = placeLocalRealm(message.config);
+      const placed = allocateLocalRealm(message.config);
       if (placed === null) {
         port.postMessage({ type: 'allocationFailed', requestId: message.requestId, error: 'local reactor capacity is exhausted' } satisfies AllocationMessage);
         return;
@@ -144,7 +144,7 @@ function serveAllocationPort(port: ThreadPort, ownerReleased: Promise<string>): 
   });
 }
 
-/** A pool-hosted realm placement, returned to `Realm`. */
+/** A reactor-hosted realm placement, returned to `Realm`. */
 export interface ScheduledRealmAllocation {
   workloadId: string;
   /** Parent-side channel half: the Realm's port messages through it. */
@@ -156,7 +156,7 @@ export interface ScheduledRealmAllocation {
   revoke(reason: string): void;
 }
 
-export function placeScheduledRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
+export function allocateScheduledRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
   if (hasAllocationPort()) {
     const { channel, rpc } = controlChannel();
     return rpc.call({ config }).then((raw) => {
@@ -175,7 +175,7 @@ export function placeScheduledRealm(config: RealmWorkloadSpec): ScheduledRealmAl
       } satisfies ScheduledRealmAllocation;
     });
   }
-  return placeLocalRealm(config);
+  return allocateLocalRealm(config);
 }
 
 function hasAllocationPort(): boolean {
@@ -184,7 +184,7 @@ function hasAllocationPort(): boolean {
   return info !== undefined;
 }
 
-function placeLocalRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | null {
+function allocateLocalRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | null {
   const placed = clusterOrchestrator.allocateRealm(config);
   if (placed === null) return null;
   const released = placed.released;

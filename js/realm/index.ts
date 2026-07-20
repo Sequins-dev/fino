@@ -32,7 +32,7 @@
 */
 import { mergeChildRules, createProcessContext, stepProcessContext } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
-import { placeScheduledRealm, type ScheduledRealmAllocation } from 'internal:realm/allocate';
+import { allocateScheduledRealm, type ScheduledRealmAllocation } from 'internal:realm/allocate';
 import { IdleRetirement } from 'internal:orchestrator/idle';
 import { PortRpc, type WireCodec } from 'internal:realm/port-rpc';
 import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
@@ -1946,9 +1946,197 @@ export class ProcessPort extends ThreadPort {
 }
 let _nextSourceRealmId = 0;
 
-interface ScheduledRealmInstance {
-  allocation: ScheduledRealmAllocation;
-  port: ThreadPort;
+/** One live execution container: its port and its terminal reason. */
+interface ContainerInstance {
+  port: BaseTransportPort;
+  /** Resolves with the release reason (e.g. 'exited', 'reload', 'failed: …'). */
+  done: Promise<string>;
+}
+
+/**
+* The placement-specific half of a Realm's lifecycle: how instances are
+* created, retired, and mapped to failures. `Realm` drives one container
+* through one run loop regardless of placement.
+*/
+interface RealmContainer {
+  /** Current live instance, or create one. Throws after `markTerminated()`. */
+  ensure(): ContainerInstance | Promise<ContainerInstance>;
+  current(): ContainerInstance | null;
+  markTerminated(): void;
+  /** Ask the current (or in-flight) instance to stop. */
+  retire(reason: string): void;
+  /** Per-iteration start hook for `run()` (process ports re-arm on reload). */
+  startForRun(instance: ContainerInstance): void;
+  /** Post-release bookkeeping before `run()` loops or returns. */
+  onReleased(instance: ContainerInstance): void;
+  /** Map a settled release reason to a throwable failure, or null. */
+  failureOf(reason: string): Error | null;
+  /** Terminated-run fast path, or null to fall through to the loop. */
+  terminatedRun(): Promise<void> | null;
+}
+
+class ScheduledContainer implements RealmContainer {
+  #config: Parameters<typeof allocateScheduledRealm>[0];
+  #onInstance: (port: BaseTransportPort) => void;
+  #current: { instance: ContainerInstance; allocation: ScheduledRealmAllocation } | null = null;
+  #ready: Promise<ContainerInstance> | null = null;
+  #lastDone: Promise<string> | null = null;
+  #terminated = false;
+
+  constructor(config: Parameters<typeof allocateScheduledRealm>[0], onInstance: (port: BaseTransportPort) => void) {
+    this.#config = config;
+    this.#onInstance = onInstance;
+  }
+
+  ensure(): ContainerInstance | Promise<ContainerInstance> {
+    if (this.#terminated) throw new Error('Realm has been terminated');
+    if (this.#current !== null) return this.#current.instance;
+    if (this.#ready === null) {
+      const placement = allocateScheduledRealm(this.#config);
+      if (placement === null) throw new Error('fino:realm — local reactor capacity is exhausted');
+      if (!(placement instanceof Promise)) return this.#attach(placement);
+      this.#ready = placement.then((allocation) => this.#attach(allocation)).finally(() => { this.#ready = null; });
+    }
+    return this.#ready;
+  }
+
+  #attach(allocation: ScheduledRealmAllocation): ContainerInstance {
+    const port = new ThreadPort(allocation.portWakeFd, allocation.portHandle);
+    const instance: ContainerInstance = { port, done: allocation.released };
+    const entry = { instance, allocation };
+    this.#current = entry;
+    this.#lastDone = allocation.released;
+    void allocation.released.then(() => this.#detach(entry));
+    this.#onInstance(port);
+    return instance;
+  }
+
+  #detach(entry: { instance: ContainerInstance }): void {
+    entry.instance.port.close();
+    if (this.#current === entry) this.#current = null;
+  }
+
+  current(): ContainerInstance | null {
+    return this.#current?.instance ?? null;
+  }
+
+  markTerminated(): void {
+    this.#terminated = true;
+  }
+
+  retire(reason: string): void {
+    const entry = this.#current;
+    if (entry !== null) {
+      this.#retireEntry(entry, reason);
+    } else if (this.#ready !== null) {
+      void this.#ready.then(() => {
+        const pending = this.#current;
+        if (pending !== null) this.#retireEntry(pending, reason);
+      });
+    }
+  }
+
+  #retireEntry(entry: { instance: ContainerInstance; allocation: ScheduledRealmAllocation }, reason: string): void {
+    if (entry.instance.port.closed) entry.allocation.revoke(reason);
+    else {
+      entry.instance.port.postMessage({ __terminate: true });
+      entry.instance.port.close();
+    }
+    this.#detach(entry);
+  }
+
+  startForRun(_instance: ContainerInstance): void {}
+
+  onReleased(instance: ContainerInstance): void {
+    // The terminal pump may post a final user message and release in the
+    // same slice. Drain transit synchronously before closing the physical
+    // endpoint so release cannot win that race.
+    (instance.port as ThreadPort)._drain();
+    const entry = this.#current;
+    if (entry !== null && entry.instance === instance) this.#detach(entry);
+    else instance.port.close();
+  }
+
+  failureOf(reason: string): Error | null {
+    return _releaseFailure(reason);
+  }
+
+  terminatedRun(): Promise<void> | null {
+    const last = this.#lastDone;
+    if (last === null) return Promise.resolve();
+    return last.then((reason) => {
+      const failure = _releaseFailure(reason);
+      if (failure !== null) throw failure;
+    });
+  }
+}
+
+class ProcessContainer implements RealmContainer {
+  #config: ProcessRealmConfig;
+  #onInstance: (port: BaseTransportPort) => void;
+  #currentPort: ProcessPort | null = null;
+  #terminated = false;
+
+  constructor(config: ProcessRealmConfig, onInstance: (port: BaseTransportPort) => void) {
+    this.#config = config;
+    this.#onInstance = onInstance;
+  }
+
+  ensure(): ContainerInstance {
+    if (this.#terminated) throw new Error('Realm has been terminated');
+    if (this.#currentPort !== null) {
+      return { port: this.#currentPort, done: this.#currentPort.finished };
+    }
+    const config = this.#config;
+    const info = createProcessContext(config.root, config.entry, config.rules, config.watch, config.data, config.bootstrapData) as {
+      handle: number;
+      portHandle: number;
+      portWakeFd: number;
+    };
+    const port = new ProcessPort(info.portWakeFd, info.portHandle, info.handle);
+    this.#currentPort = port;
+    const settle = () => {
+      port.close();
+      if (this.#currentPort === port) this.#currentPort = null;
+    };
+    void port.finished.then(settle, settle);
+    this.#onInstance(port);
+    return { port, done: port.finished };
+  }
+
+  current(): ContainerInstance | null {
+    const port = this.#currentPort;
+    return port === null ? null : { port, done: port.finished };
+  }
+
+  markTerminated(): void {
+    this.#terminated = true;
+  }
+
+  retire(reason: string): void {
+    const port = this.#currentPort;
+    if (port === null) return;
+    port.postMessage({ __terminate: true });
+    // An idle drain forgets the process so a later call spawns a fresh one;
+    // a terminate keeps it current until its exit settles `finished`.
+    if (reason === 'idle') this.#currentPort = null;
+  }
+
+  startForRun(instance: ContainerInstance): void {
+    (instance.port as ProcessPort).start();
+  }
+
+  onReleased(_instance: ContainerInstance): void {}
+
+  failureOf(_reason: string): Error | null {
+    // Process failures reject `finished` itself; the reason string carries
+    // no failure channel of its own.
+    return null;
+  }
+
+  terminatedRun(): Promise<void> | null {
+    return null;
+  }
 }
 
 interface ProcessRealmConfig {
@@ -2074,38 +2262,10 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   readonly port: MessagePort | BaseTransportPort;
   #watchMode = false;
-  /** The one physical scheduled execution container owned by this Realm. */
-  #scheduled: ScheduledRealmInstance | null = null;
-  #scheduledReady: Promise<ScheduledRealmInstance> | null = null;
-  #lastScheduledRelease: Promise<string> | null = null;
-  #scheduledConfig: Parameters<typeof placeScheduledRealm>[0] | null = null;
+  /** Placement-specific lifecycle: scheduled (reactor) or process. */
+  #container!: RealmContainer;
   #terminated = false;
   #facades: Facade[] = [];
-  #processConfig: ProcessRealmConfig | null = null;
-  // For thread/process watch mode: tracks the current child's port so that
-  // terminate() reaches the most-recently-spawned child, not the original one.
-  /**
-  * Private property `#activeChildPort` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #activeChildPort = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#activeChildPort;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #activeChildPort: ProcessPort | null = null;
   /**
   * Resolves after this Realm's execution container has been allocated.
   *
@@ -2220,24 +2380,27 @@ export class Realm<F extends RealmFn = RealmFn> {
     const serializedData = serializeRealmData(opts.data);
     const serializedBootstrapData = serializeRealmBootstrapData(opts);
     this.#watchMode = watch;
+    const onInstance = (port: BaseTransportPort) => {
+      this.#bindFacadePort(port);
+      if (this.port !== undefined) (this.port as DeferredTransportPort).replace(port);
+    };
     if (opts.process) {
-      this.#processConfig = {
+      this.#container = new ProcessContainer({
         root: opts.root ?? '',
         entry: opts.entry,
         rules: serializedRules,
         watch,
         ...serializedData !== undefined ? { data: serializedData } : {},
         ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {}
-      };
-      const processPort = this.#createProcessPort();
-      this.#activeChildPort = processPort;
-      this.port = new DeferredTransportPort(processPort);
+      }, onInstance);
+      const instance = this.#container.ensure() as ContainerInstance;
+      this.port = new DeferredTransportPort(instance.port as ProcessPort);
       this.ready = Promise.resolve();
     } else {
       const mergedRules = mergeChildRules(serializedRules) as string;
       // The one reshaping point: RealmOptions names become the serializable
       // workload-spec names, passed through every layer below unchanged.
-      const scheduledConfig: Parameters<typeof placeScheduledRealm>[0] = {
+      const scheduledConfig: Parameters<typeof allocateScheduledRealm>[0] = {
         entryPath: opts.entry,
         rulesJson: mergedRules,
         ...serializedData !== undefined ? { realmData: serializedData } : {},
@@ -2246,16 +2409,14 @@ export class Realm<F extends RealmFn = RealmFn> {
         watch,
         repl
       };
-      this.#scheduledConfig = scheduledConfig;
-      const created = this.#createScheduledInstance();
+      this.#container = new ScheduledContainer(scheduledConfig, onInstance);
+      const created = this.#container.ensure();
       if (created instanceof Promise) {
-        const pending = created.finally(() => { this.#scheduledReady = null; });
-        this.#scheduledReady = pending;
-        this.ready = pending.then(() => undefined);
-        this.port = new DeferredTransportPort(pending.then((instance) => instance.port));
+        this.ready = created.then(() => undefined);
+        this.port = new DeferredTransportPort(created.then((instance) => instance.port));
       } else {
         this.ready = Promise.resolve();
-        this.port = new DeferredTransportPort(created.port);
+        this.port = new DeferredTransportPort(created.port as ThreadPort);
       }
     }
     // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
@@ -2266,58 +2427,6 @@ export class Realm<F extends RealmFn = RealmFn> {
       }));
     }
   }
-  /** Spawn a fresh child handle using the stored watch opts. @internal */
-  /**
-  * Private method `#spawnChild` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #spawnChild() {
-  *     return 'spawnChild';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#spawnChild();
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #createProcessPort(): ProcessPort {
-    const config = this.#processConfig!;
-    const info = createProcessContext(config.root, config.entry, config.rules, config.watch, config.data, config.bootstrapData) as {
-      handle: number;
-      portHandle: number;
-      portWakeFd: number;
-    };
-    const port = new ProcessPort(info.portWakeFd, info.portHandle, info.handle);
-    this.#bindFacadePort(port);
-    void port.finished.then(() => {
-      port.close();
-      if (this.#activeChildPort === port) this.#activeChildPort = null;
-    }, () => {
-      port.close();
-      if (this.#activeChildPort === port) this.#activeChildPort = null;
-    });
-    return port;
-  }
-
-  #ensureProcessPort(): ProcessPort {
-    if (this.#terminated) throw new Error('Realm has been terminated');
-    if (this.#activeChildPort !== null) return this.#activeChildPort;
-    const port = this.#createProcessPort();
-    this.#activeChildPort = port;
-    (this.port as DeferredTransportPort).replace(port);
-    return port;
-  }
-
   #bindFacadePort(port: MessagePort | BaseTransportPort): void {
     for (const facade of this.#facades) facade._bind(port);
   }
@@ -2336,101 +2445,26 @@ export class Realm<F extends RealmFn = RealmFn> {
   * ```
   */
   run(): Promise<void> {
-    if (!this.#processIsolated) {
-      if (this.#terminated) {
-        const released = this.#lastScheduledRelease;
-        if (released === null) return Promise.resolve();
-        return released.then((reason) => {
-          const failure = _releaseFailure(reason);
-          if (failure !== null) throw failure;
-        });
+    if (this.#terminated) {
+      const fast = this.#container.terminatedRun();
+      if (fast !== null) return fast;
+    }
+    return (async () => {
+      while (true) {
+        const instance = await this.#container.ensure();
+        this.#container.startForRun(instance);
+        const reason = await instance.done;
+        this.#container.onReleased(instance);
+        const failure = this.#container.failureOf(reason);
+        if (failure !== null) throw failure;
+        if (reason !== 'reload' || this.#terminated) return;
       }
-      return (async () => {
-        while (true) {
-          const instance = await this.#ensureScheduledInstance();
-          const reason = await instance.allocation.released;
-          // The terminal pump may post a final user message and release in the
-          // same slice. Drain transit synchronously before closing the physical
-          // endpoint so release cannot win that race.
-          instance.port._drain();
-          this.#detachScheduledInstance(instance);
-          const failure = _releaseFailure(reason);
-          if (failure !== null) throw failure;
-          if (reason !== 'reload' || this.#terminated) return;
-          const next = await this.#ensureScheduledInstance();
-          (this.port as DeferredTransportPort).replace(next.port);
-        }
-      })();
-    }
-    if (this.#watchMode) {
-      return (async () => {
-        let port = this.#ensureProcessPort();
-        while (true) {
-          port.start();
-          const reason = await port.finished;
-          if (reason !== 'reload' || this.#terminated) return;
-          this.#activeChildPort = null;
-          port = this.#ensureProcessPort();
-        }
-      })();
-    }
-    const processPort = this.#ensureProcessPort();
-    processPort.start();
-    return processPort.finished.then(() => undefined);
+    })();
   }
 
-  #createScheduledInstance(): ScheduledRealmInstance | Promise<ScheduledRealmInstance> {
-    const placement = placeScheduledRealm(this.#scheduledConfig!);
-    if (placement === null) throw new Error('fino:realm — local reactor capacity is exhausted');
-    if (placement instanceof Promise) return placement.then((allocation) => this.#attachScheduledAllocation(allocation));
-    return this.#attachScheduledAllocation(placement);
-  }
-
-  #attachScheduledAllocation(allocation: ScheduledRealmAllocation): ScheduledRealmInstance {
-    const instance: ScheduledRealmInstance = {
-      allocation,
-      port: new ThreadPort(allocation.portWakeFd, allocation.portHandle)
-    };
-    this.#bindFacadePort(instance.port);
-    this.#scheduled = instance;
-    this.#lastScheduledRelease = allocation.released;
-    void allocation.released.then(() => this.#detachScheduledInstance(instance));
-    return instance;
-  }
-
-  async #ensureScheduledInstance(): Promise<ScheduledRealmInstance> {
-    if (this.#terminated) throw new Error('Realm has been terminated');
-    if (this.#scheduled !== null) return this.#scheduled;
-    if (this.#scheduledReady === null) {
-      const created = this.#createScheduledInstance();
-      if (!(created instanceof Promise)) {
-        (this.port as DeferredTransportPort).replace(created.port);
-        return created;
-      }
-      this.#scheduledReady = created.finally(() => { this.#scheduledReady = null; });
-    }
-    const instance = await this.#scheduledReady;
-    (this.port as DeferredTransportPort).replace(instance.port);
-    return instance;
-  }
-
-  #retireScheduledInstance(instance: ScheduledRealmInstance, reason: string): void {
-    if (instance.port.closed) instance.allocation.revoke(reason);
-    else {
-      instance.port.postMessage({ __terminate: true });
-      instance.port.close();
-    }
-    this.#detachScheduledInstance(instance);
-  }
-
-  #detachScheduledInstance(instance: ScheduledRealmInstance): void {
-    instance.port.close();
-    if (this.#scheduled === instance) this.#scheduled = null;
-  }
-
-  async #callScheduled(args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
-    const instance = await this.#ensureScheduledInstance();
-    return _callThroughPort(instance.port, instance.allocation.released, args);
+  async #callThrough(args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    const instance = await this.#container.ensure();
+    return _callThroughPort(instance.port, instance.done, args);
   }
   /**
   * Call the child Realm's default-exported function with `args`.
@@ -2454,17 +2488,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (startPublished) {
       _topicRealmCall.publish(otelRuntimeEvent('realm', 'call', 'start'));
     }
-    let base: Promise<Awaited<ReturnType<F>>>;
-    if (!this.#processIsolated) {
-      base = this.#callScheduled(args);
-    } else {
-      try {
-        const processPort = this.#ensureProcessPort();
-        base = _callThroughPort(processPort, processPort.finished, args);
-      } catch (error) {
-        base = Promise.reject(error);
-      }
-    }
+    const base = this.#callThrough(args);
     const observed = base.then((result) => {
       this.#finishCall();
       if (!startPublished && !_topicRealmCallEnd.hasSubscribers) return result;
@@ -2487,14 +2511,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     this.#idle.release();
   }
   #drainIdleInstance(): void {
-    if (!this.#processIsolated) {
-      const instance = this.#scheduled;
-      if (instance !== null) this.#retireScheduledInstance(instance, 'idle');
-      return;
-    }
-    const port = this.#activeChildPort;
-    this.#activeChildPort = null;
-    port?.postMessage({ __terminate: true });
+    this.#container.retire('idle');
   }
   /**
   * Signal the child realm to stop.
@@ -2512,13 +2529,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   terminate(): void {
     if (this.#terminated) return;
     this.#terminated = true;
-    if (!this.#processIsolated) {
-      const scheduled = this.#scheduled;
-      if (scheduled !== null) this.#retireScheduledInstance(scheduled, 'terminated');
-      else void this.#scheduledReady?.then((instance) => this.#retireScheduledInstance(instance, 'terminated'));
-    } else {
-      this.#activeChildPort?.postMessage({ __terminate: true });
-    }
+    this.#container.retire('terminated');
+    this.#container.markTerminated();
   }
   /**
   * Keep this Realm's otherwise-idle execution container warm. Active calls and
@@ -2526,10 +2538,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   ref(): this {
     this.#referenced = true;
-    if (!this.#processIsolated && this.#scheduled === null && !this.#terminated) {
-      void this.#ensureScheduledInstance();
-    } else if (this.#processIsolated && this.#activeChildPort === null && !this.#terminated) {
-      this.#ensureProcessPort();
+    if (!this.#terminated && this.#container.current() === null) {
+      void Promise.resolve().then(() => this.#container.ensure());
     }
     return this;
   }

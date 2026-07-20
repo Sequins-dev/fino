@@ -51,7 +51,7 @@ describe('NodeOrchestrator', () => {
   it('executes realms on multiple reactors', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 2, capacity: 2 });
     orchestrator.start();
-    const placements = [0, 1].map((index) => orchestrator.deployRealm({
+    const placements = [0, 1].map((index) => orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string,
     }));
@@ -71,7 +71,7 @@ describe('NodeOrchestrator', () => {
   it('moves the same live realm between reactors', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 2, capacity: 2 });
     orchestrator.start();
-    const placement = orchestrator.deployRealm({
+    const placement = orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
     });
@@ -101,7 +101,7 @@ describe('NodeOrchestrator', () => {
       batchPool: { minReactors: 0, maxReactors: 1, idleTimeoutMs: 10 }
     });
     orchestrator.start();
-    const placement = orchestrator.deployRealm({
+    const placement = orchestrator.allocateRealm({
       entryPath: blockingWorker,
       rulesJson: mergeChildRules('[]') as string
     });
@@ -129,12 +129,12 @@ describe('NodeOrchestrator', () => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 2, capacity: 4, batchPool: { minReactors: 1 } });
     orchestrator.start();
     try {
-      const background = orchestrator.deployRealm({
+      const background = orchestrator.allocateRealm({
         entryPath: worker,
         rulesJson: mergeChildRules('[]') as string,
         priority: 'background'
       });
-      const service = orchestrator.deployRealm({
+      const service = orchestrator.allocateRealm({
         entryPath: worker,
         rulesJson: mergeChildRules('[]') as string
       });
@@ -152,7 +152,7 @@ describe('NodeOrchestrator', () => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 4, batchPool: { minReactors: 0 } });
     orchestrator.start();
     try {
-      const placed = orchestrator.deployRealm({
+      const placed = orchestrator.allocateRealm({
         entryPath: worker,
         rulesJson: mergeChildRules('[]') as string,
         priority: 'background'
@@ -176,7 +176,7 @@ describe('NodeOrchestrator', () => {
     orchestrator.start();
     const hog = new URL('../realm/fixtures/heap-hog.ts', import.meta.url).pathname;
     try {
-      const placed = orchestrator.deployRealm({
+      const placed = orchestrator.allocateRealm({
         entryPath: hog,
         rulesJson: mergeChildRules('[]') as string
       });
@@ -195,11 +195,11 @@ describe('NodeOrchestrator', () => {
       hardBudgetMicros: 10_000
     });
     orchestrator.start();
-    const runaway = orchestrator.deployRealm({
+    const runaway = orchestrator.allocateRealm({
       entryPath: blockingWorker,
       rulesJson: mergeChildRules('[]') as string
     });
-    const survivor = orchestrator.deployRealm({
+    const survivor = orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
     });
@@ -221,7 +221,7 @@ describe('NodeOrchestrator', () => {
   it('replaces reactor capacity after a reactor exits', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 1 });
     orchestrator.start();
-    const first = orchestrator.deployRealm({
+    const first = orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
     });
@@ -229,7 +229,7 @@ describe('NodeOrchestrator', () => {
     try {
       orchestrator._killReactor('reactor-0');
       t.equal(await orchestrator.whenReleased(first.workloadId), 'reactor-exited');
-      const replacement = await eventually(() => orchestrator.deployRealm({
+      const replacement = await eventually(() => orchestrator.allocateRealm({
         entryPath: worker,
         rulesJson: mergeChildRules('[]') as string
       }));
@@ -244,11 +244,11 @@ describe('NodeOrchestrator', () => {
   it('replaces only the physical reactor after one isolate crashes', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 2 });
     orchestrator.start();
-    const failed = orchestrator.deployRealm({
+    const failed = orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
     });
-    const survivor = orchestrator.deployRealm({
+    const survivor = orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
     });

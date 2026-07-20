@@ -2,7 +2,7 @@
 * Tests for internal:shutdown — registerShutdownHook and runShutdownHooks.
 */
 import { describe, it } from 'fino:test/test';
-import { placeScheduledRealm } from 'internal:realm/allocate';
+import { allocateScheduledRealm } from 'internal:realm/allocate';
 import { mergeChildRules } from 'internal:realm-native';
 import { registerShutdownHook, runShutdownHooks } from 'internal:shutdown';
 const longRunningRealm = new URL('../realm/fixtures/long-running.ts', import.meta.url).pathname;
@@ -157,12 +157,12 @@ describe('B2 regression: hooks registered during shutdown are also executed', ()
 });
 describe('realm allocator shutdown registration', () => {
   it('registers a fresh hook after an earlier shutdown cycle', async (t) => {
-    const first = await placeScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    const first = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
     t.ok(first !== null, 'the first realm was placed');
     await runShutdownHooks();
     await first?.released;
 
-    const second = await placeScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    const second = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
     t.ok(second !== null, 'the second realm was placed');
     await runShutdownHooks();
 
@@ -178,8 +178,8 @@ describe('realm allocator shutdown registration', () => {
     }
     t.equal(released, true, 'the second shutdown cycle stopped the replacement scheduler');
 
-    const survivor = await placeScheduledRealm({ entryPath: longRunningRealm, rulesJson });
-    const completed = await placeScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    const survivor = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    const completed = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
     t.ok(survivor !== null && completed !== null, 'replacement realms were placed');
     completed?.revoke('completed');
     await completed?.released;

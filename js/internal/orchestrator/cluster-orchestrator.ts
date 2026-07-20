@@ -41,7 +41,7 @@ export class ClusterOrchestrator {
   /** Allocate one realm on an eligible node, or return `null` at capacity. */
   allocateRealm(spec: RealmWorkloadSpec): ClusterRealmAllocation | null {
     const node = this.#ensureNode();
-    const placed = node.deployRealm(spec);
+    const placed = node.allocateRealm(spec);
     if (placed === null) {
       this.#idle.poke();
       return null;
