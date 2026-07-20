@@ -206,6 +206,8 @@ export class ThreadPort extends BaseTransportPort {
   * @internal
   */
   #handle: number;
+  /** Whether the wake watch counts toward realm liveness. */
+  #referenced: boolean;
   /**
   * Current onmessageerror handler.
   *
@@ -213,14 +215,17 @@ export class ThreadPort extends BaseTransportPort {
   */
   #onmessageerror: ((ev: Event) => void) | null = null;
   /**
-  * Create a ThreadPort over an existing wake pipe.
+  * Create a ThreadPort over an existing wake pipe. `referenced: false` marks
+  * the wake watch as non-liveness-holding (a realm's own port must not keep
+  * that realm alive once its entry has settled).
   *
   * @internal
   */
-  constructor(wakeReadFd: number, handle: number) {
+  constructor(wakeReadFd: number, handle: number, options?: { referenced?: boolean }) {
     super();
     this.#wakeReadFd = wakeReadFd;
     this.#handle = handle;
+    this.#referenced = options?.referenced ?? true;
   }
   /**
   * Serialize and send a message to the opposite thread endpoint.
@@ -295,7 +300,7 @@ export class ThreadPort extends BaseTransportPort {
   */
   async #watchLoop(): Promise<void> {
     while (!this._closed) {
-      const n = await readable(this.#wakeReadFd);
+      const n = await readable(this.#wakeReadFd, this.#referenced);
       if (this._closed) break;
       if (typeof n === 'number' && n < 0) break;
       this._drain();

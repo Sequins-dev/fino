@@ -10,6 +10,25 @@ describe('Realm lifecycle', () => {
     await realm.run();
     t.ok(true, 'child realm exited');
   });
+  it('referenced handles keep a realm alive after its entry settles', async (t) => {
+    const realm = new Realm({ entry: new URL('./fixtures/interval-alive.ts', import.meta.url).pathname });
+    let ticks = 0;
+    realm.port.addEventListener('message', (event) => {
+      const data = (event as MessageEvent).data as { tick?: number };
+      if (typeof data?.tick === 'number') ticks = data.tick;
+    });
+    realm.port.start();
+    await realm.run();
+    t.equal(ticks, 3, 'the interval fired to completion (and stayed port-connected) before the realm exited');
+  });
+  it('terminate() overrides live handles', async (t) => {
+    const realm = new Realm({ entry: new URL('./fixtures/interval-forever.ts', import.meta.url).pathname });
+    const p = realm.run();
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    realm.terminate();
+    await p;
+    t.ok(true, 'a realm holding a live interval still terminates on demand');
+  });
   it('realm.terminate() stops a long-running realm', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname });
     const p = realm.run();

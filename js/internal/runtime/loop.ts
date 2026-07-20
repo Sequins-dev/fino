@@ -86,9 +86,13 @@ export function _untrackAtomicsWaiter(): void {
 // ---------------------------------------------------------------------------
 // Readiness + fused transfer
 // ---------------------------------------------------------------------------
-/** Resolve when `fd` is readable, with the bytes-available estimate. */
-export function readable(fd: number): Promise<number> {
-  return native.readable(fd);
+/**
+* Resolve when `fd` is readable, with the bytes-available estimate. An
+* unreferenced watch (`referenced: false`) never keeps its realm alive — used
+* for a realm's own port wake, mirroring an unref'd IPC channel.
+*/
+export function readable(fd: number, referenced = true): Promise<number> {
+  return native.readable(fd, referenced);
 }
 
 /**

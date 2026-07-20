@@ -260,9 +260,12 @@ mod imp {
         mut rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
+        // Optional second arg: referenced (default true). An unreferenced
+        // watch (a realm's own port wake) never keeps the realm alive.
+        let referenced = args.get(1).is_undefined() || args.get(1).boolean_value(scope);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
-        engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Readable);
+        engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Readable, referenced);
     }
 
     /// Register a bare-readiness op (readable/writable) with the reactor engine.
@@ -270,6 +273,7 @@ mod imp {
         g: v8::Global<v8::PromiseResolver>,
         fd: i32,
         kind: crate::reactor::engine::IoKind,
+        referenced: bool,
     ) {
         let resolver_id = crate::async_rt::push_resolver(g);
         crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Io(
@@ -281,6 +285,7 @@ mod imp {
                 buf_ptr: std::ptr::null_mut(),
                 len: 0,
                 written: 0,
+                referenced,
             },
         ));
     }
@@ -293,7 +298,7 @@ mod imp {
         let fd = arg_i32(scope, &args, 0);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
-        engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Writable);
+        engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Writable, true);
     }
 
     // --- fused transfer ---------------------------------------------------
@@ -354,6 +359,7 @@ mod imp {
                 buf_ptr: ptr,
                 len,
                 written: 0,
+                referenced: true,
             },
         ));
     }
@@ -402,6 +408,7 @@ mod imp {
                         buf_ptr: ptr,
                         len,
                         written,
+                        referenced: true,
                     },
                 ));
             }

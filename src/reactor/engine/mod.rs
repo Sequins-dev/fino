@@ -213,6 +213,8 @@ pub(crate) struct PendingIoReg {
     /// mid-flight. Held for its `Drop` (RAII liveness), never read directly.
     #[allow(dead_code)]
     pub buffer: Option<v8::SharedRef<v8::BackingStore>>,
+    /// Readiness only: whether this watch counts toward realm liveness.
+    pub referenced: bool,
     /// Stable backing-store pointer at the op's byte offset (null for readiness).
     pub buf_ptr: *mut u8,
     pub len: usize,
@@ -596,8 +598,14 @@ mod imp {
                             io.len,
                             io.written,
                         ),
-                        IoKind::Readable => self.io.submit_readiness(owner, target, io.fd, true),
-                        IoKind::Writable => self.io.submit_readiness(owner, target, io.fd, false),
+                        IoKind::Readable => {
+                            self.io
+                                .submit_readiness(owner, target, io.fd, true, io.referenced)
+                        }
+                        IoKind::Writable => {
+                            self.io
+                                .submit_readiness(owner, target, io.fd, false, io.referenced)
+                        }
                     }
                 }
                 EngineReg::Timer {

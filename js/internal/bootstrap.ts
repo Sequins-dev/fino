@@ -56,7 +56,7 @@
 *
 * @internal
 */
-import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from 'internal:runtime/loop';
+import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter, alive as loopAlive } from 'internal:runtime/loop';
 import { runNativeLoop } from 'internal:async-context';
 import { wakeFd } from 'internal:async-runtime';
 import { env } from '../process.ts';
@@ -298,7 +298,7 @@ const _portInfo = (getPortInfo as () => {
   handle: number;
   wakeReadFd: number;
 } | undefined)();
-const _childPort: ThreadPort | undefined = _portInfo !== undefined ? new ThreadPort(_portInfo.wakeReadFd, _portInfo.handle) : undefined;
+const _childPort: ThreadPort | undefined = _portInfo !== undefined ? new ThreadPort(_portInfo.wakeReadFd, _portInfo.handle, { referenced: false }) : undefined;
 // Expose the child port as `realmPort` on globalThis so entry modules can
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
@@ -515,18 +515,21 @@ if (_childEntry) {
     // { __terminate: true } port message (sets _externalTerminate).
     const entryDone = _watchMode ? _externalTerminate || isTerminated() as boolean : _childDone || isTerminated() as boolean;
     if (entryDone && !_shutdownStarted) _startChildShutdown();
-    // Close the receive port as soon as we begin winding down — do NOT wait for
-    // shutdown hooks to finish. Once the entry is done (or the parent asked us to
-    // terminate), we no longer need to receive messages; leaving the wake-fd
-    // `readable()` watch armed makes the loop busy-spin the moment the parent
-    // closes its end of the pipe (the read reports EOF on every tick), and that
-    // spin also keeps `alive()` true so the loop can never exit. Cancelling the
-    // watch here turns the shutdown-hook window into an idle wait, not a spin.
-    if (entryDone && !_portClosed && _childPort !== undefined) {
+    // Natural completion honors live handles: a realm whose entry settled but
+    // still owns referenced work (an interval, a watch, a pending child
+    // process) keeps running until those drain — the same contract every
+    // handle-owning runtime provides. terminate()/reload are explicit stops
+    // and bypass the gate, so a wedged handle can never hold a kill hostage.
+    // The realm's own port is unreferenced (it never holds the realm open)
+    // and stays receivable while handles run, so a parent's __terminate can
+    // always land; it closes once nothing else keeps the realm alive.
+    const forced = _externalTerminate || isTerminated() as boolean;
+    const handleAlive = loopAlive();
+    if (entryDone && !_portClosed && _childPort !== undefined && (forced || !handleAlive)) {
       _portClosed = true;
       _childPort.close();
     }
-    const done = entryDone && _shutdownDone;
+    const done = entryDone && _shutdownDone && (forced || !handleAlive);
     if (done) {
       // Tear down the watcher and poll interval so alive() drains to false
       // and the child's step loop can exit cleanly.  This handles both the

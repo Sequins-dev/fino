@@ -83,6 +83,7 @@ pub(crate) enum Transfer {
         resolver_id: usize,
         fd: i32,
         read: bool,
+        referenced: bool,
     },
     Timer {
         resolver_id: usize,
@@ -100,6 +101,9 @@ enum Record {
         fd: i32,
         ptr: *mut u8,
         len: u32,
+        /// Unreferenced readiness watches (a realm's own port wake) never
+        /// count toward liveness; fused reads are always referenced.
+        referenced: bool,
     },
     Write {
         owner: Owner,
@@ -329,7 +333,14 @@ impl RuntimeIo {
         }
     }
 
-    pub fn submit_readiness(&mut self, owner: Owner, target: Target, fd: i32, read: bool) {
+    pub fn submit_readiness(
+        &mut self,
+        owner: Owner,
+        target: Target,
+        fd: i32,
+        read: bool,
+        referenced: bool,
+    ) {
         self.supersede_fd(fd, read);
         let id = self.next_id();
         if read {
@@ -348,6 +359,7 @@ impl RuntimeIo {
                 fd,
                 ptr: std::ptr::null_mut(),
                 len: 0,
+                referenced,
             },
         );
     }
@@ -384,6 +396,7 @@ impl RuntimeIo {
                 fd,
                 ptr,
                 len: len as u32,
+                referenced: true,
             },
         );
     }
@@ -519,6 +532,7 @@ impl RuntimeIo {
                 fd,
                 ptr,
                 len,
+                referenced: _,
             } => {
                 if res == -libc::EAGAIN
                     && let Some(buffer) = buffer
@@ -622,6 +636,9 @@ impl RuntimeIo {
                 continue;
             }
             match record {
+                Record::Read {
+                    referenced: false, ..
+                } => {}
                 Record::Read { .. } => counts.reads += 1,
                 Record::Write { .. } => counts.writes += 1,
                 Record::Timer {
@@ -695,6 +712,7 @@ impl RuntimeIo {
                 Record::Read {
                     target: Target { resolver_id, .. },
                     fd,
+                    referenced,
                     ..
                 } => {
                     let read = self.reads.get(&fd) == Some(&id);
@@ -707,6 +725,7 @@ impl RuntimeIo {
                         resolver_id,
                         fd,
                         read,
+                        referenced,
                     });
                 }
                 Record::Timer {
@@ -737,6 +756,7 @@ impl RuntimeIo {
                     resolver_id,
                     fd,
                     read,
+                    referenced,
                 } => self.submit_readiness(
                     owner,
                     Target {
@@ -745,6 +765,7 @@ impl RuntimeIo {
                     },
                     fd,
                     read,
+                    referenced,
                 ),
                 Transfer::Timer {
                     resolver_id,
