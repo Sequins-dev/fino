@@ -742,17 +742,24 @@ mod imp {
         scratch: Vec<Completion>,
         /// Workload whose isolate boundary unwound unexpectedly.
         crashed_workload: Option<u64>,
+        /// Local mode: this reactor runs inline on its caller's thread (the
+        /// process root), hosting exactly one workload. Its release stops the
+        /// loop and hands the parked isolate back instead of disposing it.
+        local_root: Option<u64>,
+        /// The local root's parked isolate + release reason, captured by
+        /// `release` for `run_local` to run teardown on.
+        local_released: Option<(ParkedWorkload, String)>,
     }
 
-    pub(super) fn run(
+    fn new_thread(
         config: ReactorConfig,
         control_rx: mpsc::Receiver<Control>,
         report_tx: mpsc::Sender<Report>,
         report_seq: Arc<AtomicU64>,
         orch_wake: crate::async_rt::WakeSink,
         reactor: Reactor,
-    ) -> Option<RecoveryWorkset> {
-        let engine = ReactorThread {
+    ) -> ReactorThread {
+        ReactorThread {
             config,
             resources: Box::new(EngineResources {
                 io: crate::reactor::io::RuntimeIo::new(reactor),
@@ -776,8 +783,109 @@ mod imp {
             running: true,
             scratch: Vec::new(),
             crashed_workload: None,
-        };
-        drive(engine)
+            local_root: None,
+            local_released: None,
+        }
+    }
+
+    pub(super) fn run(
+        config: ReactorConfig,
+        control_rx: mpsc::Receiver<Control>,
+        report_tx: mpsc::Sender<Report>,
+        report_seq: Arc<AtomicU64>,
+        orch_wake: crate::async_rt::WakeSink,
+        reactor: Reactor,
+    ) -> Option<RecoveryWorkset> {
+        drive(new_thread(
+            config, control_rx, report_tx, report_seq, orch_wake, reactor,
+        ))
+    }
+
+    /// The workload id of a local (caller-thread) reactor's single realm.
+    pub(super) const LOCAL_ROOT_ID: u64 = 1;
+
+    /// Run a reactor inline on the current thread, hosting `seed` as its only
+    /// workload — the same drive loop pool reactors run, minus the thread, the
+    /// supervisor, and the report channel. When the workload releases,
+    /// `on_release` runs teardown with the isolate entered and this reactor
+    /// still installed (so teardown JS can register engine I/O), then the
+    /// workload is quiesced and disposed. A panic at the pump boundary is
+    /// fatal for a local reactor: the workload is disposed and `Err` returned.
+    pub(super) fn run_local(
+        config: ReactorConfig,
+        seed: ParkedWorkload,
+        on_release: impl FnOnce(&mut ParkedWorkload, &str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let reactor =
+            Reactor::new().map_err(|e| format!("reactor engine: init failed: {e}"))?;
+        let orch_wake = seed
+            .wake_sink()
+            .ok_or_else(|| "reactor engine: seed workload has no async state".to_string())?;
+        // Local mode has no orchestrator: the control/report channels exist
+        // only to satisfy the shared loop. Keep the far ends alive so sends
+        // stay cheap successes for the loop's lifetime.
+        let (_control_tx, control_rx) = mpsc::channel::<Control>();
+        let (report_tx, _report_rx) = mpsc::channel::<Report>();
+        let report_seq = Arc::new(AtomicU64::new(0));
+        let mut engine = new_thread(config, control_rx, report_tx, report_seq, orch_wake, reactor);
+
+        let id = LOCAL_ROOT_ID;
+        engine.local_root = Some(id);
+        seed.install_wake_notifier(engine.resources.io.notifier(), post_wake(id));
+        engine.workloads.insert(
+            id,
+            EngineWorkload {
+                id,
+                inner: seed,
+                priority_class: 1,
+                debt_micros: 0.0,
+                sequence: 0,
+                last_sync_heavy_report: None,
+                ready_events: Vec::new(),
+                crash_on_next_pump: false,
+            },
+        );
+        engine.runnable.insert(id);
+
+        ENGINE_CONTEXT.with(|context| {
+            context.set((&mut *engine.resources, 0));
+        });
+        let result = (|| {
+            engine.loop_forever();
+            if engine.crashed_workload.take().is_some() {
+                set_engine_owner(0);
+                // Same containment sequencing as pool recovery (release
+                // deactivates, quiesces, and captures), but local mode has no
+                // replacement worker — dispose and fail.
+                if engine.workloads.contains_key(&id) {
+                    engine.release(id, "reactor-workload-panicked".to_string());
+                }
+                if let Some((workload, _)) = engine.local_released.take() {
+                    drop_parked(workload);
+                }
+                return Err("fino: realm execution panicked".to_string());
+            }
+            let Some((mut workload, reason)) = engine.local_released.take() else {
+                return Err(
+                    "reactor engine: local loop exited without releasing its workload".to_string(),
+                );
+            };
+            // Teardown runs as a live engine workload: isolate entered, owner
+            // set, this reactor still current — so onDone/checkpoint JS can
+            // register I/O that the quiesce below then cancels and harvests.
+            let active = activate_realm_native(&mut workload);
+            let outcome = {
+                let _owner = EngineOwnerScope::enter(id);
+                on_release(&mut workload, &reason)
+            };
+            deactivate_realm_native(&mut workload, active);
+            engine.cancel_owned(id);
+            engine.drain_doomed();
+            drop_parked(workload);
+            outcome
+        })();
+        ENGINE_CONTEXT.with(|context| context.set((std::ptr::null_mut(), 0)));
+        result
     }
 
     /// Resume an intact reactor working set on a replacement physical worker.
@@ -1535,6 +1643,13 @@ mod imp {
             self.drain_doomed();
             if let Some(w) = self.workloads.remove(&id) {
                 self.runnable.remove(&id);
+                if self.local_root == Some(id) {
+                    // The local root's isolate outlives the loop: `run_local`
+                    // runs caller teardown on it before disposing.
+                    self.local_released = Some((w.inner, reason));
+                    self.running = false;
+                    return;
+                }
                 drop_parked(w.inner);
                 self.report(Report::Released {
                     workload_id: id,
@@ -1598,6 +1713,12 @@ mod imp {
         }
 
         fn report(&mut self, report: Report) {
+            // A local reactor has no orchestrator; a report's wake would only
+            // re-mark its own workload runnable (the sink is the root's) and
+            // spin the idle loop.
+            if self.local_root.is_some() {
+                return;
+            }
             let _ = self.report_tx.send(report);
             // Wake the orchestrator's loop so it drains the report promptly:
             // bump the sequence its drain hook compares, then wake its sink.
@@ -1653,6 +1774,21 @@ mod tests {
 // ===========================================================================
 // Public spawn API + shared tenant setup.
 // ===========================================================================
+
+/// Run a reactor inline on the current thread with `seed` as its only
+/// workload — the process root's drive loop. See `imp::run_local`.
+// The allow covers the one-commit gap until runtime::run adopts this.
+#[allow(dead_code)]
+pub(crate) fn run_local(
+    config: ReactorConfig,
+    seed: crate::reactor::workload::ParkedWorkload,
+    on_release: impl FnOnce(
+        &mut crate::reactor::workload::ParkedWorkload,
+        &str,
+    ) -> Result<(), String>,
+) -> Result<(), String> {
+    imp::run_local(config, seed, on_release)
+}
 
 /// Spawn a reactor thread and return the orchestrator-side handle. The
 /// reactor is created here (on the spawning thread) so its Notifier exists

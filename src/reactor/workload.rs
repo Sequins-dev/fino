@@ -163,6 +163,23 @@ impl ParkedWorkload {
         self.moved_between_threads = true;
     }
 
+    /// This workload's background-wake sink (present while parked; taken only
+    /// while the workload is active).
+    pub(crate) fn wake_sink(&self) -> Option<crate::async_rt::WakeSink> {
+        self.async_state.as_ref().map(|s| s.wake_sink.clone())
+    }
+
+    /// Run `f` with a context-entered handle scope on this workload's isolate.
+    /// The workload must be active (entered) — see `activate_realm_native`.
+    // The allow covers the one-commit gap until runtime::run adopts run_local.
+    #[allow(dead_code)]
+    pub(crate) fn enter_scope<R>(&mut self, f: impl FnOnce(&mut v8::HandleScope) -> R) -> R {
+        let isolate_scope = &mut v8::HandleScope::new(&mut self.isolate);
+        let context = v8::Local::new(isolate_scope, &self.context);
+        let scope = &mut v8::ContextScope::new(isolate_scope, context);
+        f(scope)
+    }
+
     /// Return the thread-affine facility that currently prevents a live move.
     pub(crate) fn move_blocker(&self) -> Option<&'static str> {
         let state = self._state.borrow();
@@ -393,7 +410,10 @@ pub(crate) fn pump_realm_native(
             // Budget kill or heap-limit containment landed mid-slice.
             PumpOutcome::Terminated
         } else if cont {
-            if crate::reactor::drive_needs_poll() {
+            // V8 background work (compile/Wasm) posts foreground tasks without
+            // touching the reactor — like Atomics.waitAsync it needs a bounded
+            // re-pump, or a workload with only that work parks forever.
+            if crate::reactor::drive_needs_poll() || scope.has_pending_background_tasks() {
                 PumpOutcome::PendingPoll
             } else {
                 PumpOutcome::Pending
