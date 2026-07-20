@@ -336,9 +336,15 @@ export class DeferredTransportPort extends BaseTransportPort {
   #generation = 0;
   #messageListener: ((event: Event) => void) | null = null;
   #errorListener: ((event: Event) => void) | null = null;
+  /** Whether the eventual endpoint supports MessagePort transfer. */
+  #allowPortTransfer: boolean;
 
-  constructor(port: BaseTransportPort | Promise<BaseTransportPort>) {
+  constructor(
+    port: BaseTransportPort | Promise<BaseTransportPort>,
+    options?: { allowPortTransfer?: boolean }
+  ) {
     super();
+    this.#allowPortTransfer = options?.allowPortTransfer ?? true;
     this.replace(port);
   }
 
@@ -351,6 +357,9 @@ export class DeferredTransportPort extends BaseTransportPort {
         return;
       }
       this.#attach(port);
+    }, () => {
+      // Allocation failed; the owner reports it through ready/run()/call().
+      // The deferred endpoint simply never materializes.
     });
     else this.#attach(next);
   }
@@ -388,7 +397,29 @@ export class DeferredTransportPort extends BaseTransportPort {
   postMessage(message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
     if (this._closed) return;
     if (this.#port === null) {
-      this.#pending.push([message, transferOrOptions]);
+      // postMessage semantics are synchronous even while the physical
+      // endpoint is still materializing: invalid payloads and transfer
+      // entries reject NOW, and transferred ArrayBuffers detach NOW. The
+      // buffered send therefore holds an already-validated, already-moved
+      // clone; the eventual flush transfers the moved buffers onward.
+      const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? [];
+      const ports = transfer.filter((item): item is MessagePort => item instanceof MessagePort);
+      if (ports.length > 0) {
+        if (!this.#allowPortTransfer) {
+          throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
+        }
+        // MessagePort transfer needs the target's transit upgrade; it is
+        // performed at flush, exactly as a live ThreadPort would.
+        this.#pending.push([message, transferOrOptions]);
+        return;
+      }
+      const invalid = transfer.find((item) => !(item instanceof ArrayBuffer));
+      if (invalid !== undefined) {
+        throw new TypeError('ThreadPort transfer list only supports ArrayBuffer and MessagePort values');
+      }
+      const buffers = transfer as ArrayBuffer[];
+      const moved = structuredClone({ message, transfer: buffers }, { transfer: buffers });
+      this.#pending.push([moved.message, buffers.length > 0 ? moved.transfer : undefined]);
       return;
     }
     this.#port.postMessage(message, transferOrOptions);

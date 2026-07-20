@@ -33,26 +33,25 @@ export type NodeRealmAllocation = Omit<ClusterRealmAllocation, 'released' | 'rev
 * cluster orchestration, so local and remote nodes are interacted with
 * uniformly. `NodeOrchestrator` satisfies it in-process; a remote node
 * satisfies it by speaking these same methods over its cluster control
-* channel (which is why admission may answer asynchronously — a network sits
-* in the middle). Deliberately NOT a realm or port surface: a node admits
-* serialized realm configurations and reports lifecycle, and nothing here
-* drives realms (see research-docs/research/multi-node-distribution.md).
+* channel. Every operation that can involve a peer is ALWAYS asynchronous —
+* never sometimes-sync — so callers cannot fork on timing. Deliberately NOT
+* a realm or port surface: a node admits serialized realm configurations and
+* reports lifecycle, and nothing here drives realms (see
+* research-docs/research/multi-node-distribution.md).
 */
 export interface ClusterNode {
   /** Boot the node's substrate. Idempotent. */
-  start(): void | Promise<void>;
+  start(): Promise<void>;
   /** Slots currently eligible for ordinary realm admission (locally cached). */
   admissionCapacity(): number;
-  /** Admit a serialized realm; `null` (or resolve `null`) when at capacity. */
-  allocateRealm(
-    spec: RealmWorkloadSpec
-  ): NodeRealmAllocation | Promise<NodeRealmAllocation | null> | null;
+  /** Admit a serialized realm; resolves `null` when the node is at capacity. */
+  allocateRealm(spec: RealmWorkloadSpec): Promise<NodeRealmAllocation | null>;
   /** Resolve with the release reason when a workload reaches a terminal state. */
   whenReleased(workloadId: string): Promise<string>;
-  /** Hard-stop one workload on its hosting reactor. */
+  /** Hard-stop one workload on its hosting reactor (one-way). */
   revoke(workloadId: string, reason: string): void;
   /** Stop the node service. One-shot. */
-  shutdown(): void | Promise<void>;
+  shutdown(): Promise<void>;
 }
 
 /** Cluster-level facade over `ClusterNode`s; defaults to one local node. */
@@ -74,19 +73,15 @@ export class ClusterOrchestrator {
     this.#createNode = createNode ?? (() => new NodeOrchestrator(resolveNodeOrchestratorOptions()));
   }
 
-  /**
-  * Allocate one realm on an eligible node. Synchronous `null` means the
-  * (synchronously answering) node is at capacity; an asynchronously admitting
-  * node surfaces as a promise that rejects on failure or exhausted capacity.
-  */
-  allocateRealm(spec: RealmWorkloadSpec): ClusterRealmAllocation | Promise<ClusterRealmAllocation> | null {
+  /** Allocate one realm on an eligible node; resolves `null` at capacity. */
+  async allocateRealm(spec: RealmWorkloadSpec): Promise<ClusterRealmAllocation | null> {
     const node = this.#ensureNode();
-    // Hold the node open across the (possibly asynchronous) admission window
-    // so idle retirement cannot shut it down mid-allocation.
+    // Hold the node open across the admission window so idle retirement
+    // cannot shut it down mid-allocation.
     this.#idle.retain();
-    let placed: ReturnType<ClusterNode['allocateRealm']>;
+    let placed: NodeRealmAllocation | null;
     try {
-      placed = node.allocateRealm(spec);
+      placed = await node.allocateRealm(spec);
     } catch (error) {
       this.#idle.release();
       throw error;
@@ -94,18 +89,6 @@ export class ClusterOrchestrator {
     if (placed === null) {
       this.#idle.release();
       return null;
-    }
-    if (placed instanceof Promise) {
-      return placed.then((resolved) => {
-        if (resolved === null) {
-          this.#idle.release();
-          throw new Error('fino:realm — node allocation capacity is exhausted');
-        }
-        return this.#wireAllocation(node, resolved);
-      }, (error: unknown) => {
-        this.#idle.release();
-        throw error;
-      });
     }
     return this.#wireAllocation(node, placed);
   }

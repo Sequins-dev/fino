@@ -114,23 +114,32 @@ function serveAllocationPort(port: ThreadPort, ownerReleased: Promise<string>): 
     const message = (event as MessageEvent<AllocationMessage>).data;
     if (closed) return;
     if (message.type === 'allocate') {
-      const placed = allocateLocalRealm(message.config);
-      if (placed === null) {
-        port.postMessage({ type: 'allocationFailed', requestId: message.requestId, error: 'local reactor capacity is exhausted' } satisfies AllocationMessage);
-        return;
-      }
-      served.set(message.requestId, placed);
-      port.postMessage({
-        type: 'allocated',
-        requestId: message.requestId,
-        workloadId: placed.workloadId,
-        portHandle: placed.portHandle,
-        portWakeFd: placed.portWakeFd
-      } satisfies AllocationMessage);
-      void placed.released.then((reason) => {
-        served.delete(message.requestId);
-        if (!closed) port.postMessage({ type: 'released', requestId: message.requestId, reason } satisfies AllocationMessage);
-      });
+      void (async () => {
+        let placed: ScheduledRealmAllocation;
+        try {
+          placed = await allocateLocalRealm(message.config);
+        } catch (error) {
+          if (!closed) port.postMessage({ type: 'allocationFailed', requestId: message.requestId, error: error instanceof Error ? error.message : String(error) } satisfies AllocationMessage);
+          return;
+        }
+        if (closed) {
+          // The owner released while admission was in flight.
+          placed.revoke('allocation-owner-released: closed');
+          return;
+        }
+        served.set(message.requestId, placed);
+        port.postMessage({
+          type: 'allocated',
+          requestId: message.requestId,
+          workloadId: placed.workloadId,
+          portHandle: placed.portHandle,
+          portWakeFd: placed.portWakeFd
+        } satisfies AllocationMessage);
+        void placed.released.then((reason) => {
+          served.delete(message.requestId);
+          if (!closed) port.postMessage({ type: 'released', requestId: message.requestId, reason } satisfies AllocationMessage);
+        });
+      })();
     } else if (message.type === 'revoke') {
       served.get(message.requestId)?.revoke(message.reason);
     }
@@ -156,7 +165,7 @@ export interface ScheduledRealmAllocation {
   revoke(reason: string): void;
 }
 
-export function allocateScheduledRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
+export function allocateScheduledRealm(config: RealmWorkloadSpec): Promise<ScheduledRealmAllocation> {
   if (hasAllocationPort()) {
     const { channel, rpc } = controlChannel();
     return rpc.call({ config }).then((raw) => {
@@ -184,10 +193,9 @@ function hasAllocationPort(): boolean {
   return info !== undefined;
 }
 
-function allocateLocalRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
-  const placed = clusterOrchestrator.allocateRealm(config);
-  if (placed === null) return null;
-  if (placed instanceof Promise) return placed.then((allocation) => wireAllocation(allocation));
+async function allocateLocalRealm(config: RealmWorkloadSpec): Promise<ScheduledRealmAllocation> {
+  const placed = await clusterOrchestrator.allocateRealm(config);
+  if (placed === null) throw new Error('fino:realm — local reactor capacity is exhausted');
   return wireAllocation(placed);
 }
 

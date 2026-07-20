@@ -1959,8 +1959,8 @@ interface ContainerInstance {
 * through one run loop regardless of placement.
 */
 interface RealmContainer {
-  /** Current live instance, or create one. Throws after `markTerminated()`. */
-  ensure(): ContainerInstance | Promise<ContainerInstance>;
+  /** Current live instance, or create one. Rejects after `markTerminated()`. */
+  ensure(): Promise<ContainerInstance>;
   current(): ContainerInstance | null;
   markTerminated(): void;
   /** Ask the current (or in-flight) instance to stop. */
@@ -1988,15 +1988,12 @@ class ScheduledContainer implements RealmContainer {
     this.#onInstance = onInstance;
   }
 
-  ensure(): ContainerInstance | Promise<ContainerInstance> {
+  async ensure(): Promise<ContainerInstance> {
     if (this.#terminated) throw new Error('Realm has been terminated');
     if (this.#current !== null) return this.#current.instance;
-    if (this.#ready === null) {
-      const placement = allocateScheduledRealm(this.#config);
-      if (placement === null) throw new Error('fino:realm — local reactor capacity is exhausted');
-      if (!(placement instanceof Promise)) return this.#attach(placement);
-      this.#ready = placement.then((allocation) => this.#attach(allocation)).finally(() => { this.#ready = null; });
-    }
+    this.#ready ??= allocateScheduledRealm(this.#config)
+      .then((allocation) => this.#attach(allocation))
+      .finally(() => { this.#ready = null; });
     return this.#ready;
   }
 
@@ -2082,7 +2079,9 @@ class ProcessContainer implements RealmContainer {
     this.#onInstance = onInstance;
   }
 
-  ensure(): ContainerInstance {
+  // The body runs synchronously to completion (no awaits): the process is
+  // spawned during the call even though the contract is uniformly async.
+  async ensure(): Promise<ContainerInstance> {
     if (this.#terminated) throw new Error('Realm has been terminated');
     if (this.#currentPort !== null) {
       return { port: this.#currentPort, done: this.#currentPort.finished };
@@ -2393,9 +2392,6 @@ export class Realm<F extends RealmFn = RealmFn> {
         ...serializedData !== undefined ? { data: serializedData } : {},
         ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {}
       }, onInstance);
-      const instance = this.#container.ensure() as ContainerInstance;
-      this.port = new DeferredTransportPort(instance.port as ProcessPort);
-      this.ready = Promise.resolve();
     } else {
       const mergedRules = mergeChildRules(serializedRules) as string;
       // The one reshaping point: RealmOptions names become the serializable
@@ -2410,15 +2406,12 @@ export class Realm<F extends RealmFn = RealmFn> {
         repl
       };
       this.#container = new ScheduledContainer(scheduledConfig, onInstance);
-      const created = this.#container.ensure();
-      if (created instanceof Promise) {
-        this.ready = created.then(() => undefined);
-        this.port = new DeferredTransportPort(created.then((instance) => instance.port));
-      } else {
-        this.ready = Promise.resolve();
-        this.port = new DeferredTransportPort(created.port as ThreadPort);
-      }
     }
+    const created = this.#container.ensure();
+    this.ready = created.then(() => undefined);
+    this.port = new DeferredTransportPort(created.then((instance) => instance.port), {
+      allowPortTransfer: !this.#processIsolated
+    });
     // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
     // the common case where no OTel subscriber is registered).
     if (_topicRealmSpawn.hasSubscribers) {
@@ -2539,7 +2532,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   ref(): this {
     this.#referenced = true;
     if (!this.#terminated && this.#container.current() === null) {
-      void Promise.resolve().then(() => this.#container.ensure());
+      // Best-effort warm-up; failures surface on the next run()/call().
+      void this.#container.ensure().catch(() => {});
     }
     return this;
   }

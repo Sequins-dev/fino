@@ -31,20 +31,22 @@ describe('ClusterOrchestrator over the ClusterNode contract', () => {
     const cluster = new ClusterOrchestrator((): ClusterNode => {
       inner = new NodeOrchestrator({ reactorCount: 1, capacity: 2 });
       return {
-        start: () => inner.start(),
+        start: async () => inner.start(),
         admissionCapacity: () => inner.admissionCapacity(),
         allocateRealm: async (spec) => {
+          // Simulated network hop before the real (async) local admission.
           await new Promise((resolve) => setTimeout(resolve, 5));
           return inner.allocateRealm(spec);
         },
         whenReleased: (workloadId) => inner.whenReleased(workloadId),
         revoke: (workloadId, reason) => inner.revoke(workloadId, reason),
-        shutdown: () => inner.shutdown()
+        shutdown: async () => {
+          await inner.shutdown();
+        }
       };
     });
-    const placed = cluster.allocateRealm({ entryPath: worker, rulesJson: rules });
-    t.ok(placed instanceof Promise, 'asynchronous admission surfaces as a promise');
-    const allocation = await placed!;
+    const allocation = (await cluster.allocateRealm({ entryPath: worker, rulesJson: rules }))!;
+    t.ok(allocation !== null, 'the asynchronously admitting node placed the realm');
     const port = new ThreadPort(allocation.portWakeFd, allocation.portHandle);
     try {
       const result = await call(port, 1);
@@ -57,17 +59,16 @@ describe('ClusterOrchestrator over the ClusterNode contract', () => {
     }
   });
 
-  it('rejects asynchronous admission that resolves to exhausted capacity', async (t) => {
+  it('resolves null for exhausted capacity and Realm rejects on it', async (t) => {
     const cluster = new ClusterOrchestrator((): ClusterNode => ({
-      start: () => {},
+      start: async () => {},
       admissionCapacity: () => 0,
       allocateRealm: async () => null,
       whenReleased: () => Promise.resolve('released'),
       revoke: () => {},
-      shutdown: () => {}
+      shutdown: async () => {}
     }));
-    const placed = cluster.allocateRealm({ entryPath: worker, rulesJson: rules });
-    t.ok(placed instanceof Promise, 'the capacity answer is asynchronous');
-    await t.rejects(async () => { await placed; }, /capacity is exhausted/, 'promise-of-null becomes a capacity rejection');
+    const placed = await cluster.allocateRealm({ entryPath: worker, rulesJson: rules });
+    t.equal(placed, null, 'the node contract reports capacity as a null resolution');
   });
 });

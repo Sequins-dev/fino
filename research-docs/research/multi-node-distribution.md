@@ -68,11 +68,13 @@ class, a cluster port type, or another realm-driving loop.
   allocateRealm, whenReleased, revoke, shutdown. `NodeOrchestrator` satisfies
   it in-process; the remote implementation satisfies the same methods as
   JSON-RPC over a per-peer control channel on the QUIC mesh, so local and
-  remote nodes are interacted with uniformly. Admission is async-capable end
-  to end (`allocateRealm` may return a promise, and the whole consumer chain
-  down through `Realm` already tolerates it); a remote allocation will also
-  need a transport-neutral port reference in place of in-process transit
-  handles when the network port lands.
+  remote nodes are interacted with uniformly. Every contract method that can
+  involve a peer is ALWAYS asynchronous — never sometimes-sync — and the
+  whole consumer chain down through `Realm` is promise-shaped end to end
+  (capacity exhaustion resolves `null` at the node contract and becomes a
+  rejection at the realm layer). A remote allocation will also need a
+  transport-neutral port reference in place of in-process transit handles
+  when the network port lands.
 
 The former `SPAWN`, `SPAWN_ACK`, `PORT_MSG`, `REALM_EXIT`, `ClusterPort`, and
 `RealmRegistry` prototype has been removed. It bypassed node admission, called

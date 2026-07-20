@@ -210,7 +210,7 @@ export class NodeOrchestrator {
   }
 
   /** Boot the native reactor threads and start runaway containment. Idempotent. */
-  start(): void {
+  async start(): Promise<void> {
     if (this.#closed) throw new Error('NodeOrchestrator is one-shot and has been shut down');
     if (this.#started) return;
     this.#started = true;
@@ -461,13 +461,13 @@ export class NodeOrchestrator {
     if (!existing) this.#provisionBatchReactor();
   }
 
-  allocateRealm(spec: RealmWorkloadSpec): {
+  async allocateRealm(spec: RealmWorkloadSpec): Promise<{
     workloadId: RealmId;
     portHandle: number;
     portWakeFd: number;
     allocationPortHandle: number;
     allocationPortWakeFd: number;
-  } | null {
+  } | null> {
     this.#ensureBatchReactorFor(spec);
     let record;
     try {
