@@ -157,13 +157,10 @@ fn run_native_loop(
 
     let mut flush_ports_fn = None;
     if let Ok(hooks) = v8::Local::<v8::Object>::try_from(args.get(2)) {
-        let hook = |scope: &mut v8::HandleScope, name: &str| {
-            v8::String::new(scope, name)
-                .and_then(|k| hooks.get(scope, k.into()))
-                .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
-                .map(|f| v8::Global::new(scope, f))
-        };
-        flush_ports_fn = hook(scope, "flushPorts");
+        flush_ports_fn = v8::String::new(scope, "flushPorts")
+            .and_then(|k| hooks.get(scope, k.into()))
+            .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+            .map(|f| v8::Global::new(scope, f));
     }
 
     let state_rc = get_state(scope);

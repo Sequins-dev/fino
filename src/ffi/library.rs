@@ -71,13 +71,13 @@ impl FfiSymbol {
             }
         }
 
-        if let Some(n) = variadic {
-            if n >= param_types.len() {
-                return Err(format!(
-                    "'variadic' count ({n}) must be less than total param count ({})",
-                    param_types.len()
-                ));
-            }
+        if let Some(n) = variadic
+            && n >= param_types.len()
+        {
+            return Err(format!(
+                "'variadic' count ({n}) must be less than total param count ({})",
+                param_types.len()
+            ));
         }
 
         let ffi_params: Vec<_> = param_types.iter().map(|t| t.to_ffi_type()).collect();

@@ -1,13 +1,13 @@
 //! `internal:async-runtime` synthetic V8 module.
 //!
 //! Exports:
-//! - `wakeFd: number`    — read end of the per-isolate self-pipe. JS registers
-//!                          this with `loop.readable(fd)` so kqueue/io_uring
-//!                          wakes immediately when async FFI work completes.
+//! - `wakeFd: number` — read end of the per-isolate self-pipe. JS registers
+//!   this with `loop.readable(fd)` so the reactor wakes immediately when
+//!   async FFI work completes.
 //! - `drainWakes(): void` — read all pending bytes from the pipe and tell the
-//!                          Rust layer to drain async FFI completions on the
-//!                          next `pump_and_checkpoint`. Called by JS after
-//!                          `loop.readable(wakeFd)` resolves.
+//!   Rust layer to drain async FFI completions on the next
+//!   `pump_and_checkpoint`. Called by JS after `loop.readable(wakeFd)`
+//!   resolves.
 
 use ::v8;
 

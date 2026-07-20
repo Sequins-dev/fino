@@ -134,7 +134,7 @@ fn set_json_result(
                 throw_error(scope, &format!("{operation}: failed to materialize result"));
                 return;
             };
-            rv.set(value.into());
+            rv.set(value);
         }
     }
 }
@@ -321,7 +321,7 @@ fn parse_source(source: &str, options: &ParseOptions) -> Result<String, String> 
     let errors = ret
         .errors
         .iter()
-        .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
+        .map(|error| diagnostic_result(source, "parse", error.message.as_ref(), None, "error"))
         .collect::<Vec<_>>();
     let result = ParseResult {
         ok: errors.is_empty() && !ret.panicked,
@@ -377,17 +377,16 @@ fn escape_invalid_json_hex_escapes(input: &str) -> String {
                 i += 2;
                 continue;
             }
-            if next == b'u' && i + 5 < bytes.len() {
-                if let Some(code) = hex_escape_code(&bytes[i + 2..i + 6]) {
-                    if (0xD800..=0xDFFF).contains(&code)
-                        && !is_valid_surrogate_pair_escape(bytes, i)
-                    {
-                        out.push_str("\\\\u");
-                        out.push_str(&input[i + 2..i + 6]);
-                        i += 6;
-                        continue;
-                    }
-                }
+            if next == b'u'
+                && i + 5 < bytes.len()
+                && let Some(code) = hex_escape_code(&bytes[i + 2..i + 6])
+                && (0xD800..=0xDFFF).contains(&code)
+                && !is_valid_surrogate_pair_escape(bytes, i)
+            {
+                out.push_str("\\\\u");
+                out.push_str(&input[i + 2..i + 6]);
+                i += 6;
+                continue;
             }
             out.push('\\');
             out.push(next as char);
@@ -448,8 +447,8 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
                 map: stripped.map,
                 errors: Vec::new(),
             };
-            return serde_json::to_string(&result)
-                .map_err(|err| format!("failed to serialize transpile result: {err}"));
+            serde_json::to_string(&result)
+                .map_err(|err| format!("failed to serialize transpile result: {err}"))
         }
         Err(message) => {
             let result = TranspileResult {
@@ -464,8 +463,8 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
                     "error",
                 )],
             };
-            return serde_json::to_string(&result)
-                .map_err(|err| format!("failed to serialize transpile result: {err}"));
+            serde_json::to_string(&result)
+                .map_err(|err| format!("failed to serialize transpile result: {err}"))
         }
     }
 }
@@ -532,7 +531,7 @@ fn format_source(source: &str, options: &ParseOptions) -> Result<String, String>
                 .errors
                 .iter()
                 .map(|error| {
-                    diagnostic_result(source, "parse", &error.message.to_string(), None, "error")
+                    diagnostic_result(source, "parse", error.message.as_ref(), None, "error")
                 })
                 .collect(),
         };
@@ -565,7 +564,7 @@ fn lint_source(source: &str, options: &ParseOptions) -> Result<String, String> {
     let mut diagnostics: Vec<DiagnosticResult> = ret
         .errors
         .iter()
-        .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
+        .map(|error| diagnostic_result(source, "parse", error.message.as_ref(), None, "error"))
         .collect();
 
     if ret.errors.is_empty() && !ret.panicked {
@@ -602,10 +601,10 @@ fn resolve_source_type(options: &ParseOptions) -> SourceType {
             _ => {}
         }
     }
-    if let Some(filename) = options.filename.as_deref() {
-        if let Ok(source_type) = SourceType::from_path(Path::new(filename)) {
-            return source_type;
-        }
+    if let Some(filename) = options.filename.as_deref()
+        && let Ok(source_type) = SourceType::from_path(Path::new(filename))
+    {
+        return source_type;
     }
     SourceType::ts()
 }

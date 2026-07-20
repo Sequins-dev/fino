@@ -1318,7 +1318,7 @@ fn tla_fulfill_callback(
         let mut st = state_rc.borrow_mut();
         let entry = st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take());
         // Trim trailing None slots to prevent unbounded Vec growth.
-        while st.tla_resolvers.last().map_or(false, |e| e.is_none()) {
+        while st.tla_resolvers.last().is_some_and(|e| e.is_none()) {
             st.tla_resolvers.pop();
         }
         entry
@@ -1342,7 +1342,7 @@ fn tla_reject_callback(
     let entry = {
         let mut st = state_rc.borrow_mut();
         let entry = st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take());
-        while st.tla_resolvers.last().map_or(false, |e| e.is_none()) {
+        while st.tla_resolvers.last().is_some_and(|e| e.is_none()) {
             st.tla_resolvers.pop();
         }
         entry
@@ -1527,7 +1527,7 @@ fn get_or_load_builtin_inner<'s>(
         let st = state_rc.borrow();
         let d = resolve_directive(&st.import_rules, from, spec).cloned();
         if matches!(d, Some(ImportDirective::Block)) {
-            let is_builtin_from = from.map_or(false, |f| {
+            let is_builtin_from = from.is_some_and(|f| {
                 f.starts_with("fino:")
                     || f.starts_with("internal:")
                     || st.builtin_specifiers.values().any(|v| v == f)

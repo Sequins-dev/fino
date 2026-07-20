@@ -191,7 +191,7 @@ pub fn resolve_directive<'a>(
         let from_ok = rule
             .from
             .as_ref()
-            .map_or(true, |p| p.matches(from.unwrap_or("")));
+            .is_none_or(|p| p.matches(from.unwrap_or("")));
         if from_ok && rule.pattern.matches(spec) {
             last = Some(&rule.directive);
         }
@@ -461,6 +461,7 @@ impl FinoState {
     ///
     /// Fields that differ from `new_root` are taken as parameters; all
     /// module-cache and callback fields start empty/None.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_child(
         process_env: ProcessEnv,
         package_map_json: Option<String>,

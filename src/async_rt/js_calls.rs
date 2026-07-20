@@ -79,8 +79,11 @@ pub struct JsCallRequest {
     pub args: Vec<SendArg>,
     pub param_types: Vec<NativeType>,
     /// Filled by the V8 thread; the blocking thread waits on the condvar.
-    pub result_slot: Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>,
+    pub result_slot: ResultSlot,
 }
+
+/// Shared slot a blocking thread parks on until the V8 thread fills it.
+pub type ResultSlot = Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>;
 
 // ---------------------------------------------------------------------------
 // Thread-local callback table (V8 thread only)
@@ -245,10 +248,7 @@ fn call_local_callback_sync(
     Ok(local_to_call_result(tc, val))
 }
 
-fn fill_slot(
-    slot: &Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>,
-    result: Result<CallResult, String>,
-) {
+fn fill_slot(slot: &ResultSlot, result: Result<CallResult, String>) {
     let (lock, cvar) = slot.as_ref();
     *lock.lock().unwrap() = Some(result);
     cvar.notify_one();
@@ -389,20 +389,20 @@ fn local_to_call_result(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) 
         return CallResult::String(s.to_rust_string_lossy(scope));
     }
     // TypedArray / ArrayBuffer — copy bytes out.
-    if let Ok(ta) = v8::Local::<v8::TypedArray>::try_from(val) {
-        if let Some(buf) = ta.buffer(scope) {
-            let bs = buf.get_backing_store();
-            let offset = ta.byte_offset();
-            let len = ta.byte_length();
-            let mut bytes = vec![0u8; len];
-            if let Some(data) = bs.data() {
-                let src = unsafe {
-                    std::slice::from_raw_parts((data.as_ptr() as *const u8).add(offset), len)
-                };
-                bytes.copy_from_slice(src);
-            }
-            return CallResult::Bytes(bytes);
+    if let Ok(ta) = v8::Local::<v8::TypedArray>::try_from(val)
+        && let Some(buf) = ta.buffer(scope)
+    {
+        let bs = buf.get_backing_store();
+        let offset = ta.byte_offset();
+        let len = ta.byte_length();
+        let mut bytes = vec![0u8; len];
+        if let Some(data) = bs.data() {
+            let src = unsafe {
+                std::slice::from_raw_parts((data.as_ptr() as *const u8).add(offset), len)
+            };
+            bytes.copy_from_slice(src);
         }
+        return CallResult::Bytes(bytes);
     }
     if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(val) {
         let bs = ab.get_backing_store();

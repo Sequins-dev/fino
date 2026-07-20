@@ -75,7 +75,7 @@ impl ChannelImpl for InspectorChannel {
         // Resolve a pending evaluate() if the call_id matches.
         {
             let mut slot = self.pending_eval.borrow_mut();
-            if slot.as_ref().map_or(false, |e| e.call_id == call_id) {
+            if slot.as_ref().is_some_and(|e| e.call_id == call_id) {
                 let eval = slot.take().unwrap();
                 eval.pending_resolutions
                     .borrow_mut()
@@ -91,10 +91,11 @@ impl ChannelImpl for InspectorChannel {
     fn send_notification(&mut self, mut message: v8::UniquePtr<v8::inspector::StringBuffer>) {
         let json = message.as_mut().unwrap().string().to_string();
         // Capture context_id from Runtime.executionContextCreated notification.
-        if self.context_id.get() < 0 && json.contains("executionContextCreated") {
-            if let Some(id) = extract_context_id(&json) {
-                self.context_id.set(id);
-            }
+        if self.context_id.get() < 0
+            && json.contains("executionContextCreated")
+            && let Some(id) = extract_context_id(&json)
+        {
+            self.context_id.set(id);
         }
         self.buffered_messages.borrow_mut().push(json);
     }
@@ -418,14 +419,14 @@ fn evaluate_cb(
             let name_val = obj.get(scope, name_key.into());
             let return_by_value_val = obj.get(scope, return_by_value_key.into());
 
-            let repl = repl_val.map_or(true, |v| {
+            let repl = repl_val.is_none_or(|v| {
                 if v.is_boolean() {
                     v.boolean_value(scope)
                 } else {
                     true
                 }
             });
-            let await_p = await_val.map_or(true, |v| {
+            let await_p = await_val.is_none_or(|v| {
                 if v.is_boolean() {
                     v.boolean_value(scope)
                 } else {
@@ -436,7 +437,7 @@ fn evaluate_cb(
                 .and_then(|v| v.to_string(scope))
                 .map(|s| s.to_rust_string_lossy(scope))
                 .unwrap_or_default();
-            let return_by_value = return_by_value_val.map_or(false, |v| {
+            let return_by_value = return_by_value_val.is_some_and(|v| {
                 if v.is_boolean() {
                     v.boolean_value(scope)
                 } else {

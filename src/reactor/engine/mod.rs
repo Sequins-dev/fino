@@ -451,8 +451,8 @@ mod imp {
     }
 
     impl ForwardRoute {
-        fn send(&self, message: Control) -> Result<(), Control> {
-            self.tx.send(message).map_err(|error| error.0)?;
+        fn send(&self, message: Control) -> Result<(), Box<Control>> {
+            self.tx.send(message).map_err(|error| Box::new(error.0))?;
             self.notify.post(POST_CONTROL, 0);
             Ok(())
         }
@@ -1509,7 +1509,9 @@ mod imp {
                     operations,
                 },
             };
-            if let Err(Control::Attach { workload }) = route.send(attach) {
+            if let Err(returned) = route.send(attach)
+                && let Control::Attach { workload } = *returned
+            {
                 let TransferWorkload {
                     workload,
                     operations,
@@ -2178,7 +2180,7 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
                     reactor: cherenkov::Reactor,
                 },
                 Recovery {
-                    workset: imp::RecoveryWorkset,
+                    workset: Box<imp::RecoveryWorkset>,
                     reactor: cherenkov::Reactor,
                 },
             }
@@ -2195,7 +2197,9 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
                 let worker = std::thread::Builder::new()
                     .name("reactor".to_string())
                     .spawn(move || match start {
-                        WorkerStart::Recovery { workset, reactor } => imp::resume(workset, reactor),
+                        WorkerStart::Recovery { workset, reactor } => {
+                            imp::resume(*workset, reactor)
+                        }
                         WorkerStart::Fresh {
                             config,
                             control_rx,
@@ -2222,7 +2226,10 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
                             break;
                         };
                         supervisor_control_notify.replace(reactor.notifier());
-                        start = WorkerStart::Recovery { workset, reactor };
+                        start = WorkerStart::Recovery {
+                            workset: Box::new(workset),
+                            reactor,
+                        };
                     }
                     Ok(None) | Err(_) => break,
                 }

@@ -92,8 +92,7 @@ unsafe extern "C" fn trampoline(
         .collect();
 
     // Create a condvar slot for the result.
-    let slot: Arc<(Mutex<Option<Result<js_calls::CallResult, String>>>, Condvar)> =
-        Arc::new((Mutex::new(None), Condvar::new()));
+    let slot: js_calls::ResultSlot = Arc::new((Mutex::new(None), Condvar::new()));
 
     let request = JsCallRequest {
         callback_id: data.callback_id,
@@ -182,7 +181,7 @@ pub fn new_callback(
     // Build the libffi CIF.
     let ffi_params: Vec<_> = param_types.iter().map(|t| t.to_ffi_type()).collect();
     let ffi_result = result_type.to_ffi_type();
-    let cif = Cif::new(ffi_params.into_iter(), ffi_result);
+    let cif = Cif::new(ffi_params, ffi_result);
 
     // Leak the userdata so the closure can hold a `'static` reference.
     let context = scope.get_current_context();

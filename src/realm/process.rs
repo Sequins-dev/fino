@@ -436,15 +436,10 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
     let bridge_tx = bridge_half.tx.clone();
     let bridge_wake_write = bridge_half.partner_wake_write_fd;
     std::thread::spawn(move || {
-        loop {
-            match read_message(socket_fd) {
-                Ok(msg) => {
-                    let _ = bridge_tx.send(msg);
-                    let b = [1u8];
-                    unsafe { libc::write(bridge_wake_write, b.as_ptr() as _, 1) };
-                }
-                Err(_) => break,
-            }
+        while let Ok(msg) = read_message(socket_fd) {
+            let _ = bridge_tx.send(msg);
+            let b = [1u8];
+            unsafe { libc::write(bridge_wake_write, b.as_ptr() as _, 1) };
         }
     });
 
