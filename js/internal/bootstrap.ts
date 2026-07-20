@@ -65,7 +65,7 @@ import { env } from '../process.ts';
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPortInfo, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, debugMark } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPortInfo, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
 import { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask, Performance, performance } from '../globals/time.ts';
 import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, CryptoKey, crypto, cryptoAvailable, tlsAvailable, fetch, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, _flushPorts, BroadcastChannel } from '../globals/global.ts';
@@ -502,9 +502,7 @@ if (_childEntry) {
   function _startChildShutdown() {
     if (_shutdownStarted) return;
     _shutdownStarted = true;
-    (debugMark as (m: string) => void)('child shutdown started');
     Promise.resolve(runShutdownHooks()).then(function _childShutdownOk() {
-      (debugMark as (m: string) => void)('child shutdown hooks done');
       _shutdownDone = true;
     }, function _childShutdownErr(err: unknown) {
       // Root-CLI parity: a shutdown-hook failure fails the run, but never

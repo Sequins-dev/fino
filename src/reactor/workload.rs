@@ -545,6 +545,7 @@ pub(crate) fn drop_parked(mut workload: ParkedWorkload) {
         unsafe {
             workload.isolate.enter();
         }
+        dispose_parked_diagnostics(&mut workload);
         let locker = locker.neutralize_for_isolate_dispose();
         drop(workload);
         unsafe {
@@ -554,8 +555,27 @@ pub(crate) fn drop_parked(mut workload: ParkedWorkload) {
         unsafe {
             workload.isolate.enter();
         }
+        dispose_parked_diagnostics(&mut workload);
         drop(workload);
     }
+}
+
+/// Dispose a released workload's profiler/inspector before its isolate dies.
+/// A realm revoked while profiling (or holding an inspector session) must not
+/// leak the C++ object — or dispose its isolate underneath one.
+fn dispose_parked_diagnostics(workload: &mut ParkedWorkload) {
+    let has = {
+        let state = workload._state.borrow();
+        state.cpu_profiler.is_some() || state.inspector_state.is_some()
+    };
+    if !has {
+        return;
+    }
+    let state = Rc::clone(&workload._state);
+    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
+    let context = v8::Local::new(isolate_scope, &workload.context);
+    let _context_scope = v8::ContextScope::new(isolate_scope, context);
+    crate::realm::child::dispose_realm_diagnostics(&state);
 }
 
 /// `sweepBudgets()` — terminate every workload whose armed pump deadline has

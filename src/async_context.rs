@@ -14,10 +14,6 @@ use ::v8;
 
 use crate::state::{get_state, root_queue_ptr};
 
-fn loop_debug_enabled() -> bool {
-    std::env::var_os("FINO_LOOP_DEBUG").is_some()
-}
-
 // ---------------------------------------------------------------------------
 // internal:async-context synthetic module
 // ---------------------------------------------------------------------------
@@ -141,9 +137,6 @@ fn schedule_sync(
     let fn_global = v8::Global::new(scope, fn_obj);
     let resolver_global = v8::Global::new(scope, resolver);
     st.sync_calls.push_back((fn_global, resolver_global));
-    if loop_debug_enabled() {
-        eprintln!("[async-context] scheduleSync queued");
-    }
 
     rv.set(promise.into());
 }
@@ -180,7 +173,4 @@ fn run_native_loop(
         flush_ports_fn,
     });
     st.on_done_fn = on_done.map(|f| v8::Global::new(scope, f));
-    if loop_debug_enabled() {
-        eprintln!("[async-context] runNativeLoop registered");
-    }
 }

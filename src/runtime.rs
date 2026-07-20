@@ -84,13 +84,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
                     pump_and_checkpoint(scope);
                 }
 
-                if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
-                    unsafe { crate::profiler::dispose_profiler(ptr) };
-                }
-
-                if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
-                    unsafe { crate::inspector_module::dispose_inspector(ptr) };
-                }
+                crate::realm::child::dispose_realm_diagnostics(&state_rc);
 
                 // Check for a deferred module evaluation error.
                 let main_module = v8::Local::new(scope, &module);
@@ -281,14 +275,6 @@ fn call_hook(scope: &mut v8::HandleScope, g: &v8::Global<v8::Function>) -> Optio
         // the isolate clears once the stack unwinds, but the engine's pump
         // must classify this slice as Terminated.
         crate::state::get_state(tc).borrow_mut().saw_termination = true;
-    }
-    if out.is_none() && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-        let msg = tc
-            .exception()
-            .and_then(|e| e.to_string(tc))
-            .map(|s| s.to_rust_string_lossy(tc))
-            .unwrap_or_default();
-        eprintln!("[native-drive] policy hook threw: {msg}");
     }
     out
 }

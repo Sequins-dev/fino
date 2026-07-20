@@ -1,5 +1,3 @@
-use v8;
-
 use crate::state::get_state;
 
 /// Build the `internal:process` synthetic module.

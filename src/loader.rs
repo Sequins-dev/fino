@@ -4,7 +4,6 @@
 use std::path::{Component, Path, PathBuf};
 
 use oxc_sourcemap::SourceMap;
-use v8;
 
 use crate::{
     async_context, async_runtime_module, ffi, inspector_module, platform, profiler, realm,
@@ -1438,21 +1437,8 @@ fn settle_dynamic_import<'s, 'tc>(
     resolver: v8::Local<'s, v8::PromiseResolver>,
 ) {
     if let Some(m) = module {
-        if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-            eprintln!("[loader] dyn-import settle: status={:?}", m.get_status());
-        }
         match instantiate_and_evaluate(tc, m) {
             Some(eval_result) if !tc.has_caught() => {
-                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                    eprintln!(
-                        "[loader] dyn-import evaluated: status={:?} is_promise={} promise_state={:?}",
-                        m.get_status(),
-                        eval_result.is_promise(),
-                        v8::Local::<v8::Promise>::try_from(eval_result)
-                            .ok()
-                            .map(|p| p.state()),
-                    );
-                }
                 let namespace = m.get_module_namespace();
                 if let Ok(eval_promise) = v8::Local::<v8::Promise>::try_from(eval_result) {
                     // TLA: defer resolution until the eval Promise settles.
@@ -1525,16 +1511,7 @@ fn get_or_load_builtin_inner<'s>(
         st.builtin_cache.get(spec).map(|m| v8::Local::new(scope, m))
     };
     if let Some(m) = cached {
-        if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-            eprintln!(
-                "[loader] cache hit {spec} from={from:?} status={:?}",
-                m.get_status()
-            );
-        }
         return Some(m);
-    }
-    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-        eprintln!("[loader] load builtin {spec} from={from:?}");
     }
 
     // 2. Evaluate the import rule list (last-match-wins).

@@ -10,7 +10,6 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::{GetSpan, SourceType};
 use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
 use serde::Serialize;
-use v8;
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["parse", "transpile", "format", "lint"]

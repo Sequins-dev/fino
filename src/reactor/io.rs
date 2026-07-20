@@ -261,6 +261,9 @@ impl RuntimeIo {
         drop(old);
         self.doomed.clear();
 
+        // Writes re-arm through `arm_write_op`, which needs `&mut self`;
+        // collect them while the records are borrowed.
+        let mut writes: Vec<(u64, i32, u64, u32, u32)> = Vec::new();
         for (&id, record) in &self.records {
             match record {
                 Record::Read {
@@ -294,17 +297,7 @@ impl RuntimeIo {
                     len,
                     done,
                     ..
-                } => unsafe {
-                    self.reactor.submit(
-                        id,
-                        Op::Write {
-                            src: Source::fd(*fd),
-                            buf: (*base + *done as u64) as *const u8,
-                            len: *len - *done,
-                            off: CURRENT_POS,
-                        },
-                    );
-                },
+                } => writes.push((id, *fd, *base, *len, *done)),
                 Record::Timer { deadline, .. } => self.reactor.submit_timeout(
                     id,
                     deadline
@@ -312,6 +305,27 @@ impl RuntimeIo {
                         .as_millis() as u64,
                 ),
             }
+        }
+        for (id, fd, base, len, done) in writes {
+            self.arm_write_op(id, fd, base, len, done);
+        }
+    }
+
+    /// Arm (or re-arm) the remaining bytes of a tracked write.
+    ///
+    /// SAFETY: the caller's record retains the backing store covering
+    /// `base..base+len` until the completion is harvested.
+    fn arm_write_op(&mut self, id: u64, fd: i32, base: u64, len: u32, done: u32) {
+        unsafe {
+            self.reactor.submit(
+                id,
+                Op::Write {
+                    src: Source::fd(fd),
+                    buf: (base + done as u64) as *const u8,
+                    len: len - done,
+                    off: CURRENT_POS,
+                },
+            );
         }
     }
 
@@ -390,17 +404,7 @@ impl RuntimeIo {
         let base = base as u64;
         let len = len as u32;
         let done = done as u32;
-        unsafe {
-            self.reactor.submit(
-                id,
-                Op::Write {
-                    src: Source::fd(fd),
-                    buf: (base + done as u64) as *const u8,
-                    len: len - done,
-                    off: CURRENT_POS,
-                },
-            );
-        }
+        self.arm_write_op(id, fd, base, len, done);
         self.writes.insert(fd, id);
         self.records.insert(
             id,
@@ -584,17 +588,7 @@ impl RuntimeIo {
         done: u32,
     ) {
         let id = self.next_id();
-        unsafe {
-            self.reactor.submit(
-                id,
-                Op::Write {
-                    src: Source::fd(fd),
-                    buf: (base + done as u64) as *const u8,
-                    len: len - done,
-                    off: CURRENT_POS,
-                },
-            );
-        }
+        self.arm_write_op(id, fd, base, len, done);
         self.writes.insert(fd, id);
         self.records.insert(
             id,

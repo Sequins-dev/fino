@@ -330,21 +330,13 @@ fn native_transit_send(
                 let _ = half.tx.send(msg);
                 half.partner_wake_write_fd
             }
-            None => {
-                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                    eprintln!("[transit] send h{handle}: NO HALF");
-                }
-                return;
-            }
+            None => return,
         }
     };
 
     let byte: [u8; 1] = [1];
     // SAFETY: partner_wake_write is a valid open pipe fd.
-    let w = unsafe { libc::write(partner_wake_write, byte.as_ptr() as *const _, 1) };
-    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-        eprintln!("[transit] send h{handle} wake_write={w} fd={partner_wake_write}");
-    }
+    unsafe { libc::write(partner_wake_write, byte.as_ptr() as *const _, 1) };
 }
 
 // ---------------------------------------------------------------------------
@@ -390,9 +382,6 @@ fn native_transit_recv(
         }
     };
 
-    if std::env::var_os("FINO_LOOP_DEBUG").is_some() && !messages.is_empty() {
-        eprintln!("[transit] recv h{handle} n={}", messages.len());
-    }
     rv.set(build_message_array(scope, messages).into());
 }
 

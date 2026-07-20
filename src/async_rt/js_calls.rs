@@ -57,8 +57,9 @@ pub enum CallResult {
     I64(i64),
     U64(u64),
     F64(f64),
-    #[allow(dead_code)]
-    String(String),
+    // The payload is captured for symmetry with the other reprs, but string
+    // returns currently coerce to 0 at the FFI word boundary.
+    String(#[allow(dead_code)] String),
     Bytes(Vec<u8>),
 }
 

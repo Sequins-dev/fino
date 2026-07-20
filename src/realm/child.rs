@@ -137,13 +137,7 @@ pub fn run_child_isolate(config: RealmExecutionConfig) -> Result<(), String> {
                     pump_and_checkpoint(scope);
                 }
 
-                if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
-                    unsafe { crate::profiler::dispose_profiler(ptr) };
-                }
-
-                if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
-                    unsafe { crate::inspector_module::dispose_inspector(ptr) };
-                }
+                dispose_realm_diagnostics(&state_rc);
 
                 // Drop this realm's channel half before the isolate is
                 // disposed: removal closes its pipe ends and hangs up the
@@ -196,6 +190,19 @@ pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
         if !progress {
             break;
         }
+    }
+}
+
+/// Dispose the realm's thread-affine diagnostics (CPU profiler, inspector).
+/// Must run with the realm's isolate entered, before it is disposed — a
+/// leaked profiler/inspector is a C++ object that must not outlive its
+/// isolate.
+pub(crate) fn dispose_realm_diagnostics(state_rc: &Rc<RefCell<FinoState>>) {
+    if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
+        unsafe { crate::profiler::dispose_profiler(ptr) };
+    }
+    if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
+        unsafe { crate::inspector_module::dispose_inspector(ptr) };
     }
 }
 

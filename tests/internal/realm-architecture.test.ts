@@ -48,7 +48,7 @@ describe('reactor-only Realm architecture', () => {
     const root = cwd();
     const orchestrator = await readTextFile(`${root}/js/internal/orchestrator/index.ts`);
     const nodeOrchestrator = await readTextFile(`${root}/js/internal/orchestrator/node-orchestrator.ts`);
-    const engine = await readTextFile(`${root}/src/reactor/engine.rs`);
+    const engine = await readTextFile(`${root}/src/reactor/engine/mod.rs`);
     const bootstrap = await readTextFile(`${root}/js/internal/bootstrap.ts`);
     const realm = await readTextFile(`${root}/js/realm/index.ts`);
     t.ok(!orchestrator.includes('SchedulerNode'), 'node orchestration is not named as a scheduler');

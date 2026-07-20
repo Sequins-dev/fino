@@ -23,7 +23,6 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getReplMode",
         "getRealmData",
         "getRealmBootstrapData",
-        "debugMark",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -59,34 +58,8 @@ fn eval_steps<'a>(
     set_fn!("getReplMode", get_repl_mode);
     set_fn!("getRealmData", get_realm_data);
     set_fn!("getRealmBootstrapData", get_realm_bootstrap_data);
-    set_fn!("debugMark", debug_mark);
 
     Some(v8::undefined(scope).into())
-}
-
-/// Timestamped stderr marker, emitted only under FINO_LOOP_DEBUG — for
-/// tracing runtime-internal phases where console output is captured or
-/// buffered (e.g. inside test-harness runs).
-fn debug_mark(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    if std::env::var_os("FINO_LOOP_DEBUG").is_none() {
-        return;
-    }
-    let msg = args
-        .get(0)
-        .to_string(scope)
-        .map(|s| s.to_rust_string_lossy(scope))
-        .unwrap_or_default();
-    eprintln!(
-        "[mark] {msg} at {:?}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
 }
 
 /// Returns the entry module path stored in the current context's FinoState,
@@ -263,15 +236,6 @@ fn request_reload(
     let mut st = state_rc.borrow_mut();
     st.reload_requested = true;
     st.terminated = true;
-    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-        eprintln!(
-            "[reload] requestReload at {:?}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        );
-    }
     // For process realm children: set the process-wide flag so run_process_child
     // exits with code 75.  This is a no-op in the parent process.
     crate::realm::process::CHILD_RELOAD_REQUESTED.store(true, Ordering::Release);

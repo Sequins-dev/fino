@@ -4,7 +4,6 @@ pub use crate::async_rt::bridge::PendingResolution;
 
 use oxc_sourcemap::{SourceMap, Token};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use v8;
 
 pub struct SourceMapCache {
     pub map: SourceMap,
@@ -367,7 +366,6 @@ pub struct FinoState {
     // ---------------------------------------------------------------------------
     /// Live process realm handles indexed by the JS handle returned from
     /// `createProcessContext`.
-    #[allow(dead_code)]
     pub process_contexts: Vec<Option<crate::realm::process::ProcessRealmHandle>>,
 
     /// Entry module path for child Realms. Set by `createContext` before
@@ -444,41 +442,19 @@ impl FinoState {
         root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
         import_rules: Vec<ImportRule>,
     ) -> Self {
-        Self {
+        Self::new_child(
             process_env,
             package_map_json,
             root_queue,
             import_rules,
-            builtin_cache: HashMap::new(),
-            fs_cache: HashMap::new(),
-            builtin_specifiers: HashMap::new(),
-            module_paths: HashMap::new(),
-            source_maps: HashMap::new(),
-            resolve_fn: None,
-            init_meta_fn: None,
-            transpile_fn: None,
-            on_done_fn: None,
-            native_loop: None,
-            sync_calls: std::collections::VecDeque::new(),
-            pending_resolutions: Rc::new(RefCell::new(Vec::new())),
-            tla_resolvers: Vec::new(),
-            cpu_profiler: None,
-            entry_path: None,
-            terminated: false,
-            reload_requested: false,
-            watch_mode: false,
-            repl_mode: false,
-            realm_data: None,
-            realm_bootstrap_data: None,
-            entry_error: None,
-            inspector_state: None,
-            port_transit_handle: None,
-            port_wake_read_fd: None,
-            allocation_transit_handle: None,
-            allocation_wake_read_fd: None,
-            saw_termination: false,
-            process_contexts: Vec::new(),
-        }
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+        )
     }
 
     /// Create state for a reactor-hosted or process-isolated realm.
