@@ -163,16 +163,14 @@ impl ParkedWorkload {
         self.moved_between_threads = true;
     }
 
-    /// This workload's background-wake sink (present while parked; taken only
-    /// while the workload is active).
-    pub(crate) fn wake_sink(&self) -> Option<crate::async_rt::WakeSink> {
-        self.async_state.as_ref().map(|s| s.wake_sink.clone())
+    /// The realm's entry module (main.mjs for the root, bootstrap.mjs for
+    /// children), for post-release module-status checks.
+    pub(crate) fn module_global(&self) -> v8::Global<v8::Module> {
+        self._module.clone()
     }
 
     /// Run `f` with a context-entered handle scope on this workload's isolate.
     /// The workload must be active (entered) — see `activate_realm_native`.
-    // The allow covers the one-commit gap until runtime::run adopts run_local.
-    #[allow(dead_code)]
     pub(crate) fn enter_scope<R>(&mut self, f: impl FnOnce(&mut v8::HandleScope) -> R) -> R {
         let isolate_scope = &mut v8::HandleScope::new(&mut self.isolate);
         let context = v8::Local::new(isolate_scope, &self.context);
@@ -318,6 +316,61 @@ pub(crate) fn setup_realm_workload(
         Ok(realm) => realm,
         Err(error) => {
             crate::async_rt::swap_state(saved_state);
+            unregister_budget_target(budget_token);
+            return Err(error);
+        }
+    };
+
+    let async_state = crate::async_rt::swap_state(saved_state);
+
+    let mut workload = ParkedWorkload {
+        isolate,
+        context: realm.context,
+        async_state,
+        thread_handle,
+        budget_token,
+        _state: realm.state,
+        _module: realm.module,
+        moved_between_threads: false,
+    };
+    unsafe {
+        workload.isolate.exit();
+    }
+    Ok(workload)
+}
+
+/// Construct the ROOT workload: the process's CLI realm (`internal:main.mjs`,
+/// root state, no port channels) parked for a local reactor to drive. The
+/// root differs from child realms in isolate policy only: `Atomics.wait` is
+/// forbidden (this is the process's primary thread) and there is no
+/// near-heap-limit containment — the root's cap is the process's.
+pub(crate) fn setup_root_workload(
+    process_env: crate::state::ProcessEnv,
+) -> Result<ParkedWorkload, String> {
+    crate::runtime::init_v8();
+
+    let mut params = v8::CreateParams::default();
+    params = params.heap_limits(0, DEFAULT_HEAP_LIMIT_BYTES);
+    params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
+
+    let mut isolate = v8::Isolate::new(params);
+    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+    isolate.set_allow_atomics_wait(false);
+    isolate.set_host_import_module_dynamically_callback(crate::loader::dynamic_import_callback);
+    isolate
+        .set_host_initialize_import_meta_object_callback(crate::loader::init_import_meta_callback);
+
+    let thread_handle = isolate.thread_safe_handle();
+    let budget_token = register_budget_target(thread_handle.clone());
+
+    let async_state = crate::async_rt::new_state();
+    let saved_state = crate::async_rt::swap_state(Some(async_state));
+
+    let realm = match crate::runtime::bootstrap_root(&mut isolate, process_env) {
+        Ok(realm) => realm,
+        Err(error) => {
+            crate::async_rt::swap_state(saved_state);
+            unregister_budget_target(budget_token);
             return Err(error);
         }
     };
@@ -441,7 +494,11 @@ pub(crate) fn pump_realm_native(
     outcome
 }
 
-fn invoke_reactor_callback(scope: &mut v8::HandleScope, callback_id: usize, fflags: Option<u32>) {
+pub(crate) fn invoke_reactor_callback(
+    scope: &mut v8::HandleScope,
+    callback_id: usize,
+    fflags: Option<u32>,
+) {
     let callback = crate::async_rt::with_callback_table(|table| {
         table
             .get(callback_id)

@@ -250,6 +250,10 @@ pub(crate) enum EngineReg {
         pid: u32,
         resolver_id: usize,
     },
+    /// A persistent generic wake pipe: drain on readability and re-arm.
+    WakeSource {
+        fd: i32,
+    },
     AddVnode {
         fd: i32,
         path: std::path::PathBuf,
@@ -469,13 +473,22 @@ mod imp {
         VnodeNext {
             owner: u64,
             fd: i32,
+            /// The WatchId this op was armed on. Validated at delivery so a
+            /// stale in-flight event (or its re-arm) from a closed fd cannot
+            /// route to the fresh watch a reused fd number now keys.
+            watch: WatchId,
         },
         SignalNext {
             owner: u64,
             signo: i32,
+            watch: WatchId,
         },
         RePoll {
             owner: u64,
+        },
+        WakeSource {
+            owner: u64,
+            fd: i32,
         },
     }
 
@@ -492,11 +505,52 @@ mod imp {
         callback_id: usize,
     }
 
+    /// What an external-record completion delivers to its owner.
+    pub(super) enum ExternalDelivery {
+        ProcExit {
+            resolver_id: usize,
+        },
+        Callback {
+            callback_id: usize,
+            fflags: Option<u32>,
+        },
+        Repoll,
+        /// A wake pipe fired (and was drained + re-armed): nothing to
+        /// deliver, but the owner should re-check its queues.
+        Wake,
+    }
+
+    /// A completion harvested inside a workload's in-pump `tick()` that
+    /// belongs to another owner (or to the drive loop). The drive loop routes
+    /// these after the pump returns.
+    pub(super) enum Deferred {
+        /// A notifier post (wake or control poke).
+        Post {
+            user_data: u64,
+            res: i32,
+        },
+        Resolve {
+            owner: u64,
+            resolver_id: usize,
+            result: f64,
+        },
+        Event {
+            owner: u64,
+            event: crate::reactor::workload::ReactorEvent,
+        },
+        Runnable {
+            owner: u64,
+        },
+    }
+
     pub(super) struct EngineResources {
         io: crate::reactor::io::RuntimeIo,
         external: HashMap<u64, ExternalRecord>,
         vnodes: HashMap<(u64, i32), VnodeEntry>,
         signals: HashMap<(u64, i32), SignalEntry>,
+        /// Foreign completions harvested by an in-pump `tick()`; drained by
+        /// the drive loop between pumps.
+        deferred: Vec<Deferred>,
     }
 
     impl EngineResources {
@@ -584,6 +638,7 @@ mod imp {
                         },
                     );
                 }
+                EngineReg::WakeSource { fd } => self.arm_wake_source(owner_id, fd),
                 EngineReg::AddVnode {
                     fd,
                     path,
@@ -606,7 +661,7 @@ mod imp {
             let op = self.io.next_external_id();
             self.io.submit_watch_next(op, watch);
             self.external
-                .insert(op, ExternalRecord::VnodeNext { owner, fd });
+                .insert(op, ExternalRecord::VnodeNext { owner, fd, watch });
             self.vnodes.insert(
                 (owner, fd),
                 VnodeEntry {
@@ -633,8 +688,14 @@ mod imp {
             };
             let op = self.io.next_external_id();
             self.io.submit_watch_next(op, watch);
-            self.external
-                .insert(op, ExternalRecord::SignalNext { owner, signo });
+            self.external.insert(
+                op,
+                ExternalRecord::SignalNext {
+                    owner,
+                    signo,
+                    watch,
+                },
+            );
             self.signals.insert(
                 (owner, signo),
                 SignalEntry {
@@ -649,6 +710,131 @@ mod imp {
             if let Some(entry) = self.signals.remove(&(owner, signo)) {
                 let _ = self.io.remove_kernel_watch(entry.watch);
                 crate::async_rt::js_calls::unregister_callback(entry.callback_id);
+            }
+        }
+
+        fn arm_wake_source(&mut self, owner: u64, fd: i32) {
+            let op = self.io.next_external_id();
+            self.io.submit_external(
+                op,
+                cherenkov::Op::PollIn {
+                    src: cherenkov::Source::fd(fd),
+                },
+            );
+            self.external
+                .insert(op, ExternalRecord::WakeSource { owner, fd });
+        }
+
+        /// Route one `Dispatch::External` completion through its record:
+        /// tear down errored watches, re-arm surviving ones, and return what
+        /// (if anything) to deliver to which owner. Shared by the drive
+        /// loop's `on_completion` and the in-pump `engine_tick`.
+        pub(super) fn route_external(
+            &mut self,
+            user_data: u64,
+            res: i32,
+        ) -> Option<(u64, ExternalDelivery)> {
+            let record = self.external.remove(&user_data)?;
+            match record {
+                ExternalRecord::Proc {
+                    owner, resolver_id, ..
+                } => Some((owner, ExternalDelivery::ProcExit { resolver_id })),
+                ExternalRecord::VnodeNext { owner, fd, watch } => {
+                    if res == err::CANCELED || res == err::BUSY {
+                        return None;
+                    }
+                    // A reused fd number keys a FRESH watch: a stale
+                    // completion armed on the old watch must neither tear it
+                    // down nor deliver to it.
+                    let live = self
+                        .vnodes
+                        .get(&(owner, fd))
+                        .is_some_and(|entry| entry.watch == watch);
+                    if !live {
+                        return None;
+                    }
+                    if res < 0 {
+                        self.vnodes.remove(&(owner, fd));
+                        return None;
+                    }
+                    let entry = self.vnodes.get(&(owner, fd))?;
+                    let callback_id = entry.callback_id;
+                    let op = self.io.next_external_id();
+                    self.io.submit_watch_next(op, watch);
+                    self.external
+                        .insert(op, ExternalRecord::VnodeNext { owner, fd, watch });
+                    Some((
+                        owner,
+                        ExternalDelivery::Callback {
+                            callback_id,
+                            fflags: Some(super::super::imp::fs_to_note(res)),
+                        },
+                    ))
+                }
+                ExternalRecord::SignalNext {
+                    owner,
+                    signo,
+                    watch,
+                } => {
+                    let live = self
+                        .signals
+                        .get(&(owner, signo))
+                        .is_some_and(|entry| entry.watch == watch);
+                    if res < 0 {
+                        if live && res != err::CANCELED && res != err::BUSY {
+                            self.signals.remove(&(owner, signo));
+                        }
+                        return None;
+                    }
+                    if !live {
+                        return None;
+                    }
+                    let entry = self.signals.get(&(owner, signo))?;
+                    let callback_id = entry.callback_id;
+                    let op = self.io.next_external_id();
+                    self.io.submit_watch_next(op, watch);
+                    self.external.insert(
+                        op,
+                        ExternalRecord::SignalNext {
+                            owner,
+                            signo,
+                            watch,
+                        },
+                    );
+                    Some((
+                        owner,
+                        ExternalDelivery::Callback {
+                            callback_id,
+                            fflags: None,
+                        },
+                    ))
+                }
+                ExternalRecord::RePoll { owner } => Some((owner, ExternalDelivery::Repoll)),
+                ExternalRecord::WakeSource { owner, fd } => {
+                    if res < 0 {
+                        // Canceled or errored: drop the wake source.
+                        return None;
+                    }
+                    // Drain the pipe; EOF (write end closed) retires the
+                    // source — re-arming a drained-EOF fd would
+                    // complete-readable forever.
+                    let mut buf = [0u8; 64];
+                    let eof = loop {
+                        let n = unsafe {
+                            libc::read(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, buf.len())
+                        };
+                        if n == 0 {
+                            break true;
+                        }
+                        if n < 0 {
+                            break false;
+                        }
+                    };
+                    if !eof {
+                        self.arm_wake_source(owner, fd);
+                    }
+                    Some((owner, ExternalDelivery::Wake))
+                }
             }
         }
 
@@ -667,7 +853,7 @@ mod imp {
                     crate::async_rt::js_calls::unregister_callback(entry.callback_id);
                 }
                 self.external.retain(|_, record| {
-                    !matches!(record, ExternalRecord::VnodeNext { owner, fd } if (*owner, *fd) == key)
+                    !matches!(record, ExternalRecord::VnodeNext { owner, fd, .. } if (*owner, *fd) == key)
                 });
             }
 
@@ -683,24 +869,39 @@ mod imp {
                     crate::async_rt::js_calls::unregister_callback(entry.callback_id);
                 }
                 self.external.retain(|_, record| {
-                    !matches!(record, ExternalRecord::SignalNext { owner, signo } if (*owner, *signo) == key)
+                    !matches!(record, ExternalRecord::SignalNext { owner, signo, .. } if (*owner, *signo) == key)
                 });
             }
 
-            for (&id, record) in &self.external {
-                match *record {
-                    ExternalRecord::Proc { pid, .. } => self.io.submit_proc_exit(id, pid),
-                    ExternalRecord::VnodeNext { owner, fd } => {
-                        if let Some(entry) = self.vnodes.get(&(owner, fd)) {
+            for (&id, record) in self.external.iter_mut() {
+                match record {
+                    ExternalRecord::Proc { pid, .. } => self.io.submit_proc_exit(id, *pid),
+                    ExternalRecord::VnodeNext { owner, fd, watch } => {
+                        // The rebuilt watch has a fresh WatchId; the armed
+                        // record must carry it or delivery validation would
+                        // treat every event as stale.
+                        if let Some(entry) = self.vnodes.get(&(*owner, *fd)) {
+                            *watch = entry.watch;
                             self.io.submit_watch_next(id, entry.watch);
                         }
                     }
-                    ExternalRecord::SignalNext { owner, signo } => {
-                        if let Some(entry) = self.signals.get(&(owner, signo)) {
+                    ExternalRecord::SignalNext {
+                        owner,
+                        signo,
+                        watch,
+                    } => {
+                        if let Some(entry) = self.signals.get(&(*owner, *signo)) {
+                            *watch = entry.watch;
                             self.io.submit_watch_next(id, entry.watch);
                         }
                     }
                     ExternalRecord::RePoll { .. } => self.io.submit_external_timeout(id, 25),
+                    ExternalRecord::WakeSource { fd, .. } => self.io.submit_external(
+                        id,
+                        cherenkov::Op::PollIn {
+                            src: cherenkov::Source::fd(*fd),
+                        },
+                    ),
                 }
             }
         }
@@ -718,8 +919,9 @@ mod imp {
         /// an advance into a `nextReport()` resolution.
         report_seq: Arc<AtomicU64>,
         /// The orchestrator isolate's wake sink — the same channel background
-        /// FFI threads use, so a report wakes either loop flavor.
-        orch_wake: crate::async_rt::WakeSink,
+        /// FFI threads use, so a report wakes either loop flavor. `None` on a
+        /// local reactor (no orchestrator; reports are suppressed).
+        orch_wake: Option<crate::async_rt::WakeSink>,
         workloads: HashMap<u64, EngineWorkload>,
         /// The isolate currently entered on this thread. It stays active across
         /// slices and waits until a different workload actually wins scheduling.
@@ -756,7 +958,7 @@ mod imp {
         control_rx: mpsc::Receiver<Control>,
         report_tx: mpsc::Sender<Report>,
         report_seq: Arc<AtomicU64>,
-        orch_wake: crate::async_rt::WakeSink,
+        orch_wake: Option<crate::async_rt::WakeSink>,
         reactor: Reactor,
     ) -> ReactorThread {
         ReactorThread {
@@ -766,6 +968,7 @@ mod imp {
                 external: HashMap::new(),
                 vnodes: HashMap::new(),
                 signals: HashMap::new(),
+                deferred: Vec::new(),
             }),
             control_rx,
             report_tx,
@@ -797,60 +1000,232 @@ mod imp {
         reactor: Reactor,
     ) -> Option<RecoveryWorkset> {
         drive(new_thread(
-            config, control_rx, report_tx, report_seq, orch_wake, reactor,
+            config,
+            control_rx,
+            report_tx,
+            report_seq,
+            Some(orch_wake),
+            reactor,
         ))
     }
 
     /// The workload id of a local (caller-thread) reactor's single realm.
     pub(super) const LOCAL_ROOT_ID: u64 = 1;
 
-    /// Run a reactor inline on the current thread, hosting `seed` as its only
-    /// workload — the same drive loop pool reactors run, minus the thread, the
-    /// supervisor, and the report channel. When the workload releases,
-    /// `on_release` runs teardown with the isolate entered and this reactor
-    /// still installed (so teardown JS can register engine I/O), then the
-    /// workload is quiesced and disposed. A panic at the pump boundary is
-    /// fatal for a local reactor: the workload is disposed and `Err` returned.
+    /// Bounded in-pump harvest backing JS `tick()`/`spin()`: wait on THIS
+    /// engine's reactor and dispatch the current workload's completions
+    /// inline (the scope is live), deferring everything else to the drive
+    /// loop. Only meaningful from JS running inside a workload pump — a
+    /// synchronous frame cannot leave the pump, so without this a spinning
+    /// workload could never observe its own reactor completions.
+    pub(super) fn engine_tick(scope: &mut v8::HandleScope, timeout: Option<Duration>) -> i32 {
+        let (resources, owner) = ENGINE_CONTEXT.with(|context| context.get());
+        if resources.is_null() || owner == 0 {
+            return 0;
+        }
+        // SAFETY: same contract as `apply_registration` — the boxed
+        // EngineResources is disjoint from the borrowed workload map, and
+        // every reference below is dropped before JS runs.
+        let mut buf: Vec<Completion> = Vec::new();
+        {
+            let r = unsafe { &mut *resources };
+            let _ = r.io.wait(timeout, &mut buf);
+        }
+        enum Inline {
+            Resolve {
+                resolver_id: usize,
+                result: f64,
+            },
+            Callback {
+                callback_id: usize,
+                fflags: Option<u32>,
+            },
+            /// A drained wake for the current workload — counted, no action.
+            Wake,
+        }
+        let mut dispatched = 0i32;
+        for c in &buf {
+            let (user_data, res) = (c.user_data, c.res);
+            if user_data & POST_FLAG != 0 {
+                let own_wake = user_data & POST_WAKE_BIT != 0
+                    && (user_data & !(POST_FLAG | POST_WAKE_BIT)) == owner;
+                if own_wake {
+                    // Already awake; the spin's microtask drain empties the
+                    // queues this wake announced.
+                    dispatched += 1;
+                } else {
+                    let r = unsafe { &mut *resources };
+                    r.deferred.push(Deferred::Post { user_data, res });
+                }
+                continue;
+            }
+            let inline = {
+                let r = unsafe { &mut *resources };
+                match r.io.dispatch(user_data, res) {
+                    crate::reactor::io::Dispatch::Resolved(resolved) => {
+                        let crate::reactor::io::Target::Workload { id, resolver_id } =
+                            resolved.target
+                        else {
+                            unreachable!("host completion on reactor engine")
+                        };
+                        if id == owner {
+                            Some(Inline::Resolve {
+                                resolver_id,
+                                result: resolved.result,
+                            })
+                        } else {
+                            r.deferred.push(Deferred::Resolve {
+                                owner: id,
+                                resolver_id,
+                                result: resolved.result,
+                            });
+                            None
+                        }
+                    }
+                    crate::reactor::io::Dispatch::Handled => None,
+                    crate::reactor::io::Dispatch::External => {
+                        match r.route_external(user_data, res) {
+                            Some((own, ExternalDelivery::ProcExit { resolver_id }))
+                                if own == owner =>
+                            {
+                                Some(Inline::Resolve {
+                                    resolver_id,
+                                    result: 0.0,
+                                })
+                            }
+                            Some((
+                                own,
+                                ExternalDelivery::Callback {
+                                    callback_id,
+                                    fflags,
+                                },
+                            )) if own == owner => Some(Inline::Callback {
+                                callback_id,
+                                fflags,
+                            }),
+                            Some((own, ExternalDelivery::Repoll)) => {
+                                if own != owner {
+                                    r.deferred.push(Deferred::Runnable { owner: own });
+                                }
+                                None
+                            }
+                            Some((own, ExternalDelivery::Wake)) => {
+                                if own == owner {
+                                    Some(Inline::Wake)
+                                } else {
+                                    r.deferred.push(Deferred::Runnable { owner: own });
+                                    None
+                                }
+                            }
+                            Some((own, ExternalDelivery::ProcExit { resolver_id })) => {
+                                r.deferred.push(Deferred::Resolve {
+                                    owner: own,
+                                    resolver_id,
+                                    result: 0.0,
+                                });
+                                None
+                            }
+                            Some((
+                                own,
+                                ExternalDelivery::Callback {
+                                    callback_id,
+                                    fflags,
+                                },
+                            )) => {
+                                r.deferred.push(Deferred::Event {
+                                    owner: own,
+                                    event: crate::reactor::workload::ReactorEvent::Callback {
+                                        callback_id,
+                                        fflags,
+                                    },
+                                });
+                                None
+                            }
+                            None => None,
+                        }
+                    }
+                }
+            };
+            match inline {
+                Some(Inline::Resolve {
+                    resolver_id,
+                    result,
+                }) => {
+                    dispatched += 1;
+                    crate::async_rt::resolve_io_completion(scope, resolver_id, result);
+                }
+                Some(Inline::Callback {
+                    callback_id,
+                    fflags,
+                }) => {
+                    dispatched += 1;
+                    crate::reactor::workload::invoke_reactor_callback(scope, callback_id, fflags);
+                }
+                Some(Inline::Wake) => dispatched += 1,
+                None => {}
+            }
+        }
+        dispatched
+    }
+
+    /// Run a reactor inline on the current thread, hosting the workload built
+    /// by `setup` as its only realm — the same drive loop pool reactors run,
+    /// minus the thread, the supervisor, and the report channel. `setup` runs
+    /// with this reactor installed and the workload's owner entered, so
+    /// bootstrap-time I/O registrations land here (mirroring `place_realm`).
+    /// When the workload releases, `on_release` runs teardown with the isolate
+    /// entered and this reactor still installed (so teardown JS can register
+    /// engine I/O), then the workload is quiesced and disposed. A panic at the
+    /// pump boundary is fatal for a local reactor: the workload is disposed
+    /// and `Err` returned.
     pub(super) fn run_local(
         config: ReactorConfig,
-        seed: ParkedWorkload,
+        setup: impl FnOnce() -> Result<ParkedWorkload, String>,
         on_release: impl FnOnce(&mut ParkedWorkload, &str) -> Result<(), String>,
     ) -> Result<(), String> {
-        let reactor =
-            Reactor::new().map_err(|e| format!("reactor engine: init failed: {e}"))?;
-        let orch_wake = seed
-            .wake_sink()
-            .ok_or_else(|| "reactor engine: seed workload has no async state".to_string())?;
+        let reactor = Reactor::new().map_err(|e| format!("reactor engine: init failed: {e}"))?;
         // Local mode has no orchestrator: the control/report channels exist
         // only to satisfy the shared loop. Keep the far ends alive so sends
         // stay cheap successes for the loop's lifetime.
         let (_control_tx, control_rx) = mpsc::channel::<Control>();
         let (report_tx, _report_rx) = mpsc::channel::<Report>();
         let report_seq = Arc::new(AtomicU64::new(0));
-        let mut engine = new_thread(config, control_rx, report_tx, report_seq, orch_wake, reactor);
+        let mut engine = new_thread(config, control_rx, report_tx, report_seq, None, reactor);
 
         let id = LOCAL_ROOT_ID;
         engine.local_root = Some(id);
-        seed.install_wake_notifier(engine.resources.io.notifier(), post_wake(id));
-        engine.workloads.insert(
-            id,
-            EngineWorkload {
-                id,
-                inner: seed,
-                priority_class: 1,
-                debt_micros: 0.0,
-                sequence: 0,
-                last_sync_heavy_report: None,
-                ready_events: Vec::new(),
-                crash_on_next_pump: false,
-            },
-        );
-        engine.runnable.insert(id);
 
         ENGINE_CONTEXT.with(|context| {
             context.set((&mut *engine.resources, 0));
         });
         let result = (|| {
+            let seed = {
+                let _owner = EngineOwnerScope::enter(id);
+                setup()
+            };
+            let seed = match seed {
+                Ok(seed) => seed,
+                Err(error) => {
+                    engine.cancel_owned(id);
+                    engine.drain_doomed();
+                    return Err(error);
+                }
+            };
+            seed.install_wake_notifier(engine.resources.io.notifier(), post_wake(id));
+            engine.workloads.insert(
+                id,
+                EngineWorkload {
+                    id,
+                    inner: seed,
+                    priority_class: 1,
+                    debt_micros: 0.0,
+                    sequence: 0,
+                    last_sync_heavy_report: None,
+                    ready_events: Vec::new(),
+                    crash_on_next_pump: false,
+                },
+            );
+            engine.runnable.insert(id);
             engine.loop_forever();
             if engine.crashed_workload.take().is_some() {
                 set_engine_owner(0);
@@ -1095,7 +1470,8 @@ mod imp {
                 ExternalRecord::Proc { owner, .. }
                 | ExternalRecord::VnodeNext { owner, .. }
                 | ExternalRecord::SignalNext { owner, .. }
-                | ExternalRecord::RePoll { owner } => *owner == workload_id,
+                | ExternalRecord::RePoll { owner }
+                | ExternalRecord::WakeSource { owner, .. } => *owner == workload_id,
             }) {
                 self.report(Report::MoveRejected {
                     workload_id,
@@ -1252,6 +1628,9 @@ mod imp {
                     self.crashed_workload = Some(id);
                     break;
                 }
+                // An in-pump tick() may have harvested completions belonging
+                // to other workloads; route them before selecting again.
+                self.drain_deferred();
             }
         }
 
@@ -1421,67 +1800,50 @@ mod imp {
                 }
                 crate::reactor::io::Dispatch::Handled => {}
                 crate::reactor::io::Dispatch::External => {
-                    let Some(record) = self.resources.external.remove(&user_data) else {
-                        return;
-                    };
-                    match record {
-                        ExternalRecord::Proc {
-                            owner, resolver_id, ..
-                        } => {
+                    match self.resources.route_external(user_data, res) {
+                        Some((owner, ExternalDelivery::ProcExit { resolver_id })) => {
                             self.deliver_completion(owner, resolver_id, 0.0);
                         }
-                        ExternalRecord::VnodeNext { owner, fd } => {
-                            if res == err::CANCELED || res == err::BUSY {
-                                return;
-                            }
-                            if res < 0 {
-                                self.resources.vnodes.remove(&(owner, fd));
-                                return;
-                            }
-                            let Some(entry) = self.resources.vnodes.get(&(owner, fd)) else {
-                                return;
-                            };
-                            let callback_id = entry.callback_id;
-                            let watch = entry.watch;
+                        Some((
+                            owner,
+                            ExternalDelivery::Callback {
+                                callback_id,
+                                fflags,
+                            },
+                        )) => {
                             self.deliver_event(
                                 owner,
                                 crate::reactor::workload::ReactorEvent::Callback {
                                     callback_id,
-                                    fflags: Some(super::super::imp::fs_to_note(res)),
+                                    fflags,
                                 },
                             );
-                            let op = self.resources.io.next_external_id();
-                            self.resources.io.submit_watch_next(op, watch);
-                            self.resources
-                                .external
-                                .insert(op, ExternalRecord::VnodeNext { owner, fd });
                         }
-                        ExternalRecord::SignalNext { owner, signo } => {
-                            if res < 0 {
-                                if res != err::CANCELED && res != err::BUSY {
-                                    self.resources.signals.remove(&(owner, signo));
-                                }
-                                return;
+                        Some((owner, ExternalDelivery::Repoll | ExternalDelivery::Wake)) => {
+                            if self.workloads.contains_key(&owner) {
+                                self.runnable.insert(owner);
                             }
-                            let Some(entry) = self.resources.signals.get(&(owner, signo)) else {
-                                return;
-                            };
-                            let callback_id = entry.callback_id;
-                            let watch = entry.watch;
-                            self.deliver_event(
-                                owner,
-                                crate::reactor::workload::ReactorEvent::Callback {
-                                    callback_id,
-                                    fflags: None,
-                                },
-                            );
-                            let op = self.resources.io.next_external_id();
-                            self.resources.io.submit_watch_next(op, watch);
-                            self.resources
-                                .external
-                                .insert(op, ExternalRecord::SignalNext { owner, signo });
                         }
-                        ExternalRecord::RePoll { owner } => {
+                        None => {}
+                    }
+                }
+            }
+        }
+
+        /// Route the foreign completions an in-pump `tick()` set aside.
+        fn drain_deferred(&mut self) {
+            while !self.resources.deferred.is_empty() {
+                let deferred = std::mem::take(&mut self.resources.deferred);
+                for item in deferred {
+                    match item {
+                        Deferred::Post { user_data, res } => self.route(user_data, res),
+                        Deferred::Resolve {
+                            owner,
+                            resolver_id,
+                            result,
+                        } => self.deliver_completion(owner, resolver_id, result),
+                        Deferred::Event { owner, event } => self.deliver_event(owner, event),
+                        Deferred::Runnable { owner } => {
                             if self.workloads.contains_key(&owner) {
                                 self.runnable.insert(owner);
                             }
@@ -1569,6 +1931,7 @@ mod imp {
                     | ExternalRecord::VnodeNext { owner, .. }
                     | ExternalRecord::SignalNext { owner, .. }
                     | ExternalRecord::RePoll { owner }
+                    | ExternalRecord::WakeSource { owner, .. }
                         if *owner == id =>
                     {
                         Some(*op)
@@ -1723,7 +2086,9 @@ mod imp {
             // Wake the orchestrator's loop so it drains the report promptly:
             // bump the sequence its drain hook compares, then wake its sink.
             self.report_seq.fetch_add(1, Ordering::Release);
-            self.orch_wake.wake();
+            if let Some(wake) = &self.orch_wake {
+                wake.wake();
+            }
         }
     }
 }
@@ -1775,19 +2140,24 @@ mod tests {
 // Public spawn API + shared tenant setup.
 // ===========================================================================
 
-/// Run a reactor inline on the current thread with `seed` as its only
-/// workload — the process root's drive loop. See `imp::run_local`.
-// The allow covers the one-commit gap until runtime::run adopts this.
-#[allow(dead_code)]
+/// In-pump reactor harvest for the currently entered workload; backs the JS
+/// `tick()` used by `spin()`. See `imp::engine_tick`.
+pub(crate) fn engine_tick(
+    scope: &mut v8::HandleScope,
+    timeout: Option<std::time::Duration>,
+) -> i32 {
+    imp::engine_tick(scope, timeout)
+}
+
+/// Run a reactor inline on the current thread with the workload built by
+/// `setup` as its only realm — the process root's drive loop. See
+/// `imp::run_local`.
 pub(crate) fn run_local(
     config: ReactorConfig,
-    seed: crate::reactor::workload::ParkedWorkload,
-    on_release: impl FnOnce(
-        &mut crate::reactor::workload::ParkedWorkload,
-        &str,
-    ) -> Result<(), String>,
+    setup: impl FnOnce() -> Result<crate::reactor::workload::ParkedWorkload, String>,
+    on_release: impl FnOnce(&mut crate::reactor::workload::ParkedWorkload, &str) -> Result<(), String>,
 ) -> Result<(), String> {
-    imp::run_local(config, seed, on_release)
+    imp::run_local(config, setup, on_release)
 }
 
 /// Spawn a reactor thread and return the orchestrator-side handle. The

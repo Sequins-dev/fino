@@ -48,197 +48,158 @@ pub(crate) fn init_v8() {
     SHARED_ALLOCATOR.get_or_init(|| SharedAllocator(v8::new_default_allocator().into()));
 }
 
+/// Run the process's CLI realm to completion. The main thread IS a reactor:
+/// the same drive loop the orchestrator's pool runs, hosting the root realm
+/// as its only workload.
 pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     init_v8();
 
-    let mut params = v8::CreateParams::default();
-    params = params.heap_limits(0, 1 << 30);
-    params = params.array_buffer_allocator(shared_allocator());
+    let config = crate::reactor::engine::ReactorConfig {
+        // The root is uncontained: no pump budget, no sync-slice reports
+        // (there is no orchestrator to migrate it anywhere).
+        hard_budget_micros: 0,
+        sync_slice_micros: u64::MAX,
+        heap_limit_bytes: 0,
+        process_env: process_env.clone(),
+        package_map_json: None,
+        reactor_class: crate::reactor::engine::ReactorClass::Latency,
+    };
 
-    let isolate = &mut v8::Isolate::new(params);
+    crate::reactor::engine::run_local(
+        config,
+        move || crate::reactor::workload::setup_root_workload(process_env),
+        |workload, _reason| {
+            let module = workload.module_global();
+            workload.enter_scope(|scope| {
+                let state_rc = crate::state::get_state(scope);
 
-    // Initialise per-isolate async state (executor + blocking pool wake pipe).
-    crate::async_rt::init();
+                // Call onDone() — runs the post-loop error check from
+                // internal/main.ts (e.g. `if (caughtError) { exit(1); }`).
+                // If onDone calls exit(), we never return from here.
+                let on_done_fn = state_rc.borrow().on_done_fn.clone();
+                if let Some(f) = on_done_fn {
+                    let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
+                    v8::Local::new(scope, &f).call(scope, undef, &[]);
+                    // Drain foreground tasks + microtasks enqueued by onDone.
+                    pump_and_checkpoint(scope);
+                }
 
-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
-    // Atomics.wait() blocks the thread — not safe on the main event-loop thread.
-    isolate.set_allow_atomics_wait(false);
-    isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
-    isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
+                if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
+                    unsafe { crate::profiler::dispose_profiler(ptr) };
+                }
 
-    // isolate_scope is a bare HandleScope<()>; the root context is re-entered
-    // for each host-loop iteration.
-    let isolate_scope = &mut v8::HandleScope::new(isolate);
+                if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
+                    unsafe { crate::inspector_module::dispose_inspector(ptr) };
+                }
 
-    // Create root microtask queue.
-    let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
-
-    // Create context and assign the root queue to it.
-    let context = v8::Context::new(isolate_scope, Default::default());
-    context.set_microtask_queue(&root_queue);
-
-    // Keep a Global for the main module so it survives across ContextScope
-    // block boundaries (v8::Local lifetimes are tied to the scope they were
-    // created in).
-    let main_module_global: v8::Global<v8::Module>;
-
-    // Keep the root state across ContextScope iterations.
-    let state_rc: Rc<RefCell<FinoState>>;
-
-    // -----------------------------------------------------------------------
-    // Setup: initialise FinoState, compile+evaluate internal/main.mjs, first pump.
-    // -----------------------------------------------------------------------
-    {
-        let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-        let package_map_json =
-            std::fs::read_to_string(process_env.root.join(".fino/package-map.json")).ok();
-        let state = FinoState::new_root(
-            process_env,
-            package_map_json,
-            root_queue,
-            crate::state::default_import_rules(),
-        );
-
-        context.set_slot(Rc::new(RefCell::new(state)));
-
-        // Initialize the CPED with an empty JS Array — this becomes the live
-        // async context frame. Must happen before any JS code runs.
-        let initial_frame = v8::Array::new(scope, 0);
-        scope.set_continuation_preserved_embedder_data(initial_frame.into());
-
-        // Compile and evaluate internal/main.mjs.
-        let main_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/main.mjs"));
-        let main_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/main.mjs.map"));
-
-        let main_module = {
-            let tc = &mut v8::TryCatch::new(scope);
-            loader::register_source_map_from_json(tc, "internal:main", main_map);
-            match loader::compile_source_module(tc, main_src, "internal:main", Some(main_map)) {
-                Some(m) => m,
-                None => {
-                    let msg = catch_message(tc)
-                        .unwrap_or_else(|| "Failed to compile internal/main.mjs".to_string());
+                // Check for a deferred module evaluation error.
+                let main_module = v8::Local::new(scope, &module);
+                if main_module.get_status() == v8::ModuleStatus::Errored {
+                    let exc = main_module.get_exception();
+                    let msg = exc
+                        .to_string(scope)
+                        .map(|s| s.to_rust_string_lossy(scope))
+                        .unwrap_or_else(|| "Unknown error in internal/main.mjs".to_string());
                     return Err(msg);
                 }
-            }
-        };
+                Ok(())
+            })
+        },
+    )
+}
 
-        // Register internal/main.mjs so its specifier is known for import-rule `from` matching.
-        // Using "internal:main" places it in the internal: namespace so the default
-        // rules allow it to import other internal: modules.
-        loader::register_as_builtin(scope, main_module, "internal:main");
+/// Construct the root realm inside `isolate`: FinoState, CPED frame, and the
+/// evaluated `internal:main.mjs` module (whose body registers the native loop
+/// hooks the drive loop pumps).
+pub(crate) fn bootstrap_root(
+    isolate: &mut v8::OwnedIsolate,
+    process_env: ProcessEnv,
+) -> Result<crate::realm::child::BootstrappedRealm, String> {
+    let isolate_scope = &mut v8::HandleScope::new(isolate);
+    let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
+    let context = v8::Context::new(isolate_scope, Default::default());
+    context.set_microtask_queue(&root_queue);
+    let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
-        // Instantiate.
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            if main_module
-                .instantiate_module(tc, loader::resolve_module_callback)
-                .is_none()
-            {
+    let package_map_json =
+        std::fs::read_to_string(process_env.root.join(".fino/package-map.json")).ok();
+    let state = FinoState::new_root(
+        process_env,
+        package_map_json,
+        root_queue,
+        crate::state::default_import_rules(),
+    );
+    context.set_slot(Rc::new(RefCell::new(state)));
+
+    // Initialize the CPED with an empty JS Array — this becomes the live
+    // async context frame. Must happen before any JS code runs.
+    let initial_frame = v8::Array::new(scope, 0);
+    scope.set_continuation_preserved_embedder_data(initial_frame.into());
+
+    let main_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/main.mjs"));
+    let main_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/main.mjs.map"));
+
+    let main_module = {
+        let tc = &mut v8::TryCatch::new(scope);
+        loader::register_source_map_from_json(tc, "internal:main", main_map);
+        match loader::compile_source_module(tc, main_src, "internal:main", Some(main_map)) {
+            Some(m) => m,
+            None => {
                 let msg = catch_message(tc)
-                    .unwrap_or_else(|| "Failed to instantiate internal/main.mjs".to_string());
+                    .unwrap_or_else(|| "Failed to compile internal/main.mjs".to_string());
                 return Err(msg);
             }
         }
+    };
 
-        // Evaluate.  V8 defers the module body to the microtask queue; the actual
-        // module code runs during the first perform_checkpoint below.
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            if main_module.evaluate(tc).is_none() {
-                let msg = catch_message(tc)
-                    .unwrap_or_else(|| "Failed to evaluate internal/main.mjs".to_string());
-                return Err(msg);
-            }
-        }
+    // Register internal/main.mjs so its specifier is known for import-rule
+    // `from` matching. Using "internal:main" places it in the internal:
+    // namespace so the default rules allow it to import other internal: modules.
+    loader::register_as_builtin(scope, main_module, "internal:main");
 
-        // First pump + checkpoint: runs internal/main.ts module body as a microtask.
-        // The module body calls runNativeLoop(...) from internal:async-context,
-        // storing those callbacks in FinoState for the loop below.
-        pump_and_checkpoint(scope);
-
-        // Surface any synchronous error that occurred in the module body.
-        if main_module.get_status() == v8::ModuleStatus::Errored {
-            let exc = main_module.get_exception();
-            let msg = exc
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in internal/main.mjs".to_string());
-            return Err(msg);
-        }
-
-        state_rc = crate::state::get_state(scope);
-        main_module_global = v8::Global::new(scope, main_module);
-    } // ContextScope dropped — isolate_scope is free again.
-
-    // -----------------------------------------------------------------------
-    // Host loop.
-    //
-    // Each iteration re-enters the root context and calls its native loop
-    // policy hooks. Child realms are owned by reactors, so the root
-    // host has no child-context stepping phase.
-    //
-    // Using a named loop label so `break` inside the inner block exits here.
-    // -----------------------------------------------------------------------
-    'main: loop {
-        let should_continue = {
-            let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-            // The realm's loop is reactor-backed: Rust owns the pump cadence
-            // and calls only thin JS policy hooks. No hooks means bootstrap
-            // never called driveLoop (e.g. argv.length < 2) — nothing to run.
-            if state_rc.borrow().native_loop.is_none() {
-                break 'main;
-            }
-            native_drive_step(scope, &state_rc)
-        }; // ContextScope dropped — isolate_scope is free.
-
-        if !should_continue {
-            break 'main;
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Teardown: call onDone and dispose realm-owned diagnostics.
-    // -----------------------------------------------------------------------
     {
-        let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-        // Call onDone() — runs the post-loop error check from internal/main.ts (e.g.
-        // `if (caughtError) { exit(1); }`).  If onDone calls exit(), we never
-        // return from here; otherwise it returns normally.
-        let on_done_fn = state_rc.borrow().on_done_fn.clone();
-        if let Some(f) = on_done_fn {
-            let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-            v8::Local::new(scope, &f).call(scope, undef, &[]);
-            // Drain foreground tasks + microtasks enqueued by onDone.
-            pump_and_checkpoint(scope);
-        }
-
-        // Dispose the CPU profiler if it was created.
-        if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
-            unsafe { crate::profiler::dispose_profiler(ptr) };
-        }
-
-        // Dispose the V8 inspector if it was created.
-        if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
-            unsafe { crate::inspector_module::dispose_inspector(ptr) };
-        }
-
-        // Check for a deferred module evaluation error.
-        let main_module = v8::Local::new(scope, &main_module_global);
-        if main_module.get_status() == v8::ModuleStatus::Errored {
-            let exc = main_module.get_exception();
-            let msg = exc
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in internal/main.mjs".to_string());
+        let tc = &mut v8::TryCatch::new(scope);
+        if main_module
+            .instantiate_module(tc, loader::resolve_module_callback)
+            .is_none()
+        {
+            let msg = catch_message(tc)
+                .unwrap_or_else(|| "Failed to instantiate internal/main.mjs".to_string());
             return Err(msg);
         }
     }
 
-    Ok(())
+    // Evaluate. V8 defers the module body to the microtask queue; the actual
+    // module code runs during the first perform_checkpoint below.
+    {
+        let tc = &mut v8::TryCatch::new(scope);
+        if main_module.evaluate(tc).is_none() {
+            let msg = catch_message(tc)
+                .unwrap_or_else(|| "Failed to evaluate internal/main.mjs".to_string());
+            return Err(msg);
+        }
+    }
+
+    // First pump + checkpoint: runs internal/main.ts module body as a
+    // microtask. The module body calls runNativeLoop(...), storing the
+    // policy hooks the drive loop pumps.
+    pump_and_checkpoint(scope);
+
+    // Surface any synchronous error that occurred in the module body.
+    if main_module.get_status() == v8::ModuleStatus::Errored {
+        let exc = main_module.get_exception();
+        let msg = exc
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_else(|| "Unknown error in internal/main.mjs".to_string());
+        return Err(msg);
+    }
+
+    Ok(crate::realm::child::BootstrappedRealm {
+        context: v8::Global::new(scope, context),
+        state: crate::state::get_state(scope),
+        module: v8::Global::new(scope, main_module),
+    })
 }
 
 /// Pump V8 platform foreground tasks then drain the microtask queue.

@@ -952,6 +952,12 @@ mod imp {
             });
             return;
         }
+        if crate::reactor::engine::engine_io_active() {
+            crate::reactor::engine::engine_io_register(
+                crate::reactor::engine::EngineReg::WakeSource { fd },
+            );
+            return;
+        }
         with_reactor(|r| {
             let ud = r.io.next_external_id();
             r.io.submit_external(
@@ -1061,6 +1067,11 @@ mod imp {
     /// dispatched count, or 0 when no reactor exists on this thread. Rust-side
     /// core of `tick()`, also driven directly by the native host loop.
     pub(crate) fn wait_and_dispatch(scope: &mut v8::HandleScope, timeout: Option<Duration>) -> i32 {
+        // An engine-hosted realm's reactor IS the engine: harvest it in-pump,
+        // dispatching this workload's completions inline.
+        if crate::reactor::engine::engine_io_active() {
+            return crate::reactor::engine::engine_tick(scope, timeout);
+        }
         // Non-creating: a thread with no reactor has nothing to wait for.
         let completions = with_reactor_opt(|r| {
             let mut buf = std::mem::take(&mut r.scratch);

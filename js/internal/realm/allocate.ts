@@ -15,7 +15,6 @@
 * @internal
 */
 import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
-import { isEngineThread } from 'internal:reactor-engine';
 import { getAllocationPortInfo } from 'internal:realm-bridge';
 import { ThreadPort } from 'internal:realm/transport-port';
 import { registerShutdownHook } from 'internal:shutdown';
@@ -181,7 +180,7 @@ export interface RealmAllocationConfig {
 }
 
 export function placeScheduledRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
-  if (isEngineThread()) {
+  if (hasAllocationPort()) {
     const requestId = _requestSeq++;
     const channel = controlChannel();
     const result = new Promise<ScheduledRealmAllocation>((resolve, reject) => _pending.set(requestId, { resolve, reject }));
@@ -189,6 +188,12 @@ export function placeScheduledRealm(config: RealmAllocationConfig): ScheduledRea
     return result;
   }
   return placeLocalRealm(config);
+}
+
+function hasAllocationPort(): boolean {
+  if (_control !== null) return true;
+  const info = (getAllocationPortInfo as () => unknown | undefined)();
+  return info !== undefined;
 }
 
 function placeLocalRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | null {
