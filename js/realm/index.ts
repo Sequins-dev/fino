@@ -33,6 +33,7 @@
 import { mergeChildRules, createProcessContext, stepProcessContext } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { placeScheduledRealm, type ScheduledRealmAllocation } from 'internal:realm/allocate';
+import { IdleRetirement } from 'internal:orchestrator/idle';
 import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, DeferredTransportPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
@@ -2171,8 +2172,12 @@ export class Realm<F extends RealmFn = RealmFn> {
   /** Whether this logical Realm should keep its owner alive while idle. */
   #referenced = true;
   #nextCallId = 0;
-  #activeCalls = 0;
-  #idleCallTimer: ReturnType<typeof setTimeout> | null = null;
+  /** In-flight call holds; idle drains the instance when unreferenced. */
+  #idle = new IdleRetirement({
+    delayMs: 0,
+    shouldRetire: () => !this.#referenced && !this.#watchMode,
+    retire: () => this.#drainIdleInstance()
+  });
   readonly #processIsolated: boolean;
   /**
   * Parent-side port for general communication with the child realm.
@@ -2581,11 +2586,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
     const correlationId = this.#nextCallId++;
-    this.#activeCalls++;
-    if (this.#idleCallTimer !== null) {
-      clearTimeout(this.#idleCallTimer);
-      this.#idleCallTimer = null;
-    }
+    this.#idle.retain();
     const callStart = performance.now();
     // Capture at call time so the end event is always published when start was.
     const startPublished = _topicRealmCall.hasSubscribers;
@@ -2622,17 +2623,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     return observed;
   }
   #finishCall(): void {
-    this.#activeCalls = Math.max(0, this.#activeCalls - 1);
-    this.#scheduleIdleRetirement();
+    this.#idle.release();
   }
-  #scheduleIdleRetirement(): void {
-    if (this.#activeCalls !== 0 || this.#referenced || this.#watchMode) return;
-    this.#idleCallTimer = setTimeout(() => {
-      this.#idleCallTimer = null;
-      if (this.#activeCalls === 0 && !this.#referenced) this.#drainIdleDeployment();
-    }, 0);
-  }
-  #drainIdleDeployment(): void {
+  #drainIdleInstance(): void {
     if (!this.#processIsolated) {
       const instance = this.#scheduled;
       if (instance !== null) this.#retireScheduledInstance(instance, 'idle');
@@ -2685,7 +2678,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   */
   unref(): this {
     this.#referenced = false;
-    this.#scheduleIdleRetirement();
+    this.#idle.poke();
     return this;
   }
   /** Return whether this Realm has an explicit idle-liveness reference. */

@@ -584,6 +584,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:orchestrator/budget-watchdog",
         "internal/orchestrator/budget-watchdog"
     ),
+    source_builtin!("internal:orchestrator/idle", "internal/orchestrator/idle"),
     source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
     source_builtin!("internal:jobs/store", "internal/jobs/store"),
     source_builtin!("internal:jobs/runner", "internal/jobs/runner"),

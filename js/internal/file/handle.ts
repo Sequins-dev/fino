@@ -224,8 +224,7 @@ export class File {
         const buf = new ArrayBuffer(bufSize);
         // The reactor reads directly into `buf`. A regular file takes the
         // sync fast path (no readiness park) — read returns 0 at EOF.
-        const r = loopModule.readAsync(fd, buf, 0, bufSize);
-        const n = typeof r === 'number' ? r : await r;
+        const n = await loopModule.readAwaited(fd, buf, 0, bufSize);
         if (n <= 0) return {
           done: true,
           value: undefined
@@ -298,7 +297,7 @@ export class File {
     const out = new Uint8Array(remaining);
     let pos = 0;
     while (pos < remaining) {
-      const n = await this.#readMacInto(out, pos, remaining - pos, size);
+      const n = await this.#readInto(out, pos, remaining - pos);
       if (n <= 0) break;
       pos += n;
     }
@@ -318,10 +317,9 @@ export class File {
   *
   * @internal
   */
-  async #readMacInto(out: Uint8Array, pos: number, len: number, _size: number): Promise<number> {
+  async #readInto(out: Uint8Array, pos: number, len: number): Promise<number> {
     const fd = this.#fd;
-    const r = loopModule.readAsync(fd, out.buffer, out.byteOffset + pos, len);
-    return typeof r === 'number' ? r : await r;
+    return loopModule.readAwaited(fd, out.buffer, out.byteOffset + pos, len);
   }
   /**
   * Chunked read-to-EOF fallback: allocates a fresh buffer per chunk and
@@ -338,8 +336,7 @@ export class File {
     const fd = this.#fd;
     while (true) {
       const buf = new ArrayBuffer(bufSize);
-      const r = loopModule.readAsync(fd, buf, 0, bufSize);
-      const n = typeof r === 'number' ? r : await r;
+      const n = await loopModule.readAwaited(fd, buf, 0, bufSize);
       if (n <= 0) break;
       chunks.push(new Uint8Array(buf, 0, n));
       total += n;

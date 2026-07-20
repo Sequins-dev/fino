@@ -10,6 +10,7 @@
 * @internal
 */
 import { registerShutdownHook } from 'internal:shutdown';
+import { IdleRetirement } from './idle.ts';
 import { DeploymentController, type DeploymentControllerOptions } from './deployment.ts';
 import { NodeOrchestrator, type RealmWorkloadSpec } from './node-orchestrator.ts';
 
@@ -26,8 +27,15 @@ export interface ClusterRealmAllocation {
 /** Cluster-level facade; currently backed by one local node. */
 export class ClusterOrchestrator {
   #node: NodeOrchestrator | null = null;
-  #retained = 0;
-  #idleTimer: ReturnType<typeof setTimeout> | null = null;
+  #idle = new IdleRetirement({
+    delayMs: 50,
+    shouldRetire: () => this.#node !== null,
+    retire: () => {
+      const node = this.#node;
+      this.#node = null;
+      void node!.shutdown();
+    }
+  });
   #shutdownHookRegistered = false;
 
   /** Allocate one realm on an eligible node, or return `null` at capacity. */
@@ -35,12 +43,12 @@ export class ClusterOrchestrator {
     const node = this.#ensureNode();
     const placed = node.deployRealm(spec);
     if (placed === null) {
-      this.#scheduleIdleShutdown();
+      this.#idle.poke();
       return null;
     }
-    this.#retain();
+    this.#idle.retain();
     const released = node.whenReleased(placed.workloadId);
-    void released.then(() => this.#release(), () => this.#release());
+    void released.then(() => this.#idle.release(), () => this.#idle.release());
     return {
       ...placed,
       released,
@@ -50,16 +58,16 @@ export class ClusterOrchestrator {
 
   /** Construct deployment admission against aggregate eligible capacity. */
   createDeployment<T>(options: Omit<DeploymentControllerOptions<T>, 'capacity' | 'onTerminate'>): DeploymentController<T> {
-    this.#retain();
+    this.#idle.retain();
     this.#ensureNode();
     try {
       return new DeploymentController({
         ...options,
         capacity: () => this.admissionCapacity(),
-        onTerminate: () => this.#release()
+        onTerminate: () => this.#idle.release()
       });
     } catch (error) {
-      this.#release();
+      this.#idle.release();
       throw error;
     }
   }
@@ -78,38 +86,13 @@ export class ClusterOrchestrator {
       this.#shutdownHookRegistered = true;
       registerShutdownHook(() => {
         this.#shutdownHookRegistered = false;
-        this.#retained = 0;
-        if (this.#idleTimer !== null) clearTimeout(this.#idleTimer);
-        this.#idleTimer = null;
+        this.#idle.reset();
         const active = this.#node;
         this.#node = null;
         return active?.shutdown();
       });
     }
     return node;
-  }
-
-  #retain(): void {
-    this.#retained++;
-    if (this.#idleTimer !== null) clearTimeout(this.#idleTimer);
-    this.#idleTimer = null;
-  }
-
-  #release(): void {
-    this.#retained = Math.max(0, this.#retained - 1);
-    this.#scheduleIdleShutdown();
-  }
-
-  #scheduleIdleShutdown(): void {
-    if (this.#retained !== 0 || this.#node === null) return;
-    if (this.#idleTimer !== null) clearTimeout(this.#idleTimer);
-    const node = this.#node;
-    this.#idleTimer = setTimeout(() => {
-      this.#idleTimer = null;
-      if (this.#retained !== 0 || this.#node !== node) return;
-      this.#node = null;
-      void node.shutdown();
-    }, 50);
   }
 }
 

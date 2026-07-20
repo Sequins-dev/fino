@@ -68,28 +68,10 @@
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import * as loop from 'internal:runtime/loop';
-// Optional fused readiness+syscall ops supplied by the native reactor loop.
-// FdReader/FdWriter retain a readable/writable + libc fallback for compatible
-// loop implementations that do not expose them.
-// They return a byte count SYNCHRONOUSLY when the syscall completes without
-// blocking (the common case), or a Promise<number> when it would block — so the
-// hot path pays no Promise/microtask.
-const fusedLoop = loop as unknown as {
-  readAsync?: (fd: number, buf: ArrayBuffer | Uint8Array, offset: number, len: number) => number | Promise<number>;
-  writeAsync?: (fd: number, buf: ArrayBuffer | Uint8Array, offset: number, len: number) => number | Promise<number>;
-};
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const errnoFn = os === 'darwin' ? '__error' : '__errno_location';
 const EAGAIN = os === 'darwin' ? 35 : 11;
 const lib = dlopen(LIBC, {
-  read: {
-    parameters: [
-      'i32',
-      'buffer',
-      'i32'
-    ],
-    result: 'i32'
-  },
   write: {
     parameters: [
       'i32',
@@ -1293,31 +1275,6 @@ export class FdReader extends BufferedBytesReader {
   * @internal
   */
   #readView: Uint8Array = new Uint8Array(this.#readBuf);
-  // Bytes kqueue reported available at last EVFILT_READ event. When > 0 we can
-  // skip the next loop.readable() call because the kernel already told us data
-  // is present. Reset to 0 after each read() or on unexpected EAGAIN.
-  /**
-  * Private property `#avail` used by `FdReader`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #avail = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#avail;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #avail: number = 0;
   /**
   * Create a reader for an existing file descriptor.
   *
@@ -1388,36 +1345,14 @@ export class FdReader extends BufferedBytesReader {
   * @internal
   */
   protected async doPull(): Promise<Uint8Array | null> {
-    const readAsync = fusedLoop.readAsync;
-    if (readAsync !== undefined) {
-      if (this.closed) return null;
-      if (this.#fd < 0) throw new Error('read failed');
-      const r = readAsync(this.#fd, this.#readBuf, 0, 65536);
-      const n = typeof r === 'number' ? r : await r;
-      if (this.closed) return null;
-      if (n <= 0) return null;
-      const out = new Uint8Array(n);
-      out.set(this.#readView.subarray(0, n));
-      return out;
-    }
-    while (true) {
-      if (this.closed) return null;
-      if (this.#fd < 0) throw new Error('read failed');
-      if (this.#avail <= 0) {
-        this.#avail = await loop.readable(this.#fd);
-        if (this.closed) return null;
-      }
-      const n = lib.symbols.read(this.#fd, this.#readBuf, 65536) as number;
-      if (n > 0) {
-        this.#avail = Math.max(0, this.#avail - n);
-        const out = new Uint8Array(n);
-        out.set(this.#readView.subarray(0, n));
-        return out;
-      }
-      if (n === 0) return null;
-      if (getErrno() !== EAGAIN) return null;
-      this.#avail = 0;
-    }
+    if (this.closed) return null;
+    if (this.#fd < 0) throw new Error('read failed');
+    const n = await loop.readAwaited(this.#fd, this.#readBuf, 0, 65536);
+    if (this.closed) return null;
+    if (n <= 0) return null;
+    const out = new Uint8Array(n);
+    out.set(this.#readView.subarray(0, n));
+    return out;
   }
 }
 // ---------------------------------------------------------------------------
@@ -2266,29 +2201,9 @@ export class FdWriter extends BufferedBytesWriter {
   * @internal
   */
   protected async doFlush(buf: Uint8Array): Promise<void> {
-    const writeAsync = fusedLoop.writeAsync;
-    if (writeAsync !== undefined) {
-      const r = writeAsync(this.#fd, buf, 0, buf.byteLength);
-      const n = typeof r === 'number' ? r : await r;
-      if (this.closed) throw new Error('Writer closed during write');
-      if (n < 0) throw new Error('write failed');
-      return;
-    }
-    let off = 0;
-    while (off < buf.byteLength) {
-      const slice = off === 0 ? buf : buf.subarray(off);
-      const n = lib.symbols.write(this.#fd, slice, slice.byteLength) as number;
-      if (n > 0) {
-        off += n;
-        continue;
-      }
-      if (n < 0 && getErrno() === EAGAIN) {
-        await loop.writable(this.#fd);
-        if (this.closed) throw new Error('Writer closed during write');
-        continue;
-      }
-      throw new Error('write failed');
-    }
+    const n = await loop.writeAwaited(this.#fd, buf, 0, buf.byteLength);
+    if (this.closed) throw new Error('Writer closed during write');
+    if (n < 0) throw new Error('write failed');
   }
   /**
   * Write multiple buffers.

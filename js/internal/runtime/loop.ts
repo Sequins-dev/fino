@@ -121,6 +121,22 @@ export function writeAsync(fd: number, buf: Uint8Array | ArrayBuffer, offset: nu
 }
 
 /**
+* Fused read, always awaitable: a synchronous completion resolves without
+* parking, so callers can `await` unconditionally instead of repeating the
+* number-or-promise branch at every site.
+*/
+export function readAwaited(fd: number, buf: Uint8Array | ArrayBuffer, offset: number, len: number): Promise<number> {
+  const r = native.readAsync(fd, buf, offset, len);
+  return typeof r === 'number' ? Promise.resolve(r) : r as Promise<number>;
+}
+
+/** Fused write counterpart of {@link readAwaited}. */
+export function writeAwaited(fd: number, buf: Uint8Array | ArrayBuffer, offset: number, len: number): Promise<number> {
+  const r = native.writeAsync(fd, buf, offset, len);
+  return typeof r === 'number' ? Promise.resolve(r) : r as Promise<number>;
+}
+
+/**
 * Positional/streaming file read. `pos < 0` reads at the current offset;
 * otherwise `pread(2)` at `pos`. Resolves with the byte count (negative =
 * `-errno`). Regular-file reads do not block meaningfully, so this is a native

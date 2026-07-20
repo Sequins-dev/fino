@@ -8,6 +8,8 @@
 *
 * @internal
 */
+import { IdleRetirement } from './idle.ts';
+
 export interface DeploymentScalingPolicy {
   min?: number;
   max?: number;
@@ -48,8 +50,8 @@ function nonNegative(value: number, name: string): number {
 
 interface ReplicaRecord<T> {
   value: T;
-  active: number;
-  idleTimer: ReturnType<typeof setTimeout> | null;
+  /** Admission holds + the scale-down idle timer for this replica. */
+  idle: IdleRetirement;
 }
 
 /** An exclusive admission lease for one deployment replica. */
@@ -112,14 +114,14 @@ export class DeploymentController<T> {
     if (this.#closed) throw new Error('RealmDeployment has been terminated');
     await this.ready;
     while (!this.#closed) {
-      const idle = this.#records.find((record) => record.active === 0);
+      const idle = this.#records.find((record) => record.idle.held === 0);
       if (idle !== undefined) return this.#lease(idle);
       if (this.#records.length < this.#currentMaximum()) {
         const released = await this.#waitForRelease(this.#scaleUpWindowMs);
         if (released) continue;
         this.#scaleUp ??= this.#spawn().finally(() => { this.#scaleUp = null; });
         const record = await this.#scaleUp;
-        if (record.active === 0) return this.#lease(record);
+        if (record.idle.held === 0) return this.#lease(record);
         continue;
       }
       await this.#waitForRelease();
@@ -152,11 +154,21 @@ export class DeploymentController<T> {
 
   async #spawn(): Promise<ReplicaRecord<T>> {
     if (this.#closed) throw new Error('RealmDeployment has been terminated');
+    const value = await this.#create();
     const record: ReplicaRecord<T> = {
-      value: await this.#create(),
-      active: 0,
-      idleTimer: null
+      value,
+      idle: null as unknown as IdleRetirement
     };
+    record.idle = new IdleRetirement({
+      delayMs: this.#scaleDownWindowMs,
+      shouldRetire: () => this.#records.indexOf(record) >= this.#min,
+      retire: () => {
+        const current = this.#records.indexOf(record);
+        if (current < 0) return;
+        this.#records.splice(current, 1);
+        this.#dispose(record.value);
+      }
+    });
     if (this.#closed) {
       this.#dispose(record.value);
       throw new Error('RealmDeployment has been terminated');
@@ -166,11 +178,7 @@ export class DeploymentController<T> {
   }
 
   #lease(record: ReplicaRecord<T>): ReplicaLease<T> {
-    if (record.idleTimer !== null) {
-      clearTimeout(record.idleTimer);
-      record.idleTimer = null;
-    }
-    record.active++;
+    record.idle.retain();
     let released = false;
     return {
       value: record.value,
@@ -183,23 +191,13 @@ export class DeploymentController<T> {
   }
 
   #release(record: ReplicaRecord<T>): void {
-    record.active = Math.max(0, record.active - 1);
-    const index = this.#records.indexOf(record);
-    if (record.active === 0 && index >= this.#min && record.idleTimer === null) {
-      record.idleTimer = setTimeout(() => {
-        record.idleTimer = null;
-        const current = this.#records.indexOf(record);
-        if (record.active !== 0 || current < this.#min) return;
-        this.#records.splice(current, 1);
-        this.#retire(record);
-      }, this.#scaleDownWindowMs);
-    }
+    record.idle.release();
     for (const wake of this.#waiters) wake();
     this.#waiters.clear();
   }
 
   #retire(record: ReplicaRecord<T>): void {
-    if (record.idleTimer !== null) clearTimeout(record.idleTimer);
+    record.idle.cancel();
     this.#dispose(record.value);
   }
 
