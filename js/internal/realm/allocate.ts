@@ -15,6 +15,7 @@
 * @internal
 */
 import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
+import type { RealmWorkloadSpec } from 'internal:orchestrator/node-orchestrator';
 import { getAllocationPortInfo } from 'internal:realm-bridge';
 import { PortRpc, type WireCodec } from 'internal:realm/port-rpc';
 import { ThreadPort } from 'internal:realm/transport-port';
@@ -38,7 +39,7 @@ let _controlShutdownHookRegistered = false;
 type AllocationMessage = {
   type: 'allocate';
   requestId: number;
-  config: RealmAllocationConfig;
+  config: RealmWorkloadSpec;
 } | {
   type: 'allocated';
   requestId: number;
@@ -155,22 +156,7 @@ export interface ScheduledRealmAllocation {
   revoke(reason: string): void;
 }
 
-/**
-* Place a realm config through the node orchestrator. Returns `null` when all eligible
-* reactors are at their admission limits.
-*
-* @internal
-*/
-export interface RealmAllocationConfig {
-  entry: string;
-  rulesJson: string;
-  realmData?: string;
-  bootstrapData?: string;
-  watch?: boolean;
-  repl?: boolean;
-}
-
-export function placeScheduledRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
+export function placeScheduledRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
   if (hasAllocationPort()) {
     const { channel, rpc } = controlChannel();
     return rpc.call({ config }).then((raw) => {
@@ -198,15 +184,8 @@ function hasAllocationPort(): boolean {
   return info !== undefined;
 }
 
-function placeLocalRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | null {
-  const placed = clusterOrchestrator.allocateRealm({
-    entryPath: config.entry,
-    rulesJson: config.rulesJson,
-    ...config.realmData !== undefined ? { realmData: config.realmData } : {},
-    ...config.bootstrapData !== undefined ? { bootstrapData: config.bootstrapData } : {},
-    ...config.watch !== undefined ? { watch: config.watch } : {},
-    ...config.repl !== undefined ? { repl: config.repl } : {}
-  });
+function placeLocalRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | null {
+  const placed = clusterOrchestrator.allocateRealm(config);
   if (placed === null) return null;
   const released = placed.released;
   const allocationPort = new ThreadPort(placed.allocationPortWakeFd, placed.allocationPortHandle);

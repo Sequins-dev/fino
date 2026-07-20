@@ -9,7 +9,7 @@
 * @internal
 */
 import * as engine from 'internal:reactor-engine';
-import { availableParallelism } from 'internal:process';
+import { availableParallelism, env } from 'internal:process';
 import { NodeRealmCollection, type PriorityClass, type ReactorLoadSummary, type RealmId } from './node.ts';
 import { BudgetWatchdog } from './budget-watchdog.ts';
 
@@ -83,6 +83,42 @@ export interface NodeOrchestratorOptions {
   syncSliceThresholdMicros?: number;
   /** Per-workload heap cap (bytes); nearing it terminates the workload rather than OOMing the process. */
   heapLimitBytes?: number;
+}
+
+function envInt(name: string): number | undefined {
+  const raw = (env as Record<string, string | undefined>)[name];
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+* Resolve the node's orchestrator tuning from the process environment, with
+* the built-in defaults for anything unset. This is the production config
+* seam: every knob the constructor accepts is reachable without code.
+*/
+export function resolveNodeOrchestratorOptions(): NodeOrchestratorOptions {
+  const reactorCount = envInt('FINO_REACTOR_COUNT');
+  const capacity = envInt('FINO_REACTOR_CAPACITY');
+  const hardBudgetMicros = envInt('FINO_REACTOR_HARD_BUDGET_MICROS');
+  const syncSliceThresholdMicros = envInt('FINO_REACTOR_SYNC_SLICE_MICROS');
+  const heapLimitBytes = envInt('FINO_REALM_HEAP_LIMIT_BYTES');
+  const minReactors = envInt('FINO_BATCH_REACTORS_MIN');
+  const maxReactors = envInt('FINO_BATCH_REACTORS_MAX');
+  const idleTimeoutMs = envInt('FINO_BATCH_IDLE_TIMEOUT_MS');
+  const batchPool = {
+    ...minReactors !== undefined ? { minReactors } : {},
+    ...maxReactors !== undefined ? { maxReactors } : {},
+    ...idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}
+  };
+  return {
+    ...reactorCount !== undefined ? { reactorCount } : {},
+    capacity: capacity ?? 8,
+    ...hardBudgetMicros !== undefined ? { hardBudgetMicros } : {},
+    ...syncSliceThresholdMicros !== undefined ? { syncSliceThresholdMicros } : {},
+    ...heapLimitBytes !== undefined ? { heapLimitBytes } : {},
+    ...Object.keys(batchPool).length > 0 ? { batchPool } : {}
+  };
 }
 
 /**
@@ -419,6 +455,12 @@ export class NodeOrchestrator {
   * constructs the Realm's port over it), or `null` when the node has no
   * capacity.
   */
+  #ensureBatchReactorFor(spec: RealmWorkloadSpec): void {
+    if (spec.priority !== 'background') return;
+    const existing = this.#reactorIds.some((id) => this.#collection.reactorClassOf(id) === 'batch');
+    if (!existing) this.#provisionBatchReactor();
+  }
+
   deployRealm(spec: RealmWorkloadSpec): {
     workloadId: RealmId;
     portHandle: number;
@@ -426,6 +468,7 @@ export class NodeOrchestrator {
     allocationPortHandle: number;
     allocationPortWakeFd: number;
   } | null {
+    this.#ensureBatchReactorFor(spec);
     let record;
     try {
       record = this.#collection.allocate({

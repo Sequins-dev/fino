@@ -12,7 +12,7 @@
 import { registerShutdownHook } from 'internal:shutdown';
 import { IdleRetirement } from './idle.ts';
 import { DeploymentController, type DeploymentControllerOptions } from './deployment.ts';
-import { NodeOrchestrator, type RealmWorkloadSpec } from './node-orchestrator.ts';
+import { NodeOrchestrator, resolveNodeOrchestratorOptions, type RealmWorkloadSpec } from './node-orchestrator.ts';
 
 export interface ClusterRealmAllocation {
   workloadId: string;
@@ -79,7 +79,7 @@ export class ClusterOrchestrator {
 
   #ensureNode(): NodeOrchestrator {
     if (this.#node !== null) return this.#node;
-    const node = new NodeOrchestrator({ capacity: 8 });
+    const node = new NodeOrchestrator(resolveNodeOrchestratorOptions());
     node.start();
     this.#node = node;
     if (!this.#shutdownHookRegistered) {

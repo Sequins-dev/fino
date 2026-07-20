@@ -1681,6 +1681,23 @@ export interface RealmOptions {
   */
   root?: string;
   /**
+  * Scheduling priority class for this realm.
+  *
+  * `'interactive'` and `'service'` (the default) realms run on
+  * latency-class reactor threads; `'background'` realms are placed on the
+  * batch reactor pool so sync-heavy or throughput work never contends with
+  * efficient async workloads. The allocator also demotes realms that
+  * repeatedly blow the synchronous-slice budget, whatever their declared
+  * priority. Ignored by process-isolated realms, which own their process.
+  *
+  * ```ts no_run
+  * import { Realm } from 'fino:realm';
+  *
+  * const indexer = new Realm({ entry: './reindex.ts', priority: 'background' });
+  * ```
+  */
+  priority?: 'interactive' | 'service' | 'background';
+  /**
   * Import rules for this Realm. Appended after the parent's rules;
   * last-match-wins. Use `ImportMap.deny([...])` or `ImportMap.inherit([...])`.
   *
@@ -1797,17 +1814,15 @@ export interface RealmOptions {
   otlpEndpoint?: string | false;
 }
 
-/** Replica bounds and stabilization windows for a `RealmDeployment`. */
-export interface RealmDeploymentScalingOptions {
-  /** Availability minimum. Defaults to one and must not exceed `max`. */
-  min?: number;
-  /** Replica ceiling. When omitted, follows aggregate eligible cluster capacity. */
-  max?: number;
-  /** Queue-pressure stabilization window before adding a replica. Defaults to 1 second. */
-  scaleUpWindowMs?: number;
-  /** Quiet stabilization window before draining an excess replica. Defaults to 30 seconds. */
-  scaleDownWindowMs?: number;
-}
+/**
+* Replica bounds and stabilization windows for a `RealmDeployment`: `min`
+* (availability floor, default 1), `max` (ceiling, defaults to aggregate
+* eligible capacity), `scaleUpWindowMs` (queue-pressure window before adding
+* a replica, default 1s), and `scaleDownWindowMs` (quiet window before
+* draining an excess replica, default 30s). Alias of the controller's own
+* policy type — one shape, not two.
+*/
+export type RealmDeploymentScalingOptions = deployment.DeploymentScalingPolicy;
 
 /** Options for a replicated deployment of independent realms. */
 export type RealmDeploymentOptions = Omit<RealmOptions, 'process' | 'watch' | 'repl'> & {
@@ -2236,6 +2251,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (repl && (opts.process || opts.watch)) {
       throw new Error('fino:realm — repl: true is not supported with process or watch realms');
     }
+    if (opts.priority !== undefined && !['interactive', 'service', 'background'].includes(opts.priority)) {
+      throw new TypeError("fino:realm — priority must be 'interactive', 'service', or 'background'");
+    }
     // Build the child-specific rule list from overrides / legacy providers+blocked.
     const rules: ImportRule[] = [];
     if (opts.overrides) {
@@ -2281,11 +2299,14 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.ready = Promise.resolve();
     } else {
       const mergedRules = mergeChildRules(serializedRules) as string;
+      // The one reshaping point: RealmOptions names become the serializable
+      // workload-spec names, passed through every layer below unchanged.
       const scheduledConfig: Parameters<typeof placeScheduledRealm>[0] = {
-        entry: opts.entry,
+        entryPath: opts.entry,
         rulesJson: mergedRules,
         ...serializedData !== undefined ? { realmData: serializedData } : {},
         ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {},
+        ...opts.priority !== undefined ? { priority: opts.priority } : {},
         watch,
         repl
       };

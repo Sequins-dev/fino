@@ -28,6 +28,28 @@ describe('DeploymentController orchestration capacity', () => {
     controller.terminate();
   });
 
+  it('drains an idle above-minimum replica after the scale-down window', async (t) => {
+    let nextId = 0;
+    const disposed: number[] = [];
+    const controller = new DeploymentController({
+      scaling: { min: 1, max: 2, scaleUpWindowMs: 0, scaleDownWindowMs: 20 },
+      capacity: () => 2,
+      create: () => ({ id: ++nextId }),
+      dispose: (value) => { disposed.push(value.id); }
+    });
+    await controller.ready;
+    // Force the second replica into existence, then let both go idle.
+    const first = await controller.acquire();
+    const second = await controller.acquire();
+    t.equal(controller.values().length, 2, 'scaled up to two replicas');
+    first.release();
+    second.release();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    t.equal(controller.values().length, 1, 'the excess idle replica drained');
+    t.equal(disposed.length, 1, 'exactly one replica was disposed');
+    controller.terminate();
+  });
+
   it('releases orchestration when minimum creation fails', async (t) => {
     let released = 0;
     const controller = new DeploymentController({

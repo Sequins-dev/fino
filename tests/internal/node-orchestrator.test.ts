@@ -125,6 +125,69 @@ describe('NodeOrchestrator', () => {
     }
   });
 
+  it('places background-priority realms on the batch pool', async (t) => {
+    const orchestrator = new NodeOrchestrator({ reactorCount: 2, capacity: 4, batchPool: { minReactors: 1 } });
+    orchestrator.start();
+    try {
+      const background = orchestrator.deployRealm({
+        entryPath: worker,
+        rulesJson: mergeChildRules('[]') as string,
+        priority: 'background'
+      });
+      const service = orchestrator.deployRealm({
+        entryPath: worker,
+        rulesJson: mergeChildRules('[]') as string
+      });
+      t.ok(background !== null && service !== null, 'both realms placed');
+      const backgroundReactor = orchestrator.collection().placementOf(background!.workloadId)!;
+      const serviceReactor = orchestrator.collection().placementOf(service!.workloadId)!;
+      t.equal(orchestrator.collection().reactorClassOf(backgroundReactor), 'batch', 'background realm landed on a batch reactor');
+      t.equal(orchestrator.collection().reactorClassOf(serviceReactor), 'latency', 'service realm stayed on a latency reactor');
+    } finally {
+      await orchestrator.shutdown();
+    }
+  });
+
+  it('provisions a batch reactor on demand for background priority', async (t) => {
+    const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 4, batchPool: { minReactors: 0 } });
+    orchestrator.start();
+    try {
+      const placed = orchestrator.deployRealm({
+        entryPath: worker,
+        rulesJson: mergeChildRules('[]') as string,
+        priority: 'background'
+      });
+      t.ok(placed !== null, 'background realm placed');
+      const reactor = orchestrator.collection().placementOf(placed!.workloadId)!;
+      t.equal(orchestrator.collection().reactorClassOf(reactor), 'batch', 'a batch reactor was provisioned for it');
+    } finally {
+      await orchestrator.shutdown();
+    }
+  });
+
+  it('terminates a realm that nears its per-workload heap cap', async (t) => {
+    const orchestrator = new NodeOrchestrator({
+      reactorCount: 1,
+      capacity: 4,
+      // Small enough that an unbounded allocator trips it fast; large enough
+      // to bootstrap (bootstrap alone needs a few MiB of old space).
+      heapLimitBytes: 48 * 1024 * 1024
+    });
+    orchestrator.start();
+    const hog = new URL('../realm/fixtures/heap-hog.ts', import.meta.url).pathname;
+    try {
+      const placed = orchestrator.deployRealm({
+        entryPath: hog,
+        rulesJson: mergeChildRules('[]') as string
+      });
+      t.ok(placed !== null, 'heap hog placed');
+      const reason = await orchestrator.whenReleased(placed!.workloadId);
+      t.ok(/terminated|failed/.test(reason), `containment released the workload (${reason}) instead of OOMing the process`);
+    } finally {
+      await orchestrator.shutdown();
+    }
+  });
+
   it('contains a hard-budget overrun without losing sibling isolates', async (t) => {
     const orchestrator = new NodeOrchestrator({
       reactorCount: 1,

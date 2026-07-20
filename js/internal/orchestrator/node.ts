@@ -64,7 +64,13 @@ export class NodeRealmCollection {
   }
 
   allocate(spec: RealmPlacementSpec): RealmRecord {
-    const reactorId = this.#leastLoaded(null, 'latency');
+    const priority = spec.priority ?? 'service';
+    // Background realms live on the batch pool so they never contend with
+    // latency-class work; fall back to latency only when no batch reactor
+    // can take them.
+    const preferred: ReactorClass = priority === 'background' ? 'batch' : 'latency';
+    let reactorId = this.#leastLoaded(null, preferred);
+    if (reactorId === null && preferred === 'batch') reactorId = this.#leastLoaded(null, 'latency');
     if (reactorId === null) throw new Error('cannot place realm: all reactors are at capacity');
     const id = `realm-${this.#sequence++}`;
     const record: RealmRecord = {
