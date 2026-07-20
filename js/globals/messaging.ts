@@ -13,7 +13,8 @@
 * IntraPort transport: same-Isolate Realms exchange messages via direct JS
 * object references + structuredClone. postMessage clones the value and pushes
 * it to the partner port's queue. _flushPorts() dispatches all queued messages
-* on started ports; called from driveLoop between tick() and drainMicrotasks().
+* on started ports; the reactor drive loop invokes it as the realm's
+* flush-ports policy hook each pump slice.
 *
 * MessagePort transfer: a MessagePort can be transferred via postMessage. For
 * same-Isolate transfers a fresh receiver-side port replaces matching
@@ -27,9 +28,8 @@
 * | Transport | Clone path | Transfer support |
 * | --- | --- | --- |
 * | Same-isolate `MessagePort` | Runtime structured-clone subset. | `ArrayBuffer` and `MessagePort`. |
-* | Thread `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
+* | Reactor realm `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
 * | Process `ProcessPort` | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
-* | Remote/cluster calls | Cluster transport serialization. | No live `MessagePort` transfer contract. |
 *
 * ## Example
 *

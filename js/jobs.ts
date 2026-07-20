@@ -793,7 +793,7 @@ export class Jobs {
   async workers(opts: {
     entry: string;
     size?: number;
-    realm?: Omit<RealmOptions, 'entry' | 'thread'>;
+    realm?: Omit<RealmOptions, 'entry' | 'process' | 'watch' | 'repl'>;
   }): Promise<void> {
     if (this.#control !== null) {
       await this.#control.registerWorkers({

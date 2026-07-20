@@ -17,10 +17,13 @@ reloadable application contexts.
 
 Every ordinary realm is one V8 isolate hosted and scheduled by a reactor
 thread. Node orchestration chooses the reactor and, when clustering is enabled,
-cluster orchestration will first choose the node. `RealmDeployment` composes
-independent realm replicas when scaling is required. Use `process: true` only
-when an OS-process isolation boundary is required; it does not create a
-separate Realm API.
+cluster orchestration will first choose the node. Declare scheduling intent
+with `priority`: `'background'` realms run on the batch reactor pool so
+sync-heavy work never contends with latency-class realms, and the orchestrator
+also demotes realms that repeatedly blow the synchronous-slice budget.
+`RealmDeployment` composes independent realm replicas when scaling is
+required. Use `process: true` only when an OS-process isolation boundary is
+required; it does not create a separate Realm API.
 
 The guides in this section:
 

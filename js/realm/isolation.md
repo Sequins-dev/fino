@@ -4,8 +4,9 @@ weight: 12
 # Isolation and Placement
 
 Ordinary Fino realms always run as V8 isolates on reactor
-threads. The allocator chooses the node and reactor; application code does not
-select embedded, thread, or remote modes.
+threads. The allocator chooses the node and reactor — placement is never an
+application-level decision. Declare intent instead: `priority: 'background'`
+steers a realm onto the batch reactor pool, away from latency-class work.
 
 ```ts
 import { Realm } from 'fino:realm';

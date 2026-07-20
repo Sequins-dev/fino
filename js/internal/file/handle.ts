@@ -8,8 +8,8 @@
 *
 * The `File` owns the descriptor lifecycle. Readers and writers created from a
 * file share the same descriptor, so callers close the `File` once all derived
-* streams are finished. Linux uses io_uring-backed async operations where
-* available; macOS yields through the runtime loop around synchronous syscalls.
+* streams are finished. All reads ride the reactor's fused read: a regular
+* file completes synchronously, anything that would block parks on the loop.
 *
 * ## Example
 *
@@ -41,10 +41,10 @@ import type { Path } from '../../file/path.ts';
 * handle share the same underlying fd, so close the `File` — not the individual
 * stream — to release it. Closing flushes any writer created by `writer()`.
 *
-* Async reads use io_uring on Linux and yield through the runtime loop around
-* synchronous syscalls on macOS. Every method throws if the handle is already
-* closed, and `reader()`/`writer()` also throw when the open mode disallows the
-* requested direction.
+* Reads use the reactor's fused read (synchronous completion for regular
+* files, a parked completion otherwise). Every method throws if the handle is
+* already closed, and `reader()`/`writer()` also throw when the open mode
+* disallows the requested direction.
 *
 * ```ts no_run
 * import { File } from 'internal:file/handle';
@@ -194,11 +194,9 @@ export class File {
   * Throws immediately if the handle was opened in a non-readable mode (`w`,
   * `a`).
   *
-  * On Linux this issues `IORING_OP_READ` for genuine async I/O. On macOS it
-  * yields through the runtime loop via kqueue `EVFILT_READ` between synchronous
-  * `read(2)` calls, checking `lseek(SEEK_CUR)` against the file size before each
-  * wait so it exits cleanly at EOF (where `EVFILT_READ` never fires) while still
-  * noticing a file that has grown.
+  * Each chunk is one fused reactor read straight into the chunk buffer: a
+  * regular file completes synchronously (returning 0 at EOF), and a
+  * descriptor that would block parks on the loop until readable.
   *
   * ```ts no_run
   * let total = 0;
@@ -268,8 +266,8 @@ export class File {
   * Drains the same chunked read loop as `reader()` and concatenates the result,
   * so it advances the shared file offset and returns an empty array when
   * already at EOF. Throws if the handle is closed. For large files prefer
-  * `reader()` to avoid holding the whole contents in memory. Uses the same
-  * Linux io_uring / macOS kqueue EOF strategy documented on `reader()`.
+  * `reader()` to avoid holding the whole contents in memory. Reads use the
+  * same fused-reactor path documented on `reader()`.
   *
   * ```ts no_run
   * const bytes = await file.bytes();
@@ -323,9 +321,9 @@ export class File {
   }
   /**
   * Chunked read-to-EOF fallback: allocates a fresh buffer per chunk and
-  * concatenates. Used for the Linux io_uring path, special/empty files whose
-  * size is unknown, and the grown-file tail. macOS-sized reads in {@link bytes}
-  * avoid this for the common case.
+  * concatenates. Used for special/empty files whose size is unknown and the
+  * grown-file tail; sized in-place reads in {@link bytes} avoid this for the
+  * common case.
   *
   * @internal
   */
@@ -527,8 +525,7 @@ export class File {
   *
   * Idempotent: a second call is a no-op. Any pending writer created by
   * `writer()` is flushed before the fd is released, so buffered bytes are not
-  * lost. On Linux the close is issued as `IORING_OP_CLOSE`; on macOS it runs
-  * synchronously via `close(2)`. This method also backs `Symbol.asyncDispose`,
+  * lost. This method also backs `Symbol.asyncDispose`,
   * so an `await using` binding closes the handle when it leaves scope.
   *
   * ```ts no_run
@@ -568,7 +565,7 @@ export class File {
   * Close this file handle synchronously with `close(2)`.
   *
   * This low-level path is for native callbacks that must release descriptors
-  * without scheduling io_uring work from inside another async FFI operation.
+  * without scheduling reactor work from inside another async FFI operation.
   * Flushes any active writer synchronously first and is idempotent. Normal
   * application code should use `close()` instead.
   *

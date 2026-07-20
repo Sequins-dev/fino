@@ -49,9 +49,12 @@ const workers = new RealmDeployment<(name: string) => Promise<string>>({
 const [a, b] = await Promise.all([workers.call('Ana'), workers.call('Bo')]);
 ```
 
-Each replica has an independent heap. `connect()` reserves one replica for an
-affine session, while `broadcast()` sends a message to every ready replica.
-Process isolation remains a one-to-one `Realm` feature and is not supported by
+Each replica has an independent heap. `connect()` reserves one replica and
+returns a `RealmSession` — a stable, replica-affine handle whose `call()`
+always reaches the same heap until `close()` releases it back to the
+deployment (sessions also support `using` for scope-bound release).
+`broadcast()` sends a message to every ready replica. Process isolation
+remains a one-to-one `Realm` feature and is not supported by
 `RealmDeployment`.
 
 ## Idle liveness

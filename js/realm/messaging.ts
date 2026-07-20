@@ -31,12 +31,9 @@
 * import { Realm } from 'fino:realm';
 *
 * const channel = new MessageChannel();
-* const realm = new Realm({
-*   entry: './worker.ts',
-*   input: channel.port1,
-*   output: channel.port2,
-* });
-* realm.port.postMessage({ hello: true });
+* const realm = new Realm({ entry: './worker.ts' });
+* realm.port.postMessage({ port: channel.port2 }, [channel.port2]);
+* channel.port1.postMessage({ hello: true });
 * ```
 */
 /**

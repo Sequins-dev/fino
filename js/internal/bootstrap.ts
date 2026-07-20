@@ -389,14 +389,6 @@ if (_childEntry) {
         }).cliOtel;
       } catch {}
     }
-    const raw = (getRealmData as () => string | undefined)();
-    if (cliOtel === undefined && raw !== undefined) {
-      try {
-        cliOtel = (JSON.parse(raw) as {
-          cliOtel?: typeof cliOtel;
-        }).cliOtel;
-      } catch {}
-    }
     if (cliOtel && typeof cliOtel.endpoint === 'string' && cliOtel.endpoint) {
       const { createCliOtelRuntime } = await import('internal:opentelemetry/bootstrap');
       const { runWithTracerProvider, runWithLoggerProvider, runWithMeterProvider } = await import('fino:opentelemetry');
