@@ -222,6 +222,30 @@ function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
 // ImportMap - helper for building the child-specific rule list
 // ---------------------------------------------------------------------------
 /**
+* Anything that expands to import rules. The provider config classes
+* (`DiskFsConfig`, `SystemNetConfig`, `SystemDnsConfig`) implement this, so
+* common I/O grants read as one object inside `overrides` instead of a
+* hand-written rule list.
+*/
+export interface ImportRuleBuilder {
+  toRules(): ImportRule[];
+}
+
+/** A rule-list entry: a literal rule, or a builder that expands to rules. */
+export type ImportRuleInput = ImportRule | ImportRuleBuilder;
+
+function _flattenRules(entries: ImportRuleInput[]): ImportRule[] {
+  const rules: ImportRule[] = [];
+  for (const entry of entries) {
+    if (typeof (entry as ImportRuleBuilder).toRules === 'function') {
+      rules.push(...(entry as ImportRuleBuilder).toRules());
+    } else {
+      rules.push(entry as ImportRule);
+    }
+  }
+  return rules;
+}
+/**
 * An ordered list of import rules to apply to a child Realm.
 *
 * Rules are last-match-wins. Use `ImportMap.deny([...overrides])` to start
@@ -275,8 +299,8 @@ export class ImportMap {
   *
   * @param rules Ordered child-specific import rules.
   */
-  constructor(rules: ImportRule[]) {
-    this.#rules = rules;
+  constructor(rules: ImportRuleInput[]) {
+    this.#rules = _flattenRules(rules);
   }
   /**
   * Deny everything by default; allow/remap/facade specific specifiers.
@@ -293,7 +317,7 @@ export class ImportMap {
   * new Realm({ entry: './worker.ts', overrides });
   * ```
   */
-  static deny(overrides: ImportRule[]): ImportMap {
+  static deny(overrides: ImportRuleInput[]): ImportMap {
     return new ImportMap([{
       pattern: '*',
       directive: 'block'
@@ -315,7 +339,7 @@ export class ImportMap {
   * new Realm({ entry: './worker.ts', overrides });
   * ```
   */
-  static inherit(overrides: ImportRule[]): ImportMap {
+  static inherit(overrides: ImportRuleInput[]): ImportMap {
     return new ImportMap([{
       pattern: '*',
       directive: 'inherit'
@@ -1289,7 +1313,7 @@ export class Facade {
   }
 }
 // ---------------------------------------------------------------------------
-// Legacy provider config classes (kept for backwards compatibility)
+// Provider config classes — rule builders for the common I/O grants
 // ---------------------------------------------------------------------------
 /**
 * Generated-doc-visible interface `DiskFsOptions`.
@@ -1326,15 +1350,16 @@ export interface DiskFsOptions {
 /**
 * Use the real on-disk filesystem for this realm.
 *
-* This legacy provider config is kept for backwards compatibility. New code
-* should prefer explicit import rules where possible.
+* A rule builder for the most common filesystem grant: place it inside
+* `overrides` and it expands (via `toRules()`) into the equivalent import
+* rules.
 *
 * ```ts no_run
-* import { DiskFsConfig, Realm } from 'fino:realm';
+* import { DiskFsConfig, ImportMap, Realm } from 'fino:realm';
 *
 * new Realm({
 *   entry: './worker.ts',
-*   providers: { fs: new DiskFsConfig({ root: '/srv/app' }) },
+*   overrides: ImportMap.deny([new DiskFsConfig({ root: '/srv/app' })]),
 * });
 * ```
 */
@@ -1383,8 +1408,8 @@ export class DiskFsConfig {
   /**
   * Serialize this provider config.
   *
-  * The result includes the provider type and any configured options. It is
-  * suitable for legacy config persistence, not for direct import-rule use.
+  * The result includes the provider type and any configured options, for
+  * config persistence; use `toRules()` for import-rule expansion.
   *
   * ```ts no_run
   * import { DiskFsConfig } from 'fino:realm';
@@ -1418,8 +1443,8 @@ export class DiskFsConfig {
   /**
   * Convert this provider config into import rules.
   *
-  * Disk filesystem config inherits the runtime file bindings, matching the
-  * legacy system default behavior.
+  * Disk filesystem config inherits the runtime file bindings — the system
+  * default behavior, granted explicitly.
   *
   * ```ts no_run
   * import { DiskFsConfig } from 'fino:realm';
@@ -1442,13 +1467,16 @@ export class DiskFsConfig {
 /**
 * Use the system network stack for this realm.
 *
-* This legacy provider config maps the network provider import back to the
-* inherited system provider.
+* A rule builder mapping the network provider import to the inherited system
+* provider; place it inside `overrides`.
 *
 * ```ts no_run
-* import { Realm, SystemNetConfig } from 'fino:realm';
+* import { ImportMap, Realm, SystemNetConfig } from 'fino:realm';
 *
-* new Realm({ entry: './worker.ts', providers: { net: new SystemNetConfig() } });
+* new Realm({
+*   entry: './worker.ts',
+*   overrides: ImportMap.deny([new SystemNetConfig()]),
+* });
 * ```
 */
 export class SystemNetConfig {
@@ -1514,13 +1542,16 @@ export class SystemNetConfig {
 /**
 * Use the system DNS resolver for this realm.
 *
-* This legacy provider config maps DNS provider imports back to the inherited
-* system resolver.
+* A rule builder mapping DNS provider imports to the inherited system
+* resolver; place it inside `overrides`.
 *
 * ```ts no_run
-* import { Realm, SystemDnsConfig } from 'fino:realm';
+* import { ImportMap, Realm, SystemDnsConfig } from 'fino:realm';
 *
-* new Realm({ entry: './worker.ts', providers: { dns: new SystemDnsConfig() } });
+* new Realm({
+*   entry: './worker.ts',
+*   overrides: ImportMap.deny([new SystemDnsConfig()]),
+* });
 * ```
 */
 export class SystemDnsConfig {
@@ -1587,59 +1618,6 @@ export class SystemDnsConfig {
 // Realm options
 // ---------------------------------------------------------------------------
 /**
-* Legacy provider overrides installed in a child realm.
-*
-* Prefer `RealmOptions.overrides` with explicit import rules for new code.
-* Unspecified providers are inherited from the parent realm.
-*
-* ```ts no_run
-* import { DiskFsConfig, type RealmProviders } from 'fino:realm';
-*
-* const providers: RealmProviders = {
-*   fs: new DiskFsConfig({ root: '/srv/app' }),
-* };
-* ```
-*/
-export interface RealmProviders {
-  /**
-  * Filesystem provider override.
-  *
-  * When omitted, filesystem bindings are inherited. This compatibility field
-  * currently supports the disk filesystem provider config.
-  *
-  * ```ts no_run
-  * import { DiskFsConfig, type RealmProviders } from 'fino:realm';
-  *
-  * const providers: RealmProviders = { fs: new DiskFsConfig() };
-  * ```
-  */
-  fs?: DiskFsConfig;
-  /**
-  * Network provider override.
-  *
-  * When omitted, network provider bindings are inherited.
-  *
-  * ```ts no_run
-  * import { SystemNetConfig, type RealmProviders } from 'fino:realm';
-  *
-  * const providers: RealmProviders = { net: new SystemNetConfig() };
-  * ```
-  */
-  net?: SystemNetConfig;
-  /**
-  * DNS provider override.
-  *
-  * When omitted, DNS provider bindings are inherited.
-  *
-  * ```ts no_run
-  * import { SystemDnsConfig, type RealmProviders } from 'fino:realm';
-  *
-  * const providers: RealmProviders = { dns: new SystemDnsConfig() };
-  * ```
-  */
-  dns?: SystemDnsConfig;
-}
-/**
 * Options for constructing and running a child realm.
 *
 * `process: true` requests an OS-process isolation boundary. Without it, node
@@ -1704,41 +1682,22 @@ export interface RealmOptions {
   * ```ts no_run
   * import { ImportMap, type RealmOptions } from 'fino:realm';
   *
-  * const options: RealmOptions = {
-  *   entry: './worker.ts',
-  *   overrides: ImportMap.deny([{ pattern: './api.ts', directive: 'inherit' }]),
-  * };
-  * ```
-  */
-  overrides?: ImportMap | ImportRule[];
-  /**
-  * @deprecated Use `overrides` with explicit ImportRule entries instead.
-  * Override specific I/O providers. Unspecified providers are inherited.
+  * Entries may be literal rules or rule builders such as `DiskFsConfig` —
+  * anything with `toRules()` expands in place.
   *
   * ```ts no_run
-  * import { DiskFsConfig, type RealmOptions } from 'fino:realm';
+  * import { DiskFsConfig, ImportMap, type RealmOptions } from 'fino:realm';
   *
   * const options: RealmOptions = {
   *   entry: './worker.ts',
-  *   providers: { fs: new DiskFsConfig() },
+  *   overrides: ImportMap.deny([
+  *     new DiskFsConfig({ root: '/srv/app' }),
+  *     { pattern: './api.ts', directive: 'inherit' },
+  *   ]),
   * };
   * ```
   */
-  providers?: RealmProviders;
-  /**
-  * @deprecated Use `overrides` with `{ pattern, directive: 'block' }` instead.
-  * Module specifiers that should throw on import in the child Realm.
-  *
-  * ```ts no_run
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const options: RealmOptions = {
-  *   entry: './worker.ts',
-  *   blocked: ['fino:process'],
-  * };
-  * ```
-  */
-  blocked?: string[];
+  overrides?: ImportMap | ImportRuleInput[];
   /**
   * If true, spawn the child Realm as a separate OS process for hard crash
   * isolation and OS-level sandbox enforcement. Messaging uses framed binary
@@ -2190,23 +2149,12 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (!transpiled.ok) {
       throw new Error(transpiled.errors.map((error) => error.message).join('\n') || 'Unable to transpile Realm source');
     }
+    if ('providers' in options || 'blocked' in options) {
+      throw new TypeError("fino:realm — providers/blocked were removed; pass the config classes (or block rules) inside overrides");
+    }
     const rules: ImportRule[] = [];
     if (options.overrides) {
-      const src = options.overrides instanceof ImportMap ? options.overrides.toRules() : options.overrides;
-      rules.push(...src);
-    } else {
-      if (options.providers) {
-        const { fs, net, dns } = options.providers;
-        if (fs) rules.push(...fs.toRules());
-        if (net) rules.push(...net.toRules());
-        if (dns) rules.push(...dns.toRules());
-      }
-      if (options.blocked) {
-        for (const spec of options.blocked) rules.push({
-          pattern: spec,
-          directive: 'block'
-        });
-      }
+      rules.push(...(options.overrides instanceof ImportMap ? options.overrides.toRules() : _flattenRules(options.overrides)));
     }
     rules.push({
       pattern: specifier,
@@ -2216,7 +2164,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         source_map: options.sourceMap ?? transpiled.map ?? ''
       }
     });
-    const { specifier: _specifier, sourceMap: _sourceMap, providers: _providers, blocked: _blocked, ...realmOptions } = options;
+    const { specifier: _specifier, sourceMap: _sourceMap, ...realmOptions } = options;
     return new Realm<F>({
       ...realmOptions,
       entry: specifier,
@@ -2254,24 +2202,12 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (opts.priority !== undefined && !['interactive', 'service', 'background'].includes(opts.priority)) {
       throw new TypeError("fino:realm — priority must be 'interactive', 'service', or 'background'");
     }
-    // Build the child-specific rule list from overrides / legacy providers+blocked.
+    if ('providers' in opts || 'blocked' in opts) {
+      throw new TypeError("fino:realm — providers/blocked were removed; pass the config classes (or block rules) inside overrides, e.g. overrides: ImportMap.inherit([new DiskFsConfig(), { pattern: 'fino:ffi', directive: 'block' }])");
+    }
     const rules: ImportRule[] = [];
     if (opts.overrides) {
-      const src = opts.overrides instanceof ImportMap ? opts.overrides.toRules() : opts.overrides;
-      rules.push(...src);
-    } else {
-      if (opts.providers) {
-        const { fs, net, dns } = opts.providers;
-        if (fs) rules.push(...fs.toRules());
-        if (net) rules.push(...net.toRules());
-        if (dns) rules.push(...dns.toRules());
-      }
-      if (opts.blocked) {
-        for (const spec of opts.blocked) rules.push({
-          pattern: spec,
-          directive: 'block'
-        });
-      }
+      rules.push(...(opts.overrides instanceof ImportMap ? opts.overrides.toRules() : _flattenRules(opts.overrides)));
     }
     if (repl) {
       rules.push({
