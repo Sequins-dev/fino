@@ -14,7 +14,7 @@
 *
 * @internal
 */
-import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
+import { clusterOrchestrator, type ClusterRealmAllocation } from 'internal:orchestrator/cluster-orchestrator';
 import type { RealmWorkloadSpec } from 'internal:orchestrator/node-orchestrator';
 import { getAllocationPortInfo } from 'internal:realm-bridge';
 import { PortRpc, type WireCodec } from 'internal:realm/port-rpc';
@@ -184,9 +184,15 @@ function hasAllocationPort(): boolean {
   return info !== undefined;
 }
 
-function allocateLocalRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | null {
+function allocateLocalRealm(config: RealmWorkloadSpec): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
   const placed = clusterOrchestrator.allocateRealm(config);
   if (placed === null) return null;
+  if (placed instanceof Promise) return placed.then((allocation) => wireAllocation(allocation));
+  return wireAllocation(placed);
+}
+
+/** Serve the allocation's control port and shape it for `Realm`. */
+function wireAllocation(placed: ClusterRealmAllocation): ScheduledRealmAllocation {
   const released = placed.released;
   const allocationPort = new ThreadPort(placed.allocationPortWakeFd, placed.allocationPortHandle);
   serveAllocationPort(allocationPort, released);

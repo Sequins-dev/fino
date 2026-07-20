@@ -63,6 +63,16 @@ class, a cluster port type, or another realm-driving loop.
 - `SeedServer` admits peers, distributes `WELCOME`/`PEER_UP`/`PEER_DOWN`, and
   expires silent members.
 - The wire protocol contains membership messages only.
+- Cluster orchestration holds every node through the `ClusterNode` contract
+  (`internal:orchestrator/cluster-orchestrator`): start, admissionCapacity,
+  allocateRealm, whenReleased, revoke, shutdown. `NodeOrchestrator` satisfies
+  it in-process; the remote implementation satisfies the same methods as
+  JSON-RPC over a per-peer control channel on the QUIC mesh, so local and
+  remote nodes are interacted with uniformly. Admission is async-capable end
+  to end (`allocateRealm` may return a promise, and the whole consumer chain
+  down through `Realm` already tolerates it); a remote allocation will also
+  need a transport-neutral port reference in place of in-process transit
+  handles when the network port lands.
 
 The former `SPAWN`, `SPAWN_ACK`, `PORT_MSG`, `REALM_EXIT`, `ClusterPort`, and
 `RealmRegistry` prototype has been removed. It bypassed node admission, called
