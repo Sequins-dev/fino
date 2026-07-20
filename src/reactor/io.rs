@@ -10,11 +10,8 @@ use std::time::{Duration, Instant};
 
 use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum Owner {
-    Host(usize),
-    Workload(u64),
-}
+/// The workload (engine id) that registered an operation.
+pub(crate) type Owner = u64;
 
 #[cfg(test)]
 mod tests {
@@ -28,8 +25,8 @@ mod tests {
         let first = v8::ArrayBuffer::new_backing_store_from_vec(vec![0_u8; 8]).make_shared();
         let first_ptr = first.data().unwrap().as_ptr().cast::<u8>();
         io.submit_read(
-            Owner::Workload(1),
-            Target::Workload {
+            1,
+            Target {
                 id: 1,
                 resolver_id: 1,
             },
@@ -42,8 +39,8 @@ mod tests {
         let second_ptr = second.data().unwrap().as_ptr().cast::<u8>();
 
         io.submit_read(
-            Owner::Workload(1),
-            Target::Workload {
+            1,
+            Target {
                 id: 1,
                 resolver_id: 2,
             },
@@ -62,9 +59,11 @@ mod tests {
     }
 }
 
-pub(crate) enum Target {
-    Host(v8::Global<v8::PromiseResolver>),
-    Workload { id: u64, resolver_id: usize },
+/// Where a completion resolves: a resolver slot in the owning workload.
+#[derive(Clone, Copy)]
+pub(crate) struct Target {
+    pub id: u64,
+    pub resolver_id: usize,
 }
 
 pub(crate) struct Resolved {
@@ -77,12 +76,6 @@ pub(crate) struct Counts {
     pub reads: u32,
     pub writes: u32,
     pub timers: u32,
-}
-
-impl Counts {
-    pub fn total(self) -> u32 {
-        self.reads + self.writes + self.timers
-    }
 }
 
 pub(crate) enum Transfer {
@@ -179,6 +172,7 @@ impl RuntimeIo {
         }
     }
 
+    #[cfg(test)]
     pub fn create() -> std::io::Result<Self> {
         Reactor::new().map(Self::new)
     }
@@ -445,12 +439,6 @@ impl RuntimeIo {
         self.timers.insert(timer_id, id);
     }
 
-    pub fn submit_host_timer(&mut self, owner: Owner, target: Target, ms: u64) -> u64 {
-        let timer_id = self.next_id;
-        self.submit_timer(owner, target, timer_id, ms, true);
-        timer_id
-    }
-
     pub fn cancel_timer(&mut self, timer_id: u64) {
         if let Some(id) = self.timers.remove(&timer_id) {
             self.reactor.cancel(id);
@@ -687,20 +675,17 @@ impl RuntimeIo {
     }
 
     pub fn detach_workload(&mut self, owner: u64) -> Vec<Transfer> {
-        let owner = Owner::Workload(owner);
         let ids: Vec<u64> = self
             .records
             .iter()
             .filter_map(|(id, record)| match record {
                 Record::Read {
                     owner: record_owner,
-                    target: Target::Workload { .. },
                     buffer: None,
                     ..
                 }
                 | Record::Timer {
                     owner: record_owner,
-                    target: Target::Workload { .. },
                     ..
                 } if *record_owner == owner => Some(*id),
                 _ => None,
@@ -714,7 +699,7 @@ impl RuntimeIo {
             };
             match record {
                 Record::Read {
-                    target: Target::Workload { resolver_id, .. },
+                    target: Target { resolver_id, .. },
                     fd,
                     ..
                 } => {
@@ -731,7 +716,7 @@ impl RuntimeIo {
                     });
                 }
                 Record::Timer {
-                    target: Target::Workload { resolver_id, .. },
+                    target: Target { resolver_id, .. },
                     timer_id,
                     deadline,
                     referenced,
@@ -759,8 +744,8 @@ impl RuntimeIo {
                     fd,
                     read,
                 } => self.submit_readiness(
-                    Owner::Workload(owner),
-                    Target::Workload {
+                    owner,
+                    Target {
                         id: owner,
                         resolver_id,
                     },
@@ -773,8 +758,8 @@ impl RuntimeIo {
                     deadline,
                     referenced,
                 } => self.submit_timer(
-                    Owner::Workload(owner),
-                    Target::Workload {
+                    owner,
+                    Target {
                         id: owner,
                         resolver_id,
                     },

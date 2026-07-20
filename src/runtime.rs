@@ -236,11 +236,7 @@ pub(crate) fn service_sync_call(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
-    let (maybe_fn, maybe_resolver) = {
-        let mut st = state_rc.borrow_mut();
-        (st.sync_call_fn.take(), st.sync_call_resolver.take())
-    };
-    let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) else {
+    let Some((fn_ref, resolver_ref)) = state_rc.borrow_mut().sync_calls.pop_front() else {
         return false;
     };
     // Call fn() and capture result/exception as globals so TryCatch can drop.
@@ -344,7 +340,7 @@ pub(crate) fn native_drive_step_nonblocking(
         }
         pump_and_checkpoint(scope);
 
-        let sync_pending = state_rc.borrow().sync_call_fn.is_some();
+        let sync_pending = !state_rc.borrow().sync_calls.is_empty();
         if flushed || serviced || sync_pending {
             continue;
         }
@@ -356,16 +352,11 @@ pub(crate) fn native_drive_step_nonblocking(
         return false;
     };
 
-    let owner = std::rc::Rc::as_ptr(state_rc) as usize;
-    let live = crate::reactor::drive_live(owner) || scope.has_pending_background_tasks();
-    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-        eprintln!(
-            "[native-drive] done={done} reactor_live={} bg_tasks={} counts={}",
-            crate::reactor::drive_live(owner),
-            scope.has_pending_background_tasks(),
-            crate::reactor::drive_counts_debug(owner),
-        );
-    }
+    // Atomics.waitAsync waiters settle cross-thread with no reactor
+    // registration, and V8 background work posts foreground tasks the same
+    // way — both must hold the realm open. Reactor-handle liveness is the JS
+    // policy hook's concern (loop alive()).
+    let live = crate::reactor::drive_needs_poll() || scope.has_pending_background_tasks();
     if done && !live {
         return false;
     }

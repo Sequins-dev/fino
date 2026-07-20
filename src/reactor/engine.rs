@@ -279,8 +279,6 @@ thread_local! {
     static ENGINE_CONTEXT: Cell<(*mut imp::EngineResources, u64)> = const {
         Cell::new((std::ptr::null_mut(), 0))
     };
-    /// Monotonic timer id source for engine-mode timers.
-    static ENGINE_TIMER_SEQ: RefCell<u64> = const { RefCell::new(1) };
 }
 
 #[derive(Clone, Copy)]
@@ -374,14 +372,12 @@ impl Drop for EngineOwnerScope {
     }
 }
 
-/// Allocate a fresh engine-mode timer id.
+/// Allocate a fresh timer id. Process-global: timers survive cross-thread
+/// workload moves keyed by this id in the destination's timer map, so two
+/// threads' sequences must never collide.
 pub(crate) fn engine_next_timer_id() -> u64 {
-    ENGINE_TIMER_SEQ.with(|c| {
-        let mut v = c.borrow_mut();
-        let id = *v;
-        *v += 1;
-        id
-    })
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 // ===========================================================================
@@ -555,7 +551,7 @@ mod imp {
 
     impl EngineResources {
         pub(super) fn counts(&self, owner: u64) -> EngineCounts {
-            let counts = self.io.counts(crate::reactor::io::Owner::Workload(owner));
+            let counts = self.io.counts(owner);
             EngineCounts {
                 reads: counts.reads,
                 writes: counts.writes,
@@ -576,10 +572,10 @@ mod imp {
         }
 
         pub(super) fn apply_registration(&mut self, owner_id: u64, reg: EngineReg) {
-            let owner = crate::reactor::io::Owner::Workload(owner_id);
+            let owner = owner_id;
             match reg {
                 EngineReg::Io(io) => {
-                    let target = crate::reactor::io::Target::Workload {
+                    let target = crate::reactor::io::Target {
                         id: owner_id,
                         resolver_id: io.resolver_id,
                     };
@@ -611,7 +607,7 @@ mod imp {
                     resolver_id,
                 } => self.io.submit_timer(
                     owner,
-                    crate::reactor::io::Target::Workload {
+                    crate::reactor::io::Target {
                         id: owner_id,
                         resolver_id,
                     },
@@ -1063,11 +1059,7 @@ mod imp {
                 let r = unsafe { &mut *resources };
                 match r.io.dispatch(user_data, res) {
                     crate::reactor::io::Dispatch::Resolved(resolved) => {
-                        let crate::reactor::io::Target::Workload { id, resolver_id } =
-                            resolved.target
-                        else {
-                            unreachable!("host completion on reactor engine")
-                        };
+                        let crate::reactor::io::Target { id, resolver_id } = resolved.target;
                         if id == owner {
                             Some(Inline::Resolve {
                                 resolver_id,
@@ -1424,12 +1416,17 @@ mod imp {
                         self.resources.io.notifier(),
                         post_wake(workload_id),
                     );
+                    // A completion delivered on the source just before the
+                    // move travels in `ready_events` — no wake will ever
+                    // re-announce it, so an arriving backlog must make the
+                    // workload runnable or it parks forever.
+                    let has_ready = !workload.workload.ready_events.is_empty();
                     self.workloads.insert(workload_id, workload.workload);
                     self.resources
                         .io
                         .attach_workload(workload_id, workload.operations);
                     self.incoming.remove(&workload_id);
-                    if self.early_wakes.remove(&workload_id) {
+                    if self.early_wakes.remove(&workload_id) || has_ready {
                         self.runnable.insert(workload_id);
                     }
                     self.report(Report::Moved { workload_id });
@@ -1790,10 +1787,7 @@ mod imp {
         fn on_completion(&mut self, user_data: u64, res: i32) {
             match self.resources.io.dispatch(user_data, res) {
                 crate::reactor::io::Dispatch::Resolved(resolved) => {
-                    let crate::reactor::io::Target::Workload { id, resolver_id } = resolved.target
-                    else {
-                        unreachable!("host completion on reactor engine")
-                    };
+                    let crate::reactor::io::Target { id, resolver_id } = resolved.target;
                     self.deliver_completion(id, resolver_id, resolved.result);
                     self.finish_forwarding_if_drained(id);
                 }
@@ -1881,10 +1875,7 @@ mod imp {
             if !self.forwarded.contains_key(&owner) {
                 return;
             }
-            let pending = self
-                .resources
-                .io
-                .has_owner(crate::reactor::io::Owner::Workload(owner));
+            let pending = self.resources.io.has_owner(owner);
             if !pending {
                 self.forwarded.remove(&owner);
             }
@@ -1918,9 +1909,7 @@ mod imp {
         /// CANCELED completion is harvested, so the buffer — and the isolate
         /// that owns its memory — must stay alive until then.
         fn cancel_owned(&mut self, id: u64) {
-            self.resources
-                .io
-                .cancel_owner(crate::reactor::io::Owner::Workload(id));
+            self.resources.io.cancel_owner(id);
             let external: Vec<u64> = self
                 .resources
                 .external

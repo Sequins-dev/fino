@@ -329,9 +329,13 @@ pub struct FinoState {
     // Pending synchronous call (set by JS scheduleSync() from internal:async-context)
     // ---------------------------------------------------------------------------
     /// Function to call from outside the microtask checkpoint (so spin() works).
-    pub sync_call_fn: Option<v8::Global<v8::Function>>,
-    /// Promise resolver to settle after calling sync_call_fn.
-    pub sync_call_resolver: Option<v8::Global<v8::PromiseResolver>>,
+    /// FIFO of functions to call outside any microtask checkpoint, each with
+    /// the resolver that settles its `scheduleSync` promise. A queue, not a
+    /// slot: concurrent schedulers (e.g. parallel test files in one realm)
+    /// must never overwrite — a displaced entry's promise would simply never
+    /// settle, wedging its awaiter forever.
+    pub sync_calls:
+        std::collections::VecDeque<(v8::Global<v8::Function>, v8::Global<v8::PromiseResolver>)>,
 
     // ---------------------------------------------------------------------------
     // Pending resolutions from Rust async futures (future_to_promise)
@@ -455,8 +459,7 @@ impl FinoState {
             transpile_fn: None,
             on_done_fn: None,
             native_loop: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
+            sync_calls: std::collections::VecDeque::new(),
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
@@ -510,8 +513,7 @@ impl FinoState {
             transpile_fn: None,
             on_done_fn: None,
             native_loop: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
+            sync_calls: std::collections::VecDeque::new(),
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,

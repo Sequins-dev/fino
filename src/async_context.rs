@@ -138,8 +138,9 @@ fn schedule_sync(
 
     let state_rc = get_state(scope);
     let mut st = state_rc.borrow_mut();
-    st.sync_call_fn = Some(v8::Global::new(scope, fn_obj));
-    st.sync_call_resolver = Some(v8::Global::new(scope, resolver));
+    let fn_global = v8::Global::new(scope, fn_obj);
+    let resolver_global = v8::Global::new(scope, resolver);
+    st.sync_calls.push_back((fn_global, resolver_global));
     if loop_debug_enabled() {
         eprintln!("[async-context] scheduleSync queued");
     }

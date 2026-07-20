@@ -81,10 +81,6 @@ impl WakeSink {
     pub fn install_notifier(&self, notifier: cherenkov::Notifier, user_data: u64) {
         *self.0.notifier.write().unwrap() = Some((notifier, user_data));
     }
-
-    pub fn notifier_installed(&self) -> bool {
-        self.0.notifier.read().unwrap().is_some()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -313,25 +309,6 @@ pub fn release_handle() -> Option<(ViewReleaseQueue, WakeSink)> {
 /// thread — e.g. reactor-engine load reports waking the orchestrator).
 pub fn wake_sink() -> Option<WakeSink> {
     STATE.with(|s| s.borrow().as_ref().map(|st| st.wake_sink.clone()))
-}
-
-/// Upgrade or reroute the current isolate's wake sink to a reactor post.
-pub fn install_wake_notifier(notifier: cherenkov::Notifier, user_data: u64) {
-    STATE.with(|s| {
-        if let Some(state) = s.borrow().as_ref() {
-            state.wake_sink.install_notifier(notifier, user_data);
-        }
-    })
-}
-
-/// Whether the current isolate's wakes already post into a reactor.
-pub fn wake_notifier_installed() -> bool {
-    STATE.with(|s| {
-        s.borrow()
-            .as_ref()
-            .map(|st| st.wake_sink.notifier_installed())
-            .unwrap_or(false)
-    })
 }
 
 /// Poll the executor once. Returns true if a task ran.

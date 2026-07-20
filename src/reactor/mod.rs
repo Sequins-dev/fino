@@ -1,11 +1,11 @@
 //! `internal:reactor-native` — the realm loop's native reactor bridge.
 //!
-//! The synthetic module routes a realm's asynchronous operations to the one
-//! Cherenkov completion reactor owned by its thread. Reactor-engine workloads
-//! register owner-tagged operations directly with [`io::RuntimeIo`]; the host
-//! loop uses a small adapter that stores V8 globals while its isolate is
-//! entered. Both paths share buffer retention, readiness, transfer, timer,
-//! cancellation, and liveness bookkeeping in [`io`].
+//! The synthetic module routes a realm's asynchronous operations to its
+//! hosting reactor engine: every JS thread (the process root included) runs
+//! the same [`engine`] drive loop, so each op registers an owner-tagged
+//! operation with the engine's shared [`io::RuntimeIo`] through the entered
+//! workload's `ENGINE_CONTEXT`. Buffer retention, readiness, transfer, timer,
+//! cancellation, and liveness bookkeeping live in [`io`].
 //!
 //! It is exposed to JS as the synthetic module `internal:reactor-native` and is
 //! wrapped by the `internal:runtime/loop` builtin, which presents the runtime
@@ -91,28 +91,9 @@ fn eval_steps<'a>(
     Some(v8::undefined(scope).into())
 }
 
-/// Whether the given realm (FinoState pointer identity) has reactor work
-/// that must keep it alive (its live handles + atomics waiters). Non-creating.
-#[cfg(unix)]
-pub(crate) fn drive_live(owner: usize) -> bool {
-    imp::drive_live(owner)
-}
-#[cfg(not(unix))]
-pub(crate) fn drive_live(_owner: usize) -> bool {
-    false
-}
-
-/// Debug string of the given realm's live-handle counters (FINO_LOOP_DEBUG).
-#[cfg(unix)]
-pub(crate) fn drive_counts_debug(owner: usize) -> String {
-    imp::drive_counts_debug(owner)
-}
-#[cfg(not(unix))]
-pub(crate) fn drive_counts_debug(_owner: usize) -> String {
-    String::new()
-}
-
-/// Whether the native host loop must use a bounded wait instead of blocking.
+/// Whether the drive loop must use a bounded re-pump instead of parking: an
+/// Atomics.waitAsync resolution posts a V8 foreground task without waking the
+/// reactor.
 #[cfg(unix)]
 pub(crate) fn drive_needs_poll() -> bool {
     imp::drive_needs_poll()
@@ -127,17 +108,11 @@ pub(crate) fn drive_needs_poll() -> bool {
 // ===========================================================================
 #[cfg(unix)]
 mod imp {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::ffi::c_void;
     use std::time::Duration;
 
     use ::v8;
-    use cherenkov::{Completion, Op, Source, WatchId, err, fs_event};
-
-    /// Notifier post tags live in a namespace disjoint from op tags: ops use a
-    /// monotonic counter with bit 63 clear; posts set bit 63.
-    pub(crate) const POST_FFI_WAKE: u64 = 1 << 63;
+    use cherenkov::fs_event;
 
     // kqueue NOTE_* values — the `{fflags}` vocabulary of the loop's vnode
     // callback contract on every platform (loop.ts dispatches these verbatim
@@ -146,115 +121,6 @@ mod imp {
     const NOTE_WRITE: u32 = 0x2;
     const NOTE_ATTRIB: u32 = 0x8;
     const NOTE_RENAME: u32 = 0x20;
-
-    /// What a reactor completion (keyed by `user_data`) resolves to. Every
-    /// alive-counting record carries its `owner` — the realm (`FinoState`
-    /// pointer) that registered it — so each scheduled realm's liveness is
-    /// independent.
-    enum Pending {
-        Proc {
-            owner: usize,
-            resolver: v8::Global<v8::PromiseResolver>,
-        },
-        /// The armed WatchNext of the fs watch adapting `vnodes[fd]`.
-        VnodeNext { fd: i32 },
-        /// The armed WatchNext of the signal watch adapting `signals[signo]`.
-        SignalNext { signo: i32 },
-        /// A persistent wake source: drain the fd and re-arm.
-        WakeSource { fd: i32 },
-    }
-
-    struct VnodeEntry {
-        owner: usize,
-        watch: WatchId,
-        cb: v8::Global<v8::Function>,
-    }
-
-    struct SignalEntry {
-        watch: WatchId,
-        cb: v8::Global<v8::Function>,
-    }
-
-    /// Per-realm live-handle counts. Signals and wake sources are deliberately
-    /// excluded — they must not keep a realm alive (matching loop.ts).
-    #[derive(Default, Clone, Copy)]
-    struct HandleCounts {
-        procs: usize,
-        vnodes: usize,
-    }
-
-    impl HandleCounts {
-        fn total(&self) -> usize {
-            self.procs + self.vnodes
-        }
-    }
-
-    struct NativeReactor {
-        io: crate::reactor::io::RuntimeIo,
-        ops: HashMap<u64, Pending>,
-        vnodes: HashMap<i32, VnodeEntry>,
-        signals: HashMap<i32, SignalEntry>,
-        /// Live-handle counts per owning realm (FinoState pointer identity).
-        alive_by_owner: HashMap<usize, HandleCounts>,
-        scratch: Vec<Completion>,
-    }
-
-    impl NativeReactor {
-        fn new() -> Self {
-            let io = crate::reactor::io::RuntimeIo::create()
-                .unwrap_or_else(|e| panic!("cherenkov::Reactor::new() failed: {e}"));
-            NativeReactor {
-                io,
-                ops: HashMap::new(),
-                vnodes: HashMap::new(),
-                signals: HashMap::new(),
-                alive_by_owner: HashMap::new(),
-                scratch: Vec::new(),
-            }
-        }
-
-        fn bump(&mut self, owner: usize, f: impl FnOnce(&mut HandleCounts)) {
-            let counts = self.alive_by_owner.entry(owner).or_default();
-            f(counts);
-            if counts.total() == 0 {
-                self.alive_by_owner.remove(&owner);
-            }
-        }
-
-        fn counts_for(&self, owner: usize) -> HandleCounts {
-            self.alive_by_owner.get(&owner).copied().unwrap_or_default()
-        }
-    }
-
-    /// The current realm's identity: the FinoState allocation address. Stable
-    /// for a realm's lifetime; used to key per-realm handle accounting.
-    fn owner_of(scope: &mut v8::HandleScope) -> usize {
-        std::rc::Rc::as_ptr(&crate::state::get_state(scope)) as usize
-    }
-
-    thread_local! {
-        // NOTE: dropped at thread exit in an unspecified order relative to the
-        // isolate's teardown — the same hazard the previous inline-kqueue
-        // thread_local had. The Globals inside are leaked, not dereferenced,
-        // if the isolate dies first.
-        static REACTOR: RefCell<Option<NativeReactor>> = const { RefCell::new(None) };
-    }
-
-    fn with_reactor<R>(f: impl FnOnce(&mut NativeReactor) -> R) -> R {
-        REACTOR.with(|cell| {
-            let mut slot = cell.borrow_mut();
-            if slot.is_none() {
-                *slot = Some(NativeReactor::new());
-            }
-            f(slot.as_mut().unwrap())
-        })
-    }
-
-    /// Non-creating access: engine workloads already use the engine's reactor,
-    /// so `alive`/`tick`/`activeHandleCounts` must not instantiate a second one.
-    fn with_reactor_opt<R>(f: impl FnOnce(&mut NativeReactor) -> R) -> Option<R> {
-        REACTOR.with(|cell| cell.borrow_mut().as_mut().map(f))
-    }
 
     fn errno() -> i32 {
         std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -374,18 +240,6 @@ mod imp {
         v8::Number::new(scope, n).into()
     }
 
-    fn resolve_num(scope: &mut v8::HandleScope, g: &v8::Global<v8::PromiseResolver>, n: f64) {
-        let resolver = v8::Local::new(scope, g);
-        let val = num(scope, n);
-        resolver.resolve(scope, val);
-    }
-
-    fn resolve_undef(scope: &mut v8::HandleScope, g: &v8::Global<v8::PromiseResolver>) {
-        let resolver = v8::Local::new(scope, g);
-        let undef = v8::undefined(scope).into();
-        resolver.resolve(scope, undef);
-    }
-
     /// Create a fresh resolver, set its promise as the callback return value,
     /// and hand the caller the live resolver `Local` to settle synchronously.
     fn new_resolver<'s>(
@@ -408,19 +262,7 @@ mod imp {
         let fd = arg_i32(scope, &args, 0);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
-        if crate::reactor::engine::engine_io_active() {
-            engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Readable);
-            return;
-        }
-        let owner = owner_of(scope);
-        with_reactor(|r| {
-            r.io.submit_readiness(
-                crate::reactor::io::Owner::Host(owner),
-                crate::reactor::io::Target::Host(g),
-                fd,
-                true,
-            );
-        });
+        engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Readable);
     }
 
     /// Register a bare-readiness op (readable/writable) with the reactor engine.
@@ -451,19 +293,7 @@ mod imp {
         let fd = arg_i32(scope, &args, 0);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
-        if crate::reactor::engine::engine_io_active() {
-            engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Writable);
-            return;
-        }
-        let owner = owner_of(scope);
-        with_reactor(|r| {
-            r.io.submit_readiness(
-                crate::reactor::io::Owner::Host(owner),
-                crate::reactor::io::Target::Host(g),
-                fd,
-                false,
-            );
-        });
+        engine_register_readiness(g, fd, crate::reactor::engine::IoKind::Writable);
     }
 
     // --- fused transfer ---------------------------------------------------
@@ -511,35 +341,21 @@ mod imp {
             Some(store) => store,
             None => return,
         };
-        // Engine mode: register with the reactor engine (isolate-tagged, completed
-        // off-isolate and resolved during the next pump) rather than the inline
-        // per-thread reactor. The buffer is realm-provided; we retain it for liveness.
-        if crate::reactor::engine::engine_io_active() {
-            let resolver_id = crate::async_rt::push_resolver(g_res);
-            crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Io(
-                crate::reactor::engine::PendingIoReg {
-                    fd,
-                    kind: crate::reactor::engine::IoKind::Read,
-                    resolver_id,
-                    buffer: Some(backing_store),
-                    buf_ptr: ptr,
-                    len,
-                    written: 0,
-                },
-            ));
-            return;
-        }
-        let owner = owner_of(scope);
-        with_reactor(|r| {
-            r.io.submit_read(
-                crate::reactor::io::Owner::Host(owner),
-                crate::reactor::io::Target::Host(g_res),
-                backing_store,
+        // Register with the reactor engine: isolate-tagged, completed
+        // off-isolate and resolved during the next pump. The buffer is
+        // realm-provided; we retain it for liveness.
+        let resolver_id = crate::async_rt::push_resolver(g_res);
+        crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Io(
+            crate::reactor::engine::PendingIoReg {
                 fd,
-                ptr,
+                kind: crate::reactor::engine::IoKind::Read,
+                resolver_id,
+                buffer: Some(backing_store),
+                buf_ptr: ptr,
                 len,
-            );
-        });
+                written: 0,
+            },
+        ));
     }
 
     pub fn write_async(
@@ -575,36 +391,19 @@ mod imp {
                     Some(store) => store,
                     None => return,
                 };
-                // Engine mode: register the remaining write with the reactor engine.
-                if crate::reactor::engine::engine_io_active() {
-                    let resolver_id = crate::async_rt::push_resolver(g_res);
-                    crate::reactor::engine::engine_io_register(
-                        crate::reactor::engine::EngineReg::Io(
-                            crate::reactor::engine::PendingIoReg {
-                                fd,
-                                kind: crate::reactor::engine::IoKind::Write,
-                                resolver_id,
-                                buffer: Some(backing_store),
-                                buf_ptr: ptr,
-                                len,
-                                written,
-                            },
-                        ),
-                    );
-                    return;
-                }
-                let owner = owner_of(scope);
-                with_reactor(|r| {
-                    r.io.submit_write(
-                        crate::reactor::io::Owner::Host(owner),
-                        crate::reactor::io::Target::Host(g_res),
-                        backing_store,
+                // Register the remaining write with the reactor engine.
+                let resolver_id = crate::async_rt::push_resolver(g_res);
+                crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Io(
+                    crate::reactor::engine::PendingIoReg {
                         fd,
-                        ptr,
+                        kind: crate::reactor::engine::IoKind::Write,
+                        resolver_id,
+                        buffer: Some(backing_store),
+                        buf_ptr: ptr,
                         len,
                         written,
-                    );
-                });
+                    },
+                ));
             }
         }
     }
@@ -676,7 +475,7 @@ mod imp {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let g = v8::Global::new(scope, resolver);
-        let id = if crate::reactor::engine::engine_io_active() {
+        let id = {
             let timer_id = crate::reactor::engine::engine_next_timer_id();
             let resolver_id = crate::async_rt::push_resolver(g);
             crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Timer {
@@ -685,15 +484,6 @@ mod imp {
                 resolver_id,
             });
             timer_id
-        } else {
-            let owner = owner_of(scope);
-            with_reactor(|r| {
-                r.io.submit_host_timer(
-                    crate::reactor::io::Owner::Host(owner),
-                    crate::reactor::io::Target::Host(g),
-                    ms as u64,
-                )
-            })
         };
         let out = v8::Object::new(scope);
         let k_id = v8::String::new(scope, "id").unwrap();
@@ -710,13 +500,9 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let id = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
-        if crate::reactor::engine::engine_io_active() {
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::CancelTimer { timer_id: id },
-            );
-            return;
-        }
-        with_reactor(|r| r.io.cancel_timer(id));
+        crate::reactor::engine::engine_io_register(
+            crate::reactor::engine::EngineReg::CancelTimer { timer_id: id },
+        );
     }
 
     pub fn set_timer_ref(
@@ -726,16 +512,12 @@ mod imp {
     ) {
         let id = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
         let referenced = args.get(1).boolean_value(scope);
-        if crate::reactor::engine::engine_io_active() {
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::SetTimerRef {
-                    timer_id: id,
-                    referenced,
-                },
-            );
-            return;
-        }
-        with_reactor(|r| r.io.set_timer_ref(id, referenced));
+        crate::reactor::engine::engine_io_register(
+            crate::reactor::engine::EngineReg::SetTimerRef {
+                timer_id: id,
+                referenced,
+            },
+        );
     }
 
     // --- proc / vnode / signal -------------------------------------------
@@ -748,26 +530,13 @@ mod imp {
         let pid = arg_i32(scope, &args, 0);
         let resolver = new_resolver(scope, &mut rv);
         let g = v8::Global::new(scope, resolver);
-        if crate::reactor::engine::engine_io_active() {
-            let resolver_id = crate::async_rt::push_resolver(g);
-            crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Proc {
-                pid: pid.max(0) as u32,
-                resolver_id,
-            });
-            return;
-        }
-        let owner = owner_of(scope);
-        with_reactor(|r| {
-            let ud = r.io.next_external_id();
-            // An already-exited pid completes with a synthesized error on the
-            // next tick; dispatch resolves on ANY completion, so the caller can
-            // always proceed to reap.
-            r.io.submit_proc_exit(ud, pid.max(0) as u32);
-            r.ops.insert(ud, Pending::Proc { owner, resolver: g });
-            r.bump(owner, |c| c.procs += 1);
-            if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                eprintln!("[reactor] proc({pid}) -> ud {ud}");
-            }
+        // An already-exited pid completes with a synthesized error on the next
+        // harvest; delivery resolves on ANY completion, so the caller can
+        // always proceed to reap.
+        let resolver_id = crate::async_rt::push_resolver(g);
+        crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::Proc {
+            pid: pid.max(0) as u32,
+            resolver_id,
         });
     }
 
@@ -789,46 +558,13 @@ mod imp {
             None => return,
         };
         let g = v8::Global::new(scope, cb);
-        if crate::reactor::engine::engine_io_active() {
-            let callback_id = crate::async_rt::js_calls::register_callback(g);
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::AddVnode {
-                    fd,
-                    path,
-                    callback_id,
-                },
-            );
-            return;
-        }
-        let owner = owner_of(scope);
-        with_reactor(|r| {
-            if let Some(old) = r.vnodes.remove(&fd) {
-                let _ = r.io.remove_kernel_watch(old.watch);
-                r.bump(old.owner, |c| c.vnodes -= 1);
-            }
-            // Watch everything: watch.ts always subscribes ALL_NOTES, and the
-            // requested-mask arg predates the portable event set.
-            match r.io.add_fs_watch(&path, fs_event::ALL) {
-                Err(e) => {
-                    if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                        eprintln!("[reactor] addVnode fd {fd} path {path:?} failed: {e}");
-                    }
-                }
-                Ok(watch) => {
-                    let ud = r.io.next_external_id();
-                    r.io.submit_watch_next(ud, watch);
-                    r.ops.insert(ud, Pending::VnodeNext { fd });
-                    r.vnodes.insert(
-                        fd,
-                        VnodeEntry {
-                            owner,
-                            watch,
-                            cb: g,
-                        },
-                    );
-                    r.bump(owner, |c| c.vnodes += 1);
-                }
-            }
+        // Watch everything: watch.ts always subscribes ALL_NOTES, and the
+        // requested-mask arg predates the portable event set.
+        let callback_id = crate::async_rt::js_calls::register_callback(g);
+        crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::AddVnode {
+            fd,
+            path,
+            callback_id,
         });
     }
 
@@ -838,19 +574,9 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
-        if crate::reactor::engine::engine_io_active() {
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::RemoveVnode { fd },
-            );
-            return;
-        }
-        with_reactor(|r| {
-            if let Some(entry) = r.vnodes.remove(&fd) {
-                // The armed WatchNext completes CANCELED; dispatch drops it.
-                let _ = r.io.remove_kernel_watch(entry.watch);
-                r.bump(entry.owner, |c| c.vnodes -= 1);
-            }
-        });
+        crate::reactor::engine::engine_io_register(
+            crate::reactor::engine::EngineReg::RemoveVnode { fd },
+        );
     }
 
     pub fn add_signal(
@@ -864,25 +590,12 @@ mod imp {
             Err(_) => return,
         };
         let g = v8::Global::new(scope, cb);
-        if crate::reactor::engine::engine_io_active() {
-            let callback_id = crate::async_rt::js_calls::register_callback(g);
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::AddSignal { signo, callback_id },
-            );
-            return;
-        }
-        with_reactor(|r| {
-            if let Some(old) = r.signals.remove(&signo) {
-                let _ = r.io.remove_kernel_watch(old.watch);
-            }
-            // cherenkov installs a no-op handler (suppressing the default
-            // disposition) and restores the previous sigaction on remove.
-            if let Ok(watch) = r.io.add_signal_watch(signo) {
-                let ud = r.io.next_external_id();
-                r.io.submit_watch_next(ud, watch);
-                r.ops.insert(ud, Pending::SignalNext { signo });
-                r.signals.insert(signo, SignalEntry { watch, cb: g });
-            }
+        // cherenkov installs a no-op handler (suppressing the default
+        // disposition) and restores the previous sigaction on remove.
+        let callback_id = crate::async_rt::js_calls::register_callback(g);
+        crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::AddSignal {
+            signo,
+            callback_id,
         });
     }
 
@@ -892,17 +605,9 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let signo = arg_i32(scope, &args, 0);
-        if crate::reactor::engine::engine_io_active() {
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::RemoveSignal { signo },
-            );
-            return;
-        }
-        with_reactor(|r| {
-            if let Some(entry) = r.signals.remove(&signo) {
-                let _ = r.io.remove_kernel_watch(entry.watch);
-            }
-        });
+        crate::reactor::engine::engine_io_register(
+            crate::reactor::engine::EngineReg::RemoveSignal { signo },
+        );
     }
 
     // --- wake sources & removal ------------------------------------------
@@ -913,43 +618,14 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
-        // The isolate's async-runtime wake pipe upgrades to a Notifier post:
-        // background FFI threads then post straight into this thread's reactor
-        // instead of writing pipe bytes. If a reactor already claimed the sink
-        // (the engine claims a tenant's before its bootstrap runs), there is
-        // nothing to arm — and no reactor must be created on that thread.
+        // The isolate's async-runtime wake pipe needs no arming: the hosting
+        // reactor claims the workload's wake sink (post_wake-tagged) right
+        // after setup, so background FFI threads post straight into it.
         if fd == crate::async_rt::get_wake_read_fd() {
-            if crate::async_rt::wake_notifier_installed() {
-                return;
-            }
-            // On an engine thread the ENGINE claims the workload's sink right
-            // after setup (post_wake-tagged); installing a notifier here
-            // would win the first-install race with one from a stray
-            // thread-local reactor nobody waits on.
-            if crate::reactor::engine::engine_io_active() {
-                return;
-            }
-            with_reactor(|r| {
-                let notifier = r.io.notifier();
-                crate::async_rt::install_wake_notifier(notifier, POST_FFI_WAKE);
-            });
             return;
         }
-        if crate::reactor::engine::engine_io_active() {
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::WakeSource { fd },
-            );
-            return;
-        }
-        with_reactor(|r| {
-            let ud = r.io.next_external_id();
-            r.io.submit_external(
-                ud,
-                Op::PollIn {
-                    src: Source::fd(fd),
-                },
-            );
-            r.ops.insert(ud, Pending::WakeSource { fd });
+        crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::WakeSource {
+            fd,
         });
     }
 
@@ -959,13 +635,9 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
-        if crate::reactor::engine::engine_io_active() {
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::RemoveRead { fd },
-            );
-            return;
-        }
-        with_reactor(|r| r.io.remove_read(fd));
+        crate::reactor::engine::engine_io_register(crate::reactor::engine::EngineReg::RemoveRead {
+            fd,
+        });
     }
 
     pub fn remove_write(
@@ -974,13 +646,9 @@ mod imp {
         _rv: v8::ReturnValue,
     ) {
         let fd = arg_i32(scope, &args, 0);
-        if crate::reactor::engine::engine_io_active() {
-            crate::reactor::engine::engine_io_register(
-                crate::reactor::engine::EngineReg::RemoveWrite { fd },
-            );
-            return;
-        }
-        with_reactor(|r| r.io.remove_write(fd));
+        crate::reactor::engine::engine_io_register(
+            crate::reactor::engine::EngineReg::RemoveWrite { fd },
+        );
     }
 
     // --- liveness & introspection ----------------------------------------
@@ -990,18 +658,8 @@ mod imp {
         _args: v8::FunctionCallbackArguments,
         mut rv: v8::ReturnValue,
     ) {
-        let owner = owner_of(_scope);
-        let mut live = with_reactor_opt(|r| {
-            r.counts_for(owner).total() > 0
-                || r.io.counts(crate::reactor::io::Owner::Host(owner)).total() > 0
-        })
-        .unwrap_or(false);
-        // An engine-hosted realm's io/timers live in the ENGINE's op table,
-        // not this thread's reactor.
-        if !live && crate::reactor::engine::engine_io_active() {
-            live = crate::reactor::engine::engine_current_counts().total() > 0;
-        }
-        rv.set_bool(live);
+        // A realm's io/timers/watches live in its hosting engine's op tables.
+        rv.set_bool(crate::reactor::engine::engine_current_counts().total() > 0);
     }
 
     pub fn active_handle_counts(
@@ -1009,32 +667,14 @@ mod imp {
         _args: v8::FunctionCallbackArguments,
         mut rv: v8::ReturnValue,
     ) {
-        let owner = owner_of(scope);
-        let counts = with_reactor_opt(|r| r.counts_for(owner)).unwrap_or_default();
-        let io_counts = with_reactor_opt(|r| r.io.counts(crate::reactor::io::Owner::Host(owner)))
-            .unwrap_or_default();
-        let (mut reads, mut writes, mut timers, mut procs, mut vnodes) = (
-            io_counts.reads as usize,
-            io_counts.writes as usize,
-            io_counts.timers as usize,
-            counts.procs,
-            counts.vnodes,
-        );
-        if crate::reactor::engine::engine_io_active() {
-            let engine = crate::reactor::engine::engine_current_counts();
-            reads += engine.reads as usize;
-            writes += engine.writes as usize;
-            timers += engine.timers as usize;
-            procs += engine.procs as usize;
-            vnodes += engine.vnodes as usize;
-        }
+        let engine = crate::reactor::engine::engine_current_counts();
         let obj = v8::Object::new(scope);
         for (name, val) in [
-            ("reads", reads),
-            ("writes", writes),
-            ("timers", timers),
-            ("procs", procs),
-            ("vnodes", vnodes),
+            ("reads", engine.reads as usize),
+            ("writes", engine.writes as usize),
+            ("timers", engine.timers as usize),
+            ("procs", engine.procs as usize),
+            ("vnodes", engine.vnodes as usize),
         ] {
             let k = v8::String::new(scope, name).unwrap();
             let v = num(scope, val as f64);
@@ -1043,100 +683,7 @@ mod imp {
         rv.set(obj.into());
     }
 
-    // --- the poll+dispatch core ------------------------------------------
-
-    /// Wait on the thread's reactor (up to `timeout`, `None` = block until
-    /// something happens) and dispatch every harvested completion. Returns the
-    /// dispatched count, or 0 when no reactor exists on this thread. Rust-side
-    /// core of `tick()`, also driven directly by the native host loop.
-    pub(crate) fn wait_and_dispatch(scope: &mut v8::HandleScope, timeout: Option<Duration>) -> i32 {
-        // An engine-hosted realm's reactor IS the engine: harvest it in-pump,
-        // dispatching this workload's completions inline.
-        if crate::reactor::engine::engine_io_active() {
-            return crate::reactor::engine::engine_tick(scope, timeout);
-        }
-        // Non-creating: a thread with no reactor has nothing to wait for.
-        let completions = with_reactor_opt(|r| {
-            let mut buf = std::mem::take(&mut r.scratch);
-            buf.clear();
-            let _ = r.io.wait(timeout, &mut buf);
-            buf
-        });
-        let Some(completions) = completions else {
-            return 0;
-        };
-        // Dispatch OUTSIDE the RefCell borrow: resolvers run JS synchronously
-        // (via microtask checkpoints later) and callbacks re-enter the reactor.
-        if std::env::var_os("FINO_LOOP_DEBUG").is_some() && !completions.is_empty() {
-            thread_local! {
-                static WAIT_TRACES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-            }
-            let n = WAIT_TRACES.with(|c| {
-                let n = c.get();
-                c.set(n + 1);
-                n
-            });
-            if n < 500 || n.is_multiple_of(100_000) {
-                let uds: Vec<String> = completions
-                    .iter()
-                    .map(|c| format!("{:#x}:{}", c.user_data, c.res))
-                    .collect();
-                eprintln!("[reactor] wait -> [{}] (n={n})", uds.join(","));
-            }
-        }
-        let mut dispatched = 0i32;
-        for c in &completions {
-            dispatched += dispatch(scope, c.user_data, c.res);
-        }
-        with_reactor_opt(|r| r.scratch = completions);
-        dispatched
-    }
-
-    /// Live-handle predicate for the native host loop: THIS REALM's reactor
-    /// handles owned by this realm, plus Atomics.waitAsync waiters (which settle
-    /// cross-thread with no reactor registration; thread-scoped).
-    pub(crate) fn drive_live(owner: usize) -> bool {
-        with_reactor_opt(|r| {
-            r.counts_for(owner).total() > 0
-                || r.io.counts(crate::reactor::io::Owner::Host(owner)).total() > 0
-        })
-        .unwrap_or(false)
-            || ATOMICS_WAITERS.with(|c| c.get()) > 0
-    }
-
-    pub(crate) fn drive_counts_debug(owner: usize) -> String {
-        let atomics = ATOMICS_WAITERS.with(|c| c.get());
-        with_reactor_opt(|r| {
-            let c = r.counts_for(owner);
-            let io = r.io.counts(crate::reactor::io::Owner::Host(owner));
-            let ops: Vec<String> = r
-                .ops
-                .iter()
-                .map(|(ud, p)| {
-                    let (kind, own, fd) = match p {
-                        Pending::Proc { owner, .. } => ("p", *owner, -1),
-                        Pending::VnodeNext { fd } => ("v", 0, *fd),
-                        Pending::SignalNext { signo } => ("s", 0, *signo),
-                        Pending::WakeSource { fd } => ("wk", 0, *fd),
-                    };
-                    format!(
-                        "{ud}:{kind}:fd{fd}:{}",
-                        if own == owner { "own" } else { "oth" }
-                    )
-                })
-                .collect();
-            format!(
-                "r{}w{}t{}p{}v{}a{atomics} ops=[{}]",
-                io.reads,
-                io.writes,
-                io.timers,
-                c.procs,
-                c.vnodes,
-                ops.join(",")
-            )
-        })
-        .unwrap_or_else(|| format!("none/a{atomics}"))
-    }
+    // --- atomics-waiter liveness ------------------------------------------
 
     /// Whether the native host loop must poll instead of blocking: an
     /// Atomics.waitAsync resolution posts a V8 foreground task without waking
@@ -1221,160 +768,9 @@ mod imp {
         mut rv: v8::ReturnValue,
     ) {
         let timeout_ms = args.get(0).integer_value(scope).unwrap_or(0).max(0) as u64;
-        let dispatched = wait_and_dispatch(scope, Some(Duration::from_millis(timeout_ms)));
+        let dispatched =
+            crate::reactor::engine::engine_tick(scope, Some(Duration::from_millis(timeout_ms)));
         rv.set_int32(dispatched);
-    }
-
-    /// Route one completion. Returns 1 when it settled/notified something.
-    fn dispatch(scope: &mut v8::HandleScope, ud: u64, res: i32) -> i32 {
-        if ud == POST_FFI_WAKE {
-            // The wake's only job was to break the sleep; the pump's drain
-            // empties the FFI completion queues.
-            return 1;
-        }
-        match with_reactor(|r| r.io.dispatch(ud, res)) {
-            crate::reactor::io::Dispatch::Resolved(resolved) => {
-                let crate::reactor::io::Target::Host(resolver) = resolved.target else {
-                    unreachable!("workload completion on host reactor")
-                };
-                resolve_num(scope, &resolver, resolved.result);
-                return 1;
-            }
-            crate::reactor::io::Dispatch::Handled => return 0,
-            crate::reactor::io::Dispatch::External => {}
-        }
-        let pending = match with_reactor_opt(|r| r.ops.remove(&ud)).flatten() {
-            Some(p) => p,
-            None => return 0,
-        };
-        match pending {
-            Pending::Proc { owner, resolver } => {
-                // Any completion — including "already exited / not visible"
-                // errors — means the caller can proceed to reap.
-                with_reactor(|r| r.bump(owner, |c| c.procs -= 1));
-                if std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-                    eprintln!("[reactor] proc ud {ud} dispatched res={res}");
-                }
-                resolve_undef(scope, &resolver);
-                1
-            }
-            Pending::VnodeNext { fd } => dispatch_vnode(scope, fd, res),
-            Pending::SignalNext { signo } => dispatch_signal(scope, signo, res),
-            Pending::WakeSource { fd } => {
-                if res < 0 {
-                    // Canceled or errored: drop the wake source.
-                    return 0;
-                }
-                // Drain the pipe; EOF (write end closed) retires the source —
-                // re-arming a drained-EOF fd would complete-readable forever.
-                let mut buf = [0u8; 64];
-                let eof = loop {
-                    let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
-                    if n == 0 {
-                        break true;
-                    }
-                    if n < 0 {
-                        break false;
-                    }
-                };
-                if !eof {
-                    with_reactor(|r| {
-                        let ud = r.io.next_external_id();
-                        r.io.submit_external(
-                            ud,
-                            Op::PollIn {
-                                src: Source::fd(fd),
-                            },
-                        );
-                        r.ops.insert(ud, Pending::WakeSource { fd });
-                    });
-                }
-                1
-            }
-        }
-    }
-
-    fn dispatch_vnode(scope: &mut v8::HandleScope, fd: i32, res: i32) -> i32 {
-        if res == err::CANCELED || res == err::BUSY {
-            return 0;
-        }
-        if res < 0 {
-            // Kernel tore the watch down (-ENODEV) or it vanished (-ENOENT).
-            with_reactor(|r| {
-                if let Some(entry) = r.vnodes.remove(&fd) {
-                    let _ = r.io.remove_kernel_watch(entry.watch);
-                    r.bump(entry.owner, |c| c.vnodes -= 1);
-                }
-            });
-            return 0;
-        }
-        let cb = with_reactor(|r| r.vnodes.get(&fd).map(|e| e.cb.clone()));
-        let Some(g) = cb else { return 0 };
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            let func = v8::Local::new(tc, &g);
-            let recv = v8::undefined(tc).into();
-            let arg = v8::Object::new(tc);
-            let k = v8::String::new(tc, "fflags").unwrap();
-            let v = num(tc, fs_to_note(res) as f64);
-            arg.set(tc, k.into(), v);
-            // A throwing callback must not poison the rest of the dispatch
-            // batch (a pending exception silently breaks later resolves).
-            if func.call(tc, recv, &[arg.into()]).is_none() && tc.has_caught() {
-                let msg = tc
-                    .exception()
-                    .map(|e| e.to_rust_string_lossy(tc))
-                    .unwrap_or_else(|| "unknown exception".into());
-                eprintln!("fino: vnode callback threw: {msg}");
-            }
-        }
-        // Re-arm only if the entry survived the callback (which may have
-        // called removeVnode synchronously — watch.ts's delete handler does).
-        with_reactor(|r| {
-            if let Some(watch) = r.vnodes.get(&fd).map(|e| e.watch) {
-                let ud = r.io.next_external_id();
-                r.io.submit_watch_next(ud, watch);
-                r.ops.insert(ud, Pending::VnodeNext { fd });
-            }
-        });
-        1
-    }
-
-    fn dispatch_signal(scope: &mut v8::HandleScope, signo: i32, res: i32) -> i32 {
-        if res < 0 {
-            if res != err::CANCELED && res != err::BUSY {
-                with_reactor(|r| {
-                    if let Some(entry) = r.signals.remove(&signo) {
-                        let _ = r.io.remove_kernel_watch(entry.watch);
-                    }
-                });
-            }
-            return 0;
-        }
-        let cb = with_reactor(|r| r.signals.get(&signo).map(|e| e.cb.clone()));
-        let Some(g) = cb else { return 0 };
-        // One callback per completion, however many deliveries coalesced —
-        // matching kqueue EV_CLEAR semantics the JS contract was built on.
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            let func = v8::Local::new(tc, &g);
-            let recv = v8::undefined(tc).into();
-            if func.call(tc, recv, &[]).is_none() && tc.has_caught() {
-                let msg = tc
-                    .exception()
-                    .map(|e| e.to_rust_string_lossy(tc))
-                    .unwrap_or_else(|| "unknown exception".into());
-                eprintln!("fino: signal callback threw: {msg}");
-            }
-        }
-        with_reactor(|r| {
-            if let Some(watch) = r.signals.get(&signo).map(|e| e.watch) {
-                let ud = r.io.next_external_id();
-                r.io.submit_watch_next(ud, watch);
-                r.ops.insert(ud, Pending::SignalNext { signo });
-            }
-        });
-        1
     }
 }
 
