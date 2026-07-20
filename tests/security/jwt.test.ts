@@ -223,6 +223,31 @@ describe('fino:security JWT/JWE helpers', () => {
       t.equal(verified.payload.sub, algorithm, `${algorithm} round trips`);
     }
   });
+  it('round-trips an ES256 signature whose first byte is 0x30', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping ECDSA signature-shape test');
+      return;
+    }
+    // Regression: a leftover DER heuristic used to misparse any RAW r||s
+    // signature whose first random byte was 0x30 (the DER SEQUENCE tag) —
+    // a 1-in-256 signing failure. ECDSA nonces are random, so sign until we
+    // draw that byte and prove the token still round-trips.
+    const key = await generateJwk({ kty: 'EC', alg: 'ES256', kid: 'es-30', namedCurve: 'P-256' });
+    const decode = (candidate: string): Uint8Array => {
+      const sig = candidate.split('.')[2]!;
+      return Uint8Array.from(atob(sig.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+    };
+    let token: string | null = null;
+    for (let attempt = 0; attempt < 4096 && token === null; attempt++) {
+      const candidate = await jwtSign({ sub: 'raw-sig' }, key, { algorithm: 'ES256' });
+      if (decode(candidate)[0] === 0x30) token = candidate;
+    }
+    t.ok(token !== null, 'drew a signature starting with the DER SEQUENCE tag');
+    t.equal(decode(token!).length, 64, 'ES256 signatures are raw 64-byte r||s');
+    const verified = await jwtVerify(token!, { keys: [key] });
+    t.equal(verified.payload.sub, 'raw-sig', 'the 0x30-leading raw signature verifies');
+  });
+
   it('validates JWT audience arrays, nbf, iat, and clock tolerance', async (t) => {
     if (!cryptoAvailable) {
       t.ok(true, 'OpenSSL not available; skipping JWT claim edge test');

@@ -447,62 +447,6 @@ function importUsages(alg: string, op: 'sign' | 'verify'): KeyUsage[] {
   if (alg.startsWith('HS')) return [op];
   return [op];
 }
-function ecBytes(alg: string): number {
-  if (alg === 'ES384') return 48;
-  if (alg === 'ES512') return 66;
-  return 32;
-}
-function trimInteger(bytes: Uint8Array): Uint8Array {
-  let start = 0;
-  while (start < bytes.length - 1 && bytes[start] === 0) start++;
-  return bytes.subarray(start);
-}
-function padInteger(bytes: Uint8Array, size: number): Uint8Array {
-  const trimmed = trimInteger(bytes);
-  if (trimmed.length > size) return trimmed.subarray(trimmed.length - size);
-  const out = new Uint8Array(size);
-  out.set(trimmed, size - trimmed.length);
-  return out;
-}
-function derToJose(signature: Uint8Array, alg: string): Uint8Array {
-  const size = ecBytes(alg);
-  if (signature[0] !== 48) return signature;
-  let offset = 2;
-  if (signature[1]! & 128) offset = 2 + (signature[1]! & 127);
-  if (signature[offset++] !== 2) throw new Error('Invalid ECDSA DER signature');
-  const rLen = signature[offset++]!;
-  const r = signature.subarray(offset, offset + rLen);
-  offset += rLen;
-  if (signature[offset++] !== 2) throw new Error('Invalid ECDSA DER signature');
-  const sLen = signature[offset++]!;
-  const s = signature.subarray(offset, offset + sLen);
-  const out = new Uint8Array(size * 2);
-  out.set(padInteger(r, size), 0);
-  out.set(padInteger(s, size), size);
-  return out;
-}
-function integerDer(bytes: Uint8Array): Uint8Array {
-  const trimmed = trimInteger(bytes);
-  const needsZero = (trimmed[0]! & 128) !== 0;
-  const out = new Uint8Array(2 + trimmed.length + (needsZero ? 1 : 0));
-  out[0] = 2;
-  out[1] = trimmed.length + (needsZero ? 1 : 0);
-  out.set(trimmed, needsZero ? 3 : 2);
-  return out;
-}
-function joseToDer(signature: Uint8Array, alg: string): Uint8Array {
-  const size = ecBytes(alg);
-  if (signature.length !== size * 2) return signature;
-  const r = integerDer(signature.subarray(0, size));
-  const s = integerDer(signature.subarray(size));
-  const len = r.length + s.length;
-  const out = new Uint8Array(2 + len);
-  out[0] = 48;
-  out[1] = len;
-  out.set(r, 2);
-  out.set(s, 2 + r.length);
-  return out;
-}
 function optionList(value: string | string[] | undefined): string[] | null {
   if (value === undefined) return null;
   return Array.isArray(value) ? value : [value];
@@ -573,8 +517,11 @@ export async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyL
     ...key,
     alg
   }, importUsages(alg, 'sign'));
-  let signature = new Uint8Array(await crypto.subtle.sign(signAlgorithm(alg), cryptoKey, toBytes(signingInput)) as ArrayBuffer);
-  if (alg.startsWith('ES')) signature = derToJose(signature, alg);
+  // WebCrypto ECDSA signatures are already the JOSE raw r||s form; no
+  // DER conversion happens here. (A former DER-shaped signer left a
+  // heuristic converter behind that misfired whenever r's first random
+  // byte happened to be 0x30 — a 1-in-256 signing failure.)
+  const signature = new Uint8Array(await crypto.subtle.sign(signAlgorithm(alg), cryptoKey, toBytes(signingInput)) as ArrayBuffer);
   return `${signingInput}.${base64urlEncode(signature)}`;
 }
 /**
