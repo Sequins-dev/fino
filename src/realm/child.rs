@@ -103,120 +103,75 @@ pub(crate) fn bootstrap_realm(
 // Shared host loop
 // ---------------------------------------------------------------------------
 
-/// Bootstrap a fresh V8 Isolate and run its event loop to completion.
-///
-/// Handles: isolate creation, `internal/bootstrap.mjs` evaluation, the host loop, and
-/// teardown.  The caller is responsible only for setting up the IPC channel and
-/// any RAII guards (e.g. `OwnedFd`) before calling here.
+/// Bootstrap a fresh V8 Isolate and run its event loop to completion — the
+/// process-realm main thread. The same reactor drive loop pool reactors run,
+/// seeded with this realm as its only workload. The caller is responsible only
+/// for setting up the IPC channel and any RAII guards (e.g. `OwnedFd`) before
+/// calling here.
 pub fn run_child_isolate(config: RealmExecutionConfig) -> Result<(), String> {
-    use std::time::Instant;
-
-    fn timing_enabled() -> bool {
-        static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *E.get_or_init(|| std::env::var_os("FINO_REALM_TIMING").is_some())
-    }
-
     crate::runtime::init_v8();
 
-    let label = config.timing_label;
-    let total_start = timing_enabled().then(Instant::now);
+    let engine_config = crate::reactor::engine::ReactorConfig {
+        // The process root is uncontained by pump budget: there is no
+        // orchestrator in this process to sweep or migrate it.
+        hard_budget_micros: 0,
+        sync_slice_micros: u64::MAX,
+        heap_limit_bytes: 0,
+        process_env: config.process_env.clone(),
+        package_map_json: None,
+        reactor_class: crate::reactor::engine::ReactorClass::Latency,
+    };
 
-    let mut params = v8::CreateParams::default();
-    params = params.heap_limits(0, config.heap_limit_bytes.max(1 << 30));
-    params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
+    crate::reactor::engine::run_local(
+        engine_config,
+        move || crate::reactor::workload::setup_realm_workload(config),
+        |workload, _reason| {
+            let module = workload.module_global();
+            workload.enter_scope(|scope| {
+                let state_rc = get_state(scope);
 
-    let t = timing_enabled().then(Instant::now);
-    let mut isolate = v8::Isolate::new(params);
-    if let Some(t) = t {
-        eprintln!(
-            "[fino:realm-timing] {label}  isolate-new: {:?}",
-            t.elapsed()
-        );
-    }
+                let on_done_fn = state_rc.borrow().on_done_fn.clone();
+                if let Some(f) = on_done_fn {
+                    let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
+                    v8::Local::new(scope, &f).call(scope, undef, &[]);
+                    pump_and_checkpoint(scope);
+                }
 
-    // Initialise per-isolate async state for this child isolate's thread.
-    crate::async_rt::init();
+                if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
+                    unsafe { crate::profiler::dispose_profiler(ptr) };
+                }
 
-    configure_realm_isolate(&mut isolate);
-    let realm = bootstrap_realm(&mut isolate, config)?;
-    if let Some(t) = total_start {
-        eprintln!(
-            "[fino:realm-timing] {label}  total:       {:?}",
-            t.elapsed()
-        );
-    }
+                if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
+                    unsafe { crate::inspector_module::dispose_inspector(ptr) };
+                }
 
-    // -----------------------------------------------------------------------
-    // Host loop
-    // -----------------------------------------------------------------------
-    'main: loop {
-        let should_continue = {
-            let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
-            let context = v8::Local::new(isolate_scope, &realm.context);
-            let scope = &mut v8::ContextScope::new(isolate_scope, context);
+                // Drop this realm's channel half before the isolate is
+                // disposed: removal closes its pipe ends and hangs up the
+                // mpsc, which is how the partner (parent port, or a process
+                // realm's writer bridge thread) observes disconnection.
+                if let Some(handle) = state_rc.borrow_mut().port_transit_handle.take() {
+                    drop(crate::realm::transit::remove_half(handle));
+                }
 
-            // The realm's loop is reactor-backed: Rust owns the pump cadence
-            // and calls only thin JS policy hooks. No hooks means bootstrap
-            // never called driveLoop — nothing to run.
-            if realm.state.borrow().native_loop.is_none() {
-                break 'main;
-            }
-            crate::runtime::native_drive_step(scope, &realm.state)
-        };
+                let bm = v8::Local::new(scope, &module);
+                if bm.get_status() == v8::ModuleStatus::Errored {
+                    let exc = bm.get_exception();
+                    return Err(exc
+                        .to_string(scope)
+                        .map(|s| s.to_rust_string_lossy(scope))
+                        .unwrap_or_else(|| "Unknown error in internal/bootstrap.mjs".to_string()));
+                }
 
-        if !should_continue {
-            break 'main;
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Teardown
-    // -----------------------------------------------------------------------
-    {
-        let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
-        let context = v8::Local::new(isolate_scope, &realm.context);
-        let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-        let on_done_fn = realm.state.borrow().on_done_fn.clone();
-        if let Some(f) = on_done_fn {
-            let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-            v8::Local::new(scope, &f).call(scope, undef, &[]);
-            pump_and_checkpoint(scope);
-        }
-
-        if let Some(ptr) = realm.state.borrow_mut().cpu_profiler.take() {
-            unsafe { crate::profiler::dispose_profiler(ptr) };
-        }
-
-        if let Some(ptr) = realm.state.borrow_mut().inspector_state.take() {
-            unsafe { crate::inspector_module::dispose_inspector(ptr) };
-        }
-
-        // Drop this realm's channel half before the isolate is disposed:
-        // removal closes its pipe ends and hangs up the mpsc, which is how
-        // the partner (parent port, or a process realm's writer bridge
-        // thread) observes disconnection.
-        if let Some(handle) = realm.state.borrow_mut().port_transit_handle.take() {
-            drop(crate::realm::transit::remove_half(handle));
-        }
-
-        let bm = v8::Local::new(scope, &realm.module);
-        if bm.get_status() == v8::ModuleStatus::Errored {
-            let exc = bm.get_exception();
-            return Err(exc
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in internal/bootstrap.mjs".to_string()));
-        }
-
-        // If the entry module threw at top-level, propagate the error so the
-        // parent can reject Realm.run() instead of resolving it silently.
-        if let Some(err) = get_state(scope).borrow().entry_error.clone() {
-            return Err(err);
-        }
-    }
-
-    Ok(())
+                // If the entry module threw at top-level, propagate the error
+                // so the parent can reject Realm.run() instead of resolving
+                // it silently.
+                if let Some(err) = get_state(scope).borrow().entry_error.clone() {
+                    return Err(err);
+                }
+                Ok(())
+            })
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -122,23 +122,6 @@ pub(crate) fn drive_needs_poll() -> bool {
     false
 }
 
-/// Wait on this thread's reactor and dispatch completions; see
-/// `imp::wait_and_dispatch`.
-#[cfg(unix)]
-pub(crate) fn drive_wait_and_dispatch(
-    scope: &mut v8::HandleScope,
-    timeout: Option<std::time::Duration>,
-) -> i32 {
-    imp::wait_and_dispatch(scope, timeout)
-}
-#[cfg(not(unix))]
-pub(crate) fn drive_wait_and_dispatch(
-    _scope: &mut v8::HandleScope,
-    _timeout: Option<std::time::Duration>,
-) -> i32 {
-    0
-}
-
 // ===========================================================================
 // Unix implementation (cherenkov: kqueue on macOS, io_uring on Linux)
 // ===========================================================================

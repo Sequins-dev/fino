@@ -267,25 +267,9 @@ pub fn swap_state(new: Option<IsolateAsyncState>) -> Option<IsolateAsyncState> {
     STATE.with(|s| std::mem::replace(&mut *s.borrow_mut(), new))
 }
 
-/// Initialize the per-isolate async state. Call once per isolate, before the
-/// event loop starts. Returns the wake-pipe read fd to expose to JS.
-pub fn init() -> RawFd {
-    let state = new_state();
-    let wake_read = state.wake_read;
-    STATE.with(|s| *s.borrow_mut() = Some(state));
-    wake_read
-}
-
-/// Tear down the per-isolate async state (pipes closed via Drop).
-#[allow(dead_code)]
-pub fn shutdown() {
-    STATE.with(|s| {
-        *s.borrow_mut() = None;
-    });
-}
-
-/// Returns true when called from the V8 isolate thread (i.e. `init()` has been called here).
-/// Used by `FfiCallback` trampolines to detect same-thread calls that would deadlock.
+/// Returns true when called from a V8 isolate thread (a workload's async
+/// state is swapped in). Used by `FfiCallback` trampolines to detect
+/// same-thread calls that would deadlock.
 pub fn is_v8_thread() -> bool {
     STATE.with(|s| s.borrow().is_some())
 }

@@ -1574,7 +1574,6 @@ mod imp {
                     repl_mode,
                     port_half,
                     allocation_half: Some(allocation_half),
-                    timing_label: "reactor-realm",
                 })
             };
             let inner = match setup {

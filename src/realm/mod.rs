@@ -35,7 +35,6 @@ pub(crate) struct RealmExecutionConfig {
     pub entry_path: String,
     pub port_half: (u32, RawFd),
     pub allocation_half: Option<(u32, RawFd)>,
-    pub timing_label: &'static str,
     pub watch_mode: bool,
     pub repl_mode: bool,
     pub realm_data: Option<String>,

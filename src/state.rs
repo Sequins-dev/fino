@@ -324,7 +324,6 @@ pub struct FinoState {
     /// backoff: hot re-pass while work flows, sleep only once quiet — child
     /// realms advance one step per iteration, so a multi-turn ladder (e.g. a
     /// respawning realm's module loads) must not pay a sleep per rung.
-    pub native_empty_ticks: u32,
 
     // ---------------------------------------------------------------------------
     // Pending synchronous call (set by JS scheduleSync() from internal:async-context)
@@ -456,7 +455,6 @@ impl FinoState {
             transpile_fn: None,
             on_done_fn: None,
             native_loop: None,
-            native_empty_ticks: 0,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
@@ -512,7 +510,6 @@ impl FinoState {
             transpile_fn: None,
             on_done_fn: None,
             native_loop: None,
-            native_empty_ticks: 0,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),

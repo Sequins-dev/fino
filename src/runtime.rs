@@ -297,44 +297,15 @@ fn call_hook(scope: &mut v8::HandleScope, g: &v8::Global<v8::Function>) -> Optio
     out
 }
 
-/// One iteration of the native host loop for a reactor-backed realm: pump
-/// everything ready to a fixed point, run the thin JS policy hooks, decide
-/// doneness (§5 of the reactor doc: realm policy done AND reactor quiescent),
-/// then block on the reactor until the next completion.
+/// One pump slice of a reactor-hosted realm: settle everything ready to a
+/// fixed point, run the thin JS policy hooks, and decide doneness (§5 of the
+/// reactor doc: realm policy done AND reactor quiescent). The engine owns the
+/// thread's wait cadence, so there is no trailing reactor wait here.
 /// Returns false when the realm is finished (or a policy hook threw).
-pub(crate) fn native_drive_step(
-    scope: &mut v8::HandleScope,
-    state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
-) -> bool {
-    native_drive_step_inner(scope, state_rc, true)
-}
-
-/// Native-drive iteration without the trailing reactor wait. Reactor engines
-/// use this because the engine owns the thread's wait cadence.
 pub(crate) fn native_drive_step_nonblocking(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
-    let cont = native_drive_step_inner(scope, state_rc, false);
-    if !cont && std::env::var_os("FINO_LOOP_DEBUG").is_some() {
-        eprintln!(
-            "[reload] nonblocking realm step returned false at {:?}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        );
-    }
-    cont
-}
-
-fn native_drive_step_inner(
-    scope: &mut v8::HandleScope,
-    state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
-    wait: bool,
-) -> bool {
-    use std::time::Duration;
-
     let (is_done, flush_ports) = {
         let st = state_rc.borrow();
         let Some(h) = st.native_loop.as_ref() else {
@@ -347,9 +318,8 @@ fn native_drive_step_inner(
     // Settle to true quiescence before deciding anything: the policy hooks
     // and scheduleSync'd functions each run JS that can schedule more work
     // (`isDone()`'s first true-ward call starts wind-down microtasks; a test
-    // body queues the next scheduleSync). Blocking with any of it pending
-    // would strand the loop — nothing about it wakes the reactor.
-    let mut activity = false;
+    // body queues the next scheduleSync). Parking with any of it pending
+    // would strand the realm — nothing about it wakes the reactor.
     loop {
         pump_and_checkpoint(scope);
         // Port deliveries are macrotasks.
@@ -376,7 +346,6 @@ fn native_drive_step_inner(
 
         let sync_pending = state_rc.borrow().sync_call_fn.is_some();
         if flushed || serviced || sync_pending {
-            activity = true;
             continue;
         }
         break;
@@ -399,32 +368,6 @@ fn native_drive_step_inner(
     }
     if done && !live {
         return false;
-    }
-
-    if wait {
-        // Block until a completion — the reactor is the wake source for all
-        // asynchrony. Bound the wait only where progress can happen without
-        // one: Atomics resolutions / V8 background tasks post foreground work
-        // without touching the reactor. Bounded waits back off adaptively:
-        // hot re-pass while work flows, then 25ms once quiet.
-        let bounded = crate::reactor::drive_needs_poll() || scope.has_pending_background_tasks();
-        let timeout = if bounded {
-            let quiet = state_rc.borrow().native_empty_ticks;
-            Some(if quiet >= 3 {
-                Duration::from_millis(25)
-            } else {
-                Duration::ZERO
-            })
-        } else {
-            None
-        };
-        let dispatched = crate::reactor::drive_wait_and_dispatch(scope, timeout);
-        let mut st = state_rc.borrow_mut();
-        if dispatched > 0 || activity {
-            st.native_empty_ticks = 0;
-        } else {
-            st.native_empty_ticks = st.native_empty_ticks.saturating_add(1);
-        }
     }
     true
 }

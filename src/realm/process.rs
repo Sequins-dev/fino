@@ -470,7 +470,6 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         entry_path: config.entry_path,
         port_half: (child_handle, child_wake_read),
         allocation_half: None,
-        timing_label: "process-realm",
         watch_mode: config.watch_mode,
         repl_mode: false,
         realm_data: config.realm_data,
