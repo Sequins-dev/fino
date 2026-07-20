@@ -226,6 +226,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     // runtime
     source_builtin!("internal:runtime/libc", "internal/runtime/libc"),
+    source_builtin!("internal:realm/port-rpc", "internal/realm/port-rpc"),
     source_builtin!("internal:parent-rpc", "internal/runtime/parent-rpc"),
     source_builtin!(
         "internal:synthetic-direct",

@@ -16,16 +16,23 @@
 */
 import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
 import { getAllocationPortInfo } from 'internal:realm-bridge';
+import { PortRpc, type WireCodec } from 'internal:realm/port-rpc';
 import { ThreadPort } from 'internal:realm/transport-port';
 import { registerShutdownHook } from 'internal:shutdown';
 
-let _control: ThreadPort | null = null;
-let _requestSeq = 0;
-const _pending = new Map<number, {
-  resolve(value: ScheduledRealmAllocation): void;
-  reject(error: unknown): void;
-}>();
-const _remoteReleased = new Map<number, (reason: string) => void>();
+const ALLOCATION_CODEC: WireCodec = {
+  encodeReq(id, head) {
+    return { type: 'allocate', requestId: id, config: head['config'] };
+  },
+  decode(msg) {
+    if (msg['type'] === 'allocated') return { kind: 'res', id: msg['requestId'] as number, result: msg };
+    if (msg['type'] === 'allocationFailed') return { kind: 'err', id: msg['requestId'] as number, error: String(msg['error']) };
+    return null;
+  }
+};
+
+let _control: { channel: ThreadPort; rpc: PortRpc } | null = null;
+const _ownerReleased = new Map<number, (reason: string) => void>();
 let _controlShutdownHookRegistered = false;
 
 type AllocationMessage = {
@@ -52,7 +59,7 @@ type AllocationMessage = {
   reason: string;
 };
 
-function controlChannel(): ThreadPort {
+function controlChannel(): { channel: ThreadPort; rpc: PortRpc } {
   if (_control !== null) return _control;
   const info = (getAllocationPortInfo as () => {
     handle: number;
@@ -60,40 +67,25 @@ function controlChannel(): ThreadPort {
   } | undefined)();
   if (info === undefined) throw new Error('realm allocator control port is unavailable');
   const channel = new ThreadPort(info.wakeReadFd, info.handle);
+  const rpc = new PortRpc({
+    send: (msg) => channel.postMessage(msg),
+    codec: ALLOCATION_CODEC
+  });
   channel.addEventListener('message', (event) => {
     const message = (event as MessageEvent<AllocationMessage>).data;
-    if (message.type === 'allocated') {
-      const pending = _pending.get(message.requestId);
-      if (pending === undefined) return;
-      _pending.delete(message.requestId);
-      let release!: (reason: string) => void;
-      const released = new Promise<string>((resolve) => { release = resolve; });
-      _remoteReleased.set(message.requestId, release);
-      pending.resolve({
-        workloadId: message.workloadId,
-        portHandle: message.portHandle,
-        portWakeFd: message.portWakeFd,
-        released,
-        revoke(reason) {
-          channel.postMessage({ type: 'revoke', requestId: message.requestId, reason } satisfies AllocationMessage);
-        }
-      });
-    } else if (message.type === 'allocationFailed') {
-      const pending = _pending.get(message.requestId);
-      if (pending !== undefined) {
-        _pending.delete(message.requestId);
-        pending.reject(new Error(message.error));
-      }
-    } else if (message.type === 'released') {
-      const release = _remoteReleased.get(message.requestId);
+    if (rpc.dispatch(message)) return;
+    // `released` is an owner push, not a response — it settles the
+    // allocation's lifetime promise rather than a pending request.
+    if (message.type === 'released') {
+      const release = _ownerReleased.get(message.requestId);
       if (release !== undefined) {
-        _remoteReleased.delete(message.requestId);
+        _ownerReleased.delete(message.requestId);
         release(message.reason);
       }
     }
   });
   channel.start();
-  _control = channel;
+  _control = { channel, rpc };
   if (!_controlShutdownHookRegistered) {
     _controlShutdownHookRegistered = true;
     registerShutdownHook(() => {
@@ -101,17 +93,16 @@ function controlChannel(): ThreadPort {
       closeControlChannel(new Error('realm allocator control port shut down'));
     });
   }
-  return channel;
+  return _control;
 }
 
 function closeControlChannel(reason = new Error('realm allocator control port closed')): void {
-  const channel = _control;
+  const control = _control;
   _control = null;
-  channel?.close();
-  for (const pending of _pending.values()) pending.reject(reason);
-  _pending.clear();
-  for (const release of _remoteReleased.values()) release(reason.message);
-  _remoteReleased.clear();
+  control?.channel.close();
+  control?.rpc.rejectAll(reason);
+  for (const release of _ownerReleased.values()) release(reason.message);
+  _ownerReleased.clear();
 }
 
 /** Serve one realm's private allocation control port until that owner exits. */
@@ -181,11 +172,22 @@ export interface RealmAllocationConfig {
 
 export function placeScheduledRealm(config: RealmAllocationConfig): ScheduledRealmAllocation | Promise<ScheduledRealmAllocation> | null {
   if (hasAllocationPort()) {
-    const requestId = _requestSeq++;
-    const channel = controlChannel();
-    const result = new Promise<ScheduledRealmAllocation>((resolve, reject) => _pending.set(requestId, { resolve, reject }));
-    channel.postMessage({ type: 'allocate', requestId, config } satisfies AllocationMessage);
-    return result;
+    const { channel, rpc } = controlChannel();
+    return rpc.call({ config }).then((raw) => {
+      const message = raw as Extract<AllocationMessage, { type: 'allocated' }>;
+      let release!: (reason: string) => void;
+      const released = new Promise<string>((resolve) => { release = resolve; });
+      _ownerReleased.set(message.requestId, release);
+      return {
+        workloadId: message.workloadId,
+        portHandle: message.portHandle,
+        portWakeFd: message.portWakeFd,
+        released,
+        revoke(reason) {
+          channel.postMessage({ type: 'revoke', requestId: message.requestId, reason } satisfies AllocationMessage);
+        }
+      } satisfies ScheduledRealmAllocation;
+    });
   }
   return placeLocalRealm(config);
 }

@@ -34,6 +34,7 @@ import { mergeChildRules, createProcessContext, stepProcessContext } from 'inter
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { placeScheduledRealm, type ScheduledRealmAllocation } from 'internal:realm/allocate';
 import { IdleRetirement } from 'internal:orchestrator/idle';
+import { PortRpc, type WireCodec } from 'internal:realm/port-rpc';
 import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, DeferredTransportPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
@@ -709,6 +710,153 @@ interface _HandleEntry {
   streams: Map<string, (...args: unknown[]) => AsyncIterable<unknown>>;
   sinks: Map<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>>;
 }
+/** How a dispatch target resolves its methods (facade or handle entry). */
+interface _RpcTarget {
+  /** Error-message name, e.g. `handle '__h3'` or `facade 'app:api'`. */
+  label: string;
+  scalar(method: string): ((...args: unknown[]) => unknown) | undefined;
+  stream(method: string): ((...args: unknown[]) => AsyncIterable<unknown>) | undefined;
+  sink(method: string): ((args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>) | undefined;
+}
+
+/**
+* The one server-side RPC envelope dispatcher: write-stream setup and chunk
+* routing, request dispatch across stream/scalar/sink methods, async-iterable
+* result streaming, and FacadeHandle registration. Facade bindings and handle
+* registries differ only in how a specifier resolves to a target.
+*/
+function _dispatchRpcEnvelope(
+  port: MessagePort | BaseTransportPort,
+  reg: Map<string, _HandleEntry>,
+  wsSources: Map<number, _WriteSource>,
+  ev: Event,
+  resolveTarget: (specifier: string) => _RpcTarget | null
+): void {
+  const msg = (ev as MessageEvent).data;
+  if (!msg || typeof msg !== 'object') return;
+  const obj = msg as Record<string, unknown>;
+  if (obj['__rpc_send_start'] === true) {
+    const target = resolveTarget(String(obj['specifier'] ?? ''));
+    if (!target) return;
+    (ev as MessageEvent).stopImmediatePropagation?.();
+    const method = obj['method'] as string ?? '';
+    const reqId = obj['reqId'] as number ?? 0;
+    const args = obj['args'] as unknown[] ?? [];
+    const sinkFn = target.sink(method);
+    if (!sinkFn) {
+      port.postMessage({
+        __rpc_res: true,
+        reqId,
+        error: `No sendStream method '${method}' on ${target.label}`
+      });
+      return;
+    }
+    const source = new _WriteSource();
+    wsSources.set(reqId, source);
+    sinkFn(args, source).then((result) => {
+      wsSources.delete(reqId);
+      _sendResult(port, reg, reqId, result);
+    }, (err: unknown) => {
+      wsSources.delete(reqId);
+      port.postMessage({
+        __rpc_res: true,
+        reqId,
+        error: String(err)
+      });
+    });
+    return;
+  }
+  if (obj['__rpc_send_chunk'] === true) {
+    const src = wsSources.get(obj['reqId'] as number);
+    if (src) {
+      (ev as MessageEvent).stopImmediatePropagation?.();
+      src.push(obj['chunk']);
+    }
+    return;
+  }
+  if (obj['__rpc_send_end'] === true) {
+    const src = wsSources.get(obj['reqId'] as number);
+    if (src) {
+      (ev as MessageEvent).stopImmediatePropagation?.();
+      wsSources.delete(obj['reqId'] as number);
+      src.end();
+    }
+    return;
+  }
+  if (obj['__rpc_send_err'] === true) {
+    const src = wsSources.get(obj['reqId'] as number);
+    if (src) {
+      (ev as MessageEvent).stopImmediatePropagation?.();
+      wsSources.delete(obj['reqId'] as number);
+      src.fail(String(obj['error'] ?? 'sink aborted'));
+    }
+    return;
+  }
+  if (obj['__rpc_req'] !== true) return;
+  const target = resolveTarget(String(obj['specifier'] ?? ''));
+  if (!target) return;
+  (ev as MessageEvent).stopImmediatePropagation?.();
+  const method = obj['method'] as string ?? '';
+  const reqId = obj['reqId'] as number ?? 0;
+  const args = obj['args'] as unknown[] ?? [];
+  const streamResult = (iterable: AsyncIterable<unknown>) => {
+    (async () => {
+      try {
+        for await (const chunk of iterable) {
+          port.postMessage({
+            __rpc_chunk: true,
+            reqId,
+            chunk
+          });
+        }
+        port.postMessage({
+          __rpc_end: true,
+          reqId
+        });
+      } catch (err: unknown) {
+        port.postMessage({
+          __rpc_err: true,
+          reqId,
+          error: String(err)
+        });
+      }
+    })().catch(() => {});
+  };
+  const streamFn = target.stream(method);
+  if (streamFn) {
+    let iterable: AsyncIterable<unknown>;
+    try {
+      iterable = streamFn(...args);
+    } catch (err: unknown) {
+      port.postMessage({
+        __rpc_res: true,
+        reqId,
+        error: String(err)
+      });
+      return;
+    }
+    streamResult(iterable);
+    return;
+  }
+  const scalarFn = target.scalar(method);
+  if (!scalarFn) {
+    port.postMessage({
+      __rpc_res: true,
+      reqId,
+      error: `No method '${method}' on ${target.label}`
+    });
+    return;
+  }
+  new Promise<unknown>((res) => res(scalarFn(...args))).then((result) => {
+    if (_isAsyncIterable(result)) streamResult(result);
+    else _sendResult(port, reg, reqId, result);
+  }, (err: unknown) => port.postMessage({
+    __rpc_res: true,
+    reqId,
+    error: String(err)
+  }));
+}
+
 // WeakMap: port -> (handleId -> HandleEntry). GC'd when the port is collected.
 const _portHandleRegistries = new WeakMap<object, Map<string, _HandleEntry>>();
 let _nextHandleSeq = 0;
@@ -722,96 +870,16 @@ function _getOrCreateHandleRegistry(port: MessagePort | BaseTransportPort): Map<
   const wsSources = _getOrCreateWriteSourceRegistry(port);
   // One shared dispatcher per port handles all handle method calls.
   port.addEventListener('message', function _handleDispatcher(ev: Event) {
-    const msg = (ev as MessageEvent).data;
-    if (!msg || typeof msg !== 'object') return;
-    const obj = msg as Record<string, unknown>;
-    // Write-stream envelopes for handle sink methods
-    if (obj['__rpc_send_start'] === true) {
-      const entry = registry.get(obj['specifier'] as string ?? '');
-      if (!entry) return;
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      const method = obj['method'] as string ?? '';
-      const reqId = obj['reqId'] as number ?? 0;
-      const args = obj['args'] as unknown[] ?? [];
-      const sinkFn = entry.sinks.get(method);
-      if (!sinkFn) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: `No sendStream method '${method}' on handle '${obj['specifier']}'`
-        });
-        return;
-      }
-      const source = new _WriteSource();
-      wsSources.set(reqId, source);
-      sinkFn(args, source).then((result) => {
-        wsSources.delete(reqId);
-        _sendResult(port, registry, reqId, result);
-      }, (err: unknown) => {
-        wsSources.delete(reqId);
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: String(err)
-        });
-      });
-      return;
-    }
-    if (obj['__rpc_req'] !== true) return;
-    const entry = registry.get(obj['specifier'] as string ?? '');
-    if (!entry) return;
-    (ev as MessageEvent).stopImmediatePropagation?.();
-    const method = obj['method'] as string ?? '';
-    const reqId = obj['reqId'] as number ?? 0;
-    const args = obj['args'] as unknown[] ?? [];
-    const streamFn = entry.streams.get(method);
-    if (streamFn) {
-      let iter: AsyncIterable<unknown>;
-      try {
-        iter = streamFn(...args);
-      } catch (err: unknown) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: String(err)
-        });
-        return;
-      }
-      (async () => {
-        try {
-          for await (const chunk of iter) port.postMessage({
-            __rpc_chunk: true,
-            reqId,
-            chunk
-          });
-          port.postMessage({
-            __rpc_end: true,
-            reqId
-          });
-        } catch (err: unknown) {
-          port.postMessage({
-            __rpc_err: true,
-            reqId,
-            error: String(err)
-          });
-        }
-      })().catch(() => {});
-      return;
-    }
-    const scalarFn = entry.scalar.get(method);
-    if (!scalarFn) {
-      port.postMessage({
-        __rpc_res: true,
-        reqId,
-        error: `No method '${method}' on handle '${obj['specifier']}'`
-      });
-      return;
-    }
-    new Promise<unknown>((res) => res(scalarFn(...args))).then((result) => _sendResult(port, registry, reqId, result), (err: unknown) => port.postMessage({
-      __rpc_res: true,
-      reqId,
-      error: String(err)
-    }));
+    _dispatchRpcEnvelope(port, registry, wsSources, ev, (specifier) => {
+      const entry = registry.get(specifier);
+      if (!entry) return null;
+      return {
+        label: `handle '${specifier}'`,
+        scalar: (method) => entry.scalar.get(method),
+        stream: (method) => entry.streams.get(method),
+        sink: (method) => entry.sinks.get(method)
+      };
+    });
   } as EventListener);
   return reg;
 }
@@ -1208,166 +1276,14 @@ export class Facade {
     const sinkHandlers = this.#sinkHandlers;
     const reg = _getOrCreateHandleRegistry(port);
     const wsSources = _getOrCreateWriteSourceRegistry(port);
+    const target: _RpcTarget = {
+      label: `facade '${specifier}'`,
+      scalar: (method) => handlers.get(method),
+      stream: (method) => streamHandlers.get(method),
+      sink: (method) => sinkHandlers.get(method)
+    };
     port.addEventListener('message', function onRpcRequest(ev: Event) {
-      const msg = (ev as MessageEvent).data;
-      if (msg === null || typeof msg !== 'object') return;
-      const obj = msg as Record<string, unknown>;
-      // --- write-stream chunk envelopes (child->parent) ---
-      if (obj['__rpc_send_start'] === true && obj['specifier'] === specifier) {
-        (ev as MessageEvent).stopImmediatePropagation?.();
-        const { method, reqId, args } = obj as {
-          method: string;
-          reqId: number;
-          args: unknown[];
-        };
-        const fn = sinkHandlers.get(method);
-        if (!fn) {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: `No sendStream handler for ${specifier}#${method}`
-          });
-          return;
-        }
-        const source = new _WriteSource();
-        wsSources.set(reqId, source);
-        fn(args, source).then((result) => {
-          wsSources.delete(reqId);
-          _sendResult(port, reg, reqId, result);
-        }, (err: unknown) => {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: String(err)
-          });
-        });
-        return;
-      }
-      if (obj['__rpc_send_chunk'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          src.push(obj['chunk']);
-        }
-        return;
-      }
-      if (obj['__rpc_send_end'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          wsSources.delete(obj['reqId'] as number);
-          src.end();
-        }
-        return;
-      }
-      if (obj['__rpc_send_err'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          wsSources.delete(obj['reqId'] as number);
-          src.fail(String(obj['error'] ?? 'sink aborted'));
-        }
-        return;
-      }
-      // --- standard request dispatch (__rpc_req) ---
-      if (obj['__rpc_req'] !== true || obj['specifier'] !== specifier) {
-        return;
-      }
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      const { method, reqId, args } = msg as {
-        method: string;
-        reqId: number;
-        args: unknown[];
-      };
-      // --- streaming handler ---
-      const streamFn = streamHandlers.get(method);
-      if (streamFn) {
-        let iterable: AsyncIterable<unknown>;
-        try {
-          iterable = streamFn(...args);
-        } catch (err: unknown) {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: String(err)
-          });
-          return;
-        }
-        (async () => {
-          try {
-            for await (const chunk of iterable) {
-              port.postMessage({
-                __rpc_chunk: true,
-                reqId,
-                chunk
-              });
-            }
-            port.postMessage({
-              __rpc_end: true,
-              reqId
-            });
-          } catch (err: unknown) {
-            port.postMessage({
-              __rpc_err: true,
-              reqId,
-              error: String(err)
-            });
-          }
-        })().catch(() => {});
-        return;
-      }
-      // --- scalar handler ---
-      const handler = handlers.get(method);
-      if (!handler) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: `No handler for ${specifier}#${method}`
-        });
-        return;
-      }
-      new Promise<unknown>((res) => res(handler(...args))).then((result) => {
-        if (result instanceof FacadeHandle) {
-          // Register the handle and send its ID + stream-method list to the child.
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            result: _registerHandle(reg, result)
-          });
-        } else if (_isAsyncIterable(result)) {
-          (async () => {
-            try {
-              for await (const chunk of result) {
-                port.postMessage({
-                  __rpc_chunk: true,
-                  reqId,
-                  chunk
-                });
-              }
-              port.postMessage({
-                __rpc_end: true,
-                reqId
-              });
-            } catch (err: unknown) {
-              port.postMessage({
-                __rpc_err: true,
-                reqId,
-                error: String(err)
-              });
-            }
-          })().catch(() => {});
-        } else {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            result
-          });
-        }
-      }, (err: unknown) => port.postMessage({
-        __rpc_res: true,
-        reqId,
-        error: String(err)
-      }));
+      _dispatchRpcEnvelope(port, reg, wsSources, ev, (requested) => requested === specifier ? target : null);
     } as EventListener);
     port.start();
   }
@@ -2070,85 +1986,75 @@ interface ProcessRealmConfig {
   bootstrapData?: string;
 }
 // ---------------------------------------------------------------------------
-// call() response helpers
+// call() plumbing
 // ---------------------------------------------------------------------------
-/**
-* Decode a `{ __call_error, message?, stack? }` response or resolve with
-* the raw data value. Centralised to avoid duplicating the error-extraction
-* block across scheduled and process-isolated `call()` branches.
-*/
-function _resolveCallResponse<R>(data: unknown, resolve: (v: R) => void, reject: (err: unknown) => void): void {
-  if (data && typeof data === 'object' && (data as {
-    __call_error?: boolean;
-  }).__call_error) {
-    const d = data as {
-      message?: string;
-      name?: string;
-      stack?: string;
-    };
-    const err = new Error(d.message ?? 'Realm call failed');
-    if (d.name !== undefined) err.name = d.name;
-    if (d.stack !== undefined) err.stack = d.stack;
-    reject(err);
-  } else {
-    const result = data && typeof data === 'object' && (data as { __call_result?: boolean }).__call_result
-      ? (data as { result?: unknown }).result
-      : data;
-    resolve(result as R);
-  }
-}
-
-function _matchesCallResponse(data: unknown, correlationId: number): boolean {
-  if (!data || typeof data !== 'object') return false;
-  const message = data as { __call_result?: boolean; __call_error?: boolean; correlationId?: number };
-  return (message.__call_result === true || message.__call_error === true) && message.correlationId === correlationId;
-}
-
 function _releaseFailure(reason: string): Error | null {
   if (reason.startsWith('failed')) return new Error(reason.replace(/^failed: ?/, '') || reason);
   if (/^(setup_failed|reactor-workload-panicked|reactor-recovery-failed)/.test(reason)) return new Error(reason);
   return null;
 }
 
+/** The `__call` envelope family carrying Realm.call() invocations. */
+const _CALL_CODEC: WireCodec = {
+  encodeReq(id, head) {
+    return { __call: true, correlationId: id, args: head['args'] };
+  },
+  decode(msg) {
+    const id = msg['correlationId'] as number;
+    if (msg['__call_error'] === true) {
+      const error = new Error(typeof msg['message'] === 'string' ? msg['message'] : 'Realm call failed');
+      if (typeof msg['name'] === 'string') error.name = msg['name'];
+      if (typeof msg['stack'] === 'string') error.stack = msg['stack'];
+      return { kind: 'err', id, error };
+    }
+    if (msg['__call_result'] === true) return { kind: 'res', id, result: msg['result'] };
+    return null;
+  }
+};
+
+const _portCallRpc = new WeakMap<object, PortRpc>();
+function _callRpcFor(port: BaseTransportPort): PortRpc {
+  let rpc = _portCallRpc.get(port as object);
+  if (rpc === undefined) {
+    rpc = new PortRpc({
+      send: (msg) => port.postMessage(msg),
+      codec: _CALL_CODEC
+    });
+    const bound = rpc;
+    port.addEventListener('message', (event) => {
+      bound.dispatch((event as MessageEvent).data);
+    });
+    port.start();
+    _portCallRpc.set(port as object, rpc);
+  }
+  return rpc;
+}
+
 /** Run one correlated call over either physical Realm transport. */
 function _callThroughPort<R>(
   port: BaseTransportPort,
   terminal: Promise<unknown>,
-  correlationId: number,
   args: unknown[]
 ): Promise<R> {
-  return new Promise<R>((resolve, reject) => {
-    let settled = false;
-    let terminalTimer: ReturnType<typeof setTimeout> | null = null;
-    const cleanup = () => {
-      port.removeEventListener('message', handler);
-      if (terminalTimer !== null) clearTimeout(terminalTimer);
-    };
-    const settle = (action: () => void) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      action();
-    };
-    const handler = (event: Event) => {
-      const data = (event as MessageEvent).data;
-      if (!_matchesCallResponse(data, correlationId)) return;
-      settle(() => _resolveCallResponse(data, resolve, reject));
-    };
-    terminal.then((value) => {
-      terminalTimer = setTimeout(() => settle(() => {
-        const failure = typeof value === 'string' ? _releaseFailure(value) : null;
-        reject(failure ?? new Error('Realm exited before returning a call result'));
-      }), 25);
-    }, (error) => settle(() => reject(error)));
-    port.addEventListener('message', handler);
-    port.start();
-    try {
-      port.postMessage({ __call: true, correlationId, args });
-    } catch (error) {
-      settle(() => reject(error));
-    }
+  const rpc = _callRpcFor(port);
+  let id: number;
+  let promise: Promise<unknown>;
+  try {
+    ({ id, promise } = rpc.callWithId({ args }));
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  terminal.then((value) => {
+    // The terminal pump may deliver the call result and release in the same
+    // slice; give delivery one macrotask turn before failing the call.
+    setTimeout(() => {
+      const failure = typeof value === 'string' ? _releaseFailure(value) : null;
+      rpc.fail(id, failure ?? new Error('Realm exited before returning a call result'));
+    }, 25);
+  }, (error) => {
+    rpc.fail(id, error instanceof Error ? error : new Error(String(error)));
   });
+  return promise as Promise<R>;
 }
 // ---------------------------------------------------------------------------
 // Realm class
@@ -2171,7 +2077,6 @@ function _callThroughPort<R>(
 export class Realm<F extends RealmFn = RealmFn> {
   /** Whether this logical Realm should keep its owner alive while idle. */
   #referenced = true;
-  #nextCallId = 0;
   /** In-flight call holds; idle drains the instance when unreferenced. */
   #idle = new IdleRetirement({
     delayMs: 0,
@@ -2566,9 +2471,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (this.#scheduled === instance) this.#scheduled = null;
   }
 
-  async #callScheduled(correlationId: number, args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+  async #callScheduled(args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
     const instance = await this.#ensureScheduledInstance();
-    return _callThroughPort(instance.port, instance.allocation.released, correlationId, args);
+    return _callThroughPort(instance.port, instance.allocation.released, args);
   }
   /**
   * Call the child Realm's default-exported function with `args`.
@@ -2585,7 +2490,6 @@ export class Realm<F extends RealmFn = RealmFn> {
   * ```
   */
   call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
-    const correlationId = this.#nextCallId++;
     this.#idle.retain();
     const callStart = performance.now();
     // Capture at call time so the end event is always published when start was.
@@ -2595,11 +2499,11 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     let base: Promise<Awaited<ReturnType<F>>>;
     if (!this.#processIsolated) {
-      base = this.#callScheduled(correlationId, args);
+      base = this.#callScheduled(args);
     } else {
       try {
         const processPort = this.#ensureProcessPort();
-        base = _callThroughPort(processPort, processPort.finished, correlationId, args);
+        base = _callThroughPort(processPort, processPort.finished, args);
       } catch (error) {
         base = Promise.reject(error);
       }
