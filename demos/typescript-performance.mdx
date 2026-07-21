@@ -1,0 +1,310 @@
+import { Arrow, Callout, CodeLabel, Decision, Evidence, Eyebrow, Flow, FlowNode, Grid, Layer, Lead, Metric, Panel, Rule } from './typescript-performance-components.tsx'
+export const meta = { title: 'The TypeScript data plane', author: 'Fino · runtime architecture' }
+export const theme = { paper: '#f4f0e5', ink: '#0d1b1e', accent: '#ee5b40', muted: '#66777a' }
+
+<Eyebrow>Fino runtime architecture · 2026</Eyebrow>
+
+# The TypeScript data plane
+
+<Rule />
+
+<Lead>How Fino gets faster by pushing native code to the edges—and keeping protocols, policy, and application objects in one optimized heap.</Lead>
+
+<Footer>V8 in the center · native at the edges</Footer>
+
+<Notes>This is not an argument that JavaScript beats C at compression or cryptography. It is an argument about where a runtime pays coordination costs. FFI exists so TypeScript can own more of the system without asking Rust to mediate every operation.</Notes>
+
+---
+
+<Eyebrow>01 · The inversion</Eyebrow>
+
+## Native is the edge, not the architecture
+
+<div style={{ display: 'grid', gap: '.65rem', width: '100%' }}>
+  <Layer label="Application" detail="Handlers, middleware, schemas, observability, workflows" tone="coral">TypeScript objects stay TypeScript objects</Layer>
+  <Layer label="Protocol" detail="HTTP, DNS, Postgres, QUIC orchestration, Arrow, Parquet" tone="cyan">State machines live beside the application</Layer>
+  <Layer label="Primitive" detail="syscalls, crypto, compression, nghttp2/3, ngtcp2, SQLite" tone="ink">Native code does irreducible native work</Layer>
+</div>
+
+<Callout label="Thesis">Cross once for a coarse primitive. Do the surrounding work where the data already lives.</Callout>
+
+<Notes>The inversion is the key: the Rust host is not a second standard library. It supplies V8, loading, scheduling, isolation, and a fast path to native primitives. The TypeScript library owns the runtime behavior developers interact with.</Notes>
+
+---
+
+<Eyebrow>02 · What shipped</Eyebrow>
+
+## The standard library is overwhelmingly TypeScript
+
+<Grid columns={3}>
+  <Metric value="195k" label="lines of TypeScript" note="All js/**/*.ts and .tsx in this worktree." />
+  <Metric value="16k" label="lines of Rust" note="The host, loader, realms, scheduler, FFI, and profiler." tone="amber" />
+  <Metric value="32k" label="TS lines in core data paths" note="HTTP/QUIC, DNS, Postgres, Arrow, Parquet, and formats." tone="coral" />
+</Grid>
+
+<Callout label="Directional, not doctrinal">Line counts include documentation and are not a productivity metric. They reveal where behavior is owned.</Callout>
+
+<Notes>Counts from the feature/slides worktree: 195,562 TypeScript lines, 16,080 Rust lines, and 32,443 lines across selected protocol/data modules. The Rust core is deliberately small but foundational.</Notes>
+
+---
+
+<Eyebrow>03 · One heap</Eyebrow>
+
+## Staying in TypeScript removes whole categories of work
+
+<Grid columns={2}>
+  <Panel title="One object model"><div>`Request`, `Headers`, `URL`, router context, and telemetry references pass directly.</div></Panel>
+  <Panel title="One optimizer" tone="amber"><div>V8 sees object shapes, monomorphic call sites, loops, and branches across the whole path.</div></Panel>
+  <Panel title="One ownership regime" tone="coral"><div>Typed arrays, strings, promises, and queues do not need Rust mirrors or lifetime handoffs.</div></Panel>
+  <Panel title="One debugging surface"><div>Profiles name the actual protocol and policy functions instead of stopping at a binding.</div></Panel>
+</Grid>
+
+<Notes>A native layer can only optimize what it can see. Keeping the path in TypeScript lets V8 optimize across URL parsing, Request construction, routing, and response shaping while every layer shares object identity.</Notes>
+
+---
+
+<Eyebrow>04 · The hidden tax</Eyebrow>
+
+## A native implementation can add work even when its loop is faster
+
+<Flow>
+  <FlowNode number="01" title="Marshal" detail="Turn JS values into native structs or handles." tone="coral" />
+  <Arrow />
+  <FlowNode number="02" title="Execute" detail="Run the native algorithm." tone="amber" />
+  <Arrow />
+  <FlowNode number="03" title="Rebuild" detail="Allocate JS-visible results and wrappers." tone="coral" />
+  <Arrow />
+  <FlowNode number="04" title="Synchronize" detail="Reconcile cancellation, queues, ownership, and errors." />
+</Flow>
+
+<Callout label="Performance question">Is the native loop faster than the loop—or faster than the entire round trip?</Callout>
+
+<Notes>This is why microbenchmarks of an isolated Rust parser can mislead. A runtime must count conversion into native inputs, construction of application-visible results, synchronization with the event loop, and any duplicated validation or state.</Notes>
+
+---
+
+<Eyebrow>05 · What FFI is for</Eyebrow>
+
+## The boundary is an escape hatch for primitives
+
+<Grid columns={3}>
+  <Panel title="Enter"><div>Pass scalars, pointers, and existing buffers through the V8 Fast API.</div></Panel>
+  <Panel title="Work" tone="amber"><div>Let libc or a specialized library perform the operation it owns.</div></Panel>
+  <Panel title="Return" tone="coral"><div>Keep bytes in place; bring back the smallest possible result.</div></Panel>
+</Grid>
+
+<Callout label="Purpose">Fast FFI does not pull the runtime into Rust. It makes a TypeScript-first runtime viable.</Callout>
+
+<Notes>The FFI implementation still matters: fast scalar and buffer calls, stable pointer representations, and explicit ownership keep necessary crossings small. But its strategic purpose is to avoid adding a bespoke Rust binding module for every capability.</Notes>
+
+---
+
+<Eyebrow>06 · HTTP/3 cutaway</Eyebrow>
+
+## Native libraries are sans-I/O; TypeScript is the data plane
+
+<Flow>
+  <FlowNode number="KERNEL" title="UDP" detail="recvmsg, sendmmsg, readiness" tone="coral" />
+  <Arrow />
+  <FlowNode number="NGTCP2" title="QUIC math" detail="packets, crypto levels, loss recovery" tone="amber" />
+  <Arrow />
+  <FlowNode number="TS" title="Connection state" detail="timers, queues, stream objects, policy" />
+  <Arrow />
+  <FlowNode number="NGHTTP3" title="QPACK/H3" detail="wire codec and protocol machinery" tone="amber" />
+  <Arrow />
+  <FlowNode number="TS" title="Application" detail="Request → router → Response" />
+</Flow>
+
+<Notes>ngtcp2 and nghttp3 do not own the socket. TypeScript owns transport orchestration and application semantics, calling native libraries for protocol primitives. That makes the hot path directly optimizable without a Rust HTTP object model in between.</Notes>
+
+---
+
+<Eyebrow>07 · Measured</Eyebrow>
+
+## The first ceiling was JavaScript allocation—not native execution
+
+<Grid columns={2}>
+  <Metric value="28%" label="of on-CPU JS time in GC" note="Profiled under h3load c100/m10." tone="coral" />
+  <Evidence value="+8–10%" title="H3 throughput" before="eager AbortSignal + duplicate Headers" after="lazy fields + direct trusted construction" />
+</Grid>
+
+<Callout label="Why TypeScript helped">The fix removed objects before they existed. A native HTTP layer would still have needed to recreate them for the handler.</Callout>
+
+<Notes>Commit 54cc089 measured +8.3% and +9.6% across two repetitions from a 37,553 req/s baseline. It made Request.signal lazy and skipped server-path Headers copies. Response.json's internal fast path was later reverted after a profiler-OOM regression; the Request-side lesson remains valid.</Notes>
+
+---
+
+<Eyebrow>08 · Measured</Eyebrow>
+
+## A TypeScript URL fast path moved system throughput
+
+<Evidence value="+8.3%" title="HTTP/2 throughput" before="47,968 req/s" after="51,932 req/s" />
+
+<Grid columns={3}>
+  <Panel title="Skip"><div>Non-`blob:` requests no longer enter object-URL resolution.</div></Panel>
+  <Panel title="Scan" tone="amber"><div>Percent encoding returns the original string when no byte needs escaping.</div></Panel>
+  <Panel title="Stay ASCII" tone="coral"><div>Ordinary hosts bypass label splitting and code-point arrays.</div></Panel>
+</Grid>
+
+<Notes>Commit 37a16fb. Profiling showed URL parsing at roughly 7% of on-CPU JS. The change was entirely in js/globals/url.ts and remained spec-equivalent for the common case.</Notes>
+
+---
+
+<Eyebrow>09 · Measured</Eyebrow>
+
+## Direct TypeScript references beat a generic event abstraction
+
+<Evidence value="+11.4%" title="HTTP/3 throughput" before="40,454 req/s" after="45,062 req/s" tone="coral" />
+
+<Flow>
+  <FlowNode number="BEFORE" title="EventTarget + queue" detail="Create QuicStreamEvent, dispatch it, and retain the same stream in an unread accept queue." tone="coral" />
+  <Arrow />
+  <FlowNode number="AFTER" title="Internal direct hook" detail="Hand the existing QuicStream reference directly to the H3 driver." />
+</Flow>
+
+<Callout label="The win">No language change. No native rewrite. One unnecessary abstraction left the hot path.</Callout>
+
+<Notes>Commit d095255, four interleaved h3load A/B rounds. It also fixed unbounded retention because the H3 driver used events but never drained acceptStream().</Notes>
+
+---
+
+<Eyebrow>10 · Measured</Eyebrow>
+
+## TypeScript can decide not to cross
+
+<Evidence value="+1.2%" title="HTTP/3 median" before="cancel + re-arm + native expiry query" after="reuse unchanged absolute deadline" tone="amber" />
+
+<Grid columns={2}>
+  <Panel title="One skipped decision"><div>No Promise, closure, Map delete/insert, or reactor changelist update.</div></Panel>
+  <Panel title="One skipped crossing" tone="coral"><div>No repeated `ngtcp2_conn_get_expiry` call when the deadline did not move.</div></Panel>
+</Grid>
+
+<Callout label="Architectural advantage">Policy sits beside state, so TypeScript can prove the native query is redundant.</Callout>
+
+<Notes>Commit 6aa2694, drift-cancelled four-round A/B: 41,712 to 42,196 req/s median. The same change also deduplicated the max UDP payload-size query within each write drain.</Notes>
+
+---
+
+<Eyebrow>11 · Measured</Eyebrow>
+
+## Most wins came from moving less—not computing faster
+
+<div style={{ display: 'grid', gap: '.65rem', width: '100%' }}>
+  <Evidence value="+1.5%" title="Reuse H3 multi-vector scratch" before="new Uint8Array every drain" after="grow once, overwrite" />
+  <Evidence value="+1.8%" title="Remove redundant body copies" before="4 outbound / 3 inbound" after="3 outbound / 2 inbound" tone="amber" />
+  <Evidence value="+4.8%" title="Reuse H2 header scratch" before="2 arrays + frame object per header" after="one reusable buffer + direct field read" tone="coral" />
+</div>
+
+<Notes>Commits 6fe193f, 6103e07, and 0a30639. The H2 callback alone had been about 9% of on-CPU JS time. These improvements optimize the TypeScript/native seam without moving the protocol state machine out of TypeScript.</Notes>
+
+---
+
+<Eyebrow>12 · HTTP/1</Eyebrow>
+
+## A complete protocol driver can stay in TypeScript
+
+<Grid columns={3}>
+  <Panel title="Parse + frame"><div>RFC 9112 message boundaries, chunking, trailers, keep-alive, and 100-continue.</div></Panel>
+  <Panel title="Schedule" tone="amber"><div>Pipeline handlers concurrently while preserving wire response order.</div></Panel>
+  <Panel title="Batch" tone="coral"><div>Cache repeated response heads and flush queued responses with one `writev`.</div></Panel>
+</Grid>
+
+<Callout label="Native edge">TypeScript decides what to write. The kernel receives the final vectors in one coarse syscall.</Callout>
+
+<Notes>See js/net/http/h1.ts. The module-level response-head cache exists because TextEncoder work appeared at roughly 3% flat in profiles. The driver also bounds pending requests and iov count without requiring native connection objects.</Notes>
+
+---
+
+<Eyebrow>13 · Wire protocols</Eyebrow>
+
+## Bytes do not become faster merely because Rust reads them
+
+<Grid columns={2}>
+  <Panel title="DNS"><div>Packet encoding, compression pointers, record parsing, retries, TCP fallback, and DNSSEC policy are TypeScript over `Uint8Array` and `DataView`.</div></Panel>
+  <Panel title="Postgres" tone="amber"><div>Startup, SCRAM, Parse/Bind/Execute, row descriptions, and result decoding stay in the same heap as query consumers.</div></Panel>
+  <Panel title="FlatBuffers" tone="coral"><div>Schema-less table navigation returns views into existing bytes instead of native wrapper objects.</div></Panel>
+  <Panel title="Formats"><div>CSV, Markdown, TOML, XML, YAML, and validation compose directly with application values.</div></Panel>
+</Grid>
+
+<Callout label="Where TS wins">Field-by-field boundary calls would cost more than the integer loads and branches they replace.</Callout>
+
+<Notes>These modules are not automatically fast because they are TypeScript. They are fast when they scan contiguous bytes, avoid intermediate objects, and return values already shaped for their consumers. The important comparison is against a chatty native wrapper, not against an ideal native parser that never has to expose results.</Notes>
+
+---
+
+<Eyebrow>14 · Columnar data</Eyebrow>
+
+## Pure TypeScript can be the zero-copy layer
+
+<Grid columns={3}>
+  <Metric value="53ns" label="wrap 100K int32 values" note="makeVector over an existing raw buffer; O(1)." />
+  <Metric value="~1µs" label="read 100K × 2 IPC" note="Uncompressed vectors alias the input body." tone="amber" />
+  <Metric value="0" label="elements copied" note="Vector, slice, Table, and Column are views." tone="coral" />
+</Grid>
+
+<Callout label="The trick">Performance comes from not touching 100,000 values—not from implementing the wrapper constructor in native code.</Callout>
+
+<Notes>Local release microbenchmark on 2026-07-21: makeVector 53 ns/iteration and tableFromIPC 993 ns/iteration for the benchmark corpus. These are point observations with noisy microbenchmark confidence intervals, not cross-runtime comparisons. The durable claim is structural: makeVector wraps supplied buffers and IPC readers use subarray views when bodies are uncompressed.</Notes>
+
+---
+
+<Eyebrow>15 · Native algorithm, TS policy</Eyebrow>
+
+## SQLite demonstrates the intended split
+
+<Flow>
+  <FlowNode number="TS" title="Database API" detail="statements, values, migrations, application errors" />
+  <Arrow />
+  <FlowNode number="C" title="SQLite engine" detail="query planner, B-tree, bytecode VM" tone="amber" />
+  <Arrow />
+  <FlowNode number="TS" title="VFS callbacks" detail="disk, memory, object storage, or a virtual filesystem" tone="coral" />
+</Flow>
+
+<Callout label="Why it matters">The expensive algorithm stays native. I/O ownership stays programmable and consistent with the rest of the runtime.</Callout>
+
+<Notes>SQLite's VFS is an especially useful boundary pattern. SQLite retains the query engine and file-format implementation; TypeScript can route page reads and writes through disk, memory, S3-like storage, testing fakes, or capability-limited providers.</Notes>
+
+---
+
+<Eyebrow>16 · Honest boundary</Eyebrow>
+
+## TypeScript is not the right place for every loop
+
+<Grid columns={2}>
+  <Panel title="Keep native" tone="coral"><div>syscalls and readiness</div><div>TLS and cryptographic primitives</div><div>compression codecs</div><div>SQLite execution</div><div>QUIC/H2/H3 codec kernels</div></Panel>
+  <Panel title="Keep TypeScript"><div>protocol orchestration</div><div>application-visible objects</div><div>routing and policy</div><div>queues, timers, cancellation</div><div>format metadata and zero-copy views</div></Panel>
+</Grid>
+
+<Callout label="Rule">Native owns compute density. TypeScript owns coordination density.</Callout>
+
+<Notes>There are exceptions, but this rule is a better default than choosing by language reputation. Tight numerical or cryptographic loops belong in mature native libraries. Branchy orchestration over JS-visible state usually benefits from staying beside that state.</Notes>
+
+---
+
+<Eyebrow>17 · Decision rule</Eyebrow>
+
+## Choose the side that minimizes total work
+
+<div style={{ width: '100%' }}>
+  <Decision when="A syscall or specialized kernel" choose="native edge" reason="The operating system or mature library already owns the primitive." tone="coral" />
+  <Decision when="Data already lives as JS objects" choose="TypeScript" reason="Avoid mirroring object graphs and rebuilding results." />
+  <Decision when="Many tiny native operations" choose="batch or lift the loop" reason="One coarse crossing beats thousands of individually fast calls." tone="amber" />
+  <Decision when="State can suppress work" choose="TypeScript beside state" reason="Cache, coalesce, skip, and reuse before calling native code." />
+  <Decision when="Bytes can remain bytes" choose="typed-array view" reason="Alias or slice existing storage; do not translate merely for type prestige." tone="coral" />
+</div>
+
+<Notes>Apply this per hot path, not per module. A TypeScript module can batch one native call for its core primitive, then continue in TypeScript. Profiling should decide when an abstraction or allocation leaves the hot path—not a blanket rewrite policy.</Notes>
+
+---
+
+<Eyebrow>Conclusion</Eyebrow>
+
+# Push native code out to the edges
+
+<Rule />
+
+<Lead>Use native code for the work only native code should do. Keep the system around it in TypeScript—where objects, state, policy, and V8’s optimizer can see each other.</Lead>
+
+<Footer>The boundary is infrastructure · TypeScript is the runtime</Footer>
+
+<Notes>The surprising result is not that TypeScript outruns a native loop. It is that the end-to-end system often wins when the loop is not separated from its state and consumers by an ownership boundary.</Notes>
