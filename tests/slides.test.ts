@@ -96,7 +96,7 @@ describe('fino:ui/slides', () => {
     t.notOk(presenterHtml.includes('replace(//$/'), 'presenter script is not parsed as a line comment');
   });
 
-  it('fits one fixed slide canvas into viewer and presenter viewports without layout JavaScript', async (t) => {
+  it('fits one responsive slide into viewer and presenter viewports without layout JavaScript', async (t) => {
     const presentation = new Presentation(deckModule());
     const app = new App();
     app.route('/talk').mount(presentation.viewer());
@@ -105,16 +105,26 @@ describe('fino:ui/slides', () => {
     const presenter = await app.handle(new Request('http://local/control')) as Response;
     const viewerHtml = await viewer.text();
     const presenterHtml = await presenter.text();
-    t.ok(viewerHtml.includes('class="fino-slide-viewport fino-audience"'), 'viewer wraps the fixed canvas in a fitting viewport');
+    t.ok(viewerHtml.includes('class="fino-slide-viewport fino-audience"'), 'viewer wraps the responsive slide in a fitting viewport');
     t.ok(presenterHtml.includes('class="fino-presenter-preview fino-slide-viewport"'), 'presenter current slide uses the same fitting viewport');
     t.ok(presenterHtml.includes('class="fino-next-viewport fino-slide-viewport"'), 'presenter next slide uses the same fitting viewport');
-    t.ok(viewerHtml.includes('viewBox="0 0 1600 900"'), 'viewer scales the fixed canvas with a native view box');
-    t.ok(presenterHtml.match(/viewBox="0 0 1600 900"/g)?.length === 2, 'presenter scales both preview canvases with native view boxes');
+    t.ok(viewerHtml.includes('<div class="fino-slide-surface">'), 'viewer renders a responsive HTML slide surface');
+    t.ok(presenterHtml.match(/<div class="fino-slide-surface">/g)?.length === 2, 'presenter renders responsive HTML surfaces for both previews');
+    t.notOk(viewerHtml.includes('<svg'), 'viewer does not use a fixed SVG canvas');
+    t.notOk(presenterHtml.includes('<svg'), 'presenter does not use fixed SVG canvases');
+    t.notOk(viewerHtml.includes('1600px'), 'viewer does not retain a fixed design width');
+    t.notOk(viewerHtml.includes('900px'), 'viewer does not retain a fixed design height');
+    t.ok(viewerHtml.includes('.fino-slide-viewport{position:relative;display:grid;place-items:center;overflow:hidden;container-type:size}'), 'each host exposes both dimensions to its slide');
+    t.ok(viewerHtml.includes('.fino-slide-surface{width:min(100cqw,177.7777778cqh);height:min(100cqh,56.25cqw);aspect-ratio:16/9;container-type:inline-size}'), 'slide surface takes the largest contained 16:9 area');
+    t.ok(viewerHtml.includes('.fino-slide-frame{position:relative;width:100%;height:100%;'), 'slide content fills its responsive surface');
+    t.ok(viewerHtml.includes('font-size:1cqw'), 'slide-local dimensions scale with the responsive surface');
+    t.notOk(viewerHtml.includes('background-size:5px 5px'), 'slide decoration does not retain fixed pixel dimensions');
+    t.ok(viewerHtml.includes('background-size:.3125em .3125em'), 'slide decoration follows the slide-local scale');
     t.ok(presenterHtml.includes('color:var(--slides-ink)'), 'slide foreground does not inherit from the presenter shell');
     t.ok(viewerHtml.includes('.fino-audience{width:100vw;height:100vh'), 'viewer gives the slide scaler the full browser viewport');
     t.ok(presenterHtml.includes('.fino-presenter-preview{width:100%;height:100%;min-width:0;min-height:0}'), 'presenter current slide fills its allocated preview cell');
     t.ok(presenterHtml.includes('.fino-next-viewport{width:100%;aspect-ratio:16/9}'), 'presenter next slide fills its bounded preview area');
-    t.notOk(viewerHtml.includes('.fino-slide-viewport{position:relative;overflow:hidden;aspect-ratio:16/9}'), 'shared viewport does not force a width-driven box around the scaler');
+    t.notOk(viewerHtml.includes('.fino-slide-viewport{position:relative;overflow:hidden;aspect-ratio:16/9}'), 'shared viewport does not force a width-driven box around the slide');
     t.ok(viewerHtml.includes('.fino-fullscreen{position:absolute;right:0;top:0;'), 'fullscreen control overlays the slide without reserving space');
     t.ok(viewerHtml.includes('opacity:0;transition:opacity'), 'fullscreen control is hidden until its corner is targeted');
     t.ok(viewerHtml.includes('.fino-fullscreen:hover,.fino-fullscreen:focus-visible{opacity:1}'), 'fullscreen control fades in for pointer and keyboard users');
