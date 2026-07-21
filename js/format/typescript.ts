@@ -11,7 +11,9 @@
 * tokens, diagnostics, and the detected source mode. The AST shape follows the
 * bundled OXC version and can change as OXC evolves. `transpile()` returns
 * JavaScript code plus source map text and diagnostics for TypeScript/JSX
-* syntax lowering. `format()` rewrites source with stable style defaults, and
+* syntax lowering. TSX and JSX use the automatic `fino:ui` runtime unless a
+* file-level `@jsxImportSource` pragma selects another runtime. `format()`
+* rewrites source with stable style defaults, and
 * `lint()` reports diagnostics from the runtime's default rule set. For
 * serving browser-side TypeScript directly from a Fino HTTP app,
 * `transpileFiles()` provides transpile-on-request middleware.
@@ -719,7 +721,8 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
 * bundling. Grammar comes from `filename` alone — TypeScript module grammar
 * when omitted — so JSX or declaration input needs a filename with a matching
 * extension; `options.sourceType` is not consulted here. Check `ok` and
-* `errors` before consuming `code`.
+* `errors` before consuming `code`. JSX uses the automatic `fino:ui` runtime
+* by default and honors file-level `@jsxImportSource` pragmas.
 *
 * ```ts no_run
 * import { transpile } from 'fino:format/typescript';

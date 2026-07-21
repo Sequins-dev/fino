@@ -262,6 +262,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ui/web/flow", "ui/web/flow"),
     source_builtin!("fino:ui/web/state", "ui/web/state"),
     source_builtin!("fino:ui/jsx-runtime", "ui/jsx-runtime"),
+    source_builtin!("fino:ui/slides", "ui/slides"),
     source_builtin!("fino:tty", "tty"),
     source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
     source_builtin!("fino:tty/tui", "tty/tui"),
@@ -445,6 +446,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:semver", "semver"),
     source_builtin!("fino:uuid", "uuid"),
     source_builtin!("fino:format/markdown", "format/markdown"),
+    source_builtin!("fino:format/mdx", "format/mdx"),
     source_builtin!("fino:template", "template"),
     source_builtin!("fino:log", "log"),
     source_builtin!("fino:validate", "validate"),
@@ -1680,7 +1682,7 @@ fn load_fs_module_uncached<'s>(
         let escaped = escape_js_string(&text);
         let src = format!("export default JSON.parse('{escaped}');");
         compile_source_module(scope, &src, &resource_name, None)
-    } else if is_typescript(path) || is_sql(path) {
+    } else if is_typescript(path) || is_mdx(path) || is_sql(path) {
         let stripped = transpile_typescript(scope, path, &text)?;
         register_source_map_from_json(scope, &resource_name, &stripped.map);
         compile_source_module(
@@ -1798,8 +1800,10 @@ fn resolve_path(
     {
         return Ok(p);
     }
-    // Extension probing: try TypeScript/JS extensions in order.
-    for ext in [".ts", ".mts", ".mjs", ".js", ".json"] {
+    // Extension probing: prefer typed sources, then JSX, JS, and data modules.
+    for ext in [
+        ".ts", ".tsx", ".mts", ".mdx", ".jsx", ".mjs", ".js", ".json",
+    ] {
         let mut probed = raw.as_os_str().to_owned();
         probed.push(ext);
         if let Ok(p) = PathBuf::from(probed).canonicalize()
@@ -1887,12 +1891,16 @@ fn hex_value(byte: u8) -> Option<u8> {
 fn is_typescript(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("ts" | "mts" | "cts")
+        Some("ts" | "tsx" | "mts" | "cts" | "jsx")
     )
 }
 
 fn is_json(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("json")
+}
+
+fn is_mdx(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("mdx")
 }
 
 fn is_sql(path: &Path) -> bool {
