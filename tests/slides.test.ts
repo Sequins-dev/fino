@@ -96,6 +96,25 @@ describe('fino:ui/slides', () => {
     t.notOk(presenterHtml.includes('replace(//$/'), 'presenter script is not parsed as a line comment');
   });
 
+  it('fits one fixed slide canvas into viewer and presenter viewports without layout JavaScript', async (t) => {
+    const presentation = new Presentation(deckModule());
+    const app = new App();
+    app.route('/talk').mount(presentation.viewer());
+    app.route('/control').mount(presentation.presenter());
+    const viewer = await app.handle(new Request('http://local/talk')) as Response;
+    const presenter = await app.handle(new Request('http://local/control')) as Response;
+    const viewerHtml = await viewer.text();
+    const presenterHtml = await presenter.text();
+    t.ok(viewerHtml.includes('class="fino-slide-viewport fino-audience"'), 'viewer wraps the fixed canvas in a fitting viewport');
+    t.ok(presenterHtml.includes('class="fino-presenter-preview fino-slide-viewport"'), 'presenter current slide uses the same fitting viewport');
+    t.ok(presenterHtml.includes('class="fino-next-viewport fino-slide-viewport"'), 'presenter next slide uses the same fitting viewport');
+    t.ok(viewerHtml.includes('viewBox="0 0 1600 900"'), 'viewer scales the fixed canvas with a native view box');
+    t.ok(presenterHtml.match(/viewBox="0 0 1600 900"/g)?.length === 2, 'presenter scales both preview canvases with native view boxes');
+    t.ok(presenterHtml.includes('color:var(--slides-ink)'), 'slide foreground does not inherit from the presenter shell');
+    t.notOk(viewerHtml.includes('ResizeObserver'), 'viewer needs no JavaScript layout observer');
+    t.notOk(presenterHtml.includes('ResizeObserver'), 'presenter needs no JavaScript layout observer');
+  });
+
   it('navigates shared state through same-origin nonce-protected commands', async (t) => {
     const presentation = new Presentation(deckModule());
     const app = new App();

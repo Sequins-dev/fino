@@ -173,6 +173,10 @@ function themeStyle(theme: PresentationTheme): string {
   }).join(';');
 }
 
+function slideSurface(frame: string): string {
+  return `<svg class="fino-slide-surface" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid meet" focusable="false"><foreignObject width="1600" height="900">${frame}</foreignObject></svg>`;
+}
+
 function pageShell(title: string, lang: string, body: string, style: string, script: string): Response {
   return new Response(`<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${style}</style></head><body>${body}<script>${script}</script></body></html>`, {
     headers: { 'content-type': 'text/html; charset=utf-8' }
@@ -182,7 +186,7 @@ function pageShell(title: string, lang: string, body: string, style: string, scr
 const sharedStyle = `
 :root{--slides-paper:#f1eadc;--slides-ink:#171713;--slides-accent:#e4542f;--slides-muted:#8e877a;--slides-panel:#24231f;color-scheme:light}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--slides-ink);color:var(--slides-ink)}
-body{font-family:"Avenir Next Condensed","Helvetica Neue",sans-serif}.fino-slide-frame{position:relative;overflow:hidden;background:var(--slides-paper);box-shadow:0 2.5rem 8rem #0009;isolation:isolate;container-type:inline-size}
+body{font-family:"Avenir Next Condensed","Helvetica Neue",sans-serif}.fino-slide-viewport{position:relative;overflow:hidden;aspect-ratio:16/9}.fino-slide-surface{display:block;width:100%;height:100%}.fino-slide-surface foreignObject{overflow:hidden}.fino-slide-frame{position:relative;width:1600px;height:900px;overflow:hidden;background:var(--slides-paper);color:var(--slides-ink);box-shadow:0 2.5rem 8rem #0009;isolation:isolate;container-type:inline-size}
 .fino-slide-frame:before{content:"";position:absolute;inset:0;z-index:-1;opacity:.2;background-image:radial-gradient(#171713 0.55px,transparent .55px);background-size:5px 5px}
 .fino-slide-frame>section{width:100%;height:100%;padding:8% 9%;display:flex;flex-direction:column;justify-content:center;gap:1.3rem}
 .fino-slide-frame h1,.fino-slide-frame h2,.fino-slide-frame h3{font-family:"Iowan Old Style","Baskerville",serif;line-height:.93;letter-spacing:-.045em;margin:0;max-width:14ch}
@@ -195,7 +199,7 @@ button,select{font:inherit}button{cursor:pointer}
 `;
 
 const viewerStyle = `${sharedStyle}
-body{display:grid;place-items:center;min-height:100vh;padding:3vw}.fino-audience{width:min(94vw,177.77vh);aspect-ratio:16/9;animation:enter .55s cubic-bezier(.2,.8,.2,1)}
+body{display:grid;place-items:center;min-height:100vh;padding:3vh 3vw;overflow:hidden}.fino-audience{width:min(94vw,167.11vh);animation:enter .55s cubic-bezier(.2,.8,.2,1)}
 .fino-fullscreen{position:fixed;right:1rem;top:1rem;border:1px solid #f1eadc55;background:#171713aa;color:var(--slides-paper);padding:.55rem .75rem;letter-spacing:.09em;text-transform:uppercase;font-size:.68rem}
 @keyframes enter{from{opacity:0;transform:translateY(1rem) scale(.99)}}@media(max-aspect-ratio:1/1){body{padding:0}.fino-audience{width:100vw}}
 `;
@@ -203,10 +207,10 @@ body{display:grid;place-items:center;min-height:100vh;padding:3vw}.fino-audience
 const presenterStyle = `${sharedStyle}
 body{background:#191917;color:var(--slides-paper);min-height:100vh}.fino-presenter-shell{min-height:100vh;padding:2rem;display:grid;grid-template-columns:minmax(0,1.6fr) minmax(18rem,.7fr);gap:2rem}
 .fino-presenter-main{display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:1rem;min-width:0}.fino-presenter-kicker{margin:0;color:var(--slides-accent);font-size:.72rem;letter-spacing:.22em;text-transform:uppercase}.fino-presenter-title{font:2rem/1 "Iowan Old Style",serif;margin:.3rem 0 0}
-.fino-presenter-preview{aspect-ratio:16/9;width:100%;max-width:100%;min-width:0;overflow:hidden}.fino-presenter-preview .fino-slide-frame{width:100%;height:100%}.fino-presenter-controls{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:.6rem;align-items:center;min-width:0}
+.fino-presenter-preview{width:100%;max-width:100%;min-width:0}.fino-presenter-controls{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:.6rem;align-items:center;min-width:0}
 .fino-presenter-controls button,.fino-presenter-controls select{border:1px solid #f1eadc33;background:#24231f;color:var(--slides-paper);padding:.8rem 1rem}.fino-presenter-controls button:hover{border-color:var(--slides-accent);color:var(--slides-accent)}
 .fino-compile-error{margin:0;padding:1rem 2rem;background:#8d241d;color:#fff4e8;border-bottom:1px solid #ffb39b}.fino-compile-error strong{letter-spacing:.08em;text-transform:uppercase;font-size:.74rem}.fino-compile-error pre{margin:.5rem 0 0;white-space:pre-wrap;font:12px/1.45 "SFMono-Regular",monospace}
-.fino-presenter-side{display:grid;grid-template-rows:auto auto 1fr;gap:1rem;min-width:0;min-height:0}.fino-clock{font:3rem/1 "Iowan Old Style",serif;font-variant-numeric:tabular-nums}.fino-next{opacity:.72;min-width:0;overflow:hidden}.fino-next .fino-slide-frame{width:100%;aspect-ratio:16/9}.fino-notes{border-top:1px solid #f1eadc22;padding-top:1rem;overflow:auto;line-height:1.55;color:#d8d0c2}.fino-notes h3{color:var(--slides-accent);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase}
+.fino-presenter-side{display:grid;grid-template-rows:auto auto 1fr;gap:1rem;min-width:0;min-height:0}.fino-clock{font:3rem/1 "Iowan Old Style",serif;font-variant-numeric:tabular-nums}.fino-next{opacity:.72;min-width:0;overflow:hidden}.fino-next-viewport{width:100%}.fino-notes{border-top:1px solid #f1eadc22;padding-top:1rem;overflow:auto;line-height:1.55;color:#d8d0c2}.fino-notes h3{color:var(--slides-accent);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase}
 @media(max-width:900px){.fino-presenter-shell{grid-template-columns:1fr}.fino-presenter-controls{grid-template-columns:1fr 1fr}.fino-presenter-side{grid-template-rows:auto auto auto}}
 `;
 
@@ -329,7 +333,8 @@ export class Presentation {
     const record = this.#manifest.slides[this.#state.slide]!;
     const vnode = audienceNode(record.vnode, this.#state.step)!;
     const progress = ((this.#state.slide + 1) / this.#manifest.slides.length) * 100;
-    return `<div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${renderToHtml(vnode)}<div class="fino-progress" role="progressbar" aria-valuemin="1" aria-valuemax="${this.#manifest.slides.length}" aria-valuenow="${this.#state.slide + 1}"><i style="width:${progress}%"></i></div></div>`;
+    const frame = `<div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${renderToHtml(vnode)}<div class="fino-progress" role="progressbar" aria-valuemin="1" aria-valuemax="${this.#manifest.slides.length}" aria-valuenow="${this.#state.slide + 1}"><i style="width:${progress}%"></i></div></div>`;
+    return slideSurface(frame);
   }
 
   #presenterHtml(audience: string): string {
@@ -338,7 +343,8 @@ export class Presentation {
     const nextHtml = next ? renderToHtml(audienceNode(next.vnode, 0)!) : '<section><p>End of deck</p></section>';
     const options = this.#manifest.slides.map((_, index) => `<option value="go:${index}"${index === this.#state.slide ? ' selected' : ''}>${String(index + 1).padStart(2, '0')}</option>`).join('');
     const failure = this.#diagnostic ? `<div class="fino-compile-error" role="alert"><strong>Deck compile failed — showing last good revision</strong><pre>${escapeHtml(this.#diagnostic)}</pre></div>` : '';
-    return `${failure}<div class="fino-presenter-shell" data-presentation-nonce="${escapeHtml(this.#nonce)}" data-started-at="${this.#startedAt}"><section class="fino-presenter-main"><header><p class="fino-presenter-kicker">Presenter · ${this.#state.slide + 1}/${this.#manifest.slides.length} · step ${this.#state.step + 1}</p><h1 class="fino-presenter-title">${escapeHtml(this.#manifest.meta.title ?? 'Untitled presentation')}</h1></header><div class="fino-presenter-preview fino-audience">${audience}</div><nav class="fino-presenter-controls" aria-label="Presentation controls"><button data-command="previous" aria-label="Previous slide">← Previous</button><button data-command="next" aria-label="Next slide or step">Next →</button><select data-slide-picker aria-label="Choose slide">${options}</select><button data-fullscreen>Fullscreen</button></nav></section><aside class="fino-presenter-side"><div><p class="fino-presenter-kicker">Elapsed</p><div class="fino-clock" data-clock>00:00</div></div><div class="fino-next"><p class="fino-presenter-kicker">Next</p><div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${nextHtml}</div></div><div class="fino-notes"><h3>Notes</h3>${current.notes || '<p>No notes for this slide.</p>'}</div></aside></div>`;
+    const nextFrame = `<div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${nextHtml}</div>`;
+    return `${failure}<div class="fino-presenter-shell" data-presentation-nonce="${escapeHtml(this.#nonce)}" data-started-at="${this.#startedAt}"><section class="fino-presenter-main"><header><p class="fino-presenter-kicker">Presenter · ${this.#state.slide + 1}/${this.#manifest.slides.length} · step ${this.#state.step + 1}</p><h1 class="fino-presenter-title">${escapeHtml(this.#manifest.meta.title ?? 'Untitled presentation')}</h1></header><div class="fino-presenter-preview fino-slide-viewport">${audience}</div><nav class="fino-presenter-controls" aria-label="Presentation controls"><button data-command="previous" aria-label="Previous slide">← Previous</button><button data-command="next" aria-label="Next slide or step">Next →</button><select data-slide-picker aria-label="Choose slide">${options}</select><button data-fullscreen>Fullscreen</button></nav></section><aside class="fino-presenter-side"><div><p class="fino-presenter-kicker">Elapsed</p><div class="fino-clock" data-clock>00:00</div></div><div class="fino-next"><p class="fino-presenter-kicker">Next</p><div class="fino-next-viewport fino-slide-viewport">${slideSurface(nextFrame)}</div></div><div class="fino-notes"><h3>Notes</h3>${current.notes || '<p>No notes for this slide.</p>'}</div></aside></div>`;
   }
 
   #renderBroadcast(): Broadcast {
@@ -415,7 +421,7 @@ export class Presentation {
 
   #viewerPage(): Response {
     const title = this.#manifest.meta.title ?? 'Presentation';
-    const body = `<main id="fino-slides-stage" class="fino-audience">${this.#current.viewer.html}</main><button class="fino-fullscreen" data-fullscreen aria-label="Enter fullscreen">Fullscreen</button>`;
+    const body = `<main id="fino-slides-stage" class="fino-slide-viewport fino-audience">${this.#current.viewer.html}</main><button class="fino-fullscreen" data-fullscreen aria-label="Enter fullscreen">Fullscreen</button>`;
     const script = `${patchClient}const stream=new EventSource(location.pathname.replace(/\\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
     return pageShell(title, this.#manifest.meta.lang ?? 'en', body, viewerStyle, script);
   }
