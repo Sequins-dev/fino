@@ -83,6 +83,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:config` | `benchmarks/config.bench.ts` |
 | `fino:security` | `benchmarks/security/index.bench.ts` |
 | `fino:security/oauth` | not yet benchmarked |
+| `fino:security/session` | not yet benchmarked |
 | `fino:security/random` | `benchmarks/security/random.bench.ts` |
 | `fino:security/headers` | `benchmarks/security/headers.bench.ts` |
 | `fino:security/cors` | `benchmarks/security/cors.bench.ts` |

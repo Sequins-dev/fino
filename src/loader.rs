@@ -508,6 +508,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:security/jwk", "security/jwk"),
     source_builtin!("fino:security/jwt", "security/jwt"),
     source_builtin!("fino:security/oauth", "security/oauth"),
+    source_builtin!("fino:security/session", "security/session"),
     // format
     source_builtin!("fino:data", "data"),
     source_builtin!("fino:data/arrow", "data/arrow/index"),

@@ -2121,7 +2121,11 @@ export function cookies(): Producer {
     return new CookieJar(ctx.request.headers.get('cookie') ?? unsafeCookie);
   });
 }
-/** Session data persisted by a `SessionStore`.
+/** Session data persisted by the legacy HTTP-app `SessionStore`.
+*
+* This compatibility surface stores an unsealed session ID and has no expiry
+* or concurrent-write protection. New applications should use `Session` from
+* `fino:security/session`.
 *
 * ```ts no_run
 * session.data.userId = 'u_123';
@@ -2150,10 +2154,12 @@ export interface Session {
   */
   isNew: boolean;
 }
-/** Minimal async session store interface.
+/** Legacy minimal async session store interface.
 *
 * Store methods may be synchronous or async. Returned sessions should be safe
 * for request-local mutation.
+* New stores should implement the revision-safe contract in
+* `fino:security/session`; this interface remains for compatibility.
 *
 * ```ts no_run
 * const store = memorySessionStore();
@@ -2182,9 +2188,11 @@ export interface SessionStore {
   */
   delete(id: string): void | Promise<void>;
 }
-/** Create an in-memory session store suitable for tests and single-process apps.
+/** Create a legacy in-memory session store for tests and single-process apps.
 *
 * Data is lost when the process exits and is not shared across workers.
+* New applications should import `memorySessionStore()` from
+* `fino:security/session` for expiry and stale-write protection.
 *
 * ```ts no_run
 * const store = memorySessionStore();
@@ -2214,11 +2222,13 @@ export function memorySessionStore(): SessionStore {
     }
   };
 }
-/** Producer that loads a cookie-backed session and saves it after response creation.
+/** Legacy producer that loads a cookie-backed session and saves it after response creation.
 *
 * Expects `ctx.cookies` to be a `CookieJar` when installed after
 * `.value('cookies', cookies())`; otherwise it creates a private jar. New
 * sessions are assigned UUIDs and persisted after the response is produced.
+* The cookie is not sealed and records do not expire. Use `sessions()` from
+* `fino:security/session` for production authentication sessions.
 *
 * ```ts no_run
 * app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() }));

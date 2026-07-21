@@ -245,6 +245,14 @@ The default distributed contract is eventually consistent:
 - services that need strict coordination should use a dedicated lease/lock
   service rather than assuming KV write order is global.
 
+The `fino:security/session` store contract is stricter than this default. A
+production authentication-session adapter requires per-key linearizable
+conditional writes and read-after-write behavior so logout or ID regeneration
+cannot be undone by an in-flight stale request. Do not offer that adapter over
+the eventual replicated-all mode. It must wait for an explicit stronger KV
+consistency mode or a dedicated session service; holding a distributed lock
+for the duration of an HTTP request is not an acceptable substitute.
+
 ### Conflict Resolution
 
 Every mutation should carry enough metadata to converge deterministically:
