@@ -182,12 +182,12 @@ function pageShell(title: string, lang: string, body: string, style: string, scr
 const sharedStyle = `
 :root{--slides-paper:#f1eadc;--slides-ink:#171713;--slides-accent:#e4542f;--slides-muted:#8e877a;--slides-panel:#24231f;color-scheme:light}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--slides-ink);color:var(--slides-ink)}
-body{font-family:"Avenir Next Condensed","Helvetica Neue",sans-serif}.fino-slide-frame{position:relative;overflow:hidden;background:var(--slides-paper);box-shadow:0 2.5rem 8rem #0009;isolation:isolate}
+body{font-family:"Avenir Next Condensed","Helvetica Neue",sans-serif}.fino-slide-frame{position:relative;overflow:hidden;background:var(--slides-paper);box-shadow:0 2.5rem 8rem #0009;isolation:isolate;container-type:inline-size}
 .fino-slide-frame:before{content:"";position:absolute;inset:0;z-index:-1;opacity:.2;background-image:radial-gradient(#171713 0.55px,transparent .55px);background-size:5px 5px}
 .fino-slide-frame>section{width:100%;height:100%;padding:8% 9%;display:flex;flex-direction:column;justify-content:center;gap:1.3rem}
 .fino-slide-frame h1,.fino-slide-frame h2,.fino-slide-frame h3{font-family:"Iowan Old Style","Baskerville",serif;line-height:.93;letter-spacing:-.045em;margin:0;max-width:14ch}
-.fino-slide-frame h1{font-size:clamp(3rem,8vw,8rem)}.fino-slide-frame h2{font-size:clamp(2.5rem,6vw,6rem)}.fino-slide-frame h3{font-size:clamp(2rem,4vw,4rem)}
-.fino-slide-frame p,.fino-slide-frame li{font-size:clamp(1.15rem,2.2vw,2.2rem);line-height:1.38;max-width:34em}.fino-slide-frame a{color:var(--slides-accent)}
+.fino-slide-frame h1{font-size:clamp(3rem,8cqw,8rem)}.fino-slide-frame h2{font-size:clamp(2.5rem,6cqw,6rem)}.fino-slide-frame h3{font-size:clamp(2rem,4cqw,4rem)}
+.fino-slide-frame p,.fino-slide-frame li{font-size:clamp(1.15rem,2.2cqw,2.2rem);line-height:1.38;max-width:34em}.fino-slide-frame p:empty{display:none}.fino-slide-frame a{color:var(--slides-accent)}
 .fino-slide-frame code{font-family:"SFMono-Regular",monospace;background:#17171312;padding:.08em .25em}.fino-slide-frame pre{padding:1.5rem;background:var(--slides-ink);color:var(--slides-paper);overflow:auto}
 .fino-slide-frame blockquote{margin:0;border-left:.35rem solid var(--slides-accent);padding-left:1.5rem}.fino-slide-header,.fino-slide-footer{position:absolute;left:4%;right:4%;font-size:.78rem;letter-spacing:.15em;text-transform:uppercase}.fino-slide-header{top:3%}.fino-slide-footer{bottom:3%}
 .fino-progress{position:absolute;inset:auto 0 0;height:.34rem;background:#1717131c}.fino-progress>i{display:block;height:100%;background:var(--slides-accent);transition:width .35s ease}
@@ -202,11 +202,11 @@ body{display:grid;place-items:center;min-height:100vh;padding:3vw}.fino-audience
 
 const presenterStyle = `${sharedStyle}
 body{background:#191917;color:var(--slides-paper);min-height:100vh}.fino-presenter-shell{min-height:100vh;padding:2rem;display:grid;grid-template-columns:minmax(0,1.6fr) minmax(18rem,.7fr);gap:2rem}
-.fino-presenter-main{display:grid;grid-template-rows:auto 1fr auto;gap:1rem}.fino-presenter-kicker{margin:0;color:var(--slides-accent);font-size:.72rem;letter-spacing:.22em;text-transform:uppercase}.fino-presenter-title{font:2rem/1 "Iowan Old Style",serif;margin:.3rem 0 0}
-.fino-presenter-preview{aspect-ratio:16/9;width:100%}.fino-presenter-preview .fino-slide-frame{width:100%;height:100%}.fino-presenter-controls{display:grid;grid-template-columns:auto auto 1fr auto;gap:.6rem;align-items:center}
+.fino-presenter-main{display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:1rem;min-width:0}.fino-presenter-kicker{margin:0;color:var(--slides-accent);font-size:.72rem;letter-spacing:.22em;text-transform:uppercase}.fino-presenter-title{font:2rem/1 "Iowan Old Style",serif;margin:.3rem 0 0}
+.fino-presenter-preview{aspect-ratio:16/9;width:100%;max-width:100%;min-width:0;overflow:hidden}.fino-presenter-preview .fino-slide-frame{width:100%;height:100%}.fino-presenter-controls{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:.6rem;align-items:center;min-width:0}
 .fino-presenter-controls button,.fino-presenter-controls select{border:1px solid #f1eadc33;background:#24231f;color:var(--slides-paper);padding:.8rem 1rem}.fino-presenter-controls button:hover{border-color:var(--slides-accent);color:var(--slides-accent)}
 .fino-compile-error{margin:0;padding:1rem 2rem;background:#8d241d;color:#fff4e8;border-bottom:1px solid #ffb39b}.fino-compile-error strong{letter-spacing:.08em;text-transform:uppercase;font-size:.74rem}.fino-compile-error pre{margin:.5rem 0 0;white-space:pre-wrap;font:12px/1.45 "SFMono-Regular",monospace}
-.fino-presenter-side{display:grid;grid-template-rows:auto auto 1fr;gap:1rem;min-height:0}.fino-clock{font:3rem/1 "Iowan Old Style",serif;font-variant-numeric:tabular-nums}.fino-next{opacity:.72}.fino-next .fino-slide-frame{width:100%;aspect-ratio:16/9}.fino-notes{border-top:1px solid #f1eadc22;padding-top:1rem;overflow:auto;line-height:1.55;color:#d8d0c2}.fino-notes h3{color:var(--slides-accent);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase}
+.fino-presenter-side{display:grid;grid-template-rows:auto auto 1fr;gap:1rem;min-width:0;min-height:0}.fino-clock{font:3rem/1 "Iowan Old Style",serif;font-variant-numeric:tabular-nums}.fino-next{opacity:.72;min-width:0;overflow:hidden}.fino-next .fino-slide-frame{width:100%;aspect-ratio:16/9}.fino-notes{border-top:1px solid #f1eadc22;padding-top:1rem;overflow:auto;line-height:1.55;color:#d8d0c2}.fino-notes h3{color:var(--slides-accent);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase}
 @media(max-width:900px){.fino-presenter-shell{grid-template-columns:1fr}.fino-presenter-controls{grid-template-columns:1fr 1fr}.fino-presenter-side{grid-template-rows:auto auto auto}}
 `;
 
@@ -278,7 +278,7 @@ export class Presentation {
         return { vnode: Deck(), meta: deckModule.meta ?? {}, theme: deckModule.theme ?? {} };
       }
     `;
-    const realm = Realm.fromSource<() => { vnode: VNode; meta: PresentationMeta; theme: PresentationTheme }>(wrapper);
+    const realm = Realm.fromSource<() => { vnode: VNode; meta: PresentationMeta; theme: PresentationTheme }>(wrapper, { thread: true });
     try {
       const loaded = await realm.call();
       if (!loaded?.vnode || typeof loaded.vnode.type !== 'string') throw new TypeError('Presentation module default export must return a Fino VNode');
@@ -416,7 +416,7 @@ export class Presentation {
   #viewerPage(): Response {
     const title = this.#manifest.meta.title ?? 'Presentation';
     const body = `<main id="fino-slides-stage" class="fino-audience">${this.#current.viewer.html}</main><button class="fino-fullscreen" data-fullscreen aria-label="Enter fullscreen">Fullscreen</button>`;
-    const script = `${patchClient}const stream=new EventSource(location.pathname.replace(/\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
+    const script = `${patchClient}const stream=new EventSource(location.pathname.replace(/\\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
     return pageShell(title, this.#manifest.meta.lang ?? 'en', body, viewerStyle, script);
   }
 
@@ -424,7 +424,7 @@ export class Presentation {
     const title = `${this.#manifest.meta.title ?? 'Presentation'} · Presenter`;
     const body = `<main id="fino-slides-presenter">${this.#current.presenter.html}</main>`;
     const script = `${patchClient}
-const root=document.getElementById('fino-slides-presenter');const endpoint=location.pathname.replace(/\/$/,'');const stream=new EventSource(endpoint+'/_events');stream.addEventListener('patch',event=>{applyPatch(event);bind();});
+const root=document.getElementById('fino-slides-presenter');const endpoint=location.pathname.replace(/\\/$/,'');const stream=new EventSource(endpoint+'/_events');stream.addEventListener('patch',event=>{applyPatch(event);bind();});
 async function send(command){const shell=root.querySelector('[data-presentation-nonce]');const body=new URLSearchParams({command,nonce:shell.dataset.presentationNonce});await fetch(endpoint+'/_command',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});}
 function bind(){root.querySelectorAll('[data-command]').forEach(button=>button.onclick=()=>send(button.dataset.command));const picker=root.querySelector('[data-slide-picker]');if(picker)picker.onchange=()=>send(picker.value);const fullscreen=root.querySelector('[data-fullscreen]');if(fullscreen)fullscreen.onclick=()=>document.documentElement.requestFullscreen?.();}
 document.addEventListener('keydown',event=>{if(event.key==='ArrowRight'||event.key==='PageDown'){event.preventDefault();send('next');}else if(event.key==='ArrowLeft'||event.key==='PageUp'){event.preventDefault();send('previous');}else if(event.key==='Home'){event.preventDefault();send('reset');}});

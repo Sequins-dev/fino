@@ -7,6 +7,7 @@ import { parseEventStream } from 'fino:net/http/eventstream';
 import { Fragment, h } from 'fino:ui';
 import { Presentation } from 'fino:ui/slides';
 import { DiskFileSystem } from 'fino:file';
+import { Process, execPath } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 
 const fs = new DiskFileSystem();
@@ -78,6 +79,21 @@ describe('fino:ui/slides', () => {
     const presenter = await app.handle(new Request('http://local/conference/talk/_presenter')) as Response;
     t.ok((await viewer.text()).includes('First slide'), 'combined viewer is relative to the app mount');
     t.ok((await presenter.text()).includes('Presenter'), 'combined presenter uses the documented relative branch');
+  });
+
+  it('emits valid client scripts for mounted route endpoints', async (t) => {
+    const presentation = new Presentation(deckModule());
+    const app = new App();
+    app.route('/talk').mount(presentation.viewer());
+    app.route('/control').mount(presentation.presenter());
+    const viewer = await app.handle(new Request('http://local/talk')) as Response;
+    const presenter = await app.handle(new Request('http://local/control')) as Response;
+    const viewerHtml = await viewer.text();
+    const presenterHtml = await presenter.text();
+    t.ok(viewerHtml.includes("replace(/\\/$/,'')"), 'viewer emits an escaped trailing-slash expression');
+    t.ok(presenterHtml.includes("replace(/\\/$/,'')"), 'presenter emits an escaped trailing-slash expression');
+    t.notOk(viewerHtml.includes('replace(//$/'), 'viewer script is not parsed as a line comment');
+    t.notOk(presenterHtml.includes('replace(//$/'), 'presenter script is not parsed as a line comment');
   });
 
   it('navigates shared state through same-origin nonce-protected commands', async (t) => {
@@ -186,6 +202,31 @@ describe('fino:ui/slides', () => {
     } finally {
       await server.close();
       await presentation.close();
+    }
+  });
+
+  it('serves a file deck when presentation loading starts during application startup', async (t) => {
+    const fixture = new URL('./fixtures/slides-live-server.ts', import.meta.url).pathname;
+    const proc = new Process(execPath, [fixture]);
+    proc.stdin.close();
+    const waiting = proc.wait();
+    const controller = new AbortController();
+    try {
+      const line = await Promise.race([
+        proc.stdout.readUntil(new Uint8Array([10]), 4096),
+        loop.timeout(2_000).then(() => { throw new Error('slide server startup timed out'); })
+      ]);
+      if (line === null) throw new Error('slide server exited before reporting its port');
+      const port = Number(new TextDecoder().decode(line).trim());
+      const response = await Promise.race([
+        fetch(`http://127.0.0.1:${port}/talk`, { signal: controller.signal }),
+        loop.timeout(2_000).then(() => { throw new Error('standalone slide request timed out'); })
+      ]);
+      t.ok((await response.text()).includes('Slides that stay together'), 'standalone server responds with compiled MDX');
+    } finally {
+      controller.abort();
+      proc.kill();
+      await waiting;
     }
   });
 });
