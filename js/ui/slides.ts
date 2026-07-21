@@ -1,16 +1,21 @@
 /**
 * fino:ui/slides — shared, server-driven presentations from MDX and Fino VNodes.
 *
-* A `Presentation` owns one in-memory navigation state shared by every viewer.
-* It exposes mountable `Router` collections instead of choosing application
-* paths: `viewer()` and `presenter()` can be mounted independently, while
-* `router()` provides a convenience composition with the presenter at the
-* relative `/_presenter` route. The presenter is intentionally unauthenticated
-* at this layer so applications can attach their own middleware before mount.
+* A `Presentation` owns one default in-memory navigation state shared by its
+* presenter and following viewers, plus isolated viewer sessions requested
+* with `?follow=false`. It exposes mountable `Router` collections instead of
+* choosing application paths: `viewer()` and `presenter()` can be mounted
+* independently, while `router()` provides a convenience composition with the
+* presenter at the relative `/_presenter` route. The presenter is intentionally
+* unauthenticated at this layer so applications can attach their own middleware
+* before mount.
 *
-* Navigation is serialized on the server. Each accepted command renders one
-* revision and fans the same `{ id, mode, html }` SSE patch out to every
-* connected browser. State is process-local and resets with the application.
+* Navigation is serialized on the server. By default, each accepted presenter
+* command renders one revision and fans the same `{ id, mode, html }` SSE patch
+* out to every connected viewer. Opening a viewer with `?follow=false` creates
+* an isolated server-side navigation session instead: arrow keys command that
+* session and its own SSE stream without changing presenter state. All session
+* state is process-local and resets with the application.
 *
 * MDX and component modules are trusted executable code. Components must be
 * synchronous server-rendered Fino UI components; browser hydration and
@@ -24,6 +29,7 @@
 * const app = new App();
 * app.route('/talk').mount(slides.viewer());
 * app.route('/talk-control').use(requireUser).mount(slides.presenter());
+* // `/talk` follows the presenter; `/talk?follow=false` navigates independently.
 * ```
 */
 import { topic, type Topic } from 'fino:context/topic';
@@ -98,8 +104,22 @@ interface Broadcast {
   presenter: Patch;
   closed?: boolean;
 }
+interface ViewerBroadcast {
+  revision: number;
+  viewer: Patch;
+  closed?: boolean;
+}
+interface ViewerSession {
+  id: string;
+  nonce: string;
+  state: PresentationState;
+  queue: Promise<void>;
+  updates: Topic<ViewerBroadcast>;
+  current: ViewerBroadcast;
+}
 
 let nextPresentationId = 1;
+const maxIndependentViewerSessions = 128;
 
 /** Mark presenter-only speaker notes that are removed from audience output. */
 function Notes(props: { children?: NormalizedChild[] }): VNode {
@@ -177,6 +197,32 @@ function slideSurface(frame: string): string {
   return `<div class="fino-slide-surface">${frame}</div>`;
 }
 
+function advanceState(state: PresentationState, slides: SlideRecord[]): void {
+  const current = slides[state.slide]!;
+  if (state.step < current.maxStep) state.step++;
+  else if (state.slide < slides.length - 1) {
+    state.slide++;
+    state.step = 0;
+  }
+}
+
+function retreatState(state: PresentationState): void {
+  if (state.step > 0) state.step--;
+  else if (state.slide > 0) {
+    state.slide--;
+    state.step = 0;
+  }
+}
+
+function originRejection(request: Request): Response | null {
+  const unsafeRequest = request as unknown as { _getUnsafeHeader?: (name: string) => string | null };
+  const fetchSite = request.headers.get('sec-fetch-site') ?? unsafeRequest._getUnsafeHeader?.('sec-fetch-site') ?? null;
+  if (fetchSite !== null && fetchSite !== 'same-origin' && fetchSite !== 'same-site' && fetchSite !== 'none') return new Response('Forbidden: origin', { status: 403 });
+  const requestOrigin = request.headers.get('origin') ?? unsafeRequest._getUnsafeHeader?.('origin') ?? null;
+  if (requestOrigin !== null && new URL(requestOrigin).origin !== new URL(request.url).origin) return new Response('Forbidden: origin', { status: 403 });
+  return null;
+}
+
 function pageShell(title: string, lang: string, body: string, style: string, script: string): Response {
   return new Response(`<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${style}</style></head><body>${body}<script>${script}</script></body></html>`, {
     headers: { 'content-type': 'text/html; charset=utf-8' }
@@ -233,6 +279,7 @@ export class Presentation {
   #queue: Promise<void> = Promise.resolve();
   #updates: Topic<Broadcast>;
   #current!: Broadcast;
+  #viewerSessions = new Map<string, ViewerSession>();
   #nonce = crypto.randomUUID();
   #startedAt = Date.now();
   #closed = false;
@@ -240,7 +287,7 @@ export class Presentation {
   #watchTask: Promise<void> | null = null;
   #diagnostic = '';
 
-  /** Begin loading `source` and create one shared presentation session. */
+  /** Begin loading `source` and create the default shared presentation session. */
   constructor(source: string | PresentationModule, options: PresentationOptions = {}) {
     this.#source = source;
     const id = options.id ?? `presentation-${nextPresentationId++}-${crypto.randomUUID()}`;
@@ -296,8 +343,13 @@ export class Presentation {
     const slides = slideSections(rendered).map(slideRecord);
     if (slides.length === 0) throw new Error('Presentation module did not render any <section data-fino-slide> elements');
     this.#manifest = { slides, meta, theme };
-    this.#state.slide = Math.min(this.#state.slide, slides.length - 1);
-    this.#state.step = Math.min(this.#state.step, slides[this.#state.slide]!.maxStep);
+    this.#clampState(this.#state);
+    for (const session of this.#viewerSessions.values()) this.#clampState(session.state);
+  }
+
+  #clampState(state: PresentationState): void {
+    state.slide = Math.min(state.slide, this.#manifest.slides.length - 1);
+    state.step = Math.min(state.step, this.#manifest.slides[state.slide]!.maxStep);
   }
 
   async #watch(filename: string): Promise<void> {
@@ -322,6 +374,11 @@ export class Presentation {
         this.#state.revision++;
         this.#current = this.#renderBroadcast();
         this.#updates.publish(this.#current);
+        for (const session of this.#viewerSessions.values()) {
+          session.state.revision++;
+          session.current = this.#renderViewerBroadcast(session.state);
+          session.updates.publish(session.current);
+        }
       }
     } finally {
       if (this.#watcher === watcher) this.#watcher = null;
@@ -329,11 +386,11 @@ export class Presentation {
     }
   }
 
-  #audienceHtml(): string {
-    const record = this.#manifest.slides[this.#state.slide]!;
-    const vnode = audienceNode(record.vnode, this.#state.step)!;
-    const progress = ((this.#state.slide + 1) / this.#manifest.slides.length) * 100;
-    const frame = `<div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${renderToHtml(vnode)}<div class="fino-progress" role="progressbar" aria-valuemin="1" aria-valuemax="${this.#manifest.slides.length}" aria-valuenow="${this.#state.slide + 1}"><i style="width:${progress}%"></i></div></div>`;
+  #audienceHtml(state: PresentationState): string {
+    const record = this.#manifest.slides[state.slide]!;
+    const vnode = audienceNode(record.vnode, state.step)!;
+    const progress = ((state.slide + 1) / this.#manifest.slides.length) * 100;
+    const frame = `<div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${renderToHtml(vnode)}<div class="fino-progress" role="progressbar" aria-valuemin="1" aria-valuemax="${this.#manifest.slides.length}" aria-valuenow="${state.slide + 1}"><i style="width:${progress}%"></i></div></div>`;
     return slideSurface(frame);
   }
 
@@ -348,12 +405,52 @@ export class Presentation {
   }
 
   #renderBroadcast(): Broadcast {
-    const audience = this.#audienceHtml();
+    const audience = this.#audienceHtml(this.#state);
     return {
       revision: this.#state.revision,
       viewer: { id: 'fino-slides-stage', mode: 'inner', html: audience },
       presenter: { id: 'fino-slides-presenter', mode: 'inner', html: this.#presenterHtml(audience) }
     };
+  }
+
+  #renderViewerBroadcast(state: PresentationState): ViewerBroadcast {
+    return {
+      revision: state.revision,
+      viewer: { id: 'fino-slides-stage', mode: 'inner', html: this.#audienceHtml(state) }
+    };
+  }
+
+  #createViewerSession(): ViewerSession {
+    if (this.#viewerSessions.size >= maxIndependentViewerSessions) {
+      const oldest = this.#viewerSessions.values().next().value as ViewerSession;
+      oldest.updates.publish({ ...oldest.current, closed: true });
+      this.#viewerSessions.delete(oldest.id);
+    }
+    const id = crypto.randomUUID();
+    const state: PresentationState = { slide: 0, step: 0, revision: 0 };
+    const session: ViewerSession = {
+      id,
+      nonce: crypto.randomUUID(),
+      state,
+      queue: Promise.resolve(),
+      updates: topic<ViewerBroadcast>(`fino:ui/slides:viewer:${id}`),
+      current: this.#renderViewerBroadcast(state)
+    };
+    this.#viewerSessions.set(id, session);
+    return session;
+  }
+
+  #transitionViewerSession(session: ViewerSession, change: () => void): Promise<void> {
+    const run = async () => {
+      await this.#ready;
+      if (this.#closed || this.#viewerSessions.get(session.id) !== session) throw new Error('Viewer session is closed');
+      change();
+      session.state.revision++;
+      session.current = this.#renderViewerBroadcast(session.state);
+      session.updates.publish(session.current);
+    };
+    session.queue = session.queue.then(run, run);
+    return session.queue;
   }
 
   async #transition(change: () => void): Promise<void> {
@@ -371,25 +468,12 @@ export class Presentation {
 
   /** Reveal the next step, or advance one slide when all steps are visible. */
   next(): Promise<void> {
-    return this.#transition(() => {
-      const current = this.#manifest.slides[this.#state.slide]!;
-      if (this.#state.step < current.maxStep) this.#state.step++;
-      else if (this.#state.slide < this.#manifest.slides.length - 1) {
-        this.#state.slide++;
-        this.#state.step = 0;
-      }
-    });
+    return this.#transition(() => advanceState(this.#state, this.#manifest.slides));
   }
 
   /** Move to the previous step, or to the preceding slide's first step. */
   previous(): Promise<void> {
-    return this.#transition(() => {
-      if (this.#state.step > 0) this.#state.step--;
-      else if (this.#state.slide > 0) {
-        this.#state.slide--;
-        this.#state.step = 0;
-      }
-    });
+    return this.#transition(() => retreatState(this.#state));
   }
 
   /** Move to a zero-based slide and optional step, clamped to deck bounds. */
@@ -419,10 +503,25 @@ export class Presentation {
     }
   }
 
-  #viewerPage(): Response {
+  async #writeViewerSessionStream(events: any, session: ViewerSession): Promise<void> {
+    await this.#ready;
+    await events.write({ event: 'patch', data: JSON.stringify(session.current.viewer), id: String(session.current.revision) });
+    for await (const update of session.updates) {
+      if (update.closed) break;
+      await events.write({ event: 'patch', data: JSON.stringify(update.viewer), id: String(update.revision) });
+    }
+  }
+
+  #viewerPage(session?: ViewerSession): Response {
     const title = this.#manifest.meta.title ?? 'Presentation';
-    const body = `<main id="fino-slides-stage" class="fino-slide-viewport fino-audience">${this.#current.viewer.html}</main><button class="fino-fullscreen" data-fullscreen aria-label="Enter fullscreen">Fullscreen</button>`;
-    const script = `${patchClient}const stream=new EventSource(location.pathname.replace(/\\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
+    const attributes = session ? ` data-fino-viewer-session="${escapeHtml(session.id)}" data-fino-viewer-nonce="${escapeHtml(session.nonce)}"` : '';
+    const audience = session?.current.viewer.html ?? this.#current.viewer.html;
+    const body = `<main id="fino-slides-stage" class="fino-slide-viewport fino-audience"${attributes}>${audience}</main><button class="fino-fullscreen" data-fullscreen aria-label="Enter fullscreen">Fullscreen</button>`;
+    const script = session ? `${patchClient}
+const root=document.getElementById('fino-slides-stage');const endpoint=location.pathname.replace(/\\/$/,'');const session=root.dataset.finoViewerSession;const nonce=root.dataset.finoViewerNonce;const stream=new EventSource(endpoint+'/_events?session='+encodeURIComponent(session));stream.addEventListener('patch',applyPatch);
+async function send(command){const body=new URLSearchParams({command,session,nonce});await fetch(endpoint+'/_command',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});}
+document.addEventListener('keydown',event=>{if(event.key==='ArrowRight'||event.key==='ArrowDown'){event.preventDefault();send('next');}else if(event.key==='ArrowLeft'||event.key==='ArrowUp'){event.preventDefault();send('previous');}});
+document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());` : `${patchClient}const stream=new EventSource(location.pathname.replace(/\\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
     return pageShell(title, this.#manifest.meta.lang ?? 'en', body, viewerStyle, script);
   }
 
@@ -439,14 +538,42 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
     return pageShell(title, this.#manifest.meta.lang ?? 'en', body, presenterStyle, script);
   }
 
-  /** Create a router serving the stable audience page and its SSE stream. */
+  /**
+  * Create the audience router and its SSE endpoints.
+  *
+  * The default page follows presenter state. A request with `?follow=false`
+  * allocates an isolated server-side session, starts it at the first slide,
+  * and emits arrow-key commands over `POST /_command`. Independent sessions
+  * still receive rendered patches over SSE and are capped at 128 per
+  * `Presentation`; creating another closes the oldest session.
+  */
   viewer(): Router {
     const router = new Router();
-    router.get('/').handle(async () => {
+    router.get('/').handle(async (ctx) => {
       await this.#ready;
-      return this.#viewerPage();
+      const independent = new URL(ctx.request.url).searchParams.get('follow') === 'false';
+      return this.#viewerPage(independent ? this.#createViewerSession() : undefined);
     });
-    router.route('/_events').sse((events) => this.#writeStream(events, 'viewer'));
+    router.post('/_command').handle(async (ctx) => {
+      const rejected = originRejection(ctx.request);
+      if (rejected) return rejected;
+      const form = await ctx.request.formData();
+      const session = this.#viewerSessions.get(String(form.get('session') ?? ''));
+      if (!session) return new Response('Viewer session not found', { status: 404 });
+      if (String(form.get('nonce') ?? '') !== session.nonce) return new Response('Forbidden: nonce', { status: 403 });
+      const command = String(form.get('command') ?? '');
+      if (command === 'next') await this.#transitionViewerSession(session, () => advanceState(session.state, this.#manifest.slides));
+      else if (command === 'previous') await this.#transitionViewerSession(session, () => retreatState(session.state));
+      else return new Response('Bad Request', { status: 400 });
+      return Response.json({ ...session.state });
+    });
+    router.route('/_events').sse((events, ctx) => {
+      const id = new URL(ctx.request.url).searchParams.get('session');
+      if (id === null) return this.#writeStream(events, 'viewer');
+      const session = this.#viewerSessions.get(id);
+      if (!session) throw new Error('Viewer session not found');
+      return this.#writeViewerSessionStream(events, session);
+    });
     return router;
   }
 
@@ -458,11 +585,8 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
       return this.#presenterPage();
     });
     router.post('/_command').handle(async (ctx) => {
-      const unsafeRequest = ctx.request as unknown as { _getUnsafeHeader?: (name: string) => string | null };
-      const fetchSite = ctx.request.headers.get('sec-fetch-site') ?? unsafeRequest._getUnsafeHeader?.('sec-fetch-site') ?? null;
-      if (fetchSite !== null && fetchSite !== 'same-origin' && fetchSite !== 'same-site' && fetchSite !== 'none') return new Response('Forbidden: origin', { status: 403 });
-      const requestOrigin = ctx.request.headers.get('origin') ?? unsafeRequest._getUnsafeHeader?.('origin') ?? null;
-      if (requestOrigin !== null && new URL(requestOrigin).origin !== new URL(ctx.request.url).origin) return new Response('Forbidden: origin', { status: 403 });
+      const rejected = originRejection(ctx.request);
+      if (rejected) return rejected;
       const form = await ctx.request.formData();
       if (String(form.get('nonce') ?? '') !== this.#nonce) return new Response('Forbidden: nonce', { status: 403 });
       const command = String(form.get('command') ?? '');
@@ -496,6 +620,8 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
     this.#closed = true;
     this.#watcher?.close();
     this.#updates.publish({ ...this.#current, closed: true });
+    for (const session of this.#viewerSessions.values()) session.updates.publish({ ...session.current, closed: true });
+    this.#viewerSessions.clear();
     await this.#watchTask;
   }
 

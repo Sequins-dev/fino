@@ -44,6 +44,13 @@ function nonce(html: string): string {
   return match[1]!;
 }
 
+function viewerSession(html: string): { id: string; nonce: string } {
+  const id = /data-fino-viewer-session="([^"]+)"/.exec(html)?.[1];
+  const token = /data-fino-viewer-nonce="([^"]+)"/.exec(html)?.[1];
+  if (!id || !token) throw new Error('missing independent viewer session');
+  return { id, nonce: token };
+}
+
 function command(url: string, value: string, token: string, origin = 'http://local'): Request {
   return new Request(url, {
     method: 'POST',
@@ -53,6 +60,18 @@ function command(url: string, value: string, token: string, origin = 'http://loc
       'content-type': 'application/x-www-form-urlencoded'
     },
     body: new URLSearchParams({ command: value, nonce: token }).toString()
+  });
+}
+
+function viewerCommand(url: string, value: string, session: { id: string; nonce: string }, origin = 'http://local'): Request {
+  return new Request(url, {
+    method: 'POST',
+    headers: {
+      origin,
+      'sec-fetch-site': origin === 'http://local' ? 'same-origin' : 'cross-site',
+      'content-type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({ command: value, session: session.id, nonce: session.nonce }).toString()
   });
 }
 
@@ -94,6 +113,66 @@ describe('fino:ui/slides', () => {
     t.ok(presenterHtml.includes("replace(/\\/$/,'')"), 'presenter emits an escaped trailing-slash expression');
     t.notOk(viewerHtml.includes('replace(//$/'), 'viewer script is not parsed as a line comment');
     t.notOk(presenterHtml.includes('replace(//$/'), 'presenter script is not parsed as a line comment');
+  });
+
+  it('gives follow=false viewers an isolated server-driven SSE session', async (t) => {
+    const presentation = new Presentation(deckModule());
+    const app = new App();
+    app.route('/talk').mount(presentation.viewer());
+    const page = await app.handle(new Request('http://local/talk?follow=false')) as Response;
+    const pageHtml = await page.text();
+    const session = viewerSession(pageHtml);
+    t.ok(pageHtml.includes('First slide'), 'independent viewer starts at the beginning of the deck');
+    await presentation.next();
+
+    const response = await app.handle(new Request(`http://local/talk/_events?session=${session.id}`)) as Response;
+    const events = parseEventStream(response.body!)[Symbol.asyncIterator]();
+    const initial = await events.next();
+    t.ok(initial.value?.data.includes('First slide') === true, 'independent stream starts with its own current slide');
+
+    const moved = await app.handle(viewerCommand('http://local/talk/_command', 'next', session)) as Response;
+    t.equal(moved.status, 200, 'direction command updates the independent session');
+    const update = await events.next();
+    t.ok(update.value?.data.includes('Second slide') === true, 'independent stream receives its navigation patch');
+    t.deepEqual(presentation.state, { slide: 1, step: 0, revision: 1 }, 'independent navigation does not mutate presenter state');
+    const followed = await app.handle(new Request('http://local/talk')) as Response;
+    t.ok((await followed.text()).includes('Second slide'), 'normal audience remains on presenter state');
+
+    const rejected = await app.handle(viewerCommand('http://local/talk/_command', 'next', { ...session, nonce: 'wrong' })) as Response;
+    t.equal(rejected.status, 403, 'independent commands require the session nonce');
+    await events.return?.();
+    await presentation.close();
+  });
+
+  it('maps direction keys to an independent viewer session without changing follow mode', async (t) => {
+    const presentation = new Presentation(deckModule());
+    const app = new App();
+    app.route('/talk').mount(presentation.viewer());
+    const followed = await app.handle(new Request('http://local/talk')) as Response;
+    const independent = await app.handle(new Request('http://local/talk?follow=false')) as Response;
+    const followedHtml = await followed.text();
+    const independentHtml = await independent.text();
+    t.notOk(followedHtml.includes('data-fino-viewer-session'), 'default viewer continues to follow presenter state');
+    t.ok(independentHtml.includes("new EventSource(endpoint+'/_events?session='+encodeURIComponent(session))"), 'independent viewer subscribes to its own SSE session');
+    t.ok(independentHtml.includes("event.key==='ArrowRight'||event.key==='ArrowDown'"), 'right and down arrows advance');
+    t.ok(independentHtml.includes("event.key==='ArrowLeft'||event.key==='ArrowUp'"), 'left and up arrows go back');
+    t.ok(independentHtml.includes("send('next')"), 'forward keys send a server navigation command');
+    t.ok(independentHtml.includes("send('previous')"), 'back keys send a server navigation command');
+    await presentation.close();
+  });
+
+  it('bounds retained independent viewer sessions', async (t) => {
+    const presentation = new Presentation(deckModule());
+    const app = new App();
+    app.route('/talk').mount(presentation.viewer());
+    const first = await app.handle(new Request('http://local/talk?follow=false')) as Response;
+    const oldest = viewerSession(await first.text());
+    for (let index = 0; index < 128; index++) {
+      await app.handle(new Request('http://local/talk?follow=false'));
+    }
+    const expired = await app.handle(viewerCommand('http://local/talk/_command', 'next', oldest)) as Response;
+    t.equal(expired.status, 404, 'creating a 129th session expires the oldest retained viewer');
+    await presentation.close();
   });
 
   it('fits one responsive slide into viewer and presenter viewports without layout JavaScript', async (t) => {
