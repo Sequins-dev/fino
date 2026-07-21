@@ -1,0 +1,332 @@
+import { Arrow, Callout, CodeLabel, Decision, Eyebrow, Flow, FlowNode, Grid, Lead, MatrixHeader, MatrixRow, Metric, Panel, PointerWord, Rule, Tier } from './ffi-performance-components.tsx'
+export const meta = { title: 'Crossing the boundary at full speed', author: 'Fino · FFI internals' }
+export const theme = { paper: '#f3efe4', ink: '#111923', accent: '#f05d44', muted: '#76818b' }
+
+<Eyebrow>Fino runtime internals · 2026</Eyebrow>
+
+# Crossing the boundary at full speed
+
+<Rule />
+
+<Lead>How Fino’s FFI turns JavaScript calls into native work—without making the boundary the bottleneck.</Lead>
+
+<Footer>Rust · V8 · libffi · native ABI</Footer>
+
+<Notes>The thesis is not that FFI is free. It is that the common path is shaped so the costs are paid once, data stays where it is, and V8 can optimize the call site.</Notes>
+
+---
+
+<Eyebrow>01 · Surface area</Eyebrow>
+
+## One module, five responsibilities
+
+<Grid columns={3}>
+  <Panel title="Bind" tone="coral"><div>Load a shared library, resolve symbols, and retain its lifetime.</div></Panel>
+  <Panel title="Describe" tone="amber"><div>Map JS values to scalar, pointer, buffer, and struct ABI shapes.</div></Panel>
+  <Panel title="Dispatch"><div>Choose Fast API, direct ABI, libffi, or the blocking pool.</div></Panel>
+  <Panel title="Memory"><div>Expose pointers, pin backing stores, copy in bulk, or alias native bytes.</div></Panel>
+  <Panel title="Callbacks" tone="amber"><div>Turn a JS function into a C-callable closure, on-thread or cross-thread.</div></Panel>
+  <Panel title="Safety boundary" tone="coral"><div>Trust the declared signature and make lifetime rules explicit.</div></Panel>
+</Grid>
+
+<Notes>The public surface is synthetic: dlopen, Pointer, FfiCallback, and structType. Most complexity exists to keep the per-call path small.</Notes>
+
+---
+
+<Eyebrow>02 · The route</Eyebrow>
+
+## A call is classified before it is made
+
+<Flow>
+  <FlowNode number="01" title="JS call site" detail="Numbers, BigInts, pointer buffers, typed arrays" />
+  <Arrow />
+  <FlowNode number="02" title="V8 wrapper" detail="Fast overload when the signature qualifies" tone="amber" />
+  <Arrow />
+  <FlowNode number="03" title="Rust dispatch" detail="Direct ABI or general libffi path" tone="coral" />
+  <Arrow />
+  <FlowNode number="04" title="C symbol" detail="The code pointer resolved at dlopen" />
+</Flow>
+
+<Callout label="Design rule">Move decisions out of the hot loop. The call site should execute a route—not rediscover one.</Callout>
+
+---
+
+<Eyebrow>03 · Pay once</Eyebrow>
+
+## `dlopen()` is the compilation phase
+
+<Steps>
+  <Panel title="1 · Resolve"><div>Each symbol name becomes a stable native code pointer.</div></Panel>
+  <Panel title="2 · Compile the ABI" tone="amber"><div>Parameter and result descriptors become one reusable libffi `Cif`, including variadic ABI metadata.</div></Panel>
+  <Panel title="3 · Classify" tone="coral"><div>The signature is labeled scalar-fast, pointer-fast, or general.</div></Panel>
+  <Panel title="4 · Install"><div>Eligible symbols receive a V8 `CFunctionInfo` and a precompiled arity trampoline.</div></Panel>
+</Steps>
+
+<Notes>The Cif is built once and retained in FfiSymbol. Dynamic type parsing and symbol lookup do not recur on every call.</Notes>
+
+---
+
+<Eyebrow>04 · Tiered dispatch</Eyebrow>
+
+## Three paths, one function object
+
+<div style={{ display: 'grid', gap: '.65rem', width: '100%' }}>
+  <Tier name="Tier A" route="V8 Fast API → direct ABI" eligibility="Optimized call sites; ≤16 integer, pointer, or buffer parameters; scalar/void result." cost="minimum" />
+  <Tier name="Tier B" route="V8 callback → direct ABI" eligibility="The same eligible signature when V8 does not select its fast overload." cost="low" tone="amber" />
+  <Tier name="Tier C" route="V8 callback → libffi" eligibility="Floats, by-value structs, variadics, async calls, or explicitly disabled fast dispatch." cost="general" tone="coral" />
+</div>
+
+<Callout label="Important">The fallback is still optimized: fast-eligible signatures skip libffi argument descriptors even when V8 takes the normal callback.</Callout>
+
+---
+
+<Eyebrow>05 · Fast API</Eyebrow>
+
+## The shortest route has no `HandleScope`
+
+<Grid columns={2}>
+  <Panel title="V8 knows the shape"><div>`CFunctionInfo` declares exact argument and return types. TurboFan can call a native overload directly.</div><div>64-bit integers use BigInt representation; small integers remain JS Numbers.</div></Panel>
+  <Panel title="Rust receives register-shaped values" tone="amber"><div>Scalar arguments arrive as `u64`-class values. Pointer/buffer values arrive as raw `Local&lt;Value&gt;` words.</div><div>Per-arity trampolines cover calls from zero through sixteen arguments.</div></Panel>
+  <Panel title="Pointers are decoded in place" tone="coral"><div>Typed-array data addresses and pointer-buffer contents are extracted without creating JS objects.</div></Panel>
+  <Panel title="The code pointer is called directly"><div>`extern "C"` function shapes match integer/pointer register classes on AAPCS64 and SysV AMD64.</div></Panel>
+</Grid>
+
+<Notes>The top comment in fast.rs still mentions libffi inside the trampoline, but the current implementation calls the symbol directly. This deck follows the executable code.</Notes>
+
+---
+
+<Eyebrow>06 · Eligibility</Eyebrow>
+
+## Fast only where the ABI is predictable
+
+<div style={{ width: '100%' }}>
+  <MatrixHeader />
+  <MatrixRow type="bool · i8…i64 · size" parameter="YES" result="YES" note="One general-purpose register class; scalar return." />
+  <MatrixRow type="buffer" parameter="YES" result="NO" note="Parameter can expose backing-store address; return cannot create a JS buffer." tone="amber" />
+  <MatrixRow type="pointer" parameter="YES" result="NO" note="Parameter reads an 8-byte pointer word; return needs allocation and a HandleScope." tone="amber" />
+  <MatrixRow type="f32 · f64" parameter="NO" result="NO" note="Floating-point registers need a different trampoline shape." tone="coral" />
+  <MatrixRow type="struct by value" parameter="NO" result="NO" note="Aggregate ABI rules are delegated to libffi." tone="coral" />
+  <MatrixRow type="variadic · async" parameter="NO" result="NO" note="Variadic placement and Promise/thread hops require the general route." tone="coral" />
+</div>
+
+---
+
+<Eyebrow>07 · Pointer representation</Eyebrow>
+
+## A pointer is eight bytes—not a wrapper
+
+<PointerWord />
+
+<Grid columns={3}>
+  <Panel title="Address"><div>A little-endian `u64` inside an 8-byte `ArrayBuffer`.</div></Panel>
+  <Panel title="Null" tone="amber"><div>JavaScript `null`; no sentinel object and no address allocation.</div></Panel>
+  <Panel title="Views" tone="coral"><div>`ArrayBufferView.data()` already includes `byteOffset`.</div></Panel>
+</Grid>
+
+<Callout label="Why not BigInt?">Pointer buffers avoid BigInt arithmetic in hot pointer plumbing and can double as reusable native pointer slots.</Callout>
+
+---
+
+<Eyebrow>08 · Allocation control</Eyebrow>
+
+## The pointer arena removes tiny garbage
+
+<CodeLabel>hot-path pattern</CodeLabel>
+
+```ts
+const ptrArena = new ArrayBuffer(8 * 8)
+const slots = Array.from({ length: 8 },
+  (_, i) => new Uint8Array(ptrArena, i * 8, 8))
+
+Pointer.of(packet, ptrArena, 0) // writes address in place
+native.symbols.consume(slots[0], packet.byteLength)
+```
+
+<Grid columns={2}>
+  <Metric value="0" label="new pointer buffers per call" note="The arena is allocated once and overwritten." />
+  <Metric value="O(1)" label="arena reset cost" note="Existing slots remain valid views over the same storage." tone="amber" />
+</Grid>
+
+<Notes>This pattern is used in the HTTP/3 and QUIC sessions. Pointer.of without an arena still returns a fresh eight-byte ArrayBuffer for ergonomic, non-hot code.</Notes>
+
+---
+
+<Eyebrow>09 · Buffers</Eyebrow>
+
+## `buffer` means “lend C these bytes”
+
+<Flow>
+  <FlowNode number="JS" title="TypedArray" detail="Existing V8 backing store" />
+  <Arrow />
+  <FlowNode number="PIN" title="SharedRef" detail="Keeps storage alive for the complete native call" tone="amber" />
+  <Arrow />
+  <FlowNode number="C" title="void*" detail="Base address plus the view byteOffset" tone="coral" />
+</Flow>
+
+<Grid columns={2}>
+  <Panel title="No payload copy"><div>The native function reads or writes the same backing bytes JS owns.</div></Panel>
+  <Panel title="Lifetime is explicit" tone="amber"><div>Synchronous and async calls retain `SharedRef&lt;BackingStore&gt;` pins until native work completes.</div></Panel>
+</Grid>
+
+---
+
+<Eyebrow>10 · Native-owned memory</Eyebrow>
+
+## Zero-copy can point the other way
+
+```ts
+const ptr = libc.symbols.malloc(length)
+const buffer = Pointer.view(ptr, length, {
+  onRelease: () => libc.symbols.free(ptr)
+})
+
+const bytes = new Uint8Array(buffer) // aliases malloc memory
+```
+
+<Grid columns={3}>
+  <Panel title="Alias"><div>V8 receives an external backing store over the native address.</div></Panel>
+  <Panel title="Account" tone="amber"><div>External bytes are reported to V8 so large views create GC pressure.</div></Panel>
+  <Panel title="Release" tone="coral"><div>The GC-thread deleter queues one callback and wakes the JS event loop.</div></Panel>
+</Grid>
+
+<Notes>The backing-store deleter may run on any thread and therefore never touches V8. It sends a tiny release record through the existing wake mechanism.</Notes>
+
+---
+
+<Eyebrow>11 · Copy deliberately</Eyebrow>
+
+## When copying is required, do it once and reuse the destination
+
+<Grid columns={2}>
+  <Panel title="Convenient"><div>`Pointer.copyFrom(ptr, len)` allocates a new `Uint8Array`, then performs one native bulk copy.</div></Panel>
+  <Panel title="Hot path" tone="amber"><div>`Pointer.copyFromInto(dest, ptr, len)` fills an existing buffer or view—no result allocation.</div></Panel>
+</Grid>
+
+<Callout label="HTTP/3 example">A reusable vector buffer is filled directly from nghttp3 output. Per-packet pointer wrappers and destination arrays stay out of the loop.</Callout>
+
+<div style={{ color: '#76818b', fontSize: 'clamp(.8rem,1.25cqw,1.2rem)', lineHeight: 1.45 }}>The optimization is not “never copy.” It is “make ownership obvious, copy in bulk, and avoid allocating merely to perform the copy.”</div>
+
+---
+
+<Eyebrow>12 · Slow path discipline</Eyebrow>
+
+## General calls still avoid routine heap traffic
+
+<Grid columns={2}>
+  <Panel title="Per-symbol scratch"><div>`SymbolData` retains one `CallScratch`; every synchronous call clears and reuses it.</div></Panel>
+  <Panel title="Stack-first vectors" tone="amber"><div>`SmallVec` holds eight native args, four struct buffers, and four backing-store pins inline.</div></Panel>
+  <Panel title="Compact values" tone="coral"><div>A `NativeValue` C union stores any scalar without boxing a Rust enum payload.</div></Panel>
+  <Panel title="Prebuilt ABI"><div>The libffi `Cif` is shared; only argument references are assembled for the call.</div></Panel>
+</Grid>
+
+<Notes>Struct values still require owned bytes, and large arities spill. The inline capacities are tuned for ordinary native APIs, not asserted as universal.</Notes>
+
+---
+
+<Eyebrow>13 · Structs</Eyebrow>
+
+## Aggregate correctness is a chosen cost
+
+<Flow>
+  <FlowNode number="LAYOUT" title="structType" detail="Natural alignment, explicit offsets, nested layouts" />
+  <Arrow />
+  <FlowNode number="BYTES" title="ArrayBuffer" detail="The exact C memory representation" tone="amber" />
+  <Arrow />
+  <FlowNode number="ABI" title="libffi" detail="Platform aggregate passing and return rules" tone="coral" />
+</Flow>
+
+<Grid columns={2}>
+  <Panel title="Computed once"><div>Layout metadata is shared through `Arc`; its libffi structure type is embedded in the symbol’s Cif.</div></Panel>
+  <Panel title="Copied when ownership demands it" tone="amber"><div>By-value arguments and nested results use owned bytes. Structs intentionally do not enter the direct fast path.</div></Panel>
+</Grid>
+
+---
+
+<Eyebrow>14 · Blocking native work</Eyebrow>
+
+## `async: true` buys responsiveness, not lower latency
+
+<Flow>
+  <FlowNode number="1" title="Marshal once" detail="Scalars become owned eight-byte words; buffers retain backing-store pins" />
+  <Arrow />
+  <FlowNode number="2" title="Blocking pool" detail="Capped, reusable workers execute the libffi call" tone="amber" />
+  <Arrow />
+  <FlowNode number="3" title="Self-pipe wake" detail="One byte interrupts kqueue/io_uring sleep" tone="coral" />
+  <Arrow />
+  <FlowNode number="4" title="Resolve on V8" detail="Raw result bytes become the Promise value" />
+</Flow>
+
+<Grid columns={2}>
+  <Panel title="No V8 handles cross threads"><div>The worker carries a resolver slot ID and plain owned data.</div></Panel>
+  <Panel title="Concurrency is bounded" tone="amber"><div>The global blocking pool reuses parked threads and honors `BLOCKING_MAX_THREADS`.</div></Panel>
+</Grid>
+
+---
+
+<Eyebrow>15 · Native callbacks</Eyebrow>
+
+## The return trip has two routes
+
+<Grid columns={2}>
+  <Panel title="Same V8 thread"><div>C re-enters JavaScript immediately with a live callback scope.</div><div>Raw C argument slots become a stack-first JS argument list—no queue, serialization, or condition variable.</div></Panel>
+  <Panel title="Foreign thread" tone="amber"><div>The trampoline copies scalar arguments into a request, wakes the event loop, then waits on a condition variable.</div><div>JavaScript may return a Promise; the C thread resumes only after resolution.</div></Panel>
+</Grid>
+
+<Callout label="Constraint">Use `fast: false` when a native function may synchronously call an `FfiCallback`; re-entry needs the normal HandleScope route.</Callout>
+
+---
+
+<Eyebrow>16 · In production</Eyebrow>
+
+## HTTP/3 applies the whole playbook
+
+<Grid columns={3}>
+  <Metric value="8×8B" label="reusable pointer arena" note="QUIC/H3 buffers become pointer slots in place." />
+  <Metric value="1×" label="shared native query" note="Read max payload once, use it across helpers." tone="amber" />
+  <Metric value="0" label="no-op timer rearms" note="Skip Promise, closure, map, kqueue, and FFI churn." tone="coral" />
+</Grid>
+
+<Callout label="Measured system result">A combined H3 hot-path change—including FFI callback and allocation reductions—moved the app router from ~28.5k to ~32.3k req/s at c100/m10, and ~35.5k at m100.</Callout>
+
+<Notes>These figures come from the Improve H3 router throughput commit. They are system-level results, not an isolated benchmark of one FFI primitive.</Notes>
+
+---
+
+<Eyebrow>17 · Binding decisions</Eyebrow>
+
+## Choose the cheapest correct shape
+
+<div style={{ width: '100%' }}>
+  <Decision when="Scalar, pointer, or buffer; short call" choose="default fast path" reason="Let V8 optimize it; reuse pointer arenas in loops." />
+  <Decision when="May block on I/O or CPU" choose="async: true" reason="Pay the pool and wake costs to protect event-loop latency." tone="amber" />
+  <Decision when="Calls JS synchronously" choose="fast: false" reason="Preserve safe V8 re-entry through a HandleScope." tone="coral" />
+  <Decision when="C retains bytes after return" choose="owned native memory" reason="Use Pointer.view with release ownership, or pin explicitly." tone="amber" />
+  <Decision when="Aggregate or variadic ABI" choose="libffi path" reason="Prefer platform correctness over a speculative shortcut." tone="coral" />
+</div>
+
+---
+
+<Eyebrow>18 · The contract</Eyebrow>
+
+## Fast FFI is still unsafe FFI
+
+<Grid columns={2}>
+  <Panel title="The descriptor is a promise" tone="coral"><div>A wrong parameter, result, struct layout, or variadic count can become undefined behavior.</div></Panel>
+  <Panel title="Pointers carry no ownership"><div>The caller must keep pointed-to storage alive and sized for every access.</div></Panel>
+  <Panel title="Zero-copy couples lifetimes" tone="amber"><div>External views need a deliberate release policy; transferring or detaching triggers it.</div></Panel>
+  <Panel title="Crossings still cost"><div>Batch work, reuse buffers, cache native answers, and avoid calls whose result has not changed.</div></Panel>
+</Grid>
+
+---
+
+<Eyebrow>Conclusion</Eyebrow>
+
+# Optimize the boundary. Then cross it less.
+
+<Rule />
+
+<Lead>Precompute the ABI. Give V8 a direct route. Keep bytes in place. Reuse the tiny things. Move blocking work off-thread. Preserve a general path for everything else.</Lead>
+
+<Footer>src/ffi · src/async_rt · HTTP/3 and QUIC bindings</Footer>
+
+<Notes>The fastest boundary is still the one you do not cross. Fino’s layer makes the necessary crossings predictable enough that architecture—not incidental marshaling—sets the ceiling.</Notes>
