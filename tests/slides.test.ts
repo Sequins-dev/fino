@@ -111,6 +111,13 @@ describe('fino:ui/slides', () => {
     t.ok(viewerHtml.includes('viewBox="0 0 1600 900"'), 'viewer scales the fixed canvas with a native view box');
     t.ok(presenterHtml.match(/viewBox="0 0 1600 900"/g)?.length === 2, 'presenter scales both preview canvases with native view boxes');
     t.ok(presenterHtml.includes('color:var(--slides-ink)'), 'slide foreground does not inherit from the presenter shell');
+    t.ok(viewerHtml.includes('.fino-audience{width:100vw;height:100vh'), 'viewer gives the slide scaler the full browser viewport');
+    t.ok(presenterHtml.includes('.fino-presenter-preview{width:100%;height:100%;min-width:0;min-height:0}'), 'presenter current slide fills its allocated preview cell');
+    t.ok(presenterHtml.includes('.fino-next-viewport{width:100%;aspect-ratio:16/9}'), 'presenter next slide fills its bounded preview area');
+    t.notOk(viewerHtml.includes('.fino-slide-viewport{position:relative;overflow:hidden;aspect-ratio:16/9}'), 'shared viewport does not force a width-driven box around the scaler');
+    t.ok(viewerHtml.includes('.fino-fullscreen{position:absolute;right:0;top:0;'), 'fullscreen control overlays the slide without reserving space');
+    t.ok(viewerHtml.includes('opacity:0;transition:opacity'), 'fullscreen control is hidden until its corner is targeted');
+    t.ok(viewerHtml.includes('.fino-fullscreen:hover,.fino-fullscreen:focus-visible{opacity:1}'), 'fullscreen control fades in for pointer and keyboard users');
     t.notOk(viewerHtml.includes('ResizeObserver'), 'viewer needs no JavaScript layout observer');
     t.notOk(presenterHtml.includes('ResizeObserver'), 'presenter needs no JavaScript layout observer');
   });
