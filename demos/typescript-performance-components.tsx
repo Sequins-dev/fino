@@ -84,9 +84,8 @@ export function Evidence(props: { value: string; title: string; before: string; 
 }
 
 export function Callout(props: Children & { label: string; tone?: Tone }): VNode {
-  const isAmber = props.tone === undefined || props.tone === 'amber';
-  const background = isAmber ? '#9a5b00' : toneColor(props.tone);
-  return <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1em', alignItems: 'center', background, color: isAmber ? paper : ink, padding: '1em 1.25em' }}><div style={{ font: '900 .66em/1 "SFMono-Regular",monospace', letterSpacing: '.12em', textTransform: 'uppercase' }}>{props.label}</div><div style={{ fontSize: '1.25em', fontWeight: 800 }}>{props.children ?? []}</div></div>;
+  const accent = toneColor(props.tone ?? 'amber');
+  return <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1em', alignItems: 'center', background: ink, color: paper, borderLeft: `.55em solid ${accent}`, padding: '1em 1.25em' }}><div style={{ color: accent, font: '900 .66em/1 "SFMono-Regular",monospace', letterSpacing: '.12em', textTransform: 'uppercase' }}>{props.label}</div><div style={{ fontSize: '1.25em', fontWeight: 800 }}>{props.children ?? []}</div></div>;
 }
 
 export function CodeLabel(props: Children): VNode {
