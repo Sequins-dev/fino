@@ -4,7 +4,10 @@
 import { describe, it } from 'fino:test/test';
 import { h } from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
+import { DiskFileSystem } from 'fino:file';
 import { Callout, Lead } from '../demos/typescript-performance-components.tsx';
+
+const fs = new DiskFileSystem();
 
 describe('TypeScript performance deck', () => {
   it('keeps title-slide subtitles subordinate to their headings', (t) => {
@@ -23,5 +26,20 @@ describe('TypeScript performance deck', () => {
     const html = renderToHtml(h(Callout, { label: 'Context' }, 'Supporting context.'));
 
     t.ok(html.includes('font-family:&quot;Avenir Next&quot;,&quot;Helvetica Neue&quot;,sans-serif;font-size:1.15em;font-weight:600;line-height:1.3;letter-spacing:.005em'), 'callout copy uses open spacing and moderate weight');
+  });
+
+  it('organizes the architecture story into five substantial chapters', async (t) => {
+    const source = new TextDecoder().decode(await fs.readFile('./demos/typescript-performance.mdx'));
+
+    t.equal(source.split('\n---\n').length, 37, 'the expanded deck has enough room to develop its argument');
+    for (const title of [
+      'Coordination is the runtime',
+      'Reuse is an architectural decision',
+      'Make the boundary boring',
+      'Native must earn the crossing',
+      'Choose by total work'
+    ]) {
+      t.ok(source.includes(`# ${title}`), `the deck includes the “${title}” chapter`);
+    }
   });
 });
