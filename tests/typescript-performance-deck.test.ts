@@ -19,4 +19,10 @@ describe('TypeScript performance deck', () => {
     t.ok(html.includes('background:#0d1b1e;color:#f4f0e5'), 'callout text remains legible against its ink surface');
     t.ok(html.includes('border-left:.55em solid #f3aa18'), 'callout retains amber as a restrained accent');
   });
+
+  it('sets callout copy in a readable non-condensed face', (t) => {
+    const html = renderToHtml(h(Callout, { label: 'Context' }, 'Supporting context.'));
+
+    t.ok(html.includes('font-family:&quot;Avenir Next&quot;,&quot;Helvetica Neue&quot;,sans-serif;font-size:1.15em;font-weight:600;line-height:1.3;letter-spacing:.005em'), 'callout copy uses open spacing and moderate weight');
+  });
 });
