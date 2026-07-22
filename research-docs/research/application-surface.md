@@ -2,7 +2,7 @@
 
 > Status: remaining-roadmap snapshot. This note intentionally removes items
 > that have already landed (`fino:jobs`, `fino:storage`,
-> `fino:security/oauth`, `fino:email`, the `fino:signals` read model,
+> `fino:security/oauth`, HTTP app sessions, `fino:email`, the `fino:signals` read model,
 > Postgres, general caching, AI response caching, and the first
 > server-driven web UI pass) and focuses on the application batteries still
 > missing for the all-in-one agent-app goal.
@@ -25,6 +25,9 @@ The runtime now has a credible AI and local-app substrate:
   deterministic clocks, tag invalidation, and HTTP response-cache middleware.
 - Auth primitives: JWT/JWS/JWE, JWK/JWKS, sealed cookies, password hashing,
   plus OAuth/OIDC client helpers in `fino:security/oauth`.
+- Server sessions: `fino:net/http/app` middleware with sealed identifier
+  cookies, key rotation, fixed or rolling expiry, explicit
+  regeneration/invalidation, and caller-owned revision-capable caches.
 - HTTP app surface: route builders, shared builder branches, middleware and
   layer composition, cookies, in-app session primitives, OpenAPI metadata, and
   response/error helpers.
@@ -35,31 +38,10 @@ The runtime now has a credible AI and local-app substrate:
 
 The remaining gap is no longer "basic app infrastructure." It is the set of
 surfaces that make a Fino app production-complete without leaving the runtime:
-first-class server sessions, production UI hardening, safe code execution,
-budget enforcement, webhooks, and secret custody.
+production UI hardening, safe code execution, budget enforcement, webhooks,
+and secret custody.
 
-## 2. First-Class Server Sessions: `fino:security/session`
-
-OAuth client flows exist, but apps still need a first-class authenticated
-session layer.
-
-The HTTP app already has `cookies()`, `sessions()`, `memorySessionStore()`,
-and `ctx.session`. The remaining work is to move that capability into a
-security-owned module and make the production story explicit:
-
-- Public `fino:security/session` exports for the session record, store
-  contract, middleware, and common stores.
-- Sealed-cookie session ids with rotation guidance.
-- Pluggable record stores: memory, SQLite, and `fino:cache`.
-- Rolling expiry and explicit invalidation.
-- Middleware for `fino:net/http/app` that hydrates `ctx.session` without
-  duplicating the current app implementation.
-- Auth helpers that compose with `fino:security/oauth` callback results.
-
-This should not become an identity provider. It is the app-session layer that
-turns OAuth/JWT primitives into "put this app behind login."
-
-## 3. Browser UI Hardening
+## 2. Browser UI Hardening
 
 The first `fino:ui/web` pass has landed: server-rendered VNodes, view
 snapshots, SSE patches for enhanced actions, workflow-backed pages, and
@@ -77,7 +59,7 @@ apps:
 - Ensure the generated browser client and docs make progressive enhancement
   boundaries clear.
 
-## 4. AI Product Controls
+## 3. AI Product Controls
 
 ### Budgets
 
@@ -112,7 +94,7 @@ support can run constrained code. Productize the AI-facing story as
 This is a flagship agent feature: safe code execution without requiring a
 container sidecar for the common trusted-or-semi-trusted case.
 
-## 5. Webhooks
+## 4. Webhooks
 
 Add `fino:webhooks` or split helpers under HTTP/security:
 
@@ -123,7 +105,7 @@ Add `fino:webhooks` or split helpers under HTTP/security:
 
 Webhooks are deliberately thin: fetch plus signatures plus jobs.
 
-## 6. Secrets
+## 5. Secrets
 
 `fino:config` can redact configured secret paths in validation errors, but it
 does not yet have secret sources or secret-typed values. Add a secrets source
@@ -137,20 +119,18 @@ for `fino:config`:
 The model should stay capability-shaped: a secret is granted to a deployment
 or realm, not scattered as process-global ambient state.
 
-## 7. Updated Sequencing
+## 6. Updated Sequencing
 
-1. **First-class server sessions** — extract and harden the app-session layer
-   on top of the HTTP app and OAuth.
-2. **Browser UI hardening and demo** — prove the all-in-one app path with
+1. **Browser UI hardening and demo** — prove the all-in-one app path with
    durable state, sessions, CSRF, streaming model state, and no client build
    step.
-3. **Budgets and gateway policy** — turns usage accounting into product
+2. **Budgets and gateway policy** — turns usage accounting into product
    controls.
-4. **`fino:ai/sandbox`** — flagship agent capability; sequence stronger
+3. **`fino:ai/sandbox`** — flagship agent capability; sequence stronger
    isolation tiers with multi-tenant runtime work.
-5. **Webhooks and secrets** — small, production-critical batteries.
+4. **Webhooks and secrets** — small, production-critical batteries.
 
 The organizing principle stays the same: every surface is a module, and the
 module graph remains the capability graph. What a tenant can import is what it
-can do, whether that is a session store, model, UI channel, webhook sender, or
+can do, whether that is a session cache, model, UI channel, webhook sender, or
 secret.

@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
-import { App, cookies, memorySessionStore, sessions } from 'fino:net/http/app';
+import { memoryCache } from 'fino:cache';
+import { App, cookies, sessions } from 'fino:net/http/app';
 import { parseEventStream } from 'fino:net/http/eventstream';
 import { h, Signal } from 'fino:ui';
 import { page, view, webUI } from 'fino:ui/web';
@@ -41,7 +42,11 @@ function makeApp() {
     }
   });
   const app = new App();
-  const ui = app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() })).layer(webUI({ store, secret: 'test-secret' }));
+  const ui = app.value('cookies', cookies()).value('session', sessions({
+    store: memoryCache({ namespace: 'sessions' }),
+    keys: [{ id: 'test', secret: 'ui-session-test-secret' }],
+    ttlMs: 60_000
+  })).layer(webUI({ store, secret: 'test-secret' }));
   ui.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
   ui.post('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
   return { app };
@@ -73,7 +78,11 @@ function makeSecureApp() {
     }
   });
   const app = new App();
-  const ui = app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() })).layer(webUI({ store, secret: 'test-secret' }));
+  const ui = app.value('cookies', cookies()).value('session', sessions({
+    store: memoryCache({ namespace: 'sessions' }),
+    keys: [{ id: 'test', secret: 'ui-session-test-secret' }],
+    ttlMs: 60_000
+  })).layer(webUI({ store, secret: 'test-secret' }));
   ui.get('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
   ui.post('/secure').handle(page((ctx) => h('main', null, secure.mount(ctx))));
   return { app, runs: () => handlerRuns };

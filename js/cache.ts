@@ -9,7 +9,10 @@
 *
 * ## Design
 *
-* A `Cache` is a simple async key/value interface. `memoryCache()` is an LRU
+* A `Cache` is a simple async key/value interface. Built-in caches also
+* implement `RevisionedCache`, whose opaque revisions and `compareAndSet()`
+* provide atomic per-key updates without turning the cache into a distributed
+* coordination service. `memoryCache()` is an LRU
 * cache intended for tests and single-process applications; `sqliteCache()`
 * persists entries through `fino:database/sqlite` and the configured
 * filesystem provider. `responseCache()` is a layer for `fino:net/http/app`
@@ -37,7 +40,7 @@
 import { Database } from 'fino:database/sqlite';
 import type { FileSystem } from 'internal:file/provider';
 import { defineMiddleware, type LayerMiddleware } from 'fino:net/http/app';
-
+import { v4 as uuidv4 } from 'fino:uuid';
 /**
 * Clock used by cache backends to decide when entries expire.
 *
@@ -62,7 +65,6 @@ export interface CacheClock {
   /** Return the current time in milliseconds. */
   now(): number;
 }
-
 /**
 * Options applied when writing a cache entry with `Cache.set()`.
 *
@@ -85,7 +87,21 @@ export interface CacheSetOptions {
   /** Tags used by `invalidateTags()` to remove related entries. */
   tags?: string[];
 }
-
+/** A cache value paired with the opaque revision assigned by its backend. */
+export interface CacheEntry<T = unknown> {
+  /** Deserialized cache value. */
+  value: T;
+  /** Opaque token that changes after every successful write. */
+  revision: string;
+}
+/** Options for an atomic `RevisionedCache.compareAndSet()` write. */
+export interface CacheCompareAndSetOptions extends CacheSetOptions {
+  /**
+  * Required current revision. Pass `null` to create the entry only when it
+  * does not already exist.
+  */
+  ifRevision: string | null;
+}
 /**
 * Small async cache interface shared by all backends.
 *
@@ -126,7 +142,22 @@ export interface Cache {
   /** Return a view over the same backend using `name` as its namespace. */
   namespace(name: string): Cache;
 }
-
+/**
+* Cache extension for optimistic, per-key concurrency control.
+*
+* `getEntry()` returns an opaque revision with the value. Pass that revision
+* to `compareAndSet()` to replace only the version that was read. A stale
+* write returns `null` and leaves the current value untouched. This is a local
+* atomicity contract; it does not make a cache distributed or coherent.
+*/
+export interface RevisionedCache extends Cache {
+  /** Read a value and its current revision, or `null` when absent or expired. */
+  getEntry<T = unknown>(key: string): Promise<CacheEntry<T> | null>;
+  /** Conditionally write `key`, returning its new value and revision on success. */
+  compareAndSet<T = unknown>(key: string, value: T, opts: CacheCompareAndSetOptions): Promise<CacheEntry<T> | null>;
+  /** Return a revision-capable view over the same backend in `name`. */
+  namespace(name: string): RevisionedCache;
+}
 /**
 * Options for `memoryCache()`.
 *
@@ -147,7 +178,6 @@ export interface MemoryCacheOptions {
   /** Clock used for TTL checks. Defaults to `Date.now()`. */
   clock?: CacheClock;
 }
-
 /**
 * Options for `sqliteCache()`.
 *
@@ -172,42 +202,38 @@ export interface SqliteCacheOptions {
   /** Optional filesystem provider for the SQLite VFS. */
   fs?: FileSystem;
 }
-
 type StoredEntry = {
   value: string;
+  revision: string;
   expiresAt: number | null;
   touchedAt: number;
   tags: Set<string>;
 };
-
 const defaultClock: CacheClock = { now: () => Date.now() };
-
 function encodeValue(value: unknown): string {
   return JSON.stringify(value);
 }
-
 function decodeValue<T>(value: string): T {
   return JSON.parse(value) as T;
 }
-
 function nsKey(namespace: string, key: string): string {
   return `${namespace}\0${key}`;
 }
-
-class MemoryCache implements Cache {
+class MemoryCache implements RevisionedCache {
   #entries: Map<string, StoredEntry>;
   #namespace: string;
   #maxEntries: number;
   #clock: CacheClock;
-
   constructor(entries: Map<string, StoredEntry>, opts: Required<MemoryCacheOptions>) {
     this.#entries = entries;
     this.#namespace = opts.namespace;
     this.#maxEntries = opts.maxEntries;
     this.#clock = opts.clock;
   }
-
   async get<T = unknown>(key: string): Promise<T | null> {
+    return (await this.getEntry<T>(key))?.value ?? null;
+  }
+  async getEntry<T = unknown>(key: string): Promise<CacheEntry<T> | null> {
     const full = nsKey(this.#namespace, key);
     const entry = this.#entries.get(full);
     if (!entry) return null;
@@ -219,25 +245,48 @@ class MemoryCache implements Cache {
     entry.touchedAt = now;
     this.#entries.delete(full);
     this.#entries.set(full, entry);
-    return decodeValue<T>(entry.value);
+    return {
+      value: decodeValue<T>(entry.value),
+      revision: entry.revision
+    };
   }
-
   async set<T = unknown>(key: string, value: T, opts: CacheSetOptions = {}): Promise<void> {
     const now = this.#clock.now();
     const full = nsKey(this.#namespace, key);
     this.#entries.set(full, {
       value: encodeValue(value),
+      revision: uuidv4().toString(),
       expiresAt: opts.ttlMs === undefined ? null : now + Math.max(0, opts.ttlMs),
       touchedAt: now,
       tags: new Set(opts.tags ?? [])
     });
     this.#evict();
   }
-
+  async compareAndSet<T = unknown>(key: string, value: T, opts: CacheCompareAndSetOptions): Promise<CacheEntry<T> | null> {
+    const now = this.#clock.now();
+    const full = nsKey(this.#namespace, key);
+    const current = this.#entries.get(full);
+    if (current !== undefined && current.expiresAt !== null && current.expiresAt <= now) this.#entries.delete(full);
+    const live = this.#entries.get(full);
+    if (opts.ifRevision === null ? live !== undefined : live?.revision !== opts.ifRevision) return null;
+    const encoded = encodeValue(value);
+    const revision = uuidv4().toString();
+    this.#entries.set(full, {
+      value: encoded,
+      revision,
+      expiresAt: opts.ttlMs === undefined ? null : now + Math.max(0, opts.ttlMs),
+      touchedAt: now,
+      tags: new Set(opts.tags ?? [])
+    });
+    this.#evict();
+    return {
+      value: decodeValue<T>(encoded),
+      revision
+    };
+  }
   async delete(key: string): Promise<void> {
     this.#entries.delete(nsKey(this.#namespace, key));
   }
-
   async invalidateTags(tags: string[]): Promise<void> {
     const wanted = new Set(tags);
     const prefix = `${this.#namespace}\0`;
@@ -246,15 +295,13 @@ class MemoryCache implements Cache {
       if ([...entry.tags].some((tag) => wanted.has(tag))) this.#entries.delete(key);
     }
   }
-
-  namespace(name: string): Cache {
+  namespace(name: string): RevisionedCache {
     return new MemoryCache(this.#entries, {
       namespace: name,
       maxEntries: this.#maxEntries,
       clock: this.#clock
     });
   }
-
   #evict(): void {
     while (this.#entries.size > this.#maxEntries) {
       const first = this.#entries.keys().next().value as string | undefined;
@@ -263,7 +310,6 @@ class MemoryCache implements Cache {
     }
   }
 }
-
 /**
 * Create an in-memory LRU cache.
 *
@@ -286,14 +332,13 @@ class MemoryCache implements Cache {
 * await cache.get('one'); // 1
 * ```
 */
-export function memoryCache(opts: MemoryCacheOptions = {}): Cache {
+export function memoryCache(opts: MemoryCacheOptions = {}): RevisionedCache {
   return new MemoryCache(new Map(), {
     namespace: opts.namespace ?? 'default',
     maxEntries: opts.maxEntries ?? Number.POSITIVE_INFINITY,
     clock: opts.clock ?? defaultClock
   });
 }
-
 /**
 * SQLite-backed cache handle returned by `sqliteCache()`.
 *
@@ -313,34 +358,45 @@ export function memoryCache(opts: MemoryCacheOptions = {}): Cache {
 * }
 * ```
 */
-export interface SqliteCache extends Cache {
+export interface SqliteCache extends RevisionedCache {
   /** Close the underlying SQLite database. */
   close(): Promise<void>;
 }
-
 class SqliteCacheImpl implements SqliteCache {
   #db: Database;
   #namespace: string;
   #clock: CacheClock;
   #ownsDb: boolean;
-
   constructor(db: Database, namespace: string, clock: CacheClock, ownsDb: boolean) {
     this.#db = db;
     this.#namespace = namespace;
     this.#clock = clock;
     this.#ownsDb = ownsDb;
   }
-
   static async open(opts: SqliteCacheOptions): Promise<SqliteCacheImpl> {
     const db = await Database.open(opts.path, { fs: opts.fs });
     await db.exec(`CREATE TABLE IF NOT EXISTS fino_cache_entries (
       namespace TEXT NOT NULL,
       key TEXT NOT NULL,
       value TEXT NOT NULL,
+      revision TEXT NOT NULL,
       expires_at INTEGER,
       touched_at INTEGER NOT NULL,
       PRIMARY KEY(namespace, key)
     )`);
+    const entryColumns = await db.prepare(`PRAGMA table_info(fino_cache_entries)`).all();
+    if (!entryColumns.some((column) => column.name === 'revision')) {
+      await db.exec(`ALTER TABLE fino_cache_entries ADD COLUMN revision TEXT`);
+      const legacyEntries = await db.prepare(`SELECT namespace, key FROM fino_cache_entries WHERE revision IS NULL`).all();
+      const assignRevision = db.prepare(`UPDATE fino_cache_entries SET revision = ? WHERE namespace = ? AND key = ?`);
+      try {
+        for (const entry of legacyEntries) {
+          await assignRevision.run(uuidv4().toString(), entry.namespace as string, entry.key as string);
+        }
+      } finally {
+        assignRevision.finalize();
+      }
+    }
     await db.exec(`CREATE TABLE IF NOT EXISTS fino_cache_tags (
       namespace TEXT NOT NULL,
       key TEXT NOT NULL,
@@ -350,9 +406,11 @@ class SqliteCacheImpl implements SqliteCache {
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_fino_cache_tags ON fino_cache_tags(namespace, tag)`);
     return new SqliteCacheImpl(db, opts.namespace ?? 'default', opts.clock ?? defaultClock, true);
   }
-
   async get<T = unknown>(key: string): Promise<T | null> {
-    const stmt = this.#db.prepare(`SELECT value, expires_at FROM fino_cache_entries WHERE namespace = ? AND key = ?`);
+    return (await this.getEntry<T>(key))?.value ?? null;
+  }
+  async getEntry<T = unknown>(key: string): Promise<CacheEntry<T> | null> {
+    const stmt = this.#db.prepare(`SELECT value, revision, expires_at FROM fino_cache_entries WHERE namespace = ? AND key = ?`);
     try {
       const row = await stmt.get(this.#namespace, key);
       if (!row) return null;
@@ -363,16 +421,18 @@ class SqliteCacheImpl implements SqliteCache {
         return null;
       }
       await this.#db.prepare(`UPDATE fino_cache_entries SET touched_at = ? WHERE namespace = ? AND key = ?`).run(now, this.#namespace, key);
-      return decodeValue<T>(row.value as string);
+      return {
+        value: decodeValue<T>(row.value as string),
+        revision: row.revision as string
+      };
     } finally {
       stmt.finalize();
     }
   }
-
   async set<T = unknown>(key: string, value: T, opts: CacheSetOptions = {}): Promise<void> {
     const now = this.#clock.now();
     const expiresAt = opts.ttlMs === undefined ? null : now + Math.max(0, opts.ttlMs);
-    await this.#db.prepare(`INSERT OR REPLACE INTO fino_cache_entries(namespace, key, value, expires_at, touched_at) VALUES(?, ?, ?, ?, ?)`).run(this.#namespace, key, encodeValue(value), expiresAt, now);
+    await this.#db.prepare(`INSERT OR REPLACE INTO fino_cache_entries(namespace, key, value, revision, expires_at, touched_at) VALUES(?, ?, ?, ?, ?, ?)`).run(this.#namespace, key, encodeValue(value), uuidv4().toString(), expiresAt, now);
     await this.#db.prepare(`DELETE FROM fino_cache_tags WHERE namespace = ? AND key = ?`).run(this.#namespace, key);
     const insert = this.#db.prepare(`INSERT OR IGNORE INTO fino_cache_tags(namespace, key, tag) VALUES(?, ?, ?)`);
     try {
@@ -381,28 +441,47 @@ class SqliteCacheImpl implements SqliteCache {
       insert.finalize();
     }
   }
-
+  async compareAndSet<T = unknown>(key: string, value: T, opts: CacheCompareAndSetOptions): Promise<CacheEntry<T> | null> {
+    const now = this.#clock.now();
+    const expiresAt = opts.ttlMs === undefined ? null : now + Math.max(0, opts.ttlMs);
+    const encoded = encodeValue(value);
+    const revision = uuidv4().toString();
+    let changed = false;
+    await this.#db.transaction(async () => {
+      await this.#db.prepare(`DELETE FROM fino_cache_entries WHERE namespace = ? AND key = ? AND expires_at IS NOT NULL AND expires_at <= ?`).run(this.#namespace, key, now);
+      const result = opts.ifRevision === null ? await this.#db.prepare(`INSERT OR IGNORE INTO fino_cache_entries(namespace, key, value, revision, expires_at, touched_at) VALUES(?, ?, ?, ?, ?, ?)`).run(this.#namespace, key, encoded, revision, expiresAt, now) : await this.#db.prepare(`UPDATE fino_cache_entries SET value = ?, revision = ?, expires_at = ?, touched_at = ? WHERE namespace = ? AND key = ? AND revision = ?`).run(encoded, revision, expiresAt, now, this.#namespace, key, opts.ifRevision);
+      changed = result.changes === 1;
+      if (!changed) return;
+      await this.#db.prepare(`DELETE FROM fino_cache_tags WHERE namespace = ? AND key = ?`).run(this.#namespace, key);
+      const insert = this.#db.prepare(`INSERT OR IGNORE INTO fino_cache_tags(namespace, key, tag) VALUES(?, ?, ?)`);
+      try {
+        for (const tag of opts.tags ?? []) await insert.run(this.#namespace, key, tag);
+      } finally {
+        insert.finalize();
+      }
+    });
+    return changed ? {
+      value: decodeValue<T>(encoded),
+      revision
+    } : null;
+  }
   async delete(key: string): Promise<void> {
     await this.#db.prepare(`DELETE FROM fino_cache_entries WHERE namespace = ? AND key = ?`).run(this.#namespace, key);
     await this.#db.prepare(`DELETE FROM fino_cache_tags WHERE namespace = ? AND key = ?`).run(this.#namespace, key);
   }
-
   async invalidateTags(tags: string[]): Promise<void> {
     if (tags.length === 0) return;
     const placeholders = tags.map(() => '?').join(',');
     const rows = await this.#db.prepare(`SELECT key FROM fino_cache_tags WHERE namespace = ? AND tag IN (${placeholders})`).all(this.#namespace, ...tags);
     for (const row of rows) await this.delete(row.key as string);
   }
-
-  namespace(name: string): Cache {
+  namespace(name: string): RevisionedCache {
     return new SqliteCacheImpl(this.#db, name, this.#clock, false);
   }
-
   async close(): Promise<void> {
     if (this.#ownsDb) await this.#db.close();
   }
 }
-
 /**
 * Open a SQLite-backed cache.
 *
@@ -427,7 +506,6 @@ class SqliteCacheImpl implements SqliteCache {
 export function sqliteCache(opts: SqliteCacheOptions): Promise<SqliteCache> {
   return SqliteCacheImpl.open(opts);
 }
-
 /**
 * Options for `responseCache()`.
 *
@@ -454,37 +532,31 @@ export interface ResponseCacheOptions {
   /** Diagnostic header name, or `false` to disable it. Defaults to `x-fino-cache`. */
   header?: false | string;
 }
-
 type CachedResponse = {
   status: number;
   headers: Array<[string, string]>;
   body: string;
 };
-
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
-
 function base64ToBytes(value: string): Uint8Array {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
-
 function responseKey(req: Request, vary: string[]): string {
   const parts = [req.method.toUpperCase(), req.url];
   for (const name of vary) parts.push(`${name.toLowerCase()}:${req.headers.get(name) ?? ''}`);
   return parts.join('\n');
 }
-
 function cacheHeaderName(opts: ResponseCacheOptions): string | null {
   if (opts.header === false) return null;
   return opts.header ?? 'x-fino-cache';
 }
-
 /**
 * Create HTTP response-cache middleware for `fino:net/http/app`.
 *

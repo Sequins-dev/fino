@@ -27,6 +27,13 @@
 * request context from anywhere in the async call chain by using
 * `fino:context`.
 *
+* Server sessions are part of this same application surface. `sessions()`
+* accepts a caller-owned `RevisionedCache` directly, seals browser identifiers,
+* supports key rotation and fixed or rolling expiry, and uses conditional
+* writes so stale requests cannot silently overwrite newer state. Applications
+* choose and close their cache backend; the middleware owns only session
+* lifecycle and cookie policy.
+*
 * OpenAPI generation targets OpenAPI 3.1 and embeds JSON Schema objects from
 * `fino:validate` directly. Middleware can describe documentation effects with
 * `defineMiddleware(fn, meta)` and `defineProducer(fn, meta)`, making runtime
@@ -57,8 +64,7 @@
 import { Context } from '../../context/index.ts';
 import { DiskFileSystem } from '../../file/fs.ts';
 import { join, normalize } from '../../file/path.ts';
-import { v4 as uuidv4 } from '../../uuid.ts';
-import { CookieJar, type CookieOptions } from '../../security/cookie.ts';
+import { CookieJar } from '../../security/cookie.ts';
 import { compile } from '../../validate.ts';
 import { Headers, Request, Response } from './index.ts';
 import { serve } from './server.ts';
@@ -68,6 +74,8 @@ import { WebTransport } from './webtransport.ts';
 import { EventSourceWriter } from './eventstream.ts';
 import { Channel } from '../../internal/stream.ts';
 export { CookieJar } from '../../security/cookie.ts';
+export { SessionConflictError, sessions } from './session.ts';
+export type { Session, SessionClock, SessionKey, SessionOptions, SessionRecord } from './session.ts';
 /**
 * Standard HTTP methods supported by route builders.
 *
@@ -794,7 +802,7 @@ export abstract class BuilderBranch<TSelf extends BuilderBranch<TSelf>> {
   /** Return a new builder with a context value appended to this branch.
   *
   * ```ts no_run
-  * const withSession = app.value('session', sessions({ store }));
+  * const withSession = app.value('session', sessions(sessionOptions));
   * ```
   */
   value(name: string, producer: Producer): TSelf {
@@ -2119,137 +2127,6 @@ export function cookies(): Producer {
       _getUnsafeHeader?: (name: string) => string | null;
     })._getUnsafeHeader?.('cookie') ?? null;
     return new CookieJar(ctx.request.headers.get('cookie') ?? unsafeCookie);
-  });
-}
-/** Session data persisted by a `SessionStore`.
-*
-* ```ts no_run
-* session.data.userId = 'u_123';
-* ```
-*/
-export interface Session {
-  /** Stable session ID.
-  *
-  * ```ts no_run
-  * console.log(session.id);
-  * ```
-  */
-  id: string;
-  /** Mutable session payload.
-  *
-  * ```ts no_run
-  * session.data.count = Number(session.data.count ?? 0) + 1;
-  * ```
-  */
-  data: Record<string, unknown>;
-  /** True when this session was created for the current request.
-  *
-  * ```ts no_run
-  * if (session.isNew) console.log('new session');
-  * ```
-  */
-  isNew: boolean;
-}
-/** Minimal async session store interface.
-*
-* Store methods may be synchronous or async. Returned sessions should be safe
-* for request-local mutation.
-*
-* ```ts no_run
-* const store = memorySessionStore();
-* ```
-*/
-export interface SessionStore {
-  /** Load a session by ID, or return `null` when missing.
-  *
-  * ```ts no_run
-  * const session = await store.get(id);
-  * ```
-  */
-  get(id: string): Session | null | Promise<Session | null>;
-  /** Persist a session by ID.
-  *
-  * ```ts no_run
-  * await store.set(session.id, session);
-  * ```
-  */
-  set(id: string, session: Session): void | Promise<void>;
-  /** Delete a session by ID.
-  *
-  * ```ts no_run
-  * await store.delete(id);
-  * ```
-  */
-  delete(id: string): void | Promise<void>;
-}
-/** Create an in-memory session store suitable for tests and single-process apps.
-*
-* Data is lost when the process exits and is not shared across workers.
-*
-* ```ts no_run
-* const store = memorySessionStore();
-* app.value('session', sessions({ store }));
-* ```
-*/
-export function memorySessionStore(): SessionStore {
-  const map = new Map<string, Session>();
-  return {
-    get(id) {
-      const session = map.get(id);
-      return session === undefined ? null : {
-        id: session.id,
-        isNew: false,
-        data: { ...session.data }
-      };
-    },
-    set(id, session) {
-      map.set(id, {
-        id,
-        isNew: false,
-        data: { ...session.data }
-      });
-    },
-    delete(id) {
-      map.delete(id);
-    }
-  };
-}
-/** Producer that loads a cookie-backed session and saves it after response creation.
-*
-* Expects `ctx.cookies` to be a `CookieJar` when installed after
-* `.value('cookies', cookies())`; otherwise it creates a private jar. New
-* sessions are assigned UUIDs and persisted after the response is produced.
-*
-* ```ts no_run
-* app.value('cookies', cookies()).value('session', sessions({ store: memorySessionStore() }));
-* ```
-*/
-export function sessions(opts: {
-  store: SessionStore;
-  cookie?: string;
-  cookieOptions?: CookieOptions;
-}): Producer {
-  const cookie = opts.cookie ?? 'sid';
-  return defineProducer(async (ctx) => {
-    const jar = ctx.cookies instanceof CookieJar ? ctx.cookies : new CookieJar(ctx.request.headers.get('cookie'));
-    const existing = jar.get(cookie);
-    let session = existing === undefined ? null : await opts.store.get(existing);
-    if (session === null) session = {
-      id: uuidv4().toString(),
-      data: {},
-      isNew: true
-    };
-    const currentNext = ctx.__sessionApply as undefined | ((res: Response) => Promise<void>);
-    ctx.__sessionApply = async (res: Response) => {
-      await currentNext?.(res);
-      await opts.store.set(session!.id, session!);
-      if (session!.isNew || existing === undefined) jar.set(cookie, session!.id, {
-        path: '/',
-        httpOnly: true,
-        ...opts.cookieOptions
-      });
-    };
-    return session;
   });
 }
 /** Middleware that converts uncaught errors to a JSON error response.
