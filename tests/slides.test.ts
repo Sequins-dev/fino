@@ -196,7 +196,11 @@ describe('fino:ui/slides', () => {
     t.ok(viewerHtml.includes('.fino-slide-viewport{position:relative;display:grid;place-items:center;overflow:hidden;container-type:size}'), 'each host exposes both dimensions to its slide');
     t.ok(viewerHtml.includes('.fino-slide-surface{width:min(100cqw,177.7777778cqh);height:min(100cqh,56.25cqw);aspect-ratio:16/9;container-type:inline-size}'), 'slide surface takes the largest contained 16:9 area');
     t.ok(viewerHtml.includes('.fino-slide-frame{position:relative;width:100%;height:100%;'), 'slide content fills its responsive surface');
-    t.ok(viewerHtml.includes('font-size:1cqw'), 'slide-local dimensions scale with the responsive surface');
+    t.ok(viewerHtml.includes('font-size:1.25cqw'), 'slide-local content remains legible as the responsive surface scales');
+    t.ok(viewerHtml.includes('margin:0;max-width:100%'), 'slide headings can use the full content width');
+    t.ok(viewerHtml.includes('.fino-slide-frame h1{font-size:5.5cqw}'), 'slide titles leave more room for supporting content');
+    t.ok(viewerHtml.includes('.fino-slide-frame h2{font-size:4.6cqw}'), 'section titles remain prominent without dominating the slide');
+    t.ok(viewerHtml.includes('.fino-slide-frame p,.fino-slide-frame li{font-size:2.5cqw'), 'body copy uses a readable presentation scale');
     t.notOk(viewerHtml.includes('background-size:5px 5px'), 'slide decoration does not retain fixed pixel dimensions');
     t.ok(viewerHtml.includes('background-size:.3125em .3125em'), 'slide decoration follows the slide-local scale');
     t.ok(presenterHtml.includes('color:var(--slides-ink)'), 'slide foreground does not inherit from the presenter shell');

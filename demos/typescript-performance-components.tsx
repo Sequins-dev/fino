@@ -23,7 +23,7 @@ export function Eyebrow(props: Children): VNode {
 }
 
 export function Lead(props: Children): VNode {
-  return <div style={{ maxWidth: '30em', fontFamily: '"Iowan Old Style",Baskerville,serif', fontSize: '2.55em', lineHeight: 1.16, letterSpacing: '-.025em', color: ink }}>{props.children ?? []}</div>;
+  return <div style={{ maxWidth: '30em', fontFamily: '"Iowan Old Style",Baskerville,serif', fontSize: '2.1em', lineHeight: 1.16, letterSpacing: '-.025em', color: ink }}>{props.children ?? []}</div>;
 }
 
 export function Rule(): VNode {
