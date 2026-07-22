@@ -13,11 +13,10 @@ describe('TypeScript performance deck', () => {
     t.ok(html.includes('font-size:2.1em'), 'lead text uses a restrained display size');
   });
 
-  it('uses an ink callout surface with an amber accent', (t) => {
+  it('uses an amber callout surface with ink text', (t) => {
     const html = renderToHtml(h(Callout, { label: 'Context' }, 'Supporting context.'));
 
-    t.ok(html.includes('background:#0d1b1e;color:#f4f0e5'), 'callout text remains legible against its ink surface');
-    t.ok(html.includes('border-left:.55em solid #f3aa18'), 'callout retains amber as a restrained accent');
+    t.ok(html.includes('background:#f3aa18;color:#0d1b1e'), 'callout restores the deck amber with dark text');
   });
 
   it('sets callout copy in a readable non-condensed face', (t) => {

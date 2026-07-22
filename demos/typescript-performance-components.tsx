@@ -84,8 +84,9 @@ export function Evidence(props: { value: string; title: string; before: string; 
 }
 
 export function Callout(props: Children & { label: string; tone?: Tone }): VNode {
-  const accent = toneColor(props.tone ?? 'amber');
-  return <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1em', alignItems: 'center', background: ink, color: paper, borderLeft: `.55em solid ${accent}`, padding: '1em 1.25em' }}><div style={{ color: accent, font: '900 .66em/1 "SFMono-Regular",monospace', letterSpacing: '.12em', textTransform: 'uppercase' }}>{props.label}</div><div style={{ fontFamily: '"Avenir Next","Helvetica Neue",sans-serif', fontSize: '1.15em', fontWeight: 600, lineHeight: 1.3, letterSpacing: '.005em' }}>{props.children ?? []}</div></div>;
+  const background = toneColor(props.tone ?? 'amber');
+  const foreground = props.tone === 'ink' ? paper : ink;
+  return <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1em', alignItems: 'center', background, color: foreground, padding: '1em 1.25em' }}><div style={{ font: '900 .66em/1 "SFMono-Regular",monospace', letterSpacing: '.12em', textTransform: 'uppercase' }}>{props.label}</div><div style={{ fontFamily: '"Avenir Next","Helvetica Neue",sans-serif', fontSize: '1.15em', fontWeight: 600, lineHeight: 1.3, letterSpacing: '.005em' }}>{props.children ?? []}</div></div>;
 }
 
 export function CodeLabel(props: Children): VNode {
