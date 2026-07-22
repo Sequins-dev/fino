@@ -1,9 +1,8 @@
-/** Tests for fino:security/session stores and HTTP lifecycle behavior. */
+/** Tests for fino:net/http/app session caches and HTTP lifecycle behavior. */
 import { describe, it } from 'fino:test/test';
-import { memoryCache } from 'fino:cache';
+import { memoryCache, sqliteCache, type RevisionedCache } from 'fino:cache';
 import { DiskFileSystem } from 'fino:file';
-import { App, cookies } from 'fino:net/http/app';
-import { cacheSessionStore, memorySessionStore, sessions, sqliteSessionStore, SessionConflictError, type Session, type SessionKey, type SessionRecord, type SessionStore } from 'fino:security/session';
+import { App, cookies, sessions, SessionConflictError, type Session, type SessionKey } from 'fino:net/http/app';
 function fakeClock(now = 1e3) {
   return {
     clock: { now: () => now },
@@ -11,40 +10,6 @@ function fakeClock(now = 1e3) {
       now += ms;
     }
   };
-}
-function record(id = 'session-1'): SessionRecord<{
-  user: string;
-}> {
-  return {
-    id,
-    data: { user: 'ada' },
-    createdAt: 1e3,
-    updatedAt: 1e3,
-    expiresAt: Number.MAX_SAFE_INTEGER
-  };
-}
-async function assertStoreContract(t: any, store: SessionStore<{
-  user: string;
-}>): Promise<void> {
-  const initial = record();
-  t.equal(await store.load(initial.id), null, 'missing session returns null');
-  const created = await store.save(initial, { ifRevision: null });
-  t.ok(created !== null, 'create-only save creates a missing session');
-  t.deepEqual(created!.record, initial);
-  t.equal(await store.save(initial, { ifRevision: null }), null, 'create-only save rejects an existing session');
-  const changed = {
-    ...initial,
-    data: { user: 'grace' },
-    updatedAt: 1100
-  };
-  const updated = await store.save(changed, { ifRevision: created!.revision });
-  t.ok(updated !== null, 'matching revision updates the session');
-  t.notEqual(updated!.revision, created!.revision, 'session revision advances');
-  t.equal(await store.save(initial, { ifRevision: created!.revision }), null, 'stale revision rejects');
-  t.deepEqual((await store.load(initial.id))!.record.data, { user: 'grace' });
-  await store.delete(initial.id);
-  t.equal(await store.load(initial.id), null, 'delete removes the session');
-  t.equal(await store.save(initial, { ifRevision: updated!.revision }), null, 'stale save cannot resurrect a deleted session');
 }
 const primaryKey: SessionKey = {
   id: 'primary',
@@ -59,7 +24,7 @@ function cookiePair(response: Response, name = 'fino.sid'): string {
   if (header === undefined) throw new Error(`missing ${name} Set-Cookie header`);
   return header.split(';')[0]!;
 }
-function makeApp(store: SessionStore<Record<string, unknown>>, options: {
+function makeApp(store: RevisionedCache, options: {
   keys?: readonly [SessionKey, ...SessionKey[]];
   clock?: {
     now(): number;
@@ -97,58 +62,46 @@ function makeApp(store: SessionStore<Record<string, unknown>>, options: {
   });
   return app;
 }
-describe('fino:security/session stores', () => {
-  it('memory store satisfies the revisioned contract', async (t) => {
-    await assertStoreContract(t, memorySessionStore());
-  });
-  it('cache adapter satisfies the revisioned contract', async (t) => {
-    await assertStoreContract(t, cacheSessionStore(memoryCache()));
-  });
-  it('sqlite store satisfies the revisioned contract and survives reopen', async (t) => {
+describe('fino:net/http/app session cache integration', () => {
+  it('accepts a caller-owned SQLite cache and survives reopen', async (t) => {
     const path = `/tmp/fino-session-test-${Math.floor(Math.random() * 1e9)}.db`;
     const fs = new DiskFileSystem();
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await sqliteSessionStore({
+    const store = await sqliteCache({
       path,
+      namespace: 'sessions',
       fs
     });
     try {
-      await assertStoreContract(t, store);
-      const saved = await store.save(record('persistent'), { ifRevision: null });
-      t.ok(saved !== null);
-    } finally {
+      const app = makeApp(store);
+      const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
+      const pair = cookiePair(login);
       await store.close();
-    }
-    const reopened = await sqliteSessionStore({
-      path,
-      fs
-    });
-    try {
-      t.deepEqual((await reopened.load('persistent'))!.record.data, { user: 'ada' });
+      const reopened = await sqliteCache({
+        path,
+        namespace: 'sessions',
+        fs
+      });
+      try {
+        const restored = await makeApp(reopened).handle(new Request('https://example.test/me', { headers: { cookie: pair } }));
+        t.equal((await restored.json() as {
+          user: string;
+        }).user, 'ada');
+      } finally {
+        await reopened.close();
+      }
     } finally {
-      await reopened.close();
       try {
         await fs.unlink(path);
       } catch {}
     }
   });
-  it('stores discard expired records using an injected clock', async (t) => {
-    const time = fakeClock();
-    const store = memorySessionStore({ clock: time.clock });
-    const created = await store.save({
-      ...record(),
-      expiresAt: 2e3
-    }, { ifRevision: null });
-    t.ok(created !== null);
-    time.advance(1001);
-    t.equal(await store.load('session-1'), null);
-  });
 });
-describe('fino:security/session HTTP middleware', () => {
+describe('fino:net/http/app session middleware', () => {
   it('seals the session id and persists login data with secure cookie defaults', async (t) => {
-    const store = memorySessionStore<Record<string, unknown>>();
+    const store = memoryCache({ namespace: 'sessions' });
     const app = makeApp(store);
     const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
     const body = await login.json() as {
@@ -170,7 +123,7 @@ describe('fino:security/session HTTP middleware', () => {
     t.equal(me.headers.getSetCookie().length, 0, 'fixed unmodified session does not rewrite storage or cookie');
   });
   it('rejects tampered cookies and replaces them with a fresh session', async (t) => {
-    const app = makeApp(memorySessionStore());
+    const app = makeApp(memoryCache({ namespace: 'sessions' }));
     const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
     const original = await login.clone().json() as {
       id: string;
@@ -187,7 +140,7 @@ describe('fino:security/session HTTP middleware', () => {
     t.ok(me.headers.getSetCookie().some((value) => value.startsWith('fino.sid=')));
   });
   it('accepts an old sealing key and reissues with the primary key', async (t) => {
-    const store = memorySessionStore<Record<string, unknown>>();
+    const store = memoryCache({ namespace: 'sessions' });
     const oldApp = makeApp(store, { keys: [oldKey] });
     const login = await oldApp.handle(new Request('https://example.test/login', { method: 'POST' }));
     const original = await login.clone().json() as {
@@ -205,7 +158,10 @@ describe('fino:security/session HTTP middleware', () => {
   });
   it('supports fixed and rolling expiry', async (t) => {
     const time = fakeClock();
-    const fixedStore = memorySessionStore<Record<string, unknown>>({ clock: time.clock });
+    const fixedStore = memoryCache({
+      namespace: 'fixed-sessions',
+      clock: time.clock
+    });
     const fixedApp = makeApp(fixedStore, { clock: time.clock });
     const fixedLogin = await fixedApp.handle(new Request('https://example.test/login', { method: 'POST' }));
     const fixedBody = await fixedLogin.clone().json() as {
@@ -216,7 +172,10 @@ describe('fino:security/session HTTP middleware', () => {
     t.equal((await fixedMe.json() as {
       expiresAt: number;
     }).expiresAt, fixedBody.expiresAt);
-    const rollingStore = memorySessionStore<Record<string, unknown>>({ clock: time.clock });
+    const rollingStore = memoryCache({
+      namespace: 'rolling-sessions',
+      clock: time.clock
+    });
     const rollingApp = makeApp(rollingStore, {
       clock: time.clock,
       rolling: true
@@ -232,8 +191,30 @@ describe('fino:security/session HTTP middleware', () => {
     }).expiresAt > rollingBody.expiresAt);
     t.ok(rollingMe.headers.getSetCookie().length > 0, 'rolling session refreshes its cookie');
   });
+  it('replaces an expired session with a fresh anonymous session', async (t) => {
+    const time = fakeClock();
+    const store = memoryCache({
+      namespace: 'sessions',
+      clock: time.clock
+    });
+    const app = makeApp(store, { clock: time.clock });
+    const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
+    const authenticated = await login.clone().json() as {
+      id: string;
+    };
+    const pair = cookiePair(login);
+    time.advance(1001);
+    const me = await app.handle(new Request('https://example.test/me', { headers: { cookie: pair } }));
+    const fresh = await me.json() as {
+      id: string;
+      user: null;
+    };
+    t.notEqual(fresh.id, authenticated.id);
+    t.equal(fresh.user, null);
+    t.ok(me.headers.getSetCookie().some((value) => value.startsWith('fino.sid=')));
+  });
   it('invalidates the stored session and expires the browser cookie', async (t) => {
-    const app = makeApp(memorySessionStore());
+    const app = makeApp(memoryCache({ namespace: 'sessions' }));
     const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
     const original = await login.clone().json() as {
       id: string;
@@ -254,7 +235,7 @@ describe('fino:security/session HTTP middleware', () => {
     t.equal(fresh.user, null);
   });
   it('regenerates a loaded id after login and makes the old cookie unusable', async (t) => {
-    const app = makeApp(memorySessionStore());
+    const app = makeApp(memoryCache({ namespace: 'sessions' }));
     const anonymous = await app.handle(new Request('https://example.test/me'));
     const anonymousBody = await anonymous.clone().json() as {
       id: string;
@@ -278,7 +259,7 @@ describe('fino:security/session HTTP middleware', () => {
     t.equal(staleBody.user, null);
   });
   it('raises SessionConflictError instead of overwriting a concurrent mutation', async (t) => {
-    const store = memorySessionStore<Record<string, unknown>>();
+    const store = memoryCache({ namespace: 'sessions' });
     const setup = makeApp(store);
     const login = await setup.handle(new Request('https://example.test/login', { method: 'POST' }));
     const pair = cookiePair(login);

@@ -43,12 +43,17 @@ import 'fino:net/http/eventsource';
 import 'fino:net/http/websocket';
 import 'fino:net/http/webtransport';
 import 'fino:ai/cache';
-import 'fino:security/session';
 import { DiskFileSystem } from 'fino:file';
 const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 describe('builtin module layout', () => {
   it('exposes the pre-release public module grouping', async (t) => {
     t.ok(true, 'new public builtin grouping resolves');
+  });
+  it('exposes sessions only through the HTTP app surface', async (t) => {
+    await t.rejects(() => import('fino:security/session'), /dynamic import failed|Cannot find module|not found|unknown/i);
+    const app = await import('fino:net/http/app');
+    t.equal(typeof app.sessions, 'function');
+    t.equal(typeof app.SessionConflictError, 'function');
   });
   it('keeps HTTP protocol drivers out of the public builtin API', async (t) => {
     await t.rejects(() => import('fino:net/http/h1'), /dynamic import failed|Cannot find module|not found|unknown/i);
@@ -75,6 +80,7 @@ describe('builtin module layout', () => {
       'Router',
       'RouterBase',
       'RouterBranch',
+      'SessionConflictError',
       'WebSocket',
       'WebSocketConnection',
       'WebSocketError',
@@ -85,7 +91,6 @@ describe('builtin module layout', () => {
       'defineMiddleware',
       'defineProducer',
       'errorHandler',
-      'memorySessionStore',
       'parseRequest',
       'parseResponse',
       'schema',

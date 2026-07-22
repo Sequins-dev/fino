@@ -3,8 +3,7 @@
 *
 * The module includes cryptographic random bytes and tokens, security and CORS
 * header builders, signed or sealed cookies, PBKDF2 password records, JWK/JWKS
-* utilities, compact JWT/JWE helpers, signed opaque JSON tokens, and
-* revision-safe server sessions with sealed browser identifiers.
+* utilities, compact JWT/JWE helpers, and signed opaque JSON tokens.
 *
 * Learn more:
 * - Fetch CORS protocol: https://fetch.spec.whatwg.org/#http-cors-protocol
@@ -27,4 +26,3 @@ export * from './password.ts';
 export * from './jwk.ts';
 export * from './jwt.ts';
 export * from './oauth.ts';
-export * from './session.ts';

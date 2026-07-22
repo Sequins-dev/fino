@@ -2,7 +2,8 @@
 * Tests for fino:net/http/app — middleware, routing, context, and OpenAPI.
 */
 import { describe, it } from 'fino:test/test';
-import { App, BuilderBranch, Router, RouteBuilder, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
+import { memoryCache } from 'fino:cache';
+import { App, BuilderBranch, Router, RouteBuilder, body, cookies, defineMiddleware, defineProducer, errorHandler, schema, sessions } from 'fino:net/http/app';
 import { WebSocketConnection, MessageEvent } from 'fino:net/http/websocket';
 import { WebTransport } from 'fino:net/http/webtransport';
 import { parseEventStream } from 'fino:net/http/eventstream';
@@ -315,7 +316,9 @@ describe('HTTP app built-ins', () => {
   it('parses body, mutates cookies, and persists memory sessions', async (t) => {
     const app = new App();
     const stateful = app.value('cookies', cookies()).value('session', sessions({
-      store: memorySessionStore(),
+      store: memoryCache({ namespace: 'sessions' }),
+      keys: [{ id: 'test', secret: 'http-app-session-test-secret' }],
+      ttlMs: 60_000,
       cookie: 'sid'
     }));
     stateful.post('/login').value('body', body.json(v.object({ user: v.string() }))).handle((ctx) => {

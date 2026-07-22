@@ -11,7 +11,7 @@ The subsystem has several focused surfaces that cover different concerns. Pick b
 
 **Starting an HTTP server** — use `fino:net/http/server`. It provides `serveHttp()` (simple request/response handler), `serve()` (accept-based handler that also handles WebSocket and WebTransport upgrades), and server lifecycle management. See the [server guide](./http/serving.md).
 
-**Routing and middleware** — use `fino:net/http/app`. It provides `App`, `Router`, Koa-style middleware, URLPattern route builders, body and schema helpers, OpenAPI generation, cookie producers, and a `listen()` shortcut that wires the app into `serve()`. Production server-session middleware and stores live in `fino:security/session`; the app module retains its original unsealed helpers for compatibility. See the [routing guide](./http/routing.md).
+**Routing and middleware** — use `fino:net/http/app`. It provides `App`, `Router`, Koa-style middleware, URLPattern route builders, body and schema helpers, OpenAPI generation, cookie and revision-safe session producers, and a `listen()` shortcut that wires the app into `serve()`. See the [routing guide](./http/routing.md).
 
 **Making outbound HTTP requests** — either use the global `fetch()` for one-shot requests, or `HttpClient` from `fino:net/http/client` for reusable policy, protocol control, rich response metadata, persistent logical sessions, and built-in SSE and WebSocket helpers. See the [client guide](./http/http-client.md).
 

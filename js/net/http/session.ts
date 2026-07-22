@@ -1,16 +1,12 @@
 /**
-* fino:security/session — revision-safe server sessions for HTTP applications.
+* internal:net/http/session — revision-safe HTTP app session implementation.
 *
-* Session middleware, records, and stores live in this security-owned module
-* so application code can use the same lifecycle with memory, SQLite, cache,
-* and future distributed KV backends. Stores expose opaque revisions and
-* conditional saves: a request may replace only the record it loaded, so a
-* stale response cannot silently overwrite a newer login or recreate a session
-* after logout. Backends may implement that guarantee with a transaction,
-* compare-and-set primitive, or a brief internal key lock; locks are never held
-* while application handlers run.
+* The public API is exported only by `fino:net/http/app`. Callers supply a
+* revision-capable `fino:cache` backend directly; session lifecycle code owns
+* record validation, TTL translation, sealed identifiers, and conditional
+* writes.
 *
-* Session data is JSON-serialized by the built-in stores. It is suitable for
+* Session data is JSON-serialized by the supplied cache. It is suitable for
 * authentication identity and small request-scoped metadata, not as a
 * transactional application database. A distributed adapter must provide
 * atomic per-key conditional writes and read-after-write behavior to preserve
@@ -18,20 +14,17 @@
 * replication alone is insufficient for immediate global logout.
 *
 * ```ts no_run
-* import { memorySessionStore } from 'fino:security/session';
+* import { memoryCache } from 'fino:cache';
+* import { sessions } from 'fino:net/http/app';
 *
-* const store = memorySessionStore();
-* const saved = await store.save({
-*   id: crypto.randomUUID(),
-*   data: { userId: 'user-123' },
-*   createdAt: Date.now(),
-*   updatedAt: Date.now(),
-*   expiresAt: Date.now() + 3_600_000,
-* }, { ifRevision: null });
+* const middleware = sessions({
+*   store: memoryCache({ namespace: 'sessions' }),
+*   keys: [{ id: 'primary', secret: process.env.SESSION_SECRET! }],
+*   ttlMs: 3_600_000,
+* });
 * ```
 */
-import { memoryCache, sqliteCache, type CacheClock, type RevisionedCache, type SqliteCache } from 'fino:cache';
-import type { FileSystem } from 'internal:file/provider';
+import type { CacheEntry, RevisionedCache } from 'fino:cache';
 import { CookieJar, sealCookie, unsealCookie, type BufferLike, type CookieOptions } from 'fino:security/cookie';
 import { v4 as uuidv4 } from 'fino:uuid';
 import type { HttpContext, Producer } from 'fino:net/http/app';
@@ -53,79 +46,7 @@ export interface SessionRecord<T = Record<string, unknown>> {
   /** Absolute Unix timestamp in milliseconds after which the record is invalid. */
   expiresAt: number;
 }
-/** A loaded or saved session paired with its backend's opaque revision. */
-export interface SessionSnapshot<T = Record<string, unknown>> {
-  /** Session record visible to the middleware. */
-  record: SessionRecord<T>;
-  /** Opaque token required by the next conditional save. */
-  revision: string;
-}
-/** Options for a revision-conditional session save. */
-export interface SessionSaveOptions {
-  /** Current revision, or `null` to create only when the ID is absent. */
-  ifRevision: string | null;
-}
-/**
-* Backend contract used by server-session middleware.
-*
-* `save()` must atomically compare `ifRevision` and write the replacement.
-* It returns `null` on a missing or stale revision without changing the current
-* record. `delete()` is unconditional so logout wins over any record currently
-* stored; in-flight requests still carry an old revision and cannot recreate it.
-*/
-export interface SessionStore<T = Record<string, unknown>> {
-  /** Load a live session and its revision, or `null` when missing or expired. */
-  load(id: string): Promise<SessionSnapshot<T> | null>;
-  /** Conditionally create or replace a session record. */
-  save(record: SessionRecord<T>, options: SessionSaveOptions): Promise<SessionSnapshot<T> | null>;
-  /** Unconditionally remove a session ID. Missing sessions are ignored. */
-  delete(id: string): Promise<void>;
-}
-/** Options for adapting a revision-capable cache into a session store. */
-export interface CacheSessionStoreOptions {
-  /** Clock used to translate absolute session expiry into cache TTL. */
-  clock?: SessionClock;
-}
 const defaultClock: SessionClock = { now: () => Date.now() };
-class CacheBackedSessionStore<T> implements SessionStore<T> {
-  readonly cache: RevisionedCache;
-  readonly clock: SessionClock;
-  constructor(cache: RevisionedCache, clock: SessionClock) {
-    this.cache = cache;
-    this.clock = clock;
-  }
-  async load(id: string): Promise<SessionSnapshot<T> | null> {
-    const entry = await this.cache.getEntry<SessionRecord<T>>(id);
-    if (entry === null) return null;
-    if (entry.value.expiresAt <= this.clock.now()) {
-      await this.cache.delete(id);
-      return null;
-    }
-    return {
-      record: entry.value,
-      revision: entry.revision
-    };
-  }
-  async save(record: SessionRecord<T>, options: SessionSaveOptions): Promise<SessionSnapshot<T> | null> {
-    assertRecord(record);
-    const ttlMs = record.expiresAt - this.clock.now();
-    if (ttlMs <= 0) {
-      await this.cache.delete(record.id);
-      return null;
-    }
-    const entry = await this.cache.compareAndSet(record.id, record, {
-      ifRevision: options.ifRevision,
-      ttlMs
-    });
-    return entry === null ? null : {
-      record: entry.value,
-      revision: entry.revision
-    };
-  }
-  delete(id: string): Promise<void> {
-    return this.cache.delete(id);
-  }
-}
 function assertRecord(record: SessionRecord<unknown>): void {
   if (record.id.length === 0) throw new TypeError('session id must not be empty');
   for (const [name, value] of [
@@ -135,71 +56,6 @@ function assertRecord(record: SessionRecord<unknown>): void {
   ] as const) {
     if (!Number.isFinite(value)) throw new TypeError(`session ${name} must be finite`);
   }
-}
-/**
-* Adapt a `RevisionedCache` to the session-store contract.
-*
-* The supplied cache remains caller-owned. Its namespace is used unchanged,
-* allowing applications to isolate session records before creating the adapter.
-*/
-export function cacheSessionStore<T = Record<string, unknown>>(cache: RevisionedCache, options: CacheSessionStoreOptions = {}): SessionStore<T> {
-  return new CacheBackedSessionStore<T>(cache, options.clock ?? defaultClock);
-}
-/** Options for `memorySessionStore()`. */
-export interface MemorySessionStoreOptions extends CacheSessionStoreOptions {
-  /** Maximum sessions retained across namespaces. Defaults to unlimited. */
-  maxEntries?: number;
-  /** Cache namespace used for records. Defaults to `"sessions"`. */
-  namespace?: string;
-}
-/** Create a process-local revision-safe session store for tests and local apps. */
-export function memorySessionStore<T = Record<string, unknown>>(options: MemorySessionStoreOptions = {}): SessionStore<T> {
-  const clock = options.clock ?? defaultClock;
-  return cacheSessionStore<T>(memoryCache({
-    maxEntries: options.maxEntries,
-    namespace: options.namespace ?? 'sessions',
-    clock: clock as CacheClock
-  }), { clock });
-}
-/** Options for opening a SQLite-backed session store. */
-export interface SqliteSessionStoreOptions extends CacheSessionStoreOptions {
-  /** SQLite database path or URI. */
-  path: string;
-  /** Cache namespace used for records. Defaults to `"sessions"`. */
-  namespace?: string;
-  /** Optional filesystem provider used by SQLite. */
-  fs?: FileSystem;
-}
-/** SQLite-backed session store that owns its database connection. */
-export interface SqliteSessionStore<T = Record<string, unknown>> extends SessionStore<T> {
-  /** Close the underlying SQLite cache connection. */
-  close(): Promise<void>;
-}
-class OwnedSqliteSessionStore<T> extends CacheBackedSessionStore<T> implements SqliteSessionStore<T> {
-  readonly #sqlite: SqliteCache;
-  constructor(cache: SqliteCache, clock: SessionClock) {
-    super(cache, clock);
-    this.#sqlite = cache;
-  }
-  close(): Promise<void> {
-    return this.#sqlite.close();
-  }
-}
-/**
-* Open a durable revision-safe session store over SQLite.
-*
-* Call `close()` when the owning application shuts down. Reopening the same
-* path and namespace restores all records that have not expired.
-*/
-export async function sqliteSessionStore<T = Record<string, unknown>>(options: SqliteSessionStoreOptions): Promise<SqliteSessionStore<T>> {
-  const clock = options.clock ?? defaultClock;
-  const cache = await sqliteCache({
-    path: options.path,
-    namespace: options.namespace ?? 'sessions',
-    clock: clock as CacheClock,
-    fs: options.fs
-  });
-  return new OwnedSqliteSessionStore<T>(cache, clock);
 }
 /** One cookie-sealing key accepted by server-session middleware. */
 export interface SessionKey {
@@ -224,8 +80,8 @@ export interface Session<T = Record<string, unknown>> extends SessionRecord<T> {
 }
 /** Options for the secure HTTP session producer. */
 export interface SessionOptions<T = Record<string, unknown>> {
-  /** Revision-safe backend used for session records. */
-  store: SessionStore<T>;
+  /** Caller-owned revision-capable cache used for session records. */
+  store: RevisionedCache;
   /** Sealing keys ordered primary-first; old keys remain readable for rotation. */
   keys: readonly [SessionKey, ...SessionKey[]];
   /** Session lifetime in milliseconds. Must be finite and greater than zero. */
@@ -324,12 +180,12 @@ function deleteCookieOptions(options: SessionOptions<unknown>): CookieOptions {
 * are not stored automatically.
 *
 * ```ts no_run
-* import { App, cookies } from 'fino:net/http/app';
-* import { memorySessionStore, sessions } from 'fino:security/session';
+* import { memoryCache } from 'fino:cache';
+* import { App, cookies, sessions } from 'fino:net/http/app';
 *
 * const app = new App();
 * const authenticated = app.value('cookies', cookies()).value('session', sessions({
-*   store: memorySessionStore(),
+*   store: memoryCache({ namespace: 'sessions' }),
 *   keys: [{ id: '2026-07', secret: process.env.SESSION_SECRET! }],
 *   ttlMs: 24 * 60 * 60_000,
 * }));
@@ -346,13 +202,13 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
     if (!(ctx.cookies instanceof CookieJar)) ctx.cookies = jar;
     const opened = jar.get(cookie);
     const decoded = opened === undefined ? null : unsealSessionId(opened, options.keys);
-    let snapshot = decoded === null ? null : await options.store.load(decoded.id);
+    let snapshot = decoded === null ? null : await options.store.getEntry<SessionRecord<T>>(decoded.id);
     const now = clock.now();
-    if (snapshot !== null && snapshot.record.expiresAt <= now) {
-      await options.store.delete(snapshot.record.id);
+    if (snapshot !== null && snapshot.value.expiresAt <= now) {
+      await options.store.delete(snapshot.value.id);
       snapshot = null;
     }
-    const initialRecord: SessionRecord<T> = snapshot?.record ?? {
+    const initialRecord: SessionRecord<T> = snapshot?.value ?? {
       id: uuidv4().toString(),
       data: {} as T,
       createdAt: now,
@@ -396,21 +252,31 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
       if (options.rolling === true) session.expiresAt = finishNow + options.ttlMs;
       if (regenerated) await options.store.delete(originalId);
       const shouldSave = session.isNew || dirty || options.rolling === true;
-      let saved: SessionSnapshot<T> | null = snapshot;
+      let saved: CacheEntry<SessionRecord<T>> | null = snapshot;
       if (shouldSave) {
         const expected = session.isNew ? null : snapshot!.revision;
-        saved = await options.store.save({
+        const record: SessionRecord<T> = {
           id: session.id,
           data: session.data,
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
           expiresAt: session.expiresAt
-        }, { ifRevision: expected });
+        };
+        assertRecord(record);
+        const ttlMs = record.expiresAt - finishNow;
+        saved = ttlMs <= 0 ? null : await options.store.compareAndSet(record.id, record, {
+          ifRevision: expected,
+          ttlMs
+        });
         if (saved === null && !dirty && !session.isNew && options.rolling === true) {
-          const latest = await options.store.load(session.id);
+          const latest = await options.store.getEntry<SessionRecord<T>>(session.id);
           if (latest !== null) {
-            latest.record.expiresAt = finishNow + options.ttlMs;
-            saved = await options.store.save(latest.record, { ifRevision: latest.revision });
+            latest.value.expiresAt = finishNow + options.ttlMs;
+            assertRecord(latest.value);
+            saved = await options.store.compareAndSet(session.id, latest.value, {
+              ifRevision: latest.revision,
+              ttlMs: options.ttlMs
+            });
           }
         }
         if (saved === null) {

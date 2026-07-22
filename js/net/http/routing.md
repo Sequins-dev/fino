@@ -171,13 +171,13 @@ app.route('/messages')
 
 ## Cookies and sessions
 
-`cookies()` parses the request `Cookie` header into a mutable `CookieJar` and applies queued `Set-Cookie` headers to the response automatically. Production server sessions live in `fino:security/session`:
+`cookies()` parses the request `Cookie` header into a mutable `CookieJar` and applies queued `Set-Cookie` headers to the response automatically. `sessions()` is the single server-session API and accepts a caller-owned revision-capable cache directly:
 
 ```ts
-import { App, cookies } from 'fino:net/http/app';
-import { sessions, sqliteSessionStore } from 'fino:security/session';
+import { sqliteCache } from 'fino:cache';
+import { App, cookies, sessions } from 'fino:net/http/app';
 
-const store = await sqliteSessionStore({ path: './sessions.db' });
+const store = await sqliteCache({ path: './sessions.db', namespace: 'sessions' });
 
 const stateful = app.value('cookies', cookies())
   .value('session', sessions({
@@ -194,7 +194,7 @@ stateful.get('/me').handle((ctx) => {
 });
 ```
 
-Use `memorySessionStore()` from `fino:security/session` for tests and local applications. SQLite provides durable single-node records; `cacheSessionStore()` adapts any revision-capable cache. Distributed stores must preserve atomic revision-conditional writes and read-after-write behavior so logout and regeneration cannot be undone by stale requests. The unsealed session helpers still exported by `fino:net/http/app` remain only for compatibility.
+Use `memoryCache({ namespace: 'sessions' })` for tests and local applications. SQLite provides durable single-node records and remains caller-owned, so close it during application shutdown. Any future distributed cache supplied here must preserve atomic revision-conditional writes and read-after-write behavior so logout and regeneration cannot be undone by stale requests; eventual consistency alone is insufficient.
 
 ## Error handling middleware
 

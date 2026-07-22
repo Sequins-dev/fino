@@ -2,7 +2,7 @@
 
 > Status: remaining-roadmap snapshot. This note intentionally removes items
 > that have already landed (`fino:jobs`, `fino:storage`,
-> `fino:security/oauth`, `fino:security/session`, `fino:email`, the `fino:signals` read model,
+> `fino:security/oauth`, HTTP app sessions, `fino:email`, the `fino:signals` read model,
 > Postgres, general caching, AI response caching, and the first
 > server-driven web UI pass) and focuses on the application batteries still
 > missing for the all-in-one agent-app goal.
@@ -25,9 +25,9 @@ The runtime now has a credible AI and local-app substrate:
   deterministic clocks, tag invalidation, and HTTP response-cache middleware.
 - Auth primitives: JWT/JWS/JWE, JWK/JWKS, sealed cookies, password hashing,
   plus OAuth/OIDC client helpers in `fino:security/oauth`.
-- Server sessions: sealed identifier cookies with key rotation, fixed or
-  rolling expiry, explicit regeneration/invalidation, revision-safe memory,
-  SQLite, and cache-backed stores, and HTTP app middleware.
+- Server sessions: `fino:net/http/app` middleware with sealed identifier
+  cookies, key rotation, fixed or rolling expiry, explicit
+  regeneration/invalidation, and caller-owned revision-capable caches.
 - HTTP app surface: route builders, shared builder branches, middleware and
   layer composition, cookies, in-app session primitives, OpenAPI metadata, and
   response/error helpers.
@@ -132,5 +132,5 @@ or realm, not scattered as process-global ambient state.
 
 The organizing principle stays the same: every surface is a module, and the
 module graph remains the capability graph. What a tenant can import is what it
-can do, whether that is a session store, model, UI channel, webhook sender, or
+can do, whether that is a session cache, model, UI channel, webhook sender, or
 secret.

@@ -198,9 +198,9 @@ answer survives a process kill, which LiveView and Hotwire cannot say.
 ## 6. Snapshot mechanics (L2)
 
 The store contract mirrors `WorkflowStore` (`js/workflow.ts:113`) rather
-than reusing the App `SessionStore`: a session is per-browser identity
-with cookie custody; a snapshot is per-*view-instance* with page custody,
-versioning, and TTL. Conflating them breaks multi-tab.
+than reusing the HTTP app's revisioned session cache: a session is per-browser
+identity with cookie custody; a snapshot is per-*view-instance* with page
+custody, versioning, and TTL. Conflating them breaks multi-tab.
 
 ```ts
 interface ViewSnapshot {
