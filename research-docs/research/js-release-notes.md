@@ -7,7 +7,7 @@ or an explicit `not yet benchmarked` marker.
 
 Intentional non-parity areas remain documented for release review: JOSE, CORS,
 cookie handling, Fetch behavior, OpenTelemetry integration, cluster APIs,
-distributed realm scheduling, DNSSEC, HTTP/3, and QUIC.
+remote realms, DNSSEC, HTTP/3, and QUIC.
 
 ## DNSSEC Release Verification
 

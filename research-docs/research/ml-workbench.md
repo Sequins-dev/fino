@@ -21,8 +21,8 @@ Jupyter's MIME-bundle convention, adopted verbatim — anything showable
 (DataFrame, Tensor, chart, tracked run) implements
 `[Symbol.for('fino.display')]() → { 'text/html': ..., 'text/plain': ... }`.
 Then a **native notebook** (`fino notebook`): HTTP server + `fino:ui` JSX
-frontend; cells execute in a persistent ordinary `Realm` driven by the existing
-V8 inspector infrastructure (restart = replace realm; capability narrowing per
+frontend; cells execute in a persistent thread realm driven by the existing
+V8 inspector infrastructure (restart = kill realm; capability narrowing per
 notebook — something Jupyter cannot do). The file format is **plain
 TypeScript with `// %%` cell markers** — git-diffable, runnable as a
 script, type-checked — with `.ipynb` import/export. A real Jupyter kernel
@@ -56,11 +56,11 @@ stores and displays what it produces.
 Fino gets an Optuna-class tool by composition rather than a new system. A
 sweep is a study over `fino:workflow`-backed trials: each trial is a durable
 run — kill/resume works mid-sweep — executed in parallel over
-`RealmDeployment`, recording into the same tracking store, so the dashboard
-shows sweeps with no extra plumbing. Samplers start with random search plus TPE;
-ASHA/successive-halving early stopping reads the loss curves already in the
-metric store. Search spaces are plain seeded-deterministic objects, and a study
-exposes `state()`/`restore()` like everything else stateful.
+`fino:realm/pool`, recording into the same tracking store, so the dashboard
+shows sweeps with no extra plumbing. Samplers start with random search plus
+TPE; ASHA/successive-halving early stopping reads the loss curves already in
+the metric store. Search spaces are plain seeded-deterministic objects, and a
+study exposes `state()`/`restore()` like everything else stateful.
 
 ## 5. Sequencing
 
