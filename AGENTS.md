@@ -31,11 +31,11 @@ at about 72 characters. The body should explain what changed and why, not repeat
 the diff. PRs should include a short summary, affected areas, test coverage, and
 benchmark or profiling notes for performance-sensitive changes.
 
-Before every commit, format all modified source files with the repository
-formatters and verify the corresponding format checks pass. Run `cargo fmt` for
-Rust changes and `fino fmt` on every changed JavaScript and TypeScript path; do
-not rely on focused tests to catch formatting drift. Review changed Markdown
-separately because `fino fmt` does not process it.
+Before every commit, run `cargo fmt` for Rust changes and verify
+`cargo fmt --check` passes. Review JavaScript, TypeScript, and Markdown changes
+manually. Do not run `fino fmt` across repository source or use it as a CI gate
+until Fino can embed the Oxc formatter; the current Oxc code generator is not a
+source-preserving formatter.
 
 When adding a public `fino:*` builtin or changing which builtins are registered
 in `src/loader.rs`, update `benchmarks/COVERAGE.md` in the same change so every

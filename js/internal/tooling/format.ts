@@ -2,7 +2,7 @@
 * internal:tooling/format — shared implementation for `fino fmt`.
 *
 * This module owns the whole formatting workflow behind the `fmt` command:
- * source discovery, native source formatter invocation, check-mode comparison,
+ * source discovery, native OXC formatter invocation, check-mode comparison,
 * write-back, parse diagnostic reporting, and the aggregate success/failure
 * messages. The public `fino:commands/fmt` task is a thin CLI shell over the
 * single entry point exported here, so any tool that wants to format Fino

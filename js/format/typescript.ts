@@ -1,12 +1,11 @@
 /**
-* fino:format/typescript - TypeScript and JavaScript source tooling.
+* fino:format/typescript - OXC-backed TypeScript and JavaScript tooling.
 *
-* This module exposes the runtime's OXC parser, transformer, and linter plus a
-* source-preserving formatter. Use it for tooling-oriented tasks such as
-* inspecting TypeScript/JavaScript source, collecting comments and tokens,
-* validating syntax, stripping TypeScript syntax before evaluation,
-* normalizing source style, or running the default lint rule set. It is not a
-* type checker.
+* This module exposes the runtime's OXC parser, transformer, formatter, and
+* linter to JavaScript. Use it for tooling-oriented tasks such as inspecting
+* TypeScript/JavaScript source, collecting comments and tokens, validating
+* syntax, stripping TypeScript syntax before evaluation, normalizing source
+* style, or running the default lint rule set. It is not a type checker.
 *
 * `parse()` returns OXC's serialized ESTree-compatible AST, comments, optional
 * tokens, diagnostics, and the detected source mode. The AST shape follows the
@@ -14,9 +13,8 @@
 * JavaScript code plus source map text and diagnostics for TypeScript/JSX
 * syntax lowering. TSX and JSX use the automatic `fino:ui` runtime unless a
 * file-level `@jsxImportSource` pragma selects another runtime. `format()`
-* rewrites source with stable, 100-column style defaults while preserving
-* comments and literal notation. `lint()` reports diagnostics from the
-* runtime's default rule set. For
+* rewrites source with stable style defaults, and
+* `lint()` reports diagnostics from the runtime's default rule set. For
 * serving browser-side TypeScript directly from a Fino HTTP app,
 * `transpileFiles()` provides transpile-on-request middleware.
 *

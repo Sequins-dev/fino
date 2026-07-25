@@ -613,7 +613,7 @@ describe('CLI commands', () => {
   });
   it('fmt writes only changed source files', async (t) => {
     await withTempProject({
-      'src/app.ts': 'const value = "hello";\nif (value) {\nconsole.log(value);\n}\n',
+      'src/app.ts': 'const value = "hello";\nif (value) { console.log(value); }\n',
       'target/generated.ts': 'const value = "ignored";\n'
     }, async (dir, fs) => {
       const { stdout, stderr, result } = await runCli(['fmt'], { cwd: dir });
