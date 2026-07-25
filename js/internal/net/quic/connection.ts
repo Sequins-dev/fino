@@ -6,7 +6,7 @@
 
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
-import * as loop from '../../runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { lib as fileLib, cstr as fileCstr, O_CREAT, O_TRUNC, O_WRONLY } from '../../file/bindings.ts';
 import { EAGAIN, decodeAddr } from '../../../net/socket.ts';
 import { randBytes } from '../../openssl.ts';
@@ -2354,7 +2354,7 @@ export class QuicConnection extends EventTarget {
     if (output.directory !== undefined && output.directory.length > 0) {
       fileLib.symbols.mkdir(fileCstr(output.directory), 493);
     }
-    const fd = Number(fileLib.symbols.open(fileCstr(output.path), O_WRONLY | O_CREAT | O_TRUNC, 420));
+    const fd = loop.openSync(output.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644);
     if (fd < 0) throw new Error(`qlog open failed: ${fd}`);
     fileLib.symbols.fchmod(fd, 420);
     this.#qlogOpened = true;

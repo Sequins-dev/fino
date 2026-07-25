@@ -42,8 +42,7 @@
 import { JobsStore, backoffDelayMs, type JobRecord, type JobRetryPolicy, type JobStatus, type QueueStats, type ScheduleRecord } from './store.ts';
 import { parseCron, nextOccurrence } from './cron.ts';
 import { collectTasks, dispatchJob, type JobsWireCall, type JobsWireResult } from './runner.ts';
-import { RealmPool } from '../../realm/pool.ts';
-import { Facade, type ImportRule, type RealmOptions } from '../../realm/index.ts';
+import { Facade, RealmDeployment, type ImportRule, type RealmDeploymentOptions } from '../../realm/index.ts';
 import type { Task } from '../../task.ts';
 import type { WorkflowState, WorkflowStore, WorkflowWait } from '../../workflow.ts';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.ts';
@@ -624,8 +623,7 @@ export class JobsService {
     return processor;
   }
   /**
-  * Register a pool processor backed by an exclusive `RealmPool` of worker
-  * realms.
+  * Register a processor backed by a locally scaled logical `Realm`.
   *
   * The `entry` module must default-export a `Task`; the pool is queried for
   * its task names on startup and rejects if the entry does not report them.
@@ -654,7 +652,7 @@ export class JobsService {
   async workers(opts: {
     entry: string;
     size?: number;
-    realm?: Omit<RealmOptions, 'entry' | 'thread'>;
+    realm?: Omit<RealmDeploymentOptions, 'entry' | 'scaling'>;
   }): Promise<JobProcessor> {
     const workflowStore = this.#workflowStore;
     const facade = new Facade('fino:jobs/checkpoints', ['save', 'load', 'list', 'remove'])
@@ -670,32 +668,29 @@ export class JobsService {
         directive: facade
       }
     ];
-    const pool = new RealmPool({
+    const size = opts.size ?? 1;
+    const deployment = new RealmDeployment({
       entry: opts.entry,
-      size: opts.size ?? 1,
-      exclusive: true,
-      timeout: 0,
-      realm: {
-        ...opts.realm ?? {},
-        overrides: rules
-      }
+      ...opts.realm ?? {},
+      overrides: rules,
+      scaling: { min: size, max: size }
     });
     let taskNames: string[];
     try {
-      taskNames = await pool.call({ kind: 'tasks' }) as string[];
+      taskNames = await deployment.call({ kind: 'tasks' }) as string[];
       if (!Array.isArray(taskNames) || taskNames.some((n) => typeof n !== 'string')) {
         throw new Error(`worker entry "${opts.entry}" did not report its task names — it must default-export a Task`);
       }
     } catch (err) {
-      await pool.close();
+      deployment.terminate();
       throw err;
     }
     const processor: JobProcessor = {
       kind: 'pool',
       taskNames,
-      capacity: pool.size,
-      run: (call) => pool.call(call) as Promise<JobsWireResult>,
-      close: () => pool.close()
+      capacity: size,
+      run: (call) => deployment.call(call) as Promise<JobsWireResult>,
+      close: () => { deployment.terminate(); }
     };
     this.#addProcessor(processor);
     return processor;

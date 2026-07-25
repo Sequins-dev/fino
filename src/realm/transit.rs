@@ -9,7 +9,7 @@
 //! The JS side:
 //! - Calls `createTransitChannel()` to get two handles + wake-read fds.
 //! - Upgrades the partner port (P2) with the P2-half handle.
-//! - Ships the Q-half info (`{ handle, wakeReadFd }`) in the `ThreadMessage`.
+//! - Ships the Q-half info (`{ handle, wakeReadFd }`) in the `RealmMessage`.
 //! - On the receiver, creates a new `MessagePort` in transit mode using the
 //!   Q-half handle and wake-read fd.
 //!
@@ -17,9 +17,10 @@
 //!
 //! Exports:
 //! - `createTransitChannel() → { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd }`
-//! - `transitSend(handle, bytes, stores) → void`
+//! - `transitSend(handle, bytes, stores, ports) → void`
 //! - `transitRecv(handle) → [[Uint8Array[], PortInfo[]], ...]`
 //!   where PortInfo = `[handle: number, wakeReadFd: number]` (a 2-element Array)
+//! - `transitClose(handle) → void` — drop the half (closes its pipe ends)
 
 use std::{
     collections::HashMap,
@@ -29,19 +30,59 @@ use std::{
 
 use ::v8;
 
-use crate::realm::thread::ThreadMessage;
+use crate::realm::message::RealmMessage;
 
 // ---------------------------------------------------------------------------
 // Global registry
 // ---------------------------------------------------------------------------
 
 pub struct TransitHalf {
-    pub tx: mpsc::Sender<ThreadMessage>,
-    pub rx: mpsc::Receiver<ThreadMessage>,
+    pub tx: mpsc::Sender<RealmMessage>,
+    pub rx: mpsc::Receiver<RealmMessage>,
     /// Own wake-pipe read end — the JS side watches this via `loop.readable()`.
     pub wake_read_fd: RawFd,
     /// Partner's wake-pipe write end — written after each send to unblock partner.
     pub partner_wake_write_fd: RawFd,
+}
+
+impl Drop for TransitHalf {
+    fn drop(&mut self) {
+        // Each half owns exactly two pipe ends: its own read end and the
+        // partner's write end. Closing them here (registry removal, realm
+        // teardown) is what lets the partner observe disconnection.
+        unsafe {
+            if self.wake_read_fd >= 0 {
+                libc::close(self.wake_read_fd);
+            }
+            if self.partner_wake_write_fd >= 0 {
+                libc::close(self.partner_wake_write_fd);
+            }
+        }
+    }
+}
+
+impl TransitHalf {
+    /// Split an unregistered bridge half between its reader and writer
+    /// threads. The returned descriptors retain the same ownership contract
+    /// as the half: the caller must close both exactly once.
+    pub fn into_bridge_parts(
+        self,
+    ) -> (
+        mpsc::Sender<RealmMessage>,
+        mpsc::Receiver<RealmMessage>,
+        RawFd,
+        RawFd,
+    ) {
+        let half = std::mem::ManuallyDrop::new(self);
+        unsafe {
+            (
+                std::ptr::read(&half.tx),
+                std::ptr::read(&half.rx),
+                half.wake_read_fd,
+                half.partner_wake_write_fd,
+            )
+        }
+    }
 }
 
 // SAFETY: TransitHalf contains mpsc Sender/Receiver which are Send, and RawFd
@@ -80,49 +121,67 @@ fn create_pipe() -> Result<(RawFd, RawFd), String> {
     Ok((fds[0], fds[1]))
 }
 
-/// Create a symmetric transit channel pair.  Returns `(p2_handle, q_handle)`.
+/// Create a symmetric channel: two unregistered halves.
 ///
-/// P2 half:
-/// - tx → sends to Q   (P2 → Q direction)
-/// - rx ← receives from Q (Q → P2 direction)
-/// - wake_read_fd: P2 watches this (Q writes here after sending)
-/// - partner_wake_write_fd: P2 writes here after sending (wakes Q)
+/// Half A:
+/// - tx → sends to B   (A → B direction)
+/// - rx ← receives from B (B → A direction)
+/// - wake_read_fd: A watches this (B writes here after sending)
+/// - partner_wake_write_fd: A writes here after sending (wakes B)
 ///
-/// Q half is symmetric.
-pub fn create_transit_pair() -> Result<(u32, u32, RawFd, RawFd), String> {
-    let (p2_to_q_tx, p2_to_q_rx) = mpsc::channel::<ThreadMessage>();
-    let (q_to_p2_tx, q_to_p2_rx) = mpsc::channel::<ThreadMessage>();
+/// Half B is symmetric. This is THE realm channel primitive: realm ports
+/// (whatever the child's placement), transferred MessagePorts, and bridge
+/// endpoints are all halves of such a pair — register a half to make it
+/// addressable from JS, or hold it directly (e.g. a process realm's socket
+/// bridge threads).
+pub fn create_halves() -> Result<(TransitHalf, TransitHalf), String> {
+    let (a_to_b_tx, a_to_b_rx) = mpsc::channel::<RealmMessage>();
+    let (b_to_a_tx, b_to_a_rx) = mpsc::channel::<RealmMessage>();
 
-    // Pipe A: P2 writes here to wake Q; Q reads here.
-    let (q_wake_read, p2_wake_write) = create_pipe()?;
-    // Pipe B: Q writes here to wake P2; P2 reads here.
-    let (p2_wake_read, q_wake_write) = create_pipe()?;
+    // Pipe A: A writes here to wake B; B reads here.
+    let (b_wake_read, a_wake_write) = create_pipe()?;
+    // Pipe B: B writes here to wake A; A reads here.
+    let (a_wake_read, b_wake_write) = create_pipe()?;
 
-    let p2_half = TransitHalf {
-        tx: p2_to_q_tx,
-        rx: q_to_p2_rx,
-        wake_read_fd: p2_wake_read,
-        partner_wake_write_fd: p2_wake_write,
+    let a = TransitHalf {
+        tx: a_to_b_tx,
+        rx: b_to_a_rx,
+        wake_read_fd: a_wake_read,
+        partner_wake_write_fd: a_wake_write,
     };
-    let q_half = TransitHalf {
-        tx: q_to_p2_tx,
-        rx: p2_to_q_rx,
-        wake_read_fd: q_wake_read,
-        partner_wake_write_fd: q_wake_write,
+    let b = TransitHalf {
+        tx: b_to_a_tx,
+        rx: a_to_b_rx,
+        wake_read_fd: b_wake_read,
+        partner_wake_write_fd: b_wake_write,
     };
+    Ok((a, b))
+}
 
+/// Register a half in the global registry, making it addressable by handle
+/// from JS (`transitSend`/`transitRecv`/`transitClose`).
+pub fn register_half(half: TransitHalf) -> u32 {
     let mut reg = registry().lock().unwrap();
-    let p2_handle = reg.next_handle;
+    let handle = reg.next_handle;
     reg.next_handle += 1;
-    let q_handle = reg.next_handle;
-    reg.next_handle += 1;
+    reg.halves.insert(handle, half);
+    handle
+}
 
+/// Remove a half from the registry. Dropping it closes its pipe ends, which
+/// is how the partner observes disconnection. Idempotent.
+pub fn remove_half(handle: u32) -> Option<TransitHalf> {
+    registry().lock().unwrap().halves.remove(&handle)
+}
+
+/// Create a registered transit channel pair. Returns
+/// `(p2_handle, q_handle, p2_wake_read_fd, q_wake_read_fd)`.
+pub fn create_transit_pair() -> Result<(u32, u32, RawFd, RawFd), String> {
+    let (p2_half, q_half) = create_halves()?;
     let p2_wake_read_fd = p2_half.wake_read_fd;
     let q_wake_read_fd = q_half.wake_read_fd;
-
-    reg.halves.insert(p2_handle, p2_half);
-    reg.halves.insert(q_handle, q_half);
-
+    let p2_handle = register_half(p2_half);
+    let q_handle = register_half(q_half);
     Ok((p2_handle, q_handle, p2_wake_read_fd, q_wake_read_fd))
 }
 
@@ -131,11 +190,15 @@ pub fn create_transit_pair() -> Result<(u32, u32, RawFd, RawFd), String> {
 // ---------------------------------------------------------------------------
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> =
-        ["createTransitChannel", "transitSend", "transitRecv"]
-            .iter()
-            .map(|n| v8::String::new(scope, n).unwrap())
-            .collect();
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "createTransitChannel",
+        "transitSend",
+        "transitRecv",
+        "transitClose",
+    ]
+    .iter()
+    .map(|n| v8::String::new(scope, n).unwrap())
+    .collect();
     let module_name = v8::String::new(scope, "internal:transit-port").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
 }
@@ -156,6 +219,7 @@ fn eval_steps<'a>(
     set_fn!("createTransitChannel", native_create_transit_channel);
     set_fn!("transitSend", native_transit_send);
     set_fn!("transitRecv", native_transit_recv);
+    set_fn!("transitClose", native_transit_close);
     Some(v8::undefined(scope).into())
 }
 
@@ -250,10 +314,12 @@ fn native_transit_send(
             Vec::new()
         };
 
-    let msg = ThreadMessage {
+    let transfer_ports = crate::realm::message::extract_port_infos(scope, args.get(3));
+
+    let msg = RealmMessage {
         data,
         transfer_stores,
-        transfer_ports: Vec::new(),
+        transfer_ports,
     };
 
     // Send and wake partner — all under a single lock acquisition.
@@ -284,31 +350,56 @@ fn native_transit_recv(
 ) {
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u32;
 
-    let (messages, wake_read_fd) = {
+    let messages = {
         let reg = registry().lock().unwrap();
         match reg.halves.get(&handle) {
             Some(half) => {
+                // Drain the wake pipe BEFORE the queue: a message that lands
+                // between the two drains then leaves its wake byte in the
+                // pipe, so the watcher re-fires. The reverse order swallows
+                // that wake and strands the message until an unrelated one.
+                let mut discard = [0u8; 256];
+                loop {
+                    // SAFETY: discard is valid; fd is a non-blocking pipe end.
+                    let n = unsafe {
+                        libc::read(
+                            half.wake_read_fd,
+                            discard.as_mut_ptr() as *mut _,
+                            discard.len(),
+                        )
+                    };
+                    if n < discard.len() as isize {
+                        break;
+                    }
+                }
                 let mut msgs = Vec::new();
                 while let Ok(m) = half.rx.try_recv() {
                     msgs.push(m);
                 }
-                (msgs, Some(half.wake_read_fd))
+                msgs
             }
-            None => (Vec::new(), None),
+            None => Vec::new(),
         }
     };
-
-    if let Some(fd) = wake_read_fd {
-        let mut discard = [0u8; 256];
-        // SAFETY: discard is valid; fd is a valid non-blocking pipe read end.
-        unsafe { libc::read(fd, discard.as_mut_ptr() as *mut _, discard.len()) };
-    }
 
     rv.set(build_message_array(scope, messages).into());
 }
 
 // ---------------------------------------------------------------------------
-// Shared helper: build the JS return value for a batch of ThreadMessages.
+// transitClose(handle) → void
+// ---------------------------------------------------------------------------
+
+fn native_transit_close(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u32;
+    drop(remove_half(handle));
+}
+
+// ---------------------------------------------------------------------------
+// Shared helper: build the JS return value for a batch of RealmMessages.
 //
 // Returns: `[[Uint8Array[], [number, number][]], ...]`
 //   outer[i][0] = Uint8Array[] (mainBytes at [0], storeBytes at [1..])
@@ -317,7 +408,7 @@ fn native_transit_recv(
 
 pub fn build_message_array<'s>(
     scope: &mut v8::HandleScope<'s>,
-    messages: Vec<ThreadMessage>,
+    messages: Vec<RealmMessage>,
 ) -> v8::Local<'s, v8::Array> {
     let outer = v8::Array::new(scope, messages.len() as i32);
     for (i, msg) in messages.into_iter().enumerate() {

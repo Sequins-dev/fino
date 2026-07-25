@@ -11,11 +11,9 @@
 import { EventTarget, _markEventTrusted } from '../../globals/eventtarget.ts';
 import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
-import { nativeSend, nativeRecv } from 'internal:thread-port';
-import { threadPortSend, threadPortRecv } from 'internal:realm-native';
-import { createTransitChannel } from 'internal:transit-port';
+import { createTransitChannel, transitSend, transitRecv, transitClose } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
-import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
+import { dispatchParentRpc } from 'internal:parent-rpc';
 
 /**
 * Shared lifecycle and dispatch logic for transport-backed realm ports.
@@ -48,6 +46,10 @@ export abstract class BaseTransportPort extends EventTarget {
   * @internal
   */
   #onmessage: ((ev: Event) => void) | null = null;
+  /** Whether close() has run. */
+  get closed(): boolean {
+    return this._closed;
+  }
   /**
   * Start delivery for this transport-backed port.
   *
@@ -60,9 +62,12 @@ export abstract class BaseTransportPort extends EventTarget {
     this._onStart();
   }
   /**
-  * Close this port and stop delivery.
+  * Close this port and stop delivery. Idempotent: a second close() must not
+  * re-run _onClose — the fd numbers it releases may already belong to a new
+  * port, and deregistering them again would sever that port's watch.
   */
   close(): void {
+    if (this._closed) return;
     this._closed = true;
     this._started = false;
     this._onClose();
@@ -102,44 +107,7 @@ export abstract class BaseTransportPort extends EventTarget {
       this.dispatchEvent(event);
       return;
     }
-    if (value !== null && typeof value === 'object') {
-      const obj = value as Record<string, unknown>;
-      if (obj['__rpc_res'] === true) {
-        const rpc = obj as {
-          reqId: number;
-          result?: unknown;
-          error?: string;
-        };
-        if (rpc.error !== undefined) {
-          if (!rejectRpc(rpc.reqId, rpc.error)) errStream(rpc.reqId, rpc.error);
-        } else {
-          resolveRpc(rpc.reqId, rpc.result);
-        }
-        return;
-      }
-      if (obj['__rpc_chunk'] === true) {
-        const m = obj as {
-          reqId: number;
-          chunk: unknown;
-        };
-        pushChunk(m.reqId, m.chunk);
-        return;
-      }
-      if (obj['__rpc_end'] === true) {
-        endStream((obj as {
-          reqId: number;
-        }).reqId);
-        return;
-      }
-      if (obj['__rpc_err'] === true) {
-        const m = obj as {
-          reqId: number;
-          error: string;
-        };
-        errStream(m.reqId, m.error);
-        return;
-      }
-    }
+    if (dispatchParentRpc(value)) return;
     const event = new MessageEvent('message', {
       data: value,
       ports
@@ -169,15 +137,61 @@ export abstract class BaseTransportPort extends EventTarget {
 }
 
 /**
-* Drain one batch of messages from a thread-port receive queue.
+* Drain one batch of messages from a transit channel half.
 */
-function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, number][]][] {
-  const raw = handle !== null ? (threadPortRecv as (h: number) => unknown)(handle) : (nativeRecv as () => unknown)();
-  return raw as [Uint8Array[], [number, number][]][];
+function _recvTransitMessages(handle: number): [Uint8Array[], [number, number][]][] {
+  return (transitRecv as (h: number) => unknown)(handle) as [Uint8Array[], [number, number][]][];
+}
+
+interface PreparedThreadMessage {
+  data: Uint8Array;
+  stores: Uint8Array[];
+  ports: [number, number][];
+}
+
+function _prepareThreadMessage(
+  message: unknown,
+  transferOrOptions?: Transferable[] | StructuredSerializeOptions
+): PreparedThreadMessage {
+  const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? [];
+  const buffers: ArrayBuffer[] = [];
+  const ports: MessagePort[] = [];
+  const seen = new Set<Transferable>();
+  for (const item of transfer) {
+    if (seen.has(item)) throw new DOMException('Duplicate value in ThreadPort transfer list', 'DataCloneError');
+    seen.add(item);
+    if (item instanceof ArrayBuffer) buffers.push(item);
+    else if (item instanceof MessagePort) {
+      item._validateCrossThreadTransfer();
+      ports.push(item);
+    } else {
+      throw new TypeError('ThreadPort transfer list only supports ArrayBuffer and MessagePort values');
+    }
+  }
+  const serialized = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+    message,
+    buffers.length > 0 ? buffers : undefined
+  );
+  const portInfos: [number, number][] = [];
+  for (const port of ports) {
+    const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (createTransitChannel as () => {
+      p2Handle: number;
+      p2WakeReadFd: number;
+      qHandle: number;
+      qWakeReadFd: number;
+    })();
+    port._transferCrossThread(p2Handle, p2WakeReadFd);
+    portInfos.push([qHandle, qWakeReadFd]);
+  }
+  return {
+    data: serialized[0]!,
+    stores: serialized.length > 1 ? serialized.slice(1) : [],
+    ports: portInfos
+  };
 }
 
 /**
-* MessagePort-compatible endpoint for cross-thread realm messaging.
+* MessagePort-compatible endpoint for reactor-realm transit messaging.
 *
 * ThreadPort is constructed by realm bootstrap and realm internals. It is not a
 * web global; application code should treat `Realm.port` as a port-like object
@@ -189,19 +203,21 @@ function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, num
 export class ThreadPort extends BaseTransportPort {
   /**
   * Wake-pipe read fd registered with loop.readable(); becomes readable when
-  * the partner thread sends a message.
+  * the partner sends a message.
   *
   * @internal
   */
   #wakeReadFd: number;
   /**
-  * Thread context handle. Non-null on the parent side, which routes through
-  * handle-indexed native ops; null on the child side, which uses the FinoState
-  * channel.
+  * Transit-registry handle of this side's channel half. The same mechanism
+  * carries every cross-isolate realm port — parent side, child side, and
+  * transferred MessagePorts — regardless of the realm's placement.
   *
   * @internal
   */
-  #handle: number | null;
+  #handle: number;
+  /** Whether the wake watch counts toward realm liveness. */
+  #referenced: boolean;
   /**
   * Current onmessageerror handler.
   *
@@ -209,49 +225,33 @@ export class ThreadPort extends BaseTransportPort {
   */
   #onmessageerror: ((ev: Event) => void) | null = null;
   /**
-  * Create a ThreadPort over an existing wake pipe.
+  * Create a ThreadPort over an existing wake pipe. `referenced: false` marks
+  * the wake watch as non-liveness-holding (a realm's own port must not keep
+  * that realm alive once its entry has settled).
   *
   * @internal
   */
-  constructor(wakeReadFd: number, handle?: number) {
+  constructor(wakeReadFd: number, handle: number, options?: { referenced?: boolean }) {
     super();
     this.#wakeReadFd = wakeReadFd;
-    this.#handle = handle ?? null;
+    this.#handle = handle;
+    this.#referenced = options?.referenced ?? true;
   }
   /**
   * Serialize and send a message to the opposite thread endpoint.
   */
   postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
     if (this._closed) return;
-    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts) ? transferOrOpts as Transferable[] : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const transferABs: ArrayBuffer[] = [];
-    const portInfos: [number, number][] = [];
-    if (rawTransfer) {
-      for (const item of rawTransfer) {
-        if (item instanceof ArrayBuffer) {
-          transferABs.push(item);
-        } else if (item instanceof MessagePort) {
-          const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (createTransitChannel as () => {
-            p2Handle: number;
-            p2WakeReadFd: number;
-            qHandle: number;
-            qWakeReadFd: number;
-          })();
-          item._transferCrossThread(p2Handle, p2WakeReadFd);
-          portInfos.push([qHandle, qWakeReadFd]);
-        } else {
-          throw new TypeError('ThreadPort transfer list only supports ArrayBuffer and MessagePort values');
-        }
-      }
-    }
-    const serResult = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(message, transferABs.length > 0 ? transferABs : undefined);
-    const data = serResult[0];
-    const stores = serResult.length > 1 ? serResult.slice(1) : [] as Uint8Array[];
-    if (this.#handle !== null) {
-      (threadPortSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(this.#handle, data, stores, portInfos);
-    } else {
-      (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(data, stores, portInfos);
-    }
+    this._postPrepared(_prepareThreadMessage(message, transferOrOpts));
+  }
+  /** Send a message whose transfer semantics were completed synchronously. @internal */
+  _postPrepared(message: PreparedThreadMessage): void {
+    (transitSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
+      this.#handle,
+      message.data,
+      message.stores,
+      message.ports
+    );
   }
   /**
   * Start watching the wake fd for incoming messages.
@@ -268,7 +268,12 @@ export class ThreadPort extends BaseTransportPort {
   */
   protected override _onClose(): void {
     removeRead(this.#wakeReadFd);
+    // Drop this side's channel half: closes its pipe ends so the partner
+    // observes disconnection, and releases the mpsc pair.
+    (transitClose as (h: number) => void)(this.#handle);
   }
+  /** Called after each wake has drained the transit queue. @internal */
+  protected _afterDrain(): void {}
   /**
   * Message error handler property.
   */
@@ -290,9 +295,11 @@ export class ThreadPort extends BaseTransportPort {
   */
   async #watchLoop(): Promise<void> {
     while (!this._closed) {
-      await readable(this.#wakeReadFd);
+      const n = await readable(this.#wakeReadFd, this.#referenced);
       if (this._closed) break;
+      if (typeof n === 'number' && n < 0) break;
       this._drain();
+      this._afterDrain();
     }
   }
   /**
@@ -301,12 +308,124 @@ export class ThreadPort extends BaseTransportPort {
   * @internal
   */
   _drain(): void {
-    const messages = _recvThreadMessages(this.#handle);
+    const messages = _recvTransitMessages(this.#handle);
     for (const [byteArr, portArr] of messages as any[]) {
       const [buf, ...stores] = byteArr as Uint8Array[];
       if (!buf) continue;
       const ports = (portArr as [number, number][]).map(([h, wfd]) => MessagePort._fromTransit(h, wfd));
       this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
     }
+  }
+}
+
+/**
+* Stable logical endpoint whose physical reactor port is supplied by the node
+* allocator asynchronously. Messages posted during allocation are retained in
+* order and flushed once the placement reply arrives.
+*
+* @internal
+*/
+export class DeferredTransportPort extends BaseTransportPort {
+  #port: BaseTransportPort | null = null;
+  #pending: Array<
+    | { kind: 'thread'; message: PreparedThreadMessage }
+    | { kind: 'generic'; message: unknown; transfer?: Transferable[] | StructuredSerializeOptions }
+  > = [];
+  #messageListener: ((event: Event) => void) | null = null;
+  #errorListener: ((event: Event) => void) | null = null;
+  /** Whether the eventual endpoint supports MessagePort transfer. */
+  #allowPortTransfer: boolean;
+
+  constructor(options?: { allowPortTransfer?: boolean }) {
+    super();
+    this.#allowPortTransfer = options?.allowPortTransfer ?? true;
+  }
+
+  /** Replace the physical replica endpoint without changing public identity. @internal */
+  replace(next: BaseTransportPort): void {
+    this.#attach(next);
+  }
+
+  #attach(port: BaseTransportPort): void {
+    if (this.#port === port) return;
+    this.#detachCurrent();
+    this.#port = port;
+    this.#messageListener = (event) => {
+      const source = event as MessageEvent;
+      this.dispatchEvent(new MessageEvent('message', { data: source.data, ports: source.ports }));
+    };
+    this.#errorListener = (event) => this.dispatchEvent(event);
+    port.addEventListener('message', this.#messageListener);
+    port.addEventListener('messageerror', this.#errorListener);
+    if (this._closed) {
+      port.close();
+      return;
+    }
+    if (this._started) port.start();
+    for (const pending of this.#pending.splice(0)) {
+      if (pending.kind === 'thread') {
+        if (!(port instanceof ThreadPort)) {
+          for (const [handle] of pending.message.ports) (transitClose as (h: number) => void)(handle);
+          throw new TypeError('Deferred MessagePort transfer requires a ThreadPort endpoint');
+        }
+        port._postPrepared(pending.message);
+      } else {
+        port.postMessage(pending.message, pending.transfer);
+      }
+    }
+  }
+
+  #detachCurrent(): void {
+    const port = this.#port;
+    if (port === null) return;
+    if (this.#messageListener !== null) port.removeEventListener('message', this.#messageListener);
+    if (this.#errorListener !== null) port.removeEventListener('messageerror', this.#errorListener);
+    port.close();
+    this.#port = null;
+    this.#messageListener = null;
+    this.#errorListener = null;
+  }
+
+  postMessage(message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
+    if (this._closed) return;
+    if (this.#port === null) {
+      // postMessage semantics are synchronous even while the physical
+      // endpoint is still materializing: invalid payloads and transfer
+      // entries reject NOW, and transferred ArrayBuffers detach NOW. The
+      // buffered send therefore holds an already-validated, already-moved
+      // clone; the eventual flush transfers the moved buffers onward.
+      const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? [];
+      if (this.#allowPortTransfer) {
+        this.#pending.push({ kind: 'thread', message: _prepareThreadMessage(message, transferOrOptions) });
+        return;
+      }
+      const invalid = transfer.find((item) => !(item instanceof ArrayBuffer));
+      if (invalid !== undefined) {
+        throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
+      }
+      const buffers = transfer as ArrayBuffer[];
+      const moved = structuredClone({ message, transfer: buffers }, { transfer: buffers });
+      this.#pending.push({
+        kind: 'generic',
+        message: moved.message,
+        transfer: buffers.length > 0 ? moved.transfer : undefined
+      });
+      return;
+    }
+    this.#port.postMessage(message, transferOrOptions);
+  }
+
+  protected override _onStart(): void {
+    this.#port?.start();
+  }
+
+  protected override _onClose(): void {
+    for (const pending of this.#pending) {
+      if (pending.kind === 'thread') {
+        for (const [handle] of pending.message.ports) (transitClose as (h: number) => void)(handle);
+      }
+    }
+    this.#pending.length = 0;
+    this.#detachCurrent();
   }
 }

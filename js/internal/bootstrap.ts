@@ -56,25 +56,21 @@
 *
 * @internal
 */
-import { tick, alive, loopFd, registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
-import { drainMicrotasks, runLoop } from 'internal:async-context';
+import { registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter, alive as loopAlive } from 'internal:runtime/loop';
+import { runNativeLoop } from 'internal:async-context';
 import { wakeFd } from 'internal:async-runtime';
-import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 import { env } from '../process.ts';
 // Register the async-runtime wake pipe with kqueue so background FFI threads
 // can interrupt the event loop sleep immediately. Does not affect alive().
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, setLoopFd } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPortInfo, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
-// fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
-// non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask, Performance, performance } from '../globals/time.ts';
 import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, CryptoKey, crypto, cryptoAvailable, tlsAvailable, fetch, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, _flushPorts, BroadcastChannel } from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
 import { ThreadPort } from 'internal:realm/transport-port';
-import { getWakeReadFd } from 'internal:thread-port';
 interface StackFrame {
   getFileName?(): string | null;
   getScriptNameOrSourceURL?(): string | null;
@@ -254,41 +250,13 @@ runtimeError.prepareStackTrace = function prepareStackTrace(err: Error, callSite
   return header + '\n' + callSites.map(formatCallSite).join('\n');
 };
 /**
-* Optional hooks controlling how `driveLoop` polls and how it coordinates
-* with child Realms embedded in the caller's isolate.
-*
-* @internal
-*/
-interface DriveLoopOptions {
-  /** Called once per tick, after microtasks drain, to advance any embedded
-  *  child Realms sharing this isolate. */
-  stepChildren?: () => void;
-  /** Reports whether any child Realm still has pending work. While it
-  *  returns true the loop keeps running even after `isDone()` is true. */
-  childrenAlive?: () => boolean;
-  /** If true, always poll with timeout=0 (non-blocking). Used for child realms
-  *  that are driven by a parent loop — the parent controls sleeping. */
-  nonBlocking?: boolean;
-}
-/**
-* Registers a step/onDone callback pair with the Rust host loop.
-*
-* The host loop calls the registered step function once per iteration until
-* it returns false, then calls `onDone` (e.g. to surface errors or clean up).
-* Each step polls the event loop backend (kqueue/io_uring) for I/O, timer,
-* and wake-pipe events, flushes inter-realm message ports, drains the
-* microtask queue, and — when `opts.stepChildren` is provided — advances any
-* embedded child Realms.
+* Hands this realm's loop policy to the Rust host loop, which pumps to
+* quiescence, flushes ports, then blocks until the next completion.
 *
 * `isDone` reports whether the caller's own work is complete, but a true
 * result alone does not stop the loop: the loop also keeps running while the
-* event loop still has live handles (pending timers, sockets, watchers,
-* Atomics waiters) or while `opts.childrenAlive?.()` reports live children.
-*
-* Polling is adaptive: after three consecutive empty ticks the poll blocks
-* for up to 25ms to avoid spinning, and any completed event resets the
-* backoff. `opts.nonBlocking` forces a zero timeout on every tick, for realms
-* whose sleeping is controlled by a parent loop.
+* realm still has live handles (pending timers, sockets, watchers, or Atomics
+* waiters).
 *
 * ```ts no_run
 * import { driveLoop } from 'internal:bootstrap';
@@ -300,31 +268,15 @@ interface DriveLoopOptions {
 *   () => {
 *     // loop finished
 *   },
-*   { nonBlocking: true },
 * );
 * ```
 *
 * @internal
 */
-export function driveLoop(isDone: () => boolean, onDone: () => void, opts?: DriveLoopOptions): void {
-  let emptyTicks = 0;
-  function step() {
-    const loopAlive = alive();
-    const hasChildren = opts?.childrenAlive?.() ?? false;
-    if (isDone() && !loopAlive && !hasChildren) return false;
-    const timeout = opts?.nonBlocking ? 0 : emptyTicks >= 3 ? 25 : 0;
-    const count = tick(timeout);
-    _flushPorts();
-    drainMicrotasks();
-    opts?.stepChildren?.();
-    if (count === 0) {
-      emptyTicks++;
-    } else {
-      emptyTicks = 0;
-    }
-    return true;
-  }
-  runLoop(step, onDone);
+export function driveLoop(isDone: () => boolean, onDone: () => void): void {
+  runNativeLoop(isDone, onDone, {
+    flushPorts: _flushPorts
+  });
 }
 // ---------------------------------------------------------------------------
 // Child Realm auto-setup
@@ -334,93 +286,50 @@ export function driveLoop(isDone: () => boolean, onDone: () => void, opts?: Driv
 // dynamically import the entry module and wire up the child's driveLoop, so
 // user entry modules don't need to call driveLoop themselves.
 //
-// If the child has a port (via getPort()), and the entry module default-exports
+// If the child has a port and the entry module default-exports
 // a function, the bootstrap automatically wires up call-mode: it listens for a
 // { __call, data } message, invokes the function, and posts the result back.
 // If the entry has no default function export, the child stays alive (for
 // multi-event messaging) until the parent calls terminate().
 const _childEntry = getEntryPath() as string | undefined;
-// Construct the correct port type for this realm context:
-// - Thread realms: wake_read_fd >= 0 → construct a ThreadPort backed by native channels
-// - Embedded realms: use the IntraPort passed by the parent via realm-bridge
-const _threadWakeReadFd = getWakeReadFd() as number;
-const _childPort: MessagePort | ThreadPort | undefined = _threadWakeReadFd >= 0 ? new ThreadPort(_threadWakeReadFd) : getPort() as MessagePort | undefined;
+// Construct this realm's port to its parent. Every child has a transit-channel
+// half regardless of placement; process realms bridge that channel over IPC.
+const _portInfo = (getPortInfo as () => {
+  handle: number;
+  wakeReadFd: number;
+} | undefined)();
+const _childPort: ThreadPort | undefined = _portInfo !== undefined ? new ThreadPort(_portInfo.wakeReadFd, _portInfo.handle, { referenced: false }) : undefined;
 // Expose the child port as `realmPort` on globalThis so entry modules can
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
-// Embedded realms (MessagePort) need an RPC-response interceptor on _childPort so
-// that __rpc_res / __rpc_chunk / __rpc_end / __rpc_err envelopes from the parent
-// reach the pending-call registry in internal:parent-rpc.
-// Thread/process realms get this for free from BaseTransportPort._dispatchMessage.
-if (_threadWakeReadFd < 0 && _childPort !== undefined) {
-  const _embeddedPort = _childPort as MessagePort;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (_embeddedPort as any).addEventListener('message', function _rpcResponseHandler(ev: Event) {
-    const msg = (ev as MessageEvent).data;
-    if (!msg || typeof msg !== 'object') return;
-    const obj = msg as Record<string, unknown>;
-    if (obj['__rpc_res'] === true) {
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      const rpc = obj as {
-        reqId: number;
-        result?: unknown;
-        error?: string;
-      };
-      if (rpc.error !== undefined) {
-        if (!rejectRpc(rpc.reqId, rpc.error)) errStream(rpc.reqId, rpc.error);
-      } else {
-        resolveRpc(rpc.reqId, rpc.result);
-      }
-    } else if (obj['__rpc_chunk'] === true) {
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      pushChunk((obj as {
-        reqId: number;
-      }).reqId, (obj as {
-        chunk: unknown;
-      }).chunk);
-    } else if (obj['__rpc_end'] === true) {
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      endStream((obj as {
-        reqId: number;
-      }).reqId);
-    } else if (obj['__rpc_err'] === true) {
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      errStream((obj as {
-        reqId: number;
-        error: string;
-      }).reqId, (obj as {
-        reqId: number;
-        error: string;
-      }).error);
-    }
-  });
-}
-// Record this realm's pollable loop fd so an embedding parent can wake on
-// this realm's I/O and timer events instead of polling every ~25ms. Harmless
-// in the root realm (nothing reads it there).
-try {
-  (setLoopFd as (fd: number) => void)(loopFd());
-} catch {}
 if (_childEntry) {
   let _childDone = false;
   let _entryFailed = false;
   // Set when the parent sends { __terminate: true } via the port.  Used in
   // watch mode (where _childDone is not checked) so thread/process realm
-  // terminate() unblocks _childIsDone() the same way terminateChild() does
-  // for embedded realms.
+  // terminate() unblocks _childIsDone() during watch mode.
   let _externalTerminate = false;
   // Start the port early so messages (including __terminate) arrive during
   // module loading, before the entry module's own listener is added.
-  // __call and __pool_call messages that arrive before the entry module finishes
-  // loading are queued here and replayed once the _callHandler is installed.
-  const _earlyPoolCalls: unknown[] = [];
+  // Calls that arrive before the entry module finishes loading are queued and
+  // replayed once the call handler is installed.
   let _earlyCall: unknown = null;
   let _callHandlerInstalled = false;
+  // Messages the parent posts while this realm is still loading its entry
+  // module would dispatch to no listener and be lost — the parent cannot
+  // know how long the module graph takes on this placement. Buffer them and
+  // replay once the entry registers its first message listener.
+  const _earlyUserMessages: unknown[] = [];
+  let _userListenerSeen = false;
+  let _replaying = false;
   if (_childPort !== undefined) {
     _childPort.start();
     _childPort.addEventListener('message', function _terminateHandler(ev) {
       const msg = (ev as MessageEvent).data;
-      if (!msg || typeof msg !== 'object') return;
+      if (!msg || typeof msg !== 'object') {
+        if (!_userListenerSeen && !_replaying) _earlyUserMessages.push(msg);
+        return;
+      }
       if ((msg as {
         __terminate?: boolean;
       }).__terminate === true) {
@@ -431,13 +340,35 @@ if (_childEntry) {
       }).__call) {
         // Queue early __call until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyCall = msg;
-      } else if (!_callHandlerInstalled && (msg as {
-        __pool_call?: boolean;
-      }).__pool_call) {
-        // Queue early pool calls until _callHandler is ready; flag prevents re-queuing during replay.
-        _earlyPoolCalls.push(msg);
+      } else if (!_userListenerSeen && !_replaying && !(msg as {
+        __call?: boolean;
+      }).__call) {
+        _earlyUserMessages.push(msg);
       }
     });
+    const _origAddEventListener = _childPort.addEventListener.bind(_childPort);
+    (_childPort as {
+      addEventListener: typeof _childPort.addEventListener;
+    }).addEventListener = function _bufferedAddEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      const result = _origAddEventListener(type as never, listener as never, options as never);
+      if (type === 'message' && !_userListenerSeen) {
+        _userListenerSeen = true;
+        const replay = _earlyUserMessages.splice(0);
+        if (replay.length > 0) {
+          Promise.resolve().then(() => {
+            _replaying = true;
+            try {
+              for (const m of replay) {
+                _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+              }
+            } finally {
+              _replaying = false;
+            }
+          });
+        }
+      }
+      return result;
+    } as typeof _childPort.addEventListener;
   }
   // CLI OTel providers are context-scoped, so the spawner cannot install them
   // across the realm boundary - the child must wrap its own entry import.
@@ -454,14 +385,6 @@ if (_childEntry) {
     if (bootstrapRaw !== undefined) {
       try {
         cliOtel = (JSON.parse(bootstrapRaw) as {
-          cliOtel?: typeof cliOtel;
-        }).cliOtel;
-      } catch {}
-    }
-    const raw = (getRealmData as () => string | undefined)();
-    if (cliOtel === undefined && raw !== undefined) {
-      try {
-        cliOtel = (JSON.parse(raw) as {
           cliOtel?: typeof cliOtel;
         }).cliOtel;
       } catch {}
@@ -493,79 +416,36 @@ if (_childEntry) {
       // Call mode: wait for { __call, args }, invoke default export, post result.
       // _childDone is set after the function returns; do NOT set it here.
       const _fn = _entryCallable;
-      // Track which invocation mode this worker is in so the two modes cannot
-      // interfere with each other.
-      let _isPoolMode = false;
       _childPort.addEventListener('message', function _callHandler(ev) {
         const msg = (ev as MessageEvent).data;
         if (!msg || typeof msg !== 'object') return;
         if ((msg as {
           __call?: boolean;
-        }).__call && !_isPoolMode) {
-          // Single-invocation call() mode: invoke once, post result, terminate.
+        }).__call) {
+          // Correlated invocations may reuse this realm until it is retired.
           // Stop propagation so user code never sees internal __call envelopes.
           (ev as MessageEvent).stopImmediatePropagation?.();
           const _args = (msg as {
             args?: unknown[];
           }).args ?? [];
+          const _correlationId = (msg as { correlationId?: number }).correlationId;
           new Promise<unknown>((res) => res(_fn(..._args))).then(function _callOk(result: unknown) {
-            _childPort!.postMessage(result);
-            _childDone = true;
+            _childPort!.postMessage({
+              __call_result: true,
+              correlationId: _correlationId,
+              result
+            });
           }, function _callErr(err: unknown) {
             _childPort!.postMessage({
               __call_error: true,
+              correlationId: _correlationId,
               message: String(err),
               name: err instanceof Error ? err.name : undefined,
               stack: err instanceof Error ? err.stack : undefined
             });
-            _childDone = true;
           });
-        } else if ((msg as {
-          __pool_call?: boolean;
-        }).__pool_call) {
-          // Pool mode: multi-invocation with correlation ID. Worker stays alive.
-          // Stop propagation so user code never sees internal __pool_call envelopes.
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          _isPoolMode = true;
-          const _pmsg = msg as {
-            __pool_call: boolean;
-            correlationId: number;
-            args?: unknown[];
-          };
-          const _corrId = _pmsg.correlationId;
-          const _args = _pmsg.args ?? [];
-          // Lazily import fino:realm/pool so non-pool realms avoid the evaluation cost.
-          import('fino:realm/pool').then(
-            function _poolImport({ correlationIdContext }) {
-              correlationIdContext.runWithValue(String(_corrId), function _poolInvoke() {
-                new Promise<unknown>((res) => res(_fn(..._args))).then(function _poolCallOk(result: unknown) {
-                  _childPort!.postMessage({
-                    __pool_result: true,
-                    correlationId: _corrId,
-                    result
-                  });
-                }, function _poolCallErr(err: unknown) {
-                  _childPort!.postMessage({
-                    __pool_error: true,
-                    correlationId: _corrId,
-                    message: String(err),
-                    stack: err instanceof Error ? err.stack : undefined
-                  });
-                });
-              });
-            },
-            // If the pool module itself fails to load, surface the error as __pool_error
-            // so the parent dispatcher rejects rather than hanging indefinitely.
-            function _poolImportFailed(err: unknown) {
-              _childPort!.postMessage({
-                __pool_error: true,
-                correlationId: _corrId,
-                message: 'fino:realm/pool module failed to load: ' + String(err)
-              });
-            }
-          );
         }
-        // Other messages (not __call / __pool_call / __terminate) pass through
+        // Other messages pass through
         // to user-registered listeners unchanged.
       });
       // Mark the handler as installed so _terminateHandler stops queuing early messages.
@@ -576,7 +456,6 @@ if (_childEntry) {
         _toReplay.push(_earlyCall);
         _earlyCall = null;
       }
-      _toReplay.push(..._earlyPoolCalls.splice(0));
       if (_toReplay.length > 0) {
         Promise.resolve().then(() => {
           for (const m of _toReplay) {
@@ -632,12 +511,25 @@ if (_childEntry) {
   driveLoop(function _childIsDone() {
     // In watch mode the realm stays alive after the entry completes so the
     // file-watcher loop can keep driving kqueue/inotify events.  Exit is
-    // triggered by: requestReload() (sets state.terminated), terminateChild()
-    // for embedded realms (same), or { __terminate: true } over the port for
-    // thread/process realms (sets _externalTerminate).
+    // triggered by requestReload() (sets state.terminated) or a
+    // { __terminate: true } port message (sets _externalTerminate).
     const entryDone = _watchMode ? _externalTerminate || isTerminated() as boolean : _childDone || isTerminated() as boolean;
     if (entryDone && !_shutdownStarted) _startChildShutdown();
-    const done = entryDone && _shutdownDone;
+    // Natural completion honors live handles: a realm whose entry settled but
+    // still owns referenced work (an interval, a watch, a pending child
+    // process) keeps running until those drain — the same contract every
+    // handle-owning runtime provides. terminate()/reload are explicit stops
+    // and bypass the gate, so a wedged handle can never hold a kill hostage.
+    // The realm's own port is unreferenced (it never holds the realm open)
+    // and stays receivable while handles run, so a parent's __terminate can
+    // always land; it closes once nothing else keeps the realm alive.
+    const forced = _externalTerminate || isTerminated() as boolean;
+    const handleAlive = loopAlive();
+    if (entryDone && !_portClosed && _childPort !== undefined && (forced || !handleAlive)) {
+      _portClosed = true;
+      _childPort.close();
+    }
+    const done = entryDone && _shutdownDone && (forced || !handleAlive);
     if (done) {
       // Tear down the watcher and poll interval so alive() drains to false
       // and the child's step loop can exit cleanly.  This handles both the
@@ -651,15 +543,9 @@ if (_childEntry) {
         _watcherRef.close();
         _watcherRef = null;
       }
-      if (!_portClosed && _childPort !== undefined) {
-        // Close the port to cancel any pending loop.readable() so that
-        // alive() can return false and the loop can exit cleanly.
-        _portClosed = true;
-        (_childPort as MessagePort | ThreadPort).close();
-      }
     }
     return done;
-  }, function _childOnDone() {}, { nonBlocking: true });
+  }, function _childOnDone() {});
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop
   // ---------------------------------------------------------------------------
@@ -779,5 +665,5 @@ if ((getReplMode as () => boolean)()) {
   });
   driveLoop(function _replIsDone() {
     return _replDone || isTerminated() as boolean;
-  }, function _replOnDone() {}, { nonBlocking: true });
+  }, function _replOnDone() {});
 }

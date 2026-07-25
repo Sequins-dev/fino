@@ -217,7 +217,7 @@ export interface ClusterSeedTransport extends ClusterTransport {
   * ```ts no_run
   * transport.broadcastExcept('worker-a', {
   *   t: 'PEER_UP',
-  *   peer: { nodeId: 'worker-a', load: { cpu: 0, memory: 0 } },
+  *   peer: { nodeId: 'worker-a' },
   * });
   * ```
   */

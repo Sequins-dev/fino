@@ -41,7 +41,7 @@
 * `onClose` callback — do not close the Reader/Writer to release the fd; call
 * `file.close()` instead.
 */
-import { lib, Pointer, isDarwin, loopModule, asyncOps, cstr, throwErrno, throwErrnoCode, readCStr, _toStr, _toPath, joinPath, O_CREAT, O_RDONLY, O_WRONLY, O_RDWR, O_TRUNC, O_APPEND, O_EXCL, S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR, SEEK_SET, SEEK_CUR, SEEK_END, DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK, F_OK as _F_OK, R_OK as _R_OK, W_OK as _W_OK, X_OK as _X_OK, modeToFlags, encodeUtf8, decodeUtf8 } from 'internal:file/bindings';
+import { lib, Pointer, isDarwin, loopModule, cstr, throwErrno, throwErrnoCode, readCStr, _toStr, _toPath, joinPath, O_CREAT, O_RDONLY, O_WRONLY, O_RDWR, O_TRUNC, O_APPEND, O_EXCL, S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR, SEEK_SET, SEEK_CUR, SEEK_END, DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK, F_OK as _F_OK, R_OK as _R_OK, W_OK as _W_OK, X_OK as _X_OK, modeToFlags, encodeUtf8, decodeUtf8 } from 'internal:file/bindings';
 import { Stat } from '../internal/file/stat.ts';
 import { File } from '../internal/file/handle.ts';
 import { Entry, FileEntry, DirEntry } from '../internal/file/entry.ts';
@@ -208,27 +208,10 @@ export class DiskFileSystem extends FileSystem {
     const p = _toPath(path);
     const s = p.toString();
     const flags = modeToFlags(mode);
-    let fd: number;
-    if (asyncOps) {
-      const loop = loopModule;
-      const ops = asyncOps;
-      if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-      // Linux: use io_uring IORING_OP_OPENAT for async open.
-      const pathBuf = cstr(s);
-      const result = await loop.submit(function submitAsyncOpen(raw: object, id: number) {
-        ops.asyncOpen(raw, pathBuf.buffer as ArrayBuffer, flags, 438, id);
-      });
-      fd = result.res;
-      if (fd < 0) throwErrnoCode('open', s, fd);
-    } else {
-      // macOS: synchronous open(2).
-      // Note: libffi on macOS ARM64 may not correctly pass the mode argument
-      // to the variadic open(2) syscall. Use fchmod to ensure newly-created
-      // files get standard permissions (rw-r--r--) regardless.
-      fd = lib.symbols.open(cstr(s), flags, 438);
-      if (fd < 0) throwErrno('open', s);
-    }
-    if (flags & O_CREAT) lib.symbols.fchmod(fd, 420);
+    // open(2) via the loop's variadic-safe native shim (the FFI silently
+    // drops the mode argument on ARM64 Darwin).
+    const fd = loopModule.openSync(s, flags, 0o644);
+    if (fd < 0) throwErrnoCode('open', s, fd);
     return new File(fd, this, p, mode);
   }
   /**
@@ -243,9 +226,8 @@ export class DiskFileSystem extends FileSystem {
     const p = _toPath(path);
     const s = p.toString();
     const flags = modeToFlags(mode);
-    const fd = lib.symbols.open(cstr(s), flags, 438);
-    if (fd < 0) throwErrno('open', s);
-    if (flags & O_CREAT) lib.symbols.fchmod(fd, 420);
+    const fd = loopModule.openSync(s, flags, 0o644);
+    if (fd < 0) throwErrnoCode('open', s, fd);
     return new File(fd, this, p, mode);
   }
   /**

@@ -27,9 +27,8 @@
 * predicate first waits for the command promise to settle, then kicks off
 * shutdown hooks exactly once and only reports the loop finished after those
 * hooks resolve, guaranteeing cleanup runs before exit. `fino:realm` is imported
-* lazily so the root loop can also step and observe liveness of any child Realms
-* that were created, without hard-depending on the realm module being
-* registered (during tests it may not be).
+* The realm allocator registers its own shutdown hook lazily when it first
+* starts the node's reactor pool.
 *
 * ```ts no_run
 * import 'internal:main';
@@ -55,17 +54,6 @@ if (argv[1] === '--sandbox-launcher') {
 }
 import root from '../commands/root.ts';
 import { runShutdownHooks } from './shutdown.ts';
-// Imported lazily to avoid a hard dependency that breaks when fino:realm is
-// not yet loaded. _stepChildren and _childrenAlive default to no-ops so the
-// root realm's driveLoop works even before any Realm is created.
-let _stepChildren: (() => void) | undefined;
-let _childrenAlive: (() => boolean) | undefined;
-import('fino:realm').then(function onRealmLoaded(m) {
-  _stepChildren = m._stepChildren as () => void;
-  _childrenAlive = m._childrenAlive as () => boolean;
-}, function _ignore() {
-  // fino:realm not registered yet during tests — safe to ignore
-});
 function normalizeCliArgv(args: string[]): string[] {
   if (args[0] === '--bench') return ['bench', ...args.slice(1)];
   return args;
@@ -108,12 +96,5 @@ driveLoop(function isDone() {
   if (caughtError) {
     console.error(caughtError);
     exit(1);
-  }
-}, {
-  stepChildren: function stepChildren() {
-    _stepChildren?.();
-  },
-  childrenAlive: function childrenAlive() {
-    return _childrenAlive?.() ?? false;
   }
 });

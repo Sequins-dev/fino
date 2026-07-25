@@ -13,7 +13,8 @@
 * IntraPort transport: same-Isolate Realms exchange messages via direct JS
 * object references + structuredClone. postMessage clones the value and pushes
 * it to the partner port's queue. _flushPorts() dispatches all queued messages
-* on started ports; called from driveLoop between tick() and drainMicrotasks().
+* on started ports; the reactor drive loop invokes it as the realm's
+* flush-ports policy hook each pump slice.
 *
 * MessagePort transfer: a MessagePort can be transferred via postMessage. For
 * same-Isolate transfers a fresh receiver-side port replaces matching
@@ -27,9 +28,8 @@
 * | Transport | Clone path | Transfer support |
 * | --- | --- | --- |
 * | Same-isolate `MessagePort` | Runtime structured-clone subset. | `ArrayBuffer` and `MessagePort`. |
-* | Thread `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
+* | Reactor realm `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
 * | Process `ProcessPort` | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
-* | Remote/cluster calls | Cluster transport serialization. | No live `MessagePort` transfer contract. |
 *
 * ## Example
 *
@@ -48,7 +48,6 @@
 import { Event, EventTarget, _markEventTrusted } from './eventtarget.ts';
 import { DOMException, _structuredCloneWithTransferMap } from './encoding.ts';
 import { serialize, deserialize } from 'internal:serializer';
-import { getWakeReadFd } from 'internal:thread-port';
 import { transitSend, transitRecv } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 // ---------------------------------------------------------------------------
@@ -381,12 +380,22 @@ export class MessagePort extends EventTarget {
   * @internal
   */
   _transferCrossThread(p2Handle: number, p2WakeReadFd: number): void {
-    if (this.#neutered || this.#closed) return;
+    this._validateCrossThreadTransfer();
     const partner = this.#partner;
     this.#neutered = true;
     _activePorts.delete(this);
     this.#partner = null;
     partner?._upgradeToTransit(p2Handle, p2WakeReadFd);
+  }
+  /**
+  * Validate that this endpoint can be transferred to another isolate without
+  * mutating either side of the channel.
+  *
+  * @internal
+  */
+  _validateCrossThreadTransfer(): void {
+    if (this.#closed) throw messagePortDataCloneError('Closed MessagePort cannot be transferred');
+    if (this.#neutered) throw messagePortDataCloneError('Neutered MessagePort cannot be transferred');
   }
   /**
   * Create a new MessagePort in transit mode (the receiving Q side after a
@@ -544,6 +553,7 @@ export class MessagePort extends EventTarget {
   * ```
   */
   close(): void {
+    if (this.#closed) return;
     this.#closed = true;
     this.#started = false;
     _activePorts.delete(this);
@@ -643,9 +653,9 @@ export class MessagePort extends EventTarget {
   *
   * @internal
   */
-  _drain(): void {
-    if (!this.#started) return;
-    if (this.#transitHandle !== null) return;
+  _drain(): boolean {
+    if (!this.#started) return false;
+    if (this.#transitHandle !== null) return false;
     const pending = this.#queue.splice(0);
     for (const item of pending) {
       const event = new MessageEvent('message', {
@@ -655,6 +665,7 @@ export class MessagePort extends EventTarget {
       _markEventTrusted(event);
       this.dispatchEvent(event);
     }
+    return pending.length > 0;
   }
   // ---------------------------------------------------------------------------
   // Private helpers
@@ -674,8 +685,9 @@ export class MessagePort extends EventTarget {
     const self = this;
     (async () => {
       while (!self.#closed && self.#transitHandle !== null) {
-        await readable(fd);
+        const n = await readable(fd);
         if (self.#closed || self.#transitHandle === null) break;
+        if (typeof n === 'number' && n < 0) break;
         const msgs = ((transitRecv as (h: number) => [[Uint8Array[], [number, number][]]])(handle) as unknown) as [[Uint8Array[], [number, number][]]];
         for (const [byteArr, portArr] of msgs as any[]) {
           try {
@@ -752,8 +764,11 @@ export class MessageChannel {
 // ---------------------------------------------------------------------------
 /**
 * Dispatch all queued messages on every started MessagePort in this context.
-* Called from driveLoop between tick() and drainMicrotasks() so that port
-* messages are treated as tasks that run before the microtask checkpoint.
+* Called from the loop drive between tick() and the microtask drain so that
+* port messages are treated as tasks that run before the checkpoint. Returns
+* whether anything was delivered — the native host loop keeps pumping while
+* port queues make progress, since same-isolate ports never touch the
+* reactor and would otherwise never wake it.
 *
 * ```typescript no_run
 * _flushPorts();
@@ -761,8 +776,10 @@ export class MessageChannel {
 *
 * @internal
 */
-export function _flushPorts(): void {
+export function _flushPorts(): boolean {
+  let delivered = false;
   for (const port of _activePorts) {
-    port._drain();
+    if (port._drain()) delivered = true;
   }
+  return delivered;
 }

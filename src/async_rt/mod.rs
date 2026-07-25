@@ -1,13 +1,13 @@
 //! Per-isolate async executor + thread-pool offload for blocking FFI calls.
 //!
 //! Architecture:
-//! - One `LocalExecutor` per V8 isolate (stored in a thread-local). Same-thread
-//!   embedded child realms share the executor — they're cooperative and can't
-//!   run in parallel anyway.
+//! - One `LocalExecutor` per V8 isolate, swapped into thread-local ownership
+//!   whenever a reactor activates that isolate.
 //! - A process-global blocking pool (`blocking` crate) for sync→async FFI offload.
-//! - A self-pipe per isolate: background threads write 1 byte when FFI work
-//!   completes; JS registers the read end with `loop.readable(fd)` so kqueue
-//!   wakes up immediately rather than waiting for a timeout.
+//! - A [`WakeSink`] per isolate: background threads call `wake()` when FFI work
+//!   completes. Root/process hosts may use a self-pipe byte; reactor realms
+//!   upgrade the sink in place to
+//!   a cherenkov Notifier post — no pipe traffic at all.
 //! - Per-realm `pending_resolutions` (in `FinoState`): futures push completed
 //!   `JsValueRepr` + resolver here; `drain_pending` converts + resolves them
 //!   with a live scope.
@@ -19,12 +19,69 @@ pub mod js_calls;
 use std::{
     cell::RefCell,
     os::unix::io::RawFd,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use ::v8;
 
 pub use bridge::PendingResolution;
+
+// ---------------------------------------------------------------------------
+// Wake sink — the one cross-thread wake channel for an isolate
+// ---------------------------------------------------------------------------
+
+/// How a background thread wakes an isolate's event loop. Every isolate starts
+/// with its self-pipe as the sink; a reactor-backed realm upgrades it once to a
+/// cherenkov [`Notifier`](cherenkov::Notifier) post — clones already captured
+/// by background threads pick the upgrade up through the shared `OnceLock`.
+#[derive(Clone)]
+pub struct WakeSink(Arc<WakeSinkInner>);
+
+struct WakeSinkInner {
+    /// Write end of the isolate's self-pipe, owned here (closed on last drop)
+    /// so background threads holding clones can never write a recycled fd.
+    pipe_write: RawFd,
+    /// Current reactor route. A parked isolate may replace it when it moves.
+    notifier: RwLock<Option<(cherenkov::Notifier, u64)>>,
+}
+
+impl Drop for WakeSinkInner {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.pipe_write);
+        }
+    }
+}
+
+impl WakeSink {
+    fn new(pipe_write: RawFd) -> WakeSink {
+        WakeSink(Arc::new(WakeSinkInner {
+            pipe_write,
+            notifier: RwLock::new(None),
+        }))
+    }
+
+    /// Wake the isolate's loop. Callable from any thread. A post into a
+    /// dropped reactor returns false and falls back to the pipe byte — the
+    /// same shutdown-race envelope the raw pipe write always had (SIGPIPE is
+    /// ignored process-wide; a failed write is harmless).
+    pub fn wake(&self) {
+        if let Some((notifier, user_data)) = self.0.notifier.read().unwrap().as_ref()
+            && notifier.post(*user_data, 0)
+        {
+            return;
+        }
+        unsafe {
+            libc::write(self.0.pipe_write, b"\x01".as_ptr() as *const _, 1);
+        }
+    }
+
+    /// Route the sink to a reactor Notifier post. Replacing the route is safe:
+    /// background producers hold this shared cell rather than a notifier copy.
+    pub fn install_notifier(&self, notifier: cherenkov::Notifier, user_data: u64) {
+        *self.0.notifier.write().unwrap() = Some((notifier, user_data));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // FFI completion (from background threads)
@@ -69,21 +126,17 @@ pub struct ViewRelease {
 pub type ViewReleaseQueue = Arc<Mutex<Vec<ViewRelease>>>;
 
 // ---------------------------------------------------------------------------
-// Thread-local resolver table — bridges non-Send v8::Global across threads
+// Isolate-owned resolver table — background work carries only numeric ids
 // ---------------------------------------------------------------------------
-
-thread_local! {
-    /// Stores `v8::Global<PromiseResolver>` values by index. The background
-    /// thread stores only the index (a plain `usize`) in `FfiCompletion`; the
-    /// main thread retrieves and consumes the resolver when draining.
-    static RESOLVER_TABLE: RefCell<Vec<Option<v8::Global<v8::PromiseResolver>>>> =
-        const { RefCell::new(Vec::new()) };
-}
 
 /// Store a resolver and return its slot index (called from the main thread).
 pub fn push_resolver(resolver: v8::Global<v8::PromiseResolver>) -> usize {
-    RESOLVER_TABLE.with(|t| {
-        let mut table = t.borrow_mut();
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let table = &mut state
+            .as_mut()
+            .expect("async_rt::init() not called")
+            .resolver_table;
         let id = table.len();
         table.push(Some(resolver));
         id
@@ -92,7 +145,26 @@ pub fn push_resolver(resolver: v8::Global<v8::PromiseResolver>) -> usize {
 
 /// Take a resolver by its slot index (called from the main thread during drain).
 fn take_resolver(id: usize) -> Option<v8::Global<v8::PromiseResolver>> {
-    RESOLVER_TABLE.with(|t| t.borrow_mut().get_mut(id)?.take())
+    STATE.with(|state| {
+        state
+            .borrow_mut()
+            .as_mut()?
+            .resolver_table
+            .get_mut(id)?
+            .take()
+    })
+}
+
+/// Resolve a reactor-engine I/O completion: take the resolver stored by
+/// `push_resolver` and settle its promise with `result` (a byte count, negative
+/// for `-errno`). Called by the engine during a pump with the owning isolate
+/// entered. A no-op if the resolver was already taken (double completion).
+pub(crate) fn resolve_io_completion(scope: &mut v8::HandleScope, resolver_id: usize, result: f64) {
+    if let Some(g) = take_resolver(resolver_id) {
+        let resolver = v8::Local::new(scope, &g);
+        let val = v8::Number::new(scope, result);
+        resolver.resolve(scope, val.into());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,16 +186,23 @@ pub struct IsolateAsyncState {
     /// Read end of the self-pipe. JS registers this with `loop.readable(fd)`
     /// so kqueue/io_uring wakes when an async FFI call completes.
     pub wake_read: RawFd,
-    /// Write end of the self-pipe. Background threads write here on FFI completion.
-    pub wake_write: RawFd,
+    /// The cross-thread wake channel: background threads call `wake()` on a
+    /// clone (pipe byte by default, Notifier post once a reactor claims it).
+    /// Owns the pipe's write end.
+    pub wake_sink: WakeSink,
+    /// Promise resolvers belong to the isolate, not the OS thread currently
+    /// pumping it. Keeping the table here lets a parked isolate migrate.
+    resolver_table: Vec<Option<v8::Global<v8::PromiseResolver>>>,
+    /// FFI callback handles follow the isolate for the same reason.
+    callback_table: Vec<Option<v8::Global<v8::Function>>>,
 }
 
 impl Drop for IsolateAsyncState {
     fn drop(&mut self) {
         unsafe {
             libc::close(self.wake_read);
-            libc::close(self.wake_write);
         }
+        // wake_write closes when the last WakeSink clone drops.
     }
 }
 
@@ -131,9 +210,15 @@ thread_local! {
     static STATE: RefCell<Option<IsolateAsyncState>> = const { RefCell::new(None) };
 }
 
-/// Initialize the per-isolate async state. Call once per isolate, before the
-/// event loop starts. Returns the wake-pipe read fd to expose to JS.
-pub fn init() -> RawFd {
+/// Build a fresh, detached `IsolateAsyncState` (its own self-pipe + executor +
+/// queues) without installing it as the current thread-local state.
+///
+/// Used to give a reactor-hosted realm isolate its *own* async state, stored
+/// alongside its isolate handle. The reactor swaps it into the thread-local
+/// (via [`swap_state`]) around each pump so the isolate's FFI completions,
+/// executor, and wake pipe stay with that isolate — never shared with the
+/// reactor's own state or sibling realm isolates on the same thread.
+pub fn new_state() -> IsolateAsyncState {
     let mut fds = [0i32; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
     assert_eq!(ret, 0, "pipe(2) failed");
@@ -144,33 +229,43 @@ pub fn init() -> RawFd {
         libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
-    let wake_read = fds[0];
-    let wake_write = fds[1];
-
-    STATE.with(|s| {
-        *s.borrow_mut() = Some(IsolateAsyncState {
-            executor: async_executor::LocalExecutor::new(),
-            completions: Arc::new(Mutex::new(Vec::new())),
-            js_call_requests: Arc::new(Mutex::new(Vec::new())),
-            view_releases: Arc::new(Mutex::new(Vec::new())),
-            wake_read,
-            wake_write,
-        });
-    });
-
-    wake_read
+    IsolateAsyncState {
+        executor: async_executor::LocalExecutor::new(),
+        completions: Arc::new(Mutex::new(Vec::new())),
+        js_call_requests: Arc::new(Mutex::new(Vec::new())),
+        view_releases: Arc::new(Mutex::new(Vec::new())),
+        wake_read: fds[0],
+        wake_sink: WakeSink::new(fds[1]),
+        resolver_table: Vec::new(),
+        callback_table: Vec::new(),
+    }
 }
 
-/// Tear down the per-isolate async state (pipes closed via Drop).
-#[allow(dead_code)]
-pub fn shutdown() {
-    STATE.with(|s| {
-        *s.borrow_mut() = None;
-    });
+pub(crate) fn with_callback_table<R>(
+    f: impl FnOnce(&mut Vec<Option<v8::Global<v8::Function>>>) -> R,
+) -> R {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        f(&mut state
+            .as_mut()
+            .expect("async_rt::init() not called")
+            .callback_table)
+    })
 }
 
-/// Returns true when called from the V8 isolate thread (i.e. `init()` has been called here).
-/// Used by `FfiCallback` trampolines to detect same-thread calls that would deadlock.
+/// Swap the current thread-local async state, returning the previous one.
+///
+/// The scheduler pumps a tenant isolate by entering it and swapping in that
+/// isolate's state (`swap_state(Some(tenant))`), pumping, then restoring its own
+/// (`swap_state(saved)`). Every `STATE.with(...)` accessor below then transparently
+/// resolves to whichever isolate is currently active.
+pub fn swap_state(new: Option<IsolateAsyncState>) -> Option<IsolateAsyncState> {
+    STATE.with(|s| std::mem::replace(&mut *s.borrow_mut(), new))
+}
+
+/// Returns true when called from a V8 isolate thread (a workload's async
+/// state is swapped in). Used by `FfiCallback` trampolines to detect
+/// same-thread calls that would deadlock.
 pub fn is_v8_thread() -> bool {
     STATE.with(|s| s.borrow().is_some())
 }
@@ -180,34 +275,40 @@ pub fn get_wake_read_fd() -> i32 {
     STATE.with(|s| s.borrow().as_ref().map(|st| st.wake_read).unwrap_or(-1))
 }
 
-/// Get the completions queue + write fd (for submitting async FFI work).
+/// Get the completions queue + wake sink (for submitting async FFI work).
 /// Returns None if `init()` hasn't been called on this thread.
-pub fn completion_handle() -> Option<(Arc<Mutex<Vec<FfiCompletion>>>, RawFd)> {
+pub fn completion_handle() -> Option<(Arc<Mutex<Vec<FfiCompletion>>>, WakeSink)> {
     STATE.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| (Arc::clone(&st.completions), st.wake_write))
+            .map(|st| (Arc::clone(&st.completions), st.wake_sink.clone()))
     })
 }
 
-/// Get the JS-call-request queue + write fd (for `FfiCallback` trampolines).
+/// Get the JS-call-request queue + wake sink (for `FfiCallback` trampolines).
 /// Returns None if `init()` hasn't been called on this thread.
-pub fn js_call_handle() -> Option<(Arc<Mutex<Vec<js_calls::JsCallRequest>>>, RawFd)> {
+pub fn js_call_handle() -> Option<(Arc<Mutex<Vec<js_calls::JsCallRequest>>>, WakeSink)> {
     STATE.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| (Arc::clone(&st.js_call_requests), st.wake_write))
+            .map(|st| (Arc::clone(&st.js_call_requests), st.wake_sink.clone()))
     })
 }
 
-/// Get the view-release queue + write fd (for `Pointer.view` backing-store
+/// Get the view-release queue + wake sink (for `Pointer.view` backing-store
 /// deleters). Returns None if `init()` hasn't been called on this thread.
-pub fn release_handle() -> Option<(ViewReleaseQueue, RawFd)> {
+pub fn release_handle() -> Option<(ViewReleaseQueue, WakeSink)> {
     STATE.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| (Arc::clone(&st.view_releases), st.wake_write))
+            .map(|st| (Arc::clone(&st.view_releases), st.wake_sink.clone()))
     })
+}
+
+/// The current isolate's wake sink (for waking this isolate from another
+/// thread — e.g. reactor-engine load reports waking the orchestrator).
+pub fn wake_sink() -> Option<WakeSink> {
+    STATE.with(|s| s.borrow().as_ref().map(|st| st.wake_sink.clone()))
 }
 
 /// Poll the executor once. Returns true if a task ran.
@@ -247,6 +348,7 @@ pub fn drain_all(
     progress |= drain_js_call_requests(scope);
     progress |= drain_view_releases(scope);
     progress |= drain_pending_resolutions(scope, state_rc);
+    progress |= crate::reactor::engine::drain_report_wakes(scope);
     progress
 }
 
@@ -306,11 +408,16 @@ fn drain_js_call_requests(scope: &mut v8::HandleScope) -> bool {
 /// Read all bytes from the wake pipe (non-blocking) and drain the FfiCompletion
 /// queue, resolving each promise with the FFI result.
 fn drain_ffi_completions(scope: &mut v8::HandleScope) -> bool {
-    // Drain the wake pipe (non-blocking; ignore errors if empty).
+    // Drain the wake pipe until empty (non-blocking; ignore errors if empty).
     STATE.with(|s| {
         if let Some(st) = s.borrow().as_ref() {
             let mut buf = [0u8; 64];
-            unsafe { libc::read(st.wake_read, buf.as_mut_ptr() as *mut _, 64) };
+            loop {
+                let n = unsafe { libc::read(st.wake_read, buf.as_mut_ptr() as *mut _, 64) };
+                if n <= 0 {
+                    break;
+                }
+            }
         }
     });
 
@@ -351,32 +458,12 @@ fn drain_ffi_completions(scope: &mut v8::HandleScope) -> bool {
     true
 }
 
-/// Drain pending_resolutions from the root realm and all embedded children.
+/// Drain pending resolutions for one reactor-hosted realm.
 fn drain_pending_resolutions(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
-    let mut progress = false;
-    progress |= drain_pending_for(scope, state_rc);
-    // Walk embedded child contexts.
-    let child_count = state_rc.borrow().child_contexts.len();
-    for i in 0..child_count {
-        let maybe_ctx = {
-            let st = state_rc.borrow();
-            match &st.child_contexts[i] {
-                crate::state::ChildRealmSlot::Active(child) => {
-                    Some(v8::Local::new(scope, &child.context))
-                }
-                _ => None,
-            }
-        };
-        if let Some(ctx) = maybe_ctx {
-            let child_scope = &mut v8::ContextScope::new(scope, ctx);
-            let child_state = crate::state::get_state(child_scope);
-            progress |= drain_pending_for(child_scope, &child_state);
-        }
-    }
-    progress
+    drain_pending_for(scope, state_rc)
 }
 
 /// Drain pending_resolutions from a single realm's FinoState.

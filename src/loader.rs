@@ -4,7 +4,6 @@
 use std::path::{Component, Path, PathBuf};
 
 use oxc_sourcemap::SourceMap;
-use v8;
 
 use crate::{
     async_context, async_runtime_module, ffi, inspector_module, platform, profiler, realm,
@@ -31,23 +30,6 @@ enum BuiltinKind {
 
 type BuiltinEntry = (&'static str, BuiltinKind);
 
-#[cfg(target_os = "macos")]
-const LOOP_BACKEND_SRC: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/js/internal/runtime/kqueue.mjs"));
-#[cfg(target_os = "macos")]
-const LOOP_BACKEND_MAP: &str = include_str!(concat!(
-    env!("OUT_DIR"),
-    "/js/internal/runtime/kqueue.mjs.map"
-));
-#[cfg(not(target_os = "macos"))]
-const LOOP_BACKEND_SRC: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/js/internal/runtime/linux.mjs"));
-#[cfg(not(target_os = "macos"))]
-const LOOP_BACKEND_MAP: &str = include_str!(concat!(
-    env!("OUT_DIR"),
-    "/js/internal/runtime/linux.mjs.map"
-));
-
 macro_rules! source_builtin {
     ($specifier:literal, $path:literal) => {
         (
@@ -73,10 +55,6 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(realm::serializer::create_module),
     ),
     (
-        "internal:thread-port",
-        BuiltinKind::Synthetic(realm::thread::create_thread_port_module),
-    ),
-    (
         "internal:transit-port",
         BuiltinKind::Synthetic(realm::transit::create_module),
     ),
@@ -95,6 +73,14 @@ static BUILTINS: &[BuiltinEntry] = &[
     (
         "internal:net-native",
         BuiltinKind::Synthetic(crate::net_native::create_module),
+    ),
+    (
+        "internal:reactor-native",
+        BuiltinKind::Synthetic(crate::reactor::create_module),
+    ),
+    (
+        "internal:reactor-engine",
+        BuiltinKind::Synthetic(crate::reactor::engine::create_module),
     ),
     (
         "internal:process",
@@ -120,17 +106,22 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:loader-hooks",
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
+    (
+        "internal:reactor/workload",
+        BuiltinKind::Synthetic(crate::reactor::workload::create_module),
+    ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
     source_builtin!("fino:realm", "realm/index"),
+    source_builtin!("fino:runtime", "runtime"),
     source_builtin!("fino:module", "module"),
-    source_builtin!("fino:realm/pool", "realm/pool"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
     source_builtin!(
         "internal:realm/transport-port",
         "internal/realm/transport-port"
     ),
+    source_builtin!("internal:realm/allocate", "internal/realm/allocate"),
     source_builtin!("internal:globals/messaging", "globals/messaging"),
     // public CLI command tasks, with internal aliases for runtime compatibility
     source_builtin!("fino:commands/root", "commands/root"),
@@ -235,24 +226,12 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     // runtime
     source_builtin!("internal:runtime/libc", "internal/runtime/libc"),
+    source_builtin!("internal:realm/port-rpc", "internal/realm/port-rpc"),
     source_builtin!("internal:parent-rpc", "internal/runtime/parent-rpc"),
     source_builtin!(
         "internal:synthetic-direct",
         "internal/runtime/synthetic-direct"
     ),
-    source_builtin!("internal:runtime/kqueue", "internal/runtime/kqueue"),
-    source_builtin!("internal:runtime/io_uring", "internal/runtime/io_uring"),
-    source_builtin!("internal:runtime/poll", "internal/runtime/poll"),
-    source_builtin!("internal:runtime/linux", "internal/runtime/linux"),
-    (
-        "internal:runtime/loop-backend",
-        BuiltinKind::Source {
-            code: LOOP_BACKEND_SRC,
-            source_map: LOOP_BACKEND_MAP,
-            path: "internal/runtime/loop-backend",
-        },
-    ),
-    source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
     source_builtin!("fino:process", "process"),
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:signals", "signals"),
@@ -276,6 +255,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/dns-wire", "internal/net/dns-wire"),
     source_builtin!("internal:net/dnssec", "internal/net/dnssec"),
     source_builtin!("fino:net/socket", "net/socket"),
+    source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
     source_builtin!("fino:net/tls", "net/tls"),
     source_builtin!("fino:net/dns", "net/dns"),
     source_builtin!("fino:net/mdns", "net/mdns"),
@@ -375,7 +355,6 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:cluster/webtransport-transport",
         "internal/cluster/webtransport-transport"
     ),
-    source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
     source_builtin!("internal:cluster/client", "internal/cluster/client"),
     source_builtin!("fino:cluster", "cluster"),
@@ -590,8 +569,26 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:workflow", "workflow"),
     source_builtin!("fino:task", "task"),
     source_builtin!("fino:task/durable", "task/durable"),
-    // orchestrator + jobs
+    // orchestration + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
+    source_builtin!("internal:orchestrator/node", "internal/orchestrator/node"),
+    source_builtin!(
+        "internal:orchestrator/deployment",
+        "internal/orchestrator/deployment"
+    ),
+    source_builtin!(
+        "internal:orchestrator/cluster-orchestrator",
+        "internal/orchestrator/cluster-orchestrator"
+    ),
+    source_builtin!(
+        "internal:orchestrator/node-orchestrator",
+        "internal/orchestrator/node-orchestrator"
+    ),
+    source_builtin!(
+        "internal:orchestrator/budget-watchdog",
+        "internal/orchestrator/budget-watchdog"
+    ),
+    source_builtin!("internal:orchestrator/idle", "internal/orchestrator/idle"),
     source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
     source_builtin!("internal:jobs/store", "internal/jobs/store"),
     source_builtin!("internal:jobs/runner", "internal/jobs/runner"),
@@ -971,6 +968,41 @@ pub fn resolve_module_callback<'s>(
     });
 
     if spec.starts_with("fino:") || spec.starts_with("internal:") {
+        // Enforce Block rules even for builtins already present in the realm's
+        // cache (get_or_load_builtin returns cached modules before re-checking
+        // rules). A cached module was already resolved through an allowed path,
+        // so honor that: only re-block a spec that is NOT yet cached. This
+        // applies the same builtin-referrer exemption as get_or_load_builtin —
+        // builtins may always import other builtins regardless of user realm
+        // restrictions, so a child realm's own bootstrap chain (and any module
+        // it legitimately pre-loaded) is never denied under a catch-all Block.
+        let blocked = {
+            let st = state_rc.borrow();
+            if st.builtin_cache.contains_key(spec.as_str()) {
+                false
+            } else if matches!(
+                crate::state::resolve_directive(&st.import_rules, from_spec.as_deref(), &spec),
+                Some(ImportDirective::Block)
+            ) {
+                let is_builtin_from = from_spec.as_deref().is_some_and(|f| {
+                    f.starts_with("fino:")
+                        || f.starts_with("internal:")
+                        || st.builtin_specifiers.values().any(|v| v.as_str() == f)
+                });
+                !is_builtin_from
+            } else {
+                false
+            }
+        };
+        if blocked {
+            let msg = v8::String::new(
+                scope,
+                &format!("Import of '{spec}' is blocked in this Realm"),
+            )?;
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return None;
+        }
         return get_or_load_builtin(scope, &spec, from_spec.as_deref());
     }
 
@@ -1289,7 +1321,7 @@ fn tla_fulfill_callback(
         let mut st = state_rc.borrow_mut();
         let entry = st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take());
         // Trim trailing None slots to prevent unbounded Vec growth.
-        while st.tla_resolvers.last().map_or(false, |e| e.is_none()) {
+        while st.tla_resolvers.last().is_some_and(|e| e.is_none()) {
             st.tla_resolvers.pop();
         }
         entry
@@ -1313,7 +1345,7 @@ fn tla_reject_callback(
     let entry = {
         let mut st = state_rc.borrow_mut();
         let entry = st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take());
-        while st.tla_resolvers.last().map_or(false, |e| e.is_none()) {
+        while st.tla_resolvers.last().is_some_and(|e| e.is_none()) {
             st.tla_resolvers.pop();
         }
         entry
@@ -1498,7 +1530,7 @@ fn get_or_load_builtin_inner<'s>(
         let st = state_rc.borrow();
         let d = resolve_directive(&st.import_rules, from, spec).cloned();
         if matches!(d, Some(ImportDirective::Block)) {
-            let is_builtin_from = from.map_or(false, |f| {
+            let is_builtin_from = from.is_some_and(|f| {
                 f.starts_with("fino:")
                     || f.starts_with("internal:")
                     || st.builtin_specifiers.values().any(|v| v == f)
@@ -1752,6 +1784,12 @@ pub fn register_source_map_from_json(
 
 /// Register a module's script_id as a builtin so `internal:*` imports are
 /// allowed from it.
+///
+/// This does NOT insert the module into the builtin cache: directly-evaluated
+/// harness modules (`internal:bootstrap`, `internal:main`) must never be
+/// linked into loader-instantiated graphs — V8 wedges evaluating a graph that
+/// links a module evaluated by a foreign instantiation pass. Builtins that
+/// need harness state must use an internal bridge rather than the loader cache.
 pub fn register_as_builtin(scope: &mut v8::HandleScope, module: v8::Local<v8::Module>, spec: &str) {
     if let Some(id) = module.script_id() {
         get_state(scope)

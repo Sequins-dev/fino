@@ -5,13 +5,10 @@
 * microtask queue, and event loop. The parent's import rule list governs every
 * module resolution in the child; the child can layer overrides on top.
 *
-* The release baseline covers embedded realms plus isolated `thread`,
-* `process`, and `remote` modes. Thread and process realms provide lifecycle,
-* messaging, `run()`, `call()`, facade, and import-rule behavior with transport
-* parity where the underlying serializers allow it. Remote realms run over the
-* current trusted `fino:cluster` WebTransport transport and require an active
-* cluster before construction. Cluster authentication, hostile-peer handling,
-* and remote `watch` / `repl` modes are outside this baseline.
+* Every ordinary realm is hosted by a reactor thread selected by node
+* orchestration. `RealmDeployment` manages independent replicas without
+* changing the one-container meaning of `Realm`. `process: true` adds an
+* OS-process isolation boundary while preserving the same Realm API.
 *
 * The import rule list uses last-match-wins semantics. Declare a wildcard
 * first as the baseline and more specific patterns afterwards as overrides.
@@ -25,7 +22,6 @@
 *
 * const realm = new Realm({
 *   entry: './worker.ts',
-*   thread: true,
 *   overrides: ImportMap.inherit([
 *     { pattern: 'fino:process', directive: 'block' },
 *   ]),
@@ -34,16 +30,18 @@
 * await realm.terminate();
 * ```
 */
-import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { mergeChildRules, createProcessContext, stepProcessContext } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
-import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
-import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
-import { readable, removeRead } from 'internal:runtime/loop';
-import { serialize as _ser } from 'internal:serializer';
-import type { ClusterClient } from 'internal:cluster/client';
-import { ClusterPort, getCluster } from 'fino:cluster';
+import { allocateScheduledRealm, type ScheduledRealmAllocation } from 'internal:realm/allocate';
+import { IdleRetirement } from 'internal:orchestrator/idle';
+import { PortRpc, type WireCodec } from 'internal:realm/port-rpc';
+import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
+import { ThreadPort, DeferredTransportPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
+import * as deployment from 'internal:orchestrator/deployment';
+import type { ReplicaLease } from 'internal:orchestrator/deployment';
+import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
 const _topicRealmSpawn = topic(otelRuntimeTopic('realm', 'spawn', 'start'));
@@ -219,9 +217,34 @@ function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
   if (!endpoint) return undefined;
   return JSON.stringify({ cliOtel: { endpoint } });
 }
+
 // ---------------------------------------------------------------------------
 // ImportMap - helper for building the child-specific rule list
 // ---------------------------------------------------------------------------
+/**
+* Anything that expands to import rules. The provider config classes
+* (`DiskFsConfig`, `SystemNetConfig`, `SystemDnsConfig`) implement this, so
+* common I/O grants read as one object inside `overrides` instead of a
+* hand-written rule list.
+*/
+export interface ImportRuleBuilder {
+  toRules(): ImportRule[];
+}
+
+/** A rule-list entry: a literal rule, or a builder that expands to rules. */
+export type ImportRuleInput = ImportRule | ImportRuleBuilder;
+
+function _flattenRules(entries: ImportRuleInput[]): ImportRule[] {
+  const rules: ImportRule[] = [];
+  for (const entry of entries) {
+    if (typeof (entry as ImportRuleBuilder).toRules === 'function') {
+      rules.push(...(entry as ImportRuleBuilder).toRules());
+    } else {
+      rules.push(entry as ImportRule);
+    }
+  }
+  return rules;
+}
 /**
 * An ordered list of import rules to apply to a child Realm.
 *
@@ -276,8 +299,8 @@ export class ImportMap {
   *
   * @param rules Ordered child-specific import rules.
   */
-  constructor(rules: ImportRule[]) {
-    this.#rules = rules;
+  constructor(rules: ImportRuleInput[]) {
+    this.#rules = _flattenRules(rules);
   }
   /**
   * Deny everything by default; allow/remap/facade specific specifiers.
@@ -294,7 +317,7 @@ export class ImportMap {
   * new Realm({ entry: './worker.ts', overrides });
   * ```
   */
-  static deny(overrides: ImportRule[]): ImportMap {
+  static deny(overrides: ImportRuleInput[]): ImportMap {
     return new ImportMap([{
       pattern: '*',
       directive: 'block'
@@ -316,7 +339,7 @@ export class ImportMap {
   * new Realm({ entry: './worker.ts', overrides });
   * ```
   */
-  static inherit(overrides: ImportRule[]): ImportMap {
+  static inherit(overrides: ImportRuleInput[]): ImportMap {
     return new ImportMap([{
       pattern: '*',
       directive: 'inherit'
@@ -694,7 +717,7 @@ class _WriteSource {
 }
 // portObj -> (reqId -> _WriteSource) for active write streams on this port.
 const _portWriteSources = new WeakMap<object, Map<number, _WriteSource>>();
-function _getOrCreateWriteSourceRegistry(port: MessagePort | ThreadPort | ProcessPort | ClusterPort): Map<number, _WriteSource> {
+function _getOrCreateWriteSourceRegistry(port: MessagePort | BaseTransportPort): Map<number, _WriteSource> {
   const key = port as object;
   let reg = _portWriteSources.get(key);
   if (!reg) {
@@ -711,10 +734,157 @@ interface _HandleEntry {
   streams: Map<string, (...args: unknown[]) => AsyncIterable<unknown>>;
   sinks: Map<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>>;
 }
+/** How a dispatch target resolves its methods (facade or handle entry). */
+interface _RpcTarget {
+  /** Error-message name, e.g. `handle '__h3'` or `facade 'app:api'`. */
+  label: string;
+  scalar(method: string): ((...args: unknown[]) => unknown) | undefined;
+  stream(method: string): ((...args: unknown[]) => AsyncIterable<unknown>) | undefined;
+  sink(method: string): ((args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>) | undefined;
+}
+
+/**
+* The one server-side RPC envelope dispatcher: write-stream setup and chunk
+* routing, request dispatch across stream/scalar/sink methods, async-iterable
+* result streaming, and FacadeHandle registration. Facade bindings and handle
+* registries differ only in how a specifier resolves to a target.
+*/
+function _dispatchRpcEnvelope(
+  port: MessagePort | BaseTransportPort,
+  reg: Map<string, _HandleEntry>,
+  wsSources: Map<number, _WriteSource>,
+  ev: Event,
+  resolveTarget: (specifier: string) => _RpcTarget | null
+): void {
+  const msg = (ev as MessageEvent).data;
+  if (!msg || typeof msg !== 'object') return;
+  const obj = msg as Record<string, unknown>;
+  if (obj['__rpc_send_start'] === true) {
+    const target = resolveTarget(String(obj['specifier'] ?? ''));
+    if (!target) return;
+    (ev as MessageEvent).stopImmediatePropagation?.();
+    const method = obj['method'] as string ?? '';
+    const reqId = obj['reqId'] as number ?? 0;
+    const args = obj['args'] as unknown[] ?? [];
+    const sinkFn = target.sink(method);
+    if (!sinkFn) {
+      port.postMessage({
+        __rpc_res: true,
+        reqId,
+        error: `No sendStream method '${method}' on ${target.label}`
+      });
+      return;
+    }
+    const source = new _WriteSource();
+    wsSources.set(reqId, source);
+    sinkFn(args, source).then((result) => {
+      wsSources.delete(reqId);
+      _sendResult(port, reg, reqId, result);
+    }, (err: unknown) => {
+      wsSources.delete(reqId);
+      port.postMessage({
+        __rpc_res: true,
+        reqId,
+        error: String(err)
+      });
+    });
+    return;
+  }
+  if (obj['__rpc_send_chunk'] === true) {
+    const src = wsSources.get(obj['reqId'] as number);
+    if (src) {
+      (ev as MessageEvent).stopImmediatePropagation?.();
+      src.push(obj['chunk']);
+    }
+    return;
+  }
+  if (obj['__rpc_send_end'] === true) {
+    const src = wsSources.get(obj['reqId'] as number);
+    if (src) {
+      (ev as MessageEvent).stopImmediatePropagation?.();
+      wsSources.delete(obj['reqId'] as number);
+      src.end();
+    }
+    return;
+  }
+  if (obj['__rpc_send_err'] === true) {
+    const src = wsSources.get(obj['reqId'] as number);
+    if (src) {
+      (ev as MessageEvent).stopImmediatePropagation?.();
+      wsSources.delete(obj['reqId'] as number);
+      src.fail(String(obj['error'] ?? 'sink aborted'));
+    }
+    return;
+  }
+  if (obj['__rpc_req'] !== true) return;
+  const target = resolveTarget(String(obj['specifier'] ?? ''));
+  if (!target) return;
+  (ev as MessageEvent).stopImmediatePropagation?.();
+  const method = obj['method'] as string ?? '';
+  const reqId = obj['reqId'] as number ?? 0;
+  const args = obj['args'] as unknown[] ?? [];
+  const streamResult = (iterable: AsyncIterable<unknown>) => {
+    (async () => {
+      try {
+        for await (const chunk of iterable) {
+          port.postMessage({
+            __rpc_chunk: true,
+            reqId,
+            chunk
+          });
+        }
+        port.postMessage({
+          __rpc_end: true,
+          reqId
+        });
+      } catch (err: unknown) {
+        port.postMessage({
+          __rpc_err: true,
+          reqId,
+          error: String(err)
+        });
+      }
+    })().catch(() => {});
+  };
+  const streamFn = target.stream(method);
+  if (streamFn) {
+    let iterable: AsyncIterable<unknown>;
+    try {
+      iterable = streamFn(...args);
+    } catch (err: unknown) {
+      port.postMessage({
+        __rpc_res: true,
+        reqId,
+        error: String(err)
+      });
+      return;
+    }
+    streamResult(iterable);
+    return;
+  }
+  const scalarFn = target.scalar(method);
+  if (!scalarFn) {
+    port.postMessage({
+      __rpc_res: true,
+      reqId,
+      error: `No method '${method}' on ${target.label}`
+    });
+    return;
+  }
+  new Promise<unknown>((res) => res(scalarFn(...args))).then((result) => {
+    if (_isAsyncIterable(result)) streamResult(result);
+    else _sendResult(port, reg, reqId, result);
+  }, (err: unknown) => port.postMessage({
+    __rpc_res: true,
+    reqId,
+    error: String(err)
+  }));
+}
+
 // WeakMap: port -> (handleId -> HandleEntry). GC'd when the port is collected.
 const _portHandleRegistries = new WeakMap<object, Map<string, _HandleEntry>>();
 let _nextHandleSeq = 0;
-function _getOrCreateHandleRegistry(port: MessagePort | ThreadPort | ProcessPort | ClusterPort): Map<string, _HandleEntry> {
+function _getOrCreateHandleRegistry(port: MessagePort | BaseTransportPort): Map<string, _HandleEntry> {
   const key = port as object;
   let reg = _portHandleRegistries.get(key);
   if (reg) return reg;
@@ -724,96 +894,16 @@ function _getOrCreateHandleRegistry(port: MessagePort | ThreadPort | ProcessPort
   const wsSources = _getOrCreateWriteSourceRegistry(port);
   // One shared dispatcher per port handles all handle method calls.
   port.addEventListener('message', function _handleDispatcher(ev: Event) {
-    const msg = (ev as MessageEvent).data;
-    if (!msg || typeof msg !== 'object') return;
-    const obj = msg as Record<string, unknown>;
-    // Write-stream envelopes for handle sink methods
-    if (obj['__rpc_send_start'] === true) {
-      const entry = registry.get(obj['specifier'] as string ?? '');
-      if (!entry) return;
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      const method = obj['method'] as string ?? '';
-      const reqId = obj['reqId'] as number ?? 0;
-      const args = obj['args'] as unknown[] ?? [];
-      const sinkFn = entry.sinks.get(method);
-      if (!sinkFn) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: `No sendStream method '${method}' on handle '${obj['specifier']}'`
-        });
-        return;
-      }
-      const source = new _WriteSource();
-      wsSources.set(reqId, source);
-      sinkFn(args, source).then((result) => {
-        wsSources.delete(reqId);
-        _sendResult(port, registry, reqId, result);
-      }, (err: unknown) => {
-        wsSources.delete(reqId);
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: String(err)
-        });
-      });
-      return;
-    }
-    if (obj['__rpc_req'] !== true) return;
-    const entry = registry.get(obj['specifier'] as string ?? '');
-    if (!entry) return;
-    (ev as MessageEvent).stopImmediatePropagation?.();
-    const method = obj['method'] as string ?? '';
-    const reqId = obj['reqId'] as number ?? 0;
-    const args = obj['args'] as unknown[] ?? [];
-    const streamFn = entry.streams.get(method);
-    if (streamFn) {
-      let iter: AsyncIterable<unknown>;
-      try {
-        iter = streamFn(...args);
-      } catch (err: unknown) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: String(err)
-        });
-        return;
-      }
-      (async () => {
-        try {
-          for await (const chunk of iter) port.postMessage({
-            __rpc_chunk: true,
-            reqId,
-            chunk
-          });
-          port.postMessage({
-            __rpc_end: true,
-            reqId
-          });
-        } catch (err: unknown) {
-          port.postMessage({
-            __rpc_err: true,
-            reqId,
-            error: String(err)
-          });
-        }
-      })().catch(() => {});
-      return;
-    }
-    const scalarFn = entry.scalar.get(method);
-    if (!scalarFn) {
-      port.postMessage({
-        __rpc_res: true,
-        reqId,
-        error: `No method '${method}' on handle '${obj['specifier']}'`
-      });
-      return;
-    }
-    new Promise<unknown>((res) => res(scalarFn(...args))).then((result) => _sendResult(port, registry, reqId, result), (err: unknown) => port.postMessage({
-      __rpc_res: true,
-      reqId,
-      error: String(err)
-    }));
+    _dispatchRpcEnvelope(port, registry, wsSources, ev, (specifier) => {
+      const entry = registry.get(specifier);
+      if (!entry) return null;
+      return {
+        label: `handle '${specifier}'`,
+        scalar: (method) => entry.scalar.get(method),
+        stream: (method) => entry.streams.get(method),
+        sink: (method) => entry.sinks.get(method)
+      };
+    });
   } as EventListener);
   return reg;
 }
@@ -1203,179 +1293,27 @@ export class Facade {
   *
   * @internal
   */
-  _bind(port: MessagePort | ThreadPort | ProcessPort | ClusterPort): void {
+  _bind(port: MessagePort | BaseTransportPort): void {
     const specifier = this.#specifier;
     const handlers = this.#handlers;
     const streamHandlers = this.#streamHandlers;
     const sinkHandlers = this.#sinkHandlers;
     const reg = _getOrCreateHandleRegistry(port);
     const wsSources = _getOrCreateWriteSourceRegistry(port);
+    const target: _RpcTarget = {
+      label: `facade '${specifier}'`,
+      scalar: (method) => handlers.get(method),
+      stream: (method) => streamHandlers.get(method),
+      sink: (method) => sinkHandlers.get(method)
+    };
     port.addEventListener('message', function onRpcRequest(ev: Event) {
-      const msg = (ev as MessageEvent).data;
-      if (msg === null || typeof msg !== 'object') return;
-      const obj = msg as Record<string, unknown>;
-      // --- write-stream chunk envelopes (child->parent) ---
-      if (obj['__rpc_send_start'] === true && obj['specifier'] === specifier) {
-        (ev as MessageEvent).stopImmediatePropagation?.();
-        const { method, reqId, args } = obj as {
-          method: string;
-          reqId: number;
-          args: unknown[];
-        };
-        const fn = sinkHandlers.get(method);
-        if (!fn) {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: `No sendStream handler for ${specifier}#${method}`
-          });
-          return;
-        }
-        const source = new _WriteSource();
-        wsSources.set(reqId, source);
-        fn(args, source).then((result) => {
-          wsSources.delete(reqId);
-          _sendResult(port, reg, reqId, result);
-        }, (err: unknown) => {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: String(err)
-          });
-        });
-        return;
-      }
-      if (obj['__rpc_send_chunk'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          src.push(obj['chunk']);
-        }
-        return;
-      }
-      if (obj['__rpc_send_end'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          wsSources.delete(obj['reqId'] as number);
-          src.end();
-        }
-        return;
-      }
-      if (obj['__rpc_send_err'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          wsSources.delete(obj['reqId'] as number);
-          src.fail(String(obj['error'] ?? 'sink aborted'));
-        }
-        return;
-      }
-      // --- standard request dispatch (__rpc_req) ---
-      if (obj['__rpc_req'] !== true || obj['specifier'] !== specifier) {
-        return;
-      }
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      const { method, reqId, args } = msg as {
-        method: string;
-        reqId: number;
-        args: unknown[];
-      };
-      // --- streaming handler ---
-      const streamFn = streamHandlers.get(method);
-      if (streamFn) {
-        let iterable: AsyncIterable<unknown>;
-        try {
-          iterable = streamFn(...args);
-        } catch (err: unknown) {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: String(err)
-          });
-          return;
-        }
-        (async () => {
-          try {
-            for await (const chunk of iterable) {
-              port.postMessage({
-                __rpc_chunk: true,
-                reqId,
-                chunk
-              });
-            }
-            port.postMessage({
-              __rpc_end: true,
-              reqId
-            });
-          } catch (err: unknown) {
-            port.postMessage({
-              __rpc_err: true,
-              reqId,
-              error: String(err)
-            });
-          }
-        })().catch(() => {});
-        return;
-      }
-      // --- scalar handler ---
-      const handler = handlers.get(method);
-      if (!handler) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: `No handler for ${specifier}#${method}`
-        });
-        return;
-      }
-      new Promise<unknown>((res) => res(handler(...args))).then((result) => {
-        if (result instanceof FacadeHandle) {
-          // Register the handle and send its ID + stream-method list to the child.
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            result: _registerHandle(reg, result)
-          });
-        } else if (_isAsyncIterable(result)) {
-          (async () => {
-            try {
-              for await (const chunk of result) {
-                port.postMessage({
-                  __rpc_chunk: true,
-                  reqId,
-                  chunk
-                });
-              }
-              port.postMessage({
-                __rpc_end: true,
-                reqId
-              });
-            } catch (err: unknown) {
-              port.postMessage({
-                __rpc_err: true,
-                reqId,
-                error: String(err)
-              });
-            }
-          })().catch(() => {});
-        } else {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            result
-          });
-        }
-      }, (err: unknown) => port.postMessage({
-        __rpc_res: true,
-        reqId,
-        error: String(err)
-      }));
+      _dispatchRpcEnvelope(port, reg, wsSources, ev, (requested) => requested === specifier ? target : null);
     } as EventListener);
     port.start();
   }
 }
 // ---------------------------------------------------------------------------
-// Legacy provider config classes (kept for backwards compatibility)
+// Provider config classes — rule builders for the common I/O grants
 // ---------------------------------------------------------------------------
 /**
 * Generated-doc-visible interface `DiskFsOptions`.
@@ -1412,15 +1350,16 @@ export interface DiskFsOptions {
 /**
 * Use the real on-disk filesystem for this realm.
 *
-* This legacy provider config is kept for backwards compatibility. New code
-* should prefer explicit import rules where possible.
+* A rule builder for the most common filesystem grant: place it inside
+* `overrides` and it expands (via `toRules()`) into the equivalent import
+* rules.
 *
 * ```ts no_run
-* import { DiskFsConfig, Realm } from 'fino:realm';
+* import { DiskFsConfig, ImportMap, Realm } from 'fino:realm';
 *
 * new Realm({
 *   entry: './worker.ts',
-*   providers: { fs: new DiskFsConfig({ root: '/srv/app' }) },
+*   overrides: ImportMap.deny([new DiskFsConfig({ root: '/srv/app' })]),
 * });
 * ```
 */
@@ -1469,8 +1408,8 @@ export class DiskFsConfig {
   /**
   * Serialize this provider config.
   *
-  * The result includes the provider type and any configured options. It is
-  * suitable for legacy config persistence, not for direct import-rule use.
+  * The result includes the provider type and any configured options, for
+  * config persistence; use `toRules()` for import-rule expansion.
   *
   * ```ts no_run
   * import { DiskFsConfig } from 'fino:realm';
@@ -1504,8 +1443,8 @@ export class DiskFsConfig {
   /**
   * Convert this provider config into import rules.
   *
-  * Disk filesystem config inherits the runtime file bindings, matching the
-  * legacy system default behavior.
+  * Disk filesystem config inherits the runtime file bindings — the system
+  * default behavior, granted explicitly.
   *
   * ```ts no_run
   * import { DiskFsConfig } from 'fino:realm';
@@ -1528,13 +1467,16 @@ export class DiskFsConfig {
 /**
 * Use the system network stack for this realm.
 *
-* This legacy provider config maps the network provider import back to the
-* inherited system provider.
+* A rule builder mapping the network provider import to the inherited system
+* provider; place it inside `overrides`.
 *
 * ```ts no_run
-* import { Realm, SystemNetConfig } from 'fino:realm';
+* import { ImportMap, Realm, SystemNetConfig } from 'fino:realm';
 *
-* new Realm({ entry: './worker.ts', providers: { net: new SystemNetConfig() } });
+* new Realm({
+*   entry: './worker.ts',
+*   overrides: ImportMap.deny([new SystemNetConfig()]),
+* });
 * ```
 */
 export class SystemNetConfig {
@@ -1600,13 +1542,16 @@ export class SystemNetConfig {
 /**
 * Use the system DNS resolver for this realm.
 *
-* This legacy provider config maps DNS provider imports back to the inherited
-* system resolver.
+* A rule builder mapping DNS provider imports to the inherited system
+* resolver; place it inside `overrides`.
 *
 * ```ts no_run
-* import { Realm, SystemDnsConfig } from 'fino:realm';
+* import { ImportMap, Realm, SystemDnsConfig } from 'fino:realm';
 *
-* new Realm({ entry: './worker.ts', providers: { dns: new SystemDnsConfig() } });
+* new Realm({
+*   entry: './worker.ts',
+*   overrides: ImportMap.deny([new SystemDnsConfig()]),
+* });
 * ```
 */
 export class SystemDnsConfig {
@@ -1673,70 +1618,16 @@ export class SystemDnsConfig {
 // Realm options
 // ---------------------------------------------------------------------------
 /**
-* Legacy provider overrides installed in a child realm.
-*
-* Prefer `RealmOptions.overrides` with explicit import rules for new code.
-* Unspecified providers are inherited from the parent realm.
-*
-* ```ts no_run
-* import { DiskFsConfig, type RealmProviders } from 'fino:realm';
-*
-* const providers: RealmProviders = {
-*   fs: new DiskFsConfig({ root: '/srv/app' }),
-* };
-* ```
-*/
-export interface RealmProviders {
-  /**
-  * Filesystem provider override.
-  *
-  * When omitted, filesystem bindings are inherited. This compatibility field
-  * currently supports the disk filesystem provider config.
-  *
-  * ```ts no_run
-  * import { DiskFsConfig, type RealmProviders } from 'fino:realm';
-  *
-  * const providers: RealmProviders = { fs: new DiskFsConfig() };
-  * ```
-  */
-  fs?: DiskFsConfig;
-  /**
-  * Network provider override.
-  *
-  * When omitted, network provider bindings are inherited.
-  *
-  * ```ts no_run
-  * import { SystemNetConfig, type RealmProviders } from 'fino:realm';
-  *
-  * const providers: RealmProviders = { net: new SystemNetConfig() };
-  * ```
-  */
-  net?: SystemNetConfig;
-  /**
-  * DNS provider override.
-  *
-  * When omitted, DNS provider bindings are inherited.
-  *
-  * ```ts no_run
-  * import { SystemDnsConfig, type RealmProviders } from 'fino:realm';
-  *
-  * const providers: RealmProviders = { dns: new SystemDnsConfig() };
-  * ```
-  */
-  dns?: SystemDnsConfig;
-}
-/**
 * Options for constructing and running a child realm.
 *
-* Exactly one of `thread`, `process`, or `remote` may be used for isolated
-* execution modes; enabling more than one throws during construction. Without
-* those flags, the realm is embedded in the current isolate with its own
-* context and module graph.
+* `process: true` requests an OS-process isolation boundary. Without it, node
+* orchestration places the realm on a reactor. Placement is intentionally not
+* exposed as a construction option.
 *
 * ```ts no_run
 * import { Realm, type RealmOptions } from 'fino:realm';
 *
-* const options: RealmOptions = { entry: './worker.ts', thread: true };
+* const options: RealmOptions = { entry: './worker.ts' };
 * const realm = new Realm(options);
 * ```
 */
@@ -1768,63 +1659,51 @@ export interface RealmOptions {
   */
   root?: string;
   /**
+  * Scheduling priority class for this realm.
+  *
+  * `'interactive'` and `'service'` (the default) realms run on
+  * latency-class reactor threads; `'background'` realms are placed on the
+  * batch reactor pool so sync-heavy or throughput work never contends with
+  * efficient async workloads. The allocator also demotes realms that
+  * repeatedly blow the synchronous-slice budget, whatever their declared
+  * priority. Ignored by process-isolated realms, which own their process.
+  *
+  * ```ts no_run
+  * import { Realm } from 'fino:realm';
+  *
+  * const indexer = new Realm({ entry: './reindex.ts', priority: 'background' });
+  * ```
+  */
+  priority?: 'interactive' | 'service' | 'background';
+  /**
   * Import rules for this Realm. Appended after the parent's rules;
   * last-match-wins. Use `ImportMap.deny([...])` or `ImportMap.inherit([...])`.
   *
   * ```ts no_run
   * import { ImportMap, type RealmOptions } from 'fino:realm';
   *
-  * const options: RealmOptions = {
-  *   entry: './worker.ts',
-  *   overrides: ImportMap.deny([{ pattern: './api.ts', directive: 'inherit' }]),
-  * };
-  * ```
-  */
-  overrides?: ImportMap | ImportRule[];
-  /**
-  * @deprecated Use `overrides` with explicit ImportRule entries instead.
-  * Override specific I/O providers. Unspecified providers are inherited.
+  * Entries may be literal rules or rule builders such as `DiskFsConfig` —
+  * anything with `toRules()` expands in place.
   *
   * ```ts no_run
-  * import { DiskFsConfig, type RealmOptions } from 'fino:realm';
+  * import { DiskFsConfig, ImportMap, type RealmOptions } from 'fino:realm';
   *
   * const options: RealmOptions = {
   *   entry: './worker.ts',
-  *   providers: { fs: new DiskFsConfig() },
+  *   overrides: ImportMap.deny([
+  *     new DiskFsConfig({ root: '/srv/app' }),
+  *     { pattern: './api.ts', directive: 'inherit' },
+  *   ]),
   * };
   * ```
   */
-  providers?: RealmProviders;
-  /**
-  * @deprecated Use `overrides` with `{ pattern, directive: 'block' }` instead.
-  * Module specifiers that should throw on import in the child Realm.
-  *
-  * ```ts no_run
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const options: RealmOptions = {
-  *   entry: './worker.ts',
-  *   blocked: ['fino:process'],
-  * };
-  * ```
-  */
-  blocked?: string[];
-  /**
-  * If true, spawn the child Realm on a separate OS thread with its own
-  * V8 Isolate. Messaging uses V8 ValueSerializer over Rust mpsc channels
-  * instead of same-Isolate structured clone.
-  *
-  * ```ts no_run
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const options: RealmOptions = { entry: './worker.ts', thread: true };
-  * ```
-  */
-  thread?: boolean;
+  overrides?: ImportMap | ImportRuleInput[];
   /**
   * If true, spawn the child Realm as a separate OS process for hard crash
-  * isolation. Messaging uses framed binary over a Unix socketpair.
-  * Mutually exclusive with `thread`.
+  * isolation and OS-level sandbox enforcement. Messaging uses framed binary
+  * over a Unix socketpair. This is an isolation boundary orchestration must
+  * honor, not a placement hint — plain realms are placed on a reactor
+  * automatically.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -1834,23 +1713,9 @@ export interface RealmOptions {
   */
   process?: boolean;
   /**
-  * If true, spawn the child Realm on a remote cluster node. Requires a
-  * prior call to `startCluster()` or `joinCluster()` from `fino:cluster`.
-  * Messaging uses the cluster PORT_MSG protocol over WebTransport.
-  * Mutually exclusive with `thread` and `process`.
-  *
-  * ```ts no_run
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const options: RealmOptions = { entry: './worker.ts', remote: true };
-  * ```
-  */
-  remote?: boolean;
-  /**
   * If true, automatically restart the child Realm whenever any file it
   * imported changes on disk. The JS `Realm` instance is stable across
   * reloads; only the underlying V8 context / thread / process is replaced.
-  * Not supported with `remote: true`.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -1862,8 +1727,8 @@ export interface RealmOptions {
   /**
   * If true, run this child Realm in REPL mode. The child listens for
   * `{ __eval, id, code }` messages on its port and responds with
-  * `{ __eval_result }` or `{ __eval_error }`. Embedded-only - not
-  * compatible with `thread`, `process`, `remote`, or `watch`.
+  * `{ __eval_result }` or `{ __eval_error }`. It is not compatible with
+  * process isolation or watch mode.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -1877,7 +1742,7 @@ export interface RealmOptions {
   * The child reads it via `internal:realm-bridge.getRealmData()` before the
   * entry module is imported, so it can shape application-specific worker
   * configuration. Runtime bootstrap metadata such as `otlpEndpoint` is stored
-  * separately and does not appear here. Not supported with `remote: true`.
+  * separately and does not appear here.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -1906,40 +1771,25 @@ export interface RealmOptions {
   * ```
   */
   otlpEndpoint?: string | false;
-  /**
-  * Parent-side MessagePort for communication with the child.
-  * Ignored when `thread: true` or `process: true`.
-  *
-  * Must be paired with `output`. If omitted, the realm constructor creates a
-  * fresh `MessageChannel` and exposes the parent side as `realm.port`.
-  *
-  * ```ts no_run
-  * import { MessageChannel } from 'fino:realm/messaging';
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const { port1, port2 } = new MessageChannel();
-  * const options: RealmOptions = { entry: './worker.ts', input: port1, output: port2 };
-  * ```
-  */
-  input?: MessagePort;
-  /**
-  * Child-side MessagePort passed into the child Realm.
-  * Must be provided together with `input`.
-  * Ignored when `thread: true` or `process: true`.
-  *
-  * The child can import `fino:realm/self` to access this port. Passing only
-  * `output` without `input` is ignored by the embedded constructor path.
-  *
-  * ```ts no_run
-  * import { MessageChannel } from 'fino:realm/messaging';
-  * import type { RealmOptions } from 'fino:realm';
-  *
-  * const { port1, port2 } = new MessageChannel();
-  * const options: RealmOptions = { entry: './worker.ts', input: port1, output: port2 };
-  * ```
-  */
-  output?: MessagePort;
 }
+
+/**
+* Replica bounds and stabilization windows for a `RealmDeployment`: `min`
+* (availability floor, default 1), `max` (ceiling, defaults to aggregate
+* eligible capacity), `scaleUpWindowMs` (queue-pressure window before adding
+* a replica, default 1s), and `scaleDownWindowMs` (quiet window before
+* draining an excess replica, default 30s). Alias of the controller's own
+* policy type — one shape, not two.
+*/
+export type RealmDeploymentScalingOptions = deployment.DeploymentScalingPolicy;
+
+/** Options for a replicated deployment of independent realms. */
+export type RealmDeploymentOptions = Omit<RealmOptions, 'process' | 'watch' | 'repl'> & {
+  /** Process isolation is one-to-one and therefore only supported by `Realm`. */
+  process?: never;
+  /** Replica-count and queue-pressure policy. */
+  scaling?: RealmDeploymentScalingOptions;
+};
 /**
 * Options for creating a Realm from in-memory entrypoint source.
 *
@@ -1982,7 +1832,7 @@ export interface RealmSourceOptions extends Omit<RealmOptions, 'entry' | 'watch'
 // Entry function type constraint
 // ---------------------------------------------------------------------------
 /**
-* Function shape used by `Realm.call()` and `RealmPool.call()`.
+* Function shape used by `Realm.call()`.
 *
 * A child entry module should default-export a function compatible with this
 * type when the parent intends to call it. Arguments and return values must be
@@ -2017,50 +1867,12 @@ export type RealmFn = (...args: any[]) => any;
 * realm.port.start();
 * ```
 */
-export class ProcessPort extends BaseTransportPort {
-  /**
-  * Private property `#wakeReadFd` used by `ProcessPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #wakeReadFd = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#wakeReadFd;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #wakeReadFd: number;
-  /**
-  * Private property `#handle` used by `ProcessPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handle = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#handle;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
+export class ProcessPort extends ThreadPort {
+  /** Resolves when the process-hosted reactor exits or asks to reload. */
+  readonly finished: Promise<'released' | 'reload'>;
+  #resolveFinished!: (reason: 'released' | 'reload') => void;
+  #rejectFinished!: (error: unknown) => void;
+  #finished = false;
   #handle: number;
   /**
   * Create a process transport port from native process realm handles.
@@ -2072,17 +1884,21 @@ export class ProcessPort extends BaseTransportPort {
   * ```ts no_run
   * import { ProcessPort } from 'fino:realm';
   *
-  * const port = new ProcessPort(wakeReadFd, nativeHandle);
+  * const port = new ProcessPort(wakeReadFd, transitHandle, nativeHandle);
   * port.start();
   * ```
   *
   * @param wakeReadFd Readable file descriptor used to wake the event loop.
-  * @param handle Native process realm handle.
+  * @param transitHandle Parent-side transit endpoint.
+  * @param handle Native process status handle.
   */
-  constructor(wakeReadFd: number, handle: number) {
-    super();
-    this.#wakeReadFd = wakeReadFd;
+  constructor(wakeReadFd: number, transitHandle: number, handle: number) {
+    super(wakeReadFd, transitHandle);
     this.#handle = handle;
+    this.finished = new Promise((resolve, reject) => {
+      this.#resolveFinished = resolve;
+      this.#rejectFinished = reject;
+    });
   }
   /**
   * Serialize and send a message to the process realm.
@@ -2110,268 +1926,296 @@ export class ProcessPort extends BaseTransportPort {
     if (unsupported !== undefined) {
       throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
     }
-    const transferABs = (rawTransfer?.filter((t) => t instanceof ArrayBuffer) ?? []) as ArrayBuffer[];
-    const serResult = (_ser as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(message, transferABs.length > 0 ? transferABs : undefined);
-    const data = serResult[0];
-    const stores = serResult.length > 1 ? serResult.slice(1) : [] as Uint8Array[];
-    (processPortSend as (h: number, b: Uint8Array, s: Uint8Array[]) => void)(this.#handle, data, stores);
+    super.postMessage(message, transferOrOpts);
   }
-  /**
-  * Start watching the native wake file descriptor.
-  *
-  * Called by `BaseTransportPort.start()`. Application code should call
-  * `start()` rather than invoking this hook directly.
-  *
-  * ```ts no_run
-  * import { Realm } from 'fino:realm';
-  *
-  * const realm = new Realm({ entry: './worker.ts', process: true });
-  * realm.port.start();
-  * ```
-  *
-  * @internal
-  */
-  protected override _onStart(): void {
-    this.#watchLoop();
+  protected override _afterDrain(): void {
+    this.#checkFinished();
   }
-  /**
-  * Remove the wake file descriptor from the event loop when the port closes.
-  *
-  * Called by `BaseTransportPort.close()`. Closing more than once is handled by
-  * the base class.
-  *
-  * ```ts no_run
-  * import { Realm } from 'fino:realm';
-  *
-  * const realm = new Realm({ entry: './worker.ts', process: true });
-  * realm.port.close();
-  * ```
-  *
-  * @internal
-  */
-  protected override _onClose(): void {
-    removeRead(this.#wakeReadFd);
-  }
-  /**
-  * Private method `#watchLoop` used by `ProcessPort`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchLoop() {
-  *     return 'watchLoop';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#watchLoop();
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  async #watchLoop(): Promise<void> {
-    while (!this._closed) {
-      await readable(this.#wakeReadFd);
-      if (this._closed) break;
-      this._drain();
-    }
-  }
-  /**
-  * Drain pending native messages and dispatch them as message events.
-  *
-  * This is used by the process-port watcher after the wake fd becomes
-  * readable. It is exposed for bridge integration; callers should normally use
-  * `start()` and event listeners instead.
-  *
-  * ```ts no_run
-  * import { ProcessPort } from 'fino:realm';
-  *
-  * const port = new ProcessPort(wakeReadFd, nativeHandle);
-  * port._drain();
-  * ```
-  *
-  * @internal
-  */
-  _drain(): void {
-    for (const [byteArr] of _recvProcessMessages(this.#handle) as any[]) {
-      const [buf, ...stores] = byteArr as Uint8Array[];
-      if (!buf) continue;
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined);
-    }
-  }
-}
-// ---------------------------------------------------------------------------
-// Active children tracking
-// ---------------------------------------------------------------------------
-type RealmKind = 'embedded' | 'thread' | 'process' | 'remote';
-let _nextPortHandle = 0;
-let _nextSourceRealmId = 0;
-interface ActiveChild {
-  handle: number;
-  kind: RealmKind;
-  resolve: () => void;
-  reject: (err: unknown) => void;
-  clusterPort?: ClusterPort;
-  /** Called when the child exits with reload_requested. Returns the new handle
-  *  to keep running, or null to stop watching (after terminate()). */
-  onReload?: () => number | null;
-  /** Pollable loop fd of an embedded child, once armed as a parent-loop wake
-  *  source. Undefined until the child records it via setLoopFd(). */
-  loopFd?: number;
-}
-const _activeChildren: ActiveChild[] = [];
-// Embedded children run their loop only when the parent steps them, so the
-// parent must wake whenever the child's kqueue/io_uring has pending events —
-// otherwise child I/O and timers are quantized to the parent's idle sleep.
-// The child's loop fd polls readable when it has pending events; keeping a
-// one-shot read watch armed on it makes the parent's tick() return the moment
-// the child has work, and also holds the parent's loop alive while the child
-// runs.
-function _armChildLoopWatch(child: ActiveChild): void {
-  const fd = getChildLoopFd(child.handle) as number;
-  if (fd < 0) return;
-  child.loopFd = fd;
-  void (async function _childLoopWatch() {
+  #checkFinished(): void {
+    if (this.#finished) return;
     try {
-      while (child.loopFd === fd) {
-        await readable(fd);
-        if (child.loopFd !== fd) break;
-        // Yield one microtask so stepping (later in this host-loop iteration)
-        // can drain the child before the watch re-arms.
-        await Promise.resolve();
-      }
-    } catch {}
-  })();
-}
-function _disarmChildLoopWatch(child: ActiveChild): void {
-  if (child.loopFd === undefined) return;
-  try {
-    removeRead(child.loopFd);
-  } catch {}
-  child.loopFd = undefined;
-}
-/**
-* Step all active child realms by one event-loop iteration.
-*
-* This bridge function is called by the host event loop. It resolves or
-* rejects pending `Realm.run()` and `Realm.call()` promises when children exit,
-* and handles watch-mode reload requests. Remote realms are skipped because
-* their lifecycle is driven by the cluster transport.
-*
-* ```ts no_run
-* import { _childrenAlive, _stepChildren } from 'fino:realm';
-*
-* while (_childrenAlive()) _stepChildren();
-* ```
-*
-* @internal
-*/
-export function _stepChildren(): void {
-  for (let i = _activeChildren.length - 1; i >= 0; i--) {
-    const child = _activeChildren[i]!;
-    if (child.kind === 'remote') continue;
-    // Step returns: true = alive, false = clean exit, null = reload requested
-    let stepResult: boolean | null;
-    let stepError: unknown = undefined;
-    if (child.kind === 'thread') {
-      try {
-        stepResult = stepThreadContext(child.handle) as boolean | null;
-      } catch (err) {
-        stepResult = false;
-        stepError = err;
-      }
-    } else if (child.kind === 'process') {
-      try {
-        stepResult = stepProcessContext(child.handle) as boolean | null;
-      } catch (err) {
-        stepResult = false;
-        stepError = err;
-      }
-    } else {
-      try {
-        stepResult = stepContext(child.handle) as boolean | null;
-      } catch (err) {
-        stepResult = false;
-        stepError = err;
-      }
-    }
-    if (stepResult !== true) {
-      _disarmChildLoopWatch(child);
-      if (stepError !== undefined) {
-        child.reject(stepError);
-        _activeChildren.splice(i, 1);
-      } else if (stepResult === null && child.onReload !== undefined) {
-        const newHandle = child.onReload();
-        if (newHandle !== null) {
-          child.handle = newHandle;
-        } else {
-          child.resolve();
-          _activeChildren.splice(i, 1);
-        }
-      } else {
-        child.resolve();
-        _activeChildren.splice(i, 1);
-      }
-    } else if (child.kind === 'embedded' && child.loopFd === undefined) {
-      _armChildLoopWatch(child);
+      const alive = stepProcessContext(this.#handle) as boolean | null;
+      if (alive === true) return;
+      this.#finished = true;
+      this.#resolveFinished(alive === null ? 'reload' : 'released');
+    } catch (error) {
+      this.#finished = true;
+      this.#rejectFinished(error);
     }
   }
 }
-/**
-* Return whether any child realms are still tracked as active.
-*
-* This is a runtime loop helper. It returns `true` for children registered by
-* `run()` or `call()` until they resolve, reject, or are removed by remote
-* exit handling.
-*
-* ```ts no_run
-* import { _childrenAlive } from 'fino:realm';
-*
-* if (_childrenAlive()) console.log('realm work remains');
-* ```
-*
-* @internal
-*/
-export function _childrenAlive(): boolean {
-  return _activeChildren.length > 0;
+let _nextSourceRealmId = 0;
+
+/** One live execution container: its port and its terminal reason. */
+interface ContainerInstance {
+  port: BaseTransportPort;
+  /** Resolves with the release reason (e.g. 'exited', 'reload', 'failed: …'). */
+  done: Promise<string>;
 }
-// ---------------------------------------------------------------------------
-// Native bridge helpers
-// ---------------------------------------------------------------------------
-/** Drain one batch from a process-port receive queue: `[[mainBytes, ...stores], ...]`. */
-function _recvProcessMessages(handle: number): Uint8Array[][] {
-  return (processPortRecv as (h: number) => unknown)(handle) as Uint8Array[][];
-}
-// ---------------------------------------------------------------------------
-// call() response helpers
-// ---------------------------------------------------------------------------
+
 /**
-* Decode a `{ __call_error, message?, stack? }` response or resolve with
-* the raw data value. Centralised to avoid duplicating the error-extraction
-* block across the remote and non-remote `call()` branches.
+* The placement-specific half of a Realm's lifecycle: how instances are
+* created, retired, and mapped to failures. `Realm` drives one container
+* through one run loop regardless of placement.
 */
-function _resolveCallResponse<R>(data: unknown, resolve: (v: R) => void, reject: (err: unknown) => void): void {
-  if (data && typeof data === 'object' && (data as {
-    __call_error?: boolean;
-  }).__call_error) {
-    const d = data as {
-      message?: string;
-      name?: string;
-      stack?: string;
+interface RealmContainer {
+  /** Current live instance, or create one. Rejects after `markTerminated()`. */
+  ensure(): Promise<ContainerInstance>;
+  current(): ContainerInstance | null;
+  markTerminated(): void;
+  /** Ask the current (or in-flight) instance to stop. */
+  retire(reason: string): void;
+  /** Per-iteration start hook for `run()` (process ports re-arm on reload). */
+  startForRun(instance: ContainerInstance): void;
+  /** Post-release bookkeeping before `run()` loops or returns. */
+  onReleased(instance: ContainerInstance): void;
+  /** Map a settled release reason to a throwable failure, or null. */
+  failureOf(reason: string): Error | null;
+  /** Terminated-run fast path, or null to fall through to the loop. */
+  terminatedRun(): Promise<void> | null;
+}
+
+class ScheduledContainer implements RealmContainer {
+  #config: Parameters<typeof allocateScheduledRealm>[0];
+  #onInstance: (port: BaseTransportPort) => void;
+  #current: { instance: ContainerInstance; allocation: ScheduledRealmAllocation } | null = null;
+  #ready: Promise<ContainerInstance> | null = null;
+  #lastDone: Promise<string> | null = null;
+  #terminated = false;
+
+  constructor(config: Parameters<typeof allocateScheduledRealm>[0], onInstance: (port: BaseTransportPort) => void) {
+    this.#config = config;
+    this.#onInstance = onInstance;
+  }
+
+  async ensure(): Promise<ContainerInstance> {
+    if (this.#terminated) throw new Error('Realm has been terminated');
+    if (this.#current !== null) return this.#current.instance;
+    this.#ready ??= allocateScheduledRealm(this.#config)
+      .then((allocation) => this.#attach(allocation))
+      .finally(() => { this.#ready = null; });
+    return this.#ready;
+  }
+
+  #attach(allocation: ScheduledRealmAllocation): ContainerInstance {
+    const port = new ThreadPort(allocation.portWakeFd, allocation.portHandle);
+    const instance: ContainerInstance = { port, done: allocation.released };
+    const entry = { instance, allocation };
+    this.#current = entry;
+    this.#lastDone = allocation.released;
+    void allocation.released.then(() => this.#detach(entry));
+    this.#onInstance(port);
+    return instance;
+  }
+
+  #detach(entry: { instance: ContainerInstance }): void {
+    entry.instance.port.close();
+    if (this.#current === entry) this.#current = null;
+  }
+
+  current(): ContainerInstance | null {
+    return this.#current?.instance ?? null;
+  }
+
+  markTerminated(): void {
+    this.#terminated = true;
+  }
+
+  retire(reason: string): void {
+    const entry = this.#current;
+    if (entry !== null) {
+      this.#retireEntry(entry, reason);
+    } else if (this.#ready !== null) {
+      void this.#ready.then(() => {
+        const pending = this.#current;
+        if (pending !== null) this.#retireEntry(pending, reason);
+      });
+    }
+  }
+
+  #retireEntry(entry: { instance: ContainerInstance; allocation: ScheduledRealmAllocation }, reason: string): void {
+    if (entry.instance.port.closed) entry.allocation.revoke(reason);
+    else {
+      entry.instance.port.postMessage({ __terminate: true });
+      entry.instance.port.close();
+    }
+    this.#detach(entry);
+  }
+
+  startForRun(_instance: ContainerInstance): void {}
+
+  onReleased(instance: ContainerInstance): void {
+    // The terminal pump may post a final user message and release in the
+    // same slice. Drain transit synchronously before closing the physical
+    // endpoint so release cannot win that race.
+    (instance.port as ThreadPort)._drain();
+    const entry = this.#current;
+    if (entry !== null && entry.instance === instance) this.#detach(entry);
+    else instance.port.close();
+  }
+
+  failureOf(reason: string): Error | null {
+    return _releaseFailure(reason);
+  }
+
+  terminatedRun(): Promise<void> | null {
+    const last = this.#lastDone;
+    if (last === null) return Promise.resolve();
+    return last.then((reason) => {
+      const failure = _releaseFailure(reason);
+      if (failure !== null) throw failure;
+    });
+  }
+}
+
+class ProcessContainer implements RealmContainer {
+  #config: ProcessRealmConfig;
+  #onInstance: (port: BaseTransportPort) => void;
+  #currentPort: ProcessPort | null = null;
+  #terminated = false;
+
+  constructor(config: ProcessRealmConfig, onInstance: (port: BaseTransportPort) => void) {
+    this.#config = config;
+    this.#onInstance = onInstance;
+  }
+
+  // The body runs synchronously to completion (no awaits): the process is
+  // spawned during the call even though the contract is uniformly async.
+  async ensure(): Promise<ContainerInstance> {
+    if (this.#terminated) throw new Error('Realm has been terminated');
+    if (this.#currentPort !== null) {
+      return { port: this.#currentPort, done: this.#currentPort.finished };
+    }
+    const config = this.#config;
+    const info = createProcessContext(config.root, config.entry, config.rules, config.watch, config.data, config.bootstrapData) as {
+      handle: number;
+      portHandle: number;
+      portWakeFd: number;
     };
-    const err = new Error(d.message ?? 'Realm call failed');
-    if (d.name !== undefined) err.name = d.name;
-    if (d.stack !== undefined) err.stack = d.stack;
-    reject(err);
-  } else {
-    resolve(data as R);
+    const port = new ProcessPort(info.portWakeFd, info.portHandle, info.handle);
+    this.#currentPort = port;
+    const settle = () => {
+      port.close();
+      if (this.#currentPort === port) this.#currentPort = null;
+    };
+    void port.finished.then(settle, settle);
+    this.#onInstance(port);
+    return { port, done: port.finished };
   }
+
+  current(): ContainerInstance | null {
+    const port = this.#currentPort;
+    return port === null ? null : { port, done: port.finished };
+  }
+
+  markTerminated(): void {
+    this.#terminated = true;
+  }
+
+  retire(reason: string): void {
+    const port = this.#currentPort;
+    if (port === null) return;
+    port.postMessage({ __terminate: true });
+    // An idle drain forgets the process so a later call spawns a fresh one;
+    // a terminate keeps it current until its exit settles `finished`.
+    if (reason === 'idle') this.#currentPort = null;
+  }
+
+  startForRun(instance: ContainerInstance): void {
+    (instance.port as ProcessPort).start();
+  }
+
+  onReleased(_instance: ContainerInstance): void {}
+
+  failureOf(_reason: string): Error | null {
+    // Process failures reject `finished` itself; the reason string carries
+    // no failure channel of its own.
+    return null;
+  }
+
+  terminatedRun(): Promise<void> | null {
+    return null;
+  }
+}
+
+interface ProcessRealmConfig {
+  root: string;
+  entry: string;
+  rules: string;
+  watch: boolean;
+  data?: string;
+  bootstrapData?: string;
+}
+// ---------------------------------------------------------------------------
+// call() plumbing
+// ---------------------------------------------------------------------------
+function _releaseFailure(reason: string): Error | null {
+  if (reason.startsWith('failed')) return new Error(reason.replace(/^failed: ?/, '') || reason);
+  if (/^(setup_failed|reactor-workload-panicked|reactor-recovery-failed)/.test(reason)) return new Error(reason);
+  return null;
+}
+
+/** The `__call` envelope family carrying Realm.call() invocations. */
+const _CALL_CODEC: WireCodec = {
+  encodeReq(id, head) {
+    return { __call: true, correlationId: id, args: head['args'] };
+  },
+  decode(msg) {
+    const id = msg['correlationId'] as number;
+    if (msg['__call_error'] === true) {
+      const error = new Error(typeof msg['message'] === 'string' ? msg['message'] : 'Realm call failed');
+      if (typeof msg['name'] === 'string') error.name = msg['name'];
+      if (typeof msg['stack'] === 'string') error.stack = msg['stack'];
+      return { kind: 'err', id, error };
+    }
+    if (msg['__call_result'] === true) return { kind: 'res', id, result: msg['result'] };
+    return null;
+  }
+};
+
+const _portCallRpc = new WeakMap<object, PortRpc>();
+function _callRpcFor(port: BaseTransportPort): PortRpc {
+  let rpc = _portCallRpc.get(port as object);
+  if (rpc === undefined) {
+    rpc = new PortRpc({
+      send: (msg) => port.postMessage(msg),
+      codec: _CALL_CODEC
+    });
+    const bound = rpc;
+    port.addEventListener('message', (event) => {
+      bound.dispatch((event as MessageEvent).data);
+    });
+    port.start();
+    _portCallRpc.set(port as object, rpc);
+  }
+  return rpc;
+}
+
+/** Run one correlated call over either physical Realm transport. */
+function _callThroughPort<R>(
+  port: BaseTransportPort,
+  terminal: Promise<unknown>,
+  args: unknown[]
+): Promise<R> {
+  const rpc = _callRpcFor(port);
+  let id: number;
+  let promise: Promise<unknown>;
+  try {
+    ({ id, promise } = rpc.callWithId({ args }));
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  terminal.then((value) => {
+    // The terminal pump may deliver the call result and release in the same
+    // slice; give delivery one macrotask turn before failing the call.
+    setTimeout(() => {
+      const failure = typeof value === 'string' ? _releaseFailure(value) : null;
+      rpc.fail(id, failure ?? new Error('Realm exited before returning a call result'));
+    }, 25);
+  }, (error) => {
+    rpc.fail(id, error instanceof Error ? error : new Error(String(error)));
+  });
+  return promise as Promise<R>;
 }
 // ---------------------------------------------------------------------------
 // Realm class
@@ -2379,9 +2223,9 @@ function _resolveCallResponse<R>(data: unknown, resolve: (v: R) => void, reject:
 /**
 * Isolated child realm with its own module graph and communication port.
 *
-* A realm can run embedded in the current isolate, in a thread, in a process,
-* or on a remote cluster node. Use `run()` for entry modules with side effects
-* and `call()` for entry modules that default-export a callable function.
+* Ordinary realms run on a reactor thread. Process-isolated
+* realms use the same API with a separate OS process boundary. Use `run()` for
+* entry modules with side effects and `call()` for callable entry modules.
 *
 * ```ts no_run
 * import { Realm } from 'fino:realm';
@@ -2392,56 +2236,20 @@ function _resolveCallResponse<R>(data: unknown, resolve: (v: R) => void, reject:
 * ```
 */
 export class Realm<F extends RealmFn = RealmFn> {
-  /**
-  * Private property `#handle` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #handle = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#handle;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #handle: number;
-  /**
-  * Private readonly property `#kind` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #kind = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#kind;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  readonly #kind: RealmKind;
+  /** Whether this logical Realm should keep its owner alive while idle. */
+  #referenced = true;
+  /** In-flight call holds; idle drains the instance when unreferenced. */
+  #idle = new IdleRetirement({
+    delayMs: 0,
+    shouldRetire: () => !this.#referenced && !this.#watchMode,
+    retire: () => this.#drainIdleInstance()
+  });
+  readonly #processIsolated: boolean;
   /**
   * Parent-side port for general communication with the child realm.
   *
-  * Embedded realms expose a `MessagePort`, thread realms expose a
-  * `ThreadPort`, process realms expose a `ProcessPort`, and remote realms
-  * expose a `ClusterPort`. Start the port before listening for messages.
+  * Reactor realms expose a `ThreadPort`; process-isolated realms expose a
+  * `ProcessPort`. Start the port before listening for messages.
   *
   * ```ts no_run
   * import { Realm } from 'fino:realm';
@@ -2451,121 +2259,19 @@ export class Realm<F extends RealmFn = RealmFn> {
   * realm.port.start();
   * ```
   */
-  readonly port: MessagePort | ThreadPort | ProcessPort | ClusterPort;
-  /** Pending spawn for remote realms; resolves to childPortId after SPAWN_ACK. */
+  readonly port: MessagePort | BaseTransportPort;
+  #watchMode = false;
+  /** Placement-specific lifecycle: scheduled (reactor) or process. */
+  #container!: RealmContainer;
+  #terminated = false;
+  #facades: Facade[] = [];
   /**
-  * Private property `#spawnPromise` used by `Realm`.
+  * Resolves after this Realm's execution container has been allocated.
   *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #spawnPromise = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#spawnPromise;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
+  * Allocation failures reject this promise. Evaluation and call failures are
+  * reported by `run()` and `call()` instead.
   */
-  #spawnPromise: Promise<string> | null = null;
-  // Watch mode state
-  /**
-  * Private property `#watchOpts` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchOpts = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#watchOpts;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #watchOpts: RealmOptions | null = null;
-  /**
-  * Private property `#watchSerializedRules` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchSerializedRules = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#watchSerializedRules;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #watchSerializedRules = '[]';
-  /**
-  * Private property `#watchTerminated` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #watchTerminated = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#watchTerminated;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #watchTerminated = false;
-  // For thread/process watch mode: tracks the current child's port so that
-  // terminate() reaches the most-recently-spawned child, not the original one.
-  /**
-  * Private property `#activeChildPort` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #activeChildPort = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#activeChildPort;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #activeChildPort: ThreadPort | ProcessPort | null = null;
+  readonly ready: Promise<void>;
   /**
   * Create a Realm whose entrypoint is in-memory module source.
   *
@@ -2602,23 +2308,12 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (!transpiled.ok) {
       throw new Error(transpiled.errors.map((error) => error.message).join('\n') || 'Unable to transpile Realm source');
     }
+    if ('providers' in options || 'blocked' in options) {
+      throw new TypeError("fino:realm — providers/blocked were removed; pass the config classes (or block rules) inside overrides");
+    }
     const rules: ImportRule[] = [];
     if (options.overrides) {
-      const src = options.overrides instanceof ImportMap ? options.overrides.toRules() : options.overrides;
-      rules.push(...src);
-    } else {
-      if (options.providers) {
-        const { fs, net, dns } = options.providers;
-        if (fs) rules.push(...fs.toRules());
-        if (net) rules.push(...net.toRules());
-        if (dns) rules.push(...dns.toRules());
-      }
-      if (options.blocked) {
-        for (const spec of options.blocked) rules.push({
-          pattern: spec,
-          directive: 'block'
-        });
-      }
+      rules.push(...(options.overrides instanceof ImportMap ? options.overrides.toRules() : _flattenRules(options.overrides)));
     }
     rules.push({
       pattern: specifier,
@@ -2628,7 +2323,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         source_map: options.sourceMap ?? transpiled.map ?? ''
       }
     });
-    const { specifier: _specifier, sourceMap: _sourceMap, providers: _providers, blocked: _blocked, ...realmOptions } = options;
+    const { specifier: _specifier, sourceMap: _sourceMap, ...realmOptions } = options;
     return new Realm<F>({
       ...realmOptions,
       entry: specifier,
@@ -2639,15 +2334,14 @@ export class Realm<F extends RealmFn = RealmFn> {
   * Create a child realm and its parent-side communication port.
   *
   * The constructor builds import rules, creates the selected execution mode,
-  * and binds facade RPC dispatchers. It throws for invalid mode combinations,
-  * remote realms without an active cluster, or native creation failures.
+  * and binds facade RPC dispatchers. It throws for invalid option
+  * combinations or native creation failures.
   *
   * ```ts no_run
   * import { ImportMap, Realm } from 'fino:realm';
   *
   * const realm = new Realm({
   *   entry: './worker.ts',
-  *   thread: true,
   *   overrides: ImportMap.inherit([]),
   * });
   * ```
@@ -2655,40 +2349,24 @@ export class Realm<F extends RealmFn = RealmFn> {
   * @param opts Realm construction and loader options.
   */
   constructor(opts: RealmOptions) {
-    const isolatedModes = [
-      opts.thread,
-      opts.process,
-      opts.remote
-    ].filter(Boolean).length;
-    if (isolatedModes > 1) {
-      throw new Error('fino:realm — exactly one isolated mode may be enabled: thread, process, or remote');
+    if ('scaling' in opts) {
+      throw new TypeError('fino:realm — scaling belongs to RealmDeployment');
     }
-    if (opts.watch && opts.remote) {
-      throw new Error('fino:realm — watch: true is not supported with remote: true');
-    }
+    this.#processIsolated = opts.process === true;
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;
-    if (repl && (opts.thread || opts.process || opts.remote || opts.watch)) {
-      throw new Error('fino:realm — repl: true is only supported for embedded realms (not thread, process, remote, or watch)');
+    if (repl && (opts.process || opts.watch)) {
+      throw new Error('fino:realm — repl: true is not supported with process or watch realms');
     }
-    // Build the child-specific rule list from overrides / legacy providers+blocked.
+    if (opts.priority !== undefined && !['interactive', 'service', 'background'].includes(opts.priority)) {
+      throw new TypeError("fino:realm — priority must be 'interactive', 'service', or 'background'");
+    }
+    if ('providers' in opts || 'blocked' in opts) {
+      throw new TypeError("fino:realm — providers/blocked were removed; pass the config classes (or block rules) inside overrides, e.g. overrides: ImportMap.inherit([new DiskFsConfig(), { pattern: 'fino:ffi', directive: 'block' }])");
+    }
     const rules: ImportRule[] = [];
     if (opts.overrides) {
-      const src = opts.overrides instanceof ImportMap ? opts.overrides.toRules() : opts.overrides;
-      rules.push(...src);
-    } else {
-      if (opts.providers) {
-        const { fs, net, dns } = opts.providers;
-        if (fs) rules.push(...fs.toRules());
-        if (net) rules.push(...net.toRules());
-        if (dns) rules.push(...dns.toRules());
-      }
-      if (opts.blocked) {
-        for (const spec of opts.blocked) rules.push({
-          pattern: spec,
-          directive: 'block'
-        });
-      }
+      rules.push(...(opts.overrides instanceof ImportMap ? opts.overrides.toRules() : _flattenRules(opts.overrides)));
     }
     if (repl) {
       rules.push({
@@ -2696,122 +2374,55 @@ export class Realm<F extends RealmFn = RealmFn> {
         directive: 'inherit'
       });
     }
+    this.#facades = [...new Set(rules.flatMap((rule) => rule.directive instanceof Facade ? [rule.directive] : []))];
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
     const serializedData = serializeRealmData(opts.data);
     const serializedBootstrapData = serializeRealmBootstrapData(opts);
-    if (opts.remote && serializedData !== undefined) {
-      throw new Error('fino:realm — data is not supported with remote: true');
-    }
-    if (opts.watch) {
-      this.#watchOpts = opts;
-      this.#watchSerializedRules = serializedRules;
-    }
-    if (opts.remote) {
-      const cluster = getCluster();
-      if (!cluster) {
-        throw new Error('fino:realm — remote: true requires an active cluster; call startCluster() or joinCluster() first');
-      }
-      this.#kind = 'remote';
-      this.#handle = -1;
-      const portId = `${cluster.nodeId}/p-${_nextPortHandle++}`;
-      const clusterPort = new ClusterPort(portId, cluster);
-      this.port = clusterPort;
-      const config = {
-        entry: opts.entry,
+    this.#watchMode = watch;
+    const publicPort = new DeferredTransportPort({
+      allowPortTransfer: !this.#processIsolated
+    });
+    this.port = publicPort;
+    const onInstance = (port: BaseTransportPort) => {
+      this.#bindFacadePort(port);
+      publicPort.replace(port);
+    };
+    if (opts.process) {
+      this.#container = new ProcessContainer({
         root: opts.root ?? '',
-        rules: JSON.parse(serializedRules),
-        ...serializedBootstrapData !== undefined ? { bootstrapData: JSON.parse(serializedBootstrapData) } : {}
-      };
-      this.#spawnPromise = cluster.spawnRemote(portId, config).then((childPortId: string) => {
-        clusterPort._setChildPortId(childPortId);
-        return childPortId;
-      });
-    } else if (opts.process) {
-      this.#kind = 'process';
-      const handle = createProcessContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
-      this.#handle = handle;
-      const wakeReadFd = getProcessSocketFd(handle) as number;
-      this.port = new ProcessPort(wakeReadFd, handle);
-    } else if (opts.thread) {
-      this.#kind = 'thread';
-      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
-      this.#handle = handle;
-      const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
-      this.port = new ThreadPort(wakeReadFd, handle);
+        entry: opts.entry,
+        rules: serializedRules,
+        watch,
+        ...serializedData !== undefined ? { data: serializedData } : {},
+        ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {}
+      }, onInstance);
     } else {
-      this.#kind = 'embedded';
-      let parentPort: MessagePort;
-      let childPort: MessagePort;
-      if (opts.input !== undefined && opts.output !== undefined) {
-        parentPort = opts.input;
-        childPort = opts.output;
-      } else {
-        const channel = new MessageChannel();
-        parentPort = channel.port1;
-        childPort = channel.port2;
-      }
-      this.port = parentPort;
-      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl, serializedData, serializedBootstrapData) as number;
+      const mergedRules = mergeChildRules(serializedRules) as string;
+      // The one reshaping point: RealmOptions names become the serializable
+      // workload-spec names, passed through every layer below unchanged.
+      const scheduledConfig: Parameters<typeof allocateScheduledRealm>[0] = {
+        entryPath: opts.entry,
+        rulesJson: mergedRules,
+        ...serializedData !== undefined ? { realmData: serializedData } : {},
+        ...serializedBootstrapData !== undefined ? { bootstrapData: serializedBootstrapData } : {},
+        ...opts.priority !== undefined ? { priority: opts.priority } : {},
+        watch,
+        repl
+      };
+      this.#container = new ScheduledContainer(scheduledConfig, onInstance);
     }
-    // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
-    if (rules.length > 0) {
-      const port = this.port as MessagePort | ThreadPort | ProcessPort | ClusterPort;
-      for (const rule of rules) {
-        if (rule.directive instanceof Facade) {
-          (rule.directive as Facade)._bind(port);
-        }
-      }
-    }
+    const created = this.#container.ensure();
+    this.ready = created.then(() => undefined);
     // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
     // the common case where no OTel subscriber is registered).
     if (_topicRealmSpawn.hasSubscribers) {
       _topicRealmSpawn.publish(otelRuntimeEvent('realm', 'spawn', 'start', {
-        kind: this.#kind,
         entry: opts.entry
       }));
     }
   }
-  /** Spawn a fresh child handle using the stored watch opts. @internal */
-  /**
-  * Private method `#spawnChild` used by `Realm`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #spawnChild() {
-  *     return 'spawnChild';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#spawnChild();
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #spawnChild(): number {
-    const opts = this.#watchOpts!;
-    const rules = this.#watchSerializedRules;
-    const data = serializeRealmData(opts.data);
-    const bootstrapData = serializeRealmBootstrapData(opts);
-    if (opts.process) {
-      const h = createProcessContext(opts.root ?? '', opts.entry, rules, true, data, bootstrapData) as number;
-      this.#activeChildPort = new ProcessPort(getProcessSocketFd(h) as number, h);
-      return h;
-    } else if (opts.thread) {
-      const h = createThreadContext(opts.root ?? '', opts.entry, rules, true, data, bootstrapData) as number;
-      this.#activeChildPort = new ThreadPort(getThreadPortWakeReadFd(h) as number, h);
-      return h;
-    } else {
-      const { port2: childPort } = new MessageChannel();
-      return createContext(opts.root ?? '', opts.entry, rules, childPort, true, false, data, bootstrapData) as number;
-    }
+  #bindFacadePort(port: MessagePort | BaseTransportPort): void {
+    for (const facade of this.#facades) facade._bind(port);
   }
   /**
   * Run the child realm to completion.
@@ -2828,60 +2439,33 @@ export class Realm<F extends RealmFn = RealmFn> {
   * ```
   */
   run(): Promise<void> {
-    if (this.#kind === 'remote') {
-      const clusterPort = this.port as ClusterPort;
-      const cluster = getCluster()!;
-      return (this.#spawnPromise ?? Promise.resolve('')).then((childPortId: string) => new Promise<void>((resolve, reject) => {
-        const entry: ActiveChild = {
-          handle: -1,
-          kind: 'remote',
-          resolve,
-          reject,
-          clusterPort
-        };
-        _activeChildren.push(entry);
-        cluster.onRealmExit(childPortId, (error?: string) => {
-          const idx = _activeChildren.indexOf(entry);
-          if (idx >= 0) _activeChildren.splice(idx, 1);
-          if (error) reject(new Error(error));
-          else resolve();
-        });
-      }));
+    if (this.#terminated) {
+      const fast = this.#container.terminatedRun();
+      if (fast !== null) return fast;
     }
-    if (this.#watchOpts !== null) {
-      return new Promise<void>((resolve, reject) => {
-        const self = this;
-        const entry: ActiveChild = {
-          handle: this.#handle,
-          kind: this.#kind,
-          resolve,
-          reject,
-          onReload(): number | null {
-            if (self.#watchTerminated) return null;
-            const newHandle = self.#spawnChild();
-            self.#handle = newHandle;
-            return newHandle;
-          }
-        };
-        _activeChildren.push(entry);
-      });
-    }
-    return new Promise<void>((resolve, reject) => {
-      _activeChildren.push({
-        handle: this.#handle,
-        kind: this.#kind,
-        resolve,
-        reject
-      });
-    });
+    return (async () => {
+      while (true) {
+        const instance = await this.#container.ensure();
+        this.#container.startForRun(instance);
+        const reason = await instance.done;
+        this.#container.onReleased(instance);
+        const failure = this.#container.failureOf(reason);
+        if (failure !== null) throw failure;
+        if (reason !== 'reload' || this.#terminated) return;
+      }
+    })();
+  }
+
+  async #callThrough(args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    const instance = await this.#container.ensure();
+    return _callThroughPort(instance.port, instance.done, args);
   }
   /**
   * Call the child Realm's default-exported function with `args`.
   *
   * The call starts the realm, sends `{ __call: true, args }`, and resolves
   * with the returned value. It rejects if the realm exits before returning, if
-  * the child serializes a call error, or if the remote cluster reports exit.
-  * The port is closed after the first response for non-streaming calls.
+  * the child serializes a call error, or if its reactor exits.
   *
   * ```ts no_run
   * import { Realm } from 'fino:realm';
@@ -2891,124 +2475,81 @@ export class Realm<F extends RealmFn = RealmFn> {
   * ```
   */
   call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    this.#idle.retain();
     const callStart = performance.now();
-    const kind = this.#kind;
     // Capture at call time so the end event is always published when start was.
     const startPublished = _topicRealmCall.hasSubscribers;
     if (startPublished) {
-      _topicRealmCall.publish(otelRuntimeEvent('realm', 'call', 'start', { kind }));
+      _topicRealmCall.publish(otelRuntimeEvent('realm', 'call', 'start'));
     }
-    let base: Promise<Awaited<ReturnType<F>>>;
-    if (kind === 'remote') {
-      const clusterPort = this.port as ClusterPort;
-      const cluster = getCluster()!;
-      base = (this.#spawnPromise ?? Promise.resolve('')).then((childPortId: string) => new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        let settled = false;
-        const entry: ActiveChild = {
-          handle: -1,
-          kind: 'remote',
-          resolve: () => {},
-          reject: (err: unknown) => reject(err),
-          clusterPort
-        };
-        _activeChildren.push(entry);
-        cluster.onRealmExit(childPortId, (error?: string) => {
-          setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            const idx = _activeChildren.indexOf(entry);
-            if (idx >= 0) _activeChildren.splice(idx, 1);
-            if (error) reject(new Error(error));
-            else reject(new Error('Realm exited before returning a call result'));
-          }, 25);
-        });
-        const handler = (ev: unknown) => {
-          if (settled) return;
-          settled = true;
-          const data = (ev as {
-            data?: unknown;
-          }).data;
-          clusterPort.removeEventListener('message', handler as any);
-          clusterPort.close();
-          const idx = _activeChildren.indexOf(entry);
-          if (idx >= 0) _activeChildren.splice(idx, 1);
-          _resolveCallResponse(data, resolve, reject);
-        };
-        clusterPort.addEventListener('message', handler as any);
-        clusterPort.start();
-        clusterPort.postMessage({
-          __call: true,
-          args
-        });
-      }));
-    } else {
-      base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        _activeChildren.push({
-          handle: this.#handle,
-          kind,
-          resolve: () => reject(new Error('Realm exited before returning a call result')),
-          reject: (err: unknown) => reject(err)
-        });
-        const handler = (ev: Event) => {
-          const data = (ev as MessageEvent).data;
-          this.port.removeEventListener('message', handler);
-          this.port.close();
-          _resolveCallResponse(data, resolve, reject);
-        };
-        this.port.addEventListener('message', handler);
-        this.port.start();
-        this.port.postMessage({
-          __call: true,
-          args
-        });
-      });
-    }
-    if (!startPublished && !_topicRealmCallEnd.hasSubscribers) return base;
-    return base.then((result) => {
+    const base = this.#callThrough(args);
+    const observed = base.then((result) => {
+      this.#finishCall();
+      if (!startPublished && !_topicRealmCallEnd.hasSubscribers) return result;
       _topicRealmCallEnd.publish(otelRuntimeEvent('realm', 'call', 'end', {
-        kind,
         durationMs: performance.now() - callStart
       }));
       return result;
     }, (err: unknown) => {
+      this.#finishCall();
+      if (!startPublished && !_topicRealmCallEnd.hasSubscribers) throw err;
       _topicRealmCallEnd.publish(otelRuntimeEvent('realm', 'call', 'end', {
-        kind,
         durationMs: performance.now() - callStart,
         error: true
       }));
       throw err;
     });
+    return observed;
+  }
+  #finishCall(): void {
+    this.#idle.release();
+  }
+  #drainIdleInstance(): void {
+    this.#container.retire('idle');
   }
   /**
   * Signal the child realm to stop.
   *
-  * Embedded realms are terminated through the native child handle. Thread,
-  * process, and remote realms receive a `__terminate` message and their
-  * parent-side port is closed. The method is synchronous and does not wait for
-  * `run()` to settle.
+  * Reactor and process-isolated realms receive a `__terminate` message. The
+  * method is synchronous and does not wait for `run()` to settle.
   *
   * ```ts no_run
   * import { Realm } from 'fino:realm';
   *
-  * const realm = new Realm({ entry: './worker.ts', thread: true });
+  * const realm = new Realm({ entry: './worker.ts' });
   * realm.terminate();
   * ```
   */
   terminate(): void {
-    this.#watchTerminated = true;
-    if (this.#kind === 'remote') {
-      this.port.postMessage({ __terminate: true });
-      this.port.close();
-    } else if (this.#kind === 'thread' || this.#kind === 'process') {
-      // After a watch-mode reload, this.port still points to the first child's
-      // port.  Use #activeChildPort when set (updated by #spawnChild on reload)
-      // so the terminate message reaches the currently-running child.
-      const activePort = this.#activeChildPort ?? this.port as ThreadPort | ProcessPort;
-      activePort.postMessage({ __terminate: true });
-      activePort.close();
-    } else {
-      terminateChild(this.#handle);
+    if (this.#terminated) return;
+    this.#terminated = true;
+    this.#container.retire('terminated');
+    this.#container.markTerminated();
+  }
+  /**
+  * Keep this Realm's otherwise-idle execution container warm. Active calls and
+  * `run()` retain their own work independently.
+  */
+  ref(): this {
+    this.#referenced = true;
+    if (!this.#terminated && this.#container.current() === null) {
+      // Best-effort warm-up; failures surface on the next run()/call().
+      void this.#container.ensure().catch(() => {});
     }
+    return this;
+  }
+  /**
+  * Allow this Realm's idle execution container to drain without keeping its
+  * owner alive. In-flight calls and a pending `run()` still retain their work.
+  */
+  unref(): this {
+    this.#referenced = false;
+    this.#idle.poke();
+    return this;
+  }
+  /** Return whether this Realm has an explicit idle-liveness reference. */
+  hasRef(): boolean {
+    return this.#referenced;
   }
   /**
   * Explicit resource management hook.
@@ -3023,6 +2564,175 @@ export class Realm<F extends RealmFn = RealmFn> {
   * realm.port.postMessage('start');
   * ```
   */
+  [Symbol.dispose](): void {
+    this.terminate();
+  }
+}
+
+/**
+* A stable, replica-affine connection to a `RealmDeployment`.
+*
+* The session exclusively retains one physical realm until `close()` is called.
+* Local reactor migration does not change that realm or its module heap.
+*/
+export class RealmSession<F extends RealmFn = RealmFn> {
+  #lease: ReplicaLease<Realm<F>> | null;
+
+  /**
+  * Constructed internally by `RealmDeployment.connect()`.
+  *
+  * @internal
+  */
+  constructor(lease: ReplicaLease<Realm<F>>) {
+    this.#lease = lease;
+  }
+
+  /**
+  * Invoke the connected replica's default export.
+  *
+  * Calls reject after `close()` and otherwise have the same failure behavior
+  * as `Realm.call()`.
+  */
+  call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    if (this.#lease === null) return Promise.reject(new Error('RealmSession is closed'));
+    return this.#lease.value.call(...args);
+  }
+
+  /** Release the replica back to the deployment. Idempotent. */
+  close(): void {
+    this.#lease?.release();
+    this.#lease = null;
+  }
+
+  /** Close this session when leaving a `using` scope. */
+  [Symbol.dispose](): void {
+    this.close();
+  }
+}
+
+/**
+* A scalable deployment of independent `Realm` execution containers.
+*
+* `call()` load-balances across ready replicas, `broadcast()` posts to every
+* ready replica, and `connect()` reserves one stable replica for an affine
+* session. Replica heaps are independent; use a single `Realm` when state must
+* remain one-to-one.
+*
+* ```ts no_run
+* import { RealmDeployment } from 'fino:realm';
+*
+* using workers = new RealmDeployment({
+*   entry: './worker.ts',
+*   scaling: { min: 2, max: 8 },
+* });
+* const result = await workers.call({ job: 'thumbnail' });
+* ```
+*/
+export class RealmDeployment<F extends RealmFn = RealmFn> {
+  /**
+  * Resolves when the deployment's minimum number of replicas is ready.
+  *
+  * It rejects if a minimum replica cannot be allocated or initialized.
+  */
+  readonly ready: Promise<void>;
+  #controller: deployment.DeploymentController<Realm<F>>;
+  #realmOptions: RealmOptions;
+  #referenced = true;
+  #terminated = false;
+
+  /**
+  * Create a referenced deployment and begin warming its minimum replicas.
+  *
+  * Process isolation, watch mode, and REPL mode are intentionally unavailable
+  * because a deployment represents interchangeable independent replicas.
+  */
+  constructor(options: RealmDeploymentOptions) {
+    if ((options as { process?: boolean }).process === true) {
+      throw new TypeError('fino:realm — process isolation is only supported by Realm');
+    }
+    const { scaling, process: _process, ...realmOptions } = options;
+    this.#realmOptions = realmOptions;
+    this.#controller = clusterOrchestrator.createDeployment<Realm<F>>({
+      scaling,
+      create: async () => {
+        const realm = new Realm<F>(this.#realmOptions);
+        if (!this.#referenced) realm.unref();
+        await realm.ready;
+        return realm;
+      },
+      dispose: (realm) => realm.terminate()
+    });
+    this.ready = this.#controller.ready;
+  }
+
+  /**
+  * Route one invocation to an available replica.
+  *
+  * The call waits when every replica is admitted. Sustained waiting may add a
+  * replica up to `scaling.max`. It rejects after `terminate()` or when the
+  * selected realm fails.
+  */
+  async call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    const lease = await this.#controller.acquire();
+    try {
+      return await lease.value.call(...args);
+    } finally {
+      lease.release();
+    }
+  }
+
+  /**
+  * Post an independently serialized message to every ready replica.
+  *
+  * This does not create replicas beyond those already ready and does not wait
+  * for application-level acknowledgement.
+  */
+  async broadcast(message: unknown): Promise<void> {
+    const leases = await this.#controller.acquireAll();
+    try {
+      for (const lease of leases) lease.value.port.postMessage(message);
+    } finally {
+      for (const lease of leases) lease.release();
+    }
+  }
+
+  /**
+  * Reserve one stable replica until the returned session is closed.
+  *
+  * The returned session remains attached to the same realm even if node
+  * orchestration moves that realm between local reactor threads.
+  */
+  async connect(): Promise<RealmSession<F>> {
+    return new RealmSession(await this.#controller.acquire());
+  }
+
+  /** Keep idle deployment replicas allocated. */
+  ref(): this {
+    this.#referenced = true;
+    for (const realm of this.#controller.values()) realm.ref();
+    return this;
+  }
+
+  /** Allow idle replicas to retire without cancelling active work. */
+  unref(): this {
+    this.#referenced = false;
+    for (const realm of this.#controller.values()) realm.unref();
+    return this;
+  }
+
+  /** Return whether the deployment retains idle replicas. */
+  hasRef(): boolean {
+    return this.#referenced;
+  }
+
+  /** Terminate every replica and reject future admission. */
+  terminate(): void {
+    if (this.#terminated) return;
+    this.#terminated = true;
+    this.#controller.terminate();
+  }
+
+  /** Terminate this deployment when leaving a `using` scope. */
   [Symbol.dispose](): void {
     this.terminate();
   }

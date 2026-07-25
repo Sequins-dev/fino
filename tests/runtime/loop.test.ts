@@ -3,7 +3,6 @@
 */
 import { describe, it } from 'fino:test/test';
 import * as loop from 'internal:runtime/loop';
-import * as backend from 'internal:runtime/loop-backend';
 import * as fileBindings from 'internal:file/bindings';
 import * as sock from 'fino:net/socket';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -68,49 +67,6 @@ function closeAll(...fds: number[]): void {
     } catch {}
   }
 }
-describe('Backend contract', () => {
-  it('exposes the common readiness, timer, and wait surface', (t) => {
-    for (const name of [
-      'create',
-      'addRead',
-      'addWrite',
-      'removeRead',
-      'removeWrite',
-      'addTimer',
-      'removeTimer',
-      'wait',
-      'destroy'
-    ]) {
-      t.equal(typeof (backend as Record<string, unknown>)[name], 'function', `${name} is exported`);
-    }
-    t.equal(typeof backend.EVFILT_READ, 'number', 'read filter is exported');
-    t.equal(typeof backend.EVFILT_WRITE, 'number', 'write filter is exported');
-    t.equal(typeof backend.EVFILT_TIMER, 'number', 'timer filter is exported');
-    if (fileBindings.isDarwin) {
-      t.equal(typeof backend.EVFILT_PROC, 'number', 'macOS backend exports proc events');
-      t.equal(typeof backend.EVFILT_VNODE, 'number', 'macOS backend exports vnode events');
-      t.equal(backend.EVFILT_COMPLETION, undefined, 'macOS backend does not expose completion events');
-    } else {
-      t.equal(backend.EVFILT_PROC, undefined, 'Linux backend does not expose proc events');
-      t.equal(backend.EVFILT_VNODE, undefined, 'Linux backend does not expose vnode events');
-      t.equal(typeof backend.EVFILT_COMPLETION, 'number', 'Linux backend exposes completion events');
-    }
-  });
-  it('creates a platform backend handle with explicit Linux fallback kind', (t) => {
-    const raw = backend.create() as {
-      kind?: unknown;
-    };
-    try {
-      if (fileBindings.isDarwin) {
-        t.equal(typeof raw.fd, 'number', 'macOS backend handle owns a kqueue fd');
-      } else {
-        t.ok(raw.kind === 'io_uring' || raw.kind === 'poll', 'Linux backend selects io_uring or poll');
-      }
-    } finally {
-      backend.destroy(raw as never);
-    }
-  });
-});
 describe('Basic operations', () => {
   it('timeout() resolves after delay', (t) => {
     const t0 = Date.now();
@@ -134,17 +90,21 @@ describe('Basic operations', () => {
     const elapsed = Date.now() - t0;
     t.ok(elapsed < 500, 'short timeout was not delayed by cancelled timers (' + elapsed + 'ms)');
   });
-  it('cancelled timers stop keeping the loop alive without settling', (t) => {
+  it('cancelled timers stop counting toward loop liveness without settling', (t) => {
+    // Assert the timer-specific count: the realm's port watch keeps a
+    // baseline read handle armed for its whole life, so bare alive() is
+    // realm-infrastructure-dependent.
+    const before = loop._activeHandleCounts().timers;
     let resolved = false;
     const timer = loop.timeout(1e4);
     timer.then(() => {
       resolved = true;
     });
-    t.equal(loop.alive(), true, 'pending timer keeps the loop alive');
+    t.equal(loop._activeHandleCounts().timers, before + 1, 'pending timer counts toward liveness');
     timer.cancel();
     wait(Promise.resolve());
     t.equal(resolved, false, 'cancelled timer promise stays unsettled');
-    t.equal(loop.alive(), false, 'cancelled timer no longer keeps the loop alive');
+    t.equal(loop._activeHandleCounts().timers, before, 'cancelled timer no longer counts');
   });
 });
 describe('I/O watchers', () => {
@@ -291,19 +251,25 @@ describe('Backend-specific loop hooks', () => {
   it('registerWakeSource does not keep the loop alive and wakes tick()', (t) => {
     const { server, client, peer } = connectedPair();
     try {
+      const before = loop._activeHandleCounts();
       loop.registerWakeSource(peer);
-      t.equal(loop.alive(), false, 'wake source alone does not keep loop alive');
+      const after = loop._activeHandleCounts();
+      t.equal(after.reads, before.reads, 'wake source does not count as a read handle');
+      t.equal(after.timers, before.timers, 'wake source does not count as a timer');
       sock.send(client, encodeUtf8('wake'), 0);
       const dispatched = loop.tick(100);
       t.ok(dispatched >= 1, 'wake source produced a backend event');
-      t.equal(decodeUtf8(requireRecv(sock.recv(peer, 64, 0))), 'wake', 'wake bytes remain consumable');
+      // The reactor drains wake bytes itself when dispatching the source —
+      // they exist only to break the loop's sleep.
+      const drained = sock.recv(peer, 64, 0);
+      t.ok(typeof drained === 'number' && drained < 0, 'wake bytes were drained by the loop');
     } finally {
       closeAll(peer, client, server);
     }
   });
   it('vnode reports file writes on macOS and throws explicitly elsewhere', (t) => {
     const path = `/tmp/fino-loop-vnode-${Math.floor(Math.random() * 1e6)}.txt`;
-    const fd = fileBindings.lib.symbols.open(fileBindings.cstr(path), fileBindings.O_CREAT | fileBindings.O_RDWR | fileBindings.O_TRUNC, 384);
+    const fd = loop.openSync(path, fileBindings.O_CREAT | fileBindings.O_RDWR | fileBindings.O_TRUNC, 0o600);
     if (fd < 0) throw new Error('open vnode fixture failed');
     try {
       if (!fileBindings.isDarwin) {
@@ -317,7 +283,12 @@ describe('Backend-specific loop hooks', () => {
       const bytes = encodeUtf8('vnode');
       const written = fileBindings.lib.symbols.write(fd, bytes, bytes.byteLength);
       t.equal(Number(written), bytes.byteLength, 'fixture write succeeded');
-      loop.tick(1e3);
+      // tick() returns on ANY completion (e.g. a retiring wake source from an
+      // earlier test), so keep ticking until the vnode event lands.
+      const deadline = Date.now() + 2e3;
+      while ((fflags & (NOTE_WRITE | NOTE_EXTEND)) === 0 && Date.now() < deadline) {
+        loop.tick(50);
+      }
       loop.removeVnode(fd);
       t.ok((fflags & (NOTE_WRITE | NOTE_EXTEND)) !== 0, 'vnode callback saw write or extend flag');
     } finally {
@@ -325,13 +296,6 @@ describe('Backend-specific loop hooks', () => {
       fileBindings.lib.symbols.close(fd);
       fileBindings.lib.symbols.unlink(fileBindings.cstr(path));
     }
-  });
-  it('submit() has explicit platform behavior', async (t) => {
-    if (backend.EVFILT_COMPLETION === undefined) {
-      t.throws(() => loop.submit(() => {}), /not supported/, 'submit throws when completion backend is unavailable');
-      return;
-    }
-    t.ok(typeof loop.submit === 'function', 'submit is exposed when completion backend is available');
   });
 });
 describe('spin / run', () => {

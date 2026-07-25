@@ -24,7 +24,7 @@
 import { h, Fragment, createSignal, batch, type Child, type Props, type VNode } from 'fino:ui';
 import { writeStdout } from '../tty.ts';
 import { stdin } from '../process.ts';
-import { timeout as loopTimeout } from '../internal/runtime/loop.ts';
+import { timeout as loopTimeout } from 'internal:runtime/loop';
 import { disableAutoWrap, enableAutoWrap, enterAlternateScreen, enterMouseMode, enterRawMode, exitAlternateScreen, exitMouseMode, hideCursor, showCursor, queryTerminalSize } from '../internal/tty/bindings.ts';
 export { h, Fragment, createSignal, batch };
 type Direction = 'row' | 'column';

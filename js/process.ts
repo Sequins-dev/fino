@@ -100,7 +100,7 @@ import { seatbeltAvailable } from './internal/security/sandbox/seatbelt.ts';
 import type { SandboxPolicy } from './internal/security/sandbox/plan.ts';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { FdReader, FdWriter } from './internal/stream.ts';
-import * as loop from './internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { topic, Topic } from './context/topic.ts';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
@@ -712,12 +712,10 @@ function readPipeFds(buf: ArrayBuffer | {
   const view = new DataView(buf instanceof ArrayBuffer ? buf : buf.buffer);
   return [view.getInt32(0, true), view.getInt32(4, true)];
 }
-/** Set a file descriptor to non-blocking mode. */
+/** Set a file descriptor to non-blocking mode (native — fcntl is variadic,
+* which the JS FFI silently miscalls on ARM64 Darwin). */
 function setNonblocking(fd: number): void {
-  const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
-  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed on fd ${fd}`);
-  const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  if (rc < 0) throw new Error(`fcntl(F_SETFL) failed on fd ${fd}`);
+  (loop as unknown as { setNonblocking(fd: number): void }).setNonblocking(fd);
 }
 // Opaque libc storage for posix_spawn_file_actions_t. The exact struct differs
 // by platform; this is intentionally larger than current Linux/macOS layouts.

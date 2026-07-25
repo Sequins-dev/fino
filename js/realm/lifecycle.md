@@ -3,131 +3,90 @@ weight: 11
 ---
 # Realm Lifecycle
 
-## Creating a realm
-
-Construct a realm by pointing it at an entry module:
+## Create and run
 
 ```ts
 import { Realm } from 'fino:realm';
 
 const realm = new Realm({ entry: './worker.ts' });
-```
-
-The constructor returns immediately. The child context is created and the module starts loading when you call `run()` or `call()`. Pass `root` to change the filesystem root used for module resolution inside the child:
-
-```ts
-const realm = new Realm({
-  entry: './worker.ts',
-  root: '/srv/plugin',
-});
-```
-
-### In-memory source
-
-`Realm.fromSource()` accepts TypeScript source text directly instead of a file path. The source is transpiled at construction time and the child can use static imports and top-level await just like a file-backed entry:
-
-```ts
-const realm = Realm.fromSource(`
-  import { basename } from 'fino:file/path';
-  const name = basename('/tmp/example.ts');
-  if (name !== 'example.ts') throw new Error('unexpected: ' + name);
-`);
 await realm.run();
 ```
 
-The optional `specifier` field in the options sets the synthetic URL assigned to the source module. Set this when the source text contains relative imports and you want them to resolve from a specific directory:
+Node orchestration begins allocation during construction. The chosen reactor
+constructs and schedules exactly one execution container. `run()` settles when
+the entry module and its referenced work finish, and rejects on an uncaught
+entry error. `Realm.fromSource()` provides the same behavior for in-memory
+TypeScript; source realms cannot use watch mode.
+
+## Repeated calls
+
+If the entry default-exports a function, `call()` invokes it. Calls are
+correlated and one `Realm` may be called repeatedly. Every call reaches the
+same physical realm and therefore observes the same module heap.
 
 ```ts
-const realm = Realm.fromSource(
-  `import helper from './helper.ts';`,
-  { specifier: '/srv/app/entry.ts' },
-);
-```
-
-Watch mode is not available for source realms — there is no file on disk to monitor.
-
-## Running a realm
-
-`run()` starts the child and returns a promise that settles when the child finishes:
-
-```ts
-await realm.run();
-```
-
-The promise resolves when the child's module evaluation completes normally, including draining any top-level awaits. It rejects if the child throws an uncaught error at the top level:
-
-```ts
-try {
-  await realm.run();
-} catch (err) {
-  console.error('child failed:', err);
-}
-```
-
-For long-running children such as servers or background workers, `run()` stays pending until you call `terminate()`.
-
-## Calling a function
-
-When the child's entry module default-exports a function, use `call()` instead of `run()`. The parent sends the arguments, the child invokes the function, and the result comes back as a resolved promise:
-
-```ts
-// worker.ts (child)
-export default async function (name: string): Promise<string> {
-  return `hello ${name}`;
-}
-
-// parent
 const realm = new Realm<(name: string) => Promise<string>>({
   entry: './worker.ts',
 });
-const greeting = await realm.call('Ana');
+
+const [a, b] = await Promise.all([realm.call('Ana'), realm.call('Bo')]);
 ```
 
-Arguments and return values must be serializable by the active transport. Plain objects, arrays, typed arrays, and primitives work. Functions, symbols, and weak collections throw a `DataCloneError` at `call()` time.
+## Deployments and scaling
 
-Errors thrown by the child function propagate to the parent as a rejected promise with the original error message and name preserved.
-
-`call()` closes the port after the first response, so a single `Realm` instance is one-shot when used this way. For repeated calls to a pool of workers, see `fino:realm/pool`.
-
-## Terminating a realm
-
-`terminate()` stops the child. For embedded realms the V8 context is torn down synchronously. For thread and process realms a `__terminate` message is sent and the parent-side port is closed. For remote realms the cluster is notified.
+Use `RealmDeployment` when work may run on independent replicas. Its `call()`
+method admits one call to an available replica. Sustained queue pressure adds a
+replica up to `max`; idle excess replicas retire after the scale-down window.
 
 ```ts
-realm.terminate();
+import { RealmDeployment } from 'fino:realm';
+
+const workers = new RealmDeployment<(name: string) => Promise<string>>({
+  entry: './worker.ts',
+  scaling: { min: 1, max: 4 },
+});
+
+const [a, b] = await Promise.all([workers.call('Ana'), workers.call('Bo')]);
 ```
 
-`terminate()` is synchronous and does not wait for the child to exit cleanly. If you called `run()` first, its promise resolves shortly after `terminate()` returns.
+Each replica has an independent heap. `connect()` reserves one replica and
+returns a `RealmSession` — a stable, replica-affine handle whose `call()`
+always reaches the same heap until `close()` releases it back to the
+deployment (sessions also support `using` for scope-bound release).
+`broadcast()` sends a message to every ready replica. Process isolation
+remains a one-to-one `Realm` feature and is not supported by
+`RealmDeployment`.
 
-The `using` declaration triggers `terminate()` automatically when the block exits:
+## Idle liveness
+
+Realms and deployments are referenced by default. Natural completion still
+lets a realm exit; the reference controls whether otherwise-idle call capacity
+is kept warm. After `unref()`, idle capacity may drain and a later call can
+reconstruct it.
+
+```ts
+realm.ref();    // keep idle capacity warm
+realm.unref();  // allow idle capacity to expire
+realm.hasRef();
+```
+
+Active calls and `run()` retain their own work independently of this flag.
+
+## Termination
+
+`terminate()` synchronously requests shutdown; it does not wait for the isolate
+or process to finish. Explicit resource management calls it automatically:
 
 ```ts
 {
-  using realm = new Realm({ entry: './worker.ts', thread: true });
-  const result = await realm.call(payload);
-} // realm.terminate() called here
+  using realm = new Realm({ entry: './worker.ts' });
+  await realm.call(payload);
+}
 ```
 
 ## Watch mode
 
-Setting `watch: true` makes the `Realm` object stable across child restarts. Whenever any file in the child's import graph changes on disk, the runtime tears down the current child context and spawns a fresh one using the same options. The `Realm` instance itself stays constant:
-
-```ts
-const realm = new Realm({ entry: './server.ts', watch: true });
-const done = realm.run();  // stays pending; child restarts silently on file change
-```
-
-The watcher tracks transitive imports, not just the entry file. If a helper module changes, the child restarts. Multiple rapid edits within a 50 ms debounce window produce a single reload rather than a cascade.
-
-`run()` stays pending across reloads and only resolves when you call `terminate()`:
-
-```ts
-const realm = new Realm({ entry: './plugin.ts', watch: true });
-const done = realm.run();
-
-// later, when you want to stop watching:
-realm.terminate();
-await done;
-```
-
-Watch mode works with embedded, thread, and process realms. It is not available with `remote: true`.
+`watch: true` keeps the logical Realm stable while replacing its isolate after
+an imported file changes. `run()` stays pending across reloads until
+`terminate()` is called. Watch mode works on reactor-hosted realms and with
+process isolation; it is unavailable for `Realm.fromSource()`.

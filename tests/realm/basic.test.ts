@@ -2,13 +2,32 @@
 * Tests for fino:realm — basic Realm construction and lifecycle.
 */
 import { describe, it } from 'fino:test/test';
-import { Realm, ImportMap } from 'fino:realm';
+import { Realm, RealmDeployment, ImportMap } from 'fino:realm';
 import type realmDataFn from './fixtures/realm-data-fn.ts';
 describe('Realm lifecycle', () => {
   it('creates and runs a child realm that exits naturally', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
     await realm.run();
     t.ok(true, 'child realm exited');
+  });
+  it('referenced handles keep a realm alive after its entry settles', async (t) => {
+    const realm = new Realm({ entry: new URL('./fixtures/interval-alive.ts', import.meta.url).pathname });
+    let ticks = 0;
+    realm.port.addEventListener('message', (event) => {
+      const data = (event as MessageEvent).data as { tick?: number };
+      if (typeof data?.tick === 'number') ticks = data.tick;
+    });
+    realm.port.start();
+    await realm.run();
+    t.equal(ticks, 3, 'the interval fired to completion (and stayed port-connected) before the realm exited');
+  });
+  it('terminate() overrides live handles', async (t) => {
+    const realm = new Realm({ entry: new URL('./fixtures/interval-forever.ts', import.meta.url).pathname });
+    const p = realm.run();
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    realm.terminate();
+    await p;
+    t.ok(true, 'a realm holding a live interval still terminates on demand');
   });
   it('realm.terminate() stops a long-running realm', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname });
@@ -31,7 +50,6 @@ describe('Realm lifecycle', () => {
   });
   it('keeps RealmOptions.data separate from OTLP endpoint metadata', async (t) => {
     const realm = new Realm<typeof realmDataFn>({
-      thread: true,
       entry: new URL('./fixtures/realm-data-fn.ts', import.meta.url).pathname,
       data: { role: 'worker' },
       otlpEndpoint: 'http://collector.example:4318/base'
@@ -44,6 +62,19 @@ describe('Realm lifecycle', () => {
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
       otlpEndpoint: ''
     }), /otlpEndpoint must be a non-empty string/, 'empty endpoint is rejected');
+  });
+  it('validates deployment scaling bounds before construction', (t) => {
+    const entry = new URL('./fixtures/hello.ts', import.meta.url).pathname;
+    t.throws(() => new RealmDeployment({ entry, scaling: { min: 0 } }), /minimum.*positive/i);
+    t.throws(() => new RealmDeployment({ entry, scaling: { min: 3, max: 2 } }), /minimum.*maximum/i);
+  });
+  it('exposes refable logical-deployment lifecycle', (t) => {
+    using realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
+    t.equal(realm.hasRef(), true, 'a Realm is referenced by default');
+    t.equal(realm.ref(), realm, 'ref returns the realm');
+    t.equal(realm.hasRef(), true);
+    t.equal(realm.unref(), realm, 'unref returns the realm');
+    t.equal(realm.hasRef(), false);
   });
 });
 describe('Realm.fromSource', () => {

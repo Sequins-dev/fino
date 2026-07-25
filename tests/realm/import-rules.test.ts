@@ -6,44 +6,29 @@
 */
 import { describe, it } from 'fino:test/test';
 import { Realm, ImportMap } from 'fino:realm';
-describe('Realm import policy precedence', () => {
-  it('overrides take precedence over legacy blocked specifiers', async (t) => {
+describe('Realm import policy', () => {
+  it('rule builders expand in place inside overrides', async (t) => {
+    const allowFfi = { toRules: () => [{ pattern: 'fino:ffi', directive: 'inherit' as const }] };
     const realm = Realm.fromSource([
       'import { Pointer } from \'fino:ffi\';',
       'export default () => Pointer !== undefined;',
       ''
     ].join('\n'), {
-      overrides: ImportMap.inherit([{
+      overrides: ImportMap.inherit([allowFfi, {
         pattern: 'fino:ffi',
         directive: 'inherit'
-      }]),
-      blocked: ['fino:ffi']
+      }])
     });
-    t.equal(await realm.call(), true, 'blocked is ignored when overrides are present');
+    t.equal(await realm.call(), true, 'a toRules() object expanded into working rules');
   });
-  it('legacy blocked specifiers apply when overrides are absent', async (t) => {
-    const realm = new Realm({
-      blocked: ['fino:ffi'],
-      entry: new URL('./fixtures/import-ffi.ts', import.meta.url).pathname
-    });
-    await realm.run();
-    t.ok(true, 'blocked applies in legacy policy mode');
-  });
-  it('overrides take precedence over legacy provider conversion', (t) => {
-    const throwingProviders = { fs: { toRules(): never {
-      throw new Error('legacy provider conversion should not run');
-    } } };
-    const realm = Realm.fromSource('export default () => true;\n', {
-      overrides: ImportMap.inherit([]),
-      providers: throwingProviders as any
-    });
-    t.ok(realm instanceof Realm, 'realm constructs without converting legacy providers');
-  });
-  it('legacy provider conversion is used when overrides are absent', (t) => {
-    const throwingProviders = { fs: { toRules(): never {
-      throw new Error('legacy provider conversion ran');
-    } } };
-    t.throws(() => Realm.fromSource('export default () => true;\n', { providers: throwingProviders as any }), /legacy provider conversion ran/, 'providers are converted in legacy policy mode');
+  it('the removed providers/blocked options throw with a pointer to overrides', (t) => {
+    t.throws(() => Realm.fromSource('export default () => true;\n', {
+      ...{ providers: { fs: { toRules: () => [] } } }
+    } as never), /providers\/blocked were removed/);
+    t.throws(() => new Realm({
+      entry: './worker.ts',
+      ...{ blocked: ['fino:ffi'] }
+    } as never), /providers\/blocked were removed/);
   });
 });
 describe('ImportMap.deny', () => {

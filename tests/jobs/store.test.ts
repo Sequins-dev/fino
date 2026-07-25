@@ -39,15 +39,26 @@ describe('JobsStore', () => {
     }
     const fromA: Awaited<ReturnType<typeof a.claimReady>> = [];
     const fromB: typeof fromA = [];
-    // Interleave claims until the queue drains; flock contention surfaces as
-    // busy errors that a claimer simply retries.
-    for (let round = 0; round < 40 && fromA.length + fromB.length < 10; round++) {
+    // Interleave claims until the queue drains. SQLite may bypass its busy
+    // handler during lock promotion to avoid deadlock, so retry busy errors
+    // over a time window and yield between rounds instead of exhausting a
+    // fixed spin count before the competing lock has been released.
+    const deadline = Date.now() + 5_000;
+    const busyErrors: string[] = [];
+    while (fromA.length + fromB.length < 10 && Date.now() < deadline) {
+      const before = fromA.length + fromB.length;
       const [ra, rb] = await Promise.allSettled([a.claimReady('worker-a', 30_000, 2), b.claimReady('worker-b', 30_000, 2)]);
       if (ra.status === 'fulfilled') fromA.push(...ra.value);
+      else if (/busy|locked/i.test(String(ra.reason))) busyErrors.push(String(ra.reason));
+      else throw ra.reason;
       if (rb.status === 'fulfilled') fromB.push(...rb.value);
+      else if (/busy|locked/i.test(String(rb.reason))) busyErrors.push(String(rb.reason));
+      else throw rb.reason;
+      if (fromA.length + fromB.length === before) await new Promise((resolve) => setTimeout(resolve, 1));
     }
     const ids = new Set([...fromA.map((j) => j.id), ...fromB.map((j) => j.id)]);
-    t.equal(fromA.length + fromB.length, 10, 'every job claimed exactly once across connections');
+    const remaining = fromA.length + fromB.length === 10 ? [] : await a.listJobs({ status: 'pending', limit: 20 });
+    t.equal(fromA.length + fromB.length, 10, `every job claimed exactly once across connections; pending=${remaining.length}, busy=${busyErrors.length}`);
     t.equal(ids.size, 10, 'no job claimed twice');
   });
   it('concurrent claimants on one connection get disjoint sets', async (t) => {

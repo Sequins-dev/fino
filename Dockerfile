@@ -1,7 +1,10 @@
+# The cherenkov reactor is a path dependency living beside this repo, so the
+# build context must be the PARENT directory:
+#   container build -f surge/Dockerfile ~/Code/rust
 FROM rust:1-bookworm
 
 ENV CARGO_TERM_COLOR=always
-WORKDIR /workspace
+WORKDIR /workspace/surge
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -20,7 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
   && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+COPY cherenkov/ /workspace/cherenkov/
+COPY surge/ .
 
 RUN cargo build
 

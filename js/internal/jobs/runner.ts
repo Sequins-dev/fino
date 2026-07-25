@@ -10,7 +10,7 @@
 * pool-worker default export all funnel through `dispatchJob`.
 *
 * Errors are returned as values, never thrown across a processor boundary.
-* A `RealmPool` worker communicates over a serialization wire that flattens a
+* A scheduled Realm worker communicates over a serialization wire that flattens a
 * thrown `Error` to `{message, stack}` and drops everything else, so the
 * scheduler-critical fields — whether a failure is `retryable`, and whether a
 * durable run `parked` rather than finished — would not survive the trip. By
@@ -265,7 +265,7 @@ export async function dispatchJob(registry: Map<string, Task>, call: JobsWireCal
 /**
 * Build the pool-worker dispatcher for a task tree.
 *
-* Returns the function a `RealmPool` worker realm default-exports: the pool
+* Returns the function a scheduled worker realm default-exports: the job
 * invokes it once per delivered envelope. It collects `root` and its
 * descendants into a registry once, then handles two envelope kinds. A
 * `{ kind: 'tasks' }` control envelope returns the list of registered task

@@ -97,18 +97,18 @@ impl JsValueRepr {
                 return Self::BigIntU64(v);
             }
         }
-        if val.is_number() {
-            if let Some(n) = val.number_value(scope) {
-                let i = n as i32;
-                if i as f64 == n {
-                    return Self::I32(i);
-                }
-                let u = n as u32;
-                if u as f64 == n {
-                    return Self::U32(u);
-                }
-                return Self::F64(n);
+        if val.is_number()
+            && let Some(n) = val.number_value(scope)
+        {
+            let i = n as i32;
+            if i as f64 == n {
+                return Self::I32(i);
             }
+            let u = n as u32;
+            if u as f64 == n {
+                return Self::U32(u);
+            }
+            return Self::F64(n);
         }
         if let Ok(s) = v8::Local::<v8::String>::try_from(val) {
             return Self::String(s.to_rust_string_lossy(scope));

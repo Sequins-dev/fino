@@ -2,7 +2,11 @@
 * Tests for internal:shutdown — registerShutdownHook and runShutdownHooks.
 */
 import { describe, it } from 'fino:test/test';
+import { allocateScheduledRealm } from 'internal:realm/allocate';
+import { mergeChildRules } from 'internal:realm-native';
 import { registerShutdownHook, runShutdownHooks } from 'internal:shutdown';
+const longRunningRealm = new URL('../realm/fixtures/long-running.ts', import.meta.url).pathname;
+const rulesJson = mergeChildRules('[]') as string;
 describe('runShutdownHooks — no-op on empty', () => {
   it('does not throw when no hooks are registered', async (t) => {
     // Drain any hooks left by previous suites, then confirm a fresh run is clean.
@@ -149,5 +153,45 @@ describe('B2 regression: hooks registered during shutdown are also executed', ()
     t.ok(order.includes('B') && order.includes('C'), 'both inner hooks ran');
     t.ok(order.indexOf('A') < order.indexOf('B'), 'A before B');
     t.ok(order.indexOf('A') < order.indexOf('C'), 'A before C');
+  });
+});
+describe('realm allocator shutdown registration', () => {
+  it('registers a fresh hook after an earlier shutdown cycle', async (t) => {
+    const first = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    t.ok(first !== null, 'the first realm was placed');
+    await runShutdownHooks();
+    await first?.released;
+
+    const second = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    t.ok(second !== null, 'the second realm was placed');
+    await runShutdownHooks();
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const released = await Promise.race([
+      second?.released.then(() => true),
+      new Promise<false>((resolve) => { timeout = setTimeout(() => resolve(false), 250); })
+    ]);
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (!released) {
+      second?.revoke('test-cleanup');
+      await second?.released;
+    }
+    t.equal(released, true, 'the second shutdown cycle stopped the replacement scheduler');
+
+    const survivor = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    const completed = await allocateScheduledRealm({ entryPath: longRunningRealm, rulesJson });
+    t.ok(survivor !== null && completed !== null, 'replacement realms were placed');
+    completed?.revoke('completed');
+    await completed?.released;
+
+    let survivorTimeout: ReturnType<typeof setTimeout> | undefined;
+    const survivorReleased = await Promise.race([
+      survivor?.released.then(() => true),
+      new Promise<false>((resolve) => { survivorTimeout = setTimeout(() => resolve(false), 100); })
+    ]);
+    if (survivorTimeout !== undefined) clearTimeout(survivorTimeout);
+    survivor?.revoke('test-cleanup');
+    await survivor?.released;
+    t.equal(survivorReleased, false, 'a completed peer does not stop the surviving realm');
   });
 });

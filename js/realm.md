@@ -15,26 +15,26 @@ application did not write can run with exactly the modules it was granted and
 nothing else. The same primitive covers ordinary worker-style execution and
 reloadable application contexts.
 
-Realms come in four execution modes. An embedded realm shares the current V8
-isolate and OS thread. A thread realm gets its own V8 isolate and OS thread. A
-process realm runs in a separate OS process. A remote realm runs on a machine
-in a `fino:cluster`. Within each mode the import rule system, messaging API,
-facade mechanism, and watch mode work the same way, so you can move from
-embedded to thread to process as isolation requirements change without
-rewriting application logic.
+Every ordinary realm is one V8 isolate hosted and scheduled by a reactor
+thread. Node orchestration chooses the reactor and, when clustering is enabled,
+cluster orchestration will first choose the node. Declare scheduling intent
+with `priority`: `'background'` realms run on the batch reactor pool so
+sync-heavy work never contends with latency-class realms, and the orchestrator
+also demotes realms that repeatedly blow the synchronous-slice budget.
+`RealmDeployment` composes independent realm replicas when scaling is
+required. Use `process: true` only when an OS-process isolation boundary is
+required; it does not create a separate Realm API.
 
 The guides in this section:
 
 - [Realm Lifecycle](./realm/lifecycle.md) — creating realms, running them,
   calling into them, and controlling their lifetime, including watch mode for
   auto-reload on file changes.
-- [Isolation Levels](./realm/isolation.md) — choosing between embedded,
-  thread, process, and remote modes, and what each mode costs and provides.
+- [Isolation and Placement](./realm/isolation.md) — orchestrated placement,
+  local mobility, and optional process isolation.
 - [Messaging](./realm/realm-messaging.md) — exchanging messages between parent
   and child using ports and `BroadcastChannel`.
 - [Facades](./realm/facades.md) — exposing parent-side logic to the child as a
   virtual module the child can import and call like any other module.
 - [Import Capabilities](./realm/capabilities.md) — shaping what a child realm
   is allowed to import, using import rules and provider configs.
-- [Realm Pools](./realm/pools.md) — running repeated independent tasks across
-  a pool of warm thread realms with load-based dispatch.

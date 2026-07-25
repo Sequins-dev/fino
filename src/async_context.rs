@@ -7,16 +7,12 @@
 //! - `getCPED` / `setCPED`: V8 Torque builtins extracted from the extras binding
 //!   object. These compile to direct CPED memory loads/stores on the V8 isolate
 //!   and can be inlined by TurboFan/Maglev — no native barrier crossing.
-//! - `drainMicrotasks`, `hasPendingV8Tasks`, `scheduleSync`, `runLoop`: host loop
+//! - `drainMicrotasks`, `hasPendingV8Tasks`, `scheduleSync`, `runNativeLoop`: host loop
 //!   primitives that must remain in Rust.
 
 use ::v8;
 
 use crate::state::{get_state, root_queue_ptr};
-
-fn loop_debug_enabled() -> bool {
-    std::env::var_os("FINO_LOOP_DEBUG").is_some()
-}
 
 // ---------------------------------------------------------------------------
 // internal:async-context synthetic module
@@ -29,7 +25,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "drainMicrotasks",
         "hasPendingV8Tasks",
         "scheduleSync",
-        "runLoop",
+        "runNativeLoop",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -74,7 +70,7 @@ fn eval_steps<'a>(
     set_fn!("drainMicrotasks", drain_microtasks);
     set_fn!("hasPendingV8Tasks", has_pending_v8_tasks);
     set_fn!("scheduleSync", schedule_sync);
-    set_fn!("runLoop", run_loop);
+    set_fn!("runNativeLoop", run_native_loop);
 
     Some(v8::undefined(scope).into())
 }
@@ -138,29 +134,40 @@ fn schedule_sync(
 
     let state_rc = get_state(scope);
     let mut st = state_rc.borrow_mut();
-    st.sync_call_fn = Some(v8::Global::new(scope, fn_obj));
-    st.sync_call_resolver = Some(v8::Global::new(scope, resolver));
-    if loop_debug_enabled() {
-        eprintln!("[async-context] scheduleSync queued");
-    }
+    let fn_global = v8::Global::new(scope, fn_obj);
+    let resolver_global = v8::Global::new(scope, resolver);
+    st.sync_calls.push_back((fn_global, resolver_global));
 
     rv.set(promise.into());
 }
 
-/// Called by `internal/main.ts` with `(step, onDone)` to hand off host-safe loop
-/// stepping to Rust. JS owns scheduling policy; Rust only calls `step()`
-/// outside checkpoints and services deferred sync work between calls.
-fn run_loop(
+/// Called by the bootstrap with `(isDone, onDone, hooks?)` when the realm's
+/// loop module is reactor-backed: the Rust host loop drives the reactor itself
+/// (wait → dispatch → pump to quiescence → reclassify) and calls only these
+/// thin policy callbacks. `hooks` may provide a `flushPorts` function.
+fn run_native_loop(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    let Ok(is_done) = v8::Local::<v8::Function>::try_from(args.get(0)) else {
+        return;
+    };
+    let on_done = v8::Local::<v8::Function>::try_from(args.get(1)).ok();
+
+    let mut flush_ports_fn = None;
+    if let Ok(hooks) = v8::Local::<v8::Object>::try_from(args.get(2)) {
+        flush_ports_fn = v8::String::new(scope, "flushPorts")
+            .and_then(|k| hooks.get(scope, k.into()))
+            .and_then(|v| v8::Local::<v8::Function>::try_from(v).ok())
+            .map(|f| v8::Global::new(scope, f));
+    }
+
     let state_rc = get_state(scope);
     let mut st = state_rc.borrow_mut();
-    st.loop_step_fn = v8::Local::<v8::Function>::try_from(args.get(0))
-        .ok()
-        .map(|f| v8::Global::new(scope, f));
-    st.on_done_fn = v8::Local::<v8::Function>::try_from(args.get(1))
-        .ok()
-        .map(|f| v8::Global::new(scope, f));
+    st.native_loop = Some(crate::state::NativeLoopHooks {
+        is_done_fn: v8::Global::new(scope, is_done),
+        flush_ports_fn,
+    });
+    st.on_done_fn = on_done.map(|f| v8::Global::new(scope, f));
 }

@@ -113,10 +113,11 @@ const realm = new Realm({
 await realm.run();
 ```
 
-Realms run embedded in the current isolate, in their own thread, in a separate
-process, or on a remote cluster machine, with the same import-rule, messaging,
-and facade model in every mode. See the [Realms section](./realm.md), and
-[Import Capabilities](./realm/capabilities.md) for the rule system.
+Ordinary realms always run as independent isolates assigned to reactor threads.
+The node and, eventually, cluster orchestrators choose placement without
+changing the import-rule, messaging, or facade model. Process realms add a
+separate OS-process boundary. See the [Realms section](./realm.md), and [Import
+Capabilities](./realm/capabilities.md) for the rule system.
 
 Process execution adds an operating-system boundary on top. `fino:process` can
 request sandbox policies (filesystem, network, process, resource limits) for

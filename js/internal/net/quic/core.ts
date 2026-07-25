@@ -61,7 +61,7 @@ import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { atob } from '../../../globals/encoding.ts';
 import { encodeUtf8 } from '../../encoding.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
-import * as loop from '../../runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { topic } from '../../../context/topic.ts';
 import { lib as fileLib, cstr as fileCstr, O_APPEND, O_CREAT, O_TRUNC, O_WRONLY } from '../../file/bindings.ts';
 import { AF_INET, AF_INET6, EAGAIN, IPPROTO_IP, IPPROTO_IPV6, IPPROTO_UDP, IPV6_UNICAST_HOPS, IPV6_RECVTCLASS, IPV6_V6ONLY, IP_RECVTOS, IP_TTL, SOL_SOCKET, SO_RCVBUF, SO_REUSEPORT, SO_SNDBUF, SOCK_DGRAM, bind as socketBind, close as socketClose, createDatagramRecvBatch, decodeAddr, encodeAddr, getsockname, recvmsgEcn, recvfrom, sendmmsgBatch, sendmsgEcn, sendto, setNonblocking, setsockopt, socket } from '../../../net/socket.ts';
@@ -2773,7 +2773,7 @@ export function writeAllFd(fd: number, data: Uint8Array): void {
 }
 export function appendKeylogLine(options: QuicKeylogOptions, line: string): void {
   if (options === false) return;
-  const fd = Number(fileLib.symbols.open(fileCstr(options.path), O_WRONLY | O_CREAT | O_APPEND, 384));
+  const fd = loop.openSync(options.path, O_WRONLY | O_CREAT | O_APPEND, 0o600);
   if (fd < 0) return;
   try {
     fileLib.symbols.fchmod(fd, 384);

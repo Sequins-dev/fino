@@ -125,7 +125,7 @@ import { dlopen, Pointer } from 'fino:ffi';
 import { networkInterfaces as nativeNetworkInterfaces } from 'internal:net-native';
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
-import * as loop from '../internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { FdReader, FdWriter, BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.ts';
 // ---------------------------------------------------------------------------
 // Types
@@ -1079,10 +1079,9 @@ export function socket(family: number = AF_INET, type: number = SOCK_STREAM, pro
 * ```
 */
 export function setNonblocking(fd: number): void {
-  const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
-  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed: errno=${getErrno()}`);
-  const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  if (rc < 0) throw new Error(`fcntl(F_SETFL, O_NONBLOCK) failed: errno=${getErrno()}`);
+  // Native — fcntl(2) is variadic, which the JS FFI silently miscalls on
+  // ARM64 Darwin (F_SETFL "succeeded" without setting O_NONBLOCK).
+  (loop as unknown as { setNonblocking(fd: number): void }).setNonblocking(fd);
 }
 /**
 * Set socket option. Value can be a boolean/number (written as 4-byte int)
@@ -2103,14 +2102,28 @@ export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Prom
     if (opts.noDelay && family !== AF_UNIX) {
       setsockopt(fd, IPPROTO_TCP_LEVEL, TCP_NODELAY, true);
     }
-    // Non-blocking connect returns immediately (EINPROGRESS).
-    // Wait for writable, then check SO_ERROR for the actual result.
-    connect(fd, addr);
-    await loop.writable(fd);
-    const errBuf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
-    const errno = new DataView(errBuf).getInt32(0, true);
-    if (errno !== 0) {
-      throw new Error('connect() failed: errno=' + errno);
+    // Non-blocking connect usually returns EINPROGRESS; wait for writable,
+    // then check SO_ERROR for the handshake result. An immediate failure
+    // (loopback ECONNREFUSED fails synchronously on macOS, which also leaves
+    // SO_ERROR clear) must be thrown here — waiting would misread a dead
+    // socket's writability as success.
+    const rc = connect(fd, addr);
+    if (rc < 0 && rc !== EINPROGRESS) {
+      throw new Error('connect() failed: errno=' + -rc);
+    }
+    if (rc === EINPROGRESS) {
+      // The loop's writable() resolves the socket's pending error (negated)
+      // when the poll consumed SO_ERROR itself; fall back to getsockopt for
+      // resolutions that carry no value.
+      const werr = (await loop.writable(fd)) as unknown as number | undefined;
+      if (typeof werr === 'number' && werr < 0) {
+        throw new Error('connect() failed: errno=' + -werr);
+      }
+      const errBuf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
+      const errno = new DataView(errBuf).getInt32(0, true);
+      if (errno !== 0) {
+        throw new Error('connect() failed: errno=' + errno);
+      }
     }
     return fd;
   } catch (err) {
@@ -2327,6 +2340,12 @@ export class Socket {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    // Deregister any armed loop ops first: closing an fd with an in-flight
+    // read/write silently drops the kernel registration (kqueue removes the
+    // knote on close), leaking the loop handle — and this realm's liveness —
+    // forever.
+    loop.removeRead(this.#fd);
+    loop.removeWrite(this.#fd);
     shutdown(this.#fd, SHUT_RDWR);
     close(this.#fd);
   }
@@ -2394,8 +2413,9 @@ export class Socket {
     async function acceptOne() {
       while (true) {
         if (serverClosed) return null;
-        await loop.readable(serverFd);
+        const n = await loop.readable(serverFd);
         if (serverClosed) return null;
+        if (typeof n === 'number' && n < 0) return null;
         const result = accept(serverFd);
         if (result !== null) {
           if (!isKnownAddress(result.addr)) {

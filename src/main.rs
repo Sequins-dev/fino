@@ -11,10 +11,12 @@ mod net_native;
 mod platform;
 mod profiler;
 mod protobuf;
+mod reactor;
 mod realm;
 mod runtime;
 mod state;
 mod typescript_format;
+mod v8_threading;
 
 fn main() {
     // Server processes must not die on broken-pipe writes. Network connections

@@ -8,8 +8,8 @@
 *
 * The `File` owns the descriptor lifecycle. Readers and writers created from a
 * file share the same descriptor, so callers close the `File` once all derived
-* streams are finished. Linux uses io_uring-backed async operations where
-* available; macOS yields through the runtime loop around synchronous syscalls.
+* streams are finished. All reads ride the reactor's fused read: a regular
+* file completes synchronously, anything that would block parks on the loop.
 *
 * ## Example
 *
@@ -27,7 +27,7 @@
 *
 * @internal
 */
-import { lib, isDarwin, loopModule, asyncOps, throwErrno, throwErrnoCode, _toPath, modeIsReadable, modeIsWritable, SEEK_CUR, O_CREAT, decodeUtf8, Pointer } from './bindings.ts';
+import { lib, isDarwin, loopModule, throwErrno, throwErrnoCode, _toPath, modeIsReadable, modeIsWritable, SEEK_CUR, O_CREAT, decodeUtf8, Pointer } from './bindings.ts';
 import { Stat } from './stat.ts';
 import { FdWriter } from '../stream.ts';
 import type { Path } from '../../file/path.ts';
@@ -41,10 +41,10 @@ import type { Path } from '../../file/path.ts';
 * handle share the same underlying fd, so close the `File` — not the individual
 * stream — to release it. Closing flushes any writer created by `writer()`.
 *
-* Async reads use io_uring on Linux and yield through the runtime loop around
-* synchronous syscalls on macOS. Every method throws if the handle is already
-* closed, and `reader()`/`writer()` also throw when the open mode disallows the
-* requested direction.
+* Reads use the reactor's fused read (synchronous completion for regular
+* files, a parked completion otherwise). Every method throws if the handle is
+* already closed, and `reader()`/`writer()` also throw when the open mode
+* disallows the requested direction.
 *
 * ```ts no_run
 * import { File } from 'internal:file/handle';
@@ -194,11 +194,9 @@ export class File {
   * Throws immediately if the handle was opened in a non-readable mode (`w`,
   * `a`).
   *
-  * On Linux this issues `IORING_OP_READ` for genuine async I/O. On macOS it
-  * yields through the runtime loop via kqueue `EVFILT_READ` between synchronous
-  * `read(2)` calls, checking `lseek(SEEK_CUR)` against the file size before each
-  * wait so it exits cleanly at EOF (where `EVFILT_READ` never fires) while still
-  * noticing a file that has grown.
+  * Each chunk is one fused reactor read straight into the chunk buffer: a
+  * regular file completes synchronously (returning 0 at EOF), and a
+  * descriptor that would block parks on the loop until readable.
   *
   * ```ts no_run
   * let total = 0;
@@ -215,14 +213,6 @@ export class File {
     const fd = this.#fd;
     const isClosed = (): boolean => this.#closed;
     const bufSize = 65536;
-    // macOS: capture file size once at reader() creation time for EOF detection.
-    // lseek(SEEK_CUR) is called per-iteration to get the current offset.
-    let fileSize: number | null = null;
-    if (!asyncOps) {
-      const statBuf = new ArrayBuffer(256);
-      lib.symbols.fstat(fd, statBuf);
-      fileSize = Stat.parse(statBuf).size;
-    }
     const iterable: AsyncIterable<Uint8Array> = { [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
       return { async next(): Promise<IteratorResult<Uint8Array>> {
         if (isClosed()) return {
@@ -230,36 +220,9 @@ export class File {
           value: undefined
         };
         const buf = new ArrayBuffer(bufSize);
-        let n: number;
-        if (asyncOps) {
-          const loop = loopModule;
-          const ops = asyncOps;
-          if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-          // Linux: io_uring IORING_OP_READ.
-          const result = await loop.submit(function submitAsyncRead(raw: object, id: number) {
-            ops.asyncRead(raw, fd, buf, bufSize, id);
-          });
-          n = result.res;
-          if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
-        } else {
-          // macOS: check EOF via lseek before calling readable() to avoid
-          // hanging (EVFILT_READ does not fire when offset == file_size).
-          const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-          if (fileSize !== null && offset >= fileSize) {
-            // Re-stat: the file may have grown since we last checked.
-            const refreshBuf = new ArrayBuffer(256);
-            lib.symbols.fstat(fd, refreshBuf);
-            fileSize = Stat.parse(refreshBuf).size;
-            if (offset >= fileSize) return {
-              done: true,
-              value: undefined
-            };
-          }
-          // Yield to the event loop. For a vnode with remaining data,
-          // EVFILT_READ fires immediately on the next tick.
-          await loopModule!.readable(fd);
-          n = Number(lib.symbols.read(fd, buf, bufSize));
-        }
+        // The reactor reads directly into `buf`. A regular file takes the
+        // sync fast path (no readiness park) — read returns 0 at EOF.
+        const n = await loopModule.readAwaited(fd, buf, 0, bufSize);
         if (n <= 0) return {
           done: true,
           value: undefined
@@ -303,8 +266,8 @@ export class File {
   * Drains the same chunked read loop as `reader()` and concatenates the result,
   * so it advances the shared file offset and returns an empty array when
   * already at EOF. Throws if the handle is closed. For large files prefer
-  * `reader()` to avoid holding the whole contents in memory. Uses the same
-  * Linux io_uring / macOS kqueue EOF strategy documented on `reader()`.
+  * `reader()` to avoid holding the whole contents in memory. Reads use the
+  * same fused-reactor path documented on `reader()`.
   *
   * ```ts no_run
   * const bytes = await file.bytes();
@@ -313,37 +276,65 @@ export class File {
   */
   async bytes(): Promise<Uint8Array> {
     if (this.#closed) throw new Error('File is closed');
+    const fd = this.#fd;
+    // Size the destination once from fstat and read straight into it, so a
+    // regular file needs a single allocation (the array returned to the caller)
+    // and zero per-chunk scratch. Repeated 64 KiB scratch buffers were the
+    // dominant external-memory-GC source under the reactor engine's non-yielding
+    // pump (profiled at ~30% of the reactor thread's CPU); reading in place
+    // removes that churn.
+    const statBuf = new ArrayBuffer(256);
+    lib.symbols.fstat(fd, statBuf);
+    const size = Stat.parse(statBuf).size;
+    const startOffset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
+    const remaining = size > startOffset ? size - startOffset : 0;
+    // Empty file, or a special file whose fstat size is not its readable length
+    // (pipe, device, /proc): fall back to chunked growth.
+    if (remaining === 0) return this.#bytesChunked();
+
+    const out = new Uint8Array(remaining);
+    let pos = 0;
+    while (pos < remaining) {
+      const n = await this.#readInto(out, pos, remaining - pos);
+      if (n <= 0) break;
+      pos += n;
+    }
+    // `bytes()` captures the file as of its fstat size (like a snapshot read); a
+    // shorter read means a concurrent truncation. Content appended after the
+    // fstat is not chased here — probing for it would cost a per-call scratch
+    // buffer, the churn this path exists to avoid; use `reader()` for a file
+    // being actively appended to.
+    return pos === remaining ? out : out.subarray(0, pos);
+  }
+  /**
+  * Read `len` bytes from the descriptor into `out` starting at byte offset
+  * `pos`, filling the destination in place (no scratch allocation) via the
+  * reactor's fused read. Returns the byte count, or 0 at EOF. Helper for
+  * {@link bytes}; pipes/sockets/other unsized descriptors go through
+  * {@link #bytesChunked}.
+  *
+  * @internal
+  */
+  async #readInto(out: Uint8Array, pos: number, len: number): Promise<number> {
+    const fd = this.#fd;
+    return loopModule.readAwaited(fd, out.buffer, out.byteOffset + pos, len);
+  }
+  /**
+  * Chunked read-to-EOF fallback: allocates a fresh buffer per chunk and
+  * concatenates. Used for special/empty files whose size is unknown and the
+  * grown-file tail; sized in-place reads in {@link bytes} avoid this for the
+  * common case.
+  *
+  * @internal
+  */
+  async #bytesChunked(): Promise<Uint8Array> {
     const chunks: Uint8Array[] = [];
     let total = 0;
     const bufSize = 65536;
     const fd = this.#fd;
-    // macOS: capture file size once for EOF detection (same strategy as reader()).
-    let fileSize: number | null = null;
-    if (!asyncOps) {
-      const statBuf = new ArrayBuffer(256);
-      lib.symbols.fstat(fd, statBuf);
-      fileSize = Stat.parse(statBuf).size;
-    }
     while (true) {
       const buf = new ArrayBuffer(bufSize);
-      let n: number;
-      if (asyncOps) {
-        const loop = loopModule;
-        const ops = asyncOps;
-        if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-        const result = await loop.submit(function submitAsyncRead(raw: object, id: number) {
-          ops.asyncRead(raw, fd, buf, bufSize, id);
-        });
-        n = result.res;
-        if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
-      } else {
-        // macOS: check EOF via lseek before calling readable() to avoid
-        // hanging (EVFILT_READ does not fire when offset == file_size).
-        const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-        if (fileSize !== null && offset >= fileSize) break;
-        await loopModule!.readable(fd);
-        n = Number(lib.symbols.read(fd, buf, bufSize));
-      }
+      const n = await loopModule.readAwaited(fd, buf, 0, bufSize);
       if (n <= 0) break;
       chunks.push(new Uint8Array(buf, 0, n));
       total += n;
@@ -534,8 +525,7 @@ export class File {
   *
   * Idempotent: a second call is a no-op. Any pending writer created by
   * `writer()` is flushed before the fd is released, so buffered bytes are not
-  * lost. On Linux the close is issued as `IORING_OP_CLOSE`; on macOS it runs
-  * synchronously via `close(2)`. This method also backs `Symbol.asyncDispose`,
+  * lost. This method also backs `Symbol.asyncDispose`,
   * so an `await using` binding closes the handle when it leaves scope.
   *
   * ```ts no_run
@@ -551,17 +541,7 @@ export class File {
     if (this.#activeWriter !== null && !this.#activeWriter.closed) {
       await this.#activeWriter.flush();
     }
-    if (asyncOps) {
-      const loop = loopModule;
-      const ops = asyncOps;
-      if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-      const fd = this.#fd;
-      await loop.submit(function submitAsyncClose(raw: object, id: number) {
-        ops.asyncClose(raw, fd, id);
-      });
-    } else {
-      lib.symbols.close(this.#fd);
-    }
+    lib.symbols.close(this.#fd);
   }
   /**
   * Dispose hook that closes the handle when an `await using` binding goes out
@@ -585,7 +565,7 @@ export class File {
   * Close this file handle synchronously with `close(2)`.
   *
   * This low-level path is for native callbacks that must release descriptors
-  * without scheduling io_uring work from inside another async FFI operation.
+  * without scheduling reactor work from inside another async FFI operation.
   * Flushes any active writer synchronously first and is idempotent. Normal
   * application code should use `close()` instead.
   *

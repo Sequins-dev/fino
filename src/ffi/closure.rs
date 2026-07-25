@@ -7,7 +7,6 @@
 //! must return a non-Promise scalar result.
 
 use std::ffi::c_void;
-use std::os::unix::io::RawFd;
 use std::sync::{Arc, Condvar, Mutex};
 
 use libffi::low::Callback;
@@ -33,10 +32,10 @@ struct CallbackData {
     context: v8::Global<v8::Context>,
     func: v8::Global<v8::Function>,
     js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
-    wake_write: RawFd,
+    wake: crate::async_rt::WakeSink,
 }
 
-// SAFETY: only primitive types and Arc (Send).
+// SAFETY: only primitive types, Arc (Send), and WakeSink (Send + Sync).
 unsafe impl Send for CallbackData {}
 unsafe impl Sync for CallbackData {}
 
@@ -93,8 +92,7 @@ unsafe extern "C" fn trampoline(
         .collect();
 
     // Create a condvar slot for the result.
-    let slot: Arc<(Mutex<Option<Result<js_calls::CallResult, String>>>, Condvar)> =
-        Arc::new((Mutex::new(None), Condvar::new()));
+    let slot: js_calls::ResultSlot = Arc::new((Mutex::new(None), Condvar::new()));
 
     let request = JsCallRequest {
         callback_id: data.callback_id,
@@ -105,9 +103,7 @@ unsafe extern "C" fn trampoline(
 
     // Submit to the V8 thread queue and wake the event loop.
     data.js_call_requests.lock().unwrap().push(request);
-    unsafe {
-        libc::write(data.wake_write, b"\x01".as_ptr() as *const c_void, 1);
-    }
+    data.wake.wake();
 
     // Block until the V8 thread fills the slot.
     let (lock, cvar) = slot.as_ref();
@@ -175,7 +171,7 @@ pub fn new_callback(
     result_type: NativeType,
     func_global: v8::Global<v8::Function>,
 ) -> Result<(*mut CallbackHandle, *mut c_void), String> {
-    let (js_call_requests, wake_write) =
+    let (js_call_requests, wake) =
         crate::async_rt::js_call_handle().ok_or("FfiCallback: runtime not initialised")?;
 
     let func_local = v8::Local::new(scope, &func_global);
@@ -185,7 +181,7 @@ pub fn new_callback(
     // Build the libffi CIF.
     let ffi_params: Vec<_> = param_types.iter().map(|t| t.to_ffi_type()).collect();
     let ffi_result = result_type.to_ffi_type();
-    let cif = Cif::new(ffi_params.into_iter(), ffi_result);
+    let cif = Cif::new(ffi_params, ffi_result);
 
     // Leak the userdata so the closure can hold a `'static` reference.
     let context = scope.get_current_context();
@@ -198,7 +194,7 @@ pub fn new_callback(
         context,
         func,
         js_call_requests,
-        wake_write,
+        wake,
     });
     let userdata_ptr: *mut CallbackData = Box::into_raw(userdata);
     let userdata_ref: &'static CallbackData = unsafe { &*userdata_ptr };

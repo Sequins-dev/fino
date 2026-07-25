@@ -29,22 +29,12 @@
 * @internal
 */
 import { dlopen, Pointer } from 'fino:ffi';
+import * as loopModule from 'internal:runtime/loop';
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from '../encoding.ts';
 import { Path } from '../../file/path.ts';
 export { Pointer };
 export { encodeUtf8, decodeUtf8 };
-interface LoopModule {
-  submit(fn: (raw: object, id: number) => void): Promise<{
-    res: number;
-  }>;
-  readable(fd: number): Promise<number>;
-}
-interface AsyncOpsModule {
-  asyncOpen(raw: object, pathBuf: ArrayBuffer, flags: number, mode: number, id: number): void;
-  asyncRead(raw: object, fd: number, buf: ArrayBuffer, len: number, id: number): void;
-  asyncClose(raw: object, fd: number, id: number): void;
-}
 interface ErrnoError extends Error {
   code?: string | number;
   syscall?: string;
@@ -125,19 +115,9 @@ const _ERRNO_CODES: Record<number, string> = {
     104: 'ECONNRESET'
   }
 };
-// Both platforms need fino:loop for async reads.
-// Linux additionally uses fino:io_uring for IORING_OP_READ / IORING_OP_OPENAT.
-//
-// macOS: kqueue EVFILT_READ on a regular file (vnode) fires when
-//   current_file_offset < file_size, with ev.data = file_size - current_offset
-//   (bytes remaining). It does NOT fire when offset == file_size (at EOF).
-//   We therefore check the current offset via lseek(SEEK_CUR) before each
-//   loop.readable() call to avoid hanging at EOF.
 /**
-* Loaded event-loop module used by async file reads and close operations.
-*
-* Set during module initialization. It is nullable only to reflect dynamic
-* import failure before initialization completes.
+* The reactor loop, re-exported for file I/O: fused `readAsync`/`fileRead`
+* transfers and the variadic-safe `openSync` shim.
 *
 * ```typescript no_run
 * import * as bindings from 'internal:file/bindings';
@@ -146,24 +126,7 @@ const _ERRNO_CODES: Record<number, string> = {
 *
 * @internal
 */
-export let loopModule: LoopModule | null = null;
-/**
-* Linux io_uring async file operation bindings.
-*
-* `null` on macOS, where file reads use kqueue-assisted synchronous reads.
-*
-* ```typescript no_run
-* import { asyncOps } from 'internal:file/bindings';
-* if (asyncOps) void asyncOps.asyncRead;
-* ```
-*
-* @internal
-*/
-export let asyncOps: AsyncOpsModule | null = null;
-loopModule = await import('internal:runtime/loop');
-if (!isDarwin) {
-  asyncOps = await import('internal:runtime/loop-backend');
-}
+export { loopModule };
 const errnoFn = isDarwin ? '__error' : '__errno_location';
 /**
 * Platform libc handle with filesystem-related symbols.

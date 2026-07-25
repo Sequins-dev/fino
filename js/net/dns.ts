@@ -155,7 +155,7 @@
 * ```
 */
 import * as sock from './socket.ts';
-import * as loop from '../internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { DiskFileSystem } from '../file/fs.ts';
 import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
 import { os } from 'internal:process';

@@ -24,7 +24,7 @@
 * ```
 */
 import * as sock from './socket.ts';
-import * as loop from '../internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { RECORD_TYPES, _buildQuery, _decodeName, _encodeName, _parseResponse } from 'internal:net/dns-wire';
 import type { Address } from './socket.ts';
 import type { DnsResourceRecord } from './dns.ts';

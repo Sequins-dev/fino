@@ -5,7 +5,6 @@
 //! function resolves. The JS function may return a Promise — the bridge
 //! awaits it on the LocalExecutor and wakes the blocking thread when done.
 
-use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -58,8 +57,9 @@ pub enum CallResult {
     I64(i64),
     U64(u64),
     F64(f64),
-    #[allow(dead_code)]
-    String(String),
+    // The payload is captured for symmetry with the other reprs, but string
+    // returns currently coerce to 0 at the FFI word boundary.
+    String(#[allow(dead_code)] String),
     Bytes(Vec<u8>),
 }
 
@@ -79,22 +79,19 @@ pub struct JsCallRequest {
     pub args: Vec<SendArg>,
     pub param_types: Vec<NativeType>,
     /// Filled by the V8 thread; the blocking thread waits on the condvar.
-    pub result_slot: Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>,
+    pub result_slot: ResultSlot,
 }
+
+/// Shared slot a blocking thread parks on until the V8 thread fills it.
+pub type ResultSlot = Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>;
 
 // ---------------------------------------------------------------------------
 // Thread-local callback table (V8 thread only)
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static CALLBACK_TABLE: RefCell<Vec<Option<v8::Global<v8::Function>>>> =
-        const { RefCell::new(Vec::new()) };
-}
-
 /// Register a JS function and return its slot index. Called from the V8 thread.
 pub fn register_callback(func: v8::Global<v8::Function>) -> usize {
-    CALLBACK_TABLE.with(|t| {
-        let mut table = t.borrow_mut();
+    crate::async_rt::with_callback_table(|table| {
         // Reuse a freed slot if available.
         for (i, slot) in table.iter_mut().enumerate() {
             if slot.is_none() {
@@ -112,13 +109,13 @@ pub fn register_callback(func: v8::Global<v8::Function>) -> usize {
 /// thread by fire-and-forget consumers that invoke the callback exactly once
 /// (e.g. `Pointer.view` release draining).
 pub fn take_callback(id: usize) -> Option<v8::Global<v8::Function>> {
-    CALLBACK_TABLE.with(|t| t.borrow_mut().get_mut(id)?.take())
+    crate::async_rt::with_callback_table(|table| table.get_mut(id)?.take())
 }
 
 /// Release a callback registration. Called from the V8 thread.
 pub fn unregister_callback(id: usize) {
-    CALLBACK_TABLE.with(|t| {
-        if let Some(slot) = t.borrow_mut().get_mut(id) {
+    crate::async_rt::with_callback_table(|table| {
+        if let Some(slot) = table.get_mut(id) {
             *slot = None;
         }
     });
@@ -135,8 +132,8 @@ pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest
     }
 
     for req in requests {
-        let func_local = CALLBACK_TABLE.with(|t| {
-            t.borrow()
+        let func_local = crate::async_rt::with_callback_table(|table| {
+            table
                 .get(req.callback_id)
                 .and_then(|o| o.as_ref())
                 .map(|g| v8::Local::new(scope, g))
@@ -251,10 +248,7 @@ fn call_local_callback_sync(
     Ok(local_to_call_result(tc, val))
 }
 
-fn fill_slot(
-    slot: &Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>,
-    result: Result<CallResult, String>,
-) {
+fn fill_slot(slot: &ResultSlot, result: Result<CallResult, String>) {
     let (lock, cvar) = slot.as_ref();
     *lock.lock().unwrap() = Some(result);
     cvar.notify_one();
@@ -395,20 +389,20 @@ fn local_to_call_result(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) 
         return CallResult::String(s.to_rust_string_lossy(scope));
     }
     // TypedArray / ArrayBuffer — copy bytes out.
-    if let Ok(ta) = v8::Local::<v8::TypedArray>::try_from(val) {
-        if let Some(buf) = ta.buffer(scope) {
-            let bs = buf.get_backing_store();
-            let offset = ta.byte_offset();
-            let len = ta.byte_length();
-            let mut bytes = vec![0u8; len];
-            if let Some(data) = bs.data() {
-                let src = unsafe {
-                    std::slice::from_raw_parts((data.as_ptr() as *const u8).add(offset), len)
-                };
-                bytes.copy_from_slice(src);
-            }
-            return CallResult::Bytes(bytes);
+    if let Ok(ta) = v8::Local::<v8::TypedArray>::try_from(val)
+        && let Some(buf) = ta.buffer(scope)
+    {
+        let bs = buf.get_backing_store();
+        let offset = ta.byte_offset();
+        let len = ta.byte_length();
+        let mut bytes = vec![0u8; len];
+        if let Some(data) = bs.data() {
+            let src = unsafe {
+                std::slice::from_raw_parts((data.as_ptr() as *const u8).add(offset), len)
+            };
+            bytes.copy_from_slice(src);
         }
+        return CallResult::Bytes(bytes);
     }
     if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(val) {
         let bs = ab.get_backing_store();

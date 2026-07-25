@@ -17,7 +17,6 @@ const config = new Facade('app:config', ['getDatabaseUrl'])
 
 const realm = new Realm({
   entry: './worker.ts',
-  thread: true,
   overrides: ImportMap.inherit([
     { pattern: 'app:config', directive: config },
   ]),

@@ -1,0 +1,1784 @@
+//! Native per-thread reactor engine.
+//!
+//! A reactor thread hosts N realm workloads and pumps them in priority order.
+//! Every assigned realm is constructed through the same bootstrap
+//! (`workload::setup_realm_workload`) and driven through its native loop hooks.
+//!
+//! The orchestrator (main thread, TS) drives a pool of these threads through a
+//! cross-thread control/report channel: an mpsc for the messages, cherenkov
+//! Notifier posts for the wakes (control pokes post into the engine's reactor;
+//! reports wake the orchestrator through its isolate wake sink). Control:
+//! place / revoke / shutdown. Reports: released / sync-heavy / load.
+//!
+//! Isolate-tagged direct I/O (replacing the facade) layers on top of this loop —
+//! see `reactor/io.rs` — so a parked isolate's reactor I/O completions mark it
+//! runnable here. This module owns the execution + scheduling half.
+
+use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock, mpsc};
+use std::thread::JoinHandle;
+
+/// Notifier post tags for the engine's reactor: ops use a monotonic counter
+/// with bit 63 clear; posts set bit 63. Bit 62 distinguishes a per-workload
+/// wake (low bits = workload id, a JS number ≤ 2^53) from a control poke.
+const POST_FLAG: u64 = 1 << 63;
+const POST_WAKE_BIT: u64 = 1 << 62;
+const POST_CONTROL: u64 = POST_FLAG;
+
+/// The post tag a tenant's background FFI wakes carry into the engine reactor.
+fn post_wake(workload_id: u64) -> u64 {
+    POST_FLAG | POST_WAKE_BIT | workload_id
+}
+
+/// A stable message-passing route whose physical Cherenkov target can be
+/// replaced without changing the logical reactor handle held by orchestration
+/// or peer reactors.
+#[derive(Clone)]
+pub(crate) struct ReactorNotifier(Arc<RwLock<cherenkov::Notifier>>);
+
+impl ReactorNotifier {
+    fn new(notifier: cherenkov::Notifier) -> Self {
+        Self(Arc::new(RwLock::new(notifier)))
+    }
+
+    fn replace(&self, notifier: cherenkov::Notifier) {
+        *self.0.write().unwrap_or_else(|error| error.into_inner()) = notifier;
+    }
+
+    fn current(&self) -> cherenkov::Notifier {
+        self.0
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn post(&self, user_data: u64, result: i32) -> bool {
+        self.0
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .post(user_data, result)
+    }
+}
+
+/// Stable control route shared by orchestration and cross-reactor handoff.
+#[derive(Clone)]
+pub(crate) struct ControlRoute {
+    tx: mpsc::Sender<Control>,
+    notify: ReactorNotifier,
+}
+
+impl ControlRoute {
+    fn send(&self, message: Control) -> Result<(), Box<Control>> {
+        self.tx.send(message).map_err(|error| Box::new(error.0))?;
+        self.notify.post(POST_CONTROL, 0);
+        Ok(())
+    }
+}
+
+use crate::state::ProcessEnv;
+
+/// Per-thread reactor configuration (all cold-path, set at spawn).
+#[derive(Clone)]
+pub struct ReactorConfig {
+    /// Hard runaway budget per synchronous pump slice (µs, 0 = disabled).
+    pub hard_budget_micros: u64,
+    /// A synchronous slice over this (µs) emits a rate-limited blocking report.
+    pub sync_slice_micros: u64,
+    /// Per-tenant old-generation heap cap (bytes, 0 = default 1 GiB).
+    pub heap_limit_bytes: usize,
+    /// Process env shared by tenant isolates on this thread.
+    pub process_env: ProcessEnv,
+    /// Package map JSON shared by tenant isolates on this thread.
+    pub package_map_json: Option<String>,
+    /// Relative OS scheduling class for this reactor thread.
+    pub reactor_class: ReactorClass,
+}
+
+#[derive(Clone, Copy)]
+pub enum ReactorClass {
+    Latency,
+    Batch,
+}
+
+pub(crate) struct RealmPlacement {
+    pub workload_id: u64,
+    pub entry_path: String,
+    /// The realm's complete serialized import rules (parent-inherited).
+    pub rules_json: String,
+    /// JSON-serialized RealmOptions.data, if any.
+    pub realm_data: Option<String>,
+    /// Runtime-owned bootstrap metadata, if any.
+    pub realm_bootstrap_data: Option<String>,
+    pub watch_mode: bool,
+    pub repl_mode: bool,
+    pub priority_class: u8,
+    /// The child-side channel half (transit handle + wake-pipe read fd).
+    pub port_half: (u32, i32),
+    /// Private parent/child allocator-control channel half.
+    pub allocation_half: (u32, i32),
+}
+
+/// Control messages: orchestrator (main thread) → reactor thread.
+pub(crate) enum Control {
+    /// Create + place a REALM workload on this thread and mark it runnable:
+    /// a full child realm (uniform bootstrap, port channel, rule
+    /// inheritance) whose native loop hooks the engine pumps.
+    PlaceRealm(RealmPlacement),
+    /// Terminate + release a workload.
+    Revoke { workload_id: u64, reason: String },
+    /// Detach an exited isolate and ship exclusive ownership to another
+    /// reactor thread. Existing source-hosted operations forward completions.
+    Move {
+        workload_id: u64,
+        destination: ControlRoute,
+    },
+    /// Pre-announce a move before its wake route can target the destination.
+    ExpectAttach { workload_id: u64 },
+    /// Withdraw a pre-announcement after a failed attach send.
+    CancelAttach { workload_id: u64 },
+    /// Attach an isolate detached by another reactor.
+    Attach { workload: imp::TransferWorkload },
+    /// Completion of an operation still draining on a prior reactor.
+    ForwardCompletion {
+        workload_id: u64,
+        resolver_id: usize,
+        result: f64,
+    },
+    /// Test-only fault injection: panic when this workload next enters its
+    /// pump boundary. The panic exercises the same recovery path as an
+    /// unexpected unwind from isolate execution.
+    CrashRealm { workload_id: u64 },
+    /// Stop the reactor loop and dispose all hosted isolates.
+    Shutdown,
+}
+
+/// Report messages: reactor thread → orchestrator (main thread).
+pub enum Report {
+    /// A workload reached a terminal state (settled terminal / rejected / revoked).
+    Released { workload_id: u64, reason: String },
+    /// A live isolate was attached after moving from another reactor.
+    Moved { workload_id: u64 },
+    /// A live move was refused because the isolate owns thread-affine state.
+    MoveRejected {
+        workload_id: u64,
+        reason: &'static str,
+    },
+    /// A synchronous slice exceeded the soft threshold — migrate to a batch thread.
+    SyncHeavy { workload_id: u64, cpu_micros: f64 },
+    /// Coarse load signature changed (held : runnable : debt-band).
+    Load {
+        held: u32,
+        runnable: u32,
+        debt_micros: f64,
+    },
+}
+
+/// Orchestrator-side handle to a spawned reactor thread. `join` is held for the
+/// thread's lifetime (dropping it would detach the thread).
+pub struct ReactorHandle {
+    pub(crate) control: ControlRoute,
+    pub report_rx: mpsc::Receiver<Report>,
+    /// Bumped by the engine thread once per queued report — and once at thread
+    /// exit, so a dead engine still wakes its report pump. The orchestrator's
+    /// drain hook resolves `report_waiter` whenever it advances past
+    /// `report_seen`.
+    pub report_seq: Arc<AtomicU64>,
+    /// Last `report_seq` value a resolved `nextReport()` consumed.
+    pub report_seen: Cell<u64>,
+    /// The armed `nextReport()` resolver, if the report pump is parked.
+    pub report_waiter: RefCell<Option<v8::Global<v8::PromiseResolver>>>,
+    /// Logical liveness spans physical worker replacement.
+    pub alive: Arc<AtomicBool>,
+    /// Physical worker generation, starting at one.
+    pub generation: Arc<AtomicU64>,
+    pub join: JoinHandle<()>,
+}
+
+// ===========================================================================
+// Workload-to-engine I/O registration.
+//
+// A realm's `internal:io` operations register directly with the engine's shared
+// `RuntimeIo`. Completions carry workload-local resolver identifiers and are
+// delivered during that realm's next pump.
+//
+// The buffer is realm-provided (the workload's ArrayBuffer) — the reactor never
+// allocates the data buffer, only the small fixed-shape registration record.
+// ===========================================================================
+
+/// What a fd-keyed reactor op does on readiness.
+pub(crate) enum IoKind {
+    /// Fused read: perform `read(2)` into `buf` off-isolate, resolve byte count.
+    Read,
+    /// Fused write: drain the remaining bytes of `buf`, resolve total written.
+    Write,
+    /// Bare readiness: resolve with the bytes-available hint (no syscall).
+    Readable,
+    /// Bare write-readiness: resolve (value ignored).
+    Writable,
+}
+
+/// One outstanding fd-keyed reactor op registered by a workload during a pump.
+pub(crate) struct PendingIoReg {
+    pub fd: i32,
+    pub kind: IoKind,
+    pub resolver_id: usize,
+    /// Retains the realm-provided buffer (fused ops) so the GC can't collect it
+    /// mid-flight. Held for its `Drop` (RAII liveness), never read directly.
+    #[allow(dead_code)]
+    pub buffer: Option<v8::SharedRef<v8::BackingStore>>,
+    /// Readiness only: whether this watch counts toward realm liveness.
+    pub referenced: bool,
+    /// Stable backing-store pointer at the op's byte offset (null for readiness).
+    pub buf_ptr: *mut u8,
+    pub len: usize,
+    /// For a partial write already drained on the fast path, resume from here.
+    pub written: usize,
+}
+
+/// A registration a workload hands the engine during a pump.
+pub(crate) enum EngineReg {
+    Io(PendingIoReg),
+    Timer {
+        timer_id: u64,
+        ms: i64,
+        resolver_id: usize,
+    },
+    SetTimerRef {
+        timer_id: u64,
+        referenced: bool,
+    },
+    CancelTimer {
+        timer_id: u64,
+    },
+    /// Abandon the pending read-side watch on `fd` (loop `removeRead`): the
+    /// promise is never settled, and the engine's armed op is canceled so a
+    /// reused fd number can arm a fresh watch.
+    RemoveRead {
+        fd: i32,
+    },
+    /// Abandon the pending write-side watch on `fd` (loop `removeWrite`).
+    RemoveWrite {
+        fd: i32,
+    },
+    Proc {
+        pid: u32,
+        resolver_id: usize,
+    },
+    /// A persistent generic wake pipe: drain on readability and re-arm.
+    WakeSource {
+        fd: i32,
+    },
+    AddVnode {
+        fd: i32,
+        path: std::path::PathBuf,
+        callback_id: usize,
+    },
+    RemoveVnode {
+        fd: i32,
+    },
+    AddSignal {
+        signo: i32,
+        callback_id: usize,
+    },
+    RemoveSignal {
+        signo: i32,
+    },
+}
+
+thread_local! {
+    /// Direct access to the engine thread's I/O resources while a workload is
+    /// entered. `EngineResources` is boxed so this pointer remains stable;
+    /// callbacks touch only this disjoint allocation, never the borrowed
+    /// workload map.
+    static ENGINE_CONTEXT: Cell<(*mut imp::EngineResources, u64)> = const {
+        Cell::new((std::ptr::null_mut(), 0))
+    };
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct EngineCounts {
+    pub reads: u32,
+    pub writes: u32,
+    pub timers: u32,
+    pub procs: u32,
+    pub vnodes: u32,
+}
+
+impl EngineCounts {
+    const ZERO: Self = Self {
+        reads: 0,
+        writes: 0,
+        timers: 0,
+        procs: 0,
+        vnodes: 0,
+    };
+
+    pub fn total(self) -> u32 {
+        self.reads + self.writes + self.timers + self.procs + self.vnodes
+    }
+}
+
+/// The pumping workload's engine-held handle counts. Zero off-engine.
+pub(crate) fn engine_current_counts() -> EngineCounts {
+    ENGINE_CONTEXT.with(|context| {
+        let (resources, owner) = context.get();
+        if resources.is_null() || owner == 0 {
+            EngineCounts::ZERO
+        } else {
+            // SAFETY: `run` installs the stable address of its boxed resources
+            // for this thread and clears it before that allocation is dropped.
+            unsafe { (*resources).counts(owner) }
+        }
+    })
+}
+
+/// Whether the current thread is a reactor engine thread, so `internal:io`
+/// operations register with its shared reactor resources.
+pub(crate) fn engine_io_active() -> bool {
+    ENGINE_CONTEXT.with(|context| !context.get().0.is_null())
+}
+
+/// Register an outstanding reactor op (called from an `internal:io` op during a
+/// pump). Registration is immediate so watches are armed before JavaScript can
+/// trigger them later in the same pump.
+pub(crate) fn engine_io_register(reg: EngineReg) {
+    ENGINE_CONTEXT.with(|context| {
+        let (resources, owner) = context.get();
+        assert!(
+            !resources.is_null() && owner != 0,
+            "engine registration outside a workload pump"
+        );
+        // SAFETY: see `engine_current_counts`; the active pump borrows the
+        // separate workloads field, not `resources`.
+        unsafe { (*resources).apply_registration(owner, reg) };
+    });
+}
+
+/// Select which workload owns registrations made by the currently entered
+/// isolate. The engine resource pointer remains unchanged for the thread.
+fn set_engine_owner(owner: u64) {
+    ENGINE_CONTEXT.with(|context| {
+        let (resources, _) = context.get();
+        context.set((resources, owner));
+    });
+}
+
+/// Restores the previous workload owner whenever an isolate-facing operation
+/// returns or unwinds.
+struct EngineOwnerScope {
+    previous: u64,
+}
+
+impl EngineOwnerScope {
+    fn enter(owner: u64) -> Self {
+        let previous = ENGINE_CONTEXT.with(|context| {
+            let (resources, previous) = context.get();
+            context.set((resources, owner));
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for EngineOwnerScope {
+    fn drop(&mut self) {
+        set_engine_owner(self.previous);
+    }
+}
+
+/// Allocate a fresh timer id. Process-global: timers survive cross-thread
+/// workload moves keyed by this id in the destination's timer map, so two
+/// threads' sequences must never collide.
+pub(crate) fn engine_next_timer_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+// ===========================================================================
+// The reactor loop. Platform-independent: all I/O goes through the cherenkov
+// completion `Reactor` (io_uring on Linux, kqueue-emulating-completions on
+// macOS, IOCP on Windows).
+// ===========================================================================
+mod imp {
+    use super::*;
+    use crate::reactor::workload::{
+        ActiveWorkload, ParkedWorkload, PumpOutcome, activate_realm_native,
+        deactivate_realm_native, drop_parked, pump_realm_native, setup_realm_workload,
+    };
+    use cherenkov::{Completion, Reactor, err};
+    use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
+
+    pub(super) fn select_next_id(
+        runnable: &HashSet<u64>,
+        mut compare: impl FnMut(u64, u64) -> std::cmp::Ordering,
+    ) -> Option<u64> {
+        runnable.iter().copied().min_by(|a, b| compare(*a, *b))
+    }
+
+    /// A hosted isolate plus the scheduling state the run-queue orders by.
+    pub(super) struct EngineWorkload {
+        id: u64,
+        inner: ParkedWorkload,
+        /// A realm workload: pumped through its native loop hooks rather than
+        /// the tenant dispatch protocol.
+        priority_class: u8,
+        debt_micros: f64,
+        sequence: u64,
+        last_sync_heavy_report: Option<Instant>,
+        /// Reactor I/O completions landed while parked (resolver_id, result),
+        /// resolved at the start of the next pump.
+        ready_events: Vec<crate::reactor::workload::ReactorEvent>,
+        /// Internal fault-injection latch used by the recovery integration
+        /// test. It is consumed inside the isolate pump boundary.
+        crash_on_next_pump: bool,
+    }
+
+    /// Exclusive ownership of an exited isolate while it crosses a native
+    /// channel. `ParkedWorkload` is intentionally !Send in rusty_v8; this is
+    /// the single audited boundary that moves it after all V8 scopes are gone.
+    pub(crate) struct TransferWorkload {
+        workload: EngineWorkload,
+        operations: Vec<crate::reactor::io::Transfer>,
+    }
+
+    // SAFETY: the source removes the workload from its maps before constructing
+    // this value and never accesses it again. The destination marks the isolate
+    // as cross-thread before entering it under V8's Locker.
+    unsafe impl Send for TransferWorkload {}
+
+    /// A complete logical-reactor working set crossing from a failed physical
+    /// worker to its replacement. Every surviving isolate is parked and no V8
+    /// scope is live when this value is constructed.
+    pub(super) struct RecoveryWorkset(ReactorThread);
+
+    // SAFETY: `recover_failed_workload` removes and disposes the only entered
+    // isolate before constructing this value. The remaining isolates obey the
+    // same parked-isolate transfer invariant as `TransferWorkload`; RuntimeIo
+    // is exclusively owned and its old Cherenkov backend is canceled and
+    // replaced before any survivor resumes.
+    unsafe impl Send for RecoveryWorkset {}
+
+    /// One owner-tagged effect produced by completion classification.
+    pub(super) enum Delivery {
+        Event {
+            owner: u64,
+            event: crate::reactor::workload::ReactorEvent,
+        },
+        /// A repoll timer or drained wake source made this owner runnable
+        /// without producing an isolate-facing event.
+        Runnable { owner: u64 },
+    }
+
+    impl Delivery {
+        pub(super) fn owner(&self) -> u64 {
+            match self {
+                Self::Event { owner, .. } | Self::Runnable { owner } => *owner,
+            }
+        }
+    }
+
+    /// A completion harvested inside a workload's in-pump `tick()` that
+    /// belongs to another owner (or to the drive loop). The drive loop routes
+    /// these after the pump returns.
+    pub(super) enum Deferred {
+        /// A notifier post (wake or control poke).
+        Post {
+            user_data: u64,
+            res: i32,
+        },
+        Delivery(Delivery),
+    }
+
+    pub(super) struct EngineResources {
+        io: crate::reactor::io::RuntimeIo,
+        /// Foreign completions harvested by an in-pump `tick()`; drained by
+        /// the drive loop between pumps.
+        deferred: Vec<Deferred>,
+    }
+
+    impl EngineResources {
+        pub(super) fn counts(&self, owner: u64) -> EngineCounts {
+            let counts = self.io.counts(owner);
+            EngineCounts {
+                reads: counts.reads,
+                writes: counts.writes,
+                timers: counts.timers,
+                procs: counts.procs,
+                vnodes: counts.vnodes,
+            }
+        }
+
+        pub(super) fn apply_registration(&mut self, owner_id: u64, reg: EngineReg) {
+            let owner = owner_id;
+            match reg {
+                EngineReg::Io(io) => match io.kind {
+                    IoKind::Read => self.io.submit_read(
+                        owner,
+                        io.resolver_id,
+                        io.buffer.expect("engine read missing backing store"),
+                        io.fd,
+                        io.buf_ptr,
+                        io.len,
+                    ),
+                    IoKind::Write => self.io.submit_write(
+                        owner,
+                        io.resolver_id,
+                        io.buffer.expect("engine write missing backing store"),
+                        io.fd,
+                        io.buf_ptr,
+                        io.len,
+                        io.written,
+                    ),
+                    IoKind::Readable => {
+                        self.io
+                            .submit_readiness(owner, io.resolver_id, io.fd, true, io.referenced)
+                    }
+                    IoKind::Writable => {
+                        self.io
+                            .submit_readiness(owner, io.resolver_id, io.fd, false, io.referenced)
+                    }
+                },
+                EngineReg::Timer {
+                    timer_id,
+                    ms,
+                    resolver_id,
+                } => self
+                    .io
+                    .submit_timer(owner, resolver_id, timer_id, ms.max(0) as u64, true),
+                EngineReg::CancelTimer { timer_id } => self.io.cancel_timer(timer_id),
+                EngineReg::SetTimerRef {
+                    timer_id,
+                    referenced,
+                } => self.io.set_timer_ref(timer_id, referenced),
+                EngineReg::RemoveRead { fd } => self.io.remove_read(fd),
+                EngineReg::RemoveWrite { fd } => self.io.remove_write(fd),
+                EngineReg::Proc { pid, resolver_id } => {
+                    self.io.submit_proc(owner_id, pid, resolver_id)
+                }
+                EngineReg::WakeSource { fd } => self.io.register_wake_source(owner_id, fd),
+                EngineReg::AddVnode {
+                    fd,
+                    path,
+                    callback_id,
+                } => self.io.add_vnode(owner_id, fd, path, callback_id),
+                EngineReg::RemoveVnode { fd } => self.io.remove_vnode(owner_id, fd),
+                EngineReg::AddSignal { signo, callback_id } => {
+                    self.io.add_signal(owner_id, signo, callback_id)
+                }
+                EngineReg::RemoveSignal { signo } => self.io.remove_signal(owner_id, signo),
+            }
+        }
+
+        /// Classify one reactor completion into the single owner-tagged
+        /// delivery vocabulary used by both in-pump `tick()` and the outer
+        /// reactor drive.
+        fn dispatch_completion(&mut self, user_data: u64, res: i32) -> Option<Delivery> {
+            match self.io.dispatch(user_data, res) {
+                crate::reactor::io::Dispatch::Resolved(resolved) => Some(Delivery::Event {
+                    owner: resolved.owner,
+                    event: crate::reactor::workload::ReactorEvent::Resolve {
+                        resolver_id: resolved.resolver_id,
+                        result: resolved.result,
+                    },
+                }),
+                crate::reactor::io::Dispatch::Callback {
+                    owner,
+                    callback_id,
+                    fflags,
+                } => Some(Delivery::Event {
+                    owner,
+                    event: crate::reactor::workload::ReactorEvent::Callback {
+                        callback_id,
+                        fflags,
+                    },
+                }),
+                crate::reactor::io::Dispatch::Runnable { owner } => {
+                    Some(Delivery::Runnable { owner })
+                }
+                crate::reactor::io::Dispatch::Handled => None,
+            }
+        }
+
+        fn replace_reactor(&mut self, reactor: Reactor) {
+            self.io.replace_reactor(reactor);
+        }
+    }
+
+    struct ReactorThread {
+        config: ReactorConfig,
+        /// The single completion reactor for this thread (cherenkov: io_uring on
+        /// Linux, kqueue-emulating-completions on macOS, IOCP on Windows). The
+        /// only I/O primitive the engine touches.
+        resources: Box<EngineResources>,
+        control_rx: mpsc::Receiver<Control>,
+        report_tx: mpsc::Sender<Report>,
+        /// Bumped once per queued report; the orchestrator's drain hook turns
+        /// an advance into a `nextReport()` resolution.
+        report_seq: Arc<AtomicU64>,
+        /// The orchestrator isolate's wake sink — the same channel background
+        /// FFI threads use, so a report wakes either loop flavor. `None` on a
+        /// local reactor (no orchestrator; reports are suppressed).
+        orch_wake: Option<crate::async_rt::WakeSink>,
+        workloads: HashMap<u64, EngineWorkload>,
+        /// The isolate currently entered on this thread. It stays active across
+        /// slices and waits until a different workload actually wins scheduling.
+        active: Option<(u64, ActiveWorkload)>,
+        /// Routes retained while this reactor drains operations submitted before
+        /// their owning isolate moved to another thread.
+        forwarded: HashMap<u64, ControlRoute>,
+        /// Workloads with work ready to run (fresh wake, or a completion landed).
+        runnable: HashSet<u64>,
+        /// Workload ids pre-announced by a move source but not attached yet.
+        incoming: HashSet<u64>,
+        /// Wakes that arrived after pre-announcement but before attachment.
+        early_wakes: HashSet<u64>,
+        next_sequence: u64,
+        last_load_signature: (u32, u32, u32),
+        /// When the last Load report was posted (coalescing floor).
+        last_load_report: Instant,
+        running: bool,
+        /// Reusable completion buffer for `Reactor::wait`.
+        scratch: Vec<Completion>,
+        /// Workload whose isolate boundary unwound unexpectedly.
+        crashed_workload: Option<u64>,
+        /// Local mode: this reactor runs inline on its caller's thread (the
+        /// process root), hosting exactly one workload. Its release stops the
+        /// loop and hands the parked isolate back instead of disposing it.
+        local_root: Option<u64>,
+        /// The local root's parked isolate + release reason, captured by
+        /// `release` for `run_local` to run teardown on.
+        local_released: Option<(ParkedWorkload, String)>,
+    }
+
+    fn new_thread(
+        config: ReactorConfig,
+        control_rx: mpsc::Receiver<Control>,
+        report_tx: mpsc::Sender<Report>,
+        report_seq: Arc<AtomicU64>,
+        orch_wake: Option<crate::async_rt::WakeSink>,
+        reactor: Reactor,
+    ) -> ReactorThread {
+        ReactorThread {
+            config,
+            resources: Box::new(EngineResources {
+                io: crate::reactor::io::RuntimeIo::new(reactor),
+                deferred: Vec::new(),
+            }),
+            control_rx,
+            report_tx,
+            report_seq,
+            orch_wake,
+            workloads: HashMap::new(),
+            active: None,
+            forwarded: HashMap::new(),
+            runnable: HashSet::new(),
+            incoming: HashSet::new(),
+            early_wakes: HashSet::new(),
+            next_sequence: 1,
+            last_load_signature: (u32::MAX, u32::MAX, u32::MAX),
+            last_load_report: Instant::now(),
+            running: true,
+            scratch: Vec::new(),
+            crashed_workload: None,
+            local_root: None,
+            local_released: None,
+        }
+    }
+
+    pub(super) fn run(
+        config: ReactorConfig,
+        control_rx: mpsc::Receiver<Control>,
+        report_tx: mpsc::Sender<Report>,
+        report_seq: Arc<AtomicU64>,
+        orch_wake: crate::async_rt::WakeSink,
+        reactor: Reactor,
+    ) -> Option<RecoveryWorkset> {
+        drive(new_thread(
+            config,
+            control_rx,
+            report_tx,
+            report_seq,
+            Some(orch_wake),
+            reactor,
+        ))
+    }
+
+    /// The workload id of a local (caller-thread) reactor's single realm.
+    pub(super) const LOCAL_ROOT_ID: u64 = 1;
+
+    /// Bounded in-pump harvest backing JS `tick()`/`spin()`: wait on THIS
+    /// engine's reactor and dispatch the current workload's completions
+    /// inline (the scope is live), deferring everything else to the drive
+    /// loop. Only meaningful from JS running inside a workload pump — a
+    /// synchronous frame cannot leave the pump, so without this a spinning
+    /// workload could never observe its own reactor completions.
+    pub(super) fn engine_tick(scope: &mut v8::HandleScope, timeout: Option<Duration>) -> i32 {
+        let (resources, owner) = ENGINE_CONTEXT.with(|context| context.get());
+        if resources.is_null() || owner == 0 {
+            return 0;
+        }
+        // SAFETY: same contract as `apply_registration` — the boxed
+        // EngineResources is disjoint from the borrowed workload map, and
+        // every reference below is dropped before JS runs.
+        let mut buf: Vec<Completion> = Vec::new();
+        {
+            let r = unsafe { &mut *resources };
+            let _ = r.io.wait(timeout, &mut buf);
+        }
+        let mut dispatched = 0i32;
+        for c in &buf {
+            let (user_data, res) = (c.user_data, c.res);
+            if user_data & POST_FLAG != 0 {
+                let own_wake = user_data & POST_WAKE_BIT != 0
+                    && (user_data & !(POST_FLAG | POST_WAKE_BIT)) == owner;
+                if own_wake {
+                    // Already awake; the spin's microtask drain empties the
+                    // queues this wake announced.
+                    dispatched += 1;
+                } else {
+                    let r = unsafe { &mut *resources };
+                    r.deferred.push(Deferred::Post { user_data, res });
+                }
+                continue;
+            }
+            let delivery = {
+                let r = unsafe { &mut *resources };
+                match r.dispatch_completion(user_data, res) {
+                    Some(delivery) if delivery.owner() != owner => {
+                        r.deferred.push(Deferred::Delivery(delivery));
+                        None
+                    }
+                    delivery => delivery,
+                }
+            };
+            match delivery {
+                Some(Delivery::Event {
+                    event:
+                        crate::reactor::workload::ReactorEvent::Resolve {
+                            resolver_id,
+                            result,
+                        },
+                    ..
+                }) => {
+                    dispatched += 1;
+                    crate::async_rt::resolve_io_completion(scope, resolver_id, result);
+                }
+                Some(Delivery::Event {
+                    event:
+                        crate::reactor::workload::ReactorEvent::Callback {
+                            callback_id,
+                            fflags,
+                        },
+                    ..
+                }) => {
+                    dispatched += 1;
+                    crate::reactor::workload::invoke_reactor_callback(scope, callback_id, fflags);
+                }
+                Some(Delivery::Runnable { .. }) => dispatched += 1,
+                None => {}
+            }
+        }
+        dispatched
+    }
+
+    /// Run a reactor inline on the current thread, hosting the workload built
+    /// by `setup` as its only realm — the same drive loop pool reactors run,
+    /// minus the thread, the supervisor, and the report channel. `setup` runs
+    /// with this reactor installed and the workload's owner entered, so
+    /// bootstrap-time I/O registrations land here (mirroring `place_realm`).
+    /// When the workload releases, `on_release` runs teardown with the isolate
+    /// entered and this reactor still installed (so teardown JS can register
+    /// engine I/O), then the workload is quiesced and disposed. A panic at the
+    /// pump boundary is fatal for a local reactor: the workload is disposed
+    /// and `Err` returned.
+    pub(super) fn run_local(
+        config: ReactorConfig,
+        setup: impl FnOnce() -> Result<ParkedWorkload, String>,
+        on_release: impl FnOnce(&mut ParkedWorkload, &str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let reactor = Reactor::new().map_err(|e| format!("reactor engine: init failed: {e}"))?;
+        // Local mode has no orchestrator: the control/report channels exist
+        // only to satisfy the shared loop. Keep the far ends alive so sends
+        // stay cheap successes for the loop's lifetime.
+        let (_control_tx, control_rx) = mpsc::channel::<Control>();
+        let (report_tx, _report_rx) = mpsc::channel::<Report>();
+        let report_seq = Arc::new(AtomicU64::new(0));
+        let mut engine = new_thread(config, control_rx, report_tx, report_seq, None, reactor);
+
+        let id = LOCAL_ROOT_ID;
+        engine.local_root = Some(id);
+
+        ENGINE_CONTEXT.with(|context| {
+            context.set((&mut *engine.resources, 0));
+        });
+        let result = (|| {
+            let seed = {
+                let _owner = EngineOwnerScope::enter(id);
+                setup()
+            };
+            let seed = match seed {
+                Ok(seed) => seed,
+                Err(error) => {
+                    engine.cancel_owned(id);
+                    engine.drain_doomed();
+                    return Err(error);
+                }
+            };
+            seed.install_wake_notifier(engine.resources.io.notifier(), post_wake(id));
+            engine.workloads.insert(
+                id,
+                EngineWorkload {
+                    id,
+                    inner: seed,
+                    priority_class: 1,
+                    debt_micros: 0.0,
+                    sequence: 0,
+                    last_sync_heavy_report: None,
+                    ready_events: Vec::new(),
+                    crash_on_next_pump: false,
+                },
+            );
+            engine.runnable.insert(id);
+            engine.loop_forever();
+            if engine.crashed_workload.take().is_some() {
+                set_engine_owner(0);
+                // Same containment sequencing as pool recovery (release
+                // deactivates, quiesces, and captures), but local mode has no
+                // replacement worker — dispose and fail.
+                if engine.workloads.contains_key(&id) {
+                    engine.release(id, "reactor-workload-panicked".to_string());
+                }
+                if let Some((workload, _)) = engine.local_released.take() {
+                    drop_parked(workload);
+                }
+                return Err("fino: realm execution panicked".to_string());
+            }
+            let Some((mut workload, reason)) = engine.local_released.take() else {
+                return Err(
+                    "reactor engine: local loop exited without releasing its workload".to_string(),
+                );
+            };
+            // Teardown runs as a live engine workload: isolate entered, owner
+            // set, this reactor still current — so onDone/checkpoint JS can
+            // register I/O that the quiesce below then cancels and harvests.
+            let active = activate_realm_native(&mut workload);
+            let outcome = {
+                let _owner = EngineOwnerScope::enter(id);
+                on_release(&mut workload, &reason)
+            };
+            deactivate_realm_native(&mut workload, active);
+            engine.cancel_owned(id);
+            engine.drain_doomed();
+            drop_parked(workload);
+            outcome
+        })();
+        ENGINE_CONTEXT.with(|context| context.set((std::ptr::null_mut(), 0)));
+        result
+    }
+
+    /// Resume an intact reactor working set on a replacement physical worker.
+    pub(super) fn resume(workset: RecoveryWorkset, reactor: Reactor) -> Option<RecoveryWorkset> {
+        let RecoveryWorkset(mut engine) = workset;
+        engine.replace_physical_reactor(reactor);
+        drive(engine)
+    }
+
+    fn drive(mut engine: ReactorThread) -> Option<RecoveryWorkset> {
+        ENGINE_CONTEXT.with(|context| {
+            context.set((&mut *engine.resources, 0));
+        });
+        let _ = apply_thread_priority(engine.config.reactor_class);
+        crate::runtime::init_v8();
+        engine.loop_forever();
+        if let Some(workload_id) = engine.crashed_workload.take() {
+            set_engine_owner(0);
+            engine.recover_failed_workload(workload_id);
+            ENGINE_CONTEXT.with(|context| context.set((std::ptr::null_mut(), 0)));
+            return Some(RecoveryWorkset(engine));
+        }
+        engine.deactivate_active();
+        // Teardown: quiesce every in-flight op (tenant buffers must outlive
+        // their completions), then dispose every hosted isolate.
+        let ids: Vec<u64> = engine.workloads.keys().copied().collect();
+        for id in ids {
+            engine.cancel_owned(id);
+        }
+        engine.drain_doomed();
+        for (_, w) in engine.workloads.drain() {
+            drop_parked(w.inner);
+        }
+        ENGINE_CONTEXT.with(|context| context.set((std::ptr::null_mut(), 0)));
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply_thread_priority(class: ReactorClass) -> bool {
+        let qos = match class {
+            ReactorClass::Latency => libc::qos_class_t::QOS_CLASS_USER_INITIATED,
+            ReactorClass::Batch => libc::qos_class_t::QOS_CLASS_UTILITY,
+        };
+        unsafe { libc::pthread_set_qos_class_self_np(qos, 0) == 0 }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_thread_priority(class: ReactorClass) -> bool {
+        let nice = match class {
+            ReactorClass::Latency => 0,
+            ReactorClass::Batch => 10,
+        };
+        unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, nice) == 0 }
+    }
+
+    #[cfg(windows)]
+    fn apply_thread_priority(class: ReactorClass) -> bool {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            THREAD_PRIORITY_NORMAL,
+        };
+        let priority = match class {
+            ReactorClass::Latency => THREAD_PRIORITY_NORMAL,
+            ReactorClass::Batch => THREAD_PRIORITY_BELOW_NORMAL,
+        };
+        unsafe { SetThreadPriority(GetCurrentThread(), priority) != 0 }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    fn apply_thread_priority(_class: ReactorClass) -> bool {
+        false
+    }
+
+    impl ReactorThread {
+        fn loop_forever(&mut self) {
+            while self.running {
+                self.drain_control();
+                if !self.running || self.crashed_workload.is_some() {
+                    break;
+                }
+                self.pump_runnable();
+                if self.crashed_workload.is_some() {
+                    break;
+                }
+                self.report_load_if_changed();
+                if !self.running {
+                    break;
+                }
+                // Nothing runnable: block until a wake pipe / completion fd fires.
+                self.poll_block();
+            }
+        }
+
+        fn drain_control(&mut self) {
+            // A POST_CONTROL completion broke the wait; the messages are in
+            // the mpsc, nothing to drain but the channel itself.
+            while self.crashed_workload.is_none()
+                && let Ok(msg) = self.control_rx.try_recv()
+            {
+                self.handle_control(msg);
+            }
+        }
+
+        fn handle_control(&mut self, msg: Control) {
+            match msg {
+                Control::PlaceRealm(placement) => {
+                    let workload_id = placement.workload_id;
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.place_realm(placement);
+                    }));
+                    if result.is_err() {
+                        set_engine_owner(0);
+                        self.crashed_workload = Some(workload_id);
+                    }
+                }
+                Control::Revoke {
+                    workload_id,
+                    reason,
+                } => {
+                    if self.workloads.contains_key(&workload_id) {
+                        self.release(workload_id, reason);
+                    }
+                }
+                Control::Move {
+                    workload_id,
+                    destination,
+                } => self.move_workload(workload_id, destination),
+                Control::ExpectAttach { workload_id } => {
+                    self.incoming.insert(workload_id);
+                }
+                Control::CancelAttach { workload_id } => {
+                    self.incoming.remove(&workload_id);
+                    self.early_wakes.remove(&workload_id);
+                }
+                Control::Attach { mut workload } => {
+                    workload.workload.inner.mark_moved_between_threads();
+                    let workload_id = workload.workload.id;
+                    workload.workload.inner.install_wake_notifier(
+                        self.resources.io.notifier(),
+                        post_wake(workload_id),
+                    );
+                    // A completion delivered on the source just before the
+                    // move travels in `ready_events` — no wake will ever
+                    // re-announce it, so an arriving backlog must make the
+                    // workload runnable or it parks forever.
+                    let has_ready = !workload.workload.ready_events.is_empty();
+                    self.workloads.insert(workload_id, workload.workload);
+                    self.resources
+                        .io
+                        .attach_workload(workload_id, workload.operations);
+                    self.incoming.remove(&workload_id);
+                    if self.early_wakes.remove(&workload_id) || has_ready {
+                        self.runnable.insert(workload_id);
+                    }
+                    self.report(Report::Moved { workload_id });
+                }
+                Control::ForwardCompletion {
+                    workload_id,
+                    resolver_id,
+                    result,
+                } => self.deliver_completion(workload_id, resolver_id, result),
+                Control::CrashRealm { workload_id } => {
+                    if let Some(workload) = self.workloads.get_mut(&workload_id) {
+                        workload.crash_on_next_pump = true;
+                        self.runnable.insert(workload_id);
+                    }
+                }
+                Control::Shutdown => self.running = false,
+            }
+        }
+
+        fn move_workload(&mut self, workload_id: u64, destination: ControlRoute) {
+            if let Some(reason) = self
+                .workloads
+                .get(&workload_id)
+                .and_then(|workload| workload.inner.move_blocker())
+            {
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason,
+                });
+                return;
+            }
+            if self.resources.io.has_unmovable(workload_id) {
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason: "reactor-watch-active",
+                });
+                return;
+            }
+            if destination
+                .send(Control::ExpectAttach { workload_id })
+                .is_err()
+            {
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason: "destination-unavailable",
+                });
+                return;
+            }
+            if self.active_id() == Some(workload_id) {
+                self.deactivate_active();
+            }
+            let Some(workload) = self.workloads.remove(&workload_id) else {
+                let _ = destination.send(Control::CancelAttach { workload_id });
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason: "realm-not-found",
+                });
+                return;
+            };
+            self.runnable.remove(&workload_id);
+            let operations = self.resources.io.detach_workload(workload_id);
+            let source_notify = self.resources.io.notifier();
+            workload
+                .inner
+                .install_wake_notifier(destination.notify.current(), post_wake(workload_id));
+            let attach = Control::Attach {
+                workload: TransferWorkload {
+                    workload,
+                    operations,
+                },
+            };
+            if let Err(returned) = destination.send(attach)
+                && let Control::Attach { workload } = *returned
+            {
+                let TransferWorkload {
+                    workload,
+                    operations,
+                } = workload;
+                let _ = destination.send(Control::CancelAttach { workload_id });
+                workload
+                    .inner
+                    .install_wake_notifier(source_notify, post_wake(workload_id));
+                self.resources.io.attach_workload(workload_id, operations);
+                self.workloads.insert(workload_id, workload);
+                self.runnable.insert(workload_id);
+                self.report(Report::MoveRejected {
+                    workload_id,
+                    reason: "destination-unavailable",
+                });
+                return;
+            }
+            self.forwarded.insert(workload_id, destination);
+            self.finish_forwarding_if_drained(workload_id);
+        }
+
+        fn place_realm(&mut self, placement: RealmPlacement) {
+            let RealmPlacement {
+                workload_id,
+                entry_path,
+                rules_json,
+                realm_data,
+                realm_bootstrap_data,
+                watch_mode,
+                repl_mode,
+                priority_class,
+                port_half,
+                allocation_half,
+            } = placement;
+            let import_rules: Vec<crate::state::ImportRule> =
+                match serde_json::from_str(&rules_json) {
+                    Ok(rules) => rules,
+                    Err(err) => {
+                        self.report(Report::Released {
+                            workload_id,
+                            reason: format!("setup_failed: bad rules: {err}"),
+                        });
+                        return;
+                    }
+                };
+            let setup = {
+                let _owner = EngineOwnerScope::enter(workload_id);
+                setup_realm_workload(crate::realm::RealmExecutionConfig {
+                    entry_path,
+                    process_env: self.config.process_env.clone(),
+                    package_map_json: self.config.package_map_json.clone(),
+                    heap_limit_bytes: self.config.heap_limit_bytes,
+                    import_rules,
+                    realm_data,
+                    realm_bootstrap_data,
+                    watch_mode,
+                    repl_mode,
+                    port_half,
+                    allocation_half: Some(allocation_half),
+                })
+            };
+            let inner = match setup {
+                Ok(w) => w,
+                Err(err) => {
+                    self.cancel_owned(workload_id);
+                    self.drain_doomed();
+                    self.report(Report::Released {
+                        workload_id,
+                        reason: format!("setup_failed: {err}"),
+                    });
+                    return;
+                }
+            };
+            let seq = self.next_sequence;
+            self.next_sequence += 1;
+            inner.install_wake_notifier(self.resources.io.notifier(), post_wake(workload_id));
+            self.workloads.insert(
+                workload_id,
+                EngineWorkload {
+                    id: workload_id,
+                    inner,
+                    priority_class,
+                    debt_micros: 0.0,
+                    sequence: seq,
+                    last_sync_heavy_report: None,
+                    ready_events: Vec::new(),
+                    crash_on_next_pump: false,
+                },
+            );
+            // A realm runs immediately: its entry import is already pending.
+            self.runnable.insert(workload_id);
+        }
+
+        fn pump_runnable(&mut self) {
+            while self.running {
+                // Select before changing V8 ownership. If the current isolate
+                // still wins, activation is a no-op and the next slice avoids
+                // an exit/lock/enter round trip.
+                let selected = select_next_id(&self.runnable, |a, b| self.compare_runnable(a, b));
+                let Some(id) = selected else {
+                    break;
+                };
+                self.runnable.remove(&id);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.activate(id);
+                    self.pump_one(id);
+                }));
+                if result.is_err() {
+                    set_engine_owner(0);
+                    self.crashed_workload = Some(id);
+                    break;
+                }
+                // An in-pump tick() may have harvested completions belonging
+                // to other workloads; route them before selecting again.
+                self.drain_deferred();
+            }
+        }
+
+        fn active_id(&self) -> Option<u64> {
+            self.active.as_ref().map(|(id, _)| *id)
+        }
+
+        fn activate(&mut self, id: u64) {
+            if self.active_id() == Some(id) {
+                return;
+            }
+            self.deactivate_active();
+            let Some(workload) = self.workloads.get_mut(&id) else {
+                return;
+            };
+            let active = activate_realm_native(&mut workload.inner);
+            self.active = Some((id, active));
+        }
+
+        fn deactivate_active(&mut self) {
+            let Some((id, active)) = self.active.take() else {
+                return;
+            };
+            let workload = self
+                .workloads
+                .get_mut(&id)
+                .expect("active workload missing from reactor ownership");
+            deactivate_realm_native(&mut workload.inner, active);
+        }
+
+        fn compare_runnable(&self, a: u64, b: u64) -> std::cmp::Ordering {
+            let wa = &self.workloads[&a];
+            let wb = &self.workloads[&b];
+            wa.priority_class
+                .cmp(&wb.priority_class)
+                .then(wa.debt_micros.total_cmp(&wb.debt_micros))
+                .then(wa.sequence.cmp(&wb.sequence))
+                .then(wa.id.cmp(&wb.id))
+        }
+
+        fn pump_one(&mut self, id: u64) {
+            debug_assert_eq!(self.active_id(), Some(id));
+            if self
+                .workloads
+                .get_mut(&id)
+                .is_some_and(|workload| std::mem::take(&mut workload.crash_on_next_pump))
+            {
+                panic!("reactor workload fault injection");
+            }
+            let hard = self.config.hard_budget_micros;
+            let reactor_events = {
+                let w = match self.workloads.get_mut(&id) {
+                    Some(w) => w,
+                    None => return,
+                };
+                std::mem::take(&mut w.ready_events)
+            };
+            let t0 = Instant::now();
+            let outcome = {
+                let _owner = EngineOwnerScope::enter(id);
+                let w = self.workloads.get_mut(&id).unwrap();
+                pump_realm_native(&mut w.inner, hard, &reactor_events)
+            };
+            let slice_micros = t0.elapsed().as_micros() as f64;
+            {
+                let w = self.workloads.get_mut(&id).unwrap();
+                w.debt_micros += slice_micros;
+                let report_due = w
+                    .last_sync_heavy_report
+                    .map(|last| last.elapsed() >= Duration::from_millis(250))
+                    .unwrap_or(true);
+                if report_due && slice_micros > self.config.sync_slice_micros as f64 {
+                    w.last_sync_heavy_report = Some(Instant::now());
+                    self.report(Report::SyncHeavy {
+                        workload_id: id,
+                        cpu_micros: slice_micros,
+                    });
+                }
+            }
+            match outcome {
+                PumpOutcome::Pending => {}
+                PumpOutcome::PendingPoll => self.arm_repoll(id),
+                PumpOutcome::Settled { result } => self.release(id, result),
+                PumpOutcome::Terminated => self.release(id, "terminated".to_string()),
+                PumpOutcome::Rejected(msg) => self.release(id, format!("failed: {msg}")),
+            }
+        }
+
+        fn recover_failed_workload(&mut self, workload_id: u64) {
+            if self.workloads.contains_key(&workload_id) {
+                self.release(workload_id, "reactor-workload-panicked".to_string());
+            } else {
+                self.cancel_owned(workload_id);
+                self.drain_doomed();
+                self.report(Report::Released {
+                    workload_id,
+                    reason: "reactor-workload-panicked".to_string(),
+                });
+            }
+            for workload in self.workloads.values_mut() {
+                workload.inner.mark_moved_between_threads();
+            }
+            self.running = true;
+            self.last_load_signature = (u32::MAX, u32::MAX, u32::MAX);
+        }
+
+        /// Retarget the logical reactor to a fresh Cherenkov instance. All
+        /// message-passing wake sinks move first, then the old backend is
+        /// canceled and fully harvested before survivor operations are
+        /// re-armed on the new backend.
+        fn replace_physical_reactor(&mut self, reactor: Reactor) {
+            let notifier = reactor.notifier();
+            for workload in self.workloads.values() {
+                workload
+                    .inner
+                    .install_wake_notifier(notifier.clone(), post_wake(workload.id));
+            }
+
+            // Run at least one harvest even when no submitted operation is
+            // pending: a background WakeSink may have posted to the old
+            // notifier immediately before its shared route was replaced.
+            let mut first_harvest = true;
+            while first_harvest || self.resources.io.pending() > 0 {
+                first_harvest = false;
+                self.resources.io.cancel_all();
+                let mut completions = std::mem::take(&mut self.scratch);
+                completions.clear();
+                let timeout = (self.resources.io.pending() == 0).then_some(Duration::ZERO);
+                let _ = self.resources.io.wait(timeout, &mut completions);
+                for completion in &completions {
+                    let canceled_live = completion.res == err::CANCELED
+                        && self.resources.io.is_live_record(completion.user_data);
+                    if !canceled_live {
+                        self.route(completion.user_data, completion.res);
+                    }
+                }
+                self.scratch = completions;
+            }
+            self.resources.replace_reactor(reactor);
+        }
+
+        fn arm_repoll(&mut self, owner: u64) {
+            self.resources.io.submit_repoll(owner, 25);
+        }
+
+        /// Route one completion to its owner. `res` is the operation result: a
+        /// byte count for read/write, a bytes-available hint for readiness, or
+        /// (for a bare `PollOut`) 0; a negative value is `-errno`. The tenant's
+        /// promise resolver gets it verbatim during the next pump.
+        fn on_completion(&mut self, user_data: u64, res: i32) {
+            if let Some(delivery) = self.resources.dispatch_completion(user_data, res) {
+                self.deliver(delivery);
+            }
+        }
+
+        fn deliver(&mut self, delivery: Delivery) {
+            let owner = delivery.owner();
+            match delivery {
+                Delivery::Event { event, .. } => self.deliver_event(owner, event),
+                Delivery::Runnable { .. } => {
+                    if self.workloads.contains_key(&owner) {
+                        self.runnable.insert(owner);
+                    }
+                }
+            }
+            self.finish_forwarding_if_drained(owner);
+        }
+
+        /// Route the foreign completions an in-pump `tick()` set aside.
+        fn drain_deferred(&mut self) {
+            while !self.resources.deferred.is_empty() {
+                let deferred = std::mem::take(&mut self.resources.deferred);
+                for item in deferred {
+                    match item {
+                        Deferred::Post { user_data, res } => self.route(user_data, res),
+                        Deferred::Delivery(delivery) => self.deliver(delivery),
+                    }
+                }
+            }
+        }
+
+        fn deliver_completion(&mut self, owner: u64, resolver_id: usize, result: f64) {
+            if let Some(workload) = self.workloads.get_mut(&owner) {
+                workload
+                    .ready_events
+                    .push(crate::reactor::workload::ReactorEvent::Resolve {
+                        resolver_id,
+                        result,
+                    });
+                self.runnable.insert(owner);
+            } else if let Some(route) = self.forwarded.get(&owner) {
+                let _ = route.send(Control::ForwardCompletion {
+                    workload_id: owner,
+                    resolver_id,
+                    result,
+                });
+            }
+        }
+
+        fn deliver_event(&mut self, owner: u64, event: crate::reactor::workload::ReactorEvent) {
+            if let Some(workload) = self.workloads.get_mut(&owner) {
+                workload.ready_events.push(event);
+                self.runnable.insert(owner);
+            }
+        }
+
+        fn finish_forwarding_if_drained(&mut self, owner: u64) {
+            if !self.forwarded.contains_key(&owner) {
+                return;
+            }
+            let pending = self.resources.io.has_owner(owner);
+            if !pending {
+                self.forwarded.remove(&owner);
+            }
+        }
+
+        /// Route one harvest: Notifier posts by tag, ops through their record.
+        fn route(&mut self, user_data: u64, res: i32) {
+            if user_data & POST_FLAG != 0 {
+                if user_data & POST_WAKE_BIT != 0 {
+                    // A tenant's background wake: mark it runnable. Stale posts
+                    // for released workloads fall through harmlessly.
+                    let id = user_data & !(POST_FLAG | POST_WAKE_BIT);
+                    if self.workloads.contains_key(&id) {
+                        self.runnable.insert(id);
+                    } else if self.incoming.contains(&id) {
+                        self.early_wakes.insert(id);
+                    }
+                }
+                // POST_CONTROL: the wait broke; drain_control() at the top of
+                // the loop empties the mpsc.
+                return;
+            }
+            self.on_completion(user_data, res);
+        }
+
+        /// Cancel every op this workload owns. Pointer-free records (timers,
+        /// readiness) are dropped eagerly — their CANCELED completion finds no
+        /// record and is ignored. Pointer-carrying records (fused reads,
+        /// writes) retain the tenant's ArrayBuffer and move to `doomed`: the
+        /// reactor may still hand their pointers to the kernel until the
+        /// CANCELED completion is harvested, so the buffer — and the isolate
+        /// that owns its memory — must stay alive until then.
+        fn cancel_owned(&mut self, id: u64) {
+            self.resources.io.cancel_owner(id);
+        }
+
+        /// Wait until every doomed op's completion has been harvested (so its
+        /// retained buffer can be dropped with its isolate still alive).
+        /// Cancellation completes promptly on every backend; the deadline is a
+        /// defensive bound, not an expected path.
+        fn drain_doomed(&mut self) {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !self.resources.io.doomed_is_empty() {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "reactor engine: {} canceled op(s) unharvested at teardown",
+                        self.resources.io.doomed_len()
+                    );
+                    self.resources.io.discard_doomed();
+                    break;
+                }
+                let mut buf = std::mem::take(&mut self.scratch);
+                buf.clear();
+                let _ = self
+                    .resources
+                    .io
+                    .wait(Some(Duration::from_millis(10)), &mut buf);
+                for c in &buf {
+                    self.route(c.user_data, c.res);
+                }
+                self.scratch = buf;
+            }
+        }
+
+        fn release(&mut self, id: u64, reason: String) {
+            if self.active_id() == Some(id) {
+                self.deactivate_active();
+            }
+            // Quiesce this workload's outstanding ops BEFORE disposing the
+            // isolate their buffers belong to.
+            self.cancel_owned(id);
+            self.drain_doomed();
+            if let Some(w) = self.workloads.remove(&id) {
+                self.runnable.remove(&id);
+                if self.local_root == Some(id) {
+                    // The local root's isolate outlives the loop: `run_local`
+                    // runs caller teardown on it before disposing.
+                    self.local_released = Some((w.inner, reason));
+                    self.running = false;
+                    return;
+                }
+                drop_parked(w.inner);
+                self.report(Report::Released {
+                    workload_id: id,
+                    reason,
+                });
+            }
+        }
+
+        fn poll_block(&mut self) {
+            // Block on the reactor only when nothing is runnable; otherwise reap
+            // whatever completions are already available and return so the pump
+            // loop keeps making progress. Newly submitted ops are flushed to the
+            // kernel inside `wait`.
+            let timeout = if self.runnable.is_empty() {
+                None
+            } else {
+                Some(Duration::ZERO)
+            };
+            let mut buf = std::mem::take(&mut self.scratch);
+            buf.clear();
+            let _ = self.resources.io.wait(timeout, &mut buf);
+            // Control messages are already in the mpsc when their notifier
+            // post wakes this wait. Apply pre-announced attaches before
+            // routing workload wakes harvested in the same batch.
+            self.drain_control();
+            for c in &buf {
+                self.route(c.user_data, c.res);
+            }
+            self.scratch = buf;
+        }
+
+        fn report_load_if_changed(&mut self) {
+            let held = self.workloads.len() as u32;
+            let runnable = self.runnable.len() as u32;
+            let debt_micros = self
+                .workloads
+                .values()
+                .map(|workload| workload.debt_micros)
+                .sum::<f64>();
+            let debt_band = (debt_micros / 10_000.0).min(u32::MAX as f64) as u32;
+            let sig = (held, runnable, debt_band);
+            if sig == self.last_load_signature {
+                return;
+            }
+            // Load is advisory telemetry, and `runnable` oscillates on every
+            // hot pump — unthrottled, each flip posts a wake that spins the
+            // orchestrator's report pump (the legacy 25ms poll absorbed this
+            // by accident). Coalesce to ≥10ms unless `held` changed, which
+            // placement decisions actually depend on.
+            let held_changed = held != self.last_load_signature.0;
+            if !held_changed && self.last_load_report.elapsed() < Duration::from_millis(10) {
+                return;
+            }
+            self.last_load_signature = sig;
+            self.last_load_report = Instant::now();
+            self.report(Report::Load {
+                held,
+                runnable,
+                debt_micros,
+            });
+        }
+
+        fn report(&mut self, report: Report) {
+            // A local reactor has no orchestrator; a report's wake would only
+            // re-mark its own workload runnable (the sink is the root's) and
+            // spin the idle loop.
+            if self.local_root.is_some() {
+                return;
+            }
+            let _ = self.report_tx.send(report);
+            // Wake the orchestrator's loop so it drains the report promptly:
+            // bump the sequence its drain hook compares, then wake its sink.
+            self.report_seq.fetch_add(1, Ordering::Release);
+            if let Some(wake) = &self.orch_wake {
+                wake.wake();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::imp::{Delivery, select_next_id};
+    use super::{ENGINE_CONTEXT, EngineOwnerScope};
+    use std::cmp::Ordering;
+    use std::collections::HashSet;
+
+    #[test]
+    fn completion_delivery_keeps_its_owner_and_resolver_payload() {
+        let delivery = Delivery::Event {
+            owner: 7,
+            event: crate::reactor::workload::ReactorEvent::Resolve {
+                resolver_id: 11,
+                result: 13.0,
+            },
+        };
+
+        assert_eq!(delivery.owner(), 7);
+        assert!(matches!(
+            delivery,
+            Delivery::Event {
+                owner: 7,
+                event: crate::reactor::workload::ReactorEvent::Resolve {
+                    resolver_id: 11,
+                    result: 13.0,
+                },
+            }
+        ));
+    }
+
+    #[test]
+    fn keeps_active_workload_when_it_still_has_priority() {
+        let runnable = HashSet::from([7, 11]);
+        let selected = select_next_id(&runnable, |a, b| a.cmp(&b));
+
+        assert_eq!(selected, Some(7));
+    }
+
+    #[test]
+    fn leaves_idle_active_workload_entered_until_another_is_runnable() {
+        let runnable = HashSet::new();
+        let selected = select_next_id(&runnable, |_a, _b| Ordering::Equal);
+
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn engine_owner_scope_restores_the_previous_owner() {
+        ENGINE_CONTEXT.with(|context| context.set((std::ptr::null_mut(), 7)));
+        {
+            let _scope = EngineOwnerScope::enter(11);
+            ENGINE_CONTEXT.with(|context| assert_eq!(context.get().1, 11));
+        }
+        ENGINE_CONTEXT.with(|context| assert_eq!(context.get().1, 7));
+        ENGINE_CONTEXT.with(|context| context.set((std::ptr::null_mut(), 0)));
+    }
+}
+
+// ===========================================================================
+// Public spawn API + shared tenant setup.
+// ===========================================================================
+
+/// In-pump reactor harvest for the currently entered workload; backs the JS
+/// `tick()` used by `spin()`. See `imp::engine_tick`.
+pub(crate) fn engine_tick(
+    scope: &mut v8::HandleScope,
+    timeout: Option<std::time::Duration>,
+) -> i32 {
+    imp::engine_tick(scope, timeout)
+}
+
+/// Run a reactor inline on the current thread with the workload built by
+/// `setup` as its only realm — the process root's drive loop. See
+/// `imp::run_local`.
+pub(crate) fn run_local(
+    config: ReactorConfig,
+    setup: impl FnOnce() -> Result<crate::reactor::workload::ParkedWorkload, String>,
+    on_release: impl FnOnce(&mut crate::reactor::workload::ParkedWorkload, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    imp::run_local(config, setup, on_release)
+}
+
+/// Spawn a reactor thread and return the orchestrator-side handle. The
+/// reactor is created here (on the spawning thread) so its Notifier exists
+/// before the thread runs, then moved in — it is `Send` by design.
+pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
+    let (control_tx, control_rx) = mpsc::channel::<Control>();
+    let (report_tx, report_rx) = mpsc::channel::<Report>();
+    let reactor =
+        cherenkov::Reactor::new().map_err(|e| format!("reactor engine: init failed: {e}"))?;
+    let control = ControlRoute {
+        tx: control_tx,
+        notify: ReactorNotifier::new(reactor.notifier()),
+    };
+    let report_seq = Arc::new(AtomicU64::new(0));
+    let alive = Arc::new(AtomicBool::new(true));
+    let generation = Arc::new(AtomicU64::new(1));
+    let orch_wake = crate::async_rt::wake_sink()
+        .ok_or_else(|| "reactor engine: async runtime not initialised".to_string())?;
+
+    let supervisor_seq = Arc::clone(&report_seq);
+    let supervisor_wake = orch_wake.clone();
+    let supervisor_alive = Arc::clone(&alive);
+    let supervisor_generation = Arc::clone(&generation);
+    let supervisor_control_notify = control.notify.clone();
+    let join = std::thread::Builder::new()
+        .name("reactor-supervisor".to_string())
+        .spawn(move || {
+            enum WorkerStart {
+                Fresh {
+                    config: ReactorConfig,
+                    control_rx: mpsc::Receiver<Control>,
+                    report_tx: mpsc::Sender<Report>,
+                    reactor: cherenkov::Reactor,
+                },
+                Recovery {
+                    workset: Box<imp::RecoveryWorkset>,
+                    reactor: cherenkov::Reactor,
+                },
+            }
+            let mut start = WorkerStart::Fresh {
+                config,
+                control_rx,
+                report_tx,
+                reactor,
+            };
+            loop {
+                let replacing = matches!(start, WorkerStart::Recovery { .. });
+                let worker_seq = Arc::clone(&supervisor_seq);
+                let worker_wake = supervisor_wake.clone();
+                let worker = std::thread::Builder::new()
+                    .name("reactor".to_string())
+                    .spawn(move || match start {
+                        WorkerStart::Recovery { workset, reactor } => {
+                            imp::resume(*workset, reactor)
+                        }
+                        WorkerStart::Fresh {
+                            config,
+                            control_rx,
+                            report_tx,
+                            reactor,
+                        } => imp::run(
+                            config,
+                            control_rx,
+                            report_tx,
+                            worker_seq,
+                            worker_wake,
+                            reactor,
+                        ),
+                    });
+                let Ok(worker) = worker else {
+                    break;
+                };
+                if replacing {
+                    supervisor_generation.fetch_add(1, Ordering::Release);
+                }
+                match worker.join() {
+                    Ok(Some(workset)) => {
+                        let Ok(reactor) = cherenkov::Reactor::new() else {
+                            break;
+                        };
+                        supervisor_control_notify.replace(reactor.notifier());
+                        start = WorkerStart::Recovery {
+                            workset: Box::new(workset),
+                            reactor,
+                        };
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            supervisor_alive.store(false, Ordering::Release);
+            // Logical death signal: one final bump + wake so the
+            // orchestrator's report pump re-checks reactorAlive.
+            supervisor_seq.fetch_add(1, Ordering::Release);
+            supervisor_wake.wake();
+        })
+        .map_err(|e| format!("failed to spawn reactor thread: {e}"))?;
+
+    Ok(ReactorHandle {
+        control,
+        report_rx,
+        report_seq,
+        report_seen: Cell::new(0),
+        report_waiter: RefCell::new(None),
+        alive,
+        generation,
+        join,
+    })
+}
+
+pub(crate) mod js;
+pub use js::create_module;
+pub(crate) use js::drain_report_wakes;

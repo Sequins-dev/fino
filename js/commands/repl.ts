@@ -3,8 +3,8 @@
 *
 * Implements the interactive REPL behind both `fino repl` and bare `fino`.
 * The parent realm owns the terminal — reading stdin, editing the current
-* line, and printing results — while each complete snippet is evaluated in an
-* embedded child realm created with `Realm({ repl: true })`. The child routes
+* line, and printing results — while each complete snippet is evaluated in a
+* reactor-hosted realm created with `Realm({ repl: true })`. The child routes
 * code through the inspector bridge (`internal:repl/handler`) over the
 * realm's `MessagePort`, so snippets run in a normal runtime context with
 * top-level `await` and redeclarable bindings, and the CLI shell itself stays
@@ -192,10 +192,9 @@ function isComplete(buf: string): boolean {
 */
 async function runReplCommand(): Promise<void> {
   const realm = new Realm({ repl: true });
-  const port = realm.port as MessagePort;
+  const port = realm.port;
   port.start();
-  // Register the realm for stepping — required so the embedded child is
-  // driven by the parent loop. The run() Promise resolves when the realm exits.
+  // The run() Promise resolves when the reactor-hosted realm exits.
   const runPromise = realm.run();
   let nextId = 1;
   const pending = new Map<number, {

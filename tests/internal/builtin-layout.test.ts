@@ -29,7 +29,6 @@ import 'fino:commands/repl';
 import 'fino:tty';
 import 'fino:tty/prompt';
 import 'fino:realm';
-import 'fino:realm/pool';
 import 'fino:realm/self';
 import 'fino:realm/messaging';
 import 'fino:module';
@@ -60,6 +59,9 @@ describe('builtin module layout', () => {
     await t.rejects(() => import('fino:net/http/h2'), /dynamic import failed|Cannot find module|not found|unknown/i);
     await t.rejects(() => import('fino:net/http/h3'), /dynamic import failed|Cannot find module|not found|unknown/i);
     await t.rejects(() => import('fino:net/http/driver'), /dynamic import failed|Cannot find module|not found|unknown/i);
+  });
+  it('keeps the runtime loop out of the public builtin API', async (t) => {
+    await t.rejects(() => import('fino:net/loop-reactor'), /dynamic import failed|Cannot find module|not found|unknown/i);
   });
   it('keeps HTTP globals and private protocol internals out of the public HTTP barrel', async (t) => {
     const http = await import('fino:net/http');

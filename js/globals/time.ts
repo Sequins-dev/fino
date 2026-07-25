@@ -231,7 +231,9 @@ let _nextId = 1;
 /** Per-timer bookkeeping shared by all timer APIs: a cancelled flag plus a hook that removes the currently scheduled loop timer. */
 interface TimerState {
   cancelled: boolean;
+  referenced: boolean;
   cancelCurrent: () => void;
+  setCurrentRef: (referenced: boolean) => void;
 }
 const _timers = new Map<number, TimerState>();
 // ---------------------------------------------------------------------------
@@ -256,7 +258,9 @@ export function setTimeout(fn: (...args: any[]) => void, ms: number = 0, ...args
   const t = loop.timeout(Math.max(0, Number(ms)) || 0);
   const state: TimerState = {
     cancelled: false,
-    cancelCurrent: () => t.cancel()
+    referenced: true,
+    cancelCurrent: () => t.cancel(),
+    setCurrentRef: (referenced) => referenced ? t.ref() : t.unref()
   };
   _timers.set(id, state);
   t.then(function fireTimeout() {
@@ -311,17 +315,22 @@ export function setInterval(fn: (...args: any[]) => void, ms: number = 0, ...arg
   let currentTimer: loop.CancelablePromise | null = null;
   const state: TimerState = {
     cancelled: false,
+    referenced: true,
     cancelCurrent: () => {
       if (currentTimer !== null) {
         currentTimer.cancel();
         currentTimer = null;
       }
+    },
+    setCurrentRef: (referenced) => {
+      if (currentTimer !== null) referenced ? currentTimer.ref() : currentTimer.unref();
     }
   };
   _timers.set(id, state);
   function schedule() {
     if (state.cancelled) return;
     currentTimer = loop.timeout(delay);
+    if (!state.referenced) currentTimer.unref();
     currentTimer.then(function fireInterval() {
       currentTimer = null;
       if (!state.cancelled) {
@@ -347,6 +356,22 @@ export function setInterval(fn: (...args: any[]) => void, ms: number = 0, ...arg
 */
 export function clearInterval(id: number): void {
   clearTimeout(id);
+}
+
+/** Change whether a numeric web timer keeps its realm alive. @internal */
+export function _setTimerRef(id: number, referenced: boolean): void {
+  const state = _timers.get(id);
+  if (state === undefined) throw new RangeError(`unknown timer handle: ${id}`);
+  if (state.referenced === referenced) return;
+  state.referenced = referenced;
+  state.setCurrentRef(referenced);
+}
+
+/** Return whether a numeric web timer keeps its realm alive. @internal */
+export function _timerHasRef(id: number): boolean {
+  const state = _timers.get(id);
+  if (state === undefined) throw new RangeError(`unknown timer handle: ${id}`);
+  return state.referenced;
 }
 // ---------------------------------------------------------------------------
 // setImmediate / clearImmediate

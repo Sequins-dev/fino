@@ -130,7 +130,7 @@ pub fn namespace<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Objec
 /// as `deleter_data`; reclaimed exactly once when the deleter runs.
 struct ViewCtx {
     releases: crate::async_rt::ViewReleaseQueue,
-    wake_write: std::os::unix::io::RawFd,
+    wake: crate::async_rt::WakeSink,
     callback_id: Option<usize>,
     byte_length: usize,
 }
@@ -156,9 +156,9 @@ unsafe extern "C" fn view_deleter(
             byte_length: ctx.byte_length,
         });
     }
-    // SAFETY: wake_write is the isolate's self-pipe; a failed write (e.g.
-    // during shutdown) is harmless because the drain also runs unconditionally.
-    unsafe { libc::write(ctx.wake_write, b"\x01".as_ptr() as *const c_void, 1) };
+    // A wake that races shutdown is harmless: the drain also runs
+    // unconditionally on every pump.
+    ctx.wake.wake();
 }
 
 /// `Pointer.view(ptr, len, opts?)` — create an `ArrayBuffer` that aliases the
@@ -209,7 +209,7 @@ fn ptr_view(
         }
     }
 
-    let Some((releases, wake_write)) = crate::async_rt::release_handle() else {
+    let Some((releases, wake)) = crate::async_rt::release_handle() else {
         if let Some(id) = callback_id {
             crate::async_rt::js_calls::unregister_callback(id);
         }
@@ -219,7 +219,7 @@ fn ptr_view(
 
     let ctx = Box::new(ViewCtx {
         releases,
-        wake_write,
+        wake,
         callback_id,
         byte_length: len,
     });

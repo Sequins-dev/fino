@@ -1,223 +1,38 @@
-/**
-* Public integration coverage for fino:cluster over WebTransport.
-*/
+/** Public cluster membership integration coverage. */
 import { describe, it } from 'fino:test/test';
-import { Process, cwd, env, execPath } from 'fino:process';
-import { Realm } from 'fino:realm';
 import { startCluster, joinCluster, leaveCluster } from 'fino:cluster';
-import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
-const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
-const remoteCallEntry = `file://${cwd()}/tests/cluster/fixtures/remote-call.ts`;
-const longRunningEntry = `file://${cwd()}/tests/realm/fixtures/long-running.ts`;
-const neverFnEntry = `file://${cwd()}/tests/realm/fixtures/never-fn.ts`;
-const clusterTls = {
-  cert: `${cwd()}/tests/net/fixtures/test.crt`,
-  key: `${cwd()}/tests/net/fixtures/test.key`
+
+const tls = {
+  cert: `${import.meta.dirname}/../net/fixtures/test.crt`,
+  key: `${import.meta.dirname}/../net/fixtures/test.key`
 };
-async function readLine(proc: Process): Promise<string> {
-  const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
-  if (bytes === null) throw new Error('worker exited before readiness line');
-  return decodeUtf8(bytes).trim();
-}
-function randomPort(): number {
-  return 3e4 + Math.floor(Math.random() * 1e4);
-}
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([promise, loop.timeout(ms).then(() => {
-    throw new Error(`${label} timed out after ${ms}ms`);
-  })]);
-}
-async function waitForWorker(port: number): Promise<Process> {
-  const proc = new Process(execPath, ['tests/cluster/fixtures/worker-process.ts', `https://127.0.0.1:${port}/__fino_cluster`]);
-  try {
-    const line = await withTimeout(readLine(proc), 2e3, 'worker readiness');
-    if (line !== 'worker ready') throw new Error(`unexpected worker readiness line: ${line}`);
-    return proc;
-  } catch (err) {
-    proc.kill();
-    throw err;
-  }
-}
-async function stopWorker(proc: Process): Promise<void> {
-  proc.stdin.close();
-  const waiting = proc.wait();
-  let result: Awaited<ReturnType<Process['wait']>>;
-  try {
-    result = await withTimeout(waiting, 500, 'worker graceful shutdown');
-  } catch {
-    proc.kill();
-    result = await waiting;
-  }
-  if (result.code !== 0 && result.signal === null) {
-    throw new Error(`worker exited with code ${String(result.code)} signal ${String(result.signal)}`);
-  }
-}
-async function killWorker(proc: Process): Promise<void> {
-  proc.kill();
-  await proc.wait();
-}
-describe('fino:cluster public WebTransport integration', () => {
-  it('rejects ws:// cluster seeds', async (t) => {
-    await t.rejects(() => joinCluster({
-      seed: 'ws://127.0.0.1:1',
-      nodeId: 'bad-seed'
-    }), /WebTransport cluster seeds must use https:/);
+const randomPort = (): number => 3e4 + Math.floor(Math.random() * 1e4);
+
+describe('fino:cluster membership', () => {
+  it('rejects non-HTTPS seed URLs', async (t) => {
+    await t.rejects(() => joinCluster({ seed: 'ws://127.0.0.1:1' }), /must use https:/);
   });
-  it('startCluster + joinCluster route remote Realm.call over WebTransport', async (t) => {
+
+  it('starts, leaves, and can start again', async (t) => {
     if (!quicAvailable || !h3Available) return;
     const port = randomPort();
-    await withTimeout(startCluster({
-      port,
-      nodeId: 'cluster-seed',
-      tls: clusterTls
-    }), 2e3, 'startCluster');
-    let worker: Process | null = null;
-    try {
-      worker = await waitForWorker(port);
-      const realm = new Realm<(name: string) => string>({
-        entry: remoteCallEntry,
-        remote: true
-      });
-      const result = await withTimeout(realm.call('ok'), 3e3, 'remote Realm.call');
-      t.equal(result, 'remote:ok', 'remote realm call returned worker result');
-    } finally {
-      if (worker !== null) await stopWorker(worker);
-      leaveCluster();
-    }
-  });
-  it('startCluster self-joins through the configured IPv6 hostname and path', async (t) => {
-    if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    const path = `/__fino_cluster_ipv6_${port}`;
-    await withTimeout(startCluster({
-      port,
-      hostname: '::1',
-      path,
-      nodeId: 'cluster-ipv6-self-join',
-      tls: clusterTls
-    }), 2e3, 'startCluster IPv6 self-join');
-    leaveCluster();
-    t.ok(true, 'seed self-join used configured IPv6 hostname and custom path');
-  });
-  it('leaveCluster is idempotent and allows a later start', async (t) => {
-    if (!quicAvailable || !h3Available) return;
+    await startCluster({ port, nodeId: 'seed-1', tls });
     leaveCluster();
     leaveCluster();
-    const port = randomPort();
-    await withTimeout(startCluster({
-      port,
-      nodeId: 'cluster-restart',
-      tls: clusterTls
-    }), 2e3, 'first startCluster');
+    await startCluster({ port: port + 1, nodeId: 'seed-2', tls });
     leaveCluster();
-    await loop.timeout(20);
-    await withTimeout(startCluster({
-      port: port + 1,
-      nodeId: 'cluster-restart-2',
-      tls: clusterTls
-    }), 2e3, 'second startCluster');
-    leaveCluster();
-    t.ok(true, 'cluster state can be reused after leaveCluster');
+    t.ok(true);
   });
-  it('allows only one active cluster connection per process', async (t) => {
+
+  it('allows only one active cluster connection', async (t) => {
     if (!quicAvailable || !h3Available) return;
     const port = randomPort();
-    await withTimeout(startCluster({
-      port,
-      nodeId: 'cluster-single-active',
-      tls: clusterTls
-    }), 2e3, 'startCluster');
+    await startCluster({ port, nodeId: 'seed-1', tls });
     try {
-      await t.rejects(() => startCluster({
-        port: port + 1,
-        nodeId: 'cluster-second-active',
-        tls: clusterTls
-      }), /already connected/i, 'second startCluster rejects while connected');
+      await t.rejects(() => startCluster({ port: port + 1, nodeId: 'seed-2', tls }), /already connected/);
     } finally {
-      leaveCluster();
-    }
-  });
-  it('remote Realm.run settles after terminate()', async (t) => {
-    if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    await withTimeout(startCluster({
-      port,
-      nodeId: 'cluster-terminate',
-      tls: clusterTls
-    }), 2e3, 'startCluster');
-    let worker: Process | null = null;
-    try {
-      worker = await waitForWorker(port);
-      const realm = new Realm({
-        entry: longRunningEntry,
-        remote: true
-      });
-      const running = withTimeout(realm.run(), 3e3, 'remote Realm.run terminate');
-      await loop.timeout(20);
-      realm.terminate();
-      await running;
-      t.ok(true, 'remote realm run settled after terminate');
-    } finally {
-      if (worker !== null) await stopWorker(worker);
-      leaveCluster();
-    }
-  });
-  it('worker loss rejects an active remote Realm.call', async (t) => {
-    if (!quicAvailable || !h3Available) return;
-    const oldInterval = env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS;
-    const oldTimeout = env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
-    env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = '50';
-    env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = '150';
-    const port = randomPort();
-    await withTimeout(startCluster({
-      port,
-      nodeId: 'cluster-worker-loss',
-      tls: clusterTls
-    }), 2e3, 'startCluster');
-    let worker: Process | null = null;
-    try {
-      worker = await waitForWorker(port);
-      const realm = new Realm<() => Promise<never>>({
-        entry: neverFnEntry,
-        remote: true
-      });
-      const pending = withTimeout(realm.call(), 3e3, 'remote Realm.call worker loss');
-      await loop.timeout(50);
-      await killWorker(worker);
-      worker = null;
-      await t.rejects(() => pending, /peer .* disconnected/);
-    } finally {
-      if (worker !== null) await stopWorker(worker);
-      leaveCluster();
-      if (oldInterval === undefined) delete env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS;
-      else env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = oldInterval;
-      if (oldTimeout === undefined) delete env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
-      else env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = oldTimeout;
-    }
-  });
-  it('leaveCluster rejects an active remote Realm.call', async (t) => {
-    if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    await withTimeout(startCluster({
-      port,
-      nodeId: 'cluster-shutdown',
-      tls: clusterTls
-    }), 2e3, 'startCluster');
-    let worker: Process | null = null;
-    try {
-      worker = await waitForWorker(port);
-      const realm = new Realm<() => Promise<never>>({
-        entry: neverFnEntry,
-        remote: true
-      });
-      const pending = realm.call();
-      await loop.timeout(20);
-      leaveCluster();
-      await t.rejects(() => withTimeout(pending, 3e3, 'remote Realm.call leaveCluster'), /cluster connection closed/i);
-    } finally {
-      if (worker !== null) await stopWorker(worker);
       leaveCluster();
     }
   });

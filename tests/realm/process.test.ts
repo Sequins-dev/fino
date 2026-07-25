@@ -10,9 +10,10 @@ import { Realm, ImportMap } from 'fino:realm';
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
+import type scalingFn from './fixtures/scaling-fn.ts';
 describe('Process Realm basics', () => {
   it('spawns a process realm that runs to completion', async (t) => {
-    const realm = new Realm({
+    using realm = new Realm({
       process: true,
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname
     });
@@ -20,7 +21,7 @@ describe('Process Realm basics', () => {
     t.ok(true, 'process realm ran to completion');
   });
   it('call() invokes the default-export function in a process realm', async (t) => {
-    const realm = new Realm<typeof echoFn>({
+    using realm = new Realm<typeof echoFn>({
       process: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
@@ -28,7 +29,7 @@ describe('Process Realm basics', () => {
     t.equal(result, 'hello from process', 'echo result matches input');
   });
   it('call() passes multiple arguments', async (t) => {
-    const realm = new Realm<typeof sumFn>({
+    using realm = new Realm<typeof sumFn>({
       process: true,
       entry: new URL('./fixtures/multi-arg-fn.ts', import.meta.url).pathname
     });
@@ -36,7 +37,7 @@ describe('Process Realm basics', () => {
     t.equal(result, 60, 'sum of 10+20+30 is 60');
   });
   it('call() propagates errors from process realm', async (t) => {
-    const realm = new Realm<typeof errorFn>({
+    using realm = new Realm<typeof errorFn>({
       process: true,
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname
     });
@@ -49,7 +50,7 @@ describe('Process Realm basics', () => {
     }
   });
   it('terminate() stops a process realm and cleans up', async (t) => {
-    const realm = new Realm({
+    using realm = new Realm({
       process: true,
       entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname
     });
@@ -69,7 +70,7 @@ describe('Process Realm basics', () => {
     }
   });
   it('child process exit(1) surfaces as run() rejection', async (t) => {
-    const realm = new Realm({
+    using realm = new Realm({
       process: true,
       entry: new URL('./fixtures/exit-nonzero.ts', import.meta.url).pathname
     });
@@ -81,14 +82,14 @@ describe('Process Realm basics', () => {
     }
   });
   it('top-level throw surfaces as run() rejection', async (t) => {
-    const realm = new Realm({
+    using realm = new Realm({
       process: true,
       entry: new URL('./fixtures/throw-at-toplevel.ts', import.meta.url).pathname
     });
     await t.rejects(() => realm.run(), /top-level|throw|Error/i, 'run() rejects when child throws during module evaluation');
   });
   it('terminate() is idempotent and later call rejects promptly', async (t) => {
-    const realm = new Realm<typeof echoFn>({
+    using realm = new Realm<typeof echoFn>({
       process: true,
       entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname
     });
@@ -113,7 +114,7 @@ describe('Process Realm — serialization of complex types over IPC', () => {
         flag: boolean;
       };
     };
-    const realm = new Realm<(o: Obj) => Obj>({
+    using realm = new Realm<(o: Obj) => Obj>({
       process: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
@@ -134,7 +135,7 @@ describe('Process Realm — serialization of complex types over IPC', () => {
     t.equal(result.nested.flag, true, 'nested boolean survives IPC');
   });
   it('call() round-trips an ArrayBuffer', async (t) => {
-    const realm = new Realm<(b: ArrayBuffer) => ArrayBuffer>({
+    using realm = new Realm<(b: ArrayBuffer) => ArrayBuffer>({
       process: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
@@ -151,28 +152,46 @@ describe('Process Realm — serialization of complex types over IPC', () => {
   });
 });
 describe('Process Realm call() + run() ordering', () => {
-  it('run() resolves after call() has completed', async (t) => {
-    const realm = new Realm<typeof echoFn>({
+  it('run() resolves after a completed call is explicitly terminated', async (t) => {
+    using realm = new Realm<typeof echoFn>({
       process: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
     const runPromise = realm.run();
     const result = await realm.call('ordering-check');
     t.equal(result, 'ordering-check', 'call() returned the correct result');
-    // run() should settle once the realm exits (after call completes)
+    realm.terminate();
     await runPromise;
-    t.ok(true, 'run() resolved cleanly after call() completed');
+    t.ok(true, 'run() resolved cleanly after termination');
   });
 });
-describe('Process Realm call() after realm has exited', () => {
-  it('call() on an already-exited realm rejects rather than hanging', async (t) => {
-    const realm = new Realm<typeof echoFn>({
+describe('Process Realm repeated calls and exit', () => {
+  it('reuses one process-isolated realm for sequential calls', async (t) => {
+    using realm = new Realm<typeof echoFn>({
       process: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
     });
-    // Complete one call so the realm runs and exits cleanly.
+    t.equal(await realm.call('first'), 'first');
+    t.equal(await realm.call('second'), 'second');
+  });
+  it('reconstructs an unreferenced process realm after idle drain', async (t) => {
+    using realm = new Realm<typeof scalingFn>({
+      process: true,
+      entry: new URL('./fixtures/scaling-fn.ts', import.meta.url).pathname
+    }).unref();
+    const before = await realm.call(0);
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const after = await realm.call(0);
+    t.notEqual(after, before, 'idle process isolate was replaced');
+  });
+  it('call() on an already-exited realm rejects rather than hanging', async (t) => {
+    using realm = new Realm<typeof echoFn>({
+      process: true,
+      entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname
+    });
     const runPromise = realm.run();
     await realm.call('before-exit');
+    realm.terminate();
     await runPromise;
     // Now the realm has exited. A subsequent call should reject promptly.
     const settled = await Promise.race([realm.call('after-exit').then(() => 'resolved', () => 'rejected'), new Promise<string>((res) => setTimeout(() => res('timeout'), 2e3))]);
@@ -181,7 +200,7 @@ describe('Process Realm call() after realm has exited', () => {
 });
 describe('Process Realm import rules', () => {
   it('import rules are respected in the child process', async (t) => {
-    const realm = new Realm({
+    using realm = new Realm({
       process: true,
       overrides: ImportMap.inherit([{
         pattern: 'fino:ffi',

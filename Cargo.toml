@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cherenkov = { path = "../cherenkov" }
 v8 = "139.0.0"
 libc = "0.2"
 libffi = "5.1.0"
@@ -23,6 +24,9 @@ serde_json = "1"
 async-executor = "1"
 futures-channel = "0.3"
 blocking = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [build-dependencies]
 cc = "1"

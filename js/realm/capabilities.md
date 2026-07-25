@@ -90,23 +90,23 @@ new Realm({
 
 This is enforced by the Rust-side loader before the child realm is created. There is no way for a JS-level rule to bypass it.
 
-## Legacy provider configs
+## Provider rule builders
 
-`DiskFsConfig`, `SystemNetConfig`, and `SystemDnsConfig` are legacy builder classes retained for backwards compatibility. They translate to import rules internally:
+`DiskFsConfig`, `SystemNetConfig`, and `SystemDnsConfig` are rule builders for the common I/O grants. Anything with `toRules(): ImportRule[]` can appear directly inside `overrides` (or an `ImportMap`), where it expands in place — so a filesystem grant reads as one object instead of a hand-written rule list:
 
 ```ts
-import { Realm, DiskFsConfig, SystemNetConfig } from 'fino:realm';
+import { Realm, ImportMap, DiskFsConfig, SystemNetConfig } from 'fino:realm';
 
 new Realm({
   entry: './worker.ts',
-  providers: {
-    fs:  new DiskFsConfig({ root: '/srv/app' }),
-    net: new SystemNetConfig(),
-  },
+  overrides: ImportMap.deny([
+    new DiskFsConfig({ root: '/srv/app' }),
+    new SystemNetConfig(),
+  ]),
 });
 ```
 
-When `overrides` is present in `RealmOptions`, both `providers` and `blocked` are ignored. Prefer `overrides` with explicit import rules for new code; the legacy fields exist only to avoid breaking existing configurations that predate the `overrides` API.
+There is exactly one capability-configuration path: `overrides`. The former `providers` and `blocked` options were removed — they silently lost to `overrides` whenever both were present. A `blocked: [spec]` entry is now `{ pattern: spec, directive: 'block' }` inside `overrides`.
 
 ## Provider inheritance
 

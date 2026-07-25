@@ -38,6 +38,5 @@ Typical REPL work should stay exploratory:
 
 This is not Node's `repl` module. There is no persistent history file,
 completion API, raw terminal editing contract, pluggable writer, or
-PTY-specific behavior guarantee yet. Embedded realm REPL mode is limited to
-same-process realms; `repl: true` is rejected with `thread`, `process`,
-`remote`, or `watch`.
+PTY-specific behavior guarantee yet. REPL evaluation uses an ordinary
+reactor-hosted realm; `repl: true` is rejected with `process` or `watch`.

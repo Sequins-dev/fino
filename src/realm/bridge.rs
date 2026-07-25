@@ -1,7 +1,8 @@
 //! `internal:realm-bridge` — read-only view of the current Realm's FinoState.
 //!
 //! Readable from within a child Realm context; provides the entry path,
-//! termination flag, and MessagePort stored in the child's FinoState.
+//! termination flag, and transit-port coordinates stored in the child's
+//! FinoState.
 
 use std::sync::atomic::Ordering;
 
@@ -13,7 +14,8 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
     let export_names: Vec<v8::Local<v8::String>> = [
         "getEntryPath",
         "isTerminated",
-        "getPort",
+        "getPortInfo",
+        "getAllocationPortInfo",
         "setEntryError",
         "getLoadedFsPaths",
         "requestReload",
@@ -21,7 +23,6 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getReplMode",
         "getRealmData",
         "getRealmBootstrapData",
-        "setLoopFd",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -48,7 +49,8 @@ fn eval_steps<'a>(
 
     set_fn!("getEntryPath", get_entry_path);
     set_fn!("isTerminated", is_terminated);
-    set_fn!("getPort", get_port);
+    set_fn!("getPortInfo", get_port_info);
+    set_fn!("getAllocationPortInfo", get_allocation_port_info);
     set_fn!("setEntryError", set_entry_error);
     set_fn!("getLoadedFsPaths", get_loaded_fs_paths);
     set_fn!("requestReload", request_reload);
@@ -56,7 +58,6 @@ fn eval_steps<'a>(
     set_fn!("getReplMode", get_repl_mode);
     set_fn!("getRealmData", get_realm_data);
     set_fn!("getRealmBootstrapData", get_realm_bootstrap_data);
-    set_fn!("setLoopFd", set_loop_fd);
 
     Some(v8::undefined(scope).into())
 }
@@ -115,32 +116,59 @@ fn get_realm_bootstrap_data(
     }
 }
 
-/// Record this realm's pollable event-loop fd so the parent's loop can wake
-/// on the child's I/O and timer events (read back through
-/// `internal:realm-native.getChildLoopFd`).
-fn set_loop_fd(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let fd = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-    let state_rc = get_state(scope);
-    state_rc.borrow_mut().loop_fd = Some(fd);
-}
-
-/// Returns the MessagePort object passed to this child Realm at creation time,
-/// or `undefined` if this is the root Realm or no port was provided.
-fn get_port(
+/// Returns this realm's own channel half — `{ handle, wakeReadFd }` for the
+/// transit-registry half its realmPort messages through — or `undefined` in
+/// the root realm.
+fn get_port_info(
     scope: &mut v8::HandleScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let state_rc = get_state(scope);
-    let st = state_rc.borrow();
-    match &st.port {
-        Some(p) => rv.set(v8::Local::new(scope, p)),
-        None => rv.set(v8::undefined(scope).into()),
-    }
+    let info = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        st.port_transit_handle
+            .and_then(|h| st.port_wake_read_fd.map(|fd| (h, fd)))
+    };
+    let Some((handle, fd)) = info else {
+        rv.set(v8::undefined(scope).into());
+        return;
+    };
+    let obj = v8::Object::new(scope);
+    let k = v8::String::new(scope, "handle").unwrap();
+    let v = v8::Number::new(scope, handle as f64);
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "wakeReadFd").unwrap();
+    let v = v8::Number::new(scope, fd as f64);
+    obj.set(scope, k.into(), v.into());
+    rv.set(obj.into());
+}
+
+/// Returns the private allocator-control channel half for a reactor realm, or
+/// `undefined` outside reactor-hosted child contexts.
+fn get_allocation_port_info(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let info = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        st.allocation_transit_handle
+            .and_then(|handle| st.allocation_wake_read_fd.map(|fd| (handle, fd)))
+    };
+    let Some((handle, fd)) = info else {
+        rv.set(v8::undefined(scope).into());
+        return;
+    };
+    let obj = v8::Object::new(scope);
+    let key = v8::String::new(scope, "handle").unwrap();
+    let value = v8::Number::new(scope, handle as f64);
+    obj.set(scope, key.into(), value.into());
+    let key = v8::String::new(scope, "wakeReadFd").unwrap();
+    let value = v8::Number::new(scope, fd as f64);
+    obj.set(scope, key.into(), value.into());
+    rv.set(obj.into());
 }
 
 /// Records an entry-module error string in the realm's FinoState.
@@ -208,9 +236,6 @@ fn request_reload(
     let mut st = state_rc.borrow_mut();
     st.reload_requested = true;
     st.terminated = true;
-    if let Some(ref signal) = st.reload_requested_signal {
-        signal.store(true, Ordering::Release);
-    }
     // For process realm children: set the process-wide flag so run_process_child
     // exits with code 75.  This is a no-op in the parent process.
     crate::realm::process::CHILD_RELOAD_REQUESTED.store(true, Ordering::Release);

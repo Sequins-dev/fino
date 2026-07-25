@@ -7,9 +7,9 @@
 //! ## IPC
 //!
 //! `socketpair(AF_UNIX, SOCK_STREAM, 0)` gives a bidirectional channel.
-//! Parent keeps `fd[0]` (non-blocking, registered with the event loop).
-//! Child keeps `fd[1]` (used as the channel source; a bridge thread reads it
-//! and feeds an mpsc channel so `native_recv` works unchanged).
+//! Parent and child each bridge their socket end to a transit channel. Both JS
+//! endpoints therefore use the same `ThreadPort` transport implementation;
+//! the socket is only the process boundary between the bridge halves.
 //!
 //! ## Message framing
 //!
@@ -26,21 +26,21 @@
 //!
 //! Parent writes the serialised `SpawnConfig` as the first framed message
 //! immediately after `fork+exec`.  The child reads it (blocking) before
-//! entering the event loop.  Subsequent messages are normal `ThreadMessage`
+//! entering the event loop. Subsequent messages are normal `RealmMessage`
 //! frames exchanged via the bridge.
 
 use std::{
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::io::RawFd,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
 };
 
 use serde::{Deserialize, Serialize};
 
-use super::thread::ThreadMessage;
+use super::message::RealmMessage;
 use crate::state::ImportRule;
 
 /// Magic prefix that marks an entry-error sentinel IPC message sent by the
@@ -59,8 +59,8 @@ pub static CHILD_RELOAD_REQUESTED: std::sync::atomic::AtomicBool =
 // Wire format
 // ---------------------------------------------------------------------------
 
-/// Write one length-prefixed `ThreadMessage` to a file descriptor (blocking).
-pub fn write_message(fd: RawFd, msg: &ThreadMessage) -> std::io::Result<()> {
+/// Write one length-prefixed `RealmMessage` to a file descriptor (blocking).
+pub fn write_message(fd: RawFd, msg: &RealmMessage) -> std::io::Result<()> {
     // Guard against u32 truncation: individual fields and total payload must
     // fit in u32 (4 GiB). Messages this large are pathological but the cast
     // would silently corrupt the framing on the reader side.
@@ -89,8 +89,8 @@ pub fn write_message(fd: RawFd, msg: &ThreadMessage) -> std::io::Result<()> {
     write_all(fd, &payload)
 }
 
-/// Read one length-prefixed `ThreadMessage` from a file descriptor (blocking).
-pub fn read_message(fd: RawFd) -> std::io::Result<ThreadMessage> {
+/// Read one length-prefixed `RealmMessage` from a file descriptor (blocking).
+pub fn read_message(fd: RawFd) -> std::io::Result<RealmMessage> {
     let mut hdr = [0u8; 4];
     read_exact(fd, &mut hdr)?;
     let total = u32::from_be_bytes(hdr) as usize;
@@ -116,7 +116,7 @@ pub fn read_message(fd: RawFd) -> std::io::Result<ThreadMessage> {
         stores.push(p[pos..pos + sl].to_vec());
         pos += sl;
     }
-    Ok(ThreadMessage {
+    Ok(RealmMessage {
         data,
         transfer_stores: stores,
         transfer_ports: Vec::new(),
@@ -193,29 +193,15 @@ pub struct SpawnConfig {
 // ---------------------------------------------------------------------------
 
 pub struct ProcessRealmHandle {
-    /// Parent's end of the socketpair (non-blocking).
-    pub socket_fd: RawFd,
     /// Set `true` once the child exits (set by reader thread).
     pub done: Arc<AtomicBool>,
     /// Populated if the child exited with an error.
     pub error: Arc<Mutex<Option<String>>>,
     /// Set `true` when the child exited with code 75 (reload requested).
     pub reload_requested: Arc<AtomicBool>,
-    /// Receives messages from the child.
-    pub rx: mpsc::Receiver<ThreadMessage>,
-    /// Sends messages to the child (queued for the writer bridge thread).
-    pub tx: mpsc::Sender<ThreadMessage>,
-    /// Wake-pipe read end — receives a byte after each inbound message.
-    pub parent_wake_read: RawFd,
-}
-
-impl Drop for ProcessRealmHandle {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.socket_fd);
-            libc::close(self.parent_wake_read);
-        }
-    }
+    /// Parent-side registered transit endpoint reused by `ThreadPort`.
+    pub port_handle: u32,
+    pub port_wake_read: RawFd,
 }
 
 // ---------------------------------------------------------------------------
@@ -248,21 +234,6 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         libc::fcntl(child_fd, libc::F_SETFD, 0);
     }
 
-    // Wake-pipe for the parent (reader bridge writes here on each message).
-    let mut wfds = [0i32; 2];
-    if unsafe { libc::pipe(wfds.as_mut_ptr()) } != 0 {
-        unsafe {
-            libc::close(parent_fd);
-            libc::close(child_fd);
-        }
-        return Err(format!("pipe: {}", std::io::Error::last_os_error()));
-    }
-    let (parent_wake_read, parent_wake_write) = (wfds[0], wfds[1]);
-    unsafe {
-        libc::fcntl(parent_wake_read, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(parent_wake_write, libc::F_SETFL, libc::O_NONBLOCK);
-    }
-
     // Serialise spawn config.
     let cfg = SpawnConfig {
         entry_path: args.entry_path,
@@ -276,7 +247,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         exec_path: args.process_env.exec_path.clone(),
         package_map_json: args.package_map_json,
     };
-    let config_msg = ThreadMessage {
+    let config_msg = RealmMessage {
         data: serde_json::to_string(&cfg)
             .map_err(|e| e.to_string())?
             .into_bytes(),
@@ -290,7 +261,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     cmd.arg("--realm-child").arg(child_fd.to_string());
 
     // In pre_exec: close fds the child doesn't own.
-    let close_in_child = [parent_fd, parent_wake_read, parent_wake_write];
+    let close_in_child = [parent_fd];
     unsafe {
         cmd.pre_exec(move || {
             for &fd in &close_in_child {
@@ -311,14 +282,48 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     // be reading yet and a non-blocking write could EAGAIN on a fresh socket.
     write_message(parent_fd, &config_msg).map_err(|e| format!("write config: {e}"))?;
 
-    // Now switch parent_fd to non-blocking for the async event-loop phase.
-    unsafe {
-        libc::fcntl(parent_fd, libc::F_SETFL, libc::O_NONBLOCK);
+    // Give the parent the same transit endpoint used by reactor realms. The
+    // bridge owns duplicated socket descriptors so handle teardown cannot
+    // close an fd while a bridge thread is using it (or after the number has
+    // been reused for unrelated I/O).
+    let (bridge_half, parent_half) = match crate::realm::transit::create_halves() {
+        Ok(halves) => halves,
+        Err(error) => {
+            unsafe { libc::close(parent_fd) };
+            return Err(format!("process realm parent channel: {error}"));
+        }
     };
+    let parent_wake_read = parent_half.wake_read_fd;
+    let parent_handle = crate::realm::transit::register_half(parent_half);
+    let (bridge_tx, bridge_rx, bridge_wake_read, parent_wake_write) =
+        bridge_half.into_bridge_parts();
+    unsafe { libc::close(bridge_wake_read) };
 
-    // Bridge threads.
-    let (reader_tx, parent_rx) = mpsc::channel::<ThreadMessage>();
-    let (parent_tx, writer_rx) = mpsc::channel::<ThreadMessage>();
+    let reader_raw = unsafe { libc::dup(parent_fd) };
+    let writer_raw = unsafe { libc::dup(parent_fd) };
+    unsafe { libc::close(parent_fd) };
+    if reader_raw < 0 || writer_raw < 0 {
+        if reader_raw >= 0 {
+            unsafe { libc::close(reader_raw) };
+        }
+        if writer_raw >= 0 {
+            unsafe { libc::close(writer_raw) };
+        }
+        unsafe {
+            libc::close(bridge_wake_read);
+            libc::close(parent_wake_write);
+        }
+        drop(bridge_tx);
+        drop(bridge_rx);
+        drop(crate::realm::transit::remove_half(parent_handle));
+        return Err(format!(
+            "dup process socket: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let reader_fd = unsafe { OwnedFd::from_raw_fd(reader_raw) };
+    let writer_fd = unsafe { OwnedFd::from_raw_fd(writer_raw) };
+
     let done = Arc::new(AtomicBool::new(false));
     let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let reload_requested = Arc::new(AtomicBool::new(false));
@@ -330,7 +335,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         let reload_requested = reload_requested.clone();
         std::thread::spawn(move || {
             loop {
-                match read_message(parent_fd) {
+                match read_message(reader_fd.as_raw_fd()) {
                     Ok(msg) => {
                         // Check for a child-side entry-error sentinel.
                         if msg.data.starts_with(ENTRY_ERROR_PREFIX) {
@@ -340,7 +345,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
                             *error.lock().unwrap() = Some(err_msg);
                             continue;
                         }
-                        let _ = reader_tx.send(msg);
+                        let _ = bridge_tx.send(msg);
                         let b = [1u8];
                         unsafe { libc::write(parent_wake_write, b.as_ptr() as _, 1) };
                     }
@@ -379,6 +384,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
             // Final wake so the parent notices exit on the next step.
             let b = [1u8];
             unsafe { libc::write(parent_wake_write, b.as_ptr() as _, 1) };
+            unsafe { libc::close(parent_wake_write) };
         });
     }
 
@@ -386,8 +392,8 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     {
         let error = error.clone();
         std::thread::spawn(move || {
-            while let Ok(msg) = writer_rx.recv() {
-                if let Err(e) = write_message(parent_fd, &msg) {
+            while let Ok(msg) = bridge_rx.recv() {
+                if let Err(e) = write_message(writer_fd.as_raw_fd(), &msg) {
                     *error.lock().unwrap() = Some(format!("process realm write: {e}"));
                     break;
                 }
@@ -396,13 +402,11 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     }
 
     Ok(ProcessRealmHandle {
-        socket_fd: parent_fd,
         done,
         error,
         reload_requested,
-        rx: parent_rx,
-        tx: parent_tx,
-        parent_wake_read,
+        port_handle: parent_handle,
+        port_wake_read: parent_wake_read,
     })
 }
 
@@ -421,39 +425,35 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
     // Prevent grandchildren from inheriting the socket.
     unsafe { libc::fcntl(socket_fd, libc::F_SETFD, libc::FD_CLOEXEC) };
 
-    // Bridge: socket ↔ mpsc + wake pipe (so native_recv / native_send work unchanged).
-    let (reader_tx, channel_rx) = mpsc::channel::<ThreadMessage>();
-    let (channel_tx, writer_rx) = mpsc::channel::<ThreadMessage>();
-    let mut wfds = [0i32; 2];
-    unsafe { libc::pipe(wfds.as_mut_ptr()) };
-    let (wake_read, wake_write) = (wfds[0], wfds[1]);
-    unsafe {
-        libc::fcntl(wake_read, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(wake_write, libc::F_SETFL, libc::O_NONBLOCK);
-    }
+    // Bridge: socket ↔ a realm channel. The child's realmPort is a transit
+    // half exactly like a reactor realm's; the bridge threads hold the other
+    // (unregistered) half and shuttle it over the socket.
+    let (bridge_half, child_half) = crate::realm::transit::create_halves()
+        .map_err(|e| format!("process realm channel: {e}"))?;
+    let child_wake_read = child_half.wake_read_fd;
+    let child_handle = crate::realm::transit::register_half(child_half);
 
+    let bridge_tx = bridge_half.tx.clone();
+    let bridge_wake_write = bridge_half.partner_wake_write_fd;
     std::thread::spawn(move || {
-        loop {
-            match read_message(socket_fd) {
-                Ok(msg) => {
-                    let _ = reader_tx.send(msg);
-                    let b = [1u8];
-                    unsafe { libc::write(wake_write, b.as_ptr() as _, 1) };
-                }
-                Err(_) => break,
-            }
+        while let Ok(msg) = read_message(socket_fd) {
+            let _ = bridge_tx.send(msg);
+            let b = [1u8];
+            unsafe { libc::write(bridge_wake_write, b.as_ptr() as _, 1) };
         }
     });
 
     let writer_handle = std::thread::spawn(move || {
-        while let Ok(msg) = writer_rx.recv() {
+        // Owns the bridge half; recv() unblocks with Err when the child's
+        // half is dropped at realm teardown.
+        while let Ok(msg) = bridge_half.rx.recv() {
             if write_message(socket_fd, &msg).is_err() {
                 break;
             }
         }
     });
 
-    let result = super::child::run_child_isolate(super::child::ChildConfig {
+    let result = super::child::run_child_isolate(crate::realm::RealmExecutionConfig {
         process_env: crate::state::ProcessEnv {
             root: std::path::PathBuf::from(&config.root),
             args: config.args,
@@ -463,15 +463,13 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         package_map_json: config.package_map_json,
         import_rules: config.import_rules,
         entry_path: config.entry_path,
-        channel_rx,
-        channel_tx,
-        wake_read_fd: wake_read,
-        wake_write_fd: None, // parent wakes via the socket; bridge handles it
-        timing_label: "process-realm",
+        port_half: (child_handle, child_wake_read),
+        allocation_half: None,
         watch_mode: config.watch_mode,
+        repl_mode: false,
         realm_data: config.realm_data,
         realm_bootstrap_data: config.realm_bootstrap_data,
-        reload_requested_signal: None, // process realm uses exit code 75
+        heap_limit_bytes: 1 << 30,
     });
 
     // channel_tx dropped (inside FinoState) when run_child_isolate returned.
@@ -489,7 +487,7 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
     if let Err(ref msg) = result {
         let mut data = ENTRY_ERROR_PREFIX.to_vec();
         data.extend_from_slice(msg.as_bytes());
-        let sentinel = ThreadMessage {
+        let sentinel = RealmMessage {
             data,
             transfer_stores: Vec::new(),
             transfer_ports: Vec::new(),
@@ -511,16 +509,16 @@ mod tests {
         (fds[0], fds[1])
     }
 
-    fn make_msg(data: &[u8]) -> ThreadMessage {
-        ThreadMessage {
+    fn make_msg(data: &[u8]) -> RealmMessage {
+        RealmMessage {
             data: data.to_vec(),
             transfer_stores: Vec::new(),
             transfer_ports: Vec::new(),
         }
     }
 
-    fn make_msg_with_stores(data: &[u8], stores: Vec<Vec<u8>>) -> ThreadMessage {
-        ThreadMessage {
+    fn make_msg_with_stores(data: &[u8], stores: Vec<Vec<u8>>) -> RealmMessage {
+        RealmMessage {
             data: data.to_vec(),
             transfer_stores: stores,
             transfer_ports: Vec::new(),

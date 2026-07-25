@@ -88,7 +88,7 @@ import { EventSourceReader } from '../net/http/eventstream.ts';
 import { Socket } from '../net/socket.ts';
 import { TlsSocket } from '../net/tls.ts';
 import { lookup } from '../net/dns.ts';
-import * as loop from '../internal/runtime/loop.ts';
+import * as loop from 'internal:runtime/loop';
 import { EventTarget, Event } from './eventtarget.ts';
 import { MessageEvent } from './messaging.ts';
 import { URL } from './url.ts';
