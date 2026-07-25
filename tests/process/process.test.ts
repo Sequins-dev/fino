@@ -209,9 +209,13 @@ describe('Process class', () => {
   });
   it('strict sandbox enforces a memory limit on Linux', async (t) => {
     if (os !== 'linux') return;
+    // RLIMIT_AS includes the launcher's already-mapped V8 address space. Keep
+    // enough headroom for the launcher to report and exec while still checking
+    // that the child observes the exact configured limit.
+    const memoryBytes = 8 * 1024 * 1024 * 1024;
     const proc = new Process('/bin/sh', ['-c', 'ulimit -v'], { sandbox: {
       mode: 'strict',
-      resources: { memoryBytes: 64 * 1024 * 1024 }
+      resources: { memoryBytes }
     } });
     const resources = proc.sandboxReport.enforced.find((entry) => entry.category === 'resources');
     const resourcesDiagnostic = proc.sandboxReport.diagnostics.find((entry) => entry.startsWith('resources:'));
@@ -226,7 +230,7 @@ describe('Process class', () => {
     // `ulimit -v` (KiB); a cgroup memory.max does not (ulimit stays unlimited).
     const ulimitKib = Number(joinChunks(chunks).trim());
     if (resourcesDiagnostic?.includes('[tier: rlimit]')) {
-      t.equal(ulimitKib, 65536, 'rlimit-tier child sees the 64MiB address-space limit in KiB');
+      t.equal(ulimitKib, memoryBytes / 1024, 'rlimit-tier child sees the configured address-space limit in KiB');
     } else {
       t.ok(resourcesDiagnostic?.includes('[tier: cgroup]'), 'resources diagnostic identifies the cgroup enforcement tier');
       t.ok(/cgroup/i.test(resources!.reason), 'cgroup-tier memory limit is enforced via memory.max');

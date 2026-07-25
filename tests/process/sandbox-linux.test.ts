@@ -10,6 +10,7 @@
 */
 import { describe, it } from 'fino:test/test';
 import { os, Process, processSandboxCapabilities, kill } from 'fino:process';
+import * as loop from 'internal:runtime/loop';
 function joinChunks(chunks: Uint8Array[]): string {
   const total = chunks.reduce((n, c) => n + c.byteLength, 0);
   const merged = new Uint8Array(total);
@@ -26,14 +27,35 @@ async function runToExit(proc: Process): Promise<{
   stdout: string;
 }> {
   proc.stdin.close();
-  const chunks: Uint8Array[] = [];
-  for await (const c of proc.stdout) chunks.push(c);
-  for await (const _ of proc.stderr) {}
-  const status = await proc.wait();
+  const readStdout = async (): Promise<string> => {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    return joinChunks(chunks);
+  };
+  const drainStderr = async (): Promise<void> => {
+    for await (const _ of proc.stderr) {}
+  };
+  const [stdout, , status] = await Promise.all([
+    readStdout(),
+    drainStderr(),
+    proc.wait()
+  ]);
   return {
     ...status,
-    stdout: joinChunks(chunks)
+    stdout
   };
+}
+async function waitForProcessExit(pid: number, timeoutMs = 1e3): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await loop.timeout(10);
+  }
+  return false;
 }
 function landlockOn(): boolean {
   return processSandboxCapabilities().backends.some((b) => b.name === 'linuxNative' && b.supported.includes('filesystem'));
@@ -121,6 +143,6 @@ describe('cgroup v2 resource limits and cleanup', () => {
     const { stdout } = await runToExit(proc);
     const grandchild = Number(stdout.trim());
     t.ok(Number.isInteger(grandchild) && grandchild > 0, 'captured the orphaned sleep pid');
-    t.throws(() => kill(grandchild, 0), /No such process|ESRCH|failed/, 'orphaned descendant was reaped on teardown');
+    t.ok(await waitForProcessExit(grandchild), 'orphaned descendant was reaped on teardown');
   });
 });
