@@ -50,7 +50,7 @@
 *
 * @internal
 */
-import type { Model, ModelMessage, StreamEvent, StopReason, ToolUsePart, ContentPart, Usage, ToolDefinition, GenerateRequest, ResponseFormat, ModelStreamState } from 'fino:ai/model';
+import type { Model, ModelMessage, StreamEvent, StopReason, ToolUsePart, ContentPart, Usage, ToolDefinition, GenerateRequest, GenerateResult, ResponseFormat, ModelStreamState } from 'fino:ai/model';
 import { assembleResult, foldModelStreamEvent, initialModelStreamState, ModelError, normalizeSchema } from 'internal:ai/shared';
 import type { SchemaLike } from 'internal:ai/shared';
 import { createSignal } from 'fino:signals';
@@ -62,8 +62,9 @@ import { getTracerProvider, runWithActiveSpan } from 'fino:opentelemetry/traces'
 import { getMeterProvider } from 'fino:opentelemetry/metrics';
 import { getLoggerProvider, LogRecordBuilder, SeverityNumber } from 'fino:opentelemetry/logs';
 import type { SkillRegistry } from 'fino:ai/skill';
-import { MessageHistory, appendOnlyHistoryStrategy, costOf, PRICING } from 'fino:ai/context';
+import { MessageHistory, appendOnlyHistoryStrategy, costOf, estimateTokens, PRICING } from 'fino:ai/context';
 import type { HistoryStrategy } from 'fino:ai/context';
+import type { Budget, BudgetLease } from 'fino:ai/budget';
 import { Channel } from 'internal:stream';
 import type { Reader } from 'internal:stream';
 export { MessageHistory, appendOnlyHistoryStrategy, SuspendSignal };
@@ -674,6 +675,14 @@ export interface AgentRuntimeOptions {
   * view. Default 200000.
   */
   budgetTokens?: number;
+  /**
+  * Enforceable spend capability checked before every model call.
+  *
+  * Reuse one budget across agents for tenant-wide policy, or create one per
+  * run/session. This is separate from `budgetTokens`, which only sizes the
+  * model-facing history view.
+  */
+  budget?: Budget;
 }
 let runCounter = 0;
 function newRunId(): string {
@@ -947,6 +956,7 @@ export class AgentRuntime {
   #guardrails?: Guardrails;
   #historyStrategy: HistoryStrategy;
   #budgetTokens: number;
+  #budget?: Budget;
   /**
   * Builds the runtime from resolved options.
   *
@@ -964,6 +974,7 @@ export class AgentRuntime {
     this.#guardrails = opts.guardrails;
     this.#historyStrategy = opts.history ?? appendOnlyHistoryStrategy();
     this.#budgetTokens = opts.budgetTokens ?? 2e5;
+    this.#budget = opts.budget;
     let baseInstructions = opts.instructions;
     const baseTools = [...opts.tools ?? []];
     if (opts.skills) {
@@ -1138,6 +1149,41 @@ export class AgentRuntime {
       if (gr.action === 'block') throw new GuardrailError(gr.reason ?? 'Input blocked by guardrail', gr.reason);
       if (gr.action === 'redact') effectiveMessages = gr.messages ?? effectiveMessages;
     }
+    const req = {
+      messages: effectiveMessages,
+      ...system ? { system } : {},
+      ...activeToolDefs.length > 0 ? { tools: activeToolDefs } : {},
+      ...toolChoice !== undefined ? { toolChoice } : {},
+      ...this.#defaults,
+      ...responseFormat ? { responseFormat } : {},
+      ...state.signal ? { signal: state.signal } : {}
+    };
+    let budgetLease: BudgetLease | undefined;
+    if (this.#budget) {
+      const predictedUsage = {
+        inputTokens: estimateTokens(effectiveMessages),
+        outputTokens: this.#defaults.maxTokens ?? 4096
+      };
+      try {
+        budgetLease = this.#budget.reserve({
+          tokens: predictedUsage.inputTokens + predictedUsage.outputTokens,
+          usd: costOf(predictedUsage, this.#model.name, PRICING)
+        });
+      } catch (error) {
+        if (error instanceof SuspendSignal) {
+          return {
+            state,
+            done: false,
+            suspend: error,
+            stopReason: 'error',
+            turn: { text: '', toolUseParts: [] },
+            activeModel: this.#model,
+            appendedMessages: []
+          };
+        }
+        throw error;
+      }
+    }
     const provider = providerName(this.#model);
     const requestModel = modelId(this.#model);
     const tracer = getTracerProvider().getTracer('fino.ai');
@@ -1157,18 +1203,23 @@ export class AgentRuntime {
     try {
       return await runWithActiveSpan(stepSpan, async () => {
         if (state.signal?.aborted) throw state.signal.reason;
-        const req = {
-          messages: effectiveMessages,
-          ...system ? { system } : {},
-          ...activeToolDefs.length > 0 ? { tools: activeToolDefs } : {},
-          ...toolChoice !== undefined ? { toolChoice } : {},
-          ...this.#defaults,
-          ...responseFormat ? { responseFormat } : {},
-          ...state.signal ? { signal: state.signal } : {}
-        };
         const t0 = Date.now();
-        const { events: buf, activeModel } = await this.#streamWithRetryAndFallback(req, onEvent);
-        const rawTurn = await assembleResult(asyncOf(buf));
+        let streamed: { events: StreamEvent[]; activeModel: Model };
+        try {
+          streamed = await this.#streamWithRetryAndFallback(req, onEvent);
+        } catch (error) {
+          budgetLease?.release();
+          throw error;
+        }
+        const { events: buf, activeModel } = streamed;
+        let rawTurn: GenerateResult;
+        try {
+          rawTurn = await assembleResult(asyncOf(buf));
+        } catch (error) {
+          budgetLease?.release();
+          throw error;
+        }
+        budgetLease?.commit(rawTurn.usage, costOf(rawTurn.usage, activeModel.name, PRICING));
         const elapsed = (Date.now() - t0) / 1e3;
         let turnText = rawTurn.text;
         if (this.#guardrails?.output && turnText) {

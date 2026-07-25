@@ -20,10 +20,10 @@ cargo run -- script.ts
 ./target/debug/fino script.ts
 
 # Run all tests
-cargo run -- --test 'tests/**/*.test.ts'
+cargo run -- test 'tests/**/*.test.ts'
 
 # Run a single test file
-cargo run -- --test tests/ffi.test.ts
+cargo run -- test tests/ffi.test.ts
 
 # Lint / format
 cargo clippy

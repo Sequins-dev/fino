@@ -34,7 +34,7 @@
 * await realm.terminate();
 * ```
 */
-import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd, killProcessContext } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
@@ -2982,6 +2982,10 @@ export class Realm<F extends RealmFn = RealmFn> {
   /**
   * Signal the child realm to stop.
   *
+  * Process realms normally receive a cooperative termination message. Pass
+  * `{ force: true }` to send `SIGKILL` when untrusted synchronous code cannot
+  * service that message. Other realm kinds ignore `force`.
+  *
   * Embedded realms are terminated through the native child handle. Thread,
   * process, and remote realms receive a `__terminate` message and their
   * parent-side port is closed. The method is synchronous and does not wait for
@@ -2994,11 +2998,15 @@ export class Realm<F extends RealmFn = RealmFn> {
   * realm.terminate();
   * ```
   */
-  terminate(): void {
+  terminate(options: { force?: boolean } = {}): void {
     this.#watchTerminated = true;
     if (this.#kind === 'remote') {
       this.port.postMessage({ __terminate: true });
       this.port.close();
+    } else if (this.#kind === 'process' && options.force === true) {
+      killProcessContext(this.#handle);
+      const activePort = this.#activeChildPort ?? this.port as ProcessPort;
+      activePort.close();
     } else if (this.#kind === 'thread' || this.#kind === 'process') {
       // After a watch-mode reload, this.port still points to the first child's
       // port.  Use #activeChildPort when set (updated by #spawnChild on reload)

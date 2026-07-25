@@ -1,0 +1,57 @@
+name: DNSSEC Release Verification
+
+on:
+  push:
+    tags:
+      - "v*"
+  schedule:
+    - cron: "23 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      dns_server:
+        description: Recursive resolver used by the live DNSSEC checks
+        required: false
+        default: "1.1.1.1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-dnssec:
+    name: Live DNSSEC
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            clang \
+            cmake \
+            g++ \
+            git \
+            libgnutls28-dev \
+            libngtcp2-crypto-gnutls-dev \
+            libngtcp2-dev \
+            libsqlite3-dev \
+            libssl-dev \
+            make \
+            perl \
+            pkg-config \
+            python3
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Verify signed and bogus public domains
+        env:
+          FINO_DNS_LIVE: "1"
+          FINO_DNS_SERVER: ${{ inputs.dns_server || '1.1.1.1' }}
+        run: ./target/release/fino test tests/net/dns-live.test.ts

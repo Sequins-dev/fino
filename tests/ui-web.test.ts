@@ -25,8 +25,9 @@ function makeApp() {
     embed: ['draft'],
     actions: {
       add: {
-        async handler({ state }, input) {
+        async handler({ state, checkpoint }, input) {
           state.items.set((items) => items.concat(String(input.text ?? '')));
+          await checkpoint();
           state.draft.set('');
         }
       }
@@ -49,7 +50,7 @@ function makeApp() {
   })).layer(webUI({ store, secret: 'test-secret' }));
   ui.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
   ui.post('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
-  return { app };
+  return { app, store };
 }
 
 function makeSecureApp() {
@@ -101,7 +102,7 @@ function cookieHeader(response: Response): string {
 
 describe('fino:ui/web', () => {
   it('renders a page and applies an enhanced action as SSE patches', async (t) => {
-    const { app } = makeApp();
+    const { app, store } = makeApp();
     const first = await app.handle(new Request('http://local/')) as Response;
     const html = await first.text();
     const cookie = cookieHeader(first);
@@ -132,6 +133,7 @@ describe('fino:ui/web', () => {
     const events = await collectEvents(action);
     t.ok(events.some((event) => event.type === 'patch' && JSON.stringify(event.data).includes('Write tests')), 'action returns a patch with updated HTML');
     t.equal(events.at(-1)?.type, 'close', 'action stream closes');
+    t.equal((await store.load(hidden(html, '_view')))?.version, 2, 'checkpoint and final state are both durable');
   });
 
   it('uses PRG for no-JS actions and rejects invalid CSRF tokens', async (t) => {

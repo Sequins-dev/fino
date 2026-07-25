@@ -29,7 +29,23 @@ import type { Handler, HttpContext, LayerMiddleware } from 'fino:net/http/app';
 import type { ViewSnapshot, ViewStateStore } from 'fino:ui/web/state';
 
 type StateRecord = Record<string, Signal<unknown>>;
-type ActionHandler = (ctx: { state: StateRecord; snapshot: ViewSnapshot; http: HttpContext }, input: Record<string, unknown>) => unknown | Promise<unknown>;
+/**
+* Context supplied to a server-driven view action.
+*/
+export interface ViewActionContext {
+  /** Mutable signals restored from the durable snapshot. */
+  state: StateRecord;
+  /** Snapshot from which this action started. */
+  snapshot: ViewSnapshot;
+  /** HTTP request context for the action. */
+  http: HttpContext;
+  /**
+  * Persist the current signals and publish a live patch before the action
+  * finishes. Await checkpoints to preserve patch order.
+  */
+  checkpoint(): Promise<void>;
+}
+type ActionHandler = (ctx: ViewActionContext, input: Record<string, unknown>) => unknown | Promise<unknown>;
 type ViewRender = (ctx: { state: StateRecord; actions: Record<string, ActionRef> }) => VNode;
 type EmbedSpec = string | { key: string; sealed?: boolean };
 
@@ -40,6 +56,14 @@ export interface WebUIOptions {
   secret: string;
   /** Snapshot lifetime in milliseconds. Defaults to one hour. */
   ttlMs?: number;
+  /**
+  * Minimum time between opportunistic snapshot sweeps.
+  *
+  * Sweeps run before requests handled by this middleware. The default is one
+  * minute. Set to `false` to operate cleanup from an external scheduler, or
+  * `0` to sweep on every request (primarily useful in tests).
+  */
+  sweepIntervalMs?: number | false;
 }
 
 /**
@@ -387,26 +411,39 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
     } catch (err) {
       return new Response((err as Error).message, { status: 400 });
     }
-    await batch(() => action.handler({ state, snapshot, http: ctx }, formEntries(form)));
-    const l2 = signalValues(state, new Set(Object.keys(state).filter((key) => !serverView.embed.has(key))));
-    const nextVersion = snapshot.version + 1;
-    const nextNonce = randomId('render');
-    const csrf = csrfPayload(viewId, nextNonce, options.secret);
-    const nextSnapshot: ViewSnapshot = {
-      ...snapshot,
-      version: nextVersion,
-      data: l2,
-      applied: [{ rid, action: name }, ...snapshot.applied].slice(0, 16),
-      updatedAt: Date.now()
+    let currentSnapshot = snapshot;
+    const commit = async (complete: boolean) => {
+      const data = signalValues(state, new Set(Object.keys(state).filter((key) => !serverView.embed.has(key))));
+      const nextVersion = currentSnapshot.version + 1;
+      const nextNonce = randomId('render');
+      const csrf = csrfPayload(viewId, nextNonce, options.secret);
+      const nextSnapshot: ViewSnapshot = {
+        ...currentSnapshot,
+        version: nextVersion,
+        data,
+        applied: complete
+          ? [{ rid, action: name }, ...currentSnapshot.applied].slice(0, 16)
+          : currentSnapshot.applied,
+        updatedAt: Date.now()
+      };
+      const rendered = serverView.renderSnapshot(ctx, nextSnapshot, state, nextNonce, csrf, options.secret);
+      nextSnapshot.regions = { [viewId]: rendered.hash };
+      await options.store.save(nextSnapshot, { expectVersion: currentSnapshot.version });
+      currentSnapshot = nextSnapshot;
+      topic(`fino:ui/view:${viewId}`).publish({ version: nextVersion });
+      return rendered;
     };
-    const rendered = serverView.renderSnapshot(ctx, nextSnapshot, state, nextNonce, csrf, options.secret);
-    nextSnapshot.regions = { [viewId]: rendered.hash };
-    await options.store.save(nextSnapshot, { expectVersion: snapshot.version });
-    topic(`fino:ui/view:${viewId}`).publish({ version: nextVersion });
+    await batch(() => action.handler({
+      state,
+      snapshot,
+      http: ctx,
+      checkpoint: () => commit(false).then(() => {})
+    }, formEntries(form)));
+    const rendered = await commit(true);
     if (!wantsSse(ctx)) return redirectBack(ctx);
     return sseResponse([
-      { event: 'patch', data: { id: viewId, mode: 'replace', html: rendered.html }, id: String(nextVersion) },
-      { event: 'close', data: {}, id: String(nextVersion) }
+      { event: 'patch', data: { id: viewId, mode: 'replace', html: rendered.html }, id: String(currentSnapshot.version) },
+      { event: 'close', data: {}, id: String(currentSnapshot.version) }
     ]);
   });
 }
@@ -438,18 +475,20 @@ function handleLive(ctx: HttpContext, options: WebUIOptions): Response {
     const patch = renderLivePatch(ctx, options, snapshot);
     if (patch !== null) writeSse(controller, { event: 'patch', data: { id: patch.id, mode: 'replace', html: patch.html }, id: String(patch.version) });
   };
+  let handles: Array<{ dispose(): void }> = [];
+  const dispose = () => {
+    for (const handle of handles) handle.dispose();
+    handles = [];
+  };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new TextEncoder().encode(': connected\n\n'));
-      const handles = viewIds.map((viewId) => topic(`fino:ui/view:${viewId}`).subscribe(() => {
+      handles = viewIds.map((viewId) => topic(`fino:ui/view:${viewId}`).subscribe(() => {
         void sendSnapshot(controller, viewId, true).catch(() => {});
       }));
       for (const viewId of viewIds) void sendSnapshot(controller, viewId).catch(() => {});
-      return () => {
-        for (const handle of handles) handle.dispose();
-      };
     },
-    cancel() {}
+    cancel: dispose
   });
   return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
 }
@@ -475,7 +514,29 @@ function redirectBack(ctx: HttpContext): Response {
 */
 export function webUI(options: WebUIOptions): LayerMiddleware {
   if (!options.secret) throw new Error('webUI requires a secret for CSRF protection');
+  const sweepIntervalMs = options.sweepIntervalMs === undefined ? 60_000 : options.sweepIntervalMs;
+  let nextSweepAt = 0;
+  let sweeping: Promise<void> | null = null;
+  const sweepIfDue = async () => {
+    if (sweepIntervalMs === false) return;
+    const now = Date.now();
+    if (now < nextSweepAt) return;
+    nextSweepAt = now + Math.max(0, sweepIntervalMs);
+    sweeping ??= (async () => {
+      const startedAt = Date.now();
+      try {
+        const deleted = await options.store.sweep(now);
+        topic('fino:ui/sweep').publish({ deleted, durationMs: Date.now() - startedAt });
+      } catch (error) {
+        topic('fino:ui/sweep:error').publish(error);
+      } finally {
+        sweeping = null;
+      }
+    })();
+    await sweeping;
+  };
   return async (ctx, next) => {
+    await sweepIfDue();
     const url = new URL(ctx.request.url);
     if (ctx.request.method === 'GET' && url.pathname === clientScriptPath()) {
       return new Response(CLIENT_SOURCE, {

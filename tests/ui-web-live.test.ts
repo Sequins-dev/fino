@@ -83,4 +83,39 @@ describe('fino:ui/web live and client endpoints', () => {
     const expiredEvent = await parseEventStream(expired.body!)[Symbol.asyncIterator]().next();
     t.equal(expiredEvent.value?.type, 'navigate', 'missing snapshot navigates on reconnect');
   });
+
+  it('disposes live topic subscriptions when the browser disconnects', async (t) => {
+    const { app } = makeApp();
+    const first = await app.handle(new Request('http://local/')) as Response;
+    const viewId = mountedViewId(await first.text());
+    const updates = topic(`fino:ui/view:${viewId}`);
+
+    const live = await app.handle(new Request(`http://local/_fino/live?view=${viewId}`, {
+      headers: { accept: 'text/event-stream' }
+    })) as Response;
+    t.ok(updates.hasSubscribers, 'live response subscribes to view updates');
+
+    await live.body!.cancel();
+    t.equal(updates.hasSubscribers, false, 'cancelling the response disposes subscriptions');
+  });
+
+  it('sweeps expired snapshots on the configured request cadence', async (t) => {
+    const store = new InMemoryViewStore();
+    let swept = 0;
+    const originalSweep = store.sweep.bind(store);
+    store.sweep = async (now?: number) => {
+      swept++;
+      return originalSweep(now);
+    };
+    const app = new App();
+    app.layer(webUI({
+      store,
+      secret: 'test-secret',
+      sweepIntervalMs: 0
+    }));
+
+    await app.handle(new Request('http://local/not-found'));
+    await app.handle(new Request('http://local/still-not-found'));
+    t.equal(swept, 2, 'zero interval sweeps once per request');
+  });
 });
