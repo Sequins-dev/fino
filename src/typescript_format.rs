@@ -8,7 +8,7 @@ use oxc_data_structures::code_buffer::IndentChar;
 use oxc_parser::{Parser, config::RuntimeParserConfig};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::{GetSpan, SourceType};
-use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
+use oxc_transformer::{JsxOptions, TransformOptions, Transformer, TypeScriptOptions};
 use serde::Serialize;
 use v8;
 
@@ -492,6 +492,10 @@ pub(crate) fn strip_typescript_module(path: &Path, source: &str) -> Result<Strip
         .into_scoping();
     let options_transform = TransformOptions {
         typescript: TypeScriptOptions::default(),
+        jsx: JsxOptions {
+            import_source: Some("fino:ui".to_string()),
+            ..JsxOptions::default()
+        },
         ..TransformOptions::default()
     };
     let transformer_ret = Transformer::new(&allocator, path, &options_transform)
