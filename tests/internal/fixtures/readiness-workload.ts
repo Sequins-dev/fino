@@ -3,6 +3,7 @@ import * as loop from 'internal:runtime/loop';
 import * as socket from 'fino:net/socket';
 export default async function readAfterReady(input: {
   fd: number;
+  includeLoopFd?: boolean;
   readIterations?: number;
   raceFd?: number;
   structuredValue?: unknown;
@@ -36,5 +37,11 @@ export default async function readAfterReady(input: {
   const reader = new FdReader(input.fd, () => {});
   const bytes = await reader.read();
   if (bytes === null) throw new Error('socket closed before it became readable');
-  return new TextDecoder().decode(bytes);
+  const value = new TextDecoder().decode(bytes);
+  return input.includeLoopFd
+    ? {
+        value,
+        loopFd: loop.loopFd(),
+      }
+    : value;
 }

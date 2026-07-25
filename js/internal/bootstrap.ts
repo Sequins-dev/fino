@@ -50,7 +50,6 @@
  *   () => {
  *     // Host loop has drained pending runtime work.
  *   },
- *   { nonBlocking: true },
  * );
  * ```
  *
@@ -59,7 +58,6 @@
 import {
   tick,
   alive,
-  loopFd,
   registerWakeSource,
   _trackAtomicsWaiter,
   _untrackAtomicsWaiter,
@@ -84,7 +82,6 @@ import {
   getReplMode,
   getRealmData,
   getRealmBootstrapData,
-  setLoopFd,
 } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
@@ -365,29 +362,24 @@ interface DriveLoopOptions {
   /** Reports whether any child Realm still has pending work. While it
    *  returns true the loop keeps running even after `isDone()` is true. */
   childrenAlive?: () => boolean;
-  /** If true, always poll with timeout=0 (non-blocking). Used for child realms
-   *  that are driven by a parent loop — the parent controls sleeping. */
-  nonBlocking?: boolean;
 }
 /**
  * Registers a step/onDone callback pair with the Rust host loop.
  *
  * The host loop calls the registered step function once per iteration until
  * it returns false, then calls `onDone` (e.g. to surface errors or clean up).
- * Each step polls the event loop backend (kqueue/io_uring) for I/O, timer,
- * and wake-pipe events, flushes inter-realm message ports, drains the
- * microtask queue, and — when `opts.stepChildren` is provided — advances any
- * embedded child Realms.
+ * Each step drains already-ready reactor completions without blocking, flushes
+ * inter-realm message ports, drains the microtask queue, and — when
+ * `opts.stepChildren` is provided — advances any embedded child Realms.
  *
  * `isDone` reports whether the caller's own work is complete, but a true
  * result alone does not stop the loop: the loop also keeps running while the
  * event loop still has live handles (pending timers, sockets, watchers,
  * Atomics waiters) or while `opts.childrenAlive?.()` reports live children.
  *
- * Polling is adaptive: after three consecutive empty ticks the poll blocks
- * for up to 25ms to avoid spinning, and any completed event resets the
- * backoff. `opts.nonBlocking` forces a zero timeout on every tick, for realms
- * whose sleeping is controlled by a parent loop.
+ * The Rust host loop owns the adaptive blocking wait on the thread-shared
+ * reactor. TypeScript only dispatches completion metadata into its promise
+ * resolvers; it never decides when the OS poll should block.
  *
  * ```ts no_run
  * import { driveLoop } from 'internal:bootstrap';
@@ -399,7 +391,6 @@ interface DriveLoopOptions {
  *   () => {
  *     // loop finished
  *   },
- *   { nonBlocking: true },
  * );
  * ```
  *
@@ -410,21 +401,14 @@ export function driveLoop(
   onDone: () => void,
   opts?: DriveLoopOptions,
 ): void {
-  let emptyTicks = 0;
   function step() {
     const loopAlive = alive();
     const hasChildren = opts?.childrenAlive?.() ?? false;
     if (isDone() && !loopAlive && !hasChildren) return false;
-    const timeout = opts?.nonBlocking ? 0 : emptyTicks >= 3 ? 25 : 0;
-    const count = tick(timeout);
+    tick(0);
     _flushPorts();
     drainMicrotasks();
     opts?.stepChildren?.();
-    if (count === 0) {
-      emptyTicks++;
-    } else {
-      emptyTicks = 0;
-    }
     return true;
   }
   runLoop(step, onDone);
@@ -519,12 +503,6 @@ if (_threadWakeReadFd < 0 && _childPort !== undefined) {
     }
   });
 }
-// Record this realm's pollable loop fd so an embedding parent can wake on
-// this realm's I/O and timer events instead of polling every ~25ms. Harmless
-// in the root realm (nothing reads it there).
-try {
-  (setLoopFd as (fd: number) => void)(loopFd());
-} catch {}
 if (_childEntry) {
   let _childDone = false;
   let _entryFailed = false;
@@ -847,7 +825,6 @@ if (_childEntry) {
       return done;
     },
     function _childOnDone() {},
-    { nonBlocking: true },
   );
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop
@@ -991,6 +968,5 @@ if ((getReplMode as () => boolean)()) {
       return _replDone || (isTerminated() as boolean);
     },
     function _replOnDone() {},
-    { nonBlocking: true },
   );
 }

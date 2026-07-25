@@ -289,6 +289,7 @@ fn create_child_context(
         );
 
         child_ctx_local.set_slot(Rc::new(RefCell::new(state)));
+        crate::scheduler_native::configure_reactor_workload(child_scope)?;
 
         // 4. Initialize CPED with an empty JS Array (live async-context frame).
         let initial_frame = v8::Array::new(child_scope, 0);

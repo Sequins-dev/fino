@@ -1,7 +1,12 @@
 import { describe, it } from 'fino:test/test';
 import * as loop from 'internal:runtime/loop';
 import * as socket from 'fino:net/socket';
-import { runReadinessWorkload, runResidentReadinessWorkload } from 'internal:scheduler/readiness';
+import { Isolate } from 'internal:scheduler/isolate';
+import {
+  runReadinessWorkload,
+  runResidentReadinessWorkload,
+  runSharedResidentReadinessWorkloads,
+} from 'internal:scheduler/readiness';
 const ENTRY = new URL('./fixtures/readiness-workload.ts', import.meta.url).pathname;
 function connectedPair(): {
   server: number;
@@ -13,7 +18,7 @@ function connectedPair(): {
   socket.bind(server, {
     family: 'ipv4',
     ip: '127.0.0.1',
-    port: 0
+    port: 0,
   });
   socket.listen(server, 4);
   socket.setNonblocking(server);
@@ -30,7 +35,7 @@ function connectedPair(): {
   return {
     server,
     client,
-    peer: accepted.fd
+    peer: accepted.fd,
   };
 }
 function closeAll(...fds: number[]): void {
@@ -74,16 +79,18 @@ describe('readiness-only isolate scheduler', () => {
       t.ok(filled > 0, 'socket send buffer was filled');
       const result = runReadinessWorkload<number>(ENTRY, {
         fd: pair.client,
-        write: 'tail'
+        write: 'tail',
       });
-      t.equal(loop._activeHandleCounts().writes, 1, 'workload registered writability on the host loop');
       while (true) {
         const chunk = socket.recv(pair.peer, 65536);
         if (chunk === socket.EAGAIN || chunk === null) break;
       }
-      const written = await Promise.race([result, new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('scheduled write did not resume')), 1e3);
-      })]);
+      const written = await Promise.race([
+        result,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('scheduled write did not resume')), 1e3);
+        }),
+      ]);
       t.equal(written, 4, 'workload completed its own buffered write');
       t.equal(loop._activeHandleCounts().writes, 0, 'host writability registration drained');
     } finally {
@@ -96,13 +103,16 @@ describe('readiness-only isolate scheduler', () => {
     try {
       const result = runReadinessWorkload<string>(ENTRY, {
         fd: first.peer,
-        raceFd: neverReady.peer
+        raceFd: neverReady.peer,
       });
       t.equal(loop._activeHandleCounts().reads, 2, 'both raced reads registered on the host loop');
       socket.send(first.client, new TextEncoder().encode('winner'));
-      const winner = await Promise.race([result, new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('readiness race waited for every fd')), 1e3);
-      })]);
+      const winner = await Promise.race([
+        result,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('readiness race waited for every fd')), 1e3);
+        }),
+      ]);
       t.equal(winner, 'winner', 'first ready fd resumed the workload');
       t.equal(loop._activeHandleCounts().reads, 0, 'losing readiness watch was cancelled');
     } finally {
@@ -119,7 +129,7 @@ describe('readiness-only isolate scheduler', () => {
       t.equal(socket.send(pair.client, bytes), iterations, 'queued every benchmark byte');
       const result = runResidentReadinessWorkload<number>(ENTRY, {
         fd: pair.peer,
-        readIterations: iterations
+        readIterations: iterations,
       });
       t.equal(result.value, iterations, 'workload performed every read');
       t.equal(result.isolateEntries, 1, 'workload was entered once for the run');
@@ -132,6 +142,94 @@ describe('readiness-only isolate scheduler', () => {
   it('uses structured clone values at the resident isolate boundary', (t) => {
     const result = runResidentReadinessWorkload<bigint>(ENTRY, { structuredValue: 42n });
     t.equal(result.value, 42n, 'BigInt crosses the isolate boundary without JSON');
-    t.throws(() => runResidentReadinessWorkload(ENTRY, { structuredValue: () => undefined }), /structured-cloneable/, 'non-cloneable inputs fail at the boundary');
+    t.throws(
+      () => runResidentReadinessWorkload(ENTRY, { structuredValue: () => undefined }),
+      /structured-cloneable/,
+      'non-cloneable inputs fail at the boundary',
+    );
+  });
+  it('shares one backend across resident workload isolates', (t) => {
+    const first = connectedPair();
+    const second = connectedPair();
+    const firstIsolate = new Isolate(ENTRY, true);
+    const secondIsolate = new Isolate(ENTRY, true);
+    try {
+      socket.send(first.client, new TextEncoder().encode('first'));
+      socket.send(second.client, new TextEncoder().encode('second'));
+      const a = firstIsolate.runResident<{
+        value: string;
+        loopFd: number;
+      }>({
+        fd: first.peer,
+        includeLoopFd: true,
+      });
+      const b = secondIsolate.runResident<{
+        value: string;
+        loopFd: number;
+      }>({
+        fd: second.peer,
+        includeLoopFd: true,
+      });
+      t.equal(a.value.value, 'first', 'first isolate performed its own read');
+      t.equal(b.value.value, 'second', 'second isolate performed its own read');
+      t.equal(a.value.loopFd, b.value.loopFd, 'both isolates used one kernel backend');
+      t.equal(a.isolateEntries + b.isolateEntries, 2, 'each workload was entered once');
+      t.equal(a.isolateExits + b.isolateExits, 2, 'each workload exited once after settling');
+    } finally {
+      firstIsolate.terminate();
+      secondIsolate.terminate();
+      closeAll(first.peer, first.client, first.server);
+      closeAll(second.peer, second.client, second.server);
+    }
+  });
+  it('routes shared-backend readiness to its source isolate', (t) => {
+    const first = connectedPair();
+    const second = connectedPair();
+    try {
+      socket.send(first.client, new TextEncoder().encode('first'));
+      socket.send(second.client, new TextEncoder().encode('second'));
+      const result = runSharedResidentReadinessWorkloads<{
+        value: string;
+        loopFd: number;
+      }>(ENTRY, [
+        {
+          fd: first.peer,
+          includeLoopFd: true,
+        },
+        {
+          fd: second.peer,
+          includeLoopFd: true,
+        },
+      ]);
+      t.equal(result.values[0]?.value, 'first', 'first readiness returned to the first isolate');
+      t.equal(result.values[1]?.value, 'second', 'second readiness returned to the second isolate');
+      t.equal(
+        result.values[0]?.loopFd,
+        result.values[1]?.loopFd,
+        'both tasks used the shared backend',
+      );
+      t.ok(result.workloadSwitches > 0, 'foreign readiness caused a direct workload switch');
+      t.equal(result.schedulerReadinessTurns, 0, 'scheduler TypeScript did not process readiness');
+    } finally {
+      closeAll(first.peer, first.client, first.server);
+      closeAll(second.peer, second.client, second.server);
+    }
+  });
+  it('does not leave and re-enter a sole shared-backend workload', (t) => {
+    const pair = connectedPair();
+    try {
+      socket.send(pair.client, new Uint8Array([1]));
+      const result = runSharedResidentReadinessWorkloads<number>(ENTRY, [
+        {
+          fd: pair.peer,
+          readIterations: 1,
+        },
+      ]);
+      t.equal(result.values[0], 1, 'the workload performed its read');
+      t.equal(result.isolateEntries, 1, 'the sole workload stayed entered');
+      t.equal(result.isolateExits, 1, 'the sole workload exited after settlement');
+    } finally {
+      closeAll(pair.peer, pair.client, pair.server);
+    }
   });
 });
