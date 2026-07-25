@@ -64,6 +64,8 @@ surface for what you are building:
   HTTP/3.
 - [Protocol Versions and Transport](./net/http/protocols.md) — HTTP/1.1, h2,
   h3, ALPN, and TLS configuration.
+- [Server-Driven Web UI](./ui/web.md) — progressive enhancement, live SSE
+  patches, cleanup, deployment, and operational guidance.
 
 ## Observe It
 

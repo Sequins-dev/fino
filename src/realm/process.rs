@@ -193,6 +193,8 @@ pub struct SpawnConfig {
 // ---------------------------------------------------------------------------
 
 pub struct ProcessRealmHandle {
+    /// PID of the isolated child, used for fail-closed forced termination.
+    pub child_pid: libc::pid_t,
     /// Parent's end of the socketpair (non-blocking).
     pub socket_fd: RawFd,
     /// Set `true` once the child exits (set by reader thread).
@@ -396,6 +398,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     }
 
     Ok(ProcessRealmHandle {
+        child_pid,
         socket_fd: parent_fd,
         done,
         error,

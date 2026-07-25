@@ -15,7 +15,6 @@
 */
 import { Fragment, h, type Child, type Props, type VNode, type VNodeType } from 'fino:ui';
 export { Fragment };
-
 /**
 * TypeScript JSX types shared by `.tsx` applications using Fino's automatic
 * runtime. Intrinsic element names and attributes remain host-defined, so the

@@ -219,6 +219,44 @@ describe('I/O watchers', () => {
     t.ok(p instanceof Promise, 'readable() returned a Promise');
     sock.close(server);
   });
+  it('closing a watched fd cannot wake a recycled fd', (t) => {
+    const { fd: stale } = listenOnEphemeralPort();
+    let staleResolved = false;
+    loop.readable(stale).then(() => {
+      staleResolved = true;
+    });
+    sock.close(stale);
+    const { fd: server, port } = listenOnEphemeralPort();
+    try {
+      if (server !== stale) {
+        t.ok(true, 'platform did not immediately recycle the watched fd');
+        return;
+      }
+      let currentResolved = false;
+      const current = loop.readable(server).then(() => {
+        currentResolved = true;
+      });
+      loop.tick(20);
+      t.equal(currentResolved, false, 'stale close completion did not wake the recycled fd');
+      const client = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+      sock.setNonblocking(client);
+      try {
+        sock.connect(client, {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port
+        });
+        wait(current);
+        t.equal(currentResolved, true, 'new readiness still wakes the recycled fd');
+      } finally {
+        sock.close(client);
+      }
+    } finally {
+      sock.close(server);
+    }
+    wait(Promise.resolve());
+    t.equal(staleResolved, false, 'closed fd watch stayed unsettled');
+  });
   it('readable() replacement resolves only the newest pending watch', (t) => {
     const { server, client, peer } = connectedPair();
     try {

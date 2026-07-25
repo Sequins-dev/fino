@@ -1,5 +1,5 @@
 /**
-* Tests that js/documentation.md stays a complete map of the authored guides.
+* Documentation tests that keep js/documentation.md a complete guide map.
 */
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';

@@ -1,5 +1,5 @@
 /**
-* Tests for fino:process — process info APIs and child process spawning.
+* Process tests for fino:process info APIs and child process spawning.
 */
 import { describe, it } from 'fino:test/test';
 import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, signal, SIGKILL, Process, processStats, processStatsSignal, processSandboxCapabilities } from 'fino:process';
@@ -215,15 +215,20 @@ describe('Process class', () => {
   });
   it('strict sandbox enforces a memory limit on Linux', async (t) => {
     if (os !== 'linux') return;
+    // RLIMIT_AS includes the launcher's already-mapped V8 address space. Keep
+    // enough headroom for the launcher to report and exec while still checking
+    // that the child observes the exact configured limit.
+    const memoryBytes = 8 * 1024 * 1024 * 1024;
     const proc = new Process('/bin/sh', ['-c', 'ulimit -v'], {
       sandbox: {
         mode: 'strict',
         resources: {
-          memoryBytes: 64 * 1024 * 1024
+          memoryBytes
         }
       }
     });
     const resources = proc.sandboxReport.enforced.find((entry) => entry.category === 'resources');
+    const resourcesDiagnostic = proc.sandboxReport.diagnostics.find((entry) => entry.startsWith('resources:'));
     t.ok(resources !== undefined, 'resources policy is reported enforced');
     proc.stdin.close();
     const chunks = [];
@@ -234,9 +239,10 @@ describe('Process class', () => {
     // The mechanism depends on the host: an RLIMIT_AS fallback shows up in
     // `ulimit -v` (KiB); a cgroup memory.max does not (ulimit stays unlimited).
     const ulimitKib = Number(joinChunks(chunks).trim());
-    if (/rlimit|RLIMIT/i.test(resources!.reason)) {
-      t.equal(ulimitKib, 65536, 'rlimit-tier child sees the 64MiB address-space limit in KiB');
+    if (resourcesDiagnostic?.includes('[tier: rlimit]')) {
+      t.equal(ulimitKib, memoryBytes / 1024, 'rlimit-tier child sees the configured address-space limit in KiB');
     } else {
+      t.ok(resourcesDiagnostic?.includes('[tier: cgroup]'), 'resources diagnostic identifies the cgroup enforcement tier');
       t.ok(/cgroup/i.test(resources!.reason), 'cgroup-tier memory limit is enforced via memory.max');
     }
   });

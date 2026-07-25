@@ -24,9 +24,9 @@ if [ "$#" -gt 0 ]; then
   SUITES=("$@")
 else
   SUITES=(
-    tests/runtime/process.test.ts
-    tests/runtime/process-sandbox.test.ts
-    tests/runtime/process-sandbox-linux.test.ts
+    tests/process/process.test.ts
+    tests/process/sandbox.test.ts
+    tests/process/sandbox-linux.test.ts
   )
 fi
 

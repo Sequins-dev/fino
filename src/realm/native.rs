@@ -26,6 +26,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "processPortSend",
         "processPortRecv",
         "getProcessSocketFd",
+        "killProcessContext",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -64,6 +65,7 @@ fn eval_steps<'a>(
     set_fn!("processPortSend", process_port_send);
     set_fn!("processPortRecv", process_port_recv);
     set_fn!("getProcessSocketFd", get_process_socket_fd);
+    set_fn!("killProcessContext", kill_process_context);
 
     Some(v8::undefined(scope).into())
 }
@@ -990,6 +992,33 @@ fn get_process_socket_fd(
         .map(|h| h.parent_wake_read)
         .unwrap_or(-1);
     rv.set(v8::Integer::new(scope, fd).into());
+}
+
+/// JS: `killProcessContext(handle: number): void`
+///
+/// Force-kills an isolated process Realm. The reader bridge retains ownership
+/// of `waitpid`, so the normal step path observes and releases the reaped
+/// handle. Missing or already-exited handles are harmless.
+fn kill_process_context(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let pid = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        st.process_contexts
+            .get(handle)
+            .and_then(|slot| slot.as_ref())
+            .filter(|process| !process.done.load(std::sync::atomic::Ordering::Acquire))
+            .map(|process| process.child_pid)
+    };
+    if let Some(pid) = pid {
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -34,6 +34,8 @@
 import { DiskFileSystem } from './file/fs.ts';
 import { parse as parseToml } from './format/toml.ts';
 import { argv as processArgv, env as processEnv } from './process.ts';
+import { Facade } from './realm/index.ts';
+import { unsealCookie, type BufferLike } from './security/cookie.ts';
 import { ValidationError, parse as validateParse } from './validate.ts';
 import type { JsonSchema, ValidationIssue } from './validate.ts';
 const textDecoder = new TextDecoder();
@@ -300,6 +302,61 @@ export type ConfigSource = {
   prefix?: string;
 } | {
   /**
+  * Select an environment source whose mapped values are secrets.
+  *
+  * This source maps values like `env`, then automatically tags every produced
+  * leaf as a `SecretValue`. Use `values` to avoid ambient process state when
+  * deploying or testing.
+  */
+  type: 'secret-env';
+  /**
+  * Environment-like values to read instead of the ambient process environment.
+  *
+  * Omit this only when the current process environment is the intended secret
+  * provider.
+  */
+  values?: Record<string, string>;
+  /**
+  * Explicit environment-name to dotted config-path mapping.
+  *
+  * Every mapped destination is tagged as secret after validation.
+  */
+  map?: Record<string, string>;
+  /**
+  * Optional prefix used for default environment mapping.
+  *
+  * Matching names are lowercased and underscores become path separators.
+  */
+  prefix?: string;
+} | {
+  /**
+  * Select an authenticated encrypted secret file.
+  *
+  * The file contains one value produced by `sealCookie()` over a JSON or TOML
+  * object. Authentication is checked before parsing and all leaves are tagged
+  * as secrets.
+  */
+  type: 'secret-file';
+  /**
+  * Path to the sealed UTF-8 file.
+  */
+  path: string;
+  /**
+  * Key used to authenticate and decrypt the sealed file.
+  *
+  * Applications should obtain this capability from their deployment
+  * environment rather than placing it in source code.
+  */
+  key: BufferLike;
+  /**
+  * Plaintext object format inside the sealed envelope.
+  *
+  * Defaults to JSON because sealed file names generally have no format-bearing
+  * extension.
+  */
+  format?: 'json' | 'toml';
+} | {
+  /**
   * Select a command-line argument source.
   *
   * The parser accepts `--path value`, `--path=value`, and bare boolean
@@ -388,6 +445,137 @@ export type ConfigSource = {
   value: ConfigValue;
 };
 /**
+* A value tagged as secret after config validation.
+*
+* Rendering a secret through strings, JSON, or template interpolation produces
+* `[redacted]`. Call `reveal()` only at the boundary that consumes the secret.
+*
+* ```ts no_run
+* import { SecretValue } from 'fino:config';
+*
+* const token = new SecretValue('token');
+* String(token); // [redacted]
+* token.reveal(); // token
+* ```
+*/
+export class SecretValue<T = unknown> {
+  readonly #value: T;
+  /**
+  * Tag a validated value as secret.
+  *
+  * @param value Value retained behind the explicit reveal boundary.
+  */
+  constructor(value: T) {
+    this.#value = value;
+  }
+  /**
+  * Return the underlying secret value.
+  *
+  * Keep this call close to the API that needs the plaintext so logs and
+  * telemetry continue to receive the redacting wrapper by default.
+  */
+  reveal(): T {
+    return this.#value;
+  }
+  /**
+  * Render a redaction marker instead of the secret.
+  */
+  toString(): string {
+    return '[redacted]';
+  }
+  /**
+  * Serialize a redaction marker instead of the secret.
+  */
+  toJSON(): string {
+    return '[redacted]';
+  }
+  /**
+  * Redact implicit primitive coercion, including template interpolation.
+  */
+  [Symbol.toPrimitive](): string {
+    return '[redacted]';
+  }
+}
+/**
+* Provider seam used to resolve secrets by deployment-defined name.
+*
+* A local config provider, cluster secret store, or managed secret service can
+* implement this interface without changing realm grant code.
+*/
+export interface SecretProvider {
+  /**
+  * Resolve one named secret, or return `undefined` when it does not exist.
+  */
+  get(name: string): Promise<SecretValue | undefined>;
+}
+/**
+* Expose tagged values from loaded config through the `SecretProvider` seam.
+*
+* Only values already tagged as `SecretValue` are returned.
+*/
+export class ConfigSecretProvider implements SecretProvider {
+  readonly #config: LoadedConfig;
+  /**
+  * Create a provider over one loaded config result.
+  */
+  constructor(config: LoadedConfig) {
+    this.#config = config;
+  }
+  /**
+  * Resolve one dotted config path when it contains a tagged secret.
+  */
+  async get(name: string): Promise<SecretValue | undefined> {
+    const value = this.#config.get(name);
+    return value instanceof SecretValue ? value : undefined;
+  }
+}
+/**
+* An exact allowlist granting selected provider secrets to a consumer.
+*
+* The grant can be used directly or converted to a Realm `Facade`. The facade
+* reveals plaintext only after its name passes the grant allowlist, avoiding
+* ambient process environment access in the child.
+*/
+export class SecretGrant {
+  readonly #provider: SecretProvider;
+  readonly #names: Set<string>;
+  /**
+  * Create an exact-name grant over a provider.
+  */
+  constructor(provider: SecretProvider, names: Iterable<string>) {
+    this.#provider = provider;
+    this.#names = new Set(names);
+  }
+  /**
+  * Resolve a granted secret.
+  *
+  * Ungranted and missing names reject without disclosing any secret value.
+  */
+  async get(name: string): Promise<SecretValue> {
+    if (!this.#names.has(name)) {
+      throw new ConfigError(`Secret '${name}' is not granted`);
+    }
+    const value = await this.#provider.get(name);
+    if (value === undefined) {
+      throw new ConfigError(`Granted secret '${name}' is unavailable`);
+    }
+    return value;
+  }
+  /**
+  * Create a synthetic module exposing `get(name)` to a child Realm.
+  *
+  * The child receives only the revealed value of an explicitly granted name.
+  */
+  facade(specifier = 'fino:config/secrets'): Facade {
+    return new Facade(specifier, ['get']).handle('get', async (name) => {
+      if (typeof name !== 'string') {
+        throw new ConfigError('Secret name must be a string');
+      }
+      return (await this.get(name)).reveal();
+    });
+  }
+}
+/**
 * Options for `loadConfig()`.
 *
 * Provide a validation schema and the ordered list of enabled sources. The
@@ -445,11 +633,11 @@ export interface LoadConfigOptions<T = unknown> {
   */
   sources: ConfigSource[];
   /**
-  * Config paths whose received values should be redacted in validation errors.
+  * Config paths whose values should be tagged and redacted.
   *
-  * Paths use the same dotted form as source mappings. Redaction affects the
-  * rendered error message; the original `ValidationIssue` objects are still
-  * exposed on `ConfigError.issues`.
+  * Paths use the same dotted form as source mappings. Validated values become
+  * `SecretValue` instances, and validation messages plus structured
+  * `ConfigError.issues` replace received values with `[redacted]`.
   *
   * ```ts no_run
   * import { ConfigError, loadConfig } from 'fino:config';
@@ -612,9 +800,9 @@ export interface LoadedConfig<T = unknown> {
 /**
 * Error thrown when loading or validating config fails.
 *
-* Validation failures include the original `ValidationIssue` objects in
-* `issues`. Source parsing and unknown-source errors may throw `ConfigError`
-* without issues.
+* Validation failures include redacted `ValidationIssue` objects in `issues`.
+* Source parsing and unknown-source errors may throw `ConfigError` without
+* issues.
 *
 * ```ts no_run
 * import { ConfigError, loadConfig } from 'fino:config';
@@ -634,7 +822,7 @@ export class ConfigError extends Error {
   * Validation issues when the failure came from `fino:validate`.
   *
   * This array is empty for loader errors that are not validation failures.
-  * Secret redaction applies to the error message, not to issue objects.
+  * Received values at secret paths are replaced with `[redacted]`.
   *
   * ```ts no_run
   * import { ConfigError, loadConfig } from 'fino:config';
@@ -722,6 +910,26 @@ function sourceKeys(value: unknown, prefix = ''): string[] {
     else keys.push(path);
   }
   return keys;
+}
+function secretPathRelated(path: string, secretPath: string): boolean {
+  if (path === '' || secretPath === '') return true;
+  return path === secretPath || path.startsWith(`${secretPath}.`) || secretPath.startsWith(`${path}.`);
+}
+function tagSecrets<T>(value: T, secretPaths: Set<string>): T {
+  let tagged: unknown = value;
+  const paths = [...secretPaths].sort((a, b) => a.split('.').length - b.split('.').length);
+  for (const path of paths) {
+    if (path === '') {
+      tagged = tagged instanceof SecretValue ? tagged : new SecretValue(tagged);
+      continue;
+    }
+    if (!isRecord(tagged)) continue;
+    const current = getPath(tagged, path);
+    if (current !== undefined && !(current instanceof SecretValue)) {
+      setPath(tagged, path, new SecretValue(current));
+    }
+  }
+  return tagged as T;
 }
 function inferFormat(path: string): 'json' | 'toml' {
   if (path.endsWith('.toml')) return 'toml';
@@ -876,14 +1084,23 @@ function coerceScalars(value: unknown, schema: unknown): unknown {
 // ---------------------------------------------------------------------------
 /** Render a validation issue while redacting configured secret paths. */
 function redactIssue(issue: ValidationIssue, secretPaths: Set<string>): string {
-  const secret = secretPaths.has(issue.path);
+  const secret = [...secretPaths].some((path) => secretPathRelated(issue.path, path));
   const received = secret ? '[redacted]' : JSON.stringify(issue.value);
   return `${issue.path || '<root>'}: ${issue.message} (received ${received})`;
+}
+/** Clone a validation issue without retaining received secret values. */
+function redactStructuredIssue(issue: ValidationIssue, secretPaths: Set<string>): ValidationIssue {
+  const secret = [...secretPaths].some((path) => secretPathRelated(issue.path, path));
+  return secret ? {
+    ...issue,
+    value: '[redacted]'
+  } : { ...issue };
 }
 /** Load one configured source into a nested object plus a source report. */
 async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
   value: ConfigValue;
   report: ConfigSourceReport;
+  secretPaths: string[];
 }> {
   if (source.type === 'defaults' || source.type === 'override') {
     return {
@@ -891,7 +1108,8 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
       report: {
         type: source.type,
         keys: sourceKeys(source.value)
-      }
+      },
+      secretPaths: []
     };
   }
   if (source.type === 'file') {
@@ -904,7 +1122,8 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
         type: 'file',
         path: source.path,
         keys: sourceKeys(value)
-      }
+      },
+      secretPaths: []
     };
   }
   if (source.type === 'dotenv') {
@@ -916,18 +1135,48 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
         type: 'dotenv',
         path: source.path,
         keys: sourceKeys(value)
-      }
+      },
+      secretPaths: []
     };
   }
-  if (source.type === 'env') {
+  if (source.type === 'env' || source.type === 'secret-env') {
     const values = source.values ?? processEnv;
     const value = mapEnvLike(values, source);
+    const keys = sourceKeys(value);
     return {
       value,
       report: {
-        type: 'env',
-        keys: sourceKeys(value)
-      }
+        type: source.type,
+        keys
+      },
+      secretPaths: source.type === 'secret-env' ? keys : []
+    };
+  }
+  if (source.type === 'secret-file') {
+    const sealed = textDecoder.decode(await fs.readFile(source.path)).trim();
+    const plaintext = unsealCookie(sealed, source.key);
+    if (plaintext === null) {
+      throw new ConfigError(`Unable to authenticate sealed secret file '${source.path}'`);
+    }
+    const format = source.format ?? 'json';
+    let value: ConfigValue;
+    try {
+      value = format === 'toml' ? parseToml(plaintext) as ConfigValue : JSON.parse(plaintext) as ConfigValue;
+    } catch {
+      throw new ConfigError(`Unable to parse sealed secret file '${source.path}' as ${format}`);
+    }
+    if (!isRecord(value)) {
+      throw new ConfigError(`Sealed secret file '${source.path}' must contain an object`);
+    }
+    const keys = sourceKeys(value);
+    return {
+      value,
+      report: {
+        type: 'secret-file',
+        path: source.path,
+        keys
+      },
+      secretPaths: keys
     };
   }
   if (source.type === 'argv') {
@@ -938,7 +1187,8 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
       report: {
         type: 'argv',
         keys: sourceKeys(value)
-      }
+      },
+      secretPaths: []
     };
   }
   throw new ConfigError(`Unknown config source type '${(source as {
@@ -984,14 +1234,16 @@ export async function loadConfig<T = unknown>(options: LoadConfigOptions<T>): Pr
   const fs = new DiskFileSystem();
   let merged: unknown = {};
   const reports: ConfigSourceReport[] = [];
+  const secretPaths = new Set(options.secrets ?? []);
   for (const source of options.sources) {
     const loaded = await loadSource(source, fs);
     merged = deepMerge(merged, loaded.value);
     reports.push(loaded.report);
+    for (const path of loaded.secretPaths) secretPaths.add(path);
   }
   const coerced = coerceScalars(merged, options.schema);
   try {
-    const value = validateParse<T>(options.schema, coerced);
+    const value = tagSecrets(validateParse<T>(options.schema, coerced), secretPaths);
     return {
       value,
       sources: reports,
@@ -1001,8 +1253,8 @@ export async function loadConfig<T = unknown>(options: LoadConfigOptions<T>): Pr
     };
   } catch (err) {
     if (err instanceof ValidationError) {
-      const secretPaths = new Set(options.secrets ?? []);
-      throw new ConfigError(`Invalid config: ${err.issues.map((issue) => redactIssue(issue, secretPaths)).join('; ')}`, err.issues);
+      const issues = err.issues.map((issue) => redactStructuredIssue(issue, secretPaths));
+      throw new ConfigError(`Invalid config: ${err.issues.map((issue) => redactIssue(issue, secretPaths)).join('; ')}`, issues);
     }
     throw err;
   }

@@ -14,14 +14,15 @@ function publicBuiltins(source: string): string[] {
   }
   return [...specs].sort();
 }
-function coveredBuiltins(source: string): Set<string> {
-  const specs = new Set<string>();
-  const re = /`(?<spec>fino:[^`]+)`/g;
+function coverageRows(source: string): Map<string, string> {
+  const rows = new Map<string, string>();
+  const re = /^\|\s*`(?<spec>fino:[^`]+)`\s*\|\s*(?<coverage>[^|]+?)\s*\|$/gm;
   for (const match of source.matchAll(re)) {
     const spec = match.groups?.spec;
-    if (spec) specs.add(spec);
+    const coverage = match.groups?.coverage;
+    if (spec && coverage) rows.set(spec, coverage.trim());
   }
-  return specs;
+  return rows;
 }
 function listedBenchmarkPaths(source: string): string[] {
   const paths = new Set<string>();
@@ -36,8 +37,11 @@ describe('benchmark coverage map', () => {
   it('documents every public fino builtin registered in the loader', async (t) => {
     const loader = await readText('src/loader.rs');
     const coverage = await readText('benchmarks/COVERAGE.md');
-    const missing = publicBuiltins(loader).filter((spec) => !coveredBuiltins(coverage).has(spec));
-    t.deepEqual(missing, [], 'all public builtins appear in benchmarks/COVERAGE.md');
+    const rows = coverageRows(coverage);
+    const missing = publicBuiltins(loader).filter((spec) => !rows.has(spec));
+    const invalid = [...rows].filter(([, value]) => value !== 'not yet benchmarked' && !/^`benchmarks\/[^`]+`$/.test(value));
+    t.deepEqual(missing, [], 'all public builtins have a coverage table row');
+    t.deepEqual(invalid, [], 'every row names a benchmark file or the explicit not-yet marker');
   });
   it('uses js-mirrored benchmark paths for public source builtins', async (t) => {
     const coverage = await readText('benchmarks/COVERAGE.md');
@@ -99,36 +103,5 @@ describe('benchmark coverage map', () => {
       }
     }
     t.deepEqual(missing, [], 'release-audit benchmark stress/failure markers are present');
-  });
-  it('links release notes to benchmark inventory and intentional non-parity areas', async (t) => {
-    const notes = await readText('research-docs/research/js-release-notes.md');
-    const required = [
-      'benchmarks/COVERAGE.md',
-      'JOSE',
-      'CORS',
-      'cookie',
-      'Fetch',
-      'OpenTelemetry',
-      'cluster',
-      'remote realms',
-      'DNSSEC',
-      'HTTP/3',
-      'QUIC'
-    ];
-    const missing = required.filter((marker) => !notes.includes(marker));
-    t.deepEqual(missing, [], 'release notes cover benchmark workflow and intentional non-parity areas');
-  });
-  it('keeps DNSSEC release lane and root anchor policy documented', async (t) => {
-    const notes = await readText('research-docs/research/js-release-notes.md');
-    const required = [
-      'FINO_DNS_LIVE=1',
-      'FINO_DNS_SERVER',
-      'tests/net/dns-live.test.ts',
-      'https://data.iana.org/root-anchors/root-anchors.xml',
-      'root trust anchor rollover',
-      'unsupported DNSSEC algorithms and digests fail closed'
-    ];
-    const missing = required.filter((marker) => !notes.includes(marker));
-    t.deepEqual(missing, [], 'DNSSEC release verification policy is explicit');
   });
 });

@@ -1,13 +1,21 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::sync::Arc;
 
 use oxc_allocator::Allocator;
 use oxc_ast::{Comment, ast::CommentKind};
 use oxc_codegen::{Codegen, CodegenOptions};
-use oxc_data_structures::code_buffer::IndentChar;
+use oxc_formatter::{
+    FormatOptions as OxcFormatOptions, Formatter as OxcFormatter, LineWidth, QuoteStyle,
+    get_parse_options,
+};
+use oxc_linter::{
+    AllowWarnDeny, ConfigStore, ConfigStoreBuilder, ContextSubHost, ExternalPluginStore, FixKind,
+    Fixer, LintFilter, LintOptions as OxcLintOptions, Linter, ModuleRecord,
+};
 use oxc_parser::{Parser, config::RuntimeParserConfig};
 use oxc_semantic::SemanticBuilder;
-use oxc_span::{GetSpan, SourceType};
+use oxc_span::SourceType;
 use oxc_transformer::{JsxOptions, TransformOptions, Transformer, TypeScriptOptions};
 use serde::Serialize;
 use v8;
@@ -151,6 +159,7 @@ struct ParseOptions {
     filename: Option<String>,
     source_type: Option<String>,
     tokens: bool,
+    fix: bool,
 }
 
 fn parse_options(
@@ -174,6 +183,9 @@ fn parse_options(
     }
     if let Some(tokens) = get_bool_property(scope, object, "tokens") {
         options.tokens = tokens;
+    }
+    if let Some(fix) = get_bool_property(scope, object, "fix") {
+        options.fix = fix;
     }
     options
 }
@@ -528,7 +540,10 @@ pub(crate) fn strip_typescript_module(path: &Path, source: &str) -> Result<Strip
 fn format_source(source: &str, options: &ParseOptions) -> Result<String, String> {
     let allocator = Allocator::default();
     let source_type = resolve_source_type(options);
-    let ret = Parser::new(&allocator, source, source_type).parse();
+    let ret = Parser::new(&allocator, source, source_type)
+        .with_options(get_parse_options())
+        .with_config(RuntimeParserConfig::new(true))
+        .parse();
     if !ret.errors.is_empty() || ret.panicked {
         let result = FormatResult {
             ok: false,
@@ -545,18 +560,24 @@ fn format_source(source: &str, options: &ParseOptions) -> Result<String, String>
             .map_err(|err| format!("failed to serialize format result: {err}"));
     }
 
-    let generated = Codegen::new()
-        .with_options(CodegenOptions {
-            single_quote: true,
-            indent_char: IndentChar::Space,
-            indent_width: 2,
-            ..CodegenOptions::default()
-        })
-        .with_source_text(source)
-        .build(&ret.program);
+    let formatter_options = OxcFormatOptions {
+        line_width: LineWidth::try_from(100)
+            .map_err(|error| format!("invalid formatter line width: {error}"))?,
+        quote_style: QuoteStyle::Single,
+        jsx_quote_style: QuoteStyle::Double,
+        ..OxcFormatOptions::default()
+    };
+    let numeric_spellings = ret
+        .tokens
+        .iter()
+        .filter(|token| token.kind().is_number())
+        .map(|token| source_slice(source, token.start(), token.end()))
+        .collect::<Vec<_>>();
+    let code = OxcFormatter::new(&allocator, formatter_options).build(&ret.program);
+    let code = restore_numeric_spellings(code, source_type, &numeric_spellings)?;
     let result = FormatResult {
         ok: true,
-        code: normalize_formatted_code(generated.code),
+        code: normalize_formatted_code(code),
         errors: Vec::new(),
     };
     serde_json::to_string(&result)
@@ -567,32 +588,157 @@ fn lint_source(source: &str, options: &ParseOptions) -> Result<String, String> {
     let allocator = Allocator::default();
     let source_type = resolve_source_type(options);
     let ret = Parser::new(&allocator, source, source_type).parse();
-    let mut diagnostics: Vec<DiagnosticResult> = ret
+    let diagnostics: Vec<DiagnosticResult> = ret
         .errors
         .iter()
         .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
         .collect();
 
-    if ret.errors.is_empty() && !ret.panicked {
-        for stmt in &ret.program.body {
-            if matches!(stmt, oxc_ast::ast::Statement::DebuggerStatement(_)) {
-                diagnostics.push(diagnostic_result(
-                    source,
-                    "no-debugger",
-                    "Unexpected debugger statement.",
-                    Some(stmt.span()),
-                    "error",
-                ));
-            }
-        }
+    if !diagnostics.is_empty() || ret.panicked {
+        let result = LintResult {
+            ok: false,
+            diagnostics,
+            fixed_code: None,
+        };
+        return serde_json::to_string(&result)
+            .map_err(|err| format!("failed to serialize lint result: {err}"));
     }
 
+    let path = options
+        .filename
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or_else(|| Path::new("module.ts"));
+    let semantic_ret = SemanticBuilder::new().with_cfg(true).build(&ret.program);
+    if !semantic_ret.errors.is_empty() {
+        let diagnostics = semantic_ret
+            .errors
+            .iter()
+            .map(|error| {
+                diagnostic_result(
+                    source,
+                    "semantic",
+                    &error.message,
+                    error
+                        .labels
+                        .as_ref()
+                        .and_then(|labels| labels.first())
+                        .map(|label| {
+                            oxc_span::Span::new(
+                                label.offset() as u32,
+                                (label.offset() + label.len()) as u32,
+                            )
+                        }),
+                    "error",
+                )
+            })
+            .collect();
+        let result = LintResult {
+            ok: false,
+            diagnostics,
+            fixed_code: None,
+        };
+        return serde_json::to_string(&result)
+            .map_err(|err| format!("failed to serialize lint result: {err}"));
+    }
+
+    let semantic = semantic_ret.semantic;
+    let module_record = Arc::new(ModuleRecord::new(path, &ret.module_record, &semantic));
+    let mut lint_config = ConfigStoreBuilder::empty();
+    for rule in [
+        "no-debugger",
+        "no-const-assign",
+        "no-dupe-keys",
+        "no-duplicate-case",
+        "no-unreachable",
+        "use-isnan",
+        "valid-typeof",
+        "no-loss-of-precision",
+        "no-new-native-nonconstructor",
+        "no-sparse-arrays",
+        "no-unsafe-negation",
+        "no-useless-backreference",
+    ] {
+        let filter = LintFilter::new(AllowWarnDeny::Warn, rule)
+            .map_err(|error| format!("invalid OXC lint rule {rule}: {error}"))?;
+        lint_config = lint_config.with_filter(&filter);
+    }
+    let mut external_plugins = ExternalPluginStore::default();
+    let base_config = lint_config
+        .build(&mut external_plugins)
+        .map_err(|error| format!("failed to build OXC lint configuration: {error}"))?;
+    let config = ConfigStore::new(base_config, Default::default(), external_plugins);
+    let linter = Linter::new(OxcLintOptions::default(), config, None).with_fix(if options.fix {
+        FixKind::SafeFix
+    } else {
+        FixKind::None
+    });
+    let messages = linter.run(
+        path,
+        vec![ContextSubHost::new(semantic, module_record, 0)],
+        &allocator,
+    );
+    let (messages, fixed_code) = if options.fix {
+        let fixed = Fixer::new(source, messages, Some(source_type)).fix();
+        (
+            fixed.messages,
+            fixed.fixed.then(|| fixed.fixed_code.into_owned()),
+        )
+    } else {
+        (messages, None)
+    };
+    let diagnostics = messages
+        .iter()
+        .map(|message| {
+            let code = message
+                .error
+                .code
+                .number
+                .as_deref()
+                .or(message.error.code.scope.as_deref())
+                .unwrap_or("lint");
+            diagnostic_result(
+                source,
+                code,
+                &message.error.message,
+                Some(message.span),
+                &format!("{:?}", message.error.severity).to_ascii_lowercase(),
+            )
+        })
+        .collect::<Vec<_>>();
     let result = LintResult {
-        ok: diagnostics.is_empty() && !ret.panicked,
+        ok: diagnostics.is_empty(),
         diagnostics,
-        fixed_code: None,
+        fixed_code,
     };
     serde_json::to_string(&result).map_err(|err| format!("failed to serialize lint result: {err}"))
+}
+
+fn restore_numeric_spellings(
+    mut formatted: String,
+    source_type: SourceType,
+    original_spellings: &[String],
+) -> Result<String, String> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, &formatted, source_type)
+        .with_config(RuntimeParserConfig::new(true))
+        .parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        return Err("OXC formatter produced source that could not be reparsed".to_string());
+    }
+    let formatted_numbers = parsed
+        .tokens
+        .iter()
+        .filter(|token| token.kind().is_number())
+        .map(|token| token.span())
+        .collect::<Vec<_>>();
+    if formatted_numbers.len() != original_spellings.len() {
+        return Err("OXC formatter changed the number of numeric literal tokens".to_string());
+    }
+    for (span, spelling) in formatted_numbers.iter().zip(original_spellings).rev() {
+        formatted.replace_range(span.start as usize..span.end as usize, spelling);
+    }
+    Ok(formatted)
 }
 
 fn resolve_source_type(options: &ParseOptions) -> SourceType {

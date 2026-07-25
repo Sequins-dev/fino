@@ -1,5 +1,5 @@
 /**
-* Integration tests for `fino install` and package-map-backed bare imports.
+* Command integration tests for `fino install` and package-map-backed bare imports.
 */
 import { before, after, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';

@@ -23,15 +23,8 @@
 * if (!result.ok) console.error(result.diagnostics);
 * ```
 */
-import {
-  parseMarkdown,
-  renderMarkdownInline,
-  type MarkdownDocument,
-  type MarkdownListItem,
-  type MarkdownNode
-} from 'fino:format/markdown';
+import { parseMarkdown, renderMarkdownInline, type MarkdownDocument, type MarkdownListItem, type MarkdownNode } from 'fino:format/markdown';
 import { transpile } from 'fino:format/typescript';
-
 /** Source location attached to an MDX compiler diagnostic. */
 export interface MdxDiagnostic {
   /** Human-readable parser or transformer message. */
@@ -47,7 +40,6 @@ export interface MdxDiagnostic {
   /** Stable diagnostic rule identifier when available. */
   ruleId: string;
 }
-
 /** Successful or failed MDX compilation result. */
 export interface MdxCompileResult {
   /** Whether parsing and transformation succeeded. */
@@ -59,35 +51,75 @@ export interface MdxCompileResult {
   /** Positioned diagnostics collected during compilation. */
   diagnostics: MdxDiagnostic[];
 }
-
 /** Options controlling one MDX compilation. */
 export interface MdxCompileOptions {
   /** Original source filename used in diagnostics and source maps. */
   filename?: string;
 }
-
 interface SourceDocument {
   esm: string[];
-  slides: Array<{ source: string; line: number }>;
+  slides: Array<{
+    source: string;
+    line: number;
+  }>;
 }
-
 const markdownComponents = [
-  'a', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'hr', 'img', 'input', 'li', 'ol', 'p', 'pre', 'strong', 'table', 'tbody', 'td',
-  'th', 'thead', 'tr', 'ul'
+  'a',
+  'blockquote',
+  'br',
+  'code',
+  'del',
+  'em',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'img',
+  'input',
+  'li',
+  'ol',
+  'p',
+  'pre',
+  'strong',
+  'table',
+  'tbody',
+  'td',
+  'th',
+  'thead',
+  'tr',
+  'ul'
 ];
-const deckComponents = ['Notes', 'Head', 'Header', 'Footer', 'Steps'];
-
+const deckComponents = [
+  'Notes',
+  'Head',
+  'Header',
+  'Footer',
+  'Steps'
+];
 function diagnostic(message: string, line: number, column: number, offset: number, ruleId: string): MdxDiagnostic {
-  return { message, line, column, offset, source: 'fino:format/mdx', ruleId };
+  return {
+    message,
+    line,
+    column,
+    offset,
+    source: 'fino:format/mdx',
+    ruleId
+  };
 }
-
-function lineAt(source: string, offset: number): { line: number; column: number } {
+function lineAt(source: string, offset: number): {
+  line: number;
+  column: number;
+} {
   const prefix = source.slice(0, offset);
   const lines = prefix.split('\n');
-  return { line: lines.length, column: (lines.at(-1)?.length ?? 0) + 1 };
+  return {
+    line: lines.length,
+    column: (lines.at(-1)?.length ?? 0) + 1
+  };
 }
-
 function matchingBrace(source: string, start: number): number {
   let depth = 0;
   let quote = '';
@@ -103,7 +135,7 @@ function matchingBrace(source: string, start: number): number {
       else if (char === quote) quote = '';
       continue;
     }
-    if (char === '"' || char === "'" || char === '`') {
+    if (char === '"' || char === '\'' || char === '`') {
       quote = char;
       continue;
     }
@@ -112,7 +144,6 @@ function matchingBrace(source: string, start: number): number {
   }
   return -1;
 }
-
 function jsxTagEnd(source: string, start: number): number {
   let quote = '';
   let escaped = false;
@@ -128,17 +159,19 @@ function jsxTagEnd(source: string, start: number): number {
       else if (char === quote) quote = '';
       continue;
     }
-    if (char === '"' || char === "'") quote = char;
+    if (char === '"' || char === '\'') quote = char;
     else if (char === '{') braces++;
     else if (char === '}') braces = Math.max(0, braces - 1);
     else if (char === '>' && braces === 0) return index;
   }
   return -1;
 }
-
 function validateMdx(source: string): MdxDiagnostic[] {
   const diagnostics: MdxDiagnostic[] = [];
-  const componentStack: Array<{ name: string; offset: number }> = [];
+  const componentStack: Array<{
+    name: string;
+    offset: number;
+  }> = [];
   let fenced = false;
   for (let index = 0; index < source.length;) {
     const atLineStart = index === 0 || source[index - 1] === '\n';
@@ -177,7 +210,10 @@ function validateMdx(source: string): MdxDiagnostic[] {
             diagnostics.push(diagnostic(`Unexpected closing JSX tag </${name}>.`, place.line, place.column, index, 'jsx-tag-mismatch'));
             break;
           }
-        } else if (!selfClosing) componentStack.push({ name, offset: index });
+        } else if (!selfClosing) componentStack.push({
+          name,
+          offset: index
+        });
       }
       index = end + 1;
       continue;
@@ -191,10 +227,12 @@ function validateMdx(source: string): MdxDiagnostic[] {
   }
   return diagnostics;
 }
-
 function splitDocument(source: string): SourceDocument {
   const esm: string[] = [];
-  const slides: Array<{ source: string; line: number }> = [];
+  const slides: Array<{
+    source: string;
+    line: number;
+  }> = [];
   let current: string[] = [];
   let startLine = 1;
   let fenced = false;
@@ -207,18 +245,29 @@ function splitDocument(source: string): SourceDocument {
       continue;
     }
     if (!fenced && /^---\s*$/.test(line)) {
-      slides.push({ source: current.join('\n'), line: startLine });
+      slides.push({
+        source: current.join('\n'),
+        line: startLine
+      });
       current = [];
       startLine = index + 2;
       continue;
     }
     current.push(line);
   }
-  slides.push({ source: current.join('\n'), line: startLine });
-  return { esm, slides };
+  slides.push({
+    source: current.join('\n'),
+    line: startLine
+  });
+  return {
+    esm,
+    slides
+  };
 }
-
-function protectMdx(source: string): { markdown: string; tokens: string[] } {
+function protectMdx(source: string): {
+  markdown: string;
+  tokens: string[];
+} {
   const tokens: string[] = [];
   let markdown = '';
   for (let index = 0; index < source.length;) {
@@ -236,14 +285,15 @@ function protectMdx(source: string): { markdown: string; tokens: string[] } {
       index++;
     }
   }
-  return { markdown, tokens };
+  return {
+    markdown,
+    tokens
+  };
 }
-
 function mapMarkdownTags(value: string): string {
   const names = markdownComponents.join('|');
   return value.replace(new RegExp(`<(/?)(${names})(?=[\\s>])`, 'g'), '<$1_components.$2');
 }
-
 function inline(source: string, document: MarkdownDocument): string {
   const protectedSource = protectMdx(source);
   let value = renderMarkdownInline(protectedSource.markdown, {
@@ -257,12 +307,10 @@ function inline(source: string, document: MarkdownDocument): string {
   }
   return value;
 }
-
 function renderListItem(item: MarkdownListItem, document: MarkdownDocument, tight: boolean): string {
   const checkbox = item.task === undefined ? '' : `<_components.input type="checkbox" checked={${item.task}} disabled />`;
   return `<_components.li>${checkbox}${item.nodes.map((node) => renderNode(node, document, tight)).join('')}</_components.li>`;
 }
-
 function renderNode(node: MarkdownNode, document: MarkdownDocument, tight = false): string {
   if (node.kind === 'paragraph') {
     const content = inline(node.text, document);
@@ -290,7 +338,6 @@ function renderNode(node: MarkdownNode, document: MarkdownDocument, tight = fals
   }).join('')}</_components.tr>`).join('');
   return `<_components.table><_components.thead><_components.tr>${head}</_components.tr></_components.thead>${rows ? `<_components.tbody>${rows}</_components.tbody>` : ''}</_components.table>`;
 }
-
 function generateTsx(source: SourceDocument): string {
   const defaults = markdownComponents.map((name) => `${JSON.stringify(name)}: ${JSON.stringify(name)}`).join(', ');
   const deckDefaults = [
@@ -307,7 +354,6 @@ function generateTsx(source: SourceDocument): string {
   }).join('');
   return `/** @jsxImportSource fino:ui */\n${source.esm.join('\n')}\nexport default function MDXContent(props: Record<string, any> = {}) {\n  const _components = { ${defaults}, ${deckDefaults}, ...(props.components ?? {}) };\n  return <>${sections}</>;\n}\n`;
 }
-
 /**
 * Compile one trusted MDX document into an executable Fino UI ESM module.
 *
@@ -319,7 +365,12 @@ function generateTsx(source: SourceDocument): string {
 export function compileMdx(source: string, options: MdxCompileOptions = {}): MdxCompileResult {
   const filename = options.filename ?? 'module.mdx';
   const diagnostics = validateMdx(source);
-  if (diagnostics.length > 0) return { ok: false, code: '', map: '', diagnostics };
+  if (diagnostics.length > 0) return {
+    ok: false,
+    code: '',
+    map: '',
+    diagnostics
+  };
   const tsx = generateTsx(splitDocument(source));
   const transformed = transpile(tsx, { filename: `${filename}.tsx` });
   if (!transformed.ok) {
@@ -339,9 +390,16 @@ export function compileMdx(source: string, options: MdxCompileOptions = {}): Mdx
   }
   let map = transformed.map;
   try {
-    const value = JSON.parse(map) as { sources?: string[] };
+    const value = JSON.parse(map) as {
+      sources?: string[];
+    };
     value.sources = [filename];
     map = JSON.stringify(value);
   } catch (_) {}
-  return { ok: true, code: transformed.code, map, diagnostics: [] };
+  return {
+    ok: true,
+    code: transformed.code,
+    map,
+    diagnostics: []
+  };
 }
