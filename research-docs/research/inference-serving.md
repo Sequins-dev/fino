@@ -54,8 +54,13 @@ interface InferenceModel {
   llama.cpp tracks blocks. (Multi-sequence batching semantics verified
   against the header during the spike, like every C-API claim in this
   family.)
-- **`fino:tensor` (after engine Phase 2).** A transformer running on the
-  engine. Here KV is engine tensors and the serving layer owns paging:
+- **`fino:tensor` (after the engine has a GPU backend).** A transformer running
+  on the engine — which needs a native backend landed
+  ([tensor-engine.md](./tensor-engine.md) Phase 2 for Metal, Phase 3 for
+  Vulkan) and benefits from fusion (Phase 4) before it is competitive. This is
+  also the path that eventually retires the llama.cpp provider below, and it is
+  honestly distant. Here KV is engine tensors and the serving layer owns
+  paging:
   fixed-size blocks, per-sequence block tables, allocation from the engine's
   pool. Decode steps are shape-stable, which is precisely the engine's
   capture/replay sweet spot — steady-state decode becomes a single graph
@@ -129,10 +134,20 @@ Three tracks with different dependencies:
   complete, useful serving product on its own.
 - **Track B — needs `fino:data`.** Batch inference over
   Dataset/DataFrame (§5).
-- **Track C — needs engine Phase 2.** The engine-backed provider with
-  serving-owned paged KV and capture/replay decode; prefix caching;
-  speculative decoding last (it needs a cheap draft model and the engine
-  path to be worth accelerating).
+- **Track C — needs the engine's accelerator phase.** The engine-backed
+  provider with serving-owned paged KV and capture/replay decode; prefix
+  caching; speculative decoding last (it needs a cheap draft model and the
+  engine path to be worth accelerating).
+
+On relative priority: Track A is a complete product on its own, but it is
+competing with llama.cpp's own server and with vLLM, and a third
+continuous-batching scheduler is not why anyone would adopt a runtime. Track
+B is the differentiated one — offline inference over the data stack has no
+equivalent elsewhere, because it depends on true worker parallelism, durable
+resumption, and one process holding the pipeline and the model together. Build
+B's foundations first (they are shared with everything else in
+[data-stack.md](./data-stack.md)), and let Track A follow the scheduler work
+it needs rather than leading it. See [next-steps.md](./next-steps.md).
 
 ## 7. Risks and Open Questions
 

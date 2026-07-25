@@ -17,10 +17,13 @@
 
 ## 1. Principles
 
-Data is Arrow-first and streaming-first. `fino:data/arrow` already provides
-the Arrow substrate (below); the remaining pieces are a native Parquet
-module, a query/DataFrame layer, and a Dataset/DataLoader, each of which
-builds on it.
+Data is Arrow-first and streaming-first. The format tier is **complete**:
+`fino:data/arrow` provides the Arrow substrate and `fino:data/parquet`
+provides Parquet, both on reusable generic modules (`internal:format/thrift`,
+Snappy in `fino:compress`) that landed with them. The remaining pieces are the
+*consumers* — a query/DataFrame layer and a Dataset/DataLoader — and those are
+now the priority, because until they exist the columnar tier has no user
+inside the runtime.
 
 The guiding principle here is the same one that produced `fino:format/flatbuffers`
 and the `fino:compress` codecs: **untangle the dependency tree into discrete,
@@ -38,24 +41,27 @@ avoid. Parquet decomposes cleanly into reusable parts we mostly already have.
   implemented and tested. It is the tabular interchange the rest of the data
   stack consumes and produces: `column.toTensor()`, `RecordBatch`/`Table`, and
   zero-copy hand-off to native libraries via `Pointer.view`.
-- **`fino:format/thrift` — generic Thrift codec (planned).** Parquet's file
+- **`internal:format/thrift` — generic Thrift codec (exists).** Parquet's file
   metadata (`FileMetaData`, `RowGroup`, `ColumnChunk`, `Statistics`, …) is
   serialized with Thrift's compact protocol. Like flatbuffers, Thrift is a
   general-purpose format that belongs in its own module, not buried in a
-  Parquet reader — a schema-less compact-protocol reader/writer that any
-  consumer can use.
-- **`fino:compress` + Snappy (planned).** Parquet's default page codec is
-  Snappy; gzip/brotli/zstd/lz4 (which Parquet also permits) already exist.
-  Snappy is a small, well-specified block format — add it to the existing
-  generic compress module, not to Parquet internals.
-- **`fino:data/parquet` — native Parquet (planned).** Built on
-  `fino:format/thrift` + `fino:compress` + `fino:data/arrow`: read and write
-  the full column layout (the ~8 encodings — plain, RLE/bit-packed dictionary,
-  delta, delta-length/byte-array, byte-stream-split — plus page compression,
-  statistics, and nested/repetition-and-definition levels), producing and
-  consuming Arrow record batches. This is real work, but it is *bounded* work
-  in discrete modules whose generic parts (Thrift, Snappy) are reusable — the
-  opposite of importing a multi-feature engine to get one format.
+  Parquet reader — and it landed as one: a schema-less compact-protocol
+  reader/writer (with binary and JSON protocols alongside) that any consumer
+  can use. Currently `internal:*`; promoting it to `fino:format/thrift` is a
+  one-line loader change whenever an external consumer wants it.
+- **`fino:compress` + Snappy (exists).** Parquet's default page codec is
+  Snappy; gzip/brotli/zstd/lz4 (which Parquet also permits) were already
+  there. Snappy landed in the generic compress module
+  (`internal:compress/snappy`), not in Parquet internals.
+- **`fino:data/parquet` — native Parquet (exists).** Built on
+  `internal:format/thrift` + `fino:compress` + `fino:data/arrow`: reads and
+  writes the full column layout (PLAIN, RLE/bit-packed dictionary, the DELTA
+  family, delta-length/byte-array, byte-stream-split, plus page compression,
+  statistics, and nested repetition/definition levels), producing and
+  consuming Arrow record batches, golden-tested against pyarrow-generated
+  fixtures. The decomposition thesis held: the generic parts came out reusable
+  and the format-specific part stayed bounded — the opposite of importing a
+  multi-feature engine to get one format.
 - **`fino:data/frame` — DataFrame over Arrow (planned).** A lazy DataFrame that
   builds an expression plan and executes it with its own small operator set
   (filter, project, groupBy/agg, join, sort, limit) *directly over Arrow
@@ -82,11 +88,14 @@ fino module that stands alone rather than a facet of one bundled dependency.
 
 The data stack's slice of the parent roadmap:
 
-- **Phase 0 (in parallel with the engine spike; none of it waits on the
-  engine):** `fino:format/thrift`, Snappy in `fino:compress`,
-  `fino:data/parquet`.
-- **Then:** `fino:data/frame` and `fino:data` (Dataset/DataLoader), which the
-  training loop and `fino:ai/eval` consume.
+- **Phase 0 — done.** `internal:format/thrift`, Snappy in `fino:compress`,
+  and `fino:data/parquet` have all landed, with golden tests.
+- **Next, and now the highest-leverage work in this document:**
+  `fino:data/frame` and `fino:data` (Dataset/DataLoader). These are what give
+  the format tier a consumer, and what the training loop, `fino:ai/eval`, and
+  batch inference ([inference-serving.md](./inference-serving.md) §5) all
+  build on. `fino:data` today is a re-export of the Arrow namespace and
+  nothing more.
 - **Phase 3 slice:** DataLoader hardening — worker-pool pipeline, prefetch
   into the engine's pinned H2D ring, and `state()`/`restore()` integration
   with `fino:workflow` checkpointing (surfaced in
@@ -98,11 +107,16 @@ The data stack's slice of the parent roadmap:
 
 ## 4. Risks and Open Questions
 
-- **Native Parquet is bounded but not small.** Full encoding coverage (the ~8
-  encodings, nested repetition/definition levels, statistics) is the effort;
-  keep it honest by building the reusable generics (`fino:format/thrift`,
-  Snappy) first and differentially testing `fino:data/parquet` against files
-  written by pyarrow/parquet-tools, the way Arrow is tested against pyarrow.
+- **The DataFrame's scope is the live risk** now that Parquet is done. A lazy
+  expression plan with its own vectorized operator set is open-ended work, and
+  "add SQL" is a standing temptation that would multiply it. Hold the line at
+  the small operator set (filter, project, groupBy/agg, join, sort, limit) with
+  pushdown into the Parquet reader's existing statistics, and treat a SQL
+  front-end as a parser onto the same plan, never a second engine.
+- **Parquet's remaining risk is drift, not coverage.** The golden fixtures
+  pin behaviour against pyarrow today; keep regenerating them as the writers
+  in the wild move, and keep unsupported codecs and encodings failing loudly
+  rather than silently changing data.
 
 ## Sources
 

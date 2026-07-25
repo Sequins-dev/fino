@@ -96,15 +96,15 @@ the runtime itself, not a container around it.*
 
 **Feature mapping to Mastra's surface:**
 
-| Mastra concept | fino realization | Status of substrate |
+| Mastra concept | fino realization | Status |
 |---|---|---|
-| **Agents** (LLM + tools + memory) | An agent is a module; its tool surface is a set of `Facade`s; its authority is its import rules | Substrate ready |
-| **Tools** (typed, MCP) | Tools are Facade methods (typed RPC). Untrusted/codegen tools run in narrowed child realms; MCP servers hosted as realms behind a Facade | Substrate ready; needs tool/MCP SDK |
-| **Workflows** (graph, durable, suspend/resume) | Structured-concurrency realm graph; `watch`/reload (exit-code 75) is the suspend/resume primitive; durable state in `fino:database/sqlite` | Needs a durable-execution layer over realms |
-| **Memory** (working + semantic recall) | `fino:database/sqlite` for thread/working memory; `sqlite-vec` for semantic recall — in-process, no external store | Substrate ready; needs memory API |
-| **RAG** (chunk/embed/retrieve/rerank) | `sqlite-vec` vector store over pluggable VFS (S3-backed for serverless); embeddings via fetch to providers | Substrate ready; needs RAG toolkit |
+| **Agents** (LLM + tools + memory) | An agent is a module; its tool surface is a set of `Facade`s; its authority is its import rules | **Shipped** — `fino:ai/agent` |
+| **Tools** (typed, MCP) | Tools are Facade methods (typed RPC). Untrusted/codegen tools run in narrowed child realms; MCP servers hosted as realms behind a Facade | **Shipped** — `fino:ai/tool`, `fino:ai/mcp` |
+| **Workflows** (graph, durable, suspend/resume) | Structured-concurrency realm graph; `watch`/reload (exit-code 75) is the suspend/resume primitive; durable state in `fino:database/sqlite` | **Shipped** — `fino:workflow`, `fino:task/durable`, `fino:jobs` |
+| **Memory** (working + semantic recall) | `fino:database/sqlite` for thread/working memory; `sqlite-vec` for semantic recall — in-process, no external store | **Shipped** — `fino:ai/memory` |
+| **RAG** (chunk/embed/retrieve/rerank) | `sqlite-vec` vector store over pluggable VFS (S3-backed for serverless); embeddings via fetch to providers | Chunk/embed/retrieve shipped in `fino:ai/memory`; reranking and corpus-scale ingestion want the data stack ([next-steps.md](./next-steps.md) Wave 3) |
 | **Multi-agent networks** | Agents as realms; `remote` realms distribute them across machines with location-transparent messaging | Substrate ready (cluster); gated by cluster auth |
-| **Evals / scoring** | Eval runs as isolated realms (reproducible, parallel via `RealmPool`) | Substrate ready; needs eval harness |
+| **Evals / scoring** | Eval runs as isolated realms (reproducible, parallel via `RealmPool`) | **Shipped** — `fino:ai/eval`; still needs shared `fino:ml/metrics` and Dataset-backed cases |
 | **Observability** | Built-in OTel traces per agent step + per-realm V8 Inspector for live debugging | Best-in-class already |
 | **Voice / streaming** | WebSocket + streaming bodies + SSE (`fino:net/http/eventsource`) | Transport ready |
 | **Deployment** | Single binary; `remote` realms; appliance or serverless | Ready (self-host); serverless needs platform |
@@ -265,20 +265,26 @@ the AI-agent market specifically, and (c) generalizes cleanly to the SaaS and ga
 
 ## 5. Architecture sketch — `fino:agent` (Pillar A, deep)
 
-A concrete shape for the agent framework so the design is falsifiable, not hand-wavy.
-Layered, each layer leaning on an existing primitive:
+A concrete shape for the agent framework so the design is falsifiable, not
+hand-wavy. Most of this has since shipped under the `fino:ai` namespace rather
+than the speculative `fino:agent` one; the layering held, and the module names
+below are the real ones:
 
 ```
-fino:agent            Agent, run(), streaming, handoff           (new, JS)
-fino:agent/tool       Tool defs, typed schema, MCP adapter       -> Facade RPC
-fino:agent/sandbox    runUntrusted(code, grants)                  -> ImportMap.deny + Realm
-fino:agent/memory     thread memory + semantic recall            -> fino:database/sqlite + sqlite-vec
-fino:agent/rag        chunk / embed / retrieve / rerank          -> sqlite-vec + fetch
-fino:agent/workflow   graph, step, suspend/resume, durable       -> realm watch/reload + sqlite
-fino:agent/eval       scorers, datasets, parallel runs           -> RealmPool
-fino:agent/net        multi-agent across nodes                   -> cluster remote realms
-(observability)       per-step OTel spans, Inspector debugging   -> fino:opentelemetry
+fino:ai/agent         Agent, run(), streaming, handoff           SHIPPED
+fino:ai/tool          Tool defs, typed schema                    SHIPPED
+fino:ai/mcp           MCP client + server                        SHIPPED
+fino:ai/memory        thread memory + semantic recall            SHIPPED (sqlite + sqlite-vec)
+fino:ai/session       durable sessions, suspend/resume           SHIPPED
+fino:ai/eval          scorers, parallel runs                     SHIPPED (wants shared metrics + Datasets)
+fino:workflow         graph, step, durable, checkpointed         SHIPPED
+fino:ai/sandbox       runUntrusted(code, grants)                 NOT BUILT -> ImportMap.deny + Realm.fromSource
+fino:ai/net           multi-agent across nodes                   NOT BUILT -> cluster remote realms
+(observability)       per-step OTel spans, Inspector debugging   SHIPPED
 ```
+
+The gap that remains is the one this document argues is the most valuable:
+`fino:ai/sandbox` (§4). Everything around it exists.
 
 - **Agent** = a module + a model client (LLM via `fetch`) + a tool set (Facades) + a memory
   handle + an import-rule policy. `agent.run(input)` streams steps; tool calls dispatch

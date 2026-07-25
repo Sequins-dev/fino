@@ -39,7 +39,9 @@ representation change.
   established candidate-path idiom, nothing vendored.
 - **LAPACK** is the dense-decomposition standard, and it ships *inside* the
   OpenBLAS/Accelerate binaries the tensor engine already dlopens for GEMM —
-  the numerics tier costs no new deployment surface.
+  the numerics tier costs no new deployment surface. (Verified on an Apple
+  Silicon dev machine: brew's OpenBLAS installs `liblapack.dylib` beside
+  `libblas.dylib`, and Accelerate is always present.)
 - **ONNX-ML** (the `ai.onnx.ml` operator domain: TreeEnsemble,
   LinearClassifier, …) is the interchange format for classical models —
   inspect/read first, export later, consistent with the family-wide ONNX
@@ -102,11 +104,21 @@ stage introduces a private representation.
 ## 7. Sequencing
 
 - **Metrics first** — pure TS, no dependencies, immediately unblocks
-  `fino:ai/eval` and training loops.
+  `fino:ai/eval` and training loops. Worth stressing how ready this is:
+  `fino:ai/eval` currently carries its own ad-hoc scorers (`exactMatch`,
+  `contains`, `semanticSimilarity`, an LLM judge) and no shared metric
+  implementation exists anywhere in the runtime, so this module has a waiting
+  consumer the day it lands.
 - **GBDT + preprocessing** after `fino:data/frame` lands
-  ([data-stack.md](./data-stack.md)); no tensor-engine dependency.
-- **Linear/PCA/k-means + `linalg`** ride the engine's Phase 1 CPU substrate
-  (the BLAS binding is the same dlopen; LAPACK symbols come along).
+  ([data-stack.md](./data-stack.md)); no tensor-engine dependency. This is the
+  first path to fitting a *real* model on a real file with no accelerator and
+  no engine — worth sequencing earlier than its position here implies, since
+  tabular work is the majority use case.
+- **Linear/PCA/k-means + `linalg`** ride the engine's Phase 1 portable CPU
+  core (the BLAS binding is the same dlopen; LAPACK symbols come along). Note
+  that the engine's Phase 1 is now explicitly a CPU-only, ships-everywhere
+  slice ([tensor-engine.md](./tensor-engine.md) §7), so this tier no longer
+  waits behind any accelerator work.
 - **FFT, ONNX-ML export, cuSOLVER**: demand-gated.
 
 ## 8. Risks and Open Questions

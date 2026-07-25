@@ -71,7 +71,14 @@ This doc's slice of the parent roadmap:
 - **Phase 3 slice:** DataLoader/train/track/notebook UX hardening;
   checkpoint/resume through `fino:workflow`; hyperparameter sweeps (§4)
   follow once tracking and workflow integration are solid.
-- **Phase 4:** the Jupyter kernel (ZeroMQ transport).
+- **Phase 5:** the Jupyter kernel (ZeroMQ transport).
+
+One ordering note: the display protocol (§1) is worth adopting *now*, ahead of
+everything else here. It is a convention rather than a system — a few lines per
+showable type — and every later surface in this document (viz, tracking UI,
+notebook) assumes it exists. Nothing in the runtime implements it yet, so it is
+also the cheapest way to make Arrow tables, tensors, and eval reports feel like
+one framework rather than adjacent libraries.
 
 ## Sources
 

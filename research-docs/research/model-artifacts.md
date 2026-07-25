@@ -72,11 +72,15 @@ deltas during forward — belong to `fino:tensor/nn`
 
 `fino:model/onnx` over ONNX Runtime's stable C API (`OrtApi`) for
 exported-model inference interop — it also serves encoder models for
-[inference-serving.md](./inference-serving.md). This is a Phase 4 breadth
+[inference-serving.md](./inference-serving.md). This is a Phase 5 breadth
 item in the parent roadmap; artifact *inspection* of ONNX files (metadata,
 tensor listings) can come earlier as part of `fino:model/artifacts`. Later
 still, *export*: lowering the engine's recorded tape for small models to
-ONNX for out-of-fino deployment — ONNX remains never the internal graph.
+ONNX for out-of-fino deployment. That direction is helped by the tape being
+public API (`fino:tensor/graph`, see
+[tensor-engine.md](./tensor-engine.md) §6) — export is a consumer of the
+recorded graph like any other pass, not a privileged internal. ONNX remains
+never the internal graph.
 
 ## 6. Sequencing
 
@@ -93,7 +97,7 @@ This doc's slice of the parent roadmap:
   safetensors metadata browsing (including remote-by-Range), GGUF and ONNX
   inspection, loading a safetensors head into `fino:tensor/nn`. Connects Fino
   to real model repositories and keeps the tensor system from being toy-only.
-- **Phase 4:** the ONNX Runtime adapter (§5); ONNX export from the recorded
+- **Phase 5:** the ONNX Runtime adapter (§5); ONNX export from the recorded
   tape comes after, if interop pressure is real.
 
 ## Sources

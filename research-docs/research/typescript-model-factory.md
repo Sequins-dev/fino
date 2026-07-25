@@ -40,15 +40,26 @@ execution.
 
 Two constraints shape every design decision in this document family:
 
-1. **Linux is the primary target.** Serious training and serving happen on
-   Linux servers with NVIDIA GPUs. macOS is the development environment and
-   must have good parity, but no Apple-first library can anchor the
-   architecture.
-2. **Peak efficiency through the deep platform APIs.** The engine binds the
-   CUDA driver API, NVRTC, and cuBLASLt directly — not a convenience wrapper
-   that caps the ceiling at whatever it chose to expose. Where a wrapper is
-   used (ggml, for breadth), its bounds are stated explicitly and it is never
-   the layer that limits the primary path.
+1. **Cross-platform, with no privileged vendor.** The same script must run on
+   an Apple Silicon Mac, an arm64 or x86 Linux box, with or without a GPU, and
+   pick up whatever acceleration the machine has. Neither macOS nor NVIDIA
+   anchors the architecture: device selection is discovery, not configuration.
+2. **Direct to hardware, with our own kernels.** The engine is not built over
+   an inference library. Each platform is driven through *its own* lowest-level
+   documented interface — Metal on Apple, Vulkan on Linux/Windows/Android, the
+   CUDA driver API on NVIDIA — with no translation layer interposed, and the
+   kernels running on them are ours, compiled at runtime from a
+   dialect-neutral IR (MSL and CUDA C as text, SPIR-V emitted directly as
+   binary). ggml is the benchmark bar, not a dependency; this engine is written
+   to replace it.
+
+The consequence worth stating up front: **the only abstraction in the design is
+the one we own** — a generic tensor graph modelling framework above a thin,
+native backend interface. That framework is also shaped from the start for the
+second hardware class, fixed-function NPUs and TPUs, which consume whole graphs
+instead of running arbitrary kernels. The full priority matrix, the rationale
+for every accepted and rejected option, and the forward-compatibility design
+live in [tensor-engine.md](./tensor-engine.md) §2.
 
 The result is not "PyTorch, ported." It is a smaller, coherent engine that
 exploits what Fino uniquely has — an async-native runtime, a fast FFI, true
@@ -122,9 +133,18 @@ runtime as it exists today:
   data.
 - **Binary-format primitives exist.** `fino:format/flatbuffers` is a
   schema-less FlatBuffers reader/writer (the wire format Arrow IPC metadata
-  is encoded in), `fino:data/arrow` is the full Arrow columnar/IPC/C-Data
-  stack, and `fino:parsing/scanner` handles incremental binary scanning with
-  hex-dump diagnostics.
+  is encoded in), `internal:format/thrift` is a generic compact-protocol
+  codec, `fino:parsing/scanner` handles incremental binary scanning with
+  hex-dump diagnostics, and this repo has a long habit of implementing wire
+  formats from their specifications rather than importing them (Arrow IPC,
+  Parquet, DNS, QUIC/HTTP-3 framing, the Postgres protocol) — the precedent
+  the SPIR-V emitter relies on.
+- **The columnar data tier is complete.** `fino:data/arrow` is the full Arrow
+  columnar/IPC/C-Data stack and `fino:data/parquet` reads and writes Parquet
+  with the full encoding set (PLAIN, RLE/bit-packed dictionary, the DELTA
+  family, byte-stream-split), page compression, statistics, and nested
+  repetition/definition levels — both golden-tested against pyarrow-generated
+  fixtures. What is missing above them is consumers, not format support.
 - **The supporting stack is broad**: full HTTP/1-2-3 + TLS for hub clients
   and serving, `fino:database/sqlite` (with JS VFS and vector helpers),
   `fino:compress` (gzip/deflate/brotli/zstd/lz4), `fino:workflow` (durable
@@ -134,9 +154,18 @@ runtime as it exists today:
 
 The missing substrate is equally clear: no tensor object model, no
 dtype/device semantics, no kernels or accelerator backend, no autodiff, no
-Parquet/query layer, no safetensors reader, no tokenizers, no
-optimizer/training-loop/checkpoint API, no notebook story. (Arrow itself now
-exists as `fino:data/arrow` — the columnar format, IPC, and C Data Interface.)
+query/DataFrame layer, no Dataset/DataLoader, no safetensors reader, no
+tokenizers, no optimizer/training-loop/checkpoint API, no notebook story.
+
+Worth naming precisely, because it sets the near-term priority: the format
+tier (Arrow, Parquet) and the application tier (`fino:ai/*` — agents, tools,
+MCP, sqlite-vec memory, evals, sessions) are both mature and **they do not
+touch each other**. There is no `toTensor`, no dtype vocabulary, no display
+protocol, and no reference to Arrow or datasets anywhere in `fino:ai/eval`.
+The columnar stack currently has no consumer inside the runtime. Connecting
+those two tiers is worth more than any single new format, and it is the
+organizing idea of the near-term plan
+([next-steps.md](./next-steps.md)).
 
 The binding style throughout the child documents is the established idiom:
 dlopen system-installed libraries with candidate-path fallback
@@ -151,13 +180,14 @@ which backends light up.
 | Tensor object model | Very high | Medium | None | Critical | High |
 | Dtype/device semantics | Very high | Medium | None | Critical | High |
 | CPU tensor kernels | Very high | Medium | None | Critical | High |
-| GPU execution | Very high | Medium via WebGPU/TF.js/ORT | None | Critical | Very high |
+| GPU execution (own kernels) | Very high | Low — wrappers only | None | Critical | Very high |
 | Autodiff | Very high | Low/medium | None | Critical | Very high |
 | Graph capture/JIT | Very high | Low | None | High | Very high |
-| Arrow tables | Very high | Medium | `fino:data/arrow` (full type coverage) | High | Medium |
-| Arrow IPC + C Data Interface | Very high | Medium | `fino:data/arrow` (stream/file + CDI) | High | Medium/high |
-| Parquet | Very high | Medium | None (native `fino:data/parquet` planned) | High | Medium/high |
-| Dataset streaming | Very high | Low/medium | CSV only | High | Medium |
+| Arrow tables | Very high | Medium | `fino:data/arrow` (full type coverage) | High | **Done** |
+| Arrow IPC + C Data Interface | Very high | Medium | `fino:data/arrow` (stream/file + CDI) | High | **Done** |
+| Parquet | Very high | Medium | `fino:data/parquet` (full encodings, nested, r/w) | High | **Done** |
+| DataFrame / query layer | Very high | Low/medium | None | High | Medium |
+| Dataset streaming | Very high | Low/medium | CSV/Arrow/Parquet formats, no Dataset API | High | Medium |
 | Safetensors | Very high | Low/medium | None | High | Medium |
 | GGUF loading | Medium/high | Low | llama.cpp adapter only | High | Medium |
 | ONNX loading | High | Medium/high | None | High | High |
@@ -196,10 +226,19 @@ set, artifact loading, and a training loop that works for modest models.
 - **ONNX** is the portable graph format to read and (later) execute for
   inference interop — never the internal training graph
   (https://onnx.ai/onnx/intro/).
-- **WebGPU/WGSL** are *not* the first accelerator target. An earlier revision
-  of this document recommended them; that is revised. The first accelerator
-  is the CUDA driver API bound directly; the rationale and the full backend
-  priority matrix live in [tensor-engine.md](./tensor-engine.md).
+- **MSL, SPIR-V, and CUDA C** are the three kernel-compilation targets, all
+  reached at runtime with no offline toolchain: MSL through Metal's
+  `newLibraryWithSource:`, CUDA C through NVRTC, and SPIR-V by emitting the
+  binary format directly from TypeScript
+  (https://registry.khronos.org/SPIR-V/). They are three lowerings of one
+  dialect-neutral kernel IR, not three strategies.
+- **WebGPU/WGSL** are *not* an accelerator target. An earlier revision of this
+  document recommended them as the first one; that is revised twice over.
+  There is no system-installed wgpu-native to dlopen, so binding it would mean
+  vendoring a compiled artifact — and it sits *above* Vulkan and Metal, which
+  is the opposite of the direct-to-hardware goal. The full backend priority
+  matrix and the reasoning for every accepted and rejected option live in
+  [tensor-engine.md](./tensor-engine.md) §2.
 
 ## 6. The Document Family
 
@@ -214,12 +253,17 @@ changes.
 
 | Document | Scope | Engine dependency |
 |---|---|---|
-| [tensor-engine.md](./tensor-engine.md) | Execution model, backend architecture (CUDA-direct, ggml, CPU, Metal-direct), kernel strategy, memory semantics, autodiff, the `fino:tensor` API family, differential testing, `tensor-contract.md` | — (is the engine) |
+| [tensor-engine.md](./tensor-engine.md) | The graph framework and execution semantics; native backends (Metal, Vulkan+SPIR-V, CUDA driver API, CPU/BLAS) and the fixed-function NPU/TPU class; kernel IR and codegen; memory semantics; autodiff; the public `fino:tensor` API family; differential testing; `tensor-contract.md` | — (is the engine) |
 | [data-stack.md](./data-stack.md) | Arrow-first data infra: `fino:format/thrift`, Snappy, `fino:data/parquet`, `fino:data/frame`, Dataset/DataLoader | None (only `column.toTensor()` crosses over) |
 | [model-artifacts.md](./model-artifacts.md) | safetensors/GGUF/npy readers, the hub client + `models.lock`, tokenizers, ONNX interop | None (descriptor-producing) |
 | [ml-workbench.md](./ml-workbench.md) | Notebook + display protocol, `fino:viz`, experiment tracking, hyperparameter sweeps, durable training | None |
 | [inference-serving.md](./inference-serving.md) | Continuous-batching scheduler, KV-cache management, streaming, OpenAI-compatible surface, batch inference over Arrow | Layers over the engine; the near-term llama.cpp track doesn't wait on it |
 | [classical-ml.md](./classical-ml.md) | LAPACK-backed linalg, sklearn-shaped estimators, GBDT via XGBoost/LightGBM, preprocessing over DataFrame, shared metrics | Linalg and linear models ride the engine's CPU substrate; GBDT/preprocessing/metrics don't wait |
+
+Alongside them, [next-steps.md](./next-steps.md) is the near-term execution
+plan: what to build in what order given what has actually landed, why that
+order, and the decisions each wave forces. The documents above describe the
+destination; that one describes the next few moves.
 
 ## 7. Unification: One Framework, Not a Pile of Libraries
 
@@ -273,38 +317,57 @@ substrate:
   major Python moat, and Fino's file/stream/sqlite/realm primitives are
   already good at it — this wedge is independently useful even without the
   tensor engine.
-- **Accelerated training on the primary target**: the CUDA-direct backend
-  training real (small) models on Linux at PyTorch-eager-class step times,
-  with the same script running on a Mac. Accelerator credibility is what
-  separates a model factory from a math library.
+- **The same script, accelerated everywhere, on our own kernels**: one
+  unmodified training script that runs on CPU on arm64 Linux, on Metal on an
+  Apple Silicon Mac, and on Vulkan or CUDA on a Linux GPU box — because the
+  device is discovered, not configured, and every one of those paths goes
+  straight to the platform's own interface. Portable acceleration from a single
+  self-contained binary is the credibility claim, and it is a sharper
+  differentiator than raw step time on one vendor: PyTorch has the step time,
+  but a PyTorch install is a per-platform wheel-and-driver negotiation.
 
 ## 9. Roadmap
 
-Each phase's detail lives in the owning child document; this is the
-cross-document sequence:
+Each phase's detail lives in the owning child document, and
+[next-steps.md](./next-steps.md) sequences the immediate work in finer grain.
+This is the cross-document shape:
 
-- **Phase 0 — contracts and spikes.** `tensor-contract.md` and the CUDA
-  spike on a Linux/NVIDIA box ([tensor-engine.md](./tensor-engine.md)). In
-  parallel — none of it waits on the engine — the data track:
-  `fino:format/thrift`, Snappy, `fino:data/parquet`
-  ([data-stack.md](./data-stack.md)); the hub client and tokenizer
-  ([model-artifacts.md](./model-artifacts.md)).
-- **Phase 1 — the credibility slice.** The engine core: CUDA-direct + ggml
-  adapter + BLAS + the TS tape + `nn`/`optim` + the differential-test
-  harness ([tensor-engine.md](./tensor-engine.md)). **Exit: train an MLP and
-  a small transformer on Linux/NVIDIA within ~1.2× of PyTorch eager step
-  time; the same script trains unchanged on an M-series Mac via ggml-Metal;
-  every op and grad passes differentially against the TS oracle.**
-- **Phase 2 — peak-efficiency Linux.** cuDNN v9, CUDA Graphs step-replay,
-  pointwise fusion codegen, fp16 with loss scaling
-  ([tensor-engine.md](./tensor-engine.md)).
-- **Phase 3 — depth and Apple upgrade.** Engine: reduction/epilogue fusion,
-  NCCL data-parallel, Metal-direct gated on demonstrated Mac demand
-  ([tensor-engine.md](./tensor-engine.md)). DataLoader hardening
-  ([data-stack.md](./data-stack.md)). Train/track/notebook UX and
+- **Phase 0 — contracts and the two-dialect spike.** `tensor-contract.md` and
+  a first cut of the kernel IR, then the decisive spike: one trivial kernel
+  emitted through *both* MSL (native Metal on the dev machine) and
+  TS-emitted SPIR-V, which simultaneously proves the IR is dialect-neutral and
+  de-risks the SPIR-V emitter ([tensor-engine.md](./tensor-engine.md) §7).
+  Plus the arm64-Linux deployment probe. In parallel, waiting on nothing: the
+  shared conventions (dtype vocabulary, display protocol), `fino:ml/metrics`
+  ([classical-ml.md](./classical-ml.md)), and the hub client and tokenizer
+  ([model-artifacts.md](./model-artifacts.md)). The data-stack Phase 0
+  (Thrift, Snappy, Parquet) is **done**.
+- **Phase 1 — the portable core.** The tensor object model, TS tape,
+  `nn`/`optim`, seeded `Generator`, the reference backend as shipping fallback,
+  and BLAS/LAPACK for dense CPU math, with `fino:tensor`, `fino:tensor/graph`,
+  and `fino:tensor/backend` public behind an experimental marker
+  ([tensor-engine.md](./tensor-engine.md)). Alongside it the data consumers
+  that have been waiting for a numeric type: `fino:data/frame` and
+  Dataset/DataLoader ([data-stack.md](./data-stack.md)). **Exit: train an MLP
+  and a small transformer on CPU on both macOS and arm64 Linux, every op and
+  gradient differentially green against the oracle.**
+- **Phase 2 — Metal-direct.** Our own kernels on Apple GPUs through
+  `objc_msgSend` and runtime MSL ([tensor-engine.md](./tensor-engine.md)).
+  **Exit: the Phase 1 script runs unmodified, GPU-accelerated, with per-op
+  numbers against ggml-Metal on the same device.**
+- **Phase 3 — Vulkan-direct.** The SPIR-V emitter hardened and the same
+  templates lowered through it, covering every non-Apple GPU, then the tiled
+  GEMM ([tensor-engine.md](./tensor-engine.md)). DataLoader hardening
+  ([data-stack.md](./data-stack.md)); train/track/notebook UX and
   checkpoint/resume through `fino:workflow`
   ([ml-workbench.md](./ml-workbench.md)).
-- **Phase 4 — breadth.** HIP/ROCm, ggml-Vulkan, the tile DSL
+- **Phase 4 — fusion and step replay** ([tensor-engine.md](./tensor-engine.md)).
+- **Phase 5 — CUDA-direct where it wins**: cuBLASLt epilogues and cuDNN fused
+  attention, the things neither Metal nor Vulkan has an equivalent for
+  ([tensor-engine.md](./tensor-engine.md)).
+- **Phase 6 — the far end.** A tile DSL, data-parallel training, HIP or Level
+  Zero if needed, the first fixed-function NPU/TPU backend, and eventually
+  retiring the llama.cpp dependency for GGUF inference
   ([tensor-engine.md](./tensor-engine.md)); the ONNX Runtime adapter
   ([model-artifacts.md](./model-artifacts.md)); the Jupyter kernel
   ([ml-workbench.md](./ml-workbench.md)).
@@ -358,7 +421,8 @@ Fino becomes credible as a TypeScript model factory when it can:
 
 - load tabular/text data into efficient batches;
 - create tensors with explicit dtype/device semantics;
-- run a useful op set on CPU and the CUDA-direct backend;
+- run a useful op set on CPU everywhere, and accelerated on whatever device
+  the host happens to have, through one discovered code path;
 - compute gradients and update parameters;
 - train small models end-to-end at PyTorch-eager-class step times;
 - load safetensors and inspect GGUF/ONNX artifacts;
