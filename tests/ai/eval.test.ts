@@ -216,7 +216,10 @@ describe('EvalReporter', () => {
     const reporter = new EvalProgressReporter();
     const seen: string[] = [];
     reporter.progress.subscribe((progress) => seen.push(`${progress.completed}/${progress.total}:${progress.passed}`));
-    await reporter.onStart({ name: 'suite', cases: 2 });
+    await reporter.onStart({
+      name: 'suite',
+      cases: 2
+    });
     await reporter.onCase({
       name: 'one',
       input: null,
@@ -225,7 +228,12 @@ describe('EvalReporter', () => {
       score: 1,
       pass: true
     });
-    await reporter.onFinish({ name: 'suite', mean: 1, passed: 1, total: 2 });
+    await reporter.onFinish({
+      name: 'suite',
+      mean: 1,
+      passed: 1,
+      total: 2
+    });
     t.equal(reporter.progress.get().completed, 2, 'finish marks all cases completed');
     t.equal(reporter.progress.get().passed, 1, 'progress retains passed count');
     t.ok(seen.includes('1/2:1'), 'subscriber saw per-case progress');

@@ -1040,7 +1040,10 @@ function readInterfacesFromNameIndex(): NetworkInterface[] {
       const namePtr = Pointer.readPointer(entry, IF_NAMEINDEX_NAME) as ArrayBuffer | null;
       if (index === 0 && namePtr === null) break;
       if (index === 0) continue;
-      out.push({ index, name: nativeCString(namePtr) });
+      out.push({
+        index,
+        name: nativeCString(namePtr)
+      });
     }
     return out;
   } finally {
@@ -1777,7 +1780,7 @@ function readCmsgEcn(controlBuf: ArrayBuffer, controlLen: number): number | unde
   return ecn;
 }
 function cmsgAlign(length: number): number {
-  return (length + 7) & ~7;
+  return length + 7 & ~7;
 }
 function forEachCmsg(controlBuf: ArrayBuffer, controlLen: number, cb: (control: DataView, base: number, cmsgLen: number, level: number, type: number) => void): void {
   const control = new DataView(controlBuf);

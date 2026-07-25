@@ -19,7 +19,11 @@ describe('fino:database facade', () => {
     const fragment = sql`SELECT ${sql.identifier('user id')} FROM ${sql.identifier('users')} WHERE id = ${42} AND name IN (${sql.join(['Ada', 'Grace'])})`;
     t.equal(fragment.text('postgres'), 'SELECT "user id" FROM "users" WHERE id = $1 AND name IN ($2, $3)');
     t.equal(fragment.text('sqlite'), 'SELECT "user id" FROM "users" WHERE id = ? AND name IN (?, ?)');
-    t.deepEqual(fragment.values, [42, 'Ada', 'Grace']);
+    t.deepEqual(fragment.values, [
+      42,
+      'Ada',
+      'Grace'
+    ]);
   });
   it('rejects unsafe SQL identifiers', (t) => {
     t.throws(() => sql.identifier('users; DROP TABLE users'), /identifier/i);

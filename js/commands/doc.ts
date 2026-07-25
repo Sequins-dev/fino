@@ -3751,57 +3751,57 @@ function filesPositional() {
 *
 */
 const command = new Task({
-    name: 'doc',
-    description: 'Generate, search, and test API docs from commented source files',
-    outputMode: 'both',
-    run: runBuildCommand,
-    cli: {
-      options: buildOptions(),
-      positionals: filesPositional()
-    },
-    children: [
-      new Task({
-        name: 'build',
-        description: 'Generate API docs',
-        outputMode: 'both',
-        run: runBuildCommand,
-        cli: {
-          options: buildOptions(),
-          positionals: filesPositional()
-        }
-      }),
-      new Task({
-        name: 'show',
-        description: 'Print one documented symbol as Markdown',
-        outputMode: 'both',
-        run: runShowCommand,
-        cli: { positionals: [{
-          name: 'symbol',
-          type: 'string',
-          required: true,
-          description: 'Symbol id or name to show'
-        }] }
-      }),
-      new Task({
-        name: 'search',
-        description: 'Search generated docs',
-        outputMode: 'both',
-        run: runSearchCommand,
-        cli: { positionals: [{
-          name: 'query',
-          type: 'string',
-          multiple: true,
-          required: true,
-          description: 'Search query'
-        }] }
-      }),
-      new Task({
-        name: 'test',
-        description: 'Run examples from documentation comments',
-        outputMode: 'both',
-        run: runDocTestCommand,
-        cli: { positionals: filesPositional() }
-      })
-    ]
+  name: 'doc',
+  description: 'Generate, search, and test API docs from commented source files',
+  outputMode: 'both',
+  run: runBuildCommand,
+  cli: {
+    options: buildOptions(),
+    positionals: filesPositional()
+  },
+  children: [
+    new Task({
+      name: 'build',
+      description: 'Generate API docs',
+      outputMode: 'both',
+      run: runBuildCommand,
+      cli: {
+        options: buildOptions(),
+        positionals: filesPositional()
+      }
+    }),
+    new Task({
+      name: 'show',
+      description: 'Print one documented symbol as Markdown',
+      outputMode: 'both',
+      run: runShowCommand,
+      cli: { positionals: [{
+        name: 'symbol',
+        type: 'string',
+        required: true,
+        description: 'Symbol id or name to show'
+      }] }
+    }),
+    new Task({
+      name: 'search',
+      description: 'Search generated docs',
+      outputMode: 'both',
+      run: runSearchCommand,
+      cli: { positionals: [{
+        name: 'query',
+        type: 'string',
+        multiple: true,
+        required: true,
+        description: 'Search query'
+      }] }
+    }),
+    new Task({
+      name: 'test',
+      description: 'Run examples from documentation comments',
+      outputMode: 'both',
+      run: runDocTestCommand,
+      cli: { positionals: filesPositional() }
+    })
+  ]
 });
 export { command as default };

@@ -1088,10 +1088,7 @@ const _sslSymbols = {
     result: 'i32'
   },
   SSL_CTX_use_certificate_chain_file: {
-    parameters: [
-      'pointer',
-      'buffer'
-    ],
+    parameters: ['pointer', 'buffer'],
     result: 'i32'
   },
   SSL_CTX_use_PrivateKey_file: {

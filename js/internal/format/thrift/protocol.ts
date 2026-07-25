@@ -366,7 +366,6 @@ export abstract class ProtocolBase {
     if (this.writer === undefined) throw new Error('thrift: bytes() called on a reader protocol');
     return this.writer.bytes();
   }
-
   /**
   * Returns how many input bytes the reader has consumed so far, or `0` in
   * writer mode.

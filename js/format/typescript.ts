@@ -787,7 +787,6 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
 export function lint(source: string, options: LintOptions = {}): LintResult {
   return lintNative(String(source), options) as LintResult;
 }
-
 interface ServeCacheEntry {
   mtimeMs: number;
   size: number;
@@ -845,10 +844,7 @@ export function transpileFiles(root: string, opts: TranspileFilesOptions = {}): 
   const prefix = opts.prefix ?? '/';
   const cache = new Map<string, ServeCacheEntry>();
   const deps = async () => {
-    const [{ DiskFileSystem }, { join, normalize }] = await Promise.all([
-      import('fino:file'),
-      import('fino:file/path')
-    ]);
+    const [{ DiskFileSystem }, { join, normalize }] = await Promise.all([import('fino:file'), import('fino:file/path')]);
     return {
       fs: new DiskFileSystem(),
       join,

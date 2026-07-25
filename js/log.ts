@@ -358,24 +358,24 @@ export function getLogContext(): Fields {
   return { ...logContext.get() ?? {} };
 }
 /**
- * Enter a disposable structured log context scope.
- *
- * The provided fields are shallow-merged over any existing context and are
- * visible to logger calls made while the scope is active, including async
- * continuations scheduled before the scope is disposed. Disposing restores the
- * previous log context for the current execution branch.
- *
- * ```ts no_run
+* Enter a disposable structured log context scope.
+*
+* The provided fields are shallow-merged over any existing context and are
+* visible to logger calls made while the scope is active, including async
+* continuations scheduled before the scope is disposed. Disposing restores the
+* previous log context for the current execution branch.
+*
+* ```ts no_run
 * import { createLogger, withLogContext } from 'fino:log';
- *
- * const log = createLogger({ name: 'api' });
+*
+* const log = createLogger({ name: 'api' });
 * {
 *   using scope = withLogContext({ requestId: 'req-1' });
 *   await Promise.resolve();
- *   log.info('handled request');
+*   log.info('handled request');
 * }
- * ```
- */
+* ```
+*/
 export function withLogContext(context: Fields): LogContextScope {
   return logContext.withValue({
     ...logContext.get() ?? {},

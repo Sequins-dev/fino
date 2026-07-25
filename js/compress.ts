@@ -111,10 +111,7 @@ export type {
 * console.log(format);
 * ```
 */
- CompressionFormat,
- CompressOptions,
- DecompressOptions,
- CompressionTransform } from './internal/compress/common.ts';
+ CompressionFormat, CompressOptions, DecompressOptions, CompressionTransform } from './internal/compress/common.ts';
 /**
 * `true` when the Brotli encoder and decoder backend libraries are available.
 *

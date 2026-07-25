@@ -40,7 +40,6 @@
 *
 * @internal
 */
-
 /**
 * Parsed cron specification: the sorted, deduplicated set of allowed values for
 * each of the five fields, plus flags recording whether day-of-month and
@@ -131,7 +130,6 @@ export interface IntervalSpec {
 * @internal
 */
 export type ScheduleSpec = CronSpec | IntervalSpec;
-
 const ALIASES: Record<string, string> = {
   '@hourly': '0 * * * *',
   '@daily': '0 0 * * *',
@@ -140,7 +138,6 @@ const ALIASES: Record<string, string> = {
   '@yearly': '0 0 1 1 *',
   '@annually': '0 0 1 1 *'
 };
-
 const DURATION_RE = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/;
 const DURATION_SCALE: Record<string, number> = {
   ms: 1,
@@ -149,20 +146,38 @@ const DURATION_SCALE: Record<string, number> = {
   h: 36e5,
   d: 864e5
 };
-
 interface FieldRange {
   name: string;
   min: number;
   max: number;
 }
 const FIELDS: FieldRange[] = [
-  { name: 'minute', min: 0, max: 59 },
-  { name: 'hour', min: 0, max: 23 },
-  { name: 'day-of-month', min: 1, max: 31 },
-  { name: 'month', min: 1, max: 12 },
-  { name: 'day-of-week', min: 0, max: 7 }
+  {
+    name: 'minute',
+    min: 0,
+    max: 59
+  },
+  {
+    name: 'hour',
+    min: 0,
+    max: 23
+  },
+  {
+    name: 'day-of-month',
+    min: 1,
+    max: 31
+  },
+  {
+    name: 'month',
+    min: 1,
+    max: 12
+  },
+  {
+    name: 'day-of-week',
+    min: 0,
+    max: 7
+  }
 ];
-
 function parseField(text: string, range: FieldRange): {
   values: number[];
   restricted: boolean;
@@ -222,7 +237,6 @@ function parseField(text: string, range: FieldRange): {
     restricted
   };
 }
-
 /**
 * Parse a schedule specification — a 5-field cron expression, an `@alias`, or
 * `every:<duration>` — into a `ScheduleSpec`.
@@ -303,14 +317,12 @@ export function parseCron(spec: string): ScheduleSpec {
     dowRestricted: dow.restricted
   };
 }
-
 function nextAllowed(values: number[], from: number): number | null {
   for (const v of values) {
     if (v >= from) return v;
   }
   return null;
 }
-
 function dayMatches(spec: CronSpec, date: Date): boolean {
   const domOk = spec.daysOfMonth.includes(date.getUTCDate());
   const dowOk = spec.daysOfWeek.includes(date.getUTCDay());
@@ -319,9 +331,7 @@ function dayMatches(spec: CronSpec, date: Date): boolean {
   if (spec.dowRestricted) return dowOk;
   return true;
 }
-
 const FIVE_YEARS_MS = 5 * 366 * 864e5;
-
 /**
 * Next occurrence of `spec` strictly after `afterMs`, as epoch milliseconds.
 *
@@ -393,8 +403,6 @@ export function nextOccurrence(spec: ScheduleSpec, afterMs: number, anchorMs = 0
     }
     if (minute !== t.getUTCMinutes()) {
       t = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), t.getUTCHours(), minute));
-      // Hour rollover from minute advance cannot happen: nextAllowed(minutes)
-      // returned a value >= current minute within the same hour.
     }
     return t.getTime();
   }

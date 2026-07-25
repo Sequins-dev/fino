@@ -1,24 +1,22 @@
 import { describe, it } from 'fino:test/test';
-import {
-  decodeBackendMessage,
-  encodeBind,
-  encodeCancelRequest,
-  encodeParse,
-  encodePasswordMessage,
-  encodeQuery,
-  encodeSaslInitialResponse,
-  encodeSaslResponse,
-  encodeStartupMessage
-} from 'internal:database/postgres/protocol';
+import { decodeBackendMessage, encodeBind, encodeCancelRequest, encodeParse, encodePasswordMessage, encodeQuery, encodeSaslInitialResponse, encodeSaslResponse, encodeStartupMessage } from 'internal:database/postgres/protocol';
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 describe('Postgres protocol messages', () => {
   it('encodes StartupMessage with protocol 3.0 and null-terminated parameters', (t) => {
-    t.equal(hex(encodeStartupMessage({ user: 'ada', database: 'app' })), '0000001f000300007573657200616461006461746162617365006170700000');
+    t.equal(hex(encodeStartupMessage({
+      user: 'ada',
+      database: 'app'
+    })), '0000001f000300007573657200616461006461746162617365006170700000');
   });
   it('encodes CancelRequest with process id and secret key', (t) => {
-    t.equal(hex(encodeCancelRequest(1234, new Uint8Array([1, 2, 3, 4]))), '0000001004d2162e000004d201020304');
+    t.equal(hex(encodeCancelRequest(1234, new Uint8Array([
+      1,
+      2,
+      3,
+      4
+    ]))), '0000001004d2162e000004d201020304');
   });
   it('encodes frontend query, parse, bind, and password messages', (t) => {
     t.equal(hex(encodeQuery('SELECT 1')), '510000000d53454c454354203100');
@@ -32,29 +30,111 @@ describe('Postgres protocol messages', () => {
   });
   it('decodes row descriptions, data rows, command completion, ready state, and notifications', (t) => {
     const rowDescription = new Uint8Array([
-      0x54, 0, 0, 0, 26, 0, 1,
-      0x6e, 0,
-      0, 0, 0, 0,
-      0, 0,
-      0, 0, 0, 23,
-      0, 4,
-      0xff, 0xff, 0xff, 0xff,
-      0, 0
+      84,
+      0,
+      0,
+      0,
+      26,
+      0,
+      1,
+      110,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      23,
+      0,
+      4,
+      255,
+      255,
+      255,
+      255,
+      0,
+      0
     ]);
     t.deepEqual(decodeBackendMessage(rowDescription), {
       type: 'RowDescription',
-      fields: [{ name: 'n', tableOid: 0, columnAttribute: 0, typeOid: 23, typeSize: 4, typeModifier: -1, format: 0 }]
+      fields: [{
+        name: 'n',
+        tableOid: 0,
+        columnAttribute: 0,
+        typeOid: 23,
+        typeSize: 4,
+        typeModifier: -1,
+        format: 0
+      }]
     });
-    t.deepEqual(decodeBackendMessage(new Uint8Array([0x44, 0, 0, 0, 12, 0, 1, 0, 0, 0, 1, 0x31])), {
+    t.deepEqual(decodeBackendMessage(new Uint8Array([
+      68,
+      0,
+      0,
+      0,
+      12,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      49
+    ])), {
       type: 'DataRow',
-      values: [new Uint8Array([0x31])]
+      values: [new Uint8Array([49])]
     });
-    t.deepEqual(decodeBackendMessage(new Uint8Array([0x43, 0, 0, 0, 13, 0x53, 0x45, 0x4c, 0x45, 0x43, 0x54, 0x20, 0x31, 0])), {
+    t.deepEqual(decodeBackendMessage(new Uint8Array([
+      67,
+      0,
+      0,
+      0,
+      13,
+      83,
+      69,
+      76,
+      69,
+      67,
+      84,
+      32,
+      49,
+      0
+    ])), {
       type: 'CommandComplete',
       tag: 'SELECT 1'
     });
-    t.deepEqual(decodeBackendMessage(new Uint8Array([0x5a, 0, 0, 0, 5, 0x49])), { type: 'ReadyForQuery', status: 'I' });
-    t.deepEqual(decodeBackendMessage(new Uint8Array([0x41, 0, 0, 0, 18, 0, 0, 0, 7, 0x63, 0x68, 0, 0x70, 0x61, 0x79, 0,])), {
+    t.deepEqual(decodeBackendMessage(new Uint8Array([
+      90,
+      0,
+      0,
+      0,
+      5,
+      73
+    ])), {
+      type: 'ReadyForQuery',
+      status: 'I'
+    });
+    t.deepEqual(decodeBackendMessage(new Uint8Array([
+      65,
+      0,
+      0,
+      0,
+      18,
+      0,
+      0,
+      0,
+      7,
+      99,
+      104,
+      0,
+      112,
+      97,
+      121,
+      0
+    ])), {
       type: 'NotificationResponse',
       processId: 7,
       channel: 'ch',

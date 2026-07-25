@@ -166,40 +166,40 @@ async function loadTaskRoot(dirPath: string): Promise<Task> {
 *
 */
 const command = new Task({
-    name: 'task',
-    description: 'Run project-local tasks from a tasks directory',
-    outputMode: 'both',
-    cli: {
-      allowUnknown: true,
-      allowHelp: false,
-      options: [{
-        flags: '--dir',
-        type: 'string',
-        description: 'Directory containing task modules'
-      }],
-      positionals: [{
-        name: 'args',
-        type: 'string',
-        multiple: true,
-        description: 'Task command and arguments'
-      }]
-    },
-    run: async function runTaskCommand(input: {
-      dir?: unknown;
-      args?: unknown;
-    }, ctx) {
-      const dirPath = resolveTaskDirectory(input.dir);
-      const root = await loadTaskRoot(dirPath);
-      const args = Array.isArray(input.args) ? input.args.map(String) : [];
-      const writer = makeCliWriter(ctx.writer.mode, ctx.writer);
-      return await root.parse(args, {
-        outputMode: ctx.writer.mode,
-        writer,
-        signal: ctx.signal,
-        env: ctx.env,
-        cwd: ctx.cwd,
-        prompt: ctx.prompt
-      });
-    }
+  name: 'task',
+  description: 'Run project-local tasks from a tasks directory',
+  outputMode: 'both',
+  cli: {
+    allowUnknown: true,
+    allowHelp: false,
+    options: [{
+      flags: '--dir',
+      type: 'string',
+      description: 'Directory containing task modules'
+    }],
+    positionals: [{
+      name: 'args',
+      type: 'string',
+      multiple: true,
+      description: 'Task command and arguments'
+    }]
+  },
+  run: async function runTaskCommand(input: {
+    dir?: unknown;
+    args?: unknown;
+  }, ctx) {
+    const dirPath = resolveTaskDirectory(input.dir);
+    const root = await loadTaskRoot(dirPath);
+    const args = Array.isArray(input.args) ? input.args.map(String) : [];
+    const writer = makeCliWriter(ctx.writer.mode, ctx.writer);
+    return await root.parse(args, {
+      outputMode: ctx.writer.mode,
+      writer,
+      signal: ctx.signal,
+      env: ctx.env,
+      cwd: ctx.cwd,
+      prompt: ctx.prompt
+    });
+  }
 });
 export { command as default };

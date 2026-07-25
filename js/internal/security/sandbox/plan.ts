@@ -275,14 +275,42 @@ export interface SeccompPlan {
   rules: SeccompRule[];
 }
 const X86_64_SYSCALLS: Record<string, number> = {
-  kill: 62, getpid: 39, ptrace: 101, bpf: 321, clone: 56, clone3: 435,
-  fork: 57, vfork: 58, socket: 41, connect: 42, accept: 43, sendto: 44,
-  recvfrom: 45, socketpair: 53, bind: 49, listen: 50, accept4: 288, exit_group: 231
+  kill: 62,
+  getpid: 39,
+  ptrace: 101,
+  bpf: 321,
+  clone: 56,
+  clone3: 435,
+  fork: 57,
+  vfork: 58,
+  socket: 41,
+  connect: 42,
+  accept: 43,
+  sendto: 44,
+  recvfrom: 45,
+  socketpair: 53,
+  bind: 49,
+  listen: 50,
+  accept4: 288,
+  exit_group: 231
 };
 const AARCH64_SYSCALLS: Record<string, number> = {
-  kill: 129, getpid: 172, ptrace: 117, bpf: 280, clone: 220, clone3: 435,
-  socket: 198, socketpair: 199, bind: 200, listen: 201, accept: 202,
-  connect: 203, sendto: 206, recvfrom: 207, accept4: 242, exit_group: 94
+  kill: 129,
+  getpid: 172,
+  ptrace: 117,
+  bpf: 280,
+  clone: 220,
+  clone3: 435,
+  socket: 198,
+  socketpair: 199,
+  bind: 200,
+  listen: 201,
+  accept: 202,
+  connect: 203,
+  sendto: 206,
+  recvfrom: 207,
+  accept4: 242,
+  exit_group: 94
 };
 const SYSCALL_TABLE = arch === 'arm64' || arch === 'aarch64' ? AARCH64_SYSCALLS : X86_64_SYSCALLS;
 /**
@@ -308,10 +336,25 @@ export function syscallNumber(name: string): number | undefined {
   return SYSCALL_TABLE[name];
 }
 function forkSyscallNames(): string[] {
-  return arch === 'arm64' || arch === 'aarch64' ? ['clone', 'clone3'] : ['clone', 'clone3', 'fork', 'vfork'];
+  return arch === 'arm64' || arch === 'aarch64' ? ['clone', 'clone3'] : [
+    'clone',
+    'clone3',
+    'fork',
+    'vfork'
+  ];
 }
 function networkSyscallNames(): string[] {
-  return ['socket', 'socketpair', 'connect', 'bind', 'listen', 'accept', 'accept4', 'sendto', 'recvfrom'];
+  return [
+    'socket',
+    'socketpair',
+    'connect',
+    'bind',
+    'listen',
+    'accept',
+    'accept4',
+    'sendto',
+    'recvfrom'
+  ];
 }
 /**
 * True when the network policy leaves at least one directional allow rule.
@@ -339,7 +382,10 @@ export function networkAllowsNetwork(policy: NetworkPolicy | undefined): boolean
 }
 function pushUnique(rules: SeccompRule[], syscall: string, action: 'allow' | 'errno'): void {
   if (!rules.some((rule) => rule.syscall === syscall && rule.action === action)) {
-    rules.push({ syscall, action });
+    rules.push({
+      syscall,
+      action
+    });
   }
 }
 /**
@@ -378,16 +424,31 @@ export function planSeccomp(policy: SandboxPolicy): SeccompPlan {
   const noFork = policy.process?.allowFork === false;
   let plan: SeccompPlan;
   if (syscalls?.mode === 'allowlist') {
-    let rules: SeccompRule[] = syscalls.names.map((syscall) => ({ syscall, action: 'allow' as const }));
+    let rules: SeccompRule[] = syscalls.names.map((syscall) => ({
+      syscall,
+      action: 'allow' as const
+    }));
     if (noFork) {
       const fork = new Set(forkSyscallNames());
       rules = rules.filter((rule) => !fork.has(rule.syscall));
     }
-    plan = { defaultAction: 'kill', rules };
+    plan = {
+      defaultAction: 'kill',
+      rules
+    };
   } else if (syscalls?.mode === 'denylist') {
-    plan = { defaultAction: 'allow', rules: syscalls.names.map((syscall) => ({ syscall, action: 'errno' as const })) };
+    plan = {
+      defaultAction: 'allow',
+      rules: syscalls.names.map((syscall) => ({
+        syscall,
+        action: 'errno' as const
+      }))
+    };
   } else {
-    plan = { defaultAction: 'allow', rules: [] };
+    plan = {
+      defaultAction: 'allow',
+      rules: []
+    };
   }
   if (noFork && plan.defaultAction === 'allow') {
     for (const syscall of forkSyscallNames()) pushUnique(plan.rules, syscall, 'errno');

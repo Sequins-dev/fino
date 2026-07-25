@@ -83,54 +83,54 @@ import { TextDecoder as _TextDecoder } from '../../../../globals/encoding.ts';
 import { sym, FfiCallback, Pointer, h3Available, NGHTTP3_CALLBACKS_VERSION, NGHTTP3_SETTINGS_VERSION, CB_SIZE, SETTINGS_SIZE, CB_ACKED_STREAM_DATA, CB_STREAM_CLOSE, CB_RECV_DATA, CB_DEFERRED_CONSUME, CB_BEGIN_HEADERS, CB_RECV_HEADER, CB_END_HEADERS, CB_BEGIN_TRAILERS, CB_RECV_TRAILER, CB_END_TRAILERS, CB_END_STREAM, CB_RESET_STREAM, CB_SHUTDOWN, CB_RECV_SETTINGS2, SETTINGS_ENABLE_CONNECT_PROTOCOL as NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL, SETTINGS_H3_DATAGRAM as NGHTTP3_SETTINGS_H3_DATAGRAM, PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL, PROTO_SETTINGS_H3_DATAGRAM, NV_ENTRY_SIZE, VEC_ENTRY_SIZE, DR_READ_DATA, DR_SIZE, NGHTTP3_DATA_FLAG_EOF, NGHTTP3_DATA_FLAG_NO_END_STREAM, NGHTTP3_ERR_WOULDBLOCK, NGHTTP3_ERR_FATAL, NGHTTP3_ERR_MALFORMED_HTTP_HEADER, NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING, NGHTTP3_H3_MESSAGE_ERROR, NGHTTP3_H3_REQUEST_CANCELLED, buildNvArray, readRcbuf, writeCbPtr } from './bindings.ts';
 import { injectWebTransportSettings, readWebTransportSettings, SETTINGS_WT_ENABLED, SETTINGS_ENABLE_CONNECT_PROTOCOL, SETTINGS_H3_DATAGRAM, webTransportSettings, webTransportSettingsEnabled } from './webtransport.ts';
 /**
- * Re-exported from the h3 bindings module so drivers can build the native
- * name/value header array without importing `bindings.ts` separately.
- *
- * Takes an array of `[name, value]` header tuples and returns the packed
- * `nghttp3_nv` struct buffer plus the entry count, ready to hand to a submit
- * call. See `internal:net/http/h3/bindings` for the full description.
- */
+* Re-exported from the h3 bindings module so drivers can build the native
+* name/value header array without importing `bindings.ts` separately.
+*
+* Takes an array of `[name, value]` header tuples and returns the packed
+* `nghttp3_nv` struct buffer plus the entry count, ready to hand to a submit
+* call. See `internal:net/http/h3/bindings` for the full description.
+*/
 export { buildNvArray };
 /**
- * Event callbacks a driver registers with a session to observe decoded HTTP/3.
- *
- * The session invokes these synchronously from inside `readStream()` as
- * nghttp3 decodes inbound frames. Header and trailer fields arrive one at a
- * time between the matching `begin`/`end` pair; body chunks arrive as owned
- * `Uint8Array`s copied out of nghttp3's buffers, so handlers may retain them.
- * Stream ids are the QUIC stream ids as `bigint`. The three optional callbacks
- * fire only when the corresponding nghttp3 events occur, and `onAckedStreamData`
- * / `onShutdown` are also only installed when provided.
- *
- * ```ts no_run
- * import { Nghttp3Session, H3SessionCallbacks } from 'internal:net/http/h3/session';
- *
- * const parts: Uint8Array[] = [];
- * const callbacks: H3SessionCallbacks = {
- *   onBeginHeaders(streamId) {},
- *   onRecvHeader(streamId, token, name, value) {
- *     if (name === ':status') console.log('status', value);
- *   },
- *   onEndHeaders(streamId, fin) {},
- *   onBeginTrailers(streamId) {},
- *   onRecvTrailer(streamId, token, name, value) {},
- *   onEndTrailers(streamId, fin) {},
- *   onRecvData(streamId, data) { parts.push(data); },
- *   onEndStream(streamId) { console.log('body complete'); },
- *   onStreamClose(streamId, appErrorCode) {},
- *   onResetStream(streamId, appErrorCode) {},
- * };
- * const session = Nghttp3Session.createClient(callbacks);
- * ```
- */
+* Event callbacks a driver registers with a session to observe decoded HTTP/3.
+*
+* The session invokes these synchronously from inside `readStream()` as
+* nghttp3 decodes inbound frames. Header and trailer fields arrive one at a
+* time between the matching `begin`/`end` pair; body chunks arrive as owned
+* `Uint8Array`s copied out of nghttp3's buffers, so handlers may retain them.
+* Stream ids are the QUIC stream ids as `bigint`. The three optional callbacks
+* fire only when the corresponding nghttp3 events occur, and `onAckedStreamData`
+* / `onShutdown` are also only installed when provided.
+*
+* ```ts no_run
+* import { Nghttp3Session, H3SessionCallbacks } from 'internal:net/http/h3/session';
+*
+* const parts: Uint8Array[] = [];
+* const callbacks: H3SessionCallbacks = {
+*   onBeginHeaders(streamId) {},
+*   onRecvHeader(streamId, token, name, value) {
+*     if (name === ':status') console.log('status', value);
+*   },
+*   onEndHeaders(streamId, fin) {},
+*   onBeginTrailers(streamId) {},
+*   onRecvTrailer(streamId, token, name, value) {},
+*   onEndTrailers(streamId, fin) {},
+*   onRecvData(streamId, data) { parts.push(data); },
+*   onEndStream(streamId) { console.log('body complete'); },
+*   onStreamClose(streamId, appErrorCode) {},
+*   onResetStream(streamId, appErrorCode) {},
+* };
+* const session = Nghttp3Session.createClient(callbacks);
+* ```
+*/
 export interface H3SessionCallbacks {
   /** Start of a request or response header block on `streamId`. */
   onBeginHeaders(streamId: bigint): void;
   /**
-   * One decoded header field. `token` is the QPACK static-table token (or a
-   * negative value for dynamic fields), `name` is lowercased (pseudo-headers
-   * keep their leading colon), and `flags` carries nghttp3 header flags.
-   */
+  * One decoded header field. `token` is the QPACK static-table token (or a
+  * negative value for dynamic fields), `name` is lowercased (pseudo-headers
+  * keep their leading colon), and `flags` carries nghttp3 header flags.
+  */
   onRecvHeader(streamId: bigint, token: number, name: string, value: string, flags: number): void;
   /** Header block complete; `fin` is true when the peer also ended the stream. */
   onEndHeaders(streamId: bigint, fin: boolean): void;
@@ -145,55 +145,55 @@ export interface H3SessionCallbacks {
   /** The peer sent FIN on `streamId`; no more body or trailers will arrive. */
   onEndStream(streamId: bigint): void;
   /**
-   * The stream finished, cleanly or with an application error. Fires after the
-   * session has already dropped its per-stream bookkeeping for `streamId`.
-   */
+  * The stream finished, cleanly or with an application error. Fires after the
+  * session has already dropped its per-stream bookkeeping for `streamId`.
+  */
   onStreamClose(streamId: bigint, appErrorCode: bigint): void;
   /** The peer sent RESET_STREAM; the stream is aborted with `appErrorCode`. */
   onResetStream(streamId: bigint, appErrorCode: bigint): void;
   /**
-   * Optional. nghttp3 acknowledged `datalen` bytes of previously submitted body
-   * on `streamId` and no longer needs them retained. Only installed when
-   * provided; used by drivers that pace or account for outbound body bytes.
-   */
+  * Optional. nghttp3 acknowledged `datalen` bytes of previously submitted body
+  * on `streamId` and no longer needs them retained. Only installed when
+  * provided; used by drivers that pace or account for outbound body bytes.
+  */
   onAckedStreamData?(streamId: bigint, datalen: bigint): void;
   /**
-   * Optional. The peer sent GOAWAY; `lastStreamId` is the highest stream id it
-   * will still service. Streams above it should be treated as retryable.
-   */
+  * Optional. The peer sent GOAWAY; `lastStreamId` is the highest stream id it
+  * will still service. Streams above it should be treated as retryable.
+  */
   onShutdown?(lastStreamId: bigint): void;
   /**
-   * Optional. The peer's HTTP/3 SETTINGS were received (or, for WebTransport,
-   * decoded from the control-stream prefix). The map is keyed by SETTINGS
-   * identifier. May fire more than once as settings are merged.
-   */
+  * Optional. The peer's HTTP/3 SETTINGS were received (or, for WebTransport,
+  * decoded from the control-stream prefix). The map is keyed by SETTINGS
+  * identifier. May fire more than once as settings are merged.
+  */
   onRecvSettings?(settings: ReadonlyMap<number, number>): void;
 }
 /**
- * Accepted shapes for a request or response body passed to a submit call.
- *
- * A single `Uint8Array` is sent as one complete body. An async iterable is
- * pulled lazily, one chunk at a time, so the producer only advances as nghttp3
- * drains what it has already framed — this is how outbound backpressure reaches
- * a streaming source. Iterable chunks may be `Uint8Array` or `ArrayBuffer`;
- * empty chunks are skipped.
- */
+* Accepted shapes for a request or response body passed to a submit call.
+*
+* A single `Uint8Array` is sent as one complete body. An async iterable is
+* pulled lazily, one chunk at a time, so the producer only advances as nghttp3
+* drains what it has already framed — this is how outbound backpressure reaches
+* a streaming source. Iterable chunks may be `Uint8Array` or `ArrayBuffer`;
+* empty chunks are skipped.
+*/
 export type H3BodySource = Uint8Array | AsyncIterable<Uint8Array | ArrayBuffer>;
 /**
- * Options for creating a session with `createServer` / `createClient`.
- *
- * ```ts no_run
- * import { Nghttp3Session } from 'internal:net/http/h3/session';
- *
- * const session = Nghttp3Session.createServer(callbacks, { webTransport: true });
- * ```
- */
+* Options for creating a session with `createServer` / `createClient`.
+*
+* ```ts no_run
+* import { Nghttp3Session } from 'internal:net/http/h3/session';
+*
+* const session = Nghttp3Session.createServer(callbacks, { webTransport: true });
+* ```
+*/
 export interface H3SessionOptions {
   /**
-   * Enable WebTransport over HTTP/3. When true the session advertises the
-   * extended-CONNECT and H3-datagram SETTINGS and performs WebTransport
-   * SETTINGS negotiation on the control stream. Defaults to false.
-   */
+  * Enable WebTransport over HTTP/3. When true the session advertises the
+  * extended-CONNECT and H3-datagram SETTINGS and performs WebTransport
+  * SETTINGS negotiation on the control stream. Defaults to false.
+  */
   webTransport?: boolean;
 }
 interface BodySlot {
@@ -258,36 +258,36 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 /**
- * A single HTTP/3 connection backed by a native `nghttp3_conn`.
- *
- * Instances are created through the `createServer` / `createClient` static
- * factories, never with `new` — the constructor is private because it must
- * install the native callback and data-reader structs before the connection is
- * usable. A session owns native resources and must be released with `close()`
- * (or `using`, via `Symbol.dispose`) when the QUIC connection goes away.
- *
- * A driver uses a session in three overlapping roles: it submits outbound
- * requests or responses (`submitRequest` / `submitResponse` / `submitTrailers`),
- * feeds inbound QUIC stream bytes with `readStream()`, and lets `drainWrites()`
- * hand nghttp3's framed output to the per-stream writers registered with
- * `addQuicStream()`. Decoded HTTP events surface through the `H3SessionCallbacks`
- * passed at creation.
- *
- * ```ts no_run
- * import { Nghttp3Session } from 'internal:net/http/h3/session';
- *
- * using session = Nghttp3Session.createClient(callbacks);
- * session.bindControlStream(controlStreamId);
- * session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
- * session.addQuicStream(controlStreamId, controlWriter);
- * session.addQuicStream(requestStreamId, requestWriter);
- * session.submitRequest(requestStreamId, [
- *   [':method', 'GET'], [':scheme', 'https'],
- *   [':authority', 'example.com'], [':path', '/'],
- * ]);
- * session.drainWrites();
- * ```
- */
+* A single HTTP/3 connection backed by a native `nghttp3_conn`.
+*
+* Instances are created through the `createServer` / `createClient` static
+* factories, never with `new` — the constructor is private because it must
+* install the native callback and data-reader structs before the connection is
+* usable. A session owns native resources and must be released with `close()`
+* (or `using`, via `Symbol.dispose`) when the QUIC connection goes away.
+*
+* A driver uses a session in three overlapping roles: it submits outbound
+* requests or responses (`submitRequest` / `submitResponse` / `submitTrailers`),
+* feeds inbound QUIC stream bytes with `readStream()`, and lets `drainWrites()`
+* hand nghttp3's framed output to the per-stream writers registered with
+* `addQuicStream()`. Decoded HTTP events surface through the `H3SessionCallbacks`
+* passed at creation.
+*
+* ```ts no_run
+* import { Nghttp3Session } from 'internal:net/http/h3/session';
+*
+* using session = Nghttp3Session.createClient(callbacks);
+* session.bindControlStream(controlStreamId);
+* session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
+* session.addQuicStream(controlStreamId, controlWriter);
+* session.addQuicStream(requestStreamId, requestWriter);
+* session.submitRequest(requestStreamId, [
+*   [':method', 'GET'], [':scheme', 'https'],
+*   [':authority', 'example.com'], [':path', '/'],
+* ]);
+* session.drainWrites();
+* ```
+*/
 export class Nghttp3Session {
   #conn: ArrayBuffer;
   #callbacks: Array<{
@@ -338,51 +338,51 @@ export class Nghttp3Session {
     return this.#ptrSlots[slot]!;
   }
   /**
-   * Create a server-side session, whose peer is an HTTP/3 client.
-   *
-   * Allocates and initializes a new `nghttp3_conn` in server mode and installs
-   * the callbacks in `cb`. Throws if libnghttp3 could not be loaded on this
-   * platform.
-   *
-   * ```ts no_run
-   * import { Nghttp3Session } from 'internal:net/http/h3/session';
-   *
-   * const session = Nghttp3Session.createServer({
-   *   onBeginHeaders(streamId) {},
-   *   onRecvHeader(streamId, token, name, value) {},
-   *   onEndHeaders(streamId, fin) {
-   *     session.submitResponse(streamId, [[':status', '204']]);
-   *     session.drainWrites();
-   *   },
-   *   onBeginTrailers(streamId) {},
-   *   onRecvTrailer(streamId, token, name, value) {},
-   *   onEndTrailers(streamId, fin) {},
-   *   onRecvData(streamId, data) {},
-   *   onEndStream(streamId) {},
-   *   onStreamClose(streamId, appErrorCode) {},
-   *   onResetStream(streamId, appErrorCode) {},
-   * });
-   * ```
-   */
+  * Create a server-side session, whose peer is an HTTP/3 client.
+  *
+  * Allocates and initializes a new `nghttp3_conn` in server mode and installs
+  * the callbacks in `cb`. Throws if libnghttp3 could not be loaded on this
+  * platform.
+  *
+  * ```ts no_run
+  * import { Nghttp3Session } from 'internal:net/http/h3/session';
+  *
+  * const session = Nghttp3Session.createServer({
+  *   onBeginHeaders(streamId) {},
+  *   onRecvHeader(streamId, token, name, value) {},
+  *   onEndHeaders(streamId, fin) {
+  *     session.submitResponse(streamId, [[':status', '204']]);
+  *     session.drainWrites();
+  *   },
+  *   onBeginTrailers(streamId) {},
+  *   onRecvTrailer(streamId, token, name, value) {},
+  *   onEndTrailers(streamId, fin) {},
+  *   onRecvData(streamId, data) {},
+  *   onEndStream(streamId) {},
+  *   onStreamClose(streamId, appErrorCode) {},
+  *   onResetStream(streamId, appErrorCode) {},
+  * });
+  * ```
+  */
   static createServer(cb: H3SessionCallbacks, options: H3SessionOptions = {}): Nghttp3Session {
     if (!h3Available || sym === null) throw new Error('libnghttp3 is not available');
     return Nghttp3Session.#create(cb, true, options);
   }
   /**
-   * Create a client-side session, whose peer is an HTTP/3 server.
-   *
-   * Allocates and initializes a new `nghttp3_conn` in client mode and installs
-   * the callbacks in `cb`. Throws if libnghttp3 could not be loaded on this
-   * platform.
-   *
-   * ```ts no_run
-   * import { Nghttp3Session } from 'internal:net/http/h3/session';
-   *
-   * const session = Nghttp3Session.createClient(callbacks);
-   * session.bindControlStream(controlStreamId);
-   * session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
-   * ```
-   */
+  * Create a client-side session, whose peer is an HTTP/3 server.
+  *
+  * Allocates and initializes a new `nghttp3_conn` in client mode and installs
+  * the callbacks in `cb`. Throws if libnghttp3 could not be loaded on this
+  * platform.
+  *
+  * ```ts no_run
+  * import { Nghttp3Session } from 'internal:net/http/h3/session';
+  *
+  * const session = Nghttp3Session.createClient(callbacks);
+  * session.bindControlStream(controlStreamId);
+  * session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
+  * ```
+  */
   static createClient(cb: H3SessionCallbacks, options: H3SessionOptions = {}): Nghttp3Session {
     if (!h3Available || sym === null) throw new Error('libnghttp3 is not available');
     return Nghttp3Session.#create(cb, false, options);
@@ -704,19 +704,19 @@ export class Nghttp3Session {
   // Stream binding — call once during connection startup.
   // -------------------------------------------------------------------------
   /**
-   * Bind the local outgoing HTTP/3 control stream, once, during startup.
-   *
-   * `controlStreamId` must be a freshly opened unidirectional QUIC stream. This
-   * also marks the session ready, so `closeWhenIdle()` will send GOAWAY. Call
-   * before submitting any request or response, and register the same stream's
-   * writer with `addQuicStream()` so the control frames can be flushed. Throws
-   * if nghttp3 rejects the binding.
-   *
-   * ```ts no_run
-   * session.bindControlStream(controlStreamId);
-   * session.addQuicStream(controlStreamId, controlWriter);
-   * ```
-   */
+  * Bind the local outgoing HTTP/3 control stream, once, during startup.
+  *
+  * `controlStreamId` must be a freshly opened unidirectional QUIC stream. This
+  * also marks the session ready, so `closeWhenIdle()` will send GOAWAY. Call
+  * before submitting any request or response, and register the same stream's
+  * writer with `addQuicStream()` so the control frames can be flushed. Throws
+  * if nghttp3 rejects the binding.
+  *
+  * ```ts no_run
+  * session.bindControlStream(controlStreamId);
+  * session.addQuicStream(controlStreamId, controlWriter);
+  * ```
+  */
   bindControlStream(controlStreamId: bigint): void {
     const rc = sym!.nghttp3_conn_bind_control_stream(this.#conn, controlStreamId) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_bind_control_stream failed: ${rc}`);
@@ -724,34 +724,34 @@ export class Nghttp3Session {
     this.#ready = true;
   }
   /**
-   * Bind the local QPACK encoder and decoder streams, once, during startup.
-   *
-   * Both must be freshly opened unidirectional QUIC streams. Until this is
-   * called, `submitRequest` and `submitResponse` throw, since QPACK cannot
-   * encode headers without its streams. Throws if nghttp3 rejects the binding.
-   *
-   * ```ts no_run
-   * session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
-   * ```
-   */
+  * Bind the local QPACK encoder and decoder streams, once, during startup.
+  *
+  * Both must be freshly opened unidirectional QUIC streams. Until this is
+  * called, `submitRequest` and `submitResponse` throw, since QPACK cannot
+  * encode headers without its streams. Throws if nghttp3 rejects the binding.
+  *
+  * ```ts no_run
+  * session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
+  * ```
+  */
   bindQpackStreams(qencId: bigint, qdecId: bigint): void {
     const rc = sym!.nghttp3_conn_bind_qpack_streams(this.#conn, qencId, qdecId) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_bind_qpack_streams failed: ${rc}`);
     this.#qpackStreamsBound = true;
   }
   /**
-   * Register the QUIC writer for a stream so `drainWrites()` can flush to it.
-   *
-   * Call once per QUIC stream the driver opens or accepts — control, QPACK, and
-   * every request/response stream — before draining writes for that stream. The
-   * writer must expose `writeSync` and `closeSync`, which the synchronous write
-   * drain uses; the async `write`/`close` are used by async body pulling. The
-   * session drops the entry automatically when the stream closes or resets.
-   *
-   * ```ts no_run
-   * session.addQuicStream(requestStreamId, requestStream.writer);
-   * ```
-   */
+  * Register the QUIC writer for a stream so `drainWrites()` can flush to it.
+  *
+  * Call once per QUIC stream the driver opens or accepts — control, QPACK, and
+  * every request/response stream — before draining writes for that stream. The
+  * writer must expose `writeSync` and `closeSync`, which the synchronous write
+  * drain uses; the async `write`/`close` are used by async body pulling. The
+  * session drops the entry automatically when the stream closes or resets.
+  *
+  * ```ts no_run
+  * session.addQuicStream(requestStreamId, requestStream.writer);
+  * ```
+  */
   // Register a QUIC stream writer so drainWrites can write to it.
   addQuicStream(streamId: bigint, writer: {
     write(b: Uint8Array): Promise<void>;
@@ -765,24 +765,24 @@ export class Nghttp3Session {
   // Submit operations — synchronous; safe to call on the JS thread.
   // -------------------------------------------------------------------------
   /**
-   * Queue an HTTP/3 response on a request stream (server sessions).
-   *
-   * `headers` must start with the `:status` pseudo-header. `body` may be omitted
-   * (empty response), a single `Uint8Array`, or an async iterable pulled lazily.
-   * `trailers` are sent after the body; passing trailers with no body sends an
-   * empty body so the trailer block has a stream to follow. Nothing goes on the
-   * wire until the next `drainWrites()`.
-   *
-   * Throws if the session is closed or its QPACK streams are not yet bound, or
-   * if nghttp3 rejects the submission.
-   *
-   * ```ts no_run
-   * session.submitResponse(streamId,
-   *   [[':status', '200'], ['content-type', 'text/plain']],
-   *   new TextEncoder().encode('hello'));
-   * session.drainWrites();
-   * ```
-   */
+  * Queue an HTTP/3 response on a request stream (server sessions).
+  *
+  * `headers` must start with the `:status` pseudo-header. `body` may be omitted
+  * (empty response), a single `Uint8Array`, or an async iterable pulled lazily.
+  * `trailers` are sent after the body; passing trailers with no body sends an
+  * empty body so the trailer block has a stream to follow. Nothing goes on the
+  * wire until the next `drainWrites()`.
+  *
+  * Throws if the session is closed or its QPACK streams are not yet bound, or
+  * if nghttp3 rejects the submission.
+  *
+  * ```ts no_run
+  * session.submitResponse(streamId,
+  *   [[':status', '200'], ['content-type', 'text/plain']],
+  *   new TextEncoder().encode('hello'));
+  * session.drainWrites();
+  * ```
+  */
   submitResponse(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
     if (!this.#qpackStreamsBound) throw new Error('H3 session QPACK streams are not bound');
@@ -796,23 +796,23 @@ export class Nghttp3Session {
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_response failed: ${rc}`);
   }
   /**
-   * Queue an HTTP/3 request on a client-opened stream (client sessions).
-   *
-   * `headers` must include the `:method`, `:scheme`, `:authority`, and `:path`
-   * pseudo-headers. `body` and `trailers` behave exactly as in `submitResponse`.
-   * Nothing goes on the wire until the next `drainWrites()`.
-   *
-   * Throws if the session is closed or its QPACK streams are not yet bound, or
-   * if nghttp3 rejects the submission.
-   *
-   * ```ts no_run
-   * session.submitRequest(streamId, [
-   *   [':method', 'POST'], [':scheme', 'https'],
-   *   [':authority', 'example.com'], [':path', '/upload'],
-   * ], new TextEncoder().encode('payload'));
-   * session.drainWrites();
-   * ```
-   */
+  * Queue an HTTP/3 request on a client-opened stream (client sessions).
+  *
+  * `headers` must include the `:method`, `:scheme`, `:authority`, and `:path`
+  * pseudo-headers. `body` and `trailers` behave exactly as in `submitResponse`.
+  * Nothing goes on the wire until the next `drainWrites()`.
+  *
+  * Throws if the session is closed or its QPACK streams are not yet bound, or
+  * if nghttp3 rejects the submission.
+  *
+  * ```ts no_run
+  * session.submitRequest(streamId, [
+  *   [':method', 'POST'], [':scheme', 'https'],
+  *   [':authority', 'example.com'], [':path', '/upload'],
+  * ], new TextEncoder().encode('payload'));
+  * session.drainWrites();
+  * ```
+  */
   submitRequest(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
     if (!this.#qpackStreamsBound) throw new Error('H3 session QPACK streams are not bound');
@@ -826,20 +826,20 @@ export class Nghttp3Session {
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_request failed: ${rc}`);
   }
   /**
-   * Queue a trailer block on a stream whose body has already been sent.
-   *
-   * Use this to send trailers out of band — when the trailer set is only known
-   * after the body was submitted without a `trailers` argument. Trailers passed
-   * to `submitRequest`/`submitResponse` are handled internally and do not need
-   * this call. Nothing goes on the wire until the next `drainWrites()`.
-   *
-   * Throws if the session is closed or nghttp3 rejects the submission.
-   *
-   * ```ts no_run
-   * session.submitTrailers(streamId, [['x-checksum', 'a1b2c3']]);
-   * session.drainWrites();
-   * ```
-   */
+  * Queue a trailer block on a stream whose body has already been sent.
+  *
+  * Use this to send trailers out of band — when the trailer set is only known
+  * after the body was submitted without a `trailers` argument. Trailers passed
+  * to `submitRequest`/`submitResponse` are handled internally and do not need
+  * this call. Nothing goes on the wire until the next `drainWrites()`.
+  *
+  * Throws if the session is closed or nghttp3 rejects the submission.
+  *
+  * ```ts no_run
+  * session.submitTrailers(streamId, [['x-checksum', 'a1b2c3']]);
+  * session.drainWrites();
+  * ```
+  */
   submitTrailers(streamId: bigint, trailers: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
     const { buf: nvBuf, nv } = buildNvArray(trailers);
@@ -911,25 +911,25 @@ export class Nghttp3Session {
   // Read: feed QUIC stream bytes into nghttp3.
   // -------------------------------------------------------------------------
   /**
-   * Feed inbound QUIC stream bytes into nghttp3 for decoding.
-   *
-   * `data` is the bytes just received on `streamId`; `fin` marks the QUIC FIN.
-   * nghttp3 decodes them and drives the registered `H3SessionCallbacks`
-   * synchronously, then this method drains any writes the decode produced (for
-   * example QPACK acknowledgements). Pass an empty `data` with `fin` true to
-   * signal a FIN that carried no bytes.
-   *
-   * A malformed HTTP header or message closes just the offending stream; any
-   * other nghttp3 error closes the whole session. Either way the underlying
-   * error is thrown. Throws immediately if the session is closed, or if called
-   * re-entrantly while another `readStream`/`drainWrites` is on the stack.
-   *
-   * ```ts no_run
-   * for await (const { bytes, fin } of quicStream) {
-   *   session.readStream(quicStream.id, bytes ?? new Uint8Array(0), fin);
-   * }
-   * ```
-   */
+  * Feed inbound QUIC stream bytes into nghttp3 for decoding.
+  *
+  * `data` is the bytes just received on `streamId`; `fin` marks the QUIC FIN.
+  * nghttp3 decodes them and drives the registered `H3SessionCallbacks`
+  * synchronously, then this method drains any writes the decode produced (for
+  * example QPACK acknowledgements). Pass an empty `data` with `fin` true to
+  * signal a FIN that carried no bytes.
+  *
+  * A malformed HTTP header or message closes just the offending stream; any
+  * other nghttp3 error closes the whole session. Either way the underlying
+  * error is thrown. Throws immediately if the session is closed, or if called
+  * re-entrantly while another `readStream`/`drainWrites` is on the stack.
+  *
+  * ```ts no_run
+  * for await (const { bytes, fin } of quicStream) {
+  *   session.readStream(quicStream.id, bytes ?? new Uint8Array(0), fin);
+  * }
+  * ```
+  */
   readStream(streamId: bigint, data: Uint8Array, fin: boolean): void {
     if (this.#locked) throw new Error('nghttp3 session operation re-entered');
     if (this.#closed) throw new Error('session closed');
@@ -963,25 +963,25 @@ export class Nghttp3Session {
   // Write drain: pull nghttp3 output and push to QUIC streams.
   // -------------------------------------------------------------------------
   /**
-   * Pull all pending nghttp3 output and write it to the QUIC stream writers.
-   *
-   * Repeatedly asks nghttp3 for framed bytes and hands each stream's output to
-   * the writer registered with `addQuicStream()` via `writeSync`, reporting the
-   * consumed length back to nghttp3, until nothing is left to write. Also
-   * flushes any trailers that a streaming body deferred, and closes streams
-   * whose FIN has been produced. Call after every submit and after any async
-   * body chunk becomes available; the read path also drains automatically.
-   *
-   * If the writer for a stream is missing, its queued data is dropped and the
-   * stream is cancelled so nghttp3 does not stall. Closes the session and throws
-   * on a fatal nghttp3 error. Throws immediately if the session is closed, or if
-   * called re-entrantly while another `readStream`/`drainWrites` is on the stack.
-   *
-   * ```ts no_run
-   * session.submitResponse(streamId, [[':status', '200']]);
-   * session.drainWrites();
-   * ```
-   */
+  * Pull all pending nghttp3 output and write it to the QUIC stream writers.
+  *
+  * Repeatedly asks nghttp3 for framed bytes and hands each stream's output to
+  * the writer registered with `addQuicStream()` via `writeSync`, reporting the
+  * consumed length back to nghttp3, until nothing is left to write. Also
+  * flushes any trailers that a streaming body deferred, and closes streams
+  * whose FIN has been produced. Call after every submit and after any async
+  * body chunk becomes available; the read path also drains automatically.
+  *
+  * If the writer for a stream is missing, its queued data is dropped and the
+  * stream is cancelled so nghttp3 does not stall. Closes the session and throws
+  * on a fatal nghttp3 error. Throws immediately if the session is closed, or if
+  * called re-entrantly while another `readStream`/`drainWrites` is on the stack.
+  *
+  * ```ts no_run
+  * session.submitResponse(streamId, [[':status', '200']]);
+  * session.drainWrites();
+  * ```
+  */
   drainWrites(): void {
     if (this.#locked) throw new Error('nghttp3 session operation re-entered');
     if (this.#closed) throw new Error('session closed');
@@ -1119,18 +1119,18 @@ export class Nghttp3Session {
     return this.#closed;
   }
   /**
-   * A copy of the HTTP/3 SETTINGS this session advertises to the peer, keyed by
-   * SETTINGS identifier. Populated with WebTransport settings when the session
-   * was created with `webTransport: true`.
-   */
+  * A copy of the HTTP/3 SETTINGS this session advertises to the peer, keyed by
+  * SETTINGS identifier. Populated with WebTransport settings when the session
+  * was created with `webTransport: true`.
+  */
   get localSettings(): ReadonlyMap<number, number> {
     return new Map(this.#localSettings);
   }
   /**
-   * A copy of the peer's HTTP/3 SETTINGS as received so far, keyed by SETTINGS
-   * identifier. Empty until `peerSettingsReceived` is true; may grow as further
-   * settings are merged.
-   */
+  * A copy of the peer's HTTP/3 SETTINGS as received so far, keyed by SETTINGS
+  * identifier. Empty until `peerSettingsReceived` is true; may grow as further
+  * settings are merged.
+  */
   get peerSettings(): ReadonlyMap<number, number> {
     return new Map(this.#peerSettings);
   }
@@ -1139,17 +1139,17 @@ export class Nghttp3Session {
     return this.#peerSettingsReceived;
   }
   /**
-   * True when the peer's received SETTINGS enable WebTransport (extended CONNECT
-   * plus H3 datagrams), meaning WebTransport CONNECT streams may be opened.
-   */
+  * True when the peer's received SETTINGS enable WebTransport (extended CONNECT
+  * plus H3 datagrams), meaning WebTransport CONNECT streams may be opened.
+  */
   get peerWebTransportReady(): boolean {
     return webTransportSettingsEnabled(this.#peerSettings);
   }
   /**
-   * Inject peer SETTINGS directly, bypassing the wire, for tests that need to
-   * exercise settings-dependent behavior without a live control stream. Not for
-   * production use.
-   */
+  * Inject peer SETTINGS directly, bypassing the wire, for tests that need to
+  * exercise settings-dependent behavior without a live control stream. Not for
+  * production use.
+  */
   _recordPeerSettingsForTest(settings: ReadonlyMap<number, number>): void {
     this.#recordPeerSettings(settings);
   }
@@ -1182,18 +1182,18 @@ export class Nghttp3Session {
     return injectWebTransportSettings(bytes);
   }
   /**
-   * Begin a graceful shutdown, then close the session.
-   *
-   * If the session is ready (its control stream is bound), this sends an HTTP/3
-   * GOAWAY via `nghttp3_conn_shutdown` and drains it to the wire so the peer
-   * learns which stream ids will still be serviced, then closes. On an already
-   * closed session it resolves immediately. The returned promise rejects only if
-   * the shutdown itself throws.
-   *
-   * ```ts no_run
-   * await session.closeWhenIdle();
-   * ```
-   */
+  * Begin a graceful shutdown, then close the session.
+  *
+  * If the session is ready (its control stream is bound), this sends an HTTP/3
+  * GOAWAY via `nghttp3_conn_shutdown` and drains it to the wire so the peer
+  * learns which stream ids will still be serviced, then closes. On an already
+  * closed session it resolves immediately. The returned promise rejects only if
+  * the shutdown itself throws.
+  *
+  * ```ts no_run
+  * await session.closeWhenIdle();
+  * ```
+  */
   closeWhenIdle(): Promise<void> {
     try {
       if (this.#closed) return Promise.resolve();
@@ -1212,18 +1212,18 @@ export class Nghttp3Session {
     }
   }
   /**
-   * Free the native connection and release all per-stream state immediately.
-   *
-   * Deletes the `nghttp3_conn`, closes every installed FFI callback, and clears
-   * body slots, deferred trailers, GC pins, and registered stream writers.
-   * Idempotent; safe to call more than once. After this, all submit/read/drain
-   * operations throw. Use `closeWhenIdle()` instead when a graceful GOAWAY is
-   * wanted.
-   *
-   * ```ts no_run
-   * session.close();
-   * ```
-   */
+  * Free the native connection and release all per-stream state immediately.
+  *
+  * Deletes the `nghttp3_conn`, closes every installed FFI callback, and clears
+  * body slots, deferred trailers, GC pins, and registered stream writers.
+  * Idempotent; safe to call more than once. After this, all submit/read/drain
+  * operations throw. Use `closeWhenIdle()` instead when a graceful GOAWAY is
+  * wanted.
+  *
+  * ```ts no_run
+  * session.close();
+  * ```
+  */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -1236,13 +1236,13 @@ export class Nghttp3Session {
     this.#quicStreams.clear();
   }
   /**
-   * Dispose support so a session can be scoped with `using`. Calls `close()`.
-   *
-   * ```ts no_run
-   * using session = Nghttp3Session.createClient(callbacks);
-   * // session.close() runs automatically at end of scope.
-   * ```
-   */
+  * Dispose support so a session can be scoped with `using`. Calls `close()`.
+  *
+  * ```ts no_run
+  * using session = Nghttp3Session.createClient(callbacks);
+  * // session.close() runs automatically at end of scope.
+  * ```
+  */
   [Symbol.dispose](): void {
     this.close();
   }

@@ -49,17 +49,5 @@ export * from './http/client.ts';
 export * from '../globals/eventsource.ts';
 export * from './http/server.ts';
 export * from './http/websocket.ts';
-export {
-  WebTransport,
-  WebTransportDatagramDuplexStream,
-  type WebTransportBidirectionalStream,
-  type WebTransportCloseInfo,
-  type WebTransportHash,
-  type WebTransportOptions,
-  type WebTransportReceiveStream,
-  type WebTransportReceiveStreamStats,
-  type WebTransportSendStream,
-  type WebTransportSendStreamStats,
-  type WebTransportStats
-} from '../globals/webtransport.ts';
+export { WebTransport, WebTransportDatagramDuplexStream, type WebTransportBidirectionalStream, type WebTransportCloseInfo, type WebTransportHash, type WebTransportOptions, type WebTransportReceiveStream, type WebTransportReceiveStreamStats, type WebTransportSendStream, type WebTransportSendStreamStats, type WebTransportStats } from '../globals/webtransport.ts';
 export { Arena, parseRequest, parseResponse, serializeRequest, serializeResponse } from './http/index.ts';

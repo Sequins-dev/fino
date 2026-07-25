@@ -26,7 +26,6 @@
 import { Database, type DatabaseConnection, type DbValue } from 'fino:database';
 import { v7 as uuidv7 } from 'fino:uuid';
 import type { WorkflowState, WorkflowStatus, WorkflowStore } from 'fino:workflow';
-
 /**
 * The lifecycle state of a job, stored verbatim in the `status` column.
 *
@@ -287,7 +286,6 @@ export interface InsertJob {
   /** Owning schedule id when emitted by a schedule, else omitted. */
   scheduleId?: string | null;
 }
-
 function toNum(v: DbValue): number {
   if (typeof v === 'bigint') return Number(v);
   if (typeof v === 'number') return v;
@@ -304,7 +302,6 @@ function parseJsonOrNull(v: DbValue): unknown {
   const text = toStrOrNull(v);
   return text === null ? null : JSON.parse(text);
 }
-
 function rowToJob(row: Record<string, DbValue>): JobRecord {
   return {
     id: String(row.id),
@@ -349,9 +346,7 @@ function rowToSchedule(row: Record<string, DbValue>): ScheduleRecord {
     updatedAt: toNum(row.updated_at!)
   };
 }
-
-const ACTIVE_STATUSES = "('pending','claimed','running','waiting')";
-
+const ACTIVE_STATUSES = '(\'pending\',\'claimed\',\'running\',\'waiting\')';
 /**
 * The persistence layer for `fino:jobs`: jobs, schedules, and workflow-run
 * checkpoints behind a single database connection.
@@ -1248,7 +1243,6 @@ export class JobsStore {
     await this.close();
   }
 }
-
 /**
 * Compute the delay in milliseconds before the next attempt, given how many
 * attempts have already completed.

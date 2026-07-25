@@ -36,30 +36,135 @@ const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 // and glibc's `__errno_location` are Linux-only and are bound separately so the
 // eager dlopen does not fail on macOS.
 const COMMON_SYMBOLS = {
-  read: { parameters: ['i32', 'buffer', 'usize'], result: 'isize' },
-  write: { parameters: ['i32', 'buffer', 'usize'], result: 'isize' },
-  close: { parameters: ['i32'], result: 'i32' },
-  // fcntl and open are variadic in libc; on Darwin ARM64 the extra arg must be
-  // passed on the stack, so they must be declared variadic (fixed-arg count).
-  fcntl: { parameters: ['i32', 'i32', 'i32'], result: 'i32', variadic: 2 },
-  poll: { parameters: ['buffer', 'u64', 'i32'], result: 'i32' },
-  socketpair: { parameters: ['i32', 'i32', 'i32', 'buffer'], result: 'i32' },
-  chdir: { parameters: ['buffer'], result: 'i32' },
-  open: { parameters: ['buffer', 'i32', 'i32'], result: 'i32', variadic: 2 },
-  mkdir: { parameters: ['buffer', 'u32'], result: 'i32' },
-  rmdir: { parameters: ['buffer'], result: 'i32' },
-  realpath: { parameters: ['buffer', 'buffer'], result: 'pointer' },
-  getpid: { parameters: [], result: 'i32' },
-  setpgid: { parameters: ['i32', 'i32'], result: 'i32' },
-  setrlimit: { parameters: ['i32', 'buffer'], result: 'i32' },
-  execve: { parameters: ['buffer', 'buffer', 'buffer'], result: 'i32' },
-  waitpid: { parameters: ['i32', 'buffer', 'i32'], result: 'i32' },
-  _exit: { parameters: ['i32'], result: 'void' },
-  syscall: { parameters: ['i64', 'i64', 'i64', 'i64', 'i64'], result: 'i64' }
+  read: {
+    parameters: [
+      'i32',
+      'buffer',
+      'usize'
+    ],
+    result: 'isize'
+  },
+  write: {
+    parameters: [
+      'i32',
+      'buffer',
+      'usize'
+    ],
+    result: 'isize'
+  },
+  close: {
+    parameters: ['i32'],
+    result: 'i32'
+  },
+  fcntl: {
+    parameters: [
+      'i32',
+      'i32',
+      'i32'
+    ],
+    result: 'i32',
+    variadic: 2
+  },
+  poll: {
+    parameters: [
+      'buffer',
+      'u64',
+      'i32'
+    ],
+    result: 'i32'
+  },
+  socketpair: {
+    parameters: [
+      'i32',
+      'i32',
+      'i32',
+      'buffer'
+    ],
+    result: 'i32'
+  },
+  chdir: {
+    parameters: ['buffer'],
+    result: 'i32'
+  },
+  open: {
+    parameters: [
+      'buffer',
+      'i32',
+      'i32'
+    ],
+    result: 'i32',
+    variadic: 2
+  },
+  mkdir: {
+    parameters: ['buffer', 'u32'],
+    result: 'i32'
+  },
+  rmdir: {
+    parameters: ['buffer'],
+    result: 'i32'
+  },
+  realpath: {
+    parameters: ['buffer', 'buffer'],
+    result: 'pointer'
+  },
+  getpid: {
+    parameters: [],
+    result: 'i32'
+  },
+  setpgid: {
+    parameters: ['i32', 'i32'],
+    result: 'i32'
+  },
+  setrlimit: {
+    parameters: ['i32', 'buffer'],
+    result: 'i32'
+  },
+  execve: {
+    parameters: [
+      'buffer',
+      'buffer',
+      'buffer'
+    ],
+    result: 'i32'
+  },
+  waitpid: {
+    parameters: [
+      'i32',
+      'buffer',
+      'i32'
+    ],
+    result: 'i32'
+  },
+  _exit: {
+    parameters: ['i32'],
+    result: 'void'
+  },
+  syscall: {
+    parameters: [
+      'i64',
+      'i64',
+      'i64',
+      'i64',
+      'i64'
+    ],
+    result: 'i64'
+  }
 } as const;
 const LINUX_SYMBOLS = {
-  prctl: { parameters: ['i32', 'u64', 'u64', 'u64', 'u64'], result: 'i32' },
-  __errno_location: { parameters: [], result: 'pointer' }
+  prctl: {
+    parameters: [
+      'i32',
+      'u64',
+      'u64',
+      'u64',
+      'u64'
+    ],
+    result: 'i32'
+  },
+  __errno_location: {
+    parameters: [],
+    result: 'pointer'
+  }
 } as const;
 /**
 * Shared libc handle opened once at module load. Every symbol here is
@@ -81,14 +186,20 @@ const LINUX_SYMBOLS = {
 * if (fd >= 0) libc.symbols.close(fd);
 * ```
 */
-export const libc = dlopen(LIBC, isLinux ? { ...COMMON_SYMBOLS, ...LINUX_SYMBOLS } : COMMON_SYMBOLS) as {
+export const libc = dlopen(LIBC, isLinux ? {
+  ...COMMON_SYMBOLS,
+  ...LINUX_SYMBOLS
+} : COMMON_SYMBOLS) as {
   symbols: Record<string, (...args: unknown[]) => number | bigint | unknown>;
 };
 // macOS exposes errno through `__error` rather than glibc's `__errno_location`.
 const errnoLib = (() => {
   if (isLinux) return null;
   try {
-    return dlopen(LIBC, { __error: { parameters: [], result: 'pointer' } });
+    return dlopen(LIBC, { __error: {
+      parameters: [],
+      result: 'pointer'
+    } });
   } catch (_) {
     return null;
   }
@@ -115,7 +226,9 @@ export function errno(): number {
   try {
     const ptr = isLinux ? libc.symbols.__errno_location() : errnoLib?.symbols.__error();
     if (ptr == null) return 0;
-    return Number((Pointer as unknown as { readI32(p: unknown, off: number): number }).readI32(ptr, 0));
+    return Number(((Pointer as unknown) as {
+      readI32(p: unknown, off: number): number;
+    }).readI32(ptr, 0));
   } catch (_) {
     return 0;
   }
@@ -132,7 +245,7 @@ export const AF_UNIX = 1;
 export const SOCK_STREAM = 1;
 // poll(2)
 /** `poll` event bit indicating a descriptor has data available to read. */
-export const POLLIN = 0x0001;
+export const POLLIN = 1;
 // prctl(2)
 /**
 * `prctl` operation that permanently forbids privilege escalation for the
@@ -150,17 +263,17 @@ export const SECCOMP_MODE_FILTER = 2;
 * location, without read or write access. Linux-only; 0 on other platforms,
 * where the flag has no effect.
 */
-export const O_PATH = isLinux ? 0x200000 : 0;
+export const O_PATH = isLinux ? 2097152 : 0;
 /** `open` flag that atomically sets close-on-exec on the new descriptor. */
-export const O_CLOEXEC = isLinux ? 0x80000 : 0x1000000;
+export const O_CLOEXEC = isLinux ? 524288 : 16777216;
 /** `open` flag for read-only access. */
 export const O_RDONLY = 0;
 /** `open` flag for write-only access. */
 export const O_WRONLY = 1;
 /** `open` flag that creates the file if it does not already exist. */
-export const O_CREAT = isLinux ? 0x40 : 0x200;
+export const O_CREAT = isLinux ? 64 : 512;
 /** `open` flag that truncates an existing regular file to zero length. */
-export const O_TRUNC = isLinux ? 0x200 : 0x400;
+export const O_TRUNC = isLinux ? 512 : 1024;
 // setrlimit(2) resource ids differ by platform.
 /** `setrlimit` resource id for the process address-space (virtual memory) limit. */
 export const RLIMIT_AS = isLinux ? 9 : 5;
@@ -219,14 +332,20 @@ export function cstr(s: string): Uint8Array {
 * libc.symbols.execve(path, argv.ptrBuf, envp.ptrBuf);
 * ```
 */
-export function buildCStringArray(strings: string[]): { ptrBuf: ArrayBuffer; bufs: Uint8Array[] } {
+export function buildCStringArray(strings: string[]): {
+  ptrBuf: ArrayBuffer;
+  bufs: Uint8Array[];
+} {
   const bufs = strings.map(cstr);
   const ptrBuf = new ArrayBuffer((bufs.length + 1) * 8);
   const view = new DataView(ptrBuf);
   for (let i = 0; i < bufs.length; i++) {
     view.setBigUint64(i * 8, Pointer.addr(bufs[i]), true);
   }
-  return { ptrBuf, bufs };
+  return {
+    ptrBuf,
+    bufs
+  };
 }
 /**
 * Set or clear the close-on-exec flag on a descriptor.
@@ -356,7 +475,7 @@ export function readFileBytesSync(path: string, maxBytes: number): Uint8Array | 
 */
 export function writeFileSync(path: string, content: string, create = false): number {
   const flags = O_WRONLY | (create ? O_CREAT | O_TRUNC : 0);
-  const fd = Number(libc.symbols.open(cstr(path), flags, 0o644));
+  const fd = Number(libc.symbols.open(cstr(path), flags, 420));
   if (fd < 0) return errno();
   try {
     const bytes = new TextEncoder().encode(content);

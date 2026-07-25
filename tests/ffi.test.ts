@@ -301,9 +301,18 @@ describe('StructType', () => {
 });
 describe('usizeBig / isizeBig return types', () => {
   const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
-  const libNum = dlopen(LIBC, { strlen: { parameters: ['buffer'], result: 'usize' } });
-  const libUBig = dlopen(LIBC, { strlen: { parameters: ['buffer'], result: 'usizeBig' } });
-  const libIBig = dlopen(LIBC, { strlen: { parameters: ['buffer'], result: 'isizeBig' } });
+  const libNum = dlopen(LIBC, { strlen: {
+    parameters: ['buffer'],
+    result: 'usize'
+  } });
+  const libUBig = dlopen(LIBC, { strlen: {
+    parameters: ['buffer'],
+    result: 'usizeBig'
+  } });
+  const libIBig = dlopen(LIBC, { strlen: {
+    parameters: ['buffer'],
+    result: 'isizeBig'
+  } });
   const cstr = new TextEncoder().encode('hello\0');
   it('usize returns a JS number', (t) => {
     const n = libNum.symbols.strlen(cstr);

@@ -222,7 +222,13 @@ export type SqlDialect = DatabaseDriver;
 * `SqlFragment` built with the `sql` tag.
 */
 export type SqlInput = string | SqlFragment;
-type SqlPart = { kind: 'text'; text: string } | { kind: 'value'; index: number };
+type SqlPart = {
+  kind: 'text';
+  text: string;
+} | {
+  kind: 'value';
+  index: number;
+};
 /**
 * Portable SQL fragment produced by the `sql` tag.
 *
@@ -272,31 +278,52 @@ class Fragment implements SqlFragment {
   }
 }
 function isFragment(value: unknown): value is SqlFragment {
-  return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'sql' && typeof (value as { text?: unknown }).text === 'function' && Array.isArray((value as { values?: unknown }).values);
+  return typeof value === 'object' && value !== null && (value as {
+    kind?: unknown;
+  }).kind === 'sql' && typeof (value as {
+    text?: unknown;
+  }).text === 'function' && Array.isArray((value as {
+    values?: unknown;
+  }).values);
 }
 function appendFragment(parts: SqlPart[], values: DbValue[], fragment: SqlFragment): void {
   const offset = values.length;
   const rendered = fragment.text('postgres');
   let cursor = 0;
   for (const match of rendered.matchAll(/\$(\d+)/g)) {
-    if (match.index! > cursor) parts.push({ kind: 'text', text: rendered.slice(cursor, match.index) });
-    parts.push({ kind: 'value', index: offset + Number(match[1]) - 1 });
+    if (match.index! > cursor) parts.push({
+      kind: 'text',
+      text: rendered.slice(cursor, match.index)
+    });
+    parts.push({
+      kind: 'value',
+      index: offset + Number(match[1]) - 1
+    });
     cursor = match.index! + match[0].length;
   }
-  if (cursor < rendered.length) parts.push({ kind: 'text', text: rendered.slice(cursor) });
+  if (cursor < rendered.length) parts.push({
+    kind: 'text',
+    text: rendered.slice(cursor)
+  });
   values.push(...fragment.values);
 }
 function makeFragment(strings: TemplateStringsArray, substitutions: unknown[]): SqlFragment {
   const parts: SqlPart[] = [];
   const values: DbValue[] = [];
   for (let index = 0; index < strings.length; index++) {
-    if (strings[index]) parts.push({ kind: 'text', text: strings[index]! });
+    if (strings[index]) parts.push({
+      kind: 'text',
+      text: strings[index]!
+    });
     if (index >= substitutions.length) continue;
     const value = substitutions[index];
     if (isFragment(value)) appendFragment(parts, values, value);
     else {
       values.push(value as DbValue);
-      parts.push({ kind: 'value', index: values.length - 1 });
+      parts.push({
+        kind: 'value',
+        index: values.length - 1
+      });
     }
   }
   return new Fragment(parts, values);
@@ -373,10 +400,16 @@ function sqlTag(strings: TemplateStringsArray, ...substitutions: unknown[]): Sql
 */
 export const sql: SqlTag = Object.assign(sqlTag, {
   raw(text: string): SqlFragment {
-    return new Fragment([{ kind: 'text', text: String(text) }], []);
+    return new Fragment([{
+      kind: 'text',
+      text: String(text)
+    }], []);
   },
   identifier(name: string): SqlFragment {
-    return new Fragment([{ kind: 'text', text: quoteIdentifier(name) }], []);
+    return new Fragment([{
+      kind: 'text',
+      text: quoteIdentifier(name)
+    }], []);
   },
   join(values: unknown[], separator: SqlFragment | string = ', '): SqlFragment {
     const parts: SqlPart[] = [];
@@ -387,24 +420,44 @@ export const sql: SqlTag = Object.assign(sqlTag, {
       if (isFragment(value)) appendFragment(parts, out, value);
       else {
         out.push(value as DbValue);
-        parts.push({ kind: 'value', index: out.length - 1 });
+        parts.push({
+          kind: 'value',
+          index: out.length - 1
+        });
       }
     });
     return new Fragment(parts, out);
   }
 });
-function renderInput(input: SqlInput, dialect: SqlDialect): { text: string; values: DbValue[] } {
-  if (typeof input === 'string') return { text: input, values: [] };
-  return { text: input.text(dialect), values: input.values };
+function renderInput(input: SqlInput, dialect: SqlDialect): {
+  text: string;
+  values: DbValue[];
+} {
+  if (typeof input === 'string') return {
+    text: input,
+    values: []
+  };
+  return {
+    text: input.text(dialect),
+    values: input.values
+  };
 }
-type PlaceholderToken = { kind: 'positional' } | { kind: 'named'; name: string };
+type PlaceholderToken = {
+  kind: 'positional';
+} | {
+  kind: 'named';
+  name: string;
+};
 function isBindRecord(value: unknown): value is Record<string, DbValue> {
   return typeof value === 'object' && value !== null && !(value instanceof Uint8Array) && !(value instanceof Date);
 }
-function postgresPlaceholderPlan(query: string): { text: string; bind(params: DbParams[]): DbValue[] } {
+function postgresPlaceholderPlan(query: string): {
+  text: string;
+  bind(params: DbParams[]): DbValue[];
+} {
   const tokens: PlaceholderToken[] = [];
   let text = '';
-  let quote: "'" | '"' | null = null;
+  let quote: '\'' | '"' | null = null;
   for (let index = 0; index < query.length; index++) {
     const ch = query[index]!;
     if (quote !== null) {
@@ -418,7 +471,7 @@ function postgresPlaceholderPlan(query: string): { text: string; bind(params: Db
       }
       continue;
     }
-    if (ch === "'" || ch === '"') {
+    if (ch === '\'' || ch === '"') {
       quote = ch;
       text += ch;
       continue;
@@ -437,7 +490,10 @@ function postgresPlaceholderPlan(query: string): { text: string; bind(params: Db
       let end = index + 2;
       while (/[A-Za-z0-9_]/.test(query[end] ?? '')) end++;
       const name = query.slice(index + 1, end);
-      tokens.push({ kind: 'named', name });
+      tokens.push({
+        kind: 'named',
+        name
+      });
       text += `$${tokens.length}`;
       index = end - 1;
       continue;

@@ -72,7 +72,11 @@ function i32(value: number): Uint8Array {
   return out;
 }
 function frontend(tag: string, body: Uint8Array = new Uint8Array()): Uint8Array {
-  return concat([utf8(tag), i32(body.byteLength + 4), body]);
+  return concat([
+    utf8(tag),
+    i32(body.byteLength + 4),
+    body
+  ]);
 }
 /**
 * Encodes the StartupMessage that opens every connection.
@@ -144,7 +148,12 @@ export function encodeSSLRequest(): Uint8Array {
 * ```
 */
 export function encodeCancelRequest(processId: number, secretKey: Uint8Array): Uint8Array {
-  return concat([i32(12 + secretKey.byteLength), i32(80877102), i32(processId), secretKey]);
+  return concat([
+    i32(12 + secretKey.byteLength),
+    i32(80877102),
+    i32(processId),
+    secretKey
+  ]);
 }
 /**
 * Encodes the Terminate message for a graceful disconnect.
@@ -261,7 +270,11 @@ export function encodePasswordMessage(password: string | Uint8Array): Uint8Array
 */
 export function encodeSaslInitialResponse(mechanism: string, response: string | Uint8Array): Uint8Array {
   const bytes = typeof response === 'string' ? utf8(response) : response;
-  return frontend('p', concat([cstring(mechanism), i32(bytes.byteLength), bytes]));
+  return frontend('p', concat([
+    cstring(mechanism),
+    i32(bytes.byteLength),
+    bytes
+  ]));
 }
 /**
 * Encodes a SASLResponse continuing an in-progress SASL exchange.
@@ -298,7 +311,12 @@ export function encodeSaslResponse(response: string | Uint8Array): Uint8Array {
 * ```
 */
 export function encodeParse(statement: string, query: string, typeOids: number[] = []): Uint8Array {
-  return frontend('P', concat([cstring(statement), cstring(query), i16(typeOids.length), ...typeOids.map(i32)]));
+  return frontend('P', concat([
+    cstring(statement),
+    cstring(query),
+    i16(typeOids.length),
+    ...typeOids.map(i32)
+  ]));
 }
 /**
 * Encodes a Describe message requesting metadata for a statement or portal.
@@ -347,7 +365,14 @@ export function encodeBind(portal: string, statement: string, values: Array<stri
       valueChunks.push(i32(bytes.byteLength), bytes);
     }
   }
-  return frontend('B', concat([cstring(portal), cstring(statement), i16(0), i16(values.length), ...valueChunks, i16(0)]));
+  return frontend('B', concat([
+    cstring(portal),
+    cstring(statement),
+    i16(0),
+    i16(values.length),
+    ...valueChunks,
+    i16(0)
+  ]));
 }
 /**
 * Encodes an Execute message that runs a bound portal.
@@ -501,21 +526,55 @@ class Reader {
 * }
 * ```
 */
-export type BackendMessage =
-  | { type: 'Authentication'; code: number; data: Uint8Array }
-  | { type: 'BackendKeyData'; processId: number; secretKey: Uint8Array }
-  | { type: 'ParameterStatus'; name: string; value: string }
-  | { type: 'ReadyForQuery'; status: string }
-  | { type: 'RowDescription'; fields: RowField[] }
-  | { type: 'DataRow'; values: Array<Uint8Array | null> }
-  | { type: 'CommandComplete'; tag: string }
-  | { type: 'ErrorResponse' | 'NoticeResponse'; fields: Record<string, string> }
-  | { type: 'NotificationResponse'; processId: number; channel: string; payload: string }
-  | { type: 'ParseComplete' | 'BindComplete' | 'CloseComplete' | 'NoData' | 'PortalSuspended' | 'CopyDone' }
-  | { type: 'CopyInResponse' | 'CopyOutResponse' | 'CopyBothResponse'; format: number; columnFormats: number[] }
-  | { type: 'CopyData'; data: Uint8Array }
-  | { type: 'ParameterDescription'; typeOids: number[] }
-  | { type: 'Unknown'; tag: string; body: Uint8Array };
+export type BackendMessage = {
+  type: 'Authentication';
+  code: number;
+  data: Uint8Array;
+} | {
+  type: 'BackendKeyData';
+  processId: number;
+  secretKey: Uint8Array;
+} | {
+  type: 'ParameterStatus';
+  name: string;
+  value: string;
+} | {
+  type: 'ReadyForQuery';
+  status: string;
+} | {
+  type: 'RowDescription';
+  fields: RowField[];
+} | {
+  type: 'DataRow';
+  values: Array<Uint8Array | null>;
+} | {
+  type: 'CommandComplete';
+  tag: string;
+} | {
+  type: 'ErrorResponse' | 'NoticeResponse';
+  fields: Record<string, string>;
+} | {
+  type: 'NotificationResponse';
+  processId: number;
+  channel: string;
+  payload: string;
+} | {
+  type: 'ParseComplete' | 'BindComplete' | 'CloseComplete' | 'NoData' | 'PortalSuspended' | 'CopyDone';
+} | {
+  type: 'CopyInResponse' | 'CopyOutResponse' | 'CopyBothResponse';
+  format: number;
+  columnFormats: number[];
+} | {
+  type: 'CopyData';
+  data: Uint8Array;
+} | {
+  type: 'ParameterDescription';
+  typeOids: number[];
+} | {
+  type: 'Unknown';
+  tag: string;
+  body: Uint8Array;
+};
 /**
 * Column metadata from a `RowDescription` message.
 *
@@ -562,7 +621,11 @@ function decodeCopy(type: 'CopyInResponse' | 'CopyOutResponse' | 'CopyBothRespon
   const count = reader.i16();
   const columnFormats: number[] = [];
   for (let index = 0; index < count; index++) columnFormats.push(reader.i16());
-  return { type, format, columnFormats };
+  return {
+    type,
+    format,
+    columnFormats
+  };
 }
 /**
 * Decodes one complete backend frame into a `BackendMessage`.
@@ -594,33 +657,76 @@ export function decodeBackendMessage(frame: Uint8Array): BackendMessage {
   const length = new DataView(frame.buffer, frame.byteOffset + 1, 4).getInt32(0, false);
   const reader = new Reader(frame.subarray(5, 1 + length));
   switch (tag) {
-    case 'R': return { type: 'Authentication', code: reader.i32(), data: reader.bytesN(frame.byteLength - 9) };
-    case 'K': return { type: 'BackendKeyData', processId: reader.i32(), secretKey: reader.bytesN(frame.byteLength - 13) };
-    case 'S': return { type: 'ParameterStatus', name: reader.cstring(), value: reader.cstring() };
-    case 'Z': return { type: 'ReadyForQuery', status: String.fromCharCode(reader.u8()) };
+    case 'R': return {
+      type: 'Authentication',
+      code: reader.i32(),
+      data: reader.bytesN(frame.byteLength - 9)
+    };
+    case 'K': return {
+      type: 'BackendKeyData',
+      processId: reader.i32(),
+      secretKey: reader.bytesN(frame.byteLength - 13)
+    };
+    case 'S': return {
+      type: 'ParameterStatus',
+      name: reader.cstring(),
+      value: reader.cstring()
+    };
+    case 'Z': return {
+      type: 'ReadyForQuery',
+      status: String.fromCharCode(reader.u8())
+    };
     case '1': return { type: 'ParseComplete' };
     case '2': return { type: 'BindComplete' };
     case '3': return { type: 'CloseComplete' };
     case 'n': return { type: 'NoData' };
     case 's': return { type: 'PortalSuspended' };
     case 'c': return { type: 'CopyDone' };
-    case 'C': return { type: 'CommandComplete', tag: reader.cstring() };
-    case 'E': return { type: 'ErrorResponse', fields: decodeFields(reader) };
-    case 'N': return { type: 'NoticeResponse', fields: decodeFields(reader) };
-    case 'A': return { type: 'NotificationResponse', processId: reader.i32(), channel: reader.cstring(), payload: reader.cstring() };
+    case 'C': return {
+      type: 'CommandComplete',
+      tag: reader.cstring()
+    };
+    case 'E': return {
+      type: 'ErrorResponse',
+      fields: decodeFields(reader)
+    };
+    case 'N': return {
+      type: 'NoticeResponse',
+      fields: decodeFields(reader)
+    };
+    case 'A': return {
+      type: 'NotificationResponse',
+      processId: reader.i32(),
+      channel: reader.cstring(),
+      payload: reader.cstring()
+    };
     case 't': {
       const count = reader.i16();
       const typeOids: number[] = [];
       for (let index = 0; index < count; index++) typeOids.push(reader.i32());
-      return { type: 'ParameterDescription', typeOids };
+      return {
+        type: 'ParameterDescription',
+        typeOids
+      };
     }
     case 'T': {
       const count = reader.i16();
       const fields: RowField[] = [];
       for (let index = 0; index < count; index++) {
-        fields.push({ name: reader.cstring(), tableOid: reader.i32(), columnAttribute: reader.i16(), typeOid: reader.i32(), typeSize: reader.i16(), typeModifier: reader.i32(), format: reader.i16() });
+        fields.push({
+          name: reader.cstring(),
+          tableOid: reader.i32(),
+          columnAttribute: reader.i16(),
+          typeOid: reader.i32(),
+          typeSize: reader.i16(),
+          typeModifier: reader.i32(),
+          format: reader.i16()
+        });
       }
-      return { type: 'RowDescription', fields };
+      return {
+        type: 'RowDescription',
+        fields
+      };
     }
     case 'D': {
       const count = reader.i16();
@@ -629,12 +735,22 @@ export function decodeBackendMessage(frame: Uint8Array): BackendMessage {
         const len = reader.i32();
         values.push(len < 0 ? null : reader.bytesN(len));
       }
-      return { type: 'DataRow', values };
+      return {
+        type: 'DataRow',
+        values
+      };
     }
     case 'G': return decodeCopy('CopyInResponse', reader);
     case 'H': return decodeCopy('CopyOutResponse', reader);
     case 'W': return decodeCopy('CopyBothResponse', reader);
-    case 'd': return { type: 'CopyData', data: reader.bytesN(frame.byteLength - 5) };
-    default: return { type: 'Unknown', tag, body: reader.bytesN(frame.byteLength - 5) };
+    case 'd': return {
+      type: 'CopyData',
+      data: reader.bytesN(frame.byteLength - 5)
+    };
+    default: return {
+      type: 'Unknown',
+      tag,
+      body: reader.bytesN(frame.byteLength - 5)
+    };
   }
 }

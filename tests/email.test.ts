@@ -1,6 +1,5 @@
 import { describe, it } from 'fino:test/test';
 import { SmtpClient, dkimSign, renderMessage, send } from 'fino:email';
-
 describe('fino:email', () => {
   it('renders MIME messages and rejects header injection', (t) => {
     const rendered = renderMessage({
@@ -23,7 +22,6 @@ describe('fino:email', () => {
       text: 'x'
     }), /header/i);
   });
-
   it('sends through provider transports', async (t) => {
     let sawSubject = false;
     const result = await send({
@@ -31,18 +29,13 @@ describe('fino:email', () => {
       to: 'b@example.test',
       subject: 'Provider',
       text: 'hello'
-    }, {
-      transport: {
-        async send(message) {
-          sawSubject = message.subject === 'Provider';
-          return { id: 'provider-1' };
-        }
-      }
-    });
+    }, { transport: { async send(message) {
+      sawSubject = message.subject === 'Provider';
+      return { id: 'provider-1' };
+    } } });
     t.equal(sawSubject, true);
     t.equal(result.id, 'provider-1');
   });
-
   it('runs SMTP commands with dot-stuffed DATA', async (t) => {
     const writes: string[] = [];
     const client = new SmtpClient({
@@ -63,13 +56,15 @@ describe('fino:email', () => {
       to: 'b@example.test',
       subject: 'SMTP',
       text: '.leading dot'
-    }, { username: 'u', password: 'p' });
+    }, {
+      username: 'u',
+      password: 'p'
+    });
     t.equal(result.accepted.length, 1);
     const transcript = writes.join('');
     t.ok(transcript.includes('..leading dot'), 'DATA body is dot-stuffed');
     t.ok(transcript.includes('\r\n.\r\n'), 'DATA is terminated');
   });
-
   it('creates DKIM signatures', async (t) => {
     const header = await dkimSign('From: a@example.test\r\nSubject: Test\r\n\r\nhello\r\n', {
       domain: 'example.test',

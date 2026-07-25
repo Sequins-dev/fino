@@ -988,9 +988,6 @@ const subtle: SubtleCrypto = {
   get [Symbol.toStringTag]() {
     return 'SubtleCrypto';
   },
-  /**
-  * See `SubtleCrypto.digest()`.
-  */
   async digest(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1001,9 +998,6 @@ const subtle: SubtleCrypto = {
     const arr = _toUint8Array(data);
     return _toArrayBuffer(openssl.digest(hash, arr));
   },
-  /**
-  * See `SubtleCrypto.sign()`.
-  */
   async sign(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1055,9 +1049,6 @@ const subtle: SubtleCrypto = {
     const mac = openssl.hmac(hash, _keyData(key), _toUint8Array(data));
     return _toArrayBuffer(mac);
   },
-  /**
-  * See `SubtleCrypto.verify()`.
-  */
   async verify(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1117,9 +1108,6 @@ const subtle: SubtleCrypto = {
     for (let i = 0; i < expected.length; i++) diff |= expected[i]! ^ actual[i]!;
     return diff === 0;
   },
-  /**
-  * See `SubtleCrypto.encrypt()`.
-  */
   async encrypt(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1160,9 +1148,6 @@ const subtle: SubtleCrypto = {
     }
     return _toArrayBuffer(ciphertext);
   },
-  /**
-  * See `SubtleCrypto.decrypt()`.
-  */
   async decrypt(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1209,9 +1194,6 @@ const subtle: SubtleCrypto = {
     }
     return _toArrayBuffer(plaintext);
   },
-  /**
-  * See `SubtleCrypto.importKey()`.
-  */
   async importKey(format: KeyFormat, keyData: BufferSource, algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1454,9 +1436,6 @@ const subtle: SubtleCrypto = {
     }
     throw _webCryptoError('NotSupportedError', 'importKey: unsupported algorithm: ' + alg.name);
   },
-  /**
-  * See `SubtleCrypto.exportKey()`.
-  */
   async exportKey(format: KeyFormat, key: CryptoKey): Promise<ArrayBuffer | object> {
     _checkCryptoAvailable();
     if (format === 'jwk') {
@@ -1586,9 +1565,6 @@ const subtle: SubtleCrypto = {
     }
     return _toArrayBuffer(_keyData(key));
   },
-  /**
-  * See `SubtleCrypto.generateKey()`.
-  */
   async generateKey(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1768,9 +1744,6 @@ const subtle: SubtleCrypto = {
     }
     throw _webCryptoError('NotSupportedError', 'generateKey: unsupported algorithm: ' + alg.name);
   },
-  /**
-  * See `SubtleCrypto.deriveBits()`.
-  */
   async deriveBits(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1831,9 +1804,6 @@ const subtle: SubtleCrypto = {
     }
     throw _webCryptoError('NotSupportedError', 'deriveBits: unsupported algorithm: ' + alg.name);
   },
-  /**
-  * See `SubtleCrypto.deriveKey()`.
-  */
   async deriveKey(algorithm: string | {
     name: string;
     [key: string]: unknown;
@@ -1863,9 +1833,6 @@ const subtle: SubtleCrypto = {
     const bits = await subtle.deriveBits(algorithm, baseKey, lengthBits);
     return subtle.importKey('raw', bits, derivedKeyType, extractable, keyUsages);
   },
-  /**
-  * See `SubtleCrypto.wrapKey()`.
-  */
   async wrapKey(format: KeyFormat, key: CryptoKey, wrappingKey: CryptoKey, wrapAlgorithm: string | {
     name: string;
     [k: string]: unknown;
@@ -1899,9 +1866,6 @@ const subtle: SubtleCrypto = {
     }
     return _toArrayBuffer(ciphertext);
   },
-  /**
-  * See `SubtleCrypto.unwrapKey()`.
-  */
   async unwrapKey(format: KeyFormat, wrappedKey: BufferSource, unwrappingKey: CryptoKey, unwrapAlgorithm: string | {
     name: string;
     [k: string]: unknown;
@@ -2010,9 +1974,6 @@ export const crypto: Crypto = {
   get [Symbol.toStringTag]() {
     return 'Crypto';
   },
-  /**
-  * See `Crypto.getRandomValues()`.
-  */
   getRandomValues<T extends ArrayBufferView>(typedArray: T): T {
     _checkCryptoAvailable();
     if (!(typedArray instanceof Int8Array || typedArray instanceof Uint8Array || typedArray instanceof Uint8ClampedArray || typedArray instanceof Int16Array || typedArray instanceof Uint16Array || typedArray instanceof Int32Array || typedArray instanceof Uint32Array || typedArray instanceof BigInt64Array || typedArray instanceof BigUint64Array)) {
@@ -2032,16 +1993,10 @@ export const crypto: Crypto = {
     }
     return typedArray;
   },
-  /**
-  * See `Crypto.randomUUID()`.
-  */
   randomUUID(): string {
     _checkCryptoAvailable();
     return _uuidV4().toString();
   },
-  /**
-  * See `Crypto.subtle` and the `SubtleCrypto` interface.
-  */
   subtle
 };
 // Register on globalThis

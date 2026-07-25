@@ -35,27 +35,7 @@ import { TlsSocket } from 'fino:net/tls';
 import type { Address } from 'fino:net/socket';
 import { lookup } from 'fino:net/dns';
 import { createSignal, type ReadonlySignal } from 'fino:signals';
-import {
-  decodeBackendMessage,
-  encodeBind,
-  encodeCancelRequest,
-  encodeCopyData,
-  encodeCopyDone,
-  encodeCopyFail,
-  encodeDescribe,
-  encodeExecute,
-  encodeParse,
-  encodePasswordMessage,
-  encodeQuery,
-  encodeSaslInitialResponse,
-  encodeSaslResponse,
-  encodeSSLRequest,
-  encodeStartupMessage,
-  encodeSync,
-  encodeTerminate,
-  type BackendMessage,
-  type RowField
-} from 'internal:database/postgres/protocol';
+import { decodeBackendMessage, encodeBind, encodeCancelRequest, encodeCopyData, encodeCopyDone, encodeCopyFail, encodeDescribe, encodeExecute, encodeParse, encodePasswordMessage, encodeQuery, encodeSaslInitialResponse, encodeSaslResponse, encodeSSLRequest, encodeStartupMessage, encodeSync, encodeTerminate, type BackendMessage, type RowField } from 'internal:database/postgres/protocol';
 import { ScramSha256Client, md5Password } from 'internal:database/postgres/scram';
 import type { DbRow, DbValue, QueryResult } from 'fino:database';
 import type { BufferedBytesReader, BufferedBytesWriter } from 'internal:stream';
@@ -181,7 +161,15 @@ interface ConnectionTarget {
 function parseTarget(input: string | URL | PostgresOptions, options: PostgresOptions = {}): ConnectionTarget {
   if (typeof input === 'object' && !(input instanceof URL)) {
     const user = input.user ?? 'postgres';
-    return { user, password: input.password, database: input.database ?? user, host: input.host ?? '127.0.0.1', port: input.port ?? 5432, tls: input.tls ?? 'prefer', applicationName: input.applicationName };
+    return {
+      user,
+      password: input.password,
+      database: input.database ?? user,
+      host: input.host ?? '127.0.0.1',
+      port: input.port ?? 5432,
+      tls: input.tls ?? 'prefer',
+      applicationName: input.applicationName
+    };
   }
   const url = input instanceof URL ? input : new URL(String(input));
   const user = decodeURIComponent(url.username || options.user || 'postgres');
@@ -191,18 +179,37 @@ function parseTarget(input: string | URL | PostgresOptions, options: PostgresOpt
     database: decodeURIComponent(url.pathname.replace(/^\//, '') || options.database || user),
     host: (url.searchParams.get('host') ?? url.hostname) || options.host || '127.0.0.1',
     port: url.port ? Number(url.port) : options.port ?? 5432,
-    tls: (url.searchParams.get('sslmode') as PostgresTlsMode | null) ?? options.tls ?? 'prefer',
+    tls: url.searchParams.get('sslmode') as PostgresTlsMode | null ?? options.tls ?? 'prefer',
     applicationName: url.searchParams.get('application_name') ?? options.applicationName
   };
 }
 function socketAddress(target: ConnectionTarget): Address {
-  if (target.host.startsWith('/')) return { family: 'unix', path: `${target.host}/.s.PGSQL.${target.port}` };
-  return target.host.includes(':') ? { family: 'ipv6', ip: target.host, port: target.port } : { family: 'ipv4', ip: target.host, port: target.port };
+  if (target.host.startsWith('/')) return {
+    family: 'unix',
+    path: `${target.host}/.s.PGSQL.${target.port}`
+  };
+  return target.host.includes(':') ? {
+    family: 'ipv6',
+    ip: target.host,
+    port: target.port
+  } : {
+    family: 'ipv4',
+    ip: target.host,
+    port: target.port
+  };
 }
 async function resolveSocketAddress(target: ConnectionTarget): Promise<Address> {
   if (target.host.startsWith('/')) return socketAddress(target);
   const resolved = await lookup(target.host, { family: target.host.includes(':') ? 6 : 4 });
-  return resolved.family === 6 ? { family: 'ipv6', ip: resolved.address, port: target.port } : { family: 'ipv4', ip: resolved.address, port: target.port };
+  return resolved.family === 6 ? {
+    family: 'ipv6',
+    ip: resolved.address,
+    port: target.port
+  } : {
+    family: 'ipv4',
+    ip: resolved.address,
+    port: target.port
+  };
 }
 async function readFrame(reader: BufferedBytesReader): Promise<Uint8Array> {
   const first = await reader.readExactly(5);
@@ -241,7 +248,7 @@ function quoteIdentifier(value: string): string {
 }
 function quoteLiteral(value: string): string {
   if (value.includes('\0')) throw new Error('postgres: invalid string literal');
-  return `'${value.replaceAll("'", "''")}'`;
+  return `'${value.replaceAll('\'', '\'\'')}'`;
 }
 async function* toAsyncChunks(source: Iterable<Uint8Array | string> | AsyncIterable<Uint8Array | string>): AsyncGenerator<Uint8Array> {
   for await (const chunk of source as AsyncIterable<Uint8Array | string>) {
@@ -290,7 +297,10 @@ export class PostgresStatement {
   * command tag, discarding any returned rows.
   */
   run(...params: DbValue[]): Promise<PostgresQueryResult> {
-    return this.#db._execute(this.#sql, params, this.#name).then((result) => ({ changes: result.changes, command: result.command }));
+    return this.#db._execute(this.#sql, params, this.#name).then((result) => ({
+      changes: result.changes,
+      command: result.command
+    }));
   }
   /**
   * Executes the statement and resolves with the first returned row, or
@@ -418,8 +428,11 @@ export class PostgresDatabase {
       await writer.write(encodeSSLRequest());
       await writer.flush();
       const response = await reader.readExactly(1);
-      if (response[0] === 0x53) {
-        socket = await TlsSocket.upgrade(socket, { hostname: target.host.startsWith('/') ? undefined : target.host, rejectUnauthorized: target.tls === 'verify-ca' || target.tls === 'verify-full' });
+      if (response[0] === 83) {
+        socket = await TlsSocket.upgrade(socket, {
+          hostname: target.host.startsWith('/') ? undefined : target.host,
+          rejectUnauthorized: target.tls === 'verify-ca' || target.tls === 'verify-full'
+        });
       } else if (target.tls === 'require' || target.tls === 'verify-ca' || target.tls === 'verify-full') {
         socket.close();
         throw new Error('postgres: server refused TLS');
@@ -427,7 +440,11 @@ export class PostgresDatabase {
     }
     this.#socket = socket;
     [this.#reader, this.#writer] = socket.split();
-    await this.#writer.write(encodeStartupMessage({ user: target.user, database: target.database, ...(target.applicationName ? { application_name: target.applicationName } : {}) }));
+    await this.#writer.write(encodeStartupMessage({
+      user: target.user,
+      database: target.database,
+      ...target.applicationName ? { application_name: target.applicationName } : {}
+    }));
     await this.#writer.flush();
     await this.#authenticate();
   }
@@ -448,7 +465,9 @@ export class PostgresDatabase {
       }
     }
   }
-  async #handleAuth(message: Extract<BackendMessage, { type: 'Authentication' }>): Promise<void> {
+  async #handleAuth(message: Extract<BackendMessage, {
+    type: 'Authentication';
+  }>): Promise<void> {
     const code = message.code;
     if (code === 0) return;
     const password = this.#target.password ?? '';
@@ -540,7 +559,11 @@ export class PostgresDatabase {
   * Backs `PostgresStatement`; part of the driver-internal surface shared
   * with `fino:database`.
   */
-  async _execute(query: string, params: DbValue[] = [], statement = ''): Promise<{ rows: DbRow[]; changes: number; command?: string }> {
+  async _execute(query: string, params: DbValue[] = [], statement = ''): Promise<{
+    rows: DbRow[];
+    changes: number;
+    command?: string;
+  }> {
     return this._serialize(async () => {
       await this.#writer.write(encodeParse(statement, query));
       await this.#writer.write(encodeBind('', statement, params.map(paramValue)));
@@ -563,15 +586,17 @@ export class PostgresDatabase {
         else if (message.type === 'ErrorResponse') throw new Error(message.fields.M ?? 'postgres query failed');
         else if (message.type === 'ReadyForQuery') break;
       }
-      return { rows, changes: command ? Number(command.match(/(\d+)$/)?.[1] ?? 0) : 0, command };
+      return {
+        rows,
+        changes: command ? Number(command.match(/(\d+)$/)?.[1] ?? 0) : 0,
+        command
+      };
     });
   }
   #handleAsync(message: BackendMessage): void {
     if (message.type === 'ParameterStatus') this.parameters.set(message.name, message.value);
     else if (message.type === 'NotificationResponse') this.#notifications.set(message);
-    else if (message.type === 'NoticeResponse') {
-      // Notices are intentionally non-fatal; callers can use server logs for now.
-    }
+    else if (message.type === 'NoticeResponse') {}
   }
   /**
   * Runs `fn` inside a transaction.
@@ -623,7 +648,10 @@ export class PostgresDatabase {
   * }
   * ```
   */
-  async listen(channel: string): Promise<AsyncIterable<PostgresNotification> & { close(): Promise<void>; signal: ReadonlySignal<PostgresNotification | null> }> {
+  async listen(channel: string): Promise<AsyncIterable<PostgresNotification> & {
+    close(): Promise<void>;
+    signal: ReadonlySignal<PostgresNotification | null>;
+  }> {
     await this.exec(`LISTEN ${quoteIdentifier(channel)}`);
     const signal = this.#notifications;
     let closed = false;
@@ -700,7 +728,10 @@ export class PostgresDatabase {
         else if (message.type === 'ErrorResponse') throw new Error(message.fields.M ?? 'postgres copy failed');
         else if (message.type === 'ReadyForQuery') break;
       }
-      return { changes: command ? Number(command.match(/(\d+)$/)?.[1] ?? 0) : 0, command };
+      return {
+        changes: command ? Number(command.match(/(\d+)$/)?.[1] ?? 0) : 0,
+        command
+      };
     });
   }
   /**
@@ -790,7 +821,10 @@ export class PostgresPool {
   readonly #target: string | URL | PostgresOptions;
   readonly #options: PostgresOptions;
   readonly #idle: PostgresDatabase[] = [];
-  readonly #waiters: Array<{ resolve(db: PostgresDatabase): void; reject(err: Error): void }> = [];
+  readonly #waiters: Array<{
+    resolve(db: PostgresDatabase): void;
+    reject(err: Error): void;
+  }> = [];
   readonly #max: number;
   #total = 0;
   #closed = false;
@@ -799,7 +833,9 @@ export class PostgresPool {
   * forms as `PostgresDatabase.open`. No connection is opened until first
   * use; `options.max` caps concurrent connections (default 10).
   */
-  constructor(target: string | URL | PostgresOptions, options: PostgresOptions & { max?: number } = {}) {
+  constructor(target: string | URL | PostgresOptions, options: PostgresOptions & {
+    max?: number;
+  } = {}) {
     this.#target = target;
     this.#options = options;
     this.#max = options.max ?? 10;
@@ -816,7 +852,10 @@ export class PostgresPool {
     if (this.#closed) throw new Error('postgres pool is closed');
     const idle = this.#idle.pop();
     if (idle) return idle;
-    if (this.#total >= this.#max) return new Promise((resolve, reject) => this.#waiters.push({ resolve, reject }));
+    if (this.#total >= this.#max) return new Promise((resolve, reject) => this.#waiters.push({
+      resolve,
+      reject
+    }));
     this.#total++;
     try {
       return await PostgresDatabase.open(this.#target as any, this.#options);

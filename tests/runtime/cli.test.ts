@@ -551,20 +551,18 @@ describe('CLI commands', () => {
     });
   });
   it('passes --otlp-endpoint into run --watch realms', async (t) => {
-    await withTempProject({
-      'entry.ts': [
-        'import { getTracerProvider } from \'fino:opentelemetry\';',
-        'globalThis.fetch = async (url) => {',
-        '  console.log(\'watch-export:\' + String(url));',
-        '  return new Response(\'{}\', { status: 200 });',
-        '};',
-        'const span = getTracerProvider().getTracer(\'watch.fixture\').startSpan(\'watch-span\');',
-        'span.end();',
-        'await new Promise((resolve) => setTimeout(resolve, 80));',
-        'console.log(\'watch-ready\');',
-        ''
-      ].join('\n')
-    }, async (dir) => {
+    await withTempProject({ 'entry.ts': [
+      'import { getTracerProvider } from \'fino:opentelemetry\';',
+      'globalThis.fetch = async (url) => {',
+      '  console.log(\'watch-export:\' + String(url));',
+      '  return new Response(\'{}\', { status: 200 });',
+      '};',
+      'const span = getTracerProvider().getTracer(\'watch.fixture\').startSpan(\'watch-span\');',
+      'span.end();',
+      'await new Promise((resolve) => setTimeout(resolve, 80));',
+      'console.log(\'watch-ready\');',
+      ''
+    ].join('\n') }, async (dir) => {
       const childEnv: Record<string, string> = {};
       for (const [key, value] of Object.entries(env)) {
         if (value !== undefined) childEnv[key] = value;

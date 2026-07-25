@@ -1185,7 +1185,7 @@ describe('H2 server — robustness', () => {
     // run of CONTINUATION frames that never set END_HEADERS. Without a bound
     // the server would buffer these indefinitely (CONTINUATION flood).
     const parts: number[] = [...frame(1, 0, 1, hpack)];
-    const big = new Uint8Array(16000);
+    const big = new Uint8Array(16e3);
     for (let i = 0; i < 6; i++) parts.push(...frame(9, 0, 1, big));
     const frames = await rawH2Exchange(server.port, new Uint8Array(parts));
     await server.close();

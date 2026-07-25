@@ -28,7 +28,6 @@ import * as loop from '../internal/runtime/loop.ts';
 import { RECORD_TYPES, _buildQuery, _decodeName, _encodeName, _parseResponse } from 'internal:net/dns-wire';
 import type { Address } from './socket.ts';
 import type { DnsResourceRecord } from './dns.ts';
-
 /** DNS record types this module knows how to query on the local link.
 *
 * `A` and `AAAA` carry IPv4 and IPv6 addresses, `PTR` enumerates DNS-SD
@@ -47,7 +46,6 @@ import type { DnsResourceRecord } from './dns.ts';
 * ```
 */
 export type MdnsRecordType = 'A' | 'AAAA' | 'PTR' | 'SRV' | 'TXT';
-
 /** Tuning and destination options shared by every `Mdns` query operation.
 *
 * All fields are optional. The defaults target the standard mDNS multicast
@@ -310,19 +308,34 @@ export interface MdnsRegistration {
   /** Dispose alias for `close()`, enabling `await using` management. */
   [Symbol.asyncDispose](): Promise<void>;
 }
-
-const MDNS_IPV4: Address = { family: 'ipv4', ip: '224.0.0.251', port: 5353 };
-const MDNS_IPV6: Address = { family: 'ipv6', ip: 'ff02::fb', port: 5353 };
-const DUPLICATE_QUESTION_SUPPRESSION_MS = 1000;
-
+const MDNS_IPV4: Address = {
+  family: 'ipv4',
+  ip: '224.0.0.251',
+  port: 5353
+};
+const MDNS_IPV6: Address = {
+  family: 'ipv6',
+  ip: 'ff02::fb',
+  port: 5353
+};
+const DUPLICATE_QUESTION_SUPPRESSION_MS = 1e3;
 function timeoutError(name: string): Error {
   const err = new Error(`mdns: query timed out for '${name}'`);
-  (err as { code?: string }).code = 'ETIMEOUT';
+  (err as {
+    code?: string;
+  }).code = 'ETIMEOUT';
   return err;
 }
-
 function wildcardAddress(family: 'ipv4' | 'ipv6', port = 0): Address {
-  return family === 'ipv6' ? { family: 'ipv6', ip: '::', port } : { family: 'ipv4', ip: '0.0.0.0', port };
+  return family === 'ipv6' ? {
+    family: 'ipv6',
+    ip: '::',
+    port
+  } : {
+    family: 'ipv4',
+    ip: '0.0.0.0',
+    port
+  };
 }
 function receivePacket(fd: number, usePacketInfo: boolean): {
   data: Uint8Array;
@@ -330,7 +343,7 @@ function receivePacket(fd: number, usePacketInfo: boolean): {
   destination?: Address;
   interfaceIndex?: number;
 } | number {
-  return usePacketInfo ? sock.recvmsgPacketInfo(fd, 9000) : sock.recvfrom(fd, 9000);
+  return usePacketInfo ? sock.recvmsgPacketInfo(fd, 9e3) : sock.recvfrom(fd, 9e3);
 }
 type MulticastMembership = {
   interfaceAddress?: string;
@@ -424,7 +437,7 @@ function sendMdnsPacket(fd: number, packet: Uint8Array, family: 'ipv4' | 'ipv6',
 }
 function retryDelay(options: MdnsQueryOptions): number {
   const min = Math.max(1, Math.floor(options.retryMinMs ?? 250));
-  const max = Math.max(min, Math.floor(options.retryMaxMs ?? 1000));
+  const max = Math.max(min, Math.floor(options.retryMaxMs ?? 1e3));
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 function mdnsQueryPacket(name: string, type: number, unicastResponse: boolean | undefined): Uint8Array {
@@ -436,7 +449,7 @@ function mdnsQueryPacketWithKnownAnswers(name: string, type: number, unicastResp
   if ((knownAnswers?.length ?? 0) === 0) {
     if (unicastResponse !== true) return packet;
     const out = packet.slice();
-    new DataView(out.buffer, out.byteOffset, out.byteLength).setUint16(decoded.nextOffset + 2, 0x8001, false);
+    new DataView(out.buffer, out.byteOffset, out.byteLength).setUint16(decoded.nextOffset + 2, 32769, false);
     return out;
   }
   const questionEnd = decoded.nextOffset + 4;
@@ -453,7 +466,7 @@ function mdnsQueryPacketWithKnownAnswers(name: string, type: number, unicastResp
   const resultView = new DataView(result.buffer, result.byteOffset, result.byteLength);
   resultView.setUint16(4, 1, false);
   resultView.setUint16(6, knownAnswers?.length ?? 0, false);
-  if (unicastResponse === true) resultView.setUint16(decoded.nextOffset + 2, 0x8001, false);
+  if (unicastResponse === true) resultView.setUint16(decoded.nextOffset + 2, 32769, false);
   return result;
 }
 function recordKey(record: DnsResourceRecord): string {
@@ -482,7 +495,7 @@ function sameIpv4Link(source: string, address: string, mask: string): boolean {
   const src = ipv4ToInt(source);
   const addr = ipv4ToInt(address);
   const netmask = ipv4ToInt(mask);
-  return src !== null && addr !== null && netmask !== null && ((src & netmask) >>> 0) === ((addr & netmask) >>> 0);
+  return src !== null && addr !== null && netmask !== null && (src & netmask) >>> 0 === (addr & netmask) >>> 0;
 }
 function isLocalLinkSource(address: Address | sock.UnknownAddress, options: MdnsQueryOptions): boolean {
   if (address.family !== 'ipv4' && address.family !== 'ipv6') return false;
@@ -557,7 +570,24 @@ function addressRecordType(address: string): number {
 }
 function addressRdata(address: string): number[] {
   if (!address.includes(':')) return address.split('.').map((part) => Number(part));
-  if (address === '::1') return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+  if (address === '::1') return [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1
+  ];
   throw new Error('mdns: IPv6 publisher currently supports ::1 in JS responder fixtures');
 }
 type ResponseRecord = {
@@ -576,7 +606,7 @@ function buildResponse(query: Uint8Array, records: ResponseRecord[]): Uint8Array
 function buildPacket(id: number, question: Uint8Array | null, records: ResponseRecord[]): Uint8Array {
   const out: number[] = [];
   pushU16(out, id);
-  pushU16(out, 0x8400);
+  pushU16(out, 33792);
   pushU16(out, question === null ? 0 : 1);
   pushU16(out, records.length);
   pushU16(out, 0);
@@ -585,14 +615,17 @@ function buildPacket(id: number, question: Uint8Array | null, records: ResponseR
   for (const record of records) {
     out.push(..._encodeName(record.name));
     pushU16(out, record.type);
-    pushU16(out, (record.cacheFlush ? 0x8000 : 0) | 1);
+    pushU16(out, (record.cacheFlush ? 32768 : 0) | 1);
     pushU32(out, record.ttl);
     pushU16(out, record.rdata.length);
     out.push(...record.rdata);
   }
   return new Uint8Array(out);
 }
-function parseQuestion(packet: Uint8Array): { name: string; type: number } {
+function parseQuestion(packet: Uint8Array): {
+  name: string;
+  type: number;
+} {
   const decoded = _decodeName(packet, 12);
   const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
   return {
@@ -630,7 +663,6 @@ function hasConflict(records: DnsResourceRecord[], instance: string, serviceType
 function renamedInstanceLabel(name: string, attempt: number): string {
   return `${name} (${attempt + 1})`;
 }
-
 /** A client for local-link name resolution, service discovery, and publication.
 *
 * A single instance covers the whole mDNS/DNS-SD surface: `query` and
@@ -659,14 +691,15 @@ function renamedInstanceLabel(name: string, attempt: number): string {
 */
 export class Mdns {
   #closed = false;
-  #cache = new Map<string, { expiresAt: number; records: DnsResourceRecord[] }>();
-
+  #cache = new Map<string, {
+    expiresAt: number;
+    records: DnsResourceRecord[];
+  }>();
   #cacheKey(name: string, rrtype: MdnsRecordType, options: MdnsQueryOptions): string {
     const family = options.server?.family === 'ipv6' ? 'ipv6' : 'ipv4';
     const server = options.server === undefined ? 'mdns' : `${options.server.family}/${'ip' in options.server ? options.server.ip : ''}/${'port' in options.server ? options.server.port : ''}`;
     return `${family}/${server}/${name}/${rrtype}`;
   }
-
   #getCached(name: string, rrtype: MdnsRecordType, options: MdnsQueryOptions): DnsResourceRecord[] | null {
     if (options.cache === false) return null;
     if ((options.knownAnswers?.length ?? 0) > 0) return null;
@@ -678,18 +711,16 @@ export class Mdns {
     }
     return entry.records.slice();
   }
-
   #storeCache(name: string, rrtype: MdnsRecordType, options: MdnsQueryOptions, records: DnsResourceRecord[]): void {
     if (options.cache === false || records.length === 0) return;
     if ((options.knownAnswers?.length ?? 0) > 0) return;
     const ttl = Math.min(...records.filter((record) => record.ttl > 0).map((record) => record.ttl));
     if (!Number.isFinite(ttl)) return;
     this.#cache.set(this.#cacheKey(name, rrtype, options), {
-      expiresAt: Date.now() + ttl * 1000,
+      expiresAt: Date.now() + ttl * 1e3,
       records: records.slice()
     });
   }
-
   /** Send an mDNS query for a name and record type and return the records seen.
   *
   * The query is transmitted over UDP and the method collects parsed resource
@@ -729,7 +760,11 @@ export class Mdns {
       sock.setNonblocking(fd);
       if (options.server === undefined) {
         memberships = joinMdnsMulticast(fd, family, options);
-        sock.setMulticastOptions(fd, { family, ttl: 255, loopback: true });
+        sock.setMulticastOptions(fd, {
+          family,
+          ttl: 255,
+          loopback: true
+        });
         sock.setsockopt(fd, family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP, family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO, true);
       }
       const packet = mdnsQueryPacketWithKnownAnswers(name, qtype, options.unicastResponse, options.knownAnswers);
@@ -760,7 +795,11 @@ export class Mdns {
         if (typeof received === 'number') continue;
         if ((options.validateSource ?? options.server === undefined) && !isLocalLinkSource(received.addr, options)) continue;
         const response = _parseResponse(received.data);
-        for (const record of [...response.answers, ...response.authorities, ...response.additionals]) {
+        for (const record of [
+          ...response.answers,
+          ...response.authorities,
+          ...response.additionals
+        ]) {
           const key = recordKey(record);
           if (seen.has(key)) continue;
           seen.add(key);
@@ -776,7 +815,6 @@ export class Mdns {
       sock.close(fd);
     }
   }
-
   /** Resolve a `.local` hostname to its A/AAAA addresses as strings.
   *
   * A convenience wrapper over `query` that asks for `A` records (or `AAAA`
@@ -798,7 +836,6 @@ export class Mdns {
     const records = await this.query(name, options.server?.family === 'ipv6' ? 'AAAA' : 'A', options);
     return records.filter((record) => record.type === RECORD_TYPES.A || record.type === RECORD_TYPES.AAAA).map((record) => String(record.data));
   }
-
   /** Browse a DNS-SD service type, yielding an event per instance lifetime change.
   *
   * Returns an async iterable of `MdnsBrowseEvent`. By default it performs one
@@ -828,111 +865,133 @@ export class Mdns {
   */
   browse(serviceType: string, options: MdnsQueryOptions = {}): AsyncIterable<MdnsBrowseEvent> {
     const self = this;
-    return {
-      async *[Symbol.asyncIterator]() {
-        const seen = new Map<string, { name: string; interfaceIndex: number | null; expiresAt: number; ttl: number; recordsKey: string; serviceKey: string }>();
-        const eventsForRecords = async (records: DnsResourceRecord[], interfaceIndex: number | null = null): Promise<MdnsBrowseEvent[]> => {
-          const events: MdnsBrowseEvent[] = [];
-          const now = Date.now();
-          for (const record of records) {
-            if (record.type !== RECORD_TYPES.PTR || typeof record.data !== 'string') continue;
-            const key = `${interfaceIndex ?? 0}/${record.data}`;
-            if (record.ttl === 0) {
-              if (seen.delete(key)) {
-                events.push({
-                  type: 'down' as const,
-                  name: record.data,
-                  serviceType,
-                  interfaceIndex
-                });
-              }
-              continue;
-            }
-            const previous = seen.get(key);
-            const service = options.resolve === true ? await self.resolveService(record.data, { ...options, cache: false }).catch(() => undefined) : undefined;
-            const nextServiceKey = serviceKey(service);
-            const nextRecordsKey = recordsKey(records.filter((candidate) => candidate.name === record.data || candidate.name === service?.target));
-            seen.set(key, { name: record.data, interfaceIndex, expiresAt: now + record.ttl * 1000, ttl: record.ttl, recordsKey: nextRecordsKey, serviceKey: nextServiceKey });
-            if (previous === undefined) {
+    return { async *[Symbol.asyncIterator]() {
+      const seen = new Map<string, {
+        name: string;
+        interfaceIndex: number | null;
+        expiresAt: number;
+        ttl: number;
+        recordsKey: string;
+        serviceKey: string;
+      }>();
+      const eventsForRecords = async (records: DnsResourceRecord[], interfaceIndex: number | null = null): Promise<MdnsBrowseEvent[]> => {
+        const events: MdnsBrowseEvent[] = [];
+        const now = Date.now();
+        for (const record of records) {
+          if (record.type !== RECORD_TYPES.PTR || typeof record.data !== 'string') continue;
+          const key = `${interfaceIndex ?? 0}/${record.data}`;
+          if (record.ttl === 0) {
+            if (seen.delete(key)) {
               events.push({
-                type: 'up' as const,
+                type: 'down' as const,
                 name: record.data,
                 serviceType,
-                interfaceIndex,
-                ...service === undefined ? {} : { service }
-              });
-            } else if (previous.ttl !== record.ttl || previous.recordsKey !== nextRecordsKey || previous.serviceKey !== nextServiceKey) {
-              events.push({
-                type: 'update' as const,
-                name: record.data,
-                serviceType,
-                interfaceIndex,
-                ...service === undefined ? {} : { service }
+                interfaceIndex
               });
             }
+            continue;
           }
-          for (const [key, entry] of [...seen]) {
-            if (entry.expiresAt > now) continue;
-            seen.delete(key);
+          const previous = seen.get(key);
+          const service = options.resolve === true ? await self.resolveService(record.data, {
+            ...options,
+            cache: false
+          }).catch(() => undefined) : undefined;
+          const nextServiceKey = serviceKey(service);
+          const nextRecordsKey = recordsKey(records.filter((candidate) => candidate.name === record.data || candidate.name === service?.target));
+          seen.set(key, {
+            name: record.data,
+            interfaceIndex,
+            expiresAt: now + record.ttl * 1e3,
+            ttl: record.ttl,
+            recordsKey: nextRecordsKey,
+            serviceKey: nextServiceKey
+          });
+          if (previous === undefined) {
             events.push({
-              type: 'down' as const,
-              name: entry.name,
+              type: 'up' as const,
+              name: record.data,
               serviceType,
-              interfaceIndex: entry.interfaceIndex
+              interfaceIndex,
+              ...service === undefined ? {} : { service }
+            });
+          } else if (previous.ttl !== record.ttl || previous.recordsKey !== nextRecordsKey || previous.serviceKey !== nextServiceKey) {
+            events.push({
+              type: 'update' as const,
+              name: record.data,
+              serviceType,
+              interfaceIndex,
+              ...service === undefined ? {} : { service }
             });
           }
-          return events;
-        };
-        if (options.continuous !== true) {
-          const records = await self.query(serviceType, 'PTR', options);
-          for (const event of await eventsForRecords(records)) yield event;
-          return;
         }
-        const family = options.server?.family === 'ipv6' || options.bindAddress?.family === 'ipv6' ? 'ipv6' : 'ipv4';
-        const fd = sock.socket(family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, sock.IPPROTO_UDP);
-        let memberships: MulticastMembership[] = [];
-        try {
-          sock.bind(fd, options.bindAddress ?? wildcardAddress(family));
-          sock.setNonblocking(fd);
-          const usePacketInfo = options.server === undefined;
-          if (usePacketInfo) {
-            memberships = joinMdnsMulticast(fd, family, options);
-            sock.setMulticastOptions(fd, { family, ttl: 255, loopback: true });
-            sock.setsockopt(fd, family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP, family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO, true);
-          }
-          const query = mdnsQueryPacketWithKnownAnswers(serviceType, RECORD_TYPES.PTR, options.unicastResponse, options.knownAnswers);
-          let nextPoll = 0;
-          const pollMs = options.pollMs ?? 1000;
-          while (!self.#closed && !options.signal?.aborted) {
-            const now = Date.now();
-            if (now >= nextPoll) {
-              sendMdnsPacket(fd, query, family, memberships, options.server);
-              nextPoll = now + pollMs;
-            }
-            const waitMs = Math.max(1, Math.min(nextPoll - Date.now(), pollMs));
-            const timeout = loop.timeout(waitMs);
-            const readable = await Promise.race([loop.readable(fd).then(() => true, () => false), timeout.then(() => false)]);
-            timeout.cancel();
-            if (!readable) {
-              loop.removeRead(fd);
-              for (const event of await eventsForRecords([])) yield event;
-              continue;
-            }
-            const packet = receivePacket(fd, usePacketInfo);
-            if (typeof packet === 'number') continue;
-            if ((options.validateSource ?? usePacketInfo) && !isLocalLinkSource(packet.addr, options)) continue;
-            const response = _parseResponse(packet.data);
-            const records = [...response.answers, ...response.authorities, ...response.additionals];
-            for (const event of await eventsForRecords(records, packet.interfaceIndex ?? null)) yield event;
-          }
-        } finally {
-          if (memberships.length > 0) leaveMdnsMulticast(fd, family, memberships);
-          sock.close(fd);
+        for (const [key, entry] of [...seen]) {
+          if (entry.expiresAt > now) continue;
+          seen.delete(key);
+          events.push({
+            type: 'down' as const,
+            name: entry.name,
+            serviceType,
+            interfaceIndex: entry.interfaceIndex
+          });
         }
+        return events;
+      };
+      if (options.continuous !== true) {
+        const records = await self.query(serviceType, 'PTR', options);
+        for (const event of await eventsForRecords(records)) yield event;
+        return;
       }
-    };
+      const family = options.server?.family === 'ipv6' || options.bindAddress?.family === 'ipv6' ? 'ipv6' : 'ipv4';
+      const fd = sock.socket(family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, sock.IPPROTO_UDP);
+      let memberships: MulticastMembership[] = [];
+      try {
+        sock.bind(fd, options.bindAddress ?? wildcardAddress(family));
+        sock.setNonblocking(fd);
+        const usePacketInfo = options.server === undefined;
+        if (usePacketInfo) {
+          memberships = joinMdnsMulticast(fd, family, options);
+          sock.setMulticastOptions(fd, {
+            family,
+            ttl: 255,
+            loopback: true
+          });
+          sock.setsockopt(fd, family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP, family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO, true);
+        }
+        const query = mdnsQueryPacketWithKnownAnswers(serviceType, RECORD_TYPES.PTR, options.unicastResponse, options.knownAnswers);
+        let nextPoll = 0;
+        const pollMs = options.pollMs ?? 1e3;
+        while (!self.#closed && !options.signal?.aborted) {
+          const now = Date.now();
+          if (now >= nextPoll) {
+            sendMdnsPacket(fd, query, family, memberships, options.server);
+            nextPoll = now + pollMs;
+          }
+          const waitMs = Math.max(1, Math.min(nextPoll - Date.now(), pollMs));
+          const timeout = loop.timeout(waitMs);
+          const readable = await Promise.race([loop.readable(fd).then(() => true, () => false), timeout.then(() => false)]);
+          timeout.cancel();
+          if (!readable) {
+            loop.removeRead(fd);
+            for (const event of await eventsForRecords([])) yield event;
+            continue;
+          }
+          const packet = receivePacket(fd, usePacketInfo);
+          if (typeof packet === 'number') continue;
+          if ((options.validateSource ?? usePacketInfo) && !isLocalLinkSource(packet.addr, options)) continue;
+          const response = _parseResponse(packet.data);
+          const records = [
+            ...response.answers,
+            ...response.authorities,
+            ...response.additionals
+          ];
+          for (const event of await eventsForRecords(records, packet.interfaceIndex ?? null)) yield event;
+        }
+      } finally {
+        if (memberships.length > 0) leaveMdnsMulticast(fd, family, memberships);
+        sock.close(fd);
+      }
+    } };
   }
-
   /** Resolve a DNS-SD service instance name into a connection target.
   *
   * Queries the instance's SRV record for its target host and port, then fills
@@ -959,7 +1018,10 @@ export class Mdns {
     const srvRecords = await this.query(instance, 'SRV', options);
     const srv = srvRecords.find((record) => record.type === RECORD_TYPES.SRV && typeof record.data === 'object' && record.data !== null && 'port' in record.data);
     if (srv === undefined) throw new Error(`mdns: no SRV record for '${instance}'`);
-    const data = srv.data as { port: number; name: string };
+    const data = srv.data as {
+      port: number;
+      name: string;
+    };
     let txtRecords = srvRecords.filter((record) => record.type === RECORD_TYPES.TXT && record.name === instance);
     if (txtRecords.length === 0) txtRecords = await this.query(instance, 'TXT', options).catch(() => []);
     let addresses = srvRecords.filter((record) => (record.type === RECORD_TYPES.A || record.type === RECORD_TYPES.AAAA) && record.name === data.name).map((record) => String(record.data));
@@ -973,7 +1035,6 @@ export class Mdns {
       interfaceIndex: null
     };
   }
-
   /** Advertise a DNS-SD service from a built-in responder and return its handle.
   *
   * Binds a UDP responder that answers PTR, SRV, TXT, A, and AAAA questions for
@@ -1007,7 +1068,11 @@ export class Mdns {
   */
   async publish(service: MdnsPublishService, options: MdnsPublishOptions = {}): Promise<MdnsRegistration> {
     if (this.#closed) throw new Error('mdns: client is closed');
-    const address = options.address ?? { family: 'ipv4' as const, ip: '0.0.0.0', port: 5353 };
+    const address = options.address ?? {
+      family: 'ipv4' as const,
+      ip: '0.0.0.0',
+      port: 5353
+    };
     const multicast = options.multicast ?? options.address === undefined;
     const fd = sock.socket(address.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, sock.IPPROTO_UDP);
     sock.setsockopt(fd, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
@@ -1039,10 +1104,16 @@ export class Mdns {
     function peerKey(address: Address): string {
       return `${address.family}/${address.ip}/${address.port}`;
     }
-    function questionKey(peer: Address, question: { name: string; type: number }): string {
+    function questionKey(peer: Address, question: {
+      name: string;
+      type: number;
+    }): string {
       return `${peerKey(peer)}/${question.name}/${question.type}`;
     }
-    function shouldSuppressQuestion(peer: Address, question: { name: string; type: number }): boolean {
+    function shouldSuppressQuestion(peer: Address, question: {
+      name: string;
+      type: number;
+    }): boolean {
       const now = Date.now();
       for (const [key, expiresAt] of [...recentQuestions]) {
         if (expiresAt <= now) recentQuestions.delete(key);
@@ -1066,10 +1137,14 @@ export class Mdns {
             loop.removeRead(fd);
             continue;
           }
-          const packet = multicast ? sock.recvmsgPacketInfo(fd, 9000) : sock.recvfrom(fd, 9000);
+          const packet = multicast ? sock.recvmsgPacketInfo(fd, 9e3) : sock.recvfrom(fd, 9e3);
           if (typeof packet === 'number') continue;
           const response = _parseResponse(packet.data);
-          const records = [...response.answers, ...response.authorities, ...response.additionals];
+          const records = [
+            ...response.answers,
+            ...response.authorities,
+            ...response.additionals
+          ];
           if (hasConflict(records, instance, service.serviceType)) {
             conflicted = true;
             break;
@@ -1079,7 +1154,9 @@ export class Mdns {
         if (attempt >= maxAttempts) {
           sock.close(fd);
           const error = new Error(`mdns: service name conflict for '${instance}'`);
-          (error as { code?: string }).code = 'EADDRINUSE';
+          (error as {
+            code?: string;
+          }).code = 'EADDRINUSE';
           throw error;
         }
         instanceLabel = renamedInstanceLabel(service.name, attempt + 1);
@@ -1094,22 +1171,46 @@ export class Mdns {
       return service.addresses ?? [];
     }
     function serviceRecords(ttl: number, ptrTtl = ttl, interfaceIndex: number | null = null): ResponseRecord[] {
-      const records: ResponseRecord[] = [
-        { name: service.serviceType, type: RECORD_TYPES.PTR, ttl: ptrTtl, rdata: Array.from(_encodeName(instance)) }
-      ];
+      const records: ResponseRecord[] = [{
+        name: service.serviceType,
+        type: RECORD_TYPES.PTR,
+        ttl: ptrTtl,
+        rdata: Array.from(_encodeName(instance))
+      }];
       const srvRdata: number[] = [];
       pushU16(srvRdata, 0);
       pushU16(srvRdata, 0);
       pushU16(srvRdata, service.port);
       srvRdata.push(..._encodeName(service.target));
-      records.push({ name: instance, type: RECORD_TYPES.SRV, ttl, cacheFlush: true, rdata: srvRdata });
-      records.push({ name: instance, type: RECORD_TYPES.TXT, ttl, cacheFlush: true, rdata: txtRdata(service.txt) });
+      records.push({
+        name: instance,
+        type: RECORD_TYPES.SRV,
+        ttl,
+        cacheFlush: true,
+        rdata: srvRdata
+      });
+      records.push({
+        name: instance,
+        type: RECORD_TYPES.TXT,
+        ttl,
+        cacheFlush: true,
+        rdata: txtRdata(service.txt)
+      });
       for (const ip of serviceAddresses(interfaceIndex)) {
-        records.push({ name: service.target, type: addressRecordType(ip), ttl, cacheFlush: true, rdata: addressRdata(ip) });
+        records.push({
+          name: service.target,
+          type: addressRecordType(ip),
+          ttl,
+          cacheFlush: true,
+          rdata: addressRdata(ip)
+        });
       }
       return records;
     }
-    function answersForQuestion(question: { name: string; type: number }, ttl: number, knownAnswers: DnsResourceRecord[], interfaceIndex: number | null): ResponseRecord[] {
+    function answersForQuestion(question: {
+      name: string;
+      type: number;
+    }, ttl: number, knownAnswers: DnsResourceRecord[], interfaceIndex: number | null): ResponseRecord[] {
       const all = serviceRecords(ttl, ttl, interfaceIndex);
       if (question.name === service.serviceType && question.type === RECORD_TYPES.PTR) {
         return all.filter((record) => record.type === RECORD_TYPES.PTR && !isKnownAnswer(record, knownAnswers, instance));
@@ -1135,7 +1236,10 @@ export class Mdns {
       const key = peerKey(peer);
       let pending = pendingResponses.get(key);
       if (pending === undefined) {
-        pending = { peer, records: new Map() };
+        pending = {
+          peer,
+          records: new Map()
+        };
         pendingResponses.set(key, pending);
         const flush = (async () => {
           await loop.timeout(delayMs);
@@ -1162,7 +1266,10 @@ export class Mdns {
         const packet = receivePacket(fd, multicast);
         if (typeof packet === 'number') continue;
         peers.set(peerKey(packet.addr as Address), packet.addr as Address);
-        let question: { name: string; type: number };
+        let question: {
+          name: string;
+          type: number;
+        };
         try {
           question = parseQuestion(packet.data);
         } catch {
@@ -1211,7 +1318,6 @@ export class Mdns {
       }
     };
   }
-
   /** Mark the client closed so further operations are rejected.
   *
   * The `Mdns` instance itself owns no persistent sockets — each query opens
@@ -1234,7 +1340,6 @@ export class Mdns {
   async close(): Promise<void> {
     this.#closed = true;
   }
-
   /** Dispose alias for `close()`, enabling `await using mdns = new Mdns()`. */
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();

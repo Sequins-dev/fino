@@ -596,7 +596,9 @@ function _listenOptions(options: ServeOptions): ListenOptions {
     reusePort: options.reusePort
   };
 }
-function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
+function _quicCaFromTls(ca: string | undefined): {
+  file: string;
+} | undefined {
   return ca === undefined ? undefined : { file: ca };
 }
 /**
@@ -658,7 +660,9 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
   if (boundAddress.family !== 'ipv4' && boundAddress.family !== 'ipv6') {
     for (const callback of tlsCallbacks) {
       try {
-        (callback as { close?: () => void }).close?.();
+        (callback as {
+          close?: () => void;
+        }).close?.();
       } catch {}
     }
     tlsCallbacks = [];
@@ -800,7 +804,9 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
       tcpServer.close();
       for (const callback of tlsCallbacks) {
         try {
-          (callback as { close?: () => void }).close?.();
+          (callback as {
+            close?: () => void;
+          }).close?.();
         } catch {}
       }
       tlsCallbacks = [];

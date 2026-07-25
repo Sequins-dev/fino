@@ -57,44 +57,44 @@ import { runFormat } from '../internal/tooling/format.ts';
 *
 */
 const command = new Task({
-    name: 'fmt',
-    description: 'Format JavaScript and TypeScript source files',
-    outputMode: 'both',
-    run: async function runFmtCommand(input: {
-      files?: unknown[];
-      check?: unknown;
-    }, ctx) {
-      const files = Array.isArray(input.files) ? input.files.map(String) : [];
-      const check = input.check === true;
-      const message = await runFormat({
+  name: 'fmt',
+  description: 'Format JavaScript and TypeScript source files',
+  outputMode: 'both',
+  run: async function runFmtCommand(input: {
+    files?: unknown[];
+    check?: unknown;
+  }, ctx) {
+    const files = Array.isArray(input.files) ? input.files.map(String) : [];
+    const check = input.check === true;
+    const message = await runFormat({
+      files,
+      check
+    });
+    if (ctx.writer.mode === 'json') {
+      const result = {
+        command: 'fmt',
+        ok: true,
+        check,
         files,
-        check
-      });
-      if (ctx.writer.mode === 'json') {
-        const result = {
-          command: 'fmt',
-          ok: true,
-          check,
-          files,
-          message
-        };
-        await ctx.writer.writeJson(result);
-        return result;
-      }
-      return message;
-    },
-    cli: {
-      options: [{
-        flags: '--check',
-        type: 'boolean',
-        description: 'Report files that would change without writing them'
-      }],
-      positionals: [{
-        name: 'files',
-        type: 'string',
-        multiple: true,
-        description: 'Files, directories, or globs to format'
-      }]
+        message
+      };
+      await ctx.writer.writeJson(result);
+      return result;
     }
+    return message;
+  },
+  cli: {
+    options: [{
+      flags: '--check',
+      type: 'boolean',
+      description: 'Report files that would change without writing them'
+    }],
+    positionals: [{
+      name: 'files',
+      type: 'string',
+      multiple: true,
+      description: 'Files, directories, or globs to format'
+    }]
+  }
 });
 export { command as default };

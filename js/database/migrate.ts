@@ -37,24 +37,9 @@ import { DiskFileSystem } from 'fino:file';
 import type { FileSystem } from 'internal:file/provider';
 import { digest } from 'internal:openssl';
 import { compileSqlModule, parseSqlModule, MigrationParseError } from 'fino:database/sql';
-
-export {
-  MigrationParseError,
-  compileSqlModule,
-  escapeSqlLiteral,
-  parseSqlModule,
-  toSqlModuleSource
-} from 'fino:database/sql';
-export type {
-  CompileSqlModuleOptions,
-  ParseSqlModuleOptions,
-  SqlFunctionIR,
-  SqlModuleIR,
-  SqlParamIR
-} from 'fino:database/sql';
-
+export { MigrationParseError, compileSqlModule, escapeSqlLiteral, parseSqlModule, toSqlModuleSource } from 'fino:database/sql';
+export type { CompileSqlModuleOptions, ParseSqlModuleOptions, SqlFunctionIR, SqlModuleIR, SqlParamIR } from 'fino:database/sql';
 const enc = new TextEncoder();
-
 /**
 * Error thrown for migration planning, checksum, history, and execution
 * failures.
@@ -82,7 +67,6 @@ export class MigrationError extends Error {
     this.name = 'MigrationError';
   }
 }
-
 /**
 * A reversible database migration.
 *
@@ -128,7 +112,6 @@ export interface Migration {
   */
   checksum?: string;
 }
-
 /**
 * Function context passed to executable migration bodies.
 *
@@ -163,7 +146,6 @@ export interface MigrationContext {
   */
   sql: typeof sql;
 }
-
 /**
 * SQL body accepted by migration execution.
 *
@@ -177,7 +159,6 @@ export interface MigrationContext {
 * either be pure SQL generators or be paired with an explicit `checksum`.
 */
 export type MigrationBody = string | string[] | ((ctx: MigrationContext) => void | string | string[] | Promise<void | string | string[]>);
-
 /**
 * One row of migration history.
 *
@@ -221,7 +202,6 @@ export interface MigrationRecord {
   */
   durationMs: number;
 }
-
 /**
 * Planned migration state returned by `planMigrations()`.
 *
@@ -242,7 +222,6 @@ export interface MigrationPlan {
   */
   pending: Migration[];
 }
-
 /**
 * Options for `loadMigrations()`.
 *
@@ -264,7 +243,6 @@ export interface LoadMigrationsOptions {
   */
   fs?: FileSystem;
 }
-
 /**
 * Options shared by migration planning and execution.
 *
@@ -287,7 +265,6 @@ export interface MigrateOptions {
   */
   transaction?: boolean;
 }
-
 /**
 * Options for rollback execution.
 *
@@ -303,7 +280,6 @@ export interface RollbackOptions extends MigrateOptions {
   */
   steps?: number;
 }
-
 /**
 * Return `migration` unchanged while preserving the public `Migration` type.
 *
@@ -323,32 +299,30 @@ export interface RollbackOptions extends MigrateOptions {
 export function defineMigration(migration: Migration): Migration {
   return migration;
 }
-
 function migrationName(id: string): string {
   return id.includes('_') ? id.slice(id.indexOf('_') + 1) : id;
 }
-
 function validateTableName(name: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new MigrationError(`Invalid migration table name: ${name}`);
   return name;
 }
-
 function hex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
-
 async function resolveBody(body: MigrationBody, ctx: MigrationContext): Promise<string[]> {
   const value = typeof body === 'function' ? await body(ctx) : body;
   if (value === undefined) return [];
   return Array.isArray(value) ? value : [value];
 }
-
 async function checksumFor(body: MigrationBody, migration: Migration, db: DatabaseConnection): Promise<string> {
   if (migration.checksum) return migration.checksum;
-  const sqlText = (await resolveBody(body, { db, migration, sql })).join('\n');
+  const sqlText = (await resolveBody(body, {
+    db,
+    migration,
+    sql
+  })).join('\n');
   return hex(digest('sha-256', enc.encode(sqlText)));
 }
-
 async function ensureHistory(db: DatabaseConnection, tableName: string): Promise<void> {
   await db.exec(`CREATE TABLE IF NOT EXISTS ${tableName} (
     id TEXT NOT NULL,
@@ -359,7 +333,6 @@ async function ensureHistory(db: DatabaseConnection, tableName: string): Promise
     duration_ms INTEGER NOT NULL
   )`);
 }
-
 async function readHistory(db: DatabaseConnection, tableName: string): Promise<MigrationRecord[]> {
   try {
     const rows = await db.prepare(`SELECT id, name, checksum, direction, applied_at, duration_ms FROM ${tableName} ORDER BY applied_at ASC`).all();
@@ -376,7 +349,6 @@ async function readHistory(db: DatabaseConnection, tableName: string): Promise<M
     return [];
   }
 }
-
 function activeRecords(records: MigrationRecord[]): MigrationRecord[] {
   const active = new Map<string, MigrationRecord>();
   for (const record of records) {
@@ -385,7 +357,6 @@ function activeRecords(records: MigrationRecord[]): MigrationRecord[] {
   }
   return [...active.values()];
 }
-
 function sortedUnique(migrations: Migration[]): Migration[] {
   const seen = new Set<string>();
   for (const migration of migrations) {
@@ -394,7 +365,6 @@ function sortedUnique(migrations: Migration[]): Migration[] {
   }
   return [...migrations].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
-
 /**
 * Read currently applied migrations from the history table.
 *
@@ -412,7 +382,6 @@ function sortedUnique(migrations: Migration[]): Migration[] {
 export async function getAppliedMigrations(db: DatabaseConnection, options: MigrateOptions = {}): Promise<MigrationRecord[]> {
   return activeRecords(await readHistory(db, validateTableName(options.tableName ?? 'fino_migrations')));
 }
-
 /**
 * Compare migrations with database history and return applied and pending sets.
 *
@@ -445,23 +414,29 @@ export async function planMigrations(db: DatabaseConnection, migrations: Migrati
     const nextChecksum = await checksumFor(migration.up, migration, db);
     if (active.checksum !== nextChecksum) throw new MigrationError(`Migration checksum changed for ${migration.id}`);
   }
-  return { applied, pending };
+  return {
+    applied,
+    pending
+  };
 }
-
 async function runStatements(db: DatabaseConnection, statements: string[]): Promise<void> {
   for (const statement of statements) {
     if (statement.trim()) await db.exec(statement);
   }
 }
-
 async function record(db: DatabaseConnection, tableName: string, migration: Migration, checksum: string, direction: 'up' | 'down', started: number): Promise<MigrationRecord> {
   const appliedAt = Date.now();
   const durationMs = Math.max(0, appliedAt - started);
-  await db.prepare(`INSERT INTO ${tableName}(id, name, checksum, direction, applied_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(migration.id, migration.name ?? migrationName(migration.id), checksum, direction, appliedAt, durationMs);
-  return { id: migration.id, name: migration.name ?? migrationName(migration.id), checksum, direction, appliedAt, durationMs };
+  await db.prepare(`INSERT INTO ${tableName}(id, name, checksum, direction, applied_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?)`).run(migration.id, migration.name ?? migrationName(migration.id), checksum, direction, appliedAt, durationMs);
+  return {
+    id: migration.id,
+    name: migration.name ?? migrationName(migration.id),
+    checksum,
+    direction,
+    appliedAt,
+    durationMs
+  };
 }
-
 /**
 * Apply all pending `up` migrations.
 *
@@ -487,13 +462,20 @@ async function record(db: DatabaseConnection, tableName: string, migration: Migr
 export async function migrate(db: DatabaseConnection, migrations: Migration[], options: MigrateOptions = {}): Promise<MigrationRecord[]> {
   const tableName = validateTableName(options.tableName ?? 'fino_migrations');
   await ensureHistory(db, tableName);
-  const plan = await planMigrations(db, migrations, { ...options, tableName });
+  const plan = await planMigrations(db, migrations, {
+    ...options,
+    tableName
+  });
   const applied: MigrationRecord[] = [];
   for (const migration of plan.pending) {
     const started = Date.now();
     const checksum = await checksumFor(migration.up, migration, db);
     const task = async () => {
-      await runStatements(db, await resolveBody(migration.up, { db, migration, sql }));
+      await runStatements(db, await resolveBody(migration.up, {
+        db,
+        migration,
+        sql
+      }));
       applied.push(await record(db, tableName, migration, checksum, 'up', started));
     };
     if (options.transaction === false) await task();
@@ -501,7 +483,6 @@ export async function migrate(db: DatabaseConnection, migrations: Migration[], o
   }
   return applied;
 }
-
 /**
 * Roll back applied migrations by executing their `down` bodies.
 *
@@ -533,7 +514,11 @@ export async function rollback(db: DatabaseConnection, migrations: Migration[], 
     if (!migration.down) throw new MigrationError(`Migration ${activeRecord.id} does not define down SQL`);
     const started = Date.now();
     const task = async () => {
-      await runStatements(db, await resolveBody(migration.down!, { db, migration, sql }));
+      await runStatements(db, await resolveBody(migration.down!, {
+        db,
+        migration,
+        sql
+      }));
       rolledBack.push(await record(db, tableName, migration, activeRecord.checksum, 'down', started));
     };
     if (options.transaction === false) await task();
@@ -541,10 +526,13 @@ export async function rollback(db: DatabaseConnection, migrations: Migration[], 
   }
   return rolledBack;
 }
-
 function migrationFromSql(id: string, text: string, source: string): Migration {
   const ir = parseSqlModule(text, { source });
-  if (ir.functions.length === 0) return defineMigration({ id, name: migrationName(id), up: text });
+  if (ir.functions.length === 0) return defineMigration({
+    id,
+    name: migrationName(id),
+    up: text
+  });
   const functions = compileSqlModule(ir);
   const up = functions.up;
   if (!up) throw new MigrationParseError('directive migration must export up()', source, 1);
@@ -555,15 +543,12 @@ function migrationFromSql(id: string, text: string, source: string): Migration {
     ...functions.down ? { down: () => functions.down() } : {}
   });
 }
-
 function basename(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
 }
-
 function idFromPath(path: string): string {
   return basename(path).replace(/\.sql(?:\.ts)?$|\.ts$/i, '');
 }
-
 /**
 * Load migrations from SQL files, TypeScript migration modules, or globs.
 *
@@ -600,7 +585,10 @@ export async function loadMigrations(pattern: string | string[], options: LoadMi
   const paths: string[] = [];
   for (const pat of patterns) {
     if (/[*?{[]/.test(pat)) {
-      for await (const entry of (fs as DiskFileSystem).glob(pat, { cwd: options.cwd, onlyFiles: true })) paths.push(entry.path.toString());
+      for await (const entry of (fs as DiskFileSystem).glob(pat, {
+        cwd: options.cwd,
+        onlyFiles: true
+      })) paths.push(entry.path.toString());
     } else {
       paths.push(options.cwd ? `${options.cwd}/${pat}` : pat);
     }

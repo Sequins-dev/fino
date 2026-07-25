@@ -85,10 +85,19 @@ describe('HTTP app routing and middleware', () => {
   it('requires explicit immutable root branches for inherited enrichments', async (t) => {
     const app = new App();
     const early = app.value('seen', () => 'early');
-    early.get('/early').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
+    early.get('/early').handle((ctx) => Response.json({
+      seen: ctx.seen ?? null,
+      late: ctx.late ?? null
+    }));
     const late = early.value('late', () => 'late');
-    late.get('/late').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
-    app.get('/plain').handle((ctx) => Response.json({ seen: ctx.seen ?? null, late: ctx.late ?? null }));
+    late.get('/late').handle((ctx) => Response.json({
+      seen: ctx.seen ?? null,
+      late: ctx.late ?? null
+    }));
+    app.get('/plain').handle((ctx) => Response.json({
+      seen: ctx.seen ?? null,
+      late: ctx.late ?? null
+    }));
     t.deepEqual(await (await app.handle(request('/early'))).json(), {
       seen: 'early',
       late: null
@@ -151,7 +160,10 @@ describe('HTTP app routing and middleware', () => {
   it('nests route builders for grouped REST routes', async (t) => {
     const app = new App();
     const users = app.route('/users').value('db', () => 'db-handle');
-    users.get().handle((ctx) => Response.json({ scope: 'list', db: ctx.db }));
+    users.get().handle((ctx) => Response.json({
+      scope: 'list',
+      db: ctx.db
+    }));
     const user = users.route('/:id').value('params', schema.params(v.object({ id: v.string() })));
     user.get().handle((ctx) => Response.json({
       scope: 'show',
@@ -317,8 +329,11 @@ describe('HTTP app built-ins', () => {
     const app = new App();
     const stateful = app.value('cookies', cookies()).value('session', sessions({
       store: memoryCache({ namespace: 'sessions' }),
-      keys: [{ id: 'test', secret: 'http-app-session-test-secret' }],
-      ttlMs: 60_000,
+      keys: [{
+        id: 'test',
+        secret: 'http-app-session-test-secret'
+      }],
+      ttlMs: 6e4,
       cookie: 'sid'
     }));
     stateful.post('/login').value('body', body.json(v.object({ user: v.string() }))).handle((ctx) => {
@@ -449,22 +464,45 @@ describe('HTTP app built-ins', () => {
     const app = new App();
     app.route('/events').sse(async (events, ctx) => {
       await events.write({ data: `method:${ctx.method}` });
-      await events.write({ event: 'done', data: '{}', id: '1' });
+      await events.write({
+        event: 'done',
+        data: '{}',
+        id: '1'
+      });
     });
     const res = await app.handle(request('/events')) as Response;
     t.equal(res.headers.get('content-type'), 'text/event-stream', 'sse route sets event-stream content type');
-    const received: Array<{ type: string; data: string; id: string | null }> = [];
+    const received: Array<{
+      type: string;
+      data: string;
+      id: string | null;
+    }> = [];
     for await (const event of parseEventStream(res.body!)) {
-      received.push({ type: event.type, data: event.data, id: event.id });
+      received.push({
+        type: event.type,
+        data: event.data,
+        id: event.id
+      });
     }
-    t.deepEqual(received, [
-      { type: 'message', data: 'method:GET', id: null },
-      { type: 'done', data: '{}', id: '1' }
-    ], 'handler events arrive parsed in order');
-    const post = await app.handle(request('/events', { method: 'POST', body: 'x' })) as Response;
+    t.deepEqual(received, [{
+      type: 'message',
+      data: 'method:GET',
+      id: null
+    }, {
+      type: 'done',
+      data: '{}',
+      id: '1'
+    }], 'handler events arrive parsed in order');
+    const post = await app.handle(request('/events', {
+      method: 'POST',
+      body: 'x'
+    })) as Response;
     const first = await parseEventStream(post.body!).read();
     t.equal(first?.data, 'method:POST', 'sse route also matches POST');
-    const put = await app.handle(request('/events', { method: 'PUT', body: 'x' })) as Response;
+    const put = await app.handle(request('/events', {
+      method: 'PUT',
+      body: 'x'
+    })) as Response;
     t.equal(put.status, 405, 'sse route rejects other methods');
     t.equal(put.headers.get('allow'), 'GET, POST');
   });
@@ -485,7 +523,10 @@ describe('HTTP app built-ins', () => {
     const app = new App();
     app.route('/ticks').sse(async (events) => {
       await events.write({ data: 'tick' });
-      await events.write({ event: 'done', data: 'bye' });
+      await events.write({
+        event: 'done',
+        data: 'bye'
+      });
     });
     const server = app.listen({
       port: 0,
@@ -546,10 +587,11 @@ describe('HTTP app built-ins', () => {
   });
   it('dispatches rpc services as POST and 405s other methods', async (t) => {
     const app = new App();
-    app.route('/rpc').rpc({
-      httpHandler: () => async (req: Request) => Response.json({ echoed: await req.text() })
-    });
-    const posted = await app.handle(request('/rpc', { method: 'POST', body: 'ping' }));
+    app.route('/rpc').rpc({ httpHandler: () => async (req: Request) => Response.json({ echoed: await req.text() }) });
+    const posted = await app.handle(request('/rpc', {
+      method: 'POST',
+      body: 'ping'
+    }));
     t.deepEqual(await posted.json(), { echoed: 'ping' });
     const got = await app.handle(request('/rpc'));
     t.equal(got.status, 405, 'non-POST on an rpc route is 405');

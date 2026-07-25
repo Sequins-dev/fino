@@ -1088,11 +1088,9 @@ describe('QUIC loopback object model', () => {
   it('honors byte reader maximum sizes for QUIC stream reads', async (t) => {
     const request = encodeUtf8('abcdef');
     const credits: number[] = [];
-    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({
-      [quicConnectionInternals.extendStreamReceiveCredit](_streamId: number, bytes: number) {
-        credits.push(bytes);
-      }
-    }));
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({ [quicConnectionInternals.extendStreamReceiveCredit](_streamId: number, bytes: number) {
+      credits.push(bytes);
+    } }));
     const pendingByte = stream.reader.readByte();
     stream[quicStreamInternals.pushIncoming](0, request, true);
     t.equal(await pendingByte, 97, 'pending one-byte read consumes one byte from an arriving chunk');
@@ -1107,11 +1105,9 @@ describe('QUIC loopback object model', () => {
   });
   it('coalesces contiguous queued stream data up to the read limit', async (t) => {
     const credits: number[] = [];
-    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({
-      [quicConnectionInternals.extendStreamReceiveCredit](_streamId: number, bytes: number) {
-        credits.push(bytes);
-      }
-    }));
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub({ [quicConnectionInternals.extendStreamReceiveCredit](_streamId: number, bytes: number) {
+      credits.push(bytes);
+    } }));
     stream[quicStreamInternals.pushIncoming](0, encodeUtf8('abc'), false);
     stream[quicStreamInternals.pushIncoming](3, encodeUtf8('def'), false);
     stream[quicStreamInternals.pushIncoming](6, encodeUtf8('ghi'), true);

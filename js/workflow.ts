@@ -287,7 +287,11 @@ export interface WorkflowStore {
   delete(runId: string): Promise<void>;
 }
 function workflowRunTopic(runId: string) {
-  return topic<{ runId: string; version: number; deleted?: boolean }>(`fino:workflow:run:${runId}`);
+  return topic<{
+    runId: string;
+    version: number;
+    deleted?: boolean;
+  }>(`fino:workflow:run:${runId}`);
 }
 /**
 * Wrap a workflow store so every save and delete publishes a run update.
