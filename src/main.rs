@@ -16,6 +16,7 @@ mod runtime;
 mod scheduler_native;
 mod state;
 mod typescript_format;
+mod v8_threading;
 
 fn main() {
     // Server processes must not die on broken-pipe writes. Network connections

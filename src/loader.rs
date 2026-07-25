@@ -598,6 +598,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     // orchestrator + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
     source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
+    source_builtin!("internal:scheduler/reactor", "internal/scheduler/reactor"),
     source_builtin!("internal:scheduler/workload", "internal/scheduler/workload"),
     source_builtin!(
         "internal:scheduler/readiness",
