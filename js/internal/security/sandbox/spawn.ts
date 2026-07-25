@@ -149,12 +149,7 @@ function supportedCategories(landlockAvailable: boolean): SandboxCategory[] {
     categories.push('network', 'process', 'syscalls');
     return categories;
   }
-  return [
-    'resources',
-    'filesystem',
-    'network',
-    'process'
-  ];
+  return ['resources', 'filesystem', 'network', 'process'];
 }
 /**
 * Create a connected `AF_UNIX`/`SOCK_STREAM` socketpair and return its two fds
@@ -212,10 +207,15 @@ function readSocketpair(): [number, number] {
 * console.log('enforced:', result.report.enforced.map((c) => c.category));
 * ```
 */
-export function spawnStrictSandboxed(command: string, args: string[], opts: {
-  cwd?: string;
-  env?: Record<string, string>;
-}, sandbox: SandboxPolicy, defaultEnv: Record<string, string>, spawnLauncher: SpawnLauncher, landlockAvailable: boolean): StrictSpawnResult {
+export function spawnStrictSandboxed(
+  command: string,
+  args: string[],
+  opts: { cwd?: string; env?: Record<string, string> },
+  sandbox: SandboxPolicy,
+  defaultEnv: Record<string, string>,
+  spawnLauncher: SpawnLauncher,
+  landlockAvailable: boolean
+): StrictSpawnResult {
   // Fail fast on a disallowed initial binary before spawning anything.
   const commandError = checkInitialCommand(sandbox.process, command);
   if (commandError !== null) throw new Error(commandError);
@@ -246,15 +246,7 @@ export function spawnStrictSandboxed(command: string, args: string[], opts: {
     });
     const reportFrame = readFrame(parentSock);
     if (reportFrame === null) throw new Error('sandbox launcher exited before reporting');
-    const framed = reportFrame as {
-      type?: string;
-      installed?: InstalledMechanism[];
-      cgroupPath?: string;
-      descendantCleanup?: 'cgroup' | 'processGroup';
-      stage?: string;
-      message?: string;
-      errno?: number;
-    };
+    const framed = reportFrame as { type?: string; installed?: InstalledMechanism[]; cgroupPath?: string; descendantCleanup?: 'cgroup' | 'processGroup'; stage?: string; message?: string; errno?: number };
     if (framed.type === 'error') {
       throw new Error(`sandbox launcher failed at ${framed.stage}: ${framed.message} (errno ${framed.errno ?? 0})`);
     }
@@ -265,21 +257,12 @@ export function spawnStrictSandboxed(command: string, args: string[], opts: {
     // from an execve failure (an error frame on the still-open socket).
     const tail = readFrame(parentSock);
     if (tail !== null) {
-      const err = tail as {
-        stage?: string;
-        message?: string;
-        errno?: number;
-      };
+      const err = tail as { stage?: string; message?: string; errno?: number };
       throw new Error(`sandbox launcher failed at ${err.stage ?? 'execve'}: ${err.message ?? 'exec failed'} (errno ${err.errno ?? 0})`);
     }
     const backend = isLinux ? 'linuxNative' : 'macosSeatbelt';
     const report = buildReport(sandbox, framed.installed, backend, supportedCategories(landlockAvailable));
-    return {
-      ...launched,
-      report,
-      cgroupPath: framed.cgroupPath,
-      descendantCleanup: framed.descendantCleanup ?? 'processGroup'
-    };
+    return { ...launched, report, cgroupPath: framed.cgroupPath, descendantCleanup: framed.descendantCleanup ?? 'processGroup' };
   } catch (err) {
     closeChildStreams();
     throw err;

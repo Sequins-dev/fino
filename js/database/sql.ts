@@ -47,6 +47,7 @@
 * ```
 */
 import { parse as parseTypeScript } from 'fino:format/typescript';
+
 /**
 * Error thrown when a SQL module cannot be parsed.
 *
@@ -88,6 +89,7 @@ export class MigrationParseError extends Error {
     this.lineNum = lineNum;
   }
 }
+
 /**
 * Parameter parsed from a `-- function` directive.
 *
@@ -113,6 +115,7 @@ export interface SqlParamIR {
   */
   type: string;
 }
+
 /**
 * One SQL function parsed from a module.
 *
@@ -159,6 +162,7 @@ export interface SqlFunctionIR {
   */
   description: string[];
 }
+
 /**
 * Parsed SQL module with preserved type imports and named functions.
 *
@@ -190,6 +194,7 @@ export interface SqlModuleIR {
   */
   source: string;
 }
+
 /**
 * Options for parsing a SQL module.
 *
@@ -206,6 +211,7 @@ export interface ParseSqlModuleOptions {
   */
   source?: string;
 }
+
 /**
 * Options for compiling SQL functions.
 *
@@ -224,16 +230,16 @@ export interface CompileSqlModuleOptions {
   */
   escape?: (value: unknown) => unknown;
 }
+
 const META_RE = /^\s*--\s*function\s+([A-Za-z_][A-Za-z0-9_]*)(\(.*\)(?::\s*.+?)?)\s*$/;
 const IMPORT_RE = /^\s*--\s*(import\s+type\s+.+?)\s*;?\s*$/;
 const PATH_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[(?:\d+|'[^']+'|"[^"]+")\])*$/;
+
 function parseTsOrThrow(source: string, filename: string, lineNum: number, original: string): void {
-  const parsed = parseTypeScript(source, {
-    filename,
-    sourceType: 'ts'
-  });
+  const parsed = parseTypeScript(source, { filename, sourceType: 'ts' });
   if (!parsed.ok) throw new MigrationParseError(parsed.errors[0]?.message ?? 'invalid TypeScript syntax', original, lineNum);
 }
+
 function splitParams(raw: string): string[] {
   const out: string[] = [];
   let start = 0;
@@ -260,6 +266,7 @@ function splitParams(raw: string): string[] {
   if (last) out.push(last);
   return out;
 }
+
 function splitParam(param: string, source: string, lineNum: number): SqlParamIR {
   let depth = 0;
   for (let i = 0; i < param.length; i++) {
@@ -271,39 +278,30 @@ function splitParam(param: string, source: string, lineNum: number): SqlParamIR 
       const type = param.slice(i + 1).trim();
       if (!/^[A-Za-z_$][\w$]*$/.test(name)) throw new MigrationParseError(`invalid parameter name: ${JSON.stringify(name)}`, source, lineNum);
       if (!type) throw new MigrationParseError(`missing type for parameter: ${JSON.stringify(name)}`, source, lineNum);
-      return {
-        name,
-        type
-      };
+      return { name, type };
     }
   }
   const name = param.trim();
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) throw new MigrationParseError(`invalid parameter name: ${JSON.stringify(name)}`, source, lineNum);
-  return {
-    name,
-    type: 'string'
-  };
+  return { name, type: 'string' };
 }
-function parseSignature(name: string, raw: string, source: string, lineNum: number): {
-  params: SqlParamIR[];
-  returnType: string;
-} {
+
+function parseSignature(name: string, raw: string, source: string, lineNum: number): { params: SqlParamIR[]; returnType: string } {
   parseTsOrThrow(`function ${name}${raw} {}`, `${source}.ts`, lineNum, source);
   const close = raw.lastIndexOf(')');
   const params = splitParams(raw.slice(1, close)).map((param) => splitParam(param, source, lineNum));
   const rest = raw.slice(close + 1).trim();
   const returnType = rest.startsWith(':') ? rest.slice(1).trim() || 'string' : 'string';
-  return {
-    params,
-    returnType
-  };
+  return { params, returnType };
 }
+
 function validateSqlLine(sqlLine: string, source: string, lineNum: number): void {
   const opening = (sqlLine.match(/\{\{/g) ?? []).length;
   const closing = (sqlLine.match(/\}\}/g) ?? []).length;
   if (opening !== closing) throw new MigrationParseError('unbalanced placeholder braces', source, lineNum);
   if (/\{\{!?\s*\}\}/.test(sqlLine)) throw new MigrationParseError('empty placeholder', source, lineNum);
 }
+
 function normalizePositional(sqlText: string, params: SqlParamIR[]): string {
   let index = 0;
   return sqlText.replace(/\?/g, () => {
@@ -311,6 +309,7 @@ function normalizePositional(sqlText: string, params: SqlParamIR[]): string {
     return param ? `{{ ${param.name} }}` : '?';
   });
 }
+
 /**
 * Parse SQL directives into a typed SQL module IR.
 *
@@ -393,12 +392,9 @@ export function parseSqlModule(text: string, options: ParseSqlModuleOptions = {}
       sql: normalizePositional(sqlLines.join('\n'), params)
     });
   }
-  return {
-    imports,
-    functions,
-    source
-  };
+  return { imports, functions, source };
 }
+
 /**
 * Escape a value for SQL literal interpolation.
 *
@@ -420,9 +416,10 @@ export function parseSqlModule(text: string, options: ParseSqlModuleOptions = {}
 */
 export function escapeSqlLiteral(value: unknown, dialect: 'sqlite' | 'postgres' = 'sqlite'): unknown {
   if (typeof value !== 'string') return value;
-  if (dialect === 'postgres') return value.replaceAll('\'', '\'\'');
+  if (dialect === 'postgres') return value.replaceAll("'", "''");
   return value.replace(/['\\]/g, (ch) => '\\' + ch);
 }
+
 function pathParts(path: string): Array<string | number> {
   const parts: Array<string | number> = [];
   path.replace(/([A-Za-z_$][\w$]*)|\[(\d+|'[^']+'|"[^"]+")\]/g, (_, ident: string | undefined, bracket: string | undefined) => {
@@ -433,6 +430,7 @@ function pathParts(path: string): Array<string | number> {
   });
   return parts;
 }
+
 function readPath(values: Record<string, unknown>, path: string): unknown {
   if (!PATH_RE.test(path)) throw new Error(`Invalid SQL placeholder path: ${path}`);
   let cur: unknown = values;
@@ -442,14 +440,18 @@ function readPath(values: Record<string, unknown>, path: string): unknown {
   }
   return cur;
 }
+
 function renderFunctionBody(sqlText: string, params: SqlParamIR[], functions: Record<string, (...args: unknown[]) => string>, args: unknown[], escapeFn: (value: unknown) => unknown): string {
   const values = Object.fromEntries(params.map((param, index) => [param.name, args[index]]));
-  return sqlText.replace(/\{\{!\s*([^}]+?)\s*\}\}/g, (_, rawPath: string) => {
-    const path = rawPath.trim();
-    if (!path.includes('.') && !path.includes('[') && functions[path] && params.every((p) => p.name !== path)) return String(functions[path]());
-    return String(readPath(values, path) ?? '');
-  }).replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, rawPath: string) => String(escapeFn(readPath(values, rawPath.trim()))));
+  return sqlText
+    .replace(/\{\{!\s*([^}]+?)\s*\}\}/g, (_, rawPath: string) => {
+      const path = rawPath.trim();
+      if (!path.includes('.') && !path.includes('[') && functions[path] && params.every((p) => p.name !== path)) return String(functions[path]());
+      return String(readPath(values, path) ?? '');
+    })
+    .replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, rawPath: string) => String(escapeFn(readPath(values, rawPath.trim()))));
 }
+
 /**
 * Compile a parsed SQL module into callable JavaScript functions.
 *
@@ -489,9 +491,11 @@ export function compileSqlModule(ir: SqlModuleIR, options: CompileSqlModuleOptio
   }
   return functions;
 }
+
 function jsString(value: string): string {
   return JSON.stringify(value);
 }
+
 /**
 * Generate a TypeScript module from parsed SQL functions.
 *

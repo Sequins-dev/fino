@@ -105,11 +105,13 @@ export interface ContextScope {
 }
 function restoreScope(previous: unknown): ContextScope {
   let disposed = false;
-  return { [Symbol.dispose]() {
-    if (disposed) return;
-    disposed = true;
-    restore(previous);
-  } };
+  return {
+    [Symbol.dispose]() {
+      if (disposed) return;
+      disposed = true;
+      restore(previous);
+    }
+  };
 }
 /**
 * Async-local context slot whose value follows promise continuations.

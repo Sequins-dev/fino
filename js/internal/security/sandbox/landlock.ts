@@ -51,7 +51,10 @@
 * @internal
 */
 import { Pointer } from 'fino:ffi';
-import { libc, errno, cstr, readFileBytesSync, O_PATH, O_CLOEXEC, PR_SET_NO_NEW_PRIVS, SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF } from './ffi.ts';
+import {
+  libc, errno, cstr, readFileBytesSync, O_PATH, O_CLOEXEC, PR_SET_NO_NEW_PRIVS,
+  SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF
+} from './ffi.ts';
 import type { FilesystemPolicy, ProcessPolicy } from './plan.ts';
 const LANDLOCK_RULE_PATH_BENEATH = 1n;
 const FS_EXECUTE = 1n << 0n;
@@ -73,7 +76,8 @@ const READ_RIGHTS = FS_READ_FILE | FS_READ_DIR;
 // Write rights present since Landlock ABI v1; FS_REFER (v2) and FS_TRUNCATE (v3)
 // are added at runtime only when the kernel's ABI supports them — passing a
 // newer bit to an older kernel makes create_ruleset return EINVAL.
-const WRITE_RIGHTS_V1 = FS_WRITE_FILE | FS_REMOVE_DIR | FS_REMOVE_FILE | FS_MAKE_CHAR | FS_MAKE_DIR | FS_MAKE_REG | FS_MAKE_SOCK | FS_MAKE_FIFO | FS_MAKE_BLOCK | FS_MAKE_SYM;
+const WRITE_RIGHTS_V1 = FS_WRITE_FILE | FS_REMOVE_DIR | FS_REMOVE_FILE | FS_MAKE_CHAR
+  | FS_MAKE_DIR | FS_MAKE_REG | FS_MAKE_SOCK | FS_MAKE_FIFO | FS_MAKE_BLOCK | FS_MAKE_SYM;
 const LANDLOCK_CREATE_RULESET_VERSION = 1n << 0n;
 /**
 * Returns the kernel's Landlock ABI version, or 0 when Landlock is unavailable
@@ -156,22 +160,18 @@ export interface LandlockResult {
   /** True when a ruleset was created and applied to the process via `restrict_self`. */
   installed: boolean;
   /**
-  * True when at least one readonly or writable path was supplied, so read (and
-  * for writable subtrees, write) access is now confined to those subtrees.
-  */
+   * True when at least one readonly or writable path was supplied, so read (and
+   * for writable subtrees, write) access is now confined to those subtrees.
+   */
   fsConfined: boolean;
   /**
-  * True when execute scoping was engaged, meaning `execve` is restricted to the
-  * initial binary, the absolute-path entries of `allowedBinaries`, and their ELF
-  * interpreters.
-  */
+   * True when execute scoping was engaged, meaning `execve` is restricted to the
+   * initial binary, the absolute-path entries of `allowedBinaries`, and their ELF
+   * interpreters.
+   */
   execScoped: boolean;
 }
-const NOT_INSTALLED: LandlockResult = {
-  installed: false,
-  fsConfined: false,
-  execScoped: false
-};
+const NOT_INSTALLED: LandlockResult = { installed: false, fsConfined: false, execScoped: false };
 /**
 * The ELF interpreter (dynamic loader) a binary needs, or `null` for a static
 * binary. Landlock checks execute access on the interpreter too, so an
@@ -182,17 +182,17 @@ function elfInterpreter(path: string): string | null {
   const head = readFileBytesSync(path, 4096);
   if (head === null || head.length < 64) return null;
   const dv = new DataView(head.buffer, head.byteOffset, head.length);
-  if (dv.getUint32(0, false) !== 2135247942) return null;
+  if (dv.getUint32(0, false) !== 0x7f454c46) return null; // \x7fELF
   const is64 = head[4] === 2;
   const le = head[5] === 1;
-  if (!is64) return null;
-  const phoff = Number(dv.getBigUint64(32, le));
-  const phentsize = dv.getUint16(54, le);
-  const phnum = dv.getUint16(56, le);
+  if (!is64) return null; // only 64-bit is supported here
+  const phoff = Number(dv.getBigUint64(0x20, le));
+  const phentsize = dv.getUint16(0x36, le);
+  const phnum = dv.getUint16(0x38, le);
   for (let i = 0; i < phnum; i++) {
     const off = phoff + i * phentsize;
     if (off + 56 > head.length) break;
-    if (dv.getUint32(off, le) === 3) {
+    if (dv.getUint32(off, le) === 3) { // PT_INTERP
       const pOffset = Number(dv.getBigUint64(off + 8, le));
       const pFilesz = Number(dv.getBigUint64(off + 32, le));
       if (pOffset + pFilesz > head.length) return null;
@@ -208,7 +208,7 @@ function addPathBeneathRule(rulesetFd: number, path: string, access: bigint): vo
   if (fd < 0) {
     // A grant path that does not exist confers no access, so skipping it only
     // makes the sandbox more restrictive — fail safe rather than fail closed.
-    if (errno() === 2) return;
+    if (errno() === 2 /* ENOENT */) return;
     throw new Error(`landlock: open('${path}') failed: errno ${errno()}`);
   }
   try {
@@ -219,7 +219,13 @@ function addPathBeneathRule(rulesetFd: number, path: string, access: bigint): vo
     const view = new DataView(attr);
     view.setBigUint64(0, access, true);
     view.setInt32(8, fd, true);
-    const rc = libc.symbols.syscall(SYS_LANDLOCK_ADD_RULE, BigInt(rulesetFd), LANDLOCK_RULE_PATH_BENEATH, Pointer.addr(attr) as bigint, 0n);
+    const rc = libc.symbols.syscall(
+      SYS_LANDLOCK_ADD_RULE,
+      BigInt(rulesetFd),
+      LANDLOCK_RULE_PATH_BENEATH,
+      Pointer.addr(attr) as bigint,
+      0n
+    );
     if (rc < 0n) throw new Error(`landlock: add_rule('${path}') failed: errno ${errno()}`);
   } finally {
     libc.symbols.close(fd);
@@ -268,7 +274,11 @@ function addPathBeneathRule(rulesetFd: number, path: string, access: bigint): vo
 * console.log(result); // { installed: true, fsConfined: true, execScoped: true }
 * ```
 */
-export function installLandlock(filesystem: FilesystemPolicy | undefined, process: ProcessPolicy | undefined, initialBinary: string): LandlockResult {
+export function installLandlock(
+  filesystem: FilesystemPolicy | undefined,
+  process: ProcessPolicy | undefined,
+  initialBinary: string
+): LandlockResult {
   const readonly = filesystem?.readonly ?? [];
   const writable = filesystem?.writable ?? [];
   const fsConfined = readonly.length > 0 || writable.length > 0;
@@ -289,7 +299,13 @@ export function installLandlock(filesystem: FilesystemPolicy | undefined, proces
   // struct landlock_ruleset_attr { __u64 handled_access_fs; } (ABI v1)
   const rulesetAttr = new ArrayBuffer(8);
   new DataView(rulesetAttr).setBigUint64(0, handled, true);
-  const rulesetFd = Number(libc.symbols.syscall(SYS_LANDLOCK_CREATE_RULESET, Pointer.addr(rulesetAttr) as bigint, 8n, 0n, 0n));
+  const rulesetFd = Number(libc.symbols.syscall(
+    SYS_LANDLOCK_CREATE_RULESET,
+    Pointer.addr(rulesetAttr) as bigint,
+    8n,
+    0n,
+    0n
+  ));
   if (rulesetFd < 0) throw new Error(`landlock: create_ruleset failed: errno ${errno()}`);
   try {
     for (const path of readonly) addPathBeneathRule(rulesetFd, path, READ_RIGHTS);
@@ -317,9 +333,5 @@ export function installLandlock(filesystem: FilesystemPolicy | undefined, proces
   } finally {
     libc.symbols.close(rulesetFd);
   }
-  return {
-    installed: true,
-    fsConfined,
-    execScoped
-  };
+  return { installed: true, fsConfined, execScoped };
 }

@@ -562,8 +562,8 @@ class H3PoolEntry {
     this.#ready = (async () => {
       this.#stage = 'resolve';
       const target = await _resolveH3Target(this.#target.host, this.#target.port);
-      this.#stage = `connect ${target.address.ip}:${target.address.port}`;
-      const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+        this.#stage = `connect ${target.address.ip}:${target.address.port}`;
+        const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
       this.#endpoint = endpoint;
       try {
         const conn = await endpoint.connect({
@@ -655,9 +655,7 @@ function _tlsPoolKey(origin: string, tls: FetchInit['tls'] | undefined): string 
     key: tls.key ?? null
   })}`;
 }
-function _quicCaFromTls(ca: string | undefined): {
-  file: string;
-} | undefined {
+function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
   return ca === undefined ? undefined : { file: ca };
 }
 function _urlHostname(url: URL): string {

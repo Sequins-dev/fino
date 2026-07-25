@@ -3,12 +3,14 @@
 */
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
+
 const fs = new DiskFileSystem();
 const jsRoot = new URL('../../js/', import.meta.url).pathname;
 const textDecoder = new TextDecoder();
 async function readText(path: string): Promise<string> {
   return textDecoder.decode(await fs.readFile(path));
 }
+
 async function collectGuides(dir: string, prefix: string): Promise<string[]> {
   const found: string[] = [];
   for await (const entry of fs.glob(`${dir}**/*.md`)) {
@@ -17,6 +19,7 @@ async function collectGuides(dir: string, prefix: string): Promise<string[]> {
   }
   return found.sort();
 }
+
 function linkedPaths(markdown: string): Set<string> {
   const linked = new Set<string>();
   for (const match of markdown.matchAll(/\]\(([^)#]+\.md)(?:#[^)]*)?\)/g)) {
@@ -26,6 +29,7 @@ function linkedPaths(markdown: string): Set<string> {
   }
   return linked;
 }
+
 describe('documentation map', () => {
   it('links every authored guide under js/', async (t) => {
     const guides = await collectGuides(jsRoot, '');
@@ -37,6 +41,7 @@ describe('documentation map', () => {
     });
     t.deepEqual(missing, [], 'every guide is linked from js/documentation.md');
   });
+
   it('links only guides that exist', async (t) => {
     const guides = new Set(await collectGuides(jsRoot, ''));
     const map = await readText(`${jsRoot}documentation.md`);

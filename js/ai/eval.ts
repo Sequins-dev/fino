@@ -420,6 +420,7 @@ export class EvalProgressReporter extends EvalReporter {
     mean: 0
   });
   #scores: number[] = [];
+
   /**
   * Retained signal holding the latest progress snapshot.
   *
@@ -429,6 +430,7 @@ export class EvalProgressReporter extends EvalReporter {
   get progress(): ReadonlySignal<EvalProgress> {
     return this.#progress;
   }
+
   /**
   * Resets progress to zero with the suite's name and case count.
   */
@@ -445,6 +447,7 @@ export class EvalProgressReporter extends EvalReporter {
       mean: 0
     });
   }
+
   /**
   * Advances completed/passed counts and the running mean score.
   */
@@ -458,6 +461,7 @@ export class EvalProgressReporter extends EvalReporter {
       mean: this.#scores.reduce((a, b) => a + b, 0) / this.#scores.length
     });
   }
+
   /**
   * Sets the snapshot to the final summary, marking every case completed.
   */

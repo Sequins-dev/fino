@@ -44,6 +44,7 @@
 */
 import { hmac, digest } from './internal/openssl.ts';
 import { base64urlEncode, toBytes } from './internal/security/encoding.ts';
+
 /**
 * Mailbox address used in sender and recipient fields.
 *
@@ -53,6 +54,7 @@ import { base64urlEncode, toBytes } from './internal/security/encoding.ts';
 * for the SMTP envelope.
 */
 export type EmailAddress = string;
+
 /**
 * Message to render or deliver.
 *
@@ -94,6 +96,7 @@ export interface EmailMessage {
   /** Files to attach. Any attachment switches the top-level structure to `multipart/mixed`. */
   attachments?: EmailAttachment[];
 }
+
 /**
 * Attachment rendered into a MIME message.
 *
@@ -109,6 +112,7 @@ export interface EmailAttachment {
   /** Part payload: raw bytes to be base64-encoded, or a string that is already base64 text. */
   content: string | Uint8Array;
 }
+
 /**
 * Outcome reported by a transport after a send attempt.
 *
@@ -124,6 +128,7 @@ export interface EmailSendResult {
   /** Envelope recipient addresses the transport refused. */
   rejected?: string[];
 }
+
 /**
 * Delivery backend accepted by `send()`.
 *
@@ -159,12 +164,15 @@ export interface EmailTransport {
   /** Deliver one message, resolving with whatever delivery metadata the backend reports. */
   send(message: EmailMessage): Promise<EmailSendResult> | EmailSendResult;
 }
+
 function assertHeader(value: string): void {
   if (/[\r\n]/.test(value)) throw new Error('Invalid email header value');
 }
+
 function list(value: EmailAddress | EmailAddress[]): string[] {
   return Array.isArray(value) ? value : [value];
 }
+
 /**
 * Render an email message as RFC 5322/MIME text.
 *
@@ -235,6 +243,7 @@ export function renderMessage(message: EmailMessage): string {
   }
   return headers.join('\r\n') + '\r\n' + body;
 }
+
 /**
 * Send a message through an injected SMTP or provider transport.
 *
@@ -256,17 +265,18 @@ export function renderMessage(message: EmailMessage): string {
 * console.log(result.id ?? result.accepted);
 * ```
 */
-export async function send(message: EmailMessage, options: {
-  transport: EmailTransport;
-}): Promise<EmailSendResult> {
+export async function send(message: EmailMessage, options: { transport: EmailTransport }): Promise<EmailSendResult> {
   return await options.transport.send(message);
 }
+
 function b64(value: string): string {
   return btoa(value);
 }
+
 function dotStuff(data: string): string {
   return data.replace(/\r?\n/g, '\r\n').split('\r\n').map((line) => line.startsWith('.') ? `.${line}` : line).join('\r\n');
 }
+
 /**
 * Minimal SMTP client that drives one complete submission transaction.
 *
@@ -308,16 +318,9 @@ function dotStuff(data: string): string {
 */
 export class SmtpClient implements EmailTransport {
   #reader: string[];
-  #writer: {
-    write(chunk: string): void | Promise<void>;
-  };
+  #writer: { write(chunk: string): void | Promise<void> };
   /** Capture the server reply queue (copied) and the command writer for the transaction. */
-  constructor(connection: {
-    reader: string[];
-    writer: {
-      write(chunk: string): void | Promise<void>;
-    };
-  }) {
+  constructor(connection: { reader: string[]; writer: { write(chunk: string): void | Promise<void> } }) {
     this.#reader = [...connection.reader];
     this.#writer = connection.writer;
   }
@@ -344,10 +347,7 @@ export class SmtpClient implements EmailTransport {
   * empty in the result because a refused recipient aborts the transaction
   * with a throw instead of being collected.
   */
-  async send(message: EmailMessage, options: {
-    username?: string;
-    password?: string;
-  } = {}): Promise<EmailSendResult> {
+  async send(message: EmailMessage, options: { username?: string; password?: string } = {}): Promise<EmailSendResult> {
     await this.#read(220);
     await this.#write('EHLO localhost\r\n');
     await this.#read(250);
@@ -371,12 +371,10 @@ export class SmtpClient implements EmailTransport {
     await this.#read(250);
     await this.#write('QUIT\r\n');
     await this.#read(221);
-    return {
-      accepted,
-      rejected: []
-    };
+    return { accepted, rejected: [] };
   }
 }
+
 /**
 * Use an `SmtpClient` wherever an `EmailTransport` is accepted.
 *
@@ -394,6 +392,7 @@ export class SmtpClient implements EmailTransport {
 export function smtpTransport(client: SmtpClient): EmailTransport {
   return client;
 }
+
 /**
 * Create a `DKIM-Signature` header for a rendered message.
 *
@@ -426,19 +425,14 @@ export function smtpTransport(client: SmtpClient): EmailTransport {
 * const signed = `${header}\r\n${raw}`;
 * ```
 */
-export async function dkimSign(message: string, options: {
-  domain: string;
-  selector: string;
-  privateKey: string | Uint8Array | ArrayBuffer;
-  headers: string[];
-  now?: number;
-}): Promise<string> {
+export async function dkimSign(message: string, options: { domain: string; selector: string; privateKey: string | Uint8Array | ArrayBuffer; headers: string[]; now?: number }): Promise<string> {
   const [, body = ''] = message.split(/\r\n\r\n/);
   const bh = base64urlEncode(digest('sha-256', toBytes(body)));
-  const fields = `v=1; a=hmac-sha256; d=${options.domain}; s=${options.selector}; t=${options.now ?? Math.floor(Date.now() / 1e3)}; h=${options.headers.join(':')}; bh=${bh}; b=`;
+  const fields = `v=1; a=hmac-sha256; d=${options.domain}; s=${options.selector}; t=${options.now ?? Math.floor(Date.now() / 1000)}; h=${options.headers.join(':')}; bh=${bh}; b=`;
   const sig = base64urlEncode(hmac('sha-256', toBytes(options.privateKey), toBytes(fields)));
   return `DKIM-Signature: ${fields}${sig}`;
 }
+
 /**
 * Create a reusable DKIM signer function.
 *

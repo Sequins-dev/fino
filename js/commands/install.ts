@@ -67,30 +67,30 @@ import { installPackages } from '../internal/package_manager.ts';
 *
 */
 const command = new Task({
-  name: 'install',
-  description: 'Install npm packages into .fino and generate a package map',
-  outputMode: 'both',
-  run: async function runInstallCommand(input: {
-    packages?: unknown[];
-  }, ctx) {
-    const packages = Array.isArray(input.packages) ? input.packages.map(String) : undefined;
-    await installPackages(packages);
-    if (ctx.writer.mode === 'json') {
-      const result = {
-        command: 'install',
-        ok: true,
-        packages: packages ?? []
-      };
-      await ctx.writer.writeJson(result);
-      return result;
-    }
-    return '';
-  },
-  cli: { positionals: [{
-    name: 'packages',
-    type: 'string',
-    multiple: true,
-    description: 'Packages to add to package.json before installing'
-  }] }
+    name: 'install',
+    description: 'Install npm packages into .fino and generate a package map',
+    outputMode: 'both',
+    run: async function runInstallCommand(input: {
+      packages?: unknown[];
+    }, ctx) {
+      const packages = Array.isArray(input.packages) ? input.packages.map(String) : undefined;
+      await installPackages(packages);
+      if (ctx.writer.mode === 'json') {
+        const result = {
+          command: 'install',
+          ok: true,
+          packages: packages ?? []
+        };
+        await ctx.writer.writeJson(result);
+        return result;
+      }
+      return '';
+    },
+    cli: { positionals: [{
+      name: 'packages',
+      type: 'string',
+      multiple: true,
+      description: 'Packages to add to package.json before installing'
+    }] }
 });
 export { command as default };

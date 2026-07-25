@@ -102,7 +102,7 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
       seqLen = 4;
     } else {
       if (fatal) throw new TypeError(`TextDecoder: invalid byte 0x${b0.toString(16)} at index ${i}`);
-      str += '�';
+      str += '\uFFFD';
       i++;
       continue;
     }
@@ -111,7 +111,7 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
       const invalidSecond = (b1 & 192) === 128 && (b0 === 224 && b1 < 160 || b0 === 237 && b1 > 159 || b0 === 240 && b1 < 144 || b0 === 244 && b1 > 143);
       if (invalidSecond) {
         if (fatal) throw new TypeError(`TextDecoder: invalid byte 0x${b1.toString(16)} at index ${i + 1}`);
-        str += '�';
+        str += '\uFFFD';
         i++;
         continue;
       }
@@ -134,13 +134,13 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
     }
     if (!valid) {
       if (fatal) throw new TypeError(`TextDecoder: incomplete sequence at index ${i}`);
-      str += '�';
+      str += '\uFFFD';
       i += missingContinuation ? bytes.length - i : invalidContinuationOffset;
       continue;
     }
     if (seqLen === 2 && cp < 128 || seqLen === 3 && cp < 2048 || seqLen === 4 && cp < 65536 || cp > 1114111 || cp >= 55296 && cp <= 57343) {
       if (fatal) throw new TypeError(`TextDecoder: invalid code point U+${cp.toString(16)} at index ${i}`);
-      str += '�';
+      str += '\uFFFD';
       i += seqLen;
       continue;
     }

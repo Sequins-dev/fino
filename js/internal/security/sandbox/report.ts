@@ -212,7 +212,12 @@ const VIOLATION: Record<SandboxMechanism, ViolationBehavior['behavior']> = {
 *   report.unsupported;      // [{ category: 'syscalls', reason: '...' }]
 * ```
 */
-export function buildReport(policy: SandboxPolicy, installed: InstalledMechanism[], backend: 'linuxNative' | 'macosSeatbelt', supportedCategories: SandboxCategory[]): SandboxReport {
+export function buildReport(
+  policy: SandboxPolicy,
+  installed: InstalledMechanism[],
+  backend: 'linuxNative' | 'macosSeatbelt',
+  supportedCategories: SandboxCategory[]
+): SandboxReport {
   const enforcedByCategory = new Map<SandboxCategory, InstalledMechanism>();
   for (const record of installed) {
     if (!enforcedByCategory.has(record.category)) enforcedByCategory.set(record.category, record);
@@ -223,35 +228,20 @@ export function buildReport(policy: SandboxPolicy, installed: InstalledMechanism
   for (const [category, record] of enforcedByCategory) {
     const base = MECHANISM_REASON[record.mechanism];
     const reason = record.detail ? `${base} (${record.detail})` : base;
-    enforced.push({
-      category,
-      reason
-    });
-    violationBehavior.push({
-      category,
-      behavior: VIOLATION[record.mechanism],
-      reason
-    });
+    enforced.push({ category, reason });
+    violationBehavior.push({ category, behavior: VIOLATION[record.mechanism], reason });
     diagnostics.push(`${category}: enforced by ${base}${record.tier ? ` [tier: ${record.tier}]` : ''}`);
   }
   const requested = requestedCategories(policy);
-  const unsupported: Capability[] = requested.filter((category) => !enforcedByCategory.has(category)).map((category) => ({
-    category,
-    reason: `${category} policy was requested but no mechanism enforced it`
-  }));
+  const unsupported: Capability[] = requested
+    .filter((category) => !enforcedByCategory.has(category))
+    .map((category) => ({ category, reason: `${category} policy was requested but no mechanism enforced it` }));
   const supported: Capability[] = supportedCategories.map((category) => ({
     category,
     reason: `${backend} can enforce ${category} policy on this host`
   }));
-  const securityBoundary = policy.mode === 'strict' && unsupported.length === 0 && requested.length > 0 ? true : policy.mode === 'strict' && requested.length === 0;
-  return {
-    mode: policy.mode,
-    backend,
-    securityBoundary,
-    supported,
-    enforced,
-    unsupported,
-    diagnostics,
-    violationBehavior
-  };
+  const securityBoundary = policy.mode === 'strict' && unsupported.length === 0 && requested.length > 0
+    ? true
+    : policy.mode === 'strict' && requested.length === 0;
+  return { mode: policy.mode, backend, securityBoundary, supported, enforced, unsupported, diagnostics, violationBehavior };
 }

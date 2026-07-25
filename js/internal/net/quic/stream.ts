@@ -3,6 +3,7 @@
 *
 * @internal
 */
+
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
@@ -396,5 +397,6 @@ export class QuicStream extends EventTarget {
     deferAfterNativeCallback(() => this.dispatchEvent(new Event('close')));
   }
 }
+
 export { quicBytesWriterInternals, quicStreamInternals } from './core.ts';
 export type { QuicStreamStats } from './core.ts';

@@ -60,65 +60,65 @@ import taskCommand from './task.ts';
 * ```
 */
 const command = new Task({
-  name: 'fino',
-  description: 'Fino runtime CLI',
-  outputMode: 'text',
-  cli: {
-    stopOptionsAfterPositionals: true,
-    options: [{
-      flags: '--otlp-endpoint',
-      type: 'string',
-      description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint'
-    }, {
-      flags: '--watch',
-      type: 'boolean',
-      description: 'Re-run the script whenever any imported file changes'
-    }],
-    positionals: [{
-      name: 'script',
-      type: 'string',
-      description: 'Script module to execute'
-    }, {
-      name: 'args',
-      type: 'string',
-      multiple: true,
-      description: 'Arguments passed to the script'
-    }]
-  },
-  run: async function runRootCommand(input, ctx) {
-    const script = (input as {
-      script?: unknown;
-    }).script;
-    if (script === undefined) return replCommand.run({}, {
-      signal: ctx.signal,
-      runId: ctx.runId,
-      writer: ctx.writer,
-      env: ctx.env,
-      cwd: ctx.cwd,
-      prompt: ctx.prompt,
-      providedOptions: ctx.providedOptions
-    });
-    return runCommand.run(input as Record<string, unknown>, {
-      signal: ctx.signal,
-      runId: ctx.runId,
-      writer: ctx.writer,
-      env: ctx.env,
-      cwd: ctx.cwd,
-      prompt: ctx.prompt,
-      providedOptions: ctx.providedOptions
-    });
-  },
-  children: [
-    runCommand,
-    testCommand,
-    benchCommand,
-    installCommand,
-    initCommand,
-    docCommand,
-    fmtCommand,
-    lintCommand,
-    taskCommand,
-    replCommand
-  ]
+    name: 'fino',
+    description: 'Fino runtime CLI',
+    outputMode: 'text',
+    cli: {
+      stopOptionsAfterPositionals: true,
+      options: [{
+        flags: '--otlp-endpoint',
+        type: 'string',
+        description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint'
+      }, {
+        flags: '--watch',
+        type: 'boolean',
+        description: 'Re-run the script whenever any imported file changes'
+      }],
+      positionals: [{
+        name: 'script',
+        type: 'string',
+        description: 'Script module to execute'
+      }, {
+        name: 'args',
+        type: 'string',
+        multiple: true,
+        description: 'Arguments passed to the script'
+      }]
+    },
+    run: async function runRootCommand(input, ctx) {
+      const script = (input as {
+        script?: unknown;
+      }).script;
+      if (script === undefined) return replCommand.run({}, {
+        signal: ctx.signal,
+        runId: ctx.runId,
+        writer: ctx.writer,
+        env: ctx.env,
+        cwd: ctx.cwd,
+        prompt: ctx.prompt,
+        providedOptions: ctx.providedOptions
+      });
+      return runCommand.run(input as Record<string, unknown>, {
+        signal: ctx.signal,
+        runId: ctx.runId,
+        writer: ctx.writer,
+        env: ctx.env,
+        cwd: ctx.cwd,
+        prompt: ctx.prompt,
+        providedOptions: ctx.providedOptions
+      });
+    },
+    children: [
+      runCommand,
+      testCommand,
+      benchCommand,
+      installCommand,
+      initCommand,
+      docCommand,
+      fmtCommand,
+      lintCommand,
+      taskCommand,
+      replCommand
+    ]
 });
 export { command as default };

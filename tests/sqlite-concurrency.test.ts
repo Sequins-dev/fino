@@ -14,14 +14,17 @@ import { Database, sqliteAvailable } from 'fino:database/sqlite';
 import { Realm } from 'fino:realm';
 import { env, exit } from 'fino:process';
 import type sqliteChildFn from './realm/fixtures/sqlite-child-fn.ts';
+
 if (!sqliteAvailable) {
   if (env.FINO_REQUIRE_SQLITE === '1') throw new Error('sqlite required but unavailable');
   console.log('SKIP: sqlite unavailable');
   exit(0);
 }
+
 function tempPath(): string {
   return `/tmp/fino-sqlite-conc-${Math.floor(Math.random() * 1e9)}.db`;
 }
+
 describe('sqlite concurrency', () => {
   it('interleaves statements on one connection safely', async (t) => {
     await using db = await Database.open(tempPath());
@@ -32,11 +35,7 @@ describe('sqlite concurrency', () => {
     const a = db.prepare('SELECT * FROM t WHERE id % 2 = 0');
     const b = db.prepare('SELECT * FROM t WHERE id % 2 = 1');
     const c = db.prepare('SELECT COUNT(*) AS n FROM t');
-    const [ra, rb, rc] = await Promise.all([
-      a.all(),
-      b.all(),
-      c.get()
-    ]);
+    const [ra, rb, rc] = await Promise.all([a.all(), b.all(), c.get()]);
     a.finalize();
     b.finalize();
     c.finalize();
@@ -60,13 +59,7 @@ describe('sqlite concurrency', () => {
     }
     iterStmt.finalize();
     counter.finalize();
-    t.deepEqual(seen, [
-      0,
-      1,
-      2,
-      3,
-      4
-    ], 'iteration produced every row in order');
+    t.deepEqual(seen, [0, 1, 2, 3, 4], 'iteration produced every row in order');
   });
   it('locks writers against each other across connections', async (t) => {
     const path = tempPath();
@@ -94,7 +87,9 @@ describe('sqlite concurrency', () => {
     t.equal(Number(rows[0]!.n), 2, 'both writes landed once the lock was released');
   });
   it('runs file-backed sqlite inside a child realm', async (t) => {
-    const realm = new Realm<typeof sqliteChildFn>({ entry: new URL('./realm/fixtures/sqlite-child-fn.ts', import.meta.url).pathname });
+    const realm = new Realm<typeof sqliteChildFn>({
+      entry: new URL('./realm/fixtures/sqlite-child-fn.ts', import.meta.url).pathname
+    });
     const result = await realm.call(tempPath());
     t.equal(result, 42, 'child realm completed VFS-backed sqlite work');
   });

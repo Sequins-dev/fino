@@ -417,12 +417,7 @@ describe('BufferedBytesWriter', () => {
     t.equal(writer.writeCalls, 0, 'writev uses the buffered vector path directly');
     t.deepEqual(writer.chunks, [], 'small vectors remain buffered before flush');
     await writer.flush();
-    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[
-      1,
-      2,
-      3,
-      4
-    ]], 'small vectors flush as one coalesced chunk');
+    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[1, 2, 3, 4]], 'small vectors flush as one coalesced chunk');
   });
 });
 describe('FdReader / FdWriter', () => {

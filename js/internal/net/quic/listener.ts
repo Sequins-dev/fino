@@ -3,6 +3,7 @@
 *
 * @internal
 */
+
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
@@ -195,6 +196,7 @@ export class QuicListener {
     }
   }
 }
+
 core.registerQuicListenerClass(QuicListener);
 export { quicListenerInternals } from './core.ts';
 export type { QuicListenOptions, QuicSNIContextOptions } from './core.ts';

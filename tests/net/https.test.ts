@@ -81,7 +81,9 @@ describe('HTTPS server — basic TLS request/response', () => {
         clientAuth: 'require'
       }
     }, async (_req, session) => {
-      return new Response(session.tls?.authorized ? 'fetch mtls ok' : 'unauthorized', { status: session.tls?.authorized ? 200 : 401 });
+      return new Response(session.tls?.authorized ? 'fetch mtls ok' : 'unauthorized', {
+        status: session.tls?.authorized ? 200 : 401
+      });
     });
     try {
       let unauthenticatedStatus = 0;

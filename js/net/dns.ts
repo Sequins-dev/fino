@@ -1221,8 +1221,8 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
   if (scanner.remainingBytes < 10) throw new Error('DNS: truncated resource record header');
   const type = scanner.readU16BEField('resource record type');
   const rawClass = scanner.readU16BEField('resource record class');
-  const classCode = rawClass & 32767;
-  const cacheFlush = (rawClass & 32768) !== 0;
+  const classCode = rawClass & 0x7fff;
+  const cacheFlush = (rawClass & 0x8000) !== 0;
   const ttl = scanner.readU32BEField('resource record ttl');
   const rdlength = scanner.readU16BEField('resource record data length');
   const rdataStart = scanner.offset;

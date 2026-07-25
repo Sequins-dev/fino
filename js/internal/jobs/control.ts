@@ -44,9 +44,11 @@ import { registerShutdownHook } from '../shutdown.ts';
 import type { JobsService, JobProcessor } from './service.ts';
 import type { JobsWireCall, JobsWireResult } from './runner.ts';
 import type { WorkflowState } from '../../workflow.ts';
+
 let _service: JobsService | undefined;
 let _servicePath: string | undefined;
 let _opening: Promise<JobsService> | undefined;
+
 async function ensureService(opts: {
   path: string;
   leaseMs?: number;
@@ -79,12 +81,14 @@ async function ensureService(opts: {
   }
   return _opening;
 }
+
 function requireService(): JobsService {
   if (_service === undefined) {
     throw new Error('jobs control used before open()');
   }
   return _service;
 }
+
 /**
 * A `JobProcessor` bridge for handlers whose execution lives in a client realm.
 *
@@ -114,11 +118,11 @@ class InlineRelay implements JobProcessor {
     this.capacity = capacity;
   }
   /**
-  * Accept a due call and return a promise that settles when the client reports
-  * the outcome. The call is handed to a waiting `next` consumer if one is
-  * parked, otherwise buffered until one arrives. The promise resolves only via
-  * a later `complete` for the same `jobId` (or `close`).
-  */
+   * Accept a due call and return a promise that settles when the client reports
+   * the outcome. The call is handed to a waiting `next` consumer if one is
+   * parked, otherwise buffered until one arrives. The promise resolves only via
+   * a later `complete` for the same `jobId` (or `close`).
+   */
   run(call: JobsWireCall): Promise<JobsWireResult> {
     return new Promise<JobsWireResult>((resolve) => {
       this.#pending.set(call.jobId, resolve);
@@ -128,20 +132,20 @@ class InlineRelay implements JobProcessor {
     });
   }
   /**
-  * Pull the next due call for the client to run, resolving immediately from the
-  * buffer or parking until `run` delivers one. Backs the `inlineCalls` stream,
-  * which loops on this method forever.
-  */
+   * Pull the next due call for the client to run, resolving immediately from the
+   * buffer or parking until `run` delivers one. Backs the `inlineCalls` stream,
+   * which loops on this method forever.
+   */
   next(): Promise<JobsWireCall> {
     const buffered = this.#buffer.shift();
     if (buffered !== undefined) return Promise.resolve(buffered);
     return new Promise<JobsWireCall>((resolve) => this.#takers.push(resolve));
   }
   /**
-  * Report the result of an inline call, resolving the `run` promise parked
-  * under `jobId`. A `jobId` with no pending call (already completed, or never
-  * issued by this relay) is ignored.
-  */
+   * Report the result of an inline call, resolving the `run` promise parked
+   * under `jobId`. A `jobId` with no pending call (already completed, or never
+   * issued by this relay) is ignored.
+   */
   complete(jobId: string, result: JobsWireResult): void {
     const resolve = this.#pending.get(jobId);
     if (resolve !== undefined) {
@@ -150,10 +154,10 @@ class InlineRelay implements JobProcessor {
     }
   }
   /**
-  * Fail every in-flight call with a retryable "inline processor closed" error
-  * so the service can requeue them, then clear pending state. Called when the
-  * service drops the relay during shutdown.
-  */
+   * Fail every in-flight call with a retryable "inline processor closed" error
+   * so the service can requeue them, then clear pending state. Called when the
+   * service drops the relay during shutdown.
+   */
   async close(): Promise<void> {
     for (const resolve of this.#pending.values()) {
       resolve({
@@ -167,7 +171,9 @@ class InlineRelay implements JobProcessor {
     this.#pending.clear();
   }
 }
+
 const _relays: InlineRelay[] = [];
+
 /**
 * Build the jobs control facade the orchestrator attaches to app workload realms.
 *
@@ -223,29 +229,49 @@ export function createJobsControlFacade(): Facade {
     'wfLoad',
     'wfList',
     'wfRemove'
-  ]).handle('open', async (opts) => {
-    await ensureService(opts as {
-      path: string;
+  ])
+    .handle('open', async (opts) => {
+      await ensureService(opts as {
+        path: string;
+      });
+      return true;
+    })
+    .handle('push', (task, input, opts) => requireService().push(task as string, input, opts as never))
+    .handle('schedule', (name, task, input, opts) => requireService().schedule(name as string, task as string, input, opts as never))
+    .handle('unschedule', (name) => requireService().unschedule(name as string))
+    .handle('get', (id) => requireService().get(id as string))
+    .handle('list', (filter) => requireService().list(filter as never))
+    .handle('stats', (queue) => requireService().stats(queue as string | undefined))
+    .handle('schedules', () => requireService().schedules())
+    .handle('cancel', (id) => requireService().cancel(id as string))
+    .handle('retry', (id) => requireService().retry(id as string))
+    .handle('signal', (id, name, payload) => requireService().signal(id as string, name as string, payload))
+    .handle('waitFor', (id, opts) => requireService().waitFor(id as string, opts as never))
+    .handle('registerWorkers', async (opts) => {
+      await requireService().workers(opts as {
+        entry: string;
+        size?: number;
+      });
+      return true;
+    })
+    .handle('registerInline', (taskNames, concurrency) => {
+      const relay = new InlineRelay(taskNames as string[], concurrency as number ?? 1);
+      _relays.push(relay);
+      requireService()._addExternalProcessor(relay);
+      return _relays.length - 1;
+    })
+    .handle('completeInline', (relayIndex, jobId, result) => {
+      _relays[relayIndex as number]?.complete(jobId as string, result as JobsWireResult);
+    })
+    .handle('wfSave', (state) => requireService().workflowStore.save(state as WorkflowState))
+    .handle('wfLoad', (runId) => requireService().workflowStore.load(runId as string))
+    .handle('wfList', (filter) => requireService().workflowStore.list(filter as never))
+    .handle('wfRemove', (runId) => requireService().workflowStore.delete(runId as string))
+    .stream('inlineCalls', async function* inlineCalls(relayIndex) {
+      const relay = _relays[relayIndex as number];
+      if (relay === undefined) throw new Error('unknown inline processor');
+      while (true) {
+        yield await relay.next();
+      }
     });
-    return true;
-  }).handle('push', (task, input, opts) => requireService().push(task as string, input, opts as never)).handle('schedule', (name, task, input, opts) => requireService().schedule(name as string, task as string, input, opts as never)).handle('unschedule', (name) => requireService().unschedule(name as string)).handle('get', (id) => requireService().get(id as string)).handle('list', (filter) => requireService().list(filter as never)).handle('stats', (queue) => requireService().stats(queue as string | undefined)).handle('schedules', () => requireService().schedules()).handle('cancel', (id) => requireService().cancel(id as string)).handle('retry', (id) => requireService().retry(id as string)).handle('signal', (id, name, payload) => requireService().signal(id as string, name as string, payload)).handle('waitFor', (id, opts) => requireService().waitFor(id as string, opts as never)).handle('registerWorkers', async (opts) => {
-    await requireService().workers(opts as {
-      entry: string;
-      size?: number;
-    });
-    return true;
-  }).handle('registerInline', (taskNames, concurrency) => {
-    const relay = new InlineRelay(taskNames as string[], concurrency as number ?? 1);
-    _relays.push(relay);
-    requireService()._addExternalProcessor(relay);
-    return _relays.length - 1;
-  }).handle('completeInline', (relayIndex, jobId, result) => {
-    _relays[relayIndex as number]?.complete(jobId as string, result as JobsWireResult);
-  }).handle('wfSave', (state) => requireService().workflowStore.save(state as WorkflowState)).handle('wfLoad', (runId) => requireService().workflowStore.load(runId as string)).handle('wfList', (filter) => requireService().workflowStore.list(filter as never)).handle('wfRemove', (runId) => requireService().workflowStore.delete(runId as string)).stream('inlineCalls', async function* inlineCalls(relayIndex) {
-    const relay = _relays[relayIndex as number];
-    if (relay === undefined) throw new Error('unknown inline processor');
-    while (true) {
-      yield await relay.next();
-    }
-  });
 }

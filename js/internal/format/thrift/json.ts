@@ -223,6 +223,7 @@ export class JSONProtocol implements Protocol {
   bytes(): Uint8Array {
     return _encoder.encode(this.#parts.join(''));
   }
+
   /**
   * Returns the reader's current cursor, as a character offset into the decoded
   * input, reporting how much of the document has been consumed.

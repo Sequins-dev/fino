@@ -665,7 +665,11 @@ export class DiskFileSystem extends FileSystem {
     }
     const file = await this.open(path, 'w');
     try {
-      const buf = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      const buf = data instanceof Uint8Array
+        ? data
+        : data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
       const w = file.writer();
       await w.write(buf);
       await w.close();

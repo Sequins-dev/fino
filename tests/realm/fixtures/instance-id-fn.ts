@@ -11,9 +11,5 @@ export default async function instanceInfo(delayMs = 0): Promise<{
 }> {
   const start = Date.now();
   if (delayMs > 0) await new Promise<void>((res) => setTimeout(res, delayMs));
-  return {
-    id: instanceId,
-    start,
-    end: Date.now()
-  };
+  return { id: instanceId, start, end: Date.now() };
 }

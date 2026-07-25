@@ -98,12 +98,12 @@ function quotePath(path: string): string {
 *   );
 * ```
 */
-export function generateSeatbeltProfile(filesystem: FilesystemPolicy | undefined, network: NetworkPolicy | undefined, execPaths: string[] | null): string {
-  const lines = [
-    '(version 1)',
-    '(import "system.sb")',
-    '(deny default)'
-  ];
+export function generateSeatbeltProfile(
+  filesystem: FilesystemPolicy | undefined,
+  network: NetworkPolicy | undefined,
+  execPaths: string[] | null
+): string {
+  const lines = ['(version 1)', '(import "system.sb")', '(deny default)'];
   // Process creation: fork is always permitted (fork limiting is a Linux-only
   // seccomp feature); exec is scoped to the allowlist when one is requested.
   lines.push('(allow process-fork)');

@@ -83,29 +83,13 @@ describe('fino:log', () => {
   });
   it('restores nested log context when using scopes are disposed', (t) => {
     {
-      using outer = withLogContext({
-        requestId: 'outer',
-        tenant: 'acme'
-      });
-      t.deepEqual(getLogContext(), {
-        requestId: 'outer',
-        tenant: 'acme'
-      }, 'outer scope is active');
+      using outer = withLogContext({ requestId: 'outer', tenant: 'acme' });
+      t.deepEqual(getLogContext(), { requestId: 'outer', tenant: 'acme' }, 'outer scope is active');
       {
-        using inner = withLogContext({
-          requestId: 'inner',
-          route: '/health'
-        });
-        t.deepEqual(getLogContext(), {
-          requestId: 'inner',
-          tenant: 'acme',
-          route: '/health'
-        }, 'inner scope merges over outer');
+        using inner = withLogContext({ requestId: 'inner', route: '/health' });
+        t.deepEqual(getLogContext(), { requestId: 'inner', tenant: 'acme', route: '/health' }, 'inner scope merges over outer');
       }
-      t.deepEqual(getLogContext(), {
-        requestId: 'outer',
-        tenant: 'acme'
-      }, 'disposing inner restores outer');
+      t.deepEqual(getLogContext(), { requestId: 'outer', tenant: 'acme' }, 'disposing inner restores outer');
     }
     t.deepEqual(getLogContext(), {}, 'disposing outer clears context');
   });

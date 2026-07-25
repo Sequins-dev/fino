@@ -1,10 +1,13 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
+use dprint_plugin_typescript::configuration::{
+    ConfigurationBuilder, JsxQuoteStyle, QuoteStyle, UseBraces,
+};
+use dprint_plugin_typescript::{FormatTextOptions, format_text};
 use oxc_allocator::Allocator;
 use oxc_ast::{Comment, ast::CommentKind};
 use oxc_codegen::{Codegen, CodegenOptions};
-use oxc_data_structures::code_buffer::IndentChar;
 use oxc_parser::{Parser, config::RuntimeParserConfig};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::{GetSpan, SourceType};
@@ -528,6 +531,7 @@ pub(crate) fn strip_typescript_module(path: &Path, source: &str) -> Result<Strip
 fn format_source(source: &str, options: &ParseOptions) -> Result<String, String> {
     let allocator = Allocator::default();
     let source_type = resolve_source_type(options);
+    let is_typescript_definition = source_type.is_typescript_definition();
     let ret = Parser::new(&allocator, source, source_type).parse();
     if !ret.errors.is_empty() || ret.panicked {
         let result = FormatResult {
@@ -545,18 +549,78 @@ fn format_source(source: &str, options: &ParseOptions) -> Result<String, String>
             .map_err(|err| format!("failed to serialize format result: {err}"));
     }
 
-    let generated = Codegen::new()
-        .with_options(CodegenOptions {
-            single_quote: true,
-            indent_char: IndentChar::Space,
-            indent_width: 2,
-            ..CodegenOptions::default()
-        })
-        .with_source_text(source)
-        .build(&ret.program);
+    let path = Path::new(options.filename.as_deref().unwrap_or("source.ts"));
+    let extension = if is_typescript_definition {
+        // dprint's SWC parser formats declaration syntax correctly in regular
+        // TypeScript mode. Its declaration-file mode rejects some standalone
+        // signature fragments used by the documentation generator.
+        Some("ts")
+    } else {
+        options
+            .source_type
+            .as_deref()
+            .and_then(|source_type| match source_type {
+                "js" | "javascript" | "script" => Some("js"),
+                "jsx" => Some("jsx"),
+                "ts" | "typescript" => Some("ts"),
+                "tsx" => Some("tsx"),
+                _ => None,
+            })
+    };
+    let config = ConfigurationBuilder::new()
+        .line_width(100)
+        .indent_width(2)
+        .quote_style(QuoteStyle::PreferSingle)
+        .jsx_quote_style(JsxQuoteStyle::PreferDouble)
+        .use_braces(UseBraces::Maintain)
+        .prefer_single_line(true)
+        .build();
+    let mut code = source.to_string();
+    for pass in 0..8 {
+        match format_text(FormatTextOptions {
+            path,
+            extension,
+            text: code.clone(),
+            config: &config,
+            external_formatter: None,
+        }) {
+            Ok(Some(formatted)) => code = formatted,
+            Ok(None) => break,
+            Err(error) => {
+                let result = FormatResult {
+                    ok: false,
+                    code: String::new(),
+                    errors: vec![diagnostic_result(
+                        source,
+                        "format",
+                        &error.to_string(),
+                        None,
+                        "error",
+                    )],
+                };
+                return serde_json::to_string(&result)
+                    .map_err(|err| format!("failed to serialize format result: {err}"));
+            }
+        }
+        if pass == 7 {
+            let result = FormatResult {
+                ok: false,
+                code: String::new(),
+                errors: vec![diagnostic_result(
+                    source,
+                    "format",
+                    "formatter did not reach a stable layout after 8 passes",
+                    None,
+                    "error",
+                )],
+            };
+            return serde_json::to_string(&result)
+                .map_err(|err| format!("failed to serialize format result: {err}"));
+        }
+    }
     let result = FormatResult {
         ok: true,
-        code: normalize_formatted_code(generated.code),
+        code: normalize_formatted_code(code),
         errors: Vec::new(),
     };
     serde_json::to_string(&result)

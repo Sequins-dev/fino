@@ -634,10 +634,7 @@ describe('fino:ai/mcp — MCPClient', () => {
     let tools = [tool({
       name: 'first',
       description: 'First',
-      parameters: {
-        type: 'object',
-        properties: {}
-      },
+      parameters: { type: 'object', properties: {} },
       execute: async () => 'ok'
     })];
     let resources = [{ uri: 'memo://one' }];
@@ -646,11 +643,7 @@ describe('fino:ai/mcp — MCPClient', () => {
       tools: () => tools,
       resources: () => resources,
       prompts: () => prompts,
-      listChanged: {
-        tools: true,
-        resources: true,
-        prompts: true
-      }
+      listChanged: { tools: true, resources: true, prompts: true }
     });
     void server.serve(serverTransport);
     const seen: string[] = [];
@@ -666,10 +659,7 @@ describe('fino:ai/mcp — MCPClient', () => {
     tools = [tool({
       name: 'second',
       description: 'Second',
-      parameters: {
-        type: 'object',
-        properties: {}
-      },
+      parameters: { type: 'object', properties: {} },
       execute: async () => 'ok'
     })];
     resources = [{ uri: 'memo://two' }];

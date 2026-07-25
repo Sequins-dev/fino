@@ -47,12 +47,8 @@ import { libc, errno, cstr, readFileSync, writeFileSync } from './ffi.ts';
 import { env } from 'internal:process';
 import type { ResourcePolicy } from './plan.ts';
 const CGROUP_MOUNT = '/sys/fs/cgroup';
-const CPU_PERIOD = 1e5;
-const WANTED = [
-  'cpu',
-  'memory',
-  'pids'
-];
+const CPU_PERIOD = 100000;
+const WANTED = ['cpu', 'memory', 'pids'];
 /**
 * Resolve a cgroup v2 subtree fino may create leaf cgroups under, or `null` when
 * none is usable.
@@ -220,9 +216,9 @@ export interface CgroupResult {
 export function createAndJoinCgroup(root: string, policy: ResourcePolicy): CgroupResult {
   const controllers = usableControllers();
   const path = `${root}/fino-sandbox-${Number(libc.symbols.getpid())}`;
-  if (libc.symbols.mkdir(cstr(path), 493) !== 0) {
+  if (libc.symbols.mkdir(cstr(path), 0o755) !== 0) {
     const e = errno();
-    if (e !== 17) throw new Error(`cgroup: mkdir('${path}') failed: errno ${e}`);
+    if (e !== 17 /* EEXIST */) throw new Error(`cgroup: mkdir('${path}') failed: errno ${e}`);
   }
   const installed: CgroupResult['installed'] = [];
   const unhandled: CgroupResult['unhandled'] = [];
@@ -231,16 +227,12 @@ export function createAndJoinCgroup(root: string, policy: ResourcePolicy): Cgrou
     if (e !== 0) throw new Error(`cgroup: write ${file}=${value} failed: errno ${e}`);
   };
   if (policy.memoryBytes !== undefined) {
-    if (controllers.has('memory')) {
-      write('memory.max', String(policy.memoryBytes));
-      installed.push('memoryBytes');
-    } else unhandled.push('memoryBytes');
+    if (controllers.has('memory')) { write('memory.max', String(policy.memoryBytes)); installed.push('memoryBytes'); }
+    else unhandled.push('memoryBytes');
   }
   if (policy.pids !== undefined) {
-    if (controllers.has('pids')) {
-      write('pids.max', String(policy.pids));
-      installed.push('pids');
-    } else unhandled.push('pids');
+    if (controllers.has('pids')) { write('pids.max', String(policy.pids)); installed.push('pids'); }
+    else unhandled.push('pids');
   }
   if (policy.cpu !== undefined && controllers.has('cpu')) {
     write('cpu.max', `${Math.max(1, Math.round(policy.cpu * CPU_PERIOD))} ${CPU_PERIOD}`);
@@ -248,11 +240,7 @@ export function createAndJoinCgroup(root: string, policy: ResourcePolicy): Cgrou
   }
   // Move ourselves in last; the target inherits this cgroup across execve.
   write('cgroup.procs', String(Number(libc.symbols.getpid())));
-  return {
-    path,
-    installed,
-    unhandled
-  };
+  return { path, installed, unhandled };
 }
 /**
 * Kill every process in the spawn's cgroup and remove the leaf directory.
@@ -284,6 +272,6 @@ export function killAndRemoveCgroup(path: string): void {
   // retry a bounded number of times without sleeping on the event loop.
   for (let attempt = 0; attempt < 50; attempt++) {
     if (libc.symbols.rmdir(cstr(path)) === 0) return;
-    if (errno() !== 16) return;
+    if (errno() !== 16 /* EBUSY */) return;
   }
 }

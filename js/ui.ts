@@ -34,6 +34,7 @@
 import { Signal, batch, createSignal } from 'fino:signals';
 export { Signal, batch, createSignal };
 export type { ObservedReads, ReadonlySignal, SignalSetter, SignalSubscriber } from 'fino:signals';
+
 /**
 * Primitive child value accepted by `h()`.
 *

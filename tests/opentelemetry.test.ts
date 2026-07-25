@@ -717,10 +717,7 @@ describe('fino:opentelemetry', () => {
   it('bridges signals to observable gauges and manual reader collections', async (t) => {
     const reader = new ManualMetricReader();
     const provider = new MeterProvider();
-    const sdk = new OtelSDK({
-      meterProvider: provider,
-      metricReaders: [reader]
-    }).start();
+    const sdk = new OtelSDK({ meterProvider: provider, metricReaders: [reader] }).start();
     const meter = provider.getMeter('signal.metrics');
     const value = createSignal(3);
     const handle = gaugeFromSignal(meter, 'signal.depth', value, { attributes: { queue: 'default' } });

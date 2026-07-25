@@ -573,45 +573,45 @@ const _crypto = tryOpen(_CRYPTO_CANDIDATES, _CRYPTO_SYMBOLS);
 const _gnutls = tryOpen(_GNUTLS_CANDIDATES, _GNUTLS_SYMBOLS);
 const _libc = tryOpen(_IS_DARWIN ? ['/usr/lib/libSystem.B.dylib'] : ['libc.so.6', 'libc.so'], _LIBC_SYMBOLS);
 /**
-* Whether the GnuTLS QUIC backend can be used in this process.
-*
-* True only when all three shared libraries — `libngtcp2_crypto_gnutls`,
-* `libgnutls`, and libc — were found and loaded at import time. When false,
-* every factory in this module will throw, so callers (notably the `crypto`
-* adapter) should gate on this and fall back to the OpenSSL backend.
-*/
+ * Whether the GnuTLS QUIC backend can be used in this process.
+ *
+ * True only when all three shared libraries — `libngtcp2_crypto_gnutls`,
+ * `libgnutls`, and libc — were found and loaded at import time. When false,
+ * every factory in this module will throw, so callers (notably the `crypto`
+ * adapter) should gate on this and fall back to the OpenSSL backend.
+ */
 export const cryptoGnutlsAvailable = _crypto !== null && _gnutls !== null && _libc !== null;
 /**
-* The backend tag `'gnutls'` when this backend is available, otherwise `null`.
-*
-* Lets the generic crypto adapter report which TLS library backs a QUIC
-* endpoint without inspecting the handles.
-*/
+ * The backend tag `'gnutls'` when this backend is available, otherwise `null`.
+ *
+ * Lets the generic crypto adapter report which TLS library backs a QUIC
+ * endpoint without inspecting the handles.
+ */
 export const cryptoBackend = cryptoGnutlsAvailable ? 'gnutls' : null;
 /**
-* The bound `ngtcp2_crypto_gnutls_*` symbols, or `null` if the backend failed to load.
-*
-* These are the ngtcp2 crypto entry points and packet-level helpers (retry
-* tokens, stateless-reset tokens, connection-close encoding) shared with the
-* ngtcp2 conn callbacks. Non-null exactly when `cryptoGnutlsAvailable` is true.
-*/
+ * The bound `ngtcp2_crypto_gnutls_*` symbols, or `null` if the backend failed to load.
+ *
+ * These are the ngtcp2 crypto entry points and packet-level helpers (retry
+ * tokens, stateless-reset tokens, connection-close encoding) shared with the
+ * ngtcp2 conn callbacks. Non-null exactly when `cryptoGnutlsAvailable` is true.
+ */
 export const sym = _crypto?.symbols ?? null;
 /**
-* Function pointers for the `ngtcp2_crypto_*` callbacks, or `null` if unavailable.
-*
-* These addresses are installed directly into an `ngtcp2_callbacks` struct so
-* ngtcp2 can invoke the GnuTLS-backed encrypt/decrypt/HP-mask/key-update
-* routines without a JavaScript trampoline. Non-null exactly when
-* `cryptoGnutlsAvailable` is true.
-*/
+ * Function pointers for the `ngtcp2_crypto_*` callbacks, or `null` if unavailable.
+ *
+ * These addresses are installed directly into an `ngtcp2_callbacks` struct so
+ * ngtcp2 can invoke the GnuTLS-backed encrypt/decrypt/HP-mask/key-update
+ * routines without a JavaScript trampoline. Non-null exactly when
+ * `cryptoGnutlsAvailable` is true.
+ */
 export const ptr = _crypto?.pointers ?? null;
 /**
-* The bound `libgnutls` symbols, or `null` if the backend failed to load.
-*
-* The raw GnuTLS C API used throughout this module to build credentials and
-* sessions. Exposed so the crypto adapter can reach GnuTLS-only operations that
-* have no ngtcp2 wrapper. Non-null exactly when `cryptoGnutlsAvailable` is true.
-*/
+ * The bound `libgnutls` symbols, or `null` if the backend failed to load.
+ *
+ * The raw GnuTLS C API used throughout this module to build credentials and
+ * sessions. Exposed so the crypto adapter can reach GnuTLS-only operations that
+ * have no ngtcp2 wrapper. Non-null exactly when `cryptoGnutlsAvailable` is true.
+ */
 export const gnutlsSym = _gnutls?.symbols ?? null;
 type GnutlsCaOptions = {
   file?: string;
@@ -785,39 +785,39 @@ function priorityString(cipherSuites: readonly string[] | null): string {
   return `${GNUTLS_QUIC_PRIORITY}:-CIPHER-ALL:${ciphers.join(':')}`;
 }
 /**
-* Asserts that the GnuTLS QUIC backend loaded, throwing a specific error otherwise.
-*
-* Throws `Error` naming the first missing library — `libngtcp2_crypto_gnutls`,
-* `libgnutls`, or libc — so a misconfigured host produces an actionable message
-* instead of a null-dereference later. Use it as a guard before reaching for
-* `sym`, `ptr`, or `gnutlsSym` directly; the higher-level factories call it for
-* you.
-*
-* ```ts no_run
-*   import { requireCryptoGnutls, gnutlsSym } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   requireCryptoGnutls(); // throws if GnuTLS is not installed
-*   // gnutlsSym is now guaranteed non-null
-* ```
-*/
+ * Asserts that the GnuTLS QUIC backend loaded, throwing a specific error otherwise.
+ *
+ * Throws `Error` naming the first missing library — `libngtcp2_crypto_gnutls`,
+ * `libgnutls`, or libc — so a misconfigured host produces an actionable message
+ * instead of a null-dereference later. Use it as a guard before reaching for
+ * `sym`, `ptr`, or `gnutlsSym` directly; the higher-level factories call it for
+ * you.
+ *
+ * ```ts no_run
+ *   import { requireCryptoGnutls, gnutlsSym } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   requireCryptoGnutls(); // throws if GnuTLS is not installed
+ *   // gnutlsSym is now guaranteed non-null
+ * ```
+ */
 export function requireCryptoGnutls(): void {
   if (_crypto === null) throw new Error('libngtcp2_crypto_gnutls not found');
   if (_gnutls === null) throw new Error('libgnutls not found');
   if (_libc === null) throw new Error('libc not found');
 }
 /**
-* Performs one-time global GnuTLS initialization for this process.
-*
-* Idempotent: the first call runs `gnutls_global_init` and installs a custom
-* gettime function so session-ticket timestamps derive from `Date.now()` rather
-* than the raw system clock, letting `sendGnutlsSessionTicket` emit
-* deterministic second-granularity times. Subsequent calls return immediately.
-* Throws via `requireCryptoGnutls()` when the backend is unavailable, or if
-* `gnutls_global_init` itself fails.
-*
-* Every credential and session factory calls this, so you rarely invoke it
-* directly; do so only when preparing to use `gnutlsSym` by hand.
-*/
+ * Performs one-time global GnuTLS initialization for this process.
+ *
+ * Idempotent: the first call runs `gnutls_global_init` and installs a custom
+ * gettime function so session-ticket timestamps derive from `Date.now()` rather
+ * than the raw system clock, letting `sendGnutlsSessionTicket` emit
+ * deterministic second-granularity times. Subsequent calls return immediately.
+ * Throws via `requireCryptoGnutls()` when the backend is unavailable, or if
+ * `gnutls_global_init` itself fails.
+ *
+ * Every credential and session factory calls this, so you rarely invoke it
+ * directly; do so only when preparing to use `gnutlsSym` by hand.
+ */
 export function initCryptoGnutls(): void {
   requireCryptoGnutls();
   if (_initialized) return;
@@ -837,13 +837,13 @@ export function initCryptoGnutls(): void {
   _initialized = true;
 }
 /**
-* A GnuTLS certificate-credentials handle plus the server-side state bound to it.
-*
-* Returned by `newGnutlsCredentials` and reused across many sessions of the
-* same role. Must be released with `freeGnutlsCredentials` — it owns native
-* memory (the credentials object, and for servers a session-ticket key and an
-* anti-replay table with a live FFI callback) that otherwise leaks.
-*/
+ * A GnuTLS certificate-credentials handle plus the server-side state bound to it.
+ *
+ * Returned by `newGnutlsCredentials` and reused across many sessions of the
+ * same role. Must be released with `freeGnutlsCredentials` — it owns native
+ * memory (the credentials object, and for servers a session-ticket key and an
+ * anti-replay table with a live FFI callback) that otherwise leaks.
+ */
 export type GnutlsCredentials = {
   /** The `gnutls_certificate_credentials_t` handle as a pointer-sized `ArrayBuffer`. */
   handle: ArrayBuffer;
@@ -881,33 +881,33 @@ function configureGnutlsCa(cred: ArrayBuffer, ca: GnutlsCaOptions | undefined, v
   }
 }
 /**
-* Allocates GnuTLS certificate credentials for a client or server role.
-*
-* Runs `initCryptoGnutls()` first. A `'server'` role requires both `certFile`
-* and `keyFile` (PEM paths) and additionally provisions a fresh session-ticket
-* key and an anti-replay table for 0-RTT; it throws if either file is missing. A
-* `'client'` role may optionally present its own certificate (for mutual TLS) by
-* passing both files, and configures trust anchors: when `ca` is given its
-* file/directory/PEM entries are loaded, otherwise if `verifyPeer` is true the
-* system trust store is used. Throws, carrying the underlying GnuTLS error
-* string, if any GnuTLS call fails.
-*
-* The returned record owns native memory; release it with
-* `freeGnutlsCredentials`.
-*
-* ```ts no_run
-*   import { newGnutlsCredentials, freeGnutlsCredentials } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   // Server: certificate + private key are mandatory.
-*   const server = newGnutlsCredentials('server', '/etc/tls/cert.pem', '/etc/tls/key.pem');
-*
-*   // Client verifying the server against the system trust store.
-*   const client = newGnutlsCredentials('client', undefined, undefined, true);
-*
-*   freeGnutlsCredentials(server);
-*   freeGnutlsCredentials(client);
-* ```
-*/
+ * Allocates GnuTLS certificate credentials for a client or server role.
+ *
+ * Runs `initCryptoGnutls()` first. A `'server'` role requires both `certFile`
+ * and `keyFile` (PEM paths) and additionally provisions a fresh session-ticket
+ * key and an anti-replay table for 0-RTT; it throws if either file is missing. A
+ * `'client'` role may optionally present its own certificate (for mutual TLS) by
+ * passing both files, and configures trust anchors: when `ca` is given its
+ * file/directory/PEM entries are loaded, otherwise if `verifyPeer` is true the
+ * system trust store is used. Throws, carrying the underlying GnuTLS error
+ * string, if any GnuTLS call fails.
+ *
+ * The returned record owns native memory; release it with
+ * `freeGnutlsCredentials`.
+ *
+ * ```ts no_run
+ *   import { newGnutlsCredentials, freeGnutlsCredentials } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   // Server: certificate + private key are mandatory.
+ *   const server = newGnutlsCredentials('server', '/etc/tls/cert.pem', '/etc/tls/key.pem');
+ *
+ *   // Client verifying the server against the system trust store.
+ *   const client = newGnutlsCredentials('client', undefined, undefined, true);
+ *
+ *   freeGnutlsCredentials(server);
+ *   freeGnutlsCredentials(client);
+ * ```
+ */
 export function newGnutlsCredentials(role: 'client' | 'server', certFile?: string, keyFile?: string, verifyPeer = false, ca?: GnutlsCaOptions): GnutlsCredentials {
   initCryptoGnutls();
   const out = new ArrayBuffer(8);
@@ -931,22 +931,22 @@ export function newGnutlsCredentials(role: 'client' | 'server', certFile?: strin
   };
 }
 /**
-* Enables mutual TLS on already-allocated server credentials.
-*
-* When `clientAuth` is `'request'` or `'require'`, loads the client-CA trust
-* anchors from `ca` (or the system trust store if `ca` is omitted) and records
-* the requested auth mode and `rejectUnauthorized` flag on the credentials, so
-* `newGnutlsSession` asks peers for a certificate and `getGnutlsVerifyResult`
-* can report the outcome. A `clientAuth` of `'none'` is a no-op. Throws if
-* loading the trust anchors fails.
-*
-* ```ts no_run
-*   import { newGnutlsCredentials, configureGnutlsServerMtls } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   const creds = newGnutlsCredentials('server', '/etc/tls/cert.pem', '/etc/tls/key.pem');
-*   configureGnutlsServerMtls(creds, 'require', { file: '/etc/tls/client-ca.pem' });
-* ```
-*/
+ * Enables mutual TLS on already-allocated server credentials.
+ *
+ * When `clientAuth` is `'request'` or `'require'`, loads the client-CA trust
+ * anchors from `ca` (or the system trust store if `ca` is omitted) and records
+ * the requested auth mode and `rejectUnauthorized` flag on the credentials, so
+ * `newGnutlsSession` asks peers for a certificate and `getGnutlsVerifyResult`
+ * can report the outcome. A `clientAuth` of `'none'` is a no-op. Throws if
+ * loading the trust anchors fails.
+ *
+ * ```ts no_run
+ *   import { newGnutlsCredentials, configureGnutlsServerMtls } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   const creds = newGnutlsCredentials('server', '/etc/tls/cert.pem', '/etc/tls/key.pem');
+ *   configureGnutlsServerMtls(creds, 'require', { file: '/etc/tls/client-ca.pem' });
+ * ```
+ */
 export function configureGnutlsServerMtls(cred: GnutlsCredentials, clientAuth: 'none' | 'request' | 'require', ca?: GnutlsCaOptions, rejectUnauthorized = true): void {
   if (clientAuth !== 'none') {
     configureGnutlsCa(cred.handle, ca, true);
@@ -955,13 +955,13 @@ export function configureGnutlsServerMtls(cred: GnutlsCredentials, clientAuth: '
   }
 }
 /**
-* Releases every native resource held by a `GnutlsCredentials` record.
-*
-* Wipes and frees the server ticket key, deinitializes the anti-replay table
-* and closes its FFI callback, then frees the underlying GnuTLS credentials
-* object. Safe for either role. Do not use the record afterward, and free it
-* only once all sessions built from it have themselves been freed.
-*/
+ * Releases every native resource held by a `GnutlsCredentials` record.
+ *
+ * Wipes and frees the server ticket key, deinitializes the anti-replay table
+ * and closes its FFI callback, then frees the underlying GnuTLS credentials
+ * object. Safe for either role. Do not use the record afterward, and free it
+ * only once all sessions built from it have themselves been freed.
+ */
 export function freeGnutlsCredentials(cred: GnutlsCredentials): void {
   if (cred.ticketKey !== null) freeGnutlsTicketKey(cred.ticketKey);
   if (cred.antiReplay !== null) {
@@ -971,13 +971,13 @@ export function freeGnutlsCredentials(cred: GnutlsCredentials): void {
   gnutlsSym!.gnutls_certificate_free_credentials(cred.handle);
 }
 /**
-* A GnuTLS TLS session handle plus the JavaScript state that must outlive it.
-*
-* Produced by `newGnutlsSession`, one per QUIC connection. Alongside the raw
-* session handle it retains the buffers and FFI callbacks (SNI hostname, ALPN
-* datums, ticket and keylog hooks) that GnuTLS references by pointer, so they
-* are not garbage-collected mid-handshake. Release it with `freeGnutlsSession`.
-*/
+ * A GnuTLS TLS session handle plus the JavaScript state that must outlive it.
+ *
+ * Produced by `newGnutlsSession`, one per QUIC connection. Alongside the raw
+ * session handle it retains the buffers and FFI callbacks (SNI hostname, ALPN
+ * datums, ticket and keylog hooks) that GnuTLS references by pointer, so they
+ * are not garbage-collected mid-handshake. Release it with `freeGnutlsSession`.
+ */
 export type GnutlsSession = {
   /** The `gnutls_session_t` handle as a pointer-sized `ArrayBuffer`. */
   handle: ArrayBuffer;
@@ -1028,33 +1028,33 @@ function setGnutlsKeylogCallback(session: GnutlsSession, onKeylogLine: ((line: s
   gnutlsSym!.gnutls_session_set_keylog_function(session.handle, session.keylogHook.pointer);
 }
 /**
-* Creates and provisions a GnuTLS session for one QUIC connection.
-*
-* Runs `initCryptoGnutls()`, then initializes a session in the given `role`,
-* applies the QUIC-mandated priority string (optionally narrowed to the given
-* TLS 1.3 `cipherSuites`), attaches the `credentials`, and installs the ALPN
-* `protocols`. For a server it enables session tickets and, if the credentials
-* requested it, client-certificate auth. For a client that passes `serverName`
-* it sets SNI and, when `verifyPeer` is true, hostname verification.
-* `earlyDataMax` greater than zero arms 0-RTT early data (finalized later by
-* `configureGnutlsSession`). When `onKeylogLine` is supplied, TLS secrets are
-* emitted as NSS key-log lines for debugging.
-*
-* Throws if any GnuTLS call fails, deinitializing the half-built session first
-* so nothing leaks. `cipherSuites` entries must each be one of the QUIC TLS 1.3
-* suites (`TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`,
-* `TLS_CHACHA20_POLY1305_SHA256`); any other value throws `TypeError`. Release
-* the result with `freeGnutlsSession`.
-*
-* ```ts no_run
-*   import { newGnutlsCredentials, newGnutlsSession, freeGnutlsSession } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   const creds = newGnutlsCredentials('client');
-*   const session = newGnutlsSession('client', creds, ['h3'], 'example.com', true);
-*   // ... drive the handshake ...
-*   freeGnutlsSession(session);
-* ```
-*/
+ * Creates and provisions a GnuTLS session for one QUIC connection.
+ *
+ * Runs `initCryptoGnutls()`, then initializes a session in the given `role`,
+ * applies the QUIC-mandated priority string (optionally narrowed to the given
+ * TLS 1.3 `cipherSuites`), attaches the `credentials`, and installs the ALPN
+ * `protocols`. For a server it enables session tickets and, if the credentials
+ * requested it, client-certificate auth. For a client that passes `serverName`
+ * it sets SNI and, when `verifyPeer` is true, hostname verification.
+ * `earlyDataMax` greater than zero arms 0-RTT early data (finalized later by
+ * `configureGnutlsSession`). When `onKeylogLine` is supplied, TLS secrets are
+ * emitted as NSS key-log lines for debugging.
+ *
+ * Throws if any GnuTLS call fails, deinitializing the half-built session first
+ * so nothing leaks. `cipherSuites` entries must each be one of the QUIC TLS 1.3
+ * suites (`TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`,
+ * `TLS_CHACHA20_POLY1305_SHA256`); any other value throws `TypeError`. Release
+ * the result with `freeGnutlsSession`.
+ *
+ * ```ts no_run
+ *   import { newGnutlsCredentials, newGnutlsSession, freeGnutlsSession } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   const creds = newGnutlsCredentials('client');
+ *   const session = newGnutlsSession('client', creds, ['h3'], 'example.com', true);
+ *   // ... drive the handshake ...
+ *   freeGnutlsSession(session);
+ * ```
+ */
 export function newGnutlsSession(role: 'client' | 'server', credentials: GnutlsCredentials, protocols: string[], serverName?: string, verifyPeer = false, earlyDataMax = 0, cipherSuites: readonly string[] | null = null, onKeylogLine?: (line: string) => void): GnutlsSession {
   initCryptoGnutls();
   const out = new ArrayBuffer(8);
@@ -1098,13 +1098,13 @@ export function newGnutlsSession(role: 'client' | 'server', credentials: GnutlsC
   }
 }
 /**
-* Deinitializes a GnuTLS session and closes the FFI callbacks bound to it.
-*
-* Detaches and closes the ticket and keylog hooks before calling
-* `gnutls_deinit`, so no native callback outlives the session. The associated
-* `GnutlsCredentials` are not freed — they are shared across sessions and must
-* be released separately with `freeGnutlsCredentials`.
-*/
+ * Deinitializes a GnuTLS session and closes the FFI callbacks bound to it.
+ *
+ * Detaches and closes the ticket and keylog hooks before calling
+ * `gnutls_deinit`, so no native callback outlives the session. The associated
+ * `GnutlsCredentials` are not freed — they are shared across sessions and must
+ * be released separately with `freeGnutlsCredentials`.
+ */
 export function freeGnutlsSession(session: GnutlsSession): void {
   const ticketHook = session.ticketHook;
   const keylogHook = session.keylogHook;
@@ -1115,34 +1115,34 @@ export function freeGnutlsSession(session: GnutlsSession): void {
   keylogHook?.close();
 }
 /**
-* Points the session's user pointer at an ngtcp2 connection reference.
-*
-* ngtcp2's GnuTLS crypto callbacks reach the owning connection through the
-* session's user pointer, which they expect to hold an `ngtcp2_crypto_conn_ref`.
-* Pass the conn-ref buffer to wire them together, or `null` to clear it — for
-* example before tearing the connection down.
-*/
+ * Points the session's user pointer at an ngtcp2 connection reference.
+ *
+ * ngtcp2's GnuTLS crypto callbacks reach the owning connection through the
+ * session's user pointer, which they expect to hold an `ngtcp2_crypto_conn_ref`.
+ * Pass the conn-ref buffer to wire them together, or `null` to clear it — for
+ * example before tearing the connection down.
+ */
 export function setGnutlsConnectionRef(session: GnutlsSession, connRef: ArrayBuffer | null): void {
   gnutlsSym!.gnutls_session_set_ptr(session.handle, connRef === null ? null : Pointer.of(connRef));
 }
 /**
-* Installs ngtcp2's crypto callbacks onto the session and finalizes early data.
-*
-* Idempotent per session. Calls `ngtcp2_crypto_gnutls_configure_client_session`
-* or `..._server_session` to hook GnuTLS into ngtcp2's TLS message flow. For a
-* server with early data enabled it also turns on anti-replay protection and
-* sets the maximum early-data size. Throws if the ngtcp2 configure call returns
-* non-zero or a GnuTLS call fails. Call once after `newGnutlsSession`, before
-* driving the handshake.
-*
-* ```ts no_run
-*   import { newGnutlsCredentials, newGnutlsSession, configureGnutlsSession } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   const creds = newGnutlsCredentials('server', '/etc/tls/cert.pem', '/etc/tls/key.pem');
-*   const session = newGnutlsSession('server', creds, ['h3']);
-*   configureGnutlsSession('server', session);
-* ```
-*/
+ * Installs ngtcp2's crypto callbacks onto the session and finalizes early data.
+ *
+ * Idempotent per session. Calls `ngtcp2_crypto_gnutls_configure_client_session`
+ * or `..._server_session` to hook GnuTLS into ngtcp2's TLS message flow. For a
+ * server with early data enabled it also turns on anti-replay protection and
+ * sets the maximum early-data size. Throws if the ngtcp2 configure call returns
+ * non-zero or a GnuTLS call fails. Call once after `newGnutlsSession`, before
+ * driving the handshake.
+ *
+ * ```ts no_run
+ *   import { newGnutlsCredentials, newGnutlsSession, configureGnutlsSession } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   const creds = newGnutlsCredentials('server', '/etc/tls/cert.pem', '/etc/tls/key.pem');
+ *   const session = newGnutlsSession('server', creds, ['h3']);
+ *   configureGnutlsSession('server', session);
+ * ```
+ */
 export function configureGnutlsSession(role: 'client' | 'server', session: GnutlsSession): void {
   if (session.configured) return;
   const rc = role === 'server' ? sym!.ngtcp2_crypto_gnutls_configure_server_session(session.handle) : sym!.ngtcp2_crypto_gnutls_configure_client_session(session.handle);
@@ -1155,23 +1155,23 @@ export function configureGnutlsSession(role: 'client' | 'server', session: Gnutl
   }
 }
 /**
-* Installs or removes a hook that fires when GnuTLS issues a new session ticket.
-*
-* Passing a callback registers a post-handshake hook on the new-session-ticket
-* message; each time a ticket is generated the hook exports the session
-* (`exportGnutlsSession`) and hands the serialized bytes to the callback for
-* storage or transmission to the client. Passing `null` removes a previously
-* installed hook and closes its FFI callback. Replacing an existing callback
-* tears down the old one first. Server-side in practice.
-*
-* ```ts no_run
-*   import { setGnutlsSessionTicketCallback } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   setGnutlsSessionTicketCallback(session, (ticket) => {
-*     sendToClient(ticket); // opaque resumption blob
-*   });
-* ```
-*/
+ * Installs or removes a hook that fires when GnuTLS issues a new session ticket.
+ *
+ * Passing a callback registers a post-handshake hook on the new-session-ticket
+ * message; each time a ticket is generated the hook exports the session
+ * (`exportGnutlsSession`) and hands the serialized bytes to the callback for
+ * storage or transmission to the client. Passing `null` removes a previously
+ * installed hook and closes its FFI callback. Replacing an existing callback
+ * tears down the old one first. Server-side in practice.
+ *
+ * ```ts no_run
+ *   import { setGnutlsSessionTicketCallback } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   setGnutlsSessionTicketCallback(session, (ticket) => {
+ *     sendToClient(ticket); // opaque resumption blob
+ *   });
+ * ```
+ */
 export function setGnutlsSessionTicketCallback(session: GnutlsSession, callback: ((ticket: Uint8Array) => void) | null): void {
   if (session.ticketHook !== null) {
     gnutlsSym!.gnutls_handshake_set_hook_function(session.handle, GNUTLS_HANDSHAKE_NEW_SESSION_TICKET, GNUTLS_HOOK_POST, null);
@@ -1197,14 +1197,14 @@ export function setGnutlsSessionTicketCallback(session: GnutlsSession, callback:
   gnutlsSym!.gnutls_handshake_set_hook_function(session.handle, GNUTLS_HANDSHAKE_NEW_SESSION_TICKET, GNUTLS_HOOK_POST, session.ticketHook.pointer);
 }
 /**
-* Sends `count` NewSessionTicket messages to the peer.
-*
-* Wraps `gnutls_session_ticket_send`, temporarily truncating ticket timestamps
-* to whole seconds (through the custom gettime function installed by
-* `initCryptoGnutls`) so the emitted tickets carry deterministic,
-* second-granularity times. Throws if the GnuTLS call fails. Server-side; call
-* after the handshake completes to grant the client resumption tickets.
-*/
+ * Sends `count` NewSessionTicket messages to the peer.
+ *
+ * Wraps `gnutls_session_ticket_send`, temporarily truncating ticket timestamps
+ * to whole seconds (through the custom gettime function installed by
+ * `initCryptoGnutls`) so the emitted tickets carry deterministic,
+ * second-granularity times. Throws if the GnuTLS call fails. Server-side; call
+ * after the handshake completes to grant the client resumption tickets.
+ */
 export function sendGnutlsSessionTicket(session: GnutlsSession, count = 1): void {
   _truncateTicketTimestamp = true;
   try {
@@ -1214,13 +1214,13 @@ export function sendGnutlsSessionTicket(session: GnutlsSession, count = 1): void
   }
 }
 /**
-* Serializes the session into an opaque blob for later resumption.
-*
-* Wraps `gnutls_session_get_data2`, copying GnuTLS's allocated buffer into a
-* `Uint8Array` and freeing the C allocation. Returns `null` when no session data
-* is available yet — for example before a ticket has been issued. The bytes are
-* GnuTLS-specific and only meaningful to `importGnutlsSession`.
-*/
+ * Serializes the session into an opaque blob for later resumption.
+ *
+ * Wraps `gnutls_session_get_data2`, copying GnuTLS's allocated buffer into a
+ * `Uint8Array` and freeing the C allocation. Returns `null` when no session data
+ * is available yet — for example before a ticket has been issued. The bytes are
+ * GnuTLS-specific and only meaningful to `importGnutlsSession`.
+ */
 export function exportGnutlsSession(session: GnutlsSession): Uint8Array | null {
   const datum = new ArrayBuffer(GNUTLS_DATUM_SIZE);
   const rc = gnutlsSym!.gnutls_session_get_data2(session.handle, Pointer.of(datum)) as number;
@@ -1235,30 +1235,30 @@ export function exportGnutlsSession(session: GnutlsSession): Uint8Array | null {
   }
 }
 /**
-* Loads a previously exported session blob to attempt TLS resumption.
-*
-* Wraps `gnutls_session_set_data` with the bytes from `exportGnutlsSession`.
-* Returns true when GnuTLS accepted the data, false otherwise — for example if
-* the blob is malformed or from an incompatible session. Call on a fresh client
-* session before the handshake to offer resumption or 0-RTT.
-*
-* ```ts no_run
-*   import { newGnutlsSession, importGnutlsSession } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   const session = newGnutlsSession('client', creds, ['h3'], 'example.com');
-*   if (savedTicket) importGnutlsSession(session, savedTicket);
-* ```
-*/
+ * Loads a previously exported session blob to attempt TLS resumption.
+ *
+ * Wraps `gnutls_session_set_data` with the bytes from `exportGnutlsSession`.
+ * Returns true when GnuTLS accepted the data, false otherwise — for example if
+ * the blob is malformed or from an incompatible session. Call on a fresh client
+ * session before the handshake to offer resumption or 0-RTT.
+ *
+ * ```ts no_run
+ *   import { newGnutlsSession, importGnutlsSession } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   const session = newGnutlsSession('client', creds, ['h3'], 'example.com');
+ *   if (savedTicket) importGnutlsSession(session, savedTicket);
+ * ```
+ */
 export function importGnutlsSession(session: GnutlsSession, data: Uint8Array): boolean {
   return gnutlsSym!.gnutls_session_set_data(session.handle, data, data.byteLength) as number === 0;
 }
 /**
-* Returns the ALPN protocol GnuTLS negotiated, or the empty string.
-*
-* Yields `''` when the session is `null`, no protocol was selected, or the
-* handshake has not yet reached ALPN selection. After a successful handshake
-* this is the agreed application protocol, for example `'h3'`.
-*/
+ * Returns the ALPN protocol GnuTLS negotiated, or the empty string.
+ *
+ * Yields `''` when the session is `null`, no protocol was selected, or the
+ * handshake has not yet reached ALPN selection. After a successful handshake
+ * this is the agreed application protocol, for example `'h3'`.
+ */
 export function getGnutlsAlpnSelected(session: GnutlsSession | null): string {
   if (session === null) return '';
   const datum = new ArrayBuffer(GNUTLS_DATUM_SIZE);
@@ -1270,26 +1270,26 @@ export function getGnutlsAlpnSelected(session: GnutlsSession | null): string {
   return new TextDecoder().decode(Pointer.copyFrom(data, len) as Uint8Array);
 }
 /**
-* Returns the SNI hostname associated with the session, or `null`.
-*
-* Reports the server name recorded when a client session was created with a
-* `serverName`; returns `null` for server sessions and for clients that set no
-* SNI. Decoded from the retained NUL-terminated buffer with the trailing NUL
-* stripped.
-*/
+ * Returns the SNI hostname associated with the session, or `null`.
+ *
+ * Reports the server name recorded when a client session was created with a
+ * `serverName`; returns `null` for server sessions and for clients that set no
+ * SNI. Decoded from the retained NUL-terminated buffer with the trailing NUL
+ * stripped.
+ */
 export function getGnutlsServername(session: GnutlsSession | null): string | null {
   if (session?.hostname == null) return null;
   const bytes = session.hostname.subarray(0, Math.max(0, session.hostname.byteLength - 1));
   return new TextDecoder().decode(bytes);
 }
 /**
-* Returns the negotiated cipher suite and TLS protocol version names.
-*
-* After the handshake `cipher` is the AEAD cipher name (for example
-* `'AES-256-GCM'`) and `cipherVersion` the protocol name (for example
-* `'TLS1.3'`); either is `null` when unavailable. A `null` session yields both
-* `null`.
-*/
+ * Returns the negotiated cipher suite and TLS protocol version names.
+ *
+ * After the handshake `cipher` is the AEAD cipher name (for example
+ * `'AES-256-GCM'`) and `cipherVersion` the protocol name (for example
+ * `'TLS1.3'`); either is `null` when unavailable. A `null` session yields both
+ * `null`.
+ */
 export function getGnutlsCipherInfo(session: GnutlsSession | null): {
   cipher: string | null;
   cipherVersion: string | null;
@@ -1306,14 +1306,14 @@ export function getGnutlsCipherInfo(session: GnutlsSession | null): {
   };
 }
 /**
-* Returns the peer's leaf certificate in DER form, or `null`.
-*
-* Reads the first entry of the peer certificate chain GnuTLS captured during
-* the handshake. Returns `null` when the session is `null`, the peer sent no
-* certificate, or the entry is empty — for a server this is the client
-* certificate (present only under mutual TLS), for a client the server
-* certificate.
-*/
+ * Returns the peer's leaf certificate in DER form, or `null`.
+ *
+ * Reads the first entry of the peer certificate chain GnuTLS captured during
+ * the handshake. Returns `null` when the session is `null`, the peer sent no
+ * certificate, or the entry is empty — for a server this is the client
+ * certificate (present only under mutual TLS), for a client the server
+ * certificate.
+ */
 export function getGnutlsPeerCertificate(session: GnutlsSession | null): Uint8Array | null {
   if (session === null) return null;
   const countBuf = new ArrayBuffer(4);
@@ -1325,20 +1325,20 @@ export function getGnutlsPeerCertificate(session: GnutlsSession | null): Uint8Ar
   return cert.byteLength > 0 ? cert : null;
 }
 /**
-* Derives exported keying material via the RFC 5705 TLS exporter.
-*
-* Runs `gnutls_prf_rfc5705` with the given `label` and `context` to produce
-* `length` bytes of key material bound to the session — used, for example, to
-* derive application-layer keys tied to the QUIC/TLS handshake. Throws
-* `RangeError` if `length` is not a non-negative integer, and throws if the
-* GnuTLS PRF call fails. Returns the derived bytes as an `ArrayBuffer`.
-*
-* ```ts no_run
-*   import { exportGnutlsKeyingMaterial } from 'internal:net/quic/ngtcp2/crypto-gnutls';
-*
-*   const key = exportGnutlsKeyingMaterial(session, 'EXPORTER-my-app', new Uint8Array(0), 32);
-* ```
-*/
+ * Derives exported keying material via the RFC 5705 TLS exporter.
+ *
+ * Runs `gnutls_prf_rfc5705` with the given `label` and `context` to produce
+ * `length` bytes of key material bound to the session — used, for example, to
+ * derive application-layer keys tied to the QUIC/TLS handshake. Throws
+ * `RangeError` if `length` is not a non-negative integer, and throws if the
+ * GnuTLS PRF call fails. Returns the derived bytes as an `ArrayBuffer`.
+ *
+ * ```ts no_run
+ *   import { exportGnutlsKeyingMaterial } from 'internal:net/quic/ngtcp2/crypto-gnutls';
+ *
+ *   const key = exportGnutlsKeyingMaterial(session, 'EXPORTER-my-app', new Uint8Array(0), 32);
+ * ```
+ */
 export function exportGnutlsKeyingMaterial(session: GnutlsSession, label: string, context: Uint8Array, length: number): ArrayBuffer {
   if (!Number.isInteger(length) || length < 0) throw new RangeError('TLS exporter length must be a non-negative integer');
   const labelBytes = new TextEncoder().encode(label);
@@ -1347,15 +1347,15 @@ export function exportGnutlsKeyingMaterial(session: GnutlsSession, label: string
   return out.buffer;
 }
 /**
-* Reports the result of peer-certificate verification.
-*
-* Returns `{ code: 0, reason: null }` when the peer certificate verified
-* cleanly (or when the session is `null`). A negative `code` with a GnuTLS error
-* string in `reason` means the verification call itself failed; a positive
-* `code` is the GnuTLS verification-status bitmask with a descriptive `reason`.
-* Consult it after the handshake to decide whether to accept a peer under the
-* credentials' `rejectUnauthorized` policy.
-*/
+ * Reports the result of peer-certificate verification.
+ *
+ * Returns `{ code: 0, reason: null }` when the peer certificate verified
+ * cleanly (or when the session is `null`). A negative `code` with a GnuTLS error
+ * string in `reason` means the verification call itself failed; a positive
+ * `code` is the GnuTLS verification-status bitmask with a descriptive `reason`.
+ * Consult it after the handshake to decide whether to accept a peer under the
+ * credentials' `rejectUnauthorized` policy.
+ */
 export function getGnutlsVerifyResult(session: GnutlsSession | null): {
   code: number;
   reason: string | null;

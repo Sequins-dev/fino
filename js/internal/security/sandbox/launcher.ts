@@ -80,13 +80,10 @@ interface LaunchRequest {
 */
 function fail(fd: number, stage: string, message: string, errnoValue?: number): never {
   try {
-    writeFrame(fd, {
-      type: 'error',
-      stage,
-      message,
-      errno: errnoValue ?? 0
-    });
-  } catch (_) {}
+    writeFrame(fd, { type: 'error', stage, message, errno: errnoValue ?? 0 });
+  } catch (_) {
+    // The parent may already be gone; there is nothing else we can do.
+  }
   libc.symbols._exit(1);
   throw new Error('unreachable');
 }
@@ -104,20 +101,9 @@ function fail(fd: number, stage: string, message: string, errnoValue?: number): 
 // is installed separately, as the very last step before execve.
 function seccompInstalledRecords(sandbox: SandboxPolicy): InstalledMechanism[] {
   const records: InstalledMechanism[] = [];
-  if (sandbox.syscalls !== undefined) records.push({
-    category: 'syscalls',
-    mechanism: 'seccomp'
-  });
-  if (sandbox.process?.allowFork === false) records.push({
-    category: 'process',
-    mechanism: 'seccomp',
-    detail: 'fork denied'
-  });
-  if (sandbox.network !== undefined) records.push({
-    category: 'network',
-    mechanism: 'seccomp',
-    detail: 'coarse socket denial'
-  });
+  if (sandbox.syscalls !== undefined) records.push({ category: 'syscalls', mechanism: 'seccomp' });
+  if (sandbox.process?.allowFork === false) records.push({ category: 'process', mechanism: 'seccomp', detail: 'fork denied' });
+  if (sandbox.network !== undefined) records.push({ category: 'network', mechanism: 'seccomp', detail: 'coarse socket denial' });
   return records;
 }
 /**
@@ -169,7 +155,8 @@ export function runLauncher(fd: number): void {
     }
   }
   const installed: InstalledMechanism[] = [];
-  const hasProcessPolicy = sandbox.process?.allowExec === false || (sandbox.process?.allowedBinaries?.length ?? 0) > 0;
+  const hasProcessPolicy = sandbox.process?.allowExec === false
+    || (sandbox.process?.allowedBinaries?.length ?? 0) > 0;
   let execCommand: string;
   let execArgv: string[];
   let seccompPlan: ReturnType<typeof planSeccomp> | null = null;
@@ -184,49 +171,27 @@ export function runLauncher(fd: number): void {
           const cg = createAndJoinCgroup(root, sandbox.resources);
           cgroupPath = cg.path;
           for (const limit of cg.installed) {
-            installed.push({
-              category: 'resources',
-              mechanism: 'cgroup',
-              tier: 'cgroup',
-              detail: limit
-            });
+            installed.push({ category: 'resources', mechanism: 'cgroup', tier: 'cgroup', detail: limit });
           }
           // memory/pids whose controller was not delegated fall back to rlimits.
           for (const limit of installRlimits({
             memoryBytes: cg.unhandled.includes('memoryBytes') ? sandbox.resources.memoryBytes : undefined,
             pids: cg.unhandled.includes('pids') ? sandbox.resources.pids : undefined
           })) {
-            installed.push({
-              category: 'resources',
-              mechanism: 'rlimit',
-              tier: 'rlimit',
-              detail: limit
-            });
+            installed.push({ category: 'resources', mechanism: 'rlimit', tier: 'rlimit', detail: limit });
           }
         } else {
           // cpu was rejected pre-spawn (no rlimit equivalent); memory/pids fall
           // back to rlimits, reported honestly as the weaker tier.
           for (const limit of installRlimits(sandbox.resources)) {
-            installed.push({
-              category: 'resources',
-              mechanism: 'rlimit',
-              tier: 'rlimit',
-              detail: limit
-            });
+            installed.push({ category: 'resources', mechanism: 'rlimit', tier: 'rlimit', detail: limit });
           }
         }
       }
       const landlock = installLandlock(sandbox.filesystem, sandbox.process, request.command);
-      if (landlock.fsConfined) installed.push({
-        category: 'filesystem',
-        mechanism: 'landlock'
-      });
+      if (landlock.fsConfined) installed.push({ category: 'filesystem', mechanism: 'landlock' });
       if (landlock.execScoped) {
-        installed.push({
-          category: 'process',
-          mechanism: 'landlock',
-          detail: 'execute scoped to the initial binary and allowedBinaries'
-        });
+        installed.push({ category: 'process', mechanism: 'landlock', detail: 'execute scoped to the initial binary and allowedBinaries' });
       }
       seccompPlan = planSeccomp(sandbox);
       installed.push(...seccompInstalledRecords(sandbox));
@@ -235,12 +200,7 @@ export function runLauncher(fd: number): void {
     } else {
       if (sandbox.resources !== undefined) {
         for (const limit of installRlimits(sandbox.resources)) {
-          installed.push({
-            category: 'resources',
-            mechanism: 'rlimit',
-            tier: 'rlimit',
-            detail: limit
-          });
+          installed.push({ category: 'resources', mechanism: 'rlimit', tier: 'rlimit', detail: limit });
         }
       }
       // Scope exec to the initial binary plus absolute-path allowlist entries
@@ -253,28 +213,11 @@ export function runLauncher(fd: number): void {
         }
       }
       const profile = generateSeatbeltProfile(sandbox.filesystem, sandbox.network, execPaths);
-      if (sandbox.filesystem !== undefined) installed.push({
-        category: 'filesystem',
-        mechanism: 'seatbelt'
-      });
-      if (sandbox.network !== undefined) installed.push({
-        category: 'network',
-        mechanism: 'seatbelt',
-        detail: 'coarse/directional'
-      });
-      if (hasProcessPolicy) installed.push({
-        category: 'process',
-        mechanism: 'seatbelt',
-        detail: 'execute scoped to the initial binary and allowedBinaries'
-      });
+      if (sandbox.filesystem !== undefined) installed.push({ category: 'filesystem', mechanism: 'seatbelt' });
+      if (sandbox.network !== undefined) installed.push({ category: 'network', mechanism: 'seatbelt', detail: 'coarse/directional' });
+      if (hasProcessPolicy) installed.push({ category: 'process', mechanism: 'seatbelt', detail: 'execute scoped to the initial binary and allowedBinaries' });
       execCommand = '/usr/bin/sandbox-exec';
-      execArgv = [
-        '/usr/bin/sandbox-exec',
-        '-p',
-        profile,
-        request.command,
-        ...request.args
-      ];
+      execArgv = ['/usr/bin/sandbox-exec', '-p', profile, request.command, ...request.args];
     }
   } catch (err) {
     fail(fd, 'apply-policy', err instanceof Error ? err.message : String(err), errno());
@@ -292,12 +235,7 @@ export function runLauncher(fd: number): void {
   // Report and mark the socket close-on-exec before seccomp, so an allowlist
   // filter does not have to permit these bookkeeping syscalls.
   try {
-    writeFrame(fd, {
-      type: 'report',
-      installed,
-      cgroupPath,
-      descendantCleanup
-    });
+    writeFrame(fd, { type: 'report', installed, cgroupPath, descendantCleanup });
   } catch (err) {
     fail(fd, 'report', err instanceof Error ? err.message : String(err));
   }

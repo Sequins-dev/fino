@@ -229,16 +229,11 @@ export function createTlsServerContext(opts: TlsServerContextOptions): {
     if (opts.alpn && opts.alpn.length > 0) {
       callbacks.push(openssl.sslCtxSetAlpnServerProtos(ctx, [...opts.alpn]));
     }
-    return {
-      ctx,
-      callbacks
-    };
+    return { ctx, callbacks };
   } catch (e) {
     for (const callback of callbacks) {
       try {
-        (callback as {
-          close?: () => void;
-        }).close?.();
+        (callback as { close?: () => void }).close?.();
       } catch (_) {}
     }
     openssl.sslCtxFree(ctx);

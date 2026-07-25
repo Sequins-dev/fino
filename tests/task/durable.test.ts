@@ -6,6 +6,7 @@ import { durableTask } from 'fino:task/durable';
 import { InMemoryWorkflowStore, SqliteWorkflowStore, type WorkflowState, type WorkflowStore } from 'fino:workflow';
 import { sqliteAvailable } from 'fino:database/sqlite';
 import * as loop from 'internal:runtime/loop';
+
 class CountingStore implements WorkflowStore {
   inner = new InMemoryWorkflowStore();
   saves = 0;
@@ -26,6 +27,7 @@ class CountingStore implements WorkflowStore {
     return this.inner.delete(runId);
   }
 }
+
 describe('DurableTask', () => {
   it('runs to completion and checkpoints steps', async (t) => {
     const store = new CountingStore();
@@ -106,9 +108,7 @@ describe('DurableTask', () => {
     const task = durableTask({
       name: 'gated',
       run: async (_input: undefined, ctx) => {
-        const payload = await ctx.waitForSignal<{
-          ok: boolean;
-        }>('go');
+        const payload = await ctx.waitForSignal<{ ok: boolean }>('go');
         return payload.ok;
       }
     });
@@ -161,14 +161,14 @@ describe('DurableTask', () => {
     const task = durableTask({
       name: 'cli-durable',
       outputMode: 'text',
-      cli: { positionals: [{
-        name: 'word',
-        type: 'string',
-        required: true
-      }] },
-      run: async (input: {
-        word: string;
-      }, ctx) => {
+      cli: {
+        positionals: [{
+          name: 'word',
+          type: 'string',
+          required: true
+        }]
+      },
+      run: async (input: { word: string }, ctx) => {
         return await ctx.step('shout', () => input.word.toUpperCase());
       }
     });
@@ -186,8 +186,6 @@ describe('DurableTask', () => {
     const handle = await task.start(undefined, { runId: 'nap-1' });
     t.equal(handle.status, 'waiting', 'one drive returned immediately');
     t.equal(handle.waitingOn?.type, 'timer', 'park is a timer wait');
-    t.ok((handle.waitingOn as {
-      dueAt: number;
-    }).dueAt > Date.now() + 30 * 60 * 1e3, 'due time is in the far future');
+    t.ok((handle.waitingOn as { dueAt: number }).dueAt > Date.now() + 30 * 60 * 1000, 'due time is in the far future');
   });
 });

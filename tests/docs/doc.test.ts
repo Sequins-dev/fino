@@ -761,7 +761,7 @@ export function afterEnum(): string {
     t.ok(!markdown.includes('### #peek'), 'markdown excludes private class method');
     t.ok(markdown.includes('## VERSION'), 'markdown includes const section');
     t.ok(markdown.includes('## ConfigSource'), 'markdown includes long type alias section');
-    t.ok(markdown.includes('type ConfigSource = {\n'), 'markdown formats long type alias across lines');
+    t.ok(markdown.includes('type ConfigSource = { inline?: { name: string; enabled: boolean; tags?: string[] } } | {\n'), 'markdown wraps the long type alias at the configured width');
     t.ok(markdown.includes('format: \'json\' | \'yaml\' | \'toml\';'), 'markdown preserves nested literal union in formatted signature');
     t.equal(markdown.includes('internal marker'), false, 'markdown strips comments from formatted signatures');
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
@@ -1029,13 +1029,7 @@ export function current(): number {
     t.equal(run.result.code, 0, 'archive doc build exits successfully');
     t.equal(run.stderr, '', 'archive doc build writes no stderr');
     const html = await fs.readFile(docsDir + '/archive.html');
-    for (const name of [
-      'ArchiveFormat',
-      'ArchiveKind',
-      'ZipCompression',
-      'ArchiveEntryHandle',
-      'ArchiveInput'
-    ]) {
+    for (const name of ['ArchiveFormat', 'ArchiveKind', 'ZipCompression', 'ArchiveEntryHandle', 'ArchiveInput']) {
       t.ok(html.includes(`id="archive.${name}"`), `html includes ${name} export`);
       t.ok(html.includes(`href="#archive.${name}">${name}</a>`), `html links ${name} from signatures`);
     }
@@ -1059,13 +1053,7 @@ export function current(): number {
     t.equal(run.result.code, 0, 'compress doc build exits successfully');
     t.equal(run.stderr, '', 'compress doc build writes no stderr');
     const html = await fs.readFile(docsDir + '/compress.html');
-    for (const name of [
-      'ByteInput',
-      'CompressionFormat',
-      'CompressOptions',
-      'DecompressOptions',
-      'CompressionTransform'
-    ]) {
+    for (const name of ['ByteInput', 'CompressionFormat', 'CompressOptions', 'DecompressOptions', 'CompressionTransform']) {
       t.ok(html.includes(`id="compress.${name}"`), `html includes ${name} export`);
       t.ok(html.includes(`href="#compress.${name}">${name}</a>`), `html links ${name} from signatures`);
     }
@@ -1090,11 +1078,7 @@ export function current(): number {
     t.equal(run.result.code, 0, 'jobs doc build exits successfully');
     t.equal(run.stderr, '', 'jobs doc build writes no stderr');
     const html = await fs.readFile(docsDir + '/jobs.html');
-    for (const name of [
-      'JobRecord',
-      'ScheduleRecord',
-      'QueueStats'
-    ]) {
+    for (const name of ['JobRecord', 'ScheduleRecord', 'QueueStats']) {
       t.ok(html.includes(`id="jobs.${name}"`), `html includes ${name} export`);
       t.ok(html.includes(`href="#jobs.${name}">${name}</a>`), `html links ${name} from signatures`);
     }
@@ -1118,26 +1102,10 @@ export function current(): number {
     const html = await fs.readFile(docsDir + '/net/dns.html');
     t.ok(html.includes('id="dns.DnsServerFamily"'), 'html includes DnsServerFamily export');
     t.ok(html.includes('href="#dns.DnsServerFamily">DnsServerFamily</a>'), 'html links DnsServerFamily from DnsServer signature');
-    for (const name of [
-      '_encodeName',
-      '_buildQuery',
-      '_decodeName',
-      '_parseResponse',
-      '_parseResolvConf',
-      '_randomQueryId',
-      '_reverseIP'
-    ]) {
+    for (const name of ['_encodeName', '_buildQuery', '_decodeName', '_parseResponse', '_parseResolvConf', '_randomQueryId', '_reverseIP']) {
       t.equal(html.includes(`id="dns.${name}"`), false, `html does not include internal ${name} helper`);
     }
-    for (const name of [
-      'DsRecord',
-      'DnskeyRecord',
-      'RrsigRecord',
-      'NsecRecord',
-      'Nsec3Record',
-      'Nsec3ParamRecord',
-      'DnsEdnsMetadata'
-    ]) {
+    for (const name of ['DsRecord', 'DnskeyRecord', 'RrsigRecord', 'NsecRecord', 'Nsec3Record', 'Nsec3ParamRecord', 'DnsEdnsMetadata']) {
       t.ok(html.includes(`id="dns.${name}"`), `html includes ${name} export`);
     }
     t.ok(html.includes('href="#dns.DnsEdnsMetadata">DnsEdnsMetadata</a>'), 'html links DnsEdnsMetadata from DnsResponse signature');
@@ -1205,13 +1173,7 @@ export function serializeResponse(res: Response, arena?: Arena): AsyncIterable<U
     t.equal(run.result.code, 0, 'http app doc build exits successfully');
     t.equal(run.stderr, '', 'http app doc build writes no stderr');
     const html = await fs.readFile(docsDir + '/net/http/app.html');
-    for (const name of [
-      'SseContext',
-      'SseHandler',
-      'OpenApiParameter',
-      'OpenApiRequestBody',
-      'OpenApiResponse'
-    ]) {
+    for (const name of ['SseContext', 'SseHandler', 'OpenApiParameter', 'OpenApiRequestBody', 'OpenApiResponse']) {
       t.ok(html.includes(`id="app.${name}"`), `html includes ${name} export`);
     }
     t.ok(html.includes('href="#app.SseContext">SseContext</a>'), 'html links SseContext from SseHandler signature');
@@ -1389,13 +1351,7 @@ export * from './arrow-type.ts';
     const html = await fs.readFile(docsDir + '/file/fs.html');
     t.ok(html.includes('id="fs.FileSystem"'), 'html includes FileSystem export');
     t.ok(html.includes('href="#fs.FileSystem">FileSystem</a>'), 'html links FileSystem from DiskFileSystem signature');
-    for (const name of [
-      'Stat',
-      'File',
-      'Entry',
-      'FileEntry',
-      'DirEntry'
-    ]) {
+    for (const name of ['Stat', 'File', 'Entry', 'FileEntry', 'DirEntry']) {
       t.ok(html.includes(`id="fs.${name}"`), `html includes ${name} export`);
     }
     t.equal(await exists(fs, docsDir + '/internal/file/provider.html'), false, 'internal provider module remains hidden');
@@ -1421,29 +1377,11 @@ export * from './arrow-type.ts';
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     const streamModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/stream.ts');
     t.ok(streamModule, 'public stream module is documented');
-    for (const name of [
-      'ReaderCloseCallback',
-      'BytesReadOptions',
-      'Reader',
-      'BytesReader',
-      'BufferedBytesReader',
-      'Writer',
-      'BytesWriter',
-      'BufferedBytesWriter'
-    ]) {
+    for (const name of ['ReaderCloseCallback', 'BytesReadOptions', 'Reader', 'BytesReader', 'BufferedBytesReader', 'Writer', 'BytesWriter', 'BufferedBytesWriter']) {
       t.ok(streamModule!.exports.some((item) => item.name === name), `stream module exports ${name}`);
     }
     const markdown = await fs.readFile(docsDir + '/js/stream.md');
-    for (const name of [
-      'ReaderCloseCallback',
-      'BytesReadOptions',
-      'Reader',
-      'BytesReader',
-      'BufferedBytesReader',
-      'Writer',
-      'BytesWriter',
-      'BufferedBytesWriter'
-    ]) {
+    for (const name of ['ReaderCloseCallback', 'BytesReadOptions', 'Reader', 'BytesReader', 'BufferedBytesReader', 'Writer', 'BytesWriter', 'BufferedBytesWriter']) {
       t.ok(markdown.includes(`## ${name}`), `stream markdown includes ${name}`);
     }
     t.equal(await exists(fs, docsDir + '/js/internal/stream.md'), false, 'internal stream module remains hidden by default');
@@ -2593,26 +2531,13 @@ path: ../escape.md
     t.equal(fetchModule!.exports.some((item) => item.name === 'FetchLaterResult'), false, 'fetch globals do not export FetchLaterResult');
     t.ok(abortModule!.exports.some((item) => item.name === 'AbortSignal'), 'abort globals include AbortSignal export');
     t.ok(abortModule!.exports.some((item) => item.name === 'AbortController'), 'abort globals include AbortController export');
-    for (const name of [
-      'BlobPart',
-      'BlobOptions',
-      'FileOptions',
-      'FileReaderHandler'
-    ]) {
+    for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
       t.ok(blobModule!.exports.some((item) => item.name === name), `blob globals include ${name} export`);
     }
     t.ok(consoleModule!.exports.some((item) => item.name === 'Console'), 'console globals include Console export');
     t.equal(consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureRecord'), false, 'console capture records stay internal');
     t.equal(consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureSink'), false, 'console capture sinks stay internal');
-    for (const name of [
-      'Crypto',
-      'SubtleCrypto',
-      'CryptoKey',
-      'KeyAlgorithm',
-      'KeyFormat',
-      'KeyUsage',
-      'BufferSource'
-    ]) {
+    for (const name of ['Crypto', 'SubtleCrypto', 'CryptoKey', 'KeyAlgorithm', 'KeyFormat', 'KeyUsage', 'BufferSource']) {
       t.ok(cryptoModule!.exports.some((item) => item.name === name), `crypto globals include ${name} export`);
     }
     t.equal(encodingModule!.exports.some((item) => item.name === 'encodeUtf8'), false, 'encoding globals do not export encodeUtf8');
@@ -2623,53 +2548,26 @@ path: ../escape.md
     t.ok(formDataModule!.exports.some((item) => item.name === 'FormData'), 'formdata globals include FormData export');
     t.ok(formDataModule!.exports.some((item) => item.name === 'FormDataEntryValue'), 'formdata globals include FormDataEntryValue export');
     t.equal(formDataModule!.exports.some((item) => item.name === '_createMultipartBoundary'), false, 'formdata globals do not export multipart boundary helper');
-    for (const name of [
-      'MessageEvent',
-      'MessagePort',
-      'MessageChannel'
-    ]) {
+    for (const name of ['MessageEvent', 'MessagePort', 'MessageChannel']) {
       t.ok(messagingModule!.exports.some((item) => item.name === name), `messaging globals include ${name} export`);
     }
     t.equal(messagingModule!.exports.some((item) => item.name === 'ThreadPort'), false, 'messaging globals do not export ThreadPort');
     t.equal(messagingModule!.exports.some((item) => item.name === 'BaseTransportPort'), false, 'messaging globals do not export BaseTransportPort');
     t.ok(urlModule!.exports.some((item) => item.name === 'URL'), 'url globals include URL export');
     t.ok(urlModule!.exports.some((item) => item.name === 'URLSearchParams'), 'url globals include URLSearchParams export');
-    for (const name of [
-      'WebSocket',
-      'CloseEvent',
-      'ErrorEvent',
-      'MessageEvent'
-    ]) {
+    for (const name of ['WebSocket', 'CloseEvent', 'ErrorEvent', 'MessageEvent']) {
       t.ok(webSocketModule!.exports.some((item) => item.name === name), `websocket globals include ${name} export`);
     }
-    for (const name of [
-      'WebSocketConnection',
-      'WebSocketAcceptOptions',
-      'WebSocketConnectOptions',
-      'WebSocketError'
-    ]) {
+    for (const name of ['WebSocketConnection', 'WebSocketAcceptOptions', 'WebSocketConnectOptions', 'WebSocketError']) {
       t.equal(webSocketModule!.exports.some((item) => item.name === name), false, `websocket globals do not export ${name}`);
     }
-    for (const name of [
-      'WebSocketConnection',
-      'WebSocketAcceptOptions',
-      'WebSocketConnectOptions',
-      'WebSocketError'
-    ]) {
+    for (const name of ['WebSocketConnection', 'WebSocketAcceptOptions', 'WebSocketConnectOptions', 'WebSocketError']) {
       t.ok(httpWebSocketModule!.exports.some((item) => item.name === name), `http websocket module exports ${name}`);
     }
-    for (const name of [
-      'WebTransport',
-      'WebTransportDatagramDuplexStream',
-      'WebTransportOptions'
-    ]) {
+    for (const name of ['WebTransport', 'WebTransportDatagramDuplexStream', 'WebTransportOptions']) {
       t.ok(webTransportModule!.exports.some((item) => item.name === name), `webtransport globals include ${name} export`);
     }
-    for (const name of [
-      'Http3WebTransportInit',
-      '_fromHttp3WebTransport',
-      '_acceptIncomingQuicWebTransportStream'
-    ]) {
+    for (const name of ['Http3WebTransportInit', '_fromHttp3WebTransport', '_acceptIncomingQuicWebTransportStream']) {
       t.equal(webTransportModule!.exports.some((item) => item.name === name), false, `webtransport globals do not export ${name}`);
     }
     t.ok(httpWebTransportModule!.exports.some((item) => item.name === 'WebTransport'), 'http webtransport module exports WebTransport');
@@ -2695,12 +2593,7 @@ path: ../escape.md
     t.ok(abortMarkdown.includes('## AbortSignal'), 'abort markdown includes AbortSignal');
     t.ok(abortMarkdown.includes('## AbortController'), 'abort markdown includes AbortController');
     t.equal(blobMarkdown.includes('No exported declarations found.'), false, 'blob globals page includes public exports');
-    for (const name of [
-      'BlobPart',
-      'BlobOptions',
-      'FileOptions',
-      'FileReaderHandler'
-    ]) {
+    for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
       t.ok(blobMarkdown.includes(`## ${name}`), `blob markdown includes ${name}`);
     }
     t.equal(consoleMarkdown.includes('No exported declarations found.'), false, 'console globals page includes public exports');
@@ -2734,27 +2627,12 @@ path: ../escape.md
     t.ok(webSocketMarkdown.includes('## WebSocket'), 'websocket markdown includes WebSocket');
     t.ok(webSocketMarkdown.includes('## CloseEvent'), 'websocket markdown includes CloseEvent');
     t.ok(webSocketMarkdown.includes('## ErrorEvent'), 'websocket markdown includes ErrorEvent');
-    for (const name of [
-      'WebSocketConnection',
-      'WebSocketAcceptOptions',
-      'WebSocketConnectOptions',
-      'WebSocketError'
-    ]) {
+    for (const name of ['WebSocketConnection', 'WebSocketAcceptOptions', 'WebSocketConnectOptions', 'WebSocketError']) {
       t.equal(webSocketMarkdown.includes(`## ${name}`), false, `websocket markdown omits ${name}`);
     }
     t.ok(webTransportMarkdown.includes('## WebTransport'), 'webtransport markdown includes WebTransport');
     t.ok(webTransportMarkdown.includes('## WebTransportDatagramDuplexStream'), 'webtransport markdown includes datagram constructor');
-    for (const name of [
-      'Http3WebTransportInit',
-      '_fromHttp3WebTransport',
-      '_acceptIncomingQuicWebTransportStream',
-      '_fromHttp3',
-      '_acceptIncomingQuicStream',
-      '_push',
-      '_close',
-      '_error',
-      '_stats'
-    ]) {
+    for (const name of ['Http3WebTransportInit', '_fromHttp3WebTransport', '_acceptIncomingQuicWebTransportStream', '_fromHttp3', '_acceptIncomingQuicStream', '_push', '_close', '_error', '_stats']) {
       t.equal(webTransportMarkdown.includes(name), false, `webtransport markdown omits ${name}`);
     }
     t.equal(await exists(fs, docsDir + '/js/internal/tty/bindings.md'), false, 'internal tty bindings markdown is not emitted by default');
@@ -2922,7 +2800,7 @@ export const internalSdk = true;
     t.ok(html.includes('<h3><code><span class="tok-keyword">const</span> surface</code></h3>'), 'html renders exported object signature without export prefix');
     t.ok(html.includes('id="surface.surface.run"'), 'html documents exported object method');
     t.ok(html.includes('run(input: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span>'), 'html renders object method type signature');
-    t.ok(html.includes('configure(options: {\n  enabled: <span class="tok-keyword">boolean</span>;\n}): {\n  enabled: <span class="tok-keyword">boolean</span>;\n}'), 'html formats object type annotations in object method signatures');
+    t.ok(html.includes('configure(options: { enabled: <span class="tok-keyword">boolean</span> }): { enabled: <span class="tok-keyword">boolean</span> }'), 'html formats object type annotations in object method signatures');
     t.ok(html.includes('Run with a string input.'), 'html includes object method docs');
     t.ok(html.includes('id="surface.surface.nested.ping"'), 'html follows exported object references to local object members');
     t.ok(html.includes('Ping a named target.'), 'html includes nested object member docs');
@@ -2936,7 +2814,7 @@ export const internalSdk = true;
     t.equal(moduleDoc.path, 'surface.ts', 'json stores project-relative module path');
     t.equal(surface.signature, 'const surface', 'json signature omits export prefix');
     t.equal(surface.members.some((member) => member.name === 'run' && member.kind === 'method'), true, 'json includes exported object method');
-    t.equal(surface.members.some((member) => member.name === 'configure' && member.signature === 'configure(options: {\n  enabled: boolean;\n}): {\n  enabled: boolean;\n}'), true, 'json formats object type annotations in object method signature');
+    t.equal(surface.members.some((member) => member.name === 'configure' && member.signature === 'configure(options: { enabled: boolean }): { enabled: boolean }'), true, 'json formats object type annotations in object method signature');
     t.equal(surface.members.some((member) => member.name === 'nested.ping'), true, 'json includes nested referenced object method');
     t.equal(moduleDoc.exports.some((item) => item.name === 'localHelper'), false, 'json excludes unexported local helper');
     const mode = moduleDoc.exports.find((item: DocJsonExport) => item.name === 'Mode')!;

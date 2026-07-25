@@ -51,6 +51,7 @@
 import { Task, type TaskContext, type TaskOptions, type TaskOutputWriter, type TaskRunOptions } from '../task.ts';
 import { workflow, InMemoryWorkflowStore, type Activity, type Workflow, type WorkflowContext, type WorkflowResult, type WorkflowRetryOptions, type WorkflowStateBag, type WorkflowStatus, type WorkflowStore, type WorkflowWait } from '../workflow.ts';
 import { Context } from 'fino:context';
+
 /**
 * Context passed to a durable task handler.
 *
@@ -143,17 +144,21 @@ export interface DurableRunHandle {
     stack?: string;
   };
 }
+
 const _durableRunExtras = new Context<{
   store?: WorkflowStore;
   key?: string;
 }>('durableRunExtras');
+
 let _nextDurableRunId = 0;
+
 function _noopWriter(): TaskOutputWriter {
   return {
     mode: 'text',
     writeText: () => undefined
   };
 }
+
 function _composeContext(taskCtx: TaskContext, wctx: WorkflowContext): DurableTaskContext {
   return {
     signal: taskCtx.signal,
@@ -179,6 +184,7 @@ function _composeContext(taskCtx: TaskContext, wctx: WorkflowContext): DurableTa
     }
   };
 }
+
 function _errorFromUnknown(err: unknown): {
   message: string;
   stack?: string;
@@ -191,6 +197,7 @@ function _errorFromUnknown(err: unknown): {
   }
   return { message: String(err) };
 }
+
 /**
 * A `Task` whose handler runs inside a durable `fino:workflow` execution.
 *

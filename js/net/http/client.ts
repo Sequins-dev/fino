@@ -103,9 +103,7 @@ interface MinimalAbortSignal {
   }): void;
   removeEventListener(type: string, fn: () => void): void;
 }
-function _quicCaFromTls(ca: string | undefined): {
-  file: string;
-} | undefined {
+function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
   return ca === undefined ? undefined : { file: ca };
 }
 /**

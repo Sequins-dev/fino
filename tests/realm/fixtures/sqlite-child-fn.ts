@@ -4,6 +4,7 @@
 * cross-realm promise settling path in the FFI bridge.
 */
 import { Database } from 'fino:database/sqlite';
+
 export default async function sqliteInChild(path: string): Promise<number> {
   const db = await Database.open(path);
   await db.exec('CREATE TABLE IF NOT EXISTS t (v INTEGER)');

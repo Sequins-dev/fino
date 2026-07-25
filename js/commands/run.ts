@@ -147,32 +147,32 @@ async function runScriptTask(input: RunInput): Promise<unknown> {
 * ```
 */
 const command = new Task({
-  name: 'run',
-  description: 'Run a script module',
-  outputMode: 'text',
-  cli: {
-    stopOptionsAfterPositionals: true,
-    options: [{
-      flags: '--otlp-endpoint',
-      type: 'string',
-      description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint'
-    }, {
-      flags: '--watch',
-      type: 'boolean',
-      description: 'Re-run the script whenever any imported file changes'
-    }],
-    positionals: [{
-      name: 'script',
-      type: 'string',
-      required: true,
-      description: 'Script module to execute'
-    }, {
-      name: 'args',
-      type: 'string',
-      multiple: true,
-      description: 'Arguments passed to the script'
-    }]
-  },
-  run: runScriptTask
+    name: 'run',
+    description: 'Run a script module',
+    outputMode: 'text',
+    cli: {
+      stopOptionsAfterPositionals: true,
+      options: [{
+        flags: '--otlp-endpoint',
+        type: 'string',
+        description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint'
+      }, {
+        flags: '--watch',
+        type: 'boolean',
+        description: 'Re-run the script whenever any imported file changes'
+      }],
+      positionals: [{
+        name: 'script',
+        type: 'string',
+        required: true,
+        description: 'Script module to execute'
+      }, {
+        name: 'args',
+        type: 'string',
+        multiple: true,
+        description: 'Arguments passed to the script'
+      }]
+    },
+    run: runScriptTask
 });
 export { command as default };

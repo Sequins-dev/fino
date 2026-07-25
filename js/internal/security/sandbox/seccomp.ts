@@ -76,13 +76,13 @@ export function seccompAvailable(): boolean {
   return libc.symbols.prctl(PR_GET_SECCOMP, 0n, 0n, 0n, 0n) >= 0;
 }
 // BPF instruction classes / operations (Linux uapi/linux/bpf_common.h).
-const BPF_LD_W_ABS = 0 | 0 | 32;
-const BPF_JMP_JEQ_K = 5 | 16 | 0;
-const BPF_RET_K = 6 | 0;
+const BPF_LD_W_ABS = 0x00 | 0x00 | 0x20;
+const BPF_JMP_JEQ_K = 0x05 | 0x10 | 0x00;
+const BPF_RET_K = 0x06 | 0x00;
 // seccomp return actions (Linux uapi/linux/seccomp.h).
-const SECCOMP_RET_ALLOW = 2147418112;
-const SECCOMP_RET_ERRNO_EPERM = 327680 | 1;
-const SECCOMP_RET_KILL_PROCESS = 2147483648;
+const SECCOMP_RET_ALLOW = 0x7fff0000;
+const SECCOMP_RET_ERRNO_EPERM = 0x00050000 | 1;
+const SECCOMP_RET_KILL_PROCESS = 0x80000000;
 interface Instruction {
   code: number;
   jt: number;
@@ -90,67 +90,27 @@ interface Instruction {
   k: number;
 }
 function build(plan: SeccompPlan): Instruction[] {
-  const filters: Instruction[] = [{
-    code: BPF_LD_W_ABS,
-    jt: 0,
-    jf: 0,
-    k: 0
-  }];
+  const filters: Instruction[] = [{ code: BPF_LD_W_ABS, jt: 0, jf: 0, k: 0 }];
   if (plan.defaultAction === 'allow') {
     for (const rule of plan.rules) {
       if (rule.action !== 'errno') continue;
       const nr = syscallNumber(rule.syscall);
       if (nr === undefined) throw new Error(`unsupported syscall in seccomp plan: ${rule.syscall}`);
-      filters.push({
-        code: BPF_JMP_JEQ_K,
-        jt: 0,
-        jf: 1,
-        k: nr
-      });
-      filters.push({
-        code: BPF_RET_K,
-        jt: 0,
-        jf: 0,
-        k: SECCOMP_RET_ERRNO_EPERM
-      });
+      filters.push({ code: BPF_JMP_JEQ_K, jt: 0, jf: 1, k: nr });
+      filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ERRNO_EPERM });
     }
-    filters.push({
-      code: BPF_RET_K,
-      jt: 0,
-      jf: 0,
-      k: SECCOMP_RET_ALLOW
-    });
+    filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW });
   } else if (plan.defaultAction === 'kill') {
     for (const rule of plan.rules) {
       if (rule.action !== 'allow') continue;
       const nr = syscallNumber(rule.syscall);
       if (nr === undefined) throw new Error(`unsupported syscall in seccomp plan: ${rule.syscall}`);
-      filters.push({
-        code: BPF_JMP_JEQ_K,
-        jt: 0,
-        jf: 1,
-        k: nr
-      });
-      filters.push({
-        code: BPF_RET_K,
-        jt: 0,
-        jf: 0,
-        k: SECCOMP_RET_ALLOW
-      });
+      filters.push({ code: BPF_JMP_JEQ_K, jt: 0, jf: 1, k: nr });
+      filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW });
     }
-    filters.push({
-      code: BPF_RET_K,
-      jt: 0,
-      jf: 0,
-      k: SECCOMP_RET_KILL_PROCESS
-    });
+    filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_KILL_PROCESS });
   } else {
-    filters.push({
-      code: BPF_RET_K,
-      jt: 0,
-      jf: 0,
-      k: SECCOMP_RET_ALLOW
-    });
+    filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW });
   }
   return filters;
 }
@@ -195,9 +155,9 @@ export function installSeccomp(plan: SeccompPlan): boolean {
   const view = new DataView(filterBuf);
   for (let i = 0; i < filters.length; i++) {
     const f = filters[i];
-    view.setUint16(i * 8, f.code & 65535, true);
-    view.setUint8(i * 8 + 2, f.jt & 255);
-    view.setUint8(i * 8 + 3, f.jf & 255);
+    view.setUint16(i * 8, f.code & 0xffff, true);
+    view.setUint8(i * 8 + 2, f.jt & 0xff);
+    view.setUint8(i * 8 + 3, f.jf & 0xff);
     view.setUint32(i * 8 + 4, f.k >>> 0, true);
   }
   // struct sock_fprog { unsigned short len; struct sock_filter *filter; }

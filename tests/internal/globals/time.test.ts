@@ -113,11 +113,7 @@ describe('setImmediate / clearImmediate', () => {
       });
       order.push('sync2');
     });
-    t.deepEqual(order, [
-      'sync',
-      'sync2',
-      'immediate'
-    ], 'immediate fires after sync code');
+    t.deepEqual(order, ['sync', 'sync2', 'immediate'], 'immediate fires after sync code');
   });
   it('passes extra args to fn', async (t) => {
     let received: [string, number] | undefined;

@@ -432,7 +432,7 @@ describe('Wire protocol', () => {
     ], 'raw RDATA preserved');
   });
   it('_parseResponse — preserves class code and mDNS cache-flush bit', (t) => {
-    const query = _buildQuery(4660, 'printer.local', RECORD_TYPES.A);
+    const query = _buildQuery(0x1234, 'printer.local', RECORD_TYPES.A);
     const msg = buildDnsResponse(query, [{
       type: RECORD_TYPES.A,
       data: '192.168.1.44',
@@ -441,7 +441,7 @@ describe('Wire protocol', () => {
     const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength);
     const questionEnd = _decodeName(query, 12).nextOffset + 4;
     const answerClassOffset = questionEnd + 2 + 2;
-    view.setUint16(answerClassOffset, 32769, false);
+    view.setUint16(answerClassOffset, 0x8001, false);
     const parsed = _parseResponse(msg);
     t.equal(parsed.answers[0]!.classCode, 1, 'classCode masks off the cache-flush bit');
     t.equal(parsed.answers[0]!.cacheFlush, true, 'cacheFlush reports the high class bit');

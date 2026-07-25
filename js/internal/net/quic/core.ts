@@ -1110,7 +1110,9 @@ export type PreferredAddressParams = {
   };
 };
 export const quicIncomingStreamHook = Symbol('fino.quic.incomingStreamHook');
-export const quicBytesWriterInternals = { closeFromStopSending: Symbol('fino.quic.bytesWriter.closeFromStopSending') } as const;
+export const quicBytesWriterInternals = {
+  closeFromStopSending: Symbol('fino.quic.bytesWriter.closeFromStopSending')
+} as const;
 export const quicEndpointInternals = {
   inspectAddressValidationStats: Symbol('fino.quic.endpoint.inspectAddressValidationStats'),
   bindTransport: Symbol('fino.quic.endpoint.bindTransport'),
@@ -4834,6 +4836,7 @@ export class QuicEndpoint extends EventTarget {
     }
   }
 }
+
 export type QuicListenerConstructor = new (endpoint: QuicEndpoint, address: QuicAddress, alpnProtocols: string[], transports: QuicDatagramTransport[], ctx: QuicTlsContext, options: ResolvedQuicOptions, sniContexts?: Map<string, QuicTlsContext>) => QuicListener;
 export type QuicConnectionConstructor = new (role: 'client' | 'server', endpoint: QuicEndpoint, listener: QuicListener | null, localAddress: QuicAddress, remoteAddress: QuicAddress, alpnProtocols: string[], transport: QuicDatagramTransport, ctx: QuicTlsContext | null, tls: QuicTlsSession, originalDcid: ArrayBuffer | null, options: ResolvedQuicOptions, serverName?: string | null) => QuicConnection;
 let registeredQuicListenerClass: QuicListenerConstructor | null = null;

@@ -23,6 +23,7 @@
 */
 import { escapeHtml } from 'fino:template';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
+
 const VOID_ELEMENTS = new Set([
   'area',
   'base',
@@ -39,7 +40,9 @@ const VOID_ELEMENTS = new Set([
   'track',
   'wbr'
 ]);
+
 const RAW_HTML = Symbol('fino.ui.html.raw');
+
 export interface RawHtml {
   /**
   * Trusted markup payload consumed by `renderToHtml()`.
@@ -48,6 +51,7 @@ export interface RawHtml {
   */
   readonly [RAW_HTML]: string;
 }
+
 /**
 * Mark a trusted string as raw HTML.
 *
@@ -64,12 +68,15 @@ export interface RawHtml {
 export function rawHtml(html: string): RawHtml {
   return { [RAW_HTML]: String(html) };
 }
+
 function isRawHtml(value: unknown): value is RawHtml {
   return typeof value === 'object' && value !== null && RAW_HTML in value;
 }
+
 function kebab(name: string): string {
   return name.replace(/[A-Z]/g, (ch) => `-${ch.toLowerCase()}`);
 }
+
 function renderStyle(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -82,6 +89,7 @@ function renderStyle(value: unknown): string {
   }
   return out.join(';');
 }
+
 function renderAttrs(props: Props): string {
   let out = '';
   for (const [rawName, value] of Object.entries(props)) {
@@ -98,11 +106,13 @@ function renderAttrs(props: Props): string {
   }
   return out;
 }
+
 function renderChild(child: NormalizedChild | RawHtml): string {
   if (isRawHtml(child)) return child[RAW_HTML];
   if (typeof child === 'string') return escapeHtml(child);
   return renderToHtml(child);
 }
+
 /**
 * Render one Fino UI VNode to an HTML string.
 *

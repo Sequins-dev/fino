@@ -256,18 +256,11 @@ describe('SqliteMemory', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(4),
-      fs
-    });
+    const mem = await SqliteMemory.open({ path, embedder: deterministicEmbedder(4), fs });
     try {
       const seen: number[] = [];
       const dispose = mem.ingestProgress.subscribe((progress) => seen.push(progress.stored));
-      await mem.ingest([{ text: 'alpha beta gamma' }], { chunk: {
-        size: 5,
-        overlap: 1
-      } });
+      await mem.ingest([{ text: 'alpha beta gamma' }], { chunk: { size: 5, overlap: 1 } });
       dispose();
       t.equal(mem.ingestProgress.get().active, false, 'ingest progress ends inactive');
       t.ok(mem.ingestProgress.get().chunks > 1, 'ingest progress records chunk count');

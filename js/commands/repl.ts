@@ -74,43 +74,26 @@ function formatResult(value: unknown): string {
     return String(value);
   }
 }
-type ReplKey = {
-  type: 'text';
-  value: string;
-} | {
-  type: 'enter';
-} | {
-  type: 'ctrl-c';
-} | {
-  type: 'ctrl-d';
-} | {
-  type: 'backspace';
-} | {
-  type: 'delete';
-} | {
-  type: 'left';
-} | {
-  type: 'right';
-} | {
-  type: 'up';
-} | {
-  type: 'down';
-} | {
-  type: 'home';
-} | {
-  type: 'end';
-} | {
-  type: 'unknown';
-};
+type ReplKey =
+  | { type: 'text'; value: string }
+  | { type: 'enter' }
+  | { type: 'ctrl-c' }
+  | { type: 'ctrl-d' }
+  | { type: 'backspace' }
+  | { type: 'delete' }
+  | { type: 'left' }
+  | { type: 'right' }
+  | { type: 'up' }
+  | { type: 'down' }
+  | { type: 'home' }
+  | { type: 'end' }
+  | { type: 'unknown' };
 function decodeReplKey(first: number, readByte: () => Promise<number | null>): Promise<ReplKey> | ReplKey {
   if (first === 10 || first === 13) return { type: 'enter' };
   if (first === 3) return { type: 'ctrl-c' };
   if (first === 4) return { type: 'ctrl-d' };
   if (first === 127 || first === 8) return { type: 'backspace' };
-  if (first !== 27) return {
-    type: 'text',
-    value: String.fromCharCode(first)
-  };
+  if (first !== 27) return { type: 'text', value: String.fromCharCode(first) };
   return (async () => {
     const second = await readByte();
     if (second === null) return { type: 'unknown' };
@@ -404,9 +387,9 @@ async function runReplCommand(): Promise<void> {
 * ```
 */
 const command = new Task({
-  name: 'repl',
-  description: 'Start an interactive REPL',
-  outputMode: 'text',
-  run: runReplCommand
+    name: 'repl',
+    description: 'Start an interactive REPL',
+    outputMode: 'text',
+    run: runReplCommand
 });
 export { command as default };

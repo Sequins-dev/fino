@@ -3,6 +3,7 @@
 *
 * @internal
 */
+
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
@@ -2572,6 +2573,7 @@ export class QuicConnection extends EventTarget {
     this.#pendingWrites = this.#pendingWrites.filter((entry) => entry.streamId !== streamId);
   }
 }
+
 core.registerQuicConnectionClass(QuicConnection);
 export { quicConnectionInternals, quicIncomingStreamHook } from './core.ts';
 export type { QuicConnectionOptions, QuicConnectionState, QuicConnectionStats, QuicPeerVerification, QuicTransportParameterSnapshot } from './core.ts';

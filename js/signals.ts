@@ -34,6 +34,7 @@
 * stop();
 * ```
 */
+
 /**
 * Callback invoked after a signal value changes.
 *
@@ -42,10 +43,12 @@
 * final value after the outermost batch completes.
 */
 export type SignalSubscriber<T> = (value: T, previous: T) => void;
+
 /**
 * Value or updater accepted by `Signal.set()`.
 */
 export type SignalSetter<T> = T | ((value: T) => T);
+
 /**
 * Read-only signal handle for consumers.
 *
@@ -64,6 +67,7 @@ export interface ReadonlySignal<T> {
   */
   subscribe(subscriber: SignalSubscriber<T>): () => void;
 }
+
 /**
 * Result returned by `observeReads()`.
 */
@@ -73,18 +77,23 @@ export interface ObservedReads<T> {
   /** Unique signals read while the callback ran, in first-read order. */
   signals: ReadonlySignal<unknown>[];
 }
+
 type ReadObserver = (signal: ReadonlySignal<unknown>) => void;
+
 let batchDepth = 0;
 const pendingSignals = new Set<Signal<unknown>>();
 const readObservers: ReadObserver[] = [];
+
 function currentReadObserver(): ReadObserver | undefined {
   return readObservers[readObservers.length - 1];
 }
+
 function flushSignals(): void {
   const pending = Array.from(pendingSignals);
   pendingSignals.clear();
   for (const signal of pending) signal.flush();
 }
+
 /**
 * Run multiple signal writes as one notification pass.
 *
@@ -100,6 +109,7 @@ export function batch<T>(fn: () => T): T {
     if (batchDepth === 0) flushSignals();
   }
 }
+
 /**
 * Explicit mutable reactive value.
 *
@@ -112,15 +122,18 @@ export class Signal<T> implements ReadonlySignal<T> {
   #previous: T;
   #dirty = false;
   #subscribers = new Set<SignalSubscriber<T>>();
+
   constructor(initial: T) {
     this.#value = initial;
     this.#previous = initial;
   }
+
   /** Return the current signal value and record the read when observed. */
   get(): T {
     currentReadObserver()?.(this as ReadonlySignal<unknown>);
     return this.#value;
   }
+
   /**
   * Replace the value or derive the next value from the current one.
   *
@@ -139,6 +152,7 @@ export class Signal<T> implements ReadonlySignal<T> {
       this.flush();
     }
   }
+
   /**
   * Subscribe to value changes.
   *
@@ -154,6 +168,7 @@ export class Signal<T> implements ReadonlySignal<T> {
       this.#subscribers.delete(subscriber);
     };
   }
+
   /** @internal Flush one pending notification pass. */
   flush(): void {
     if (!this.#dirty) return;
@@ -163,12 +178,14 @@ export class Signal<T> implements ReadonlySignal<T> {
     for (const subscriber of Array.from(this.#subscribers)) subscriber(value, previous);
   }
 }
+
 /**
 * Create a writable signal with explicit `get`, `set`, and `subscribe` methods.
 */
 export function createSignal<T>(initial: T): Signal<T> {
   return new Signal(initial);
 }
+
 /**
 * Run `fn` and return the signals read during that run.
 *
@@ -192,6 +209,7 @@ export function observeReads<T>(fn: () => T): ObservedReads<T> {
     readObservers.pop();
   }
 }
+
 function subscribeAll(signals: ReadonlySignal<unknown>[], fn: () => void): () => void {
   const disposers = signals.map((signal) => signal.subscribe(fn));
   let active = true;
@@ -201,6 +219,7 @@ function subscribeAll(signals: ReadonlySignal<unknown>[], fn: () => void): () =>
     for (const dispose of disposers) dispose();
   };
 }
+
 /**
 * Create a read-only signal derived from other signals.
 *
@@ -226,6 +245,7 @@ export function computed<T>(fn: () => T): ReadonlySignal<T> {
   rerun();
   return out;
 }
+
 /**
 * Run a side effect now and whenever its read dependencies change.
 *
@@ -255,18 +275,22 @@ export function effect(fn: () => void): () => void {
     disposeDeps = undefined;
   };
 }
+
 class LazySignal<T> implements ReadonlySignal<T> {
   #inner: Signal<T>;
   #start: (set: (value: T) => void) => () => void;
   #stop: (() => void) | undefined;
   #subscribers = 0;
+
   constructor(initial: T, start: (set: (value: T) => void) => () => void) {
     this.#inner = createSignal(initial);
     this.#start = start;
   }
+
   get(): T {
     return this.#inner.get();
   }
+
   subscribe(subscriber: SignalSubscriber<T>): () => void {
     const disposeInner = this.#inner.subscribe(subscriber);
     this.#subscribers++;
@@ -287,6 +311,7 @@ class LazySignal<T> implements ReadonlySignal<T> {
     };
   }
 }
+
 /**
 * Create a cold read-only signal.
 *
@@ -297,6 +322,7 @@ class LazySignal<T> implements ReadonlySignal<T> {
 export function lazy<T>(initial: T, start: (set: (value: T) => void) => () => void): ReadonlySignal<T> {
   return new LazySignal(initial, start);
 }
+
 /**
 * Fold an async iterable into a cold retained signal.
 *
@@ -304,10 +330,7 @@ export function lazy<T>(initial: T, start: (set: (value: T) => void) => () => vo
 * the active iterator's `return()` method is called when present so upstream
 * subscriptions and readers can release resources.
 */
-export function fromIterable<
-  T,
-  S
->(src: AsyncIterable<T>, fold: (acc: S, item: T) => S, initial: S): ReadonlySignal<S> {
+export function fromIterable<T, S>(src: AsyncIterable<T>, fold: (acc: S, item: T) => S, initial: S): ReadonlySignal<S> {
   let current = initial;
   return lazy(initial, (set) => {
     let active = true;
@@ -320,7 +343,10 @@ export function fromIterable<
           current = fold(current, next.value);
           set(current);
         }
-      } catch {}
+      } catch {
+        // Signals have no error channel. Consumers that need every failure
+        // should observe the source iterable directly.
+      }
     })();
     return () => {
       active = false;

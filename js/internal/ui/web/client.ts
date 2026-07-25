@@ -42,7 +42,7 @@
 *   }
 *
 *   // Reference the same path from a page so the browser loads the runtime.
-*   const scriptTag = `<script src="${path}"><\/script>`;
+*   const scriptTag = `<script src="${path}"></script>`;
 * ```
 *
 * @internal
@@ -125,6 +125,7 @@ function connectLive() {
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', connectLive);
 else connectLive();
 `;
+
 function hash(value: string): string {
   let out = 2166136261;
   for (let i = 0; i < value.length; i++) {
@@ -133,6 +134,7 @@ function hash(value: string): string {
   }
   return (out >>> 0).toString(16);
 }
+
 /**
 * The complete browser-side runtime script that `fino:ui/web` serves to clients.
 *

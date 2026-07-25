@@ -234,12 +234,16 @@ describe('TlsSocket', () => {
       family: 'ipv4',
       ip: '127.0.0.1',
       port: 9
-    }, { cert: CERT_PATH }), /cert.*key|key.*cert/i, 'cert without key is rejected before TCP connect');
+    }, {
+      cert: CERT_PATH
+    }), /cert.*key|key.*cert/i, 'cert without key is rejected before TCP connect');
     await t.rejects(() => TlsSocket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
       port: 9
-    }, { key: KEY_PATH }), /cert.*key|key.*cert/i, 'key without cert is rejected before TCP connect');
+    }, {
+      key: KEY_PATH
+    }), /cert.*key|key.*cert/i, 'key without cert is rejected before TCP connect');
   });
   it('custom CA still rejects a hostname mismatch', { skip }, async (t) => {
     const server = serveHttp({

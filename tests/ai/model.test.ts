@@ -203,6 +203,7 @@ describe('assembleResult', () => {
     t.equal(result.usage.outputTokens, 0);
   });
 });
+
 describe('ModelStream.state', () => {
   it('folds streamed model events while result consumes the stream', async (t) => {
     const stream = new ModelStreamImpl(events({

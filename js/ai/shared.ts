@@ -440,9 +440,11 @@ export function initialModelStreamState(): ModelStreamState {
     stopReason: 'end_turn'
   };
 }
+
 function renderTextByIndex(textByIndex: Map<number, string>): string {
   return [...textByIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, text]) => text).join('');
 }
+
 /**
 * Incrementally fold one provider event into a retained model stream state.
 *
@@ -463,19 +465,23 @@ export function foldModelStreamEvent(state: ModelStreamState, event: StreamEvent
         ...state,
         text: renderTextByIndex(textByIndex)
       };
-    case 'usage': return {
-      ...state,
-      usage: event.usage
-    };
-    case 'stop': return {
-      ...state,
-      stopReason: event.reason
-    };
-    case 'error': return {
-      ...state,
-      stopReason: 'error'
-    };
-    default: return state;
+    case 'usage':
+      return {
+        ...state,
+        usage: event.usage
+      };
+    case 'stop':
+      return {
+        ...state,
+        stopReason: event.reason
+      };
+    case 'error':
+      return {
+        ...state,
+        stopReason: 'error'
+      };
+    default:
+      return state;
   }
 }
 /**
@@ -507,10 +513,12 @@ export class ModelStreamImpl implements ModelStream {
   #gen: AsyncGenerator<StreamEvent>;
   #state = createSignal<ModelStreamState>(initialModelStreamState());
   #textByIndex = new Map<number, string>();
+
   /** Wrap `gen` so its events drive both iteration and the retained state signal. */
   constructor(gen: AsyncGenerator<StreamEvent>) {
     this.#gen = gen;
   }
+
   /**
   * Retained state folded from provider events observed so far.
   *
@@ -521,9 +529,11 @@ export class ModelStreamImpl implements ModelStream {
   get state() {
     return this.#state;
   }
+
   #fold(event: StreamEvent): void {
     this.#state.set((state) => foldModelStreamEvent(state, event, this.#textByIndex));
   }
+
   /** Iterate provider events, folding each one into `state` as it is observed. */
   [Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
     const iterator = this.#gen;

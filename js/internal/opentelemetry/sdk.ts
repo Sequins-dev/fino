@@ -297,7 +297,7 @@ export class ManualMetricReader extends MetricReader {
 export function metricsSignal(reader: ManualMetricReader, options: {
   intervalMs?: number;
 } = {}): ReadonlySignal<MetricRecord[]> {
-  const intervalMs = options.intervalMs ?? 1e3;
+  const intervalMs = options.intervalMs ?? 1000;
   return lazy<MetricRecord[]>([], (set) => {
     const collect = () => {
       const metrics = reader.collect();

@@ -664,9 +664,7 @@ type ResolvedChain = {
   meta: OperationMeta;
 };
 function resolveChain(node: BuilderNode): ResolvedChain {
-  const nodes: Array<Exclude<BuilderNode, {
-    kind: 'root';
-  }>> = [];
+  const nodes: Array<Exclude<BuilderNode, { kind: 'root' }>> = [];
   let current: BuilderNode = node;
   while (current.kind !== 'root') {
     nodes.push(current);
@@ -925,10 +923,12 @@ function wrapSse(handler: SseHandler): Handler {
         channel.writer.fail(err);
       }
     })();
-    return new Response(channel.reader, { headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-store'
-    } });
+    return new Response(channel.reader, {
+      headers: {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-store'
+      }
+    });
   };
 }
 function closeUpgraded(upgraded: unknown): void {
@@ -938,7 +938,9 @@ function closeUpgraded(upgraded: unknown): void {
     } else if (upgraded instanceof WebTransport) {
       upgraded.close();
     }
-  } catch {}
+  } catch {
+    // The connection is already closing; nothing to clean up.
+  }
 }
 function routePathToOpenApi(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
@@ -1173,7 +1175,7 @@ export abstract class RouterBase<TSelf> extends BuilderBranch<RouterBranch> {
   constructor() {
     const root = {
       kind: 'root',
-      owner: (undefined as unknown) as RouterBase<unknown>
+      owner: undefined as unknown as RouterBase<unknown>
     };
     super(root);
     root.owner = this as RouterBase<unknown>;
@@ -1527,10 +1529,12 @@ export class App extends RouterBase<App> {
       operation.responses = meta.responses ?? { '200': { description: 'OK' } };
       paths[openPath]![method.toLowerCase()] = operation;
     };
-    const sseBaseline: OperationMeta = { responses: { '200': {
-      description: 'Server-sent event stream',
-      content: { 'text/event-stream': { schema: { type: 'string' } } }
-    } } };
+    const sseBaseline: OperationMeta = {
+      responses: { '200': {
+        description: 'Server-sent event stream',
+        content: { 'text/event-stream': { schema: { type: 'string' } } }
+      } }
+    };
     for (const op of this._operations) {
       if (op.kind === 'http') {
         emit(op, op.method!);
@@ -1926,22 +1930,69 @@ export class MethodBuilder extends BuilderBranch<MethodBuilder> {
 * ```
 */
 export const schema = {
+  /** Validate URLPattern path parameters and expose them as `ctx.params`.
+  *
+  * The returned producer parses `ctx.params` against the schema and stores the
+  * validated object back under the reserved `params` slot; install it with
+  * `.value('params', schema.params(...))`. The schema's object properties are
+  * emitted as required OpenAPI `path` parameters. Throws from producer
+  * execution when a parameter is missing or fails validation.
+  *
+  * ```ts no_run
+  * app.route('/users/:id').value('params', schema.params(v.object({ id: v.string() })));
+  * ```
+  */
   params(schemaValue: unknown): Producer {
     const validator = compile<Record<string, string>>(schemaValue);
     return defineProducer((ctx) => validator.parse(ctx.params ?? {}), { parameters: parametersFromObject(schemaValue, 'path') });
   },
+  /** Validate the request query string and expose it as `ctx.query`.
+  *
+  * The returned middleware parses the URL search parameters into an object
+  * (repeated keys become arrays), validates it, and assigns the result to
+  * `ctx.query`. Properties become OpenAPI `query` parameters, required when the
+  * schema marks them required. Throws when validation fails.
+  *
+  * ```ts no_run
+  * app.get('/search').use(schema.query(v.object({ q: v.string() }))).handle((ctx) => Response.json(ctx.query));
+  * ```
+  */
   query(schemaValue: unknown): Middleware {
     const validator = compile<Record<string, unknown>>(schemaValue);
     return defineMiddleware((ctx) => {
       ctx.query = validator.parse(parseQueryObject(queryFromRequest(ctx.request)));
     }, { parameters: parametersFromObject(schemaValue, 'query') });
   },
+  /** Validate request headers and expose them as `ctx.headers`.
+  *
+  * Header names are lowercased before validation and in the generated OpenAPI
+  * `header` parameters. The validated object is assigned to `ctx.headers`.
+  * Throws when a required header is missing or malformed.
+  *
+  * ```ts no_run
+  * app.get('/me').use(schema.headers(v.object({ authorization: v.string() }))).handle((ctx) => Response.json(ctx.headers));
+  * ```
+  */
   headers(schemaValue: unknown): Middleware {
     const validator = compile<Record<string, unknown>>(schemaValue);
     return defineMiddleware((ctx) => {
       ctx.headers = validator.parse(parseHeaderObject(ctx.request.headers));
     }, { parameters: parametersFromObject(schemaValue, 'header') });
   },
+  /** Validate the outgoing response body and document it in OpenAPI.
+  *
+  * The returned middleware runs downstream, then — only when the response
+  * status and content type match `opts` (defaults: status 200,
+  * `application/json`) — clones the response and validates its parsed body,
+  * throwing on mismatch. The response itself is passed through unchanged. The
+  * schema is recorded as the response body schema for the given status.
+  *
+  * ```ts no_run
+  * app.get('/users/:id')
+  *   .layer(schema.response(v.object({ id: v.string() }), { status: 200 }))
+  *   .handle((ctx) => Response.json({ id: ctx.params?.id }));
+  * ```
+  */
   response(schemaValue: unknown, opts: {
     status?: number;
     description?: string;
@@ -1977,6 +2028,18 @@ function contentTypeFromResponse(res: Response): string {
 * ```
 */
 export const body = {
+  /** Parse the request body as JSON, optionally validating it against a schema.
+  *
+  * The producer stores the parsed value under the slot it is bound to
+  * (conventionally `body`). When a schema is passed, the parsed value is
+  * validated and the validated value is stored. Throws when the request
+  * declares a content type other than `application/json`, and when the body is
+  * not valid JSON or fails schema validation.
+  *
+  * ```ts no_run
+  * app.post('/items').value('body', body.json(v.object({ name: v.string() }))).handle((ctx) => Response.json(ctx.body));
+  * ```
+  */
   json(schemaValue?: unknown): Producer {
     const validator = schemaValue === undefined ? null : compile(schemaValue);
     return defineProducer(async (ctx) => {
@@ -1990,12 +2053,30 @@ export const body = {
       content: { 'application/json': { schema: schemaValue === undefined ? {} : cloneSchema(schemaValue) } }
     } });
   },
+  /** Read the request body as a UTF-8 string.
+  *
+  * The producer resolves to the decoded body text and documents a required
+  * `text/plain` request body in OpenAPI.
+  *
+  * ```ts no_run
+  * app.post('/notes').value('body', body.text()).handle((ctx) => new Response(ctx.body as string));
+  * ```
+  */
   text(): Producer {
     return defineProducer((ctx) => ctx.request.text(), { requestBody: {
       required: true,
       content: { 'text/plain': { schema: { type: 'string' } } }
     } });
   },
+  /** Read the request body as raw bytes.
+  *
+  * The producer resolves to a `Uint8Array` and documents a required
+  * `application/octet-stream` binary request body in OpenAPI.
+  *
+  * ```ts no_run
+  * app.put('/blob').value('body', body.bytes()).handle((ctx) => Response.json({ size: (ctx.body as Uint8Array).byteLength }));
+  * ```
+  */
   bytes(): Producer {
     return defineProducer((ctx) => ctx.request.bytes(), { requestBody: {
       required: true,
@@ -2005,6 +2086,16 @@ export const body = {
       } } }
     } });
   },
+  /** Parse a URL-encoded or multipart form body into `FormData`.
+  *
+  * The producer resolves to the request's `FormData` and documents both
+  * `application/x-www-form-urlencoded` and `multipart/form-data` request
+  * bodies. Throws when the underlying request does not support `formData()`.
+  *
+  * ```ts no_run
+  * app.post('/upload').value('body', body.form()).handle((ctx) => Response.json({ ok: true }));
+  * ```
+  */
   form(): Producer {
     return defineProducer(async (ctx) => {
       const req = ctx.request as Request & {

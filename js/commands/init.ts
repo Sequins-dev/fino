@@ -156,119 +156,119 @@ async function resolveField(ctx: TaskContext, input: Record<string, unknown>, ke
 *
 */
 const command = new Task({
-  name: 'init',
-  description: 'Create a package.json for the current project',
-  outputMode: 'both',
-  run: async function runInitCommand(input: Record<string, unknown>, ctx) {
-    const root = cwd();
-    const packageJsonPath = root + '/package.json';
-    if (await exists(packageJsonPath) && !input.force) {
-      throw new Error('fino init: package.json already exists (pass --force to overwrite)');
-    }
-    const name = await resolveField(ctx, input, 'name', {
-      label: 'Package name',
-      defaultValue: String(input.name ?? ''),
-      validate: validatePackageName
-    });
-    const version = await resolveField(ctx, input, 'version', {
-      label: 'Version',
-      defaultValue: String(input.version ?? '1.0.0')
-    });
-    const description = await resolveField(ctx, input, 'description', {
-      label: 'Description',
-      defaultValue: String(input.description ?? '')
-    });
-    const license = await resolveField(ctx, input, 'license', {
-      label: 'License',
-      defaultValue: String(input.license ?? 'MIT')
-    });
-    const author = await resolveField(ctx, input, 'author', {
-      label: 'Author',
-      defaultValue: String(input.author ?? '')
-    });
-    const repository = await resolveField(ctx, input, 'repository', {
-      label: 'Repository',
-      defaultValue: String(input.repository ?? '')
-    });
-    const validationError = validatePackageName(String(name));
-    if (validationError) throw new Error(`fino init: ${validationError}`);
-    const pkg = {
-      name,
-      version,
-      type: 'module',
-      description,
-      license,
-      author,
-      repository
-    };
-    await fs.writeFile(packageJsonPath, textEncoder.encode(JSON.stringify(pkg, null, 2) + '\n'));
-    const message = `Wrote ${packageJsonPath}`;
-    if (ctx.writer.mode === 'json') {
-      const result = {
-        command: 'init',
-        ok: true,
-        path: packageJsonPath,
-        package: pkg,
-        message
+    name: 'init',
+    description: 'Create a package.json for the current project',
+    outputMode: 'both',
+    run: async function runInitCommand(input: Record<string, unknown>, ctx) {
+      const root = cwd();
+      const packageJsonPath = root + '/package.json';
+      if (await exists(packageJsonPath) && !input.force) {
+        throw new Error('fino init: package.json already exists (pass --force to overwrite)');
+      }
+      const name = await resolveField(ctx, input, 'name', {
+        label: 'Package name',
+        defaultValue: String(input.name ?? ''),
+        validate: validatePackageName
+      });
+      const version = await resolveField(ctx, input, 'version', {
+        label: 'Version',
+        defaultValue: String(input.version ?? '1.0.0')
+      });
+      const description = await resolveField(ctx, input, 'description', {
+        label: 'Description',
+        defaultValue: String(input.description ?? '')
+      });
+      const license = await resolveField(ctx, input, 'license', {
+        label: 'License',
+        defaultValue: String(input.license ?? 'MIT')
+      });
+      const author = await resolveField(ctx, input, 'author', {
+        label: 'Author',
+        defaultValue: String(input.author ?? '')
+      });
+      const repository = await resolveField(ctx, input, 'repository', {
+        label: 'Repository',
+        defaultValue: String(input.repository ?? '')
+      });
+      const validationError = validatePackageName(String(name));
+      if (validationError) throw new Error(`fino init: ${validationError}`);
+      const pkg = {
+        name,
+        version,
+        type: 'module',
+        description,
+        license,
+        author,
+        repository
       };
-      await ctx.writer.writeJson(result);
-      return result;
-    }
-    return message;
-  },
-  cli: { options: [
-    {
-      flags: '--name',
-      type: 'string',
-      description: 'Package name',
-      default() {
-        return basename(cwd()) || 'fino-app';
+      await fs.writeFile(packageJsonPath, textEncoder.encode(JSON.stringify(pkg, null, 2) + '\n'));
+      const message = `Wrote ${packageJsonPath}`;
+      if (ctx.writer.mode === 'json') {
+        const result = {
+          command: 'init',
+          ok: true,
+          path: packageJsonPath,
+          package: pkg,
+          message
+        };
+        await ctx.writer.writeJson(result);
+        return result;
       }
+      return message;
     },
-    {
-      flags: '--version',
-      type: 'string',
-      description: 'Package version',
-      default: '1.0.0'
-    },
-    {
-      flags: '--description',
-      type: 'string',
-      description: 'Package description',
-      default: ''
-    },
-    {
-      flags: '--license',
-      type: 'string',
-      description: 'Package license',
-      default: 'MIT'
-    },
-    {
-      flags: '--author',
-      type: 'string',
-      description: 'Package author',
-      default() {
-        return getDefaultAuthor(cwd());
+    cli: { options: [
+      {
+        flags: '--name',
+        type: 'string',
+        description: 'Package name',
+        default() {
+          return basename(cwd()) || 'fino-app';
+        }
+      },
+      {
+        flags: '--version',
+        type: 'string',
+        description: 'Package version',
+        default: '1.0.0'
+      },
+      {
+        flags: '--description',
+        type: 'string',
+        description: 'Package description',
+        default: ''
+      },
+      {
+        flags: '--license',
+        type: 'string',
+        description: 'Package license',
+        default: 'MIT'
+      },
+      {
+        flags: '--author',
+        type: 'string',
+        description: 'Package author',
+        default() {
+          return getDefaultAuthor(cwd());
+        }
+      },
+      {
+        flags: '--repository',
+        type: 'string',
+        description: 'Package repository URL',
+        default() {
+          return getDefaultRepository(cwd());
+        }
+      },
+      {
+        flags: '--yes, -y',
+        type: 'boolean',
+        description: 'Accept defaults for any promptable values'
+      },
+      {
+        flags: '--force, -f',
+        type: 'boolean',
+        description: 'Overwrite an existing package.json'
       }
-    },
-    {
-      flags: '--repository',
-      type: 'string',
-      description: 'Package repository URL',
-      default() {
-        return getDefaultRepository(cwd());
-      }
-    },
-    {
-      flags: '--yes, -y',
-      type: 'boolean',
-      description: 'Accept defaults for any promptable values'
-    },
-    {
-      flags: '--force, -f',
-      type: 'boolean',
-      description: 'Overwrite an existing package.json'
-    }
-  ] }
+    ] }
 });
 export { command as default };

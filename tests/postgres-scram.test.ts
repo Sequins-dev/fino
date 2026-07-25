@@ -2,12 +2,7 @@ import { describe, it } from 'fino:test/test';
 import { ScramSha256Client, md5Password } from 'internal:database/postgres/scram';
 describe('Postgres password authentication helpers', () => {
   it('computes PostgreSQL MD5 password responses', (t) => {
-    t.equal(md5Password('secret', 'ada', new Uint8Array([
-      1,
-      2,
-      3,
-      4
-    ])), 'md5164dbcd37c01a78e869e72965960a754');
+    t.equal(md5Password('secret', 'ada', new Uint8Array([1, 2, 3, 4])), 'md5164dbcd37c01a78e869e72965960a754');
   });
   it('computes SCRAM-SHA-256 client-final messages and verifies server signatures', async (t) => {
     const client = new ScramSha256Client('pencil', 'fyko+d2lbbFgONRv9qkxdawL');
