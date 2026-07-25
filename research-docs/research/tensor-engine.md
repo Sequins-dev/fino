@@ -49,9 +49,9 @@ language:
 - **Synchronization is explicit and promise-shaped.** `await t.data()`,
   `await t.item()`, checkpointing, and cross-device transfer are the only
   sync points. "Blocking" means a worker on the runtime's blocking pool parks
-  on a device event and resolves a promise through the wake pipe — the event
-  loop keeps running. A training loop's natural cadence is one awaited scalar
-  (the loss) per step.
+  on a device event and resolves a promise through the isolate's completion
+  queue and reactor notifier — the event loop keeps running. A training loop's
+  natural cadence is one awaited scalar (the loss) per step.
 
 Python cannot make this model pleasant — `tensor.item()` blocks the whole
 interpreter, and asyncio and CUDA streams live in different universes. In
@@ -284,9 +284,9 @@ Launches cost microseconds of CPU and return immediately.
 **Readback (`await t.data()` / `t.item()`).**
 `cuMemcpyDtoHAsync(pinnedStaging, devPtr, bytes, stream)` →
 `cuEventRecord(ev, stream)` → `cuEventSynchronize(ev)` declared `async: true`
-→ resolves on the blocking pool → wake pipe → `Pointer.view` over the pinned
-staging buffer (zero-copy; the view's release callback recycles the staging
-slot). The
+→ resolves on the blocking pool → reactor wake route → `Pointer.view` over the
+pinned staging buffer (zero-copy; the view's release callback recycles the
+staging slot). The
 in-flight readback table holds a strong reference to the tensor so its handle
 cannot be finalized while a pool thread waits. A training loop keeps roughly
 one waiter outstanding; the pool's default cap is irrelevant at that

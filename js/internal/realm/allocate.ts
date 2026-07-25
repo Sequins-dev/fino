@@ -10,7 +10,7 @@
 * parents submit allocation requests back to that owner over the internal
 * control channel instead of creating another orchestrator.
 *
-* See research-docs/research/realm-allocation.md.
+* See `js/realm/isolation.md` for the maintained placement model.
 *
 * @internal
 */

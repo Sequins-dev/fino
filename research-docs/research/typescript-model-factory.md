@@ -105,38 +105,42 @@ runtime as it exists today:
   (`src/ffi/fast.rs`). Existing modules use this for libc, SQLite, OpenSSL,
   nghttp2/nghttp3/ngtcp2, and llama.cpp/ggml (`js/ai/model/local.ts`).
 - **Off-thread waiting and completion delivery exist.** `async: true` FFI
-  symbols run on the global blocking pool and resolve promises via the
-  per-isolate wake pipe (`src/async_rt/mod.rs`, `src/ffi/call.rs`). A device
-  event wait declared `async: true` is exactly this mechanism — no new Rust
-  completion machinery is required for asynchronous GPU readback.
+  symbols run on the global blocking pool and resolve promises through the
+  isolate's async completion queue and installed reactor notifier
+  (`src/async_rt`, `src/ffi/call.rs`). A device event wait declared
+  `async: true` is exactly this mechanism — no new Rust completion machinery
+  is required for asynchronous GPU readback.
 - **Zero-copy parallelism for data loading exists.** SharedArrayBuffers are
-  genuinely shared across thread realms (shared allocator in
+  genuinely shared across ordinary realms (shared allocator in
   `src/runtime.rs`, SAB registry in `src/realm/serializer.rs`), and
-  `fino:realm/pool` is a warm worker pool with load-based dispatch.
+  `RealmDeployment` supplies warm independent replicas with load-based
+  admission.
 - **Zero-copy views over native memory exist.** `Pointer.view(ptr, len,
   { onRelease })` (`src/ffi/pointer.rs`) wraps native memory in an external
   ArrayBuffer without copying; the release callback fires on the JS thread
-  after V8 frees the backing store, marshalled through the wake pipe. This is
-  the substrate for zero-copy GPU readback from pinned host staging, Arrow
-  buffers from native producers, mmap'd safetensors slices, and ggml tensor
-  data.
+  after V8 frees the backing store, delivered through the realm's reactor wake
+  route. This is the substrate for zero-copy GPU readback from pinned host
+  staging, Arrow buffers from native producers, mmap'd safetensors slices, and
+  ggml tensor data.
 - **Binary-format primitives exist.** `fino:format/flatbuffers` is a
   schema-less FlatBuffers reader/writer (the wire format Arrow IPC metadata
   is encoded in), `fino:data/arrow` is the full Arrow columnar/IPC/C-Data
-  stack, and `fino:parsing/scanner` handles incremental binary scanning with
-  hex-dump diagnostics.
+  stack, `internal:format/thrift` and `fino:data/parquet` implement the native
+  Parquet format path, and `fino:parsing/scanner` handles incremental binary
+  scanning with hex-dump diagnostics.
 - **The supporting stack is broad**: full HTTP/1-2-3 + TLS for hub clients
   and serving, `fino:database/sqlite` (with JS VFS and vector helpers),
-  `fino:compress` (gzip/deflate/brotli/zstd/lz4), `fino:workflow` (durable
+  `fino:compress` (gzip/deflate/brotli/zstd/lz4/snappy), `fino:workflow` (durable
   checkpointed runs),
   `fino:opentelemetry` + `fino:profiler`, `fino:ui` JSX, the V8 inspector
   REPL infrastructure, and the `fino:ai` agent/model/memory/eval family.
 
 The missing substrate is equally clear: no tensor object model, no
 dtype/device semantics, no kernels or accelerator backend, no autodiff, no
-Parquet/query layer, no safetensors reader, no tokenizers, no
-optimizer/training-loop/checkpoint API, no notebook story. (Arrow itself now
-exists as `fino:data/arrow` — the columnar format, IPC, and C Data Interface.)
+DataFrame/query or Dataset/DataLoader layer, no safetensors reader, no
+tokenizers, no optimizer/training-loop/checkpoint API, no notebook story.
+(Arrow itself now exists as `fino:data/arrow`, and native Parquet exists as
+`fino:data/parquet`.)
 
 The binding style throughout the child documents is the established idiom:
 dlopen system-installed libraries with candidate-path fallback
@@ -156,8 +160,8 @@ which backends light up.
 | Graph capture/JIT | Very high | Low | None | High | Very high |
 | Arrow tables | Very high | Medium | `fino:data/arrow` (full type coverage) | High | Medium |
 | Arrow IPC + C Data Interface | Very high | Medium | `fino:data/arrow` (stream/file + CDI) | High | Medium/high |
-| Parquet | Very high | Medium | None (native `fino:data/parquet` planned) | High | Medium/high |
-| Dataset streaming | Very high | Low/medium | CSV only | High | Medium |
+| Parquet | Very high | Medium | `fino:data/parquet` (read/write, full type/encoding/nested coverage) | High | Medium/high |
+| Dataset streaming | Very high | Low/medium | Arrow/Parquet/CSV primitives; no Dataset/DataLoader | High | Medium |
 | Safetensors | Very high | Low/medium | None | High | Medium |
 | GGUF loading | Medium/high | Low | llama.cpp adapter only | High | Medium |
 | ONNX loading | High | Medium/high | None | High | High |
@@ -215,7 +219,7 @@ changes.
 | Document | Scope | Engine dependency |
 |---|---|---|
 | [tensor-engine.md](./tensor-engine.md) | Execution model, backend architecture (CUDA-direct, ggml, CPU, Metal-direct), kernel strategy, memory semantics, autodiff, the `fino:tensor` API family, differential testing, `tensor-contract.md` | — (is the engine) |
-| [data-stack.md](./data-stack.md) | Arrow-first data infra: `fino:format/thrift`, Snappy, `fino:data/parquet`, `fino:data/frame`, Dataset/DataLoader | None (only `column.toTensor()` crosses over) |
+| [data-stack.md](./data-stack.md) | Remaining Arrow-first data infra: `fino:data/frame`, Parquet pushdown, Dataset/DataLoader | None (only `column.toTensor()` crosses over) |
 | [model-artifacts.md](./model-artifacts.md) | safetensors/GGUF/npy readers, the hub client + `models.lock`, tokenizers, ONNX interop | None (descriptor-producing) |
 | [ml-workbench.md](./ml-workbench.md) | Notebook + display protocol, `fino:viz`, experiment tracking, hyperparameter sweeps, durable training | None |
 | [inference-serving.md](./inference-serving.md) | Continuous-batching scheduler, KV-cache management, streaming, OpenAI-compatible surface, batch inference over Arrow | Layers over the engine; the near-term llama.cpp track doesn't wait on it |
@@ -285,9 +289,9 @@ cross-document sequence:
 
 - **Phase 0 — contracts and spikes.** `tensor-contract.md` and the CUDA
   spike on a Linux/NVIDIA box ([tensor-engine.md](./tensor-engine.md)). In
-  parallel — none of it waits on the engine — the data track:
-  `fino:format/thrift`, Snappy, `fino:data/parquet`
-  ([data-stack.md](./data-stack.md)); the hub client and tokenizer
+  parallel — none of it waits on the engine — define the DataFrame expression
+  and streaming execution contracts over the implemented Arrow/Parquet stack
+  ([data-stack.md](./data-stack.md)), plus the hub client and tokenizer
   ([model-artifacts.md](./model-artifacts.md)).
 - **Phase 1 — the credibility slice.** The engine core: CUDA-direct + ggml
   adapter + BLAS + the TS tape + `nn`/`optim` + the differential-test

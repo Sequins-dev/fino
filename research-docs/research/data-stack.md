@@ -1,4 +1,4 @@
-# Fino Data Stack
+# Fino Data Stack — Remaining Work
 
 > Status: research and direction-setting document.
 >
@@ -6,109 +6,111 @@
 > model-factory strategy. Siblings: [tensor-engine.md](./tensor-engine.md),
 > [model-artifacts.md](./model-artifacts.md),
 > [ml-workbench.md](./ml-workbench.md),
-> [inference-serving.md](./inference-serving.md),
+> [inference-serving.md](./inference-serving.md), and
 > [classical-ml.md](./classical-ml.md).
 >
-> Scope: general-purpose data infrastructure — Arrow-centered tabular data,
-> Parquet and its reusable format dependencies, a DataFrame layer, and the
-> Dataset/DataLoader pipeline. This stack is engine-independent: it is useful
-> for any data work in Fino, and only the `column.toTensor()` boundary
-> touches [tensor-engine.md](./tensor-engine.md).
+> Scope: the query/DataFrame layer and Dataset/DataLoader pipeline that remain
+> above Fino's implemented Arrow and Parquet stack.
 
-## 1. Principles
+## 1. Current Baseline
 
-Data is Arrow-first and streaming-first. `fino:data/arrow` already provides
-the Arrow substrate (below); the remaining pieces are a native Parquet
-module, a query/DataFrame layer, and a Dataset/DataLoader, each of which
-builds on it.
+The standards and file-format foundation is implemented:
 
-The guiding principle here is the same one that produced `fino:format/flatbuffers`
-and the `fino:compress` codecs: **untangle the dependency tree into discrete,
-generalized modules** rather than adopt a bundled engine that re-clusters the
-functionality. The obvious shortcut — dlopen DuckDB as a Parquet + CSV/JSON +
-SQL "workhorse" — is rejected for exactly that reason: it collapses a whole
-cluster back into one opaque internal, which is what this runtime exists to
-avoid. Parquet decomposes cleanly into reusable parts we mostly already have.
+- `fino:data/arrow` covers Arrow logical types, vectors, record batches,
+  tables, IPC stream/file formats, compression, and the C Data Interface.
+- `internal:format/thrift` provides the binary, compact, and JSON protocol
+  codecs used by Parquet.
+- `fino:compress` includes Snappy raw blocks alongside gzip/deflate, Brotli,
+  Zstandard, and LZ4.
+- `fino:data/parquet` reads and writes Arrow tables/record batches with full
+  type, encoding, page-version, compression, statistics, and nested Dremel
+  coverage. Golden fixtures verify interoperability with PyArrow.
 
-## 2. The Modules
+The remaining stack should stay Arrow-first and streaming-first. Do not adopt a
+bundled query engine merely to obtain DataFrame or dataset behavior: the
+runtime already owns the reusable format and compression layers.
 
-- **`fino:data/arrow` — Arrow (exists).** The columnar in-memory format (all
-  logical types), the IPC stream and file formats (with LZ4/ZSTD body
-  compression), and the Arrow C Data Interface (`fino:data/arrow/cdata`) are
-  implemented and tested. It is the tabular interchange the rest of the data
-  stack consumes and produces: `column.toTensor()`, `RecordBatch`/`Table`, and
-  zero-copy hand-off to native libraries via `Pointer.view`.
-- **`fino:format/thrift` — generic Thrift codec (planned).** Parquet's file
-  metadata (`FileMetaData`, `RowGroup`, `ColumnChunk`, `Statistics`, …) is
-  serialized with Thrift's compact protocol. Like flatbuffers, Thrift is a
-  general-purpose format that belongs in its own module, not buried in a
-  Parquet reader — a schema-less compact-protocol reader/writer that any
-  consumer can use.
-- **`fino:compress` + Snappy (planned).** Parquet's default page codec is
-  Snappy; gzip/brotli/zstd/lz4 (which Parquet also permits) already exist.
-  Snappy is a small, well-specified block format — add it to the existing
-  generic compress module, not to Parquet internals.
-- **`fino:data/parquet` — native Parquet (planned).** Built on
-  `fino:format/thrift` + `fino:compress` + `fino:data/arrow`: read and write
-  the full column layout (the ~8 encodings — plain, RLE/bit-packed dictionary,
-  delta, delta-length/byte-array, byte-stream-split — plus page compression,
-  statistics, and nested/repetition-and-definition levels), producing and
-  consuming Arrow record batches. This is real work, but it is *bounded* work
-  in discrete modules whose generic parts (Thrift, Snappy) are reusable — the
-  opposite of importing a multi-feature engine to get one format.
-- **`fino:data/frame` — DataFrame over Arrow (planned).** A lazy DataFrame that
-  builds an expression plan and executes it with its own small operator set
-  (filter, project, groupBy/agg, join, sort, limit) *directly over Arrow
-  record batches* — vectorized column kernels, not SQL compiled to a foreign
-  engine. Predicate/projection pushdown targets the `fino:data/parquet` reader
-  (skip row groups by statistics, read only needed columns). If a SQL surface
-  is wanted later it parses to the same plan; the execution engine stays ours.
-- **`fino:data` — Dataset/DataLoader (planned).** `Dataset` (random access) and
-  `IterableDataset` (async iterable) with `map/filter/shuffle(buffer)/batch/
-  take/split/interleave`; sources from CSV/JSONL (existing modules), Arrow
-  IPC, `fino:data/parquet`, sqlite, HTTP, and the hub. `DataLoader` runs the
-  decode/augment/tokenize pipeline on `fino:realm/pool` workers writing
-  collated batches into SharedArrayBuffer slabs (a ring allocator); the
-  training realm receives `{sab, offset, shape, dtype}` descriptors —
-  zero-copy across realms today. Determinism is first-class: one seed derives
-  per-worker/per-epoch streams; loaders expose `state()`/`restore()` so
-  `fino:workflow` can checkpoint mid-epoch position.
+## 2. DataFrame Over Arrow
 
-The flow `Parquet → DataFrame → Arrow batch → column.toTensor() → GPU` is
-pointer-passing at every boundary via `Pointer.view`, and every stage is a
-fino module that stands alone rather than a facet of one bundled dependency.
+Add `fino:data/frame` as a lazy expression plan executed directly over Arrow
+record batches. The initial bounded operator set is:
 
-## 3. Sequencing
+- filter and projection;
+- `groupBy` and aggregation;
+- joins;
+- sort and limit;
+- reusable scalar/column expressions for preprocessing.
 
-The data stack's slice of the parent roadmap:
+Execution should use vectorized column kernels rather than row objects. The
+Parquet integration should push required columns and predicates into scans,
+skip row groups from statistics, and stream record batches instead of loading
+whole files when the input permits random access.
 
-- **Phase 0 (in parallel with the engine spike; none of it waits on the
-  engine):** `fino:format/thrift`, Snappy in `fino:compress`,
-  `fino:data/parquet`.
-- **Then:** `fino:data/frame` and `fino:data` (Dataset/DataLoader), which the
-  training loop and `fino:ai/eval` consume.
-- **Phase 3 slice:** DataLoader hardening — worker-pool pipeline, prefetch
-  into the engine's pinned H2D ring, and `state()`/`restore()` integration
-  with `fino:workflow` checkpointing (surfaced in
-  [ml-workbench.md](./ml-workbench.md)).
-- Vision datasets eventually need `fino:media/image` (decode via system
-  jpeg-turbo/libpng) plus augmentation transforms — random crop/flip/color
-  jitter as DataLoader-stage tensor ops running on the worker pool; that
-  lives in the parent roadmap's later items.
+If a SQL surface is added later, it parses into the same plan. It must not
+introduce a second execution engine.
 
-## 4. Risks and Open Questions
+## 3. Dataset And DataLoader
 
-- **Native Parquet is bounded but not small.** Full encoding coverage (the ~8
-  encodings, nested repetition/definition levels, statistics) is the effort;
-  keep it honest by building the reusable generics (`fino:format/thrift`,
-  Snappy) first and differentially testing `fino:data/parquet` against files
-  written by pyarrow/parquet-tools, the way Arrow is tested against pyarrow.
+Add the public `fino:data` pipeline abstractions:
+
+- `Dataset` for deterministic random access;
+- `IterableDataset` for async streaming sources;
+- `map`, `filter`, buffered `shuffle`, `batch`, `take`, deterministic `split`,
+  and `interleave`;
+- sources for CSV/JSONL, Arrow IPC, Parquet, SQLite, HTTP/storage, and the model
+  hub when it lands;
+- collators that produce Arrow batches first and tensor descriptors only at the
+  tensor boundary.
+
+`DataLoader` should parallelize decode, augmentation, and tokenization with
+ordinary realms composed through `RealmDeployment`. Workers write collated
+batches into SharedArrayBuffer slabs; consumers receive descriptors rather
+than structured-cloned payload copies.
+
+Determinism is part of the contract. One seed derives per-epoch and per-worker
+streams, while `state()`/`restore()` records source position, shuffle state,
+epoch, and outstanding batch order so `fino:workflow` can checkpoint mid-epoch.
+
+## 4. Tensor And Media Boundaries
+
+Arrow record batches remain the tabular currency; tensors are the numeric
+currency. `column.toTensor()` is the explicit crossing point once
+`fino:tensor` exists. Preserve zero-copy or bounded-copy behavior explicitly
+and expose it in diagnostics rather than hiding conversions.
+
+Vision datasets later need `fino:media/image` over system jpeg-turbo/libpng
+plus seeded crop/flip/color transforms. Decode and augmentation belong in the
+DataLoader worker stage, not in the DataFrame engine.
+
+## 5. Delivery Order
+
+1. Define the DataFrame expression and streaming execution contracts over
+   Arrow batches.
+2. Implement projection/filter plus Parquet column and row-group pushdown.
+3. Add aggregation, join, sort, and preprocessing expressions.
+4. Add deterministic Dataset/IterableDataset transformations and built-in
+   sources.
+5. Add RealmDeployment-backed DataLoader workers and SharedArrayBuffer
+   collation.
+6. Add `state()`/`restore()` and workflow checkpoint/resume coverage.
+7. Integrate pinned host-to-device prefetch only after the tensor engine
+   exposes the required storage contract.
+
+## 6. Required Tests
+
+- expression results match a simple row-wise oracle across nulls and Arrow
+  logical types;
+- projected Parquet scans avoid decoding unused columns;
+- predicate statistics skip only row groups proven not to match;
+- streaming plans keep memory bounded across large inputs;
+- the same seed yields the same split, shuffle, and batch order;
+- save/restore resumes without duplication or omission;
+- worker failures and cancellation release realms and shared slabs;
+- zero-copy versus bounded-copy crossings are observable and tested.
 
 ## Sources
 
 - Apache Arrow overview: https://arrow.apache.org/overview/
 - Apache Arrow C Data Interface: https://arrow.apache.org/docs/format/CDataInterface.html
 - Apache Parquet format: https://parquet.apache.org/docs/file-format/
-- Apache Thrift compact protocol: https://github.com/apache/thrift/blob/master/doc/specs/thrift-compact-protocol.md
-- Snappy format: https://github.com/google/snappy/blob/main/format_description.txt
-- Hugging Face Datasets (the pipeline-maturity benchmark): https://huggingface.co/docs/datasets/index
+- Hugging Face Datasets: https://huggingface.co/docs/datasets/index

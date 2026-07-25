@@ -3,7 +3,8 @@
 > Status: roadmap note. This replaces the node-local KV idea extracted from
 > the retired `stdlib-dx.md`. `fino:cache` remains the local cache surface;
 > `fino:kv` should be a distributed, multi-tenant runtime service built on the
-> cluster and orchestrator work in `multi-tenant-runtime.md`.
+> cluster and orchestrator work in `multi-node-distribution.md`, with tenant
+> grant policy from `multi-tenant-runtime.md`.
 
 ## 1. Goal
 
@@ -61,8 +62,8 @@ their own correctness contracts.
 
 ### Orchestrator Service Registry
 
-Extend the existing orchestrator service registry into a cluster-visible service
-model:
+Add a cluster-visible service registry on top of the existing orchestrator and
+`ClusterNode` lifecycle contracts:
 
 - local services register with a name, version, and capability requirements;
 - the cluster client advertises available local services after join and during
@@ -116,9 +117,9 @@ KV v1 should use replicated-all placement:
 - reads default to the local replica;
 - reconnect and node restart trigger a resync against peers.
 
-Do not start with sharding. Sharded owners need the service placement and
-deployment controller from `multi-tenant-runtime.md`; replicated-all is simpler
-and matches the cache/config/control-plane use cases.
+Do not start with sharding. Sharded owners need the distributed placement and
+reconciliation controller from `multi-node-distribution.md`; replicated-all is
+simpler and matches the cache/config/control-plane use cases.
 
 ## 5. Public API Shape
 

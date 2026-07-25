@@ -74,6 +74,10 @@ apps:
 - Decide whether WebSocket patches are needed or whether SSE plus form actions
   should remain the intentionally narrow transport.
 - Add operational cleanup hooks for expired snapshots and abandoned streams.
+- Settle history retention for long-lived views and the checkpoint cadence for
+  mid-handler model-token streaming.
+- Treat dependency-aware region rendering as a measured optimization; hash
+  diffing remains the correctness baseline until profiling justifies it.
 - Ensure the generated browser client and docs make progressive enhancement
   boundaries clear.
 

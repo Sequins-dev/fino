@@ -31,29 +31,15 @@ reactor --------------- constructs isolate and schedules its work
 The cluster layer must extend this model. It must not introduce a remote Realm
 class, a cluster port type, or another realm-driving loop.
 
-## 2. Current implementation
+## 2. Current baseline
 
 ### Node-local substrate
 
-- `NodeOrchestrator` is the node's realm lifecycle authority.
-- `NodeRealmCollection` owns placement records, load summaries, capacity, and
-  move reservations.
-- `NodeOrchestrator` selects a local latency or batch reactor and owns reactor
-  lifecycle.
-- Reactor engines construct every scheduled unit through
-  `setup_realm_workload` and the normal realm bootstrap.
-- A selected isolate stays locked and entered until a different isolate
-  outranks it, it moves, or it terminates.
-- Same-node movement transfers the live isolate. Destination-compatible
-  operations are rearmed; source-bound operations forward completions until
-  they drain.
-- Repeated blocking work moves to lower-priority batch reactors. Batch reactors
-  have lower scheduling priority and retire when idle.
-- Nested realms submit allocation back to the owning node over an internal
-  control channel.
-- A `Realm` is one physical execution container. `RealmDeployment` composes
-  independent replicas with queue-pressure scale-out, quiet scale-down,
-  affine sessions, broadcast, and `ref()`/`unref()` liveness.
+Node-local placement, live same-node movement, latency/batch reactor policy,
+and `RealmDeployment` scaling are implemented. `NodeOrchestrator` is the local
+lifecycle and admission authority; nested allocations return to that owner
+rather than constructing another scheduler. The maintained public model is
+documented in `js/realm.md` and `js/realm/isolation.md`.
 
 ### Cluster substrate
 
@@ -63,24 +49,12 @@ class, a cluster port type, or another realm-driving loop.
 - `SeedServer` admits peers, distributes `WELCOME`/`PEER_UP`/`PEER_DOWN`, and
   expires silent members.
 - The wire protocol contains membership messages only.
-- Cluster orchestration holds every node through the `ClusterNode` contract
-  (`internal:orchestrator/cluster-orchestrator`): start, admissionCapacity,
-  allocateRealm, whenReleased, revoke, shutdown. `NodeOrchestrator` satisfies
-  it in-process; the remote implementation satisfies the same methods as
-  JSON-RPC over a per-peer control channel on the QUIC mesh, so local and
-  remote nodes are interacted with uniformly. Every contract method that can
-  involve a peer is ALWAYS asynchronous — never sometimes-sync — and the
-  whole consumer chain down through `Realm` is promise-shaped end to end
-  (capacity exhaustion resolves `null` at the node contract and becomes a
-  rejection at the realm layer). A remote allocation will also need a
-  transport-neutral port reference in place of in-process transit handles
-  when the network port lands.
-
-The former `SPAWN`, `SPAWN_ACK`, `PORT_MSG`, `REALM_EXIT`, `ClusterPort`, and
-`RealmRegistry` prototype has been removed. It bypassed node admission, called
-the old reactor-context constructor directly, and stepped realms from the
-cluster client. Retaining it would create a second, incompatible realm-driving
-loop.
+- Cluster orchestration defines an asynchronous `ClusterNode` contract for
+  start, cached admission capacity, allocation, release, revoke, and shutdown.
+  `NodeOrchestrator` implements it in-process. A remote implementation and its
+  authenticated control protocol do not exist yet; they must preserve the
+  always-async allocation chain and replace in-process transit handles with a
+  transport-neutral port reference.
 
 ## 3. Placement policy
 
@@ -220,21 +194,14 @@ external durable state or an explicit checkpoint contract.
 
 ## 9. Delivery stages
 
-1. **Completed: reactor-only realms.** Remove embedded/reactor/remote kinds,
-   child stepping, `RealmPool`, and cluster-driven realm construction.
-2. **Completed: local movement.** Transfer live isolates at pump boundaries,
-   rearm transferable operations, forward draining completions, and preserve
-   the active isolate across reactor cycles.
-3. **Completed: local deployment scaling.** Warm `min`, scale queued calls up,
-   drain quiet excess replicas, and implement deployment `ref()`/`unref()`.
-4. **Next: node observations and admission RPC.** Export reactor health and
+1. **Node observations and admission RPC.** Export reactor health and
    add an authenticated orchestration request/accept/reject protocol over the
    mesh.
-5. **Next: durable reconciliation.** Add Raft-backed realm specs, replica
+2. **Durable reconciliation.** Add Raft-backed realm specs, replica
    attempts, epochs, and make-before-break recovery.
-6. **Next: service directory and DNS.** Publish ready attempts, withdraw before
+3. **Service directory and DNS.** Publish ready attempts, withdraw before
    drain, and test generation-aware routing.
-7. **Next: direct data streams.** Route application traffic peer-to-peer with
+4. **Direct data streams.** Route application traffic peer-to-peer with
    bounded persistent streams and backpressure.
 
 ## 10. Required tests for the next stages
@@ -247,5 +214,4 @@ external durable state or an explicit checkpoint contract.
 - scale-down withdraws before active-task drain;
 - peer loss reconstructs only durable replicas;
 - partition without quorum cannot advance assignment or routing generations;
-- direct-stream queues remain bounded under a slow peer;
-- local live movement never changes heap identity or logical port identity.
+- direct-stream queues remain bounded under a slow peer.
