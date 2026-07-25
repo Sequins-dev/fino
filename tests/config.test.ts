@@ -139,17 +139,11 @@ describe('fino:config', () => {
         type: 'override',
         value: { secret: 'short' }
       }]
-    }), (err) => err instanceof ConfigError
-      && err.message.includes('[redacted]')
-      && !err.message.includes('short')
-      && JSON.stringify(err.issues).includes('[redacted]')
-      && !JSON.stringify(err.issues).includes('short'), 'config errors redact configured secret paths in messages and structured issues');
+    }), (err) => err instanceof ConfigError && err.message.includes('[redacted]') && !err.message.includes('short') && JSON.stringify(err.issues).includes('[redacted]') && !JSON.stringify(err.issues).includes('short'), 'config errors redact configured secret paths in messages and structured issues');
   });
   it('tags secret env values and redacts accidental rendering', async (t) => {
     const loaded = await loadConfig({
-      schema: v.object({
-        database: v.object({ password: v.string() })
-      }),
+      schema: v.object({ database: v.object({ password: v.string() }) }),
       sources: [{
         type: 'secret-env',
         values: { APP_DATABASE_PASSWORD: 'correct horse battery staple' },
@@ -166,14 +160,10 @@ describe('fino:config', () => {
   });
   it('loads authenticated sealed secret files and rejects the wrong key', async (t) => {
     const key = 'test-only-sealed-config-key';
-    const plaintext = JSON.stringify({
-      api: { token: 'sealed-token' }
-    });
+    const plaintext = JSON.stringify({ api: { token: 'sealed-token' } });
     await writeText(fs, TEST_DIR + '/secrets.sealed', sealCookie(plaintext, key));
     const loaded = await loadConfig({
-      schema: v.object({
-        api: v.object({ token: v.string() })
-      }),
+      schema: v.object({ api: v.object({ token: v.string() }) }),
       sources: [{
         type: 'secret-file',
         path: TEST_DIR + '/secrets.sealed',
@@ -184,42 +174,29 @@ describe('fino:config', () => {
     t.ok(secret instanceof SecretValue, 'sealed file leaves are tagged as secrets');
     t.equal(secret.reveal(), 'sealed-token', 'authenticated plaintext is available explicitly');
     await t.rejects(() => loadConfig({
-      schema: v.object({
-        api: v.object({ token: v.string() })
-      }),
+      schema: v.object({ api: v.object({ token: v.string() }) }),
       sources: [{
         type: 'secret-file',
         path: TEST_DIR + '/secrets.sealed',
         key: 'wrong-key'
       }]
-    }), (err) => err instanceof ConfigError
-      && !err.message.includes('sealed-token'), 'authentication failures do not expose plaintext');
-    await writeText(
-      fs,
-      TEST_DIR + '/secrets.sealed',
-      sealCookie('{"api":{"token":"must-not-appear"}, trailing}', key)
-    );
+    }), (err) => err instanceof ConfigError && !err.message.includes('sealed-token'), 'authentication failures do not expose plaintext');
+    await writeText(fs, TEST_DIR + '/secrets.sealed', sealCookie('{"api":{"token":"must-not-appear"}, trailing}', key));
     await t.rejects(() => loadConfig({
-      schema: v.object({
-        api: v.object({ token: v.string() })
-      }),
+      schema: v.object({ api: v.object({ token: v.string() }) }),
       sources: [{
         type: 'secret-file',
         path: TEST_DIR + '/secrets.sealed',
         key
       }]
-    }), (err) => err instanceof ConfigError
-      && err.message.includes('Unable to parse sealed secret file')
-      && !err.message.includes('must-not-appear'), 'sealed plaintext is omitted from parse errors');
+    }), (err) => err instanceof ConfigError && err.message.includes('Unable to parse sealed secret file') && !err.message.includes('must-not-appear'), 'sealed plaintext is omitted from parse errors');
   });
   it('grants named secrets to realms through a provider-backed facade', async (t) => {
     const loaded = await loadConfig({
-      schema: v.object({
-        api: v.object({
-          token: v.string(),
-          internal: v.string()
-        })
-      }),
+      schema: v.object({ api: v.object({
+        token: v.string(),
+        internal: v.string()
+      }) }),
       sources: [{
         type: 'secret-env',
         values: {
@@ -254,12 +231,10 @@ describe('fino:config', () => {
           processEnv: typeof globalThis.process,
         };
       }
-    `, {
-      overrides: ImportMap.deny([{
-        pattern: 'app:secrets',
-        directive: facade
-      }])
-    });
+    `, { overrides: ImportMap.deny([{
+      pattern: 'app:secrets',
+      directive: facade
+    }]) });
     const result = await realm.call();
     t.equal(result.token, 'realm-token', 'the granted value crosses the explicit facade');
     t.ok(result.denied.includes('not granted'), 'ungranted values remain unavailable in the child');

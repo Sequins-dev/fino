@@ -22,12 +22,10 @@ import type { RevisionedCache } from 'fino:cache';
 import type { GenerateRequest, Model, ModelStream } from 'fino:ai/model';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { Facade } from 'fino:realm';
-
 interface Counter {
   count: number;
   resetAt: number;
 }
-
 /**
 * Fixed-window gateway policy options.
 */
@@ -41,7 +39,6 @@ export interface GatewayPolicyOptions {
   /** Deterministic clock hook. Defaults to `Date.now`. */
   clock?: () => number;
 }
-
 /**
 * Error returned when a gateway key has exhausted its current window.
 */
@@ -54,7 +51,6 @@ export class GatewayRateLimitError extends Error {
   readonly retryAt: number;
   /** Configured request limit. */
   readonly limit: number;
-
   /** Create structured retry metadata for a rejected key. */
   constructor(key: string, retryAt: number, now: number, limit: number) {
     super(`AI gateway rate limit exceeded for ${key}`);
@@ -65,7 +61,6 @@ export class GatewayRateLimitError extends Error {
     this.limit = limit;
   }
 }
-
 /**
 * Atomic per-key request counter backed by `fino:cache`.
 */
@@ -74,7 +69,6 @@ export class GatewayPolicy {
   #requests: number;
   #windowMs: number;
   #clock: () => number;
-
   /**
   * Create a policy. Counters are isolated by the exact key passed to
   * `acquire()`.
@@ -91,36 +85,46 @@ export class GatewayPolicy {
     this.#windowMs = options.windowMs;
     this.#clock = options.clock ?? Date.now;
   }
-
   /**
   * Consume one request from `key`, retrying optimistic-cache conflicts.
   *
   * Throws `GatewayRateLimitError` before provider invocation when the current
   * window is full.
   */
-  async acquire(key: string): Promise<{ remaining: number; resetAt: number }> {
+  async acquire(key: string): Promise<{
+    remaining: number;
+    resetAt: number;
+  }> {
     if (!key) throw new TypeError('gateway key must not be empty');
     for (let attempt = 0; attempt < 32; attempt++) {
       const now = this.#clock();
       const entry = await this.#cache.getEntry<Counter>(key);
       const expired = entry === null || entry.value.resetAt <= now;
-      const current: Counter = expired ? { count: 0, resetAt: now + this.#windowMs } : entry.value;
+      const current: Counter = expired ? {
+        count: 0,
+        resetAt: now + this.#windowMs
+      } : entry.value;
       if (current.count >= this.#requests) {
         throw new GatewayRateLimitError(key, current.resetAt, now, this.#requests);
       }
-      const next = { count: current.count + 1, resetAt: current.resetAt };
+      const next = {
+        count: current.count + 1,
+        resetAt: current.resetAt
+      };
       const saved = await this.#cache.compareAndSet(key, next, {
         ifRevision: expired ? null : entry!.revision,
-        ttlMs: Math.max(1, current.resetAt - now),
+        ttlMs: Math.max(1, current.resetAt - now)
       });
       if (saved !== null) {
-        return { remaining: this.#requests - next.count, resetAt: next.resetAt };
+        return {
+          remaining: this.#requests - next.count,
+          resetAt: next.resetAt
+        };
       }
     }
     throw new Error(`AI gateway counter contention for ${key}`);
   }
 }
-
 /**
 * Options for `gatewayModel()`.
 */
@@ -130,7 +134,6 @@ export interface GatewayModelOptions {
   /** Static key or parent-side resolver for the current tenant/API key. */
   key: string | (() => string);
 }
-
 /**
 * Wrap a model with per-key gateway policy.
 */
@@ -151,10 +154,9 @@ export function gatewayModel(base: Model, options: GatewayModelOptions): Model {
     async generate(request: GenerateRequest) {
       await options.policy.acquire(key());
       return base.generate(request);
-    },
+    }
   };
 }
-
 /**
 * Options for a child-realm model facade.
 */
@@ -162,7 +164,6 @@ export interface ModelFacadeOptions {
   /** Synthetic module specifier imported by the child. */
   specifier: string;
 }
-
 /**
 * Expose model generation without exposing the model object or credentials.
 *
@@ -175,9 +176,7 @@ export function modelFacade(resolve: () => Model | null, options: ModelFacadeOpt
     if (model === null) throw new Error('Model capability has been revoked');
     return model;
   };
-  return new Facade(options.specifier, ['generate'])
-    .handle('generate', async (request) => current().generate(request as GenerateRequest))
-    .stream('stream', async function* (request) {
-      yield* current().stream(request as GenerateRequest);
-    });
+  return new Facade(options.specifier, ['generate']).handle('generate', async (request) => current().generate(request as GenerateRequest)).stream('stream', async function* (request) {
+    yield* current().stream(request as GenerateRequest);
+  });
 }

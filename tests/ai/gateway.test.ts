@@ -4,13 +4,15 @@ import { GatewayRateLimitError, gatewayModel, GatewayPolicy, modelFacade } from 
 import type { GenerateRequest, GenerateResult, Model, ModelStream } from 'fino:ai/model';
 import { ImportMap, Realm } from 'fino:realm';
 import { ModelStreamImpl } from 'internal:ai/shared';
-
 function modelNamed(name: string, calls: string[]): Model {
   const result: GenerateResult = {
     text: name,
     toolCalls: [],
-    usage: { inputTokens: 1, outputTokens: 1 },
-    stopReason: 'end_turn',
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1
+    },
+    stopReason: 'end_turn'
   };
   return {
     name,
@@ -18,9 +20,19 @@ function modelNamed(name: string, calls: string[]): Model {
     stream(_request: GenerateRequest): ModelStream {
       calls.push(name);
       async function* events() {
-        yield { type: 'text_delta' as const, index: 0, text: name };
-        yield { type: 'usage' as const, usage: result.usage };
-        yield { type: 'stop' as const, reason: 'end_turn' as const };
+        yield {
+          type: 'text_delta' as const,
+          index: 0,
+          text: name
+        };
+        yield {
+          type: 'usage' as const,
+          usage: result.usage
+        };
+        yield {
+          type: 'stop' as const,
+          reason: 'end_turn' as const
+        };
       }
       return new ModelStreamImpl(events());
     },
@@ -30,21 +42,19 @@ function modelNamed(name: string, calls: string[]): Model {
     },
     async embed() {
       return [];
-    },
+    }
   };
 }
-
 describe('AI gateway policy', () => {
   it('isolates quotas per tenant and returns deterministic retry metadata', async (t) => {
-    let now = 1000;
+    let now = 1e3;
     const cache = memoryCache({ clock: { now: () => now } });
     const policy = new GatewayPolicy({
       cache,
       requests: 2,
       windowMs: 100,
-      clock: () => now,
+      clock: () => now
     });
-
     await policy.acquire('tenant-a');
     await policy.acquire('tenant-a');
     let rejected: unknown;
@@ -59,26 +69,27 @@ describe('AI gateway policy', () => {
     now = 1101;
     await policy.acquire('tenant-a');
   });
-
   it('wraps provider calls without putting credentials into child policy state', async (t) => {
     const calls: string[] = [];
     const policy = new GatewayPolicy({
       cache: memoryCache(),
       requests: 1,
-      windowMs: 1000,
+      windowMs: 1e3
     });
     const wrapped = gatewayModel(modelNamed('parent-provider', calls), {
       policy,
-      key: 'tenant-a',
+      key: 'tenant-a'
     });
-    await wrapped.generate({ messages: [{ role: 'user', content: 'hi' }] });
-    await t.rejects(
-      () => wrapped.generate({ messages: [{ role: 'user', content: 'again' }] }),
-      GatewayRateLimitError,
-    );
+    await wrapped.generate({ messages: [{
+      role: 'user',
+      content: 'hi'
+    }] });
+    await t.rejects(() => wrapped.generate({ messages: [{
+      role: 'user',
+      content: 'again'
+    }] }), GatewayRateLimitError);
     t.deepEqual(calls, ['parent-provider']);
   });
-
   it('resolves the parent model on every facade call for rotation and revocation', async (t) => {
     const calls: string[] = [];
     let active: Model | null = modelNamed('first', calls);
@@ -87,10 +98,13 @@ describe('AI gateway policy', () => {
       const realm = new Realm<() => Promise<string>>({
         thread: true,
         entry: new URL('../realm/fixtures/model-facade-call.ts', import.meta.url).pathname,
-        overrides: ImportMap.deny([
-          { pattern: 'internal:runtime/loop', directive: 'inherit' },
-          { pattern: 'app:model', directive: facade },
-        ]),
+        overrides: ImportMap.deny([{
+          pattern: 'internal:runtime/loop',
+          directive: 'inherit'
+        }, {
+          pattern: 'app:model',
+          directive: facade
+        }])
       });
       try {
         return await realm.call();

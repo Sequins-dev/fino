@@ -31,5 +31,16 @@ at about 72 characters. The body should explain what changed and why, not repeat
 the diff. PRs should include a short summary, affected areas, test coverage, and
 benchmark or profiling notes for performance-sensitive changes.
 
+Before every commit, format all modified source files with the repository
+formatters and verify the corresponding format checks pass. Run `cargo fmt` for
+Rust changes and `fino fmt` on every changed JavaScript and TypeScript path; do
+not rely on focused tests to catch formatting drift. Review changed Markdown
+separately because `fino fmt` does not process it.
+
+When adding a public `fino:*` builtin or changing which builtins are registered
+in `src/loader.rs`, update `benchmarks/COVERAGE.md` in the same change so every
+public builtin has a coverage-table row. Run
+`fino test tests/internal/benchmark-coverage.test.ts` before committing.
+
 ## Performance & Profiling Notes
 Benchmark with unique ports to avoid stale local servers: `PORT=3031 cargo run -- example.ts` plus `autocannon -c 100 -d 10 http://127.0.0.1:3031/`. Use debug builds for symbolized native profiling and `example_profile.ts` for built-in JS pprof output.

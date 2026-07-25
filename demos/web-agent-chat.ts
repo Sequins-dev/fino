@@ -16,19 +16,20 @@ import { openai } from 'fino:ai/model';
 import { env } from 'fino:process';
 import { DatabaseViewStore } from 'fino:ui/web/state';
 import { createWebAgentChatApp } from './web-agent-chat-app';
-
 const apiKey = env.OPENAI_API_KEY;
 const sessionSecret = env.SESSION_SECRET;
 const csrfSecret = env.UI_CSRF_SECRET;
 if (!apiKey || !sessionSecret || !csrfSecret) {
   throw new Error('OPENAI_API_KEY, SESSION_SECRET, and UI_CSRF_SECRET are required');
 }
-
 const store = await DatabaseViewStore.open('sqlite://web-agent-chat.db');
 const app = createWebAgentChatApp({
-  model: openai({ apiKey, model: env.OPENAI_MODEL ?? 'gpt-4o-mini' }),
+  model: openai({
+    apiKey,
+    model: env.OPENAI_MODEL ?? 'gpt-4o-mini'
+  }),
   store,
   sessionSecret,
-  csrfSecret,
+  csrfSecret
 });
-app.listen({ port: Number(env.PORT ?? 3000) });
+app.listen({ port: Number(env.PORT ?? 3e3) });

@@ -39,13 +39,11 @@ import { basename, dirname, isAbsolute, join, normalize } from 'fino:file/path';
 import { Process, SIGKILL } from 'fino:process';
 import type { ProcessSandboxOptions } from 'fino:process';
 import { Facade, ImportMap, Realm } from 'fino:realm';
-
 const CAPABILITY_SPECIFIER = 'fino:ai/sandbox/capabilities';
 const auditTopic = topic<SandboxAuditEvent>('fino:ai/sandbox');
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const fs = new DiskFileSystem();
-
 /**
 * Filesystem roots visible to sandbox code.
 */
@@ -55,7 +53,6 @@ export interface SandboxFilesystemGrant {
   /** Absolute roots beneath which `writeText()` may write. */
   write?: string[];
 }
-
 /**
 * HTTP requests visible to sandbox code.
 */
@@ -65,7 +62,6 @@ export interface SandboxNetworkGrant {
   /** Allowed methods. Defaults to `GET`. */
   methods?: string[];
 }
-
 /**
 * Strictly sandboxed child-process access.
 */
@@ -79,7 +75,6 @@ export interface SandboxSubprocessGrant {
   /** Maximum command runtime. Defaults to 30 seconds. */
   timeoutMs?: number;
 }
-
 /**
 * Limits shared across one sandbox lifetime.
 */
@@ -97,7 +92,6 @@ export interface SandboxResourceGrant {
   /** Maximum elapsed time for one `call()`. Defaults to 30 seconds. */
   wallClockMs?: number;
 }
-
 /**
 * Capability grants supplied by trusted parent code.
 */
@@ -115,7 +109,6 @@ export interface AISandboxOptions {
   /** Operation, byte, and elapsed-time limits. */
   resources?: SandboxResourceGrant;
 }
-
 /**
 * Event published for sandbox capability use, denial, and execution results.
 */
@@ -131,7 +124,6 @@ export interface SandboxAuditEvent {
   /** Human-readable denial or failure reason. */
   reason?: string;
 }
-
 /**
 * Structured error for a denied capability or exhausted resource grant.
 */
@@ -140,7 +132,6 @@ export class SandboxDeniedError extends Error {
   readonly capability: string;
   /** Requested target, when one is safe to expose. */
   readonly target?: string;
-
   /** Create a capability denial. Applications normally receive these from an `AISandbox`. */
   constructor(capability: string, message: string, target?: string) {
     super(message);
@@ -149,7 +140,6 @@ export class SandboxDeniedError extends Error {
     this.target = target;
   }
 }
-
 interface NormalizedResources {
   maxOperations: number;
   maxReadBytes: number;
@@ -158,7 +148,6 @@ interface NormalizedResources {
   maxProcessOutputBytes: number;
   wallClockMs: number;
 }
-
 function positiveInteger(name: string, value: number | undefined, fallback: number): number {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved <= 0) {
@@ -166,7 +155,6 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
   }
   return resolved;
 }
-
 function normalizeResources(input: SandboxResourceGrant = {}): NormalizedResources {
   return {
     maxOperations: positiveInteger('resources.maxOperations', input.maxOperations, 100),
@@ -174,21 +162,18 @@ function normalizeResources(input: SandboxResourceGrant = {}): NormalizedResourc
     maxWriteBytes: positiveInteger('resources.maxWriteBytes', input.maxWriteBytes, 1024 * 1024),
     maxNetworkBytes: positiveInteger('resources.maxNetworkBytes', input.maxNetworkBytes, 1024 * 1024),
     maxProcessOutputBytes: positiveInteger('resources.maxProcessOutputBytes', input.maxProcessOutputBytes, 1024 * 1024),
-    wallClockMs: positiveInteger('resources.wallClockMs', input.wallClockMs, 30_000),
+    wallClockMs: positiveInteger('resources.wallClockMs', input.wallClockMs, 3e4)
   };
 }
-
 function normalizeRoots(name: string, roots: string[] | undefined): string[] {
   return (roots ?? []).map((root) => {
     if (!isAbsolute(root)) throw new TypeError(`${name} roots must be absolute`);
     return normalize(root).toString().replace(/\/+$/, '') || '/';
   });
 }
-
 function isWithin(path: string, root: string): boolean {
   return root === '/' || path === root || path.startsWith(`${root}/`);
 }
-
 async function canonicalReadPath(path: string, roots: string[]): Promise<string | null> {
   if (!isAbsolute(path)) return null;
   const resolved = await fs.realpath(path);
@@ -198,7 +183,6 @@ async function canonicalReadPath(path: string, roots: string[]): Promise<string 
   }
   return null;
 }
-
 async function canonicalWritePath(path: string, roots: string[]): Promise<string | null> {
   if (!isAbsolute(path)) return null;
   const clean = normalize(path).toString();
@@ -210,7 +194,6 @@ async function canonicalWritePath(path: string, roots: string[]): Promise<string
   }
   return null;
 }
-
 async function collect(source: AsyncIterable<Uint8Array>, limit: number): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -227,12 +210,9 @@ async function collect(source: AsyncIterable<Uint8Array>, limit: number): Promis
   }
   return output;
 }
-
-async function collectShared(
-  source: AsyncIterable<Uint8Array>,
-  limit: number,
-  total: { length: number },
-): Promise<Uint8Array> {
+async function collectShared(source: AsyncIterable<Uint8Array>, limit: number, total: {
+  length: number;
+}): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let length = 0;
   for await (const chunk of source) {
@@ -251,7 +231,6 @@ async function collectShared(
   }
   return output;
 }
-
 function hardenedSource(source: string): string {
   return `
 for (const name of [
@@ -267,7 +246,6 @@ for (const name of [
 }
 ${source}`;
 }
-
 /**
 * A single-use, process-isolated, parent-capability-backed TypeScript execution
 * context. Single-use execution avoids retaining a privileged RPC channel after
@@ -282,7 +260,6 @@ export class AISandbox<F extends (...args: any[]) => any = (...args: any[]) => a
   #operations = 0;
   #called = false;
   #terminated = false;
-
   /**
   * Validate grants and prepare source for a deny-by-default process Realm.
   *
@@ -297,12 +274,19 @@ export class AISandbox<F extends (...args: any[]) => any = (...args: any[]) => a
     const origins = new Set((options.network?.origins ?? []).map((origin) => new URL(origin).origin));
     const methods = new Set((options.network?.methods ?? ['GET']).map((method) => method.toUpperCase()));
     const commands = new Set(options.subprocess?.commands ?? []);
-
     const emit = (event: Omit<SandboxAuditEvent, 'timestamp'>) => {
-      auditTopic.publish({ ...event, timestamp: Date.now() });
+      auditTopic.publish({
+        ...event,
+        timestamp: Date.now()
+      });
     };
     const deny = (capability: string, message: string, target?: string): never => {
-      emit({ capability, target, outcome: 'denied', reason: message });
+      emit({
+        capability,
+        target,
+        outcome: 'denied',
+        reason: message
+      });
       throw new SandboxDeniedError(capability, message, target);
     };
     const consume = (capability: string, target?: string) => {
@@ -313,160 +297,168 @@ export class AISandbox<F extends (...args: any[]) => any = (...args: any[]) => a
       return async <T>(fn: () => Promise<T> | T): Promise<T> => {
         try {
           const result = await fn();
-          emit({ capability, target, outcome: 'used' });
+          emit({
+            capability,
+            target,
+            outcome: 'used'
+          });
           return result;
         } catch (error) {
           if (error instanceof SandboxDeniedError) throw error;
-          emit({ capability, target, outcome: 'error', reason: String(error) });
+          emit({
+            capability,
+            target,
+            outcome: 'error',
+            reason: String(error)
+          });
           throw error;
         }
       };
     };
-
     const createFacade = () => new Facade(CAPABILITY_SPECIFIER, [
       'environment',
       'secret',
       'readText',
       'writeText',
       'fetchText',
-      'spawn',
-    ])
-      .handle('environment', (name) => {
-        const key = String(name);
-        if (!Object.hasOwn(options.environment ?? {}, key)) {
-          deny('environment', `Environment variable ${key} is not granted`, key);
+      'spawn'
+    ]).handle('environment', (name) => {
+      const key = String(name);
+      if (!Object.hasOwn(options.environment ?? {}, key)) {
+        deny('environment', `Environment variable ${key} is not granted`, key);
+      }
+      return consume('environment', key)(() => options.environment![key]!);
+    }).handle('secret', (name) => {
+      const key = String(name);
+      if (!Object.hasOwn(options.secrets ?? {}, key)) {
+        deny('secret', `Secret ${key} is not granted`, key);
+      }
+      return consume('secret', key)(() => options.secrets![key]!);
+    }).handle('readText', async (path) => {
+      const target = String(path);
+      if (readRoots.length === 0) deny('filesystem.read', `Filesystem read is not granted for ${target}`, target);
+      const canonical = await canonicalReadPath(target, readRoots);
+      if (canonical === null) deny('filesystem.read', `Filesystem read is not granted for ${target}`, target);
+      return consume('filesystem.read', target)(async () => {
+        const bytes = await fs.readFile(canonical);
+        if (bytes.byteLength > this.#resources.maxReadBytes) {
+          deny('resource.bytes', `Sandbox file read exceeds ${this.#resources.maxReadBytes} bytes`, target);
         }
-        return consume('environment', key)(() => options.environment![key]!);
-      })
-      .handle('secret', (name) => {
-        const key = String(name);
-        if (!Object.hasOwn(options.secrets ?? {}, key)) {
-          deny('secret', `Secret ${key} is not granted`, key);
-        }
-        return consume('secret', key)(() => options.secrets![key]!);
-      })
-      .handle('readText', async (path) => {
-        const target = String(path);
-        if (readRoots.length === 0) deny('filesystem.read', `Filesystem read is not granted for ${target}`, target);
-        const canonical = await canonicalReadPath(target, readRoots);
-        if (canonical === null) deny('filesystem.read', `Filesystem read is not granted for ${target}`, target);
-        return consume('filesystem.read', target)(async () => {
-          const bytes = await fs.readFile(canonical);
-          if (bytes.byteLength > this.#resources.maxReadBytes) {
-            deny('resource.bytes', `Sandbox file read exceeds ${this.#resources.maxReadBytes} bytes`, target);
-          }
-          return decoder.decode(bytes);
+        return decoder.decode(bytes);
+      });
+    }).handle('writeText', async (path, text) => {
+      const target = String(path);
+      if (writeRoots.length === 0) deny('filesystem.write', `Filesystem write is not granted for ${target}`, target);
+      const canonical = await canonicalWritePath(target, writeRoots);
+      if (canonical === null) deny('filesystem.write', `Filesystem write is not granted for ${target}`, target);
+      const bytes = encoder.encode(String(text));
+      if (bytes.byteLength > this.#resources.maxWriteBytes) {
+        deny('resource.bytes', `Sandbox file write exceeds ${this.#resources.maxWriteBytes} bytes`, target);
+      }
+      return consume('filesystem.write', target)(async () => {
+        await fs.writeFile(canonical, bytes);
+      });
+    }).handle('fetchText', async (url, init) => {
+      const target = String(url);
+      let parsed: URL;
+      try {
+        parsed = new URL(target);
+      } catch {
+        deny('network', `Network URL is invalid: ${target}`, target);
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        deny('network', `Network protocol is not granted: ${parsed.protocol}`, parsed.protocol);
+      }
+      const method = String((init as {
+        method?: unknown;
+      } | undefined)?.method ?? 'GET').toUpperCase();
+      if (!origins.has(parsed.origin) || !methods.has(method)) {
+        deny('network', `Network request is not granted: ${method} ${target}`, parsed.origin);
+      }
+      return consume('network', parsed.origin)(async () => {
+        const response = await fetch(target, {
+          method,
+          headers: (init as {
+            headers?: HeadersInit;
+          } | undefined)?.headers,
+          body: (init as {
+            body?: string;
+          } | undefined)?.body,
+          redirect: 'error'
         });
-      })
-      .handle('writeText', async (path, text) => {
-        const target = String(path);
-        if (writeRoots.length === 0) deny('filesystem.write', `Filesystem write is not granted for ${target}`, target);
-        const canonical = await canonicalWritePath(target, writeRoots);
-        if (canonical === null) deny('filesystem.write', `Filesystem write is not granted for ${target}`, target);
-        const bytes = encoder.encode(String(text));
-        if (bytes.byteLength > this.#resources.maxWriteBytes) {
-          deny('resource.bytes', `Sandbox file write exceeds ${this.#resources.maxWriteBytes} bytes`, target);
-        }
-        return consume('filesystem.write', target)(async () => {
-          await fs.writeFile(canonical, bytes);
+        const body = response.body === null ? new Uint8Array() : await collect(response.body, this.#resources.maxNetworkBytes);
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers),
+          body: decoder.decode(body)
+        };
+      });
+    }).handle('spawn', async (command, args) => {
+      const executable = String(command);
+      if (!commands.has(executable)) {
+        deny('subprocess', `Subprocess command is not granted: ${executable}`, executable);
+      }
+      const argv = Array.isArray(args) ? args.map(String) : [];
+      return consume('subprocess', executable)(async () => {
+        const timeoutMs = positiveInteger('subprocess.timeoutMs', options.subprocess?.timeoutMs, 3e4);
+        const policy = options.subprocess?.sandbox ?? {
+          mode: 'strict',
+          network: {
+            outbound: [{
+              action: 'deny',
+              destination: '*'
+            }],
+            inbound: [{
+              action: 'deny',
+              destination: '*'
+            }]
+          },
+          process: { allowedBinaries: [executable] }
+        } satisfies ProcessSandboxOptions;
+        const process = new Process(executable, argv, {
+          env: options.subprocess?.environment ?? {},
+          sandbox: policy
         });
-      })
-      .handle('fetchText', async (url, init) => {
-        const target = String(url);
-        let parsed: URL;
-        try {
-          parsed = new URL(target);
-        } catch {
-          deny('network', `Network URL is invalid: ${target}`, target);
-        }
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          deny('network', `Network protocol is not granted: ${parsed.protocol}`, parsed.protocol);
-        }
-        const method = String((init as { method?: unknown } | undefined)?.method ?? 'GET').toUpperCase();
-        if (!origins.has(parsed.origin) || !methods.has(method)) {
-          deny('network', `Network request is not granted: ${method} ${target}`, parsed.origin);
-        }
-        return consume('network', parsed.origin)(async () => {
-          const response = await fetch(target, {
-            method,
-            headers: (init as { headers?: HeadersInit } | undefined)?.headers,
-            body: (init as { body?: string } | undefined)?.body,
-            redirect: 'error',
-          });
-          const body = response.body === null
-            ? new Uint8Array()
-            : await collect(response.body, this.#resources.maxNetworkBytes);
-          return {
-            status: response.status,
-            headers: Object.fromEntries(response.headers),
-            body: decoder.decode(body),
-          };
-        });
-      })
-      .handle('spawn', async (command, args) => {
-        const executable = String(command);
-        if (!commands.has(executable)) {
-          deny('subprocess', `Subprocess command is not granted: ${executable}`, executable);
-        }
-        const argv = Array.isArray(args) ? args.map(String) : [];
-        return consume('subprocess', executable)(async () => {
-          const timeoutMs = positiveInteger('subprocess.timeoutMs', options.subprocess?.timeoutMs, 30_000);
-          const policy = options.subprocess?.sandbox ?? {
-            mode: 'strict',
-            network: {
-              outbound: [{ action: 'deny', destination: '*' }],
-              inbound: [{ action: 'deny', destination: '*' }],
-            },
-            process: { allowedBinaries: [executable] },
-          } satisfies ProcessSandboxOptions;
-          const process = new Process(executable, argv, {
-            env: options.subprocess?.environment ?? {},
-            sandbox: policy,
-          });
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const timeout = new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => {
-              try {
-                process.kill(SIGKILL);
-              } catch {}
-              reject(new SandboxDeniedError('resource.wallClock', `Sandbox subprocess exceeded ${timeoutMs}ms`, executable));
-            }, timeoutMs);
-          });
-          try {
-            const output = { length: 0 };
-            const [stdout, stderr, result] = await Promise.race([
-              Promise.all([
-                collectShared(process.stdout, this.#resources.maxProcessOutputBytes, output),
-                collectShared(process.stderr, this.#resources.maxProcessOutputBytes, output),
-                process.wait(),
-              ]),
-              timeout,
-            ]);
-            return {
-              ...result,
-              stdout: decoder.decode(stdout),
-              stderr: decoder.decode(stderr),
-            };
-          } catch (error) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
             try {
               process.kill(SIGKILL);
             } catch {}
-            throw error;
-          } finally {
-            if (timer !== undefined) clearTimeout(timer);
-          }
+            reject(new SandboxDeniedError('resource.wallClock', `Sandbox subprocess exceeded ${timeoutMs}ms`, executable));
+          }, timeoutMs);
         });
+        try {
+          const output = { length: 0 };
+          const [stdout, stderr, result] = await Promise.race([Promise.all([
+            collectShared(process.stdout, this.#resources.maxProcessOutputBytes, output),
+            collectShared(process.stderr, this.#resources.maxProcessOutputBytes, output),
+            process.wait()
+          ]), timeout]);
+          return {
+            ...result,
+            stdout: decoder.decode(stdout),
+            stderr: decoder.decode(stderr)
+          };
+        } catch (error) {
+          try {
+            process.kill(SIGKILL);
+          } catch {}
+          throw error;
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
       });
-
+    });
     this.#createRealm = () => Realm.fromSource<F>(hardenedSource(source), {
       process: true,
       otlpEndpoint: false,
-      overrides: ImportMap.deny([
-        { pattern: CAPABILITY_SPECIFIER, directive: createFacade() },
-      ]),
+      overrides: ImportMap.deny([{
+        pattern: CAPABILITY_SPECIFIER,
+        directive: createFacade()
+      }])
     });
   }
-
   /**
   * Invoke the source module's default export.
   *
@@ -488,21 +480,25 @@ export class AISandbox<F extends (...args: any[]) => any = (...args: any[]) => a
           capability: 'resource.wallClock',
           outcome: 'denied',
           reason,
-          timestamp: Date.now(),
+          timestamp: Date.now()
         });
         reject(new SandboxDeniedError('resource.wallClock', reason));
       }, this.#resources.wallClockMs);
     });
     try {
       const result = await Promise.race([realm.call(...args), timeout]);
-      auditTopic.publish({ capability: 'execute', outcome: 'used', timestamp: Date.now() });
+      auditTopic.publish({
+        capability: 'execute',
+        outcome: 'used',
+        timestamp: Date.now()
+      });
       return result as Awaited<ReturnType<F>>;
     } catch (error) {
       auditTopic.publish({
         capability: 'execute',
         outcome: 'denied',
         reason: String(error),
-        timestamp: Date.now(),
+        timestamp: Date.now()
       });
       throw error;
     } finally {
@@ -511,7 +507,6 @@ export class AISandbox<F extends (...args: any[]) => any = (...args: any[]) => a
       this.#active.delete(realm);
     }
   }
-
   /**
   * Stop the process Realm. Repeated calls are harmless.
   */
@@ -521,7 +516,6 @@ export class AISandbox<F extends (...args: any[]) => any = (...args: any[]) => a
     for (const realm of this.#active) realm.terminate({ force: true });
     this.#active.clear();
   }
-
   /**
   * Explicit resource management hook.
   */

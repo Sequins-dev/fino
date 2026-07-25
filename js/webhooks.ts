@@ -34,29 +34,17 @@ import { Headers, Request, Response } from './net/http/index.ts';
 import type { HttpContext, Middleware } from './net/http/app.ts';
 import { NonRetryableJobError, type JobRecord, type JobRetryPolicy, type Jobs } from './jobs.ts';
 import { task, type Task } from './task.ts';
-
 const encoder = new TextEncoder();
 const DEFAULT_TOLERANCE_SECONDS = 300;
 const DEFAULT_TASK_NAME = 'webhooks.deliver';
-
 /**
 * Header names used by the Fino webhook signature scheme.
 */
 export const webhookHeaders = {
-  /**
-  * Stable event identifier used for signature binding and idempotency.
-  */
   id: 'webhook-id',
-  /**
-  * Unix timestamp in seconds at which the delivery attempt was signed.
-  */
   timestamp: 'webhook-timestamp',
-  /**
-  * Versioned HMAC signature, currently `v1,<base64url>`.
-  */
   signature: 'webhook-signature'
 } as const;
-
 /**
 * Input accepted by `signWebhook()`.
 */
@@ -78,7 +66,6 @@ export interface WebhookSignOptions {
   */
   secret: BufferLike;
 }
-
 function concatenate(...parts: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
   let offset = 0;
@@ -88,16 +75,13 @@ function concatenate(...parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
-
 function signingInput(id: string, timestamp: number, body: BufferLike): Uint8Array {
   return concatenate(encoder.encode(`${id}.${timestamp}.`), toBytes(body));
 }
-
 function signatureFor(options: WebhookSignOptions): string {
   const digest = hmac('sha-256', toBytes(options.secret), signingInput(options.id, options.timestamp, options.body));
   return `v1,${base64urlEncode(digest)}`;
 }
-
 /**
 * Create the three headers authenticating one webhook body.
 *
@@ -115,17 +99,10 @@ export function signWebhook(options: WebhookSignOptions): Headers {
     [webhookHeaders.signature]: signatureFor(options)
   });
 }
-
 /**
 * Machine-readable inbound verification failure codes.
 */
-export type WebhookVerificationErrorCode =
-  | 'missing_header'
-  | 'invalid_timestamp'
-  | 'timestamp_outside_tolerance'
-  | 'invalid_signature'
-  | 'replay_detected';
-
+export type WebhookVerificationErrorCode = 'missing_header' | 'invalid_timestamp' | 'timestamp_outside_tolerance' | 'invalid_signature' | 'replay_detected';
 /**
 * Error raised when an inbound webhook cannot be authenticated.
 */
@@ -148,7 +125,6 @@ export class WebhookVerificationError extends Error {
     this.status = status;
   }
 }
-
 /**
 * Storage contract for atomic webhook replay claims.
 *
@@ -163,7 +139,6 @@ export interface WebhookReplayStore {
   */
   claim(id: string, expiresAt: number): Promise<boolean>;
 }
-
 /**
 * Single-process replay protection for inbound webhooks.
 */
@@ -183,7 +158,6 @@ export class InMemoryWebhookReplayStore implements WebhookReplayStore {
     return true;
   }
 }
-
 /**
 * Options controlling inbound webhook verification.
 */
@@ -217,7 +191,6 @@ export interface WebhookVerificationOptions {
   */
   replay?: WebhookReplayStore;
 }
-
 /**
 * Authenticated inbound webhook data.
 */
@@ -235,7 +208,6 @@ export interface VerifiedWebhook {
   */
   body: Uint8Array;
 }
-
 function requiredHeader(headers: Headers, name: string): string {
   const value = headers.get(name);
   if (value === null || value.length === 0) {
@@ -243,20 +215,12 @@ function requiredHeader(headers: Headers, name: string): string {
   }
   return value;
 }
-
 function verificationSecrets(options: WebhookVerificationOptions): BufferLike[] {
   const secrets = options.secrets ?? (options.secret === undefined ? [] : [options.secret]);
   if (secrets.length === 0) throw new TypeError('Webhook verification requires at least one secret');
   return secrets;
 }
-
-function verifySignature(
-  id: string,
-  timestamp: number,
-  body: Uint8Array,
-  header: string,
-  secrets: BufferLike[]
-): boolean {
+function verifySignature(id: string, timestamp: number, body: Uint8Array, header: string, secrets: BufferLike[]): boolean {
   const presented = header.split(/\s+/).filter(Boolean);
   let valid = false;
   for (const secret of secrets) {
@@ -272,17 +236,13 @@ function verifySignature(
   }
   return valid;
 }
-
 /**
 * Authenticate one Fetch-compatible webhook request.
 *
 * This consumes the supplied request body. Middleware verifies a clone so the
 * downstream handler retains its own readable body.
 */
-export async function verifyWebhookRequest(
-  request: Request,
-  options: WebhookVerificationOptions
-): Promise<VerifiedWebhook> {
+export async function verifyWebhookRequest(request: Request, options: WebhookVerificationOptions): Promise<VerifiedWebhook> {
   const id = requiredHeader(request.headers, webhookHeaders.id);
   const timestampHeader = requiredHeader(request.headers, webhookHeaders.timestamp);
   const signature = requiredHeader(request.headers, webhookHeaders.signature);
@@ -298,19 +258,15 @@ export async function verifyWebhookRequest(
   if (!Number.isFinite(tolerance) || tolerance < 0) {
     throw new TypeError('Webhook toleranceSeconds must be non-negative');
   }
-  if (Math.abs(Math.floor(nowMs / 1000) - timestamp) > tolerance) {
-    throw new WebhookVerificationError(
-      'timestamp_outside_tolerance',
-      `webhook-timestamp is outside the ${tolerance}s replay window`,
-      401
-    );
+  if (Math.abs(Math.floor(nowMs / 1e3) - timestamp) > tolerance) {
+    throw new WebhookVerificationError('timestamp_outside_tolerance', `webhook-timestamp is outside the ${tolerance}s replay window`, 401);
   }
   const body = new Uint8Array(await request.arrayBuffer());
   if (!verifySignature(id, timestamp, body, signature, verificationSecrets(options))) {
     throw new WebhookVerificationError('invalid_signature', 'Webhook signature does not match the request', 401);
   }
   if (options.replay !== undefined) {
-    const expiresAt = nowMs + tolerance * 1000;
+    const expiresAt = nowMs + tolerance * 1e3;
     if (!await options.replay.claim(id, expiresAt)) {
       throw new WebhookVerificationError('replay_detected', `Webhook '${id}' was already received`, 409);
     }
@@ -321,7 +277,6 @@ export async function verifyWebhookRequest(
     body
   };
 }
-
 /**
 * Create inbound verification middleware for `fino:net/http/app`.
 *
@@ -334,16 +289,13 @@ export function webhookVerifier(options: WebhookVerificationOptions): Middleware
       ctx.webhook = await verifyWebhookRequest(ctx.request.clone(), options);
     } catch (error) {
       if (!(error instanceof WebhookVerificationError)) throw error;
-      return Response.json({
-        error: {
-          code: error.code,
-          message: error.message
-        }
-      }, { status: error.status });
+      return Response.json({ error: {
+        code: error.code,
+        message: error.message
+      } }, { status: error.status });
     }
   };
 }
-
 /**
 * JSON-compatible input persisted for one outbound delivery.
 */
@@ -367,13 +319,11 @@ export interface WebhookDeliveryInput {
   */
   headers?: Record<string, string>;
 }
-
 /**
 * Minimal fetch shape accepted by outbound delivery for custom transports and
 * deterministic tests.
 */
 export type WebhookFetch = (input: string | Request, init?: FetchInit) => Promise<Response>;
-
 /**
 * Options used to construct the outbound delivery task.
 */
@@ -397,11 +347,9 @@ export interface WebhookDeliveryTaskOptions {
   */
   fetch?: WebhookFetch;
 }
-
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
-
 /**
 * Create the task that performs one signed outbound attempt.
 *
@@ -409,9 +357,7 @@ function isRetryableStatus(status: number): boolean {
 * non-2xx responses throw `NonRetryableJobError` so `fino:jobs` dead-letters
 * them immediately.
 */
-export function createWebhookDeliveryTask(
-  options: WebhookDeliveryTaskOptions
-): Task<WebhookDeliveryInput, {
+export function createWebhookDeliveryTask(options: WebhookDeliveryTaskOptions): Task<WebhookDeliveryInput, {
   status: number;
 }> {
   const fetch = options.fetch ?? runtimeFetch;
@@ -428,7 +374,7 @@ export function createWebhookDeliveryTask(
       if (url.protocol !== 'http:' && url.protocol !== 'https:') {
         throw new NonRetryableJobError('Webhook URL must use HTTP or HTTPS');
       }
-      const timestamp = Math.floor((options.now?.() ?? Date.now()) / 1000);
+      const timestamp = Math.floor((options.now?.() ?? Date.now()) / 1e3);
       const headers = new Headers(input.headers);
       if (!headers.has('content-type')) headers.set('content-type', 'application/json');
       const signed = signWebhook({
@@ -456,7 +402,6 @@ export function createWebhookDeliveryTask(
     }
   });
 }
-
 /**
 * Queue options for durable outbound delivery.
 */
@@ -480,26 +425,21 @@ export interface EnqueueWebhookOptions {
   */
   timeoutMs?: number;
 }
-
 /**
 * Persist an outbound webhook in `fino:jobs`.
 *
 * The event id is also the active-job dedupe key. Delivery remains at-least-once
 * across crashes, so receivers must make applying that id idempotent.
 */
-export function enqueueWebhook(
-  jobs: Pick<Jobs, 'push'>,
-  input: WebhookDeliveryInput,
-  options: EnqueueWebhookOptions = {}
-): Promise<JobRecord> {
+export function enqueueWebhook(jobs: Pick<Jobs, 'push'>, input: WebhookDeliveryInput, options: EnqueueWebhookOptions = {}): Promise<JobRecord> {
   return jobs.push(options.task ?? DEFAULT_TASK_NAME, input, {
     queue: options.queue ?? 'webhooks',
     key: input.id,
     retry: options.retry ?? {
       maxAttempts: 5,
-      baseMs: 1000,
+      baseMs: 1e3,
       factor: 2,
-      maxMs: 60_000,
+      maxMs: 6e4,
       jitter: true
     },
     ...options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }

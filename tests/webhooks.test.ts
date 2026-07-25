@@ -1,24 +1,14 @@
 import { describe, it } from 'fino:test/test';
 import { App } from 'fino:net/http/app';
 import { Jobs } from 'fino:jobs';
-import {
-  InMemoryWebhookReplayStore,
-  WebhookVerificationError,
-  createWebhookDeliveryTask,
-  enqueueWebhook,
-  signWebhook,
-  verifyWebhookRequest,
-  webhookVerifier
-} from 'fino:webhooks';
-
+import { InMemoryWebhookReplayStore, WebhookVerificationError, createWebhookDeliveryTask, enqueueWebhook, signWebhook, verifyWebhookRequest, webhookVerifier } from 'fino:webhooks';
 const secret = 'webhook-test-secret';
-
 function signedRequest(body: string, options: {
   id?: string;
   timestamp?: number;
 } = {}): Request {
   const id = options.id ?? 'evt_123';
-  const timestamp = options.timestamp ?? 1_800_000_000;
+  const timestamp = options.timestamp ?? 18e8;
   const headers = signWebhook({
     id,
     timestamp,
@@ -31,14 +21,13 @@ function signedRequest(body: string, options: {
     body
   });
 }
-
 describe('fino:webhooks inbound verification', () => {
   it('verifies signed bytes, enforces the replay window, and rejects duplicate ids', async (t) => {
     const replay = new InMemoryWebhookReplayStore();
     const request = signedRequest('{"ok":true}');
     const verified = await verifyWebhookRequest(request, {
       secret,
-      now: () => 1_800_000_100_000,
+      now: () => 18000001e5,
       toleranceSeconds: 300,
       replay
     });
@@ -46,22 +35,19 @@ describe('fino:webhooks inbound verification', () => {
     t.equal(new TextDecoder().decode(verified.body), '{"ok":true}', 'signature covers the raw body bytes');
     await t.rejects(() => verifyWebhookRequest(signedRequest('{"ok":true}'), {
       secret,
-      now: () => 1_800_000_100_000,
+      now: () => 18000001e5,
       toleranceSeconds: 300,
       replay
-    }), (error) => error instanceof WebhookVerificationError
-      && error.code === 'replay_detected', 'a claimed event id cannot be replayed');
+    }), (error) => error instanceof WebhookVerificationError && error.code === 'replay_detected', 'a claimed event id cannot be replayed');
     await t.rejects(() => verifyWebhookRequest(signedRequest('{"ok":true}', {
       id: 'evt_old',
-      timestamp: 1_799_999_000
+      timestamp: 1799999e3
     }), {
       secret,
-      now: () => 1_800_000_100_000,
+      now: () => 18000001e5,
       toleranceSeconds: 300
-    }), (error) => error instanceof WebhookVerificationError
-      && error.code === 'timestamp_outside_tolerance', 'stale timestamps are rejected');
+    }), (error) => error instanceof WebhookVerificationError && error.code === 'timestamp_outside_tolerance', 'stale timestamps are rejected');
   });
-
   it('rejects tampering and supports signing-key rotation', async (t) => {
     const request = signedRequest('original', { id: 'evt_rotate' });
     const tampered = new Request(request.url, {
@@ -71,21 +57,19 @@ describe('fino:webhooks inbound verification', () => {
     });
     await t.rejects(() => verifyWebhookRequest(tampered, {
       secrets: ['next-secret', secret],
-      now: () => 1_800_000_100_000
-    }), (error) => error instanceof WebhookVerificationError
-      && error.code === 'invalid_signature', 'body tampering invalidates the signature');
+      now: () => 18000001e5
+    }), (error) => error instanceof WebhookVerificationError && error.code === 'invalid_signature', 'body tampering invalidates the signature');
     const verified = await verifyWebhookRequest(signedRequest('rotated', { id: 'evt_rotated' }), {
       secrets: ['next-secret', secret],
-      now: () => 1_800_000_100_000
+      now: () => 18000001e5
     });
     t.equal(verified.id, 'evt_rotated', 'any configured rotation key may verify');
   });
-
   it('provides middleware with actionable errors and preserves the handler body', async (t) => {
     const app = new App();
     app.use(webhookVerifier({
       secret,
-      now: () => 1_800_000_100_000
+      now: () => 18000001e5
     })).post('/hooks').handle(async (ctx) => Response.json({
       id: ctx.webhook.id,
       body: await ctx.request.text()
@@ -101,15 +85,12 @@ describe('fino:webhooks inbound verification', () => {
       body: 'unsigned'
     }));
     t.equal(rejected.status, 400, 'missing signature headers are a bad request');
-    t.deepEqual(await rejected.json(), {
-      error: {
-        code: 'missing_header',
-        message: 'Missing webhook-id header'
-      }
-    }, 'middleware returns an actionable machine-readable error');
+    t.deepEqual(await rejected.json(), { error: {
+      code: 'missing_header',
+      message: 'Missing webhook-id header'
+    } }, 'middleware returns an actionable machine-readable error');
   });
 });
-
 describe('fino:webhooks outbound delivery', () => {
   it('queues signed delivery through fino:jobs with retry and a stable idempotency id', async (t) => {
     let attempts = 0;
@@ -121,7 +102,7 @@ describe('fino:webhooks outbound delivery', () => {
     }> = [];
     const delivery = createWebhookDeliveryTask({
       secret,
-      now: () => 1_800_000_100_000,
+      now: () => 18000001e5,
       fetch: async (_url, init) => {
         attempts++;
         const headers = new Headers(init?.headers);
@@ -143,15 +124,13 @@ describe('fino:webhooks outbound delivery', () => {
       id: 'evt_delivery',
       url: 'https://receiver.test/hooks',
       body: '{"event":"created"}'
-    }, {
-      retry: {
-        maxAttempts: 2,
-        baseMs: 10,
-        maxMs: 10,
-        jitter: false
-      }
-    });
-    const done = await jobs.wait(queued.id, { timeoutMs: 10_000 });
+    }, { retry: {
+      maxAttempts: 2,
+      baseMs: 10,
+      maxMs: 10,
+      jitter: false
+    } });
+    const done = await jobs.wait(queued.id, { timeoutMs: 1e4 });
     t.equal(done.status, 'done', 'transient HTTP failure is retried to completion');
     t.equal(attempts, 2, 'delivery used the jobs retry policy');
     t.equal(received[0].id, 'evt_delivery', 'the event id is the receiver idempotency key');

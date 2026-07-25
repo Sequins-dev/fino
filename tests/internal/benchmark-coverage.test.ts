@@ -39,8 +39,7 @@ describe('benchmark coverage map', () => {
     const coverage = await readText('benchmarks/COVERAGE.md');
     const rows = coverageRows(coverage);
     const missing = publicBuiltins(loader).filter((spec) => !rows.has(spec));
-    const invalid = [...rows].filter(([, value]) => value !== 'not yet benchmarked'
-      && !/^`benchmarks\/[^`]+`$/.test(value));
+    const invalid = [...rows].filter(([, value]) => value !== 'not yet benchmarked' && !/^`benchmarks\/[^`]+`$/.test(value));
     t.deepEqual(missing, [], 'all public builtins have a coverage table row');
     t.deepEqual(invalid, [], 'every row names a benchmark file or the explicit not-yet marker');
   });

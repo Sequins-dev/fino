@@ -913,9 +913,7 @@ function sourceKeys(value: unknown, prefix = ''): string[] {
 }
 function secretPathRelated(path: string, secretPath: string): boolean {
   if (path === '' || secretPath === '') return true;
-  return path === secretPath
-    || path.startsWith(`${secretPath}.`)
-    || secretPath.startsWith(`${path}.`);
+  return path === secretPath || path.startsWith(`${secretPath}.`) || secretPath.startsWith(`${path}.`);
 }
 function tagSecrets<T>(value: T, secretPaths: Set<string>): T {
   let tagged: unknown = value;
@@ -1096,9 +1094,7 @@ function redactStructuredIssue(issue: ValidationIssue, secretPaths: Set<string>)
   return secret ? {
     ...issue,
     value: '[redacted]'
-  } : {
-    ...issue
-  };
+  } : { ...issue };
 }
 /** Load one configured source into a nested object plus a source report. */
 async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
@@ -1165,9 +1161,7 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
     const format = source.format ?? 'json';
     let value: ConfigValue;
     try {
-      value = format === 'toml'
-        ? parseToml(plaintext) as ConfigValue
-        : JSON.parse(plaintext) as ConfigValue;
+      value = format === 'toml' ? parseToml(plaintext) as ConfigValue : JSON.parse(plaintext) as ConfigValue;
     } catch {
       throw new ConfigError(`Unable to parse sealed secret file '${source.path}' as ${format}`);
     }

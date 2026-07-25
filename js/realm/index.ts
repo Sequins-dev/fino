@@ -2998,7 +2998,9 @@ export class Realm<F extends RealmFn = RealmFn> {
   * realm.terminate();
   * ```
   */
-  terminate(options: { force?: boolean } = {}): void {
+  terminate(options: {
+    force?: boolean;
+  } = {}): void {
     this.#watchTerminated = true;
     if (this.#kind === 'remote') {
       this.port.postMessage({ __terminate: true });

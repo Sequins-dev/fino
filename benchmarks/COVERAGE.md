@@ -34,6 +34,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui` | `benchmarks/ui.bench.ts` |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |
 | `fino:ui/html` | `benchmarks/ui.bench.ts` |
+| `fino:ui/slides` | not yet benchmarked |
 | `fino:ui/web` | not yet benchmarked |
 | `fino:ui/web/flow` | not yet benchmarked |
 | `fino:ui/web/state` | not yet benchmarked |
@@ -77,6 +78,7 @@ benchmarks, but they are not public builtin coverage targets:
 `benchmarks/net/http/h2.bench.ts`, and `benchmarks/net/http/h3.bench.ts`.
 | `fino:uuid` | `benchmarks/uuid.bench.ts` |
 | `fino:format/markdown` | `benchmarks/format/markdown.bench.ts` |
+| `fino:format/mdx` | not yet benchmarked |
 | `fino:template` | `benchmarks/template.bench.ts` |
 | `fino:log` | `benchmarks/log.bench.ts` |
 | `fino:validate` | `benchmarks/validate.bench.ts` |
