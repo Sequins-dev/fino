@@ -228,7 +228,6 @@ describe('TCP / UDP loopback', () => {
           dest
         }]);
         t.ok(sentRaw !== null && sentRaw.sent === 2, 'sendmmsgBatch accepted raw-mode datagrams');
-        await loop.readable(server);
         const recvRaw = (rawBatch as any).recvRaw;
         t.equal(typeof recvRaw, 'function', 'batch receive exposes a raw-address mode');
         if (typeof recvRaw !== 'function') return;
@@ -252,7 +251,6 @@ describe('TCP / UDP loopback', () => {
           dest
         }]);
         t.ok(sentEach !== null && sentEach.sent === 2, 'sendmmsgBatch accepted callback-mode datagrams');
-        await loop.readable(server);
         const recvRawEach = (rawBatch as any).recvRawEach;
         t.equal(typeof recvRawEach, 'function', 'batch receive exposes callback raw-address mode');
         if (typeof recvRawEach !== 'function') return;
@@ -260,15 +258,14 @@ describe('TCP / UDP loopback', () => {
         const eachAddrLens: number[] = [];
         let eachCount = 0;
         const eachDeadline = Date.now() + 200;
-        while (eachPayloads.length < 2 && Date.now() < eachDeadline) {
+        while (eachCount < 2 && Date.now() < eachDeadline) {
           const readable = await Promise.race([loop.readable(server).then(() => true), loop.timeout(20).then(() => false)]);
           if (!readable) continue;
-          const count = recvRawEach.call(rawBatch, server, (data: Uint8Array, addrBuffer: ArrayBuffer, addrLen: number) => {
+          eachCount += recvRawEach.call(rawBatch, server, (data: Uint8Array, addrBuffer: ArrayBuffer, addrLen: number) => {
             t.ok(addrBuffer instanceof ArrayBuffer, 'callback raw-address receive exposes sockaddr storage');
             eachPayloads.push(decodeUtf8(data));
             eachAddrLens.push(addrLen);
           });
-          if (count > 0) eachCount += count;
         }
         t.equal(eachCount, 2, 'callback raw-address batch receive reports datagram count');
         t.deepEqual(eachPayloads.sort(), ['each-one', 'each-two'], 'callback raw-address batch payloads match');

@@ -546,22 +546,25 @@ describe('HTTP app built-ins', () => {
   });
   it('flushes an sse event before a long-lived handler completes', async (t) => {
     let release!: () => void;
-    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const app = new App();
     app.route('/live').sse(async (events) => {
       await events.write({ data: 'connected' });
       await hold;
     });
-    const server = app.listen({ port: 0, hostname: '127.0.0.1' });
+    const server = app.listen({
+      port: 0,
+      hostname: '127.0.0.1'
+    });
     try {
-      const response = await Promise.race([
-        fetch(`http://127.0.0.1:${server.port}/live`),
-        loop.timeout(1_000).then(() => { throw new Error('sse response headers timed out'); })
-      ]);
-      const event = await Promise.race([
-        parseEventStream(response.body!).read(),
-        loop.timeout(1_000).then(() => { throw new Error('initial sse event timed out'); })
-      ]);
+      const response = await Promise.race([fetch(`http://127.0.0.1:${server.port}/live`), loop.timeout(1e3).then(() => {
+        throw new Error('sse response headers timed out');
+      })]);
+      const event = await Promise.race([parseEventStream(response.body!).read(), loop.timeout(1e3).then(() => {
+        throw new Error('initial sse event timed out');
+      })]);
       t.equal(event?.data, 'connected', 'the initial event arrives while the handler remains active');
     } finally {
       release();

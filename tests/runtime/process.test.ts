@@ -214,6 +214,7 @@ describe('Process class', () => {
       resources: { memoryBytes: 64 * 1024 * 1024 }
     } });
     const resources = proc.sandboxReport.enforced.find((entry) => entry.category === 'resources');
+    const resourcesDiagnostic = proc.sandboxReport.diagnostics.find((entry) => entry.startsWith('resources:'));
     t.ok(resources !== undefined, 'resources policy is reported enforced');
     proc.stdin.close();
     const chunks = [];
@@ -224,9 +225,10 @@ describe('Process class', () => {
     // The mechanism depends on the host: an RLIMIT_AS fallback shows up in
     // `ulimit -v` (KiB); a cgroup memory.max does not (ulimit stays unlimited).
     const ulimitKib = Number(joinChunks(chunks).trim());
-    if (/rlimit|RLIMIT/i.test(resources!.reason)) {
+    if (resourcesDiagnostic?.includes('[tier: rlimit]')) {
       t.equal(ulimitKib, 65536, 'rlimit-tier child sees the 64MiB address-space limit in KiB');
     } else {
+      t.ok(resourcesDiagnostic?.includes('[tier: cgroup]'), 'resources diagnostic identifies the cgroup enforcement tier');
       t.ok(/cgroup/i.test(resources!.reason), 'cgroup-tier memory limit is enforced via memory.max');
     }
   });
