@@ -47,7 +47,7 @@ const RPC_CODEC: WireCodec = {
 };
 
 /** Async chunk queue buffering a stream until its consumer iterates. */
-export class AsyncChunkQueue {
+class AsyncChunkQueue {
   #queue: unknown[] = [];
   #waiters: Array<() => void> = [];
   #done = false;
@@ -134,18 +134,21 @@ export class WriteSink {
   }
 }
 
-export interface PortRpcOptions {
+interface PortRpcOptions {
   send(msg: unknown): void;
   codec?: WireCodec;
   /** Hook applied to scalar results before resolving (handle-proxy wrapping). */
   wrapResult?(result: unknown): unknown;
 }
 
+type PendingEntry =
+  | { kind: 'scalar'; resolve(v: unknown): void; reject(e: unknown): void }
+  | { kind: 'stream'; queue: AsyncChunkQueue }
+  | { kind: 'sink'; sink: WriteSink };
+
 export class PortRpc {
   #nextId = 0;
-  #pending = new Map<number, { resolve(v: unknown): void; reject(e: unknown): void }>();
-  #streams = new Map<number, AsyncChunkQueue>();
-  #sinks = new Map<number, WriteSink>();
+  #pending = new Map<number, PendingEntry>();
   #send: (msg: unknown) => void;
   #codec: WireCodec;
   #wrapResult: ((result: unknown) => unknown) | null;
@@ -165,7 +168,7 @@ export class PortRpc {
   callWithId(head: Record<string, unknown>): { id: number; promise: Promise<unknown> } {
     const id = this.#nextId++;
     const promise = new Promise<unknown>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      this.#pending.set(id, { kind: 'scalar', resolve, reject });
       this.#send(this.#codec.encodeReq(id, head));
     });
     return { id, promise };
@@ -175,7 +178,7 @@ export class PortRpc {
   callStream(head: Record<string, unknown>): AsyncIterable<unknown> {
     const id = this.#nextId++;
     const queue = new AsyncChunkQueue();
-    this.#streams.set(id, queue);
+    this.#pending.set(id, { kind: 'stream', queue });
     this.#send(this.#codec.encodeReq(id, head));
     return queue;
   }
@@ -184,7 +187,7 @@ export class PortRpc {
   callSink(head: Record<string, unknown>): WriteSink {
     const id = this.#nextId++;
     const sink = new WriteSink(id, this.#send);
-    this.#sinks.set(id, sink);
+    this.#pending.set(id, { kind: 'sink', sink });
     this.#send({ __rpc_send_start: true, reqId: id, ...head });
     return sink;
   }
@@ -199,88 +202,46 @@ export class PortRpc {
     if (msg === null || typeof msg !== 'object') return false;
     const decoded = this.#codec.decode(msg as Record<string, unknown>);
     if (decoded === null) return false;
+    const entry = this.#pending.get(decoded.id);
+    if (entry === undefined) return true;
     switch (decoded.kind) {
-      case 'res':
-        return this.resolve(decoded.id, decoded.result);
-      case 'err':
-        return this.reject(decoded.id, decoded.error);
+      case 'res': {
+        if (entry.kind === 'scalar') {
+          this.#pending.delete(decoded.id);
+          entry.resolve(this.#wrapResult !== null ? this.#wrapResult(decoded.result) : decoded.result);
+        } else if (entry.kind === 'sink') {
+          this.#pending.delete(decoded.id);
+          entry.sink._resolve(decoded.result);
+        }
+        return true;
+      }
+      case 'err': {
+        this.#pending.delete(decoded.id);
+        if (entry.kind === 'scalar') {
+          entry.reject(typeof decoded.error === 'string' ? new Error(decoded.error) : decoded.error);
+        } else {
+          const message = typeof decoded.error === 'string' ? decoded.error : decoded.error.message;
+          if (entry.kind === 'sink') entry.sink._reject(message);
+          else entry.queue.fail(message);
+        }
+        return true;
+      }
       case 'chunk':
-        this.pushChunk(decoded.id, decoded.chunk);
+        if (entry.kind === 'stream') entry.queue.push(decoded.chunk);
         return true;
       case 'end':
-        return this.endStream(decoded.id);
+        if (entry.kind === 'stream') {
+          this.#pending.delete(decoded.id);
+          entry.queue.end();
+        }
+        return true;
     }
-  }
-
-  /** Settle a pending scalar (or a sink's terminal result). */
-  resolve(id: number, result: unknown): boolean {
-    const entry = this.#pending.get(id);
-    if (entry !== undefined) {
-      this.#pending.delete(id);
-      entry.resolve(this.#wrapResult !== null ? this.#wrapResult(result) : result);
-      return true;
-    }
-    return this.resolveSink(id, result);
-  }
-
-  /** Reject a pending scalar, sink, or stream — whichever owns `id`. */
-  reject(id: number, error: string | Error): boolean {
-    const entry = this.#pending.get(id);
-    if (entry !== undefined) {
-      this.#pending.delete(id);
-      entry.reject(typeof error === 'string' ? new Error(error) : error);
-      return true;
-    }
-    const message = typeof error === 'string' ? error : error.message;
-    if (this.rejectSink(id, message)) return true;
-    return this.errStream(id, message);
-  }
-
-  /** Settle a sink's terminal result only. */
-  resolveSink(id: number, result: unknown): boolean {
-    const sink = this.#sinks.get(id);
-    if (sink === undefined) return false;
-    this.#sinks.delete(id);
-    sink._resolve(result);
-    return true;
-  }
-
-  /** Reject a sink's terminal result only. */
-  rejectSink(id: number, error: string): boolean {
-    const sink = this.#sinks.get(id);
-    if (sink === undefined) return false;
-    this.#sinks.delete(id);
-    sink._reject(error);
-    return true;
-  }
-
-  /** Deliver a chunk to a pending stream; unknown ids are harmless no-ops. */
-  pushChunk(id: number, chunk: unknown): void {
-    this.#streams.get(id)?.push(chunk);
-  }
-
-  /** Complete a pending stream. */
-  endStream(id: number): boolean {
-    const queue = this.#streams.get(id);
-    if (queue === undefined) return false;
-    this.#streams.delete(id);
-    queue.end();
-    return true;
-  }
-
-  /** Fail a pending stream. */
-  errStream(id: number, error: string): boolean {
-    const queue = this.#streams.get(id);
-    if (queue === undefined) return false;
-    this.#streams.delete(id);
-    queue.fail(error);
-    return true;
   }
 
   /** Reject one pending scalar externally (terminal-race path). */
   fail(id: number, error: Error): boolean {
     const entry = this.#pending.get(id);
-    if (entry === undefined) return false;
+    if (entry?.kind !== 'scalar') return false;
     this.#pending.delete(id);
     entry.reject(error);
     return true;
@@ -288,11 +249,11 @@ export class PortRpc {
 
   /** Reject everything outstanding (channel teardown). */
   rejectAll(reason: Error): void {
-    for (const entry of this.#pending.values()) entry.reject(reason);
+    for (const entry of this.#pending.values()) {
+      if (entry.kind === 'scalar') entry.reject(reason);
+      else if (entry.kind === 'sink') entry.sink._reject(reason.message);
+      else entry.queue.fail(reason.message);
+    }
     this.#pending.clear();
-    for (const sink of this.#sinks.values()) sink._reject(reason.message);
-    this.#sinks.clear();
-    for (const queue of this.#streams.values()) queue.fail(reason.message);
-    this.#streams.clear();
   }
 }

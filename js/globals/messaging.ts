@@ -380,12 +380,22 @@ export class MessagePort extends EventTarget {
   * @internal
   */
   _transferCrossThread(p2Handle: number, p2WakeReadFd: number): void {
-    if (this.#neutered || this.#closed) return;
+    this._validateCrossThreadTransfer();
     const partner = this.#partner;
     this.#neutered = true;
     _activePorts.delete(this);
     this.#partner = null;
     partner?._upgradeToTransit(p2Handle, p2WakeReadFd);
+  }
+  /**
+  * Validate that this endpoint can be transferred to another isolate without
+  * mutating either side of the channel.
+  *
+  * @internal
+  */
+  _validateCrossThreadTransfer(): void {
+    if (this.#closed) throw messagePortDataCloneError('Closed MessagePort cannot be transferred');
+    if (this.#neutered) throw messagePortDataCloneError('Neutered MessagePort cannot be transferred');
   }
   /**
   * Create a new MessagePort in transit mode (the receiving Q side after a

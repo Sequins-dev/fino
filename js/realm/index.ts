@@ -2379,9 +2379,13 @@ export class Realm<F extends RealmFn = RealmFn> {
     const serializedData = serializeRealmData(opts.data);
     const serializedBootstrapData = serializeRealmBootstrapData(opts);
     this.#watchMode = watch;
+    const publicPort = new DeferredTransportPort({
+      allowPortTransfer: !this.#processIsolated
+    });
+    this.port = publicPort;
     const onInstance = (port: BaseTransportPort) => {
       this.#bindFacadePort(port);
-      if (this.port !== undefined) (this.port as DeferredTransportPort).replace(port);
+      publicPort.replace(port);
     };
     if (opts.process) {
       this.#container = new ProcessContainer({
@@ -2409,9 +2413,6 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     const created = this.#container.ensure();
     this.ready = created.then(() => undefined);
-    this.port = new DeferredTransportPort(created.then((instance) => instance.port), {
-      allowPortTransfer: !this.#processIsolated
-    });
     // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
     // the common case where no OTel subscriber is registered).
     if (_topicRealmSpawn.hasSubscribers) {

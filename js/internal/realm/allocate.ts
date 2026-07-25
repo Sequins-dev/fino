@@ -14,7 +14,7 @@
 *
 * @internal
 */
-import { clusterOrchestrator, type ClusterRealmAllocation } from 'internal:orchestrator/cluster-orchestrator';
+import { clusterOrchestrator } from 'internal:orchestrator/cluster-orchestrator';
 import type { RealmWorkloadSpec } from 'internal:orchestrator/node-orchestrator';
 import { getAllocationPortInfo } from 'internal:realm-bridge';
 import { PortRpc, type WireCodec } from 'internal:realm/port-rpc';
@@ -60,13 +60,13 @@ type AllocationMessage = {
   reason: string;
 };
 
-function controlChannel(): { channel: ThreadPort; rpc: PortRpc } {
+function tryControlChannel(): { channel: ThreadPort; rpc: PortRpc } | null {
   if (_control !== null) return _control;
   const info = (getAllocationPortInfo as () => {
     handle: number;
     wakeReadFd: number;
   } | undefined)();
-  if (info === undefined) throw new Error('realm allocator control port is unavailable');
+  if (info === undefined) return null;
   const channel = new ThreadPort(info.wakeReadFd, info.handle);
   const rpc = new PortRpc({
     send: (msg) => channel.postMessage(msg),
@@ -166,8 +166,9 @@ export interface ScheduledRealmAllocation {
 }
 
 export function allocateScheduledRealm(config: RealmWorkloadSpec): Promise<ScheduledRealmAllocation> {
-  if (hasAllocationPort()) {
-    const { channel, rpc } = controlChannel();
+  const control = tryControlChannel();
+  if (control !== null) {
+    const { channel, rpc } = control;
     return rpc.call({ config }).then((raw) => {
       const message = raw as Extract<AllocationMessage, { type: 'allocated' }>;
       let release!: (reason: string) => void;
@@ -187,20 +188,9 @@ export function allocateScheduledRealm(config: RealmWorkloadSpec): Promise<Sched
   return allocateLocalRealm(config);
 }
 
-function hasAllocationPort(): boolean {
-  if (_control !== null) return true;
-  const info = (getAllocationPortInfo as () => unknown | undefined)();
-  return info !== undefined;
-}
-
 async function allocateLocalRealm(config: RealmWorkloadSpec): Promise<ScheduledRealmAllocation> {
   const placed = await clusterOrchestrator.allocateRealm(config);
   if (placed === null) throw new Error('fino:realm — local reactor capacity is exhausted');
-  return wireAllocation(placed);
-}
-
-/** Serve the allocation's control port and shape it for `Realm`. */
-function wireAllocation(placed: ClusterRealmAllocation): ScheduledRealmAllocation {
   const released = placed.released;
   const allocationPort = new ThreadPort(placed.allocationPortWakeFd, placed.allocationPortHandle);
   serveAllocationPort(allocationPort, released);

@@ -4,11 +4,9 @@
 *
 * A facade proxy module calls `call(specifier, method, args)`; the request is
 * correlated over the realm's port channel (`globalThis.realmPort`) and the
-* transport-port drain settles it through `resolveRpc`/`rejectRpc` when the
-* parent responds. Streaming reads use `callStream` (`__rpc_chunk`/`__rpc_end`/
-* `__rpc_err` envelopes routed to `pushChunk`/`endStream`/`errStream`), and
-* write streams use `callSink`, whose terminal result flows back through the
-* same response envelope.
+* transport-port drain routes replies through `dispatchParentRpc()` when the
+* parent responds. Streaming reads and write streams use the same dispatch
+* path as scalar calls.
 *
 * The correlation machine itself lives in `internal:realm/port-rpc`; this
 * module contributes the parent-port transport and the handle-proxy wrapping
@@ -84,33 +82,7 @@ export function callSink(specifier: string, method: string, args: unknown[]): Wr
   return _rpc.callSink({ specifier, method, args });
 }
 
-/**
-* Settle a pending scalar call (falling through to a write-stream's terminal
-* result). Called by the transport-port drain on `__rpc_res`.
-*/
-export function resolveRpc(reqId: number, result: unknown): boolean {
-  return _rpc.resolve(reqId, result);
-}
-
-/**
-* Reject a pending scalar call (falling through to sink, then stream — the id
-* may belong to a stream whose handler threw before its first chunk).
-*/
-export function rejectRpc(reqId: number, error: string): boolean {
-  return _rpc.reject(reqId, error);
-}
-
-/** Deliver an `__rpc_chunk` payload to its pending stream. */
-export function pushChunk(reqId: number, chunk: unknown): void {
-  _rpc.pushChunk(reqId, chunk);
-}
-
-/** Complete a pending stream on `__rpc_end`. */
-export function endStream(reqId: number): void {
-  _rpc.endStream(reqId);
-}
-
-/** Fail a pending stream on `__rpc_err`. */
-export function errStream(reqId: number, error: string): void {
-  _rpc.errStream(reqId, error);
+/** Route a parent response through the shared correlation machine. */
+export function dispatchParentRpc(message: unknown): boolean {
+  return _rpc.dispatch(message);
 }

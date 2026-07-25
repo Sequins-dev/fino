@@ -13,7 +13,7 @@ import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
 import { createTransitChannel, transitSend, transitRecv, transitClose } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
-import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
+import { dispatchParentRpc } from 'internal:parent-rpc';
 
 /**
 * Shared lifecycle and dispatch logic for transport-backed realm ports.
@@ -107,44 +107,7 @@ export abstract class BaseTransportPort extends EventTarget {
       this.dispatchEvent(event);
       return;
     }
-    if (value !== null && typeof value === 'object') {
-      const obj = value as Record<string, unknown>;
-      if (obj['__rpc_res'] === true) {
-        const rpc = obj as {
-          reqId: number;
-          result?: unknown;
-          error?: string;
-        };
-        if (rpc.error !== undefined) {
-          if (!rejectRpc(rpc.reqId, rpc.error)) errStream(rpc.reqId, rpc.error);
-        } else {
-          resolveRpc(rpc.reqId, rpc.result);
-        }
-        return;
-      }
-      if (obj['__rpc_chunk'] === true) {
-        const m = obj as {
-          reqId: number;
-          chunk: unknown;
-        };
-        pushChunk(m.reqId, m.chunk);
-        return;
-      }
-      if (obj['__rpc_end'] === true) {
-        endStream((obj as {
-          reqId: number;
-        }).reqId);
-        return;
-      }
-      if (obj['__rpc_err'] === true) {
-        const m = obj as {
-          reqId: number;
-          error: string;
-        };
-        errStream(m.reqId, m.error);
-        return;
-      }
-    }
+    if (dispatchParentRpc(value)) return;
     const event = new MessageEvent('message', {
       data: value,
       ports
@@ -178,6 +141,53 @@ export abstract class BaseTransportPort extends EventTarget {
 */
 function _recvTransitMessages(handle: number): [Uint8Array[], [number, number][]][] {
   return (transitRecv as (h: number) => unknown)(handle) as [Uint8Array[], [number, number][]][];
+}
+
+interface PreparedThreadMessage {
+  data: Uint8Array;
+  stores: Uint8Array[];
+  ports: [number, number][];
+}
+
+function _prepareThreadMessage(
+  message: unknown,
+  transferOrOptions?: Transferable[] | StructuredSerializeOptions
+): PreparedThreadMessage {
+  const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? [];
+  const buffers: ArrayBuffer[] = [];
+  const ports: MessagePort[] = [];
+  const seen = new Set<Transferable>();
+  for (const item of transfer) {
+    if (seen.has(item)) throw new DOMException('Duplicate value in ThreadPort transfer list', 'DataCloneError');
+    seen.add(item);
+    if (item instanceof ArrayBuffer) buffers.push(item);
+    else if (item instanceof MessagePort) {
+      item._validateCrossThreadTransfer();
+      ports.push(item);
+    } else {
+      throw new TypeError('ThreadPort transfer list only supports ArrayBuffer and MessagePort values');
+    }
+  }
+  const serialized = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+    message,
+    buffers.length > 0 ? buffers : undefined
+  );
+  const portInfos: [number, number][] = [];
+  for (const port of ports) {
+    const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (createTransitChannel as () => {
+      p2Handle: number;
+      p2WakeReadFd: number;
+      qHandle: number;
+      qWakeReadFd: number;
+    })();
+    port._transferCrossThread(p2Handle, p2WakeReadFd);
+    portInfos.push([qHandle, qWakeReadFd]);
+  }
+  return {
+    data: serialized[0]!,
+    stores: serialized.length > 1 ? serialized.slice(1) : [],
+    ports: portInfos
+  };
 }
 
 /**
@@ -232,31 +242,16 @@ export class ThreadPort extends BaseTransportPort {
   */
   postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
     if (this._closed) return;
-    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts) ? transferOrOpts as Transferable[] : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const transferABs: ArrayBuffer[] = [];
-    const portInfos: [number, number][] = [];
-    if (rawTransfer) {
-      for (const item of rawTransfer) {
-        if (item instanceof ArrayBuffer) {
-          transferABs.push(item);
-        } else if (item instanceof MessagePort) {
-          const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (createTransitChannel as () => {
-            p2Handle: number;
-            p2WakeReadFd: number;
-            qHandle: number;
-            qWakeReadFd: number;
-          })();
-          item._transferCrossThread(p2Handle, p2WakeReadFd);
-          portInfos.push([qHandle, qWakeReadFd]);
-        } else {
-          throw new TypeError('ThreadPort transfer list only supports ArrayBuffer and MessagePort values');
-        }
-      }
-    }
-    const serResult = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(message, transferABs.length > 0 ? transferABs : undefined);
-    const data = serResult[0];
-    const stores = serResult.length > 1 ? serResult.slice(1) : [] as Uint8Array[];
-    (transitSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(this.#handle, data, stores, portInfos);
+    this._postPrepared(_prepareThreadMessage(message, transferOrOpts));
+  }
+  /** Send a message whose transfer semantics were completed synchronously. @internal */
+  _postPrepared(message: PreparedThreadMessage): void {
+    (transitSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
+      this.#handle,
+      message.data,
+      message.stores,
+      message.ports
+    );
   }
   /**
   * Start watching the wake fd for incoming messages.
@@ -332,36 +327,23 @@ export class ThreadPort extends BaseTransportPort {
 */
 export class DeferredTransportPort extends BaseTransportPort {
   #port: BaseTransportPort | null = null;
-  #pending: Array<[unknown, Transferable[] | StructuredSerializeOptions | undefined]> = [];
-  #generation = 0;
+  #pending: Array<
+    | { kind: 'thread'; message: PreparedThreadMessage }
+    | { kind: 'generic'; message: unknown; transfer?: Transferable[] | StructuredSerializeOptions }
+  > = [];
   #messageListener: ((event: Event) => void) | null = null;
   #errorListener: ((event: Event) => void) | null = null;
   /** Whether the eventual endpoint supports MessagePort transfer. */
   #allowPortTransfer: boolean;
 
-  constructor(
-    port: BaseTransportPort | Promise<BaseTransportPort>,
-    options?: { allowPortTransfer?: boolean }
-  ) {
+  constructor(options?: { allowPortTransfer?: boolean }) {
     super();
     this.#allowPortTransfer = options?.allowPortTransfer ?? true;
-    this.replace(port);
   }
 
   /** Replace the physical replica endpoint without changing public identity. @internal */
-  replace(next: BaseTransportPort | Promise<BaseTransportPort>): void {
-    const generation = ++this.#generation;
-    if (next instanceof Promise) void next.then((port) => {
-      if (generation !== this.#generation || this._closed) {
-        if (this.#port !== port) port.close();
-        return;
-      }
-      this.#attach(port);
-    }, () => {
-      // Allocation failed; the owner reports it through ready/run()/call().
-      // The deferred endpoint simply never materializes.
-    });
-    else this.#attach(next);
+  replace(next: BaseTransportPort): void {
+    this.#attach(next);
   }
 
   #attach(port: BaseTransportPort): void {
@@ -380,7 +362,17 @@ export class DeferredTransportPort extends BaseTransportPort {
       return;
     }
     if (this._started) port.start();
-    for (const [message, transfer] of this.#pending.splice(0)) port.postMessage(message, transfer);
+    for (const pending of this.#pending.splice(0)) {
+      if (pending.kind === 'thread') {
+        if (!(port instanceof ThreadPort)) {
+          for (const [handle] of pending.message.ports) (transitClose as (h: number) => void)(handle);
+          throw new TypeError('Deferred MessagePort transfer requires a ThreadPort endpoint');
+        }
+        port._postPrepared(pending.message);
+      } else {
+        port.postMessage(pending.message, pending.transfer);
+      }
+    }
   }
 
   #detachCurrent(): void {
@@ -403,23 +395,21 @@ export class DeferredTransportPort extends BaseTransportPort {
       // buffered send therefore holds an already-validated, already-moved
       // clone; the eventual flush transfers the moved buffers onward.
       const transfer = Array.isArray(transferOrOptions) ? transferOrOptions : transferOrOptions?.transfer ?? [];
-      const ports = transfer.filter((item): item is MessagePort => item instanceof MessagePort);
-      if (ports.length > 0) {
-        if (!this.#allowPortTransfer) {
-          throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
-        }
-        // MessagePort transfer needs the target's transit upgrade; it is
-        // performed at flush, exactly as a live ThreadPort would.
-        this.#pending.push([message, transferOrOptions]);
+      if (this.#allowPortTransfer) {
+        this.#pending.push({ kind: 'thread', message: _prepareThreadMessage(message, transferOrOptions) });
         return;
       }
       const invalid = transfer.find((item) => !(item instanceof ArrayBuffer));
       if (invalid !== undefined) {
-        throw new TypeError('ThreadPort transfer list only supports ArrayBuffer and MessagePort values');
+        throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
       }
       const buffers = transfer as ArrayBuffer[];
       const moved = structuredClone({ message, transfer: buffers }, { transfer: buffers });
-      this.#pending.push([moved.message, buffers.length > 0 ? moved.transfer : undefined]);
+      this.#pending.push({
+        kind: 'generic',
+        message: moved.message,
+        transfer: buffers.length > 0 ? moved.transfer : undefined
+      });
       return;
     }
     this.#port.postMessage(message, transferOrOptions);
@@ -430,7 +420,11 @@ export class DeferredTransportPort extends BaseTransportPort {
   }
 
   protected override _onClose(): void {
-    this.#generation++;
+    for (const pending of this.#pending) {
+      if (pending.kind === 'thread') {
+        for (const [handle] of pending.message.ports) (transitClose as (h: number) => void)(handle);
+      }
+    }
     this.#pending.length = 0;
     this.#detachCurrent();
   }
