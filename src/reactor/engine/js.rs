@@ -119,9 +119,7 @@ fn with_reactor<R>(id: usize, f: impl FnOnce(&ReactorHandle) -> R) -> Option<R> 
 /// Send a control message and post into the reactor so it acts promptly.
 fn send_control(id: usize, msg: Control) {
     with_reactor(id, |h| {
-        if h.control_tx.send(msg).is_ok() {
-            h.control_notify.post(POST_CONTROL, 0);
-        }
+        let _ = h.control.send(msg);
     });
 }
 
@@ -247,7 +245,7 @@ fn cb_place_realm(
 
     send_control(
         id,
-        Control::PlaceRealm {
+        Control::PlaceRealm(RealmPlacement {
             workload_id,
             entry_path,
             rules_json,
@@ -258,7 +256,7 @@ fn cb_place_realm(
             priority_class,
             port_half: (child_handle, child_wake_fd),
             allocation_half: (allocation_child_handle, allocation_child_wake_fd),
-        },
+        }),
     );
 
     let obj = v8::Object::new(scope);
@@ -288,10 +286,8 @@ fn cb_move_realm(
     let source_id = arg_u64(scope, &args, 0) as usize;
     let destination_id = arg_u64(scope, &args, 1) as usize;
     let workload_id = arg_u64(scope, &args, 2);
-    let destination = with_reactor(destination_id, |handle| {
-        (handle.control_tx.clone(), handle.control_notify.clone())
-    });
-    let Some((destination_tx, destination_notify)) = destination else {
+    let destination = with_reactor(destination_id, |handle| handle.control.clone());
+    let Some(destination) = destination else {
         let message = v8::String::new(scope, "moveRealm: destination reactor not found").unwrap();
         let exception = v8::Exception::error(scope, message);
         scope.throw_exception(exception);
@@ -301,8 +297,7 @@ fn cb_move_realm(
         source_id,
         Control::Move {
             workload_id,
-            destination_tx,
-            destination_notify,
+            destination,
         },
     );
 }

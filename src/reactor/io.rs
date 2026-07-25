@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source};
+use cherenkov::{CURRENT_POS, Completion, Op, Reactor, Source, WatchId, err, fs_event};
 
 /// The workload (engine id) that registered an operation.
 pub(crate) type Owner = u64;
@@ -24,31 +24,11 @@ mod tests {
         let mut io = RuntimeIo::create().unwrap();
         let first = v8::ArrayBuffer::new_backing_store_from_vec(vec![0_u8; 8]).make_shared();
         let first_ptr = first.data().unwrap().as_ptr().cast::<u8>();
-        io.submit_read(
-            1,
-            Target {
-                id: 1,
-                resolver_id: 1,
-            },
-            first,
-            fds[0],
-            first_ptr,
-            8,
-        );
+        io.submit_read(1, 1, first, fds[0], first_ptr, 8);
         let second = v8::ArrayBuffer::new_backing_store_from_vec(vec![0_u8; 8]).make_shared();
         let second_ptr = second.data().unwrap().as_ptr().cast::<u8>();
 
-        io.submit_read(
-            1,
-            Target {
-                id: 1,
-                resolver_id: 2,
-            },
-            second,
-            fds[0],
-            second_ptr,
-            8,
-        );
+        io.submit_read(1, 2, second, fds[0], second_ptr, 8);
 
         assert_eq!(io.records.len(), 1);
         assert_eq!(io.doomed.len(), 1);
@@ -57,17 +37,30 @@ mod tests {
             libc::close(fds[1]);
         }
     }
-}
 
-/// Where a completion resolves: a resolver slot in the owning workload.
-#[derive(Clone, Copy)]
-pub(crate) struct Target {
-    pub id: u64,
-    pub resolver_id: usize,
+    #[test]
+    fn repoll_completion_is_routed_by_the_shared_record_registry() {
+        let mut io = RuntimeIo::create().unwrap();
+        let id = io.submit_repoll(7, 0);
+        let mut completions = Vec::new();
+
+        io.wait(Some(Duration::from_millis(100)), &mut completions)
+            .unwrap();
+        let completion = completions
+            .into_iter()
+            .find(|completion| completion.user_data == id)
+            .expect("repoll completion");
+
+        assert!(matches!(
+            io.dispatch(completion.user_data, completion.res),
+            Dispatch::Runnable { owner: 7 }
+        ));
+    }
 }
 
 pub(crate) struct Resolved {
-    pub target: Target,
+    pub owner: Owner,
+    pub resolver_id: usize,
     pub result: f64,
 }
 
@@ -76,6 +69,8 @@ pub(crate) struct Counts {
     pub reads: u32,
     pub writes: u32,
     pub timers: u32,
+    pub procs: u32,
+    pub vnodes: u32,
 }
 
 pub(crate) enum Transfer {
@@ -96,7 +91,7 @@ pub(crate) enum Transfer {
 enum Record {
     Read {
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         buffer: Option<v8::SharedRef<v8::BackingStore>>,
         fd: i32,
         ptr: *mut u8,
@@ -107,7 +102,7 @@ enum Record {
     },
     Write {
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         buffer: v8::SharedRef<v8::BackingStore>,
         fd: i32,
         base: u64,
@@ -116,19 +111,46 @@ enum Record {
     },
     Timer {
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         timer_id: u64,
         deadline: Instant,
         referenced: bool,
+    },
+    Proc {
+        owner: Owner,
+        pid: u32,
+        resolver_id: usize,
+    },
+    VnodeNext {
+        owner: Owner,
+        fd: i32,
+        watch: WatchId,
+    },
+    SignalNext {
+        owner: Owner,
+        signo: i32,
+        watch: WatchId,
+    },
+    RePoll {
+        owner: Owner,
+    },
+    WakeSource {
+        owner: Owner,
+        fd: i32,
     },
 }
 
 impl Record {
     fn owner(&self) -> Owner {
         match self {
-            Self::Read { owner, .. } | Self::Write { owner, .. } | Self::Timer { owner, .. } => {
-                *owner
-            }
+            Self::Read { owner, .. }
+            | Self::Write { owner, .. }
+            | Self::Timer { owner, .. }
+            | Self::Proc { owner, .. }
+            | Self::VnodeNext { owner, .. }
+            | Self::SignalNext { owner, .. }
+            | Self::RePoll { owner }
+            | Self::WakeSource { owner, .. } => *owner,
         }
     }
 
@@ -143,14 +165,33 @@ impl Record {
     }
 }
 
+struct VnodeEntry {
+    owner: Owner,
+    watch: WatchId,
+    path: std::path::PathBuf,
+    callback_id: usize,
+}
+
+struct SignalEntry {
+    owner: Owner,
+    watch: WatchId,
+    callback_id: usize,
+}
+
 /// Completion result after the adapter has applied continuation bookkeeping.
 pub(crate) enum Dispatch {
-    /// The completion belonged to a caller-managed operation.
-    External,
     /// A common op completed but intentionally resolves nothing (cancellation).
     Handled,
     /// Settle this promise in its owning isolate.
     Resolved(Resolved),
+    /// Run a registered callback in its owning isolate.
+    Callback {
+        owner: Owner,
+        callback_id: usize,
+        fflags: Option<u32>,
+    },
+    /// A repoll timer or wake source made its owner runnable.
+    Runnable { owner: Owner },
 }
 
 pub(crate) struct RuntimeIo {
@@ -161,6 +202,8 @@ pub(crate) struct RuntimeIo {
     reads: HashMap<i32, u64>,
     writes: HashMap<i32, u64>,
     timers: HashMap<u64, u64>,
+    vnodes: HashMap<(Owner, i32), VnodeEntry>,
+    signals: HashMap<(Owner, i32), SignalEntry>,
 }
 
 impl RuntimeIo {
@@ -173,6 +216,8 @@ impl RuntimeIo {
             reads: HashMap::new(),
             writes: HashMap::new(),
             timers: HashMap::new(),
+            vnodes: HashMap::new(),
+            signals: HashMap::new(),
         }
     }
 
@@ -195,49 +240,6 @@ impl RuntimeIo {
         completions: &mut Vec<Completion>,
     ) -> std::io::Result<usize> {
         self.reactor.wait(timeout, completions)
-    }
-
-    /// Allocate a tag for a caller-managed operation sharing this reactor.
-    pub fn next_external_id(&mut self) -> u64 {
-        self.next_id()
-    }
-
-    pub fn submit_external(&mut self, id: u64, op: Op) {
-        // SAFETY: callers of this internal adapter retain every pointer carried
-        // by an external operation until its completion is harvested.
-        unsafe { self.reactor.submit(id, op) }
-    }
-
-    pub fn submit_proc_exit(&mut self, id: u64, pid: u32) {
-        self.reactor.submit_proc_exit(id, pid);
-    }
-
-    pub fn submit_watch_next(&mut self, id: u64, watch: cherenkov::WatchId) {
-        self.reactor.submit_watch_next(id, watch);
-    }
-
-    pub fn submit_external_timeout(&mut self, id: u64, ms: u64) {
-        self.reactor.submit_timeout(id, ms);
-    }
-
-    pub fn add_fs_watch(
-        &mut self,
-        path: &std::path::Path,
-        mask: i32,
-    ) -> std::io::Result<cherenkov::WatchId> {
-        self.reactor.add_fs_watch(path, mask)
-    }
-
-    pub fn add_signal_watch(&mut self, signo: i32) -> std::io::Result<cherenkov::WatchId> {
-        self.reactor.add_signal_watch(signo)
-    }
-
-    pub fn remove_kernel_watch(&mut self, watch: cherenkov::WatchId) -> std::io::Result<()> {
-        self.reactor.remove_watch(watch)
-    }
-
-    pub fn cancel_external(&mut self, id: u64) {
-        self.reactor.cancel(id);
     }
 
     /// Cancel every adapter-owned operation before replacing a failed
@@ -265,10 +267,41 @@ impl RuntimeIo {
         drop(old);
         self.doomed.clear();
 
+        let mut invalid_vnodes = Vec::new();
+        for (key, entry) in &mut self.vnodes {
+            match self.reactor.add_fs_watch(&entry.path, fs_event::ALL) {
+                Ok(watch) => entry.watch = watch,
+                Err(_) => invalid_vnodes.push(*key),
+            }
+        }
+        for key in invalid_vnodes {
+            if let Some(entry) = self.vnodes.remove(&key) {
+                crate::async_rt::js_calls::unregister_callback(entry.callback_id);
+            }
+            self.records.retain(|_, record| {
+                !matches!(record, Record::VnodeNext { owner, fd, .. } if (*owner, *fd) == key)
+            });
+        }
+        let mut invalid_signals = Vec::new();
+        for (key, entry) in &mut self.signals {
+            match self.reactor.add_signal_watch(key.1) {
+                Ok(watch) => entry.watch = watch,
+                Err(_) => invalid_signals.push(*key),
+            }
+        }
+        for key in invalid_signals {
+            if let Some(entry) = self.signals.remove(&key) {
+                crate::async_rt::js_calls::unregister_callback(entry.callback_id);
+            }
+            self.records.retain(|_, record| {
+                !matches!(record, Record::SignalNext { owner, signo, .. } if (*owner, *signo) == key)
+            });
+        }
+
         // Writes re-arm through `arm_write_op`, which needs `&mut self`;
         // collect them while the records are borrowed.
         let mut writes: Vec<(u64, i32, u64, u32, u32)> = Vec::new();
-        for (&id, record) in &self.records {
+        for (&id, record) in &mut self.records {
             match record {
                 Record::Read {
                     buffer,
@@ -308,6 +341,27 @@ impl RuntimeIo {
                         .saturating_duration_since(Instant::now())
                         .as_millis() as u64,
                 ),
+                Record::Proc { pid, .. } => self.reactor.submit_proc_exit(id, *pid),
+                Record::VnodeNext {
+                    owner, fd, watch, ..
+                } => {
+                    if let Some(entry) = self.vnodes.get(&(*owner, *fd)) {
+                        *watch = entry.watch;
+                        self.reactor.submit_watch_next(id, entry.watch);
+                    }
+                }
+                Record::SignalNext {
+                    owner,
+                    signo,
+                    watch,
+                } => {
+                    if let Some(entry) = self.signals.get(&(*owner, *signo)) {
+                        *watch = entry.watch;
+                        self.reactor.submit_watch_next(id, entry.watch);
+                    }
+                }
+                Record::RePoll { .. } => self.reactor.submit_timeout(id, 25),
+                Record::WakeSource { fd, .. } => self.reactor.submit_poll_in(id, Source::fd(*fd)),
             }
         }
         for (id, fd, base, len, done) in writes {
@@ -336,12 +390,12 @@ impl RuntimeIo {
     pub fn submit_readiness(
         &mut self,
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         fd: i32,
         read: bool,
         referenced: bool,
     ) {
-        self.supersede_fd(fd, read);
+        self.remove_fd(fd, read);
         let id = self.next_id();
         if read {
             self.reactor.submit_poll_in(id, Source::fd(fd));
@@ -354,7 +408,7 @@ impl RuntimeIo {
             id,
             Record::Read {
                 owner,
-                target,
+                resolver_id,
                 buffer: None,
                 fd,
                 ptr: std::ptr::null_mut(),
@@ -367,13 +421,13 @@ impl RuntimeIo {
     pub fn submit_read(
         &mut self,
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         buffer: v8::SharedRef<v8::BackingStore>,
         fd: i32,
         ptr: *mut u8,
         len: usize,
     ) {
-        self.supersede_fd(fd, true);
+        self.remove_fd(fd, true);
         let id = self.next_id();
         unsafe {
             self.reactor.submit(
@@ -391,7 +445,7 @@ impl RuntimeIo {
             id,
             Record::Read {
                 owner,
-                target,
+                resolver_id,
                 buffer: Some(buffer),
                 fd,
                 ptr,
@@ -405,14 +459,14 @@ impl RuntimeIo {
     pub fn submit_write(
         &mut self,
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         buffer: v8::SharedRef<v8::BackingStore>,
         fd: i32,
         base: *mut u8,
         len: usize,
         done: usize,
     ) {
-        self.supersede_fd(fd, false);
+        self.remove_fd(fd, false);
         let id = self.next_id();
         let base = base as u64;
         let len = len as u32;
@@ -423,7 +477,7 @@ impl RuntimeIo {
             id,
             Record::Write {
                 owner,
-                target,
+                resolver_id,
                 buffer,
                 fd,
                 base,
@@ -436,7 +490,7 @@ impl RuntimeIo {
     pub fn submit_timer(
         &mut self,
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         timer_id: u64,
         ms: u64,
         referenced: bool,
@@ -447,13 +501,114 @@ impl RuntimeIo {
             id,
             Record::Timer {
                 owner,
-                target,
+                resolver_id,
                 timer_id,
                 deadline: Instant::now() + Duration::from_millis(ms),
                 referenced,
             },
         );
         self.timers.insert(timer_id, id);
+    }
+
+    pub fn submit_proc(&mut self, owner: Owner, pid: u32, resolver_id: usize) {
+        let id = self.next_id();
+        self.reactor.submit_proc_exit(id, pid);
+        self.records.insert(
+            id,
+            Record::Proc {
+                owner,
+                pid,
+                resolver_id,
+            },
+        );
+    }
+
+    pub fn submit_repoll(&mut self, owner: Owner, ms: u64) -> u64 {
+        let id = self.next_id();
+        self.reactor.submit_timeout(id, ms);
+        self.records.insert(id, Record::RePoll { owner });
+        id
+    }
+
+    pub fn add_vnode(
+        &mut self,
+        owner: Owner,
+        fd: i32,
+        path: std::path::PathBuf,
+        callback_id: usize,
+    ) {
+        self.remove_vnode(owner, fd);
+        let Ok(watch) = self.reactor.add_fs_watch(&path, fs_event::ALL) else {
+            crate::async_rt::js_calls::unregister_callback(callback_id);
+            return;
+        };
+        self.arm_vnode(owner, fd, watch);
+        self.vnodes.insert(
+            (owner, fd),
+            VnodeEntry {
+                owner,
+                watch,
+                path,
+                callback_id,
+            },
+        );
+    }
+
+    pub fn remove_vnode(&mut self, owner: Owner, fd: i32) {
+        if let Some(entry) = self.vnodes.remove(&(owner, fd)) {
+            let _ = self.reactor.remove_watch(entry.watch);
+            crate::async_rt::js_calls::unregister_callback(entry.callback_id);
+        }
+    }
+
+    fn arm_vnode(&mut self, owner: Owner, fd: i32, watch: WatchId) {
+        let id = self.next_id();
+        self.reactor.submit_watch_next(id, watch);
+        self.records
+            .insert(id, Record::VnodeNext { owner, fd, watch });
+    }
+
+    pub fn add_signal(&mut self, owner: Owner, signo: i32, callback_id: usize) {
+        self.remove_signal(owner, signo);
+        let Ok(watch) = self.reactor.add_signal_watch(signo) else {
+            crate::async_rt::js_calls::unregister_callback(callback_id);
+            return;
+        };
+        self.arm_signal(owner, signo, watch);
+        self.signals.insert(
+            (owner, signo),
+            SignalEntry {
+                owner,
+                watch,
+                callback_id,
+            },
+        );
+    }
+
+    pub fn remove_signal(&mut self, owner: Owner, signo: i32) {
+        if let Some(entry) = self.signals.remove(&(owner, signo)) {
+            let _ = self.reactor.remove_watch(entry.watch);
+            crate::async_rt::js_calls::unregister_callback(entry.callback_id);
+        }
+    }
+
+    fn arm_signal(&mut self, owner: Owner, signo: i32, watch: WatchId) {
+        let id = self.next_id();
+        self.reactor.submit_watch_next(id, watch);
+        self.records.insert(
+            id,
+            Record::SignalNext {
+                owner,
+                signo,
+                watch,
+            },
+        );
+    }
+
+    pub fn register_wake_source(&mut self, owner: Owner, fd: i32) {
+        let id = self.next_id();
+        self.reactor.submit_poll_in(id, Source::fd(fd));
+        self.records.insert(id, Record::WakeSource { owner, fd });
     }
 
     pub fn cancel_timer(&mut self, timer_id: u64) {
@@ -499,35 +654,17 @@ impl RuntimeIo {
         }
     }
 
-    /// Enforce one live registration per descriptor and direction. Pointer
-    /// records move to `doomed` until Cherenkov confirms cancellation, keeping
-    /// their backing stores valid for the kernel.
-    fn supersede_fd(&mut self, fd: i32, read: bool) {
-        let index = if read {
-            &mut self.reads
-        } else {
-            &mut self.writes
-        };
-        let Some(id) = index.remove(&fd) else { return };
-        self.reactor.cancel(id);
-        if let Some(record) = self.records.remove(&id)
-            && record.retains_kernel_pointer()
-        {
-            self.doomed.insert(id, record);
-        }
-    }
-
     pub fn dispatch(&mut self, id: u64, res: i32) -> Dispatch {
         if self.doomed.remove(&id).is_some() {
             return Dispatch::Handled;
         }
         let Some(record) = self.records.remove(&id) else {
-            return Dispatch::External;
+            return Dispatch::Handled;
         };
         match record {
             Record::Read {
                 owner,
-                target,
+                resolver_id,
                 buffer,
                 fd,
                 ptr,
@@ -537,18 +674,19 @@ impl RuntimeIo {
                 if res == -libc::EAGAIN
                     && let Some(buffer) = buffer
                 {
-                    self.submit_read(owner, target, buffer, fd, ptr, len as usize);
+                    self.submit_read(owner, resolver_id, buffer, fd, ptr, len as usize);
                     return Dispatch::Handled;
                 }
                 self.unindex(fd, id, true);
                 Dispatch::Resolved(Resolved {
-                    target,
+                    owner,
+                    resolver_id,
                     result: res as f64,
                 })
             }
             Record::Write {
                 owner,
-                target,
+                resolver_id,
                 buffer,
                 fd,
                 base,
@@ -556,13 +694,14 @@ impl RuntimeIo {
                 done,
             } => {
                 if res == -libc::EAGAIN {
-                    self.resubmit_write(owner, target, buffer, fd, base, len, done);
+                    self.resubmit_write(owner, resolver_id, buffer, fd, base, len, done);
                     return Dispatch::Handled;
                 }
                 if res < 0 {
                     self.unindex(fd, id, false);
                     return Dispatch::Resolved(Resolved {
-                        target,
+                        owner,
+                        resolver_id,
                         result: res as f64,
                     });
                 }
@@ -570,22 +709,105 @@ impl RuntimeIo {
                 if done >= len {
                     self.unindex(fd, id, false);
                     Dispatch::Resolved(Resolved {
-                        target,
+                        owner,
+                        resolver_id,
                         result: done as f64,
                     })
                 } else {
-                    self.resubmit_write(owner, target, buffer, fd, base, len, done);
+                    self.resubmit_write(owner, resolver_id, buffer, fd, base, len, done);
                     Dispatch::Handled
                 }
             }
             Record::Timer {
-                target, timer_id, ..
+                owner,
+                resolver_id,
+                timer_id,
+                ..
             } => {
                 self.timers.remove(&timer_id);
                 Dispatch::Resolved(Resolved {
-                    target,
+                    owner,
+                    resolver_id,
                     result: 0.0,
                 })
+            }
+            Record::Proc {
+                owner, resolver_id, ..
+            } => Dispatch::Resolved(Resolved {
+                owner,
+                resolver_id,
+                result: 0.0,
+            }),
+            Record::VnodeNext { owner, fd, watch } => {
+                if res == err::CANCELED || res == err::BUSY {
+                    return Dispatch::Handled;
+                }
+                let live = self
+                    .vnodes
+                    .get(&(owner, fd))
+                    .is_some_and(|entry| entry.watch == watch);
+                if !live {
+                    return Dispatch::Handled;
+                }
+                if res < 0 {
+                    self.vnodes.remove(&(owner, fd));
+                    return Dispatch::Handled;
+                }
+                let callback_id = self.vnodes[&(owner, fd)].callback_id;
+                self.arm_vnode(owner, fd, watch);
+                Dispatch::Callback {
+                    owner,
+                    callback_id,
+                    fflags: Some(super::imp::fs_to_note(res)),
+                }
+            }
+            Record::SignalNext {
+                owner,
+                signo,
+                watch,
+            } => {
+                let live = self
+                    .signals
+                    .get(&(owner, signo))
+                    .is_some_and(|entry| entry.watch == watch);
+                if res < 0 {
+                    if live && res != err::CANCELED && res != err::BUSY {
+                        self.signals.remove(&(owner, signo));
+                    }
+                    return Dispatch::Handled;
+                }
+                if !live {
+                    return Dispatch::Handled;
+                }
+                let callback_id = self.signals[&(owner, signo)].callback_id;
+                self.arm_signal(owner, signo, watch);
+                Dispatch::Callback {
+                    owner,
+                    callback_id,
+                    fflags: None,
+                }
+            }
+            Record::RePoll { owner } => Dispatch::Runnable { owner },
+            Record::WakeSource { owner, fd } => {
+                if res < 0 {
+                    return Dispatch::Handled;
+                }
+                let mut buf = [0u8; 64];
+                let eof = loop {
+                    let n = unsafe {
+                        libc::read(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, buf.len())
+                    };
+                    if n == 0 {
+                        break true;
+                    }
+                    if n < 0 {
+                        break false;
+                    }
+                };
+                if !eof {
+                    self.register_wake_source(owner, fd);
+                }
+                Dispatch::Runnable { owner }
             }
         }
     }
@@ -594,7 +816,7 @@ impl RuntimeIo {
     fn resubmit_write(
         &mut self,
         owner: Owner,
-        target: Target,
+        resolver_id: usize,
         buffer: v8::SharedRef<v8::BackingStore>,
         fd: i32,
         base: u64,
@@ -608,7 +830,7 @@ impl RuntimeIo {
             id,
             Record::Write {
                 owner,
-                target,
+                resolver_id,
                 buffer,
                 fd,
                 base,
@@ -645,8 +867,16 @@ impl RuntimeIo {
                     referenced: true, ..
                 } => counts.timers += 1,
                 Record::Timer { .. } => {}
+                Record::Proc { .. } => counts.procs += 1,
+                Record::VnodeNext { .. } => {}
+                Record::SignalNext { .. } | Record::RePoll { .. } | Record::WakeSource { .. } => {}
             }
         }
+        counts.vnodes = self
+            .vnodes
+            .values()
+            .filter(|entry| entry.owner == owner)
+            .count() as u32;
         counts
     }
 
@@ -666,6 +896,26 @@ impl RuntimeIo {
         self.timers.retain(|_, id| self.records.contains_key(id));
         self.reads.retain(|_, id| self.records.contains_key(id));
         self.writes.retain(|_, id| self.records.contains_key(id));
+        let vnode_keys: Vec<_> = self
+            .vnodes
+            .iter()
+            .filter_map(|(key, entry)| (entry.owner == owner).then_some(*key))
+            .collect();
+        for key in vnode_keys {
+            if let Some(entry) = self.vnodes.remove(&key) {
+                let _ = self.reactor.remove_watch(entry.watch);
+            }
+        }
+        let signal_keys: Vec<_> = self
+            .signals
+            .iter()
+            .filter_map(|(key, entry)| (entry.owner == owner).then_some(*key))
+            .collect();
+        for key in signal_keys {
+            if let Some(entry) = self.signals.remove(&key) {
+                let _ = self.reactor.remove_watch(entry.watch);
+            }
+        }
     }
 
     pub fn doomed_is_empty(&self) -> bool {
@@ -683,6 +933,20 @@ impl RuntimeIo {
     pub fn has_owner(&self, owner: Owner) -> bool {
         self.records.values().any(|record| record.owner() == owner)
             || self.doomed.values().any(|record| record.owner() == owner)
+    }
+
+    pub fn has_unmovable(&self, owner: Owner) -> bool {
+        self.records.values().any(|record| {
+            record.owner() == owner
+                && matches!(
+                    record,
+                    Record::Proc { .. }
+                        | Record::VnodeNext { .. }
+                        | Record::SignalNext { .. }
+                        | Record::RePoll { .. }
+                        | Record::WakeSource { .. }
+                )
+        })
     }
 
     pub fn detach_workload(&mut self, owner: u64) -> Vec<Transfer> {
@@ -710,7 +974,7 @@ impl RuntimeIo {
             };
             match record {
                 Record::Read {
-                    target: Target { resolver_id, .. },
+                    resolver_id,
                     fd,
                     referenced,
                     ..
@@ -729,7 +993,7 @@ impl RuntimeIo {
                     });
                 }
                 Record::Timer {
-                    target: Target { resolver_id, .. },
+                    resolver_id,
                     timer_id,
                     deadline,
                     referenced,
@@ -757,16 +1021,7 @@ impl RuntimeIo {
                     fd,
                     read,
                     referenced,
-                } => self.submit_readiness(
-                    owner,
-                    Target {
-                        id: owner,
-                        resolver_id,
-                    },
-                    fd,
-                    read,
-                    referenced,
-                ),
+                } => self.submit_readiness(owner, resolver_id, fd, read, referenced),
                 Transfer::Timer {
                     resolver_id,
                     timer_id,
@@ -774,10 +1029,7 @@ impl RuntimeIo {
                     referenced,
                 } => self.submit_timer(
                     owner,
-                    Target {
-                        id: owner,
-                        resolver_id,
-                    },
+                    resolver_id,
                     timer_id,
                     deadline
                         .saturating_duration_since(Instant::now())

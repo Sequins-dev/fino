@@ -121,6 +121,23 @@ fn sweep_budgets() -> u32 {
     fired
 }
 
+/// Immediately terminate every workload with an in-progress pump, regardless
+/// of its deadline. Shutdown uses this before joining reactor threads so a
+/// synchronous runaway cannot hold the process open. Idle isolates have no
+/// armed deadline and are left alone.
+fn terminate_armed_budgets() -> u32 {
+    let mut fired = 0;
+    let mut registry = lock_registry();
+    for target in registry.values_mut() {
+        if target.deadline.take().is_some() {
+            target.handle.terminate_execution();
+            target.killed = true;
+            fired += 1;
+        }
+    }
+    fired
+}
+
 pub(crate) struct ParkedWorkload {
     context: v8::Global<v8::Context>,
     /// This isolate's own async state (executor + FFI-completion queue + wake
@@ -225,7 +242,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
     // the old TS-facing workload ops (createWorkload/dispatchWorkload/…) are
     // gone. The budget watchdog still sweeps runaway isolates through this
     // export.
-    let export_names: Vec<v8::Local<v8::String>> = ["sweepBudgets"]
+    let export_names: Vec<v8::Local<v8::String>> = ["sweepBudgets", "terminateArmedBudgets"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
         .collect();
@@ -250,6 +267,7 @@ fn eval_steps<'a>(
     }
 
     set_fn!("sweepBudgets", sweep_budgets_export);
+    set_fn!("terminateArmedBudgets", terminate_armed_budgets_export);
 
     Some(v8::undefined(scope).into())
 }
@@ -274,45 +292,34 @@ unsafe extern "C" fn heap_limit_callback(
     current + (current / 2).max(16 * 1024 * 1024)
 }
 
-/// Construct a REALM workload: a full child realm (uniform bootstrap, port
-/// channel, import-rule inheritance, entry auto-import) hosted as a parked
-/// isolate on an engine thread. The realm's `driveLoop` registers native
-/// hooks at bootstrap; `pump_realm_native` drives them per slice. This is
-/// the same bootstrap used by the process-isolated host; placement and IPC are
-/// the only differences.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn setup_realm_workload(
-    config: crate::realm::RealmExecutionConfig,
+fn setup_workload(
+    heap_limit: usize,
+    configure: impl FnOnce(&mut v8::OwnedIsolate),
+    contain_heap: bool,
+    bootstrap: impl FnOnce(
+        &mut v8::OwnedIsolate,
+    ) -> Result<crate::realm::child::BootstrappedRealm, String>,
 ) -> Result<ParkedWorkload, String> {
     crate::runtime::init_v8();
 
-    let heap_limit = if config.heap_limit_bytes == 0 {
-        DEFAULT_HEAP_LIMIT_BYTES
-    } else {
-        config.heap_limit_bytes
-    };
-    let mut params = v8::CreateParams::default();
-    params = params.heap_limits(0, heap_limit);
-    params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
-
+    let params = v8::CreateParams::default()
+        .heap_limits(0, heap_limit)
+        .array_buffer_allocator(crate::runtime::shared_allocator().clone());
     let mut isolate = v8::Isolate::new(params);
-    crate::realm::child::configure_realm_isolate(&mut isolate);
+    configure(&mut isolate);
 
-    // Containment must cover setup too: the full bootstrap is a real heap
-    // load, and nearing the cap without a callback is a process-fatal OOM
-    // (or a GC thrash that freezes the whole shard).
     let thread_handle = isolate.thread_safe_handle();
     let budget_token = register_budget_target(thread_handle.clone());
-    isolate
-        .add_near_heap_limit_callback(heap_limit_callback, budget_token as *mut std::ffi::c_void);
+    if contain_heap {
+        isolate.add_near_heap_limit_callback(
+            heap_limit_callback,
+            budget_token as *mut std::ffi::c_void,
+        );
+    }
 
-    // The realm's bootstrap starts its entry import during evaluation —
-    // FFI callbacks, async calls, and the wake pipe must find THIS
-    // workload's async state, not whatever the engine thread had.
     let async_state = crate::async_rt::new_state();
     let saved_state = crate::async_rt::swap_state(Some(async_state));
-
-    let realm = match crate::realm::child::bootstrap_realm(&mut isolate, config) {
+    let realm = match bootstrap(&mut isolate) {
         Ok(realm) => realm,
         Err(error) => {
             crate::async_rt::swap_state(saved_state);
@@ -320,7 +327,6 @@ pub(crate) fn setup_realm_workload(
             return Err(error);
         }
     };
-
     let async_state = crate::async_rt::swap_state(saved_state);
 
     let mut workload = ParkedWorkload {
@@ -339,6 +345,31 @@ pub(crate) fn setup_realm_workload(
     Ok(workload)
 }
 
+/// Construct a REALM workload: a full child realm (uniform bootstrap, port
+/// channel, import-rule inheritance, entry auto-import) hosted as a parked
+/// isolate on an engine thread. The realm's `driveLoop` registers native
+/// hooks at bootstrap; `pump_realm_native` drives them per slice. This is
+/// the same bootstrap used by the process-isolated host; placement and IPC are
+/// the only differences.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn setup_realm_workload(
+    config: crate::realm::RealmExecutionConfig,
+) -> Result<ParkedWorkload, String> {
+    let heap_limit = if config.heap_limit_bytes == 0 {
+        DEFAULT_HEAP_LIMIT_BYTES
+    } else {
+        config.heap_limit_bytes
+    };
+    // Containment covers setup too: the full bootstrap is a real heap load,
+    // while the root's cap remains process-owned.
+    setup_workload(
+        heap_limit,
+        crate::realm::child::configure_realm_isolate,
+        true,
+        move |isolate| crate::realm::child::bootstrap_realm(isolate, config),
+    )
+}
+
 /// Construct the ROOT workload: the process's CLI realm (`internal:main.mjs`,
 /// root state, no port channels) parked for a local reactor to drive. The
 /// root differs from child realms in isolate policy only: `Atomics.wait` is
@@ -347,50 +378,21 @@ pub(crate) fn setup_realm_workload(
 pub(crate) fn setup_root_workload(
     process_env: crate::state::ProcessEnv,
 ) -> Result<ParkedWorkload, String> {
-    crate::runtime::init_v8();
-
-    let mut params = v8::CreateParams::default();
-    params = params.heap_limits(0, DEFAULT_HEAP_LIMIT_BYTES);
-    params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
-
-    let mut isolate = v8::Isolate::new(params);
-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
-    isolate.set_allow_atomics_wait(false);
-    isolate.set_host_import_module_dynamically_callback(crate::loader::dynamic_import_callback);
-    isolate
-        .set_host_initialize_import_meta_object_callback(crate::loader::init_import_meta_callback);
-
-    let thread_handle = isolate.thread_safe_handle();
-    let budget_token = register_budget_target(thread_handle.clone());
-
-    let async_state = crate::async_rt::new_state();
-    let saved_state = crate::async_rt::swap_state(Some(async_state));
-
-    let realm = match crate::runtime::bootstrap_root(&mut isolate, process_env) {
-        Ok(realm) => realm,
-        Err(error) => {
-            crate::async_rt::swap_state(saved_state);
-            unregister_budget_target(budget_token);
-            return Err(error);
-        }
-    };
-
-    let async_state = crate::async_rt::swap_state(saved_state);
-
-    let mut workload = ParkedWorkload {
-        isolate,
-        context: realm.context,
-        async_state,
-        thread_handle,
-        budget_token,
-        _state: realm.state,
-        _module: realm.module,
-        moved_between_threads: false,
-    };
-    unsafe {
-        workload.isolate.exit();
-    }
-    Ok(workload)
+    setup_workload(
+        DEFAULT_HEAP_LIMIT_BYTES,
+        |isolate| {
+            isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+            isolate.set_allow_atomics_wait(false);
+            isolate.set_host_import_module_dynamically_callback(
+                crate::loader::dynamic_import_callback,
+            );
+            isolate.set_host_initialize_import_meta_object_callback(
+                crate::loader::init_import_meta_callback,
+            );
+        },
+        false,
+        move |isolate| crate::runtime::bootstrap_root(isolate, process_env),
+    )
 }
 
 /// Pump a realm workload one slice: resolve parked engine-I/O completions,
@@ -588,4 +590,12 @@ fn sweep_budgets_export(
 ) {
     let fired = sweep_budgets();
     rv.set(v8::Integer::new(scope, fired as i32).into());
+}
+
+fn terminate_armed_budgets_export(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::Integer::new_from_unsigned(scope, terminate_armed_budgets()).into());
 }

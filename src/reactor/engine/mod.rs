@@ -61,6 +61,21 @@ impl ReactorNotifier {
     }
 }
 
+/// Stable control route shared by orchestration and cross-reactor handoff.
+#[derive(Clone)]
+pub(crate) struct ControlRoute {
+    tx: mpsc::Sender<Control>,
+    notify: ReactorNotifier,
+}
+
+impl ControlRoute {
+    fn send(&self, message: Control) -> Result<(), Box<Control>> {
+        self.tx.send(message).map_err(|error| Box::new(error.0))?;
+        self.notify.post(POST_CONTROL, 0);
+        Ok(())
+    }
+}
+
 use crate::state::ProcessEnv;
 
 /// Per-thread reactor configuration (all cold-path, set at spawn).
@@ -86,36 +101,37 @@ pub enum ReactorClass {
     Batch,
 }
 
+pub(crate) struct RealmPlacement {
+    pub workload_id: u64,
+    pub entry_path: String,
+    /// The realm's complete serialized import rules (parent-inherited).
+    pub rules_json: String,
+    /// JSON-serialized RealmOptions.data, if any.
+    pub realm_data: Option<String>,
+    /// Runtime-owned bootstrap metadata, if any.
+    pub realm_bootstrap_data: Option<String>,
+    pub watch_mode: bool,
+    pub repl_mode: bool,
+    pub priority_class: u8,
+    /// The child-side channel half (transit handle + wake-pipe read fd).
+    pub port_half: (u32, i32),
+    /// Private parent/child allocator-control channel half.
+    pub allocation_half: (u32, i32),
+}
+
 /// Control messages: orchestrator (main thread) → reactor thread.
 pub(crate) enum Control {
     /// Create + place a REALM workload on this thread and mark it runnable:
     /// a full child realm (uniform bootstrap, port channel, rule
     /// inheritance) whose native loop hooks the engine pumps.
-    PlaceRealm {
-        workload_id: u64,
-        entry_path: String,
-        /// The realm's complete serialized import rules (parent-inherited).
-        rules_json: String,
-        /// JSON-serialized RealmOptions.data, if any.
-        realm_data: Option<String>,
-        /// Runtime-owned bootstrap metadata, if any.
-        realm_bootstrap_data: Option<String>,
-        watch_mode: bool,
-        repl_mode: bool,
-        priority_class: u8,
-        /// The child-side channel half (transit handle + wake-pipe read fd).
-        port_half: (u32, i32),
-        /// Private parent/child allocator-control channel half.
-        allocation_half: (u32, i32),
-    },
+    PlaceRealm(RealmPlacement),
     /// Terminate + release a workload.
     Revoke { workload_id: u64, reason: String },
     /// Detach an exited isolate and ship exclusive ownership to another
     /// reactor thread. Existing source-hosted operations forward completions.
     Move {
         workload_id: u64,
-        destination_tx: mpsc::Sender<Control>,
-        destination_notify: ReactorNotifier,
+        destination: ControlRoute,
     },
     /// Pre-announce a move before its wake route can target the destination.
     ExpectAttach { workload_id: u64 },
@@ -161,9 +177,7 @@ pub enum Report {
 /// Orchestrator-side handle to a spawned reactor thread. `join` is held for the
 /// thread's lifetime (dropping it would detach the thread).
 pub struct ReactorHandle {
-    pub control_tx: mpsc::Sender<Control>,
-    /// Posted (`POST_CONTROL`) after a control send to break the reactor's wait.
-    pub(crate) control_notify: ReactorNotifier,
+    pub(crate) control: ControlRoute,
     pub report_rx: mpsc::Receiver<Report>,
     /// Bumped by the engine thread once per queued report — and once at thread
     /// exit, so a dead engine still wakes its report pump. The orchestrator's
@@ -392,7 +406,7 @@ mod imp {
         ActiveWorkload, ParkedWorkload, PumpOutcome, activate_realm_native,
         deactivate_realm_native, drop_parked, pump_realm_native, setup_realm_workload,
     };
-    use cherenkov::{Completion, Reactor, WatchId, err, fs_event};
+    use cherenkov::{Completion, Reactor, err};
     use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
 
@@ -446,75 +460,23 @@ mod imp {
     // replaced before any survivor resumes.
     unsafe impl Send for RecoveryWorkset {}
 
-    #[derive(Clone)]
-    struct ForwardRoute {
-        tx: mpsc::Sender<Control>,
-        notify: ReactorNotifier,
+    /// One owner-tagged effect produced by completion classification.
+    pub(super) enum Delivery {
+        Event {
+            owner: u64,
+            event: crate::reactor::workload::ReactorEvent,
+        },
+        /// A repoll timer or drained wake source made this owner runnable
+        /// without producing an isolate-facing event.
+        Runnable { owner: u64 },
     }
 
-    impl ForwardRoute {
-        fn send(&self, message: Control) -> Result<(), Box<Control>> {
-            self.tx.send(message).map_err(|error| Box::new(error.0))?;
-            self.notify.post(POST_CONTROL, 0);
-            Ok(())
+    impl Delivery {
+        pub(super) fn owner(&self) -> u64 {
+            match self {
+                Self::Event { owner, .. } | Self::Runnable { owner } => *owner,
+            }
         }
-    }
-
-    #[derive(Clone, Copy)]
-    enum ExternalRecord {
-        Proc {
-            owner: u64,
-            pid: u32,
-            resolver_id: usize,
-        },
-        VnodeNext {
-            owner: u64,
-            fd: i32,
-            /// The WatchId this op was armed on. Validated at delivery so a
-            /// stale in-flight event (or its re-arm) from a closed fd cannot
-            /// route to the fresh watch a reused fd number now keys.
-            watch: WatchId,
-        },
-        SignalNext {
-            owner: u64,
-            signo: i32,
-            watch: WatchId,
-        },
-        RePoll {
-            owner: u64,
-        },
-        WakeSource {
-            owner: u64,
-            fd: i32,
-        },
-    }
-
-    struct VnodeEntry {
-        owner: u64,
-        watch: WatchId,
-        path: std::path::PathBuf,
-        callback_id: usize,
-    }
-
-    struct SignalEntry {
-        owner: u64,
-        watch: WatchId,
-        callback_id: usize,
-    }
-
-    /// What an external-record completion delivers to its owner.
-    pub(super) enum ExternalDelivery {
-        ProcExit {
-            resolver_id: usize,
-        },
-        Callback {
-            callback_id: usize,
-            fflags: Option<u32>,
-        },
-        Repoll,
-        /// A wake pipe fired (and was drained + re-armed): nothing to
-        /// deliver, but the owner should re-check its queues.
-        Wake,
     }
 
     /// A completion harvested inside a workload's in-pump `tick()` that
@@ -526,25 +488,11 @@ mod imp {
             user_data: u64,
             res: i32,
         },
-        Resolve {
-            owner: u64,
-            resolver_id: usize,
-            result: f64,
-        },
-        Event {
-            owner: u64,
-            event: crate::reactor::workload::ReactorEvent,
-        },
-        Runnable {
-            owner: u64,
-        },
+        Delivery(Delivery),
     }
 
     pub(super) struct EngineResources {
         io: crate::reactor::io::RuntimeIo,
-        external: HashMap<u64, ExternalRecord>,
-        vnodes: HashMap<(u64, i32), VnodeEntry>,
-        signals: HashMap<(u64, i32), SignalEntry>,
         /// Foreign completions harvested by an in-pump `tick()`; drained by
         /// the drive loop between pumps.
         deferred: Vec<Deferred>,
@@ -557,71 +505,48 @@ mod imp {
                 reads: counts.reads,
                 writes: counts.writes,
                 timers: counts.timers,
-                procs: self
-                    .external
-                    .values()
-                    .filter(|record| {
-                        matches!(record, ExternalRecord::Proc { owner: id, .. } if *id == owner)
-                    })
-                    .count() as u32,
-                vnodes: self
-                    .vnodes
-                    .values()
-                    .filter(|entry| entry.owner == owner)
-                    .count() as u32,
+                procs: counts.procs,
+                vnodes: counts.vnodes,
             }
         }
 
         pub(super) fn apply_registration(&mut self, owner_id: u64, reg: EngineReg) {
             let owner = owner_id;
             match reg {
-                EngineReg::Io(io) => {
-                    let target = crate::reactor::io::Target {
-                        id: owner_id,
-                        resolver_id: io.resolver_id,
-                    };
-                    match io.kind {
-                        IoKind::Read => self.io.submit_read(
-                            owner,
-                            target,
-                            io.buffer.expect("engine read missing backing store"),
-                            io.fd,
-                            io.buf_ptr,
-                            io.len,
-                        ),
-                        IoKind::Write => self.io.submit_write(
-                            owner,
-                            target,
-                            io.buffer.expect("engine write missing backing store"),
-                            io.fd,
-                            io.buf_ptr,
-                            io.len,
-                            io.written,
-                        ),
-                        IoKind::Readable => {
-                            self.io
-                                .submit_readiness(owner, target, io.fd, true, io.referenced)
-                        }
-                        IoKind::Writable => {
-                            self.io
-                                .submit_readiness(owner, target, io.fd, false, io.referenced)
-                        }
+                EngineReg::Io(io) => match io.kind {
+                    IoKind::Read => self.io.submit_read(
+                        owner,
+                        io.resolver_id,
+                        io.buffer.expect("engine read missing backing store"),
+                        io.fd,
+                        io.buf_ptr,
+                        io.len,
+                    ),
+                    IoKind::Write => self.io.submit_write(
+                        owner,
+                        io.resolver_id,
+                        io.buffer.expect("engine write missing backing store"),
+                        io.fd,
+                        io.buf_ptr,
+                        io.len,
+                        io.written,
+                    ),
+                    IoKind::Readable => {
+                        self.io
+                            .submit_readiness(owner, io.resolver_id, io.fd, true, io.referenced)
                     }
-                }
+                    IoKind::Writable => {
+                        self.io
+                            .submit_readiness(owner, io.resolver_id, io.fd, false, io.referenced)
+                    }
+                },
                 EngineReg::Timer {
                     timer_id,
                     ms,
                     resolver_id,
-                } => self.io.submit_timer(
-                    owner,
-                    crate::reactor::io::Target {
-                        id: owner_id,
-                        resolver_id,
-                    },
-                    timer_id,
-                    ms.max(0) as u64,
-                    true,
-                ),
+                } => self
+                    .io
+                    .submit_timer(owner, resolver_id, timer_id, ms.max(0) as u64, true),
                 EngineReg::CancelTimer { timer_id } => self.io.cancel_timer(timer_id),
                 EngineReg::SetTimerRef {
                     timer_id,
@@ -630,283 +555,54 @@ mod imp {
                 EngineReg::RemoveRead { fd } => self.io.remove_read(fd),
                 EngineReg::RemoveWrite { fd } => self.io.remove_write(fd),
                 EngineReg::Proc { pid, resolver_id } => {
-                    let op = self.io.next_external_id();
-                    self.io.submit_proc_exit(op, pid);
-                    self.external.insert(
-                        op,
-                        ExternalRecord::Proc {
-                            owner: owner_id,
-                            pid,
-                            resolver_id,
-                        },
-                    );
+                    self.io.submit_proc(owner_id, pid, resolver_id)
                 }
-                EngineReg::WakeSource { fd } => self.arm_wake_source(owner_id, fd),
+                EngineReg::WakeSource { fd } => self.io.register_wake_source(owner_id, fd),
                 EngineReg::AddVnode {
                     fd,
                     path,
                     callback_id,
-                } => self.add_vnode(owner_id, fd, path, callback_id),
-                EngineReg::RemoveVnode { fd } => self.remove_vnode(owner_id, fd),
+                } => self.io.add_vnode(owner_id, fd, path, callback_id),
+                EngineReg::RemoveVnode { fd } => self.io.remove_vnode(owner_id, fd),
                 EngineReg::AddSignal { signo, callback_id } => {
-                    self.add_signal(owner_id, signo, callback_id)
+                    self.io.add_signal(owner_id, signo, callback_id)
                 }
-                EngineReg::RemoveSignal { signo } => self.remove_signal(owner_id, signo),
+                EngineReg::RemoveSignal { signo } => self.io.remove_signal(owner_id, signo),
             }
         }
 
-        fn add_vnode(&mut self, owner: u64, fd: i32, path: std::path::PathBuf, callback_id: usize) {
-            self.remove_vnode(owner, fd);
-            let Ok(watch) = self.io.add_fs_watch(&path, fs_event::ALL) else {
-                crate::async_rt::js_calls::unregister_callback(callback_id);
-                return;
-            };
-            let op = self.io.next_external_id();
-            self.io.submit_watch_next(op, watch);
-            self.external
-                .insert(op, ExternalRecord::VnodeNext { owner, fd, watch });
-            self.vnodes.insert(
-                (owner, fd),
-                VnodeEntry {
+        /// Classify one reactor completion into the single owner-tagged
+        /// delivery vocabulary used by both in-pump `tick()` and the outer
+        /// reactor drive.
+        fn dispatch_completion(&mut self, user_data: u64, res: i32) -> Option<Delivery> {
+            match self.io.dispatch(user_data, res) {
+                crate::reactor::io::Dispatch::Resolved(resolved) => Some(Delivery::Event {
+                    owner: resolved.owner,
+                    event: crate::reactor::workload::ReactorEvent::Resolve {
+                        resolver_id: resolved.resolver_id,
+                        result: resolved.result,
+                    },
+                }),
+                crate::reactor::io::Dispatch::Callback {
                     owner,
-                    watch,
-                    path,
                     callback_id,
-                },
-            );
-        }
-
-        fn remove_vnode(&mut self, owner: u64, fd: i32) {
-            if let Some(entry) = self.vnodes.remove(&(owner, fd)) {
-                let _ = self.io.remove_kernel_watch(entry.watch);
-                crate::async_rt::js_calls::unregister_callback(entry.callback_id);
-            }
-        }
-
-        fn add_signal(&mut self, owner: u64, signo: i32, callback_id: usize) {
-            self.remove_signal(owner, signo);
-            let Ok(watch) = self.io.add_signal_watch(signo) else {
-                crate::async_rt::js_calls::unregister_callback(callback_id);
-                return;
-            };
-            let op = self.io.next_external_id();
-            self.io.submit_watch_next(op, watch);
-            self.external.insert(
-                op,
-                ExternalRecord::SignalNext {
+                    fflags,
+                } => Some(Delivery::Event {
                     owner,
-                    signo,
-                    watch,
-                },
-            );
-            self.signals.insert(
-                (owner, signo),
-                SignalEntry {
-                    owner,
-                    watch,
-                    callback_id,
-                },
-            );
-        }
-
-        fn remove_signal(&mut self, owner: u64, signo: i32) {
-            if let Some(entry) = self.signals.remove(&(owner, signo)) {
-                let _ = self.io.remove_kernel_watch(entry.watch);
-                crate::async_rt::js_calls::unregister_callback(entry.callback_id);
-            }
-        }
-
-        fn arm_wake_source(&mut self, owner: u64, fd: i32) {
-            let op = self.io.next_external_id();
-            self.io.submit_external(
-                op,
-                cherenkov::Op::PollIn {
-                    src: cherenkov::Source::fd(fd),
-                },
-            );
-            self.external
-                .insert(op, ExternalRecord::WakeSource { owner, fd });
-        }
-
-        /// Route one `Dispatch::External` completion through its record:
-        /// tear down errored watches, re-arm surviving ones, and return what
-        /// (if anything) to deliver to which owner. Shared by the drive
-        /// loop's `on_completion` and the in-pump `engine_tick`.
-        pub(super) fn route_external(
-            &mut self,
-            user_data: u64,
-            res: i32,
-        ) -> Option<(u64, ExternalDelivery)> {
-            let record = self.external.remove(&user_data)?;
-            match record {
-                ExternalRecord::Proc {
-                    owner, resolver_id, ..
-                } => Some((owner, ExternalDelivery::ProcExit { resolver_id })),
-                ExternalRecord::VnodeNext { owner, fd, watch } => {
-                    if res == err::CANCELED || res == err::BUSY {
-                        return None;
-                    }
-                    // A reused fd number keys a FRESH watch: a stale
-                    // completion armed on the old watch must neither tear it
-                    // down nor deliver to it.
-                    let live = self
-                        .vnodes
-                        .get(&(owner, fd))
-                        .is_some_and(|entry| entry.watch == watch);
-                    if !live {
-                        return None;
-                    }
-                    if res < 0 {
-                        self.vnodes.remove(&(owner, fd));
-                        return None;
-                    }
-                    let entry = self.vnodes.get(&(owner, fd))?;
-                    let callback_id = entry.callback_id;
-                    let op = self.io.next_external_id();
-                    self.io.submit_watch_next(op, watch);
-                    self.external
-                        .insert(op, ExternalRecord::VnodeNext { owner, fd, watch });
-                    Some((
-                        owner,
-                        ExternalDelivery::Callback {
-                            callback_id,
-                            fflags: Some(super::super::imp::fs_to_note(res)),
-                        },
-                    ))
+                    event: crate::reactor::workload::ReactorEvent::Callback {
+                        callback_id,
+                        fflags,
+                    },
+                }),
+                crate::reactor::io::Dispatch::Runnable { owner } => {
+                    Some(Delivery::Runnable { owner })
                 }
-                ExternalRecord::SignalNext {
-                    owner,
-                    signo,
-                    watch,
-                } => {
-                    let live = self
-                        .signals
-                        .get(&(owner, signo))
-                        .is_some_and(|entry| entry.watch == watch);
-                    if res < 0 {
-                        if live && res != err::CANCELED && res != err::BUSY {
-                            self.signals.remove(&(owner, signo));
-                        }
-                        return None;
-                    }
-                    if !live {
-                        return None;
-                    }
-                    let entry = self.signals.get(&(owner, signo))?;
-                    let callback_id = entry.callback_id;
-                    let op = self.io.next_external_id();
-                    self.io.submit_watch_next(op, watch);
-                    self.external.insert(
-                        op,
-                        ExternalRecord::SignalNext {
-                            owner,
-                            signo,
-                            watch,
-                        },
-                    );
-                    Some((
-                        owner,
-                        ExternalDelivery::Callback {
-                            callback_id,
-                            fflags: None,
-                        },
-                    ))
-                }
-                ExternalRecord::RePoll { owner } => Some((owner, ExternalDelivery::Repoll)),
-                ExternalRecord::WakeSource { owner, fd } => {
-                    if res < 0 {
-                        // Canceled or errored: drop the wake source.
-                        return None;
-                    }
-                    // Drain the pipe; EOF (write end closed) retires the
-                    // source — re-arming a drained-EOF fd would
-                    // complete-readable forever.
-                    let mut buf = [0u8; 64];
-                    let eof = loop {
-                        let n = unsafe {
-                            libc::read(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, buf.len())
-                        };
-                        if n == 0 {
-                            break true;
-                        }
-                        if n < 0 {
-                            break false;
-                        }
-                    };
-                    if !eof {
-                        self.arm_wake_source(owner, fd);
-                    }
-                    Some((owner, ExternalDelivery::Wake))
-                }
+                crate::reactor::io::Dispatch::Handled => None,
             }
         }
 
         fn replace_reactor(&mut self, reactor: Reactor) {
             self.io.replace_reactor(reactor);
-
-            let mut invalid_vnodes = Vec::new();
-            for (key, entry) in &mut self.vnodes {
-                match self.io.add_fs_watch(&entry.path, fs_event::ALL) {
-                    Ok(watch) => entry.watch = watch,
-                    Err(_) => invalid_vnodes.push(*key),
-                }
-            }
-            for key in invalid_vnodes {
-                if let Some(entry) = self.vnodes.remove(&key) {
-                    crate::async_rt::js_calls::unregister_callback(entry.callback_id);
-                }
-                self.external.retain(|_, record| {
-                    !matches!(record, ExternalRecord::VnodeNext { owner, fd, .. } if (*owner, *fd) == key)
-                });
-            }
-
-            let mut invalid_signals = Vec::new();
-            for (key, entry) in &mut self.signals {
-                match self.io.add_signal_watch(key.1) {
-                    Ok(watch) => entry.watch = watch,
-                    Err(_) => invalid_signals.push(*key),
-                }
-            }
-            for key in invalid_signals {
-                if let Some(entry) = self.signals.remove(&key) {
-                    crate::async_rt::js_calls::unregister_callback(entry.callback_id);
-                }
-                self.external.retain(|_, record| {
-                    !matches!(record, ExternalRecord::SignalNext { owner, signo, .. } if (*owner, *signo) == key)
-                });
-            }
-
-            for (&id, record) in self.external.iter_mut() {
-                match record {
-                    ExternalRecord::Proc { pid, .. } => self.io.submit_proc_exit(id, *pid),
-                    ExternalRecord::VnodeNext { owner, fd, watch } => {
-                        // The rebuilt watch has a fresh WatchId; the armed
-                        // record must carry it or delivery validation would
-                        // treat every event as stale.
-                        if let Some(entry) = self.vnodes.get(&(*owner, *fd)) {
-                            *watch = entry.watch;
-                            self.io.submit_watch_next(id, entry.watch);
-                        }
-                    }
-                    ExternalRecord::SignalNext {
-                        owner,
-                        signo,
-                        watch,
-                    } => {
-                        if let Some(entry) = self.signals.get(&(*owner, *signo)) {
-                            *watch = entry.watch;
-                            self.io.submit_watch_next(id, entry.watch);
-                        }
-                    }
-                    ExternalRecord::RePoll { .. } => self.io.submit_external_timeout(id, 25),
-                    ExternalRecord::WakeSource { fd, .. } => self.io.submit_external(
-                        id,
-                        cherenkov::Op::PollIn {
-                            src: cherenkov::Source::fd(*fd),
-                        },
-                    ),
-                }
-            }
         }
     }
 
@@ -931,7 +627,7 @@ mod imp {
         active: Option<(u64, ActiveWorkload)>,
         /// Routes retained while this reactor drains operations submitted before
         /// their owning isolate moved to another thread.
-        forwarded: HashMap<u64, ForwardRoute>,
+        forwarded: HashMap<u64, ControlRoute>,
         /// Workloads with work ready to run (fresh wake, or a completion landed).
         runnable: HashSet<u64>,
         /// Workload ids pre-announced by a move source but not attached yet.
@@ -968,9 +664,6 @@ mod imp {
             config,
             resources: Box::new(EngineResources {
                 io: crate::reactor::io::RuntimeIo::new(reactor),
-                external: HashMap::new(),
-                vnodes: HashMap::new(),
-                signals: HashMap::new(),
                 deferred: Vec::new(),
             }),
             control_rx,
@@ -1034,18 +727,6 @@ mod imp {
             let r = unsafe { &mut *resources };
             let _ = r.io.wait(timeout, &mut buf);
         }
-        enum Inline {
-            Resolve {
-                resolver_id: usize,
-                result: f64,
-            },
-            Callback {
-                callback_id: usize,
-                fflags: Option<u32>,
-            },
-            /// A drained wake for the current workload — counted, no action.
-            Wake,
-        }
         let mut dispatched = 0i32;
         for c in &buf {
             let (user_data, res) = (c.user_data, c.res);
@@ -1062,105 +743,40 @@ mod imp {
                 }
                 continue;
             }
-            let inline = {
+            let delivery = {
                 let r = unsafe { &mut *resources };
-                match r.io.dispatch(user_data, res) {
-                    crate::reactor::io::Dispatch::Resolved(resolved) => {
-                        let crate::reactor::io::Target { id, resolver_id } = resolved.target;
-                        if id == owner {
-                            Some(Inline::Resolve {
-                                resolver_id,
-                                result: resolved.result,
-                            })
-                        } else {
-                            r.deferred.push(Deferred::Resolve {
-                                owner: id,
-                                resolver_id,
-                                result: resolved.result,
-                            });
-                            None
-                        }
+                match r.dispatch_completion(user_data, res) {
+                    Some(delivery) if delivery.owner() != owner => {
+                        r.deferred.push(Deferred::Delivery(delivery));
+                        None
                     }
-                    crate::reactor::io::Dispatch::Handled => None,
-                    crate::reactor::io::Dispatch::External => {
-                        match r.route_external(user_data, res) {
-                            Some((own, ExternalDelivery::ProcExit { resolver_id }))
-                                if own == owner =>
-                            {
-                                Some(Inline::Resolve {
-                                    resolver_id,
-                                    result: 0.0,
-                                })
-                            }
-                            Some((
-                                own,
-                                ExternalDelivery::Callback {
-                                    callback_id,
-                                    fflags,
-                                },
-                            )) if own == owner => Some(Inline::Callback {
-                                callback_id,
-                                fflags,
-                            }),
-                            Some((own, ExternalDelivery::Repoll)) => {
-                                if own != owner {
-                                    r.deferred.push(Deferred::Runnable { owner: own });
-                                }
-                                None
-                            }
-                            Some((own, ExternalDelivery::Wake)) => {
-                                if own == owner {
-                                    Some(Inline::Wake)
-                                } else {
-                                    r.deferred.push(Deferred::Runnable { owner: own });
-                                    None
-                                }
-                            }
-                            Some((own, ExternalDelivery::ProcExit { resolver_id })) => {
-                                r.deferred.push(Deferred::Resolve {
-                                    owner: own,
-                                    resolver_id,
-                                    result: 0.0,
-                                });
-                                None
-                            }
-                            Some((
-                                own,
-                                ExternalDelivery::Callback {
-                                    callback_id,
-                                    fflags,
-                                },
-                            )) => {
-                                r.deferred.push(Deferred::Event {
-                                    owner: own,
-                                    event: crate::reactor::workload::ReactorEvent::Callback {
-                                        callback_id,
-                                        fflags,
-                                    },
-                                });
-                                None
-                            }
-                            None => None,
-                        }
-                    }
+                    delivery => delivery,
                 }
             };
-            match inline {
-                Some(Inline::Resolve {
-                    resolver_id,
-                    result,
+            match delivery {
+                Some(Delivery::Event {
+                    event:
+                        crate::reactor::workload::ReactorEvent::Resolve {
+                            resolver_id,
+                            result,
+                        },
+                    ..
                 }) => {
                     dispatched += 1;
                     crate::async_rt::resolve_io_completion(scope, resolver_id, result);
                 }
-                Some(Inline::Callback {
-                    callback_id,
-                    fflags,
+                Some(Delivery::Event {
+                    event:
+                        crate::reactor::workload::ReactorEvent::Callback {
+                            callback_id,
+                            fflags,
+                        },
+                    ..
                 }) => {
                     dispatched += 1;
                     crate::reactor::workload::invoke_reactor_callback(scope, callback_id, fflags);
                 }
-                Some(Inline::Wake) => dispatched += 1,
+                Some(Delivery::Runnable { .. }) => dispatched += 1,
                 None => {}
             }
         }
@@ -1365,31 +981,10 @@ mod imp {
 
         fn handle_control(&mut self, msg: Control) {
             match msg {
-                Control::PlaceRealm {
-                    workload_id,
-                    entry_path,
-                    rules_json,
-                    realm_data,
-                    realm_bootstrap_data,
-                    watch_mode,
-                    repl_mode,
-                    priority_class,
-                    port_half,
-                    allocation_half,
-                } => {
+                Control::PlaceRealm(placement) => {
+                    let workload_id = placement.workload_id;
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.place_realm(
-                            workload_id,
-                            entry_path,
-                            rules_json,
-                            realm_data,
-                            realm_bootstrap_data,
-                            watch_mode,
-                            repl_mode,
-                            priority_class,
-                            port_half,
-                            allocation_half,
-                        );
+                        self.place_realm(placement);
                     }));
                     if result.is_err() {
                         set_engine_owner(0);
@@ -1406,9 +1001,8 @@ mod imp {
                 }
                 Control::Move {
                     workload_id,
-                    destination_tx,
-                    destination_notify,
-                } => self.move_workload(workload_id, destination_tx, destination_notify),
+                    destination,
+                } => self.move_workload(workload_id, destination),
                 Control::ExpectAttach { workload_id } => {
                     self.incoming.insert(workload_id);
                 }
@@ -1453,12 +1047,7 @@ mod imp {
             }
         }
 
-        fn move_workload(
-            &mut self,
-            workload_id: u64,
-            destination_tx: mpsc::Sender<Control>,
-            destination_notify: ReactorNotifier,
-        ) {
+        fn move_workload(&mut self, workload_id: u64, destination: ControlRoute) {
             if let Some(reason) = self
                 .workloads
                 .get(&workload_id)
@@ -1470,24 +1059,17 @@ mod imp {
                 });
                 return;
             }
-            if self.resources.external.values().any(|record| match record {
-                ExternalRecord::Proc { owner, .. }
-                | ExternalRecord::VnodeNext { owner, .. }
-                | ExternalRecord::SignalNext { owner, .. }
-                | ExternalRecord::RePoll { owner }
-                | ExternalRecord::WakeSource { owner, .. } => *owner == workload_id,
-            }) {
+            if self.resources.io.has_unmovable(workload_id) {
                 self.report(Report::MoveRejected {
                     workload_id,
                     reason: "reactor-watch-active",
                 });
                 return;
             }
-            let route = ForwardRoute {
-                tx: destination_tx,
-                notify: destination_notify.clone(),
-            };
-            if route.send(Control::ExpectAttach { workload_id }).is_err() {
+            if destination
+                .send(Control::ExpectAttach { workload_id })
+                .is_err()
+            {
                 self.report(Report::MoveRejected {
                     workload_id,
                     reason: "destination-unavailable",
@@ -1498,7 +1080,7 @@ mod imp {
                 self.deactivate_active();
             }
             let Some(workload) = self.workloads.remove(&workload_id) else {
-                let _ = route.send(Control::CancelAttach { workload_id });
+                let _ = destination.send(Control::CancelAttach { workload_id });
                 self.report(Report::MoveRejected {
                     workload_id,
                     reason: "realm-not-found",
@@ -1510,21 +1092,21 @@ mod imp {
             let source_notify = self.resources.io.notifier();
             workload
                 .inner
-                .install_wake_notifier(destination_notify.current(), post_wake(workload_id));
+                .install_wake_notifier(destination.notify.current(), post_wake(workload_id));
             let attach = Control::Attach {
                 workload: TransferWorkload {
                     workload,
                     operations,
                 },
             };
-            if let Err(returned) = route.send(attach)
+            if let Err(returned) = destination.send(attach)
                 && let Control::Attach { workload } = *returned
             {
                 let TransferWorkload {
                     workload,
                     operations,
                 } = workload;
-                let _ = route.send(Control::CancelAttach { workload_id });
+                let _ = destination.send(Control::CancelAttach { workload_id });
                 workload
                     .inner
                     .install_wake_notifier(source_notify, post_wake(workload_id));
@@ -1537,24 +1119,23 @@ mod imp {
                 });
                 return;
             }
-            self.forwarded.insert(workload_id, route);
+            self.forwarded.insert(workload_id, destination);
             self.finish_forwarding_if_drained(workload_id);
         }
 
-        #[allow(clippy::too_many_arguments)]
-        fn place_realm(
-            &mut self,
-            workload_id: u64,
-            entry_path: String,
-            rules_json: String,
-            realm_data: Option<String>,
-            realm_bootstrap_data: Option<String>,
-            watch_mode: bool,
-            repl_mode: bool,
-            priority_class: u8,
-            port_half: (u32, i32),
-            allocation_half: (u32, i32),
-        ) {
+        fn place_realm(&mut self, placement: RealmPlacement) {
+            let RealmPlacement {
+                workload_id,
+                entry_path,
+                rules_json,
+                realm_data,
+                realm_bootstrap_data,
+                watch_mode,
+                repl_mode,
+                priority_class,
+                port_half,
+                allocation_half,
+            } = placement;
             let import_rules: Vec<crate::state::ImportRule> =
                 match serde_json::from_str(&rules_json) {
                     Ok(rules) => rules,
@@ -1761,17 +1342,13 @@ mod imp {
             while first_harvest || self.resources.io.pending() > 0 {
                 first_harvest = false;
                 self.resources.io.cancel_all();
-                for id in self.resources.external.keys().copied().collect::<Vec<_>>() {
-                    self.resources.io.cancel_external(id);
-                }
                 let mut completions = std::mem::take(&mut self.scratch);
                 completions.clear();
                 let timeout = (self.resources.io.pending() == 0).then_some(Duration::ZERO);
                 let _ = self.resources.io.wait(timeout, &mut completions);
                 for completion in &completions {
                     let canceled_live = completion.res == err::CANCELED
-                        && (self.resources.io.is_live_record(completion.user_data)
-                            || self.resources.external.contains_key(&completion.user_data));
+                        && self.resources.io.is_live_record(completion.user_data);
                     if !canceled_live {
                         self.route(completion.user_data, completion.res);
                     }
@@ -1782,11 +1359,7 @@ mod imp {
         }
 
         fn arm_repoll(&mut self, owner: u64) {
-            let op = self.resources.io.next_external_id();
-            self.resources.io.submit_external_timeout(op, 25);
-            self.resources
-                .external
-                .insert(op, ExternalRecord::RePoll { owner });
+            self.resources.io.submit_repoll(owner, 25);
         }
 
         /// Route one completion to its owner. `res` is the operation result: a
@@ -1794,42 +1367,22 @@ mod imp {
         /// (for a bare `PollOut`) 0; a negative value is `-errno`. The tenant's
         /// promise resolver gets it verbatim during the next pump.
         fn on_completion(&mut self, user_data: u64, res: i32) {
-            match self.resources.io.dispatch(user_data, res) {
-                crate::reactor::io::Dispatch::Resolved(resolved) => {
-                    let crate::reactor::io::Target { id, resolver_id } = resolved.target;
-                    self.deliver_completion(id, resolver_id, resolved.result);
-                    self.finish_forwarding_if_drained(id);
-                }
-                crate::reactor::io::Dispatch::Handled => {}
-                crate::reactor::io::Dispatch::External => {
-                    match self.resources.route_external(user_data, res) {
-                        Some((owner, ExternalDelivery::ProcExit { resolver_id })) => {
-                            self.deliver_completion(owner, resolver_id, 0.0);
-                        }
-                        Some((
-                            owner,
-                            ExternalDelivery::Callback {
-                                callback_id,
-                                fflags,
-                            },
-                        )) => {
-                            self.deliver_event(
-                                owner,
-                                crate::reactor::workload::ReactorEvent::Callback {
-                                    callback_id,
-                                    fflags,
-                                },
-                            );
-                        }
-                        Some((owner, ExternalDelivery::Repoll | ExternalDelivery::Wake)) => {
-                            if self.workloads.contains_key(&owner) {
-                                self.runnable.insert(owner);
-                            }
-                        }
-                        None => {}
+            if let Some(delivery) = self.resources.dispatch_completion(user_data, res) {
+                self.deliver(delivery);
+            }
+        }
+
+        fn deliver(&mut self, delivery: Delivery) {
+            let owner = delivery.owner();
+            match delivery {
+                Delivery::Event { event, .. } => self.deliver_event(owner, event),
+                Delivery::Runnable { .. } => {
+                    if self.workloads.contains_key(&owner) {
+                        self.runnable.insert(owner);
                     }
                 }
             }
+            self.finish_forwarding_if_drained(owner);
         }
 
         /// Route the foreign completions an in-pump `tick()` set aside.
@@ -1839,17 +1392,7 @@ mod imp {
                 for item in deferred {
                     match item {
                         Deferred::Post { user_data, res } => self.route(user_data, res),
-                        Deferred::Resolve {
-                            owner,
-                            resolver_id,
-                            result,
-                        } => self.deliver_completion(owner, resolver_id, result),
-                        Deferred::Event { owner, event } => self.deliver_event(owner, event),
-                        Deferred::Runnable { owner } => {
-                            if self.workloads.contains_key(&owner) {
-                                self.runnable.insert(owner);
-                            }
-                        }
+                        Deferred::Delivery(delivery) => self.deliver(delivery),
                     }
                 }
             }
@@ -1919,50 +1462,6 @@ mod imp {
         /// that owns its memory — must stay alive until then.
         fn cancel_owned(&mut self, id: u64) {
             self.resources.io.cancel_owner(id);
-            let external: Vec<u64> = self
-                .resources
-                .external
-                .iter()
-                .filter_map(|(op, record)| match record {
-                    ExternalRecord::Proc { owner, .. }
-                    | ExternalRecord::VnodeNext { owner, .. }
-                    | ExternalRecord::SignalNext { owner, .. }
-                    | ExternalRecord::RePoll { owner }
-                    | ExternalRecord::WakeSource { owner, .. }
-                        if *owner == id =>
-                    {
-                        Some(*op)
-                    }
-                    _ => None,
-                })
-                .collect();
-            for op in external {
-                self.resources.io.cancel_external(op);
-                self.resources.external.remove(&op);
-            }
-            let vnode_keys: Vec<(u64, i32)> = self
-                .resources
-                .vnodes
-                .keys()
-                .filter(|(owner, _)| *owner == id)
-                .copied()
-                .collect();
-            for key in vnode_keys {
-                if let Some(entry) = self.resources.vnodes.remove(&key) {
-                    let _ = self.resources.io.remove_kernel_watch(entry.watch);
-                }
-            }
-            let signals: Vec<(u64, i32)> = self
-                .resources
-                .signals
-                .iter()
-                .filter_map(|(key, entry)| (entry.owner == id).then_some(*key))
-                .collect();
-            for key in signals {
-                if let Some(entry) = self.resources.signals.remove(&key) {
-                    let _ = self.resources.io.remove_kernel_watch(entry.watch);
-                }
-            }
         }
 
         /// Wait until every doomed op's completion has been harvested (so its
@@ -2092,21 +1591,36 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    use super::imp::select_next_id;
+    use super::imp::{Delivery, select_next_id};
     use super::{ENGINE_CONTEXT, EngineOwnerScope};
     use std::cmp::Ordering;
     use std::collections::HashSet;
 
     #[test]
-    fn keeps_active_workload_when_it_still_has_priority() {
-        let runnable = HashSet::from([7, 11]);
-        let selected = select_next_id(&runnable, |a, b| a.cmp(&b));
+    fn completion_delivery_keeps_its_owner_and_resolver_payload() {
+        let delivery = Delivery::Event {
+            owner: 7,
+            event: crate::reactor::workload::ReactorEvent::Resolve {
+                resolver_id: 11,
+                result: 13.0,
+            },
+        };
 
-        assert_eq!(selected, Some(7));
+        assert_eq!(delivery.owner(), 7);
+        assert!(matches!(
+            delivery,
+            Delivery::Event {
+                owner: 7,
+                event: crate::reactor::workload::ReactorEvent::Resolve {
+                    resolver_id: 11,
+                    result: 13.0,
+                },
+            }
+        ));
     }
 
     #[test]
-    fn selects_a_different_workload_only_when_it_outranks_active() {
+    fn keeps_active_workload_when_it_still_has_priority() {
         let runnable = HashSet::from([7, 11]);
         let selected = select_next_id(&runnable, |a, b| a.cmp(&b));
 
@@ -2165,7 +1679,10 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
     let (report_tx, report_rx) = mpsc::channel::<Report>();
     let reactor =
         cherenkov::Reactor::new().map_err(|e| format!("reactor engine: init failed: {e}"))?;
-    let control_notify = ReactorNotifier::new(reactor.notifier());
+    let control = ControlRoute {
+        tx: control_tx,
+        notify: ReactorNotifier::new(reactor.notifier()),
+    };
     let report_seq = Arc::new(AtomicU64::new(0));
     let alive = Arc::new(AtomicBool::new(true));
     let generation = Arc::new(AtomicU64::new(1));
@@ -2176,7 +1693,7 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
     let supervisor_wake = orch_wake.clone();
     let supervisor_alive = Arc::clone(&alive);
     let supervisor_generation = Arc::clone(&generation);
-    let supervisor_control_notify = control_notify.clone();
+    let supervisor_control_notify = control.notify.clone();
     let join = std::thread::Builder::new()
         .name("reactor-supervisor".to_string())
         .spawn(move || {
@@ -2251,8 +1768,7 @@ pub fn spawn_reactor(config: ReactorConfig) -> Result<ReactorHandle, String> {
         .map_err(|e| format!("failed to spawn reactor thread: {e}"))?;
 
     Ok(ReactorHandle {
-        control_tx,
-        control_notify,
+        control,
         report_rx,
         report_seq,
         report_seen: Cell::new(0),
