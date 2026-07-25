@@ -9,11 +9,11 @@
 *   - a resolve hook that turns an import specifier plus the referrer's directory
 *     into a canonical absolute path (handling relative paths, `file://` URLs,
 *     absolute paths, bare package specifiers via the package map, and extension
-*     probing for `.ts`/`.mts`/`.mjs`/`.js`/`.json`);
+*     probing for `.ts`/`.tsx`/`.mts`/`.mdx`/`.jsx`/`.mjs`/`.js`/`.json`);
 *   - an import.meta hook that populates `url`, `filename`, `dirname`, and a
 *     module-local `resolve()` on each filesystem module's `import.meta`;
-*   - a transpile hook that lowers TypeScript (and `.sql` modules) to executable
-*     JavaScript with a source map.
+*   - a transpile hook that lowers TypeScript, MDX, and `.sql` modules to
+*     executable JavaScript with a source map.
 *
 * Bare specifiers are resolved against the package map produced by
 * `fino install` (surfaced through `internal:loader-hooks`). Resolution is
@@ -39,6 +39,7 @@ import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from './encoding.ts';
 import { registerResolve, registerInitMeta, registerTranspile, getPackageMap } from 'internal:loader-hooks';
 import { transpile as transpileTypeScript } from 'fino:format/typescript';
+import { compileMdx } from 'fino:format/mdx';
 import { parseSqlModule, toSqlModuleSource } from 'fino:database/sql';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const lib = dlopen(LIBC, {
@@ -198,7 +199,7 @@ function resolveWithPackageMap(specifier: string, referrerDir: string | null): s
 * in the package map; if that yields nothing, it falls back to being resolved
 * relative to `root`. Once a raw path is chosen it is canonicalized, and if that
 * names a nonexistent or directory path the loader probes `.ts`, `.mts`, `.mjs`,
-* `.js`, and `.json` extensions in that order.
+* `.tsx`, `.mdx`, `.jsx`, `.js`, and `.json` extensions in that order.
 *
 * Throws if the specifier cannot be resolved to an existing file, and (via the
 * package-map lookup) if a bare specifier has no package-map entry — the error
@@ -220,10 +221,13 @@ function resolve(specifier: string, referrerDir: string | null, root: string): s
   }
   const canonical = realpath(raw);
   if (canonical !== null && !isDirectory(canonical)) return canonical;
-  // Extension probing: try TypeScript, JS, and JSON extensions in order.
+  // Extension probing: try TypeScript, MDX, JS, and JSON extensions in order.
   for (const ext of [
     '.ts',
+    '.tsx',
     '.mts',
+    '.mdx',
+    '.jsx',
     '.mjs',
     '.js',
     '.json'
@@ -281,7 +285,10 @@ function initImportMeta(importMeta: ImportMeta & {
     if (canonical !== null && !isDirectory(canonical)) return fileUrlFromPath(canonical);
     for (const ext of [
       '.ts',
+      '.tsx',
       '.mts',
+      '.mdx',
+      '.jsx',
       '.mjs',
       '.js',
       '.json'
@@ -308,6 +315,16 @@ function transpile(source: string, filename: string): {
   code: string;
   map: string;
 } {
+  if (filename.endsWith('.mdx')) {
+    const result = compileMdx(source, { filename });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((diagnostic) => `${diagnostic.line}:${diagnostic.column} ${diagnostic.message}`).join('\n') || `Unable to compile MDX module ${filename}`);
+    }
+    return {
+      code: result.code,
+      map: result.map
+    };
+  }
   if (filename.endsWith('.sql')) {
     const generated = toSqlModuleSource(parseSqlModule(source, { source: filename }));
     const result = transpileTypeScript(generated, { filename: filename + '.ts' });

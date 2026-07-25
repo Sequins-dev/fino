@@ -15,6 +15,25 @@
 */
 import { Fragment, h, type Child, type Props, type VNode, type VNodeType } from 'fino:ui';
 export { Fragment };
+
+/**
+* TypeScript JSX types shared by `.tsx` applications using Fino's automatic
+* runtime. Intrinsic element names and attributes remain host-defined, so the
+* base runtime accepts any element while preserving type checking for component
+* props.
+*/
+export namespace JSX {
+  /** Value returned from JSX expressions. */
+  export type Element = VNode;
+  /** Property containing nested JSX children. */
+  export interface ElementChildrenAttribute {
+    children: Child;
+  }
+  /** Host elements are intentionally renderer-defined. */
+  export interface IntrinsicElements {
+    [name: string]: Props;
+  }
+}
 /**
 * Create one VNode for TypeScript's automatic JSX transform.
 *

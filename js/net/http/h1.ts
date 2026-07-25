@@ -233,17 +233,37 @@ async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: s
       rawBytes: null
     };
   }
-  // No trailers, no framing: pre-buffer to inject Content-Length.
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of rawBody) {
-    const u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-    parts.push(u8);
-    total += u8.byteLength;
+  // HTTP/1.0 has no chunked transfer coding, so retain the compatibility path
+  // that buffers an otherwise unframed body and emits Content-Length.
+  if (version === 'HTTP/1.0') {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for await (const chunk of rawBody) {
+      const u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      parts.push(u8);
+      total += u8.byteLength;
+    }
+    const bytes = total === 0 ? EMPTY_BYTES : _concat(parts, total);
+    const headers = new Headers(res.headers);
+    if (!noBodyStatus) headers.set('content-length', String(bytes.byteLength));
+    headers.set('connection', connHeader);
+    return {
+      wire: buildWireResponse({
+        version,
+        status: res.status,
+        statusText: res.statusText,
+        headers,
+        body: null
+      }),
+      rawBytes: bytes
+    };
   }
-  const bytes = total === 0 ? EMPTY_BYTES : _concat(parts, total);
+
+  // RFC 9112 sections 6.3 and 7.1: an HTTP/1.1 stream whose size is not
+  // known in advance is length-delimited with chunked transfer coding. This
+  // sends headers and each body chunk immediately instead of waiting for EOF.
   const headers = new Headers(res.headers);
-  if (!noBodyStatus) headers.set('content-length', String(bytes.byteLength));
+  headers.set('transfer-encoding', 'chunked');
   headers.set('connection', connHeader);
   return {
     wire: buildWireResponse({
@@ -251,9 +271,9 @@ async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: s
       status: res.status,
       statusText: res.statusText,
       headers,
-      body: null
+      body: rawBody
     }),
-    rawBytes: bytes
+    rawBytes: null
   };
 }
 function _getHeadBuf(headStr: string): Uint8Array {

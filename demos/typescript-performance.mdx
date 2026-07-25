@@ -1,0 +1,579 @@
+import { Arrow, Callout, Decision, Evidence, Eyebrow, Flow, FlowNode, Grid, Layer, Lead, Metric, Panel, Rule } from './typescript-performance-components.tsx'
+export const meta = { title: 'The TypeScript coordination layer', author: 'Fino · runtime architecture' }
+export const theme = { paper: '#f4f0e5', ink: '#0d1b1e', accent: '#ee5b40', muted: '#66777a' }
+
+<Eyebrow>Fino runtime architecture · 2026</Eyebrow>
+
+# The TypeScript coordination layer
+
+<Rule />
+
+<Lead>A runtime architecture built by pushing native code to the edges—and keeping the decisions in TypeScript.</Lead>
+
+<Footer>Coordinate in TypeScript · compute at the edge</Footer>
+
+<Notes>This is a story about architectural boundaries, not a contest between languages. Fino uses native code aggressively where native work is irreducible. The performance result comes from being equally aggressive about keeping policy, ownership, and coordination on one side of that boundary.</Notes>
+
+---
+
+<Eyebrow>Premise · Start with total work</Eyebrow>
+
+## The question is not which language is faster
+
+<Grid columns={3}>
+  <Panel title="Local speed"><div>How fast does one loop execute?</div></Panel>
+  <Panel title="Boundary cost" tone="amber"><div>What must be copied, converted, pinned, synchronized, or reconstructed?</div></Panel>
+  <Panel title="System work" tone="coral"><div>How much work can the architecture avoid entirely?</div></Panel>
+</Grid>
+
+<Callout label="Measure the system">A faster primitive can still produce a slower path when the architecture surrounds it with handoffs.</Callout>
+
+<Notes>Language comparisons usually isolate the compute loop. Runtime architecture cannot. It must account for preparing the call, transferring ownership, synchronizing state, returning the result, and making the next decision. The useful comparison is total work from intent to outcome.</Notes>
+
+---
+
+<Eyebrow>Premise · Crossings are architecture</Eyebrow>
+
+## A boundary is part of the hot path
+
+<Flow>
+  <FlowNode number="01" title="Prepare" detail="Shape arguments and establish ownership." />
+  <Arrow />
+  <FlowNode number="02" title="Cross" detail="Enter a different runtime and calling convention." tone="coral" />
+  <Arrow />
+  <FlowNode number="03" title="Return" detail="Decode status, results, and lifetime changes." tone="amber" />
+  <Arrow />
+  <FlowNode number="04" title="Continue" detail="Rejoin the state that decides what happens next." />
+</Flow>
+
+<Callout label="The hidden loop">A boundary paid once is infrastructure. A boundary paid for every decision becomes the architecture.</Callout>
+
+<Notes>A crossing is not merely a function call. Even with an efficient FFI, it creates a seam in ownership, observability, optimization, and control flow. That seam is cheap when it encloses a large primitive and expensive when coordination repeatedly bounces across it.</Notes>
+
+---
+
+<Eyebrow>Premise · The whole architecture</Eyebrow>
+
+## Put each kind of work where it belongs
+
+<div style={{ display: 'grid', gap: '.65em', width: '100%' }}>
+  <Layer label="Application" detail="Handlers, middleware, schemas, workflows" tone="coral">TypeScript objects stay TypeScript objects</Layer>
+  <Layer label="Coordination" detail="State, queues, timers, cancellation, policy" tone="cyan">TypeScript owns the moving system</Layer>
+  <Layer label="Primitive" detail="syscalls, engines, kernels, direct memory work" tone="ink">Native performs irreducible native work</Layer>
+</div>
+
+<Callout label="Architecture in one line">Keep decisions beside their state. Cross only to perform the primitive.</Callout>
+
+<Notes>This is the complete thesis. Application values and the coordination around them remain in TypeScript. Native code is reached at deliberately narrow edges: direct system access, mature complex engines, or operations over caller-owned bytes.</Notes>
+
+---
+
+<Eyebrow>Chapter I · Policy and state</Eyebrow>
+
+# Coordination is the runtime
+
+<Rule />
+
+<Lead>The runtime is not just the primitive. It is everything that decides when, whether, and how that primitive should run.</Lead>
+
+<Footer>Chapter I · Keep the next decision with its facts</Footer>
+
+<Notes>This chapter establishes why coordination is first-class performance work. It is branchy, stateful, and application-facing. Treating it as a thin wrapper around native code puts the majority of runtime behavior on the wrong side of the boundary.</Notes>
+
+---
+
+<Eyebrow>I · What coordination contains</Eyebrow>
+
+## Coordination is where the runtime decides
+
+<Grid columns={2}>
+  <Panel title="State"><div>Which operations exist?</div><div>Which objects and buffers do they own?</div></Panel>
+  <Panel title="Time" tone="amber"><div>What is ready now?</div><div>What should wait, retry, or expire?</div></Panel>
+  <Panel title="Policy" tone="coral"><div>What is allowed, cached, batched, routed, or rejected?</div></Panel>
+  <Panel title="Composition"><div>Which middleware, consumer, or continuation receives the result?</div></Panel>
+</Grid>
+
+<Notes>These are not peripheral concerns. They determine whether the primitive runs at all, how much work it receives, and what happens afterward. The coordination layer owns the control plane of the runtime.</Notes>
+
+---
+
+<Eyebrow>I · Shape of the work</Eyebrow>
+
+## Coordination is a graph, not a kernel
+
+<Grid columns={3}>
+  <Panel title="Branchy"><div>Common cases, exceptional cases, policy gates, and cancellation.</div></Panel>
+  <Panel title="Stateful" tone="amber"><div>Decisions depend on objects that persist across many operations.</div></Panel>
+  <Panel title="Connected" tone="coral"><div>One event can affect queues, timers, consumers, and future work.</div></Panel>
+</Grid>
+
+<Callout label="Different optimization">Dense loops reward instruction-level speed. Coordination rewards locality of information and the ability to remove work.</Callout>
+
+<Notes>Native code is excellent at tight, predictable loops. Coordination has the opposite shape. It is a changing graph of state and policy. Its performance depends less on one branch executing quickly and more on avoiding duplicated state, redundant calls, and unnecessary handoffs.</Notes>
+
+---
+
+<Eyebrow>I · Policy needs context</Eyebrow>
+
+## Policy needs the same facts as execution
+
+<Flow>
+  <FlowNode number="STATE" title="What exists" detail="Objects, queues, views, ownership, and lifecycle." />
+  <Arrow />
+  <FlowNode number="POLICY" title="What should happen" detail="Limits, priority, batching, retry, and cancellation." tone="coral" />
+  <Arrow />
+  <FlowNode number="ACTION" title="What runs" detail="A local operation or one coarse native primitive." tone="amber" />
+</Flow>
+
+<Callout label="Locality">The cheapest policy decision is made beside the state that already proves the answer.</Callout>
+
+<Notes>Policy cannot be separated cleanly from state. A batching decision needs queue depth. A retry decision needs lifecycle and time. A cancellation decision needs ownership. If policy is native while application state is in TypeScript, every decision begins with synchronization.</Notes>
+
+---
+
+<Eyebrow>I · The cost of native coordination</Eyebrow>
+
+## Native coordination creates a second truth
+
+<Grid columns={2}>
+  <Panel title="TypeScript truth"><div>Application objects</div><div>promises and streams</div><div>middleware and policy</div></Panel>
+  <Panel title="Native mirror" tone="coral"><div>shadow structs</div><div>duplicated lifecycle flags</div><div>callbacks and wrapper handles</div></Panel>
+</Grid>
+
+<Callout label="Synchronization tax">Every mirrored fact needs a rule for creation, mutation, invalidation, error, and destruction.</Callout>
+
+<Notes>The problem is not only copying data. It is maintaining two authoritative representations of one operation. Each field requires synchronization rules, each lifetime requires coordination, and every failure path must keep both sides consistent.</Notes>
+
+---
+
+<Eyebrow>I · Ownership across two heaps</Eyebrow>
+
+## References become protocols
+
+<Grid columns={3}>
+  <Panel title="A local reference"><div>Direct identity</div><div>ordinary lifetime</div><div>one error model</div></Panel>
+  <Panel title="Across a boundary" tone="amber"><div>handle tables</div><div>pinning and retention</div><div>release messages</div></Panel>
+  <Panel title="On callback" tone="coral"><div>re-entry</div><div>result reconstruction</div><div>split stack traces</div></Panel>
+</Grid>
+
+<Callout label="What changed">The object did not become more useful. Its identity became a distributed protocol.</Callout>
+
+<Notes>Moving coordination native turns references into opaque handles and ordinary lifetimes into cross-runtime protocols. Callbacks fragment causality and error handling. None of this advances the application; it only preserves an abstraction that was split apart.</Notes>
+
+---
+
+<Eyebrow>I · The TypeScript advantage</Eyebrow>
+
+## The whole decision is visible in one place
+
+<Grid columns={2}>
+  <Panel title="Skip"><div>Local state can prove that no call is needed.</div></Panel>
+  <Panel title="Batch" tone="amber"><div>Policy can combine many intentions into one primitive.</div></Panel>
+  <Panel title="Reuse" tone="coral"><div>Existing objects and buffers retain identity.</div></Panel>
+  <Panel title="Specialize"><div>V8 sees stable shapes and hot branches across the complete path.</div></Panel>
+</Grid>
+
+<Notes>This is where TypeScript can outperform a nominally faster native implementation at the system level. It can eliminate the native call, batch it, reuse existing storage, or hand a value directly to its consumer without crossing an architectural seam.</Notes>
+
+---
+
+<Eyebrow>I · Policy changes</Eyebrow>
+
+## Keep change on the cheap side of the boundary
+
+<div style={{ width: '100%' }}>
+  <Decision when="A limit changes" choose="TypeScript" reason="Update one policy beside the queues and objects it governs." />
+  <Decision when="A new fast path appears" choose="TypeScript" reason="Specialize against state already visible to the runtime." tone="amber" />
+  <Decision when="Behavior must compose" choose="TypeScript" reason="Middleware and user code share values without wrappers." tone="coral" />
+  <Decision when="The primitive stays stable" choose="native edge" reason="Keep the low-level operation small while policy evolves around it." />
+</div>
+
+<Notes>Policy changes much more frequently than low-level primitives. Keeping it in TypeScript shortens the feedback loop, preserves composability, and avoids expanding the native ABI whenever runtime behavior evolves.</Notes>
+
+---
+
+<Eyebrow>I · Chapter principle</Eyebrow>
+
+## Keep the next decision with its facts
+
+<Flow>
+  <FlowNode number="ONE" title="One object graph" detail="Application and runtime state share identity." />
+  <Arrow />
+  <FlowNode number="ONE" title="One lifecycle" detail="Cancellation, error, and completion remain coherent." tone="coral" />
+  <Arrow />
+  <FlowNode number="ONE" title="One optimizer" detail="The hot coordination path stays visible to V8." tone="amber" />
+</Flow>
+
+<Callout label="Chapter I">Native code should execute a decision—not become the place where the runtime makes it.</Callout>
+
+<Notes>The governing rule is simple: keep the next decision where the facts already live. In Fino, those facts are usually TypeScript objects, queues, timers, promises, and typed-array views.</Notes>
+
+---
+
+<Eyebrow>Chapter II · Ownership and lifetime</Eyebrow>
+
+# Reuse is an architectural decision
+
+<Rule />
+
+<Lead>Arenas and pools are not just allocation tricks. They make ownership, lifetime, and admission visible to the coordination layer.</Lead>
+
+<Footer>Chapter II · Allocate by lifetime, not by operation</Footer>
+
+<Notes>This chapter moves from control flow to memory. The same architectural principle applies: reuse works best where lifetimes are understood. TypeScript can own storage and pooling policy while native code operates directly on the selected bytes.</Notes>
+
+---
+
+<Eyebrow>II · Allocation pressure</Eyebrow>
+
+## Allocation is coordination in disguise
+
+<Grid columns={3}>
+  <Panel title="Choose"><div>How much storage is needed?</div></Panel>
+  <Panel title="Own" tone="amber"><div>Which operation may retain it, and for how long?</div></Panel>
+  <Panel title="Release" tone="coral"><div>When is reuse safe, and what invalidates old views?</div></Panel>
+</Grid>
+
+<Callout label="The real cost">Allocation policy is lifetime policy. Moving it away from coordination hides the information needed to reuse safely.</Callout>
+
+<Notes>An allocator can make obtaining bytes cheap, but the runtime still needs to know when those bytes are safe to reuse. That is a coordination question. The best memory strategy aligns storage lifetime with an operation the TypeScript layer already understands.</Notes>
+
+---
+
+<Eyebrow>II · Arena pattern</Eyebrow>
+
+## An arena makes lifetime explicit
+
+<Flow>
+  <FlowNode number="01" title="Reserve once" detail="Create one backing buffer for a known lifetime." />
+  <Arrow />
+  <FlowNode number="02" title="Slice views" detail="Advance a cursor and return typed-array views." tone="coral" />
+  <Arrow />
+  <FlowNode number="03" title="Consume" detail="Use every view before the epoch ends." tone="amber" />
+  <Arrow />
+  <FlowNode number="04" title="Reset" detail="Move one cursor back to zero." />
+</Flow>
+
+<Callout label="Simple contract">The arena owns storage. Callers borrow views. Reset ends the borrowing epoch.</Callout>
+
+<Notes>Fino's arena is a bump allocator implemented directly in TypeScript over one ArrayBuffer. Allocation creates a view at the current cursor. Reset is O(1). If capacity is exceeded, the operation safely falls back to standalone storage rather than turning optimization into a failure mode.</Notes>
+
+---
+
+<Eyebrow>II · Borrow, do not transfer</Eyebrow>
+
+## Views are cheaper than ownership transfers
+
+<Grid columns={2}>
+  <Panel title="Transfer ownership" tone="coral"><div>Allocate another buffer.</div><div>copy or detach bytes</div><div>coordinate release</div></Panel>
+  <Panel title="Borrow a view"><div>Keep one backing store.</div><div>carry offset + length</div><div>reuse when the epoch ends</div></Panel>
+</Grid>
+
+<Callout label="Typed arrays">A view can describe exactly the bytes a primitive needs without creating a second owner.</Callout>
+
+<Notes>Typed-array views are an architectural tool. They let TypeScript describe a region of existing storage precisely. The FFI can honor the view's byte offset and length, so native code receives the correct region without requiring a copied, zero-offset buffer.</Notes>
+
+---
+
+<Eyebrow>II · Bulk lifetime</Eyebrow>
+
+## Reset the epoch, not every object
+
+<Grid columns={3}>
+  <Metric value="1" label="backing buffer" note="reserved for the lifetime" />
+  <Metric value="N" label="cheap views" note="cursor increments, not backing stores" tone="coral" />
+  <Metric value="O(1)" label="bulk reset" note="one lifetime transition" tone="amber" />
+</Grid>
+
+<Notes>The arena replaces many independent allocation and release decisions with one epoch. That does not mean every view is free, but it removes repeated backing-store allocation and makes release a single explicit event.</Notes>
+
+---
+
+<Eyebrow>II · Pooling</Eyebrow>
+
+## Pools turn creation into admission control
+
+<Grid columns={2}>
+  <Panel title="Without a pool" tone="coral"><div>Create on demand.</div><div>pay setup repeatedly</div><div>discover overload late</div></Panel>
+  <Panel title="With a pool"><div>Retain warm capacity.</div><div>dispatch by availability</div><div>bound waiting explicitly</div></Panel>
+</Grid>
+
+<Callout label="Coordination again">The performance feature is not merely reuse. It is making capacity, queueing, timeout, and shutdown policy explicit.</Callout>
+
+<Notes>Pooling amortizes expensive creation, but its deeper value is controlled coordination. The pool knows its width, pending work, queue bounds, timeouts, and failure behavior. Those policies remain in TypeScript where they can compose with application intent.</Notes>
+
+---
+
+<Eyebrow>II · Safe reuse</Eyebrow>
+
+## Reuse must be bounded
+
+<div style={{ width: '100%' }}>
+  <Decision when="Capacity is available" choose="reuse" reason="Take the warm object or the next arena region." />
+  <Decision when="The arena is full" choose="fall back" reason="Allocate safely; optimization must not become a failure mode." tone="amber" />
+  <Decision when="The queue is full" choose="apply policy" reason="Reject, wait, shed, or backpressure deliberately." tone="coral" />
+  <Decision when="A lifetime ends" choose="reset or return" reason="Make reuse happen at one explicit boundary." />
+</div>
+
+<Notes>Unbounded pooling turns performance optimization into memory retention. Unsafe arena reuse turns speed into aliasing bugs. The coordination layer has enough context to bound both: capacity, epoch, queue depth, deadlines, and failure policy.</Notes>
+
+---
+
+<Eyebrow>II · Chapter principle</Eyebrow>
+
+## Reuse where the lifecycle is already known
+
+<Grid columns={3}>
+  <Panel title="Arena"><div>Many temporary byte regions share one short lifetime.</div></Panel>
+  <Panel title="Pool" tone="amber"><div>Expensive resources survive across bounded units of work.</div></Panel>
+  <Panel title="Direct view" tone="coral"><div>Existing storage already has the right owner and lifetime.</div></Panel>
+</Grid>
+
+<Callout label="Chapter II">Reuse follows ownership. Coordination knows ownership. Keep reuse policy with coordination.</Callout>
+
+<Notes>Arenas, pools, and direct typed-array views are three versions of the same idea: shape allocation around a lifetime the runtime already understands. This reduces churn without moving ownership into native code.</Notes>
+
+---
+
+<Eyebrow>Chapter III · The native edge</Eyebrow>
+
+# Make the boundary boring
+
+<Rule />
+
+<Lead>The best FFI carries only enough information for native code to perform one primitive over storage TypeScript already owns.</Lead>
+
+<Footer>Chapter III · Buffers, pointers, scalars, handles</Footer>
+
+<Notes>This chapter defines the desired native interface. The goal is not a rich cross-language object model. It is a deliberately impoverished boundary made of buffers, offsets, lengths, scalars, and stable opaque handles.</Notes>
+
+---
+
+<Eyebrow>III · Interface shape</Eyebrow>
+
+## Carry facts, not objects
+
+<Grid columns={2}>
+  <Panel title="Facts cross"><div>pointer + length</div><div>offsets and flags</div><div>small scalar values</div><div>stable opaque handles</div></Panel>
+  <Panel title="Objects stay" tone="coral"><div>requests and responses</div><div>queues and streams</div><div>policy and errors</div><div>application identity</div></Panel>
+</Grid>
+
+<Callout label="Boundary goal">Describe the primitive completely without exporting the runtime's object graph.</Callout>
+
+<Notes>A native function should not need to understand the application's Request, stream, queue, or policy object. It needs the facts required to perform its operation. This prevents the FFI from becoming a second runtime model.</Notes>
+
+---
+
+<Eyebrow>III · Storage ownership</Eyebrow>
+
+## Caller-owned buffers erase translation
+
+<Flow>
+  <FlowNode number="TS" title="Select storage" detail="Allocate, pool, or reuse where lifetime is known." />
+  <Arrow />
+  <FlowNode number="FFI" title="Expose a region" detail="Pass pointer, byte offset, and byte length." tone="coral" />
+  <Arrow />
+  <FlowNode number="NATIVE" title="Operate in place" detail="Read or write the caller-owned bytes." tone="amber" />
+  <Arrow />
+  <FlowNode number="TS" title="Continue directly" detail="Use the same storage for the next decision." />
+</Flow>
+
+<Notes>When TypeScript selects the output buffer, native code can write directly into its final destination. There is no native allocation to adopt, no result payload to copy, and no ownership transfer to reconcile.</Notes>
+
+---
+
+<Eyebrow>III · Pointer discipline</Eyebrow>
+
+## Pointers are coordinates, not ownership
+
+<Grid columns={3}>
+  <Panel title="Pointer"><div>Where the region begins.</div></Panel>
+  <Panel title="Length" tone="amber"><div>How much memory is valid.</div></Panel>
+  <Panel title="Lifetime" tone="coral"><div>How long the caller guarantees it remains usable.</div></Panel>
+</Grid>
+
+<Callout label="Narrow contract">Native may operate on the region. TypeScript retains the object, backing store, and lifecycle.</Callout>
+
+<Notes>The pointer should not imply that native code owns a new object graph. It is a coordinate into caller-owned memory for the duration of one operation. Keeping that distinction sharp makes the FFI safer and cheaper.</Notes>
+
+---
+
+<Eyebrow>III · Crossing frequency</Eyebrow>
+
+## Batch before you cross
+
+<Grid columns={2}>
+  <Panel title="Many tiny calls" tone="coral"><div>Repeated dispatch</div><div>repeated argument conversion</div><div>repeated result handling</div></Panel>
+  <Panel title="One coarse call"><div>one prepared buffer</div><div>one primitive over many entries</div><div>one compact result</div></Panel>
+</Grid>
+
+<Callout label="Amortize">The right batch moves frequency out of the FFI without moving policy into native code.</Callout>
+
+<Notes>Batching is often misunderstood as native code taking over scheduling. It should not. TypeScript decides what belongs in the batch, prepares the storage, and invokes one coarse primitive. Policy remains visible; dispatch overhead is amortized.</Notes>
+
+---
+
+<Eyebrow>III · The result</Eyebrow>
+
+## Marshalling disappears by design
+
+<Grid columns={2}>
+  <Panel title="Conventional binding" tone="coral"><div>Convert the object graph.</div><div>build native structs</div><div>run the primitive</div><div>rebuild result objects</div></Panel>
+  <Panel title="Narrow edge"><div>Keep state in TypeScript.</div><div>share existing bytes</div><div>pass compact facts</div><div>return into the same state</div></Panel>
+</Grid>
+
+<Callout label="What disappears">No mirrored application objects. No serialized coordination state. No field-by-field result reconstruction.</Callout>
+
+<Notes>This does not claim that an FFI call costs zero cycles. It means the architectural marshalling layer is absent. Large data stays in existing buffers, persistent identity stays in its owning runtime, and results are compact enough to return directly.</Notes>
+
+---
+
+<Eyebrow>III · Boundary smell</Eyebrow>
+
+## A chatty FFI means the cut is wrong
+
+<Grid columns={2}>
+  <Panel title="Warning signs" tone="coral"><div>getters for every field</div><div>callbacks for every transition</div><div>mirrored trees and maps</div><div>wrapper objects in application code</div></Panel>
+  <Panel title="Repair the cut"><div>lift decisions into TypeScript</div><div>batch related intentions</div><div>share one byte region</div><div>return one scalar or handle</div></Panel>
+</Grid>
+
+<Callout label="Diagnostic">If the binding needs an object mapper, move the boundary closer to the primitive.</Callout>
+
+<Notes>Optimizing individual getters misses the architectural problem. A chatty interface indicates that coordination was placed below the boundary. Move it back up and expose a smaller native operation.</Notes>
+
+---
+
+<Eyebrow>III · Chapter principle</Eyebrow>
+
+## Cross once, then keep moving
+
+<Flow>
+  <FlowNode number="IN" title="Buffers + facts" detail="Caller-owned storage and compact scalar metadata." />
+  <Arrow />
+  <FlowNode number="DO" title="One primitive" detail="Direct memory work, syscall, or mature engine." tone="coral" />
+  <Arrow />
+  <FlowNode number="OUT" title="Status + extent" detail="Length, offset, status, or stable handle." tone="amber" />
+</Flow>
+
+<Callout label="Chapter III">A boring boundary is a successful boundary: narrow, coarse, explicit, and rarely crossed.</Callout>
+
+<Notes>The ideal FFI is unsurprising. TypeScript prepares storage and policy, native code performs the primitive, and TypeScript immediately continues with the same state and bytes.</Notes>
+
+---
+
+<Eyebrow>Chapter IV · The narrow native core</Eyebrow>
+
+# Native must earn the crossing
+
+<Rule />
+
+<Lead>Native code belongs where it provides a capability or implementation advantage large enough to repay the boundary.</Lead>
+
+<Footer>Chapter IV · Necessity, leverage, and tradeoffs</Footer>
+
+<Notes>Native is neither forbidden nor automatically preferred. It is an architectural trade. The implementation must provide enough value—system access, mature complexity, or dense computation—to justify the seam it creates.</Notes>
+
+---
+
+<Eyebrow>IV · Genuine native work</Eyebrow>
+
+## Native fits irreducible work
+
+<Grid columns={3}>
+  <Panel title="System access" tone="coral"><div>syscalls</div><div>platform handles</div><div>kernel interfaces</div></Panel>
+  <Panel title="Mature engines" tone="amber"><div>cryptography</div><div>databases</div><div>complex protocol or codec kernels</div></Panel>
+  <Panel title="Dense primitives"><div>tight numeric loops</div><div>direct memory operations</div><div>specialized instructions</div></Panel>
+</Grid>
+
+<Callout label="Common shape">Large internal work, compact inputs and outputs, little application policy.</Callout>
+
+<Notes>These categories have a strong reason to be native. They require direct platform access, reuse a sophisticated and proven library, or execute a dense operation where low-level code has a substantial local advantage.</Notes>
+
+---
+
+<Eyebrow>IV · Native is not free</Eyebrow>
+
+## Native is still a tradeoff
+
+<Grid columns={2}>
+  <Panel title="What native buys"><div>system access</div><div>mature implementations</div><div>predictable dense compute</div></Panel>
+  <Panel title="What the boundary costs" tone="coral"><div>crossing and conversion</div><div>split ownership and tooling</div><div>harder composition</div><div>a stable ABI to maintain</div></Panel>
+</Grid>
+
+<Callout label="Selection test">The native advantage must exceed both the crossing cost and the architecture it forces around the crossing.</Callout>
+
+<Notes>A native implementation can be locally excellent and still be the wrong system choice. The full cost includes not just dispatch but ownership complexity, tooling, error paths, and the pressure to move neighboring policy native to avoid repeated crossings.</Notes>
+
+---
+
+<Eyebrow>IV · Reimplementation</Eyebrow>
+
+## Reimplementation can be the faster choice
+
+<div style={{ width: '100%' }}>
+  <Decision when="The native engine is deep and battle-tested" choose="reuse it" reason="Its implementation advantage dominates; design a coarse edge around it." tone="coral" />
+  <Decision when="The useful primitive is small" choose="consider TypeScript" reason="Avoiding conversion and repeated crossings may outweigh a faster inner loop." />
+  <Decision when="Policy dominates the operation" choose="prefer TypeScript" reason="Keep state, specialization, and composition in one optimizer." tone="amber" />
+  <Decision when="A replacement reduces the boundary" choose="measure end to end" reason="Reimplementation is justified by total work removed, not language ideology." />
+</div>
+
+<Notes>Reimplementation is not always wasteful. If the borrowed native implementation brings a large object model or requires frequent crossings for a comparatively small primitive, a focused TypeScript version may win by eliminating the seam. The decision must be measured across the whole path.</Notes>
+
+---
+
+<Eyebrow>Chapter V · The decision framework</Eyebrow>
+
+# Choose by total work
+
+<Rule />
+
+<Lead>Place each operation where the complete system performs the least conversion, synchronization, allocation, and coordination.</Lead>
+
+<Footer>Chapter V · Profile paths, not languages</Footer>
+
+<Notes>The final chapter turns the architecture into a repeatable decision process. The unit of placement is an operation, not an entire subsystem, and the optimization target is the complete path.</Notes>
+
+---
+
+<Eyebrow>V · A repeatable choice</Eyebrow>
+
+## Decide per operation, not per subsystem
+
+<div style={{ width: '100%' }}>
+  <Decision when="A syscall is the operation" choose="native edge" reason="Cross with compact arguments and return a compact result." tone="coral" />
+  <Decision when="A mature engine owns the hard algorithm" choose="native edge" reason="Feed it coarse work without adopting its object model." />
+  <Decision when="State decides whether work is needed" choose="TypeScript" reason="Skip, batch, or specialize before crossing." tone="amber" />
+  <Decision when="Lifetime determines reuse" choose="TypeScript" reason="Own arenas, pools, buffers, and backpressure beside coordination." />
+</div>
+
+<Callout label="Final test">Would moving this operation native reduce total work—or merely relocate it behind a boundary?</Callout>
+
+<Notes>The same subsystem can contain work on both sides. The split should follow operations: policy and lifetime decisions remain in TypeScript; irreducible primitives sit behind narrow native edges.</Notes>
+
+---
+
+<Eyebrow>V · What performance work found</Eyebrow>
+
+## The measured wins removed architecture
+
+<div style={{ display: 'grid', gap: '.65em', width: '100%' }}>
+  <Evidence value="+11.4%" title="Remove a duplicate handoff" before="event object + second queue" after="direct reference" tone="coral" />
+  <Evidence value="+8.3%" title="Keep a common decision local" before="generic work every time" after="TypeScript fast path" />
+  <Evidence value="+4.8%" title="Reuse boundary scratch storage" before="allocate around each call" after="retain and overwrite" tone="amber" />
+</div>
+
+<Notes>The examples differ, but the pattern is consistent. Performance improved by removing coordination machinery: a handoff, generic work, or repeated allocation. None of the wins required moving more policy into native code.</Notes>
+
+---
+
+<Eyebrow>Conclusion</Eyebrow>
+
+# Keep native at the edges
+
+<Rule />
+
+<Lead>Let TypeScript own policy, lifetime, and coordination. Let native code touch the kernel, run the mature engine, or operate directly on shared bytes—then get out of the way.</Lead>
+
+<Footer>One object graph · reused storage · narrow crossings</Footer>
+
+<Notes>The architecture is a product of repeated performance work. One coordination model avoids mirrored state. Arenas and pools align reuse with visible lifetimes. Narrow FFI calls eliminate most marshalling. Native code remains powerful precisely because it is confined to work that earns the crossing.</Notes>
