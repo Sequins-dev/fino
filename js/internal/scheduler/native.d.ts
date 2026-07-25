@@ -7,8 +7,9 @@
 *
 * @internal
 */
-export function createWorkload(entryPath: string): number;
+export function createWorkload(entryPath: string, delegatesReadiness?: boolean): number;
 export function dispatchWorkload(handle: number, requestJson: string): string;
+export function driveResidentWorkload(handle: number, input: unknown): unknown;
 export function completeHostOperation(handle: number, operationId: number, ok: boolean, resultJson: string): void;
 export function terminateWorkload(handle: number): void;
 /**

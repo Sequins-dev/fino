@@ -21,6 +21,7 @@ struct ParkedWorkload {
     take_ops_fn: v8::Global<v8::Function>,
     complete_fn: v8::Global<v8::Function>,
     settled_fn: v8::Global<v8::Function>,
+    tick_fn: v8::Global<v8::Function>,
     active_promise: Option<v8::Global<v8::Promise>>,
     async_state: Option<crate::async_rt::IsolateAsyncState>,
     _state: Rc<RefCell<FinoState>>,
@@ -46,6 +47,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
     let export_names: Vec<v8::Local<v8::String>> = [
         "createWorkload",
         "dispatchWorkload",
+        "driveResidentWorkload",
         "completeHostOperation",
         "terminateWorkload",
         "workloadWakeFd",
@@ -74,6 +76,7 @@ fn eval_steps<'a>(
 
     set_fn!("createWorkload", create_workload);
     set_fn!("dispatchWorkload", dispatch_workload);
+    set_fn!("driveResidentWorkload", drive_resident_workload);
     set_fn!("completeHostOperation", complete_host_operation);
     set_fn!("terminateWorkload", terminate_workload);
     set_fn!("workloadWakeFd", workload_wake_fd);
@@ -117,6 +120,7 @@ fn setup_workload(
     entry_path: String,
     process_env: ProcessEnv,
     package_map_json: Option<String>,
+    delegates_readiness: bool,
 ) -> Result<ParkedWorkload, String> {
     crate::runtime::init_v8();
 
@@ -144,18 +148,21 @@ fn setup_workload(
         context.set_slot(Rc::new(RefCell::new(state)));
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
-        let marker_key = v8::String::new(scope, "__finoSchedulerDelegatesReadiness")
-            .ok_or_else(|| "failed to allocate scheduler marker".to_string())?;
-        let marker_value = v8::Boolean::new(scope, true);
-        context
-            .global(scope)
-            .set(scope, marker_key.into(), marker_value.into());
+        if delegates_readiness {
+            let marker_key = v8::String::new(scope, "__finoSchedulerDelegatesReadiness")
+                .ok_or_else(|| "failed to allocate scheduler marker".to_string())?;
+            let marker_value = v8::Boolean::new(scope, true);
+            context
+                .global(scope)
+                .set(scope, marker_key.into(), marker_value.into());
+        }
 
         let runner = format!(
             "import 'internal:bootstrap';\n\
              import {{ configureWorkload }} from 'internal:scheduler/workload';\n\
-             configureWorkload(import({}));\n",
-            json_quote(&entry_path)
+             configureWorkload(import({}), {});\n",
+            json_quote(&entry_path),
+            delegates_readiness
         );
 
         let module = {
@@ -194,12 +201,14 @@ fn setup_workload(
             global_function(scope, context, "__finoSchedulerTakeHostOps")?,
             global_function(scope, context, "__finoSchedulerCompleteHostOp")?,
             global_function(scope, context, "__finoSchedulerSettled")?,
+            global_function(scope, context, "__finoSchedulerTick")?,
             get_state(scope),
             v8::Global::new(scope, module),
         ))
     })();
     let workload_async_state = crate::async_rt::swap_state(saved_async_state);
-    let (context, dispatch_fn, take_ops_fn, complete_fn, settled_fn, state, module) = initialized?;
+    let (context, dispatch_fn, take_ops_fn, complete_fn, settled_fn, tick_fn, state, module) =
+        initialized?;
 
     let mut workload = ParkedWorkload {
         context,
@@ -207,6 +216,7 @@ fn setup_workload(
         take_ops_fn,
         complete_fn,
         settled_fn,
+        tick_fn,
         active_promise: None,
         async_state: workload_async_state,
         _state: state,
@@ -234,11 +244,17 @@ fn create_workload(
         return;
     }
     let parent_state = get_state(scope);
+    let delegates_readiness = args.get(1).is_undefined() || args.get(1).boolean_value(scope);
     let (process_env, package_map_json) = {
         let state = parent_state.borrow();
         (state.process_env.clone(), state.package_map_json.clone())
     };
-    let workload = match setup_workload(entry_path, process_env, package_map_json) {
+    let workload = match setup_workload(
+        entry_path,
+        process_env,
+        package_map_json,
+        delegates_readiness,
+    ) {
         Ok(workload) => workload,
         Err(error) => {
             throw_error(scope, &format!("createWorkload: {error}"));
@@ -392,6 +408,127 @@ fn dispatch_workload(
             if let Some(value) = v8::String::new(scope, &json) {
                 rv.set(value.into());
             }
+        }
+        Err(error) => throw_error(scope, &error),
+    }
+}
+
+fn drive_resident_entered(
+    workload: &mut ParkedWorkload,
+    request_bytes: &[u8],
+) -> Result<(Vec<u8>, u64), String> {
+    let context_global = workload.context.clone();
+    let dispatch_fn = workload.dispatch_fn.clone();
+    let tick_fn = workload.tick_fn.clone();
+    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
+    let context = v8::Local::new(isolate_scope, &context_global);
+    let scope = &mut v8::ContextScope::new(isolate_scope, context);
+    if workload.active_promise.is_some() {
+        return Err("resident workload already has an active dispatch".to_string());
+    }
+    let function = v8::Local::new(scope, &dispatch_fn);
+    let request = crate::realm::serializer::deserialize_value(scope, request_bytes)?;
+    let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
+    let promise = {
+        let tc = &mut v8::TryCatch::new(scope);
+        let value = function.call(tc, receiver, &[request]).ok_or_else(|| {
+            crate::realm::child::catch_message(tc)
+                .unwrap_or_else(|| "resident workload dispatch threw".to_string())
+        })?;
+        let promise = v8::Local::<v8::Promise>::try_from(value)
+            .map_err(|_| "resident workload dispatch did not return a promise".to_string())?;
+        v8::Global::new(tc, promise)
+    };
+    workload.active_promise = Some(promise);
+
+    let mut loop_turns = 0u64;
+    loop {
+        crate::realm::child::pump_and_checkpoint(scope);
+        let promise = v8::Local::new(scope, workload.active_promise.as_ref().unwrap());
+        match promise.state() {
+            v8::PromiseState::Pending => {
+                let function = v8::Local::new(scope, &tick_fn);
+                let timeout = v8::Number::new(scope, 50.0);
+                let tc = &mut v8::TryCatch::new(scope);
+                function
+                    .call(tc, receiver, &[timeout.into()])
+                    .ok_or_else(|| {
+                        crate::realm::child::catch_message(tc)
+                            .unwrap_or_else(|| "resident workload loop tick threw".to_string())
+                    })?;
+                loop_turns += 1;
+            }
+            v8::PromiseState::Fulfilled => {
+                let result = promise.result(scope);
+                workload.active_promise = None;
+                let bytes = crate::realm::serializer::serialize_value(scope, result)?;
+                return Ok((bytes, loop_turns));
+            }
+            v8::PromiseState::Rejected => {
+                let value = promise.result(scope);
+                workload.active_promise = None;
+                return Err(js_string(scope, value));
+            }
+        }
+    }
+}
+
+fn drive_resident_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let request_bytes = match crate::realm::serializer::serialize_value(scope, args.get(1)) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            throw_error(scope, &format!("driveResidentWorkload: {error}"));
+            return;
+        }
+    };
+    let result = WORKLOADS.with(|table| {
+        let mut table = table.borrow_mut();
+        let workload = table
+            .0
+            .get_mut(handle)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| "driveResidentWorkload: invalid workload handle".to_string())?;
+        with_entered_workload(workload, |workload| {
+            drive_resident_entered(workload, &request_bytes)
+        })
+    });
+    match result {
+        Ok((bytes, loop_turns)) => {
+            let value = match crate::realm::serializer::deserialize_value(scope, &bytes) {
+                Ok(value) => value,
+                Err(error) => {
+                    throw_error(scope, &format!("driveResidentWorkload: {error}"));
+                    return;
+                }
+            };
+            let result = v8::Object::new(scope);
+            for (name, value) in [
+                ("value", value),
+                (
+                    "loopTurns",
+                    v8::Number::new(scope, loop_turns as f64).into(),
+                ),
+                ("isolateEntries", v8::Integer::new(scope, 1).into()),
+                ("isolateExits", v8::Integer::new(scope, 1).into()),
+            ] {
+                let Some(key) = v8::String::new(scope, name) else {
+                    throw_error(
+                        scope,
+                        "driveResidentWorkload: failed to allocate result key",
+                    );
+                    return;
+                };
+                if result.set(scope, key.into(), value).is_none() {
+                    throw_error(scope, "driveResidentWorkload: failed to build result");
+                    return;
+                }
+            }
+            rv.set(result.into());
         }
         Err(error) => throw_error(scope, &error),
     }

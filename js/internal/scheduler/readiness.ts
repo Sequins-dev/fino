@@ -22,7 +22,7 @@
 * @internal
 */
 import * as hostLoop from 'internal:runtime/loop';
-import { Isolate, type HostOperation, type PumpOutcome } from './isolate.ts';
+import { Isolate, type HostOperation, type PumpOutcome, type ResidentRunResult } from './isolate.ts';
 async function performReadinessOperation(operation: HostOperation): Promise<unknown> {
   const fd = Number(operation.args?.fd);
   if (!Number.isInteger(fd) || fd < 0) {
@@ -137,6 +137,30 @@ export async function runReadinessWorkload<T = unknown>(entryPath: string, input
     if (wake !== undefined) hostLoop.removeRead(isolate.wakeFd);
     for (const { operation } of pending) cancelOperation(operation);
     pending.clear();
+    isolate.terminate();
+  }
+}
+/**
+* Run one workload while retaining it as the thread's entered isolate.
+*
+* Unlike {@link runReadinessWorkload}, this single-workload comparison path
+* blocks the calling scheduler isolate until settlement. The workload uses its
+* own ordinary TypeScript readiness loop, and native code leaves it entered
+* across every loop turn. The returned counters cover the dispatch run itself;
+* construction and disposal are outside them.
+*
+* This is an experiment for measuring isolate transition costs, not a
+* multi-workload scheduler. A future shared-reactor implementation would keep
+* the same resident execution invariant while switching only when another
+* workload becomes runnable.
+*
+* @internal
+*/
+export function runResidentReadinessWorkload<T = unknown>(entryPath: string, input: unknown): ResidentRunResult<T> {
+  const isolate = new Isolate(entryPath, true);
+  try {
+    return isolate.runResident<T>(input);
+  } finally {
     isolate.terminate();
   }
 }

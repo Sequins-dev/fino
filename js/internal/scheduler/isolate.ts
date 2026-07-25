@@ -13,7 +13,7 @@
 *
 * @internal
 */
-import { createWorkload, dispatchWorkload, completeHostOperation, terminateWorkload, workloadWakeFd } from 'internal:scheduler-native';
+import { createWorkload, dispatchWorkload, driveResidentWorkload, completeHostOperation, terminateWorkload, workloadWakeFd } from 'internal:scheduler-native';
 /**
 * Outcome of a single native pump of an isolate.
 *
@@ -49,13 +49,23 @@ interface PumpEnvelope {
   value?: unknown;
 }
 /**
+* Result of driving one resident workload without leaving its isolate between
+* readiness turns.
+*/
+export interface ResidentRunResult<T = unknown> {
+  value: T;
+  loopTurns: number;
+  isolateEntries: number;
+  isolateExits: number;
+}
+/**
 * A scheduled tenant isolate. Created on the current (scheduler) thread; pumped
 * on demand by the owning scheduler loop.
 */
 export class Isolate {
   #handle: number;
-  constructor(entryPath: string) {
-    this.#handle = createWorkload(entryPath);
+  constructor(entryPath: string, resident = false) {
+    this.#handle = createWorkload(entryPath, !resident);
   }
   /**
   * Read end of this isolate's wake pipe. Register it on the scheduler loop
@@ -87,6 +97,15 @@ export class Isolate {
       };
       default: throw new Error('scheduler pump returned an untagged outcome');
     }
+  }
+  /**
+  * Enter this isolate once and drive its own TypeScript readiness loop until
+  * the dispatch settles.
+  *
+  * This blocks the caller and is only a single-workload comparison path.
+  */
+  runResident<T>(input: unknown): ResidentRunResult<T> {
+    return driveResidentWorkload(this.#handle, input) as ResidentRunResult<T>;
   }
   /**
   * Inject one JSON-sized readiness result and let the isolate resume.

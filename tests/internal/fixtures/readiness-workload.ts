@@ -1,9 +1,25 @@
 import { FdReader, FdWriter } from 'fino:stream';
+import * as loop from 'internal:runtime/loop';
+import * as socket from 'fino:net/socket';
 export default async function readAfterReady(input: {
   fd: number;
+  readIterations?: number;
   raceFd?: number;
+  structuredValue?: unknown;
   write?: string;
-}): Promise<string | number> {
+}): Promise<unknown> {
+  if (input.structuredValue !== undefined) return input.structuredValue;
+  if (input.readIterations !== undefined) {
+    let reads = 0;
+    while (reads < input.readIterations) {
+      await loop.readable(input.fd);
+      const chunk = socket.recv(input.fd, 1);
+      if (chunk === socket.EAGAIN) continue;
+      if (chunk === null) throw new Error('socket closed during repeated reads');
+      reads += chunk.byteLength;
+    }
+    return reads;
+  }
   if (input.write !== undefined) {
     const bytes = new TextEncoder().encode(input.write);
     const writer = new FdWriter(input.fd, () => {});

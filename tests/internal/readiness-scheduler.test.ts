@@ -1,7 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import * as loop from 'internal:runtime/loop';
 import * as socket from 'fino:net/socket';
-import { runReadinessWorkload } from 'internal:scheduler/readiness';
+import { runReadinessWorkload, runResidentReadinessWorkload } from 'internal:scheduler/readiness';
 const ENTRY = new URL('./fixtures/readiness-workload.ts', import.meta.url).pathname;
 function connectedPair(): {
   server: number;
@@ -109,5 +109,29 @@ describe('readiness-only isolate scheduler', () => {
       closeAll(first.peer, first.client, first.server);
       closeAll(neverReady.peer, neverReady.client, neverReady.server);
     }
+  });
+  it('keeps a sole workload entered across repeated readiness cycles', (t) => {
+    const pair = connectedPair();
+    try {
+      const iterations = 64;
+      const bytes = new Uint8Array(iterations);
+      bytes.fill(1);
+      t.equal(socket.send(pair.client, bytes), iterations, 'queued every benchmark byte');
+      const result = runResidentReadinessWorkload<number>(ENTRY, {
+        fd: pair.peer,
+        readIterations: iterations
+      });
+      t.equal(result.value, iterations, 'workload performed every read');
+      t.equal(result.isolateEntries, 1, 'workload was entered once for the run');
+      t.equal(result.isolateExits, 1, 'workload was exited once after settlement');
+      t.ok(result.loopTurns >= iterations, 'each readiness cycle drove the workload loop');
+    } finally {
+      closeAll(pair.peer, pair.client, pair.server);
+    }
+  });
+  it('uses structured clone values at the resident isolate boundary', (t) => {
+    const result = runResidentReadinessWorkload<bigint>(ENTRY, { structuredValue: 42n });
+    t.equal(result.value, 42n, 'BigInt crosses the isolate boundary without JSON');
+    t.throws(() => runResidentReadinessWorkload(ENTRY, { structuredValue: () => undefined }), /structured-cloneable/, 'non-cloneable inputs fail at the boundary');
   });
 });
