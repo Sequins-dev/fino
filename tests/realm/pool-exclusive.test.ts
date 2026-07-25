@@ -6,11 +6,9 @@ import { RealmPool } from 'fino:realm/pool';
 import type instanceIdFn from './fixtures/instance-id-fn.ts';
 import type neverFn from './fixtures/never-fn.ts';
 import type sumFn from './fixtures/sum-fn.ts';
-
 function fixture(name: string): string {
   return new URL(`./fixtures/${name}`, import.meta.url).pathname;
 }
-
 describe('RealmPool exclusive mode', () => {
   it('rejects maxQueue without exclusive', (t) => {
     t.throws(() => new RealmPool({
@@ -89,7 +87,7 @@ describe('RealmPool exclusive mode', () => {
       // slot was freed and the call was dispatched.
       const started = performance.now();
       await t.rejects(() => pool.call(), /timed out after 150ms/, 'recycled worker accepted the next call');
-      t.ok(performance.now() - started < 5000, 'second call dispatched promptly after recycle');
+      t.ok(performance.now() - started < 5e3, 'second call dispatched promptly after recycle');
     } finally {
       await pool.close();
     }

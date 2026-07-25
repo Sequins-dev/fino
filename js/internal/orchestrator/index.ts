@@ -27,21 +27,18 @@ import { Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts'
 import { createJobsControlFacade } from '../jobs/control.ts';
 import { createSignal } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
-
 /**
 * Kind of a managed workload.
 *
 * @internal
 */
 export type WorkloadKind = 'app' | 'job-pool';
-
 /**
 * Lifecycle state of a managed workload.
 *
 * @internal
 */
 export type WorkloadStatus = 'running' | 'done' | 'error' | 'terminated';
-
 /**
 * One workload managed by the orchestrator.
 *
@@ -53,13 +50,11 @@ export interface Workload {
   status: WorkloadStatus;
   handle: unknown;
 }
-
 let _nextWorkloadId = 0;
 const _workloads = new Map<string, Workload>();
 const _workloadsSignal = createSignal<Workload[]>([]);
 const _services = new Map<string, unknown>();
 const _serviceFactories = new Map<string, () => unknown>();
-
 /**
 * Snapshot of the currently managed workloads.
 *
@@ -73,7 +68,6 @@ const _serviceFactories = new Map<string, () => unknown>();
 export function workloads(): Workload[] {
   return [..._workloads.values()];
 }
-
 /**
 * Retained signal of the currently managed workloads.
 *
@@ -82,7 +76,6 @@ export function workloads(): Workload[] {
 export function workloadsSignal(): ReadonlySignal<Workload[]> {
   return _workloadsSignal;
 }
-
 /**
 * Register a workload with the orchestrator and return its record.
 *
@@ -102,7 +95,6 @@ export function registerWorkload(kind: WorkloadKind, handle: unknown): Workload 
   _workloadsSignal.set(workloads());
   return workload;
 }
-
 /**
 * Mark a workload finished and drop it from the registry.
 *
@@ -115,7 +107,6 @@ export function releaseWorkload(id: string, status: Exclude<WorkloadStatus, 'run
   _workloads.delete(id);
   _workloadsSignal.set(workloads());
 }
-
 /**
 * Provide a named orchestrator service lazily.
 *
@@ -130,7 +121,6 @@ export function provideService(name: string, factory: () => unknown): void {
   }
   _serviceFactories.set(name, factory);
 }
-
 /**
 * Resolve (and lazily construct) a named orchestrator service.
 *
@@ -148,7 +138,6 @@ export function resolveService<T>(name: string): T {
   _services.set(name, service);
   return service as T;
 }
-
 /**
 * Options for running a user entry script as an app workload.
 *
@@ -160,7 +149,6 @@ export interface AppOptions {
   otlpEndpoint?: RealmOptions['otlpEndpoint'];
   overrides?: RealmOptions['overrides'];
 }
-
 /**
 * Run a user entry script as a supervised app workload.
 *
@@ -180,13 +168,10 @@ export async function runApp(opts: AppOptions): Promise<unknown> {
   // Every app realm gets the jobs control facade; its handlers lazy-init the
   // jobs service, so scripts that never use fino:jobs pay nothing.
   const baseOverrides = opts.overrides;
-  const rules: ImportRule[] = [
-    ...baseOverrides === undefined ? [] : Array.isArray(baseOverrides) ? baseOverrides : baseOverrides.toRules(),
-    {
-      pattern: 'fino:jobs/control',
-      directive: createJobsControlFacade()
-    }
-  ];
+  const rules: ImportRule[] = [...baseOverrides === undefined ? [] : Array.isArray(baseOverrides) ? baseOverrides : baseOverrides.toRules(), {
+    pattern: 'fino:jobs/control',
+    directive: createJobsControlFacade()
+  }];
   const realm = new Realm({
     entry: opts.entry,
     ...opts.data !== undefined ? { data: opts.data } : {},

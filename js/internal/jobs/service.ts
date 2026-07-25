@@ -47,7 +47,6 @@ import { Facade, type ImportRule, type RealmOptions } from '../../realm/index.ts
 import type { Task } from '../../task.ts';
 import type { WorkflowState, WorkflowStore, WorkflowWait } from '../../workflow.ts';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.ts';
-
 const _topicEnqueue = topic(otelRuntimeTopic('jobs', 'job', 'enqueue'));
 const _topicStart = topic(otelRuntimeTopic('jobs', 'job', 'start'));
 const _topicEnd = topic(otelRuntimeTopic('jobs', 'job', 'end'));
@@ -56,7 +55,6 @@ const _topicDead = topic(otelRuntimeTopic('jobs', 'job', 'dead'));
 const _topicPark = topic(otelRuntimeTopic('jobs', 'job', 'park'));
 const _topicScheduleFire = topic(otelRuntimeTopic('jobs', 'schedule', 'fire'));
 const _topicLeaseExpire = topic(otelRuntimeTopic('jobs', 'lease', 'expire'));
-
 /**
 * A destination the scheduler can dispatch claimed jobs to.
 *
@@ -98,7 +96,6 @@ export interface JobProcessor {
   /** Release the processor's resources (close the pool, tear down realms). Called during `JobsService.stop()`. */
   close(): Promise<void>;
 }
-
 /**
 * Options accepted by `JobsService.open()`.
 *
@@ -200,8 +197,7 @@ export interface ScheduleOptions {
   /** Retry/backoff overrides for jobs this schedule enqueues. */
   retry?: Partial<JobRetryPolicy>;
 }
-
-const MAX_RUN_AT = 8640000000000000;
+const MAX_RUN_AT = 864e13;
 const DEFAULT_RETRY: JobRetryPolicy = {
   maxAttempts: 3,
   baseMs: 1e3,
@@ -209,7 +205,6 @@ const DEFAULT_RETRY: JobRetryPolicy = {
   maxMs: 6e4,
   jitter: true
 };
-
 function toRunAt(delay: number | string | Date | undefined): number {
   if (delay === undefined) return Date.now();
   if (delay instanceof Date) return delay.getTime();
@@ -225,19 +220,16 @@ function toRunAt(delay: number | string | Date | undefined): number {
   }[match[2]!]!;
   return Date.now() + Number(match[1]) * scale;
 }
-
 function retryPolicy(partial?: Partial<JobRetryPolicy>): JobRetryPolicy {
   return {
     ...DEFAULT_RETRY,
     ...partial
   };
 }
-
 function parkRunAt(waitingOn: WorkflowWait): number {
   if (waitingOn.type === 'timer') return waitingOn.dueAt;
   return waitingOn.timeoutAt ?? MAX_RUN_AT;
 }
-
 /**
 * The jobs service: owns the store connection, the scheduler poller, and the
 * set of registered processors.
@@ -657,19 +649,17 @@ export class JobsService {
     realm?: Omit<RealmOptions, 'entry' | 'thread'>;
   }): Promise<JobProcessor> {
     const workflowStore = this.#workflowStore;
-    const facade = new Facade('fino:jobs/checkpoints', ['save', 'load', 'list', 'remove'])
-      .handle('save', (state) => workflowStore.save(state as WorkflowState))
-      .handle('load', (runId) => workflowStore.load(runId as string))
-      .handle('list', (filter) => workflowStore.list(filter as never))
-      .handle('remove', (runId) => workflowStore.delete(runId as string));
+    const facade = new Facade('fino:jobs/checkpoints', [
+      'save',
+      'load',
+      'list',
+      'remove'
+    ]).handle('save', (state) => workflowStore.save(state as WorkflowState)).handle('load', (runId) => workflowStore.load(runId as string)).handle('list', (filter) => workflowStore.list(filter as never)).handle('remove', (runId) => workflowStore.delete(runId as string));
     const baseOverrides = opts.realm?.overrides;
-    const rules: ImportRule[] = [
-      ...baseOverrides === undefined ? [] : Array.isArray(baseOverrides) ? baseOverrides : baseOverrides.toRules(),
-      {
-        pattern: 'fino:jobs/checkpoints',
-        directive: facade
-      }
-    ];
+    const rules: ImportRule[] = [...baseOverrides === undefined ? [] : Array.isArray(baseOverrides) ? baseOverrides : baseOverrides.toRules(), {
+      pattern: 'fino:jobs/checkpoints',
+      directive: facade
+    }];
     const pool = new RealmPool({
       entry: opts.entry,
       size: opts.size ?? 1,

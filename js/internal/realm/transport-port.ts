@@ -16,7 +16,6 @@ import { threadPortSend, threadPortRecv } from 'internal:realm-native';
 import { createTransitChannel } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
-
 /**
 * Shared lifecycle and dispatch logic for transport-backed realm ports.
 *
@@ -167,7 +166,6 @@ export abstract class BaseTransportPort extends EventTarget {
     }
   }
 }
-
 /**
 * Drain one batch of messages from a thread-port receive queue.
 */
@@ -175,7 +173,6 @@ function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, num
   const raw = handle !== null ? (threadPortRecv as (h: number) => unknown)(handle) : (nativeRecv as () => unknown)();
   return raw as [Uint8Array[], [number, number][]][];
 }
-
 /**
 * MessagePort-compatible endpoint for cross-thread realm messaging.
 *

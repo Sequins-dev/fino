@@ -48,7 +48,6 @@ import { Database, vec } from 'fino:database/sqlite';
 import type { FileSystem } from 'internal:file/provider';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { EmbeddingModel, GenerateRequest, GenerateResult, Model, ModelStream, StreamEvent, Usage } from 'fino:ai/model';
-
 /**
 * Semantic cache configuration for `cachedModel()`.
 *
@@ -92,7 +91,6 @@ export interface SemanticCacheOptions {
   /** Optional filesystem provider for the semantic SQLite store. */
   fs?: FileSystem;
 }
-
 /**
 * Options for `cachedModel()`.
 *
@@ -130,16 +128,13 @@ export interface CachedModelOptions {
   */
   bypass?: (req: GenerateRequest) => boolean;
 }
-
 type CacheTier = 'exact' | 'semantic';
-
 type CachedRecord = {
   result: GenerateResult;
   events: StreamEvent[];
   requestText: string;
   embedding?: number[];
 };
-
 type SemanticIndex = Array<{
   key: string;
   requestText: string;
@@ -147,22 +142,18 @@ type SemanticIndex = Array<{
   result: GenerateResult;
   events: StreamEvent[];
 }>;
-
 type SemanticDbState = {
   db: Database;
   available: boolean;
 };
-
 const semanticIndexKey = '__fino_ai_semantic_index__';
 const semanticDbs = new WeakMap<SemanticCacheOptions, Promise<SemanticDbState>>();
-
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   const obj = value as Record<string, unknown>;
   return `{${Object.keys(obj).sort().filter((key) => key !== 'signal').map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(',')}}`;
 }
-
 function modelIdentity(model: Model): Record<string, unknown> {
   return {
     id: model.id,
@@ -170,11 +161,12 @@ function modelIdentity(model: Model): Record<string, unknown> {
     provider: model.provider
   };
 }
-
 function cacheKey(model: Model, req: GenerateRequest): string {
-  return `model:${stableStringify({ model: modelIdentity(model), req })}`;
+  return `model:${stableStringify({
+    model: modelIdentity(model),
+    req
+  })}`;
 }
-
 function contentText(content: GenerateRequest['messages'][number]['content']): string {
   if (typeof content === 'string') return content;
   return content.map((part) => {
@@ -183,12 +175,10 @@ function contentText(content: GenerateRequest['messages'][number]['content']): s
     return stableStringify(part);
   }).join('\n');
 }
-
 function requestText(req: GenerateRequest): string {
   const system = req.system === undefined ? '' : typeof req.system === 'string' ? req.system : contentText(req.system as never);
   return [system, ...req.messages.map((message) => `${message.role}: ${contentText(message.content)}`)].filter(Boolean).join('\n');
 }
-
 function hasToolContext(req: GenerateRequest): boolean {
   if (req.tools && req.tools.length > 0) return true;
   for (const message of req.messages) {
@@ -196,48 +186,72 @@ function hasToolContext(req: GenerateRequest): boolean {
   }
   return false;
 }
-
 function savedUsage(usage: Usage): Usage {
   return {
     inputTokens: 0,
     outputTokens: 0,
-    ...(usage.inputTokens ? { localCacheReadInputTokens: usage.inputTokens } : {}),
-    ...(usage.outputTokens ? { localCacheReadOutputTokens: usage.outputTokens } : {})
+    ...usage.inputTokens ? { localCacheReadInputTokens: usage.inputTokens } : {},
+    ...usage.outputTokens ? { localCacheReadOutputTokens: usage.outputTokens } : {}
   };
 }
-
 function cachedResult(record: CachedRecord | SemanticIndex[number], tier: CacheTier, score?: number): GenerateResult {
   return {
     ...record.result,
     usage: savedUsage(record.result.usage),
     providerMetadata: {
-      ...(record.result.providerMetadata ?? {}),
-      finoCache: score === undefined ? { hit: true, tier } : { hit: true, tier, score }
+      ...record.result.providerMetadata ?? {},
+      finoCache: score === undefined ? {
+        hit: true,
+        tier
+      } : {
+        hit: true,
+        tier,
+        score
+      }
     }
   };
 }
-
 function cachedEvents(record: CachedRecord | SemanticIndex[number], tier: CacheTier, score?: number): StreamEvent[] {
   const result = cachedResult(record, tier, score);
   const out: StreamEvent[] = [];
-  if (result.text) out.push({ type: 'text_delta', index: 0, text: result.text });
+  if (result.text) out.push({
+    type: 'text_delta',
+    index: 0,
+    text: result.text
+  });
   for (const [index, call] of result.toolCalls.entries()) {
-    out.push({ type: 'tool_call_start', index, id: call.id, name: call.name });
-    out.push({ type: 'tool_call_delta', index, json: stableStringify(call.args) });
-    out.push({ type: 'tool_call_end', index });
+    out.push({
+      type: 'tool_call_start',
+      index,
+      id: call.id,
+      name: call.name
+    });
+    out.push({
+      type: 'tool_call_delta',
+      index,
+      json: stableStringify(call.args)
+    });
+    out.push({
+      type: 'tool_call_end',
+      index
+    });
   }
-  out.push({ type: 'usage', usage: result.usage });
-  out.push({ type: 'stop', reason: result.stopReason });
+  out.push({
+    type: 'usage',
+    usage: result.usage
+  });
+  out.push({
+    type: 'stop',
+    reason: result.stopReason
+  });
   return out;
 }
-
 function streamFromEvents(events: StreamEvent[]): ModelStream {
   async function* gen() {
     yield* events;
   }
   return new ModelStreamImpl(gen());
 }
-
 function cosine(a: number[], b: number[]): number {
   let dot = 0;
   let normA = 0;
@@ -250,8 +264,10 @@ function cosine(a: number[], b: number[]): number {
   }
   return normA > 0 && normB > 0 ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
 }
-
-async function semanticLookup(opts: SemanticCacheOptions | undefined, req: GenerateRequest): Promise<{ record: SemanticIndex[number]; score: number } | null> {
+async function semanticLookup(opts: SemanticCacheOptions | undefined, req: GenerateRequest): Promise<{
+  record: SemanticIndex[number];
+  score: number;
+} | null> {
   if (!opts || hasToolContext(req)) return null;
   const sqliteHit = await semanticSqliteLookup(opts, req);
   if (sqliteHit) return sqliteHit;
@@ -269,10 +285,12 @@ async function semanticLookup(opts: SemanticCacheOptions | undefined, req: Gener
       bestScore = score;
     }
   }
-  const threshold = opts.threshold ?? 0.92;
-  return best && bestScore >= threshold ? { record: best, score: bestScore } : null;
+  const threshold = opts.threshold ?? .92;
+  return best && bestScore >= threshold ? {
+    record: best,
+    score: bestScore
+  } : null;
 }
-
 async function rememberSemantic(opts: SemanticCacheOptions | undefined, key: string, req: GenerateRequest, record: CachedRecord, ttlMs: number | undefined): Promise<void> {
   if (!opts || hasToolContext(req)) return;
   const [embedding] = await opts.embedder.embed([record.requestText]);
@@ -288,7 +306,6 @@ async function rememberSemantic(opts: SemanticCacheOptions | undefined, key: str
   });
   await opts.cache.set(semanticIndexKey, index, { ttlMs });
 }
-
 async function semanticDb(opts: SemanticCacheOptions): Promise<SemanticDbState | null> {
   if (!opts.path) return null;
   let promise = semanticDbs.get(opts);
@@ -310,14 +327,19 @@ async function semanticDb(opts: SemanticCacheOptions): Promise<SemanticDbState |
           available = false;
         }
       }
-      return { db, available };
+      return {
+        db,
+        available
+      };
     })();
     semanticDbs.set(opts, promise);
   }
   return promise;
 }
-
-async function semanticSqliteLookup(opts: SemanticCacheOptions, req: GenerateRequest): Promise<{ record: SemanticIndex[number]; score: number } | null> {
+async function semanticSqliteLookup(opts: SemanticCacheOptions, req: GenerateRequest): Promise<{
+  record: SemanticIndex[number];
+  score: number;
+} | null> {
   const state = await semanticDb(opts);
   if (!state?.available) return null;
   const [embedding] = await opts.embedder.embed([requestText(req)]);
@@ -329,7 +351,7 @@ async function semanticSqliteLookup(opts: SemanticCacheOptions, req: GenerateReq
   } finally {
     knn.finalize();
   }
-  const threshold = opts.threshold ?? 0.92;
+  const threshold = opts.threshold ?? .92;
   for (const row of rows) {
     const score = 1 / (1 + Number(row.distance));
     if (score < threshold) continue;
@@ -348,12 +370,10 @@ async function semanticSqliteLookup(opts: SemanticCacheOptions, req: GenerateReq
   }
   return null;
 }
-
 async function rememberSemanticSqlite(opts: SemanticCacheOptions, key: string, record: CachedRecord, embedding: Float32Array): Promise<void> {
   const state = await semanticDb(opts);
   if (!state?.available) return;
-  await state.db.prepare(`INSERT OR REPLACE INTO fino_ai_cache_semantic(key, request_text, result, events, embedding) VALUES(?, ?, ?, ?, ?)`)
-    .run(key, record.requestText, JSON.stringify(record.result), JSON.stringify(record.events), new Uint8Array(embedding.buffer.slice(0)));
+  await state.db.prepare(`INSERT OR REPLACE INTO fino_ai_cache_semantic(key, request_text, result, events, embedding) VALUES(?, ?, ?, ?, ?)`).run(key, record.requestText, JSON.stringify(record.result), JSON.stringify(record.events), new Uint8Array(embedding.buffer.slice(0)));
   const row = await state.db.prepare(`SELECT rowid FROM fino_ai_cache_semantic WHERE key = ?`).get(key);
   if (!row) return;
   try {
@@ -361,17 +381,18 @@ async function rememberSemanticSqlite(opts: SemanticCacheOptions, key: string, r
   } catch {}
   await state.db.prepare(`INSERT INTO fino_ai_cache_semantic_vec(rowid, embedding) VALUES(?, ?)`).run(row.rowid as bigint, vec(embedding));
 }
-
 function withCacheMetadata(result: GenerateResult, hit: boolean): GenerateResult {
   return {
     ...result,
     providerMetadata: {
-      ...(result.providerMetadata ?? {}),
-      finoCache: { hit, tier: null }
+      ...result.providerMetadata ?? {},
+      finoCache: {
+        hit,
+        tier: null
+      }
     }
   };
 }
-
 /**
 * Wrap a chat model with exact and optional semantic local caching.
 *
@@ -411,15 +432,25 @@ function withCacheMetadata(result: GenerateResult, hit: boolean): GenerateResult
 * ```
 */
 export function cachedModel(base: Model, opts: CachedModelOptions): Model {
-  async function read(req: GenerateRequest): Promise<{ result: GenerateResult; tier: CacheTier; score?: number } | null> {
+  async function read(req: GenerateRequest): Promise<{
+    result: GenerateResult;
+    tier: CacheTier;
+    score?: number;
+  } | null> {
     if (opts.bypass?.(req)) return null;
     const exact = await opts.cache.get<CachedRecord>(cacheKey(base, req));
-    if (exact) return { result: cachedResult(exact, 'exact'), tier: 'exact' };
+    if (exact) return {
+      result: cachedResult(exact, 'exact'),
+      tier: 'exact'
+    };
     const semantic = await semanticLookup(opts.semantic, req);
-    if (semantic) return { result: cachedResult(semantic.record, 'semantic', semantic.score), tier: 'semantic', score: semantic.score };
+    if (semantic) return {
+      result: cachedResult(semantic.record, 'semantic', semantic.score),
+      tier: 'semantic',
+      score: semantic.score
+    };
     return null;
   }
-
   async function write(req: GenerateRequest, result: GenerateResult, events: StreamEvent[]): Promise<void> {
     if (opts.bypass?.(req)) return;
     const key = cacheKey(base, req);
@@ -431,7 +462,6 @@ export function cachedModel(base: Model, opts: CachedModelOptions): Model {
     await opts.cache.set(key, record, { ttlMs: opts.ttlMs });
     await rememberSemantic(opts.semantic, key, req, record, opts.ttlMs);
   }
-
   return {
     id: base.id,
     name: base.name,
@@ -442,7 +472,11 @@ export function cachedModel(base: Model, opts: CachedModelOptions): Model {
       if (hit) return hit.result;
       const result = await base.generate(req);
       const stored = withCacheMetadata(result, false);
-      await write(req, stored, cachedEvents({ result: stored, events: [], requestText: requestText(req) }, 'exact'));
+      await write(req, stored, cachedEvents({
+        result: stored,
+        events: [],
+        requestText: requestText(req)
+      }, 'exact'));
       return stored;
     },
     stream(req: GenerateRequest): ModelStream {

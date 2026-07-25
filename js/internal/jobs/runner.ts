@@ -42,7 +42,6 @@
 import { Task } from '../../task.ts';
 import { DurableTask } from '../../task/durable.ts';
 import type { WorkflowStore, WorkflowWait } from '../../workflow.ts';
-
 /**
 * One job execution request delivered to a processor.
 *
@@ -124,7 +123,6 @@ export type JobsWireResult = {
   workflowRunId: string;
   waitingOn: WorkflowWait;
 };
-
 /**
 * Collect a task and its descendants into a name-keyed registry.
 *
@@ -158,7 +156,6 @@ export function collectTasks(roots: Task[]): Map<string, Task> {
   for (const root of roots) visit(root);
   return registry;
 }
-
 function errorResult(err: unknown): JobsWireResult {
   const name = err instanceof Error ? err.name : '';
   return {
@@ -170,7 +167,6 @@ function errorResult(err: unknown): JobsWireResult {
     }
   };
 }
-
 /**
 * Execute one job against a registry of tasks.
 *
@@ -261,7 +257,6 @@ export async function dispatchJob(registry: Map<string, Task>, call: JobsWireCal
     return errorResult(err);
   }
 }
-
 /**
 * Build the pool-worker dispatcher for a task tree.
 *
@@ -333,7 +328,7 @@ export function taskWorker(root: Task): (call: JobsWireCall) => Promise<JobsWire
     const needsStore = registry.get(call.task) instanceof DurableTask;
     let store: WorkflowStore;
     try {
-      store = needsStore ? await resolveStore() : undefined as unknown as WorkflowStore;
+      store = needsStore ? await resolveStore() : (undefined as unknown) as WorkflowStore;
     } catch (err) {
       return errorResult(err);
     }

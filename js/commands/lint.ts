@@ -57,44 +57,44 @@ import { runLint } from '../internal/tooling/lint.ts';
 *
 */
 const command = new Task({
-    name: 'lint',
-    description: 'Lint JavaScript and TypeScript source files',
-    outputMode: 'both',
-    run: async function runLintCommand(input: {
-      files?: unknown[];
-      fix?: unknown;
-    }, ctx) {
-      const files = Array.isArray(input.files) ? input.files.map(String) : [];
-      const fix = input.fix === true;
-      const message = await runLint({
+  name: 'lint',
+  description: 'Lint JavaScript and TypeScript source files',
+  outputMode: 'both',
+  run: async function runLintCommand(input: {
+    files?: unknown[];
+    fix?: unknown;
+  }, ctx) {
+    const files = Array.isArray(input.files) ? input.files.map(String) : [];
+    const fix = input.fix === true;
+    const message = await runLint({
+      files,
+      fix
+    });
+    if (ctx.writer.mode === 'json') {
+      const result = {
+        command: 'lint',
+        ok: true,
+        fix,
         files,
-        fix
-      });
-      if (ctx.writer.mode === 'json') {
-        const result = {
-          command: 'lint',
-          ok: true,
-          fix,
-          files,
-          message
-        };
-        await ctx.writer.writeJson(result);
-        return result;
-      }
-      return message;
-    },
-    cli: {
-      options: [{
-        flags: '--fix',
-        type: 'boolean',
-        description: 'Apply safe lint fixes without running formatting'
-      }],
-      positionals: [{
-        name: 'files',
-        type: 'string',
-        multiple: true,
-        description: 'Files, directories, or globs to lint'
-      }]
+        message
+      };
+      await ctx.writer.writeJson(result);
+      return result;
     }
+    return message;
+  },
+  cli: {
+    options: [{
+      flags: '--fix',
+      type: 'boolean',
+      description: 'Apply safe lint fixes without running formatting'
+    }],
+    positionals: [{
+      name: 'files',
+      type: 'string',
+      multiple: true,
+      description: 'Files, directories, or globs to lint'
+    }]
+  }
 });
 export { command as default };

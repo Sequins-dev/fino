@@ -38,16 +38,4 @@
 * transport.close({ closeCode: 0, reason: 'done' });
 * ```
 */
-export {
-  WebTransport,
-  WebTransportDatagramDuplexStream,
-  type WebTransportBidirectionalStream,
-  type WebTransportCloseInfo,
-  type WebTransportHash,
-  type WebTransportOptions,
-  type WebTransportReceiveStream,
-  type WebTransportReceiveStreamStats,
-  type WebTransportSendStream,
-  type WebTransportSendStreamStats,
-  type WebTransportStats
-} from '../net/http/webtransport.ts';
+export { WebTransport, WebTransportDatagramDuplexStream, type WebTransportBidirectionalStream, type WebTransportCloseInfo, type WebTransportHash, type WebTransportOptions, type WebTransportReceiveStream, type WebTransportReceiveStreamStats, type WebTransportSendStream, type WebTransportSendStreamStats, type WebTransportStats } from '../net/http/webtransport.ts';

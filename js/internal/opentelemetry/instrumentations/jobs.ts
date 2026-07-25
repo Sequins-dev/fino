@@ -48,7 +48,6 @@ import { nowUnixNano, otelRuntimeTopic } from '../common.ts';
 import type { Disposable, OtelSdkLike } from '../common.ts';
 import { createRuntimeClientSpan } from './_runtime-client.ts';
 import { isTracerProviderContextEnabled } from '../traces.ts';
-
 /**
 * Shape of the `jobs.job.start` and `jobs.job.end` runtime topic payloads.
 *
@@ -72,7 +71,6 @@ interface JobsRuntimeEvent {
   timeUnixNano?: number;
   resource?: never;
 }
-
 /**
 * Instrumentation that records one span per background-job execution attempt.
 *

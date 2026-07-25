@@ -34,7 +34,6 @@
 import { cipherDecrypt, cipherEncrypt, hmac } from '../internal/openssl.ts';
 import { base64urlDecode, base64urlEncode, normalizeSecretKey, timingSafeEqualString, toBytes, utf8, type BufferLike as SecurityBufferLike } from '../internal/security/encoding.ts';
 import { randomBytes } from './random.ts';
-
 /**
 * Byte-oriented secret input accepted by cookie signing and sealing helpers.
 *

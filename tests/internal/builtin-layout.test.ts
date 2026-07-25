@@ -108,7 +108,6 @@ describe('builtin module layout', () => {
     const listener = await import('fino:net/quic/listener');
     const stream = await import('fino:net/quic/stream');
     const quic = await import('fino:net/quic');
-
     t.equal('QuicConnection' in endpoint, false, 'endpoint module omits QuicConnection');
     t.equal('QuicListener' in endpoint, false, 'endpoint module omits QuicListener');
     t.equal('QuicStream' in endpoint, false, 'endpoint module omits QuicStream');

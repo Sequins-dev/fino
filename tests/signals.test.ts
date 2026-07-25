@@ -1,7 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { batch, computed, createSignal, effect, fromIterable, lazy, observeReads, type ReadonlySignal } from 'fino:signals';
 import { createSignal as createUiSignal, batch as uiBatch } from 'fino:ui';
-
 describe('fino:signals basics', () => {
   it('dedupes writes and notifies batched subscribers once', (t) => {
     const count = createSignal(0);
@@ -18,7 +17,6 @@ describe('fino:signals basics', () => {
     t.equal(count.get(), 4, 'value updates after unsubscribe');
     t.deepEqual(seen, [[1, 0], [3, 1]], 'batch reports previous and final values once');
   });
-
   it('tracks reads for computed values and effects with dynamic dependencies', (t) => {
     const useA = createSignal(true);
     const a = createSignal(1);
@@ -34,9 +32,13 @@ describe('fino:signals basics', () => {
     b.set(11);
     stop();
     b.set(12);
-    t.deepEqual(values, [1, 2, 10, 11], 'computed values re-track dependencies after each run');
+    t.deepEqual(values, [
+      1,
+      2,
+      10,
+      11
+    ], 'computed values re-track dependencies after each run');
   });
-
   it('exposes observeReads for render-time dependency tracking', (t) => {
     const a = createSignal('a');
     const b = createSignal('b');
@@ -45,7 +47,6 @@ describe('fino:signals basics', () => {
     t.equal(reads.signals.length, 2, 'captures both read signals');
     t.ok(reads.signals.every((sig) => typeof sig.subscribe === 'function'), 'captures readonly signal handles');
   });
-
   it('starts lazy producers only while subscribed', (t) => {
     let starts = 0;
     let stops = 0;
@@ -69,9 +70,12 @@ describe('fino:signals basics', () => {
     disposeB();
     t.equal(starts, 1, 'producer starts once for first subscriber');
     t.equal(stops, 1, 'producer stops after last subscriber');
-    t.deepEqual(seen, [1, 10, 20], 'all active subscribers see lazy updates');
+    t.deepEqual(seen, [
+      1,
+      10,
+      20
+    ], 'all active subscribers see lazy updates');
   });
-
   it('folds async iterables while hot and calls return on dispose', async (t) => {
     let iteratorCreated = 0;
     let returned = 0;
@@ -101,7 +105,6 @@ describe('fino:signals basics', () => {
     t.deepEqual(seen, [1], 'fold publishes retained state while subscribed');
   });
 });
-
 describe('fino:ui signal compatibility', () => {
   it('re-exports the signal kernel', (t) => {
     const count: ReadonlySignal<number> = createUiSignal(0);

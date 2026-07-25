@@ -51,7 +51,6 @@ import type { RealmOptions } from './realm/index.ts';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
 import { subscribeMatching } from 'fino:context/topic';
-
 /**
 * Job lifecycle states stored in `JobRecord.status`.
 *
@@ -59,7 +58,6 @@ import { subscribeMatching } from 'fino:context/topic';
 * resolves when a job reaches one of those states.
 */
 export type JobStatus = 'pending' | 'claimed' | 'running' | 'waiting' | 'done' | 'error' | 'dead' | 'cancelled';
-
 /**
 * Retry/backoff policy copied onto each job.
 *
@@ -95,7 +93,6 @@ export interface JobRetryPolicy {
   /** When true, randomize each delay in `[0, computed]` to spread out retry bursts. */
   jitter: boolean;
 }
-
 /**
 * Persisted job row returned by `push()`, `get()`, `list()`, `job()`, and
 * `wait()`.
@@ -164,7 +161,6 @@ export interface JobRecord {
   /** Epoch-ms time the job reached a terminal state, or `null` while active. */
   finishedAt: number | null;
 }
-
 /**
 * Aggregate counts for one queue or all queues.
 *
@@ -201,7 +197,6 @@ export interface QueueStats {
   /** Epoch-ms timestamp of the oldest due pending job, or `null` when idle. */
   oldestPendingAt: number | null;
 }
-
 /**
 * Persisted schedule row returned by `schedule()` and `schedules()`.
 *
@@ -248,7 +243,6 @@ export interface ScheduleRecord {
   /** Epoch-ms time of the last modification. */
   updatedAt: number;
 }
-
 /**
 * A job that could not complete and should not be retried.
 *
@@ -279,7 +273,6 @@ export class NonRetryableJobError extends Error {
     this.name = 'NonRetryableJobError';
   }
 }
-
 /**
 * Options for `Jobs.open()`.
 *
@@ -444,7 +437,6 @@ export interface JobsScheduleOptions {
   */
   retry?: Partial<JobRetryPolicy>;
 }
-
 function emptyQueueStats(): QueueStats {
   return {
     pending: 0,
@@ -457,11 +449,9 @@ function emptyQueueStats(): QueueStats {
     oldestPendingAt: null
   };
 }
-
 function isJobsRuntimeTopic(name: string): boolean {
   return name.startsWith('otel:runtime:jobs:');
 }
-
 interface ControlModule {
   open(opts: Record<string, unknown>): Promise<boolean>;
   push(task: string, input: unknown, opts: JobsPushOptions): Promise<JobRecord>;
@@ -489,7 +479,6 @@ interface ControlModule {
   wfRemove(runId: string): Promise<void>;
   inlineCalls(relayIndex: number): AsyncIterable<JobsWireCall>;
 }
-
 /**
 * Handle to the jobs system: pushes, schedules, worker registration, and
 * job lifecycle operations. Create with `Jobs.open()`.
@@ -518,7 +507,7 @@ export class Jobs {
   static async open(opts: JobsOptions): Promise<Jobs> {
     let control: ControlModule | null = null;
     try {
-      control = await import('fino:jobs/control') as unknown as ControlModule;
+      control = (await import('fino:jobs/control') as unknown) as ControlModule;
     } catch {}
     let jobs: Jobs;
     if (control !== null) {
@@ -629,7 +618,7 @@ export class Jobs {
       const handle = subscribeMatching<Record<string, unknown>>(isJobsRuntimeTopic, (event) => {
         if (event.jobId === id) refresh();
       });
-      const timer = setInterval(refresh, 5000);
+      const timer = setInterval(refresh, 5e3);
       return () => {
         active = false;
         clearInterval(timer);
@@ -656,7 +645,7 @@ export class Jobs {
       const handle = subscribeMatching<Record<string, unknown>>(isJobsRuntimeTopic, (event) => {
         if (queue === undefined || event.queue === queue) refresh();
       });
-      const timer = setInterval(refresh, 5000);
+      const timer = setInterval(refresh, 5e3);
       return () => {
         active = false;
         clearInterval(timer);
@@ -708,7 +697,12 @@ export class Jobs {
     timeoutMs?: number;
   } = {}): Promise<JobRecord> {
     if (this.#control !== null) return this.#control.waitFor(id, opts);
-    const terminal = new Set<JobStatus>(['done', 'error', 'dead', 'cancelled']);
+    const terminal = new Set<JobStatus>([
+      'done',
+      'error',
+      'dead',
+      'cancelled'
+    ]);
     const signal = this.job(id);
     return new Promise<JobRecord>((resolve, reject) => {
       let settled = false;
@@ -768,15 +762,11 @@ export class Jobs {
               }
             }));
           }
-        } catch {
-          // Stream ends when the app realm or service shuts down.
-        }
+        } catch {}
       })();
       return;
     }
-    this.#requireService().processTasks(opts.tasks, {
-      ...opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {}
-    });
+    this.#requireService().processTasks(opts.tasks, { ...opts.concurrency !== undefined ? { concurrency: opts.concurrency } : {} });
   }
   /**
   * Register a pool processor: an exclusive worker pool whose entry module

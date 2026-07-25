@@ -1,6 +1,5 @@
 import { describe, it } from 'fino:test/test';
 import { registerWorkload, releaseWorkload, workloadsSignal } from 'internal:orchestrator';
-
 describe('internal orchestrator workload signal', () => {
   it('tracks workload registration and release', (t) => {
     const seen: number[] = [];

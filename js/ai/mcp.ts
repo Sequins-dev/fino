@@ -1723,10 +1723,7 @@ export class MCPClient {
       void this.#refreshTools();
       await opts.onToolsChanged?.();
     }).method('notifications/resources/list_changed').handle(async () => {
-      void Promise.all([
-        this.#refreshResources(),
-        this.#refreshResourceTemplates()
-      ]);
+      void Promise.all([this.#refreshResources(), this.#refreshResourceTemplates()]);
       await opts.onResourcesChanged?.();
     }).method('notifications/prompts/list_changed').handle(async () => {
       void this.#refreshPrompts();

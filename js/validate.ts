@@ -1084,154 +1084,36 @@ function object(shape: Record<string, unknown>): ObjectBuilder {
 * ```
 */
 export const v = {
-  /**
-  * Create a schema that accepts any value.
-  *
-  * The generated JSON Schema is `{}`. Use this for intentionally unvalidated
-  * extension points or values that are validated elsewhere.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.any();
-  * ```
-  */
   any(): SchemaBuilder<unknown> {
     return new SchemaBuilder({});
   },
-  /**
-  * Create a string schema builder.
-  *
-  * Chain `min()`, `max()`, `length()`, `pattern()`, or `format()` to add
-  * string constraints.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.string().min(1).max(64);
-  * ```
-  */
   string(): StringBuilder {
     return new StringBuilder({ type: 'string' });
   },
-  /**
-  * Create a number schema builder.
-  *
-  * The schema accepts finite JavaScript numbers. Chain `min()` and `max()` to
-  * add numeric bounds.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.number().min(0);
-  * ```
-  */
   number(): NumberBuilder {
     return new NumberBuilder({ type: 'number' });
   },
-  /**
-  * Create an integer schema builder.
-  *
-  * The schema accepts JavaScript numbers that satisfy `Number.isInteger()`.
-  * Chain `min()` and `max()` to add integer bounds.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.integer().min(1).max(65535);
-  * ```
-  */
   integer(): NumberBuilder {
     return new NumberBuilder({ type: 'integer' });
   },
-  /**
-  * Create a boolean schema builder.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.boolean().default(false);
-  * ```
-  */
   boolean(): SchemaBuilder<boolean> {
     return new SchemaBuilder({ type: 'boolean' });
   },
-  /**
-  * Create a schema that accepts only `null`.
-  *
-  * Use `someSchema.nullable()` when a non-null schema should also accept
-  * `null`.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.null();
-  * ```
-  */
   null(): SchemaBuilder<null> {
     return new SchemaBuilder({ type: 'null' });
   },
-  /**
-  * Create a constant-value schema.
-  *
-  * The value is stored as JSON Schema `const` and must compare equal during
-  * validation.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.literal('production');
-  * ```
-  */
   literal(value: unknown): SchemaBuilder<unknown> {
     return new SchemaBuilder({ const: value });
   },
-  /**
-  * Create an enum schema from allowed values.
-  *
-  * The `values` array is copied into JSON Schema `enum`, so later mutations to
-  * the caller's array do not change the schema.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.enum(['dev', 'prod']);
-  * ```
-  */
   enum(values: unknown[]): SchemaBuilder<unknown> {
     return new SchemaBuilder({ enum: values.slice() });
   },
-  /**
-  * Create an array schema with one item schema.
-  *
-  * `item` may be another builder or a raw JSON Schema object. Chain `min()`
-  * and `max()` to constrain item count.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.array(v.string()).min(1);
-  * ```
-  */
   array(item: unknown): ArrayBuilder {
     return new ArrayBuilder({
       type: 'array',
       items: schemaOf(item)
     });
   },
-  /**
-  * Create a fixed-length tuple schema.
-  *
-  * `items` may contain builders or raw JSON Schema objects. The generated
-  * schema uses `prefixItems` and sets `minItems` and `maxItems` to the tuple
-  * length.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.tuple([v.string(), v.integer()]);
-  * ```
-  */
   tuple(items: unknown[]): ArrayBuilder {
     return new ArrayBuilder({
       type: 'array',
@@ -1240,36 +1122,7 @@ export const v = {
       maxItems: items.length
     });
   },
-  /**
-  * Create an object schema from a property shape.
-  *
-  * Shape values may be builders or raw JSON Schema objects. Properties are
-  * required by default; call `.optional()` on a builder to omit that property
-  * from the generated `required` list.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.object({
-  *   name: v.string(),
-  *   nickname: v.string().optional(),
-  * });
-  * ```
-  */
   object,
-  /**
-  * Create a union schema.
-  *
-  * `items` may contain builders or raw JSON Schema objects. The generated
-  * schema uses JSON Schema `anyOf`; validation succeeds when any branch
-  * accepts the value.
-  *
-  * ```ts no_run
-  * import { v } from 'fino:validate';
-  *
-  * const schema = v.union([v.string(), v.integer()]);
-  * ```
-  */
   union(items: unknown[]): SchemaBuilder<unknown> {
     return new SchemaBuilder({ anyOf: items.map(schemaOf) });
   }

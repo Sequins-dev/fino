@@ -277,10 +277,11 @@ describe('Session', () => {
   });
   it('watch() exposes the current run state and terminal updates', async (t) => {
     const store = new InMemorySessionStore();
-    const a = agent({
-      model: scriptModel([endTurn('watched')])
+    const a = agent({ model: scriptModel([endTurn('watched')]) });
+    const sess = session({
+      store,
+      agent: a
     });
-    const sess = session({ store, agent: a });
     const states: string[] = [];
     const watched = sess.watch();
     watched.subscribe((state) => {

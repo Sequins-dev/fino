@@ -6,18 +6,21 @@ import { task } from 'fino:task';
 import { durableTask } from 'fino:task/durable';
 import { DiskFileSystem } from 'fino:file';
 const textEncoder = new TextEncoder();
-
 export default task({
   name: 'pool-root',
   run: async () => 'root-ok',
   children: [
     task({
       name: 'pool-double',
-      run: async (input: { v: number }) => input.v * 2
+      run: async (input: {
+        v: number;
+      }) => input.v * 2
     }),
     task({
       name: 'pool-marker-flaky',
-      run: async (input: { marker: string }) => {
+      run: async (input: {
+        marker: string;
+      }) => {
         const fs = new DiskFileSystem();
         try {
           await fs.stat(input.marker);

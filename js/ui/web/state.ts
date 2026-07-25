@@ -48,7 +48,6 @@
 * ```
 */
 import { Database, sql, type DatabaseConnection } from 'fino:database';
-
 /**
 * Durable state for one mounted view instance.
 *
@@ -97,7 +96,10 @@ export interface ViewSnapshot {
   /**
   * Recent action nonces used to avoid double-submit replays.
   */
-  applied: Array<{ rid: string; action: string }>;
+  applied: Array<{
+    rid: string;
+    action: string;
+  }>;
   /**
   * Creation time in milliseconds since the Unix epoch.
   */
@@ -111,7 +113,6 @@ export interface ViewSnapshot {
   */
   expiresAt: number;
 }
-
 /**
 * Storage contract for durable view snapshots.
 *
@@ -141,13 +142,17 @@ export interface ViewStateStore {
   * that version. Mismatches, including a missing current head, throw
   * `ViewVersionConflictError`.
   */
-  save(snapshot: ViewSnapshot, opts?: { expectVersion?: number }): Promise<void>;
+  save(snapshot: ViewSnapshot, opts?: {
+    expectVersion?: number;
+  }): Promise<void>;
   /**
   * Return retained history for `viewId`, newest first.
   *
   * `opts.limit` caps the number of returned snapshots when provided.
   */
-  history(viewId: string, opts?: { limit?: number }): Promise<ViewSnapshot[]>;
+  history(viewId: string, opts?: {
+    limit?: number;
+  }): Promise<ViewSnapshot[]>;
   /**
   * Delete a snapshot head and its retained history.
   *
@@ -162,7 +167,6 @@ export interface ViewStateStore {
   */
   sweep(now?: number): Promise<number>;
 }
-
 /**
 * Error thrown when a compare-and-swap snapshot save sees a different version.
 *
@@ -177,11 +181,9 @@ export class ViewVersionConflictError extends Error {
     this.name = 'ViewVersionConflictError';
   }
 }
-
 function cloneSnapshot(snapshot: ViewSnapshot): ViewSnapshot {
   return JSON.parse(JSON.stringify(snapshot)) as ViewSnapshot;
 }
-
 function assertJsonRecord(name: string, value: Record<string, unknown>): void {
   for (const [key, entry] of Object.entries(value)) {
     if (entry === undefined) throw new TypeError(`View snapshot key "${key}" in ${name} is not JSON-serializable`);
@@ -194,14 +196,12 @@ function assertJsonRecord(name: string, value: Record<string, unknown>): void {
     }
   }
 }
-
 function validate(snapshot: ViewSnapshot): ViewSnapshot {
   assertJsonRecord('data', snapshot.data);
   assertJsonRecord('regions', snapshot.regions);
   JSON.stringify(snapshot.applied);
   return cloneSnapshot(snapshot);
 }
-
 /**
 * In-memory view snapshot store for tests and single-process prototypes.
 *
@@ -212,7 +212,6 @@ function validate(snapshot: ViewSnapshot): ViewSnapshot {
 export class InMemoryViewStore implements ViewStateStore {
   #heads = new Map<string, ViewSnapshot>();
   #history = new Map<string, ViewSnapshot[]>();
-
   /**
   * Load the current in-memory head snapshot for `viewId`, or `null`.
   */
@@ -220,7 +219,6 @@ export class InMemoryViewStore implements ViewStateStore {
     const snap = this.#heads.get(viewId);
     return snap ? cloneSnapshot(snap) : null;
   }
-
   /**
   * Save an in-memory head snapshot and prepend it to retained history.
   *
@@ -228,7 +226,9 @@ export class InMemoryViewStore implements ViewStateStore {
   * The snapshot is validated for JSON-compatible `data`, `regions`, and
   * `applied` values before storage.
   */
-  async save(snapshot: ViewSnapshot, opts: { expectVersion?: number } = {}): Promise<void> {
+  async save(snapshot: ViewSnapshot, opts: {
+    expectVersion?: number;
+  } = {}): Promise<void> {
     const current = this.#heads.get(snapshot.viewId);
     if (opts.expectVersion !== undefined && current?.version !== opts.expectVersion) {
       throw new ViewVersionConflictError(snapshot.viewId, opts.expectVersion, current?.version ?? null);
@@ -239,15 +239,15 @@ export class InMemoryViewStore implements ViewStateStore {
     history.unshift(cloneSnapshot(next));
     this.#history.set(next.viewId, history);
   }
-
   /**
   * Return retained in-memory history for `viewId`, newest first.
   */
-  async history(viewId: string, opts: { limit?: number } = {}): Promise<ViewSnapshot[]> {
+  async history(viewId: string, opts: {
+    limit?: number;
+  } = {}): Promise<ViewSnapshot[]> {
     const entries = this.#history.get(viewId) ?? [];
     return entries.slice(0, opts.limit).map(cloneSnapshot);
   }
-
   /**
   * Delete an in-memory head snapshot and all retained history for `viewId`.
   */
@@ -255,7 +255,6 @@ export class InMemoryViewStore implements ViewStateStore {
     this.#heads.delete(viewId);
     this.#history.delete(viewId);
   }
-
   /**
   * Delete expired in-memory heads and return the number removed.
   */
@@ -269,7 +268,6 @@ export class InMemoryViewStore implements ViewStateStore {
     return deleted;
   }
 }
-
 /**
 * Database-backed view snapshot store.
 *
@@ -282,11 +280,9 @@ export class InMemoryViewStore implements ViewStateStore {
 */
 export class DatabaseViewStore implements ViewStateStore {
   #db: DatabaseConnection;
-
   private constructor(db: DatabaseConnection) {
     this.#db = db;
   }
-
   /**
   * Open a database-backed view store and create required tables.
   *
@@ -294,7 +290,9 @@ export class DatabaseViewStore implements ViewStateStore {
   * `sqlite://path/to/ui.db`, or other supported database targets are accepted.
   * `opts.fs` is forwarded for filesystem-backed database providers.
   */
-  static async open(target: string, opts?: { fs?: object }): Promise<DatabaseViewStore> {
+  static async open(target: string, opts?: {
+    fs?: object;
+  }): Promise<DatabaseViewStore> {
     const db = await Database.open(target, { fs: opts?.fs as never });
     await db.exec(`CREATE TABLE IF NOT EXISTS ui_view_snapshots (
       view_id TEXT PRIMARY KEY,
@@ -314,7 +312,6 @@ export class DatabaseViewStore implements ViewStateStore {
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_ui_view_snapshots_expires ON ui_view_snapshots(expires_at)`);
     return new DatabaseViewStore(db);
   }
-
   /**
   * Load the current database head snapshot for `viewId`, or `null`.
   */
@@ -327,14 +324,15 @@ export class DatabaseViewStore implements ViewStateStore {
       stmt.finalize();
     }
   }
-
   /**
   * Save a database head snapshot and append it to history in one transaction.
   *
   * `opts.expectVersion`, when provided, must match the currently loaded head
   * version. The snapshot is validated before any database writes occur.
   */
-  async save(snapshot: ViewSnapshot, opts: { expectVersion?: number } = {}): Promise<void> {
+  async save(snapshot: ViewSnapshot, opts: {
+    expectVersion?: number;
+  } = {}): Promise<void> {
     const next = validate(snapshot);
     await this.#db.transaction(async () => {
       const current = await this.load(next.viewId);
@@ -364,11 +362,12 @@ export class DatabaseViewStore implements ViewStateStore {
       }
     });
   }
-
   /**
   * Return retained database history for `viewId`, newest first.
   */
-  async history(viewId: string, opts: { limit?: number } = {}): Promise<ViewSnapshot[]> {
+  async history(viewId: string, opts: {
+    limit?: number;
+  } = {}): Promise<ViewSnapshot[]> {
     let query = sql`SELECT snapshot FROM ui_view_snapshot_history WHERE view_id = ${viewId} ORDER BY version DESC`;
     if (opts.limit !== undefined) query = sql`${query} LIMIT ${Math.floor(opts.limit)}`;
     const stmt = this.#db.prepare(query);
@@ -379,7 +378,6 @@ export class DatabaseViewStore implements ViewStateStore {
       stmt.finalize();
     }
   }
-
   /**
   * Delete a database head snapshot and all retained history for `viewId`.
   */
@@ -399,7 +397,6 @@ export class DatabaseViewStore implements ViewStateStore {
       }
     });
   }
-
   /**
   * Delete expired database heads and return the number removed.
   *
@@ -416,14 +413,12 @@ export class DatabaseViewStore implements ViewStateStore {
       expired.finalize();
     }
   }
-
   /**
   * Close the underlying database connection.
   */
   async close(): Promise<void> {
     await this.#db.close();
   }
-
   /**
   * Dispose the underlying database connection when used with `await using`.
   */

@@ -19,7 +19,6 @@ import type { Handler, HttpContext } from 'fino:net/http/app';
 import { renderToHtml } from 'fino:ui/html';
 import type { VNode } from 'fino:ui';
 import type { Workflow, WorkflowState, WorkflowStore } from 'fino:workflow';
-
 export interface FlowPageOptions<In = unknown> {
   /** Durable workflow store containing runs for this page. */
   store: WorkflowStore;
@@ -28,17 +27,17 @@ export interface FlowPageOptions<In = unknown> {
   /** Render the current workflow state as a Fino UI tree. */
   render: (ctx: HttpContext, state: WorkflowState) => VNode;
 }
-
 function runUrl(ctx: HttpContext, runId: string): string {
   const url = new URL(ctx.request.url);
   url.searchParams.set('run', runId);
   return `${url.pathname}${url.search}`;
 }
-
 function redirect(url: string): Response {
-  return new Response(null, { status: 303, headers: { location: url } });
+  return new Response(null, {
+    status: 303,
+    headers: { location: url }
+  });
 }
-
 function parsePayload(value: FormDataEntryValue | null): unknown {
   if (value === null) return undefined;
   const text = typeof value === 'string' ? value : value.name;
@@ -49,19 +48,18 @@ function parsePayload(value: FormDataEntryValue | null): unknown {
   if (text.trim() !== '' && Number.isFinite(numeric) && String(numeric) === text) return numeric;
   return text;
 }
-
 async function renderState(ctx: HttpContext, opts: FlowPageOptions, runId: string): Promise<Response> {
   const state = await opts.store.load(runId);
   if (state === null) return new Response('Workflow run not found', { status: 404 });
-  return new Response('<!doctype html>' + renderToHtml(opts.render(ctx, state)), {
-    headers: { 'content-type': 'text/html; charset=utf-8' }
-  });
+  return new Response('<!doctype html>' + renderToHtml(opts.render(ctx, state)), { headers: { 'content-type': 'text/html; charset=utf-8' } });
 }
-
 /**
 * Create a route handler for a bounded workflow-backed page.
 */
-export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOptions<In>): Handler {
+export function flowPage<
+  In,
+  Out
+>(workflow: Workflow<In, Out>, opts: FlowPageOptions<In>): Handler {
   return async (ctx) => {
     const url = new URL(ctx.request.url);
     const runId = url.searchParams.get('run');
@@ -84,11 +82,13 @@ export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOpt
         name: state.waitingOn.name,
         payload: parsePayload(form.get(state.waitingOn.name))
       });
-      await workflow.resume({ store: opts.store, runId });
+      await workflow.resume({
+        store: opts.store,
+        runId
+      });
       return redirect(runUrl(ctx, runId));
     }
     return new Response('Method Not Allowed', { status: 405 });
   };
 }
-
 export { observableWorkflowStore, watchRun } from 'fino:workflow';

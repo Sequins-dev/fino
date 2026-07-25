@@ -804,56 +804,49 @@ function foldAgentEvent(state: AgentRunView, modelState: ModelStreamState, event
         usage: nextModel.usage
       };
     }
-    case 'step_start':
-      return {
-        ...state,
-        status: 'streaming',
-        currentTool: null,
-        stepIndex: event.stepIndex
-      };
-    case 'step_end':
-      return {
-        ...state,
-        status: 'streaming',
-        stepIndex: event.stepIndex + 1
-      };
-    case 'tool_start':
-      return {
-        ...state,
-        status: 'tool',
-        currentTool: {
-          id: event.id,
-          name: event.name
-        },
-        stepIndex: event.stepIndex
-      };
+    case 'step_start': return {
+      ...state,
+      status: 'streaming',
+      currentTool: null,
+      stepIndex: event.stepIndex
+    };
+    case 'step_end': return {
+      ...state,
+      status: 'streaming',
+      stepIndex: event.stepIndex + 1
+    };
+    case 'tool_start': return {
+      ...state,
+      status: 'tool',
+      currentTool: {
+        id: event.id,
+        name: event.name
+      },
+      stepIndex: event.stepIndex
+    };
     case 'tool_result':
-    case 'tool_error':
-      return {
-        ...state,
-        status: event.type === 'tool_error' ? 'error' : 'streaming',
-        currentTool: null,
-        stepIndex: event.stepIndex
-      };
-    case 'suspend':
-      return {
-        ...state,
-        status: 'suspended',
-        currentTool: null,
-        stepIndex: event.stepIndex
-      };
-    case 'final':
-      return {
-        ...state,
-        status: 'done',
-        currentTool: null,
-        text: event.result.text,
-        usage: event.result.usage,
-        cost: event.result.cost,
-        stepIndex: event.result.steps.length
-      };
-    default:
-      return state;
+    case 'tool_error': return {
+      ...state,
+      status: event.type === 'tool_error' ? 'error' : 'streaming',
+      currentTool: null,
+      stepIndex: event.stepIndex
+    };
+    case 'suspend': return {
+      ...state,
+      status: 'suspended',
+      currentTool: null,
+      stepIndex: event.stepIndex
+    };
+    case 'final': return {
+      ...state,
+      status: 'done',
+      currentTool: null,
+      text: event.result.text,
+      usage: event.result.usage,
+      cost: event.result.cost,
+      stepIndex: event.result.steps.length
+    };
+    default: return state;
   }
 }
 function providerName(model: Model): string {

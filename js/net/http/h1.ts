@@ -258,7 +258,6 @@ async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: s
       rawBytes: bytes
     };
   }
-
   // RFC 9112 sections 6.3 and 7.1: an HTTP/1.1 stream whose size is not
   // known in advance is length-delimited with chunked transfer coding. This
   // sends headers and each body chunk immediately instead of waiting for EOF.

@@ -565,9 +565,7 @@ export function structuredClone<T>(value: T, options?: {
   const transferList = _validateStructuredCloneTransferList(options?.transfer);
   const preflight = _preflightStructuredClone(value, undefined);
   if (preflight.useFallback) {
-    return _structuredCloneWithTransferMap(value, {
-      transfer: transferList
-    });
+    return _structuredCloneWithTransferMap(value, { transfer: transferList });
   }
   try {
     const chunks = _serialize(value, transferList);
@@ -675,7 +673,7 @@ function _preflightStructuredClone(value: unknown, transferMap: WeakMap<object, 
     if (constructorName === 'AggregateError') {
       return { useFallback: true };
     }
-    if (value.name !== new ((value as any).constructor)('').name) {
+    if (value.name !== new (value as any).constructor('').name) {
       return { useFallback: true };
     }
     if ('cause' in value) visit((value as any).cause);

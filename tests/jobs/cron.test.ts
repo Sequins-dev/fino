@@ -3,19 +3,32 @@
 */
 import { describe, it } from 'fino:test/test';
 import { parseCron, nextOccurrence, type CronSpec } from 'internal:jobs/cron';
-
 function at(iso: string): number {
   return Date.parse(iso);
 }
-
 describe('cron parsing', () => {
   it('accepts field syntax', (t) => {
     const spec = parseCron('*/15 2-4 1,15 * 1-5') as CronSpec;
-    t.deepEqual(spec.minutes, [0, 15, 30, 45], 'star step expands');
-    t.deepEqual(spec.hours, [2, 3, 4], 'range expands');
+    t.deepEqual(spec.minutes, [
+      0,
+      15,
+      30,
+      45
+    ], 'star step expands');
+    t.deepEqual(spec.hours, [
+      2,
+      3,
+      4
+    ], 'range expands');
     t.deepEqual(spec.daysOfMonth, [1, 15], 'comma list expands');
     t.equal(spec.months.length, 12, 'star month allows all');
-    t.deepEqual(spec.daysOfWeek, [1, 2, 3, 4, 5], 'weekday range expands');
+    t.deepEqual(spec.daysOfWeek, [
+      1,
+      2,
+      3,
+      4,
+      5
+    ], 'weekday range expands');
     t.ok(spec.domRestricted && spec.dowRestricted, 'restriction flags set');
   });
   it('normalizes Sunday 7 to 0 and supports aliases', (t) => {
@@ -23,7 +36,9 @@ describe('cron parsing', () => {
     t.deepEqual((parseCron('@weekly') as CronSpec).daysOfWeek, [0], '@weekly is Sunday midnight');
     const every = parseCron('every:90s');
     t.equal(every.kind, 'every', 'every: parses as interval');
-    t.equal((every as { intervalMs: number }).intervalMs, 90_000, 'interval scales to ms');
+    t.equal((every as {
+      intervalMs: number;
+    }).intervalMs, 9e4, 'interval scales to ms');
   });
   it('rejects unsupported syntax with clear errors', (t) => {
     t.throws(() => parseCron('0 0 * * MON'), /numeric/, 'day names rejected');
@@ -37,7 +52,6 @@ describe('cron parsing', () => {
     t.throws(() => parseCron('5-1 * * * *'), /inverted/, 'inverted range rejected');
   });
 });
-
 describe('cron next occurrence', () => {
   it('advances within the hour and across step boundaries', (t) => {
     const spec = parseCron('*/15 * * * *');
@@ -66,9 +80,9 @@ describe('cron next occurrence', () => {
   });
   it('aligns every: intervals to the anchor', (t) => {
     const spec = parseCron('every:90s');
-    t.equal(nextOccurrence(spec, 0), 90_000, 'first interval after the anchor');
-    t.equal(nextOccurrence(spec, 90_000), 180_000, 'exact boundary advances strictly');
-    t.equal(nextOccurrence(spec, 100_000), 180_000, 'mid-interval rounds up');
+    t.equal(nextOccurrence(spec, 0), 9e4, 'first interval after the anchor');
+    t.equal(nextOccurrence(spec, 9e4), 18e4, 'exact boundary advances strictly');
+    t.equal(nextOccurrence(spec, 1e5), 18e4, 'mid-interval rounds up');
   });
   it('bails on unsatisfiable expressions', (t) => {
     const spec = parseCron('0 0 30 2 *');

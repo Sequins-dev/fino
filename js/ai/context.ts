@@ -209,7 +209,10 @@ export function signalHistoryStrategy(inner: HistoryStrategy): {
       return result;
     }
   };
-  return { strategy, history };
+  return {
+    strategy,
+    history
+  };
 }
 /**
 * Immutable message entry stored by `MessageHistory`.

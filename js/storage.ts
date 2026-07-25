@@ -15,7 +15,6 @@ import { base64urlEncode, toBytes } from './internal/security/encoding.ts';
 import { FileSystem, type ByteWriter, type FileHandle } from 'internal:file/provider';
 import { Stat } from 'internal:file/stat';
 import type { Path } from './file/path.ts';
-
 export interface S3Credentials {
   /** Access key id used in the SigV4 credential scope. */
   accessKeyId: string;
@@ -24,7 +23,6 @@ export interface S3Credentials {
   /** Optional temporary-session token sent as `x-amz-security-token`. */
   sessionToken?: string;
 }
-
 /** Object metadata returned by `headObject()`. */
 export interface S3ObjectHead {
   /** Object size in bytes from the `Content-Length` header. */
@@ -32,7 +30,6 @@ export interface S3ObjectHead {
   /** Entity tag returned by the service, or `null` when omitted. */
   etag: string | null;
 }
-
 /** One object summary returned by `listObjectsV2()`. */
 export interface S3ObjectSummary {
   /** Object key relative to the bucket. */
@@ -44,7 +41,6 @@ export interface S3ObjectSummary {
   /** Last-modified timestamp string returned by the service. */
   lastModified?: string;
 }
-
 /** Result of an S3 multipart upload creation. */
 export interface S3MultipartUpload {
   /** Object key being uploaded. */
@@ -52,7 +48,6 @@ export interface S3MultipartUpload {
   /** Provider upload id passed to subsequent multipart calls. */
   uploadId: string;
 }
-
 /** One uploaded multipart part. */
 export interface S3UploadedPart {
   /** 1-based multipart part number. */
@@ -60,7 +55,6 @@ export interface S3UploadedPart {
   /** Entity tag returned by the service for this part. */
   etag: string;
 }
-
 /**
 * Options for signing an S3-compatible request with SigV4.
 */
@@ -76,7 +70,6 @@ export interface S3SignOptions {
   /** Payload hash to sign. Defaults to `UNSIGNED-PAYLOAD`. */
   payloadHash?: string;
 }
-
 /**
 * Options for creating a presigned S3-compatible URL.
 */
@@ -92,7 +85,6 @@ export interface S3PresignOptions {
   /** URL lifetime in seconds. Defaults to 900. */
   expiresIn?: number;
 }
-
 /**
 * Options for constructing an `S3Client`.
 */
@@ -112,7 +104,6 @@ export interface S3ClientOptions {
   /** Clock hook used for deterministic signing in tests. */
   clock?: () => Date;
 }
-
 /**
 * Options for `S3Client.listObjectsV2()`.
 */
@@ -124,7 +115,6 @@ export interface S3ListObjectsOptions {
   /** Maximum number of keys requested from the service. */
   maxKeys?: number;
 }
-
 /**
 * Result returned by `S3Client.listObjectsV2()`.
 */
@@ -136,34 +126,27 @@ export interface S3ListObjectsResult {
   /** Token to pass as `continuationToken` for the next page. */
   nextContinuationToken?: string;
 }
-
 function hex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
-
 function amzDate(date: Date): string {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, '');
 }
-
 function shortDate(date: Date): string {
   return amzDate(date).slice(0, 8);
 }
-
 function encodePath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/').replace(/%2F/g, '/');
 }
-
 function canonicalQuery(params: URLSearchParams): string {
-  return [...params.entries()].sort(([a, av], [b, bv]) => a === b ? (av < bv ? -1 : av > bv ? 1 : 0) : a < b ? -1 : 1).map(([k, v]) => `${encodeURIComponent(k).replace(/%20/g, '+')}=${encodeURIComponent(v).replace(/%20/g, '+')}`).join('&');
+  return [...params.entries()].sort(([a, av], [b, bv]) => a === b ? av < bv ? -1 : av > bv ? 1 : 0 : a < b ? -1 : 1).map(([k, v]) => `${encodeURIComponent(k).replace(/%20/g, '+')}=${encodeURIComponent(v).replace(/%20/g, '+')}`).join('&');
 }
-
 function signingKey(secret: string, date: string, region: string, service: string): Uint8Array {
   const kDate = hmac('sha-256', toBytes(`AWS4${secret}`), toBytes(date));
   const kRegion = hmac('sha-256', kDate, toBytes(region));
   const kService = hmac('sha-256', kRegion, toBytes(service));
   return hmac('sha-256', kService, toBytes('aws4_request'));
 }
-
 /**
 * Sign an S3-compatible HTTP request with AWS Signature Version 4.
 *
@@ -186,15 +169,26 @@ export async function signS3Request(input: Request, options: S3SignOptions): Pro
   const sorted = [...headers.entries()].map(([k, v]) => [k.toLowerCase(), v.trim()] as [string, string]).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   const signedHeaders = sorted.map(([k]) => k).join(';');
   const canonicalHeaders = sorted.map(([k, v]) => `${k}:${v}\n`).join('');
-  const canonical = [input.method.toUpperCase(), encodePath(url.pathname || '/'), canonicalQuery(url.searchParams), canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const canonical = [
+    input.method.toUpperCase(),
+    encodePath(url.pathname || '/'),
+    canonicalQuery(url.searchParams),
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join('\n');
   const scope = `${date}/${options.region}/${service}/aws4_request`;
-  const stringToSign = ['AWS4-HMAC-SHA256', stamp, scope, hex(digest('sha-256', toBytes(canonical)))].join('\n');
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    stamp,
+    scope,
+    hex(digest('sha-256', toBytes(canonical)))
+  ].join('\n');
   const signature = hex(hmac('sha-256', signingKey(options.credentials.secretAccessKey, date, options.region, service), toBytes(stringToSign)));
   headers.set('authorization', `AWS4-HMAC-SHA256 Credential=${options.credentials.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`);
   for (const [name, value] of headers) input.headers.set(name, value);
   return input;
 }
-
 /**
 * Create a presigned S3 URL for browser or third-party upload/download flows.
 *
@@ -214,13 +208,24 @@ export async function presignS3Url(method: string, urlInput: string | URL, optio
   url.searchParams.set('X-Amz-Expires', String(options.expiresIn ?? 900));
   url.searchParams.set('X-Amz-SignedHeaders', 'host');
   if (options.credentials.sessionToken !== undefined) url.searchParams.set('X-Amz-Security-Token', options.credentials.sessionToken);
-  const canonical = [method.toUpperCase(), encodePath(url.pathname || '/'), canonicalQuery(url.searchParams), `host:${url.host}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
-  const stringToSign = ['AWS4-HMAC-SHA256', stamp, scope, hex(digest('sha-256', toBytes(canonical)))].join('\n');
+  const canonical = [
+    method.toUpperCase(),
+    encodePath(url.pathname || '/'),
+    canonicalQuery(url.searchParams),
+    `host:${url.host}\n`,
+    'host',
+    'UNSIGNED-PAYLOAD'
+  ].join('\n');
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    stamp,
+    scope,
+    hex(digest('sha-256', toBytes(canonical)))
+  ].join('\n');
   const signature = hex(hmac('sha-256', signingKey(options.credentials.secretAccessKey, date, options.region, service), toBytes(stringToSign)));
   url.searchParams.set('X-Amz-Signature', signature);
   return url;
 }
-
 /** Error raised for non-success S3 responses. */
 export class S3Error extends Error {
   /** Create an error with the failing HTTP status code. */
@@ -228,7 +233,6 @@ export class S3Error extends Error {
     super(message);
   }
 }
-
 /**
 * Minimal S3-compatible object client.
 *
@@ -271,7 +275,10 @@ export class S3Client {
     return endpoint.toString();
   }
   async #request(method: string, key: string, body?: BodyInit, query?: Record<string, string | undefined>): Promise<Response> {
-    const req = await signS3Request(new Request(this.#url(key, query), { method, body }), {
+    const req = await signS3Request(new Request(this.#url(key, query), {
+      method,
+      body
+    }), {
       region: this.#region,
       credentials: this.#credentials,
       now: this.#clock(),
@@ -284,7 +291,10 @@ export class S3Client {
   /** Load object metadata with `HEAD`. */
   async headObject(key: string): Promise<S3ObjectHead> {
     const res = await this.#request('HEAD', key);
-    return { size: Number(res.headers.get('content-length') ?? 0), etag: res.headers.get('etag') };
+    return {
+      size: Number(res.headers.get('content-length') ?? 0),
+      etag: res.headers.get('etag')
+    };
   }
   /** Download an object as a standard `Response`. */
   async getObject(key: string): Promise<Response> {
@@ -326,12 +336,21 @@ export class S3Client {
   async createMultipartUpload(key: string): Promise<S3MultipartUpload> {
     const res = await this.#request('POST', key, undefined, { uploads: '' });
     const text = await res.text();
-    return { key, uploadId: /<UploadId>([\s\S]*?)<\/UploadId>/.exec(text)?.[1] ?? '' };
+    return {
+      key,
+      uploadId: /<UploadId>([\s\S]*?)<\/UploadId>/.exec(text)?.[1] ?? ''
+    };
   }
   /** Upload one multipart part. */
   async uploadPart(key: string, uploadId: string, partNumber: number, body: BodyInit): Promise<S3UploadedPart> {
-    const res = await this.#request('PUT', key, body, { uploadId, partNumber: String(partNumber) });
-    return { partNumber, etag: res.headers.get('etag') ?? '' };
+    const res = await this.#request('PUT', key, body, {
+      uploadId,
+      partNumber: String(partNumber)
+    });
+    return {
+      partNumber,
+      etag: res.headers.get('etag') ?? ''
+    };
   }
   /** Complete a multipart upload with uploaded part metadata. */
   async completeMultipartUpload(key: string, uploadId: string, parts: readonly S3UploadedPart[]): Promise<void> {
@@ -355,7 +374,6 @@ export class S3Client {
     }
   }
 }
-
 class S3File implements FileHandle {
   readonly path: Path;
   closed = false;
@@ -371,7 +389,7 @@ class S3File implements FileHandle {
   }
   async stat(): Promise<Stat> {
     const head = await this.#client.headObject(this.#key);
-    return new Stat(0, 0, 0o100644, 1, 0, 0, 0, head.size, 4096, 1, Date.now(), Date.now(), Date.now(), Date.now());
+    return new Stat(0, 0, 33188, 1, 0, 0, 0, head.size, 4096, 1, Date.now(), Date.now(), Date.now(), Date.now());
   }
   async *reader(): AsyncIterable<Uint8Array> {
     yield await this.bytes();
@@ -420,7 +438,6 @@ class S3File implements FileHandle {
     this.closed = true;
   }
 }
-
 /**
 * Async `FileSystem` adapter backed by an S3 key prefix.
 *
@@ -438,7 +455,7 @@ export class S3FileSystem extends FileSystem {
   }
   async stat(path: Path | string): Promise<Stat> {
     const head = await this.client.headObject(this.#key(path));
-    return new Stat(0, 0, 0o100644, 1, 0, 0, 0, head.size, 4096, 1, Date.now(), Date.now(), Date.now(), Date.now());
+    return new Stat(0, 0, 33188, 1, 0, 0, 0, head.size, 4096, 1, Date.now(), Date.now(), Date.now(), Date.now());
   }
   async lstat(path: Path | string): Promise<Stat> {
     return await this.stat(path);
@@ -470,5 +487,4 @@ export class S3FileSystem extends FileSystem {
     return '/' + this.#key(path);
   }
 }
-
 export { base64urlEncode };

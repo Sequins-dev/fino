@@ -8,7 +8,10 @@ function joinChunks(chunks: Uint8Array[]): string {
   const total = chunks.reduce((n, c) => n + c.byteLength, 0);
   const merged = new Uint8Array(total);
   let offset = 0;
-  for (const c of chunks) { merged.set(c, offset); offset += c.byteLength; }
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
   return new TextDecoder().decode(merged);
 }
 describe('sandbox backend naming', () => {
@@ -34,51 +37,48 @@ describe('sandbox backend naming', () => {
 });
 describe('strict sandbox pre-spawn network rejection', () => {
   it('rejects outbound rules carrying destination detail before spawning', (t) => {
-    t.throws(() => new Process('/bin/echo', ['x'], {
-      sandbox: {
-        mode: 'strict',
-        network: {
-          outbound: [{ action: 'allow', destination: 'example.com' }]
-        }
-      }
-    }), /filtered egress/, 'hostname destinations are rejected pre-spawn');
-    t.throws(() => new Process('/bin/echo', ['x'], {
-      sandbox: {
-        mode: 'strict',
-        network: {
-          outbound: [{ action: 'deny', destination: '10.0.0.0/8' }]
-        }
-      }
-    }), /filtered egress/, 'CIDR destinations are rejected pre-spawn');
+    t.throws(() => new Process('/bin/echo', ['x'], { sandbox: {
+      mode: 'strict',
+      network: { outbound: [{
+        action: 'allow',
+        destination: 'example.com'
+      }] }
+    } }), /filtered egress/, 'hostname destinations are rejected pre-spawn');
+    t.throws(() => new Process('/bin/echo', ['x'], { sandbox: {
+      mode: 'strict',
+      network: { outbound: [{
+        action: 'deny',
+        destination: '10.0.0.0/8'
+      }] }
+    } }), /filtered egress/, 'CIDR destinations are rejected pre-spawn');
   });
   it('rejects rules carrying port or protocol detail before spawning', (t) => {
-    t.throws(() => new Process('/bin/echo', ['x'], {
-      sandbox: {
-        mode: 'strict',
-        network: {
-          outbound: [{ action: 'allow', destination: '*', port: 443 }]
-        }
-      }
-    }), /sandbox\.network\.outbound\[0\]\.port/, 'port detail is rejected pre-spawn');
-    t.throws(() => new Process('/bin/echo', ['x'], {
-      sandbox: {
-        mode: 'strict',
-        network: {
-          inbound: [{ action: 'deny', destination: '*', protocol: 'tcp' }]
-        }
-      }
-    }), /sandbox\.network\.inbound\[0\]\.protocol/, 'protocol detail is rejected pre-spawn');
+    t.throws(() => new Process('/bin/echo', ['x'], { sandbox: {
+      mode: 'strict',
+      network: { outbound: [{
+        action: 'allow',
+        destination: '*',
+        port: 443
+      }] }
+    } }), /sandbox\.network\.outbound\[0\]\.port/, 'port detail is rejected pre-spawn');
+    t.throws(() => new Process('/bin/echo', ['x'], { sandbox: {
+      mode: 'strict',
+      network: { inbound: [{
+        action: 'deny',
+        destination: '*',
+        protocol: 'tcp'
+      }] }
+    } }), /sandbox\.network\.inbound\[0\]\.protocol/, 'protocol detail is rejected pre-spawn');
   });
   it('still accepts coarse allow/deny-all rules in strict mode', async (t) => {
     const capabilities = processSandboxCapabilities();
-    const options = {
-      sandbox: {
-        mode: 'strict' as const,
-        network: {
-          outbound: [{ action: 'deny' as const, destination: '*' }]
-        }
-      }
-    };
+    const options = { sandbox: {
+      mode: 'strict' as const,
+      network: { outbound: [{
+        action: 'deny' as const,
+        destination: '*'
+      }] }
+    } };
     if (!capabilities.strictAvailable) {
       t.throws(() => new Process('/bin/echo', ['coarse'], options), /strict sandbox/, 'coarse rules still fail closed without a strict backend');
       return;
@@ -91,14 +91,15 @@ describe('strict sandbox pre-spawn network rejection', () => {
     t.equal(code, 0, 'coarse deny-all strict spawn still works');
   });
   it('leaves best-effort mode free to record fine-grained rules unenforced', async (t) => {
-    const proc = new Process('/bin/echo', ['best-effort'], {
-      sandbox: {
-        mode: 'bestEffort',
-        network: {
-          outbound: [{ action: 'allow', destination: 'example.com', port: 443, protocol: 'tcp' }]
-        }
-      }
-    });
+    const proc = new Process('/bin/echo', ['best-effort'], { sandbox: {
+      mode: 'bestEffort',
+      network: { outbound: [{
+        action: 'allow',
+        destination: 'example.com',
+        port: 443,
+        protocol: 'tcp'
+      }] }
+    } });
     t.equal(proc.sandboxReport.securityBoundary, false, 'best-effort is not a boundary');
     t.ok(proc.sandboxReport.unsupported.some((entry) => entry.category === 'network'), 'network policy is reported unenforced');
     proc.stdin.close();
@@ -127,7 +128,13 @@ describe('strict sandbox launcher preserves the Process contract', () => {
     if (!capabilities.strictAvailable) return;
     // Coarse network denial is enforceable on every strict backend, so this
     // exercises the report without depending on Landlock or cgroups.
-    const proc = new Process('/bin/echo', ['ok'], { sandbox: { mode: 'strict', network: { outbound: [{ action: 'deny', destination: '*' }] } } });
+    const proc = new Process('/bin/echo', ['ok'], { sandbox: {
+      mode: 'strict',
+      network: { outbound: [{
+        action: 'deny',
+        destination: '*'
+      }] }
+    } });
     t.equal(proc.sandboxReport.mode, 'strict', 'report mode is strict');
     t.equal(proc.sandboxReport.backend, os === 'linux' ? 'linuxNative' : 'macosSeatbelt', 'backend matches platform');
     t.equal(proc.sandboxReport.securityBoundary, true, 'strict spawn is a security boundary');

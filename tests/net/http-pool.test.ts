@@ -374,7 +374,10 @@ describe('global fetch() — HTTPS H2 pool', () => {
       const url = new URL(req.url);
       const id = url.searchParams.get('id') ?? '';
       seen.add(id);
-      return Response.json({ id, path: url.pathname });
+      return Response.json({
+        id,
+        path: url.pathname
+      });
     });
     const origin = httpsOrigin(server.port);
     try {
@@ -382,9 +385,11 @@ describe('global fetch() — HTTPS H2 pool', () => {
         tls: { rejectUnauthorized: false },
         protocol: 'h2'
       } as any);
-      t.equal(await warm.text(), JSON.stringify({ id: '', path: '/warm' }), 'warm-up response completes');
+      t.equal(await warm.text(), JSON.stringify({
+        id: '',
+        path: '/warm'
+      }), 'warm-up response completes');
       t.ok(_fetchH2PoolHas(origin), 'warm-up request created a pooled H2 entry');
-
       const count = 32;
       const responses = await Promise.all(Array.from({ length: count }, (_, i) => {
         return fetchWithTimeout(`${origin}/batch?id=${i}`, {
@@ -446,18 +451,19 @@ describe('global fetch() — HTTPS H2 pool', () => {
         ca: CERT_PATH,
         clientAuth: 'require'
       }
-    }, async (_req, session) => new Response(session.tls?.authorized ? 'authorized' : 'anonymous', {
-      status: session.tls?.authorized ? 200 : 401
-    }));
+    }, async (_req, session) => new Response(session.tls?.authorized ? 'authorized' : 'anonymous', { status: session.tls?.authorized ? 200 : 401 }));
     const origin = httpsOrigin(server.port);
     try {
       const first = await fetch(`${origin}/with-cert`, {
         protocol: 'h2',
-        tls: { rejectUnauthorized: false, cert: CERT_PATH, key: KEY_PATH }
+        tls: {
+          rejectUnauthorized: false,
+          cert: CERT_PATH,
+          key: KEY_PATH
+        }
       } as any);
       t.equal(first.status, 200, 'cert-authenticated H2 request succeeds');
       t.equal(await first.text(), 'authorized', 'server sees client certificate');
-
       let secondStatus = 0;
       let secondRejected = false;
       try {

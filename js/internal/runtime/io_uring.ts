@@ -163,6 +163,17 @@ interface IoUringLoop {
   canceledTimers: Set<number>;
   nextWaitTimerId: number;
   fileBufs: Map<number, ArrayBuffer[]>;
+  nextPollId: number;
+  readPolls: Map<number, {
+    fd: number;
+    userData: number;
+  }>;
+  currentReadPolls: Map<number, number>;
+  writePolls: Map<number, {
+    fd: number;
+    userData: number;
+  }>;
+  currentWritePolls: Map<number, number>;
   persistentReads: Set<number>;
   signalFds: Map<number, number>;
   signalFdToSig: Map<number, number>;
@@ -183,6 +194,8 @@ const USER_DATA_FILE = 4n;
 const USER_DATA_SIGNAL = 5n;
 const USER_DATA_TIMER_CANCEL = 6n;
 const USER_DATA_WAIT_TIMER = 7n;
+const FIRST_POLL_ID = 4294967296;
+const MAX_POLL_ID = Number(USER_DATA_MASK);
 const lib = dlopen('libc.so.6', {
   syscall: {
     parameters: [
@@ -459,6 +472,11 @@ export function create(entries: number = 256): IoUringLoop {
     canceledTimers: new Set(),
     nextWaitTimerId: 1,
     fileBufs: new Map(),
+    nextPollId: FIRST_POLL_ID,
+    readPolls: new Map(),
+    currentReadPolls: new Map(),
+    writePolls: new Map(),
+    currentWritePolls: new Map(),
     persistentReads: new Set(),
     signalFds: new Map(),
     signalFdToSig: new Map()
@@ -502,6 +520,11 @@ function submitPending(loop: IoUringLoop): void {
     loop.sqSubmittedLocal += ret;
     toSubmit -= ret;
   }
+}
+function nextPollId(loop: IoUringLoop): number {
+  const id = loop.nextPollId++;
+  if (loop.nextPollId > MAX_POLL_ID) loop.nextPollId = FIRST_POLL_ID;
+  return id;
 }
 // ---------------------------------------------------------------------------
 // CQE consumption
@@ -554,11 +577,35 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
       filter = EVFILT_SIGNAL;
       ident = signo;
     } else if (userData.kind === USER_DATA_READ) {
-      if (loop.persistentReads.has(ident)) {
+      const poll = loop.readPolls.get(ident);
+      if (poll !== undefined) {
+        loop.readPolls.delete(ident);
+        if (loop.currentReadPolls.get(poll.fd) !== ident) {
+          head++;
+          continue;
+        }
+        loop.currentReadPolls.delete(poll.fd);
+        ident = poll.userData;
+      } else if (loop.persistentReads.has(ident)) {
         rearmPersistentReads.push(ident);
+      } else {
+        head++;
+        continue;
       }
       filter = EVFILT_READ;
     } else if (userData.kind === USER_DATA_WRITE) {
+      const poll = loop.writePolls.get(ident);
+      if (poll === undefined) {
+        head++;
+        continue;
+      }
+      loop.writePolls.delete(ident);
+      if (loop.currentWritePolls.get(poll.fd) !== ident) {
+        head++;
+        continue;
+      }
+      loop.currentWritePolls.delete(poll.fd);
+      ident = poll.userData;
       filter = EVFILT_WRITE;
     } else {
       // Legacy/unexpected POLL_ADD completion — fall back to the poll mask.
@@ -597,7 +644,13 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
 * @internal
 */
 export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
-  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, userData), POLLIN);
+  const pollId = nextPollId(loop);
+  loop.readPolls.set(pollId, {
+    fd,
+    userData
+  });
+  loop.currentReadPolls.set(fd, pollId);
+  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, pollId), POLLIN);
 }
 /**
 * Submit a persistent read readiness watch.
@@ -629,10 +682,20 @@ export function addPersistentRead(loop: IoUringLoop, fd: number, userData: numbe
 * @internal
 */
 export function addWrite(loop: IoUringLoop, fd: number, userData: number): void {
-  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_WRITE, userData), POLLOUT);
+  const pollId = nextPollId(loop);
+  loop.writePolls.set(pollId, {
+    fd,
+    userData
+  });
+  loop.currentWritePolls.set(fd, pollId);
+  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_WRITE, pollId), POLLOUT);
 }
 /**
-* No-op cancellation hook for read readiness.
+* Logically cancel a read readiness watch.
+*
+* The kernel may still deliver the one-shot completion after cancellation.
+* Each transient poll carries a unique id, so that late completion is ignored
+* instead of being mistaken for a watch on a recycled file descriptor.
 *
 * `IORING_OP_POLL_ADD` is one-shot in this backend, so no persistent read watch
 * exists to remove.
@@ -644,13 +707,21 @@ export function addWrite(loop: IoUringLoop, fd: number, userData: number): void 
 *
 * @internal
 */
-export function removeRead(loop: IoUringLoop, _fd: number): void {
-  // POLL_ADD is one-shot by default in io_uring — no explicit removal needed.
-  // For persistent watches, IORING_OP_POLL_REMOVE would be used here.
-  loop.persistentReads.delete(_fd);
+export function removeRead(loop: IoUringLoop, fd: number): void {
+  const pollId = loop.currentReadPolls.get(fd);
+  if (pollId !== undefined) {
+    loop.currentReadPolls.delete(fd);
+    loop.readPolls.delete(pollId);
+  }
+  // POLL_ADD is one-shot by default in io_uring. The eventual completion is
+  // ignored through its unique poll id after the logical watch is removed.
+  loop.persistentReads.delete(fd);
 }
 /**
-* No-op cancellation hook for write readiness.
+* Logically cancel a write readiness watch.
+*
+* As with reads, the underlying one-shot poll may complete later; removing its
+* unique id prevents it from waking a newer watch that reused the descriptor.
 *
 * ```typescript no_run
 * import * as uring from 'internal:runtime/io_uring';
@@ -659,8 +730,12 @@ export function removeRead(loop: IoUringLoop, _fd: number): void {
 *
 * @internal
 */
-export function removeWrite(loop: IoUringLoop, _fd: number): void {
-  void loop;
+export function removeWrite(loop: IoUringLoop, fd: number): void {
+  const pollId = loop.currentWritePolls.get(fd);
+  if (pollId !== undefined) {
+    loop.currentWritePolls.delete(fd);
+    loop.writePolls.delete(pollId);
+  }
 }
 /**
 * Watch `signo` for delivery to this process (Linux only, via signalfd).

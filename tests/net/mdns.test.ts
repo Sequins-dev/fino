@@ -6,23 +6,24 @@ import { Mdns } from 'fino:net/mdns';
 import { RECORD_TYPES, _buildQuery, _decodeName, _encodeName, _parseResponse } from 'internal:net/dns-wire';
 import * as sock from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
-
 function writeU16(out: number[], value: number): void {
   out.push(value >> 8 & 255, value & 255);
 }
-
 function writeU32(out: number[], value: number): void {
   out.push(value >>> 24 & 255, value >>> 16 & 255, value >>> 8 & 255, value & 255);
 }
-
 type FixtureRecord = {
   name?: string;
   type: number;
-  data: string | string[] | { priority: number; weight: number; port: number; target: string };
+  data: string | string[] | {
+    priority: number;
+    weight: number;
+    port: number;
+    target: string;
+  };
   ttl?: number;
   cacheFlush?: boolean;
 };
-
 function txtBytes(parts: string[]): number[] {
   const encoder = new TextEncoder();
   const out: number[] = [];
@@ -32,13 +33,17 @@ function txtBytes(parts: string[]): number[] {
   }
   return out;
 }
-
 function rdata(record: FixtureRecord): number[] {
   if (record.type === RECORD_TYPES.A) return String(record.data).split('.').map((part) => Number(part));
   if (record.type === RECORD_TYPES.PTR) return Array.from(_encodeName(String(record.data)));
   if (record.type === RECORD_TYPES.TXT) return txtBytes(record.data as string[]);
   if (record.type === RECORD_TYPES.SRV) {
-    const srv = record.data as { priority: number; weight: number; port: number; target: string };
+    const srv = record.data as {
+      priority: number;
+      weight: number;
+      port: number;
+      target: string;
+    };
     const out: number[] = [];
     writeU16(out, srv.priority);
     writeU16(out, srv.weight);
@@ -48,22 +53,21 @@ function rdata(record: FixtureRecord): number[] {
   }
   throw new Error(`unsupported fixture record type ${record.type}`);
 }
-
 function buildResponse(query: Uint8Array, records: FixtureRecord[]): Uint8Array {
   const { nextOffset } = _decodeName(query, 12);
   const question = query.slice(12, nextOffset + 4);
   const out: number[] = [];
   writeU16(out, 0);
-  writeU16(out, 0x8400);
+  writeU16(out, 33792);
   writeU16(out, 1);
   writeU16(out, records.length);
   writeU16(out, 0);
   writeU16(out, 0);
   out.push(...question);
   for (const record of records) {
-    out.push(...(record.name ? _encodeName(record.name) : [0xc0, 0x0c]));
+    out.push(...record.name ? _encodeName(record.name) : [192, 12]);
     writeU16(out, record.type);
-    writeU16(out, (record.cacheFlush ? 0x8000 : 0) | 1);
+    writeU16(out, (record.cacheFlush ? 32768 : 0) | 1);
     writeU32(out, record.ttl ?? 120);
     const bytes = rdata(record);
     writeU16(out, bytes.length);
@@ -82,9 +86,9 @@ function buildQueryWithKnownAnswer(name: string, qtype: number, record: FixtureR
   out.push(..._encodeName(name));
   writeU16(out, qtype);
   writeU16(out, 1);
-  out.push(...(record.name ? _encodeName(record.name) : _encodeName(name)));
+  out.push(...record.name ? _encodeName(record.name) : _encodeName(name));
   writeU16(out, record.type);
-  writeU16(out, (record.cacheFlush ? 0x8000 : 0) | 1);
+  writeU16(out, (record.cacheFlush ? 32768 : 0) | 1);
   writeU32(out, record.ttl ?? 120);
   const bytes = rdata(record);
   writeU16(out, bytes.length);
@@ -94,7 +98,7 @@ function buildQueryWithKnownAnswer(name: string, qtype: number, record: FixtureR
 function buildUnsolicited(records: FixtureRecord[]): Uint8Array {
   const out: number[] = [];
   writeU16(out, 0);
-  writeU16(out, 0x8400);
+  writeU16(out, 33792);
   writeU16(out, 0);
   writeU16(out, records.length);
   writeU16(out, 0);
@@ -102,7 +106,7 @@ function buildUnsolicited(records: FixtureRecord[]): Uint8Array {
   for (const record of records) {
     out.push(..._encodeName(record.name ?? '_http._tcp.local'));
     writeU16(out, record.type);
-    writeU16(out, (record.cacheFlush ? 0x8000 : 0) | 1);
+    writeU16(out, (record.cacheFlush ? 32768 : 0) | 1);
     writeU32(out, record.ttl ?? 120);
     const bytes = rdata(record);
     writeU16(out, bytes.length);
@@ -110,8 +114,11 @@ function buildUnsolicited(records: FixtureRecord[]): Uint8Array {
   }
   return new Uint8Array(out);
 }
-
-function parseQuestion(packet: Uint8Array): { name: string; type: number; classCode: number } {
+function parseQuestion(packet: Uint8Array): {
+  name: string;
+  type: number;
+  classCode: number;
+} {
   const decoded = _decodeName(packet, 12);
   const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
   return {
@@ -120,10 +127,17 @@ function parseQuestion(packet: Uint8Array): { name: string; type: number; classC
     classCode: view.getUint16(decoded.nextOffset + 2, false)
   };
 }
-
-function startFixture(respond: (packet: Uint8Array) => FixtureRecord[]): { address: sock.Address; close(): void; done: Promise<void> } {
+function startFixture(respond: (packet: Uint8Array) => FixtureRecord[]): {
+  address: sock.Address;
+  close(): void;
+  done: Promise<void>;
+} {
   const fd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-  sock.bind(fd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+  sock.bind(fd, {
+    family: 'ipv4',
+    ip: '127.0.0.1',
+    port: 0
+  });
   sock.setNonblocking(fd);
   const address = sock.getsockname(fd);
   if (address.family !== 'ipv4') throw new Error('expected IPv4 fixture');
@@ -150,9 +164,17 @@ function startFixture(respond: (packet: Uint8Array) => FixtureRecord[]): { addre
     done
   };
 }
-function startSilentFixture(onPacket: (packet: Uint8Array, addr: sock.Address) => void): { address: sock.Address; close(): void; done: Promise<void> } {
+function startSilentFixture(onPacket: (packet: Uint8Array, addr: sock.Address) => void): {
+  address: sock.Address;
+  close(): void;
+  done: Promise<void>;
+} {
   const fd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-  sock.bind(fd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+  sock.bind(fd, {
+    family: 'ipv4',
+    ip: '127.0.0.1',
+    port: 0
+  });
   sock.setNonblocking(fd);
   const address = sock.getsockname(fd);
   if (address.family !== 'ipv4') throw new Error('expected IPv4 fixture');
@@ -178,7 +200,6 @@ function startSilentFixture(onPacket: (packet: Uint8Array, addr: sock.Address) =
     done
   };
 }
-
 async function recvWithTimeout(fd: number, timeoutMs = 500): Promise<Uint8Array> {
   const timeout = loop.timeout(timeoutMs);
   const readable = await Promise.race([loop.readable(fd).then(() => true, () => false), timeout.then(() => false)]);
@@ -210,7 +231,6 @@ async function nextWithTimeout<T>(iter: AsyncIterator<T>, timeoutMs = 500): Prom
   timeout.cancel();
   return result;
 }
-
 describe('Mdns query-only discovery', () => {
   it('resolveHost queries an mDNS endpoint and returns A records', async (t) => {
     const fixture = startFixture(() => [{
@@ -239,7 +259,7 @@ describe('Mdns query-only discovery', () => {
     const fixture = startFixture((packet) => {
       const question = parseQuestion(packet);
       t.equal(question.name, 'printer.local', 'query sends requested name');
-      t.equal(question.classCode, 0x8001, 'query sets QU bit on qclass');
+      t.equal(question.classCode, 32769, 'query sets QU bit on qclass');
       return [{
         type: RECORD_TYPES.A,
         data: '192.168.1.44',
@@ -286,8 +306,15 @@ describe('Mdns query-only discovery', () => {
     try {
       const mdns = new Mdns();
       try {
-        knownAnswers = await mdns.query('_http._tcp.local', 'PTR', { server: fixture.address, timeoutMs: 500 });
-        await mdns.query('_http._tcp.local', 'PTR', { server: fixture.address, timeoutMs: 500, knownAnswers });
+        knownAnswers = await mdns.query('_http._tcp.local', 'PTR', {
+          server: fixture.address,
+          timeoutMs: 500
+        });
+        await mdns.query('_http._tcp.local', 'PTR', {
+          server: fixture.address,
+          timeoutMs: 500,
+          knownAnswers
+        });
         t.equal(queryCount, 2, 'fixture received both queries');
       } finally {
         await mdns.close();
@@ -310,8 +337,14 @@ describe('Mdns query-only discovery', () => {
     try {
       const mdns = new Mdns();
       try {
-        t.deepEqual(await mdns.resolveHost('printer.local', { server: fixture.address, timeoutMs: 500 }), ['192.168.1.44'], 'first query resolves from fixture');
-        t.deepEqual(await mdns.resolveHost('printer.local', { server: fixture.address, timeoutMs: 500 }), ['192.168.1.44'], 'second query resolves from cache');
+        t.deepEqual(await mdns.resolveHost('printer.local', {
+          server: fixture.address,
+          timeoutMs: 500
+        }), ['192.168.1.44'], 'first query resolves from fixture');
+        t.deepEqual(await mdns.resolveHost('printer.local', {
+          server: fixture.address,
+          timeoutMs: 500
+        }), ['192.168.1.44'], 'second query resolves from cache');
         t.equal(queryCount, 1, 'fresh cache avoids duplicate network query');
       } finally {
         await mdns.close();
@@ -337,8 +370,16 @@ describe('Mdns query-only discovery', () => {
           localInterfaces: [{
             index: 1,
             name: 'test0',
-            addresses: [{ family: 'ipv4', ip: '192.168.1.10', port: 0 }],
-            netmasks: [{ family: 'ipv4', ip: '255.255.255.0', port: 0 }]
+            addresses: [{
+              family: 'ipv4',
+              ip: '192.168.1.10',
+              port: 0
+            }],
+            netmasks: [{
+              family: 'ipv4',
+              ip: '255.255.255.0',
+              port: 0
+            }]
           }]
         }), /timed out/, 'non-local-link response is ignored');
       } finally {
@@ -376,12 +417,18 @@ describe('Mdns query-only discovery', () => {
     const fixture = startFixture((packet) => {
       const question = parseQuestion(packet);
       t.equal(question.name, '_http._tcp.local', 'browse sends PTR name');
-      return [{ type: RECORD_TYPES.PTR, data: 'Printer._http._tcp.local' }];
+      return [{
+        type: RECORD_TYPES.PTR,
+        data: 'Printer._http._tcp.local'
+      }];
     });
     try {
       const mdns = new Mdns();
       try {
-        const iter = mdns.browse('_http._tcp.local', { server: fixture.address, timeoutMs: 500 })[Symbol.asyncIterator]();
+        const iter = mdns.browse('_http._tcp.local', {
+          server: fixture.address,
+          timeoutMs: 500
+        })[Symbol.asyncIterator]();
         const event = await iter.next();
         t.equal(event.done, false, 'browse yields an event');
         t.equal(event.value.name, 'Printer._http._tcp.local', 'browse event contains service instance');
@@ -395,14 +442,20 @@ describe('Mdns query-only discovery', () => {
     }
   });
   it('browse suppresses duplicate PTR answers in one-shot results', async (t) => {
-    const fixture = startFixture(() => [
-      { type: RECORD_TYPES.PTR, data: 'Printer._http._tcp.local' },
-      { type: RECORD_TYPES.PTR, data: 'Printer._http._tcp.local' }
-    ]);
+    const fixture = startFixture(() => [{
+      type: RECORD_TYPES.PTR,
+      data: 'Printer._http._tcp.local'
+    }, {
+      type: RECORD_TYPES.PTR,
+      data: 'Printer._http._tcp.local'
+    }]);
     try {
       const mdns = new Mdns();
       try {
-        const iter = mdns.browse('_http._tcp.local', { server: fixture.address, timeoutMs: 500 })[Symbol.asyncIterator]();
+        const iter = mdns.browse('_http._tcp.local', {
+          server: fixture.address,
+          timeoutMs: 500
+        })[Symbol.asyncIterator]();
         const first = await nextWithTimeout(iter);
         const second = await nextWithTimeout(iter);
         t.equal(first.done, false, 'first browse event is yielded');
@@ -469,21 +522,30 @@ describe('Mdns query-only discovery', () => {
         }];
       }
       if (question.type === RECORD_TYPES.SRV) {
-        return [{
-          type: RECORD_TYPES.SRV,
-          data: { priority: 0, weight: 0, port: question.name === 'Printer._http._tcp.local' ? 8080 + srvQueries++ : 8080, target: 'printer.local' },
-          ttl: 120
-        }, {
-          name: 'Printer._http._tcp.local',
-          type: RECORD_TYPES.TXT,
-          data: ['path=/print'],
-          ttl: 120
-        }, {
-          name: 'printer.local',
-          type: RECORD_TYPES.A,
-          data: '192.168.1.44',
-          ttl: 120
-        }];
+        return [
+          {
+            type: RECORD_TYPES.SRV,
+            data: {
+              priority: 0,
+              weight: 0,
+              port: question.name === 'Printer._http._tcp.local' ? 8080 + srvQueries++ : 8080,
+              target: 'printer.local'
+            },
+            ttl: 120
+          },
+          {
+            name: 'Printer._http._tcp.local',
+            type: RECORD_TYPES.TXT,
+            data: ['path=/print'],
+            ttl: 120
+          },
+          {
+            name: 'printer.local',
+            type: RECORD_TYPES.A,
+            data: '192.168.1.44',
+            ttl: 120
+          }
+        ];
       }
       return [];
     });
@@ -526,7 +588,11 @@ describe('Mdns query-only discovery', () => {
       ttl: 120
     }]);
     const bindProbe = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(bindProbe, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    sock.bind(bindProbe, {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0
+    });
     const bindAddress = sock.getsockname(bindProbe);
     sock.close(bindProbe);
     if (bindAddress.family !== 'ipv4') throw new Error('expected IPv4 bind address');
@@ -541,7 +607,7 @@ describe('Mdns query-only discovery', () => {
           timeoutMs: 500,
           settleMs: 1,
           continuous: true,
-          pollMs: 10_000,
+          pollMs: 1e4,
           signal: controller.signal
         })[Symbol.asyncIterator]();
         const up = await nextWithTimeout(iter);
@@ -571,17 +637,38 @@ describe('Mdns query-only discovery', () => {
     const fixture = startFixture((packet) => {
       const question = parseQuestion(packet);
       if (question.type === RECORD_TYPES.SRV) {
-        return [{ type: RECORD_TYPES.SRV, data: { priority: 0, weight: 0, port: 8080, target: 'printer.local' } }];
+        return [{
+          type: RECORD_TYPES.SRV,
+          data: {
+            priority: 0,
+            weight: 0,
+            port: 8080,
+            target: 'printer.local'
+          }
+        }];
       }
       if (question.type === RECORD_TYPES.TXT) {
-        return [{ type: RECORD_TYPES.TXT, data: ['Path=/print', 'duplex', 'PATH=ignored'] }];
+        return [{
+          type: RECORD_TYPES.TXT,
+          data: [
+            'Path=/print',
+            'duplex',
+            'PATH=ignored'
+          ]
+        }];
       }
-      return [{ type: RECORD_TYPES.A, data: '192.168.1.44' }];
+      return [{
+        type: RECORD_TYPES.A,
+        data: '192.168.1.44'
+      }];
     });
     try {
       const mdns = new Mdns();
       try {
-        const service = await mdns.resolveService('Printer._http._tcp.local', { server: fixture.address, timeoutMs: 500 });
+        const service = await mdns.resolveService('Printer._http._tcp.local', {
+          server: fixture.address,
+          timeoutMs: 500
+        });
         t.equal(service.target, 'printer.local', 'SRV target is returned');
         t.equal(service.port, 8080, 'SRV port is returned');
         t.deepEqual(service.addresses, ['192.168.1.44'], 'target addresses are resolved');
@@ -604,7 +691,12 @@ describe('Mdns query-only discovery', () => {
       return [
         {
           type: RECORD_TYPES.SRV,
-          data: { priority: 0, weight: 0, port: 8080, target: 'printer.local' }
+          data: {
+            priority: 0,
+            weight: 0,
+            port: 8080,
+            target: 'printer.local'
+          }
         },
         {
           name: 'Printer._http._tcp.local',
@@ -621,7 +713,10 @@ describe('Mdns query-only discovery', () => {
     try {
       const mdns = new Mdns();
       try {
-        const service = await mdns.resolveService('Printer._http._tcp.local', { server: fixture.address, timeoutMs: 500 });
+        const service = await mdns.resolveService('Printer._http._tcp.local', {
+          server: fixture.address,
+          timeoutMs: 500
+        });
         t.equal(service.port, 8080, 'SRV port is returned');
         t.deepEqual(service.addresses, ['192.168.1.44'], 'address from SRV response is used');
         t.equal(new TextDecoder().decode(service.txt.get('path') as Uint8Array), '/print', 'TXT from SRV response is used');
@@ -642,9 +737,16 @@ describe('Mdns query-only discovery', () => {
         serviceType: '_http._tcp.local',
         target: 'printer.local',
         port: 8080,
-        txt: { path: '/print', duplex: true },
+        txt: {
+          path: '/print',
+          duplex: true
+        },
         addresses: ['192.168.1.44']
-      }, { address: { family: 'ipv4', ip: '127.0.0.1', port: 0 } });
+      }, { address: {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: 0
+      } });
       try {
         const browser = new Mdns();
         try {
@@ -676,7 +778,11 @@ describe('Mdns query-only discovery', () => {
         addresses: ['192.168.1.44'],
         addressesByInterface: { 7: ['10.0.0.7'] }
       }, {
-        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+        address: {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: 0
+        },
         interfaceIndex: 7
       });
       try {
@@ -701,7 +807,12 @@ describe('Mdns query-only discovery', () => {
     const fixture = startFixture(() => [{
       name: 'Printer._http._tcp.local',
       type: RECORD_TYPES.SRV,
-      data: { priority: 0, weight: 0, port: 9090, target: 'other.local' },
+      data: {
+        priority: 0,
+        weight: 0,
+        port: 9090,
+        target: 'other.local'
+      },
       ttl: 120,
       cacheFlush: true
     }]);
@@ -713,7 +824,11 @@ describe('Mdns query-only discovery', () => {
         target: 'printer.local',
         port: 8080
       }, {
-        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+        address: {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: 0
+        },
         probeAddress: fixture.address,
         probeTimeoutMs: 500
       }), /service name conflict/, 'conflicting SRV response rejects publication');
@@ -730,7 +845,12 @@ describe('Mdns query-only discovery', () => {
         return [{
           name: 'Printer._http._tcp.local',
           type: RECORD_TYPES.SRV,
-          data: { priority: 0, weight: 0, port: 9090, target: 'other.local' },
+          data: {
+            priority: 0,
+            weight: 0,
+            port: 9090,
+            target: 'other.local'
+          },
           ttl: 120,
           cacheFlush: true
         }];
@@ -745,7 +865,11 @@ describe('Mdns query-only discovery', () => {
         target: 'printer.local',
         port: 8080
       }, {
-        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+        address: {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: 0
+        },
         probeAddress: fixture.address,
         probeTimeoutMs: 500,
         conflictResolution: 'rename'
@@ -754,7 +878,10 @@ describe('Mdns query-only discovery', () => {
         t.equal(registration.name, 'Printer (2)._http._tcp.local', 'registration exposes the automatically renamed instance');
         const browser = new Mdns();
         try {
-          const iter = browser.browse('_http._tcp.local', { server: registration.address, timeoutMs: 500 })[Symbol.asyncIterator]();
+          const iter = browser.browse('_http._tcp.local', {
+            server: registration.address,
+            timeoutMs: 500
+          })[Symbol.asyncIterator]();
           const event = await nextWithTimeout(iter);
           t.equal(event.done, false, 'renamed publisher answers browse');
           t.equal(event.value.name, 'Printer (2)._http._tcp.local', 'browse sees the renamed service instance');
@@ -784,7 +911,11 @@ describe('Mdns query-only discovery', () => {
         target: 'printer.local',
         port: 8080
       }, {
-        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+        address: {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: 0
+        },
         probeAddress: fixture.address,
         probeTimeoutMs: 20
       });
@@ -802,7 +933,11 @@ describe('Mdns query-only discovery', () => {
   it('publish suppresses duplicate questions from the same peer briefly', async (t) => {
     const mdns = new Mdns();
     const clientFd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    sock.bind(clientFd, {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0
+    });
     sock.setNonblocking(clientFd);
     try {
       const registration = await mdns.publish({
@@ -810,7 +945,11 @@ describe('Mdns query-only discovery', () => {
         serviceType: '_http._tcp.local',
         target: 'printer.local',
         port: 8080
-      }, { address: { family: 'ipv4', ip: '127.0.0.1', port: 0 } });
+      }, { address: {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: 0
+      } });
       try {
         const query = _buildQuery(0, '_http._tcp.local', RECORD_TYPES.PTR);
         sock.sendto(clientFd, query, registration.address);
@@ -828,7 +967,11 @@ describe('Mdns query-only discovery', () => {
   it('publish sends an unsolicited announcement when requested', async (t) => {
     const mdns = new Mdns();
     const clientFd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    sock.bind(clientFd, {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0
+    });
     sock.setNonblocking(clientFd);
     const clientAddress = sock.getsockname(clientFd);
     if (clientAddress.family !== 'ipv4') throw new Error('expected IPv4 client address');
@@ -841,12 +984,20 @@ describe('Mdns query-only discovery', () => {
         txt: { path: '/print' },
         addresses: ['192.168.1.44']
       }, {
-        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+        address: {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: 0
+        },
         announceAddress: clientAddress
       });
       try {
         const announcement = _parseResponse(await recvWithTimeout(clientFd));
-        const records = [...announcement.answers, ...announcement.authorities, ...announcement.additionals];
+        const records = [
+          ...announcement.answers,
+          ...announcement.authorities,
+          ...announcement.additionals
+        ];
         t.ok(records.some((record) => record.type === RECORD_TYPES.PTR && record.data === 'Printer._http._tcp.local'), 'announcement includes service PTR');
         t.ok(records.some((record) => record.type === RECORD_TYPES.SRV && record.name === 'Printer._http._tcp.local'), 'announcement includes SRV');
         t.ok(records.some((record) => record.type === RECORD_TYPES.TXT && record.name === 'Printer._http._tcp.local'), 'announcement includes TXT');
@@ -862,7 +1013,11 @@ describe('Mdns query-only discovery', () => {
   it('publish suppresses answers already present as fresh known answers', async (t) => {
     const mdns = new Mdns();
     const clientFd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    sock.bind(clientFd, {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0
+    });
     sock.setNonblocking(clientFd);
     try {
       const registration = await mdns.publish({
@@ -870,13 +1025,17 @@ describe('Mdns query-only discovery', () => {
         serviceType: '_http._tcp.local',
         target: 'printer.local',
         port: 8080
-      }, { address: { family: 'ipv4', ip: '127.0.0.1', port: 0 } });
+      }, { address: {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: 0
+      } });
       try {
         const query = buildQueryWithKnownAnswer('_http._tcp.local', RECORD_TYPES.PTR, {
           name: '_http._tcp.local',
           type: RECORD_TYPES.PTR,
           data: 'Printer._http._tcp.local',
-          ttl: 4000
+          ttl: 4e3
         });
         sock.sendto(clientFd, query, registration.address);
         t.equal(await hasPacketWithin(clientFd), false, 'fresh known answer suppresses redundant PTR response');
@@ -894,7 +1053,11 @@ describe('Mdns query-only discovery', () => {
   it('publish aggregates delayed responses for the same peer', async (t) => {
     const mdns = new Mdns();
     const clientFd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    sock.bind(clientFd, {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0
+    });
     sock.setNonblocking(clientFd);
     try {
       const registration = await mdns.publish({
@@ -904,14 +1067,22 @@ describe('Mdns query-only discovery', () => {
         port: 8080,
         txt: { path: '/print' }
       }, {
-        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+        address: {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: 0
+        },
         responseDelayMs: 20
       });
       try {
         sock.sendto(clientFd, _buildQuery(0, 'Printer._http._tcp.local', RECORD_TYPES.SRV), registration.address);
         sock.sendto(clientFd, _buildQuery(0, 'Printer._http._tcp.local', RECORD_TYPES.TXT), registration.address);
         const response = _parseResponse(await recvWithTimeout(clientFd));
-        const records = [...response.answers, ...response.authorities, ...response.additionals];
+        const records = [
+          ...response.answers,
+          ...response.authorities,
+          ...response.additionals
+        ];
         t.ok(records.some((record) => record.type === RECORD_TYPES.SRV), 'aggregated response includes SRV answer');
         t.ok(records.some((record) => record.type === RECORD_TYPES.TXT), 'aggregated response includes TXT answer');
         t.equal(await hasPacketWithin(clientFd), false, 'no duplicate delayed response follows the aggregate');
@@ -926,7 +1097,11 @@ describe('Mdns query-only discovery', () => {
   it('publish sends zero-TTL goodbye records to queriers on close', async (t) => {
     const mdns = new Mdns();
     const clientFd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    sock.bind(clientFd, {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0
+    });
     sock.setNonblocking(clientFd);
     try {
       const registration = await mdns.publish({
@@ -936,13 +1111,21 @@ describe('Mdns query-only discovery', () => {
         port: 8080,
         txt: { path: '/print' },
         addresses: ['192.168.1.44']
-      }, { address: { family: 'ipv4', ip: '127.0.0.1', port: 0 } });
+      }, { address: {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port: 0
+      } });
       try {
         sock.sendto(clientFd, _buildQuery(0, '_http._tcp.local', RECORD_TYPES.PTR), registration.address);
         await recvWithTimeout(clientFd);
         await registration.close();
         const goodbye = _parseResponse(await recvWithTimeout(clientFd));
-        const records = [...goodbye.answers, ...goodbye.authorities, ...goodbye.additionals];
+        const records = [
+          ...goodbye.answers,
+          ...goodbye.authorities,
+          ...goodbye.additionals
+        ];
         t.ok(records.some((record) => record.type === RECORD_TYPES.PTR && record.ttl === 0 && record.data === 'Printer._http._tcp.local'), 'goodbye includes zero-TTL PTR record');
         t.ok(records.some((record) => record.type === RECORD_TYPES.SRV && record.ttl === 0), 'goodbye includes zero-TTL SRV record');
         t.ok(records.some((record) => record.type === RECORD_TYPES.TXT && record.ttl === 0), 'goodbye includes zero-TTL TXT record');
@@ -958,7 +1141,11 @@ describe('Mdns query-only discovery', () => {
   it('publish sends zero-TTL goodbye records to the configured goodbye address', async (t) => {
     const mdns = new Mdns();
     const clientFd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    sock.bind(clientFd, {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0
+    });
     sock.setNonblocking(clientFd);
     const goodbyeAddress = sock.getsockname(clientFd);
     if (goodbyeAddress.family !== 'ipv4') throw new Error('expected IPv4 goodbye address');
@@ -971,12 +1158,20 @@ describe('Mdns query-only discovery', () => {
         txt: { path: '/print' },
         addresses: ['192.168.1.44']
       }, {
-        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+        address: {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: 0
+        },
         goodbyeAddress
       });
       await registration.close();
       const goodbye = _parseResponse(await recvWithTimeout(clientFd));
-      const records = [...goodbye.answers, ...goodbye.authorities, ...goodbye.additionals];
+      const records = [
+        ...goodbye.answers,
+        ...goodbye.authorities,
+        ...goodbye.additionals
+      ];
       t.ok(records.some((record) => record.type === RECORD_TYPES.PTR && record.ttl === 0 && record.data === 'Printer._http._tcp.local'), 'configured goodbye includes zero-TTL PTR');
       t.ok(records.some((record) => record.type === RECORD_TYPES.SRV && record.ttl === 0), 'configured goodbye includes zero-TTL SRV');
     } finally {

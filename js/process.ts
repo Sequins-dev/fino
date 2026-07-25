@@ -624,24 +624,15 @@ const lib = dlopen(LIBC, {
     result: 'i32'
   },
   posix_spawnattr_setsigdefault: {
-    parameters: [
-      'buffer',
-      'buffer'
-    ],
+    parameters: ['buffer', 'buffer'],
     result: 'i32'
   },
   posix_spawnattr_setsigmask: {
-    parameters: [
-      'buffer',
-      'buffer'
-    ],
+    parameters: ['buffer', 'buffer'],
     result: 'i32'
   },
   posix_spawnattr_setflags: {
-    parameters: [
-      'buffer',
-      'u16'
-    ],
+    parameters: ['buffer', 'u16'],
     result: 'i32'
   },
   posix_spawn_file_actions_adddup2: {
@@ -726,8 +717,8 @@ const POSIX_SPAWN_FILE_ACTIONS_BYTES = 512;
 // glibc stores an inline struct, so keep this generously sized.
 const POSIX_SPAWN_ATTR_BYTES = 512;
 const SIGSET_BYTES = 128;
-const POSIX_SPAWN_SETSIGDEF = 0x0004;
-const POSIX_SPAWN_SETSIGMASK = 0x0008;
+const POSIX_SPAWN_SETSIGDEF = 4;
+const POSIX_SPAWN_SETSIGMASK = 8;
 function addSpawnAction(rc: number, action: string): void {
   if (rc !== 0) throw new Error(`${action} failed: errno ${rc}`);
 }
@@ -771,7 +762,7 @@ export function processStats(): ProcessStats {
 /**
 * Cold signal of process statistics sampled on an interval.
 */
-export function processStatsSignal(intervalMs = 1000): ReadonlySignal<ProcessStats> {
+export function processStatsSignal(intervalMs = 1e3): ReadonlySignal<ProcessStats> {
   return lazy(processStats(), (set) => {
     let expected = Date.now() + intervalMs;
     const sample = () => {
@@ -1114,13 +1105,29 @@ const _emptySandboxReport: ProcessSandboxReport = {
 function probeSandboxFeatures(): ProcessSandboxNativeFeature[] {
   if (isLinux) {
     return [
-      { name: 'landlock', available: landlockAvailable(), reason: landlockAvailable() ? 'Landlock LSM is enabled' : 'Landlock LSM is not enabled on this kernel' },
-      { name: 'seccomp', available: seccompAvailable(), reason: seccompAvailable() ? 'seccomp filtering is available' : 'seccomp is not available on this kernel' },
-      { name: 'cgroup-cpu', available: cgroupCpuAvailable(), reason: cgroupCpuAvailable() ? 'a delegated cgroup v2 cpu controller is available' : 'no delegated cgroup v2 cpu controller' }
+      {
+        name: 'landlock',
+        available: landlockAvailable(),
+        reason: landlockAvailable() ? 'Landlock LSM is enabled' : 'Landlock LSM is not enabled on this kernel'
+      },
+      {
+        name: 'seccomp',
+        available: seccompAvailable(),
+        reason: seccompAvailable() ? 'seccomp filtering is available' : 'seccomp is not available on this kernel'
+      },
+      {
+        name: 'cgroup-cpu',
+        available: cgroupCpuAvailable(),
+        reason: cgroupCpuAvailable() ? 'a delegated cgroup v2 cpu controller is available' : 'no delegated cgroup v2 cpu controller'
+      }
     ];
   }
   const seatbelt = seatbeltAvailable();
-  return [{ name: 'macos-seatbelt', available: seatbelt, reason: seatbelt ? 'sandbox-exec can apply Seatbelt profiles' : 'sandbox-exec is unavailable' }];
+  return [{
+    name: 'macos-seatbelt',
+    available: seatbelt,
+    reason: seatbelt ? 'sandbox-exec can apply Seatbelt profiles' : 'sandbox-exec is unavailable'
+  }];
 }
 // Probing touches syscalls and TextEncoder, which are not available at module
 // evaluation, so features and capabilities are computed lazily on first use and
@@ -1143,7 +1150,12 @@ function linuxStrictSupportedCategories(): ProcessSandboxCapability['category'][
   ];
 }
 function macosStrictSupportedCategories(): ProcessSandboxCapability['category'][] {
-  return nativeSandboxFeatureAvailable('macos-seatbelt') ? ['resources', 'filesystem', 'network', 'process'] : [];
+  return nativeSandboxFeatureAvailable('macos-seatbelt') ? [
+    'resources',
+    'filesystem',
+    'network',
+    'process'
+  ] : [];
 }
 function buildSandboxCapabilities(): ProcessSandboxCapabilities {
   const macos = macosStrictSupportedCategories();
@@ -1151,22 +1163,26 @@ function buildSandboxCapabilities(): ProcessSandboxCapabilities {
     platform: os,
     strictAvailable: isLinux || macos.length > 0,
     bestEffortAvailable: true,
-    backends: [{
-      name: 'none',
-      available: true,
-      reason: 'reporting-only backend; no sandbox policy is enforced',
-      supported: []
-    }, {
-      name: 'linuxNative',
-      available: isLinux,
-      reason: isLinux ? 'in-process Linux strict sandbox spawn path is available for probed Linux enforcement features' : 'linuxNative requires Linux',
-      supported: linuxStrictSupportedCategories()
-    }, {
-      name: 'macosSeatbelt',
-      available: macos.length > 0,
-      reason: os === 'darwin' ? nativeSandboxFeatureAvailable('macos-seatbelt') ? 'sandbox-exec can apply Seatbelt profiles' : 'macOS Seatbelt probe failed; strict sandbox fails closed' : 'macosSeatbelt requires macOS',
-      supported: macos
-    }],
+    backends: [
+      {
+        name: 'none',
+        available: true,
+        reason: 'reporting-only backend; no sandbox policy is enforced',
+        supported: []
+      },
+      {
+        name: 'linuxNative',
+        available: isLinux,
+        reason: isLinux ? 'in-process Linux strict sandbox spawn path is available for probed Linux enforcement features' : 'linuxNative requires Linux',
+        supported: linuxStrictSupportedCategories()
+      },
+      {
+        name: 'macosSeatbelt',
+        available: macos.length > 0,
+        reason: os === 'darwin' ? nativeSandboxFeatureAvailable('macos-seatbelt') ? 'sandbox-exec can apply Seatbelt profiles' : 'macOS Seatbelt probe failed; strict sandbox fails closed' : 'macosSeatbelt requires macOS',
+        supported: macos
+      }
+    ],
     features: sandboxFeatures()
   };
 }
@@ -1224,7 +1240,7 @@ function requestedSandboxCategories(sandbox: ProcessSandboxOptions): ProcessSand
   return unsupported;
 }
 function assertSandboxNumber(value: unknown, path: string, integer = false): void {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value))) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || integer && !Number.isInteger(value)) {
     throw new Error(`${path} must be a positive ${integer ? 'integer' : 'finite number'}`);
   }
 }
@@ -1305,7 +1321,7 @@ function validateSandboxOptions(sandbox: ProcessSandboxOptions): void {
   }
   if (sandbox.syscalls !== undefined) {
     const syscalls = sandbox.syscalls;
-    if (syscalls.mode !== 'allowlist' && syscalls.mode !== 'denylist') throw new Error("sandbox.syscalls.mode must be 'allowlist' or 'denylist'");
+    if (syscalls.mode !== 'allowlist' && syscalls.mode !== 'denylist') throw new Error('sandbox.syscalls.mode must be \'allowlist\' or \'denylist\'');
     assertSandboxStringArray(syscalls.names, 'sandbox.syscalls.names', assertSandboxString);
   }
 }
@@ -1336,11 +1352,8 @@ function validateStrictSandboxSupported(sandbox: ProcessSandboxOptions): void {
   // believes it is sandboxed when it is not.
   assertCoarseNetworkRules(sandbox.network?.outbound, 'sandbox.network.outbound');
   assertCoarseNetworkRules(sandbox.network?.inbound, 'sandbox.network.inbound');
-  const wantsExecScope = sandbox.process?.allowExec === false
-    || (sandbox.process?.allowedBinaries?.length ?? 0) > 0;
-  const wantsSeccomp = sandbox.syscalls !== undefined
-    || sandbox.process?.allowFork === false
-    || sandbox.network !== undefined;
+  const wantsExecScope = sandbox.process?.allowExec === false || (sandbox.process?.allowedBinaries?.length ?? 0) > 0;
+  const wantsSeccomp = sandbox.syscalls !== undefined || sandbox.process?.allowFork === false || sandbox.network !== undefined;
   if (!isLinux) {
     if (os !== 'darwin' || !nativeSandboxFeatureAvailable('macos-seatbelt')) {
       throw new Error('strict sandbox mode is not available on this platform');
@@ -1578,15 +1591,10 @@ export class Process {
     if (opts.sandbox?.mode === 'strict') {
       validateSandboxOptions(opts.sandbox);
       validateStrictSandboxSupported(opts.sandbox);
-      const spawned = spawnStrictSandboxed(
-        command,
-        cmdArgs,
-        { cwd: opts.cwd, env: opts.env },
-        opts.sandbox as unknown as SandboxPolicy,
-        env as Record<string, string>,
-        (launcherArgs, inheritFds) => this.#spawnWithPipes(execPath, [execPath, ...launcherArgs], {}, inheritFds),
-        isLinux && landlockAvailable()
-      );
+      const spawned = spawnStrictSandboxed(command, cmdArgs, {
+        cwd: opts.cwd,
+        env: opts.env
+      }, (opts.sandbox as unknown) as SandboxPolicy, env as Record<string, string>, (launcherArgs, inheritFds) => this.#spawnWithPipes(execPath, [execPath, ...launcherArgs], {}, inheritFds), isLinux && landlockAvailable());
       this.#pid = spawned.pid;
       this.#stdin = new FdWriter(spawned.stdinFd, function closeStdin() {
         lib.symbols.close(spawned.stdinFd);
@@ -1597,7 +1605,7 @@ export class Process {
       this.#stderr = new FdReader(spawned.stderrFd, function closeStderr() {
         lib.symbols.close(spawned.stderrFd);
       });
-      this.#sandboxReport = spawned.report as unknown as ProcessSandboxReport;
+      this.#sandboxReport = (spawned.report as unknown) as ProcessSandboxReport;
       this.#cgroupPath = spawned.cgroupPath;
       this.#descendantCleanup = spawned.descendantCleanup;
       this.#waitStarted = false;
@@ -1720,7 +1728,12 @@ export class Process {
     void argvBufs;
     void envpBufs;
     void _inheritFds;
-    return { pid: childPid, stdinFd: stdinW, stdoutFd: stdoutR, stderrFd: stderrR };
+    return {
+      pid: childPid,
+      stdinFd: stdinW,
+      stdoutFd: stdoutR,
+      stderrFd: stderrR
+    };
   }
   /**
   * Writer connected to the child's stdin.
