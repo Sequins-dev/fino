@@ -32,10 +32,10 @@ the diff. PRs should include a short summary, affected areas, test coverage, and
 benchmark or profiling notes for performance-sensitive changes.
 
 Before every commit, run `cargo fmt` for Rust changes and verify
-`cargo fmt --check` passes. Review JavaScript, TypeScript, and Markdown changes
-manually. Do not run `fino fmt` across repository source or use it as a CI gate
-until Fino can embed the Oxc formatter; the current Oxc code generator is not a
-source-preserving formatter.
+`cargo fmt --check` passes. Run `fino fmt` on each modified JavaScript or
+TypeScript source path and review its diff before committing; do not pass
+Markdown paths or format the entire repository as a substitute for reviewing
+the changed files.
 
 When adding a public `fino:*` builtin or changing which builtins are registered
 in `src/loader.rs`, update `benchmarks/COVERAGE.md` in the same change so every
