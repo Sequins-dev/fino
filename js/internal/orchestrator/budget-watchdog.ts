@@ -24,74 +24,28 @@
 import { sweepBudgets } from 'internal:reactor/workload';
 import { timeout } from 'internal:runtime/loop';
 
-const DEFAULT_SWEEP_INTERVAL_MS = 20;
-
-/** Options for {@link BudgetWatchdog}. */
-export interface BudgetWatchdogOptions {
-  /** How often to sweep for overdue pumps, in milliseconds. Defaults to 20. */
-  sweepIntervalMs?: number;
-}
-
 /**
-* The orchestrator-thread service that terminates workloads whose synchronous
-* pump slice has overrun its hard budget.
+* Start the orchestrator-thread service that terminates workloads whose
+* synchronous pump slice has overrun its hard budget.
+*
+* The timer is unreferenced: live Realm ports keep the root alive while work is
+* active, and the node's shutdown hook stops the service during normal teardown.
 */
-export class BudgetWatchdog {
-  #sweepIntervalMs: number;
-  #running = false;
-  #loop: Promise<void> | null = null;
-  #stopPromise: Promise<void> | null = null;
-  #stopResolve: (() => void) | null = null;
-  #firedTotal = 0;
-
-  constructor(options: BudgetWatchdogOptions = {}) {
-    this.#sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
-  }
-
-  /** Total number of workloads this service has hard-cancelled since starting. */
-  get firedTotal(): number {
-    return this.#firedTotal;
-  }
-
-  /** Whether the sweep loop is currently running. */
-  get running(): boolean {
-    return this.#running;
-  }
-
-  /** Begin sweeping. Idempotent — a second call while running is a no-op. */
-  start(): void {
-    if (this.#running) return;
-    this.#running = true;
-    this.#stopPromise = new Promise<void>((resolve) => {
-      this.#stopResolve = resolve;
-    });
-    this.#loop = this.#run();
-  }
-
-  /**
-  * Stop sweeping and wait for the loop to unwind. Runs one final sweep so an
-  * overrun that landed in the last interval is still contained.
-  */
-  async stop(): Promise<void> {
-    if (!this.#running) return;
-    this.#running = false;
-    this.#stopResolve?.();
-    const loop = this.#loop;
-    this.#loop = null;
-    if (loop !== null) await loop;
-  }
-
-  async #run(): Promise<void> {
-    const stopPromise = this.#stopPromise ?? Promise.resolve();
-    while (this.#running) {
-      this.#firedTotal += sweepBudgets();
-      // Wake early when stop() fires, otherwise sleep out the interval. Cancel
-      // the timer afterwards so a pending sweep never keeps the loop alive.
-      const timer = timeout(this.#sweepIntervalMs);
-      await Promise.race([timer, stopPromise]);
-      timer.cancel();
-    }
-    // Final sweep to catch an overrun from the last interval before we exit.
-    this.#firedTotal += sweepBudgets();
-  }
+export function startBudgetWatchdog(sweepIntervalMs = 20): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof timeout> | null = null;
+  const sweep = () => {
+    if (stopped) return;
+    sweepBudgets();
+    timer = timeout(sweepIntervalMs).unref();
+    void timer.then(sweep);
+  };
+  sweep();
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    timer?.cancel();
+    timer = null;
+    sweepBudgets();
+  };
 }

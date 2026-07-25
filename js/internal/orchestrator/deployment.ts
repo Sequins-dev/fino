@@ -67,8 +67,6 @@ export interface DeploymentControllerOptions<T> {
   capacity(): number;
   create(): T | Promise<T>;
   dispose(value: T): void;
-  /** Called exactly once when the deployment releases orchestration. */
-  onTerminate?(): void;
 }
 
 /** Owns replica admission and scaling for one logical deployment. */
@@ -85,7 +83,6 @@ export class DeploymentController<T> {
   #scaleDownWindowMs: number;
   #scaleUp: Promise<ReplicaRecord<T>> | null = null;
   #closed = false;
-  #onTerminate: (() => void) | null;
 
   constructor(options: DeploymentControllerOptions<T>) {
     const capacity = options.capacity();
@@ -97,7 +94,6 @@ export class DeploymentController<T> {
     this.#capacity = options.capacity;
     this.#scaleUpWindowMs = policy.scaleUpWindowMs;
     this.#scaleDownWindowMs = policy.scaleDownWindowMs;
-    this.#onTerminate = options.onTerminate ?? null;
     this.ready = this.#ensureMinimum().catch((error) => {
       this.terminate();
       throw error;
@@ -143,9 +139,6 @@ export class DeploymentController<T> {
     for (const wake of this.#waiters) wake();
     this.#waiters.clear();
     for (const record of this.#records.splice(0)) this.#retire(record);
-    const onTerminate = this.#onTerminate;
-    this.#onTerminate = null;
-    onTerminate?.();
   }
 
   async #ensureMinimum(): Promise<void> {

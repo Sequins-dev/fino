@@ -62,9 +62,4 @@ export class IdleRetirement {
     }
   }
 
-  /** Drop all holds and any pending timer (owner teardown). */
-  reset(): void {
-    this.#held = 0;
-    this.cancel();
-  }
 }

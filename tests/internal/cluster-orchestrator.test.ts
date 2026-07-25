@@ -24,6 +24,74 @@ function call(port: ThreadPort, correlationId: number): Promise<unknown> {
 }
 
 describe('ClusterOrchestrator over the ClusterNode contract', () => {
+  it('uses the lifecycle returned by asynchronous allocation', async (t) => {
+    let release!: (reason: string) => void;
+    let revokedWith: string | null = null;
+    const released = new Promise<string>((resolve) => { release = resolve; });
+    const cluster = new ClusterOrchestrator(() => ({
+      admissionCapacity: () => 1,
+      allocateRealm: async () => ({
+        workloadId: 'remote-1',
+        portHandle: 1,
+        portWakeFd: 2,
+        allocationPortHandle: 3,
+        allocationPortWakeFd: 4,
+        released,
+        revoke(reason: string) {
+          revokedWith = reason;
+          release(reason);
+        }
+      }),
+      shutdown: async () => {}
+    }));
+
+    const allocation = await cluster.allocateRealm({ entryPath: worker, rulesJson: rules });
+    if (allocation === null) throw new Error('realm was not placed');
+    allocation.revoke('test-release');
+    t.equal(revokedWith, 'test-release');
+    t.equal(await allocation.released, 'test-release');
+  });
+
+  it('keeps one node alive between completed allocations', async (t) => {
+    let created = 0;
+    let shutdowns = 0;
+    const releases: Array<(reason: string) => void> = [];
+    const cluster = new ClusterOrchestrator(() => {
+      created++;
+      return {
+        admissionCapacity: () => 1,
+        allocateRealm: async () => {
+          let release!: (reason: string) => void;
+          const released = new Promise<string>((resolve) => { release = resolve; });
+          releases.push(release);
+          return {
+            workloadId: `remote-${created}-${releases.length}`,
+            portHandle: 1,
+            portWakeFd: 2,
+            allocationPortHandle: 3,
+            allocationPortWakeFd: 4,
+            released,
+            revoke: release
+          };
+        },
+        shutdown: async () => { shutdowns++; }
+      };
+    });
+
+    const first = await cluster.allocateRealm({ entryPath: worker, rulesJson: rules });
+    if (first === null) throw new Error('first realm was not placed');
+    releases.shift()!('done');
+    await first.released;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const second = await cluster.allocateRealm({ entryPath: worker, rulesJson: rules });
+    t.ok(second !== null, 'second realm was placed');
+    t.equal(created, 1, 'the cluster reused its node');
+    t.equal(shutdowns, 0, 'the node remains alive until runtime shutdown');
+    releases.shift()!('done');
+    await second!.released;
+  });
+
   it('flows an asynchronously admitting node end to end', async (t) => {
     // A stand-in for a remote node: the same local substrate answering the
     // contract asynchronously, the way a control-channel RPC peer would.
@@ -31,15 +99,12 @@ describe('ClusterOrchestrator over the ClusterNode contract', () => {
     const cluster = new ClusterOrchestrator((): ClusterNode => {
       inner = new NodeOrchestrator({ reactorCount: 1, capacity: 2 });
       return {
-        start: async () => inner.start(),
         admissionCapacity: () => inner.admissionCapacity(),
         allocateRealm: async (spec) => {
           // Simulated network hop before the real (async) local admission.
           await new Promise((resolve) => setTimeout(resolve, 5));
           return inner.allocateRealm(spec);
         },
-        whenReleased: (workloadId) => inner.whenReleased(workloadId),
-        revoke: (workloadId, reason) => inner.revoke(workloadId, reason),
         shutdown: async () => {
           await inner.shutdown();
         }
@@ -61,11 +126,8 @@ describe('ClusterOrchestrator over the ClusterNode contract', () => {
 
   it('resolves null for exhausted capacity and Realm rejects on it', async (t) => {
     const cluster = new ClusterOrchestrator((): ClusterNode => ({
-      start: async () => {},
       admissionCapacity: () => 0,
       allocateRealm: async () => null,
-      whenReleased: () => Promise.resolve('released'),
-      revoke: () => {},
       shutdown: async () => {}
     }));
     const placed = await cluster.allocateRealm({ entryPath: worker, rulesJson: rules });

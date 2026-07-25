@@ -50,18 +50,21 @@ describe('DeploymentController orchestration capacity', () => {
     controller.terminate();
   });
 
-  it('releases orchestration when minimum creation fails', async (t) => {
-    let released = 0;
+  it('disposes an earlier minimum replica when later creation fails', async (t) => {
+    let created = 0;
+    const disposed: number[] = [];
     const controller = new DeploymentController({
-      capacity: () => 1,
-      create: () => Promise.reject(new Error('creation failed')),
-      dispose: () => {},
-      onTerminate: () => { released++; }
+      scaling: { min: 2, max: 2 },
+      capacity: () => 2,
+      create: () => ++created === 1
+        ? { id: created }
+        : Promise.reject(new Error('creation failed')),
+      dispose: (value) => { disposed.push(value.id); }
     });
     await t.rejects(() => controller.ready, /creation failed/);
-    t.equal(released, 1);
+    t.deepEqual(disposed, [1]);
     controller.terminate();
-    t.equal(released, 1, 'termination release is idempotent');
+    t.deepEqual(disposed, [1], 'termination remains idempotent');
   });
 
   it('settles queued admission and an in-flight spawn during termination', async (t) => {

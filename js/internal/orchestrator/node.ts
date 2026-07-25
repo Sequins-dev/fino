@@ -7,55 +7,63 @@
 * @internal
 */
 export type RealmId = string;
-export type ReactorId = string;
 export type PriorityClass = 'interactive' | 'service' | 'background';
-
-/** Coarse load reported by one reactor for placement decisions. */
-export interface ReactorLoadSummary {
-  reactorId: ReactorId;
-  heldRealms: number;
-  runnableRealms: number;
-  debtMicros: number;
-}
 
 export type ReactorClass = 'latency' | 'batch';
 
-/** Placement inputs retained so a realm can be reconstructed after reactor loss. */
-export interface RealmPlacementSpec {
+/** A realm workload's placement config: the serialized realm. */
+export interface RealmWorkloadSpec {
   entryPath: string;
+  /** The realm's complete serialized import rules (parent-inherited). */
+  rulesJson: string;
+  /** JSON-serialized RealmOptions.data, if any. */
+  realmData?: string;
+  /** Runtime-owned bootstrap metadata JSON, if any. */
+  bootstrapData?: string;
+  /** Restart the logical deployment when its loaded files change. */
+  watch?: boolean;
+  /** Bootstrap the replica as a REPL evaluator. */
+  repl?: boolean;
   priority?: PriorityClass;
 }
 
 /** Authoritative placement record for one realm. */
 export interface RealmRecord {
   id: RealmId;
+  engineId: number;
   reactorId: string;
-  entryPath: string;
-  priority: PriorityClass;
+  spec: RealmWorkloadSpec;
+  moveTo: string | null;
+  released: Promise<string>;
+  release(reason: string): void;
 }
 
 interface ReactorRecord {
   id: string;
+  handle: number | null;
   capacity: number;
   reactorClass: ReactorClass;
-  load: ReactorLoadSummary;
+  heldRealms: number;
+  runnableRealms: number;
+  debtMicros: number;
 }
 
 /** Main-thread state used by the node orchestrator for coarse placement. */
 export class NodeRealmCollection {
   #reactors = new Map<string, ReactorRecord>();
   #realms = new Map<RealmId, RealmRecord>();
-  #reservations = new Map<RealmId, string>();
-  #sequence = 0;
   #roundRobin = 0;
 
   registerReactor(id: string, capacity: number, reactorClass: ReactorClass = 'latency'): void {
     if (!Number.isInteger(capacity) || capacity < 1) throw new TypeError('reactor capacity must be a positive integer');
     this.#reactors.set(id, {
       id,
+      handle: null,
       capacity,
       reactorClass,
-      load: { reactorId: id, heldRealms: 0, runnableRealms: 0, debtMicros: 0 }
+      heldRealms: 0,
+      runnableRealms: 0,
+      debtMicros: 0
     });
   }
 
@@ -63,7 +71,20 @@ export class NodeRealmCollection {
     this.#reactors.delete(id);
   }
 
-  allocate(spec: RealmPlacementSpec): RealmRecord {
+  reactorIds(): string[] {
+    return [...this.#reactors.keys()];
+  }
+
+  reactorHandle(id: string): number | null {
+    return this.#reactors.get(id)?.handle ?? null;
+  }
+
+  setReactorHandle(id: string, handle: number | null): void {
+    const reactor = this.#reactors.get(id);
+    if (reactor !== undefined) reactor.handle = handle;
+  }
+
+  allocate(engineId: number, spec: RealmWorkloadSpec): RealmRecord {
     const priority = spec.priority ?? 'service';
     // Background realms live on the batch pool so they never contend with
     // latency-class work; fall back to latency only when no batch reactor
@@ -72,24 +93,38 @@ export class NodeRealmCollection {
     let reactorId = this.#leastLoaded(null, preferred);
     if (reactorId === null && preferred === 'batch') reactorId = this.#leastLoaded(null, 'latency');
     if (reactorId === null) throw new Error('cannot place realm: all reactors are at capacity');
-    const id = `realm-${this.#sequence++}`;
+    const id = `realm-${engineId}`;
+    let release!: (reason: string) => void;
     const record: RealmRecord = {
       id,
+      engineId,
       reactorId,
-      entryPath: spec.entryPath,
-      priority: spec.priority ?? 'service'
+      spec,
+      moveTo: null,
+      released: new Promise((resolve) => { release = resolve; }),
+      release
     };
     this.#realms.set(id, record);
     return record;
   }
 
-  release(id: RealmId): void {
-    this.#reservations.delete(id);
+  release(id: RealmId, reason: string): void {
+    const record = this.#realms.get(id);
+    if (record === undefined) return;
     this.#realms.delete(id);
+    record.release(reason);
   }
 
   record(id: RealmId): RealmRecord | undefined {
     return this.#realms.get(id);
+  }
+
+  recordByEngineId(engineId: number): RealmRecord | undefined {
+    return this.#realms.get(`realm-${engineId}`);
+  }
+
+  realmIds(): RealmId[] {
+    return [...this.#realms.keys()];
   }
 
   placementOf(id: RealmId): string | null {
@@ -98,31 +133,32 @@ export class NodeRealmCollection {
 
   reserveMove(id: RealmId, destination: string): boolean {
     const record = this.#realms.get(id);
-    if (record === undefined || this.#reservations.has(id) || !this.#hasRoom(destination)) return false;
-    this.#reservations.set(id, destination);
+    if (record === undefined || record.moveTo !== null || !this.#hasRoom(destination)) return false;
+    record.moveTo = destination;
     return true;
   }
 
   cancelMove(id: RealmId): void {
-    this.#reservations.delete(id);
+    const record = this.#realms.get(id);
+    if (record !== undefined) record.moveTo = null;
   }
 
   commitMove(id: RealmId, destination: string): boolean {
     const record = this.#realms.get(id);
-    if (record === undefined || this.#reservations.get(id) !== destination) return false;
+    if (record === undefined || record.moveTo !== destination) return false;
     record.reactorId = destination;
-    this.#reservations.delete(id);
+    record.moveTo = null;
     return true;
   }
 
   hasMoveReservations(reactorId: string): boolean {
-    for (const destination of this.#reservations.values()) if (destination === reactorId) return true;
+    for (const realm of this.#realms.values()) if (realm.moveTo === reactorId) return true;
     return false;
   }
 
-  recordLoad(reactorId: string, summary: ReactorLoadSummary): void {
+  recordLoad(reactorId: string, heldRealms: number, runnableRealms: number, debtMicros: number): void {
     const reactor = this.#reactors.get(reactorId);
-    if (reactor !== undefined) reactor.load = summary;
+    if (reactor !== undefined) Object.assign(reactor, { heldRealms, runnableRealms, debtMicros });
   }
 
   reactorClassOf(id: string): ReactorClass | null {
@@ -131,8 +167,10 @@ export class NodeRealmCollection {
 
   assignedTo(id: string): number {
     let count = 0;
-    for (const realm of this.#realms.values()) if (realm.reactorId === id) count++;
-    for (const destination of this.#reservations.values()) if (destination === id) count++;
+    for (const realm of this.#realms.values()) {
+      if (realm.reactorId === id) count++;
+      if (realm.moveTo === id) count++;
+    }
     return count;
   }
 
@@ -164,7 +202,7 @@ export class NodeRealmCollection {
     let bestKey = Number.POSITIVE_INFINITY;
     for (let offset = 0; offset < eligible.length; offset++) {
       const reactor = eligible[(this.#roundRobin + offset) % eligible.length]!;
-      const key = this.assignedTo(reactor.id) * 1e6 + reactor.load.runnableRealms * 1e3 + Math.min(reactor.load.debtMicros, 999);
+      const key = this.assignedTo(reactor.id) * 1e6 + reactor.runnableRealms * 1e3 + Math.min(reactor.debtMicros, 999);
       if (key < bestKey) {
         best = reactor;
         bestKey = key;

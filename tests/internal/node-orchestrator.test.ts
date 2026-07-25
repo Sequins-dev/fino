@@ -50,7 +50,6 @@ describe('NodeOrchestrator', () => {
 
   it('executes realms on multiple reactors', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 2, capacity: 2 });
-    orchestrator.start();
     const placements = await Promise.all([0, 1].map((index) => orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string,
@@ -68,9 +67,23 @@ describe('NodeOrchestrator', () => {
     }
   });
 
+  it('returns release and revoke lifecycle with the allocation', async (t) => {
+    const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 1 });
+    const placement = await orchestrator.allocateRealm({
+      entryPath: worker,
+      rulesJson: mergeChildRules('[]') as string
+    });
+    if (placement === null) throw new Error('realm was not placed');
+    try {
+      placement.revoke('allocation-owned-lifecycle');
+      t.equal(await placement.released, 'allocation-owned-lifecycle');
+    } finally {
+      await orchestrator.shutdown();
+    }
+  });
+
   it('moves the same live realm between reactors', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 2, capacity: 2 });
-    orchestrator.start();
     const placement = await orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
@@ -88,7 +101,7 @@ describe('NodeOrchestrator', () => {
       t.equal(orchestrator.collection().placementOf(placement.workloadId), destination);
     } finally {
       port.close();
-      orchestrator.revoke(placement.workloadId, 'test-done');
+      placement.revoke('test-done');
       await orchestrator.shutdown();
     }
   });
@@ -100,7 +113,6 @@ describe('NodeOrchestrator', () => {
       syncSliceThresholdMicros: 1_000,
       batchPool: { minReactors: 0, maxReactors: 1, idleTimeoutMs: 10 }
     });
-    orchestrator.start();
     const placement = await orchestrator.allocateRealm({
       entryPath: blockingWorker,
       rulesJson: mergeChildRules('[]') as string
@@ -120,14 +132,13 @@ describe('NodeOrchestrator', () => {
       t.match(destination, /^batch-/);
     } finally {
       port.close();
-      orchestrator.revoke(placement.workloadId, 'test-done');
+      placement.revoke('test-done');
       await orchestrator.shutdown();
     }
   });
 
   it('places background-priority realms on the batch pool', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 2, capacity: 4, batchPool: { minReactors: 1 } });
-    orchestrator.start();
     try {
       const background = await orchestrator.allocateRealm({
         entryPath: worker,
@@ -150,7 +161,6 @@ describe('NodeOrchestrator', () => {
 
   it('provisions a batch reactor on demand for background priority', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 4, batchPool: { minReactors: 0 } });
-    orchestrator.start();
     try {
       const placed = await orchestrator.allocateRealm({
         entryPath: worker,
@@ -173,7 +183,6 @@ describe('NodeOrchestrator', () => {
       // to bootstrap (bootstrap alone needs a few MiB of old space).
       heapLimitBytes: 48 * 1024 * 1024
     });
-    orchestrator.start();
     const hog = new URL('../realm/fixtures/heap-hog.ts', import.meta.url).pathname;
     try {
       const placed = await orchestrator.allocateRealm({
@@ -181,7 +190,7 @@ describe('NodeOrchestrator', () => {
         rulesJson: mergeChildRules('[]') as string
       });
       t.ok(placed !== null, 'heap hog placed');
-      const reason = await orchestrator.whenReleased(placed!.workloadId);
+      const reason = await placed!.released;
       t.ok(/terminated|failed/.test(reason), `containment released the workload (${reason}) instead of OOMing the process`);
     } finally {
       await orchestrator.shutdown();
@@ -194,7 +203,6 @@ describe('NodeOrchestrator', () => {
       capacity: 2,
       hardBudgetMicros: 10_000
     });
-    orchestrator.start();
     const runaway = await orchestrator.allocateRealm({
       entryPath: blockingWorker,
       rulesJson: mergeChildRules('[]') as string
@@ -208,7 +216,7 @@ describe('NodeOrchestrator', () => {
     const survivorPort = new ThreadPort(survivor.portWakeFd, survivor.portHandle);
     try {
       void call(runawayPort, 30, 1_000).catch(() => {});
-      t.equal(await orchestrator.whenReleased(runaway.workloadId), 'terminated');
+      t.equal(await runaway.released, 'terminated');
       t.equal(typeof await call(survivorPort, 31, 0), 'string');
       t.equal(orchestrator.collection().placementOf(survivor.workloadId), 'reactor-0');
     } finally {
@@ -218,9 +226,34 @@ describe('NodeOrchestrator', () => {
     }
   });
 
+  it('forces a synchronous runaway to stop before joining reactors', async (t) => {
+    const orchestrator = new NodeOrchestrator({
+      reactorCount: 1,
+      capacity: 1,
+      hardBudgetMicros: 5_000_000
+    });
+    const blocking = await orchestrator.allocateRealm({
+      entryPath: blockingWorker,
+      rulesJson: mergeChildRules('[]') as string
+    });
+    if (blocking === null) throw new Error('realm was not placed');
+    const port = new ThreadPort(blocking.portWakeFd, blocking.portHandle);
+    try {
+      await call(port, 31, 0);
+      void call(port, 32, 1_000).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const started = performance.now();
+      await orchestrator.shutdown();
+      t.ok(performance.now() - started < 500, 'shutdown terminated the active pump before joining');
+      t.equal(await blocking.released, 'shutdown');
+    } finally {
+      port.close();
+      await orchestrator.shutdown();
+    }
+  });
+
   it('replaces reactor capacity after a reactor exits', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 1 });
-    orchestrator.start();
     const first = await orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
@@ -228,7 +261,7 @@ describe('NodeOrchestrator', () => {
     if (first === null) throw new Error('realm was not placed');
     try {
       orchestrator._killReactor('reactor-0');
-      t.equal(await orchestrator.whenReleased(first.workloadId), 'reactor-exited');
+      t.equal(await first.released, 'reactor-exited');
       const replacement = await (async () => {
         const deadline = Date.now() + 2_000;
         for (;;) {
@@ -251,7 +284,6 @@ describe('NodeOrchestrator', () => {
 
   it('replaces only the physical reactor after one isolate crashes', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 1, capacity: 2 });
-    orchestrator.start();
     const failed = await orchestrator.allocateRealm({
       entryPath: worker,
       rulesJson: mergeChildRules('[]') as string
@@ -267,7 +299,7 @@ describe('NodeOrchestrator', () => {
       const generation = orchestrator._reactorGeneration('reactor-0');
       orchestrator._crashRealm(failed.workloadId);
 
-      t.equal(await orchestrator.whenReleased(failed.workloadId), 'reactor-workload-panicked');
+      t.equal(await failed.released, 'reactor-workload-panicked');
       await eventually(() => orchestrator._reactorGeneration('reactor-0') > generation ? true : null);
       t.equal(orchestrator.collection().placementOf(survivor.workloadId), 'reactor-0');
       t.equal(await call(survivorPort, 11, 0), heap, 'survivor was moved intact, not reconstructed');
@@ -279,8 +311,10 @@ describe('NodeOrchestrator', () => {
 
   it('is one-shot after shutdown', async (t) => {
     const orchestrator = new NodeOrchestrator({ reactorCount: 1 });
-    orchestrator.start();
     await orchestrator.shutdown();
-    await t.rejects(async () => { await orchestrator.start(); }, /shut down|one-shot/i);
+    await t.rejects(() => orchestrator.allocateRealm({
+      entryPath: worker,
+      rulesJson: mergeChildRules('[]') as string
+    }), /shut down|one-shot/i);
   });
 });

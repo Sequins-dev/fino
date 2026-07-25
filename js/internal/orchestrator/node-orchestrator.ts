@@ -9,33 +9,20 @@
 * @internal
 */
 import * as engine from 'internal:reactor-engine';
+import { terminateArmedBudgets } from 'internal:reactor/workload';
 import { availableParallelism, env } from 'internal:process';
-import { NodeRealmCollection, type PriorityClass, type ReactorLoadSummary, type RealmId } from './node.ts';
-import { BudgetWatchdog } from './budget-watchdog.ts';
+import {
+  NodeRealmCollection,
+  type PriorityClass,
+  type RealmId,
+  type RealmWorkloadSpec
+} from './node.ts';
+import { startBudgetWatchdog } from './budget-watchdog.ts';
 
-/** A realm workload's placement config: the serialized realm. */
-export interface RealmWorkloadSpec {
-  entryPath: string;
-  /** The realm's complete serialized import rules (parent-inherited). */
-  rulesJson: string;
-  /** JSON-serialized RealmOptions.data, if any. */
-  realmData?: string;
-  /** Runtime-owned bootstrap metadata JSON, if any. */
-  bootstrapData?: string;
-  /** Restart the logical deployment when its loaded files change. */
-  watch?: boolean;
-  /** Bootstrap the replica as a REPL evaluator. */
-  repl?: boolean;
-  priority?: PriorityClass;
-}
+export type { RealmWorkloadSpec } from './node.ts';
 
 /** Priority class → the engine's numeric priority (compareRunnable). */
 const PRIORITY_CLASS: Record<PriorityClass, number> = { interactive: 0, service: 1, background: 2 };
-
-/** A native reactor engine reactor, plus liveness bookkeeping. */
-interface ReactorHandle {
-  reactorId: number;
-}
 
 /** One engine report drained from a reactor's report channel. */
 type EngineReport =
@@ -45,16 +32,18 @@ type EngineReport =
   | { type: 'moved'; workloadId: number }
   | { type: 'moveRejected'; workloadId: number; reason: string };
 
-interface WorkloadRuntime {
-  engineId: number;
-  realmSpec: RealmWorkloadSpec;
-}
-
 interface RealmPorts {
   portHandle: number;
   portWakeFd: number;
   allocationPortHandle: number;
   allocationPortWakeFd: number;
+}
+
+/** One admitted realm and its complete node-owned lifecycle. */
+export interface RealmWorkloadAllocation extends RealmPorts {
+  workloadId: RealmId;
+  released: Promise<string>;
+  revoke(reason: string): void;
 }
 
 /** Result of attempting to move one live isolate between local reactors. */
@@ -98,26 +87,17 @@ function envInt(name: string): number | undefined {
 * seam: every knob the constructor accepts is reachable without code.
 */
 export function resolveNodeOrchestratorOptions(): NodeOrchestratorOptions {
-  const reactorCount = envInt('FINO_REACTOR_COUNT');
-  const capacity = envInt('FINO_REACTOR_CAPACITY');
-  const hardBudgetMicros = envInt('FINO_REACTOR_HARD_BUDGET_MICROS');
-  const syncSliceThresholdMicros = envInt('FINO_REACTOR_SYNC_SLICE_MICROS');
-  const heapLimitBytes = envInt('FINO_REALM_HEAP_LIMIT_BYTES');
-  const minReactors = envInt('FINO_BATCH_REACTORS_MIN');
-  const maxReactors = envInt('FINO_BATCH_REACTORS_MAX');
-  const idleTimeoutMs = envInt('FINO_BATCH_IDLE_TIMEOUT_MS');
-  const batchPool = {
-    ...minReactors !== undefined ? { minReactors } : {},
-    ...maxReactors !== undefined ? { maxReactors } : {},
-    ...idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}
-  };
   return {
-    ...reactorCount !== undefined ? { reactorCount } : {},
-    capacity: capacity ?? 8,
-    ...hardBudgetMicros !== undefined ? { hardBudgetMicros } : {},
-    ...syncSliceThresholdMicros !== undefined ? { syncSliceThresholdMicros } : {},
-    ...heapLimitBytes !== undefined ? { heapLimitBytes } : {},
-    ...Object.keys(batchPool).length > 0 ? { batchPool } : {}
+    reactorCount: envInt('FINO_REACTOR_COUNT'),
+    capacity: envInt('FINO_REACTOR_CAPACITY') ?? 8,
+    hardBudgetMicros: envInt('FINO_REACTOR_HARD_BUDGET_MICROS'),
+    syncSliceThresholdMicros: envInt('FINO_REACTOR_SYNC_SLICE_MICROS'),
+    heapLimitBytes: envInt('FINO_REALM_HEAP_LIMIT_BYTES'),
+    batchPool: {
+      minReactors: envInt('FINO_BATCH_REACTORS_MIN'),
+      maxReactors: envInt('FINO_BATCH_REACTORS_MAX'),
+      idleTimeoutMs: envInt('FINO_BATCH_IDLE_TIMEOUT_MS')
+    }
   };
 }
 
@@ -126,7 +106,6 @@ export function resolveNodeOrchestratorOptions(): NodeOrchestratorOptions {
 */
 export class NodeOrchestrator {
   #collection = new NodeRealmCollection();
-  #reactorIds: string[];
   #capacity: number;
   #hardBudgetMicros: number | undefined;
   #syncSliceThresholdMicros: number | undefined;
@@ -136,23 +115,17 @@ export class NodeOrchestrator {
   #batchIdleTimeoutMs: number;
   #batchSeq = 0;
   #batchIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  #reactors = new Map<string, ReactorHandle>();
-  #watchdog = new BudgetWatchdog();
+  #stopWatchdog: (() => void) | null = null;
   #started = false;
   #shuttingDown = false;
   #closed = false;
-  #released = new Map<RealmId, Set<(reason: string) => void>>();
   #pendingMoves = new Map<RealmId, {
     fromReactorId: string;
     toReactorId: string;
     resolve(outcome: MoveOutcome): void;
   }>();
   #previousBlockingSample = new Map<RealmId, number>();
-  // One authoritative runtime record per workload. The reverse index exists
-  // only because native reports carry the engine's numeric id.
-  #runtimes = new Map<RealmId, WorkloadRuntime>();
   #engineIdSeq = 1;
-  #engineOwners = new Map<number, RealmId>();
 
   constructor(options: NodeOrchestratorOptions = {}) {
     const hardwareParallelism = availableParallelism;
@@ -180,15 +153,12 @@ export class NodeOrchestrator {
     this.#batchMinReactors = minBatchReactors;
     this.#batchMaxReactors = maxBatchReactors;
     this.#batchIdleTimeoutMs = batchIdleTimeoutMs;
-    this.#reactorIds = [];
     for (let i = 0; i < reactorCount; i++) {
       const reactorName = `reactor-${i}`;
-      this.#reactorIds.push(reactorName);
       this.#collection.registerReactor(reactorName, this.#capacity, 'latency');
     }
     for (let i = 0; i < minBatchReactors; i++) {
       const reactorName = `batch-${this.#batchSeq++}`;
-      this.#reactorIds.push(reactorName);
       this.#collection.registerReactor(reactorName, this.#capacity, 'batch');
     }
   }
@@ -200,22 +170,22 @@ export class NodeOrchestrator {
 
   /** The ids of the node's reactors. */
   reactorIds(): string[] {
-    return [...this.#reactorIds];
+    return this.#collection.reactorIds();
   }
 
   /** Aggregate admission slots on latency reactors eligible for new realms. */
   admissionCapacity(): number {
     if (this.#closed) return 0;
-    return this.#reactorIds.filter((id) => this.#collection.reactorClassOf(id) === 'latency').length * this.#capacity;
+    return this.reactorIds().filter((id) => this.#collection.reactorClassOf(id) === 'latency').length * this.#capacity;
   }
 
-  /** Boot the native reactor threads and start runaway containment. Idempotent. */
-  async start(): Promise<void> {
+  /** Boot the native reactor threads and start runaway containment. */
+  #start(): void {
     if (this.#closed) throw new Error('NodeOrchestrator is one-shot and has been shut down');
     if (this.#started) return;
     this.#started = true;
-    this.#watchdog.start();
-    for (const reactorName of this.#reactorIds) this.#spawnReactor(reactorName);
+    this.#stopWatchdog = startBudgetWatchdog();
+    for (const reactorName of this.reactorIds()) this.#spawnReactor(reactorName);
   }
 
   #spawnReactor(reactorName: string): void {
@@ -226,15 +196,14 @@ export class NodeOrchestrator {
       reactorClass: this.#collection.reactorClassOf(reactorName) ?? 'latency'
     };
     const reactorId = engine.spawnReactor(config);
-    this.#reactors.set(reactorName, { reactorId });
+    this.#collection.setReactorHandle(reactorName, reactorId);
     void this.#pumpReports(reactorName, reactorId);
   }
 
   #provisionBatchReactor(): string | null {
-    const existing = this.#reactorIds.filter((id) => this.#collection.reactorClassOf(id) === 'batch');
+    const existing = this.reactorIds().filter((id) => this.#collection.reactorClassOf(id) === 'batch');
     if (existing.length >= this.#batchMaxReactors) return null;
     const reactorName = `batch-${this.#batchSeq++}`;
-    this.#reactorIds.push(reactorName);
     this.#collection.registerReactor(reactorName, this.#capacity, 'batch');
     if (this.#started) this.#spawnReactor(reactorName);
     return reactorName;
@@ -248,21 +217,19 @@ export class NodeOrchestrator {
 
   #scheduleBatchRetirement(reactorName: string): void {
     if (this.#collection.reactorClassOf(reactorName) !== 'batch') return;
-    const batchCount = this.#reactorIds.filter((id) => this.#collection.reactorClassOf(id) === 'batch').length;
+    const batchCount = this.reactorIds().filter((id) => this.#collection.reactorClassOf(id) === 'batch').length;
     if (batchCount <= this.#batchMinReactors) return;
     this.#cancelBatchRetirement(reactorName);
     const timer = setTimeout(() => {
       this.#batchIdleTimers.delete(reactorName);
       if (this.#shuttingDown || this.#collection.assignedTo(reactorName) !== 0 || this.#collection.hasMoveReservations(reactorName)) return;
-      const remainingBatch = this.#reactorIds.filter((id) => this.#collection.reactorClassOf(id) === 'batch').length;
+      const remainingBatch = this.reactorIds().filter((id) => this.#collection.reactorClassOf(id) === 'batch').length;
       if (remainingBatch <= this.#batchMinReactors) return;
-      const handle = this.#reactors.get(reactorName);
-      this.#reactors.delete(reactorName);
+      const handle = this.#reactorFor(reactorName);
       this.#collection.unregisterReactor(reactorName);
-      this.#reactorIds = this.#reactorIds.filter((id) => id !== reactorName);
-      if (handle !== undefined) {
-        engine.shutdown(handle.reactorId);
-        engine.joinReactor(handle.reactorId);
+      if (handle !== null) {
+        engine.shutdown(handle);
+        engine.joinReactor(handle);
       }
     }, this.#batchIdleTimeoutMs);
     this.#batchIdleTimers.set(reactorName, timer);
@@ -275,30 +242,23 @@ export class NodeOrchestrator {
   * (empty drain + not alive) and exits.
   */
   async #pumpReports(reactorName: string, reactorId: number): Promise<void> {
-    while (this.#reactors.has(reactorName) && !this.#shuttingDown) {
+    while (this.#reactorFor(reactorName) !== null && !this.#shuttingDown) {
       await engine.nextReport(reactorId);
-      if (!this.#reactors.has(reactorName)) break;
+      if (this.#reactorFor(reactorName) !== reactorId) break;
       const reports = engine.drainReports(reactorId) as EngineReport[];
       for (const report of reports) this.#onEngineReport(reactorName, report);
       // A dead reactor wakes its pump one final time with nothing queued.
       if (reports.length === 0 && !engine.reactorAlive(reactorId)) {
-        this.#onReactorExit(reactorName);
+        if (!this.#shuttingDown) this.#recover(reactorName);
         break;
       }
     }
   }
 
-  /** A reactor died. Release its lost realms and replace its capacity. */
-  #onReactorExit(reactorName: string): void {
-    if (this.#shuttingDown) return;
-    this.#recover(reactorName);
-  }
-
   #recover(reactorName: string): void {
-    const handle = this.#reactors.get(reactorName);
-    if (handle === undefined) return;
-    const reactorClass = this.#collection.reactorClassOf(reactorName) ?? 'latency';
-    this.#reactors.delete(reactorName);
+    const reactorId = this.#reactorFor(reactorName);
+    if (reactorId === null) return;
+    this.#collection.setReactorHandle(reactorName, null);
     for (const [realmId, pending] of this.#pendingMoves) {
       if (pending.fromReactorId !== reactorName && pending.toReactorId !== reactorName) continue;
       this.#pendingMoves.delete(realmId);
@@ -308,25 +268,20 @@ export class NodeOrchestrator {
     // A hard reactor loss also loses its isolates. Settle their allocations so
     // Realm or RealmDeployment can reconstruct cleanly on a later call.
     const lost = this.#collection.realmsOn(reactorName);
-    this.#collection.unregisterReactor(reactorName);
     for (const workloadId of lost) {
-      this.#collection.release(workloadId);
-      const runtime = this.#runtimes.get(workloadId);
-      if (runtime !== undefined) this.#engineOwners.delete(runtime.engineId);
-      this.#runtimes.delete(workloadId);
-      this.#settleReleased(workloadId, 'reactor-exited');
+      this.#collection.release(workloadId, 'reactor-exited');
     }
-    engine.joinReactor(handle.reactorId);
-    this.#collection.registerReactor(reactorName, this.#capacity, reactorClass);
+    engine.joinReactor(reactorId);
     this.#spawnReactor(reactorName);
   }
 
   /** Fold one engine report into the authoritative collection. */
   #onEngineReport(reactorName: string, report: EngineReport): void {
-    if (!this.#reactors.has(reactorName)) return;
+    if (this.#reactorFor(reactorName) === null) return;
     switch (report.type) {
       case 'load':
-        return this.#onLoadReport(reactorName, report);
+        this.#collection.recordLoad(reactorName, report.held, report.runnable, report.debtMicros);
+        return;
       case 'syncHeavy':
         return this.#onSyncHeavyReport(report);
       case 'moved':
@@ -339,17 +294,7 @@ export class NodeOrchestrator {
   }
 
   #workloadForReport(report: EngineReport): RealmId | undefined {
-    return 'workloadId' in report ? this.#engineOwners.get(report.workloadId) : undefined;
-  }
-
-  #onLoadReport(reactorName: string, report: EngineReport): void {
-    const summary: ReactorLoadSummary = {
-      reactorId: reactorName,
-      heldRealms: report.held,
-      runnableRealms: report.runnable,
-      debtMicros: report.debtMicros
-    };
-    this.#collection.recordLoad(reactorName, summary);
+    return 'workloadId' in report ? this.#collection.recordByEngineId(report.workloadId)?.id : undefined;
   }
 
   #onSyncHeavyReport(report: EngineReport): void {
@@ -406,11 +351,7 @@ export class NodeOrchestrator {
     }
     const reason = report.reason;
     this.#previousBlockingSample.delete(workloadId);
-    this.#collection.release(workloadId);
-    const runtime = this.#runtimes.get(workloadId);
-    if (runtime !== undefined) this.#engineOwners.delete(runtime.engineId);
-    this.#runtimes.delete(workloadId);
-    this.#settleReleased(workloadId, reason);
+    this.#collection.release(workloadId, reason);
     this.#scheduleBatchRetirement(reactorName);
   }
 
@@ -457,68 +398,57 @@ export class NodeOrchestrator {
   */
   #ensureBatchReactorFor(spec: RealmWorkloadSpec): void {
     if (spec.priority !== 'background') return;
-    const existing = this.#reactorIds.some((id) => this.#collection.reactorClassOf(id) === 'batch');
+    const existing = this.reactorIds().some((id) => this.#collection.reactorClassOf(id) === 'batch');
     if (!existing) this.#provisionBatchReactor();
   }
 
-  async allocateRealm(spec: RealmWorkloadSpec): Promise<{
-    workloadId: RealmId;
-    portHandle: number;
-    portWakeFd: number;
-    allocationPortHandle: number;
-    allocationPortWakeFd: number;
-  } | null> {
+  async allocateRealm(spec: RealmWorkloadSpec): Promise<RealmWorkloadAllocation | null> {
+    this.#start();
     this.#ensureBatchReactorFor(spec);
     let record;
     try {
-      record = this.#collection.allocate({
-        entryPath: spec.entryPath,
-        ...spec.priority !== undefined ? { priority: spec.priority } : {}
-      });
+      record = this.#collection.allocate(this.#engineIdSeq++, spec);
     } catch {
       return null;
     }
     const workloadId = record.id;
-    const engineId = this.#engineIdSeq++;
-    this.#runtimes.set(workloadId, { engineId, realmSpec: spec });
-    this.#engineOwners.set(engineId, workloadId);
     const port = this.#placeOnEngine(workloadId);
     if (port === null) {
-      const runtime = this.#runtimes.get(workloadId);
-      if (runtime !== undefined) this.#engineOwners.delete(runtime.engineId);
-      this.#runtimes.delete(workloadId);
-      this.#collection.release(workloadId);
+      this.#collection.release(workloadId, 'placement-failed');
       return null;
     }
-    return { workloadId, ...port };
+    return {
+      workloadId,
+      ...port,
+      released: record.released,
+      revoke: (reason: string) => this.#revoke(workloadId, reason)
+    };
   }
 
   /** The reactor id hosting `reactorName`, or null. */
   #reactorFor(reactorName: string): number | null {
-    const handle = this.#reactors.get(reactorName);
-    return handle === undefined ? null : handle.reactorId;
+    return this.#collection.reactorHandle(reactorName);
   }
 
   /** The engine's numeric id for a realm. */
   #engineId(workloadId: RealmId): number {
-    return this.#runtimes.get(workloadId)!.engineId;
+    return this.#collection.record(workloadId)!.engineId;
   }
 
   /** Construct one realm on its assigned reactor. */
   #placeOnEngine(workloadId: RealmId): RealmPorts | null {
     const record = this.#collection.record(workloadId);
-    const runtime = this.#runtimes.get(workloadId);
-    if (record === undefined || runtime === undefined) return null;
+    if (record === undefined) return null;
     const reactorId = this.#reactorFor(record.reactorId);
     if (reactorId === null) return null;
-    const realmSpec = runtime.realmSpec;
+    const realmSpec = record.spec;
     const info = engine.placeRealm(reactorId, {
-      realmId: runtime.engineId,
-      entryPath: record.entryPath,
+      realmId: record.engineId,
+      entryPath: realmSpec.entryPath,
       rulesJson: realmSpec.rulesJson,
       ...realmSpec.realmData !== undefined ? { data: realmSpec.realmData } : {},
       ...realmSpec.bootstrapData !== undefined ? { bootstrapData: realmSpec.bootstrapData } : {},
-      priority: PRIORITY_CLASS[record.priority],
+      priority: PRIORITY_CLASS[realmSpec.priority ?? 'service'],
       watch: realmSpec.watch === true,
       repl: realmSpec.repl === true
     }) as RealmPorts;
@@ -526,31 +456,11 @@ export class NodeOrchestrator {
   }
 
   /** Revoke a workload on its hosting reactor. */
-  revoke(workloadId: RealmId, reason: string): void {
+  #revoke(workloadId: RealmId, reason: string): void {
     const reactorName = this.#collection.placementOf(workloadId);
     if (reactorName === null) return;
     const reactorId = this.#reactorFor(reactorName);
     if (reactorId !== null) engine.revoke(reactorId, this.#engineId(workloadId), reason);
-  }
-
-  /** Resolve with the release reason when a workload reaches a terminal state. */
-  whenReleased(workloadId: RealmId): Promise<string> {
-    if (this.#collection.record(workloadId) === undefined) return Promise.resolve('released');
-    return new Promise<string>((resolve) => {
-      let waiters = this.#released.get(workloadId);
-      if (waiters === undefined) {
-        waiters = new Set();
-        this.#released.set(workloadId, waiters);
-      }
-      waiters.add(resolve);
-    });
-  }
-
-  #settleReleased(workloadId: RealmId, reason: string): void {
-    const waiters = this.#released.get(workloadId);
-    if (waiters === undefined) return;
-    this.#released.delete(workloadId);
-    for (const resolve of waiters) resolve(reason);
   }
 
   /** Shut down and join every reactor, then stop runaway containment. */
@@ -560,7 +470,9 @@ export class NodeOrchestrator {
     this.#shuttingDown = true;
     for (const timer of this.#batchIdleTimers.values()) clearTimeout(timer);
     this.#batchIdleTimers.clear();
-    const handles = [...this.#reactors.values()];
+    const handles = this.reactorIds()
+      .map((id) => this.#reactorFor(id))
+      .filter((id): id is number => id !== null);
     for (const [workloadId, pending] of this.#pendingMoves) {
       this.#collection.cancelMove(workloadId);
       pending.resolve({ status: 'deferred', reason: 'shutdown' });
@@ -569,19 +481,14 @@ export class NodeOrchestrator {
     this.#previousBlockingSample.clear();
     // Signal every reactor to stop; the report pumps exit on the final wake
     // each reactor posts as it dies.
-    for (const handle of handles) engine.shutdown(handle.reactorId);
-    for (const handle of handles) engine.joinReactor(handle.reactorId);
-    this.#reactors.clear();
-    await this.#watchdog.stop();
-    // Settle outstanding released-waiters rather than dangling them: their
-    // workloads die with the reactors, and a waiter that never resolves
-    // holds its supervisor (a parent realm's run() entry) open forever.
-    for (const waiters of this.#released.values()) {
-      for (const resolve of waiters) resolve('shutdown');
-    }
-    this.#released.clear();
-    this.#runtimes.clear();
-    this.#engineOwners.clear();
+    for (const handle of handles) engine.shutdown(handle);
+    terminateArmedBudgets();
+    for (const handle of handles) engine.joinReactor(handle);
+    for (const id of this.reactorIds()) this.#collection.setReactorHandle(id, null);
+    this.#stopWatchdog?.();
+    this.#stopWatchdog = null;
+    // Settle outstanding allocation lifetimes rather than dangling supervisors.
+    for (const workloadId of this.#collection.realmIds()) this.#collection.release(workloadId, 'shutdown');
   }
 
   /** Test hook: forcibly stop a reactor. */
