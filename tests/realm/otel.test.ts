@@ -1,5 +1,5 @@
 /**
-* Tests for OTel topic emission from fino:realm and fino:realm/pool.
+* Realm tests for OTel topic emission from fino:realm and fino:realm/pool.
 *
 * The topics are gated on hasSubscribers, so they only fire when a subscriber
 * is registered before the action takes place.  These tests subscribe first,

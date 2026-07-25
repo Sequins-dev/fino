@@ -1,5 +1,5 @@
 /**
-* Tests for fino:process sandbox honesty: backend naming, pre-spawn rejection
+* Process sandbox honesty tests: backend naming, pre-spawn rejection
 * of policy that cannot be enforced, and platform-appropriate report wording.
 */
 import { describe, it } from 'fino:test/test';

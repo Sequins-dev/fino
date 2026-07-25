@@ -186,16 +186,20 @@ jobs:
           - async-runtime
           - cluster
           - commands
+          - data
+          - docs
           - file
           - format
           - integration
           - internal
+          - jobs
           - messaging
           - net
           - process
           - realm
           - runtime
           - security
+          - task
           - test
           - tty
           - util

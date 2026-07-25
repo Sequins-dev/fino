@@ -1,5 +1,5 @@
 /**
-* Integration tests for `fino init`.
+* Command integration tests for `fino init`.
 */
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';

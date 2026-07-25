@@ -1,5 +1,5 @@
 /**
-* macOS-only strict sandbox enforcement via Seatbelt: filesystem confinement,
+* macOS process sandbox enforcement via Seatbelt: filesystem confinement,
 * process-exec scoping, and pre-spawn rejection of the categories Seatbelt
 * cannot express in this API (syscalls, fork denial).
 *

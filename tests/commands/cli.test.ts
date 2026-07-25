@@ -1,5 +1,5 @@
 /**
-* Tests for the fino CLI command tree defined by js/internal/main.ts.
+* Command integration tests for the fino CLI tree defined by js/internal/main.ts.
 */
 import { describe, it } from 'fino:test/test';
 import type { Assert } from 'fino:test/assert';

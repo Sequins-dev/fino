@@ -1,5 +1,5 @@
 /**
-* Linux-only strict sandbox enforcement: Landlock execute scoping and cgroup v2
+* Linux process sandbox enforcement: Landlock execute scoping and cgroup v2
 * resource limits + descendant cleanup.
 *
 * Test discipline: every case either asserts real enforcement when the kernel

@@ -1,5 +1,5 @@
 /**
-* Tests for fino:process — process info APIs and child process spawning.
+* Process tests for fino:process info APIs and child process spawning.
 */
 import { describe, it } from 'fino:test/test';
 import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, signal, SIGKILL, Process, processStats, processStatsSignal, processSandboxCapabilities } from 'fino:process';

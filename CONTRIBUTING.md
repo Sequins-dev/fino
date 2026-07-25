@@ -74,7 +74,7 @@ Use the generated docs command when changing public docs or API comments:
 ```
 
 The map of all authored guides is [js/documentation.md](./js/documentation.md).
-A test (`tests/runtime/docs-map.test.ts`) keeps that map complete: adding or
+A test (`tests/docs/map.test.ts`) keeps that map complete: adding or
 removing a guide requires updating it.
 
 ## Focused Checks
@@ -84,7 +84,7 @@ Useful focused checks while developing:
 ```sh
 cargo test --quiet
 ./target/release/fino test tests/internal/builtin-layout.test.ts
-./target/release/fino test tests/runtime/doc.test.ts
+./target/release/fino test tests/docs/doc.test.ts
 ./target/release/fino test tests/net/serve.test.ts
 ./target/release/fino test tests/net/socket-class.test.ts
 ```
