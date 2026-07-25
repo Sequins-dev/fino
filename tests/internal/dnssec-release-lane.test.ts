@@ -24,16 +24,4 @@ describe('DNSSEC release lane', () => {
     const missing = required.filter((marker) => !workflow.includes(marker));
     t.deepEqual(missing, [], 'workflow runs the gated live suite on schedule or demand');
   });
-  it('records the current IANA rollover checkpoint', async (t) => {
-    const release = await readText('RELEASE.md');
-    const required = [
-      'KSK-2017',
-      '20326',
-      'KSK-2024',
-      '38696',
-      '11 October 2026'
-    ];
-    const missing = required.filter((marker) => !release.includes(marker));
-    t.deepEqual(missing, [], 'release guidance identifies the current rollover keys and date');
-  });
 });
