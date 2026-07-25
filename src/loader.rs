@@ -120,6 +120,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:loader-hooks",
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
+    (
+        "internal:scheduler-native",
+        BuiltinKind::Synthetic(crate::scheduler_native::create_module),
+    ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
     source_builtin!("fino:realm", "realm/index"),
@@ -593,6 +597,12 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:task/durable", "task/durable"),
     // orchestrator + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
+    source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
+    source_builtin!("internal:scheduler/workload", "internal/scheduler/workload"),
+    source_builtin!(
+        "internal:scheduler/readiness",
+        "internal/scheduler/readiness"
+    ),
     source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
     source_builtin!("internal:jobs/store", "internal/jobs/store"),
     source_builtin!("internal:jobs/runner", "internal/jobs/runner"),

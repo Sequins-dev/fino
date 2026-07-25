@@ -1,9 +1,10 @@
 /**
  * internal:runtime/loop — global event loop singleton.
  *
- * A single kqueue/io_uring backend handle is created when this module is
- * loaded and lives for the process lifetime. All I/O and timer operations
- * register on that single handle.
+ * An ordinary realm creates one kqueue/io_uring backend handle when this module
+ * loads and keeps it for the realm lifetime. Scheduler-hosted isolates instead
+ * omit that private backend and delegate descriptor readiness to their host
+ * loop, so they never need a second poller merely to await `EAGAIN`.
  *
  *
  * ## API
@@ -148,9 +149,31 @@ const _addPersistentRead = backend.addPersistentRead as
 const _wait = backend.wait as (raw: object, timeoutMs: number) => LoopEvent[];
 const _pollFd = backend.pollFd as ((raw: object) => number) | undefined;
 // ---------------------------------------------------------------------------
-// Singleton state — created at module load, lives for the process lifetime
+// Singleton state — one local backend, omitted for delegated readiness
 // ---------------------------------------------------------------------------
-const _raw = backend.create() as object;
+const _delegatesReadiness =
+  (
+    globalThis as {
+      __finoSchedulerDelegatesReadiness?: boolean;
+    }
+  ).__finoSchedulerDelegatesReadiness === true;
+let _raw: object | undefined = _delegatesReadiness ? undefined : (backend.create() as object);
+function rawBackend(): object {
+  return (_raw ??= backend.create() as object);
+}
+type SchedulerHostOperation = (
+  operation: 'readable' | 'writable' | 'removeRead' | 'removeWrite',
+  args: {
+    fd: number;
+  },
+) => Promise<unknown>;
+function schedulerHostOperation(): SchedulerHostOperation | undefined {
+  return (
+    globalThis as {
+      __finoSchedulerHostOp?: SchedulerHostOperation;
+    }
+  ).__finoSchedulerHostOp;
+}
 const _reads: Map<number, (avail: number) => void> = new Map();
 const _writes: Map<number, () => void> = new Map();
 const _timers: Map<number, () => void> = new Map();
@@ -244,7 +267,7 @@ function _dispatch(ev: LoopEvent): void {
  * ```
  */
 export function tick(timeoutMs: number): number {
-  const events = _wait(_raw, timeoutMs);
+  const events = _wait(rawBackend(), timeoutMs);
   for (const ev of events) _dispatch(ev);
   return events.length;
 }
@@ -265,7 +288,7 @@ export function tick(timeoutMs: number): number {
  * @internal
  */
 export function loopFd(): number {
-  return _pollFd?.(_raw) ?? -1;
+  return _raw === undefined ? -1 : (_pollFd?.(_raw) ?? -1);
 }
 /**
  * Reports whether the loop still has work that could settle, so the outer run
@@ -389,12 +412,13 @@ export function _untrackAtomicsWaiter(): void {
  * Resolve the next time `fd` becomes readable, with the number of bytes
  * estimated to be available.
  *
- * The watch is one-shot: the resolver is removed as soon as the fd fires, so
- * call `readable()` again for each read. Registering a second `readable()` for
- * an fd that already has a pending read replaces the earlier resolver, which
- * is then never settled. The resolved count comes from kqueue's `ev.data` on
- * macOS; on io_uring/Linux the kernel does not report it and the promise
- * resolves with `0`. Use `removeRead()` to abandon a pending watch.
+ * The watch is one-shot: call `readable()` again for each read. Registering a
+ * second watch for the same descriptor replaces the earlier resolver. In an
+ * ordinary realm it registers on the realm-local backend. In a
+ * scheduler-hosted isolate it sends only the descriptor number to the scheduler,
+ * whose shared backend resolves this promise; the subsequent read and all
+ * buffer ownership remain in this realm. Use `removeRead()` to abandon a pending
+ * watch.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';
@@ -404,18 +428,23 @@ export function _untrackAtomicsWaiter(): void {
  * ```
  */
 export function readable(fd: number): Promise<number> {
+  const host = schedulerHostOperation();
+  if (host !== undefined) {
+    return host('readable', { fd }) as Promise<number>;
+  }
   return new Promise(function onReadable(resolve) {
     _reads.set(fd, resolve);
-    _addRead(_raw, fd, fd);
+    _addRead(rawBackend(), fd, fd);
   });
 }
 /**
  * Resolve the next time `fd` becomes writable.
  *
- * Like `readable()`, the watch is one-shot and re-registering for the same fd
- * replaces the previous resolver, which is then never settled. Typically used
- * to wait out `EAGAIN`/`EWOULDBLOCK` on a non-blocking socket before retrying
- * the write. Use `removeWrite()` to abandon a pending watch.
+ * Like `readable()`, the watch is one-shot and a second watch for the same
+ * descriptor replaces the first. Scheduler-hosted isolates delegate only this
+ * readiness wait; they still retry and perform the write themselves. It is
+ * typically used to wait out `EAGAIN`/`EWOULDBLOCK` on a non-blocking socket.
+ * Use `removeWrite()` to abandon a pending watch.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';
@@ -424,9 +453,13 @@ export function readable(fd: number): Promise<number> {
  * ```
  */
 export function writable(fd: number): Promise<void> {
+  const host = schedulerHostOperation();
+  if (host !== undefined) {
+    return host('writable', { fd }) as Promise<void>;
+  }
   return new Promise(function onWritable(resolve) {
     _writes.set(fd, resolve);
-    _addWrite(_raw, fd, fd);
+    _addWrite(rawBackend(), fd, fd);
   });
 }
 /**
@@ -454,12 +487,12 @@ export function timeout(ms: number): CancelablePromise {
   const id = _nextTimerId++;
   const p = new Promise<void>(function onTimeout(resolve) {
     _timers.set(id, resolve);
-    _addTimer(_raw, id, ms);
+    _addTimer(rawBackend(), id, ms);
   }) as CancelablePromise;
   p.cancel = function cancelTimeout() {
     if (!_timers.has(id)) return;
     _timers.delete(id);
-    if (_removeTimer) _removeTimer(_raw, id);
+    if (_removeTimer) _removeTimer(rawBackend(), id);
   };
   return p;
 }
@@ -489,7 +522,7 @@ export function proc(pid: number): Promise<void> {
   return new Promise(function onProc(resolve) {
     // Register before calling addProc so the event can never be missed.
     _procs.set(pid, resolve);
-    const registered = _addProc(_raw, pid, pid);
+    const registered = _addProc(rawBackend(), pid, pid);
     if (registered === false) {
       // Process already exited — kevent rejected the filter.
       // Resolve immediately so the caller can reap the zombie with waitpid.
@@ -528,7 +561,7 @@ export function submit(submitter: (raw: object, id: number) => void): Promise<{
   const id = _nextCompletionId++;
   return new Promise(function onSubmit(resolve) {
     _completions.set(id, resolve);
-    submitter(_raw, id);
+    submitter(rawBackend(), id);
   });
 }
 /**
@@ -551,9 +584,13 @@ export function submit(submitter: (raw: object, id: number) => void): Promise<{
  * ```
  */
 export function registerWakeSource(fd: number): void {
+  // The scheduler already watches this isolate's async-runtime wake fd and
+  // re-pumps the isolate when it fires. Registering it locally would create an
+  // unused second backend inside the parked isolate.
+  if (_delegatesReadiness) return;
   _wakeSources.add(fd);
   if (_addPersistentRead) {
-    _addPersistentRead(_raw, fd, fd);
+    _addPersistentRead(rawBackend(), fd, fd);
   }
 }
 /**
@@ -571,8 +608,13 @@ export function registerWakeSource(fd: number): void {
  * ```
  */
 export function removeRead(fd: number): void {
+  const host = schedulerHostOperation();
+  if (host !== undefined) {
+    void host('removeRead', { fd }).catch(() => {});
+    return;
+  }
   _reads.delete(fd);
-  backend.removeRead(_raw, fd);
+  backend.removeRead(rawBackend(), fd);
 }
 /**
  * Abandon a pending `writable()` watch for `fd`.
@@ -588,8 +630,13 @@ export function removeRead(fd: number): void {
  * ```
  */
 export function removeWrite(fd: number): void {
+  const host = schedulerHostOperation();
+  if (host !== undefined) {
+    void host('removeWrite', { fd }).catch(() => {});
+    return;
+  }
   _writes.delete(fd);
-  backend.removeWrite(_raw, fd);
+  backend.removeWrite(rawBackend(), fd);
 }
 /**
  * Register a persistent file/directory watch on `fd` (macOS only, via
@@ -621,7 +668,7 @@ export function vnode(
 ): void {
   if (_addVnode === undefined) throw new Error('vnode() is not supported on this platform');
   _vnodes.set(fd, callback);
-  _addVnode(_raw, fd, fflags, fd);
+  _addVnode(rawBackend(), fd, fflags, fd);
 }
 /**
  * Remove a persistent vnode watch previously registered with `vnode()`.
@@ -639,7 +686,7 @@ export function vnode(
 export function removeVnode(fd: number): void {
   if (!_vnodes.has(fd)) return;
   _vnodes.delete(fd);
-  if (backend.removeVnode) backend.removeVnode(_raw, fd);
+  if (backend.removeVnode) backend.removeVnode(rawBackend(), fd);
 }
 /**
  * Register a persistent watch for OS signal `signo` (kqueue native on macOS,
@@ -668,7 +715,7 @@ export function removeVnode(fd: number): void {
 export function signal(signo: number, callback: () => void): void {
   if (_addSignal === undefined) throw new Error('signal() is not supported on this platform');
   _signals.set(signo, callback);
-  _addSignal(_raw, signo);
+  _addSignal(rawBackend(), signo);
 }
 /**
  * Remove a signal watch previously registered with `signal()` and restore the
@@ -688,7 +735,7 @@ export function signal(signo: number, callback: () => void): void {
 export function removeSignal(signo: number): void {
   if (!_signals.has(signo)) return;
   _signals.delete(signo);
-  if (backend.removeSignal) backend.removeSignal(_raw, signo);
+  if (backend.removeSignal) backend.removeSignal(rawBackend(), signo);
 }
 // ---------------------------------------------------------------------------
 // Synchronous spinning
@@ -758,7 +805,7 @@ export function spin<T>(promise: Promise<T>, options?: SpinOptions): T {
       // 2. Poll I/O. Block up to 50 ms when idle to avoid busy-spinning;
       //    10 ms when an abort signal could fire.
       const timeout = emptyTicks >= 3 ? (signal ? 10 : 50) : 0;
-      const events = _wait(_raw, timeout);
+      const events = _wait(rawBackend(), timeout);
       for (let i = 0; i < events.length; i++) {
         const event = events[i];
         if (event !== undefined) _dispatch(event);
