@@ -42,7 +42,7 @@
 import { libc, errno, RLIMIT_AS, RLIMIT_NPROC } from './ffi.ts';
 import type { ResourcePolicy } from './plan.ts';
 /**
- * Set both the soft and hard bound of a single `setrlimit` resource to `value`.
+ * Set both the soft and hard bound encoded in `buf` for one resource.
  *
  * Packs a `struct rlimit { rlim_t rlim_cur; rlim_t rlim_max; }` — two
  * little-endian `u64` fields — with `value` in both slots so the limit is firm
@@ -50,12 +50,15 @@ import type { ResourcePolicy } from './plan.ts';
  * build the error message. Throws if the `setrlimit` call returns non-zero,
  * embedding the current `errno` so the failing resource is identifiable.
  */
-function setLimit(resource: number, value: number, label: string): void {
+function limitBuffer(value: number): ArrayBuffer {
   // struct rlimit { rlim_t rlim_cur; rlim_t rlim_max; } — rlim_t is u64.
   const buf = new ArrayBuffer(16);
   const view = new DataView(buf);
   view.setBigUint64(0, BigInt(value), true);
   view.setBigUint64(8, BigInt(value), true);
+  return buf;
+}
+function setLimit(resource: number, buf: ArrayBuffer, label: string): void {
   if (libc.symbols.setrlimit(resource, buf) !== 0) {
     throw new Error(`setrlimit(${label}) failed: errno ${errno()}`);
   }
@@ -89,13 +92,17 @@ function setLimit(resource: number, value: number, label: string): void {
  */
 export function installRlimits(policy: ResourcePolicy): string[] {
   const installed: string[] = [];
-  if (policy.memoryBytes !== undefined) {
-    setLimit(RLIMIT_AS, policy.memoryBytes, 'RLIMIT_AS');
-    installed.push('memoryBytes');
-  }
-  if (policy.pids !== undefined) {
-    setLimit(RLIMIT_NPROC, policy.pids, 'RLIMIT_NPROC');
-    installed.push('pids');
-  }
+  if (policy.memoryBytes !== undefined) installed.push('memoryBytes');
+  if (policy.pids !== undefined) installed.push('pids');
+  // Allocate every struct before changing RLIMIT_AS. Once the address-space
+  // limit is installed, even allocating the buffer for a later pids limit may
+  // fail inside the V8 launcher.
+  const memoryLimit =
+    policy.memoryBytes === undefined ? undefined : limitBuffer(policy.memoryBytes);
+  const pidsLimit = policy.pids === undefined ? undefined : limitBuffer(policy.pids);
+  // Apply the non-memory limit first so RLIMIT_AS is the final allocation-
+  // sensitive operation before the launcher's raw report/write/exec sequence.
+  if (pidsLimit !== undefined) setLimit(RLIMIT_NPROC, pidsLimit, 'RLIMIT_NPROC');
+  if (memoryLimit !== undefined) setLimit(RLIMIT_AS, memoryLimit, 'RLIMIT_AS');
   return installed;
 }

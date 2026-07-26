@@ -47,7 +47,9 @@ const EAGAIN = 11;
 function writeAll(fd: number, buf: Uint8Array): void {
   let offset = 0;
   while (offset < buf.length) {
-    const chunk = buf.subarray(offset);
+    // The common one-write path must not allocate a view: the launcher uses it
+    // after lowering RLIMIT_AS. Only a rare short write needs a new subarray.
+    const chunk = offset === 0 ? buf : buf.subarray(offset);
     const n = Number(libc.symbols.write(fd, chunk, chunk.length));
     if (n < 0) {
       const e = errno();
@@ -86,36 +88,67 @@ function readExactly(fd: number, length: number): Uint8Array | null {
   return out;
 }
 /**
- * Serialize `value` as a length-prefixed JSON frame and write it to `fd`.
+ * Serialize `value` into one length-prefixed JSON frame without writing it.
  *
- * The value is `JSON.stringify`'d to UTF-8, prefixed with its 4-byte
- * little-endian byte length, and written in full with short writes retried.
- * `value` must therefore be JSON-serializable — functions, `undefined`
- * properties, and `BigInt` values will be dropped or throw the way
- * `JSON.stringify` normally handles them.
+ * The returned buffer contains both the four-byte little-endian length and the
+ * UTF-8 JSON payload. Preparing a frame separately lets the sandbox launcher do
+ * all allocation before installing a restrictive `RLIMIT_AS`, then pass the
+ * existing bytes to {@link writeEncodedFrame}.
  *
- * Throws if the underlying `write` fails with an unrecoverable errno, or if the
- * peer accepts zero bytes (a closed or broken socket). `EINTR` and `EAGAIN` are
- * retried transparently.
+ * `value` follows `JSON.stringify` semantics and may throw for unsupported
+ * values such as `BigInt`.
  *
  * ```ts no_run
- *   import { writeFrame } from 'internal:security/sandbox/frame';
+ * import { encodeFrame, writeEncodedFrame } from 'internal:security/sandbox/frame';
  *
- *   // Launcher reports which restrictions it installed before exec'ing.
- *   writeFrame(fd, {
- *     type: 'report',
- *     installed: ['rlimit', 'landlock', 'seccomp'],
- *     cgroupPath: '/sys/fs/cgroup/fino.sandbox.1234',
- *     descendantCleanup: true,
- *   });
+ * const frame = encodeFrame({ type: 'ready' });
+ * // Install allocation-sensitive policy here.
+ * writeEncodedFrame(fd, frame);
  * ```
+ *
+ * @internal
+ */
+export function encodeFrame(value: unknown): Uint8Array {
+  const payload = new TextEncoder().encode(JSON.stringify(value));
+  const frame = new Uint8Array(4 + payload.length);
+  new DataView(frame.buffer).setUint32(0, payload.length, true);
+  frame.set(payload, 4);
+  return frame;
+}
+/**
+ * Write a frame previously returned by {@link encodeFrame} to `fd`.
+ *
+ * No serialization or payload allocation occurs here. Short writes are retried,
+ * as are `EINTR` and `EAGAIN`; other write failures throw.
+ *
+ * ```ts no_run
+ * import { encodeFrame, writeEncodedFrame } from 'internal:security/sandbox/frame';
+ *
+ * writeEncodedFrame(fd, encodeFrame({ type: 'report', installed: [] }));
+ * ```
+ *
+ * @internal
+ */
+export function writeEncodedFrame(fd: number, frame: Uint8Array): void {
+  writeAll(fd, frame);
+}
+/**
+ * Serialize `value` as a length-prefixed JSON frame and write it to `fd`.
+ *
+ * This is the ordinary convenience path combining {@link encodeFrame} and
+ * {@link writeEncodedFrame}. `value` follows `JSON.stringify` semantics.
+ * Writes retry short runs, `EINTR`, and `EAGAIN`, and throw on other failures.
+ *
+ * ```ts no_run
+ * import { writeFrame } from 'internal:security/sandbox/frame';
+ *
+ * writeFrame(fd, { type: 'report', installed: [] });
+ * ```
+ *
+ * @internal
  */
 export function writeFrame(fd: number, value: unknown): void {
-  const payload = new TextEncoder().encode(JSON.stringify(value));
-  const header = new Uint8Array(4);
-  new DataView(header.buffer).setUint32(0, payload.length, true);
-  writeAll(fd, header);
-  writeAll(fd, payload);
+  writeEncodedFrame(fd, encodeFrame(value));
 }
 /**
  * Read one length-prefixed JSON frame from `fd`.

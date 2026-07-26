@@ -27,17 +27,20 @@ jobs:
             ca-certificates \
             clang \
             cmake \
+            curl \
             g++ \
             git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
             libsqlite3-dev \
-            libssl-dev \
             make \
             perl \
             pkg-config \
-            python3
+            python3 \
+            xz-utils
+
+      - name: Install current protocol dependencies
+        uses: ./.github/actions/install-linux-protocol-deps
+        with:
+          prefix: ${{ runner.temp }}/fino-protocol-deps
 
       - name: Build release binary
         run: cargo build --release
@@ -47,6 +50,18 @@ jobs:
         with:
           name: fino-linux-release
           path: target/release/fino
+          if-no-files-found: error
+
+      - name: Package Linux protocol dependencies
+        run: |
+          tar -C "$RUNNER_TEMP/fino-protocol-deps" -czf \
+            "$RUNNER_TEMP/fino-linux-protocol-deps.tar.gz" lib
+
+      - name: Upload Linux protocol dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: fino-linux-protocol-deps
+          path: ${{ runner.temp }}/fino-linux-protocol-deps.tar.gz
           if-no-files-found: error
 
   linux-benchmarks:
@@ -75,24 +90,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install SQLite
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates \
-            clang \
-            cmake \
-            g++ \
-            git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            make \
-            perl \
-            pkg-config \
-            python3
+          sudo apt-get install -y --no-install-recommends libsqlite3-0
 
       - name: Download Linux release build
         uses: actions/download-artifact@v4
@@ -102,6 +103,11 @@ jobs:
 
       - name: Prepare binary
         run: chmod +x target/release/fino
+
+      - name: Restore Linux protocol dependencies
+        uses: ./.github/actions/restore-linux-protocol-deps
+        with:
+          prefix: ${{ github.workspace }}/.fino-protocol-deps
 
       - name: Run subsystem benchmarks
         run: FINO_REQUIRE_SQLITE=1 ./target/release/fino bench 'benchmarks/${{ matrix.path }}'

@@ -1,0 +1,24 @@
+name: Install Linux protocol dependencies
+description: Cache and build the native TLS, HTTP/2, HTTP/3, and QUIC libraries Fino requires
+
+inputs:
+  prefix:
+    description: Installation prefix for the cached native libraries
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore native protocol libraries
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.prefix }}
+        key: fino-protocol-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-linux-protocol-deps.sh') }}
+
+    - name: Build native protocol libraries
+      shell: bash
+      run: scripts/install-linux-protocol-deps.sh '${{ inputs.prefix }}'
+
+    - name: Export native protocol library path
+      shell: bash
+      run: echo 'LD_LIBRARY_PATH=${{ inputs.prefix }}/lib' >> "$GITHUB_ENV"

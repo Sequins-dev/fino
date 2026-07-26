@@ -274,30 +274,54 @@ describe('Process class', () => {
   });
   it('strict sandbox enforces a memory limit on Linux', async (t) => {
     if (os !== 'linux') return;
-    // RLIMIT_AS includes the launcher's already-mapped V8 address space. Keep
-    // enough headroom for the launcher to report and exec while still checking
-    // that the child observes the exact configured limit.
+    // A rlimit fallback must constrain the payload, not the TypeScript/V8
+    // launcher that prepares it. This deliberately sits below V8's reserved
+    // address space so applying RLIMIT_AS too early kills the launcher.
     const memoryBytes = 8 * 1024 * 1024 * 1024;
-    const proc = new Process('/bin/sh', ['-c', 'ulimit -v'], {
-      sandbox: {
-        mode: 'strict',
-        resources: {
-          memoryBytes,
-        },
-      },
-    });
+    const previousCgroupRoot = env.FINO_SANDBOX_CGROUP_ROOT;
+    env.FINO_SANDBOX_CGROUP_ROOT = '/fino-test-no-delegated-cgroup';
+    const proc = (() => {
+      try {
+        return new Process('/bin/sh', ['-c', 'ulimit -v'], {
+          sandbox: {
+            mode: 'strict',
+            resources: {
+              memoryBytes,
+            },
+          },
+        });
+      } finally {
+        if (previousCgroupRoot === undefined) delete env.FINO_SANDBOX_CGROUP_ROOT;
+        else env.FINO_SANDBOX_CGROUP_ROOT = previousCgroupRoot;
+      }
+    })();
     const resources = proc.sandboxReport.enforced.find((entry) => entry.category === 'resources');
     const resourcesDiagnostic = proc.sandboxReport.diagnostics.find((entry) =>
       entry.startsWith('resources:'),
     );
     t.ok(resources !== undefined, 'resources policy is reported enforced');
     proc.stdin.close();
-    const chunks = [];
-    for await (const chunk of proc.stdout) chunks.push(chunk);
-    for await (const _ of proc.stderr) {
-    }
-    const { code } = await proc.wait();
-    t.equal(code, 0, 'strict resource child exits successfully');
+    const readChunks = async (reader: typeof proc.stdout): Promise<Uint8Array[]> => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of reader) chunks.push(chunk);
+      return chunks;
+    };
+    const [chunks, stderrChunks, { code, signal }] = await Promise.all([
+      readChunks(proc.stdout),
+      readChunks(proc.stderr),
+      proc.wait(),
+    ]);
+    const stderrText = joinChunks(stderrChunks).trim();
+    t.equal(
+      signal,
+      null,
+      `strict resource child is not killed by a signal${stderrText ? `: ${stderrText}` : ''}`,
+    );
+    t.equal(
+      code,
+      0,
+      `strict resource child exits successfully${stderrText ? `: ${stderrText}` : ''}`,
+    );
     // The mechanism depends on the host: an RLIMIT_AS fallback shows up in
     // `ulimit -v` (KiB); a cgroup memory.max does not (ulimit stays unlimited).
     const ulimitKib = Number(joinChunks(chunks).trim());

@@ -38,7 +38,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install native dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -47,15 +47,16 @@ jobs:
             cmake \
             g++ \
             git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
             libsqlite3-dev \
-            libssl-dev \
             make \
             perl \
             pkg-config \
             python3
+
+      - name: Restore Linux protocol dependencies
+        uses: ./.github/actions/restore-linux-protocol-deps
+        with:
+          prefix: ${{ github.workspace }}/.fino-protocol-deps
 
       - name: Run Rust lint
         run: cargo clippy
@@ -89,17 +90,20 @@ jobs:
             ca-certificates \
             clang \
             cmake \
+            curl \
             g++ \
             git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
             libsqlite3-dev \
-            libssl-dev \
             make \
             perl \
             pkg-config \
-            python3
+            python3 \
+            xz-utils
+
+      - name: Install current protocol dependencies
+        uses: ./.github/actions/install-linux-protocol-deps
+        with:
+          prefix: ${{ runner.temp }}/fino-protocol-deps
 
       - name: Build
         run: cargo build
@@ -114,6 +118,18 @@ jobs:
           path: target/debug/fino
           if-no-files-found: error
 
+      - name: Package Linux protocol dependencies
+        run: |
+          tar -C "$RUNNER_TEMP/fino-protocol-deps" -czf \
+            "$RUNNER_TEMP/fino-linux-protocol-deps.tar.gz" lib
+
+      - name: Upload Linux protocol dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: fino-linux-protocol-deps
+          path: ${{ runner.temp }}/fino-linux-protocol-deps.tar.gz
+          if-no-files-found: error
+
   macos-build:
     name: macOS Build
     runs-on: macos-latest
@@ -125,7 +141,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install native dependencies
-        run: brew install gnutls libngtcp2 openssl@3 sqlite
+        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 sqlite
 
       - name: Build
         run: cargo build
@@ -144,6 +160,10 @@ jobs:
     name: Linux Tests (tests/${{ matrix.path }})
     runs-on: ubuntu-latest
     needs: linux-build
+    env:
+      FINO_REQUIRE_H2: "1"
+      FINO_REQUIRE_H3: "1"
+      FINO_REQUIRE_TLS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -176,24 +196,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install SQLite
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates \
-            clang \
-            cmake \
-            g++ \
-            git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            make \
-            perl \
-            pkg-config \
-            python3
+          sudo apt-get install -y --no-install-recommends libsqlite3-0
 
       - name: Download Linux build
         uses: actions/download-artifact@v4
@@ -203,6 +209,11 @@ jobs:
 
       - name: Prepare binary
         run: chmod +x target/debug/fino
+
+      - name: Restore Linux protocol dependencies
+        uses: ./.github/actions/restore-linux-protocol-deps
+        with:
+          prefix: ${{ github.workspace }}/.fino-protocol-deps
 
       - name: Run subsystem tests
         run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests/${{ matrix.path }}
@@ -224,6 +235,11 @@ jobs:
       - name: Prepare binary
         run: chmod +x target/debug/fino
 
+      - name: Restore Linux protocol dependencies
+        uses: ./.github/actions/restore-linux-protocol-deps
+        with:
+          prefix: ${{ github.workspace }}/.fino-protocol-deps
+
       - name: Verify public builtin benchmark inventory
         run: ./target/debug/fino test tests/internal/benchmark-coverage.test.ts
 
@@ -240,7 +256,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install native dependencies
-        run: brew install gnutls libngtcp2 openssl@3 sqlite
+        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 sqlite
 
       - name: Download macOS build
         uses: actions/download-artifact@v4
