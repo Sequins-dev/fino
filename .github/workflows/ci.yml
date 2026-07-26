@@ -14,7 +14,7 @@ concurrency:
 jobs:
   fmt:
     name: Rust Format Check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,7 +29,7 @@ jobs:
 
   lint:
     name: Lint Checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: linux-build
     steps:
       - name: Check out repository
@@ -75,7 +75,7 @@ jobs:
 
   linux-build:
     name: Linux Build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -132,7 +132,7 @@ jobs:
 
   macos-build:
     name: macOS Build
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -157,41 +157,13 @@ jobs:
           if-no-files-found: error
 
   linux-tests:
-    name: Linux Tests (tests/${{ matrix.path }})
-    runs-on: ubuntu-latest
+    name: Linux Tests
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: linux-build
     env:
       FINO_REQUIRE_H2: "1"
       FINO_REQUIRE_H3: "1"
       FINO_REQUIRE_TLS: "1"
-    strategy:
-      fail-fast: false
-      matrix:
-        path: &test-paths
-          - "*.test.ts"
-          - ai
-          - archive
-          - async-runtime
-          - cluster
-          - commands
-          - data
-          - docs
-          - file
-          - format
-          - integration
-          - internal
-          - jobs
-          - messaging
-          - net
-          - process
-          - realm
-          - runtime
-          - security
-          - task
-          - test
-          - tty
-          - util
-          - workflow
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -215,12 +187,12 @@ jobs:
         with:
           prefix: ${{ github.workspace }}/.fino-protocol-deps
 
-      - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests/${{ matrix.path }}
+      - name: Run full test suite
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
 
   release-readiness:
     name: Release Readiness
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: linux-build
     steps:
       - name: Check out repository
@@ -244,13 +216,9 @@ jobs:
         run: ./target/debug/fino test tests/internal/benchmark-coverage.test.ts
 
   macos-tests:
-    name: macOS Tests (tests/${{ matrix.path }})
-    runs-on: macos-latest
+    name: macOS Tests
+    runs-on: blacksmith-6vcpu-macos-15
     needs: macos-build
-    strategy:
-      fail-fast: false
-      matrix:
-        path: *test-paths
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -267,5 +235,5 @@ jobs:
       - name: Prepare binary
         run: chmod +x target/debug/fino
 
-      - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests/${{ matrix.path }}
+      - name: Run full test suite
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests

@@ -4630,7 +4630,7 @@ describe('QUIC loopback object model', () => {
     if (!quicAvailable) return;
     const server = new QuicEndpoint({
       alpnProtocols: ['fino-hq'],
-      connection: { maxIdleTimeoutMs: 60_000, streamIdleTimeoutMs: 0 },
+      connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0 },
     });
     const listener = await server.listen(
       testListenOptions({
@@ -4643,7 +4643,7 @@ describe('QUIC loopback object model', () => {
     );
     const client = new QuicEndpoint({
       alpnProtocols: ['fino-hq'],
-      connection: { maxIdleTimeoutMs: 60_000, streamIdleTimeoutMs: 0 },
+      connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0 },
     });
     const clientConnection = await client.connect({ address: listener.address });
     const serverConnection = await server.accept();

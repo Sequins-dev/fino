@@ -15,7 +15,7 @@ program.
 Fino builds from source with a Rust toolchain:
 
 ```sh
-git clone https://github.com/Qard/fino.git
+git clone https://github.com/Sequins-dev/fino.git
 cd fino
 cargo build --release
 ```

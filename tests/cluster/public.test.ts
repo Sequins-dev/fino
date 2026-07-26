@@ -17,6 +17,7 @@ const clusterTls = {
   cert: `${cwd()}/tests/net/fixtures/test.crt`,
   key: `${cwd()}/tests/net/fixtures/test.key`,
 };
+const WORKER_READY_TIMEOUT_MS = 5_000;
 const fs = new DiskFileSystem();
 async function readLine(proc: Process): Promise<string> {
   const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
@@ -40,7 +41,7 @@ async function waitForWorker(port: number): Promise<Process> {
     `https://127.0.0.1:${port}/__fino_cluster`,
   ]);
   try {
-    const line = await withTimeout(readLine(proc), 2e3, 'worker readiness');
+    const line = await withTimeout(readLine(proc), WORKER_READY_TIMEOUT_MS, 'worker readiness');
     if (line !== 'worker ready') throw new Error(`unexpected worker readiness line: ${line}`);
     return proc;
   } catch (err) {
