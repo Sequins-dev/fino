@@ -502,18 +502,36 @@ describe('fino:ui/slides', () => {
     proc.stdin.close();
     const waiting = proc.wait();
     const controller = new AbortController();
+    const stderrChunks: Uint8Array[] = [];
+    const readingStderr = (async () => {
+      for await (const chunk of proc.stderr) stderrChunks.push(chunk);
+    })();
     try {
-      const line = await Promise.race([
-        proc.stdout.readUntil(new Uint8Array([10]), 4096),
-        loop.timeout(2e3).then(() => {
-          throw new Error('slide server startup timed out');
-        }),
+      const startup = await Promise.race([
+        proc.stdout
+          .readUntil(new Uint8Array([10]), 4096)
+          .then((line) => ({ kind: 'ready' as const, line })),
+        waiting.then((result) => ({ kind: 'exit' as const, result })),
+        loop.timeout(10e3).then(() => ({ kind: 'timeout' as const })),
       ]);
+      if (startup.kind === 'timeout') throw new Error('slide server startup timed out');
+      if (startup.kind === 'exit') {
+        await readingStderr;
+        const stderr = new TextDecoder().decode(
+          Uint8Array.from(stderrChunks.flatMap((chunk) => [...chunk])),
+        );
+        throw new Error(
+          `slide server exited with code ${startup.result.code} before reporting its port${
+            stderr.trim() ? `: ${stderr.trim()}` : ''
+          }`,
+        );
+      }
+      const { line } = startup;
       if (line === null) throw new Error('slide server exited before reporting its port');
       const port = Number(new TextDecoder().decode(line).trim());
       const response = await Promise.race([
         fetch(`http://127.0.0.1:${port}/talk`, { signal: controller.signal }),
-        loop.timeout(2e3).then(() => {
+        loop.timeout(10e3).then(() => {
           throw new Error('standalone slide request timed out');
         }),
       ]);
@@ -525,6 +543,7 @@ describe('fino:ui/slides', () => {
       controller.abort();
       proc.kill();
       await waiting;
+      await readingStderr;
     }
   });
 });

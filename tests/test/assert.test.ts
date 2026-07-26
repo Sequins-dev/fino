@@ -459,6 +459,24 @@ describe('rejects', () => {
     );
     t.equal(errors.length, 1, '1 failure (wrong type)');
   });
+  it('reports the rejected Error message when a check fails', async (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({
+      onFail(error) {
+        errors.push(error);
+      },
+    });
+    await a.rejects(
+      async () => {
+        throw new Error('actual rejection');
+      },
+      /different message/,
+    );
+    t.ok(
+      errors[0]?.message.includes('Error: actual rejection'),
+      'failure includes the rejected error instead of an empty object',
+    );
+  });
   it('works with Promise.reject()', async (t) => {
     const errors = [];
     const a = new Assert({

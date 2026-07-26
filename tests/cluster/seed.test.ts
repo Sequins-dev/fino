@@ -376,6 +376,7 @@ describe('SeedServer — PORT_MSG routing', () => {
       fromPort: 'worker-2/1',
       toPort: 'worker-1/p-1',
       payload: JSON.stringify([btoa('hello')]),
+      seq: 1,
     });
     const portMsgs = transport.sent.filter((s) => s.msg.t === 'PORT_MSG');
     t.equal(portMsgs.length, 1, 'PORT_MSG forwarded');
@@ -397,12 +398,57 @@ describe('SeedServer — PORT_MSG routing', () => {
       fromPort: 'worker-1/0',
       toPort: 'worker-99/999',
       payload: '["aGVsbG8="]',
+      seq: 1,
     });
     t.equal(transport.sent.length, 0, 'no messages forwarded for unknown toPort');
   });
 });
 describe('SeedServer — REALM_EXIT graceful cascade', () => {
   afterEach(stopActiveSeed);
+  it('holds REALM_EXIT until its final PORT_MSG has been routed', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+    });
+    transport.inject('worker-2', {
+      t: 'HELLO',
+      nodeId: 'worker-2',
+      load: { cpu: 0, memory: 0 },
+    });
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'r-ordered-exit',
+      parentPortId: 'worker-1/p-ordered',
+      config: { entry: './fn.ts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'r-ordered-exit',
+      childPortId: 'worker-2/ordered',
+      ok: true,
+    });
+    transport.sent = [];
+    transport.inject('worker-2', {
+      t: 'REALM_EXIT',
+      realmId: 'worker-2/ordered',
+      lastPortSeq: 1,
+    } as ClusterMessage);
+    t.equal(transport.sent.length, 0, 'exit is held while its final message is missing');
+    transport.inject('worker-2', {
+      t: 'PORT_MSG',
+      fromPort: 'worker-2/ordered',
+      toPort: 'worker-1/p-ordered',
+      payload: '["aGVsbG8="]',
+      seq: 1,
+    } as ClusterMessage);
+    t.deepEqual(
+      transport.sent.map(({ msg }) => msg.t),
+      ['PORT_MSG', 'REALM_EXIT'],
+      'seed routes the final message before forwarding exit',
+    );
+  });
   it('REALM_EXIT sends TERMINATE to nodes hosting direct children', async (t) => {
     const { transport } = await makeSeed();
     transport.inject('worker-1', {
@@ -443,6 +489,7 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
       realmId: 'worker-2/10',
+      lastPortSeq: 0,
     });
     // The parent port on worker-1 is the PARENT, not the child — the child was
     // on worker-2 and exited itself, so no TERMINATE needed for worker-2/10.
@@ -487,6 +534,7 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
       realmId: 'worker-2/11',
+      lastPortSeq: 0,
     });
     const exits = transport.sent.filter((s) => s.to === 'worker-1' && s.msg.t === 'REALM_EXIT');
     t.equal(exits.length, 1, 'REALM_EXIT forwarded to parent host');
@@ -565,6 +613,7 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
       realmId: 'worker-2/20',
+      lastPortSeq: 0,
     });
     const terminates = transport.sentOfType('TERMINATE');
     t.ok(terminates.length >= 1, 'at least one TERMINATE sent for grandchild');
@@ -612,6 +661,7 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
       realmId: 'worker-2/30',
+      lastPortSeq: 0,
     });
     // No TERMINATE should go back to worker-2 for the realm that just exited
     const toWorker2 = transport.sent.filter(
@@ -694,6 +744,7 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
       realmId: 'worker-2/40',
+      lastPortSeq: 0,
     });
     const terminates = transport.sentOfType('TERMINATE');
     const terminateIds = new Set(terminates.map((m) => m.realmId));

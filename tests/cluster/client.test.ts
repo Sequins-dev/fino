@@ -188,6 +188,7 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
     transport.inject('__seed__', {
       t: 'REALM_EXIT',
       realmId: 'nodeB/0',
+      lastPortSeq: 0,
     });
     // Delivery is via microtask — flush to let it settle
     await flush(3);
@@ -206,10 +207,62 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
     transport.inject('__seed__', {
       t: 'REALM_EXIT',
       realmId: 'nodeB/1',
+      lastPortSeq: 0,
       error: 'crash',
     });
     await flush(3);
     t.equal(exitError, 'crash', 'error string propagated from REALM_EXIT');
+    client.stop();
+  });
+  it('delivers the final port message before an earlier REALM_EXIT', async (t) => {
+    const transport = new TestClientTransport('nodeA');
+    const client = new ClusterClient(transport as any, 'nodeA');
+    client.start();
+    const port = new ClusterPort('nodeA/p-parent', client);
+    const events: string[] = [];
+    port.onmessage = (event: Event) => {
+      events.push(`message:${String((event as any).data)}`);
+    };
+    client.onRealmExit('nodeB/child', () => {
+      events.push('exit');
+    });
+    transport.inject('__seed__', {
+      t: 'REALM_EXIT',
+      realmId: 'nodeB/child',
+      lastPortSeq: 2,
+    } as ClusterMessage);
+    await flush(3);
+    t.deepEqual(events, [], 'exit waits for the promised final message');
+    const encodeResult = (result: string) =>
+      JSON.stringify(
+        (serialize as (value: unknown) => Uint8Array[])(result).map((part) => {
+          let raw = '';
+          for (const byte of part) raw += String.fromCharCode(byte);
+          return btoa(raw);
+        }),
+      );
+    transport.inject('__seed__', {
+      t: 'PORT_MSG',
+      fromPort: 'nodeB/child',
+      toPort: 'nodeA/p-parent',
+      payload: encodeResult('second'),
+      seq: 2,
+    } as ClusterMessage);
+    await flush(3);
+    t.deepEqual(events, [], 'out-of-order message waits for its predecessor');
+    transport.inject('__seed__', {
+      t: 'PORT_MSG',
+      fromPort: 'nodeB/child',
+      toPort: 'nodeA/p-parent',
+      payload: encodeResult('first'),
+      seq: 1,
+    } as ClusterMessage);
+    await flush(3);
+    t.deepEqual(
+      events,
+      ['message:first', 'message:second', 'exit'],
+      'messages are delivered in order before realm exit',
+    );
     client.stop();
   });
 });

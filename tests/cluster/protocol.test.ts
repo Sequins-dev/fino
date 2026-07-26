@@ -89,19 +89,31 @@ describe('ClusterMessage encode/decode', () => {
     }
   });
   it('PORT_MSG round-trips', (t) => {
-    const msg: ClusterMessage = {
+    const msg = {
       t: 'PORT_MSG',
       fromPort: 'nodeA/p-0',
       toPort: 'nodeB/0',
       payload: btoa('hello'),
-    };
+      seq: 3,
+    } as ClusterMessage;
     const got = roundTrip(msg);
     t.equal(got.t, 'PORT_MSG');
     if (got.t === 'PORT_MSG') {
       t.equal(got.fromPort, 'nodeA/p-0');
       t.equal(got.toPort, 'nodeB/0');
       t.equal(got.payload, btoa('hello'));
+      t.equal((got as any).seq, 3);
     }
+  });
+  it('REALM_EXIT round-trips its final port-message sequence', (t) => {
+    const msg = {
+      t: 'REALM_EXIT',
+      realmId: 'nodeB/5',
+      lastPortSeq: 7,
+    } as ClusterMessage;
+    const got = roundTrip(msg);
+    t.equal(got.t, 'REALM_EXIT');
+    if (got.t === 'REALM_EXIT') t.equal((got as any).lastPortSeq, 7);
   });
   it('TERMINATE round-trips', (t) => {
     const msg: ClusterMessage = {
@@ -132,6 +144,19 @@ describe('ClusterMessage encode/decode', () => {
     t.throws(
       () =>
         decode(
+          '{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/2","payload":"","seq":-1}',
+        ),
+      /seq/,
+      'negative sequence rejected',
+    );
+    t.throws(
+      () => decode('{"t":"REALM_EXIT","realmId":"nodeB/2"}'),
+      /lastPortSeq/,
+      'realm exits require a final sequence fence',
+    );
+    t.throws(
+      () =>
+        decode(
           '{"t":"WELCOME","nodeId":"seed","peers":[{"nodeId":"bad/node","load":{"cpu":0,"memory":1}}]}',
         ),
       /peer/,
@@ -143,7 +168,7 @@ describe('ClusterMessage encode/decode', () => {
       '{"t":"HELLO","nodeId":"node1","load":{"cpu":0,"memory":1},"token":"secret"}',
     );
     const portMsg = decode(
-      '{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/p-2","payload":"","direct":true,"transport":"quic"}',
+      '{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/p-2","payload":"","seq":1,"direct":true,"transport":"quic"}',
     );
     t.equal((hello as any).token, undefined, 'auth token is not part of HELLO');
     t.equal((portMsg as any).direct, undefined, 'direct peer routing flag is not part of PORT_MSG');

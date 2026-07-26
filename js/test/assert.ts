@@ -271,6 +271,7 @@ export class AssertionError extends Error {
 function _fmt(v: unknown): string {
   if (v === null) return 'null';
   if (v === undefined) return 'undefined';
+  if (v instanceof Error) return `${v.name}: ${v.message}`;
   const type = typeof v;
   if (type === 'bigint') return v.toString() + 'n';
   if (type === 'string') return JSON.stringify(v);

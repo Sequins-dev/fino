@@ -2758,6 +2758,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     return (async () => {
       await readable(scheduled.completionFd);
+      port._drain();
       const status = takeScheduledRealmStatus(scheduled.handle);
       removeRead(scheduled.completionFd);
       port.close();
@@ -3133,14 +3134,12 @@ export class Realm<F extends RealmFn = RealmFn> {
             };
             _trackChild(entry);
             cluster.onRealmExit(childPortId, (error?: string) => {
-              setTimeout(() => {
-                if (settled) return;
-                settled = true;
-                const idx = _activeChildren.indexOf(entry);
-                if (idx >= 0) _activeChildren.splice(idx, 1);
-                if (error) reject(new Error(error));
-                else reject(new Error('Realm exited before returning a call result'));
-              }, 25);
+              if (settled) return;
+              settled = true;
+              const idx = _activeChildren.indexOf(entry);
+              if (idx >= 0) _activeChildren.splice(idx, 1);
+              if (error) reject(new Error(error));
+              else reject(new Error('Realm exited before returning a call result'));
             });
             const handler = (ev: unknown) => {
               if (settled) return;

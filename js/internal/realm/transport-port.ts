@@ -398,11 +398,19 @@ export class ScheduledPort extends BaseTransportPort {
     while (!this._closed) {
       await readable(this.#wakeReadFd);
       if (this._closed) break;
-      this.#drain();
+      this._drain();
     }
   }
 
-  #drain(): void {
+  /**
+   * Drain every currently queued message synchronously.
+   *
+   * Realm completion uses this before closing the port so a final response
+   * cannot lose a race with the independent completion readiness signal.
+   *
+   * @internal
+   */
+  _drain(): void {
     for (const [byteArr, portArr] of scheduledRealmRecv(this.#handle)) {
       const [buf, ...stores] = byteArr;
       if (!buf) continue;

@@ -30,6 +30,7 @@
  *   fromPort: 'worker-a/p-parent',
  *   toPort: 'worker-b/p-child',
  *   payload: '[]',
+ *   seq: 1,
  * });
  *
  * const message = decode(frame);
@@ -224,12 +225,13 @@ export interface SerializedSpawnConfig {
  * - `SPAWN_ACK` — the target node's response to `SPAWN`. On success `ok` is
  *   true and `childPortId` identifies the child's port; on failure `ok` is
  *   false, `childPortId` is the empty string, and `error` explains why.
- * - `REALM_EXIT` — sent by the hosting node when a spawned realm terminates,
- *   with `error` set if it exited abnormally.
+ * - `REALM_EXIT` — sent by the hosting node when a spawned realm terminates.
+ *   `lastPortSeq` fences the exit behind every preceding `PORT_MSG`, and
+ *   `error` is set if the realm exited abnormally.
  * - `TERMINATE` — request to kill a realm on its hosting node; the seed also
  *   emits this to descendants when an ancestor realm exits.
  * - `PORT_MSG` — data-plane frame between two ports. `payload` is an opaque
- *   serialized string; the protocol layer never inspects it.
+ *   serialized string; `seq` preserves source-port ordering across streams.
  *
  * ```ts
  * import { decode } from 'internal:cluster/protocol';
@@ -278,6 +280,7 @@ export type ClusterMessage =
   | {
       t: 'REALM_EXIT';
       realmId: string;
+      lastPortSeq: number;
       error?: string;
     }
   | {
@@ -289,6 +292,7 @@ export type ClusterMessage =
       fromPort: string;
       toPort: string;
       payload: string;
+      seq: number;
     };
 // ---------------------------------------------------------------------------
 // Codec
@@ -394,6 +398,7 @@ export function decode(s: string): ClusterMessage {
       const out: ClusterMessage = {
         t,
         realmId: parseClusterId(requireString(value, 'realmId'), 'realmId'),
+        lastPortSeq: requireSequence(value, 'lastPortSeq', true),
       };
       if (value.error !== undefined) out.error = requireString(value, 'error');
       return out;
@@ -409,6 +414,7 @@ export function decode(s: string): ClusterMessage {
         fromPort: parseClusterId(requireString(value, 'fromPort'), 'fromPort'),
         toPort: parseClusterId(requireString(value, 'toPort'), 'toPort'),
         payload: requireString(value, 'payload'),
+        seq: requireSequence(value, 'seq', false),
       };
     default:
       throw protocolError(`unknown message type '${t}'`);
@@ -460,6 +466,17 @@ function requireFiniteNumber(obj: Record<string, unknown>, key: string): number 
   const value = obj[key];
   if (typeof value !== 'number' || !Number.isFinite(value))
     throw protocolError(`${key} must be a finite number`);
+  return value;
+}
+function requireSequence(
+  obj: Record<string, unknown>,
+  key: string,
+  allowZero: boolean,
+): number {
+  const value = requireFiniteNumber(obj, key);
+  if (!Number.isInteger(value) || value < (allowZero ? 0 : 1)) {
+    throw protocolError(`${key} must be ${allowZero ? 'a non-negative' : 'a positive'} integer`);
+  }
   return value;
 }
 function parseLoad(value: unknown): NodeLoad {

@@ -5,17 +5,19 @@ import { describe, it } from 'fino:test/test';
 import { Process, cwd, env, execPath } from 'fino:process';
 import { Realm } from 'fino:realm';
 import { startCluster, joinCluster, leaveCluster } from 'fino:cluster';
+import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const remoteCallEntry = `file://${cwd()}/tests/cluster/fixtures/remote-call.ts`;
 const longRunningEntry = `file://${cwd()}/tests/realm/fixtures/long-running.ts`;
-const neverFnEntry = `file://${cwd()}/tests/realm/fixtures/never-fn.ts`;
+const neverFnEntry = `file://${cwd()}/tests/cluster/fixtures/never-fn.ts`;
 const clusterTls = {
   cert: `${cwd()}/tests/net/fixtures/test.crt`,
   key: `${cwd()}/tests/net/fixtures/test.key`,
 };
+const fs = new DiskFileSystem();
 async function readLine(proc: Process): Promise<string> {
   const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
   if (bytes === null) throw new Error('worker exited before readiness line');
@@ -65,6 +67,20 @@ async function stopWorker(proc: Process): Promise<void> {
 async function killWorker(proc: Process): Promise<void> {
   proc.kill();
   await proc.wait();
+}
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      await fs.stat(path);
+      return;
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error(`remote Realm.call activation timed out after ${timeoutMs}ms`);
+      }
+      await loop.timeout(10);
+    }
+  }
 }
 describe('fino:cluster public WebTransport integration', () => {
   it('rejects ws:// cluster seeds', async (t) => {
@@ -210,7 +226,7 @@ describe('fino:cluster public WebTransport integration', () => {
     const oldInterval = env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS;
     const oldTimeout = env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
     env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = '50';
-    env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = '150';
+    env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = '1000';
     const port = randomPort();
     await withTimeout(
       startCluster({
@@ -222,14 +238,15 @@ describe('fino:cluster public WebTransport integration', () => {
       'startCluster',
     );
     let worker: Process | null = null;
+    const marker = `/tmp/fino-cluster-call-active-${Date.now()}-${Math.random()}`;
     try {
       worker = await waitForWorker(port);
-      const realm = new Realm<() => Promise<never>>({
+      const realm = new Realm<(marker: string) => Promise<never>>({
         entry: neverFnEntry,
         remote: true,
       });
-      const pending = withTimeout(realm.call(), 3e3, 'remote Realm.call worker loss');
-      await loop.timeout(50);
+      const pending = withTimeout(realm.call(marker), 8e3, 'remote Realm.call worker loss');
+      await waitForFile(marker, 5e3);
       await killWorker(worker);
       worker = null;
       await t.rejects(() => pending, /peer .* disconnected/);
@@ -240,6 +257,9 @@ describe('fino:cluster public WebTransport integration', () => {
       else env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = oldInterval;
       if (oldTimeout === undefined) delete env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
       else env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = oldTimeout;
+      try {
+        await fs.unlink(marker);
+      } catch {}
     }
   });
   it('leaveCluster rejects an active remote Realm.call', async (t) => {
