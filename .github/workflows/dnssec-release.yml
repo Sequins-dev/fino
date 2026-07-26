@@ -28,6 +28,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo dependencies
+        uses: ./.github/actions/cache-cargo-deps
+
       - name: Install native dependencies
         run: |
           sudo apt-get update
