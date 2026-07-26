@@ -92,6 +92,8 @@ thread_local! {
     static WORKLOADS: RefCell<WorkloadTable> = const { RefCell::new(WorkloadTable(Vec::new())) };
     static SHARED_LOOP_DESCRIPTOR: RefCell<Option<SharedLoopDescriptor>> = const { RefCell::new(None) };
     static NEXT_WORKLOAD_OWNER: Cell<u32> = const { Cell::new(1) };
+    static NEXT_SHARED_POLL_ID: Cell<u64> = const { Cell::new(1 << 32) };
+    static SHARED_POLLS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
     static ROUTED_LOOP_EVENTS: RefCell<HashMap<u32, VecDeque<RoutedLoopEvent>>> = RefCell::new(HashMap::new());
     static READY_WORKLOADS: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     static READINESS_CHANGES: RefCell<Vec<ReadinessChange>> = const { RefCell::new(Vec::new()) };
@@ -152,6 +154,9 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "sharedLoopDescriptor",
         "routeSharedLoopEvent",
         "takeSharedLoopEvents",
+        "registerSharedPoll",
+        "takeSharedPoll",
+        "cancelSharedPoll",
         "registerSharedReadiness",
         "pollSharedReactor",
     ]
@@ -191,6 +196,9 @@ fn eval_steps<'a>(
     set_fn!("sharedLoopDescriptor", shared_loop_descriptor);
     set_fn!("routeSharedLoopEvent", route_shared_loop_event);
     set_fn!("takeSharedLoopEvents", take_shared_loop_events);
+    set_fn!("registerSharedPoll", register_shared_poll);
+    set_fn!("takeSharedPoll", take_shared_poll);
+    set_fn!("cancelSharedPoll", cancel_shared_poll);
     set_fn!("registerSharedReadiness", register_shared_readiness);
     set_fn!("pollSharedReactor", poll_shared_reactor);
     Some(v8::undefined(scope).into())
@@ -227,6 +235,60 @@ fn poll_shared_reactor(
         Ok(ready) => rv.set(v8::Boolean::new(scope, ready).into()),
         Err(error) => throw_error(scope, &error),
     }
+}
+
+fn register_shared_poll(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    const FIRST_POLL_ID: u64 = 1 << 32;
+    const LAST_POLL_ID: u64 = (1 << 48) - 1;
+
+    let user_data = args.get(0).integer_value(scope).unwrap_or(0) as u64;
+    let poll_id = NEXT_SHARED_POLL_ID.with(|next| {
+        SHARED_POLLS.with(|polls| {
+            let mut polls = polls.borrow_mut();
+            loop {
+                let candidate = next.get();
+                next.set(if candidate == LAST_POLL_ID {
+                    FIRST_POLL_ID
+                } else {
+                    candidate + 1
+                });
+                if let std::collections::hash_map::Entry::Vacant(entry) = polls.entry(candidate) {
+                    entry.insert(user_data);
+                    return candidate;
+                }
+            }
+        })
+    });
+    rv.set(v8::Number::new(scope, poll_id as f64).into());
+}
+
+fn take_shared_poll(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let poll_id = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
+    let user_data = SHARED_POLLS.with(|polls| polls.borrow_mut().remove(&poll_id));
+    if let Some(user_data) = user_data {
+        rv.set(v8::Number::new(scope, user_data as f64).into());
+    } else {
+        rv.set(v8::null(scope).into());
+    }
+}
+
+fn cancel_shared_poll(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let poll_id = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
+    SHARED_POLLS.with(|polls| {
+        polls.borrow_mut().remove(&poll_id);
+    });
 }
 
 fn route_shared_loop_event(
@@ -1460,6 +1522,12 @@ fn terminate_workload(
     WORKLOADS.with(|table| {
         let mut table = table.borrow_mut();
         if let Some(workload) = table.0.get_mut(handle).and_then(Option::take) {
+            let owner_id = workload.owner_id;
+            SHARED_POLLS.with(|polls| {
+                polls
+                    .borrow_mut()
+                    .retain(|_, user_data| (*user_data >> 32) as u32 != owner_id);
+            });
             drop_parked(workload);
         }
     });

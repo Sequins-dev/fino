@@ -125,6 +125,7 @@
  * @internal
  */
 import { dlopen, Pointer } from 'fino:ffi';
+import { cancelSharedPoll, registerSharedPoll, takeSharedPoll } from 'internal:scheduler-native';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -147,6 +148,7 @@ interface CqRingOffsets {
 interface IoUringLoop {
   ringFd: number;
   ownsFd: boolean;
+  shared: boolean;
   sqRing: object;
   sqRingSize: number;
   cqRing: object;
@@ -485,6 +487,7 @@ export function create(entries: number = 256): IoUringLoop {
   return {
     ringFd,
     ownsFd: true,
+    shared: false,
     sqRing,
     sqRingSize,
     cqRing,
@@ -575,6 +578,7 @@ export function attach(descriptor: IoUringDescriptor): IoUringLoop {
   return {
     ...descriptor,
     ownsFd: false,
+    shared: true,
     sqRing,
     cqRing,
     sqes,
@@ -718,8 +722,11 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
       filter = EVFILT_SIGNAL;
       ident = loop.signalFdToToken.get(ident) ?? signo;
     } else if (userData.kind === USER_DATA_READ) {
-      const poll = loop.readPolls.get(ident);
-      if (poll !== undefined) {
+      const sharedUserData = loop.shared ? takeSharedPoll(ident) : null;
+      const poll = loop.shared ? undefined : loop.readPolls.get(ident);
+      if (sharedUserData !== null) {
+        ident = sharedUserData;
+      } else if (poll !== undefined) {
         loop.readPolls.delete(ident);
         if (loop.currentReadPolls.get(poll.fd) !== ident) {
           head++;
@@ -735,19 +742,24 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
       }
       filter = EVFILT_READ;
     } else if (userData.kind === USER_DATA_WRITE) {
-      const poll = loop.writePolls.get(ident);
-      if (poll === undefined) {
+      const sharedUserData = loop.shared ? takeSharedPoll(ident) : null;
+      const poll = loop.shared ? undefined : loop.writePolls.get(ident);
+      if (sharedUserData !== null) {
+        ident = sharedUserData;
+        filter = EVFILT_WRITE;
+      } else if (poll === undefined) {
         head++;
         continue;
+      } else {
+        loop.writePolls.delete(ident);
+        if (loop.currentWritePolls.get(poll.fd) !== ident) {
+          head++;
+          continue;
+        }
+        loop.currentWritePolls.delete(poll.fd);
+        ident = poll.userData;
+        filter = EVFILT_WRITE;
       }
-      loop.writePolls.delete(ident);
-      if (loop.currentWritePolls.get(poll.fd) !== ident) {
-        head++;
-        continue;
-      }
-      loop.currentWritePolls.delete(poll.fd);
-      ident = poll.userData;
-      filter = EVFILT_WRITE;
     } else {
       // Legacy/unexpected POLL_ADD completion — fall back to the poll mask.
       filter = res & POLLIN ? EVFILT_READ : EVFILT_WRITE;
@@ -785,11 +797,15 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
  * @internal
  */
 export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
-  const pollId = nextPollId(loop);
-  loop.readPolls.set(pollId, {
-    fd,
-    userData,
-  });
+  const previousPollId = loop.currentReadPolls.get(fd);
+  if (loop.shared && previousPollId !== undefined) cancelSharedPoll(previousPollId);
+  const pollId = loop.shared ? registerSharedPoll(userData) : nextPollId(loop);
+  if (!loop.shared) {
+    loop.readPolls.set(pollId, {
+      fd,
+      userData,
+    });
+  }
   loop.currentReadPolls.set(fd, pollId);
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, pollId), POLLIN);
 }
@@ -823,11 +839,15 @@ export function addPersistentRead(loop: IoUringLoop, fd: number, userData: numbe
  * @internal
  */
 export function addWrite(loop: IoUringLoop, fd: number, userData: number): void {
-  const pollId = nextPollId(loop);
-  loop.writePolls.set(pollId, {
-    fd,
-    userData,
-  });
+  const previousPollId = loop.currentWritePolls.get(fd);
+  if (loop.shared && previousPollId !== undefined) cancelSharedPoll(previousPollId);
+  const pollId = loop.shared ? registerSharedPoll(userData) : nextPollId(loop);
+  if (!loop.shared) {
+    loop.writePolls.set(pollId, {
+      fd,
+      userData,
+    });
+  }
   loop.currentWritePolls.set(fd, pollId);
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_WRITE, pollId), POLLOUT);
 }
@@ -849,7 +869,8 @@ export function removeRead(loop: IoUringLoop, fd: number): void {
   const pollId = loop.currentReadPolls.get(fd);
   if (pollId !== undefined) {
     loop.currentReadPolls.delete(fd);
-    loop.readPolls.delete(pollId);
+    if (loop.shared) cancelSharedPoll(pollId);
+    else loop.readPolls.delete(pollId);
   }
   // POLL_ADD is one-shot by default in io_uring. The eventual completion is
   // ignored through its unique poll id after the logical watch is removed.
@@ -872,7 +893,8 @@ export function removeWrite(loop: IoUringLoop, fd: number): void {
   const pollId = loop.currentWritePolls.get(fd);
   if (pollId !== undefined) {
     loop.currentWritePolls.delete(fd);
-    loop.writePolls.delete(pollId);
+    if (loop.shared) cancelSharedPoll(pollId);
+    else loop.writePolls.delete(pollId);
   }
 }
 /**

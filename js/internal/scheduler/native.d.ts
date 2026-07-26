@@ -41,6 +41,12 @@ export function sharedLoopDescriptor(candidate?: string): string | null;
 export function routeSharedLoopEvent(owner: number, eventJson: string): void;
 /** Drain scalar backend events queued for `owner`. */
 export function takeSharedLoopEvents(owner: number): string;
+/** Allocate an owner-routable id for one transient shared-backend poll. */
+export function registerSharedPoll(userData: number): number;
+/** Resolve and remove a completed shared-backend poll's owner token. */
+export function takeSharedPoll(pollId: number): number | null;
+/** Forget a cancelled shared-backend poll so a late CQE is ignored. */
+export function cancelSharedPoll(pollId: number): void;
 export function registerSharedReadiness(
   ident: number,
   filter: number,
