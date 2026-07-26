@@ -2,8 +2,9 @@
 //!
 //! Native code owns isolate transitions and the scalar readiness boundary:
 //! the legacy path shares one kqueue/io_uring per thread, while the process
-//! pool routes owner-tagged registrations through a dedicated TypeScript
-//! reactor. Ready metadata is dispatched back into the owning isolate.
+//! pool routes owner-tagged registrations through the main TypeScript
+//! orchestration realm. Ready metadata is dispatched back into the owning
+//! isolate.
 //! Promise state, actual reads and writes, buffers, retries, and protocol
 //! policy remain in TypeScript.
 
@@ -12,7 +13,7 @@ use std::{
     collections::{BinaryHeap, HashMap, HashSet, VecDeque},
     rc::Rc,
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicU32, Ordering},
     },
 };
@@ -119,20 +120,6 @@ impl ReadinessPriorityQueue {
         self.queued.remove(&owner);
     }
 
-    fn enqueue(&mut self, owner: u32) {
-        let signals = self.pending(owner);
-        if signals == 0 {
-            return;
-        }
-        let generation = self.generations.get(&owner).copied().unwrap_or(0);
-        self.queued.insert(owner);
-        self.heap.push(ReadinessPriority {
-            signals,
-            generation,
-            owner,
-        });
-    }
-
     fn consume(&mut self, owner: u32) -> usize {
         self.queued.remove(&owner);
         self.pending.remove(&owner).unwrap_or(0)
@@ -144,7 +131,6 @@ struct SharedReadinessInner {
     events: HashMap<u32, VecDeque<RoutedLoopEvent>>,
     priorities: ReadinessPriorityQueue,
     process_changes: Vec<ReadinessChange>,
-    resident_workers: HashMap<u32, usize>,
     retired: HashSet<u32>,
     version: u64,
 }
@@ -192,6 +178,32 @@ fn shared_readiness() -> &'static SharedReadiness {
     SHARED.get_or_init(SharedReadiness::new)
 }
 
+fn orchestrated_owner_pools() -> &'static Mutex<HashMap<u32, Weak<OrchestratedPoolShared>>> {
+    static POOLS: OnceLock<Mutex<HashMap<u32, Weak<OrchestratedPoolShared>>>> = OnceLock::new();
+    POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn notify_orchestrated_owner_ready(owner: u32) {
+    let pool = orchestrated_owner_pools()
+        .lock()
+        .unwrap()
+        .get(&owner)
+        .and_then(Weak::upgrade);
+    if let Some(pool) = pool {
+        notify_orchestrated_pool(
+            &pool,
+            OrchestratedPoolEvent {
+                kind: OrchestratedPoolEventKind::Ready,
+                worker: usize::MAX,
+                owner,
+                value: None,
+                error: None,
+                loop_turns: 0,
+            },
+        );
+    }
+}
+
 struct SharedLoopDescriptor {
     json: String,
     fd: i32,
@@ -209,7 +221,6 @@ enum WorkloadReadiness {
     Delegated,
     ThreadShared,
     ProcessShared,
-    Local,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -256,6 +267,7 @@ impl Drop for WorkloadTable {
 
 thread_local! {
     static WORKLOADS: RefCell<WorkloadTable> = const { RefCell::new(WorkloadTable(Vec::new())) };
+    static ORCHESTRATED_POOLS: RefCell<Vec<Option<OrchestratedPool>>> = const { RefCell::new(Vec::new()) };
     static SHARED_LOOP_DESCRIPTOR: RefCell<Option<SharedLoopDescriptor>> = const { RefCell::new(None) };
     static NEXT_SHARED_POLL_ID: Cell<u64> = const { Cell::new(1 << 32) };
     static SHARED_POLLS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
@@ -324,7 +336,11 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "dispatchWorkload",
         "driveResidentWorkload",
         "driveSharedResidentWorkloads",
-        "drivePooledResidentWorkloads",
+        "createOrchestratedPool",
+        "scheduleOrchestratedWorker",
+        "takeOrchestratedPoolEvents",
+        "closeOrchestratedPool",
+        "processReadinessControlFd",
         "completeHostOperation",
         "terminateWorkload",
         "workloadWakeFd",
@@ -370,10 +386,11 @@ fn eval_steps<'a>(
         "driveSharedResidentWorkloads",
         drive_shared_resident_workloads
     );
-    set_fn!(
-        "drivePooledResidentWorkloads",
-        drive_pooled_resident_workloads
-    );
+    set_fn!("createOrchestratedPool", create_orchestrated_pool);
+    set_fn!("scheduleOrchestratedWorker", schedule_orchestrated_worker);
+    set_fn!("takeOrchestratedPoolEvents", take_orchestrated_pool_events);
+    set_fn!("closeOrchestratedPool", close_orchestrated_pool);
+    set_fn!("processReadinessControlFd", process_readiness_control_fd);
     set_fn!("completeHostOperation", complete_host_operation);
     set_fn!("terminateWorkload", terminate_workload);
     set_fn!("workloadWakeFd", workload_wake_fd);
@@ -546,7 +563,7 @@ fn route_shared_loop_event(
             return;
         }
     };
-    queue_routed_event(owner, event);
+    queue_routed_event(owner, event, true, false);
 }
 
 fn route_process_readiness(
@@ -567,10 +584,17 @@ fn route_process_readiness(
             udata: Some(args.get(6).number_value(scope).unwrap_or(0.0)),
             routed: true,
         },
+        false,
+        args.get(7).is_undefined() || args.get(7).boolean_value(scope),
     );
 }
 
-fn queue_routed_event(owner: u32, event: RoutedLoopEvent) {
+fn queue_routed_event(
+    owner: u32,
+    event: RoutedLoopEvent,
+    record_priority: bool,
+    notify_owner: bool,
+) {
     let readiness = shared_readiness();
     {
         let mut inner = readiness.inner.lock().unwrap();
@@ -578,13 +602,15 @@ fn queue_routed_event(owner: u32, event: RoutedLoopEvent) {
             return;
         }
         inner.events.entry(owner).or_default().push_back(event);
-        inner.priorities.record(owner);
-        if inner.resident_workers.contains_key(&owner) {
-            inner.priorities.remove(owner);
+        if record_priority {
+            inner.priorities.record(owner);
         }
         inner.version = inner.version.wrapping_add(1);
     }
     readiness.changed.notify_all();
+    if notify_owner {
+        notify_orchestrated_owner_ready(owner);
+    }
 }
 
 fn retire_process_readiness_owner(owner: u32) {
@@ -592,7 +618,6 @@ fn retire_process_readiness_owner(owner: u32) {
     {
         let mut inner = readiness.inner.lock().unwrap();
         inner.retired.insert(owner);
-        inner.resident_workers.remove(&owner);
         inner.priorities.consume(owner);
         inner.events.remove(&owner);
         inner.process_changes.push(ReadinessChange {
@@ -604,69 +629,6 @@ fn retire_process_readiness_owner(owner: u32) {
             udata: 0,
             cancel_owner: Some(owner),
         });
-        inner.version = inner.version.wrapping_add(1);
-    }
-    readiness.notify();
-}
-
-fn mark_workload_runnable(owner: u32) {
-    let readiness = shared_readiness();
-    {
-        let mut inner = readiness.inner.lock().unwrap();
-        inner.priorities.record(owner);
-        inner.version = inner.version.wrapping_add(1);
-    }
-    readiness.changed.notify_all();
-}
-
-fn mark_workload_resident(owner: u32, worker: usize) {
-    let mut inner = shared_readiness().inner.lock().unwrap();
-    inner.resident_workers.insert(owner, worker);
-    inner.priorities.remove(owner);
-}
-
-fn mark_workload_parked(owner: u32) {
-    let readiness = shared_readiness();
-    {
-        let mut inner = readiness.inner.lock().unwrap();
-        inner.resident_workers.remove(&owner);
-        inner.priorities.enqueue(owner);
-        inner.version = inner.version.wrapping_add(1);
-    }
-    readiness.changed.notify_all();
-}
-
-fn pending_readiness(owner: u32) -> usize {
-    shared_readiness()
-        .inner
-        .lock()
-        .unwrap()
-        .priorities
-        .pending(owner)
-}
-
-fn consume_scheduling_token(owner: u32) {
-    shared_readiness()
-        .inner
-        .lock()
-        .unwrap()
-        .priorities
-        .consume(owner);
-}
-
-fn claim_higher_priority_workload(current_owner: u32, current_signals: usize) -> Option<u32> {
-    shared_readiness()
-        .inner
-        .lock()
-        .unwrap()
-        .priorities
-        .claim_higher_than(current_owner, current_signals)
-}
-
-fn signal_scheduler_change() {
-    let readiness = shared_readiness();
-    {
-        let mut inner = readiness.inner.lock().unwrap();
         inner.version = inner.version.wrapping_add(1);
     }
     readiness.notify();
@@ -893,7 +855,6 @@ fn setup_workload(
             WorkloadReadiness::ProcessShared => {
                 install_reactor_workload(scope, owner_id, true)?;
             }
-            WorkloadReadiness::Local => {}
         }
 
         let delegates_readiness = matches!(readiness, WorkloadReadiness::Delegated);
@@ -986,87 +947,6 @@ fn setup_workload(
     Ok(workload)
 }
 
-fn drive_typescript_reactor_entered(workload: &mut ParkedWorkload) -> Result<(), String> {
-    let context_global = workload.context.clone();
-    let dispatch_fn = workload.dispatch_fn.clone();
-    let tick_fn = workload.tick_fn.clone();
-    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
-    let context = v8::Local::new(isolate_scope, &context_global);
-    let scope = &mut v8::ContextScope::new(isolate_scope, context);
-    let input = v8::Object::new(scope);
-    let key = v8::String::new(scope, "controlFd").unwrap();
-    let value = v8::Integer::new(scope, shared_readiness().wake_read);
-    input.set(scope, key.into(), value.into());
-    let function = v8::Local::new(scope, &dispatch_fn);
-    let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-    let promise = {
-        let tc = &mut v8::TryCatch::new(scope);
-        let value = function
-            .call(tc, receiver, &[input.into()])
-            .ok_or_else(|| {
-                crate::realm::child::catch_message(tc)
-                    .unwrap_or_else(|| "process readiness reactor threw".to_string())
-            })?;
-        let promise = v8::Local::<v8::Promise>::try_from(value)
-            .map_err(|_| "process readiness reactor did not return a promise".to_string())?;
-        v8::Global::new(tc, promise)
-    };
-    workload.active_promise = Some(promise);
-    loop {
-        crate::realm::child::pump_and_checkpoint(scope);
-        let promise = v8::Local::new(scope, workload.active_promise.as_ref().unwrap());
-        match promise.state() {
-            v8::PromiseState::Pending => {
-                let timeout: v8::Local<v8::Value> = v8::null(scope).into();
-                call_number_function(scope, &tick_fn, &[timeout])?;
-            }
-            v8::PromiseState::Fulfilled => {
-                return Err("process readiness reactor exited unexpectedly".to_string());
-            }
-            v8::PromiseState::Rejected => {
-                let value = promise.result(scope);
-                return Err(js_string(scope, value));
-            }
-        }
-    }
-}
-
-fn run_process_readiness_reactor(mut transfer: TransferWorkload) {
-    let active = activate_workload(&mut transfer.0);
-    if let Err(error) = drive_typescript_reactor_entered(&mut transfer.0) {
-        eprintln!("fino: process readiness reactor stopped: {error}");
-    }
-    deactivate_workload(&mut transfer.0, active);
-    drop_parked(transfer.0);
-}
-
-fn ensure_process_readiness_reactor(
-    process_env: ProcessEnv,
-    package_map_json: Option<String>,
-) -> Result<(), String> {
-    static STARTED: OnceLock<Mutex<bool>> = OnceLock::new();
-    let started = STARTED.get_or_init(|| Mutex::new(false));
-    let mut started = started.lock().unwrap();
-    if *started {
-        return Ok(());
-    }
-    let mut workload = setup_workload(
-        "internal:scheduler/reactor".to_string(),
-        process_env,
-        package_map_json,
-        WorkloadReadiness::Local,
-        0,
-    )?;
-    workload.moved_between_threads = true;
-    let transfer = TransferWorkload(workload);
-    std::thread::Builder::new()
-        .name("fino-process-readiness".to_string())
-        .spawn(move || run_process_readiness_reactor(transfer))
-        .map_err(|error| format!("failed to spawn process readiness reactor: {error}"))?;
-    *started = true;
-    Ok(())
-}
-
 fn create_workload(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1089,13 +969,6 @@ fn create_workload(
         let state = parent_state.borrow();
         (state.process_env.clone(), state.package_map_json.clone())
     };
-    if process_shared
-        && let Err(error) =
-            ensure_process_readiness_reactor(process_env.clone(), package_map_json.clone())
-    {
-        throw_error(scope, &format!("createWorkload: {error}"));
-        return;
-    }
     let readiness = if delegates_readiness {
         WorkloadReadiness::Delegated
     } else if process_shared {
@@ -1600,6 +1473,8 @@ fn wait_for_kqueue(fd: i32, timeout_ms: i32) -> Result<bool, String> {
                 udata: Some(token as f64),
                 routed: true,
             },
+            true,
+            false,
         );
     }
     Ok(count > 0)
@@ -1928,7 +1803,6 @@ fn drive_shared_resident_workloads(
 
 struct PoolItem {
     workload: TransferWorkload,
-    position: usize,
     request: Option<Vec<u8>>,
     last_worker: Option<usize>,
 }
@@ -1938,12 +1812,29 @@ struct PoolResident {
     active: ActiveWorkload,
 }
 
-struct PoolInner {
-    parked: HashMap<u32, PoolItem>,
-    values: Vec<Option<Result<Vec<u8>, String>>>,
-    remaining: usize,
-    aborted: bool,
-    fatal: Option<String>,
+enum OrchestratedWorkerCommand {
+    Run(u32),
+    Shutdown,
+}
+
+enum OrchestratedPoolEventKind {
+    Ready,
+    Quiescent,
+    Settled,
+    Error,
+}
+
+struct OrchestratedPoolEvent {
+    kind: OrchestratedPoolEventKind,
+    worker: usize,
+    owner: u32,
+    value: Option<Vec<u8>>,
+    error: Option<String>,
+    loop_turns: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct OrchestratedPoolMetrics {
     workload_switches: u64,
     workload_migrations: u64,
     isolate_entries: u64,
@@ -1951,54 +1842,106 @@ struct PoolInner {
     loop_turns: u64,
 }
 
-struct PoolState {
-    inner: Mutex<PoolInner>,
-    changed: Condvar,
+struct OrchestratedPoolInner {
+    parked: HashMap<u32, PoolItem>,
+    events: VecDeque<OrchestratedPoolEvent>,
+    metrics: OrchestratedPoolMetrics,
 }
 
-fn pool_finished(state: &PoolState) -> bool {
-    let inner = state.inner.lock().unwrap();
-    inner.remaining == 0 || inner.aborted
+struct OrchestratedPoolShared {
+    inner: Mutex<OrchestratedPoolInner>,
+    wake_read: i32,
+    wake_write: i32,
 }
 
-fn pool_take_item(state: &PoolState, owner: u32) -> Option<PoolItem> {
-    state.inner.lock().unwrap().parked.remove(&owner)
+impl OrchestratedPoolShared {
+    fn new(inner: OrchestratedPoolInner) -> Self {
+        let mut fds = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        for fd in fds {
+            unsafe {
+                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+            }
+        }
+        Self {
+            inner: Mutex::new(inner),
+            wake_read: fds[0],
+            wake_write: fds[1],
+        }
+    }
+
+    fn notify(&self) {
+        let byte = [1u8];
+        unsafe {
+            libc::write(self.wake_write, byte.as_ptr().cast(), byte.len());
+        }
+    }
+
+    fn drain_wake(&self) {
+        let mut bytes = [0u8; 64];
+        while unsafe { libc::read(self.wake_read, bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {}
+    }
 }
 
-fn activate_pool_item(worker: usize, state: &PoolState, mut item: PoolItem) -> PoolResident {
-    let owner = item.workload.0.owner_id;
+impl Drop for OrchestratedPoolShared {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.wake_read);
+            libc::close(self.wake_write);
+        }
+    }
+}
+
+struct OrchestratedPool {
+    shared: Arc<OrchestratedPoolShared>,
+    senders: Vec<std::sync::mpsc::Sender<OrchestratedWorkerCommand>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+fn notify_orchestrated_pool(shared: &OrchestratedPoolShared, event: OrchestratedPoolEvent) {
+    shared.inner.lock().unwrap().events.push_back(event);
+    shared.notify();
+}
+
+fn activate_orchestrated_pool_item(
+    worker: usize,
+    shared: &OrchestratedPoolShared,
+    mut item: PoolItem,
+) -> PoolResident {
     let migrated = item
         .last_worker
         .is_some_and(|last_worker| last_worker != worker);
     item.last_worker = Some(worker);
     item.workload.0.moved_between_threads = true;
-    mark_workload_resident(owner, worker);
     let active = activate_workload(&mut item.workload.0);
-    let mut inner = state.inner.lock().unwrap();
-    inner.isolate_entries += 1;
+    let mut inner = shared.inner.lock().unwrap();
+    inner.metrics.isolate_entries += 1;
     if migrated {
-        inner.workload_migrations += 1;
+        inner.metrics.workload_migrations += 1;
     }
     drop(inner);
     PoolResident { item, active }
 }
 
-fn park_pool_resident(state: &PoolState, mut resident: PoolResident, switched: bool) {
+fn park_orchestrated_pool_resident(
+    shared: &OrchestratedPoolShared,
+    mut resident: PoolResident,
+    switched: bool,
+) {
     let owner = resident.item.workload.0.owner_id;
     deactivate_workload(&mut resident.item.workload.0, resident.active);
-    {
-        let mut inner = state.inner.lock().unwrap();
-        inner.isolate_exits += 1;
-        if switched {
-            inner.workload_switches += 1;
-        }
-        inner.parked.insert(owner, resident.item);
+    let mut inner = shared.inner.lock().unwrap();
+    inner.metrics.isolate_exits += 1;
+    if switched {
+        inner.metrics.workload_switches += 1;
     }
-    mark_workload_parked(owner);
+    inner.parked.insert(owner, resident.item);
+    drop(inner);
 }
 
-fn finish_pool_resident(
-    state: &PoolState,
+fn finish_orchestrated_pool_resident(
+    worker: usize,
+    shared: &OrchestratedPoolShared,
     mut resident: PoolResident,
     result: Result<Vec<u8>, String>,
     loop_turns: u64,
@@ -2006,127 +1949,170 @@ fn finish_pool_resident(
     let owner = resident.item.workload.0.owner_id;
     deactivate_workload(&mut resident.item.workload.0, resident.active);
     retire_process_readiness_owner(owner);
-    let position = resident.item.position;
     drop_parked(resident.item.workload.0);
     {
-        let mut inner = state.inner.lock().unwrap();
-        inner.isolate_exits += 1;
-        inner.loop_turns += loop_turns;
-        inner.values[position] = Some(result);
-        inner.remaining -= 1;
+        let mut inner = shared.inner.lock().unwrap();
+        inner.metrics.isolate_exits += 1;
+        inner.metrics.loop_turns += loop_turns;
     }
-    state.changed.notify_all();
-    signal_scheduler_change();
+    let (kind, value, error) = match result {
+        Ok(value) => (OrchestratedPoolEventKind::Settled, Some(value), None),
+        Err(error) => (OrchestratedPoolEventKind::Error, None, Some(error)),
+    };
+    notify_orchestrated_pool(
+        shared,
+        OrchestratedPoolEvent {
+            kind,
+            worker,
+            owner,
+            value,
+            error,
+            loop_turns,
+        },
+    );
 }
 
-fn wait_for_pool_change(version: u64) {
-    let readiness = shared_readiness();
-    let inner = readiness.inner.lock().unwrap();
-    if inner.version == version {
-        drop(readiness.changed.wait(inner).unwrap());
-    }
-}
-
-fn run_pool_worker(worker: usize, state: Arc<PoolState>) {
+fn run_orchestrated_pool_worker(
+    worker: usize,
+    shared: Arc<OrchestratedPoolShared>,
+    receiver: std::sync::mpsc::Receiver<OrchestratedWorkerCommand>,
+) {
     let mut current: Option<PoolResident> = None;
-    loop {
-        if state.inner.lock().unwrap().aborted {
-            if let Some(resident) = current.take() {
-                park_pool_resident(&state, resident, false);
-            }
-            return;
-        }
-
-        let version = shared_readiness().inner.lock().unwrap().version;
-        let current_owner = current
-            .as_ref()
-            .map(|resident| resident.item.workload.0.owner_id)
-            .unwrap_or(0);
-        let current_signals = current
-            .as_ref()
-            .map(|_| pending_readiness(current_owner))
-            .unwrap_or(0);
-
-        if let Some(owner) = claim_higher_priority_workload(current_owner, current_signals) {
-            let Some(next) = pool_take_item(&state, owner) else {
-                continue;
-            };
-            if let Some(resident) = current.take() {
-                park_pool_resident(&state, resident, true);
-            }
-            current = Some(activate_pool_item(worker, &state, next));
-            continue;
-        }
-
-        let Some(mut resident) = current.take() else {
-            if pool_finished(&state) {
-                return;
-            }
-            wait_for_pool_change(version);
-            continue;
+    while let Ok(command) = receiver.recv() {
+        let owner = match command {
+            OrchestratedWorkerCommand::Run(owner) => owner,
+            OrchestratedWorkerCommand::Shutdown => break,
         };
 
-        if current_signals == 0 {
-            current = Some(resident);
-            wait_for_pool_change(version);
-            continue;
+        if current
+            .as_ref()
+            .is_some_and(|resident| resident.item.workload.0.owner_id != owner)
+        {
+            park_orchestrated_pool_resident(
+                &shared,
+                current.take().expect("current workload disappeared"),
+                true,
+            );
+        }
+        if current.is_none() {
+            let item = shared.inner.lock().unwrap().parked.remove(&owner);
+            let Some(item) = item else {
+                notify_orchestrated_pool(
+                    &shared,
+                    OrchestratedPoolEvent {
+                        kind: OrchestratedPoolEventKind::Error,
+                        worker,
+                        owner,
+                        value: None,
+                        error: Some(format!(
+                            "orchestrated workload {owner} is not available to worker {worker}"
+                        )),
+                        loop_turns: 0,
+                    },
+                );
+                continue;
+            };
+            current = Some(activate_orchestrated_pool_item(worker, &shared, item));
         }
 
+        let mut resident = current.take().expect("orchestrated workload is not active");
         let request = resident.item.request.take();
-        if request.is_some() {
-            consume_scheduling_token(current_owner);
-        }
-        let driven =
-            drive_resident_slice_entered(&mut resident.item.workload.0, request.as_deref(), false);
-        match driven {
-            Ok((ResidentSliceOutcome::Settled(value), turns)) => {
-                finish_pool_resident(&state, resident, Ok(value), turns);
-            }
-            Ok((ResidentSliceOutcome::Pending, turns)) => {
-                state.inner.lock().unwrap().loop_turns += turns;
+        match drive_resident_slice_entered(&mut resident.item.workload.0, request.as_deref(), false)
+        {
+            Ok((ResidentSliceOutcome::Pending, loop_turns)) => {
+                shared.inner.lock().unwrap().metrics.loop_turns += loop_turns;
                 current = Some(resident);
-            }
-            Ok((ResidentSliceOutcome::Switch(_), turns)) => {
-                finish_pool_resident(
-                    &state,
-                    resident,
-                    Err("pooled non-blocking slice requested an internal switch".to_string()),
-                    turns,
+                notify_orchestrated_pool(
+                    &shared,
+                    OrchestratedPoolEvent {
+                        kind: OrchestratedPoolEventKind::Quiescent,
+                        worker,
+                        owner,
+                        value: None,
+                        error: None,
+                        loop_turns,
+                    },
                 );
             }
-            Err(error) => finish_pool_resident(&state, resident, Err(error), 0),
+            Ok((ResidentSliceOutcome::Settled(value), loop_turns)) => {
+                finish_orchestrated_pool_resident(worker, &shared, resident, Ok(value), loop_turns);
+            }
+            Ok((ResidentSliceOutcome::Switch(_), loop_turns)) => {
+                finish_orchestrated_pool_resident(
+                    worker,
+                    &shared,
+                    resident,
+                    Err("orchestrated non-blocking slice requested an internal switch".to_string()),
+                    loop_turns,
+                );
+            }
+            Err(error) => {
+                finish_orchestrated_pool_resident(worker, &shared, resident, Err(error), 0);
+            }
+        }
+    }
+    if let Some(resident) = current {
+        park_orchestrated_pool_resident(&shared, resident, false);
+    }
+}
+
+impl OrchestratedPool {
+    fn shutdown(&mut self) {
+        for sender in &self.senders {
+            let _ = sender.send(OrchestratedWorkerCommand::Shutdown);
+        }
+        self.senders.clear();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
         }
     }
 }
 
-fn drive_pooled_resident_workloads(
+impl Drop for OrchestratedPool {
+    fn drop(&mut self) {
+        self.shutdown();
+        let shared = Arc::downgrade(&self.shared);
+        orchestrated_owner_pools()
+            .lock()
+            .unwrap()
+            .retain(|_, pool| !Weak::ptr_eq(pool, &shared));
+        let parked = std::mem::take(&mut self.shared.inner.lock().unwrap().parked);
+        for item in parked.into_values() {
+            retire_process_readiness_owner(item.workload.0.owner_id);
+            drop_parked(item.workload.0);
+        }
+    }
+}
+
+fn create_orchestrated_pool(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let Ok(handles_array) = v8::Local::<v8::Array>::try_from(args.get(0)) else {
-        throw_error(
-            scope,
-            "drivePooledResidentWorkloads: handles must be an array",
-        );
+        throw_error(scope, "createOrchestratedPool: handles must be an array");
         return;
     };
     let Ok(inputs_array) = v8::Local::<v8::Array>::try_from(args.get(1)) else {
-        throw_error(
-            scope,
-            "drivePooledResidentWorkloads: inputs must be an array",
-        );
+        throw_error(scope, "createOrchestratedPool: inputs must be an array");
         return;
     };
     if handles_array.length() != inputs_array.length() {
         throw_error(
             scope,
-            "drivePooledResidentWorkloads: handles and inputs must have equal length",
+            "createOrchestratedPool: handles and inputs must have equal length",
+        );
+        return;
+    }
+    if handles_array.length() == 0 {
+        throw_error(
+            scope,
+            "createOrchestratedPool: at least one workload is required",
         );
         return;
     }
 
-    let default_threads = std::thread::available_parallelism()
+    let available_threads = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1);
     let worker_count = args
@@ -2134,42 +2120,44 @@ fn drive_pooled_resident_workloads(
         .uint32_value(scope)
         .map(|count| count as usize)
         .filter(|count| *count > 0)
-        .unwrap_or(default_threads)
-        .min(default_threads.max(1));
+        .unwrap_or(available_threads)
+        .min(available_threads.max(1));
     let mut handles = Vec::with_capacity(handles_array.length() as usize);
     let mut requests = Vec::with_capacity(inputs_array.length() as usize);
     for index in 0..handles_array.length() {
         let Some(handle) = handles_array.get_index(scope, index) else {
-            throw_error(scope, "drivePooledResidentWorkloads: missing handle");
+            throw_error(scope, "createOrchestratedPool: missing handle");
             return;
         };
         handles.push(handle.integer_value(scope).unwrap_or(-1) as usize);
         let Some(input) = inputs_array.get_index(scope, index) else {
-            throw_error(scope, "drivePooledResidentWorkloads: missing input");
+            throw_error(scope, "createOrchestratedPool: missing input");
             return;
         };
         match crate::realm::serializer::serialize_value(scope, input) {
             Ok(bytes) => requests.push(bytes),
             Err(error) => {
-                throw_error(scope, &format!("drivePooledResidentWorkloads: {error}"));
+                throw_error(scope, &format!("createOrchestratedPool: {error}"));
                 return;
             }
         }
     }
     if handles.iter().copied().collect::<HashSet<_>>().len() != handles.len() {
-        throw_error(
-            scope,
-            "drivePooledResidentWorkloads: duplicate workload handle",
-        );
+        throw_error(scope, "createOrchestratedPool: duplicate workload handle");
         return;
     }
 
     let workloads = WORKLOADS.with(|table| -> Result<Vec<PoolItem>, String> {
         let mut table = table.borrow_mut();
         for handle in &handles {
-            if table.0.get(*handle).and_then(Option::as_ref).is_none() {
+            let Some(workload) = table.0.get(*handle).and_then(Option::as_ref) else {
                 return Err(format!(
-                    "drivePooledResidentWorkloads: invalid workload handle {handle}"
+                    "createOrchestratedPool: invalid workload handle {handle}"
+                ));
+            };
+            if !workload.process_readiness {
+                return Err(format!(
+                    "createOrchestratedPool: workload handle {handle} does not use process readiness"
                 ));
             }
         }
@@ -2177,14 +2165,12 @@ fn drive_pooled_resident_workloads(
             .iter()
             .copied()
             .zip(requests)
-            .enumerate()
-            .map(|(position, (handle, request))| {
+            .map(|(handle, request)| {
                 let workload = table.0[handle]
                     .take()
                     .ok_or_else(|| "workload disappeared during pool transfer".to_string())?;
                 Ok(PoolItem {
                     workload: TransferWorkload(workload),
-                    position,
                     request: Some(request),
                     last_worker: None,
                 })
@@ -2199,118 +2185,213 @@ fn drive_pooled_resident_workloads(
         }
     };
 
-    let workload_count = workloads.len();
-    let mut parked = HashMap::with_capacity(workload_count);
+    let mut owners = Vec::with_capacity(workloads.len());
+    let mut parked = HashMap::with_capacity(workloads.len());
     for item in workloads {
         let owner = item.workload.0.owner_id;
+        owners.push(owner);
         parked.insert(owner, item);
-        mark_workload_runnable(owner);
     }
-    let state = Arc::new(PoolState {
-        inner: Mutex::new(PoolInner {
-            parked,
-            values: (0..workload_count).map(|_| None).collect(),
-            remaining: workload_count,
-            aborted: false,
-            fatal: None,
-            workload_switches: 0,
-            workload_migrations: 0,
-            isolate_entries: 0,
-            isolate_exits: 0,
-            loop_turns: 0,
-        }),
-        changed: Condvar::new(),
-    });
-
+    let shared = Arc::new(OrchestratedPoolShared::new(OrchestratedPoolInner {
+        parked,
+        events: VecDeque::new(),
+        metrics: OrchestratedPoolMetrics::default(),
+    }));
+    let control_fd = shared.wake_read;
+    {
+        let mut owner_pools = orchestrated_owner_pools().lock().unwrap();
+        for owner in &owners {
+            owner_pools.insert(*owner, Arc::downgrade(&shared));
+        }
+    }
+    let mut senders = Vec::with_capacity(worker_count);
     let mut workers = Vec::with_capacity(worker_count);
     for worker in 0..worker_count {
-        let state = Arc::clone(&state);
-        workers.push(std::thread::spawn(move || run_pool_worker(worker, state)));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        senders.push(sender);
+        let shared = Arc::clone(&shared);
+        workers.push(std::thread::spawn(move || {
+            run_orchestrated_pool_worker(worker, shared, receiver)
+        }));
     }
-
-    {
-        let mut inner = state.inner.lock().unwrap();
-        while inner.remaining > 0 && !inner.aborted {
-            inner = state.changed.wait(inner).unwrap();
+    let pool = OrchestratedPool {
+        shared,
+        senders,
+        workers,
+    };
+    let handle = ORCHESTRATED_POOLS.with(|pools| {
+        let mut pools = pools.borrow_mut();
+        if let Some((handle, slot)) = pools
+            .iter_mut()
+            .enumerate()
+            .find(|(_, pool)| pool.is_none())
+        {
+            *slot = Some(pool);
+            handle
+        } else {
+            pools.push(Some(pool));
+            pools.len() - 1
         }
-    }
-    for worker in workers {
-        if worker.join().is_err() {
-            let mut inner = state.inner.lock().unwrap();
-            inner
-                .fatal
-                .get_or_insert_with(|| "pool worker panicked".to_string());
-        }
-    }
-
-    let mut inner = state.inner.lock().unwrap();
-    if let Some(error) = inner.fatal.take() {
-        let parked = std::mem::take(&mut inner.parked);
-        drop(inner);
-        for item in parked.into_values() {
-            drop_parked(item.workload.0);
-        }
-        throw_error(scope, &format!("drivePooledResidentWorkloads: {error}"));
-        return;
-    }
-    let values = std::mem::take(&mut inner.values);
-    let metrics = (
-        inner.workload_switches,
-        inner.workload_migrations,
-        inner.isolate_entries,
-        inner.isolate_exits,
-        inner.loop_turns,
-    );
-    drop(inner);
+    });
 
     let result = v8::Object::new(scope);
-    let values_array = v8::Array::new(scope, values.len() as i32);
-    for (index, value) in values.into_iter().enumerate() {
-        let bytes = match value {
-            Some(Ok(bytes)) => bytes,
-            Some(Err(error)) => {
-                throw_error(scope, &format!("drivePooledResidentWorkloads: {error}"));
-                return;
-            }
-            None => {
-                throw_error(
-                    scope,
-                    "drivePooledResidentWorkloads: workload result is missing",
-                );
-                return;
-            }
-        };
-        let value = match crate::realm::serializer::deserialize_value(scope, &bytes) {
-            Ok(value) => value,
-            Err(error) => {
-                throw_error(scope, &format!("drivePooledResidentWorkloads: {error}"));
-                return;
-            }
-        };
-        values_array.set_index(scope, index as u32, value);
+    let owners_array = v8::Array::new(scope, owners.len() as i32);
+    for (index, owner) in owners.into_iter().enumerate() {
+        let owner = v8::Integer::new_from_unsigned(scope, owner);
+        owners_array.set_index(scope, index as u32, owner.into());
     }
-    let fields: [(&str, v8::Local<v8::Value>); 7] = [
-        ("values", values_array.into()),
+    let fields: [(&str, v8::Local<v8::Value>); 4] = [
+        (
+            "handle",
+            v8::Integer::new_from_unsigned(scope, handle as u32).into(),
+        ),
+        ("owners", owners_array.into()),
+        (
+            "workerThreads",
+            v8::Integer::new_from_unsigned(scope, worker_count as u32).into(),
+        ),
+        ("controlFd", v8::Integer::new(scope, control_fd).into()),
+    ];
+    for (name, value) in fields {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
+}
+
+fn schedule_orchestrated_worker(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let worker = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let owner = args.get(2).uint32_value(scope).unwrap_or(0);
+    let result = ORCHESTRATED_POOLS.with(|pools| -> Result<(), String> {
+        let pools = pools.borrow();
+        let pool = pools
+            .get(handle)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| format!("scheduleOrchestratedWorker: invalid pool handle {handle}"))?;
+        let sender = pool
+            .senders
+            .get(worker)
+            .ok_or_else(|| format!("scheduleOrchestratedWorker: invalid worker {worker}"))?;
+        sender
+            .send(OrchestratedWorkerCommand::Run(owner))
+            .map_err(|_| format!("scheduleOrchestratedWorker: worker {worker} stopped"))
+    });
+    if let Err(error) = result {
+        throw_error(scope, &error);
+    }
+}
+
+fn take_orchestrated_pool_events(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let events = ORCHESTRATED_POOLS.with(|pools| -> Result<Vec<OrchestratedPoolEvent>, String> {
+        let pools = pools.borrow();
+        let pool = pools
+            .get(handle)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| format!("takeOrchestratedPoolEvents: invalid pool handle {handle}"))?;
+        pool.shared.drain_wake();
+        Ok(pool.shared.inner.lock().unwrap().events.drain(..).collect())
+    });
+    let events = match events {
+        Ok(events) => events,
+        Err(error) => {
+            throw_error(scope, &error);
+            return;
+        }
+    };
+    let result = v8::Array::new(scope, events.len() as i32);
+    for (index, event) in events.into_iter().enumerate() {
+        let object = v8::Object::new(scope);
+        let kind = match event.kind {
+            OrchestratedPoolEventKind::Ready => "ready",
+            OrchestratedPoolEventKind::Quiescent => "quiescent",
+            OrchestratedPoolEventKind::Settled => "settled",
+            OrchestratedPoolEventKind::Error => "error",
+        };
+        let mut fields: Vec<(&str, v8::Local<v8::Value>)> = vec![
+            ("kind", v8::String::new(scope, kind).unwrap().into()),
+            (
+                "worker",
+                v8::Integer::new_from_unsigned(scope, event.worker as u32).into(),
+            ),
+            (
+                "owner",
+                v8::Integer::new_from_unsigned(scope, event.owner).into(),
+            ),
+            (
+                "loopTurns",
+                v8::Number::new(scope, event.loop_turns as f64).into(),
+            ),
+        ];
+        if let Some(bytes) = event.value {
+            let value = match crate::realm::serializer::deserialize_value(scope, &bytes) {
+                Ok(value) => value,
+                Err(error) => {
+                    throw_error(scope, &format!("takeOrchestratedPoolEvents: {error}"));
+                    return;
+                }
+            };
+            fields.push(("value", value));
+        }
+        if let Some(error) = event.error {
+            fields.push(("error", v8::String::new(scope, &error).unwrap().into()));
+        }
+        for (name, value) in fields {
+            let key = v8::String::new(scope, name).unwrap();
+            object.set(scope, key.into(), value);
+        }
+        result.set_index(scope, index as u32, object.into());
+    }
+    rv.set(result.into());
+}
+
+fn close_orchestrated_pool(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let pool =
+        ORCHESTRATED_POOLS.with(|pools| pools.borrow_mut().get_mut(handle).and_then(Option::take));
+    let Some(mut pool) = pool else {
+        throw_error(
+            scope,
+            &format!("closeOrchestratedPool: invalid pool handle {handle}"),
+        );
+        return;
+    };
+    pool.shutdown();
+    let metrics = pool.shared.inner.lock().unwrap().metrics;
+    let result = v8::Object::new(scope);
+    let fields: [(&str, v8::Local<v8::Value>); 5] = [
         (
             "workloadSwitches",
-            v8::Number::new(scope, metrics.0 as f64).into(),
+            v8::Number::new(scope, metrics.workload_switches as f64).into(),
         ),
         (
             "workloadMigrations",
-            v8::Number::new(scope, metrics.1 as f64).into(),
+            v8::Number::new(scope, metrics.workload_migrations as f64).into(),
         ),
         (
             "isolateEntries",
-            v8::Number::new(scope, metrics.2 as f64).into(),
+            v8::Number::new(scope, metrics.isolate_entries as f64).into(),
         ),
         (
             "isolateExits",
-            v8::Number::new(scope, metrics.3 as f64).into(),
+            v8::Number::new(scope, metrics.isolate_exits as f64).into(),
         ),
-        ("loopTurns", v8::Number::new(scope, metrics.4 as f64).into()),
         (
-            "workerThreads",
-            v8::Number::new(scope, worker_count as f64).into(),
+            "loopTurns",
+            v8::Number::new(scope, metrics.loop_turns as f64).into(),
         ),
     ];
     for (name, value) in fields {
@@ -2318,6 +2399,14 @@ fn drive_pooled_resident_workloads(
         result.set(scope, key.into(), value);
     }
     rv.set(result.into());
+}
+
+fn process_readiness_control_fd(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::Integer::new(scope, shared_readiness().wake_read).into());
 }
 
 fn complete_entered(

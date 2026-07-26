@@ -3,12 +3,17 @@ import * as loop from 'internal:runtime/loop';
 import * as socket from 'fino:net/socket';
 export default async function readAfterReady(input: {
   fd: number;
+  delayMs?: number;
   includeLoopFd?: boolean;
   readIterations?: number;
   raceFd?: number;
   structuredValue?: unknown;
   write?: string;
 }): Promise<unknown> {
+  if (input.delayMs !== undefined) {
+    await loop.timeout(input.delayMs);
+    return input.delayMs;
+  }
   if (input.structuredValue !== undefined) return input.structuredValue;
   if (input.readIterations !== undefined) {
     let reads = 0;

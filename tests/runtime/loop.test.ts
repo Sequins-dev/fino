@@ -353,18 +353,23 @@ describe('I/O watchers', () => {
 describe('Backend-specific loop hooks', () => {
   it('registerWakeSource does not keep the loop alive and wakes tick()', (t) => {
     const { server, client, peer } = connectedPair();
+    let wakes = 0;
     try {
-      loop.registerWakeSource(peer);
+      loop.registerWakeSource(peer, () => {
+        wakes++;
+      });
       t.equal(loop.alive(), false, 'wake source alone does not keep loop alive');
       sock.send(client, encodeUtf8('wake'), 0);
       const dispatched = loop.tick(100);
       t.ok(dispatched >= 1, 'wake source produced a backend event');
+      t.equal(wakes, 1, 'wake source callback ran');
       t.equal(
         decodeUtf8(requireRecv(sock.recv(peer, 64, 0))),
         'wake',
         'wake bytes remain consumable',
       );
     } finally {
+      loop.unregisterWakeSource(peer);
       closeAll(peer, client, server);
     }
   });

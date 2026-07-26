@@ -377,9 +377,9 @@ interface DriveLoopOptions {
  * event loop still has live handles (pending timers, sockets, watchers,
  * Atomics waiters) or while `opts.childrenAlive?.()` reports live children.
  *
- * The Rust host loop owns the adaptive blocking wait on the thread-shared
- * reactor. TypeScript only dispatches completion metadata into its promise
- * resolvers; it never decides when the OS poll should block.
+ * The Rust host loop owns the short blocking wait on the thread-shared reactor.
+ * TypeScript dispatches completion metadata and owns workload scheduling
+ * policy, but does not block inside a child or orchestration isolate.
  *
  * ```ts no_run
  * import { driveLoop } from 'internal:bootstrap';
