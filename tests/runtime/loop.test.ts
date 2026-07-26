@@ -121,6 +121,16 @@ describe('Backend contract', () => {
       backend.destroy(raw as never);
     }
   });
+  it('removes absent readiness watches from a fresh backend', (t) => {
+    const raw = backend.create();
+    try {
+      backend.removeRead(raw, -1);
+      backend.removeWrite(raw, -1);
+      t.ok(true, 'read and write cleanup are idempotent before registration');
+    } finally {
+      backend.destroy(raw);
+    }
+  });
 });
 describe('Basic operations', () => {
   it('timeout() resolves after delay', (t) => {

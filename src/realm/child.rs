@@ -130,6 +130,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             config.reload_requested_signal,
         );
         context.set_slot(Rc::new(RefCell::new(state)));
+        crate::scheduler_native::configure_reactor_workload(scope)?;
 
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
@@ -222,6 +223,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     // -----------------------------------------------------------------------
     // Host loop
     // -----------------------------------------------------------------------
+    let mut empty_reactor_turns = 0u8;
     'main: loop {
         let should_continue = 'step: {
             let scope = &mut v8::ContextScope::new(isolate_scope, context);
@@ -284,6 +286,13 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             break 'main;
         }
         realm::process_pending_creates(isolate_scope, &state_rc);
+        crate::scheduler_native::clear_ready_workloads();
+        let timeout_ms = if empty_reactor_turns >= 3 { 25 } else { 0 };
+        if crate::scheduler_native::wait_for_reactor(timeout_ms)? {
+            empty_reactor_turns = 0;
+        } else {
+            empty_reactor_turns = empty_reactor_turns.saturating_add(1);
+        }
     }
 
     // -----------------------------------------------------------------------

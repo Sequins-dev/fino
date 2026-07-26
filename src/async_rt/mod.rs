@@ -131,33 +131,42 @@ thread_local! {
     static STATE: RefCell<Option<IsolateAsyncState>> = const { RefCell::new(None) };
 }
 
-/// Initialize the per-isolate async state. Call once per isolate, before the
-/// event loop starts. Returns the wake-pipe read fd to expose to JS.
-pub fn init() -> RawFd {
+/// Build a detached async state for a parked isolate.
+///
+/// A scheduler swaps this state into the thread-local slot while it pumps the
+/// owning isolate, keeping executors, completions, and wake pipes separate
+/// between isolates that share one OS thread.
+pub fn new_state() -> IsolateAsyncState {
     let mut fds = [0i32; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
     assert_eq!(ret, 0, "pipe(2) failed");
 
-    // Set O_NONBLOCK on both ends so reads/writes never block.
     unsafe {
         libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
         libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
-    let wake_read = fds[0];
-    let wake_write = fds[1];
+    IsolateAsyncState {
+        executor: async_executor::LocalExecutor::new(),
+        completions: Arc::new(Mutex::new(Vec::new())),
+        js_call_requests: Arc::new(Mutex::new(Vec::new())),
+        view_releases: Arc::new(Mutex::new(Vec::new())),
+        wake_read: fds[0],
+        wake_write: fds[1],
+    }
+}
 
-    STATE.with(|s| {
-        *s.borrow_mut() = Some(IsolateAsyncState {
-            executor: async_executor::LocalExecutor::new(),
-            completions: Arc::new(Mutex::new(Vec::new())),
-            js_call_requests: Arc::new(Mutex::new(Vec::new())),
-            view_releases: Arc::new(Mutex::new(Vec::new())),
-            wake_read,
-            wake_write,
-        });
-    });
+/// Install a parked isolate's async state and return the previous state.
+pub fn swap_state(new: Option<IsolateAsyncState>) -> Option<IsolateAsyncState> {
+    STATE.with(|state| std::mem::replace(&mut *state.borrow_mut(), new))
+}
 
+/// Initialize the per-isolate async state. Call once per isolate, before the
+/// event loop starts. Returns the wake-pipe read fd to expose to JS.
+pub fn init() -> RawFd {
+    let state = new_state();
+    let wake_read = state.wake_read;
+    STATE.with(|slot| *slot.borrow_mut() = Some(state));
     wake_read
 }
 

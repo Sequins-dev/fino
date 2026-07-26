@@ -125,6 +125,7 @@
  * @internal
  */
 import { dlopen, Pointer } from 'fino:ffi';
+import { cancelSharedPoll, registerSharedPoll, takeSharedPoll } from 'internal:scheduler-native';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -146,6 +147,8 @@ interface CqRingOffsets {
 /** Opaque io_uring loop handle returned by create(). */
 interface IoUringLoop {
   ringFd: number;
+  ownsFd: boolean;
+  shared: boolean;
   sqRing: object;
   sqRingSize: number;
   cqRing: object;
@@ -156,8 +159,7 @@ interface IoUringLoop {
   cqOff: CqRingOffsets;
   sqEntries: number;
   cqEntries: number;
-  sqTailLocal: number;
-  sqSubmittedLocal: number;
+  pendingSubmissions: number;
   timerBufs: Map<number, ArrayBuffer>;
   waitTimerBufs: Map<number, ArrayBuffer>;
   canceledTimers: Set<number>;
@@ -183,6 +185,19 @@ interface IoUringLoop {
   persistentReads: Set<number>;
   signalFds: Map<number, number>;
   signalFdToSig: Map<number, number>;
+  signalFdToToken: Map<number, number>;
+}
+/** Scalar fields needed to map an existing thread-shared io_uring. */
+export interface IoUringDescriptor {
+  kind: 'io_uring';
+  ringFd: number;
+  sqRingSize: number;
+  cqRingSize: number;
+  sqesSize: number;
+  sqOff: SqRingOffsets;
+  cqOff: CqRingOffsets;
+  sqEntries: number;
+  cqEntries: number;
 }
 /** kqueue-compatible event emitted by drainCqes(). */
 interface CqeEvent {
@@ -471,6 +486,8 @@ export function create(entries: number = 256): IoUringLoop {
   }
   return {
     ringFd,
+    ownsFd: true,
+    shared: false,
     sqRing,
     sqRingSize,
     cqRing,
@@ -481,8 +498,7 @@ export function create(entries: number = 256): IoUringLoop {
     cqOff,
     sqEntries,
     cqEntries,
-    sqTailLocal: 0,
-    sqSubmittedLocal: 0,
+    pendingSubmissions: 0,
     timerBufs: new Map(),
     waitTimerBufs: new Map(),
     canceledTimers: new Set(),
@@ -496,6 +512,91 @@ export function create(entries: number = 256): IoUringLoop {
     persistentReads: new Set(),
     signalFds: new Map(),
     signalFdToSig: new Map(),
+    signalFdToToken: new Map(),
+  };
+}
+/**
+ * Return the scalar attachment descriptor for `loop`.
+ *
+ * Another isolate on the same OS thread can pass this value to {@link attach}
+ * and map the same kernel submission and completion rings. Resolver maps and
+ * operation policy remain local to each isolate.
+ *
+ * @internal
+ */
+export function describe(loop: IoUringLoop): IoUringDescriptor {
+  return {
+    kind: 'io_uring',
+    ringFd: loop.ringFd,
+    sqRingSize: loop.sqRingSize,
+    cqRingSize: loop.cqRingSize,
+    sqesSize: loop.sqesSize,
+    sqOff: loop.sqOff,
+    cqOff: loop.cqOff,
+    sqEntries: loop.sqEntries,
+    cqEntries: loop.cqEntries,
+  };
+}
+/**
+ * Map a thread-shared io_uring into the current isolate.
+ *
+ * The descriptor owns no JavaScript objects. This call creates isolate-local
+ * pointer wrappers over the same kernel mappings while the native thread-local
+ * registry retains the ring fd.
+ *
+ * @internal
+ */
+export function attach(descriptor: IoUringDescriptor): IoUringLoop {
+  const { ringFd, sqRingSize, cqRingSize, sqesSize } = descriptor;
+  const sqRing = lib.symbols.mmap(
+    Pointer.null(),
+    sqRingSize,
+    PROT_READ | PROT_WRITE,
+    MAP_SHARED | MAP_POPULATE,
+    ringFd,
+    IORING_OFF_SQ_RING,
+  );
+  const cqRing = lib.symbols.mmap(
+    Pointer.null(),
+    cqRingSize,
+    PROT_READ | PROT_WRITE,
+    MAP_SHARED | MAP_POPULATE,
+    ringFd,
+    IORING_OFF_CQ_RING,
+  );
+  const sqes = lib.symbols.mmap(
+    Pointer.null(),
+    sqesSize,
+    PROT_READ | PROT_WRITE,
+    MAP_SHARED | MAP_POPULATE,
+    ringFd,
+    IORING_OFF_SQES,
+  );
+  if (sqRing === null || cqRing === null || sqes === null) {
+    throw new Error('io_uring shared mmap failed');
+  }
+  return {
+    ...descriptor,
+    ownsFd: false,
+    shared: true,
+    sqRing,
+    cqRing,
+    sqes,
+    pendingSubmissions: 0,
+    timerBufs: new Map(),
+    waitTimerBufs: new Map(),
+    canceledTimers: new Set(),
+    nextWaitTimerId: 1,
+    fileBufs: new Map(),
+    nextPollId: FIRST_POLL_ID,
+    readPolls: new Map(),
+    currentReadPolls: new Map(),
+    writePolls: new Map(),
+    currentWritePolls: new Map(),
+    persistentReads: new Set(),
+    signalFds: new Map(),
+    signalFdToSig: new Map(),
+    signalFdToToken: new Map(),
   };
 }
 // ---------------------------------------------------------------------------
@@ -511,11 +612,21 @@ function submitSqe(
   userData: bigint,
   pollEvents: number,
 ): void {
-  if (loop.sqTailLocal - loop.sqSubmittedLocal >= loop.sqEntries) {
+  let tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
+  let head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
+  if ((tail - head) >>> 0 >= loop.sqEntries) {
     submitPending(loop);
+    tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
+    head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
+    if ((tail - head) >>> 0 >= loop.sqEntries) {
+      const ret = Number(
+        syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), 0n, 1n, IORING_ENTER_GETEVENTS),
+      );
+      if (ret < 0) throw new Error(`io_uring_enter (capacity wait) failed: ${ret}`);
+      tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
+    }
   }
   const mask = Pointer.readU32(loop.sqRing, loop.sqOff.ring_mask);
-  const tail = loop.sqTailLocal;
   const index = tail & mask;
   const sqeBase = index * 64;
   // Zero the SQE slot first
@@ -532,17 +643,17 @@ function submitSqe(
   // Write the index into the SQ array
   const arrayOff = loop.sqOff.array + index * 4;
   Pointer.writeU32(loop.sqRing, arrayOff, index);
-  loop.sqTailLocal = tail + 1;
   // Publish the new tail
-  Pointer.writeU32(loop.sqRing, loop.sqOff.tail, loop.sqTailLocal);
+  Pointer.writeU32(loop.sqRing, loop.sqOff.tail, (tail + 1) >>> 0);
+  loop.pendingSubmissions++;
 }
 function submitPending(loop: IoUringLoop): void {
-  let toSubmit = loop.sqTailLocal - loop.sqSubmittedLocal;
+  let toSubmit = loop.pendingSubmissions;
   while (toSubmit > 0) {
     const ret = Number(syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), BigInt(toSubmit), 0n, 0n));
     if (ret < 0) throw new Error(`io_uring_enter (submit) failed: ${ret}`);
     if (ret === 0) throw new Error('io_uring_enter (submit) made no progress');
-    loop.sqSubmittedLocal += ret;
+    loop.pendingSubmissions -= ret;
     toSubmit -= ret;
   }
 }
@@ -609,10 +720,13 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
         );
       }
       filter = EVFILT_SIGNAL;
-      ident = signo;
+      ident = loop.signalFdToToken.get(ident) ?? signo;
     } else if (userData.kind === USER_DATA_READ) {
-      const poll = loop.readPolls.get(ident);
-      if (poll !== undefined) {
+      const sharedUserData = loop.shared ? takeSharedPoll(ident) : null;
+      const poll = loop.shared ? undefined : loop.readPolls.get(ident);
+      if (sharedUserData !== null) {
+        ident = sharedUserData;
+      } else if (poll !== undefined) {
         loop.readPolls.delete(ident);
         if (loop.currentReadPolls.get(poll.fd) !== ident) {
           head++;
@@ -628,19 +742,24 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
       }
       filter = EVFILT_READ;
     } else if (userData.kind === USER_DATA_WRITE) {
-      const poll = loop.writePolls.get(ident);
-      if (poll === undefined) {
+      const sharedUserData = loop.shared ? takeSharedPoll(ident) : null;
+      const poll = loop.shared ? undefined : loop.writePolls.get(ident);
+      if (sharedUserData !== null) {
+        ident = sharedUserData;
+        filter = EVFILT_WRITE;
+      } else if (poll === undefined) {
         head++;
         continue;
+      } else {
+        loop.writePolls.delete(ident);
+        if (loop.currentWritePolls.get(poll.fd) !== ident) {
+          head++;
+          continue;
+        }
+        loop.currentWritePolls.delete(poll.fd);
+        ident = poll.userData;
+        filter = EVFILT_WRITE;
       }
-      loop.writePolls.delete(ident);
-      if (loop.currentWritePolls.get(poll.fd) !== ident) {
-        head++;
-        continue;
-      }
-      loop.currentWritePolls.delete(poll.fd);
-      ident = poll.userData;
-      filter = EVFILT_WRITE;
     } else {
       // Legacy/unexpected POLL_ADD completion — fall back to the poll mask.
       filter = res & POLLIN ? EVFILT_READ : EVFILT_WRITE;
@@ -678,11 +797,15 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
  * @internal
  */
 export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
-  const pollId = nextPollId(loop);
-  loop.readPolls.set(pollId, {
-    fd,
-    userData,
-  });
+  const previousPollId = loop.currentReadPolls.get(fd);
+  if (loop.shared && previousPollId !== undefined) cancelSharedPoll(previousPollId);
+  const pollId = loop.shared ? registerSharedPoll(userData) : nextPollId(loop);
+  if (!loop.shared) {
+    loop.readPolls.set(pollId, {
+      fd,
+      userData,
+    });
+  }
   loop.currentReadPolls.set(fd, pollId);
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, pollId), POLLIN);
 }
@@ -716,11 +839,15 @@ export function addPersistentRead(loop: IoUringLoop, fd: number, userData: numbe
  * @internal
  */
 export function addWrite(loop: IoUringLoop, fd: number, userData: number): void {
-  const pollId = nextPollId(loop);
-  loop.writePolls.set(pollId, {
-    fd,
-    userData,
-  });
+  const previousPollId = loop.currentWritePolls.get(fd);
+  if (loop.shared && previousPollId !== undefined) cancelSharedPoll(previousPollId);
+  const pollId = loop.shared ? registerSharedPoll(userData) : nextPollId(loop);
+  if (!loop.shared) {
+    loop.writePolls.set(pollId, {
+      fd,
+      userData,
+    });
+  }
   loop.currentWritePolls.set(fd, pollId);
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_WRITE, pollId), POLLOUT);
 }
@@ -742,7 +869,8 @@ export function removeRead(loop: IoUringLoop, fd: number): void {
   const pollId = loop.currentReadPolls.get(fd);
   if (pollId !== undefined) {
     loop.currentReadPolls.delete(fd);
-    loop.readPolls.delete(pollId);
+    if (loop.shared) cancelSharedPoll(pollId);
+    else loop.readPolls.delete(pollId);
   }
   // POLL_ADD is one-shot by default in io_uring. The eventual completion is
   // ignored through its unique poll id after the logical watch is removed.
@@ -765,7 +893,8 @@ export function removeWrite(loop: IoUringLoop, fd: number): void {
   const pollId = loop.currentWritePolls.get(fd);
   if (pollId !== undefined) {
     loop.currentWritePolls.delete(fd);
-    loop.writePolls.delete(pollId);
+    if (loop.shared) cancelSharedPoll(pollId);
+    else loop.writePolls.delete(pollId);
   }
 }
 /**
@@ -782,7 +911,7 @@ export function removeWrite(loop: IoUringLoop, fd: number): void {
  * uring.addSignal(loop, 15);
  * ```
  */
-export function addSignal(loop: IoUringLoop, signo: number): void {
+export function addSignal(loop: IoUringLoop, signo: number, userData: number = signo): void {
   if (loop.signalFds.has(signo)) return;
   // Build glibc sigset_t: bit (signo-1) set.
   const sigset = new ArrayBuffer(GLIBC_SIGSET_SIZE);
@@ -798,6 +927,7 @@ export function addSignal(loop: IoUringLoop, signo: number): void {
   if (fd < 0) throw new Error(`signalfd4 failed: ${fd}`);
   loop.signalFds.set(signo, fd);
   loop.signalFdToSig.set(fd, signo);
+  loop.signalFdToToken.set(fd, userData);
   // Register POLL_ADD on the signalfd; userData = fd (used as drainCqes lookup key)
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_SIGNAL, fd), POLLIN);
 }
@@ -814,6 +944,7 @@ export function removeSignal(loop: IoUringLoop, signo: number): void {
   if (fd === undefined) return;
   loop.signalFds.delete(signo);
   loop.signalFdToSig.delete(fd);
+  loop.signalFdToToken.delete(fd);
   lib.symbols.close(fd);
 }
 /**
@@ -888,6 +1019,19 @@ export function removeTimer(loop: IoUringLoop, id: number): void {
 export function poll(loop: IoUringLoop): CqeEvent[] {
   submitPending(loop);
   return drainCqes(loop);
+}
+/**
+ * Submit this isolate's queued SQEs without harvesting completions.
+ *
+ * This makes registrations visible on the thread-shared ring before the
+ * scheduler enters another isolate.
+ *
+ * @internal
+ */
+export function flush(loop: IoUringLoop): number {
+  const submissions = loop.pendingSubmissions;
+  submitPending(loop);
+  return submissions;
 }
 /**
  * Blocking wait — block until at least 1 CQE is available or timeout expires.
@@ -1073,11 +1217,11 @@ export function destroy(loop: IoUringLoop): void {
   lib.symbols.munmap(loop.sqRing, loop.sqRingSize);
   lib.symbols.munmap(loop.cqRing, loop.cqRingSize);
   lib.symbols.munmap(loop.sqes, loop.sqesSize);
-  lib.symbols.close(loop.ringFd);
+  if (loop.ownsFd) lib.symbols.close(loop.ringFd);
 }
 /**
- * The io_uring ring fd. It polls readable when completion-queue entries are
- * pending, so a parent loop can watch it to wake on this loop's activity.
+ * The thread reactor's io_uring ring fd. It polls readable when completion
+ * queue entries are pending.
  *
  * ```typescript no_run
  * import * as uring from 'internal:runtime/io_uring';

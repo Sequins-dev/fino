@@ -103,6 +103,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         );
 
         context.set_slot(Rc::new(RefCell::new(state)));
+        crate::scheduler_native::configure_reactor_workload(scope)?;
 
         // Initialize the CPED with an empty JS Array — this becomes the live
         // async context frame. Must happen before any JS code runs.
@@ -185,6 +186,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     //
     // Using a named loop label so `break` inside the inner block exits here.
     // -----------------------------------------------------------------------
+    let mut empty_reactor_turns = 0u8;
     'main: loop {
         let should_continue = 'step: {
             let scope = &mut v8::ContextScope::new(isolate_scope, context);
@@ -265,6 +267,13 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
 
         // Create any child contexts queued during the JS step.
         realm::process_pending_creates(isolate_scope, &state_rc);
+        crate::scheduler_native::clear_ready_workloads();
+        let timeout_ms = if empty_reactor_turns >= 3 { 25 } else { 0 };
+        if crate::scheduler_native::wait_for_reactor(timeout_ms)? {
+            empty_reactor_turns = 0;
+        } else {
+            empty_reactor_turns = empty_reactor_turns.saturating_add(1);
+        }
     }
 
     // -----------------------------------------------------------------------

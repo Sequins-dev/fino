@@ -454,14 +454,6 @@ pub struct FinoState {
     /// Runtime-owned bootstrap metadata, separate from `RealmOptions.data`.
     pub realm_bootstrap_data: Option<String>,
 
-    /// The pollable fd of this realm's event-loop backend (kqueue fd on macOS,
-    /// io_uring ring fd on Linux; -1 when the backend has none). Written by the
-    /// child via `internal:realm-bridge.setLoopFd()`; read by the parent via
-    /// `internal:realm-native.getChildLoopFd()` so the parent's loop can wake
-    /// on embedded-child I/O and timer events instead of polling on a fixed
-    /// interval.
-    pub loop_fd: Option<i32>,
-
     /// Shared atomic for thread realms: `requestReload()` writes `true` here
     /// so the parent's `ThreadRealmHandle` can observe the reload intent
     /// without entering the child's V8 context. `None` for embedded/process.
@@ -540,7 +532,6 @@ impl FinoState {
             repl_mode: false,
             realm_data: None,
             realm_bootstrap_data: None,
-            loop_fd: None,
             reload_requested_signal: None,
             entry_error: None,
             port: None,
@@ -604,7 +595,6 @@ impl FinoState {
             repl_mode,
             realm_data,
             realm_bootstrap_data,
-            loop_fd: None,
             reload_requested_signal,
             entry_error: None,
             port,
