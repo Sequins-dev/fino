@@ -1,15 +1,15 @@
 /**
-* Tests for the console global.
-*
-* Since console output goes directly to fd 1/2 via libc (not capturable in
-* tests), these tests focus on behavioral correctness: functions are callable,
-* don't throw, maintain correct state, and handle edge cases like circular
-* references without crashing.
-*/
+ * Tests for the console global.
+ *
+ * Since console output goes directly to fd 1/2 via libc (not capturable in
+ * tests), these tests focus on behavioral correctness: functions are callable,
+ * don't throw, maintain correct state, and handle edge cases like circular
+ * references without crashing.
+ */
 import { describe, it } from 'fino:test/test';
 import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
 const { console } = globalThis;
-const consoleRecord = (console as unknown) as Record<string | symbol, unknown>;
+const consoleRecord = console as unknown as Record<string | symbol, unknown>;
 function captureConsole(fn: () => void): ConsoleCaptureRecord[] {
   const records: ConsoleCaptureRecord[] = [];
   const release = _pushConsoleCapture((record) => records.push(record));
@@ -39,7 +39,7 @@ describe('console exists and has expected methods', () => {
       'timeLog',
       'count',
       'countReset',
-      'clear'
+      'clear',
     ];
     for (const m of methods) {
       t.equal(typeof consoleRecord[m], 'function', `console.${m} is a function`);
@@ -57,7 +57,7 @@ describe('console exists and has expected methods', () => {
       'countReset',
       'time',
       'timeLog',
-      'timeEnd'
+      'timeEnd',
     ]) {
       const fn = consoleRecord[method] as Function;
       t.equal(fn.length, 0, `console.${method}.length`);
@@ -65,8 +65,16 @@ describe('console exists and has expected methods', () => {
   });
   it('has namespace-object prototype and toStringTag descriptors', (t) => {
     const prototype = Object.getPrototypeOf(console);
-    t.deepEqual(Object.getOwnPropertyNames(prototype), [], 'console prototype has no own properties');
-    t.equal(Object.getPrototypeOf(prototype), Object.prototype, 'console prototype inherits from Object.prototype');
+    t.deepEqual(
+      Object.getOwnPropertyNames(prototype),
+      [],
+      'console prototype has no own properties',
+    );
+    t.equal(
+      Object.getPrototypeOf(prototype),
+      Object.prototype,
+      'console prototype inherits from Object.prototype',
+    );
     const descriptor = Object.getOwnPropertyDescriptor(console, Symbol.toStringTag);
     t.ok(descriptor, 'toStringTag descriptor exists');
     if (descriptor === undefined) throw new Error('descriptor should exist');
@@ -83,11 +91,7 @@ describe('console output methods do not throw', () => {
       console.log();
       console.log('string');
       console.log(42, true, null, undefined);
-      console.log({ a: 1 }, [
-        1,
-        2,
-        3
-      ]);
+      console.log({ a: 1 }, [1, 2, 3]);
       console.log(Symbol('s'), 42n);
       console.info('info');
       console.debug('debug');
@@ -119,16 +123,19 @@ describe('console output methods do not throw', () => {
   it('table does not throw', (t) => {
     let threw = false;
     try {
-      console.table([{
-        a: 1,
-        b: 2
-      }, {
-        a: 3,
-        b: 4
-      }]);
+      console.table([
+        {
+          a: 1,
+          b: 2,
+        },
+        {
+          a: 3,
+          b: 4,
+        },
+      ]);
       console.table({
         x: 1,
-        y: 2
+        y: 2,
       });
       console.table(null);
     } catch (_) {
@@ -240,18 +247,14 @@ describe('console.time / timeEnd / timeLog', () => {
 });
 describe('console label conversion', () => {
   it('converts object labels to strings', (t) => {
-    for (const method of [
-      'count',
-      'countReset',
-      'time',
-      'timeLog',
-      'timeEnd'
-    ]) {
+    for (const method of ['count', 'countReset', 'time', 'timeLog', 'timeEnd']) {
       let called = false;
-      const label = { toString() {
-        called = true;
-        return `label-${method}`;
-      } };
+      const label = {
+        toString() {
+          called = true;
+          return `label-${method}`;
+        },
+      };
       captureConsole(() => {
         (consoleRecord[method] as (label: unknown) => void)(label);
       });
@@ -259,16 +262,17 @@ describe('console label conversion', () => {
     }
   });
   it('rethrows label conversion errors', (t) => {
-    for (const method of [
-      'count',
-      'countReset',
-      'time',
-      'timeLog',
-      'timeEnd'
-    ]) {
-      t.throws(() => (consoleRecord[method] as (label: unknown) => void)({ toString() {
-        throw new Error('conversion error');
-      } }), /conversion error/, `${method} rethrows conversion error`);
+    for (const method of ['count', 'countReset', 'time', 'timeLog', 'timeEnd']) {
+      t.throws(
+        () =>
+          (consoleRecord[method] as (label: unknown) => void)({
+            toString() {
+              throw new Error('conversion error');
+            },
+          }),
+        /conversion error/,
+        `${method} rethrows conversion error`,
+      );
     }
   });
 });
@@ -488,13 +492,20 @@ describe('console capture output', () => {
       console.log('hello %s %d %%', 'world', 3.7);
       console.info({ a: 1 }, ['x']);
     });
-    t.deepEqual(records, [{
-      fd: 1,
-      text: 'hello world 3 %'
-    }, {
-      fd: 1,
-      text: '{ a: 1 } [ "x" ]'
-    }], 'stdout records include formatted text');
+    t.deepEqual(
+      records,
+      [
+        {
+          fd: 1,
+          text: 'hello world 3 %',
+        },
+        {
+          fd: 1,
+          text: '{ a: 1 } [ "x" ]',
+        },
+      ],
+      'stdout records include formatted text',
+    );
   });
   it('captures stderr routing for warnings, errors, and assertions', (t) => {
     const records = captureConsole(() => {
@@ -502,20 +513,24 @@ describe('console capture output', () => {
       console.error('boom');
       console.assert(false, 'bad %s', 'state');
     });
-    t.deepEqual(records, [
-      {
-        fd: 2,
-        text: '[warn] careful'
-      },
-      {
-        fd: 2,
-        text: '[error] boom'
-      },
-      {
-        fd: 2,
-        text: '[assert] bad state'
-      }
-    ], 'stderr records include expected prefixes');
+    t.deepEqual(
+      records,
+      [
+        {
+          fd: 2,
+          text: '[warn] careful',
+        },
+        {
+          fd: 2,
+          text: '[error] boom',
+        },
+        {
+          fd: 2,
+          text: '[assert] bad state',
+        },
+      ],
+      'stderr records include expected prefixes',
+    );
   });
   it('captures groups and collapsed groups with indentation', (t) => {
     const records = captureConsole(() => {
@@ -526,24 +541,28 @@ describe('console capture output', () => {
       console.groupEnd();
       console.groupEnd();
     });
-    t.deepEqual(records, [
-      {
-        fd: 1,
-        text: 'outer'
-      },
-      {
-        fd: 1,
-        text: '  inside'
-      },
-      {
-        fd: 1,
-        text: '  inner'
-      },
-      {
-        fd: 1,
-        text: '    deep'
-      }
-    ], 'group indentation is captured');
+    t.deepEqual(
+      records,
+      [
+        {
+          fd: 1,
+          text: 'outer',
+        },
+        {
+          fd: 1,
+          text: '  inside',
+        },
+        {
+          fd: 1,
+          text: '  inner',
+        },
+        {
+          fd: 1,
+          text: '    deep',
+        },
+      ],
+      'group indentation is captured',
+    );
   });
   it('captures counters and missing counter warnings', (t) => {
     const records = captureConsole(() => {
@@ -552,20 +571,24 @@ describe('console capture output', () => {
       console.countReset('capture-count');
       console.countReset('capture-count-missing');
     });
-    t.deepEqual(records, [
-      {
-        fd: 1,
-        text: 'capture-count: 1'
-      },
-      {
-        fd: 1,
-        text: 'capture-count: 2'
-      },
-      {
-        fd: 2,
-        text: '[warn] Count for \'capture-count-missing\' does not exist'
-      }
-    ], 'counter records are captured');
+    t.deepEqual(
+      records,
+      [
+        {
+          fd: 1,
+          text: 'capture-count: 1',
+        },
+        {
+          fd: 1,
+          text: 'capture-count: 2',
+        },
+        {
+          fd: 2,
+          text: "[warn] Count for 'capture-count-missing' does not exist",
+        },
+      ],
+      'counter records are captured',
+    );
   });
   it('captures timer output and missing timer warnings', (t) => {
     const records = captureConsole(() => {
@@ -576,24 +599,37 @@ describe('console capture output', () => {
     });
     t.equal(records.length, 3, 'three timer records');
     t.equal(records[0]!.fd, 1, 'timeLog uses stdout');
-    t.ok(/^capture-timer: [0-9.]+ms half$/.test(records[0]!.text), 'timeLog includes elapsed and args');
+    t.ok(
+      /^capture-timer: [0-9.]+ms half$/.test(records[0]!.text),
+      'timeLog includes elapsed and args',
+    );
     t.equal(records[1]!.fd, 1, 'timeEnd uses stdout');
     t.ok(/^capture-timer: [0-9.]+ms$/.test(records[1]!.text), 'timeEnd includes elapsed');
-    t.deepEqual(records[2], {
-      fd: 2,
-      text: '[warn] Timer \'capture-timer-missing\' does not exist'
-    }, 'missing timer warning uses stderr');
+    t.deepEqual(
+      records[2],
+      {
+        fd: 2,
+        text: "[warn] Timer 'capture-timer-missing' does not exist",
+      },
+      'missing timer warning uses stderr',
+    );
   });
   it('captures table JSON output', (t) => {
     const records = captureConsole(() => {
-      console.table([{
-        name: 'a',
-        n: 1
-      }]);
+      console.table([
+        {
+          name: 'a',
+          n: 1,
+        },
+      ]);
     });
     t.equal(records.length, 1, 'one table record');
     t.equal(records[0]!.fd, 1, 'table uses stdout');
-    t.equal(records[0]!.text, '[\n  {\n    "name": "a",\n    "n": 1\n  }\n]', 'table uses JSON output');
+    t.equal(
+      records[0]!.text,
+      '[\n  {\n    "name": "a",\n    "n": 1\n  }\n]',
+      'table uses JSON output',
+    );
   });
   it('captures table fallback output when JSON serialization fails', (t) => {
     const row: any = { name: 'loop' };
@@ -601,9 +637,15 @@ describe('console capture output', () => {
     const records = captureConsole(() => {
       console.table(row);
     });
-    t.deepEqual(records, [{
-      fd: 1,
-      text: '{ name: "loop", self: [Circular *] }'
-    }], 'table falls back to inspect output for circular data');
+    t.deepEqual(
+      records,
+      [
+        {
+          fd: 1,
+          text: '{ name: "loop", self: [Circular *] }',
+        },
+      ],
+      'table falls back to inspect output for circular data',
+    );
   });
 });

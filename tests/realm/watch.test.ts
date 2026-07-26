@@ -1,10 +1,10 @@
 /**
-* Tests for realm watch mode (watch: true).
-*
-* The watcher runs inside the child realm's bootstrap; when a watched file
-* changes, the child calls requestReload() (sets terminated=true), the parent
-* sees a null step result and spawns a fresh handle — same Realm instance.
-*/
+ * Tests for realm watch mode (watch: true).
+ *
+ * The watcher runs inside the child realm's bootstrap; when a watched file
+ * changes, the child calls requestReload() (sets terminated=true), the parent
+ * sees a null step result and spawns a fresh handle — same Realm instance.
+ */
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Realm } from 'fino:realm';
@@ -47,7 +47,7 @@ function entryCode(counterPath: string, extra = ''): string {
     `const _encode = (text) => new TextEncoder().encode(text);`,
     `const _n = parseInt(await _fs.readFile(${cp}).then(_decode).catch(() => '0'));`,
     `await _fs.writeFile(${cp}, _encode(String(isNaN(_n) ? 1 : _n + 1)));`,
-    extra
+    extra,
   ].join('\n');
 }
 // ---------------------------------------------------------------------------
@@ -71,11 +71,16 @@ describe('Realm watch mode', () => {
     await rm(TEST_DIR);
   });
   it('watch: true with remote: true throws', (t) => {
-    t.throws(() => new Realm({
-      entry: '/irrelevant.ts',
-      watch: true,
-      remote: true
-    }), /watch/i, 'constructing with watch + remote throws');
+    t.throws(
+      () =>
+        new Realm({
+          entry: '/irrelevant.ts',
+          watch: true,
+          remote: true,
+        }),
+      /watch/i,
+      'constructing with watch + remote throws',
+    );
   });
   it('embedded realm reloads when entry file changes', async (t) => {
     const dir = TEST_DIR + '/embed-entry';
@@ -85,7 +90,7 @@ describe('Realm watch mode', () => {
     await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       entry: entryPath,
-      watch: true
+      watch: true,
     });
     const runP = realm.run();
     // Wait for the first run.
@@ -98,7 +103,7 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 3e3);
     realm.terminate();
     await runP;
-    t.ok(await readCounter(counterPath) >= 2, 'embedded realm reloaded after entry change');
+    t.ok((await readCounter(counterPath)) >= 2, 'embedded realm reloaded after entry change');
   });
   it('embedded realm reloads when a transitively imported file changes', async (t) => {
     const dir = TEST_DIR + '/embed-transitive';
@@ -107,19 +112,24 @@ describe('Realm watch mode', () => {
     const entryPath = dir + '/entry.ts';
     const counterPath = dir + '/counter.txt';
     await writeText(helperPath, `export const VERSION = 1;`);
-    await fs.writeFile(entryPath, textEncoder.encode([
-      `import { VERSION } from ${JSON.stringify(helperPath)};`,
-      `import { DiskFileSystem } from 'fino:file';`,
-      `const _fs = new DiskFileSystem();`,
-      `const _decode = (bytes) => new TextDecoder().decode(bytes);`,
-      `const _encode = (text) => new TextEncoder().encode(text);`,
-      `const _n = parseInt(await _fs.readFile(${JSON.stringify(counterPath)}).then(_decode).catch(() => '0'));`,
-      `await _fs.writeFile(${JSON.stringify(counterPath)}, _encode(String(isNaN(_n) ? 1 : _n + 1)));`,
-      `void VERSION;`
-    ].join('\n')));
+    await fs.writeFile(
+      entryPath,
+      textEncoder.encode(
+        [
+          `import { VERSION } from ${JSON.stringify(helperPath)};`,
+          `import { DiskFileSystem } from 'fino:file';`,
+          `const _fs = new DiskFileSystem();`,
+          `const _decode = (bytes) => new TextDecoder().decode(bytes);`,
+          `const _encode = (text) => new TextEncoder().encode(text);`,
+          `const _n = parseInt(await _fs.readFile(${JSON.stringify(counterPath)}).then(_decode).catch(() => '0'));`,
+          `await _fs.writeFile(${JSON.stringify(counterPath)}, _encode(String(isNaN(_n) ? 1 : _n + 1)));`,
+          `void VERSION;`,
+        ].join('\n'),
+      ),
+    );
     const realm = new Realm({
       entry: entryPath,
-      watch: true
+      watch: true,
     });
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 2e3);
@@ -129,7 +139,7 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 3e3);
     realm.terminate();
     await runP;
-    t.ok(await readCounter(counterPath) >= 2, 'realm reloaded after transitive import changed');
+    t.ok((await readCounter(counterPath)) >= 2, 'realm reloaded after transitive import changed');
   });
   it('files not imported by the realm do not trigger reload', async (t) => {
     const dir = TEST_DIR + '/embed-unimported';
@@ -141,7 +151,7 @@ describe('Realm watch mode', () => {
     await writeText(unrelatedPath, 'initial');
     const realm = new Realm({
       entry: entryPath,
-      watch: true
+      watch: true,
     });
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 2e3);
@@ -163,7 +173,7 @@ describe('Realm watch mode', () => {
     await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       entry: entryPath,
-      watch: true
+      watch: true,
     });
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 2e3);
@@ -190,7 +200,7 @@ describe('Realm watch mode', () => {
     await writeText(entryPath, entryCode(counterPath));
     const realm = new Realm({
       entry: entryPath,
-      watch: true
+      watch: true,
     });
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 2e3);
@@ -213,7 +223,7 @@ describe('Realm watch mode', () => {
     const realm = new Realm({
       thread: true,
       entry: entryPath,
-      watch: true
+      watch: true,
     });
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 5e3);
@@ -222,7 +232,7 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 5e3);
     realm.terminate();
     await runP;
-    t.ok(await readCounter(counterPath) >= 2, 'thread realm reloaded after entry change');
+    t.ok((await readCounter(counterPath)) >= 2, 'thread realm reloaded after entry change');
   });
   it('process realm reloads when entry file changes', async (t) => {
     const dir = TEST_DIR + '/process-entry';
@@ -233,7 +243,7 @@ describe('Realm watch mode', () => {
     const realm = new Realm({
       process: true,
       entry: entryPath,
-      watch: true
+      watch: true,
     });
     const runP = realm.run();
     await poll(() => readCounter(counterPath).then((n) => n >= 1), 8e3);
@@ -242,6 +252,6 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 8e3);
     realm.terminate();
     await runP;
-    t.ok(await readCounter(counterPath) >= 2, 'process realm reloaded after entry change');
+    t.ok((await readCounter(counterPath)) >= 2, 'process realm reloaded after entry change');
   });
 });

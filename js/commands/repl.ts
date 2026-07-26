@@ -1,46 +1,46 @@
 /**
-* fino:commands/repl — reusable `fino repl` command task.
-*
-* Implements the interactive REPL behind both `fino repl` and bare `fino`.
-* The parent realm owns the terminal — reading stdin, editing the current
-* line, and printing results — while each complete snippet is evaluated in an
-* embedded child realm created with `Realm({ repl: true })`. The child routes
-* code through the inspector bridge (`internal:repl/handler`) over the
-* realm's `MessagePort`, so snippets run in a normal runtime context with
-* top-level `await` and redeclarable bindings, and the CLI shell itself stays
-* out of scope.
-*
-* When both stdin and stdout are TTYs the loop switches the terminal to raw
-* mode for the duration of the session, enabling cursor movement, Home/End,
-* Backspace/Delete editing, and up/down navigation through in-memory input
-* history. Without a TTY it degrades to plain line reading, which makes the
-* REPL scriptable: pipe source into stdin and read results from stdout.
-* Multi-line input uses a bracket/quote balance heuristic — while the
-* accumulated buffer looks incomplete the prompt changes to `... ` and lines
-* keep accumulating. `.exit`, Ctrl-C, Ctrl-D on an empty line, or stdin EOF
-* end the session.
-*
-* The default export is the `repl` `Task`. The root Fino CLI mounts it as a
-* subcommand and also delegates to it when `fino` is invoked with no script.
-*
-* ```ts no_run
-* import { Task } from 'fino:task';
-* import replCommand from 'fino:commands/repl';
-*
-* // Run the REPL loop directly; resolves when the session ends.
-* await replCommand.run({});
-*
-* // Or mount it as a subcommand of a larger CLI.
-* const cli = new Task({
-*   name: 'mycli',
-*   description: 'My tool',
-*   outputMode: 'text',
-*   run: async () => 'usage: mycli repl',
-*   children: [replCommand],
-* });
-* await cli.parse(['repl']);
-* ```
-*/
+ * fino:commands/repl — reusable `fino repl` command task.
+ *
+ * Implements the interactive REPL behind both `fino repl` and bare `fino`.
+ * The parent realm owns the terminal — reading stdin, editing the current
+ * line, and printing results — while each complete snippet is evaluated in an
+ * embedded child realm created with `Realm({ repl: true })`. The child routes
+ * code through the inspector bridge (`internal:repl/handler`) over the
+ * realm's `MessagePort`, so snippets run in a normal runtime context with
+ * top-level `await` and redeclarable bindings, and the CLI shell itself stays
+ * out of scope.
+ *
+ * When both stdin and stdout are TTYs the loop switches the terminal to raw
+ * mode for the duration of the session, enabling cursor movement, Home/End,
+ * Backspace/Delete editing, and up/down navigation through in-memory input
+ * history. Without a TTY it degrades to plain line reading, which makes the
+ * REPL scriptable: pipe source into stdin and read results from stdout.
+ * Multi-line input uses a bracket/quote balance heuristic — while the
+ * accumulated buffer looks incomplete the prompt changes to `... ` and lines
+ * keep accumulating. `.exit`, Ctrl-C, Ctrl-D on an empty line, or stdin EOF
+ * end the session.
+ *
+ * The default export is the `repl` `Task`. The root Fino CLI mounts it as a
+ * subcommand and also delegates to it when `fino` is invoked with no script.
+ *
+ * ```ts no_run
+ * import { Task } from 'fino:task';
+ * import replCommand from 'fino:commands/repl';
+ *
+ * // Run the REPL loop directly; resolves when the session ends.
+ * await replCommand.run({});
+ *
+ * // Or mount it as a subcommand of a larger CLI.
+ * const cli = new Task({
+ *   name: 'mycli',
+ *   description: 'My tool',
+ *   outputMode: 'text',
+ *   run: async () => 'usage: mycli repl',
+ *   children: [replCommand],
+ * });
+ * await cli.parse(['repl']);
+ * ```
+ */
 import { Task } from '../task.ts';
 import { Realm } from '../realm/index.ts';
 import { stdin, stdout } from '../process.ts';
@@ -53,14 +53,14 @@ async function print(text: string): Promise<void> {
   await stdout().flush();
 }
 /**
-* Normalize text for terminals while raw mode is active.
-*
-* Raw mode disables the terminal's usual newline translation, so line feeds
-* must be written as CRLF to return subsequent lines to column zero. Existing
-* CRLF endings are preserved rather than doubled.
-*
-* @internal
-*/
+ * Normalize text for terminals while raw mode is active.
+ *
+ * Raw mode disables the terminal's usual newline translation, so line feeds
+ * must be written as CRLF to return subsequent lines to column zero. Existing
+ * CRLF endings are preserved rather than doubled.
+ *
+ * @internal
+ */
 function formatRawTerminalOutput(text: string): string {
   return text.replace(/\r?\n/g, '\r\n');
 }
@@ -88,7 +88,10 @@ type ReplKey =
   | { type: 'home' }
   | { type: 'end' }
   | { type: 'unknown' };
-function decodeReplKey(first: number, readByte: () => Promise<number | null>): Promise<ReplKey> | ReplKey {
+function decodeReplKey(
+  first: number,
+  readByte: () => Promise<number | null>,
+): Promise<ReplKey> | ReplKey {
   if (first === 10 || first === 13) return { type: 'enter' };
   if (first === 3) return { type: 'ctrl-c' };
   if (first === 4) return { type: 'ctrl-d' };
@@ -100,17 +103,24 @@ function decodeReplKey(first: number, readByte: () => Promise<number | null>): P
     if (second !== 91) return { type: 'unknown' };
     const third = await readByte();
     switch (third) {
-      case 65: return { type: 'up' };
-      case 66: return { type: 'down' };
-      case 67: return { type: 'right' };
-      case 68: return { type: 'left' };
-      case 70: return { type: 'end' };
-      case 72: return { type: 'home' };
+      case 65:
+        return { type: 'up' };
+      case 66:
+        return { type: 'down' };
+      case 67:
+        return { type: 'right' };
+      case 68:
+        return { type: 'left' };
+      case 70:
+        return { type: 'end' };
+      case 72:
+        return { type: 'home' };
       case 51: {
         const fourth = await readByte();
         return fourth === 126 ? { type: 'delete' } : { type: 'unknown' };
       }
-      default: return { type: 'unknown' };
+      default:
+        return { type: 'unknown' };
     }
   })();
 }
@@ -158,7 +168,7 @@ function isComplete(buf: string): boolean {
       i++;
       continue;
     }
-    if (c === '"' || c === '\'' || c === '`') {
+    if (c === '"' || c === "'" || c === '`') {
       inString = c;
       continue;
     }
@@ -168,28 +178,28 @@ function isComplete(buf: string): boolean {
   return depth <= 0 && !inString && !inBlockComment;
 }
 /**
-* Start the interactive REPL loop.
-*
-* The loop reads lines from stdin, keeps reading while bracket or quote balance
-* suggests an incomplete expression, sends complete snippets to the child
-* realm, and prints JSON-formatted results (strings print as-is, `undefined`
-* prints nothing). `.exit`, Ctrl-C, Ctrl-D on an empty line, or stdin EOF
-* terminate the loop. Evaluation errors are printed and do not terminate the
-* session.
-*
-* This is a small Fino REPL, not Node's `repl` module. Interactive TTY
-* sessions enter raw input mode while the loop is running so left/right
-* arrows edit the current line and up/down arrows navigate in-memory input
-* history for the current session; raw mode is restored on exit even when the
-* loop throws. It does not provide a persistent history file, completion API,
-* or pluggable writer. The returned promise resolves after the child realm
-* has been asked to terminate and its run loop has finished.
-*
-* ```ts no_run
-* import replCommand from 'fino:commands/repl';
-* await replCommand.run({});
-* ```
-*/
+ * Start the interactive REPL loop.
+ *
+ * The loop reads lines from stdin, keeps reading while bracket or quote balance
+ * suggests an incomplete expression, sends complete snippets to the child
+ * realm, and prints JSON-formatted results (strings print as-is, `undefined`
+ * prints nothing). `.exit`, Ctrl-C, Ctrl-D on an empty line, or stdin EOF
+ * terminate the loop. Evaluation errors are printed and do not terminate the
+ * session.
+ *
+ * This is a small Fino REPL, not Node's `repl` module. Interactive TTY
+ * sessions enter raw input mode while the loop is running so left/right
+ * arrows edit the current line and up/down arrows navigate in-memory input
+ * history for the current session; raw mode is restored on exit even when the
+ * loop throws. It does not provide a persistent history file, completion API,
+ * or pluggable writer. The returned promise resolves after the child realm
+ * has been asked to terminate and its run loop has finished.
+ *
+ * ```ts no_run
+ * import replCommand from 'fino:commands/repl';
+ * await replCommand.run({});
+ * ```
+ */
 async function runReplCommand(): Promise<void> {
   const realm = new Realm({ repl: true });
   const port = realm.port as MessagePort;
@@ -198,10 +208,13 @@ async function runReplCommand(): Promise<void> {
   // driven by the parent loop. The run() Promise resolves when the realm exits.
   const runPromise = realm.run();
   let nextId = 1;
-  const pending = new Map<number, {
-    resolve: (v: unknown) => void;
-    reject: (e: Error) => void;
-  }>();
+  const pending = new Map<
+    number,
+    {
+      resolve: (v: unknown) => void;
+      reject: (e: Error) => void;
+    }
+  >();
   port.addEventListener('message', function onReplMessage(ev: Event) {
     const msg = (ev as MessageEvent<Record<string, unknown>>).data;
     if (!msg || typeof msg !== 'object') return;
@@ -212,7 +225,7 @@ async function runReplCommand(): Promise<void> {
     if (msg['__eval_result'] === true) {
       entry.resolve(msg['value']);
     } else if (msg['__eval_error'] === true) {
-      entry.reject(new Error(msg['message'] as string | undefined ?? 'eval error'));
+      entry.reject(new Error((msg['message'] as string | undefined) ?? 'eval error'));
     }
   });
   async function evalCode(code: string): Promise<unknown> {
@@ -220,12 +233,12 @@ async function runReplCommand(): Promise<void> {
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, {
         resolve,
-        reject
+        reject,
       });
       port.postMessage({
         __eval: true,
         id,
-        code
+        code,
       });
     });
   }
@@ -368,28 +381,28 @@ async function runReplCommand(): Promise<void> {
   await runPromise;
 }
 /**
-* The `repl` subcommand task consumed by the root Fino CLI.
-*
-* A `Task` named `repl` with text output mode and no positional arguments or
-* command-specific options; it delegates directly to the private REPL loop.
-* Errors from child realm setup, stdin, or stdout propagate to the caller —
-* evaluation errors inside the session do not, since the loop prints them and
-* continues.
-*
-* Invoke it programmatically with `run({})`, or parse an argv slice the way
-* the CLI dispatcher does. Either form resolves once the session ends.
-*
-* ```ts no_run
-* import repl from 'fino:commands/repl';
-*
-* await repl.parse([]);   // as the CLI would invoke it
-* await repl.run({});     // direct invocation, same session
-* ```
-*/
+ * The `repl` subcommand task consumed by the root Fino CLI.
+ *
+ * A `Task` named `repl` with text output mode and no positional arguments or
+ * command-specific options; it delegates directly to the private REPL loop.
+ * Errors from child realm setup, stdin, or stdout propagate to the caller —
+ * evaluation errors inside the session do not, since the loop prints them and
+ * continues.
+ *
+ * Invoke it programmatically with `run({})`, or parse an argv slice the way
+ * the CLI dispatcher does. Either form resolves once the session ends.
+ *
+ * ```ts no_run
+ * import repl from 'fino:commands/repl';
+ *
+ * await repl.parse([]);   // as the CLI would invoke it
+ * await repl.run({});     // direct invocation, same session
+ * ```
+ */
 const command = new Task({
-    name: 'repl',
-    description: 'Start an interactive REPL',
-    outputMode: 'text',
-    run: runReplCommand
+  name: 'repl',
+  description: 'Start an interactive REPL',
+  outputMode: 'text',
+  run: runReplCommand,
 });
 export { command as default };

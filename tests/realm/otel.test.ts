@@ -1,10 +1,10 @@
 /**
-* Realm tests for OTel topic emission from fino:realm and fino:realm/pool.
-*
-* The topics are gated on hasSubscribers, so they only fire when a subscriber
-* is registered before the action takes place.  These tests subscribe first,
-* perform the action, then assert the expected events arrived.
-*/
+ * Realm tests for OTel topic emission from fino:realm and fino:realm/pool.
+ *
+ * The topics are gated on hasSubscribers, so they only fire when a subscriber
+ * is registered before the action takes place.  These tests subscribe first,
+ * perform the action, then assert the expected events arrived.
+ */
 import { describe, it } from 'fino:test/test';
 import { topic } from 'fino:context/topic';
 import { Realm } from 'fino:realm';
@@ -28,7 +28,7 @@ describe('Realm OTel topics', () => {
     const pending = iter.next();
     const realm = new Realm({
       entry: new URL('../realm/fixtures/echo-fn.ts', import.meta.url).pathname,
-      thread: true
+      thread: true,
     });
     return pending.then((ev) => {
       iter.return!();
@@ -47,7 +47,7 @@ describe('Realm OTel topics', () => {
     const iter = callTopic[Symbol.asyncIterator]();
     const realm = new Realm<typeof echoFn>({
       entry: new URL('../realm/fixtures/echo-fn.ts', import.meta.url).pathname,
-      thread: true
+      thread: true,
     });
     const pendingEvent = iter.next();
     const result = await realm.call('hello');
@@ -72,7 +72,7 @@ describe('Realm OTel topics', () => {
     const iter = endTopic[Symbol.asyncIterator]();
     const realm = new Realm<typeof echoFn>({
       entry: new URL('../realm/fixtures/echo-fn.ts', import.meta.url).pathname,
-      thread: true
+      thread: true,
     });
     const pendingEnd = iter.next();
     await realm.call('world');
@@ -94,7 +94,7 @@ describe('Realm OTel topics', () => {
     const iter = endTopic[Symbol.asyncIterator]();
     const realm = new Realm<typeof errorFn>({
       entry: new URL('../realm/fixtures/error-fn.ts', import.meta.url).pathname,
-      thread: true
+      thread: true,
     });
     const pendingEnd = iter.next();
     try {
@@ -119,7 +119,7 @@ describe('RealmPool OTel topics', () => {
     const iter = callTopic[Symbol.asyncIterator]();
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('../realm/fixtures/sum-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const pendingEvent = iter.next();
     const result = await pool.call(3, 4);
@@ -146,7 +146,7 @@ describe('RealmPool OTel topics', () => {
     const iter = endTopic[Symbol.asyncIterator]();
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('../realm/fixtures/sum-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const pendingEnd = iter.next();
     await pool.call(10, 20);
@@ -165,7 +165,7 @@ describe('RealmPool OTel topics', () => {
     const iter = endTopic[Symbol.asyncIterator]();
     const pool = new RealmPool<typeof errorFn>({
       entry: new URL('../realm/fixtures/error-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const pendingEnd = iter.next();
     try {

@@ -1,11 +1,13 @@
 import { getLoggerProvider, getMeterProvider, getTracerProvider } from 'fino:opentelemetry';
 import { port } from 'fino:realm/self';
 
-const realmPort = (globalThis as {
-  realmPort?: {
-    postMessage(message: unknown): void;
-  };
-}).realmPort;
+const realmPort = (
+  globalThis as {
+    realmPort?: {
+      postMessage(message: unknown): void;
+    };
+  }
+).realmPort;
 const activePort = port ?? realmPort;
 if (activePort === undefined) {
   throw new Error('cli-otel-realm-child: expected a child messaging port');

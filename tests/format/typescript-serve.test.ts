@@ -24,12 +24,12 @@ describe('fino:format/typescript transpileFiles', () => {
     const source = app.layer(transpileFiles(root, { prefix: '/src/' }));
     source.get('/src/:file').handle(() => new Response('fallback'));
 
-    const first = await app.handle(new Request('http://local/src/mod.ts')) as Response;
+    const first = (await app.handle(new Request('http://local/src/mod.ts'))) as Response;
     t.equal(first.headers.get('content-type'), 'text/javascript; charset=utf-8');
     t.ok((await first.text()).includes('value = 1'), 'type annotations are stripped');
 
     await writeText(`${root}/mod.ts`, 'export const value: number = 2;');
-    const second = await app.handle(new Request('http://local/src/mod.ts')) as Response;
+    const second = (await app.handle(new Request('http://local/src/mod.ts'))) as Response;
     t.ok((await second.text()).includes('value = 2'), 'mtime invalidates cache');
   });
 
@@ -40,10 +40,12 @@ describe('fino:format/typescript transpileFiles', () => {
     const source = app.layer(transpileFiles(root, { prefix: '/src/' }));
     source.get('/src/:file').handle(() => new Response('fallback'));
 
-    const js = await app.handle(new Request('http://local/src/mod.js')) as Response;
+    const js = (await app.handle(new Request('http://local/src/mod.js'))) as Response;
     t.equal(await js.text(), 'fallback', 'non-TypeScript files fall through');
 
-    const traversal = await app.handle(new Request('http://local/src/%2e%2e/secret.ts')) as Response;
+    const traversal = (await app.handle(
+      new Request('http://local/src/%2e%2e/secret.ts'),
+    )) as Response;
     t.equal(traversal.status, 403, 'path traversal is rejected');
   });
 });

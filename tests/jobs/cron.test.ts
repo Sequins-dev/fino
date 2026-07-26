@@ -1,6 +1,6 @@
 /**
-* Tests for internal:jobs/cron — parsing and next-occurrence math (UTC).
-*/
+ * Tests for internal:jobs/cron — parsing and next-occurrence math (UTC).
+ */
 import { describe, it } from 'fino:test/test';
 import { parseCron, nextOccurrence, type CronSpec } from 'internal:jobs/cron';
 
@@ -41,28 +41,64 @@ describe('cron parsing', () => {
 describe('cron next occurrence', () => {
   it('advances within the hour and across step boundaries', (t) => {
     const spec = parseCron('*/15 * * * *');
-    t.equal(nextOccurrence(spec, at('2026-03-10T12:00:00Z')), at('2026-03-10T12:15:00Z'), 'from an exact match, strictly after');
-    t.equal(nextOccurrence(spec, at('2026-03-10T12:14:59Z')), at('2026-03-10T12:15:00Z'), 'rounds into the next slot');
-    t.equal(nextOccurrence(spec, at('2026-03-10T12:46:00Z')), at('2026-03-10T13:00:00Z'), 'wraps to the next hour');
+    t.equal(
+      nextOccurrence(spec, at('2026-03-10T12:00:00Z')),
+      at('2026-03-10T12:15:00Z'),
+      'from an exact match, strictly after',
+    );
+    t.equal(
+      nextOccurrence(spec, at('2026-03-10T12:14:59Z')),
+      at('2026-03-10T12:15:00Z'),
+      'rounds into the next slot',
+    );
+    t.equal(
+      nextOccurrence(spec, at('2026-03-10T12:46:00Z')),
+      at('2026-03-10T13:00:00Z'),
+      'wraps to the next hour',
+    );
   });
   it('handles month rollover and specific day-of-month', (t) => {
     const spec = parseCron('0 0 1 * *');
-    t.equal(nextOccurrence(spec, at('2026-03-15T09:00:00Z')), at('2026-04-01T00:00:00Z'), 'first of next month');
-    t.equal(nextOccurrence(spec, at('2026-12-31T23:59:00Z')), at('2027-01-01T00:00:00Z'), 'year boundary');
+    t.equal(
+      nextOccurrence(spec, at('2026-03-15T09:00:00Z')),
+      at('2026-04-01T00:00:00Z'),
+      'first of next month',
+    );
+    t.equal(
+      nextOccurrence(spec, at('2026-12-31T23:59:00Z')),
+      at('2027-01-01T00:00:00Z'),
+      'year boundary',
+    );
   });
   it('finds leap day across years', (t) => {
     const spec = parseCron('0 0 29 2 *');
-    t.equal(nextOccurrence(spec, at('2026-03-01T00:00:00Z')), at('2028-02-29T00:00:00Z'), 'jumps to the next leap year');
+    t.equal(
+      nextOccurrence(spec, at('2026-03-01T00:00:00Z')),
+      at('2028-02-29T00:00:00Z'),
+      'jumps to the next leap year',
+    );
   });
   it('applies the vixie dom/dow OR rule', (t) => {
     const spec = parseCron('0 0 13 * 5');
     // From Mon 2026-03-02: Friday 2026-03-06 (dow match) precedes the 13th (dom match).
-    t.equal(nextOccurrence(spec, at('2026-03-02T00:00:00Z')), at('2026-03-06T00:00:00Z'), 'dow match fires first');
+    t.equal(
+      nextOccurrence(spec, at('2026-03-02T00:00:00Z')),
+      at('2026-03-06T00:00:00Z'),
+      'dow match fires first',
+    );
     // From Sat 2026-03-07: the 13th is itself a Friday; both match on the same day.
-    t.equal(nextOccurrence(spec, at('2026-03-07T00:00:00Z')), at('2026-03-13T00:00:00Z'), 'dom/dow coincide');
+    t.equal(
+      nextOccurrence(spec, at('2026-03-07T00:00:00Z')),
+      at('2026-03-13T00:00:00Z'),
+      'dom/dow coincide',
+    );
     // dom-only restriction ignores weekday.
     const domOnly = parseCron('0 0 13 * *');
-    t.equal(nextOccurrence(domOnly, at('2026-03-07T00:00:00Z')), at('2026-03-13T00:00:00Z'), 'dom-only matches the 13th');
+    t.equal(
+      nextOccurrence(domOnly, at('2026-03-07T00:00:00Z')),
+      at('2026-03-13T00:00:00Z'),
+      'dom-only matches the 13th',
+    );
   });
   it('aligns every: intervals to the anchor', (t) => {
     const spec = parseCron('every:90s');
@@ -72,6 +108,10 @@ describe('cron next occurrence', () => {
   });
   it('bails on unsatisfiable expressions', (t) => {
     const spec = parseCron('0 0 30 2 *');
-    t.throws(() => nextOccurrence(spec, at('2026-01-01T00:00:00Z')), /five years/, 'Feb 30 never occurs');
+    t.throws(
+      () => nextOccurrence(spec, at('2026-01-01T00:00:00Z')),
+      /five years/,
+      'Feb 30 never occurs',
+    );
   });
 });

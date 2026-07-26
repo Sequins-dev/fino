@@ -1,35 +1,35 @@
 /**
-* Event, CustomEvent, and EventTarget globals.
-*
-* Pure JS implementation of the WHATWG EventTarget interface:
-* https://dom.spec.whatwg.org/#interface-eventtarget
-*
-* Scope: flat dispatch only (no DOM tree). All events fire at AT_TARGET.
-* The `bubbles` and `composed` flags are stored but have no propagation
-* effect — Fino has no parent node traversal.
-*
-* Spec conformance:
-*   - addEventListener is idempotent for the same (callback, capture) pair
-*   - `once: true` auto-removes the listener after first invocation
-*   - `signal` option auto-removes the listener when the AbortSignal aborts
-*   - `passive` listeners cannot cancel the event via preventDefault()
-*   - dispatchEvent throws if the event is currently being dispatched
-*   - Listener errors are swallowed and do not prevent later listeners from
-*     firing. Fino does not currently report these through a browser-style
-*     global error event.
-*
-* ## Example
-*
-* ```typescript no_run
-*
-* const target = new EventTarget();
-* target.addEventListener('ready', () => console.log('ready'), { once: true });
-*
-* target.dispatchEvent(new Event('ready'));
-* target.dispatchEvent(new Event('ready'));
-* ```
-*
-*/
+ * Event, CustomEvent, and EventTarget globals.
+ *
+ * Pure JS implementation of the WHATWG EventTarget interface:
+ * https://dom.spec.whatwg.org/#interface-eventtarget
+ *
+ * Scope: flat dispatch only (no DOM tree). All events fire at AT_TARGET.
+ * The `bubbles` and `composed` flags are stored but have no propagation
+ * effect — Fino has no parent node traversal.
+ *
+ * Spec conformance:
+ *   - addEventListener is idempotent for the same (callback, capture) pair
+ *   - `once: true` auto-removes the listener after first invocation
+ *   - `signal` option auto-removes the listener when the AbortSignal aborts
+ *   - `passive` listeners cannot cancel the event via preventDefault()
+ *   - dispatchEvent throws if the event is currently being dispatched
+ *   - Listener errors are swallowed and do not prevent later listeners from
+ *     firing. Fino does not currently report these through a browser-style
+ *     global error event.
+ *
+ * ## Example
+ *
+ * ```typescript no_run
+ *
+ * const target = new EventTarget();
+ * target.addEventListener('ready', () => console.log('ready'), { once: true });
+ *
+ * target.dispatchEvent(new Event('ready'));
+ * target.dispatchEvent(new Event('ready'));
+ * ```
+ *
+ */
 // ---------------------------------------------------------------------------
 // Internal state WeakMaps
 // ---------------------------------------------------------------------------
@@ -50,19 +50,21 @@ interface EventState {
   trusted: boolean;
 }
 /**
-* Event listener callback accepted by `EventTarget.addEventListener()`.
-*
-* A listener can be a function or an object with a `handleEvent()` method.
-* Both forms receive the dispatched `Event` instance.
-*
-* ```typescript no_run
-* const listener: EventCallback = (event) => console.log(event.type);
-* target.addEventListener('ready', listener);
-* ```
-*/
-export type EventCallback = ((event: Event) => void) | {
-  handleEvent(event: Event): void;
-};
+ * Event listener callback accepted by `EventTarget.addEventListener()`.
+ *
+ * A listener can be a function or an object with a `handleEvent()` method.
+ * Both forms receive the dispatched `Event` instance.
+ *
+ * ```typescript no_run
+ * const listener: EventCallback = (event) => console.log(event.type);
+ * target.addEventListener('ready', listener);
+ * ```
+ */
+export type EventCallback =
+  | ((event: Event) => void)
+  | {
+      handleEvent(event: Event): void;
+    };
 interface ListenerRecord {
   callback: EventCallback;
   capture: boolean;
@@ -71,40 +73,40 @@ interface ListenerRecord {
   removed: boolean;
 }
 /**
-* Options accepted by `EventTarget.addEventListener()`.
-*
-* `capture` participates in listener identity for compatibility, but Fino has
-* no DOM tree and dispatches every event at the target. `once` removes the
-* listener after the first call. `passive` prevents `preventDefault()` from
-* canceling the event while that listener runs. `signal` removes the listener
-* when the supplied `AbortSignal` aborts.
-*
-* ```typescript no_run
-* target.addEventListener('message', onMessage, {
-*   once: true,
-*   signal: controller.signal,
-* });
-* ```
-*/
+ * Options accepted by `EventTarget.addEventListener()`.
+ *
+ * `capture` participates in listener identity for compatibility, but Fino has
+ * no DOM tree and dispatches every event at the target. `once` removes the
+ * listener after the first call. `passive` prevents `preventDefault()` from
+ * canceling the event while that listener runs. `signal` removes the listener
+ * when the supplied `AbortSignal` aborts.
+ *
+ * ```typescript no_run
+ * target.addEventListener('message', onMessage, {
+ *   once: true,
+ *   signal: controller.signal,
+ * });
+ * ```
+ */
 export interface AddEventListenerOptions {
   /**
-  * Participates in listener identity (a listener is uniquely keyed by callback
-  * plus capture flag) but has no traversal effect in Fino's flat dispatch.
-  */
+   * Participates in listener identity (a listener is uniquely keyed by callback
+   * plus capture flag) but has no traversal effect in Fino's flat dispatch.
+   */
   capture?: boolean;
   /**
-  * When true, the listener is removed automatically after its first invocation.
-  */
+   * When true, the listener is removed automatically after its first invocation.
+   */
   once?: boolean;
   /**
-  * When true, `preventDefault()` is a no-op while this listener runs, so the
-  * listener cannot cancel the event.
-  */
+   * When true, `preventDefault()` is a no-op while this listener runs, so the
+   * listener cannot cancel the event.
+   */
   passive?: boolean;
   /**
-  * An AbortSignal that removes the listener when it aborts. A signal that is
-  * already aborted skips registration entirely; passing `null` throws.
-  */
+   * An AbortSignal that removes the listener when it aborts. A signal that is
+   * already aborted skips registration entirely; passing `null` throws.
+   */
   signal?: AbortSignal;
 }
 // Event internal mutable state, keyed on Event instance.
@@ -126,18 +128,24 @@ function normalizeOptions(options: boolean | AddEventListenerOptions | null | un
     return {
       capture: options,
       once: false,
-      passive: false
+      passive: false,
     };
   }
   return {
     capture: Boolean(options?.capture),
     once: Boolean(options?.once),
-    passive: Boolean(options?.passive)
+    passive: Boolean(options?.passive),
   };
 }
-function normalizeCapture(options: boolean | {
-  capture?: boolean;
-} | null | undefined): boolean {
+function normalizeCapture(
+  options:
+    | boolean
+    | {
+        capture?: boolean;
+      }
+    | null
+    | undefined,
+): boolean {
   if (typeof options === 'boolean') return options;
   return Boolean(options?.capture);
 }
@@ -145,82 +153,86 @@ function normalizeCapture(options: boolean | {
 // Event
 // ---------------------------------------------------------------------------
 /**
-* Flat-dispatch implementation of the WHATWG Event interface.
-*
-* Fino does not have a DOM tree, so every dispatch runs at AT_TARGET and
-* composedPath() returns either the dispatch target or an empty array.
-*
-* ```typescript no_run
-* const event = new Event('ready', { cancelable: true });
-* event.type; // "ready"
-* ```
-*/
+ * Flat-dispatch implementation of the WHATWG Event interface.
+ *
+ * Fino does not have a DOM tree, so every dispatch runs at AT_TARGET and
+ * composedPath() returns either the dispatch target or an empty array.
+ *
+ * ```typescript no_run
+ * const event = new Event('ready', { cancelable: true });
+ * event.type; // "ready"
+ * ```
+ */
 export class Event {
   /**
-  * Event phase constant for no active dispatch.
-  *
-  * ```typescript no_run
-  * Event.NONE; // 0
-  * ```
-  */
+   * Event phase constant for no active dispatch.
+   *
+   * ```typescript no_run
+   * Event.NONE; // 0
+   * ```
+   */
   static NONE = 0;
   /**
-  * Event phase constant for DOM capture.
-  *
-  * Fino stores the value for compatibility but never enters this phase because
-  * there is no parent tree.
-  *
-  * ```typescript no_run
-  * Event.CAPTURING_PHASE; // 1
-  * ```
-  */
+   * Event phase constant for DOM capture.
+   *
+   * Fino stores the value for compatibility but never enters this phase because
+   * there is no parent tree.
+   *
+   * ```typescript no_run
+   * Event.CAPTURING_PHASE; // 1
+   * ```
+   */
   static CAPTURING_PHASE = 1;
   /**
-  * Event phase constant used while dispatching to the target.
-  *
-  * ```typescript no_run
-  * Event.AT_TARGET; // 2
-  * ```
-  */
+   * Event phase constant used while dispatching to the target.
+   *
+   * ```typescript no_run
+   * Event.AT_TARGET; // 2
+   * ```
+   */
   static AT_TARGET = 2;
   /**
-  * Event phase constant for DOM bubbling.
-  *
-  * The value is exposed for compatibility, but Fino never bubbles events.
-  *
-  * ```typescript no_run
-  * Event.BUBBLING_PHASE; // 3
-  * ```
-  */
+   * Event phase constant for DOM bubbling.
+   *
+   * The value is exposed for compatibility, but Fino never bubbles events.
+   *
+   * ```typescript no_run
+   * Event.BUBBLING_PHASE; // 3
+   * ```
+   */
   static BUBBLING_PHASE = 3;
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new Event('x')); // "[object Event]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new Event('x')); // "[object Event]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'Event';
   }
   /**
-  * Create an Event with optional bubbles, cancelable, and composed flags.
-  *
-  * The type argument is required and string-coerced. The flags are stored for
-  * compatibility, but bubbles and composed do not cause propagation in this
-  * flat EventTarget implementation.
-  *
-  * ```typescript no_run
-  * const event = new Event('submit', { cancelable: true });
-  * event.cancelable; // true
-  * ```
-  */
-  constructor(type: string, eventInitDict?: {
-    bubbles?: boolean;
-    cancelable?: boolean;
-    composed?: boolean;
-  }) {
-    if (arguments.length < 1) throw new TypeError('Failed to construct \'Event\': 1 argument required, but only 0 present.');
+   * Create an Event with optional bubbles, cancelable, and composed flags.
+   *
+   * The type argument is required and string-coerced. The flags are stored for
+   * compatibility, but bubbles and composed do not cause propagation in this
+   * flat EventTarget implementation.
+   *
+   * ```typescript no_run
+   * const event = new Event('submit', { cancelable: true });
+   * event.cancelable; // true
+   * ```
+   */
+  constructor(
+    type: string,
+    eventInitDict?: {
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+    },
+  ) {
+    if (arguments.length < 1)
+      throw new TypeError("Failed to construct 'Event': 1 argument required, but only 0 present.");
     _eventState.set(this, {
       type: String(type),
       bubbles: Boolean(eventInitDict?.bubbles),
@@ -234,230 +246,236 @@ export class Event {
       stopPropagation: false,
       stopImmediate: false,
       inPassiveListener: false,
-      timeStamp: typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now(),
-      trusted: false
+      timeStamp:
+        typeof globalThis.performance?.now === 'function'
+          ? globalThis.performance.now()
+          : Date.now(),
+      trusted: false,
     });
     Object.defineProperty(this, 'isTrusted', {
       get: getEventIsTrusted,
       enumerable: true,
-      configurable: true
+      configurable: true,
     });
   }
   /**
-  * Event type supplied at construction or initEvent().
-  *
-  * ```typescript no_run
-  * new Event('message').type; // "message"
-  * ```
-  */
+   * Event type supplied at construction or initEvent().
+   *
+   * ```typescript no_run
+   * new Event('message').type; // "message"
+   * ```
+   */
   get type() {
     return _eventState.get(this)!.type;
   }
   /**
-  * Whether the event was constructed with bubbles: true.
-  *
-  * This flag is stored only; Fino has no bubbling tree.
-  *
-  * ```typescript no_run
-  * new Event('x', { bubbles: true }).bubbles; // true
-  * ```
-  */
+   * Whether the event was constructed with bubbles: true.
+   *
+   * This flag is stored only; Fino has no bubbling tree.
+   *
+   * ```typescript no_run
+   * new Event('x', { bubbles: true }).bubbles; // true
+   * ```
+   */
   get bubbles() {
     return _eventState.get(this)!.bubbles;
   }
   /**
-  * Whether preventDefault() can set defaultPrevented.
-  *
-  * Passive listeners cannot cancel even when this is true.
-  *
-  * ```typescript no_run
-  * new Event('x', { cancelable: true }).cancelable; // true
-  * ```
-  */
+   * Whether preventDefault() can set defaultPrevented.
+   *
+   * Passive listeners cannot cancel even when this is true.
+   *
+   * ```typescript no_run
+   * new Event('x', { cancelable: true }).cancelable; // true
+   * ```
+   */
   get cancelable() {
     return _eventState.get(this)!.cancelable;
   }
   /**
-  * Whether the event was constructed with composed: true.
-  *
-  * This value is exposed for compatibility and has no propagation effect.
-  *
-  * ```typescript no_run
-  * new Event('x', { composed: true }).composed; // true
-  * ```
-  */
+   * Whether the event was constructed with composed: true.
+   *
+   * This value is exposed for compatibility and has no propagation effect.
+   *
+   * ```typescript no_run
+   * new Event('x', { composed: true }).composed; // true
+   * ```
+   */
   get composed() {
     return _eventState.get(this)!.composed;
   }
   /**
-  * Whether preventDefault() has successfully canceled the event.
-  *
-  * It remains false for non-cancelable events and inside passive listeners.
-  *
-  * ```typescript no_run
-  * const event = new Event('x', { cancelable: true });
-  * event.preventDefault();
-  * event.defaultPrevented; // true
-  * ```
-  */
+   * Whether preventDefault() has successfully canceled the event.
+   *
+   * It remains false for non-cancelable events and inside passive listeners.
+   *
+   * ```typescript no_run
+   * const event = new Event('x', { cancelable: true });
+   * event.preventDefault();
+   * event.defaultPrevented; // true
+   * ```
+   */
   get defaultPrevented() {
     return _eventState.get(this)!.defaultPrevented;
   }
   /**
-  * EventTarget currently dispatching or last dispatched this event.
-  *
-  * The target is null before dispatch and preserved after dispatch, matching
-  * browser behavior.
-  *
-  * ```typescript no_run
-  * const target = new EventTarget();
-  * const event = new Event('x');
-  * target.dispatchEvent(event);
-  * event.target === target; // true
-  * ```
-  */
+   * EventTarget currently dispatching or last dispatched this event.
+   *
+   * The target is null before dispatch and preserved after dispatch, matching
+   * browser behavior.
+   *
+   * ```typescript no_run
+   * const target = new EventTarget();
+   * const event = new Event('x');
+   * target.dispatchEvent(event);
+   * event.target === target; // true
+   * ```
+   */
   get target() {
     return _eventState.get(this)!.target;
   }
   /**
-  * EventTarget whose listener is currently running.
-  *
-  * This is set during dispatch and reset to null after dispatch completes.
-  *
-  * ```typescript no_run
-  * const target = new EventTarget();
-  * target.addEventListener('x', (event) => console.log(event.currentTarget));
-  * ```
-  */
+   * EventTarget whose listener is currently running.
+   *
+   * This is set during dispatch and reset to null after dispatch completes.
+   *
+   * ```typescript no_run
+   * const target = new EventTarget();
+   * target.addEventListener('x', (event) => console.log(event.currentTarget));
+   * ```
+   */
   get currentTarget() {
     return _eventState.get(this)!.currentTarget;
   }
   /**
-  * Current dispatch phase.
-  *
-  * Fino reports AT_TARGET during listener execution and NONE otherwise.
-  *
-  * ```typescript no_run
-  * const event = new Event('x');
-  * event.eventPhase; // Event.NONE
-  * ```
-  */
+   * Current dispatch phase.
+   *
+   * Fino reports AT_TARGET during listener execution and NONE otherwise.
+   *
+   * ```typescript no_run
+   * const event = new Event('x');
+   * event.eventPhase; // Event.NONE
+   * ```
+   */
   get eventPhase() {
     return _eventState.get(this)!.eventPhase;
   }
   /**
-  * Monotonic timestamp captured when the Event was created.
-  *
-  * Uses performance.now() when available, otherwise Date.now().
-  *
-  * ```typescript no_run
-  * const event = new Event('x');
-  * typeof event.timeStamp; // "number"
-  * ```
-  */
+   * Monotonic timestamp captured when the Event was created.
+   *
+   * Uses performance.now() when available, otherwise Date.now().
+   *
+   * ```typescript no_run
+   * const event = new Event('x');
+   * typeof event.timeStamp; // "number"
+   * ```
+   */
   get timeStamp() {
     return _eventState.get(this)!.timeStamp;
   }
   /**
-  * Whether the event was generated by the runtime rather than user code.
-  *
-  * Events created with `new Event(...)` are untrusted. Built-in APIs may mark
-  * their own spec-defined events as trusted before dispatch.
-  *
-  * ```typescript no_run
-  * new Event('x').isTrusted; // false
-  * ```
-  */
+   * Whether the event was generated by the runtime rather than user code.
+   *
+   * Events created with `new Event(...)` are untrusted. Built-in APIs may mark
+   * their own spec-defined events as trusted before dispatch.
+   *
+   * ```typescript no_run
+   * new Event('x').isTrusted; // false
+   * ```
+   */
   get isTrusted() {
     return getEventIsTrusted.call(this);
   }
   /**
-  * Mark a cancelable event as default-prevented.
-  *
-  * Calling this on a non-cancelable event or from a passive listener has no
-  * effect.
-  *
-  * ```typescript no_run
-  * const event = new Event('x', { cancelable: true });
-  * event.preventDefault();
-  * ```
-  */
+   * Mark a cancelable event as default-prevented.
+   *
+   * Calling this on a non-cancelable event or from a passive listener has no
+   * effect.
+   *
+   * ```typescript no_run
+   * const event = new Event('x', { cancelable: true });
+   * event.preventDefault();
+   * ```
+   */
   preventDefault() {
     const s = _eventState.get(this)!;
     if (s.cancelable && !s.inPassiveListener) s.defaultPrevented = true;
   }
   /**
-  * Request that event propagation stop after the current target.
-  *
-  * With flat dispatch this flag is stored for compatibility but there are no
-  * ancestor targets to skip.
-  *
-  * ```typescript no_run
-  * const event = new Event('x');
-  * event.stopPropagation();
-  * ```
-  */
+   * Request that event propagation stop after the current target.
+   *
+   * With flat dispatch this flag is stored for compatibility but there are no
+   * ancestor targets to skip.
+   *
+   * ```typescript no_run
+   * const event = new Event('x');
+   * event.stopPropagation();
+   * ```
+   */
   stopPropagation() {
     _eventState.get(this)!.stopPropagation = true;
   }
   /**
-  * Stop dispatching any remaining listeners for this event.
-  *
-  * During dispatch this prevents later listeners on the same EventTarget from
-  * running.
-  *
-  * ```typescript no_run
-  * const target = new EventTarget();
-  * target.addEventListener('x', (event) => event.stopImmediatePropagation());
-  * ```
-  */
+   * Stop dispatching any remaining listeners for this event.
+   *
+   * During dispatch this prevents later listeners on the same EventTarget from
+   * running.
+   *
+   * ```typescript no_run
+   * const target = new EventTarget();
+   * target.addEventListener('x', (event) => event.stopImmediatePropagation());
+   * ```
+   */
   stopImmediatePropagation() {
     const s = _eventState.get(this)!;
     s.stopPropagation = true;
     s.stopImmediate = true;
   }
   /**
-  * Return the composed path for this event.
-  *
-  * Because there is no DOM tree, the path is `[target]` while dispatching and
-  * an empty array outside dispatch.
-  *
-  * ```typescript no_run
-  * const event = new Event('x');
-  * event.composedPath(); // []
-  * ```
-  */
+   * Return the composed path for this event.
+   *
+   * Because there is no DOM tree, the path is `[target]` while dispatching and
+   * an empty array outside dispatch.
+   *
+   * ```typescript no_run
+   * const event = new Event('x');
+   * event.composedPath(); // []
+   * ```
+   */
   composedPath() {
     const s = _eventState.get(this)!;
     return s.dispatch && s.target != null ? [s.target] : [];
   }
 }
 /**
-* Create an event that represents runtime-generated platform behavior.
-*
-* User-created `new Event(...)` objects remain untrusted. This helper is for
-* built-in globals that must dispatch spec-defined trusted events, such as the
-* `abort` event produced by AbortController.
-*
-* @internal
-*/
-export function _createTrustedEvent(type: string, eventInitDict?: {
-  bubbles?: boolean;
-  cancelable?: boolean;
-  composed?: boolean;
-}): Event {
+ * Create an event that represents runtime-generated platform behavior.
+ *
+ * User-created `new Event(...)` objects remain untrusted. This helper is for
+ * built-in globals that must dispatch spec-defined trusted events, such as the
+ * `abort` event produced by AbortController.
+ *
+ * @internal
+ */
+export function _createTrustedEvent(
+  type: string,
+  eventInitDict?: {
+    bubbles?: boolean;
+    cancelable?: boolean;
+    composed?: boolean;
+  },
+): Event {
   const event = new Event(type, eventInitDict);
   _eventState.get(event)!.trusted = true;
   return event;
 }
 /**
-* Mark a platform-created event object as trusted before dispatch.
-*
-* Use this for built-in event subclasses, such as `MessageEvent`, that are
-* created internally by a web API rather than by user code.
-*
-* @internal
-*/
+ * Mark a platform-created event object as trusted before dispatch.
+ *
+ * Use this for built-in event subclasses, such as `MessageEvent`, that are
+ * created internally by a web API rather than by user code.
+ *
+ * @internal
+ */
 export function _markEventTrusted(event: Event): void {
   _eventState.get(event)!.trusted = true;
 }
@@ -475,17 +493,21 @@ eventPrototype.AT_TARGET = 2;
 eventPrototype.BUBBLING_PHASE = 3;
 // Legacy methods
 /**
-* Reinitialize an event before it is dispatched.
-*
-* Calls during dispatch are ignored. The composed flag is not part of the
-* legacy method and remains unchanged.
-*
-* ```typescript no_run
-* const event = new Event('old');
-* event.initEvent('new', false, true);
-* ```
-*/
-eventPrototype.initEvent = function initEvent(type: string, bubbles: boolean = false, cancelable: boolean = false): void {
+ * Reinitialize an event before it is dispatched.
+ *
+ * Calls during dispatch are ignored. The composed flag is not part of the
+ * legacy method and remains unchanged.
+ *
+ * ```typescript no_run
+ * const event = new Event('old');
+ * event.initEvent('new', false, true);
+ * ```
+ */
+eventPrototype.initEvent = function initEvent(
+  type: string,
+  bubbles: boolean = false,
+  cancelable: boolean = false,
+): void {
   const s = _eventState.get(this);
   if (!s || s.dispatch) return;
   s.type = String(type);
@@ -503,7 +525,7 @@ Object.defineProperty(Event.prototype, 'cancelBubble', {
   set(v) {
     if (v) this.stopPropagation();
   },
-  configurable: true
+  configurable: true,
 });
 Object.defineProperty(Event.prototype, 'returnValue', {
   get() {
@@ -512,86 +534,94 @@ Object.defineProperty(Event.prototype, 'returnValue', {
   set(v) {
     if (!v) this.preventDefault();
   },
-  configurable: true
+  configurable: true,
 });
 Object.defineProperty(Event.prototype, 'srcElement', {
   get() {
     return _eventState.get(this as Event)!.target;
   },
-  configurable: true
+  configurable: true,
 });
 // ---------------------------------------------------------------------------
 // CustomEvent
 // ---------------------------------------------------------------------------
 /**
-* Event subclass that carries arbitrary detail data.
-*
-* The detail value defaults to null and is stored by reference.
-*
-* ```typescript no_run
-* const event = new CustomEvent('data', { detail: { id: 1 } });
-* event.detail.id; // 1
-* ```
-*/
+ * Event subclass that carries arbitrary detail data.
+ *
+ * The detail value defaults to null and is stored by reference.
+ *
+ * ```typescript no_run
+ * const event = new CustomEvent('data', { detail: { id: 1 } });
+ * event.detail.id; // 1
+ * ```
+ */
 export class CustomEvent extends Event {
   /**
-  * Backing store for the `detail` payload, set at construction and replaced
-  * by `initCustomEvent()`.
-  *
-  * @internal
-  */
+   * Backing store for the `detail` payload, set at construction and replaced
+   * by `initCustomEvent()`.
+   *
+   * @internal
+   */
   #detail: unknown;
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new CustomEvent('x')); // "[object CustomEvent]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new CustomEvent('x')); // "[object CustomEvent]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'CustomEvent';
   }
   /**
-  * Create a CustomEvent with optional detail.
-  *
-  * Event flags are passed through to Event. Missing detail becomes null.
-  *
-  * ```typescript no_run
-  * const event = new CustomEvent('x', { detail: 'payload' });
-  * event.detail; // "payload"
-  * ```
-  */
-  constructor(type: string, eventInitDict?: {
-    bubbles?: boolean;
-    cancelable?: boolean;
-    composed?: boolean;
-    detail?: unknown;
-  }) {
+   * Create a CustomEvent with optional detail.
+   *
+   * Event flags are passed through to Event. Missing detail becomes null.
+   *
+   * ```typescript no_run
+   * const event = new CustomEvent('x', { detail: 'payload' });
+   * event.detail; // "payload"
+   * ```
+   */
+  constructor(
+    type: string,
+    eventInitDict?: {
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+      detail?: unknown;
+    },
+  ) {
     super(type, eventInitDict);
     this.#detail = eventInitDict?.detail ?? null;
   }
   /**
-  * Application-defined payload for the custom event.
-  *
-  * ```typescript no_run
-  * new CustomEvent('x').detail; // null
-  * ```
-  */
+   * Application-defined payload for the custom event.
+   *
+   * ```typescript no_run
+   * new CustomEvent('x').detail; // null
+   * ```
+   */
   get detail() {
     return this.#detail;
   }
   /**
-  * Legacy initializer for CustomEvent instances.
-  *
-  * Calls during dispatch are ignored. The method updates type, bubbles,
-  * cancelable, and detail.
-  *
-  * ```typescript no_run
-  * const event = new CustomEvent('old');
-  * event.initCustomEvent('new', false, false, 123);
-  * ```
-  */
-  initCustomEvent(type: string, bubbles: boolean = false, cancelable: boolean = false, detail: unknown = null): void {
+   * Legacy initializer for CustomEvent instances.
+   *
+   * Calls during dispatch are ignored. The method updates type, bubbles,
+   * cancelable, and detail.
+   *
+   * ```typescript no_run
+   * const event = new CustomEvent('old');
+   * event.initCustomEvent('new', false, false, 123);
+   * ```
+   */
+  initCustomEvent(
+    type: string,
+    bubbles: boolean = false,
+    cancelable: boolean = false,
+    detail: unknown = null,
+  ): void {
     const s = _eventState.get(this);
     if (!s || s.dispatch) return;
     eventPrototype.initEvent.call(this, type, bubbles, cancelable);
@@ -602,59 +632,63 @@ export class CustomEvent extends Event {
 // EventTarget
 // ---------------------------------------------------------------------------
 /**
-* WHATWG EventTarget with flat listener dispatch.
-*
-* Listener registration is idempotent for the same callback and capture flag.
-* Listener exceptions are swallowed so later listeners still run; this runtime
-* does not surface those exceptions through a global error event.
-*
-* ```typescript no_run
-* const target = new EventTarget();
-* target.addEventListener('ready', () => console.log('ready'));
-* target.dispatchEvent(new Event('ready'));
-* ```
-*/
+ * WHATWG EventTarget with flat listener dispatch.
+ *
+ * Listener registration is idempotent for the same callback and capture flag.
+ * Listener exceptions are swallowed so later listeners still run; this runtime
+ * does not surface those exceptions through a global error event.
+ *
+ * ```typescript no_run
+ * const target = new EventTarget();
+ * target.addEventListener('ready', () => console.log('ready'));
+ * target.dispatchEvent(new Event('ready'));
+ * ```
+ */
 export class EventTarget {
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new EventTarget()); // "[object EventTarget]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new EventTarget()); // "[object EventTarget]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'EventTarget';
   }
   /**
-  * Create an EventTarget with an empty listener registry.
-  *
-  * ```typescript no_run
-  * const target = new EventTarget();
-  * ```
-  */
+   * Create an EventTarget with an empty listener registry.
+   *
+   * ```typescript no_run
+   * const target = new EventTarget();
+   * ```
+   */
   constructor() {
     _listeners.set(this, new Map());
   }
   /**
-  * Register an event listener.
-  *
-  * Registration is idempotent: adding the same callback with the same capture
-  * flag again is a no-op. Null callbacks and objects without a `handleEvent`
-  * method are silently ignored, and a signal that is already aborted skips
-  * registration entirely. The `once` option removes the listener after its
-  * first invocation, `passive` prevents `preventDefault()` from canceling the
-  * event while that listener runs, and `signal` removes the listener when the
-  * AbortSignal aborts.
-  *
-  * Throws if `signal` is explicitly `null` rather than an AbortSignal or
-  * `undefined` — even when the callback is also null.
-  *
-  * ```typescript no_run
-  * const target = new EventTarget();
-  * target.addEventListener('tick', (event) => console.log(event.type), { once: true });
-  * ```
-  */
-  addEventListener(type: string, callback: EventCallback | null, options?: boolean | AddEventListenerOptions): void {
+   * Register an event listener.
+   *
+   * Registration is idempotent: adding the same callback with the same capture
+   * flag again is a no-op. Null callbacks and objects without a `handleEvent`
+   * method are silently ignored, and a signal that is already aborted skips
+   * registration entirely. The `once` option removes the listener after its
+   * first invocation, `passive` prevents `preventDefault()` from canceling the
+   * event while that listener runs, and `signal` removes the listener when the
+   * AbortSignal aborts.
+   *
+   * Throws if `signal` is explicitly `null` rather than an AbortSignal or
+   * `undefined` — even when the callback is also null.
+   *
+   * ```typescript no_run
+   * const target = new EventTarget();
+   * target.addEventListener('tick', (event) => console.log(event.type), { once: true });
+   * ```
+   */
+  addEventListener(
+    type: string,
+    callback: EventCallback | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
     const t = String(type);
     const { capture, once, passive } = normalizeOptions(options);
     const signal = options != null && typeof options === 'object' ? options.signal : undefined;
@@ -662,7 +696,8 @@ export class EventTarget {
       throw new TypeError('addEventListener: signal must be an AbortSignal');
     }
     if (callback === null) return;
-    if (typeof callback !== 'function' && typeof (callback as any)?.handleEvent !== 'function') return;
+    if (typeof callback !== 'function' && typeof (callback as any)?.handleEvent !== 'function')
+      return;
     // If the signal is already aborted, skip adding the listener.
     if (signal != null && signal.aborted) return;
     const listenersMap = _listeners.get(this)!;
@@ -682,33 +717,43 @@ export class EventTarget {
       capture,
       once,
       passive,
-      removed: false
+      removed: false,
     };
     list.push(record);
     // Auto-remove when the provided signal aborts.
     if (signal != null) {
       const self = this;
-      signal.addEventListener('abort', function() {
-        self.removeEventListener(t, callback, { capture });
-      }, { once: true });
+      signal.addEventListener(
+        'abort',
+        function () {
+          self.removeEventListener(t, callback, { capture });
+        },
+        { once: true },
+      );
     }
   }
   /**
-  * Remove a previously registered event listener.
-  *
-  * The type, callback, and capture flag must match the original registration.
-  * Unknown listeners are ignored.
-  *
-  * ```typescript no_run
-  * const target = new EventTarget();
-  * const fn = () => {};
-  * target.addEventListener('x', fn);
-  * target.removeEventListener('x', fn);
-  * ```
-  */
-  removeEventListener(type: string, callback: EventCallback, options?: boolean | {
-    capture?: boolean;
-  }): void {
+   * Remove a previously registered event listener.
+   *
+   * The type, callback, and capture flag must match the original registration.
+   * Unknown listeners are ignored.
+   *
+   * ```typescript no_run
+   * const target = new EventTarget();
+   * const fn = () => {};
+   * target.addEventListener('x', fn);
+   * target.removeEventListener('x', fn);
+   * ```
+   */
+  removeEventListener(
+    type: string,
+    callback: EventCallback,
+    options?:
+      | boolean
+      | {
+          capture?: boolean;
+        },
+  ): void {
     const t = String(type);
     const capture = normalizeCapture(options);
     const listenersMap = _listeners.get(this)!;
@@ -723,22 +768,22 @@ export class EventTarget {
     }
   }
   /**
-  * Dispatch an Event synchronously to matching listeners.
-  *
-  * Listeners run in registration order against a snapshot taken at dispatch
-  * time: listeners added during dispatch do not run for the current event,
-  * while listeners removed during dispatch are skipped. Exceptions thrown by
-  * listeners are swallowed so later listeners still run. Returns false only
-  * when a cancelable event was canceled via `preventDefault()`.
-  *
-  * Throws if the argument is not an Event instance, or if the event is
-  * already being dispatched.
-  *
-  * ```typescript no_run
-  * const target = new EventTarget();
-  * const ok = target.dispatchEvent(new Event('x', { cancelable: true }));
-  * ```
-  */
+   * Dispatch an Event synchronously to matching listeners.
+   *
+   * Listeners run in registration order against a snapshot taken at dispatch
+   * time: listeners added during dispatch do not run for the current event,
+   * while listeners removed during dispatch are skipped. Exceptions thrown by
+   * listeners are swallowed so later listeners still run. Returns false only
+   * when a cancelable event was canceled via `preventDefault()`.
+   *
+   * Throws if the argument is not an Event instance, or if the event is
+   * already being dispatched.
+   *
+   * ```typescript no_run
+   * const target = new EventTarget();
+   * const ok = target.dispatchEvent(new Event('x', { cancelable: true }));
+   * ```
+   */
   dispatchEvent(event: Event): boolean {
     const s = _eventState.get(event);
     if (s == null) throw new TypeError('Argument must be an Event instance');

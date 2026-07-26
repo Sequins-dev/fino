@@ -1,63 +1,136 @@
 /**
-* internal:net/quic/ngtcp2/crypto — selectable ngtcp2 TLS crypto backend.
-*
-* QUIC runs the TLS 1.3 handshake inside the transport rather than over a
-* TCP-style record layer, so ngtcp2 ships two interchangeable crypto helper
-* libraries — one bound to OpenSSL (`libngtcp2_crypto_ossl`) and one to GnuTLS
-* (`libngtcp2_crypto_gnutls`). This module hides that choice behind a single
-* adapter: it probes both at load time, prefers the OpenSSL backend when it is
-* present, and falls back to GnuTLS otherwise. The QUIC endpoint imports only
-* this file, so which native package a platform happens to install never leaks
-* into the public QUIC API.
-*
-* The selected backend is fixed for the process. `cryptoBackend` names it (or is
-* `null` when neither library is installed), and `cryptoAvailable` is the
-* boolean gate the endpoint checks before attempting QUIC at all. Every function
-* here branches on `session.backend` / `ctx.backend` internally and dispatches to
-* the matching `crypto-ossl` or `crypto-gnutls` helper, so callers work with the
-* opaque `QuicTlsContext` and `QuicTlsSession` shapes without knowing which
-* library backs them.
-*
-* Lifecycle is manual and ordered: call `initCrypto()` once, build a context
-* with `newServerContext` / `newClientContext`, spawn a per-connection session
-* with `newServerSession` / `newClientSession`, hand its native handle to ngtcp2
-* via `newNativeHandle`, and free everything in reverse (`freeNativeHandle`,
-* `freeSession`, `freeContext`) to release the underlying `SSL`/`SSL_CTX` or
-* GnuTLS session/credential objects. Because contexts and sessions own native
-* memory and registered FFI callbacks, skipping a free leaks.
-*
-* Not all features exist on both backends. TLS group selection and per-SNI
-* server contexts are OpenSSL-only and throw on GnuTLS; the functions document
-* those gaps individually.
-*
-* ```ts no_run
-* import {
-*   cryptoAvailable, initCrypto, newServerContext, newServerSession,
-*   newNativeHandle, freeNativeHandle, freeSession, freeContext,
-* } from 'internal:net/quic/ngtcp2/crypto';
-*
-* if (!cryptoAvailable) throw new Error('QUIC needs an ngtcp2 crypto backend');
-* initCrypto();
-*
-* const ctx = newServerContext('/etc/tls/cert.pem', '/etc/tls/key.pem', ['h3']);
-* const session = newServerSession(ctx, ['h3']);
-* const nativeHandle = newNativeHandle(session); // pass to ngtcp2_conn_*
-*
-* // ... run the connection ...
-*
-* freeNativeHandle(session.backend, nativeHandle);
-* freeSession(session);
-* freeContext(ctx);
-* ```
-*
-* ngtcp2 crypto helpers: https://nghttp2.org/ngtcp2/
-*
-* @internal
-*/
-import { getErrorString, sslCtxAddCaCertificates, sslCtxFree, sslCtxNewClient, sslCtxNewServer, sslCtxSetAlpnServerProtos, sslCtxSetCipherSuites, sslCtxSetDefaultVerifyPaths, sslCtxLoadVerifyLocations, sslCtxSetGroups, sslCtxSetMaxEarlyData, sslCtxSetKeylogCallback, sslCtxSetPermissiveVerify, sslCtxSetRecvMaxEarlyData, sslCtxSetServernameCallback, sslCtxSetVerify, sslCtxUseCertKey, sslEnableQuicEarlyData, sslFree, sslGetAlpnSelected, sslGetCurrentCipherInfo, sslGetPeerCertificate, sslExportKeyingMaterial, sslGetServername, sslGetVerifyResult, sslExportSession, sslImportSession, sslNew, sslNewSessionTicket, sslSetAlpnProtos, sslSetAppData, sslSetConnectState, sslSetMaxEarlyData, sslSetRecvMaxEarlyData, sslSetVerify, sslSetHostname, sslSetAcceptState, SSL_VERIFY_FAIL_IF_NO_PEER_CERT, SSL_VERIFY_PEER } from '../../../openssl.ts';
+ * internal:net/quic/ngtcp2/crypto — selectable ngtcp2 TLS crypto backend.
+ *
+ * QUIC runs the TLS 1.3 handshake inside the transport rather than over a
+ * TCP-style record layer, so ngtcp2 ships two interchangeable crypto helper
+ * libraries — one bound to OpenSSL (`libngtcp2_crypto_ossl`) and one to GnuTLS
+ * (`libngtcp2_crypto_gnutls`). This module hides that choice behind a single
+ * adapter: it probes both at load time, prefers the OpenSSL backend when it is
+ * present, and falls back to GnuTLS otherwise. The QUIC endpoint imports only
+ * this file, so which native package a platform happens to install never leaks
+ * into the public QUIC API.
+ *
+ * The selected backend is fixed for the process. `cryptoBackend` names it (or is
+ * `null` when neither library is installed), and `cryptoAvailable` is the
+ * boolean gate the endpoint checks before attempting QUIC at all. Every function
+ * here branches on `session.backend` / `ctx.backend` internally and dispatches to
+ * the matching `crypto-ossl` or `crypto-gnutls` helper, so callers work with the
+ * opaque `QuicTlsContext` and `QuicTlsSession` shapes without knowing which
+ * library backs them.
+ *
+ * Lifecycle is manual and ordered: call `initCrypto()` once, build a context
+ * with `newServerContext` / `newClientContext`, spawn a per-connection session
+ * with `newServerSession` / `newClientSession`, hand its native handle to ngtcp2
+ * via `newNativeHandle`, and free everything in reverse (`freeNativeHandle`,
+ * `freeSession`, `freeContext`) to release the underlying `SSL`/`SSL_CTX` or
+ * GnuTLS session/credential objects. Because contexts and sessions own native
+ * memory and registered FFI callbacks, skipping a free leaks.
+ *
+ * Not all features exist on both backends. TLS group selection and per-SNI
+ * server contexts are OpenSSL-only and throw on GnuTLS; the functions document
+ * those gaps individually.
+ *
+ * ```ts no_run
+ * import {
+ *   cryptoAvailable, initCrypto, newServerContext, newServerSession,
+ *   newNativeHandle, freeNativeHandle, freeSession, freeContext,
+ * } from 'internal:net/quic/ngtcp2/crypto';
+ *
+ * if (!cryptoAvailable) throw new Error('QUIC needs an ngtcp2 crypto backend');
+ * initCrypto();
+ *
+ * const ctx = newServerContext('/etc/tls/cert.pem', '/etc/tls/key.pem', ['h3']);
+ * const session = newServerSession(ctx, ['h3']);
+ * const nativeHandle = newNativeHandle(session); // pass to ngtcp2_conn_*
+ *
+ * // ... run the connection ...
+ *
+ * freeNativeHandle(session.backend, nativeHandle);
+ * freeSession(session);
+ * freeContext(ctx);
+ * ```
+ *
+ * ngtcp2 crypto helpers: https://nghttp2.org/ngtcp2/
+ *
+ * @internal
+ */
+import {
+  getErrorString,
+  sslCtxAddCaCertificates,
+  sslCtxFree,
+  sslCtxNewClient,
+  sslCtxNewServer,
+  sslCtxSetAlpnServerProtos,
+  sslCtxSetCipherSuites,
+  sslCtxSetDefaultVerifyPaths,
+  sslCtxLoadVerifyLocations,
+  sslCtxSetGroups,
+  sslCtxSetMaxEarlyData,
+  sslCtxSetKeylogCallback,
+  sslCtxSetPermissiveVerify,
+  sslCtxSetRecvMaxEarlyData,
+  sslCtxSetServernameCallback,
+  sslCtxSetVerify,
+  sslCtxUseCertKey,
+  sslEnableQuicEarlyData,
+  sslFree,
+  sslGetAlpnSelected,
+  sslGetCurrentCipherInfo,
+  sslGetPeerCertificate,
+  sslExportKeyingMaterial,
+  sslGetServername,
+  sslGetVerifyResult,
+  sslExportSession,
+  sslImportSession,
+  sslNew,
+  sslNewSessionTicket,
+  sslSetAlpnProtos,
+  sslSetAppData,
+  sslSetConnectState,
+  sslSetMaxEarlyData,
+  sslSetRecvMaxEarlyData,
+  sslSetVerify,
+  sslSetHostname,
+  sslSetAcceptState,
+  SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+  SSL_VERIFY_PEER,
+} from '../../../openssl.ts';
 import { Pointer } from './bindings.ts';
-import { cryptoBackend as osslBackend, cryptoOsslAvailable, newCryptoOsslContext, requireCryptoOssl, sym as osslSym, ptr as osslPtr } from './crypto-ossl.ts';
-import { cryptoBackend as gnutlsBackend, configureGnutlsServerMtls, configureGnutlsSession, cryptoGnutlsAvailable, freeGnutlsCredentials, freeGnutlsSession, getGnutlsAlpnSelected, getGnutlsPeerCertificate, getGnutlsServername, getGnutlsVerifyResult, exportGnutlsSession, exportGnutlsKeyingMaterial, getGnutlsCipherInfo, importGnutlsSession, initCryptoGnutls, newGnutlsCredentials, newGnutlsSession, requireCryptoGnutls, sendGnutlsSessionTicket, setGnutlsConnectionRef, setGnutlsSessionTicketCallback, sym as gnutlsSym, ptr as gnutlsPtr, type GnutlsCredentials, type GnutlsSession } from './crypto-gnutls.ts';
+import {
+  cryptoBackend as osslBackend,
+  cryptoOsslAvailable,
+  newCryptoOsslContext,
+  requireCryptoOssl,
+  sym as osslSym,
+  ptr as osslPtr,
+} from './crypto-ossl.ts';
+import {
+  cryptoBackend as gnutlsBackend,
+  configureGnutlsServerMtls,
+  configureGnutlsSession,
+  cryptoGnutlsAvailable,
+  freeGnutlsCredentials,
+  freeGnutlsSession,
+  getGnutlsAlpnSelected,
+  getGnutlsPeerCertificate,
+  getGnutlsServername,
+  getGnutlsVerifyResult,
+  exportGnutlsSession,
+  exportGnutlsKeyingMaterial,
+  getGnutlsCipherInfo,
+  importGnutlsSession,
+  initCryptoGnutls,
+  newGnutlsCredentials,
+  newGnutlsSession,
+  requireCryptoGnutls,
+  sendGnutlsSessionTicket,
+  setGnutlsConnectionRef,
+  setGnutlsSessionTicketCallback,
+  sym as gnutlsSym,
+  ptr as gnutlsPtr,
+  type GnutlsCredentials,
+  type GnutlsSession,
+} from './crypto-gnutls.ts';
 /**
  * Names which ngtcp2 crypto helper library backs the runtime.
  *
@@ -212,7 +285,9 @@ export type QuicTlsContextOptions = {
  * capabilities that differ between backends (for example, TLS groups and per-SNI
  * contexts exist only under `'ossl'`).
  */
-export const cryptoBackend: QuicCryptoBackend | null = cryptoOsslAvailable ? osslBackend : gnutlsBackend;
+export const cryptoBackend: QuicCryptoBackend | null = cryptoOsslAvailable
+  ? osslBackend
+  : gnutlsBackend;
 /**
  * Whether any ngtcp2 crypto backend is present, i.e. whether QUIC can run at
  * all.
@@ -260,7 +335,10 @@ export const ptr = cryptoOsslAvailable ? osslPtr : gnutlsPtr;
 export function requireCrypto(): void {
   if (cryptoOsslAvailable) requireCryptoOssl();
   else if (cryptoGnutlsAvailable) requireCryptoGnutls();
-  else throw new Error('no ngtcp2 crypto backend found. Install libngtcp2_crypto_ossl or libngtcp2_crypto_gnutls');
+  else
+    throw new Error(
+      'no ngtcp2 crypto backend found. Install libngtcp2_crypto_ossl or libngtcp2_crypto_gnutls',
+    );
 }
 /**
  * Initializes the selected crypto backend; call once before creating contexts.
@@ -330,20 +408,36 @@ function configureOpenSslCa(ctx: object, ca: QuicCaOptions | undefined, verifyPe
  * );
  * ```
  */
-export function newServerContext(certFile: string, keyFile: string, alpnProtocols: string[], cipherSuites: readonly string[] | null = null, onKeylogLine?: (line: string) => void, tlsOptions: QuicTlsContextOptions = {}): QuicTlsContext {
-  const clientAuth = tlsOptions.clientAuth ?? (tlsOptions.verifyClient === true ? 'require' : 'none');
+export function newServerContext(
+  certFile: string,
+  keyFile: string,
+  alpnProtocols: string[],
+  cipherSuites: readonly string[] | null = null,
+  onKeylogLine?: (line: string) => void,
+  tlsOptions: QuicTlsContextOptions = {},
+): QuicTlsContext {
+  const clientAuth =
+    tlsOptions.clientAuth ?? (tlsOptions.verifyClient === true ? 'require' : 'none');
   if (cryptoBackend === 'ossl') {
     const ctx = sslCtxNewServer();
     try {
       if (cipherSuites !== null) sslCtxSetCipherSuites(ctx, cipherSuites);
-      if (tlsOptions.groups !== undefined && tlsOptions.groups !== null) sslCtxSetGroups(ctx, tlsOptions.groups);
+      if (tlsOptions.groups !== undefined && tlsOptions.groups !== null)
+        sslCtxSetGroups(ctx, tlsOptions.groups);
       sslCtxUseCertKey(ctx, certFile, keyFile);
-      const verifyMode = clientAuth === 'none' ? 0 : SSL_VERIFY_PEER | (clientAuth === 'require' ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0);
-      const verifyCallback = verifyMode !== 0 && tlsOptions.rejectUnauthorized === false ? sslCtxSetPermissiveVerify(ctx, verifyMode) : null;
+      const verifyMode =
+        clientAuth === 'none'
+          ? 0
+          : SSL_VERIFY_PEER | (clientAuth === 'require' ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0);
+      const verifyCallback =
+        verifyMode !== 0 && tlsOptions.rejectUnauthorized === false
+          ? sslCtxSetPermissiveVerify(ctx, verifyMode)
+          : null;
       if (verifyMode !== 0 && verifyCallback === null) sslCtxSetVerify(ctx, verifyMode);
       configureOpenSslCa(ctx, tlsOptions.ca, verifyMode !== 0);
       const alpnCallback = sslCtxSetAlpnServerProtos(ctx, alpnProtocols);
-      const keylogCallback = onKeylogLine === undefined ? null : sslCtxSetKeylogCallback(ctx, onKeylogLine);
+      const keylogCallback =
+        onKeylogLine === undefined ? null : sslCtxSetKeylogCallback(ctx, onKeylogLine);
       return {
         backend: 'ossl',
         handle: ctx,
@@ -355,16 +449,22 @@ export function newServerContext(certFile: string, keyFile: string, alpnProtocol
         sniCallback: null,
         verifyCallback,
         verifyMode,
-        clientAuth
+        clientAuth,
       };
     } catch (error) {
       sslCtxFree(ctx);
       throw error;
     }
   }
-  if (tlsOptions.groups !== undefined && tlsOptions.groups !== null) throw new Error('QUIC TLS groups are only supported by the OpenSSL crypto backend');
+  if (tlsOptions.groups !== undefined && tlsOptions.groups !== null)
+    throw new Error('QUIC TLS groups are only supported by the OpenSSL crypto backend');
   const cred = newGnutlsCredentials('server', certFile, keyFile);
-  configureGnutlsServerMtls(cred, clientAuth, tlsOptions.ca, tlsOptions.rejectUnauthorized !== false);
+  configureGnutlsServerMtls(
+    cred,
+    clientAuth,
+    tlsOptions.ca,
+    tlsOptions.rejectUnauthorized !== false,
+  );
   return {
     backend: 'gnutls',
     handle: cred,
@@ -376,7 +476,7 @@ export function newServerContext(certFile: string, keyFile: string, alpnProtocol
     sniCallback: null,
     verifyCallback: null,
     verifyMode: clientAuth === 'none' ? 0 : 1,
-    clientAuth
+    clientAuth,
   };
 }
 /**
@@ -402,17 +502,24 @@ export function newServerContext(certFile: string, keyFile: string, alpnProtocol
  * });
  * ```
  */
-export function newClientContext(verifyPeer: boolean, cipherSuites: readonly string[] | null = null, onKeylogLine?: (line: string) => void, tlsOptions: QuicTlsContextOptions = {}): QuicTlsContext {
+export function newClientContext(
+  verifyPeer: boolean,
+  cipherSuites: readonly string[] | null = null,
+  onKeylogLine?: (line: string) => void,
+  tlsOptions: QuicTlsContextOptions = {},
+): QuicTlsContext {
   if (cryptoBackend === 'ossl') {
     const ctx = sslCtxNewClient();
     if (cipherSuites !== null) sslCtxSetCipherSuites(ctx, cipherSuites);
-    if (tlsOptions.groups !== undefined && tlsOptions.groups !== null) sslCtxSetGroups(ctx, tlsOptions.groups);
+    if (tlsOptions.groups !== undefined && tlsOptions.groups !== null)
+      sslCtxSetGroups(ctx, tlsOptions.groups);
     if (tlsOptions.certificateFile !== undefined && tlsOptions.privateKeyFile !== undefined) {
       sslCtxUseCertKey(ctx, tlsOptions.certificateFile, tlsOptions.privateKeyFile);
     }
     sslCtxSetVerify(ctx, verifyPeer ? SSL_VERIFY_PEER : 0);
     configureOpenSslCa(ctx, tlsOptions.ca, verifyPeer);
-    const keylogCallback = onKeylogLine === undefined ? null : sslCtxSetKeylogCallback(ctx, onKeylogLine);
+    const keylogCallback =
+      onKeylogLine === undefined ? null : sslCtxSetKeylogCallback(ctx, onKeylogLine);
     return {
       backend: 'ossl',
       handle: ctx,
@@ -423,13 +530,20 @@ export function newClientContext(verifyPeer: boolean, cipherSuites: readonly str
       keylogLine: null,
       sniCallback: null,
       verifyCallback: null,
-      verifyMode: verifyPeer ? SSL_VERIFY_PEER : 0
+      verifyMode: verifyPeer ? SSL_VERIFY_PEER : 0,
     };
   }
-  if (tlsOptions.groups !== undefined && tlsOptions.groups !== null) throw new Error('QUIC TLS groups are only supported by the OpenSSL crypto backend');
+  if (tlsOptions.groups !== undefined && tlsOptions.groups !== null)
+    throw new Error('QUIC TLS groups are only supported by the OpenSSL crypto backend');
   return {
     backend: 'gnutls',
-    handle: newGnutlsCredentials('client', tlsOptions.certificateFile, tlsOptions.privateKeyFile, verifyPeer, tlsOptions.ca),
+    handle: newGnutlsCredentials(
+      'client',
+      tlsOptions.certificateFile,
+      tlsOptions.privateKeyFile,
+      verifyPeer,
+      tlsOptions.ca,
+    ),
     cipherSuites,
     groups: null,
     alpnCallback: null,
@@ -437,7 +551,7 @@ export function newClientContext(verifyPeer: boolean, cipherSuites: readonly str
     keylogLine: onKeylogLine ?? null,
     sniCallback: null,
     verifyCallback: null,
-    verifyMode: verifyPeer ? 1 : 0
+    verifyMode: verifyPeer ? 1 : 0,
   };
 }
 /**
@@ -460,11 +574,16 @@ export function newClientContext(verifyPeer: boolean, cipherSuites: readonly str
  * setSNIContexts(base, new Map([['api.example.com', api]]));
  * ```
  */
-export function setSNIContexts(ctx: QuicTlsContext, entries: ReadonlyMap<string, QuicTlsContext>): void {
-  if (ctx.backend !== 'ossl') throw new Error('QUIC per-SNI TLS contexts are only supported by the OpenSSL crypto backend');
+export function setSNIContexts(
+  ctx: QuicTlsContext,
+  entries: ReadonlyMap<string, QuicTlsContext>,
+): void {
+  if (ctx.backend !== 'ossl')
+    throw new Error('QUIC per-SNI TLS contexts are only supported by the OpenSSL crypto backend');
   const handles = new Map<string, object>();
   for (const [name, entry] of entries) {
-    if (entry.backend !== 'ossl') throw new Error('QUIC per-SNI TLS contexts are only supported by the OpenSSL crypto backend');
+    if (entry.backend !== 'ossl')
+      throw new Error('QUIC per-SNI TLS contexts are only supported by the OpenSSL crypto backend');
     handles.set(name, entry.handle as object);
   }
   ctx.sniCallback?.close();
@@ -536,7 +655,12 @@ export function getPeerCertificate(session: QuicTlsSession | null): Uint8Array |
  * const key = exportKeyingMaterial(session, 'EXPORTER-my-app', context, 32);
  * ```
  */
-export function exportKeyingMaterial(session: QuicTlsSession | null, label: string, context: Uint8Array, length: number): ArrayBuffer {
+export function exportKeyingMaterial(
+  session: QuicTlsSession | null,
+  label: string,
+  context: Uint8Array,
+  length: number,
+): ArrayBuffer {
   if (session === null) throw new Error('QUIC TLS session is not available');
   if (session.backend === 'ossl') {
     return sslExportKeyingMaterial(session.handle as object, label, context, length);
@@ -563,7 +687,11 @@ export function exportKeyingMaterial(session: QuicTlsSession | null, label: stri
  * const session = newServerSession(ctx, ['h3'], 16 * 1024); // allow 0-RTT
  * ```
  */
-export function newServerSession(ctx: QuicTlsContext, alpnProtocols: string[], earlyDataMax = 0): QuicTlsSession {
+export function newServerSession(
+  ctx: QuicTlsContext,
+  alpnProtocols: string[],
+  earlyDataMax = 0,
+): QuicTlsSession {
   if (ctx.backend === 'ossl') {
     if (earlyDataMax > 0) {
       sslCtxSetMaxEarlyData(ctx.handle as object, earlyDataMax);
@@ -585,12 +713,21 @@ export function newServerSession(ctx: QuicTlsContext, alpnProtocols: string[], e
     sslSetAcceptState(ssl);
     return {
       backend: 'ossl',
-      handle: ssl
+      handle: ssl,
     };
   }
   return {
     backend: 'gnutls',
-    handle: newGnutlsSession('server', ctx.handle as GnutlsCredentials, alpnProtocols, undefined, false, earlyDataMax, ctx.cipherSuites, ctx.keylogLine ?? undefined)
+    handle: newGnutlsSession(
+      'server',
+      ctx.handle as GnutlsCredentials,
+      alpnProtocols,
+      undefined,
+      false,
+      earlyDataMax,
+      ctx.cipherSuites,
+      ctx.keylogLine ?? undefined,
+    ),
   };
 }
 /**
@@ -612,7 +749,13 @@ export function newServerSession(ctx: QuicTlsContext, alpnProtocols: string[], e
  * const session = newClientSession(ctx, ['h3'], 'example.com', true);
  * ```
  */
-export function newClientSession(ctx: QuicTlsContext, alpnProtocols: string[], serverName: string, verifyPeer: boolean, earlyDataMax = 0): QuicTlsSession {
+export function newClientSession(
+  ctx: QuicTlsContext,
+  alpnProtocols: string[],
+  serverName: string,
+  verifyPeer: boolean,
+  earlyDataMax = 0,
+): QuicTlsSession {
   if (ctx.backend === 'ossl') {
     const ssl = sslNew(ctx.handle as object);
     try {
@@ -620,23 +763,33 @@ export function newClientSession(ctx: QuicTlsContext, alpnProtocols: string[], s
       sslSetAlpnProtos(ssl, alpnProtocols);
       if (earlyDataMax > 0) sslSetMaxEarlyData(ssl, earlyDataMax);
       const rc = sym!.ngtcp2_crypto_ossl_configure_client_session(ssl) as number;
-      if (rc !== 0) throw new Error('ngtcp2_crypto_ossl_configure_client_session failed: ' + getErrorString());
+      if (rc !== 0)
+        throw new Error('ngtcp2_crypto_ossl_configure_client_session failed: ' + getErrorString());
       sslSetConnectState(ssl);
       return {
         backend: 'ossl',
-        handle: ssl
+        handle: ssl,
       };
     } catch (error) {
       sslFree(ssl);
       throw error;
     }
   }
-  const session = newGnutlsSession('client', ctx.handle as GnutlsCredentials, alpnProtocols, serverName, verifyPeer, earlyDataMax, ctx.cipherSuites, ctx.keylogLine ?? undefined);
+  const session = newGnutlsSession(
+    'client',
+    ctx.handle as GnutlsCredentials,
+    alpnProtocols,
+    serverName,
+    verifyPeer,
+    earlyDataMax,
+    ctx.cipherSuites,
+    ctx.keylogLine ?? undefined,
+  );
   try {
     configureGnutlsSession('client', session);
     return {
       backend: 'gnutls',
-      handle: session
+      handle: session,
     };
   } catch (error) {
     freeGnutlsSession(session);
@@ -681,18 +834,23 @@ export function exportSession(session: QuicTlsSession): Uint8Array | null {
  * if (result.resumed) console.log('resuming, early data:', result.maxEarlyData);
  * ```
  */
-export function importSession(session: QuicTlsSession, data: Uint8Array, earlyDataMax = 0): QuicImportedSession {
+export function importSession(
+  session: QuicTlsSession,
+  data: Uint8Array,
+  earlyDataMax = 0,
+): QuicImportedSession {
   if (session.backend === 'ossl') {
     const imported = sslImportSession(session.handle as object, data, earlyDataMax);
-    if (imported.imported && imported.maxEarlyData > 0) sslEnableQuicEarlyData(session.handle as object, true);
+    if (imported.imported && imported.maxEarlyData > 0)
+      sslEnableQuicEarlyData(session.handle as object, true);
     return {
       resumed: imported.imported,
-      maxEarlyData: imported.maxEarlyData
+      maxEarlyData: imported.maxEarlyData,
     };
   }
   return {
     resumed: importGnutlsSession(session.handle as GnutlsSession, data),
-    maxEarlyData: Number.MAX_SAFE_INTEGER
+    maxEarlyData: Number.MAX_SAFE_INTEGER,
   };
 }
 /**
@@ -724,7 +882,9 @@ export function freeSession(session: QuicTlsSession): void {
  */
 export function getAlpnSelected(session: QuicTlsSession | null): string {
   if (session === null) return '';
-  return session.backend === 'ossl' ? sslGetAlpnSelected(session.handle as object) ?? '' : getGnutlsAlpnSelected(session.handle as GnutlsSession);
+  return session.backend === 'ossl'
+    ? (sslGetAlpnSelected(session.handle as object) ?? '')
+    : getGnutlsAlpnSelected(session.handle as GnutlsSession);
 }
 /**
  * Collects negotiated TLS parameters into a single snapshot after the
@@ -746,7 +906,10 @@ export function getAlpnSelected(session: QuicTlsSession | null): string {
  * console.log(`${info.protocol} over ${info.cipherVersion} (${info.cipher})`);
  * ```
  */
-export function getHandshakeInfo(session: QuicTlsSession | null, fallbackServername: string | null = null): QuicTlsHandshakeInfo {
+export function getHandshakeInfo(
+  session: QuicTlsSession | null,
+  fallbackServername: string | null = null,
+): QuicTlsHandshakeInfo {
   if (session === null) {
     return {
       servername: fallbackServername,
@@ -754,7 +917,7 @@ export function getHandshakeInfo(session: QuicTlsSession | null, fallbackServern
       cipher: null,
       cipherVersion: null,
       validationErrorReason: null,
-      validationErrorCode: 0
+      validationErrorCode: 0,
     };
   }
   const protocol = getAlpnSelected(session);
@@ -767,7 +930,7 @@ export function getHandshakeInfo(session: QuicTlsSession | null, fallbackServern
       cipher: cipher.cipher,
       cipherVersion: cipher.cipherVersion,
       validationErrorReason: validation.reason,
-      validationErrorCode: validation.code
+      validationErrorCode: validation.code,
     };
   }
   const gSession = session.handle as GnutlsSession;
@@ -779,7 +942,7 @@ export function getHandshakeInfo(session: QuicTlsSession | null, fallbackServern
     cipher: cipher.cipher,
     cipherVersion: cipher.cipherVersion,
     validationErrorReason: verification.reason,
-    validationErrorCode: verification.code
+    validationErrorCode: verification.code,
   };
 }
 /**
@@ -812,8 +975,12 @@ export function sendSessionTicket(session: QuicTlsSession): void {
  * setSessionTicketCallback(session, (ticket) => saveTicket('example.com', ticket));
  * ```
  */
-export function setSessionTicketCallback(session: QuicTlsSession, callback: ((ticket: Uint8Array) => void) | null): void {
-  if (session.backend === 'gnutls') setGnutlsSessionTicketCallback(session.handle as GnutlsSession, callback);
+export function setSessionTicketCallback(
+  session: QuicTlsSession,
+  callback: ((ticket: Uint8Array) => void) | null,
+): void {
+  if (session.backend === 'gnutls')
+    setGnutlsSessionTicketCallback(session.handle as GnutlsSession, callback);
 }
 /**
  * Associates ngtcp2's connection reference with the TLS session.
@@ -882,7 +1049,10 @@ export function newNativeHandle(session: QuicTlsSession): ArrayBuffer {
  * configureSessionForConnection('server', session);
  * ```
  */
-export function configureSessionForConnection(role: 'client' | 'server', session: QuicTlsSession): void {
+export function configureSessionForConnection(
+  role: 'client' | 'server',
+  session: QuicTlsSession,
+): void {
   if (session.backend === 'gnutls') configureGnutlsSession(role, session.handle as GnutlsSession);
 }
 /**

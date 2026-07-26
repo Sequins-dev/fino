@@ -1,7 +1,25 @@
 import { describe, it } from 'fino:test/test';
-import { evaluate, exactMatch, contains, schemaScorer, llmJudge, semanticSimilarity, EvalReporter, EvalProgressReporter, JsonEvalReporter, OpenTelemetryReporter } from 'fino:ai/eval';
+import {
+  evaluate,
+  exactMatch,
+  contains,
+  schemaScorer,
+  llmJudge,
+  semanticSimilarity,
+  EvalReporter,
+  EvalProgressReporter,
+  JsonEvalReporter,
+  OpenTelemetryReporter,
+} from 'fino:ai/eval';
 import type { EvalCaseReport, EvalSummary, ScoreResult } from 'fino:ai/eval';
-import { OtelSDK, InMemoryExporter, BatchSpanProcessor, BatchLogRecordProcessor, TraceTopicInstrumentation, PeriodicExportingMetricReader } from 'fino:opentelemetry/sdk';
+import {
+  OtelSDK,
+  InMemoryExporter,
+  BatchSpanProcessor,
+  BatchLogRecordProcessor,
+  TraceTopicInstrumentation,
+  PeriodicExportingMetricReader,
+} from 'fino:opentelemetry/sdk';
 import { DiskFileSystem } from 'fino:file';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
@@ -26,13 +44,9 @@ function scriptModel(turns: StreamEvent[][]): Model {
     async embed(texts: string[]): Promise<Float32Array[]> {
       return texts.map((t) => {
         const v = t.length > 0 ? 1 / Math.sqrt(3) : 0;
-        return new Float32Array([
-          v,
-          v,
-          v
-        ]);
+        return new Float32Array([v, v, v]);
       });
-    }
+    },
   };
 }
 function jsonResponseModel(responseObj: unknown): Model {
@@ -46,19 +60,19 @@ function jsonResponseModel(responseObj: unknown): Model {
         {
           type: 'text_delta',
           index: 0,
-          text: JSON.stringify(responseObj)
+          text: JSON.stringify(responseObj),
         },
         {
           type: 'usage',
           usage: {
             inputTokens: 5,
-            outputTokens: 5
-          }
+            outputTokens: 5,
+          },
         },
         {
           type: 'stop',
-          reason: 'end_turn'
-        }
+          reason: 'end_turn',
+        },
       ];
       async function* gen() {
         yield* events;
@@ -70,23 +84,26 @@ function jsonResponseModel(responseObj: unknown): Model {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 evaluate({
   name: 'evaluate-integration',
   target: async (input: string) => input.toUpperCase(),
-  cases: [{
-    name: 'uppercase a',
-    input: 'a',
-    expected: 'A'
-  }, {
-    name: 'uppercase hello',
-    input: 'hello',
-    expected: 'HELLO'
-  }],
+  cases: [
+    {
+      name: 'uppercase a',
+      input: 'a',
+      expected: 'A',
+    },
+    {
+      name: 'uppercase hello',
+      input: 'hello',
+      expected: 'HELLO',
+    },
+  ],
   scorers: [exactMatch()],
-  threshold: 1
+  threshold: 1,
 });
 describe('scorers', () => {
   it('exactMatch passes when output equals expected', async (t) => {
@@ -94,7 +111,7 @@ describe('scorers', () => {
     const r = scorer('hello', {
       name: 'c',
       input: 'q',
-      expected: 'hello'
+      expected: 'hello',
     }) as ScoreResult;
     t.equal(r.value, 1, 'score 1 on match');
     t.equal(r.pass, true, 'pass on match');
@@ -104,7 +121,7 @@ describe('scorers', () => {
     const r = scorer('hello', {
       name: 'c',
       input: 'q',
-      expected: 'world'
+      expected: 'world',
     }) as ScoreResult;
     t.equal(r.value, 0, 'score 0 on mismatch');
     t.equal(r.pass, false, 'fail on mismatch');
@@ -113,7 +130,7 @@ describe('scorers', () => {
     const scorer = contains('hello');
     const r = scorer('say hello there', {
       name: 'c',
-      input: 'q'
+      input: 'q',
     }) as ScoreResult;
     t.equal(r.value, 1, 'score 1 when contains');
     t.equal(r.pass, true, 'pass when contains');
@@ -122,7 +139,7 @@ describe('scorers', () => {
     const scorer = contains('nope');
     const r = scorer('say hello there', {
       name: 'c',
-      input: 'q'
+      input: 'q',
     }) as ScoreResult;
     t.equal(r.value, 0, 'score 0 when not contains');
     t.equal(r.pass, false, 'fail when not contains');
@@ -131,12 +148,15 @@ describe('scorers', () => {
     const scorer = schemaScorer({
       type: 'object',
       properties: { name: { type: 'string' } },
-      required: ['name']
+      required: ['name'],
     });
-    const r = scorer({ name: 'alice' }, {
-      name: 'c',
-      input: 'q'
-    }) as ScoreResult;
+    const r = scorer(
+      { name: 'alice' },
+      {
+        name: 'c',
+        input: 'q',
+      },
+    ) as ScoreResult;
     t.equal(r.value, 1, 'score 1 for valid schema');
     t.equal(r.pass, true, 'pass for valid');
   });
@@ -144,12 +164,15 @@ describe('scorers', () => {
     const scorer = schemaScorer({
       type: 'object',
       properties: { name: { type: 'string' } },
-      required: ['name']
+      required: ['name'],
     });
-    const r = scorer({ age: 42 }, {
-      name: 'c',
-      input: 'q'
-    }) as ScoreResult;
+    const r = scorer(
+      { age: 42 },
+      {
+        name: 'c',
+        input: 'q',
+      },
+    ) as ScoreResult;
     t.equal(r.value, 0, 'score 0 for invalid');
     t.equal(r.pass, false, 'fail for invalid');
     t.ok(r.explanation, 'explanation provided on failure');
@@ -157,15 +180,20 @@ describe('scorers', () => {
   it('llmJudge uses model output for score', async (t) => {
     const m = jsonResponseModel({
       score: .9,
-      explanation: 'very good'
+      explanation: 'very good',
     });
     const scorer = llmJudge(m, 'Is the output high quality?');
-    const r = await (scorer as (out: unknown, c: {
-      name: string;
-      input: unknown;
-    }) => Promise<ScoreResult>)('great output', {
+    const r = await (
+      scorer as (
+        out: unknown,
+        c: {
+          name: string;
+          input: unknown;
+        },
+      ) => Promise<ScoreResult>
+    )('great output', {
       name: 'c',
-      input: 'q'
+      input: 'q',
     });
     t.ok(r.value >= 0 && r.value <= 1, 'score in [0,1]');
     t.ok(typeof r.pass === 'boolean', 'pass is boolean');
@@ -173,14 +201,19 @@ describe('scorers', () => {
   it('semanticSimilarity returns near-1.0 for identical-embedding texts', async (t) => {
     const m = scriptModel([]);
     const scorer = semanticSimilarity(m, .5);
-    const r = await (scorer as (out: unknown, c: {
-      name: string;
-      input: unknown;
-      expected?: unknown;
-    }) => Promise<ScoreResult>)('hello world', {
+    const r = await (
+      scorer as (
+        out: unknown,
+        c: {
+          name: string;
+          input: unknown;
+          expected?: unknown;
+        },
+      ) => Promise<ScoreResult>
+    )('hello world', {
       name: 'c',
       input: 'q',
-      expected: 'hello world'
+      expected: 'hello world',
     });
     t.ok(r.value > .99, `cosine similarity close to 1: ${r.value}`);
     t.equal(r.pass, true, 'passes min threshold 0.5');
@@ -188,34 +221,58 @@ describe('scorers', () => {
   it('semanticSimilarity returns 0 when no expected value', async (t) => {
     const m = scriptModel([]);
     const scorer = semanticSimilarity(m, .5);
-    const r = await (scorer as (out: unknown, c: {
-      name: string;
-      input: unknown;
-      expected?: unknown;
-    }) => Promise<ScoreResult>)('hello', {
+    const r = await (
+      scorer as (
+        out: unknown,
+        c: {
+          name: string;
+          input: unknown;
+          expected?: unknown;
+        },
+      ) => Promise<ScoreResult>
+    )('hello', {
       name: 'c',
-      input: 'q'
+      input: 'q',
     });
     t.equal(r.value, 0, 'score 0 when no expected');
     t.equal(r.pass, false, 'fail when no expected');
   });
   it('scorer functions expose scorerName property', (t) => {
-    t.equal((exactMatch() as {
-      scorerName?: string;
-    }).scorerName, 'exactMatch', 'exactMatch.scorerName');
-    t.equal((contains('x') as {
-      scorerName?: string;
-    }).scorerName, 'contains(x)', 'contains.scorerName');
-    t.ok((schemaScorer({}) as {
-      scorerName?: string;
-    }).scorerName, 'schemaScorer.scorerName set');
+    t.equal(
+      (
+        exactMatch() as {
+          scorerName?: string;
+        }
+      ).scorerName,
+      'exactMatch',
+      'exactMatch.scorerName',
+    );
+    t.equal(
+      (
+        contains('x') as {
+          scorerName?: string;
+        }
+      ).scorerName,
+      'contains(x)',
+      'contains.scorerName',
+    );
+    t.ok(
+      (
+        schemaScorer({}) as {
+          scorerName?: string;
+        }
+      ).scorerName,
+      'schemaScorer.scorerName set',
+    );
   });
 });
 describe('EvalReporter', () => {
   it('EvalProgressReporter exposes retained progress', async (t) => {
     const reporter = new EvalProgressReporter();
     const seen: string[] = [];
-    reporter.progress.subscribe((progress) => seen.push(`${progress.completed}/${progress.total}:${progress.passed}`));
+    reporter.progress.subscribe((progress) =>
+      seen.push(`${progress.completed}/${progress.total}:${progress.passed}`),
+    );
     await reporter.onStart({ name: 'suite', cases: 2 });
     await reporter.onCase({
       name: 'one',
@@ -223,7 +280,7 @@ describe('EvalReporter', () => {
       output: null,
       scores: {},
       score: 1,
-      pass: true
+      pass: true,
     });
     await reporter.onFinish({ name: 'suite', mean: 1, passed: 1, total: 2 });
     t.equal(reporter.progress.get().completed, 2, 'finish marks all cases completed');
@@ -235,7 +292,7 @@ describe('EvalReporter', () => {
     const r = new Concrete();
     await r.onStart({
       name: 'x',
-      cases: 1
+      cases: 1,
     });
     await r.onCase({
       name: 'c',
@@ -243,23 +300,20 @@ describe('EvalReporter', () => {
       output: 'a',
       scores: {},
       score: 1,
-      pass: true
+      pass: true,
     });
     await r.onFinish({
       name: 'x',
       mean: 1,
       passed: 1,
-      total: 1
+      total: 1,
     });
     t.ok(true, 'all hooks resolve without error');
   });
   it('subclass can override any hook', async (t) => {
     const seen: string[] = [];
     class Spy extends EvalReporter {
-      override async onStart(_s: {
-        name: string;
-        cases: number;
-      }): Promise<void> {
+      override async onStart(_s: { name: string; cases: number }): Promise<void> {
         seen.push('start');
       }
       override async onCase(_r: EvalCaseReport): Promise<void> {
@@ -272,7 +326,7 @@ describe('EvalReporter', () => {
     const spy = new Spy();
     await spy.onStart({
       name: 'x',
-      cases: 2
+      cases: 2,
     });
     await spy.onCase({
       name: 'c',
@@ -280,19 +334,15 @@ describe('EvalReporter', () => {
       output: 'a',
       scores: {},
       score: 1,
-      pass: true
+      pass: true,
     });
     await spy.onFinish({
       name: 'x',
       mean: 1,
       passed: 1,
-      total: 1
+      total: 1,
     });
-    t.deepEqual(seen, [
-      'start',
-      'case',
-      'finish'
-    ], 'hooks called in order');
+    t.deepEqual(seen, ['start', 'case', 'finish'], 'hooks called in order');
   });
   it('onCase receives scores keyed by scorer name', async (t) => {
     const caseReports: EvalCaseReport[] = [];
@@ -310,16 +360,16 @@ describe('EvalReporter', () => {
       scores: {
         exactMatch: {
           value: 1,
-          pass: true
+          pass: true,
         },
         contains: {
           value: 0,
           pass: false,
-          explanation: 'missing'
-        }
+          explanation: 'missing',
+        },
       },
       score: .5,
-      pass: false
+      pass: false,
     });
     t.equal(caseReports.length, 1, 'one case report');
     const report = caseReports[0]!;
@@ -333,43 +383,50 @@ describe('EvalReporter', () => {
     const reporter = new JsonEvalReporter();
     await reporter.onStart({
       name: 'json-eval',
-      cases: 2
+      cases: 2,
     });
     await reporter.onCase({
       name: 'b-case',
       input: 'b',
       output: 'B',
-      scores: { exact: {
-        value: 1,
-        pass: true
-      } },
+      scores: {
+        exact: {
+          value: 1,
+          pass: true,
+        },
+      },
       score: 1,
-      pass: true
+      pass: true,
     });
     await reporter.onCase({
       name: 'a-case',
       input: 'a',
       output: 'A',
-      scores: { exact: {
-        value: 1,
-        pass: true
-      } },
+      scores: {
+        exact: {
+          value: 1,
+          pass: true,
+        },
+      },
       score: 1,
-      pass: true
+      pass: true,
     });
     await reporter.onFinish({
       name: 'json-eval',
       mean: 1,
       passed: 2,
-      total: 2
+      total: 2,
     });
     const json = reporter.toJSON();
-    t.deepEqual(json.cases.map((item) => item.name), ['a-case', 'b-case']);
+    t.deepEqual(
+      json.cases.map((item) => item.name),
+      ['a-case', 'b-case'],
+    );
     t.deepEqual(json.summary, {
       name: 'json-eval',
       mean: 1,
       passed: 2,
-      total: 2
+      total: 2,
     });
     json.cases[0]!.name = 'mutated';
     t.equal(reporter.toJSON().cases[0]!.name, 'a-case', 'returned JSON is cloned');
@@ -379,29 +436,31 @@ describe('EvalReporter', () => {
     const fs = new DiskFileSystem();
     const reporter = new JsonEvalReporter({
       path,
-      fs
+      fs,
     });
     try {
       await reporter.onStart({
         name: 'json-file-eval',
-        cases: 1
+        cases: 1,
       });
       await reporter.onCase({
         name: 'case-1',
         input: 'q',
         output: 'a',
-        scores: { exact: {
-          value: 1,
-          pass: true
-        } },
+        scores: {
+          exact: {
+            value: 1,
+            pass: true,
+          },
+        },
         score: 1,
-        pass: true
+        pass: true,
       });
       await reporter.onFinish({
         name: 'json-file-eval',
         mean: 1,
         passed: 1,
-        total: 1
+        total: 1,
       });
       const raw = new TextDecoder().decode(await fs.readFile(path));
       const json = JSON.parse(raw) as {
@@ -424,17 +483,19 @@ describe('EvalReporter', () => {
     const reporter = new JsonEvalReporter();
     evaluate({
       name: 'named scorer map eval',
-      cases: [{
-        name: 'case-1',
-        input: 'abc',
-        expected: 'abc'
-      }],
+      cases: [
+        {
+          name: 'case-1',
+          input: 'abc',
+          expected: 'abc',
+        },
+      ],
       target: async (input) => input,
       scorers: {
         exact: exactMatch(),
-        hasB: contains('b')
+        hasB: contains('b'),
       },
-      report: reporter
+      report: reporter,
     });
     t.ok(true, 'named scorer map registered without throwing');
   });
@@ -446,12 +507,12 @@ describe('OpenTelemetryReporter', () => {
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
       metricReaders: [new PeriodicExportingMetricReader(exporter)],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const reporter = new OpenTelemetryReporter();
     await reporter.onStart({
       name: 'my-eval',
-      cases: 1
+      cases: 1,
     });
     await reporter.onCase({
       name: 'case-1',
@@ -461,22 +522,22 @@ describe('OpenTelemetryReporter', () => {
       scores: {
         exactMatch: {
           value: 1,
-          pass: true
+          pass: true,
         },
         contains: {
           value: 0,
           pass: false,
-          explanation: 'not found'
-        }
+          explanation: 'not found',
+        },
       },
       score: .5,
-      pass: false
+      pass: false,
     });
     await reporter.onFinish({
       name: 'my-eval',
       mean: .5,
       passed: 0,
-      total: 1
+      total: 1,
     });
     await sdk.flush();
     const logs = exporter.getFinishedLogs();
@@ -510,29 +571,31 @@ describe('OpenTelemetryReporter', () => {
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
       metricReaders: [new PeriodicExportingMetricReader(exporter)],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const reporter = new OpenTelemetryReporter();
     await reporter.onStart({
       name: 'metric-eval',
-      cases: 1
+      cases: 1,
     });
     await reporter.onCase({
       name: 'case-1',
       input: 'q',
       output: 'a',
-      scores: { exactMatch: {
-        value: 1,
-        pass: true
-      } },
+      scores: {
+        exactMatch: {
+          value: 1,
+          pass: true,
+        },
+      },
       score: 1,
-      pass: true
+      pass: true,
     });
     await reporter.onFinish({
       name: 'metric-eval',
       mean: 1,
       passed: 1,
-      total: 1
+      total: 1,
     });
     await sdk.flush();
     const metrics = exporter.getFinishedMetrics();
@@ -561,29 +624,31 @@ describe('OpenTelemetryReporter', () => {
       },
       async shutdown() {
         received.push('shutdown');
-      }
+      },
     };
     const reporter = new OpenTelemetryReporter({ exporter: stubExporter });
     await reporter.onStart({
       name: 'export-test',
-      cases: 1
+      cases: 1,
     });
     await reporter.onCase({
       name: 'case-1',
       input: 'q',
       output: 'a',
-      scores: { exactMatch: {
-        value: 1,
-        pass: true
-      } },
+      scores: {
+        exactMatch: {
+          value: 1,
+          pass: true,
+        },
+      },
       score: 1,
-      pass: true
+      pass: true,
     });
     await reporter.onFinish({
       name: 'export-test',
       mean: 1,
       passed: 1,
-      total: 1
+      total: 1,
     });
     t.ok(true, 'reporter lifecycle completed without error');
     t.ok(received.length > 0 || true, 'exporter was engaged through SDK');
@@ -594,29 +659,31 @@ describe('OpenTelemetryReporter', () => {
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
       metricReaders: [new PeriodicExportingMetricReader(exporter)],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const reporter = new OpenTelemetryReporter();
     await reporter.onStart({
       name: 'ambient-eval',
-      cases: 1
+      cases: 1,
     });
     await reporter.onCase({
       name: 'case-1',
       input: 'q',
       output: 'a',
-      scores: { exactMatch: {
-        value: 1,
-        pass: true
-      } },
+      scores: {
+        exactMatch: {
+          value: 1,
+          pass: true,
+        },
+      },
       score: 1,
-      pass: true
+      pass: true,
     });
     await reporter.onFinish({
       name: 'ambient-eval',
       mean: 1,
       passed: 1,
-      total: 1
+      total: 1,
     });
     await sdk.flush();
     const logs = exporter.getFinishedLogs();

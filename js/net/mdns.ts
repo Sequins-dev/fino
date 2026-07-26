@@ -1,78 +1,84 @@
 /**
-* fino:net/mdns — Multicast DNS and DNS-SD discovery helpers.
-*
-* Learn more:
-* - Multicast DNS: https://www.rfc-editor.org/rfc/rfc6762
-* - DNS-Based Service Discovery: https://www.rfc-editor.org/rfc/rfc6763
-* - DNS message format: https://www.rfc-editor.org/rfc/rfc1035
-*
-* This module keeps mDNS separate from the unicast DNS resolver because mDNS
-* has local-link trust rules, multicast sockets, cache semantics, and
-* DNS-SD service lifecycles that do not belong in ordinary recursive DNS.
-*
-* This implementation supports one-shot host resolution, DNS-SD browse events,
-* service resolution, and responder-backed publication. Multicast interface
-* selection is available through `fino:net/socket`; deterministic tests may
-* pass an explicit unicast `server` or bind `address`.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* const addresses = await mdns.resolveHost('printer.local');
-* await mdns.close();
-* ```
-*/
+ * fino:net/mdns — Multicast DNS and DNS-SD discovery helpers.
+ *
+ * Learn more:
+ * - Multicast DNS: https://www.rfc-editor.org/rfc/rfc6762
+ * - DNS-Based Service Discovery: https://www.rfc-editor.org/rfc/rfc6763
+ * - DNS message format: https://www.rfc-editor.org/rfc/rfc1035
+ *
+ * This module keeps mDNS separate from the unicast DNS resolver because mDNS
+ * has local-link trust rules, multicast sockets, cache semantics, and
+ * DNS-SD service lifecycles that do not belong in ordinary recursive DNS.
+ *
+ * This implementation supports one-shot host resolution, DNS-SD browse events,
+ * service resolution, and responder-backed publication. Multicast interface
+ * selection is available through `fino:net/socket`; deterministic tests may
+ * pass an explicit unicast `server` or bind `address`.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * const addresses = await mdns.resolveHost('printer.local');
+ * await mdns.close();
+ * ```
+ */
 import * as sock from './socket.ts';
 import * as loop from '../internal/runtime/loop.ts';
-import { RECORD_TYPES, _buildQuery, _decodeName, _encodeName, _parseResponse } from 'internal:net/dns-wire';
+import {
+  RECORD_TYPES,
+  _buildQuery,
+  _decodeName,
+  _encodeName,
+  _parseResponse,
+} from 'internal:net/dns-wire';
 import type { Address } from './socket.ts';
 import type { DnsResourceRecord } from './dns.ts';
 
 /** DNS record types this module knows how to query on the local link.
-*
-* `A` and `AAAA` carry IPv4 and IPv6 addresses, `PTR` enumerates DNS-SD
-* service instances for a service type, `SRV` carries the target host and port
-* of a service instance, and `TXT` carries its key/value metadata. These are
-* the string names accepted by `Mdns.query`; the module maps them to numeric
-* DNS record codes internally.
-*
-* ```ts no_run
-* import { Mdns, type MdnsRecordType } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* const rrtype: MdnsRecordType = 'AAAA';
-* const records = await mdns.query('printer.local', rrtype);
-* await mdns.close();
-* ```
-*/
+ *
+ * `A` and `AAAA` carry IPv4 and IPv6 addresses, `PTR` enumerates DNS-SD
+ * service instances for a service type, `SRV` carries the target host and port
+ * of a service instance, and `TXT` carries its key/value metadata. These are
+ * the string names accepted by `Mdns.query`; the module maps them to numeric
+ * DNS record codes internally.
+ *
+ * ```ts no_run
+ * import { Mdns, type MdnsRecordType } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * const rrtype: MdnsRecordType = 'AAAA';
+ * const records = await mdns.query('printer.local', rrtype);
+ * await mdns.close();
+ * ```
+ */
 export type MdnsRecordType = 'A' | 'AAAA' | 'PTR' | 'SRV' | 'TXT';
 
 /** Tuning and destination options shared by every `Mdns` query operation.
-*
-* All fields are optional. The defaults target the standard mDNS multicast
-* group on the link-local network, retransmit unanswered one-shot queries with
-* randomized backoff, and honor the per-instance answer cache. The socket and
-* interface fields (`bindAddress`, `interfaceAddress`, `interfaceIndex`) select
-* which interfaces participate in multicast membership; `server` overrides the
-* destination entirely and is primarily useful for deterministic tests or a
-* controlled unicast relay. `continuous`, `resolve`, and `pollMs` only affect
-* `browse`.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* const controller = new AbortController();
-* const addresses = await mdns.resolveHost('printer.local', {
-*   timeoutMs: 1500,
-*   interfaceAddress: '192.168.1.10',
-*   unicastResponse: true,
-*   signal: controller.signal,
-* });
-* await mdns.close();
-* ```
-*/
+ *
+ * All fields are optional. The defaults target the standard mDNS multicast
+ * group on the link-local network, retransmit unanswered one-shot queries with
+ * randomized backoff, and honor the per-instance answer cache. The socket and
+ * interface fields (`bindAddress`, `interfaceAddress`, `interfaceIndex`) select
+ * which interfaces participate in multicast membership; `server` overrides the
+ * destination entirely and is primarily useful for deterministic tests or a
+ * controlled unicast relay. `continuous`, `resolve`, and `pollMs` only affect
+ * `browse`.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * const controller = new AbortController();
+ * const addresses = await mdns.resolveHost('printer.local', {
+ *   timeoutMs: 1500,
+ *   interfaceAddress: '192.168.1.10',
+ *   unicastResponse: true,
+ *   signal: controller.signal,
+ * });
+ * await mdns.close();
+ * ```
+ */
 export interface MdnsQueryOptions {
   /** Query timeout in milliseconds. Defaults to 2500. */
   timeoutMs?: number;
@@ -110,29 +116,29 @@ export interface MdnsQueryOptions {
   pollMs?: number;
 }
 /** A single service-lifetime change yielded by `Mdns.browse`.
-*
-* One-shot browses emit only `up` events for each unique instance discovered.
-* A continuous browse also emits `update` when an instance's TTL or resolved
-* metadata changes and `down` when a goodbye (zero-TTL) record or TTL expiry
-* retires it. The `service` field is populated only when the browse ran with
-* `resolve: true`, in which case `up`/`update` events carry the resolved SRV,
-* TXT, and address data.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* const controller = new AbortController();
-* for await (const event of mdns.browse('_http._tcp.local', {
-*   continuous: true,
-*   resolve: true,
-*   signal: controller.signal,
-* })) {
-*   if (event.type === 'down') console.log('gone:', event.name);
-*   else console.log(event.type, event.name, event.service?.addresses);
-* }
-* ```
-*/
+ *
+ * One-shot browses emit only `up` events for each unique instance discovered.
+ * A continuous browse also emits `update` when an instance's TTL or resolved
+ * metadata changes and `down` when a goodbye (zero-TTL) record or TTL expiry
+ * retires it. The `service` field is populated only when the browse ran with
+ * `resolve: true`, in which case `up`/`update` events carry the resolved SRV,
+ * TXT, and address data.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * const controller = new AbortController();
+ * for await (const event of mdns.browse('_http._tcp.local', {
+ *   continuous: true,
+ *   resolve: true,
+ *   signal: controller.signal,
+ * })) {
+ *   if (event.type === 'down') console.log('gone:', event.name);
+ *   else console.log(event.type, event.name, event.service?.addresses);
+ * }
+ * ```
+ */
 export interface MdnsBrowseEvent {
   /** Event kind for service lifetime changes. */
   type: 'up' | 'update' | 'down';
@@ -146,27 +152,27 @@ export interface MdnsBrowseEvent {
   service?: MdnsService;
 }
 /** A DNS-SD service instance resolved into a usable connection target.
-*
-* Returned by `Mdns.resolveService` and attached to browse events when
-* `resolve: true` is set. `target` and `port` come from the SRV record;
-* `addresses` are the A/AAAA records resolved for `target`; `txt` holds the
-* parsed TXT attributes, where a bare boolean key maps to `true` and a
-* `key=value` pair maps to the raw value bytes (decode with `TextDecoder` when
-* the value is textual). Callers typically connect to the first entry of
-* `addresses` on `port`.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* const service: import('fino:net/mdns').MdnsService =
-*   await mdns.resolveService('Printer._http._tcp.local');
-* const path = service.txt.get('path');
-* const url = `http://${service.addresses[0]}:${service.port}` +
-*   (path instanceof Uint8Array ? new TextDecoder().decode(path) : '');
-* await mdns.close();
-* ```
-*/
+ *
+ * Returned by `Mdns.resolveService` and attached to browse events when
+ * `resolve: true` is set. `target` and `port` come from the SRV record;
+ * `addresses` are the A/AAAA records resolved for `target`; `txt` holds the
+ * parsed TXT attributes, where a bare boolean key maps to `true` and a
+ * `key=value` pair maps to the raw value bytes (decode with `TextDecoder` when
+ * the value is textual). Callers typically connect to the first entry of
+ * `addresses` on `port`.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * const service: import('fino:net/mdns').MdnsService =
+ *   await mdns.resolveService('Printer._http._tcp.local');
+ * const path = service.txt.get('path');
+ * const url = `http://${service.addresses[0]}:${service.port}` +
+ *   (path instanceof Uint8Array ? new TextDecoder().decode(path) : '');
+ * await mdns.close();
+ * ```
+ */
 export interface MdnsService {
   /** Service instance name. */
   name: string;
@@ -182,32 +188,32 @@ export interface MdnsService {
   interfaceIndex: number | null;
 }
 /** Description of a DNS-SD service to advertise with `Mdns.publish`.
-*
-* `name` is the human-readable instance label (for example `Printer`) and is
-* combined with `serviceType` to form the full instance name. `target` and
-* `port` populate the SRV record; `target` must resolve to the addresses you
-* advertise. `txt` becomes the TXT record: string values encode as `key=value`
-* UTF-8, `Uint8Array` values encode as `key=` followed by the raw bytes, and
-* `true` encodes as a bare boolean key. Provide `addresses` for the A/AAAA
-* records the responder should return, or `addressesByInterface` to answer with
-* different addresses depending on the receiving interface index.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* const registration = await mdns.publish({
-*   name: 'Front Desk Printer',
-*   serviceType: '_http._tcp.local',
-*   target: 'printer.local',
-*   port: 8080,
-*   txt: { path: '/print', color: 'true' },
-*   addresses: ['192.168.1.44'],
-* });
-* await registration.close();
-* await mdns.close();
-* ```
-*/
+ *
+ * `name` is the human-readable instance label (for example `Printer`) and is
+ * combined with `serviceType` to form the full instance name. `target` and
+ * `port` populate the SRV record; `target` must resolve to the addresses you
+ * advertise. `txt` becomes the TXT record: string values encode as `key=value`
+ * UTF-8, `Uint8Array` values encode as `key=` followed by the raw bytes, and
+ * `true` encodes as a bare boolean key. Provide `addresses` for the A/AAAA
+ * records the responder should return, or `addressesByInterface` to answer with
+ * different addresses depending on the receiving interface index.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * const registration = await mdns.publish({
+ *   name: 'Front Desk Printer',
+ *   serviceType: '_http._tcp.local',
+ *   target: 'printer.local',
+ *   port: 8080,
+ *   txt: { path: '/print', color: 'true' },
+ *   addresses: ['192.168.1.44'],
+ * });
+ * await registration.close();
+ * await mdns.close();
+ * ```
+ */
 export interface MdnsPublishService {
   /** Instance label without the service type, such as `Printer`. */
   name: string;
@@ -225,34 +231,34 @@ export interface MdnsPublishService {
   addressesByInterface?: Record<number, string[]>;
 }
 /** Socket, probing, and lifecycle options for `Mdns.publish`.
-*
-* By default the responder binds the IPv4 mDNS port and joins the multicast
-* group so it answers real link-local queries. Setting `probeAddress` runs a
-* pre-publish conflict probe against that destination; if a conflicting record
-* is seen, `conflictResolution` decides between rejecting the publish
-* (`'reject'`, the default) and automatically appending a numeric suffix
-* (`'rename'`, up to `maxRenameAttempts` times). The `announceAddress` and
-* `goodbyeAddress` fields direct the unsolicited announcement and shutdown
-* goodbye packets to explicit destinations, which — together with an explicit
-* `address` and `probeAddress` — make publication fully deterministic in tests.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* const registration = await mdns.publish(
-*   { name: 'Printer', serviceType: '_http._tcp.local', target: 'printer.local', port: 8080 },
-*   {
-*     probeAddress: { family: 'ipv4', ip: '224.0.0.251', port: 5353 },
-*     conflictResolution: 'rename',
-*     maxRenameAttempts: 3,
-*   },
-* );
-* console.log('published as', registration.name);
-* await registration.close();
-* await mdns.close();
-* ```
-*/
+ *
+ * By default the responder binds the IPv4 mDNS port and joins the multicast
+ * group so it answers real link-local queries. Setting `probeAddress` runs a
+ * pre-publish conflict probe against that destination; if a conflicting record
+ * is seen, `conflictResolution` decides between rejecting the publish
+ * (`'reject'`, the default) and automatically appending a numeric suffix
+ * (`'rename'`, up to `maxRenameAttempts` times). The `announceAddress` and
+ * `goodbyeAddress` fields direct the unsolicited announcement and shutdown
+ * goodbye packets to explicit destinations, which — together with an explicit
+ * `address` and `probeAddress` — make publication fully deterministic in tests.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * const registration = await mdns.publish(
+ *   { name: 'Printer', serviceType: '_http._tcp.local', target: 'printer.local', port: 8080 },
+ *   {
+ *     probeAddress: { family: 'ipv4', ip: '224.0.0.251', port: 5353 },
+ *     conflictResolution: 'rename',
+ *     maxRenameAttempts: 3,
+ *   },
+ * );
+ * console.log('published as', registration.name);
+ * await registration.close();
+ * await mdns.close();
+ * ```
+ */
 export interface MdnsPublishOptions {
   /** Bind address for the responder. Defaults to IPv4 mDNS port 5353. */
   address?: Address;
@@ -278,28 +284,28 @@ export interface MdnsPublishOptions {
   responseDelayMs?: number;
 }
 /** Handle to a live service advertisement returned by `Mdns.publish`.
-*
-* The registration keeps answering PTR/SRV/TXT/A/AAAA questions until it is
-* closed. `address` reports the actual bound UDP address (useful when the
-* publish call bound port 0), and `name` reports the final instance name, which
-* may differ from the requested label if a probing conflict triggered an
-* automatic rename. It implements `Symbol.asyncDispose`, so it can be managed
-* with `await using` for automatic cleanup.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* const mdns = new Mdns();
-* {
-*   await using registration = await mdns.publish({
-*     name: 'Printer', serviceType: '_http._tcp.local', target: 'printer.local', port: 8080,
-*   });
-*   console.log('serving on', registration.address.port, 'as', registration.name);
-*   // ... run while the service should stay discoverable ...
-* } // registration.close() runs here, sending goodbye records
-* await mdns.close();
-* ```
-*/
+ *
+ * The registration keeps answering PTR/SRV/TXT/A/AAAA questions until it is
+ * closed. `address` reports the actual bound UDP address (useful when the
+ * publish call bound port 0), and `name` reports the final instance name, which
+ * may differ from the requested label if a probing conflict triggered an
+ * automatic rename. It implements `Symbol.asyncDispose`, so it can be managed
+ * with `await using` for automatic cleanup.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * const mdns = new Mdns();
+ * {
+ *   await using registration = await mdns.publish({
+ *     name: 'Printer', serviceType: '_http._tcp.local', target: 'printer.local', port: 8080,
+ *   });
+ *   console.log('serving on', registration.address.port, 'as', registration.name);
+ *   // ... run while the service should stay discoverable ...
+ * } // registration.close() runs here, sending goodbye records
+ * await mdns.close();
+ * ```
+ */
 export interface MdnsRegistration {
   /** Bound UDP address for the responder. */
   readonly address: Address;
@@ -322,14 +328,21 @@ function timeoutError(name: string): Error {
 }
 
 function wildcardAddress(family: 'ipv4' | 'ipv6', port = 0): Address {
-  return family === 'ipv6' ? { family: 'ipv6', ip: '::', port } : { family: 'ipv4', ip: '0.0.0.0', port };
+  return family === 'ipv6'
+    ? { family: 'ipv6', ip: '::', port }
+    : { family: 'ipv4', ip: '0.0.0.0', port };
 }
-function receivePacket(fd: number, usePacketInfo: boolean): {
-  data: Uint8Array;
-  addr: Address | sock.UnknownAddress;
-  destination?: Address;
-  interfaceIndex?: number;
-} | number {
+function receivePacket(
+  fd: number,
+  usePacketInfo: boolean,
+):
+  | {
+      data: Uint8Array;
+      addr: Address | sock.UnknownAddress;
+      destination?: Address;
+      interfaceIndex?: number;
+    }
+  | number {
   return usePacketInfo ? sock.recvmsgPacketInfo(fd, 9000) : sock.recvfrom(fd, 9000);
 }
 type MulticastMembership = {
@@ -340,8 +353,12 @@ type MulticastOptions = {
   interfaceAddress?: string;
   interfaceIndex?: number;
 };
-function multicastMemberships(family: 'ipv4' | 'ipv6', options: MulticastOptions): MulticastMembership[] {
-  if (family === 'ipv4' && options.interfaceAddress !== undefined) return [{ interfaceAddress: options.interfaceAddress }];
+function multicastMemberships(
+  family: 'ipv4' | 'ipv6',
+  options: MulticastOptions,
+): MulticastMembership[] {
+  if (family === 'ipv4' && options.interfaceAddress !== undefined)
+    return [{ interfaceAddress: options.interfaceAddress }];
   if (options.interfaceIndex !== undefined) return [{ interfaceIndex: options.interfaceIndex }];
   const interfaces = sock.networkInterfaces().filter((iface) => {
     if (iface.up === false || iface.multicast === false) return false;
@@ -353,16 +370,29 @@ function multicastMemberships(family: 'ipv4' | 'ipv6', options: MulticastOptions
     const addresses = new Set<string>();
     for (const iface of interfaces) {
       for (const address of iface.addresses ?? []) {
-        if (address.family !== 'ipv4' || address.ip === '0.0.0.0' || address.ip.startsWith('127.')) continue;
+        if (address.family !== 'ipv4' || address.ip === '0.0.0.0' || address.ip.startsWith('127.'))
+          continue;
         addresses.add(address.ip);
       }
     }
-    return addresses.size === 0 ? [{}] : [...addresses].map((interfaceAddress) => ({ interfaceAddress }));
+    return addresses.size === 0
+      ? [{}]
+      : [...addresses].map((interfaceAddress) => ({ interfaceAddress }));
   }
-  const indices = [...new Set(interfaces.map((iface) => iface.index).filter((index) => Number.isInteger(index) && index > 0))];
+  const indices = [
+    ...new Set(
+      interfaces
+        .map((iface) => iface.index)
+        .filter((index) => Number.isInteger(index) && index > 0),
+    ),
+  ];
   return indices.length === 0 ? [{}] : indices.map((interfaceIndex) => ({ interfaceIndex }));
 }
-function joinMdnsMulticast(fd: number, family: 'ipv4' | 'ipv6', options: MulticastOptions): MulticastMembership[] {
+function joinMdnsMulticast(
+  fd: number,
+  family: 'ipv4' | 'ipv6',
+  options: MulticastOptions,
+): MulticastMembership[] {
   const group = family === 'ipv6' ? MDNS_IPV6.ip : MDNS_IPV4.ip;
   const joined: MulticastMembership[] = [];
   let lastError: unknown;
@@ -371,7 +401,7 @@ function joinMdnsMulticast(fd: number, family: 'ipv4' | 'ipv6', options: Multica
       sock.joinMulticastGroup(fd, {
         group,
         interfaceAddress: membership.interfaceAddress,
-        interfaceIndex: membership.interfaceIndex
+        interfaceIndex: membership.interfaceIndex,
       });
       joined.push(membership);
     } catch (error) {
@@ -381,19 +411,29 @@ function joinMdnsMulticast(fd: number, family: 'ipv4' | 'ipv6', options: Multica
   if (joined.length === 0 && lastError !== undefined) throw lastError;
   return joined;
 }
-function leaveMdnsMulticast(fd: number, family: 'ipv4' | 'ipv6', memberships: readonly MulticastMembership[]): void {
+function leaveMdnsMulticast(
+  fd: number,
+  family: 'ipv4' | 'ipv6',
+  memberships: readonly MulticastMembership[],
+): void {
   const group = family === 'ipv6' ? MDNS_IPV6.ip : MDNS_IPV4.ip;
   for (const membership of memberships) {
     try {
       sock.leaveMulticastGroup(fd, {
         group,
         interfaceAddress: membership.interfaceAddress,
-        interfaceIndex: membership.interfaceIndex
+        interfaceIndex: membership.interfaceIndex,
       });
     } catch {}
   }
 }
-function sendMdnsPacket(fd: number, packet: Uint8Array, family: 'ipv4' | 'ipv6', memberships: readonly MulticastMembership[], server?: Address): void {
+function sendMdnsPacket(
+  fd: number,
+  packet: Uint8Array,
+  family: 'ipv4' | 'ipv6',
+  memberships: readonly MulticastMembership[],
+  server?: Address,
+): void {
   if (server !== undefined) {
     sock.sendto(fd, packet, server);
     return;
@@ -406,14 +446,19 @@ function sendMdnsPacket(fd: number, packet: Uint8Array, family: 'ipv4' | 'ipv6',
       sock.setMulticastOptions(fd, {
         family,
         interfaceAddress: membership.interfaceAddress,
-        interfaceIndex: membership.interfaceIndex
+        interfaceIndex: membership.interfaceIndex,
       });
-      const destination = family === 'ipv6' && membership.interfaceIndex !== undefined ? {
-        family: 'ipv6' as const,
-        ip: MDNS_IPV6.ip,
-        port: MDNS_IPV6.port,
-        scopeId: membership.interfaceIndex
-      } : family === 'ipv6' ? MDNS_IPV6 : MDNS_IPV4;
+      const destination =
+        family === 'ipv6' && membership.interfaceIndex !== undefined
+          ? {
+              family: 'ipv6' as const,
+              ip: MDNS_IPV6.ip,
+              port: MDNS_IPV6.port,
+              scopeId: membership.interfaceIndex,
+            }
+          : family === 'ipv6'
+            ? MDNS_IPV6
+            : MDNS_IPV4;
       sock.sendto(fd, packet, destination);
       sent = true;
     } catch (error) {
@@ -427,16 +472,29 @@ function retryDelay(options: MdnsQueryOptions): number {
   const max = Math.max(min, Math.floor(options.retryMaxMs ?? 1000));
   return min + Math.floor(Math.random() * (max - min + 1));
 }
-function mdnsQueryPacket(name: string, type: number, unicastResponse: boolean | undefined): Uint8Array {
+function mdnsQueryPacket(
+  name: string,
+  type: number,
+  unicastResponse: boolean | undefined,
+): Uint8Array {
   return mdnsQueryPacketWithKnownAnswers(name, type, unicastResponse, []);
 }
-function mdnsQueryPacketWithKnownAnswers(name: string, type: number, unicastResponse: boolean | undefined, knownAnswers: readonly DnsResourceRecord[] | undefined): Uint8Array {
+function mdnsQueryPacketWithKnownAnswers(
+  name: string,
+  type: number,
+  unicastResponse: boolean | undefined,
+  knownAnswers: readonly DnsResourceRecord[] | undefined,
+): Uint8Array {
   const packet = _buildQuery(0, name, type);
   const decoded = _decodeName(packet, 12);
   if ((knownAnswers?.length ?? 0) === 0) {
     if (unicastResponse !== true) return packet;
     const out = packet.slice();
-    new DataView(out.buffer, out.byteOffset, out.byteLength).setUint16(decoded.nextOffset + 2, 0x8001, false);
+    new DataView(out.buffer, out.byteOffset, out.byteLength).setUint16(
+      decoded.nextOffset + 2,
+      0x8001,
+      false,
+    );
     return out;
   }
   const questionEnd = decoded.nextOffset + 4;
@@ -464,7 +522,10 @@ function recordsKey(records: readonly DnsResourceRecord[]): string {
 }
 function serviceKey(service: MdnsService | undefined): string {
   if (service === undefined) return '';
-  const txt = [...service.txt.entries()].map(([key, value]) => `${key}=${value === true ? 'true' : Array.from(value).join('.')}`).sort().join('&');
+  const txt = [...service.txt.entries()]
+    .map(([key, value]) => `${key}=${value === true ? 'true' : Array.from(value).join('.')}`)
+    .sort()
+    .join('&');
   return `${service.target}/${service.port}/${service.addresses.slice().sort().join(',')}/${txt}`;
 }
 function ipv4ToInt(ip: string): number | null {
@@ -474,7 +535,7 @@ function ipv4ToInt(ip: string): number | null {
   for (const part of parts) {
     const value = Number(part);
     if (!Number.isInteger(value) || value < 0 || value > 255) return null;
-    out = (out << 8 | value) >>> 0;
+    out = ((out << 8) | value) >>> 0;
   }
   return out >>> 0;
 }
@@ -482,13 +543,29 @@ function sameIpv4Link(source: string, address: string, mask: string): boolean {
   const src = ipv4ToInt(source);
   const addr = ipv4ToInt(address);
   const netmask = ipv4ToInt(mask);
-  return src !== null && addr !== null && netmask !== null && ((src & netmask) >>> 0) === ((addr & netmask) >>> 0);
+  return (
+    src !== null &&
+    addr !== null &&
+    netmask !== null &&
+    (src & netmask) >>> 0 === (addr & netmask) >>> 0
+  );
 }
-function isLocalLinkSource(address: Address | sock.UnknownAddress, options: MdnsQueryOptions): boolean {
+function isLocalLinkSource(
+  address: Address | sock.UnknownAddress,
+  options: MdnsQueryOptions,
+): boolean {
   if (address.family !== 'ipv4' && address.family !== 'ipv6') return false;
   if (options.localInterfaces === undefined) {
-    if (address.family === 'ipv4' && (address.ip.startsWith('127.') || address.ip.startsWith('169.254.'))) return true;
-    if (address.family === 'ipv6' && (address.ip === '::1' || address.ip.toLowerCase().startsWith('fe80:'))) return true;
+    if (
+      address.family === 'ipv4' &&
+      (address.ip.startsWith('127.') || address.ip.startsWith('169.254.'))
+    )
+      return true;
+    if (
+      address.family === 'ipv6' &&
+      (address.ip === '::1' || address.ip.toLowerCase().startsWith('fe80:'))
+    )
+      return true;
   }
   const interfaces = options.localInterfaces ?? sock.networkInterfaces();
   for (const iface of interfaces) {
@@ -498,8 +575,21 @@ function isLocalLinkSource(address: Address | sock.UnknownAddress, options: Mdns
     for (let i = 0; i < addrs.length; i++) {
       const local = addrs[i]!;
       const mask = masks[i];
-      if (address.family === 'ipv4' && local.family === 'ipv4' && mask?.family === 'ipv4' && sameIpv4Link(address.ip, local.ip, mask.ip)) return true;
-      if (address.family === 'ipv6' && local.family === 'ipv6' && (address.scopeId === undefined || address.scopeId === iface.index || address.scopeId === local.scopeId)) return true;
+      if (
+        address.family === 'ipv4' &&
+        local.family === 'ipv4' &&
+        mask?.family === 'ipv4' &&
+        sameIpv4Link(address.ip, local.ip, mask.ip)
+      )
+        return true;
+      if (
+        address.family === 'ipv6' &&
+        local.family === 'ipv6' &&
+        (address.scopeId === undefined ||
+          address.scopeId === iface.index ||
+          address.scopeId === local.scopeId)
+      )
+        return true;
     }
   }
   return false;
@@ -509,14 +599,20 @@ async function delay(ms: number, signal?: AbortSignal): Promise<boolean> {
   const timeout = loop.timeout(ms);
   let onAbort: (() => void) | null = null;
   let aborted = false;
-  const abort = signal === undefined ? null : new Promise<false>((resolve) => {
-    onAbort = () => {
-      aborted = true;
-      resolve(false);
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-  const result = await Promise.race([timeout.then(() => true), abort ?? new Promise<never>(() => {})]);
+  const abort =
+    signal === undefined
+      ? null
+      : new Promise<false>((resolve) => {
+          onAbort = () => {
+            aborted = true;
+            resolve(false);
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+  const result = await Promise.race([
+    timeout.then(() => true),
+    abort ?? new Promise<never>(() => {}),
+  ]);
   timeout.cancel();
   if (signal && onAbort) signal.removeEventListener('abort', onAbort);
   return result && !aborted;
@@ -536,17 +632,23 @@ function txtMap(records: DnsResourceRecord[]): Map<string, Uint8Array | true> {
   return out;
 }
 function pushU16(out: number[], value: number): void {
-  out.push(value >> 8 & 255, value & 255);
+  out.push((value >> 8) & 255, value & 255);
 }
 function pushU32(out: number[], value: number): void {
-  out.push(value >>> 24 & 255, value >>> 16 & 255, value >>> 8 & 255, value & 255);
+  out.push((value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255);
 }
 function txtRdata(txt: Record<string, string | Uint8Array | true> | undefined): number[] {
   const out: number[] = [];
   const encoder = new TextEncoder();
   for (const [key, value] of Object.entries(txt ?? {})) {
-    const bytes = value === true ? encoder.encode(key) : value instanceof Uint8Array ? new Uint8Array([...encoder.encode(key + '='), ...value]) : encoder.encode(key + '=' + value);
-    if (bytes.byteLength > 255) throw new RangeError('mdns: TXT attribute is longer than 255 bytes');
+    const bytes =
+      value === true
+        ? encoder.encode(key)
+        : value instanceof Uint8Array
+          ? new Uint8Array([...encoder.encode(key + '='), ...value])
+          : encoder.encode(key + '=' + value);
+    if (bytes.byteLength > 255)
+      throw new RangeError('mdns: TXT attribute is longer than 255 bytes');
     out.push(bytes.byteLength, ...bytes);
   }
   if (out.length === 0) out.push(0);
@@ -573,7 +675,11 @@ function buildResponse(query: Uint8Array, records: ResponseRecord[]): Uint8Array
   const question = query.slice(12, questionEnd);
   return buildPacket(id, question, records);
 }
-function buildPacket(id: number, question: Uint8Array | null, records: ResponseRecord[]): Uint8Array {
+function buildPacket(
+  id: number,
+  question: Uint8Array | null,
+  records: ResponseRecord[],
+): Uint8Array {
   const out: number[] = [];
   pushU16(out, id);
   pushU16(out, 0x8400);
@@ -597,7 +703,7 @@ function parseQuestion(packet: Uint8Array): { name: string; type: number } {
   const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
   return {
     name: decoded.name,
-    type: view.getUint16(decoded.nextOffset, false)
+    type: view.getUint16(decoded.nextOffset, false),
   };
 }
 function parseKnownAnswers(packet: Uint8Array): DnsResourceRecord[] {
@@ -607,7 +713,11 @@ function parseKnownAnswers(packet: Uint8Array): DnsResourceRecord[] {
     return [];
   }
 }
-function isKnownAnswer(record: ResponseRecord, knownAnswers: DnsResourceRecord[], ptrData: string): boolean {
+function isKnownAnswer(
+  record: ResponseRecord,
+  knownAnswers: DnsResourceRecord[],
+  ptrData: string,
+): boolean {
   for (const known of knownAnswers) {
     if (known.name !== record.name || known.type !== record.type) continue;
     if (known.ttl <= record.ttl / 2) continue;
@@ -622,8 +732,13 @@ function responseRecordKey(record: ResponseRecord): string {
 function hasConflict(records: DnsResourceRecord[], instance: string, serviceType: string): boolean {
   for (const record of records) {
     if (record.ttl === 0) continue;
-    if (record.type === RECORD_TYPES.PTR && record.name === serviceType && record.data === instance) return true;
-    if ((record.type === RECORD_TYPES.SRV || record.type === RECORD_TYPES.TXT) && record.name === instance) return true;
+    if (record.type === RECORD_TYPES.PTR && record.name === serviceType && record.data === instance)
+      return true;
+    if (
+      (record.type === RECORD_TYPES.SRV || record.type === RECORD_TYPES.TXT) &&
+      record.name === instance
+    )
+      return true;
   }
   return false;
 }
@@ -632,42 +747,49 @@ function renamedInstanceLabel(name: string, attempt: number): string {
 }
 
 /** A client for local-link name resolution, service discovery, and publication.
-*
-* A single instance covers the whole mDNS/DNS-SD surface: `query` and
-* `resolveHost` for one-shot name resolution, `browse` for DNS-SD service
-* enumeration (one-shot or continuous), `resolveService` to turn an instance
-* name into a connection target, and `publish` to advertise a service from a
-* built-in responder. Each query operation opens and closes its own transient
-* UDP socket, so instances hold no long-lived link sockets of their own; a
-* published service keeps its responder socket alive until the returned
-* registration is closed. Resolved records are cached per instance keyed by
-* name, record type, and destination, honoring the smallest record TTL.
-*
-* Call `close()` when finished. Closed clients reject `query`, `browse`, and
-* `publish`; already-open registrations are unaffected. The client also
-* implements `Symbol.asyncDispose` for `await using`.
-*
-* ```ts no_run
-* import { Mdns } from 'fino:net/mdns';
-*
-* await using mdns = new Mdns();
-* const addresses = await mdns.resolveHost('printer.local');
-* for await (const event of mdns.browse('_http._tcp.local')) {
-*   console.log('found', event.name);
-* }
-* ```
-*/
+ *
+ * A single instance covers the whole mDNS/DNS-SD surface: `query` and
+ * `resolveHost` for one-shot name resolution, `browse` for DNS-SD service
+ * enumeration (one-shot or continuous), `resolveService` to turn an instance
+ * name into a connection target, and `publish` to advertise a service from a
+ * built-in responder. Each query operation opens and closes its own transient
+ * UDP socket, so instances hold no long-lived link sockets of their own; a
+ * published service keeps its responder socket alive until the returned
+ * registration is closed. Resolved records are cached per instance keyed by
+ * name, record type, and destination, honoring the smallest record TTL.
+ *
+ * Call `close()` when finished. Closed clients reject `query`, `browse`, and
+ * `publish`; already-open registrations are unaffected. The client also
+ * implements `Symbol.asyncDispose` for `await using`.
+ *
+ * ```ts no_run
+ * import { Mdns } from 'fino:net/mdns';
+ *
+ * await using mdns = new Mdns();
+ * const addresses = await mdns.resolveHost('printer.local');
+ * for await (const event of mdns.browse('_http._tcp.local')) {
+ *   console.log('found', event.name);
+ * }
+ * ```
+ */
 export class Mdns {
   #closed = false;
   #cache = new Map<string, { expiresAt: number; records: DnsResourceRecord[] }>();
 
   #cacheKey(name: string, rrtype: MdnsRecordType, options: MdnsQueryOptions): string {
     const family = options.server?.family === 'ipv6' ? 'ipv6' : 'ipv4';
-    const server = options.server === undefined ? 'mdns' : `${options.server.family}/${'ip' in options.server ? options.server.ip : ''}/${'port' in options.server ? options.server.port : ''}`;
+    const server =
+      options.server === undefined
+        ? 'mdns'
+        : `${options.server.family}/${'ip' in options.server ? options.server.ip : ''}/${'port' in options.server ? options.server.port : ''}`;
     return `${family}/${server}/${name}/${rrtype}`;
   }
 
-  #getCached(name: string, rrtype: MdnsRecordType, options: MdnsQueryOptions): DnsResourceRecord[] | null {
+  #getCached(
+    name: string,
+    rrtype: MdnsRecordType,
+    options: MdnsQueryOptions,
+  ): DnsResourceRecord[] | null {
     if (options.cache === false) return null;
     if ((options.knownAnswers?.length ?? 0) > 0) return null;
     const entry = this.#cache.get(this.#cacheKey(name, rrtype, options));
@@ -679,50 +801,63 @@ export class Mdns {
     return entry.records.slice();
   }
 
-  #storeCache(name: string, rrtype: MdnsRecordType, options: MdnsQueryOptions, records: DnsResourceRecord[]): void {
+  #storeCache(
+    name: string,
+    rrtype: MdnsRecordType,
+    options: MdnsQueryOptions,
+    records: DnsResourceRecord[],
+  ): void {
     if (options.cache === false || records.length === 0) return;
     if ((options.knownAnswers?.length ?? 0) > 0) return;
     const ttl = Math.min(...records.filter((record) => record.ttl > 0).map((record) => record.ttl));
     if (!Number.isFinite(ttl)) return;
     this.#cache.set(this.#cacheKey(name, rrtype, options), {
       expiresAt: Date.now() + ttl * 1000,
-      records: records.slice()
+      records: records.slice(),
     });
   }
 
   /** Send an mDNS query for a name and record type and return the records seen.
-  *
-  * The query is transmitted over UDP and the method collects parsed resource
-  * records from the answer, authority, and additional sections of every
-  * matching response, deduplicated, until either the answer burst settles or
-  * the timeout elapses. Unanswered one-shot queries are retransmitted with
-  * randomized backoff between `retryMinMs` and `retryMaxMs`. When source
-  * validation is enabled (the default for multicast destinations), responses
-  * from addresses that are not on a local link are ignored. Fresh cached
-  * records short-circuit the network round trip unless `cache: false` or
-  * known answers are supplied.
-  *
-  * Throws if the client is closed, if the `signal` is already aborted or
-  * aborts during the wait (rejecting with the signal reason), or if no records
-  * arrive before the timeout (an `Error` with `code` `'ETIMEOUT'`).
-  *
-  * ```ts no_run
-  * import { Mdns } from 'fino:net/mdns';
-  *
-  * const mdns = new Mdns();
-  * const srv = await mdns.query('Printer._http._tcp.local', 'SRV', { timeoutMs: 1500 });
-  * console.log(srv.map((record) => record.data));
-  * await mdns.close();
-  * ```
-  */
-  async query(name: string, rrtype: MdnsRecordType, options: MdnsQueryOptions = {}): Promise<DnsResourceRecord[]> {
+   *
+   * The query is transmitted over UDP and the method collects parsed resource
+   * records from the answer, authority, and additional sections of every
+   * matching response, deduplicated, until either the answer burst settles or
+   * the timeout elapses. Unanswered one-shot queries are retransmitted with
+   * randomized backoff between `retryMinMs` and `retryMaxMs`. When source
+   * validation is enabled (the default for multicast destinations), responses
+   * from addresses that are not on a local link are ignored. Fresh cached
+   * records short-circuit the network round trip unless `cache: false` or
+   * known answers are supplied.
+   *
+   * Throws if the client is closed, if the `signal` is already aborted or
+   * aborts during the wait (rejecting with the signal reason), or if no records
+   * arrive before the timeout (an `Error` with `code` `'ETIMEOUT'`).
+   *
+   * ```ts no_run
+   * import { Mdns } from 'fino:net/mdns';
+   *
+   * const mdns = new Mdns();
+   * const srv = await mdns.query('Printer._http._tcp.local', 'SRV', { timeoutMs: 1500 });
+   * console.log(srv.map((record) => record.data));
+   * await mdns.close();
+   * ```
+   */
+  async query(
+    name: string,
+    rrtype: MdnsRecordType,
+    options: MdnsQueryOptions = {},
+  ): Promise<DnsResourceRecord[]> {
     if (this.#closed) throw new Error('mdns: client is closed');
     if (options.signal?.aborted) throw options.signal.reason;
     const cached = this.#getCached(name, rrtype, options);
     if (cached !== null) return cached;
     const qtype = RECORD_TYPES[rrtype];
     const family = options.server?.family === 'ipv6' ? 'ipv6' : 'ipv4';
-    const fd = sock.socket(family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, sock.IPPROTO_UDP);
+    const fd = sock.socket(
+      family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET,
+      sock.SOCK_DGRAM,
+      sock.IPPROTO_UDP,
+    );
     let memberships: MulticastMembership[] = [];
     try {
       sock.bind(fd, options.bindAddress ?? wildcardAddress(family));
@@ -730,9 +865,19 @@ export class Mdns {
       if (options.server === undefined) {
         memberships = joinMdnsMulticast(fd, family, options);
         sock.setMulticastOptions(fd, { family, ttl: 255, loopback: true });
-        sock.setsockopt(fd, family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP, family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO, true);
+        sock.setsockopt(
+          fd,
+          family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP,
+          family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO,
+          true,
+        );
       }
-      const packet = mdnsQueryPacketWithKnownAnswers(name, qtype, options.unicastResponse, options.knownAnswers);
+      const packet = mdnsQueryPacketWithKnownAnswers(
+        name,
+        qtype,
+        options.unicastResponse,
+        options.knownAnswers,
+      );
       sendMdnsPacket(fd, packet, family, memberships, options.server);
       const records: DnsResourceRecord[] = [];
       const seen = new Set<string>();
@@ -749,7 +894,13 @@ export class Mdns {
         const waitMs = Math.max(0, waitUntil - Date.now());
         if (waitMs === 0) break;
         const timeout = loop.timeout(waitMs);
-        const readable = await Promise.race([loop.readable(fd).then(() => true, () => false), timeout.then(() => false)]);
+        const readable = await Promise.race([
+          loop.readable(fd).then(
+            () => true,
+            () => false,
+          ),
+          timeout.then(() => false),
+        ]);
         timeout.cancel();
         if (!readable) {
           loop.removeRead(fd);
@@ -758,9 +909,17 @@ export class Mdns {
         }
         const received = receivePacket(fd, options.server === undefined);
         if (typeof received === 'number') continue;
-        if ((options.validateSource ?? options.server === undefined) && !isLocalLinkSource(received.addr, options)) continue;
+        if (
+          (options.validateSource ?? options.server === undefined) &&
+          !isLocalLinkSource(received.addr, options)
+        )
+          continue;
         const response = _parseResponse(received.data);
-        for (const record of [...response.answers, ...response.authorities, ...response.additionals]) {
+        for (const record of [
+          ...response.answers,
+          ...response.authorities,
+          ...response.additionals,
+        ]) {
           const key = recordKey(record);
           if (seen.has(key)) continue;
           seen.add(key);
@@ -778,60 +937,79 @@ export class Mdns {
   }
 
   /** Resolve a `.local` hostname to its A/AAAA addresses as strings.
-  *
-  * A convenience wrapper over `query` that asks for `A` records (or `AAAA`
-  * when the destination `server` is IPv6), then returns just the address
-  * strings from the matching records. Shares the timeout, retry, cache, and
-  * error semantics of `query`, so it throws with `code` `'ETIMEOUT'` when the
-  * name does not answer in time.
-  *
-  * ```ts no_run
-  * import { Mdns } from 'fino:net/mdns';
-  *
-  * const mdns = new Mdns();
-  * const addresses = await mdns.resolveHost('printer.local');
-  * console.log(addresses); // e.g. ['192.168.1.44']
-  * await mdns.close();
-  * ```
-  */
+   *
+   * A convenience wrapper over `query` that asks for `A` records (or `AAAA`
+   * when the destination `server` is IPv6), then returns just the address
+   * strings from the matching records. Shares the timeout, retry, cache, and
+   * error semantics of `query`, so it throws with `code` `'ETIMEOUT'` when the
+   * name does not answer in time.
+   *
+   * ```ts no_run
+   * import { Mdns } from 'fino:net/mdns';
+   *
+   * const mdns = new Mdns();
+   * const addresses = await mdns.resolveHost('printer.local');
+   * console.log(addresses); // e.g. ['192.168.1.44']
+   * await mdns.close();
+   * ```
+   */
   async resolveHost(name: string, options: MdnsQueryOptions = {}): Promise<string[]> {
-    const records = await this.query(name, options.server?.family === 'ipv6' ? 'AAAA' : 'A', options);
-    return records.filter((record) => record.type === RECORD_TYPES.A || record.type === RECORD_TYPES.AAAA).map((record) => String(record.data));
+    const records = await this.query(
+      name,
+      options.server?.family === 'ipv6' ? 'AAAA' : 'A',
+      options,
+    );
+    return records
+      .filter((record) => record.type === RECORD_TYPES.A || record.type === RECORD_TYPES.AAAA)
+      .map((record) => String(record.data));
   }
 
   /** Browse a DNS-SD service type, yielding an event per instance lifetime change.
-  *
-  * Returns an async iterable of `MdnsBrowseEvent`. By default it performs one
-  * PTR query and yields a single `up` event per unique instance, then
-  * completes. With `continuous: true` the iterator stays open, repolls every
-  * `pollMs`, ingests unsolicited packets on its bound socket, and additionally
-  * emits `update` when an instance's TTL or (with `resolve: true`) resolved
-  * metadata changes and `down` when a zero-TTL goodbye record arrives or a
-  * TTL lapses. Pass `resolve: true` to attach a resolved `service` to `up` and
-  * `update` events. A continuous iteration ends when the `signal` aborts or the
-  * client is closed; iterating a closed client simply yields nothing.
-  *
-  * ```ts no_run
-  * import { Mdns } from 'fino:net/mdns';
-  *
-  * const mdns = new Mdns();
-  * const controller = new AbortController();
-  * for await (const event of mdns.browse('_http._tcp.local', {
-  *   continuous: true,
-  *   resolve: true,
-  *   signal: controller.signal,
-  * })) {
-  *   if (event.type === 'down') console.log('left:', event.name);
-  *   else console.log(event.type, event.name, event.service?.port);
-  * }
-  * ```
-  */
+   *
+   * Returns an async iterable of `MdnsBrowseEvent`. By default it performs one
+   * PTR query and yields a single `up` event per unique instance, then
+   * completes. With `continuous: true` the iterator stays open, repolls every
+   * `pollMs`, ingests unsolicited packets on its bound socket, and additionally
+   * emits `update` when an instance's TTL or (with `resolve: true`) resolved
+   * metadata changes and `down` when a zero-TTL goodbye record arrives or a
+   * TTL lapses. Pass `resolve: true` to attach a resolved `service` to `up` and
+   * `update` events. A continuous iteration ends when the `signal` aborts or the
+   * client is closed; iterating a closed client simply yields nothing.
+   *
+   * ```ts no_run
+   * import { Mdns } from 'fino:net/mdns';
+   *
+   * const mdns = new Mdns();
+   * const controller = new AbortController();
+   * for await (const event of mdns.browse('_http._tcp.local', {
+   *   continuous: true,
+   *   resolve: true,
+   *   signal: controller.signal,
+   * })) {
+   *   if (event.type === 'down') console.log('left:', event.name);
+   *   else console.log(event.type, event.name, event.service?.port);
+   * }
+   * ```
+   */
   browse(serviceType: string, options: MdnsQueryOptions = {}): AsyncIterable<MdnsBrowseEvent> {
     const self = this;
     return {
       async *[Symbol.asyncIterator]() {
-        const seen = new Map<string, { name: string; interfaceIndex: number | null; expiresAt: number; ttl: number; recordsKey: string; serviceKey: string }>();
-        const eventsForRecords = async (records: DnsResourceRecord[], interfaceIndex: number | null = null): Promise<MdnsBrowseEvent[]> => {
+        const seen = new Map<
+          string,
+          {
+            name: string;
+            interfaceIndex: number | null;
+            expiresAt: number;
+            ttl: number;
+            recordsKey: string;
+            serviceKey: string;
+          }
+        >();
+        const eventsForRecords = async (
+          records: DnsResourceRecord[],
+          interfaceIndex: number | null = null,
+        ): Promise<MdnsBrowseEvent[]> => {
           const events: MdnsBrowseEvent[] = [];
           const now = Date.now();
           for (const record of records) {
@@ -843,31 +1021,51 @@ export class Mdns {
                   type: 'down' as const,
                   name: record.data,
                   serviceType,
-                  interfaceIndex
+                  interfaceIndex,
                 });
               }
               continue;
             }
             const previous = seen.get(key);
-            const service = options.resolve === true ? await self.resolveService(record.data, { ...options, cache: false }).catch(() => undefined) : undefined;
+            const service =
+              options.resolve === true
+                ? await self
+                    .resolveService(record.data, { ...options, cache: false })
+                    .catch(() => undefined)
+                : undefined;
             const nextServiceKey = serviceKey(service);
-            const nextRecordsKey = recordsKey(records.filter((candidate) => candidate.name === record.data || candidate.name === service?.target));
-            seen.set(key, { name: record.data, interfaceIndex, expiresAt: now + record.ttl * 1000, ttl: record.ttl, recordsKey: nextRecordsKey, serviceKey: nextServiceKey });
+            const nextRecordsKey = recordsKey(
+              records.filter(
+                (candidate) => candidate.name === record.data || candidate.name === service?.target,
+              ),
+            );
+            seen.set(key, {
+              name: record.data,
+              interfaceIndex,
+              expiresAt: now + record.ttl * 1000,
+              ttl: record.ttl,
+              recordsKey: nextRecordsKey,
+              serviceKey: nextServiceKey,
+            });
             if (previous === undefined) {
               events.push({
                 type: 'up' as const,
                 name: record.data,
                 serviceType,
                 interfaceIndex,
-                ...service === undefined ? {} : { service }
+                ...(service === undefined ? {} : { service }),
               });
-            } else if (previous.ttl !== record.ttl || previous.recordsKey !== nextRecordsKey || previous.serviceKey !== nextServiceKey) {
+            } else if (
+              previous.ttl !== record.ttl ||
+              previous.recordsKey !== nextRecordsKey ||
+              previous.serviceKey !== nextServiceKey
+            ) {
               events.push({
                 type: 'update' as const,
                 name: record.data,
                 serviceType,
                 interfaceIndex,
-                ...service === undefined ? {} : { service }
+                ...(service === undefined ? {} : { service }),
               });
             }
           }
@@ -878,7 +1076,7 @@ export class Mdns {
               type: 'down' as const,
               name: entry.name,
               serviceType,
-              interfaceIndex: entry.interfaceIndex
+              interfaceIndex: entry.interfaceIndex,
             });
           }
           return events;
@@ -888,8 +1086,15 @@ export class Mdns {
           for (const event of await eventsForRecords(records)) yield event;
           return;
         }
-        const family = options.server?.family === 'ipv6' || options.bindAddress?.family === 'ipv6' ? 'ipv6' : 'ipv4';
-        const fd = sock.socket(family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, sock.IPPROTO_UDP);
+        const family =
+          options.server?.family === 'ipv6' || options.bindAddress?.family === 'ipv6'
+            ? 'ipv6'
+            : 'ipv4';
+        const fd = sock.socket(
+          family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET,
+          sock.SOCK_DGRAM,
+          sock.IPPROTO_UDP,
+        );
         let memberships: MulticastMembership[] = [];
         try {
           sock.bind(fd, options.bindAddress ?? wildcardAddress(family));
@@ -898,9 +1103,19 @@ export class Mdns {
           if (usePacketInfo) {
             memberships = joinMdnsMulticast(fd, family, options);
             sock.setMulticastOptions(fd, { family, ttl: 255, loopback: true });
-            sock.setsockopt(fd, family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP, family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO, true);
+            sock.setsockopt(
+              fd,
+              family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP,
+              family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO,
+              true,
+            );
           }
-          const query = mdnsQueryPacketWithKnownAnswers(serviceType, RECORD_TYPES.PTR, options.unicastResponse, options.knownAnswers);
+          const query = mdnsQueryPacketWithKnownAnswers(
+            serviceType,
+            RECORD_TYPES.PTR,
+            options.unicastResponse,
+            options.knownAnswers,
+          );
           let nextPoll = 0;
           const pollMs = options.pollMs ?? 1000;
           while (!self.#closed && !options.signal?.aborted) {
@@ -911,7 +1126,13 @@ export class Mdns {
             }
             const waitMs = Math.max(1, Math.min(nextPoll - Date.now(), pollMs));
             const timeout = loop.timeout(waitMs);
-            const readable = await Promise.race([loop.readable(fd).then(() => true, () => false), timeout.then(() => false)]);
+            const readable = await Promise.race([
+              loop.readable(fd).then(
+                () => true,
+                () => false,
+              ),
+              timeout.then(() => false),
+            ]);
             timeout.cancel();
             if (!readable) {
               loop.removeRead(fd);
@@ -920,96 +1141,124 @@ export class Mdns {
             }
             const packet = receivePacket(fd, usePacketInfo);
             if (typeof packet === 'number') continue;
-            if ((options.validateSource ?? usePacketInfo) && !isLocalLinkSource(packet.addr, options)) continue;
+            if (
+              (options.validateSource ?? usePacketInfo) &&
+              !isLocalLinkSource(packet.addr, options)
+            )
+              continue;
             const response = _parseResponse(packet.data);
             const records = [...response.answers, ...response.authorities, ...response.additionals];
-            for (const event of await eventsForRecords(records, packet.interfaceIndex ?? null)) yield event;
+            for (const event of await eventsForRecords(records, packet.interfaceIndex ?? null))
+              yield event;
           }
         } finally {
           if (memberships.length > 0) leaveMdnsMulticast(fd, family, memberships);
           sock.close(fd);
         }
-      }
+      },
     };
   }
 
   /** Resolve a DNS-SD service instance name into a connection target.
-  *
-  * Queries the instance's SRV record for its target host and port, then fills
-  * in TXT metadata and A/AAAA addresses — preferring records already present
-  * in the SRV response's additional section and falling back to follow-up
-  * queries for TXT and for the target's addresses when they are absent. The
-  * returned `MdnsService` carries the target, port, parsed TXT map, and
-  * resolved addresses.
-  *
-  * Throws if the instance has no SRV record (an `Error` mentioning the
-  * instance name), and propagates the timeout error from the underlying SRV
-  * query when the instance does not answer.
-  *
-  * ```ts no_run
-  * import { Mdns } from 'fino:net/mdns';
-  *
-  * const mdns = new Mdns();
-  * const service = await mdns.resolveService('Printer._http._tcp.local');
-  * console.log(`${service.target}:${service.port}`, service.addresses);
-  * await mdns.close();
-  * ```
-  */
+   *
+   * Queries the instance's SRV record for its target host and port, then fills
+   * in TXT metadata and A/AAAA addresses — preferring records already present
+   * in the SRV response's additional section and falling back to follow-up
+   * queries for TXT and for the target's addresses when they are absent. The
+   * returned `MdnsService` carries the target, port, parsed TXT map, and
+   * resolved addresses.
+   *
+   * Throws if the instance has no SRV record (an `Error` mentioning the
+   * instance name), and propagates the timeout error from the underlying SRV
+   * query when the instance does not answer.
+   *
+   * ```ts no_run
+   * import { Mdns } from 'fino:net/mdns';
+   *
+   * const mdns = new Mdns();
+   * const service = await mdns.resolveService('Printer._http._tcp.local');
+   * console.log(`${service.target}:${service.port}`, service.addresses);
+   * await mdns.close();
+   * ```
+   */
   async resolveService(instance: string, options: MdnsQueryOptions = {}): Promise<MdnsService> {
     const srvRecords = await this.query(instance, 'SRV', options);
-    const srv = srvRecords.find((record) => record.type === RECORD_TYPES.SRV && typeof record.data === 'object' && record.data !== null && 'port' in record.data);
+    const srv = srvRecords.find(
+      (record) =>
+        record.type === RECORD_TYPES.SRV &&
+        typeof record.data === 'object' &&
+        record.data !== null &&
+        'port' in record.data,
+    );
     if (srv === undefined) throw new Error(`mdns: no SRV record for '${instance}'`);
     const data = srv.data as { port: number; name: string };
-    let txtRecords = srvRecords.filter((record) => record.type === RECORD_TYPES.TXT && record.name === instance);
-    if (txtRecords.length === 0) txtRecords = await this.query(instance, 'TXT', options).catch(() => []);
-    let addresses = srvRecords.filter((record) => (record.type === RECORD_TYPES.A || record.type === RECORD_TYPES.AAAA) && record.name === data.name).map((record) => String(record.data));
-    if (addresses.length === 0) addresses = await this.resolveHost(data.name, options).catch(() => []);
+    let txtRecords = srvRecords.filter(
+      (record) => record.type === RECORD_TYPES.TXT && record.name === instance,
+    );
+    if (txtRecords.length === 0)
+      txtRecords = await this.query(instance, 'TXT', options).catch(() => []);
+    let addresses = srvRecords
+      .filter(
+        (record) =>
+          (record.type === RECORD_TYPES.A || record.type === RECORD_TYPES.AAAA) &&
+          record.name === data.name,
+      )
+      .map((record) => String(record.data));
+    if (addresses.length === 0)
+      addresses = await this.resolveHost(data.name, options).catch(() => []);
     return {
       name: instance,
       target: data.name,
       port: data.port,
       txt: txtMap(txtRecords),
       addresses,
-      interfaceIndex: null
+      interfaceIndex: null,
     };
   }
 
   /** Advertise a DNS-SD service from a built-in responder and return its handle.
-  *
-  * Binds a UDP responder that answers PTR, SRV, TXT, A, and AAAA questions for
-  * the supplied service, applying duplicate-question suppression and optional
-  * response aggregation (`responseDelayMs`). When multicast publication is
-  * active it joins the mDNS group across known interfaces and sends an
-  * unsolicited announcement after binding. If `probeAddress` is set it first
-  * probes for a conflicting instance and either rejects or renames according to
-  * `conflictResolution`. The returned `MdnsRegistration` reports the bound
-  * address and the final (possibly renamed) instance name and keeps serving
-  * until closed, at which point goodbye records are sent.
-  *
-  * Throws if the client is closed, and — when probing finds an unresolved
-  * conflict under `conflictResolution: 'reject'` or after exhausting
-  * `maxRenameAttempts` — an `Error` with `code` `'EADDRINUSE'`.
-  *
-  * ```ts no_run
-  * import { Mdns } from 'fino:net/mdns';
-  *
-  * const mdns = new Mdns();
-  * await using registration = await mdns.publish({
-  *   name: 'Printer',
-  *   serviceType: '_http._tcp.local',
-  *   target: 'printer.local',
-  *   port: 8080,
-  *   txt: { path: '/print' },
-  *   addresses: ['192.168.1.44'],
-  * });
-  * console.log('advertising', registration.name, 'on', registration.address.port);
-  * ```
-  */
-  async publish(service: MdnsPublishService, options: MdnsPublishOptions = {}): Promise<MdnsRegistration> {
+   *
+   * Binds a UDP responder that answers PTR, SRV, TXT, A, and AAAA questions for
+   * the supplied service, applying duplicate-question suppression and optional
+   * response aggregation (`responseDelayMs`). When multicast publication is
+   * active it joins the mDNS group across known interfaces and sends an
+   * unsolicited announcement after binding. If `probeAddress` is set it first
+   * probes for a conflicting instance and either rejects or renames according to
+   * `conflictResolution`. The returned `MdnsRegistration` reports the bound
+   * address and the final (possibly renamed) instance name and keeps serving
+   * until closed, at which point goodbye records are sent.
+   *
+   * Throws if the client is closed, and — when probing finds an unresolved
+   * conflict under `conflictResolution: 'reject'` or after exhausting
+   * `maxRenameAttempts` — an `Error` with `code` `'EADDRINUSE'`.
+   *
+   * ```ts no_run
+   * import { Mdns } from 'fino:net/mdns';
+   *
+   * const mdns = new Mdns();
+   * await using registration = await mdns.publish({
+   *   name: 'Printer',
+   *   serviceType: '_http._tcp.local',
+   *   target: 'printer.local',
+   *   port: 8080,
+   *   txt: { path: '/print' },
+   *   addresses: ['192.168.1.44'],
+   * });
+   * console.log('advertising', registration.name, 'on', registration.address.port);
+   * ```
+   */
+  async publish(
+    service: MdnsPublishService,
+    options: MdnsPublishOptions = {},
+  ): Promise<MdnsRegistration> {
     if (this.#closed) throw new Error('mdns: client is closed');
     const address = options.address ?? { family: 'ipv4' as const, ip: '0.0.0.0', port: 5353 };
     const multicast = options.multicast ?? options.address === undefined;
-    const fd = sock.socket(address.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, sock.IPPROTO_UDP);
+    const fd = sock.socket(
+      address.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET,
+      sock.SOCK_DGRAM,
+      sock.IPPROTO_UDP,
+    );
     sock.setsockopt(fd, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
     sock.bind(fd, address);
     sock.setNonblocking(fd);
@@ -1021,19 +1270,27 @@ export class Mdns {
         ttl: 255,
         loopback: true,
         interfaceAddress: options.interfaceAddress,
-        interfaceIndex: options.interfaceIndex
+        interfaceIndex: options.interfaceIndex,
       });
-      sock.setsockopt(fd, address.family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP, address.family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO, true);
+      sock.setsockopt(
+        fd,
+        address.family === 'ipv6' ? sock.IPPROTO_IPV6 : sock.IPPROTO_IP,
+        address.family === 'ipv6' ? sock.IPV6_RECVPKTINFO : sock.IP_RECVPKTINFO,
+        true,
+      );
     }
     const bound = sock.getsockname(fd);
     let instanceLabel = service.name;
     let instance = `${instanceLabel}.${service.serviceType}`;
     let closed = false;
     const peers = new Map<string, Address>();
-    const pendingResponses = new Map<string, {
-      peer: Address;
-      records: Map<string, ResponseRecord>;
-    }>();
+    const pendingResponses = new Map<
+      string,
+      {
+        peer: Address;
+        records: Map<string, ResponseRecord>;
+      }
+    >();
     const pendingFlushes = new Set<Promise<void>>();
     const recentQuestions = new Map<string, number>();
     function peerKey(address: Address): string {
@@ -1042,7 +1299,10 @@ export class Mdns {
     function questionKey(peer: Address, question: { name: string; type: number }): string {
       return `${peerKey(peer)}/${question.name}/${question.type}`;
     }
-    function shouldSuppressQuestion(peer: Address, question: { name: string; type: number }): boolean {
+    function shouldSuppressQuestion(
+      peer: Address,
+      question: { name: string; type: number },
+    ): boolean {
       const now = Date.now();
       for (const [key, expiresAt] of [...recentQuestions]) {
         if (expiresAt <= now) recentQuestions.delete(key);
@@ -1054,13 +1314,20 @@ export class Mdns {
     }
     async function probeInstance(): Promise<void> {
       if (options.probeAddress === undefined) return;
-      const maxAttempts = options.conflictResolution === 'rename' ? options.maxRenameAttempts ?? 5 : 0;
-      for (let attempt = 0;; attempt++) {
+      const maxAttempts =
+        options.conflictResolution === 'rename' ? (options.maxRenameAttempts ?? 5) : 0;
+      for (let attempt = 0; ; attempt++) {
         let conflicted = false;
         for (let probe = 0; probe < 3; probe++) {
           sock.sendto(fd, _buildQuery(0, instance, RECORD_TYPES.SRV), options.probeAddress);
           const timeout = loop.timeout(options.probeTimeoutMs ?? 250);
-          const readable = await Promise.race([loop.readable(fd).then(() => true, () => false), timeout.then(() => false)]);
+          const readable = await Promise.race([
+            loop.readable(fd).then(
+              () => true,
+              () => false,
+            ),
+            timeout.then(() => false),
+          ]);
           timeout.cancel();
           if (!readable) {
             loop.removeRead(fd);
@@ -1093,35 +1360,84 @@ export class Mdns {
       }
       return service.addresses ?? [];
     }
-    function serviceRecords(ttl: number, ptrTtl = ttl, interfaceIndex: number | null = null): ResponseRecord[] {
+    function serviceRecords(
+      ttl: number,
+      ptrTtl = ttl,
+      interfaceIndex: number | null = null,
+    ): ResponseRecord[] {
       const records: ResponseRecord[] = [
-        { name: service.serviceType, type: RECORD_TYPES.PTR, ttl: ptrTtl, rdata: Array.from(_encodeName(instance)) }
+        {
+          name: service.serviceType,
+          type: RECORD_TYPES.PTR,
+          ttl: ptrTtl,
+          rdata: Array.from(_encodeName(instance)),
+        },
       ];
       const srvRdata: number[] = [];
       pushU16(srvRdata, 0);
       pushU16(srvRdata, 0);
       pushU16(srvRdata, service.port);
       srvRdata.push(..._encodeName(service.target));
-      records.push({ name: instance, type: RECORD_TYPES.SRV, ttl, cacheFlush: true, rdata: srvRdata });
-      records.push({ name: instance, type: RECORD_TYPES.TXT, ttl, cacheFlush: true, rdata: txtRdata(service.txt) });
+      records.push({
+        name: instance,
+        type: RECORD_TYPES.SRV,
+        ttl,
+        cacheFlush: true,
+        rdata: srvRdata,
+      });
+      records.push({
+        name: instance,
+        type: RECORD_TYPES.TXT,
+        ttl,
+        cacheFlush: true,
+        rdata: txtRdata(service.txt),
+      });
       for (const ip of serviceAddresses(interfaceIndex)) {
-        records.push({ name: service.target, type: addressRecordType(ip), ttl, cacheFlush: true, rdata: addressRdata(ip) });
+        records.push({
+          name: service.target,
+          type: addressRecordType(ip),
+          ttl,
+          cacheFlush: true,
+          rdata: addressRdata(ip),
+        });
       }
       return records;
     }
-    function answersForQuestion(question: { name: string; type: number }, ttl: number, knownAnswers: DnsResourceRecord[], interfaceIndex: number | null): ResponseRecord[] {
+    function answersForQuestion(
+      question: { name: string; type: number },
+      ttl: number,
+      knownAnswers: DnsResourceRecord[],
+      interfaceIndex: number | null,
+    ): ResponseRecord[] {
       const all = serviceRecords(ttl, ttl, interfaceIndex);
       if (question.name === service.serviceType && question.type === RECORD_TYPES.PTR) {
-        return all.filter((record) => record.type === RECORD_TYPES.PTR && !isKnownAnswer(record, knownAnswers, instance));
+        return all.filter(
+          (record) =>
+            record.type === RECORD_TYPES.PTR && !isKnownAnswer(record, knownAnswers, instance),
+        );
       }
       if (question.name === instance && question.type === RECORD_TYPES.SRV) {
-        return all.filter((record) => record.type === RECORD_TYPES.SRV && !isKnownAnswer(record, knownAnswers, instance));
+        return all.filter(
+          (record) =>
+            record.type === RECORD_TYPES.SRV && !isKnownAnswer(record, knownAnswers, instance),
+        );
       }
       if (question.name === instance && question.type === RECORD_TYPES.TXT) {
-        return all.filter((record) => record.type === RECORD_TYPES.TXT && !isKnownAnswer(record, knownAnswers, instance));
+        return all.filter(
+          (record) =>
+            record.type === RECORD_TYPES.TXT && !isKnownAnswer(record, knownAnswers, instance),
+        );
       }
-      if (question.name === service.target && (question.type === RECORD_TYPES.A || question.type === RECORD_TYPES.AAAA)) {
-        return all.filter((record) => record.name === service.target && record.type === question.type && !isKnownAnswer(record, knownAnswers, instance));
+      if (
+        question.name === service.target &&
+        (question.type === RECORD_TYPES.A || question.type === RECORD_TYPES.AAAA)
+      ) {
+        return all.filter(
+          (record) =>
+            record.name === service.target &&
+            record.type === question.type &&
+            !isKnownAnswer(record, knownAnswers, instance),
+        );
       }
       return [];
     }
@@ -1155,7 +1471,13 @@ export class Mdns {
     const done = (async () => {
       while (!closed) {
         const timeout = loop.timeout(20);
-        const readable = await Promise.race([loop.readable(fd).then(() => true, () => false), timeout.then(() => false)]);
+        const readable = await Promise.race([
+          loop.readable(fd).then(
+            () => true,
+            () => false,
+          ),
+          timeout.then(() => false),
+        ]);
         timeout.cancel();
         if (!readable) loop.removeRead(fd);
         if (!readable || closed) continue;
@@ -1170,15 +1492,26 @@ export class Mdns {
         }
         const knownAnswers = parseKnownAnswers(packet.data);
         const responseInterfaceIndex = packet.interfaceIndex ?? options.interfaceIndex ?? null;
-        const answers = answersForQuestion(question, question.type === RECORD_TYPES.PTR ? 4500 : 120, knownAnswers, responseInterfaceIndex);
-        if (answers.length > 0 && shouldSuppressQuestion(packet.addr as Address, question)) continue;
+        const answers = answersForQuestion(
+          question,
+          question.type === RECORD_TYPES.PTR ? 4500 : 120,
+          knownAnswers,
+          responseInterfaceIndex,
+        );
+        if (answers.length > 0 && shouldSuppressQuestion(packet.addr as Address, question))
+          continue;
         sendAnswers(packet.data, packet.addr as Address, answers);
       }
     })();
     if (options.announceAddress !== undefined) {
       sock.sendto(fd, buildPacket(0, null, serviceRecords(120, 4500)), options.announceAddress);
     } else if (multicast) {
-      sendMdnsPacket(fd, buildPacket(0, null, serviceRecords(120, 4500)), address.family, memberships);
+      sendMdnsPacket(
+        fd,
+        buildPacket(0, null, serviceRecords(120, 4500)),
+        address.family,
+        memberships,
+      );
     }
     return {
       address: bound as Address,
@@ -1208,29 +1541,29 @@ export class Mdns {
       },
       [Symbol.asyncDispose]() {
         return this.close();
-      }
+      },
     };
   }
 
   /** Mark the client closed so further operations are rejected.
-  *
-  * The `Mdns` instance itself owns no persistent sockets — each query opens
-  * and closes its own — so closing is cheap and mainly a guard: after it,
-  * `query`, `browse`, and `publish` throw. Already-open registrations from
-  * `publish` are independent and must be closed through their own handles.
-  * Idempotent and safe to call more than once.
-  *
-  * ```ts no_run
-  * import { Mdns } from 'fino:net/mdns';
-  *
-  * const mdns = new Mdns();
-  * try {
-  *   await mdns.resolveHost('printer.local');
-  * } finally {
-  *   await mdns.close();
-  * }
-  * ```
-  */
+   *
+   * The `Mdns` instance itself owns no persistent sockets — each query opens
+   * and closes its own — so closing is cheap and mainly a guard: after it,
+   * `query`, `browse`, and `publish` throw. Already-open registrations from
+   * `publish` are independent and must be closed through their own handles.
+   * Idempotent and safe to call more than once.
+   *
+   * ```ts no_run
+   * import { Mdns } from 'fino:net/mdns';
+   *
+   * const mdns = new Mdns();
+   * try {
+   *   await mdns.resolveHost('printer.local');
+   * } finally {
+   *   await mdns.close();
+   * }
+   * ```
+   */
   async close(): Promise<void> {
     this.#closed = true;
   }

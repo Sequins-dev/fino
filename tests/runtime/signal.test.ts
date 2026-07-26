@@ -1,6 +1,6 @@
 /**
-* Tests for signal handling via fino:process signal() Topic API.
-*/
+ * Tests for signal handling via fino:process signal() Topic API.
+ */
 import { describe, it } from 'fino:test/test';
 import { signal, SIGUSR1, SIGUSR2, SIGTERM, pid, kill } from 'fino:process';
 /** Wrap a one-shot topic delivery in a Promise. */
@@ -17,7 +17,7 @@ describe('Signal handling', () => {
   it('SIGUSR1 topic fires on signal delivery', async (t) => {
     const received = nextSignal('SIGUSR1');
     kill(pid, SIGUSR1);
-    const evt = await received as {
+    const evt = (await received) as {
       signal: string;
       signo: number;
     };
@@ -27,7 +27,7 @@ describe('Signal handling', () => {
   it('SIGUSR2 topic fires on signal delivery', async (t) => {
     const received = nextSignal('SIGUSR2');
     kill(pid, SIGUSR2);
-    const evt = await received as {
+    const evt = (await received) as {
       signal: string;
       signo: number;
     };
@@ -54,11 +54,14 @@ describe('Signal handling', () => {
     const p2 = nextSignal('SIGUSR2');
     kill(pid, SIGUSR1);
     kill(pid, SIGUSR2);
-    const [e1, e2] = await Promise.all([p1, p2]) as [{
-      signal: string;
-    }, {
-      signal: string;
-    }];
+    const [e1, e2] = (await Promise.all([p1, p2])) as [
+      {
+        signal: string;
+      },
+      {
+        signal: string;
+      },
+    ];
     t.equal(e1.signal, 'SIGUSR1', 'first event is SIGUSR1');
     t.equal(e2.signal, 'SIGUSR2', 'second event is SIGUSR2');
   });

@@ -1,8 +1,8 @@
 /**
-* TypeScript sample module used by tests/internal/typescript.test.ts.
-* Exercises type-stripping: typed functions, generics, class field annotations,
-* interface declarations, and type-only exports.
-*/
+ * TypeScript sample module used by tests/internal/typescript.test.ts.
+ * Exercises type-stripping: typed functions, generics, class field annotations,
+ * interface declarations, and type-only exports.
+ */
 interface Point {
   x: number;
   y: number;
@@ -27,6 +27,6 @@ export class Stack<T> {
 }
 export const origin: Point = {
   x: 0,
-  y: 0
+  y: 0,
 };
 export type { Point };

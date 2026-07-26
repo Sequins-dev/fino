@@ -1,8 +1,8 @@
 /**
-* Benchmarks for timer and performance globals
-*
-* Run with: cargo run -- --bench benchmarks/time.bench.ts
-*/
+ * Benchmarks for timer and performance globals
+ *
+ * Run with: cargo run -- --bench benchmarks/time.bench.ts
+ */
 import { bench } from 'fino:bench';
 bench('performance.now()', (b) => {
   b.measure('now()', () => performance.now());

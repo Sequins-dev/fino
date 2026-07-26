@@ -1,267 +1,267 @@
 /**
-* fino:format/toml - TOML 1.0.0 parser and serializer.
-*
-* TOML is a configuration format optimized for human-edited files with typed
-* values and predictable table structure. This module parses TOML 1.0.0 into
-* JavaScript values and serializes compatible JavaScript objects back to TOML.
-* It is a good fit for application config, project manifests, and small
-* settings files where comments and stable textual shape matter to users.
-*
-* The parser covers TOML scalar types, basic and literal strings, integers,
-* floats, booleans, offset datetimes, local datetimes, local dates, local
-* times, arrays, inline tables, tables, and arrays of tables. Key uniqueness
-* and structural rules from the spec are enforced. Numeric tokens and
-* date/time ranges are validated rather than partially accepted.
-*
-* Datetime types:
-*   - Offset datetime   -> native Date
-*   - Local datetime    -> TomlLocalDateTime
-*   - Local date        -> TomlLocalDate
-*   - Local time        -> TomlLocalTime
-*
-* Integer overflow throws by default; pass `{ bigint: true }` to receive
-* `BigInt` values for integers outside JavaScript's safe integer range.
-* Malformed input is reported as `ParseError` values from
-* `fino:parsing/scanner` tagged with `format: 'toml'`, carrying line/column
-* location and a `render()` diagnostic helper.
-*
-* Stringification emits a normalized TOML document and does not preserve
-* comments, source ordering between scalars and tables, or original quoting
-* style. Heterogeneous arrays are accepted as Fino values even though many
-* TOML tools prefer homogeneous arrays.
-*
-* ```ts no_run
-* import { parse, stringify } from 'fino:format/toml';
-*
-* const cfg = parse('[server]\nport = 8080\nhosts = ["a", "b"]');
-* const text = stringify(cfg);
-* ```
-*
-* ```ts no_run
-* import { parse, TomlLocalDate } from 'fino:format/toml';
-*
-* const cfg = parse('released = 2026-06-02');
-* cfg.released instanceof TomlLocalDate; // true
-* ```
-*
-* Useful references:
-*   - TOML 1.0.0 specification: https://toml.io/en/v1.0.0
-*/
+ * fino:format/toml - TOML 1.0.0 parser and serializer.
+ *
+ * TOML is a configuration format optimized for human-edited files with typed
+ * values and predictable table structure. This module parses TOML 1.0.0 into
+ * JavaScript values and serializes compatible JavaScript objects back to TOML.
+ * It is a good fit for application config, project manifests, and small
+ * settings files where comments and stable textual shape matter to users.
+ *
+ * The parser covers TOML scalar types, basic and literal strings, integers,
+ * floats, booleans, offset datetimes, local datetimes, local dates, local
+ * times, arrays, inline tables, tables, and arrays of tables. Key uniqueness
+ * and structural rules from the spec are enforced. Numeric tokens and
+ * date/time ranges are validated rather than partially accepted.
+ *
+ * Datetime types:
+ *   - Offset datetime   -> native Date
+ *   - Local datetime    -> TomlLocalDateTime
+ *   - Local date        -> TomlLocalDate
+ *   - Local time        -> TomlLocalTime
+ *
+ * Integer overflow throws by default; pass `{ bigint: true }` to receive
+ * `BigInt` values for integers outside JavaScript's safe integer range.
+ * Malformed input is reported as `ParseError` values from
+ * `fino:parsing/scanner` tagged with `format: 'toml'`, carrying line/column
+ * location and a `render()` diagnostic helper.
+ *
+ * Stringification emits a normalized TOML document and does not preserve
+ * comments, source ordering between scalars and tables, or original quoting
+ * style. Heterogeneous arrays are accepted as Fino values even though many
+ * TOML tools prefer homogeneous arrays.
+ *
+ * ```ts no_run
+ * import { parse, stringify } from 'fino:format/toml';
+ *
+ * const cfg = parse('[server]\nport = 8080\nhosts = ["a", "b"]');
+ * const text = stringify(cfg);
+ * ```
+ *
+ * ```ts no_run
+ * import { parse, TomlLocalDate } from 'fino:format/toml';
+ *
+ * const cfg = parse('released = 2026-06-02');
+ * cfg.released instanceof TomlLocalDate; // true
+ * ```
+ *
+ * Useful references:
+ *   - TOML 1.0.0 specification: https://toml.io/en/v1.0.0
+ */
 import { Scanner, ParseError } from 'fino:parsing/scanner';
 // ---------------------------------------------------------------------------
 // Per-format error class
 // ---------------------------------------------------------------------------
 /**
-* TOML-branded parse error subclass of `ParseError` from `fino:parsing/scanner`.
-*
-* It inherits source location metadata (`offset`, `line`, `column`) and the
-* `render()` diagnostic helper from `ParseError`. Note that `parse()` itself
-* reports malformed input — invalid values, duplicate keys, duplicate table
-* declarations, and integer overflow without `bigint: true` — as base
-* `ParseError` instances whose `format` is `'toml'`, not as instances of this
-* subclass. Catch with `instanceof ParseError` (which also matches
-* `TomlParseError`) and check `error.format` when the format matters; this
-* class exists for code layered on top of this module that wants to raise a
-* TOML-specific error distinguishable by `name`.
-*
-* ```ts no_run
-* import { ParseError } from 'fino:parsing/scanner';
-* import { parse } from 'fino:format/toml';
-*
-* try {
-*   parse('answer =');
-* } catch (error) {
-*   if (error instanceof ParseError && error.format === 'toml') {
-*     console.error(error.render());
-*   }
-* }
-* ```
-*/
+ * TOML-branded parse error subclass of `ParseError` from `fino:parsing/scanner`.
+ *
+ * It inherits source location metadata (`offset`, `line`, `column`) and the
+ * `render()` diagnostic helper from `ParseError`. Note that `parse()` itself
+ * reports malformed input — invalid values, duplicate keys, duplicate table
+ * declarations, and integer overflow without `bigint: true` — as base
+ * `ParseError` instances whose `format` is `'toml'`, not as instances of this
+ * subclass. Catch with `instanceof ParseError` (which also matches
+ * `TomlParseError`) and check `error.format` when the format matters; this
+ * class exists for code layered on top of this module that wants to raise a
+ * TOML-specific error distinguishable by `name`.
+ *
+ * ```ts no_run
+ * import { ParseError } from 'fino:parsing/scanner';
+ * import { parse } from 'fino:format/toml';
+ *
+ * try {
+ *   parse('answer =');
+ * } catch (error) {
+ *   if (error instanceof ParseError && error.format === 'toml') {
+ *     console.error(error.render());
+ *   }
+ * }
+ * ```
+ */
 export class TomlParseError extends ParseError {
   /**
-  * Error name, always `'TomlParseError'`.
-  *
-  * Useful for distinguishing TOML failures in logs or serialized error
-  * reports where `instanceof` checks are unavailable.
-  */
+   * Error name, always `'TomlParseError'`.
+   *
+   * Useful for distinguishing TOML failures in logs or serialized error
+   * reports where `instanceof` checks are unavailable.
+   */
   name = 'TomlParseError';
 }
 // ---------------------------------------------------------------------------
 // Exported datetime wrapper types
 // ---------------------------------------------------------------------------
 /**
-* TOML local date value without a time or UTC offset.
-*
-* `parse()` returns this wrapper for TOML local-date values such as
-* `2026-06-02`. It preserves the date as written instead of converting through
-* a timezone. `toString()` and `toJSON()` return TOML-compatible
-* `YYYY-MM-DD` text.
-*
-* ```ts no_run
-* import { TomlLocalDate } from 'fino:format/toml';
-*
-* const date = new TomlLocalDate(2026, 6, 2);
-* date.toString(); // '2026-06-02'
-* ```
-*/
+ * TOML local date value without a time or UTC offset.
+ *
+ * `parse()` returns this wrapper for TOML local-date values such as
+ * `2026-06-02`. It preserves the date as written instead of converting through
+ * a timezone. `toString()` and `toJSON()` return TOML-compatible
+ * `YYYY-MM-DD` text.
+ *
+ * ```ts no_run
+ * import { TomlLocalDate } from 'fino:format/toml';
+ *
+ * const date = new TomlLocalDate(2026, 6, 2);
+ * date.toString(); // '2026-06-02'
+ * ```
+ */
 export class TomlLocalDate {
   /**
-  * Four-digit calendar year.
-  *
-  * The constructor does not normalize invalid calendar values; parsed TOML is
-  * expected to supply spec-valid values.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate } from 'fino:format/toml';
-  *
-  * new TomlLocalDate(2026, 6, 2).year;
-  * ```
-  */
+   * Four-digit calendar year.
+   *
+   * The constructor does not normalize invalid calendar values; parsed TOML is
+   * expected to supply spec-valid values.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate } from 'fino:format/toml';
+   *
+   * new TomlLocalDate(2026, 6, 2).year;
+   * ```
+   */
   readonly year: number;
   /**
-  * One-based calendar month.
-  *
-  * January is `1` and December is `12`.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate } from 'fino:format/toml';
-  *
-  * new TomlLocalDate(2026, 6, 2).month;
-  * ```
-  */
+   * One-based calendar month.
+   *
+   * January is `1` and December is `12`.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate } from 'fino:format/toml';
+   *
+   * new TomlLocalDate(2026, 6, 2).month;
+   * ```
+   */
   readonly month: number;
   /**
-  * One-based day of month.
-  *
-  * The value is emitted with two digits by `toString()`.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate } from 'fino:format/toml';
-  *
-  * new TomlLocalDate(2026, 6, 2).day;
-  * ```
-  */
+   * One-based day of month.
+   *
+   * The value is emitted with two digits by `toString()`.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate } from 'fino:format/toml';
+   *
+   * new TomlLocalDate(2026, 6, 2).day;
+   * ```
+   */
   readonly day: number;
   /**
-  * Create a TOML local date wrapper.
-  *
-  * The values are stored directly and are not converted to a JavaScript `Date`.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate } from 'fino:format/toml';
-  *
-  * const date = new TomlLocalDate(2026, 6, 2);
-  * ```
-  */
+   * Create a TOML local date wrapper.
+   *
+   * The values are stored directly and are not converted to a JavaScript `Date`.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate } from 'fino:format/toml';
+   *
+   * const date = new TomlLocalDate(2026, 6, 2);
+   * ```
+   */
   constructor(y: number, mo: number, d: number) {
     this.year = y;
     this.month = mo;
     this.day = d;
   }
   /**
-  * Format the date as TOML local-date text.
-  *
-  * The return value is zero-padded and contains no timezone information.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate } from 'fino:format/toml';
-  *
-  * new TomlLocalDate(2026, 6, 2).toString();
-  * ```
-  */
+   * Format the date as TOML local-date text.
+   *
+   * The return value is zero-padded and contains no timezone information.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate } from 'fino:format/toml';
+   *
+   * new TomlLocalDate(2026, 6, 2).toString();
+   * ```
+   */
   toString() {
     return `${pad4(this.year)}-${pad2(this.month)}-${pad2(this.day)}`;
   }
   /**
-  * Return the JSON representation used by `JSON.stringify()`.
-  *
-  * The value matches `toString()` so local dates remain timezone-free when
-  * serialized to JSON.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate } from 'fino:format/toml';
-  *
-  * JSON.stringify({ released: new TomlLocalDate(2026, 6, 2) });
-  * ```
-  */
+   * Return the JSON representation used by `JSON.stringify()`.
+   *
+   * The value matches `toString()` so local dates remain timezone-free when
+   * serialized to JSON.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate } from 'fino:format/toml';
+   *
+   * JSON.stringify({ released: new TomlLocalDate(2026, 6, 2) });
+   * ```
+   */
   toJSON() {
     return this.toString();
   }
 }
 /**
-* TOML local time value without a date or UTC offset.
-*
-* `parse()` returns this wrapper for TOML local-time values such as
-* `12:30:00`. It preserves wall-clock time and does not attach a timezone or
-* date.
-*
-* ```ts no_run
-* import { TomlLocalTime } from 'fino:format/toml';
-*
-* const time = new TomlLocalTime(9, 30, 0);
-* time.toString(); // '09:30:00'
-* ```
-*/
+ * TOML local time value without a date or UTC offset.
+ *
+ * `parse()` returns this wrapper for TOML local-time values such as
+ * `12:30:00`. It preserves wall-clock time and does not attach a timezone or
+ * date.
+ *
+ * ```ts no_run
+ * import { TomlLocalTime } from 'fino:format/toml';
+ *
+ * const time = new TomlLocalTime(9, 30, 0);
+ * time.toString(); // '09:30:00'
+ * ```
+ */
 export class TomlLocalTime {
   /**
-  * Hour in 24-hour time.
-  *
-  * The value is emitted with two digits by `toString()`.
-  *
-  * ```ts no_run
-  * import { TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalTime(9, 30, 0).hour;
-  * ```
-  */
+   * Hour in 24-hour time.
+   *
+   * The value is emitted with two digits by `toString()`.
+   *
+   * ```ts no_run
+   * import { TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalTime(9, 30, 0).hour;
+   * ```
+   */
   readonly hour: number;
   /**
-  * Minute within the hour.
-  *
-  * The value is emitted with two digits by `toString()`.
-  *
-  * ```ts no_run
-  * import { TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalTime(9, 30, 0).minute;
-  * ```
-  */
+   * Minute within the hour.
+   *
+   * The value is emitted with two digits by `toString()`.
+   *
+   * ```ts no_run
+   * import { TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalTime(9, 30, 0).minute;
+   * ```
+   */
   readonly minute: number;
   /**
-  * Second within the minute.
-  *
-  * Fractional precision, when present, is stored separately in `ms`.
-  *
-  * ```ts no_run
-  * import { TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalTime(9, 30, 15).second;
-  * ```
-  */
+   * Second within the minute.
+   *
+   * Fractional precision, when present, is stored separately in `ms`.
+   *
+   * ```ts no_run
+   * import { TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalTime(9, 30, 15).second;
+   * ```
+   */
   readonly second: number;
   /**
-  * Millisecond fraction. Defaults to `0`.
-  *
-  * Parsed TOML fractional seconds are rounded to the nearest millisecond.
-  *
-  * ```ts no_run
-  * import { TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalTime(9, 30, 15, 250).ms;
-  * ```
-  */
+   * Millisecond fraction. Defaults to `0`.
+   *
+   * Parsed TOML fractional seconds are rounded to the nearest millisecond.
+   *
+   * ```ts no_run
+   * import { TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalTime(9, 30, 15, 250).ms;
+   * ```
+   */
   readonly ms: number;
   /**
-  * Create a TOML local time wrapper.
-  *
-  * The constructor stores values directly and does not normalize overflow.
-  *
-  * ```ts no_run
-  * import { TomlLocalTime } from 'fino:format/toml';
-  *
-  * const time = new TomlLocalTime(9, 30, 15, 250);
-  * ```
-  */
+   * Create a TOML local time wrapper.
+   *
+   * The constructor stores values directly and does not normalize overflow.
+   *
+   * ```ts no_run
+   * import { TomlLocalTime } from 'fino:format/toml';
+   *
+   * const time = new TomlLocalTime(9, 30, 15, 250);
+   * ```
+   */
   constructor(h: number, m: number, s: number, ms = 0) {
     this.hour = h;
     this.minute = m;
@@ -269,118 +269,118 @@ export class TomlLocalTime {
     this.ms = ms;
   }
   /**
-  * Format the value as TOML local-time text.
-  *
-  * Milliseconds are emitted only when non-zero.
-  *
-  * ```ts no_run
-  * import { TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalTime(9, 30, 15, 250).toString();
-  * ```
-  */
+   * Format the value as TOML local-time text.
+   *
+   * Milliseconds are emitted only when non-zero.
+   *
+   * ```ts no_run
+   * import { TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalTime(9, 30, 15, 250).toString();
+   * ```
+   */
   toString() {
     return `${pad2(this.hour)}:${pad2(this.minute)}:${pad2(this.second)}${this.ms ? `.${String(this.ms).padStart(3, '0')}` : ''}`;
   }
   /**
-  * Return the JSON representation used by `JSON.stringify()`.
-  *
-  * The value matches `toString()` and remains date- and timezone-free.
-  *
-  * ```ts no_run
-  * import { TomlLocalTime } from 'fino:format/toml';
-  *
-  * JSON.stringify({ startsAt: new TomlLocalTime(9, 30, 0) });
-  * ```
-  */
+   * Return the JSON representation used by `JSON.stringify()`.
+   *
+   * The value matches `toString()` and remains date- and timezone-free.
+   *
+   * ```ts no_run
+   * import { TomlLocalTime } from 'fino:format/toml';
+   *
+   * JSON.stringify({ startsAt: new TomlLocalTime(9, 30, 0) });
+   * ```
+   */
   toJSON() {
     return this.toString();
   }
 }
 /**
-* TOML local date-time value without a UTC offset.
-*
-* `parse()` returns this wrapper for TOML local datetimes such as
-* `2026-06-02T09:30:00`. Offset datetimes are returned as native `Date`
-* instances instead.
-*
-* ```ts no_run
-* import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
-*
-* const value = new TomlLocalDateTime(
-*   new TomlLocalDate(2026, 6, 2),
-*   new TomlLocalTime(9, 30, 0),
-* );
-* ```
-*/
+ * TOML local date-time value without a UTC offset.
+ *
+ * `parse()` returns this wrapper for TOML local datetimes such as
+ * `2026-06-02T09:30:00`. Offset datetimes are returned as native `Date`
+ * instances instead.
+ *
+ * ```ts no_run
+ * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
+ *
+ * const value = new TomlLocalDateTime(
+ *   new TomlLocalDate(2026, 6, 2),
+ *   new TomlLocalTime(9, 30, 0),
+ * );
+ * ```
+ */
 export class TomlLocalDateTime {
   /**
-  * Local date component.
-  *
-  * This component carries no timezone and is preserved independently from
-  * JavaScript `Date`.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)).date;
-  * ```
-  */
+   * Local date component.
+   *
+   * This component carries no timezone and is preserved independently from
+   * JavaScript `Date`.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)).date;
+   * ```
+   */
   readonly date: TomlLocalDate;
   /**
-  * Local time component.
-  *
-  * The component includes optional millisecond precision but no timezone.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)).time;
-  * ```
-  */
+   * Local time component.
+   *
+   * The component includes optional millisecond precision but no timezone.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)).time;
+   * ```
+   */
   readonly time: TomlLocalTime;
   /**
-  * Create a TOML local date-time wrapper from local date and time parts.
-  *
-  * No timezone conversion or validation is performed by the constructor.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
-  *
-  * const value = new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0));
-  * ```
-  */
+   * Create a TOML local date-time wrapper from local date and time parts.
+   *
+   * No timezone conversion or validation is performed by the constructor.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
+   *
+   * const value = new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0));
+   * ```
+   */
   constructor(d: TomlLocalDate, t: TomlLocalTime) {
     this.date = d;
     this.time = t;
   }
   /**
-  * Format the value as TOML local-date-time text.
-  *
-  * The returned string uses `T` between date and time and includes no offset.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
-  *
-  * new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)).toString();
-  * ```
-  */
+   * Format the value as TOML local-date-time text.
+   *
+   * The returned string uses `T` between date and time and includes no offset.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
+   *
+   * new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)).toString();
+   * ```
+   */
   toString() {
     return `${this.date}T${this.time}`;
   }
   /**
-  * Return the JSON representation used by `JSON.stringify()`.
-  *
-  * The value matches `toString()` and stays offset-free.
-  *
-  * ```ts no_run
-  * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
-  *
-  * JSON.stringify({
-  *   start: new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)),
-  * });
-  * ```
-  */
+   * Return the JSON representation used by `JSON.stringify()`.
+   *
+   * The value matches `toString()` and stays offset-free.
+   *
+   * ```ts no_run
+   * import { TomlLocalDate, TomlLocalDateTime, TomlLocalTime } from 'fino:format/toml';
+   *
+   * JSON.stringify({
+   *   start: new TomlLocalDateTime(new TomlLocalDate(2026, 6, 2), new TomlLocalTime(9, 30, 0)),
+   * });
+   * ```
+   */
   toJSON() {
     return this.toString();
   }
@@ -395,126 +395,139 @@ function pad4(n: number) {
 // Types
 // ---------------------------------------------------------------------------
 /**
-* Value types produced by the TOML parser and accepted by the stringifier.
-*
-* Offset datetimes are native `Date` values; local temporal values use the
-* wrapper classes exported by this module. Objects represent TOML tables and
-* arrays represent TOML arrays or arrays of tables depending on context.
-*
-* ```ts no_run
-* import { stringify, type TomlValue } from 'fino:format/toml';
-*
-* const value: TomlValue = { server: { port: 8080, enabled: true } };
-* stringify(value as Record<string, TomlValue>);
-* ```
-*/
-export type TomlValue = string | number | bigint | boolean | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime | TomlValue[] | {
-  /**
-  * TOML table key mapped to another TOML-compatible value.
-  *
-  * Nested objects become TOML tables or inline tables depending on
-  * stringifier context.
-  *
-  * ```ts no_run
-  * import type { TomlValue } from 'fino:format/toml';
-  *
-  * const table: TomlValue = { server: { port: 8080 } };
-  * ```
-  */
-  [k: string]: TomlValue;
-};
+ * Value types produced by the TOML parser and accepted by the stringifier.
+ *
+ * Offset datetimes are native `Date` values; local temporal values use the
+ * wrapper classes exported by this module. Objects represent TOML tables and
+ * arrays represent TOML arrays or arrays of tables depending on context.
+ *
+ * ```ts no_run
+ * import { stringify, type TomlValue } from 'fino:format/toml';
+ *
+ * const value: TomlValue = { server: { port: 8080, enabled: true } };
+ * stringify(value as Record<string, TomlValue>);
+ * ```
+ */
+export type TomlValue =
+  | string
+  | number
+  | bigint
+  | boolean
+  | Date
+  | TomlLocalDate
+  | TomlLocalTime
+  | TomlLocalDateTime
+  | TomlValue[]
+  | {
+      /**
+       * TOML table key mapped to another TOML-compatible value.
+       *
+       * Nested objects become TOML tables or inline tables depending on
+       * stringifier context.
+       *
+       * ```ts no_run
+       * import type { TomlValue } from 'fino:format/toml';
+       *
+       * const table: TomlValue = { server: { port: 8080 } };
+       * ```
+       */
+      [k: string]: TomlValue;
+    };
 /**
-* Options controlling TOML parsing.
-*
-* Parsing is strict by default and throws on integers outside JavaScript's safe
-* integer range. Enable `bigint` when preserving oversized TOML integers is
-* more important than returning only `number` values.
-*
-* ```ts no_run
-* import { parse, type TomlParseOptions } from 'fino:format/toml';
-*
-* const options: TomlParseOptions = { bigint: true };
-* parse('huge = 9223372036854775807', options);
-* ```
-*/
+ * Options controlling TOML parsing.
+ *
+ * Parsing is strict by default and throws on integers outside JavaScript's safe
+ * integer range. Enable `bigint` when preserving oversized TOML integers is
+ * more important than returning only `number` values.
+ *
+ * ```ts no_run
+ * import { parse, type TomlParseOptions } from 'fino:format/toml';
+ *
+ * const options: TomlParseOptions = { bigint: true };
+ * parse('huge = 9223372036854775807', options);
+ * ```
+ */
 export interface TomlParseOptions {
   /**
-  * Return oversized TOML integers as `BigInt` instead of throwing.
-  *
-  * Defaults to `false`. Safe integers are still returned as `number`.
-  *
-  * ```ts no_run
-  * import { parse } from 'fino:format/toml';
-  *
-  * const cfg = parse('huge = 9223372036854775807', { bigint: true });
-  * ```
-  */
+   * Return oversized TOML integers as `BigInt` instead of throwing.
+   *
+   * Defaults to `false`. Safe integers are still returned as `number`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/toml';
+   *
+   * const cfg = parse('huge = 9223372036854775807', { bigint: true });
+   * ```
+   */
   bigint?: boolean;
 }
 /**
-* Options controlling TOML output formatting.
-*
-* The current stringifier emits one key per line, table headers for nested
-* objects, and arrays of tables for arrays of object values.
-*
-* ```ts no_run
-* import { stringify, type TomlStringifyOptions } from 'fino:format/toml';
-*
-* const options: TomlStringifyOptions = { indent: '' };
-* stringify({ server: { port: 8080 } }, options);
-* ```
-*/
+ * Options controlling TOML output formatting.
+ *
+ * The current stringifier emits one key per line, table headers for nested
+ * objects, and arrays of tables for arrays of object values.
+ *
+ * ```ts no_run
+ * import { stringify, type TomlStringifyOptions } from 'fino:format/toml';
+ *
+ * const options: TomlStringifyOptions = { indent: '' };
+ * stringify({ server: { port: 8080 } }, options);
+ * ```
+ */
 export interface TomlStringifyOptions {
   /**
-  * Reserved indentation string for TOML output. Defaults to `""`.
-  *
-  * The current formatter stores this value for future formatting support, but
-  * TOML tables and arrays are emitted in a compact one-entry-per-line style.
-  *
-  * ```ts no_run
-  * import { stringify } from 'fino:format/toml';
-  *
-  * stringify({ server: { port: 8080 } }, { indent: '' });
-  * ```
-  */
+   * Reserved indentation string for TOML output. Defaults to `""`.
+   *
+   * The current formatter stores this value for future formatting support, but
+   * TOML tables and arrays are emitted in a compact one-entry-per-line style.
+   *
+   * ```ts no_run
+   * import { stringify } from 'fino:format/toml';
+   *
+   * stringify({ server: { port: 8080 } }, { indent: '' });
+   * ```
+   */
   indent?: string;
 }
 // ---------------------------------------------------------------------------
 // Parse
 // ---------------------------------------------------------------------------
 /**
-* Parse a TOML document into a plain object.
-*
-* Input may be a string or UTF-8 bytes. The parser enforces TOML 1.0.0 key
-* uniqueness, table structure, scalar syntax, and integer range rules. Tables
-* become plain objects, arrays of tables become arrays of objects, and
-* temporal values follow the mapping described in the module header (offset
-* datetimes become native `Date`, local values use the wrapper classes).
-*
-* Throws a `ParseError` (from `fino:parsing/scanner`, with `format` set to
-* `'toml'`) on malformed syntax, duplicate keys, duplicate table
-* declarations, and integers outside JavaScript's safe range unless
-* `bigint: true` is passed.
-*
-* ```ts no_run
-* import { parse } from 'fino:format/toml';
-*
-* const cfg = parse(`
-* title = "Fino"
-*
-* [server]
-* port = 8080
-* hosts = ["a.example", "b.example"]
-*
-* [[jobs]]
-* name = "backup"
-* at = 02:30:00
-* `);
-* cfg.title;                     // 'Fino'
-* (cfg.server as any).port;      // 8080
-* ```
-*/
-export function parse(input: string | Uint8Array, options: TomlParseOptions = {}): Record<string, TomlValue> {
+ * Parse a TOML document into a plain object.
+ *
+ * Input may be a string or UTF-8 bytes. The parser enforces TOML 1.0.0 key
+ * uniqueness, table structure, scalar syntax, and integer range rules. Tables
+ * become plain objects, arrays of tables become arrays of objects, and
+ * temporal values follow the mapping described in the module header (offset
+ * datetimes become native `Date`, local values use the wrapper classes).
+ *
+ * Throws a `ParseError` (from `fino:parsing/scanner`, with `format` set to
+ * `'toml'`) on malformed syntax, duplicate keys, duplicate table
+ * declarations, and integers outside JavaScript's safe range unless
+ * `bigint: true` is passed.
+ *
+ * ```ts no_run
+ * import { parse } from 'fino:format/toml';
+ *
+ * const cfg = parse(`
+ * title = "Fino"
+ *
+ * [server]
+ * port = 8080
+ * hosts = ["a.example", "b.example"]
+ *
+ * [[jobs]]
+ * name = "backup"
+ * at = 02:30:00
+ * `);
+ * cfg.title;                     // 'Fino'
+ * (cfg.server as any).port;      // 8080
+ * ```
+ */
+export function parse(
+  input: string | Uint8Array,
+  options: TomlParseOptions = {},
+): Record<string, TomlValue> {
   return new TomlParser(input, options).parse();
 }
 // Per-table metadata to track explicit definition (for duplicate-table detection)
@@ -535,7 +548,7 @@ function setMeta<T extends object>(target: T, key: symbol, value: boolean): void
     value,
     writable: true,
     configurable: true,
-    enumerable: false
+    enumerable: false,
   });
 }
 class TomlParser {
@@ -546,7 +559,7 @@ class TomlParser {
     this.#opts = opts;
     this.#sc = new Scanner(src, {
       encoding: 'utf-8',
-      format: 'toml'
+      format: 'toml',
     });
   }
   parse(): Record<string, TomlValue> {
@@ -568,7 +581,8 @@ class TomlParser {
         if (isArray) sc.expect(']');
         this.#skipWs();
         if (!sc.done && sc.peek() !== '#') {
-          if (sc.peek() !== '\n' && sc.peek() !== '\r') throw sc.error('expected newline after table header');
+          if (sc.peek() !== '\n' && sc.peek() !== '\r')
+            throw sc.error('expected newline after table header');
         }
         this.#skipComment();
         current = this.#resolveTable(this.#root, keys, isArray);
@@ -628,9 +642,16 @@ class TomlParser {
     sc.skipSpaceTab();
     const ch = sc.peek();
     if (ch === '"') return this.#parseBasicString();
-    if (ch === '\'') return this.#parseLiteralString();
+    if (ch === "'") return this.#parseLiteralString();
     // bare key: a-z A-Z 0-9 - _
-    const k = sc.eatWhile((c) => c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c === 95 || c === 45);
+    const k = sc.eatWhile(
+      (c) =>
+        (c >= 97 && c <= 122) ||
+        (c >= 65 && c <= 90) ||
+        (c >= 48 && c <= 57) ||
+        c === 95 ||
+        c === 45,
+    );
     if (k === '') throw sc.error('expected key');
     sc.skipSpaceTab();
     return k;
@@ -642,8 +663,8 @@ class TomlParser {
       if (sc.peek(3) === '"""') return this.#parseMultilineBasicString();
       return this.#parseBasicString();
     }
-    if (ch === '\'') {
-      if (sc.peek(3) === '\'\'\'') return this.#parseMultilineLiteralString();
+    if (ch === "'") {
+      if (sc.peek(3) === "'''") return this.#parseMultilineLiteralString();
       return this.#parseLiteralString();
     }
     if (ch === '[') return this.#parseArray();
@@ -708,11 +729,11 @@ class TomlParser {
   }
   #parseLiteralString(): string {
     const sc = this.#sc;
-    sc.expect('\'');
+    sc.expect("'");
     let s = '';
     while (!sc.done) {
       const ch = sc.peek();
-      if (ch === '\'') {
+      if (ch === "'") {
         sc.eat();
         return s;
       }
@@ -735,7 +756,11 @@ class TomlParser {
         // Line-ending backslash: skip whitespace
         sc.eat();
         if (sc.peek() === '\n' || sc.peek() === '\r') {
-          while (!sc.done && (sc.peek() === '\n' || sc.peek() === '\r' || sc.peek() === ' ' || sc.peek() === '	')) sc.eat();
+          while (
+            !sc.done &&
+            (sc.peek() === '\n' || sc.peek() === '\r' || sc.peek() === ' ' || sc.peek() === '	')
+          )
+            sc.eat();
           continue;
         }
         s += this.#parseEscapeChar(sc.eat());
@@ -747,12 +772,12 @@ class TomlParser {
   }
   #parseMultilineLiteralString(): string {
     const sc = this.#sc;
-    sc.match('\'\'\'');
+    sc.match("'''");
     if (sc.peek() === '\r') sc.eat();
     if (sc.peek() === '\n') sc.eat();
     let s = '';
     while (!sc.done) {
-      if (sc.match('\'\'\'')) return s;
+      if (sc.match("'''")) return s;
       s += sc.eat();
     }
     throw sc.error('unterminated multiline literal string');
@@ -764,16 +789,26 @@ class TomlParser {
   }
   #parseEscapeChar(ch: string): string {
     switch (ch) {
-      case 'b': return '\b';
-      case 't': return '	';
-      case 'n': return '\n';
-      case 'f': return '\f';
-      case 'r': return '\r';
-      case '"': return '"';
-      case '\\': return '\\';
-      case 'u': return this.#parseUnicode(4);
-      case 'U': return this.#parseUnicode(8);
-      default: throw this.#sc.error(`unknown escape \\${ch}`);
+      case 'b':
+        return '\b';
+      case 't':
+        return '	';
+      case 'n':
+        return '\n';
+      case 'f':
+        return '\f';
+      case 'r':
+        return '\r';
+      case '"':
+        return '"';
+      case '\\':
+        return '\\';
+      case 'u':
+        return this.#parseUnicode(4);
+      case 'U':
+        return this.#parseUnicode(8);
+      default:
+        throw this.#sc.error(`unknown escape \\${ch}`);
     }
   }
   #parseUnicode(len: number): string {
@@ -855,7 +890,12 @@ class TomlParser {
     }
     // Strip underscores for numeric parse
     const clean = raw.replace(/_/g, '');
-    if (raw.includes('_') && !/^[+-]?(?:0|[1-9][0-9]*)(?:_[0-9]+)*(?:\.[0-9]+(?:_[0-9]+)*)?(?:[eE][+-]?[0-9]+(?:_[0-9]+)*)?$/.test(raw)) {
+    if (
+      raw.includes('_') &&
+      !/^[+-]?(?:0|[1-9][0-9]*)(?:_[0-9]+)*(?:\.[0-9]+(?:_[0-9]+)*)?(?:[eE][+-]?[0-9]+(?:_[0-9]+)*)?$/.test(
+        raw,
+      )
+    ) {
       throw sc.error(`invalid value: ${raw}`);
     }
     if (/^[+-]?(?:0|[1-9][0-9]*)$/.test(clean)) return this.#parseInt(parseInt(clean, 10), raw);
@@ -871,12 +911,16 @@ class TomlParser {
   #parseInt(n: number, raw: string): number | bigint {
     if (!Number.isSafeInteger(n)) {
       if (this.#opts.bigint) return BigInt(raw.replace(/_/g, ''));
-      throw this.#sc.error(`integer overflow: ${raw} exceeds Number.MAX_SAFE_INTEGER; use { bigint: true }`);
+      throw this.#sc.error(
+        `integer overflow: ${raw} exceeds Number.MAX_SAFE_INTEGER; use { bigint: true }`,
+      );
     }
     return n;
   }
   #parseDate(raw: string): Date | TomlLocalDateTime | TomlLocalDate {
-    if (!/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(raw)) {
+    if (
+      !/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(raw)
+    ) {
       throw this.#sc.error(`invalid datetime: ${raw}`);
     }
     const datePart = raw.slice(0, 10);
@@ -911,24 +955,11 @@ class TomlParser {
   }
   #validateDate(y: number, mo: number, d: number, raw: string): void {
     if (mo < 1 || mo > 12 || d < 1) throw this.#sc.error(`invalid date: ${raw}`);
-    const days = [
-      31,
-      this.#isLeapYear(y) ? 29 : 28,
-      31,
-      30,
-      31,
-      30,
-      31,
-      31,
-      30,
-      31,
-      30,
-      31
-    ];
+    const days = [31, this.#isLeapYear(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     if (d > days[mo - 1]!) throw this.#sc.error(`invalid date: ${raw}`);
   }
   #isLeapYear(y: number): boolean {
-    return y % 4 === 0 && y % 100 !== 0 || y % 400 === 0;
+    return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
   }
   #resolveTable(root: TomlTable, keys: string[], isArray: boolean): TomlTable {
     let t: TomlTable = root;
@@ -955,8 +986,8 @@ class TomlParser {
           [_ARRAY]?: boolean;
         } = [];
         setMeta(arr, _ARRAY, true);
-        t[last] = (arr as unknown) as TomlValue;
-      } else if (!Array.isArray(t[last]) || !((t[last] as unknown) as TomlTable)[_ARRAY]) {
+        t[last] = arr as unknown as TomlValue;
+      } else if (!Array.isArray(t[last]) || !(t[last] as unknown as TomlTable)[_ARRAY]) {
         throw this.#sc.error(`key '${last}' is not an array of tables`);
       }
       const arr = t[last] as TomlTable[];
@@ -1003,29 +1034,32 @@ class TomlParser {
 // Stringify
 // ---------------------------------------------------------------------------
 /**
-* Serialize a TOML-compatible object to TOML text.
-*
-* The stringifier emits scalars before nested tables, nested objects as
-* `[table]` headers, and arrays of objects as `[[array-of-tables]]` entries.
-* Native `Date` values become UTC offset datetimes (`+00:00`), local temporal
-* wrappers serialize through their `toString()` methods, and non-finite
-* numbers become `inf`, `-inf`, or `nan`. Keys that are not bare-key safe are
-* quoted, and strings prefer literal (single-quoted) form when they contain no
-* single quotes or newlines. Output is normalized: comments and original
-* source formatting from a parsed document are not preserved.
-*
-* ```ts no_run
-* import { parse, stringify } from 'fino:format/toml';
-*
-* const text = stringify({
-*   title: 'Fino',
-*   server: { port: 8080, hosts: ['a.example', 'b.example'] },
-*   listeners: [{ port: 8080 }, { port: 8443 }],
-* });
-* parse(text); // round-trips to an equivalent object
-* ```
-*/
-export function stringify(value: Record<string, TomlValue>, options: TomlStringifyOptions = {}): string {
+ * Serialize a TOML-compatible object to TOML text.
+ *
+ * The stringifier emits scalars before nested tables, nested objects as
+ * `[table]` headers, and arrays of objects as `[[array-of-tables]]` entries.
+ * Native `Date` values become UTC offset datetimes (`+00:00`), local temporal
+ * wrappers serialize through their `toString()` methods, and non-finite
+ * numbers become `inf`, `-inf`, or `nan`. Keys that are not bare-key safe are
+ * quoted, and strings prefer literal (single-quoted) form when they contain no
+ * single quotes or newlines. Output is normalized: comments and original
+ * source formatting from a parsed document are not preserved.
+ *
+ * ```ts no_run
+ * import { parse, stringify } from 'fino:format/toml';
+ *
+ * const text = stringify({
+ *   title: 'Fino',
+ *   server: { port: 8080, hosts: ['a.example', 'b.example'] },
+ *   listeners: [{ port: 8080 }, { port: 8443 }],
+ * });
+ * parse(text); // round-trips to an equivalent object
+ * ```
+ */
+export function stringify(
+  value: Record<string, TomlValue>,
+  options: TomlStringifyOptions = {},
+): string {
   const indent = options.indent ?? '';
   return new TomlStringifier(indent).stringifyRoot(value);
 }
@@ -1092,7 +1126,9 @@ class TomlStringifier {
       return '[' + v.map((e) => this.#tomlValue(e)).join(', ') + ']';
     }
     if (typeof v === 'object' && v !== null) {
-      const pairs = Object.entries(v as Record<string, TomlValue>).map(([k, val]) => `${_tomlKey(k)} = ${this.#tomlValue(val)}`);
+      const pairs = Object.entries(v as Record<string, TomlValue>).map(
+        ([k, val]) => `${_tomlKey(k)} = ${this.#tomlValue(val)}`,
+      );
       return '{' + pairs.join(', ') + '}';
     }
     return String(v);
@@ -1100,7 +1136,7 @@ class TomlStringifier {
 }
 function stripMeta(value: TomlValue): TomlValue {
   if (Array.isArray(value)) {
-    delete ((value as unknown) as TableMeta)[_ARRAY];
+    delete (value as unknown as TableMeta)[_ARRAY];
     for (let i = 0; i < value.length; i++) value[i] = stripMeta(value[i]!);
     return value;
   }
@@ -1109,13 +1145,20 @@ function stripMeta(value: TomlValue): TomlValue {
     delete (value as TableMeta)[_ARRAY];
     delete (value as TableMeta)[_IMPLICIT];
     for (const key of Object.keys(value as Record<string, TomlValue>)) {
-      (value as Record<string, TomlValue>)[key] = stripMeta((value as Record<string, TomlValue>)[key]!);
+      (value as Record<string, TomlValue>)[key] = stripMeta(
+        (value as Record<string, TomlValue>)[key]!,
+      );
     }
   }
   return value;
 }
 function _isDateLike(v: unknown): boolean {
-  return v instanceof Date || v instanceof TomlLocalDate || v instanceof TomlLocalTime || v instanceof TomlLocalDateTime;
+  return (
+    v instanceof Date ||
+    v instanceof TomlLocalDate ||
+    v instanceof TomlLocalTime ||
+    v instanceof TomlLocalDateTime
+  );
 }
 function isTableValue(v: unknown): v is Record<string, TomlValue> {
   return typeof v === 'object' && v !== null && !Array.isArray(v) && !_isDateLike(v);
@@ -1125,6 +1168,6 @@ function _tomlKey(k: string): string {
 }
 function _tomlString(s: string): string {
   // Use literal strings when possible (no backslash, no single-quote)
-  if (!s.includes('\'') && !s.includes('\n') && !s.includes('\r')) return `'${s}'`;
+  if (!s.includes("'") && !s.includes('\n') && !s.includes('\r')) return `'${s}'`;
   return JSON.stringify(s);
 }

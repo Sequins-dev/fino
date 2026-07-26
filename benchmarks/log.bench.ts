@@ -1,20 +1,26 @@
 /**
-* Benchmarks for fino:log
-*
-* Run with: cargo run -- bench benchmarks/log.bench.ts
-*/
-import { createConsoleSink, createJsonSink, createLogger, createOtelSink, runWithLogContext } from 'fino:log';
+ * Benchmarks for fino:log
+ *
+ * Run with: cargo run -- bench benchmarks/log.bench.ts
+ */
+import {
+  createConsoleSink,
+  createJsonSink,
+  createLogger,
+  createOtelSink,
+  runWithLogContext,
+} from 'fino:log';
 import { bench } from 'fino:bench';
 import { LoggerProvider, runWithLoggerProvider } from 'fino:opentelemetry/logs';
 const logger = createLogger({
   name: 'bench',
   level: 'fatal',
-  context: { component: 'bench' }
+  context: { component: 'bench' },
 });
 const sinkLogger = createLogger({
   name: 'bench.sink',
   level: 'debug',
-  context: { component: 'bench' }
+  context: { component: 'bench' },
 });
 bench('log', (b) => {
   b.measure('createLogger', () => createLogger({ name: 'bench.child' }));
@@ -28,7 +34,7 @@ bench('log sinks', (b) => {
       level: 'info',
       write(line) {
         lines.push(line);
-      }
+      },
     });
     for (let i = 0; i < 16; i++) sinkLogger.info('json sink event', { index: i });
     sink.dispose();
@@ -39,7 +45,7 @@ bench('log sinks', (b) => {
       level: 'debug',
       write(line) {
         lines.push(line);
-      }
+      },
     });
     for (let i = 0; i < 16; i++) sinkLogger.warn('console sink event', { index: i });
     sink.dispose();
@@ -58,7 +64,7 @@ bench('log sinks', (b) => {
       level: 'fatal',
       write() {
         writes++;
-      }
+      },
     });
     for (let i = 0; i < 16; i++) sinkLogger.warn('filtered sink event', { index: i });
     sinkLogger.fatal('visible sink event');

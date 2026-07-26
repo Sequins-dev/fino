@@ -1,12 +1,12 @@
 /**
-* Benchmarks for fino:net/dns (packet encoding/decoding only — no network)
-*
-* Run with: cargo run -- --bench benchmarks/dns.bench.ts
-*
-* Uses only the internal exports (_encodeName, _buildQuery, _parseResponse)
-* to avoid network I/O. A synthetic DNS A-record response is constructed for
-* the parsing benchmarks.
-*/
+ * Benchmarks for fino:net/dns (packet encoding/decoding only — no network)
+ *
+ * Run with: cargo run -- --bench benchmarks/dns.bench.ts
+ *
+ * Uses only the internal exports (_encodeName, _buildQuery, _parseResponse)
+ * to avoid network I/O. A synthetic DNS A-record response is constructed for
+ * the parsing benchmarks.
+ */
 import { _encodeName, _buildQuery, _parseResponse, RECORD_TYPES } from 'fino:net/dns';
 import { validateSignedResponse } from '../../js/internal/net/dnssec.ts';
 import { bench } from 'fino:bench';
@@ -99,22 +99,8 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
 function buildDnssecResponse(name: string): Uint8Array {
   const nameWire = _encodeName(name);
   const questionLen = nameWire.length + 4;
-  const ds = concatBytes([
-    writeU16(20326),
-    new Uint8Array([8, 2]),
-    new Uint8Array(32).fill(170)
-  ]);
-  const dnskey = concatBytes([writeU16(257), new Uint8Array([
-    3,
-    8,
-    1,
-    0,
-    1,
-    3,
-    1,
-    0,
-    1
-  ])]);
+  const ds = concatBytes([writeU16(20326), new Uint8Array([8, 2]), new Uint8Array(32).fill(170)]);
+  const dnskey = concatBytes([writeU16(257), new Uint8Array([3, 8, 1, 0, 1, 3, 1, 0, 1])]);
   const rrsig = concatBytes([
     writeU16(RECORD_TYPES.A),
     new Uint8Array([8, 2]),
@@ -123,21 +109,21 @@ function buildDnssecResponse(name: string): Uint8Array {
     writeU32(4099852800),
     writeU16(20326),
     nameWire,
-    new Uint8Array(256).fill(187)
+    new Uint8Array(256).fill(187),
   ]);
   const rdatas = [
     {
       type: RECORD_TYPES.DS,
-      data: ds
+      data: ds,
     },
     {
       type: RECORD_TYPES.DNSKEY,
-      data: dnskey
+      data: dnskey,
     },
     {
       type: RECORD_TYPES.RRSIG,
-      data: rrsig
-    }
+      data: rrsig,
+    },
   ];
   let rrLen = 0;
   for (const rdata of rdatas) rrLen += 2 + 2 + 2 + 4 + 2 + rdata.data.byteLength;
@@ -184,19 +170,16 @@ const DNSSEC_RESPONSE = buildDnssecResponse('example.com');
 const MALFORMED_TRUNCATED_RESPONSE = A_RESPONSE_SHORT.subarray(0, A_RESPONSE_SHORT.byteLength - 3);
 const DNSSEC_VALIDATION_CORPUS = {
   rcode: 0,
-  answers: [{
-    name: 'unsigned.test',
-    type: RECORD_TYPES.A,
-    ttl: 60,
-    data: '192.0.2.1',
-    rawData: new Uint8Array([
-      192,
-      0,
-      2,
-      1
-    ])
-  }],
-  authorities: []
+  answers: [
+    {
+      name: 'unsigned.test',
+      type: RECORD_TYPES.A,
+      ttl: 60,
+      data: '192.0.2.1',
+      rawData: new Uint8Array([192, 0, 2, 1]),
+    },
+  ],
+  authorities: [],
 };
 bench('_encodeName', (b) => {
   b.measure('2-label short', () => _encodeName('example.com'));
@@ -212,12 +195,16 @@ bench('_buildQuery', (b) => {
     g.measure('MX', () => _buildQuery(4660, 'example.com', RECORD_TYPES.MX));
     g.measure('TXT', () => _buildQuery(4660, 'example.com', RECORD_TYPES.TXT));
     g.measure('SRV', () => _buildQuery(4660, '_http._tcp.example.com', RECORD_TYPES.SRV));
-    g.measure('A + DNSSEC DO', () => _buildQuery(4660, 'example.com', RECORD_TYPES.A, { dnssec: true }));
+    g.measure('A + DNSSEC DO', () =>
+      _buildQuery(4660, 'example.com', RECORD_TYPES.A, { dnssec: true }),
+    );
   });
   b.group('by name length', (g) => {
     g.measure('short name', () => _buildQuery(4660, 'a.co', RECORD_TYPES.A));
     g.measure('medium name', () => _buildQuery(4660, 'example.com', RECORD_TYPES.A));
-    g.measure('long name', () => _buildQuery(4660, 'api.v2.internal.svc.cluster.example.com', RECORD_TYPES.A));
+    g.measure('long name', () =>
+      _buildQuery(4660, 'api.v2.internal.svc.cluster.example.com', RECORD_TYPES.A),
+    );
   });
 });
 bench('_parseResponse', (b) => {
@@ -241,10 +228,15 @@ bench('_parseResponse', (b) => {
     });
     g.measure('DNSSEC validation corpus missing signature rejects', async () => {
       try {
-        await validateSignedResponse(DNSSEC_VALIDATION_CORPUS as any, 'unsigned.test', RECORD_TYPES.A, {
-          trustAnchors: [],
-          now: 2e3
-        });
+        await validateSignedResponse(
+          DNSSEC_VALIDATION_CORPUS as any,
+          'unsigned.test',
+          RECORD_TYPES.A,
+          {
+            trustAnchors: [],
+            now: 2e3,
+          },
+        );
         throw new Error('DNSSEC validation corpus unexpectedly accepted unsigned answer');
       } catch (err) {
         if (String((err as Error).message ?? err).includes('unexpectedly accepted')) throw err;

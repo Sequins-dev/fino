@@ -1,6 +1,6 @@
 /**
-* Tests for fino:socket + fino:loop (promise-based API).
-*/
+ * Tests for fino:socket + fino:loop (promise-based API).
+ */
 import { describe, it } from 'fino:test/test';
 import * as sock from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
@@ -27,19 +27,52 @@ describe('Constants', () => {
     t.equal(typeof sock.setMulticastOptions, 'function', 'setMulticastOptions helper is exported');
     t.equal(typeof sock.networkInterfaces, 'function', 'networkInterfaces helper is exported');
     t.equal(typeof sock.interfaceIndex, 'function', 'interfaceIndex helper is exported');
-    t.equal(typeof sock.networkInterfaceIndices, 'function', 'networkInterfaceIndices helper is exported');
+    t.equal(
+      typeof sock.networkInterfaceIndices,
+      'function',
+      'networkInterfaceIndices helper is exported',
+    );
   });
   it('enumerates network interface indexes', (t) => {
     const interfaces = sock.networkInterfaces();
     t.equal(Array.isArray(interfaces), true, 'networkInterfaces returns an array');
-    t.equal(interfaces.every((iface) => Number.isInteger(iface.index) && iface.index > 0 && typeof iface.name === 'string'), true, 'interfaces include positive indexes and names');
-    t.equal(interfaces.every((iface) => iface.addresses === undefined || Array.isArray(iface.addresses)), true, 'interfaces allow optional address arrays');
-    t.equal(interfaces.every((iface) => iface.up === undefined || typeof iface.up === 'boolean'), true, 'interfaces allow optional boolean up flags');
-    t.equal(interfaces.every((iface) => iface.multicast === undefined || typeof iface.multicast === 'boolean'), true, 'interfaces allow optional boolean multicast flags');
+    t.equal(
+      interfaces.every(
+        (iface) =>
+          Number.isInteger(iface.index) && iface.index > 0 && typeof iface.name === 'string',
+      ),
+      true,
+      'interfaces include positive indexes and names',
+    );
+    t.equal(
+      interfaces.every((iface) => iface.addresses === undefined || Array.isArray(iface.addresses)),
+      true,
+      'interfaces allow optional address arrays',
+    );
+    t.equal(
+      interfaces.every((iface) => iface.up === undefined || typeof iface.up === 'boolean'),
+      true,
+      'interfaces allow optional boolean up flags',
+    );
+    t.equal(
+      interfaces.every(
+        (iface) => iface.multicast === undefined || typeof iface.multicast === 'boolean',
+      ),
+      true,
+      'interfaces allow optional boolean multicast flags',
+    );
     const indices = sock.networkInterfaceIndices();
-    t.deepEqual(indices, interfaces.map((iface) => iface.index), 'networkInterfaceIndices matches networkInterfaces indexes');
+    t.deepEqual(
+      indices,
+      interfaces.map((iface) => iface.index),
+      'networkInterfaceIndices matches networkInterfaces indexes',
+    );
     if (interfaces.length > 0 && interfaces[0]!.name.length > 0) {
-      t.equal(sock.interfaceIndex(interfaces[0]!.name), interfaces[0]!.index, 'interfaceIndex resolves an enumerated name');
+      t.equal(
+        sock.interfaceIndex(interfaces[0]!.name),
+        interfaces[0]!.index,
+        'interfaceIndex resolves an enumerated name',
+      );
     }
   });
 });
@@ -48,7 +81,7 @@ describe('Address encoding / decoding', () => {
     const { buf } = sock.encodeAddr({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 9900
+      port: 9900,
     });
     const a = sock.decodeAddr(buf);
     t.equal(a.family, 'ipv4');
@@ -60,7 +93,7 @@ describe('Address encoding / decoding', () => {
     const { buf } = sock.encodeAddr({
       family: 'ipv6',
       ip: '::1',
-      port: 9901
+      port: 9901,
     });
     const a = sock.decodeAddr(buf);
     t.equal(a.family, 'ipv6');
@@ -73,7 +106,7 @@ describe('Address encoding / decoding', () => {
       family: 'ipv6',
       ip: '::1',
       port: 9902,
-      scopeId: 7
+      scopeId: 7,
     });
     const a = sock.decodeAddr(buf);
     t.equal(a.family, 'ipv6');
@@ -83,7 +116,7 @@ describe('Address encoding / decoding', () => {
   it('encodeAddr / decodeAddr — Unix', (t) => {
     const { buf } = sock.encodeAddr({
       family: 'unix',
-      path: '/tmp/fino_test.sock'
+      path: '/tmp/fino_test.sock',
     });
     const a = sock.decodeAddr(buf);
     t.equal(a.family, 'unix');
@@ -98,7 +131,7 @@ describe('TCP / UDP loopback', () => {
     sock.bind(serverFd, {
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
     sock.listen(serverFd, 10);
     sock.setNonblocking(serverFd);
@@ -109,7 +142,7 @@ describe('TCP / UDP loopback', () => {
     sock.connect(clientFd, {
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: address.port
+      port: address.port,
     });
     await loop.readable(serverFd);
     const result = sock.accept(serverFd);
@@ -145,7 +178,7 @@ describe('TCP / UDP loopback', () => {
     sock.bind(server, {
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
     sock.setNonblocking(server);
     const address = sock.getsockname(server);
@@ -153,7 +186,7 @@ describe('TCP / UDP loopback', () => {
     sock.sendto(client, encodeUtf8('udp-ping'), {
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: address.port
+      port: address.port,
     });
     await loop.readable(server);
     const res = sock.recvfrom(server, 256);
@@ -171,7 +204,7 @@ describe('TCP / UDP loopback', () => {
       sock.bind(server, {
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: 0
+        port: 0,
       });
       sock.setNonblocking(server);
       const bound = sock.getsockname(server);
@@ -179,17 +212,24 @@ describe('TCP / UDP loopback', () => {
       const dest = {
         family: 'ipv4' as const,
         ip: '127.0.0.1',
-        port: bound.port
+        port: bound.port,
       };
-      const sent = sock.sendmmsgBatch(client, [{
-        data: encodeUtf8('batch-one'),
-        dest
-      }, {
-        data: encodeUtf8('batch-two'),
-        dest
-      }]);
+      const sent = sock.sendmmsgBatch(client, [
+        {
+          data: encodeUtf8('batch-one'),
+          dest,
+        },
+        {
+          data: encodeUtf8('batch-two'),
+          dest,
+        },
+      ]);
       if (sent === null) {
-        t.equal(sock.recvmmsgBatch(server, 2), null, 'batch receive reports unsupported with batch send');
+        t.equal(
+          sock.recvmmsgBatch(server, 2),
+          null,
+          'batch receive reports unsupported with batch send',
+        );
         return;
       }
       t.equal(sent.sent, 2, 'sendmmsgBatch accepted both datagrams');
@@ -197,7 +237,10 @@ describe('TCP / UDP loopback', () => {
       const received = [];
       const deadline = Date.now() + 200;
       while (received.length < 2 && Date.now() < deadline) {
-        const readable = await Promise.race([loop.readable(server).then(() => true), loop.timeout(20).then(() => false)]);
+        const readable = await Promise.race([
+          loop.readable(server).then(() => true),
+          loop.timeout(20).then(() => false),
+        ]);
         if (!readable) continue;
         const batch = sock.recvmmsgBatch(server, 2 - received.length, 64);
         t.ok(Array.isArray(batch), 'recvmmsgBatch returned datagrams');
@@ -205,14 +248,33 @@ describe('TCP / UDP loopback', () => {
         received.push(...batch);
       }
       t.equal(received.length, 2, 'recvmmsgBatch received both datagrams');
-      t.deepEqual(received.map((packet) => decodeUtf8(packet.data)).sort(), ['batch-one', 'batch-two'], 'batch payloads match');
+      t.deepEqual(
+        received.map((packet) => decodeUtf8(packet.data)).sort(),
+        ['batch-one', 'batch-two'],
+        'batch payloads match',
+      );
       for (const packet of received) {
         const raw = packet as any;
-        t.ok(raw.addrBuffer instanceof ArrayBuffer, 'batch receive exposes raw sockaddr storage for hot paths');
-        t.ok(Number.isInteger(raw.addrLen) && raw.addrLen > 0, 'batch receive reports raw sockaddr length');
-        if (!(raw.addrBuffer instanceof ArrayBuffer) || !Number.isInteger(raw.addrLen) || raw.addrLen <= 0) continue;
+        t.ok(
+          raw.addrBuffer instanceof ArrayBuffer,
+          'batch receive exposes raw sockaddr storage for hot paths',
+        );
+        t.ok(
+          Number.isInteger(raw.addrLen) && raw.addrLen > 0,
+          'batch receive reports raw sockaddr length',
+        );
+        if (
+          !(raw.addrBuffer instanceof ArrayBuffer) ||
+          !Number.isInteger(raw.addrLen) ||
+          raw.addrLen <= 0
+        )
+          continue;
         const decoded = sock.decodeAddr(raw.addrBuffer.slice(0, raw.addrLen));
-        t.equal(decoded.family, packet.addr.family, 'raw sockaddr decodes to the reported address family');
+        t.equal(
+          decoded.family,
+          packet.addr.family,
+          'raw sockaddr decodes to the reported address family',
+        );
         if (decoded.family === 'ipv4' && packet.addr.family === 'ipv4') {
           t.equal(decoded.ip, packet.addr.ip, 'raw sockaddr decodes to the reported IPv4 address');
           t.equal(decoded.port, packet.addr.port, 'raw sockaddr decodes to the reported IPv4 port');
@@ -220,13 +282,16 @@ describe('TCP / UDP loopback', () => {
       }
       const rawBatch = sock.createDatagramRecvBatch(2, 64);
       if (rawBatch !== null) {
-        const sentRaw = sock.sendmmsgBatch(client, [{
-          data: encodeUtf8('raw-one'),
-          dest
-        }, {
-          data: encodeUtf8('raw-two'),
-          dest
-        }]);
+        const sentRaw = sock.sendmmsgBatch(client, [
+          {
+            data: encodeUtf8('raw-one'),
+            dest,
+          },
+          {
+            data: encodeUtf8('raw-two'),
+            dest,
+          },
+        ]);
         t.ok(sentRaw !== null && sentRaw.sent === 2, 'sendmmsgBatch accepted raw-mode datagrams');
         const recvRaw = (rawBatch as any).recvRaw;
         t.equal(typeof recvRaw, 'function', 'batch receive exposes a raw-address mode');
@@ -236,7 +301,7 @@ describe('TCP / UDP loopback', () => {
         while (rawPayloads.length < 2 && Date.now() < rawDeadline) {
           const readable = await Promise.race([
             loop.readable(server).then(() => true),
-            loop.timeout(20).then(() => false)
+            loop.timeout(20).then(() => false),
           ]);
           if (!readable) continue;
           const rawPackets = recvRaw.call(rawBatch, server);
@@ -245,19 +310,25 @@ describe('TCP / UDP loopback', () => {
           t.equal(
             rawPackets.some((packet: any) => Object.hasOwn(packet, 'addr')),
             false,
-            'raw-address batch receive skips decoded addresses'
+            'raw-address batch receive skips decoded addresses',
           );
           rawPayloads.push(...rawPackets.map((packet: any) => decodeUtf8(packet.data)));
         }
         t.deepEqual(rawPayloads.sort(), ['raw-one', 'raw-two'], 'raw-address batch payloads match');
-        const sentEach = sock.sendmmsgBatch(client, [{
-          data: encodeUtf8('each-one'),
-          dest
-        }, {
-          data: encodeUtf8('each-two'),
-          dest
-        }]);
-        t.ok(sentEach !== null && sentEach.sent === 2, 'sendmmsgBatch accepted callback-mode datagrams');
+        const sentEach = sock.sendmmsgBatch(client, [
+          {
+            data: encodeUtf8('each-one'),
+            dest,
+          },
+          {
+            data: encodeUtf8('each-two'),
+            dest,
+          },
+        ]);
+        t.ok(
+          sentEach !== null && sentEach.sent === 2,
+          'sendmmsgBatch accepted callback-mode datagrams',
+        );
         const recvRawEach = (rawBatch as any).recvRawEach;
         t.equal(typeof recvRawEach, 'function', 'batch receive exposes callback raw-address mode');
         if (typeof recvRawEach !== 'function') return;
@@ -268,22 +339,33 @@ describe('TCP / UDP loopback', () => {
         while (eachCount < 2 && Date.now() < eachDeadline) {
           const readable = await Promise.race([
             loop.readable(server).then(() => true),
-            loop.timeout(20).then(() => false)
+            loop.timeout(20).then(() => false),
           ]);
           if (!readable) continue;
           eachCount += recvRawEach.call(
             rawBatch,
             server,
             (data: Uint8Array, addrBuffer: ArrayBuffer, addrLen: number) => {
-              t.ok(addrBuffer instanceof ArrayBuffer, 'callback raw-address receive exposes sockaddr storage');
+              t.ok(
+                addrBuffer instanceof ArrayBuffer,
+                'callback raw-address receive exposes sockaddr storage',
+              );
               eachPayloads.push(decodeUtf8(data));
               eachAddrLens.push(addrLen);
-            }
+            },
           );
         }
         t.equal(eachCount, 2, 'callback raw-address batch receive reports datagram count');
-        t.deepEqual(eachPayloads.sort(), ['each-one', 'each-two'], 'callback raw-address batch payloads match');
-        t.equal(eachAddrLens.every((len) => Number.isInteger(len) && len > 0), true, 'callback raw-address batch reports address lengths');
+        t.deepEqual(
+          eachPayloads.sort(),
+          ['each-one', 'each-two'],
+          'callback raw-address batch payloads match',
+        );
+        t.equal(
+          eachAddrLens.every((len) => Number.isInteger(len) && len > 0),
+          true,
+          'callback raw-address batch reports address lengths',
+        );
       }
     } finally {
       sock.close(server);
@@ -297,24 +379,30 @@ describe('TCP / UDP loopback', () => {
       sock.bind(server, {
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: 0
+        port: 0,
       });
       sock.setNonblocking(server);
       sock.setsockopt(server, sock.IPPROTO_IP, sock.IP_RECVTOS, true);
       const bound = sock.getsockname(server);
       if (bound.family !== 'ipv4') throw new Error('expected IPv4 socket address');
-      const sent = sock.sendmsgEcn(client, encodeUtf8('ecn-ping'), {
-        family: 'ipv4',
-        ip: '127.0.0.1',
-        port: bound.port
-      }, 3);
+      const sent = sock.sendmsgEcn(
+        client,
+        encodeUtf8('ecn-ping'),
+        {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: bound.port,
+        },
+        3,
+      );
       t.equal(sent, 'ecn-ping'.length, 'sendmsgEcn sends the payload');
       await loop.readable(server);
       const packet = sock.recvmsgEcn(server, 64);
       t.ok(typeof packet !== 'number', 'recvmsgEcn returned a packet');
       if (typeof packet === 'number') throw new Error(`recvmsgEcn failed with errno ${packet}`);
       t.equal(decodeUtf8(packet.data), 'ecn-ping', 'ECN receive payload matches');
-      if (packet.ecn !== undefined) t.equal(packet.ecn, 3, 'ECN bits are parsed when ancillary data is returned');
+      if (packet.ecn !== undefined)
+        t.equal(packet.ecn, 3, 'ECN bits are parsed when ancillary data is returned');
     } finally {
       sock.close(server);
       sock.close(client);
@@ -327,7 +415,7 @@ describe('TCP / UDP loopback', () => {
       sock.bind(server, {
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: 0
+        port: 0,
       });
       sock.setNonblocking(server);
       sock.setsockopt(server, sock.IPPROTO_IP, sock.IP_RECVPKTINFO, true);
@@ -336,20 +424,25 @@ describe('TCP / UDP loopback', () => {
       const sent = sock.sendto(client, encodeUtf8('pktinfo-ping'), {
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: bound.port
+        port: bound.port,
       });
       t.equal(sent, 'pktinfo-ping'.length, 'sendto sends the payload');
       await loop.readable(server);
       const packet = sock.recvmsgPacketInfo(server, 64);
       t.ok(typeof packet !== 'number', 'recvmsgPacketInfo returned a packet');
-      if (typeof packet === 'number') throw new Error(`recvmsgPacketInfo failed with errno ${packet}`);
+      if (typeof packet === 'number')
+        throw new Error(`recvmsgPacketInfo failed with errno ${packet}`);
       t.equal(decodeUtf8(packet.data), 'pktinfo-ping', 'packet-info receive payload matches');
       if (packet.destination !== undefined) {
         t.equal(packet.destination.family, 'ipv4', 'packet-info destination is IPv4 when supplied');
         t.equal(packet.destination.ip, '127.0.0.1', 'packet-info destination address is parsed');
       }
       if (packet.interfaceIndex !== undefined) {
-        t.equal(Number.isInteger(packet.interfaceIndex), true, 'packet-info interface index is numeric when supplied');
+        t.equal(
+          Number.isInteger(packet.interfaceIndex),
+          true,
+          'packet-info interface index is numeric when supplied',
+        );
       }
     } finally {
       sock.close(server);
@@ -357,7 +450,15 @@ describe('TCP / UDP loopback', () => {
     }
   });
   it('socket option helpers throw on invalid descriptors', (t) => {
-    t.throws(() => sock.setsockopt(-1, sock.SOL_SOCKET, sock.SO_REUSEADDR, true), /setsockopt\(\) failed/, 'setsockopt reports syscall failure');
-    t.throws(() => sock.getsockopt(-1, sock.SOL_SOCKET, sock.SO_ERROR), /getsockopt\(\) failed/, 'getsockopt reports syscall failure');
+    t.throws(
+      () => sock.setsockopt(-1, sock.SOL_SOCKET, sock.SO_REUSEADDR, true),
+      /setsockopt\(\) failed/,
+      'setsockopt reports syscall failure',
+    );
+    t.throws(
+      () => sock.getsockopt(-1, sock.SOL_SOCKET, sock.SO_ERROR),
+      /getsockopt\(\) failed/,
+      'getsockopt reports syscall failure',
+    );
   });
 });

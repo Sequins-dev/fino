@@ -12,7 +12,11 @@ test('startProfiling and stopProfiling return pprof bytes', (t) => {
   t.ok(sum > 0, 'computation ran');
 });
 test('stopProfiling without start throws', (t) => {
-  t.throws(() => stopProfiling('nonexistent'), /no matching profile|no profiler/, 'throws on missing profile');
+  t.throws(
+    () => stopProfiling('nonexistent'),
+    /no matching profile|no profiler/,
+    'throws on missing profile',
+  );
 });
 test('profiling with no title argument works', (t) => {
   startProfiling();

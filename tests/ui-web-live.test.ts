@@ -22,39 +22,58 @@ function makeApp() {
     state: () => ({ items: new Signal<string[]>([]) }),
     actions: {},
     render({ state }) {
-      return h('section', { id: 'live-todos' }, h('ul', null, state.items.get().map((item) => h('li', null, item))));
-    }
+      return h(
+        'section',
+        { id: 'live-todos' },
+        h(
+          'ul',
+          null,
+          state.items.get().map((item) => h('li', null, item)),
+        ),
+      );
+    },
   });
   const app = new App();
-  const ui = app.layer(webUI({
-    store,
-    secret: 'test-secret'
-  }));
+  const ui = app.layer(
+    webUI({
+      store,
+      secret: 'test-secret',
+    }),
+  );
   ui.get('/').handle(page((ctx) => h('main', null, todos.mount(ctx))));
   return {
     app,
-    store
+    store,
   };
 }
 describe('fino:ui/web live and client endpoints', () => {
   it('serves the browser client without an explicit route', async (t) => {
     const { app } = makeApp();
-    const response = await app.handle(new Request(`http://local${clientScriptPath()}`)) as Response;
+    const response = (await app.handle(
+      new Request(`http://local${clientScriptPath()}`),
+    )) as Response;
     t.equal(response.headers.get('content-type'), 'text/javascript; charset=utf-8');
     t.ok((await response.text()).includes('EventSource'), 'client runtime source is served');
   });
   it('pushes a patch when a watched view topic is published', async (t) => {
     const { app, store } = makeApp();
-    const first = await app.handle(new Request('http://local/')) as Response;
+    const first = (await app.handle(new Request('http://local/'))) as Response;
     const html = await first.text();
     const viewId = mountedViewId(html);
     const snap = (await store.load(viewId))!;
-    await store.save({
-      ...snap,
-      version: 1,
-      data: { items: ['from topic'] }
-    }, { expectVersion: 0 });
-    const live = await app.handle(new Request(`http://local/_fino/live?view=${viewId}`, { headers: { accept: 'text/event-stream' } })) as Response;
+    await store.save(
+      {
+        ...snap,
+        version: 1,
+        data: { items: ['from topic'] },
+      },
+      { expectVersion: 0 },
+    );
+    const live = (await app.handle(
+      new Request(`http://local/_fino/live?view=${viewId}`, {
+        headers: { accept: 'text/event-stream' },
+      }),
+    )) as Response;
     const iter = parseEventStream(live.body!)[Symbol.asyncIterator]();
     topic(`fino:ui/view:${viewId}`).publish({ version: 1 });
     const event = await iter.next();
@@ -64,36 +83,51 @@ describe('fino:ui/web live and client endpoints', () => {
   });
   it('catches up behind reconnects and navigates expired views', async (t) => {
     const { app, store } = makeApp();
-    const first = await app.handle(new Request('http://local/')) as Response;
+    const first = (await app.handle(new Request('http://local/'))) as Response;
     const html = await first.text();
     const viewId = mountedViewId(html);
     const snap = (await store.load(viewId))!;
-    await store.save({
-      ...snap,
-      version: 2,
-      data: { items: ['missed'] }
-    }, { expectVersion: 0 });
-    const behind = await app.handle(new Request(`http://local/_fino/live?view=${viewId}`, { headers: {
-      accept: 'text/event-stream',
-      'last-event-id': '1'
-    } })) as Response;
+    await store.save(
+      {
+        ...snap,
+        version: 2,
+        data: { items: ['missed'] },
+      },
+      { expectVersion: 0 },
+    );
+    const behind = (await app.handle(
+      new Request(`http://local/_fino/live?view=${viewId}`, {
+        headers: {
+          accept: 'text/event-stream',
+          'last-event-id': '1',
+        },
+      }),
+    )) as Response;
     const behindEvent = await parseEventStream(behind.body!)[Symbol.asyncIterator]().next();
     t.equal(behindEvent.value?.type, 'patch');
     t.ok(behindEvent.value?.data.includes('missed'), 'behind reconnect receives missed patch');
     await store.delete(viewId);
-    const expired = await app.handle(new Request(`http://local/_fino/live?view=${viewId}`, { headers: {
-      accept: 'text/event-stream',
-      'last-event-id': '2'
-    } })) as Response;
+    const expired = (await app.handle(
+      new Request(`http://local/_fino/live?view=${viewId}`, {
+        headers: {
+          accept: 'text/event-stream',
+          'last-event-id': '2',
+        },
+      }),
+    )) as Response;
     const expiredEvent = await parseEventStream(expired.body!)[Symbol.asyncIterator]().next();
     t.equal(expiredEvent.value?.type, 'navigate', 'missing snapshot navigates on reconnect');
   });
   it('disposes live topic subscriptions when the browser disconnects', async (t) => {
     const { app } = makeApp();
-    const first = await app.handle(new Request('http://local/')) as Response;
+    const first = (await app.handle(new Request('http://local/'))) as Response;
     const viewId = mountedViewId(await first.text());
     const updates = topic(`fino:ui/view:${viewId}`);
-    const live = await app.handle(new Request(`http://local/_fino/live?view=${viewId}`, { headers: { accept: 'text/event-stream' } })) as Response;
+    const live = (await app.handle(
+      new Request(`http://local/_fino/live?view=${viewId}`, {
+        headers: { accept: 'text/event-stream' },
+      }),
+    )) as Response;
     t.ok(updates.hasSubscribers, 'live response subscribes to view updates');
     await live.body!.cancel();
     t.equal(updates.hasSubscribers, false, 'cancelling the response disposes subscriptions');
@@ -107,11 +141,13 @@ describe('fino:ui/web live and client endpoints', () => {
       return originalSweep(now);
     };
     const app = new App();
-    app.layer(webUI({
-      store,
-      secret: 'test-secret',
-      sweepIntervalMs: 0
-    }));
+    app.layer(
+      webUI({
+        store,
+        secret: 'test-secret',
+        sweepIntervalMs: 0,
+      }),
+    );
     await app.handle(new Request('http://local/not-found'));
     await app.handle(new Request('http://local/still-not-found'));
     t.equal(swept, 2, 'zero interval sweeps once per request');

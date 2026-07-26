@@ -1,6 +1,6 @@
 /**
-* Tests for fino:jobs in local mode with an inline processor.
-*/
+ * Tests for fino:jobs in local mode with an inline processor.
+ */
 import { describe, it } from 'fino:test/test';
 import { Jobs, NonRetryableJobError } from 'fino:jobs';
 import { task } from 'fino:task';
@@ -22,11 +22,11 @@ describe('fino:jobs local mode', () => {
   it('pushes a job and runs it to completion', async (t) => {
     const echo = task({
       name: 'echo',
-      run: async (input: { value: number }) => input.value * 2
+      run: async (input: { value: number }) => input.value * 2,
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [echo]
+      tasks: [echo],
     });
     const job = await jobs.push('echo', { value: 21 });
     const done = await jobs.wait(job.id, { timeoutMs: 10_000 });
@@ -36,12 +36,12 @@ describe('fino:jobs local mode', () => {
   it('job() tracks one job and stats() reports queue counts', async (t) => {
     const echo = task({
       name: 'signal-echo',
-      run: async (input: { value: number }) => input.value
+      run: async (input: { value: number }) => input.value,
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
       tasks: [echo],
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     const stats = jobs.stats();
     const statSnapshots: number[] = [];
@@ -59,7 +59,10 @@ describe('fino:jobs local mode', () => {
     t.equal(done.status, 'done', 'job completed');
     t.equal(watched.get()?.status, 'done', 'job signal retains terminal state');
     t.ok(statuses.includes('done'), 'job subscriber saw terminal state');
-    t.ok(statSnapshots.some((pending) => pending >= 1), 'stats subscriber saw pending count');
+    t.ok(
+      statSnapshots.some((pending) => pending >= 1),
+      'stats subscriber saw pending count',
+    );
     disposeJob();
     disposeStats();
   });
@@ -70,11 +73,11 @@ describe('fino:jobs local mode', () => {
       run: async () => {
         stamps.push(Date.now());
         return null;
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [stamp]
+      tasks: [stamp],
     });
     const before = Date.now();
     const job = await jobs.push('stamp', null, { delay: 120 });
@@ -88,19 +91,19 @@ describe('fino:jobs local mode', () => {
       run: async () => {
         attempts++;
         throw new Error(`attempt ${attempts} failed`);
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [flaky]
+      tasks: [flaky],
     });
     const job = await jobs.push('flaky', null, {
       retry: {
         maxAttempts: 3,
         baseMs: 20,
         maxMs: 40,
-        jitter: false
-      }
+        jitter: false,
+      },
     });
     const dead = await jobs.wait(job.id, { timeoutMs: 15_000 });
     t.equal(dead.status, 'dead', 'exhausted job dead-letters');
@@ -114,14 +117,14 @@ describe('fino:jobs local mode', () => {
       run: async () => {
         attempts++;
         throw new NonRetryableJobError('bad input');
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [hopeless]
+      tasks: [hopeless],
     });
     const job = await jobs.push('hopeless', null, {
-      retry: { maxAttempts: 5, baseMs: 10 }
+      retry: { maxAttempts: 5, baseMs: 10 },
     });
     const dead = await jobs.wait(job.id, { timeoutMs: 10_000 });
     t.equal(dead.status, 'dead', 'non-retryable error dead-letters immediately');
@@ -137,11 +140,11 @@ describe('fino:jobs local mode', () => {
           throw new NonRetryableJobError('first time fails');
         }
         return 'recovered';
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [flaky]
+      tasks: [flaky],
     });
     const job = await jobs.push('second-chance', null);
     const dead = await jobs.wait(job.id, { timeoutMs: 10_000 });
@@ -154,11 +157,11 @@ describe('fino:jobs local mode', () => {
   it('cancels a pending job', async (t) => {
     const never = task({
       name: 'never-runs',
-      run: async () => null
+      run: async () => null,
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [never]
+      tasks: [never],
     });
     const job = await jobs.push('never-runs', null, { delay: '1h' });
     t.equal(await jobs.cancel(job.id), true, 'pending job cancelled');
@@ -171,11 +174,11 @@ describe('fino:jobs local mode', () => {
       run: async () => {
         await loop.timeout(100);
         return 'done';
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [slow]
+      tasks: [slow],
     });
     const first = await jobs.push('slow-dedupe', null, { key: 'once' });
     const second = await jobs.push('slow-dedupe', null, { key: 'once' });
@@ -189,12 +192,12 @@ describe('fino:jobs local mode', () => {
       run: async () => {
         fired++;
         return fired;
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
       tasks: [tickTask],
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     await jobs.schedule('ticker', 'tick', null, { every: '150ms' });
     const deadline = Date.now() + 10_000;
@@ -215,17 +218,17 @@ describe('fino:jobs local mode', () => {
         await loop.timeout(400);
         concurrent--;
         return null;
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
       tasks: [slow],
       concurrency: 4,
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     await jobs.schedule('slow-cron', 'slow-cron', null, {
       every: '100ms',
-      overlap: 'skip'
+      overlap: 'skip',
     });
     const deadline = Date.now() + 5_000;
     while (runs < 2 && Date.now() < deadline) await loop.timeout(50);
@@ -236,22 +239,25 @@ describe('fino:jobs local mode', () => {
   it('rejects duplicate task names across processors', async (t) => {
     const a = task({
       name: 'dupe',
-      run: async () => null
+      run: async () => null,
     });
     const b = task({
       name: 'dupe',
-      run: async () => null
+      run: async () => null,
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
-      tasks: [a]
+      tasks: [a],
     });
     let threw = false;
     try {
       await jobs.process({ tasks: [b] });
     } catch (err) {
       threw = true;
-      t.ok(/already handled/.test(err instanceof Error ? err.message : ''), 'duplicate registration explains itself');
+      t.ok(
+        /already handled/.test(err instanceof Error ? err.message : ''),
+        'duplicate registration explains itself',
+      );
     }
     t.ok(threw, 'duplicate task name rejected');
   });

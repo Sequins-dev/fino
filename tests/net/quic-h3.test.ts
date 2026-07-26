@@ -11,7 +11,25 @@ import { H3ServerDriver } from 'internal:net/http/h3/server';
 import { H3ClientSession } from 'internal:net/http/h3/client';
 import { Nghttp3Session } from 'internal:net/http/h3/session';
 import { WebTransport } from 'fino:net/http/webtransport';
-import { SETTINGS_ENABLE_CONNECT_PROTOCOL, SETTINGS_H3_DATAGRAM, SETTINGS_WT_ENABLED, WEBTRANSPORT_BIDI_STREAM_TYPE, WEBTRANSPORT_UNI_STREAM_TYPE, decodeHttpDatagram, decodeH3SettingsFrame, decodeQuicVarint, decodeWebTransportStreamPrefix, encodeHttpDatagram, encodeH3SettingsFrame, encodeQuicVarint, encodeWebTransportStreamPrefix, injectWebTransportSettings, readWebTransportSettings, webTransportSettings, webTransportSettingsEnabled } from 'internal:net/http/h3/webtransport';
+import {
+  SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  SETTINGS_H3_DATAGRAM,
+  SETTINGS_WT_ENABLED,
+  WEBTRANSPORT_BIDI_STREAM_TYPE,
+  WEBTRANSPORT_UNI_STREAM_TYPE,
+  decodeHttpDatagram,
+  decodeH3SettingsFrame,
+  decodeQuicVarint,
+  decodeWebTransportStreamPrefix,
+  encodeHttpDatagram,
+  encodeH3SettingsFrame,
+  encodeQuicVarint,
+  encodeWebTransportStreamPrefix,
+  injectWebTransportSettings,
+  readWebTransportSettings,
+  webTransportSettings,
+  webTransportSettingsEnabled,
+} from 'internal:net/http/h3/webtransport';
 import { QuicPipe } from './fixtures/quic/sim-harness.ts';
 const available = quicAvailable && h3Available;
 const TEST_CERT = 'tests/net/fixtures/test.crt';
@@ -20,7 +38,10 @@ const fs = new DiskFileSystem('/');
 const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 async function readPemCertificateDer(path: string): Promise<Uint8Array> {
   const pem = decodeUtf8(await fs.readFile(path));
-  const base64 = pem.replace(/-----BEGIN CERTIFICATE-----/g, '').replace(/-----END CERTIFICATE-----/g, '').replace(/\s+/g, '');
+  const base64 = pem
+    .replace(/-----BEGIN CERTIFICATE-----/g, '')
+    .replace(/-----END CERTIFICATE-----/g, '')
+    .replace(/\s+/g, '');
   const binary = atob(base64);
   const der = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) der[i] = binary.charCodeAt(i);
@@ -33,24 +54,24 @@ function h3Pipe(): QuicPipe {
       connection: {
         maxIdleTimeoutMs: 0,
         streamIdleTimeoutMs: 0,
-        initialMaxStreamsUni: 16
-      }
+        initialMaxStreamsUni: 16,
+      },
     },
     client: {
       alpnProtocols: ['h3'],
       connection: {
         maxIdleTimeoutMs: 0,
         streamIdleTimeoutMs: 0,
-        initialMaxStreamsUni: 16
-      }
-    }
+        initialMaxStreamsUni: 16,
+      },
+    },
   });
 }
 async function h3Handshake(pipe: QuicPipe) {
   const { client, server } = await pipe.handshake();
   return {
     client,
-    server
+    server,
   };
 }
 async function h3WebTransportPair(pipe: QuicPipe): Promise<{
@@ -67,12 +88,16 @@ async function h3WebTransportPair(pipe: QuicPipe): Promise<{
   });
   const { client, server } = await h3Handshake(pipe);
   const driver = new H3ServerDriver();
-  const serverRun = driver.run(server, () => new Response('unexpected'), { onWebTransport(_request, session) {
-    resolveAccepted(session);
-    return session;
-  } });
+  const serverRun = driver.run(server, () => new Response('unexpected'), {
+    onWebTransport(_request, session) {
+      resolveAccepted(session);
+      return session;
+    },
+  });
   const clientSession = await H3ClientSession.create(client);
-  const clientTransport = await pipe.pumpUntil(clientSession.webtransport('https://example.test/wt'));
+  const clientTransport = await pipe.pumpUntil(
+    clientSession.webtransport('https://example.test/wt'),
+  );
   const serverTransport = await pipe.pumpUntil(acceptedPromise);
   await clientTransport.ready;
   await serverTransport.ready;
@@ -82,18 +107,23 @@ async function h3WebTransportPair(pipe: QuicPipe): Promise<{
     serverRun,
     clientSession,
     clientTransport,
-    serverTransport
+    serverTransport,
   };
 }
-async function readIncomingUnidirectionalBytes(pipe: QuicPipe, transport: WebTransport): Promise<Uint8Array> {
+async function readIncomingUnidirectionalBytes(
+  pipe: QuicPipe,
+  transport: WebTransport,
+): Promise<Uint8Array> {
   const incoming = transport.incomingUnidirectionalStreams.getReader();
   try {
     const next = await pipe.pumpUntil(incoming.read());
-    if (next.done || next.value === undefined) throw new Error('WebTransport unidirectional stream was not delivered');
+    if (next.done || next.value === undefined)
+      throw new Error('WebTransport unidirectional stream was not delivered');
     const reader = next.value.getReader();
     try {
       const bytes = await pipe.pumpUntil(reader.read());
-      if (bytes.done || bytes.value === undefined) throw new Error('WebTransport unidirectional stream had no payload');
+      if (bytes.done || bytes.value === undefined)
+        throw new Error('WebTransport unidirectional stream had no payload');
       return bytes.value;
     } finally {
       reader.releaseLock();
@@ -102,15 +132,20 @@ async function readIncomingUnidirectionalBytes(pipe: QuicPipe, transport: WebTra
     incoming.releaseLock();
   }
 }
-async function readIncomingBidirectionalBytes(pipe: QuicPipe, transport: WebTransport): Promise<Uint8Array> {
+async function readIncomingBidirectionalBytes(
+  pipe: QuicPipe,
+  transport: WebTransport,
+): Promise<Uint8Array> {
   const incoming = transport.incomingBidirectionalStreams.getReader();
   try {
     const next = await pipe.pumpUntil(incoming.read());
-    if (next.done || next.value === undefined) throw new Error('WebTransport bidirectional stream was not delivered');
+    if (next.done || next.value === undefined)
+      throw new Error('WebTransport bidirectional stream was not delivered');
     const reader = next.value.readable.getReader();
     try {
       const bytes = await pipe.pumpUntil(reader.read());
-      if (bytes.done || bytes.value === undefined) throw new Error('WebTransport bidirectional stream had no payload');
+      if (bytes.done || bytes.value === undefined)
+        throw new Error('WebTransport bidirectional stream had no payload');
       return bytes.value;
     } finally {
       reader.releaseLock();
@@ -119,7 +154,12 @@ async function readIncomingBidirectionalBytes(pipe: QuicPipe, transport: WebTran
     incoming.releaseLock();
   }
 }
-async function rawH3RequestOutcome(pipe: QuicPipe, clientConn: QuicConnection, headers: Array<[string, string]>, maxTurns = 1e3): Promise<string> {
+async function rawH3RequestOutcome(
+  pipe: QuicPipe,
+  clientConn: QuicConnection,
+  headers: Array<[string, string]>,
+  maxTurns = 1e3,
+): Promise<string> {
   let outcome = '';
   let resolveOutcome!: () => void;
   const responsePromise = new Promise<void>((resolve) => {
@@ -147,7 +187,7 @@ async function rawH3RequestOutcome(pipe: QuicPipe, clientConn: QuicConnection, h
     onResetStream(_sid, appErrorCode) {
       finish(`stream-error:${appErrorCode}`);
     },
-    onAckedStreamData() {}
+    onAckedStreamData() {},
   });
   clientConn.addEventListener('stream', (event) => {
     const stream = (event as QuicStreamEvent).stream;
@@ -155,7 +195,7 @@ async function rawH3RequestOutcome(pipe: QuicPipe, clientConn: QuicConnection, h
     void (async () => {
       try {
         while (true) {
-          const bytes = await stream.reader.read() as Uint8Array | null;
+          const bytes = (await stream.reader.read()) as Uint8Array | null;
           const fin = bytes === null;
           clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
           if (fin) break;
@@ -163,27 +203,25 @@ async function rawH3RequestOutcome(pipe: QuicPipe, clientConn: QuicConnection, h
       } catch {}
     })();
   });
-  const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
-    clientConn.openUnidirectionalStream(),
-    clientConn.openUnidirectionalStream(),
-    clientConn.openUnidirectionalStream()
-  ])) as QuicStream[];
-  for (const s of [
-    ctrl,
-    qenc,
-    qdec
-  ]) clientSession.addQuicStream(BigInt(s.id), s.writer);
+  const [ctrl, qenc, qdec] = (await pipe.pumpUntil(
+    Promise.all([
+      clientConn.openUnidirectionalStream(),
+      clientConn.openUnidirectionalStream(),
+      clientConn.openUnidirectionalStream(),
+    ]),
+  )) as QuicStream[];
+  for (const s of [ctrl, qenc, qdec]) clientSession.addQuicStream(BigInt(s.id), s.writer);
   clientSession.bindControlStream(BigInt(ctrl.id));
   clientSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
   clientSession.drainWrites();
   await pipe.runUntilSettled();
-  const requestStream = await pipe.pumpUntil(clientConn.openBidirectionalStream()) as QuicStream;
+  const requestStream = (await pipe.pumpUntil(clientConn.openBidirectionalStream())) as QuicStream;
   const requestSid = BigInt(requestStream.id);
   clientSession.addQuicStream(requestSid, requestStream.writer);
   void (async () => {
     try {
       while (true) {
-        const bytes = await requestStream.reader.read() as Uint8Array | null;
+        const bytes = (await requestStream.reader.read()) as Uint8Array | null;
         const fin = bytes === null;
         clientSession.readStream(requestSid, bytes ?? new Uint8Array(0), fin);
         if (fin) break;
@@ -214,63 +252,78 @@ describe('HTTP/3 (h3 ALPN)', () => {
     t.equal(settings.get(SETTINGS_WT_ENABLED), 1, 'WT enabled setting');
     t.equal(settings.get(SETTINGS_ENABLE_CONNECT_PROTOCOL), 1, 'extended CONNECT setting');
     t.equal(settings.get(SETTINGS_H3_DATAGRAM), 1, 'H3 DATAGRAM setting');
-    t.equal(webTransportSettingsEnabled(settings), true, 'settings advertise all required features');
-    t.equal(webTransportSettingsEnabled(new Map([[SETTINGS_WT_ENABLED, 1]])), false, 'partial settings are not enough');
+    t.equal(
+      webTransportSettingsEnabled(settings),
+      true,
+      'settings advertise all required features',
+    );
+    t.equal(
+      webTransportSettingsEnabled(new Map([[SETTINGS_WT_ENABLED, 1]])),
+      false,
+      'partial settings are not enough',
+    );
     const oneByte = encodeQuicVarint(63n);
     t.deepEqual([...oneByte], [63], 'one-byte QUIC varint');
-    t.deepEqual(decodeQuicVarint(oneByte), {
-      value: 63n,
-      nextOffset: 1
-    }, 'decode one-byte varint');
+    t.deepEqual(
+      decodeQuicVarint(oneByte),
+      {
+        value: 63n,
+        nextOffset: 1,
+      },
+      'decode one-byte varint',
+    );
     const twoByte = encodeQuicVarint(64n);
     t.deepEqual([...twoByte], [64, 64], 'two-byte QUIC varint');
-    t.deepEqual(decodeQuicVarint(twoByte), {
-      value: 64n,
-      nextOffset: 2
-    }, 'decode two-byte varint');
+    t.deepEqual(
+      decodeQuicVarint(twoByte),
+      {
+        value: 64n,
+        nextOffset: 2,
+      },
+      'decode two-byte varint',
+    );
     const fourByte = encodeQuicVarint(16384n);
-    t.deepEqual([...fourByte], [
-      128,
-      0,
-      64,
-      0
-    ], 'four-byte QUIC varint');
-    t.deepEqual(decodeQuicVarint(fourByte), {
-      value: 16384n,
-      nextOffset: 4
-    }, 'decode four-byte varint');
+    t.deepEqual([...fourByte], [128, 0, 64, 0], 'four-byte QUIC varint');
+    t.deepEqual(
+      decodeQuicVarint(fourByte),
+      {
+        value: 16384n,
+        nextOffset: 4,
+      },
+      'decode four-byte varint',
+    );
     const datagram = encodeHttpDatagram(8n, new Uint8Array([170, 187]));
-    t.deepEqual([...datagram], [
-      2,
-      170,
-      187
-    ], 'HTTP Datagram uses Quarter Stream ID');
+    t.deepEqual([...datagram], [2, 170, 187], 'HTTP Datagram uses Quarter Stream ID');
     const decodedDatagram = decodeHttpDatagram(datagram);
     t.equal(decodedDatagram.streamId, 8n, 'decoded session stream id');
     t.deepEqual([...decodedDatagram.payload], [170, 187], 'decoded application datagram payload');
     const bidiPrefix = encodeWebTransportStreamPrefix('bidirectional', 12n);
-    t.deepEqual([...bidiPrefix], [
-      64,
-      65,
-      3
-    ], 'bidi WT stream prefix is type plus session id');
-    t.deepEqual(decodeWebTransportStreamPrefix(bidiPrefix), {
-      kind: 'bidirectional',
-      sessionId: 12n,
-      headerLength: 3
-    }, 'decode bidi WT stream prefix');
+    t.deepEqual([...bidiPrefix], [64, 65, 3], 'bidi WT stream prefix is type plus session id');
+    t.deepEqual(
+      decodeWebTransportStreamPrefix(bidiPrefix),
+      {
+        kind: 'bidirectional',
+        sessionId: 12n,
+        headerLength: 3,
+      },
+      'decode bidi WT stream prefix',
+    );
     const uniPrefix = encodeWebTransportStreamPrefix('unidirectional', 16n);
-    t.deepEqual([...uniPrefix], [
-      64,
-      84,
-      4
-    ], 'uni WT stream prefix is type plus session id');
-    t.deepEqual(decodeWebTransportStreamPrefix(uniPrefix), {
-      kind: 'unidirectional',
-      sessionId: 16n,
-      headerLength: 3
-    }, 'decode uni WT stream prefix');
-    t.throws(() => encodeHttpDatagram(2n, new Uint8Array()), /client-initiated bidirectional/, 'datagram session stream ids are validated');
+    t.deepEqual([...uniPrefix], [64, 84, 4], 'uni WT stream prefix is type plus session id');
+    t.deepEqual(
+      decodeWebTransportStreamPrefix(uniPrefix),
+      {
+        kind: 'unidirectional',
+        sessionId: 16n,
+        headerLength: 3,
+      },
+      'decode uni WT stream prefix',
+    );
+    t.throws(
+      () => encodeHttpDatagram(2n, new Uint8Array()),
+      /client-initiated bidirectional/,
+      'datagram session stream ids are validated',
+    );
   });
   it('Nghttp3Session enables supported WebTransport H3 settings and tracks peers', (t) => {
     if (!h3Available) return;
@@ -285,19 +338,40 @@ describe('HTTP/3 (h3 ALPN)', () => {
       onEndStream() {},
       onStreamClose() {},
       onResetStream() {},
-      onAckedStreamData() {}
+      onAckedStreamData() {},
     };
     const session = Nghttp3Session.createServer(callbacks, { webTransport: true });
     try {
       const local = session.localSettings;
-      t.equal(local.get(SETTINGS_ENABLE_CONNECT_PROTOCOL), 1, 'local nghttp3 settings enable Extended CONNECT');
+      t.equal(
+        local.get(SETTINGS_ENABLE_CONNECT_PROTOCOL),
+        1,
+        'local nghttp3 settings enable Extended CONNECT',
+      );
       t.equal(local.get(SETTINGS_H3_DATAGRAM), 1, 'local nghttp3 settings enable H3 DATAGRAM');
-      t.equal(local.get(SETTINGS_WT_ENABLED), 1, 'local H3 control stream patch advertises WebTransport');
+      t.equal(
+        local.get(SETTINGS_WT_ENABLED),
+        1,
+        'local H3 control stream patch advertises WebTransport',
+      );
       t.equal(session.peerSettingsReceived, false, 'peer SETTINGS start unresolved');
-      t.equal(session.peerWebTransportReady, false, 'peer is not ready until all WT settings are known');
-      session._recordPeerSettingsForTest(new Map([[SETTINGS_ENABLE_CONNECT_PROTOCOL, 1], [SETTINGS_H3_DATAGRAM, 1]]));
+      t.equal(
+        session.peerWebTransportReady,
+        false,
+        'peer is not ready until all WT settings are known',
+      );
+      session._recordPeerSettingsForTest(
+        new Map([
+          [SETTINGS_ENABLE_CONNECT_PROTOCOL, 1],
+          [SETTINGS_H3_DATAGRAM, 1],
+        ]),
+      );
       t.equal(session.peerSettingsReceived, true, 'peer SETTINGS are recorded');
-      t.equal(session.peerWebTransportReady, false, 'recognized nghttp3 settings alone do not imply WT support');
+      t.equal(
+        session.peerWebTransportReady,
+        false,
+        'recognized nghttp3 settings alone do not imply WT support',
+      );
       session._recordPeerSettingsForTest(webTransportSettings());
       t.equal(session.peerWebTransportReady, true, 'complete peer SETTINGS enable WebTransport');
     } finally {
@@ -305,7 +379,10 @@ describe('HTTP/3 (h3 ALPN)', () => {
     }
   });
   it('patches custom WebTransport SETTINGS into H3 control streams', (t) => {
-    const baseSettings = new Map([[SETTINGS_ENABLE_CONNECT_PROTOCOL, 1], [SETTINGS_H3_DATAGRAM, 1]]);
+    const baseSettings = new Map([
+      [SETTINGS_ENABLE_CONNECT_PROTOCOL, 1],
+      [SETTINGS_H3_DATAGRAM, 1],
+    ]);
     const settingsFrame = encodeH3SettingsFrame(baseSettings);
     const controlBytes = new Uint8Array(1 + settingsFrame.byteLength);
     controlBytes[0] = 0;
@@ -316,7 +393,11 @@ describe('HTTP/3 (h3 ALPN)', () => {
     t.equal(parsed.get(SETTINGS_H3_DATAGRAM), 1, 'preserves H3 DATAGRAM setting');
     t.equal(parsed.get(SETTINGS_WT_ENABLED), 1, 'injects draft-15 WebTransport setting');
     t.equal(webTransportSettingsEnabled(parsed), true, 'patched SETTINGS satisfy WT negotiation');
-    t.deepEqual(decodeH3SettingsFrame(encodeH3SettingsFrame(parsed)), parsed, 'SETTINGS frame round trips');
+    t.deepEqual(
+      decodeH3SettingsFrame(encodeH3SettingsFrame(parsed)),
+      parsed,
+      'SETTINGS frame round trips',
+    );
   });
   it('H3 server recognizes WebTransport extended CONNECT and fails fast', async (t) => {
     if (!available) return;
@@ -326,11 +407,17 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const driver = new H3ServerDriver();
       const serverRun = driver.run(server, () => new Response('unexpected'));
       const session = await H3ClientSession.create(client);
-      const response = await pipe.pumpUntil(session.request('https://example.test/wt', {
-        method: 'CONNECT',
-        headers: { ':protocol': 'webtransport-h3' }
-      } as any));
-      t.equal(response.status, 501, 'WebTransport extended CONNECT is detected but not accepted yet');
+      const response = await pipe.pumpUntil(
+        session.request('https://example.test/wt', {
+          method: 'CONNECT',
+          headers: { ':protocol': 'webtransport-h3' },
+        } as any),
+      );
+      t.equal(
+        response.status,
+        501,
+        'WebTransport extended CONNECT is detected but not accepted yet',
+      );
       t.match(await response.text(), /WebTransport over HTTP\/3 is not available/);
       client.destroy();
       server.destroy();
@@ -349,7 +436,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
       serverSession = Nghttp3Session.createServer({
         onBeginHeaders() {},
         onRecvHeader(_sid, _token, name, value) {
-          if (name === ':protocol' && value === 'webtransport-h3') receivedWebTransportConnect = true;
+          if (name === ':protocol' && value === 'webtransport-h3')
+            receivedWebTransportConnect = true;
         },
         onEndHeaders(sid) {
           void (async () => {
@@ -366,16 +454,17 @@ describe('HTTP/3 (h3 ALPN)', () => {
         onEndStream() {},
         onStreamClose() {},
         onResetStream() {},
-        onAckedStreamData() {}
+        onAckedStreamData() {},
       });
       serverConn.addEventListener('stream', (event) => {
         const stream = (event as QuicStreamEvent).stream;
         const sid = BigInt(stream.id);
         void (async () => {
           try {
-            if (stream.direction === 'bidirectional') serverSession.addQuicStream(sid, stream.writer);
+            if (stream.direction === 'bidirectional')
+              serverSession.addQuicStream(sid, stream.writer);
             while (true) {
-              const bytes = await stream.reader.read() as Uint8Array | null;
+              const bytes = (await stream.reader.read()) as Uint8Array | null;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -383,23 +472,25 @@ describe('HTTP/3 (h3 ALPN)', () => {
           } catch {}
         })();
       });
-      const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream()
-      ])) as QuicStream[];
-      for (const s of [
-        ctrl,
-        qenc,
-        qdec
-      ]) serverSession.addQuicStream(BigInt(s.id), s.writer);
+      const [ctrl, qenc, qdec] = (await pipe.pumpUntil(
+        Promise.all([
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+        ]),
+      )) as QuicStream[];
+      for (const s of [ctrl, qenc, qdec]) serverSession.addQuicStream(BigInt(s.id), s.writer);
       serverSession.bindControlStream(BigInt(ctrl.id));
       serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       const clientSessionPromise = H3ClientSession.create(clientConn);
       serverSession.drainWrites();
       await pipe.runUntilSettled();
       const clientSession = await pipe.pumpUntil(clientSessionPromise);
-      await t.rejects(() => pipe.pumpUntil(clientSession.webtransport('https://example.test/wt')), /SETTINGS|WebTransport readiness/, 'client rejects before sending extended CONNECT');
+      await t.rejects(
+        () => pipe.pumpUntil(clientSession.webtransport('https://example.test/wt')),
+        /SETTINGS|WebTransport readiness/,
+        'client rejects before sending extended CONNECT',
+      );
       t.equal(receivedWebTransportConnect, false, 'server does not receive WebTransport CONNECT');
       serverSession.close();
       clientConn.destroy();
@@ -415,16 +506,18 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       let webTransportCalled = false;
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, () => new Response('unexpected'), { onWebTransport(_request, session) {
-        webTransportCalled = true;
-        return session;
-      } });
+      const serverDone = driver.run(serverConn, () => new Response('unexpected'), {
+        onWebTransport(_request, session) {
+          webTransportCalled = true;
+          return session;
+        },
+      });
       const outcome = await rawH3RequestOutcome(pipe, clientConn, [
         [':method', 'CONNECT'],
         [':scheme', 'https'],
         [':path', '/wt'],
         [':authority', 'localhost'],
-        [':protocol', 'webtransport-h3']
+        [':protocol', 'webtransport-h3'],
       ]);
       t.equal(outcome, 'status:400', 'server rejects WebTransport without complete peer SETTINGS');
       t.equal(webTransportCalled, false, 'onWebTransport is not invoked');
@@ -441,19 +534,29 @@ describe('HTTP/3 (h3 ALPN)', () => {
       let accepted: WebTransport | null = null;
       const { client, server } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverRun = driver.run(server, () => new Response('unexpected'), { onWebTransport(_request, session) {
-        accepted = session;
-        return session;
-      } });
+      const serverRun = driver.run(server, () => new Response('unexpected'), {
+        onWebTransport(_request, session) {
+          accepted = session;
+          return session;
+        },
+      });
       const clientSession = await H3ClientSession.create(client);
       const wt = await pipe.pumpUntil(clientSession.webtransport('https://example.test/wt'));
       t.ok(wt instanceof WebTransport, 'client receives connected WebTransport');
       t.equal(await wt.ready, undefined);
       t.ok(accepted instanceof WebTransport, 'server receives connected WebTransport');
       t.equal(await accepted!.ready, undefined);
-      const clientExport = new Uint8Array(await wt.exportKeyingMaterial('fino-webtransport-test', new Uint8Array([1, 2]), 32));
-      const serverExport = new Uint8Array(await accepted!.exportKeyingMaterial('fino-webtransport-test', new Uint8Array([1, 2]), 32));
-      t.deepEqual([...clientExport], [...serverExport], 'client and server export matching TLS keying material');
+      const clientExport = new Uint8Array(
+        await wt.exportKeyingMaterial('fino-webtransport-test', new Uint8Array([1, 2]), 32),
+      );
+      const serverExport = new Uint8Array(
+        await accepted!.exportKeyingMaterial('fino-webtransport-test', new Uint8Array([1, 2]), 32),
+      );
+      t.deepEqual(
+        [...clientExport],
+        [...serverExport],
+        'client and server export matching TLS keying material',
+      );
       const receivedReader = accepted!.datagrams.readable.getReader();
       const writer = wt.datagrams.createWritable().getWriter();
       await writer.write(new Uint8Array([69]));
@@ -461,7 +564,11 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const next = await pipe.pumpUntil(receivedReader.read());
       receivedReader.releaseLock();
       t.equal(next.done, false);
-      t.deepEqual([...next.value ?? new Uint8Array()], [69], 'server receives WT datagram for accepted session');
+      t.deepEqual(
+        [...(next.value ?? new Uint8Array())],
+        [69],
+        'server receives WT datagram for accepted session',
+      );
       client.destroy();
       server.destroy();
       await pipe.pumpUntil(serverRun.catch(() => {}));
@@ -473,13 +580,18 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     const pipe = h3Pipe();
     try {
-      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const { client, server, serverRun, clientTransport, serverTransport } =
+        await h3WebTransportPair(pipe);
       const prefix = encodeWebTransportStreamPrefix('unidirectional', 0n);
-      const stream = await pipe.pumpUntil(client.openUnidirectionalStream()) as QuicStream;
+      const stream = (await pipe.pumpUntil(client.openUnidirectionalStream())) as QuicStream;
       await stream.writer.write(prefix.subarray(0, 1));
       await stream.writer.write(prefix.subarray(1));
       await stream.writer.write(new Uint8Array([17, 18]));
-      t.deepEqual([...await readIncomingUnidirectionalBytes(pipe, serverTransport)], [17, 18], 'server receives client WT unidirectional payload after a split prefix');
+      t.deepEqual(
+        [...(await readIncomingUnidirectionalBytes(pipe, serverTransport))],
+        [17, 18],
+        'server receives client WT unidirectional payload after a split prefix',
+      );
       client.destroy();
       server.destroy();
       await pipe.pumpUntil(serverRun.catch(() => {}));
@@ -491,12 +603,17 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     const pipe = h3Pipe();
     try {
-      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const { client, server, serverRun, clientTransport, serverTransport } =
+        await h3WebTransportPair(pipe);
       const send = await pipe.pumpUntil(serverTransport.createUnidirectionalStream());
       const writer = send.getWriter();
       await writer.write(new Uint8Array([33, 34]));
       writer.releaseLock();
-      t.deepEqual([...await readIncomingUnidirectionalBytes(pipe, clientTransport)], [33, 34], 'client receives server WT unidirectional payload');
+      t.deepEqual(
+        [...(await readIncomingUnidirectionalBytes(pipe, clientTransport))],
+        [33, 34],
+        'client receives server WT unidirectional payload',
+      );
       client.destroy();
       server.destroy();
       await pipe.pumpUntil(serverRun.catch(() => {}));
@@ -508,12 +625,17 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     const pipe = h3Pipe();
     try {
-      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const { client, server, serverRun, clientTransport, serverTransport } =
+        await h3WebTransportPair(pipe);
       const stream = await pipe.pumpUntil(clientTransport.createBidirectionalStream());
       const writer = stream.writable.getWriter();
       await writer.write(new Uint8Array([49, 50]));
       writer.releaseLock();
-      t.deepEqual([...await readIncomingBidirectionalBytes(pipe, serverTransport)], [49, 50], 'server receives client WT bidirectional payload');
+      t.deepEqual(
+        [...(await readIncomingBidirectionalBytes(pipe, serverTransport))],
+        [49, 50],
+        'server receives client WT bidirectional payload',
+      );
       client.destroy();
       server.destroy();
       await pipe.pumpUntil(serverRun.catch(() => {}));
@@ -525,12 +647,17 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     const pipe = h3Pipe();
     try {
-      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const { client, server, serverRun, clientTransport, serverTransport } =
+        await h3WebTransportPair(pipe);
       const stream = await pipe.pumpUntil(serverTransport.createBidirectionalStream());
       const writer = stream.writable.getWriter();
       await writer.write(new Uint8Array([65, 66]));
       writer.releaseLock();
-      t.deepEqual([...await readIncomingBidirectionalBytes(pipe, clientTransport)], [65, 66], 'client receives server WT bidirectional payload');
+      t.deepEqual(
+        [...(await readIncomingBidirectionalBytes(pipe, clientTransport))],
+        [65, 66],
+        'client receives server WT bidirectional payload',
+      );
       client.destroy();
       server.destroy();
       await pipe.pumpUntil(serverRun.catch(() => {}));
@@ -544,12 +671,14 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client, server } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverRun = driver.run(server, () => new Response('unexpected'), { onWebTransport(_request, session) {
-        return session;
-      } });
+      const serverRun = driver.run(server, () => new Response('unexpected'), {
+        onWebTransport(_request, session) {
+          return session;
+        },
+      });
       const http = new HttpClient({
         baseUrl: 'https://example.test',
-        protocols: ['h3']
+        protocols: ['h3'],
       });
       const session = await http.session('https://example.test', { protocol: 'h3' });
       await (session as any)._attachH3TransportForTest(client);
@@ -569,25 +698,38 @@ describe('HTTP/3 (h3 ALPN)', () => {
       hostname: string;
       family?: 4 | 6;
     }> = [];
-    const resolved = await resolveH3ConnectAddress(new URL('https://example.test:9443/smoke'), async (hostname, opts) => {
-      seen.push({
-        hostname,
-        family: opts.family
-      });
-      return {
-        address: '192.0.2.55',
-        family: 4
-      };
-    });
-    t.deepEqual(seen, [{
-      hostname: 'example.test',
-      family: 4
-    }], 'hostname is resolved as IPv4');
-    t.deepEqual(resolved.address, {
-      family: 'ipv4',
-      ip: '192.0.2.55',
-      port: 9443
-    }, 'QUIC connect uses resolved IP');
+    const resolved = await resolveH3ConnectAddress(
+      new URL('https://example.test:9443/smoke'),
+      async (hostname, opts) => {
+        seen.push({
+          hostname,
+          family: opts.family,
+        });
+        return {
+          address: '192.0.2.55',
+          family: 4,
+        };
+      },
+    );
+    t.deepEqual(
+      seen,
+      [
+        {
+          hostname: 'example.test',
+          family: 4,
+        },
+      ],
+      'hostname is resolved as IPv4',
+    );
+    t.deepEqual(
+      resolved.address,
+      {
+        family: 'ipv4',
+        ip: '192.0.2.55',
+        port: 9443,
+      },
+      'QUIC connect uses resolved IP',
+    );
     t.equal(resolved.serverName, 'example.test', 'SNI stays on the URL hostname');
   });
   it('public module exports availability, guard, client, and server helpers', (t) => {
@@ -602,12 +744,24 @@ describe('HTTP/3 (h3 ALPN)', () => {
       return;
     }
     t.throws(() => requireH3(), /libnghttp3 not found/, 'requireH3 reports missing libnghttp3');
-    await t.rejects(() => h3Fetch('https://127.0.0.1/'), /libnghttp3 not found/, 'fetch rejects before opening a connection');
-    await t.rejects(() => h3Serve({
-      port: 0,
-      certificateFile: TEST_CERT,
-      privateKeyFile: TEST_KEY
-    }, () => new Response('unused')), /libnghttp3 not found/, 'serve rejects before opening a listener');
+    await t.rejects(
+      () => h3Fetch('https://127.0.0.1/'),
+      /libnghttp3 not found/,
+      'fetch rejects before opening a connection',
+    );
+    await t.rejects(
+      () =>
+        h3Serve(
+          {
+            port: 0,
+            certificateFile: TEST_CERT,
+            privateKeyFile: TEST_KEY,
+          },
+          () => new Response('unused'),
+        ),
+      /libnghttp3 not found/,
+      'serve rejects before opening a listener',
+    );
   });
   it('h3Available is truthy when libnghttp3 is installed', async (t) => {
     if (!quicAvailable) return;
@@ -618,19 +772,30 @@ describe('HTTP/3 (h3 ALPN)', () => {
   });
   it('public serve() and fetch() complete a real UDP GET round-trip', async (t) => {
     if (!available) return;
-    const server = await h3Serve({
-      port: 0,
-      hostname: '127.0.0.1',
-      certificateFile: TEST_CERT,
-      privateKeyFile: TEST_KEY
-    }, (request) => {
-      return new Response(`h3:${new URL(request.url).pathname}`, { headers: { 'x-h3-smoke': 'get' } });
-    });
+    const server = await h3Serve(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        certificateFile: TEST_CERT,
+        privateKeyFile: TEST_KEY,
+      },
+      (request) => {
+        return new Response(`h3:${new URL(request.url).pathname}`, {
+          headers: { 'x-h3-smoke': 'get' },
+        });
+      },
+    );
     try {
-      const response = await h3Fetch(`https://127.0.0.1:${server.port}/smoke`, { quic: { verifyPeer: false } });
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/smoke`, {
+        quic: { verifyPeer: false },
+      });
       t.equal(response.status, 200, 'GET response status');
       t.equal(response.headers.get('x-h3-smoke'), 'get', 'response header received');
-      t.equal(new TextDecoder().decode(await response.arrayBuffer()), 'h3:/smoke', 'response body received');
+      t.equal(
+        new TextDecoder().decode(await response.arrayBuffer()),
+        'h3:/smoke',
+        'response body received',
+      );
     } finally {
       await server.close();
     }
@@ -639,47 +804,59 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     let method = '';
     let body = '';
-    const server = await h3Serve({
-      port: 0,
-      hostname: '127.0.0.1',
-      certificateFile: TEST_CERT,
-      privateKeyFile: TEST_KEY
-    }, async (request) => {
-      method = request.method;
-      body = await request.text();
-      return new Response(`echo:${body}`);
-    });
+    const server = await h3Serve(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        certificateFile: TEST_CERT,
+        privateKeyFile: TEST_KEY,
+      },
+      async (request) => {
+        method = request.method;
+        body = await request.text();
+        return new Response(`echo:${body}`);
+      },
+    );
     try {
       const response = await h3Fetch(`https://127.0.0.1:${server.port}/upload`, {
         method: 'POST',
         body: new TextEncoder().encode('real-h3-body'),
-        quic: { verifyPeer: false }
+        quic: { verifyPeer: false },
       });
       t.equal(response.status, 200, 'POST response status');
       t.equal(method, 'POST', 'server received POST method');
       t.equal(body, 'real-h3-body', 'server received POST body');
-      t.equal(new TextDecoder().decode(await response.arrayBuffer()), 'echo:real-h3-body', 'client received echo response');
+      t.equal(
+        new TextDecoder().decode(await response.arrayBuffer()),
+        'echo:real-h3-body',
+        'client received echo response',
+      );
     } finally {
       await server.close();
     }
   });
   it('unified HTTP serve() can enable H3 accept mode', async (t) => {
     if (!available) return;
-    const server = httpServe({
-      port: 0,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: TEST_CERT,
-        key: TEST_KEY
+    const server = httpServe(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: TEST_CERT,
+          key: TEST_KEY,
+        },
+        h3: true,
+      } as any,
+      async (incoming: any) => {
+        const accepted = await incoming.accept();
+        await accepted.respond(new Response(`protocol:${accepted.protocol}`));
       },
-      h3: true
-    } as any, async (incoming: any) => {
-      const accepted = await incoming.accept();
-      await accepted.respond(new Response(`protocol:${accepted.protocol}`));
-    });
+    );
     try {
       await (server as any).ready;
-      const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, { quic: { verifyPeer: false } });
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
+        quic: { verifyPeer: false },
+      });
       t.equal(await response.text(), 'protocol:h3', 'unified accept mode handles H3 requests');
     } finally {
       await server.close();
@@ -687,24 +864,33 @@ describe('HTTP/3 (h3 ALPN)', () => {
   });
   it('unified HTTP serve() allows H3 clientAuth request mode without a client certificate', async (t) => {
     if (!available) return;
-    const server = httpServe({
-      port: 0,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: TEST_CERT,
-        key: TEST_KEY,
-        ca: TEST_CERT,
-        clientAuth: 'request'
+    const server = httpServe(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: TEST_CERT,
+          key: TEST_KEY,
+          ca: TEST_CERT,
+          clientAuth: 'request',
+        },
+        h3: true,
+      } as any,
+      async (incoming: any) => {
+        const accepted = await incoming.accept();
+        await accepted.respond(new Response(`protocol:${accepted.protocol}`));
       },
-      h3: true
-    } as any, async (incoming: any) => {
-      const accepted = await incoming.accept();
-      await accepted.respond(new Response(`protocol:${accepted.protocol}`));
-    });
+    );
     try {
       await (server as any).ready;
-      const response = await h3Fetch(`https://127.0.0.1:${server.port}/optional-client-auth`, { quic: { verifyPeer: false } });
-      t.equal(await response.text(), 'protocol:h3', 'H3 request-mode client auth accepts anonymous clients');
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/optional-client-auth`, {
+        quic: { verifyPeer: false },
+      });
+      t.equal(
+        await response.text(),
+        'protocol:h3',
+        'H3 request-mode client auth accepts anonymous clients',
+      );
     } finally {
       await server.close();
     }
@@ -712,19 +898,23 @@ describe('HTTP/3 (h3 ALPN)', () => {
   it('App.listen() exposes H3 protocol and session context', async (t) => {
     if (!available) return;
     const app = new App();
-    app.get('/proto').handle((ctx) => new Response(`${ctx.protocol}:${ctx.session?.protocol ?? 'none'}`));
+    app
+      .get('/proto')
+      .handle((ctx) => new Response(`${ctx.protocol}:${ctx.session?.protocol ?? 'none'}`));
     const server = app.listen({
       port: 0,
       hostname: '127.0.0.1',
       tls: {
         cert: TEST_CERT,
-        key: TEST_KEY
+        key: TEST_KEY,
       },
-      h3: true
+      h3: true,
     } as any);
     try {
       await (server as any).ready;
-      const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, { quic: { verifyPeer: false } });
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
+        quic: { verifyPeer: false },
+      });
       t.equal(await response.text(), 'h3:h3', 'app context sees H3 protocol and session');
     } finally {
       await server.close();
@@ -734,22 +924,31 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     const app = new App();
     let accepted = false;
-    app.value('tenant', () => 'acme').route('/wt/:room').webtransport(async (session, ctx) => {
-      accepted = session instanceof WebTransport && ctx.incoming.kind === 'webtransport' && ctx.protocol === 'h3' && ctx.session?.transport === 'quic' && ctx.params?.room === 'lobby' && ctx.tenant === 'acme';
-    });
+    app
+      .value('tenant', () => 'acme')
+      .route('/wt/:room')
+      .webtransport(async (session, ctx) => {
+        accepted =
+          session instanceof WebTransport &&
+          ctx.incoming.kind === 'webtransport' &&
+          ctx.protocol === 'h3' &&
+          ctx.session?.transport === 'quic' &&
+          ctx.params?.room === 'lobby' &&
+          ctx.tenant === 'acme';
+      });
     const server = app.listen({
       port: 0,
       hostname: '127.0.0.1',
       tls: {
         cert: TEST_CERT,
-        key: TEST_KEY
+        key: TEST_KEY,
       },
-      h3: true
+      h3: true,
     } as any);
     const client = new HttpClient({
       baseUrl: `https://127.0.0.1:${server.port}`,
       protocols: ['h3'],
-      tls: { rejectUnauthorized: false }
+      tls: { rejectUnauthorized: false },
     });
     try {
       await (server as any).ready;
@@ -771,29 +970,42 @@ describe('HTTP/3 (h3 ALPN)', () => {
       hostname: '127.0.0.1',
       tls: {
         cert: TEST_CERT,
-        key: TEST_KEY
+        key: TEST_KEY,
       },
-      h3: true
+      h3: true,
     } as any);
     const client = new HttpClient({
       baseUrl: `https://127.0.0.1:${server.port}`,
       protocols: ['h3'],
-      tls: { rejectUnauthorized: false }
+      tls: { rejectUnauthorized: false },
     });
     try {
       await (server as any).ready;
       const certDer = await readPemCertificateDer(TEST_CERT);
       const matchingHash = await crypto.subtle.digest('SHA-256', certDer);
-      const wt = await client.webtransport('/wt', { serverCertificateHashes: [{
-        algorithm: 'sha-256',
-        value: matchingHash
-      }] });
+      const wt = await client.webtransport('/wt', {
+        serverCertificateHashes: [
+          {
+            algorithm: 'sha-256',
+            value: matchingHash,
+          },
+        ],
+      });
       t.equal(await wt.ready, undefined, 'matching certificate hash accepts WebTransport');
       wt.close();
-      await t.rejects(() => client.webtransport('/wt', { serverCertificateHashes: [{
-        algorithm: 'sha-256',
-        value: new Uint8Array(32)
-      }] }), /serverCertificateHashes/i, 'mismatched certificate hash rejects WebTransport setup');
+      await t.rejects(
+        () =>
+          client.webtransport('/wt', {
+            serverCertificateHashes: [
+              {
+                algorithm: 'sha-256',
+                value: new Uint8Array(32),
+              },
+            ],
+          }),
+        /serverCertificateHashes/i,
+        'mismatched certificate hash rejects WebTransport setup',
+      );
     } finally {
       await client.close();
       await server.close();
@@ -805,7 +1017,10 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (_req) => new Response('hello h3', { headers: { 'content-type': 'text/plain' } }));
+      const serverDone = driver.run(
+        serverConn,
+        (_req) => new Response('hello h3', { headers: { 'content-type': 'text/plain' } }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
       t.equal(response.status, 200, 'response status is 200');
@@ -830,10 +1045,12 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response(`echo:${receivedBody}`);
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/upload', {
-        method: 'POST',
-        body: new TextEncoder().encode('request-body-data')
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/upload', {
+          method: 'POST',
+          body: new TextEncoder().encode('request-body-data'),
+        }),
+      );
       t.equal(response.status, 200, 'response status is 200');
       const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(receivedBody, 'request-body-data', 'server received request body');
@@ -879,9 +1096,9 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const requestPromise = session.request('https://localhost/upload', {
         method: 'POST',
-        body: requestBody() as any
+        body: requestBody() as any,
       });
-      await pipe.pumpUntilCondition(() => firstChunk !== '' ? true : null);
+      await pipe.pumpUntilCondition(() => (firstChunk !== '' ? true : null));
       t.equal(handlerEntered, true, 'handler is entered before request EOF');
       t.equal(firstChunk, 'first-', 'handler can read the first chunk before request EOF');
       releaseSecondChunk();
@@ -919,11 +1136,19 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const reader = response.body!.getReader();
       const first = await pipe.pumpUntil(reader.read());
       t.equal(first.done, false, 'first body read yields data');
-      t.equal(new TextDecoder().decode(first.value), 'first-', 'client sees first chunk before response EOF');
+      t.equal(
+        new TextDecoder().decode(first.value),
+        'first-',
+        'client sees first chunk before response EOF',
+      );
       releaseSecondChunk();
       const second = await pipe.pumpUntil(reader.read());
       t.equal(second.done, false, 'second body read yields data');
-      t.equal(new TextDecoder().decode(second.value), 'second', 'client sees second chunk after producer resumes');
+      t.equal(
+        new TextDecoder().decode(second.value),
+        'second',
+        'client sees second chunk after producer resumes',
+      );
       const done = await pipe.pumpUntil(reader.read());
       t.equal(done.done, true, 'stream closes after response EOF');
       session.close();
@@ -945,9 +1170,15 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response('ok', { headers: { 'x-reply': 'from-server' } });
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/', { headers: { 'x-custom': 'my-value' } }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', { headers: { 'x-custom': 'my-value' } }),
+      );
       t.equal(receivedHeader, 'my-value', 'server received custom request header');
-      t.equal(response.headers.get('x-reply'), 'from-server', 'client received custom response header');
+      t.equal(
+        response.headers.get('x-reply'),
+        'from-server',
+        'client received custom response header',
+      );
       session.close();
       clientConn.destroy();
       await pipe.pumpUntil(serverDone);
@@ -966,29 +1197,27 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response(`response-${id}`);
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const [r1, r2, r3] = await pipe.pumpUntil(Promise.all([
-        session.request('https://localhost/1'),
-        session.request('https://localhost/2'),
-        session.request('https://localhost/3')
-      ]));
+      const [r1, r2, r3] = await pipe.pumpUntil(
+        Promise.all([
+          session.request('https://localhost/1'),
+          session.request('https://localhost/2'),
+          session.request('https://localhost/3'),
+        ]),
+      );
       t.equal(r1.status, 200, 'response 1 status');
       t.equal(r2.status, 200, 'response 2 status');
       t.equal(r3.status, 200, 'response 3 status');
       const [b1, b2, b3] = await Promise.all([
         r1.arrayBuffer().then((b) => new TextDecoder().decode(b)),
         r2.arrayBuffer().then((b) => new TextDecoder().decode(b)),
-        r3.arrayBuffer().then((b) => new TextDecoder().decode(b))
+        r3.arrayBuffer().then((b) => new TextDecoder().decode(b)),
       ]);
-      const bodies = [
-        b1,
-        b2,
-        b3
-      ].sort();
-      t.deepEqual(bodies, [
-        'response-1',
-        'response-2',
-        'response-3'
-      ], 'all concurrent responses received');
+      const bodies = [b1, b2, b3].sort();
+      t.deepEqual(
+        bodies,
+        ['response-1', 'response-2', 'response-3'],
+        'all concurrent responses received',
+      );
       session.close();
       clientConn.destroy();
       await pipe.pumpUntil(serverDone);
@@ -1002,7 +1231,10 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (_req) => new Response('not found', { status: 404 }));
+      const serverDone = driver.run(
+        serverConn,
+        (_req) => new Response('not found', { status: 404 }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/missing'));
       t.equal(response.status, 404, 'server returned 404');
@@ -1038,13 +1270,20 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const original = new Uint8Array(256);
       for (let i = 0; i < 256; i++) original[i] = i;
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (_req) => new Response(original, { headers: { 'content-type': 'application/octet-stream' } }));
+      const serverDone = driver.run(
+        serverConn,
+        (_req) =>
+          new Response(original, { headers: { 'content-type': 'application/octet-stream' } }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/binary'));
       t.equal(response.status, 200, 'status 200');
       const received = new Uint8Array(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(received.byteLength, 256, 'received 256 bytes');
-      t.ok(received.every((b, i) => b === original[i]), 'binary bytes match');
+      t.ok(
+        received.every((b, i) => b === original[i]),
+        'binary bytes match',
+      );
       session.close();
       clientConn.destroy();
       await pipe.pumpUntil(serverDone);
@@ -1085,11 +1324,13 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response(`echo:${receivedBody}`);
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/upload', {
-        method: 'POST',
-        body: new TextEncoder().encode('trailer-body'),
-        trailers: [['x-checksum', '42']]
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/upload', {
+          method: 'POST',
+          body: new TextEncoder().encode('trailer-body'),
+          trailers: [['x-checksum', '42']],
+        }),
+      );
       t.equal(response.status, 200, 'server dispatched request with trailers');
       const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'echo:trailer-body', 'server received body before trailers');
@@ -1107,7 +1348,13 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (_req) => new Response('body-with-trailers', { trailers: new Headers([['x-digest', 'sha256-abc']]) }));
+      const serverDone = driver.run(
+        serverConn,
+        (_req) =>
+          new Response('body-with-trailers', {
+            trailers: new Headers([['x-digest', 'sha256-abc']]),
+          }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
       t.equal(response.status, 200, 'response with trailers resolves correctly');
@@ -1137,7 +1384,11 @@ describe('HTTP/3 (h3 ALPN)', () => {
       await pipe.runUntilSettled();
       // Now destroy the server — it sends CONNECTION_CLOSE to the client.
       serverConn.destroy();
-      await t.rejects(() => pipe.pumpUntil(requestPromise), /H3 stream (closed|reset)/, 'in-flight request rejected when connection closes');
+      await t.rejects(
+        () => pipe.pumpUntil(requestPromise),
+        /H3 stream (closed|reset)/,
+        'in-flight request rejected when connection closes',
+      );
       clientConn.destroy();
       await pipe.pumpUntil(serverDone).catch(() => {});
     } finally {
@@ -1150,12 +1401,18 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (req) => new Response(null, {
-        status: 200,
-        headers: { 'x-method': req.method }
-      }));
+      const serverDone = driver.run(
+        serverConn,
+        (req) =>
+          new Response(null, {
+            status: 200,
+            headers: { 'x-method': req.method },
+          }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/', { method: 'HEAD' }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', { method: 'HEAD' }),
+      );
       t.equal(response.status, 200, 'HEAD response status is 200');
       t.equal(response.headers.get('x-method'), 'HEAD', 'server received HEAD method');
       session.close();
@@ -1177,7 +1434,9 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response(`echo:${receivedBody}`);
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/', { method: 'POST' }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', { method: 'POST' }),
+      );
       t.equal(response.status, 200, 'bodyless POST returns 200');
       t.equal(receivedBody, '', 'server received empty body');
       session.close();
@@ -1193,7 +1452,11 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (_req) => new Response(new Uint8Array(0), { trailers: new Headers([['x-empty', 'yes']]) } as any));
+      const serverDone = driver.run(
+        serverConn,
+        (_req) =>
+          new Response(new Uint8Array(0), { trailers: new Headers([['x-empty', 'yes']]) } as any),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
       t.equal(response.status, 200, 'empty-body response with trailers resolves');
@@ -1219,11 +1482,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const p3 = session.request('https://localhost/hang3');
       await pipe.runUntilSettled();
       serverConn.destroy();
-      const results = await pipe.pumpUntil(Promise.allSettled([
-        p1,
-        p2,
-        p3
-      ]));
+      const results = await pipe.pumpUntil(Promise.allSettled([p1, p2, p3]));
       const rejected = results.filter((r) => r.status === 'rejected');
       t.equal(rejected.length, 3, 'all 3 in-flight requests rejected when connection closes');
       clientConn.destroy();
@@ -1238,10 +1497,14 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (_req) => new Response('Bad Request', {
-        status: 400,
-        headers: { 'x-reason': 'invalid-input' }
-      }));
+      const serverDone = driver.run(
+        serverConn,
+        (_req) =>
+          new Response('Bad Request', {
+            status: 400,
+            headers: { 'x-reason': 'invalid-input' },
+          }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
       t.equal(response.status, 400, 'client receives 400 from handler');
@@ -1265,10 +1528,25 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const driver = new H3ServerDriver();
       const serverDone = driver.run(serverConn, () => new Response('alive'));
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const [, goodResult] = await pipe.pumpUntil(Promise.allSettled([session.request('https://localhost/bad', { headers: new Headers([['connection', 'close']]) }), session.request('https://localhost/ok')]));
-      t.equal(goodResult.status, 'fulfilled', 'normal request succeeds when bad stream triggers stream-level error');
+      const [, goodResult] = await pipe.pumpUntil(
+        Promise.allSettled([
+          session.request('https://localhost/bad', {
+            headers: new Headers([['connection', 'close']]),
+          }),
+          session.request('https://localhost/ok'),
+        ]),
+      );
+      t.equal(
+        goodResult.status,
+        'fulfilled',
+        'normal request succeeds when bad stream triggers stream-level error',
+      );
       if (goodResult.status === 'fulfilled') {
-        t.equal((goodResult as PromiseFulfilledResult<Response>).value.status, 200, 'normal request returns 200');
+        t.equal(
+          (goodResult as PromiseFulfilledResult<Response>).value.status,
+          200,
+          'normal request returns 200',
+        );
       }
       session.close();
       clientConn.destroy();
@@ -1292,11 +1570,22 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response('ok');
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const [badResult, goodResult] = await pipe.pumpUntil(Promise.allSettled([session.request('https://localhost/bad-te', { headers: new Headers([['te', 'gzip']]) }), session.request('https://localhost/good-te', { headers: new Headers([['te', 'trailers']]) })]));
+      const [badResult, goodResult] = await pipe.pumpUntil(
+        Promise.allSettled([
+          session.request('https://localhost/bad-te', { headers: new Headers([['te', 'gzip']]) }),
+          session.request('https://localhost/good-te', {
+            headers: new Headers([['te', 'trailers']]),
+          }),
+        ]),
+      );
       t.equal(badResult.status, 'rejected', 'te: gzip is rejected');
       t.equal(goodResult.status, 'fulfilled', 'te: trailers is allowed through');
       if (goodResult.status === 'fulfilled') {
-        t.equal((goodResult as PromiseFulfilledResult<Response>).value.status, 200, 'te: trailers returns 200');
+        t.equal(
+          (goodResult as PromiseFulfilledResult<Response>).value.status,
+          200,
+          'te: trailers returns 200',
+        );
       }
       t.equal(teHeaderInHandler, null, 'te: trailers is not forwarded to handler (RFC 9114 §4.2)');
       session.close();
@@ -1317,7 +1606,10 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const requestPromise = session.request('https://localhost/');
       session.close();
       const [result] = await pipe.pumpUntil(Promise.allSettled([requestPromise]));
-      t.ok(result.status === 'rejected' || result.status === 'fulfilled', 'request settles without crashing');
+      t.ok(
+        result.status === 'rejected' || result.status === 'fulfilled',
+        'request settles without crashing',
+      );
       clientConn.destroy();
       await pipe.pumpUntil(serverDone).catch(() => {});
     } finally {
@@ -1337,28 +1629,57 @@ describe('HTTP/3 (h3 ALPN)', () => {
       onEndStream() {},
       onStreamClose() {},
       onResetStream() {},
-      onAckedStreamData() {}
+      onAckedStreamData() {},
     });
     session.close();
-    t.throws(() => session.submitResponse(0n, [[':status', '200']]), /session closed/, 'submitResponse throws after close');
-    t.throws(() => session.submitRequest(0n, [
-      [':method', 'GET'],
-      [':path', '/'],
-      [':scheme', 'https'],
-      [':authority', 'localhost']
-    ]), /session closed/, 'submitRequest throws after close');
-    t.throws(() => session.submitTrailers(0n, [['x-done', '1']]), /session closed/, 'submitTrailers throws after close');
-    t.throws(() => session.readStream(0n, new Uint8Array(0), false), /session closed/, 'readStream throws synchronously after close');
-    t.throws(() => session.drainWrites(), /session closed/, 'drainWrites throws synchronously after close');
+    t.throws(
+      () => session.submitResponse(0n, [[':status', '200']]),
+      /session closed/,
+      'submitResponse throws after close',
+    );
+    t.throws(
+      () =>
+        session.submitRequest(0n, [
+          [':method', 'GET'],
+          [':path', '/'],
+          [':scheme', 'https'],
+          [':authority', 'localhost'],
+        ]),
+      /session closed/,
+      'submitRequest throws after close',
+    );
+    t.throws(
+      () => session.submitTrailers(0n, [['x-done', '1']]),
+      /session closed/,
+      'submitTrailers throws after close',
+    );
+    t.throws(
+      () => session.readStream(0n, new Uint8Array(0), false),
+      /session closed/,
+      'readStream throws synchronously after close',
+    );
+    t.throws(
+      () => session.drainWrites(),
+      /session closed/,
+      'drainWrites throws synchronously after close',
+    );
   });
   it('QUIC stream writers expose explicit synchronous capabilities', async (t) => {
     if (!available) return;
     const pipe = h3Pipe();
     try {
       const { client } = await h3Handshake(pipe);
-      const stream = await pipe.pumpUntil(client.openBidirectionalStream()) as QuicStream;
-      t.equal(typeof stream.writer.writeSync, 'function', 'writer exposes writeSync as an explicit capability');
-      t.equal(typeof stream.writer.closeSync, 'function', 'writer exposes closeSync as an explicit capability');
+      const stream = (await pipe.pumpUntil(client.openBidirectionalStream())) as QuicStream;
+      t.equal(
+        typeof stream.writer.writeSync,
+        'function',
+        'writer exposes writeSync as an explicit capability',
+      );
+      t.equal(
+        typeof stream.writer.closeSync,
+        'function',
+        'writer exposes closeSync as an explicit capability',
+      );
       client.destroy();
     } finally {
       await pipe.close();
@@ -1395,14 +1716,16 @@ describe('HTTP/3 (h3 ALPN)', () => {
         receivedBody = await req.text();
         return new Response(null, {
           status: 204,
-          headers: { allow: 'GET, HEAD, POST, OPTIONS' }
+          headers: { allow: 'GET, HEAD, POST, OPTIONS' },
         });
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/', {
-        method: 'OPTIONS',
-        body: new TextEncoder().encode('xml-options-document')
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', {
+          method: 'OPTIONS',
+          body: new TextEncoder().encode('xml-options-document'),
+        }),
+      );
       t.equal(response.status, 204, 'OPTIONS response is 204');
       t.equal(receivedMethod, 'OPTIONS', 'handler sees OPTIONS method');
       t.equal(receivedBody, 'xml-options-document', 'server received OPTIONS body');
@@ -1422,7 +1745,11 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const serverDone = driver.run(serverConn, () => new Response('ok'));
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       session.close();
-      await t.rejects(() => session.request('https://localhost/'), /H3 session is closed/, 'request() after close() rejects with closed error');
+      await t.rejects(
+        () => session.request('https://localhost/'),
+        /H3 session is closed/,
+        'request() after close() rejects with closed error',
+      );
       clientConn.destroy();
       await pipe.pumpUntil(serverDone).catch(() => {});
     } finally {
@@ -1436,11 +1763,13 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
       const serverDone = driver.run(serverConn, async () => {
-        return new Response('ok', { headers: {
-          'transfer-encoding': 'chunked',
-          'connection': 'keep-alive',
-          'x-custom': 'pass'
-        } });
+        return new Response('ok', {
+          headers: {
+            'transfer-encoding': 'chunked',
+            connection: 'keep-alive',
+            'x-custom': 'pass',
+          },
+        });
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
@@ -1495,11 +1824,13 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response('ok');
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/upload', {
-        method: 'POST',
-        body: new TextEncoder().encode('hello world'),
-        headers: { 'content-type': 'text/plain' }
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/upload', {
+          method: 'POST',
+          body: new TextEncoder().encode('hello world'),
+          headers: { 'content-type': 'text/plain' },
+        }),
+      );
       t.equal(response.status, 200, 'POST with content-type returns 200');
       t.equal(receivedContentType, 'text/plain', 'server received content-type header');
       t.equal(receivedBody, 'hello world', 'server received body');
@@ -1522,7 +1853,9 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response('ok');
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/search?q=hello&page=2'));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/search?q=hello&page=2'),
+      );
       t.equal(response.status, 200, 'request with query string returns 200');
       t.equal(receivedSearch, '?q=hello&page=2', 'query string round-trips through :path');
       session.close();
@@ -1538,12 +1871,18 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (req) => new Response(null, {
-        status: 200,
-        headers: { 'x-method': req.method }
-      }));
+      const serverDone = driver.run(
+        serverConn,
+        (req) =>
+          new Response(null, {
+            status: 200,
+            headers: { 'x-method': req.method },
+          }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/resource', { method: 'DELETE' }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/resource', { method: 'DELETE' }),
+      );
       t.equal(response.status, 200, 'DELETE returns 200');
       t.equal(response.headers.get('x-method'), 'DELETE', 'server received DELETE method');
       session.close();
@@ -1559,10 +1898,16 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, (_req) => new Response('hello', { headers: {
-        'content-length': '5',
-        'content-type': 'text/plain'
-      } }));
+      const serverDone = driver.run(
+        serverConn,
+        (_req) =>
+          new Response('hello', {
+            headers: {
+              'content-length': '5',
+              'content-type': 'text/plain',
+            },
+          }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
       t.equal(response.status, 200, 'response status is 200');
@@ -1590,10 +1935,12 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response(`echo:${receivedBody}`);
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/resource', {
-        method: 'PUT',
-        body: new TextEncoder().encode('put-data')
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/resource', {
+          method: 'PUT',
+          body: new TextEncoder().encode('put-data'),
+        }),
+      );
       t.equal(response.status, 200, 'PUT returns 200');
       t.equal(receivedMethod, 'PUT', 'server received PUT method');
       t.equal(receivedBody, 'put-data', 'server received PUT body');
@@ -1618,14 +1965,16 @@ describe('HTTP/3 (h3 ALPN)', () => {
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const postBody = new Uint8Array(512).fill(65);
-      const [rGet, rPost, rDelete] = await pipe.pumpUntil(Promise.all([
-        session.request('https://localhost/a'),
-        session.request('https://localhost/b', {
-          method: 'POST',
-          body: postBody
-        }),
-        session.request('https://localhost/c', { method: 'DELETE' })
-      ]));
+      const [rGet, rPost, rDelete] = await pipe.pumpUntil(
+        Promise.all([
+          session.request('https://localhost/a'),
+          session.request('https://localhost/b', {
+            method: 'POST',
+            body: postBody,
+          }),
+          session.request('https://localhost/c', { method: 'DELETE' }),
+        ]),
+      );
       t.equal(rGet.status, 200, 'GET returns 200');
       t.equal(rGet.headers.get('x-method'), 'GET', 'GET method echoed');
       t.equal(rPost.status, 200, 'POST returns 200');
@@ -1657,15 +2006,20 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const payload = new Uint8Array(bodySize);
       for (let i = 0; i < bodySize; i++) payload[i] = i & 255;
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/large', {
-        method: 'POST',
-        body: payload
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/large', {
+          method: 'POST',
+          body: payload,
+        }),
+      );
       t.equal(response.status, 200, 'large body response status');
       t.equal(receivedByteCount, bodySize, 'server received all bytes');
       const received = new Uint8Array(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(received.byteLength, bodySize, 'client received all echoed bytes');
-      t.ok(received.every((b, i) => b === (i & 255)), 'echoed bytes match original');
+      t.ok(
+        received.every((b, i) => b === (i & 255)),
+        'echoed bytes match original',
+      );
       session.close();
       clientConn.destroy();
       await pipe.pumpUntil(serverDone);
@@ -1679,9 +2033,14 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, () => new Response('should-not-arrive', { headers: { 'content-length': '17' } }));
+      const serverDone = driver.run(
+        serverConn,
+        () => new Response('should-not-arrive', { headers: { 'content-length': '17' } }),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/', { method: 'HEAD' }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', { method: 'HEAD' }),
+      );
       t.equal(response.status, 200, 'HEAD returns 200');
       t.equal(response.headers.get('content-length'), '17', 'content-length header forwarded');
       const body = new Uint8Array(await pipe.pumpUntil(response.arrayBuffer()));
@@ -1706,10 +2065,12 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response(`echo:${body}`, { headers: { 'x-method': req.method } });
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/item', {
-        method: 'PATCH',
-        body: new TextEncoder().encode('patch-payload')
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/item', {
+          method: 'PATCH',
+          body: new TextEncoder().encode('patch-payload'),
+        }),
+      );
       t.equal(response.status, 200, 'PATCH returns 200');
       t.equal(response.headers.get('x-method'), 'PATCH', 'server received PATCH method');
       t.equal(receivedMethod, 'PATCH', 'server method matches');
@@ -1735,11 +2096,16 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response('ok');
       });
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
-      const response = await pipe.pumpUntil(session.request('https://localhost/', {
-        method: 'POST',
-        body: new TextEncoder().encode('body-data'),
-        trailers: [['x-req-trailer', 'trailer-value'], ['x-seq', '42']]
-      }));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', {
+          method: 'POST',
+          body: new TextEncoder().encode('body-data'),
+          trailers: [
+            ['x-req-trailer', 'trailer-value'],
+            ['x-seq', '42'],
+          ],
+        }),
+      );
       t.equal(response.status, 200, 'request with trailers returns 200');
       t.equal(receivedTrailers.length, 2, 'server received 2 trailer entries');
       const trailerMap = Object.fromEntries(receivedTrailers);
@@ -1775,7 +2141,16 @@ describe('HTTP/3 (h3 ALPN)', () => {
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
-      const serverDone = driver.run(serverConn, () => new Response('body', { trailers: new Headers([['transfer-encoding', 'chunked'], ['x-safe', 'yes']]) } as any));
+      const serverDone = driver.run(
+        serverConn,
+        () =>
+          new Response('body', {
+            trailers: new Headers([
+              ['transfer-encoding', 'chunked'],
+              ['x-safe', 'yes'],
+            ]),
+          } as any),
+      );
       const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
       t.equal(response.status, 200, 'response with filtered trailers is 200');
@@ -1817,7 +2192,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
         onEndStream() {},
         onStreamClose() {},
         onResetStream() {},
-        onAckedStreamData() {}
+        onAckedStreamData() {},
       });
       serverConn.addEventListener('stream', (event) => {
         const stream = (event as QuicStreamEvent).stream;
@@ -1828,7 +2203,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = await stream.reader.read() as Uint8Array | null;
+              const bytes = (await stream.reader.read()) as Uint8Array | null;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -1836,16 +2211,14 @@ describe('HTTP/3 (h3 ALPN)', () => {
           } catch {}
         })();
       });
-      const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream()
-      ])) as QuicStream[];
-      for (const s of [
-        ctrl,
-        qenc,
-        qdec
-      ]) serverSession.addQuicStream(BigInt(s.id), s.writer);
+      const [ctrl, qenc, qdec] = (await pipe.pumpUntil(
+        Promise.all([
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+        ]),
+      )) as QuicStream[];
+      for (const s of [ctrl, qenc, qdec]) serverSession.addQuicStream(BigInt(s.id), s.writer);
       serverSession.bindControlStream(BigInt(ctrl.id));
       serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       // Create the client session before pumping server drainWrites so its 'stream'
@@ -1863,7 +2236,11 @@ describe('HTTP/3 (h3 ALPN)', () => {
       // a new stream, regardless of the conservative lastStreamId value nghttp3 sent.
       await serverSession.closeWhenIdle();
       await pipe.pumpUntil(clientSession._waitForGoawayForTest());
-      await t.rejects(() => clientSession.request('https://localhost/'), /GOAWAY/, 'request after GOAWAY is rejected');
+      await t.rejects(
+        () => clientSession.request('https://localhost/'),
+        /GOAWAY/,
+        'request after GOAWAY is rejected',
+      );
       serverConn.destroy();
       clientConn.destroy();
     } finally {
@@ -1898,7 +2275,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
         onEndStream() {},
         onStreamClose() {},
         onResetStream() {},
-        onAckedStreamData() {}
+        onAckedStreamData() {},
       });
       serverConn.addEventListener('stream', (event) => {
         const stream = (event as QuicStreamEvent).stream;
@@ -1915,7 +2292,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = await stream.reader.read() as Uint8Array | null;
+              const bytes = (await stream.reader.read()) as Uint8Array | null;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -1923,27 +2300,34 @@ describe('HTTP/3 (h3 ALPN)', () => {
           } catch {}
         })();
       });
-      const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream()
-      ])) as QuicStream[];
-      for (const s of [
-        ctrl,
-        qenc,
-        qdec
-      ]) serverSession.addQuicStream(BigInt(s.id), s.writer);
+      const [ctrl, qenc, qdec] = (await pipe.pumpUntil(
+        Promise.all([
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+        ]),
+      )) as QuicStream[];
+      for (const s of [ctrl, qenc, qdec]) serverSession.addQuicStream(BigInt(s.id), s.writer);
       serverSession.bindControlStream(BigInt(ctrl.id));
       serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       const clientSessionPromise = H3ClientSession.create(clientConn);
       serverSession.drainWrites();
       await pipe.runUntilSettled();
       const clientSession = await pipe.pumpUntil(clientSessionPromise);
-      const [resetResult, okResult] = await pipe.pumpUntil(Promise.allSettled([clientSession.request('https://localhost/reset'), clientSession.request('https://localhost/ok')]));
+      const [resetResult, okResult] = await pipe.pumpUntil(
+        Promise.allSettled([
+          clientSession.request('https://localhost/reset'),
+          clientSession.request('https://localhost/ok'),
+        ]),
+      );
       t.equal(resetResult.status, 'rejected', 'stream 0 reset by server rejects that request');
       t.equal(okResult.status, 'fulfilled', 'concurrent request on stream 4 completes normally');
       if (okResult.status === 'fulfilled') {
-        t.equal((okResult as PromiseFulfilledResult<Response>).value.status, 200, 'stream 4 request returns 200');
+        t.equal(
+          (okResult as PromiseFulfilledResult<Response>).value.status,
+          200,
+          'stream 4 request returns 200',
+        );
       }
       serverConn.destroy();
       clientConn.destroy();
@@ -1986,7 +2370,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
         onEndStream() {},
         onStreamClose() {},
         onResetStream() {},
-        onAckedStreamData() {}
+        onAckedStreamData() {},
       });
       // Register BEFORE pumpUntil — same ordering discipline as H3ClientSession.create().
       clientConn.addEventListener('stream', (event) => {
@@ -1995,7 +2379,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
         void (async () => {
           try {
             while (true) {
-              const bytes = await stream.reader.read() as Uint8Array | null;
+              const bytes = (await stream.reader.read()) as Uint8Array | null;
               const fin = bytes === null;
               clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -2004,28 +2388,28 @@ describe('HTTP/3 (h3 ALPN)', () => {
         })();
       });
       // Open and bind client's mandatory unidirectional streams, drain client SETTINGS.
-      const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
-        clientConn.openUnidirectionalStream(),
-        clientConn.openUnidirectionalStream(),
-        clientConn.openUnidirectionalStream()
-      ])) as QuicStream[];
-      for (const s of [
-        ctrl,
-        qenc,
-        qdec
-      ]) clientSession.addQuicStream(BigInt(s.id), s.writer);
+      const [ctrl, qenc, qdec] = (await pipe.pumpUntil(
+        Promise.all([
+          clientConn.openUnidirectionalStream(),
+          clientConn.openUnidirectionalStream(),
+          clientConn.openUnidirectionalStream(),
+        ]),
+      )) as QuicStream[];
+      for (const s of [ctrl, qenc, qdec]) clientSession.addQuicStream(BigInt(s.id), s.writer);
       clientSession.bindControlStream(BigInt(ctrl.id));
       clientSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       clientSession.drainWrites();
       await pipe.runUntilSettled();
       // Open the CONNECT stream and read the server's 405 response.
-      const connectStream = await pipe.pumpUntil(clientConn.openBidirectionalStream()) as QuicStream;
+      const connectStream = (await pipe.pumpUntil(
+        clientConn.openBidirectionalStream(),
+      )) as QuicStream;
       const connectSid = BigInt(connectStream.id);
       clientSession.addQuicStream(connectSid, connectStream.writer);
       void (async () => {
         try {
           while (true) {
-            const bytes = await connectStream.reader.read() as Uint8Array | null;
+            const bytes = (await connectStream.reader.read()) as Uint8Array | null;
             const fin = bytes === null;
             clientSession.readStream(connectSid, bytes ?? new Uint8Array(0), fin);
             if (fin) break;
@@ -2033,7 +2417,10 @@ describe('HTTP/3 (h3 ALPN)', () => {
         } catch {}
       })();
       // Submit CONNECT with only :method and :authority (RFC 9114 §4.4).
-      clientSession.submitRequest(connectSid, [[':method', 'CONNECT'], [':authority', 'localhost:443']]);
+      clientSession.submitRequest(connectSid, [
+        [':method', 'CONNECT'],
+        [':authority', 'localhost:443'],
+      ]);
       clientSession.drainWrites();
       await pipe.runUntilSettled();
       await pipe.pumpUntil(connectResponsePromise);
@@ -2057,11 +2444,16 @@ describe('HTTP/3 (h3 ALPN)', () => {
         handlerCalled = true;
         return new Response('unexpected');
       });
-      const outcome = await rawH3RequestOutcome(pipe, clientConn, [
-        [':method', 'GET'],
-        [':path', '/missing-scheme'],
-        [':authority', 'localhost']
-      ], 80);
+      const outcome = await rawH3RequestOutcome(
+        pipe,
+        clientConn,
+        [
+          [':method', 'GET'],
+          [':path', '/missing-scheme'],
+          [':authority', 'localhost'],
+        ],
+        80,
+      );
       t.equal(outcome, 'no-response', 'server rejects missing :scheme without an HTTP response');
       t.equal(handlerCalled, false, 'handler is not invoked for malformed request control data');
       clientConn.destroy();
@@ -2081,15 +2473,28 @@ describe('HTTP/3 (h3 ALPN)', () => {
         handlerCalled = true;
         return new Response('unexpected');
       });
-      const outcome = await rawH3RequestOutcome(pipe, clientConn, [
-        [':method', 'GET'],
-        [':scheme', 'https'],
-        [':path', '/invalid-protocol'],
-        [':authority', 'localhost'],
-        [':protocol', 'webtransport-h3']
-      ], 80);
-      t.equal(outcome, 'no-response', 'server rejects :protocol outside CONNECT without an HTTP response');
-      t.equal(handlerCalled, false, 'handler is not invoked for invalid extended CONNECT pseudo-header use');
+      const outcome = await rawH3RequestOutcome(
+        pipe,
+        clientConn,
+        [
+          [':method', 'GET'],
+          [':scheme', 'https'],
+          [':path', '/invalid-protocol'],
+          [':authority', 'localhost'],
+          [':protocol', 'webtransport-h3'],
+        ],
+        80,
+      );
+      t.equal(
+        outcome,
+        'no-response',
+        'server rejects :protocol outside CONNECT without an HTTP response',
+      );
+      t.equal(
+        handlerCalled,
+        false,
+        'handler is not invoked for invalid extended CONNECT pseudo-header use',
+      );
       clientConn.destroy();
       await pipe.pumpUntil(serverDone).catch(() => {});
     } finally {
@@ -2128,7 +2533,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
         onEndStream() {},
         onStreamClose() {},
         onResetStream() {},
-        onAckedStreamData() {}
+        onAckedStreamData() {},
       });
       serverConn.addEventListener('stream', (event) => {
         const stream = (event as QuicStreamEvent).stream;
@@ -2139,7 +2544,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = await stream.reader.read() as Uint8Array | null;
+              const bytes = (await stream.reader.read()) as Uint8Array | null;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -2147,16 +2552,14 @@ describe('HTTP/3 (h3 ALPN)', () => {
           } catch {}
         })();
       });
-      const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream(),
-        serverConn.openUnidirectionalStream()
-      ])) as QuicStream[];
-      for (const s of [
-        ctrl,
-        qenc,
-        qdec
-      ]) serverSession.addQuicStream(BigInt(s.id), s.writer);
+      const [ctrl, qenc, qdec] = (await pipe.pumpUntil(
+        Promise.all([
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+        ]),
+      )) as QuicStream[];
+      for (const s of [ctrl, qenc, qdec]) serverSession.addQuicStream(BigInt(s.id), s.writer);
       serverSession.bindControlStream(BigInt(ctrl.id));
       serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       const clientSessionPromise = H3ClientSession.create(clientConn);
@@ -2173,20 +2576,33 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const reqC = clientSession.request('https://localhost/c');
       const goawayDone = serverSession.closeWhenIdle();
       let reqCError: unknown;
-      const reqCSettled = reqC.then(() => {
-        reqCError = new Error('reqC resolved instead of rejecting');
-      }, (e: unknown) => {
-        reqCError = e;
-      });
+      const reqCSettled = reqC.then(
+        () => {
+          reqCError = new Error('reqC resolved instead of rejecting');
+        },
+        (e: unknown) => {
+          reqCError = e;
+        },
+      );
       // Step 4: pump until GOAWAY sent and reqC rejected.
       await pipe.pumpUntil(Promise.all([goawayDone, reqCSettled]));
       t.ok(reqCError instanceof Error, 'reqC was rejected');
-      t.ok(reqCError instanceof Error && /GOAWAY/.test(reqCError.message), `reqC rejected with GOAWAY: ${String(reqCError)}`);
+      t.ok(
+        reqCError instanceof Error && /GOAWAY/.test(reqCError.message),
+        `reqC rejected with GOAWAY: ${String(reqCError)}`,
+      );
       // Future requests also rejected via #goawayLastStreamId guard.
-      await t.rejects(() => clientSession.request('https://localhost/d'), /GOAWAY/, 'new request after GOAWAY is rejected immediately');
+      await t.rejects(
+        () => clientSession.request('https://localhost/d'),
+        /GOAWAY/,
+        'new request after GOAWAY is rejected immediately',
+      );
       // reqB eventually fails via connection close (server session is closed,
       // no response will ever arrive). Destroy connections to settle it.
-      const reqBDone = reqB.then(() => {}, () => {});
+      const reqBDone = reqB.then(
+        () => {},
+        () => {},
+      );
       serverConn.destroy();
       clientConn.destroy();
       await pipe.pumpUntil(reqBDone);

@@ -1,16 +1,27 @@
 import { describe, it } from 'fino:test/test';
-import { h, Fragment, createSignal, batch, createRenderer, type Child, type HostAdapter, type Props } from 'fino:ui';
+import {
+  h,
+  Fragment,
+  createSignal,
+  batch,
+  createRenderer,
+  type Child,
+  type HostAdapter,
+  type Props,
+} from 'fino:ui';
 import { jsx, jsxs } from 'fino:ui/jsx-runtime';
 describe('fino:ui vnode construction', () => {
   it('normalizes props, keyed children, fragments, and JSX runtime calls', (t) => {
-    const vnode = h('row', {
-      id: 'root',
-      key: 'root-key'
-    }, 'a', [
-      false,
-      h('cell', { key: 'b' }, 'b'),
-      null
-    ], h(Fragment, null, 'c', undefined));
+    const vnode = h(
+      'row',
+      {
+        id: 'root',
+        key: 'root-key',
+      },
+      'a',
+      [false, h('cell', { key: 'b' }, 'b'), null],
+      h(Fragment, null, 'c', undefined),
+    );
     t.equal(vnode.type, 'row', 'type is preserved');
     t.equal(vnode.key, 'root-key', 'key is copied from props');
     t.deepEqual(vnode.props, { id: 'root' }, 'key is removed from props');
@@ -19,13 +30,14 @@ describe('fino:ui vnode construction', () => {
     t.equal((vnode.children[1] as any).key, 'b', 'child key is preserved');
     t.equal(vnode.children[2], 'c', 'fragment children are flattened');
     t.deepEqual(jsx('text', { children: 'hello' }), h('text', null, 'hello'), 'jsx delegates to h');
-    t.deepEqual(jsxs('text', { children: ['h', 'i'] }), h('text', null, 'h', 'i'), 'jsxs delegates to h');
+    t.deepEqual(
+      jsxs('text', { children: ['h', 'i'] }),
+      h('text', null, 'h', 'i'),
+      'jsxs delegates to h',
+    );
   });
   it('invokes function components with normalized children', (t) => {
-    function Label(props: {
-      prefix: string;
-      children?: Child[];
-    }) {
+    function Label(props: { prefix: string; children?: Child[] }) {
       return h('text', null, props.prefix, props.children?.[0]);
     }
     const vnode = h(Label, { prefix: '>' }, 'name');
@@ -66,7 +78,7 @@ describe('fino:ui host renderer', () => {
     }
     const root: TestRoot = {
       kind: 'root',
-      children: []
+      children: [],
     };
     const host: HostAdapter<TestNode, TestRoot> = {
       beginUpdate() {
@@ -80,7 +92,7 @@ describe('fino:ui host renderer', () => {
           id: ++nextId,
           type,
           props,
-          children: []
+          children: [],
         };
         calls.push(`create:${type}:${node.id}`);
         return node;
@@ -90,7 +102,7 @@ describe('fino:ui host renderer', () => {
           id: ++nextId,
           type: '#text',
           text,
-          children: []
+          children: [],
         };
         calls.push(`text:${text}:${node.id}`);
         return node;
@@ -117,32 +129,47 @@ describe('fino:ui host renderer', () => {
         const from = parent.children.indexOf(child);
         if (from >= 0) parent.children.splice(from, 1);
         calls.push(`remove:${child.id}`);
-      }
+      },
     };
     const renderer = createRenderer(host);
-    renderer.render(h('row', null, h('cell', {
-      key: 'a',
-      value: 1
-    }), h('cell', {
-      key: 'b',
-      value: 2
-    })), root);
+    renderer.render(
+      h(
+        'row',
+        null,
+        h('cell', {
+          key: 'a',
+          value: 1,
+        }),
+        h('cell', {
+          key: 'b',
+          value: 2,
+        }),
+      ),
+      root,
+    );
     const firstA = root.children[0]!.children[0];
     const firstB = root.children[0]!.children[1];
-    renderer.render(h('row', null, h('cell', {
-      key: 'b',
-      value: 3
-    }), h('cell', {
-      key: 'a',
-      value: 1
-    })), root);
+    renderer.render(
+      h(
+        'row',
+        null,
+        h('cell', {
+          key: 'b',
+          value: 3,
+        }),
+        h('cell', {
+          key: 'a',
+          value: 1,
+        }),
+      ),
+      root,
+    );
     t.equal(root.children[0]!.children[0], firstB, 'keyed child b is reused and moved first');
     t.equal(root.children[0]!.children[1], firstA, 'keyed child a is reused and moved second');
-    t.deepEqual(calls.filter((call) => call === 'begin' || call === 'end'), [
-      'begin',
-      'end',
-      'begin',
-      'end'
-    ], 'each render is wrapped in one host update batch');
+    t.deepEqual(
+      calls.filter((call) => call === 'begin' || call === 'end'),
+      ['begin', 'end', 'begin', 'end'],
+      'each render is wrapped in one host update batch',
+    );
   });
 });

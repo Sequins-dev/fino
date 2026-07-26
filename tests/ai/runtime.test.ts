@@ -23,7 +23,7 @@ function scriptModel(turns: StreamEvent[][]): Model {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 function endTurnEvents(text: string): StreamEvent[] {
@@ -31,19 +31,19 @@ function endTurnEvents(text: string): StreamEvent[] {
     {
       type: 'text_delta',
       index: 0,
-      text
+      text,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 10,
-        outputTokens: 5
-      }
+        outputTokens: 5,
+      },
     },
     {
       type: 'stop',
-      reason: 'end_turn'
-    }
+      reason: 'end_turn',
+    },
   ];
 }
 function toolCallEvents(id: string, name: string, argsJson: string, index = 0): StreamEvent[] {
@@ -52,51 +52,57 @@ function toolCallEvents(id: string, name: string, argsJson: string, index = 0): 
       type: 'tool_call_start',
       index,
       id,
-      name
+      name,
     },
     {
       type: 'tool_call_delta',
       index,
-      json: argsJson
+      json: argsJson,
     },
     {
       type: 'tool_call_end',
-      index
+      index,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 10,
-        outputTokens: 5
-      }
+        outputTokens: 5,
+      },
     },
     {
       type: 'stop',
-      reason: 'tool_use'
-    }
+      reason: 'tool_use',
+    },
   ];
 }
 function initialState(extra?: Partial<AgentState>): AgentState {
   return {
-    messages: [{
-      role: 'user',
-      content: 'hello'
-    }],
+    messages: [
+      {
+        role: 'user',
+        content: 'hello',
+      },
+    ],
     stepIndex: 0,
     usage: {
       inputTokens: 0,
-      outputTokens: 0
+      outputTokens: 0,
     },
-    ...extra
+    ...extra,
   };
 }
 describe('Agent runtime', () => {
   it('single-turn end_turn returns text result', async (t) => {
     const h = agent({ model: scriptModel([endTurnEvents('Hi there')]) });
-    const result = await h.generate({ messages: [{
-      role: 'user',
-      content: 'hi'
-    }] });
+    const result = await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'hi',
+        },
+      ],
+    });
     t.equal(result.text, 'Hi there');
     t.equal(result.stopReason, 'end_turn');
     t.equal(result.steps.length, 1);
@@ -113,22 +119,29 @@ describe('Agent runtime', () => {
       parameters: {
         type: 'object',
         properties: { name: { type: 'string' } },
-        required: ['name']
+        required: ['name'],
       },
       execute: (args) => {
         receivedArgs = args;
         return `greetResult:${args.name}`;
-      }
+      },
     });
-    const turns: StreamEvent[][] = [toolCallEvents('call_1', 'greet', '{"name":"world"}'), endTurnEvents('Hello, world!')];
+    const turns: StreamEvent[][] = [
+      toolCallEvents('call_1', 'greet', '{"name":"world"}'),
+      endTurnEvents('Hello, world!'),
+    ];
     const h = agent({
       model: scriptModel(turns),
-      tools: [greet]
+      tools: [greet],
     });
-    const result = await h.generate({ messages: [{
-      role: 'user',
-      content: 'greet'
-    }] });
+    const result = await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'greet',
+        },
+      ],
+    });
     t.deepEqual(receivedArgs, { name: 'world' }, 'tool received correct args');
     t.equal(result.text, 'Hello, world!');
     t.equal(result.stopReason, 'end_turn');
@@ -136,7 +149,12 @@ describe('Agent runtime', () => {
     t.equal(result.steps[1]!.stepIndex, 2, 'final step index is 2');
     t.equal(result.usage.inputTokens, 20, 'usage accumulated across steps');
     const msgs = result.messages;
-    const toolResultMsg = msgs.find((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((p) => p.type === 'tool_result'));
+    const toolResultMsg = msgs.find(
+      (m) =>
+        m.role === 'user' &&
+        Array.isArray(m.content) &&
+        m.content.some((p) => p.type === 'tool_result'),
+    );
     t.ok(toolResultMsg, 'tool_result appended as user message');
   });
   it('tool timeoutMs returns an error tool result when execution exceeds the limit', async (t) => {
@@ -146,13 +164,13 @@ describe('Agent runtime', () => {
       description: 'Runs too slowly',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       timeoutMs: 5,
       execute: async () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
         return 'late';
-      }
+      },
     });
     const inspectingModel: Model = {
       id: 'timeout-spy',
@@ -160,7 +178,18 @@ describe('Agent runtime', () => {
       provider: 'test',
       dimensions: 0,
       stream(req: GenerateRequest): ModelStream {
-        const hasResult = req.messages.some((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((p) => p.type === 'tool_result' && p.toolCallId === 'slow_1' && p.isError === true && String(p.content).includes('timed out')));
+        const hasResult = req.messages.some(
+          (m) =>
+            m.role === 'user' &&
+            Array.isArray(m.content) &&
+            m.content.some(
+              (p) =>
+                p.type === 'tool_result' &&
+                p.toolCallId === 'slow_1' &&
+                p.isError === true &&
+                String(p.content).includes('timed out'),
+            ),
+        );
         async function* gen() {
           if (!sawToolResult) {
             sawToolResult = hasResult;
@@ -176,11 +205,11 @@ describe('Agent runtime', () => {
       },
       async embed() {
         return [];
-      }
+      },
     };
     const result = await agent({
       model: inspectingModel,
-      tools: [slow]
+      tools: [slow],
     }).generate('run slow tool');
     t.equal(result.text, 'handled timeout');
     t.equal(sawToolResult, true, 'model saw timed-out tool result as an error');
@@ -192,161 +221,200 @@ describe('Agent runtime', () => {
       description: 'A',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       execute: async () => {
         calls.push('a');
         await Promise.resolve();
         return 'a-result';
-      }
+      },
     });
     const toolB = tool({
       name: 'b',
       description: 'B',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       execute: async () => {
         calls.push('b');
         await Promise.resolve();
         return 'b-result';
-      }
+      },
     });
     const twoToolTurn: StreamEvent[] = [
       {
         type: 'tool_call_start',
         index: 0,
         id: 'c1',
-        name: 'a'
+        name: 'a',
       },
       {
         type: 'tool_call_delta',
         index: 0,
-        json: '{}'
+        json: '{}',
       },
       {
         type: 'tool_call_end',
-        index: 0
+        index: 0,
       },
       {
         type: 'tool_call_start',
         index: 1,
         id: 'c2',
-        name: 'b'
+        name: 'b',
       },
       {
         type: 'tool_call_delta',
         index: 1,
-        json: '{}'
+        json: '{}',
       },
       {
         type: 'tool_call_end',
-        index: 1
+        index: 1,
       },
       {
         type: 'usage',
         usage: {
           inputTokens: 5,
-          outputTokens: 3
-        }
+          outputTokens: 3,
+        },
       },
       {
         type: 'stop',
-        reason: 'tool_use'
-      }
+        reason: 'tool_use',
+      },
     ];
     const h = agent({
       model: scriptModel([twoToolTurn, endTurnEvents('done')]),
-      tools: [toolA, toolB]
+      tools: [toolA, toolB],
     });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'go'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'go',
+        },
+      ],
+    });
     t.ok(calls.includes('a'), 'tool a ran');
     t.ok(calls.includes('b'), 'tool b ran');
     t.equal(calls.length, 2, 'exactly two tools ran');
   });
   it('maxSteps(1) stops after one step even if model requests tools', async (t) => {
     const h = agent({
-      model: scriptModel([toolCallEvents('c1', 'greet', '{}'), toolCallEvents('c1', 'greet', '{}')]),
-      tools: [tool({
-        name: 'greet',
-        description: 'd',
-        parameters: {
-          type: 'object',
-          properties: {}
-        },
-        execute: async () => 'ok'
-      })],
-      stopWhen: maxSteps(1)
+      model: scriptModel([
+        toolCallEvents('c1', 'greet', '{}'),
+        toolCallEvents('c1', 'greet', '{}'),
+      ]),
+      tools: [
+        tool({
+          name: 'greet',
+          description: 'd',
+          parameters: {
+            type: 'object',
+            properties: {},
+          },
+          execute: async () => 'ok',
+        }),
+      ],
+      stopWhen: maxSteps(1),
     });
-    const result = await h.generate({ messages: [{
-      role: 'user',
-      content: 'hi'
-    }] });
+    const result = await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'hi',
+        },
+      ],
+    });
     t.equal(result.steps.length, 1, 'only one step ran');
     t.equal(result.stopReason, 'tool_use');
   });
   it('unknown tool name returns isError tool result and loop continues', async (t) => {
-    const turns: StreamEvent[][] = [toolCallEvents('c1', 'nonexistent', '{}'), endTurnEvents('fallback')];
+    const turns: StreamEvent[][] = [
+      toolCallEvents('c1', 'nonexistent', '{}'),
+      endTurnEvents('fallback'),
+    ];
     const h = agent({ model: scriptModel(turns) });
-    const result = await h.generate({ messages: [{
-      role: 'user',
-      content: 'go'
-    }] });
+    const result = await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'go',
+        },
+      ],
+    });
     t.equal(result.text, 'fallback');
-    const toolResultMsg = result.messages.find((m) => m.role === 'user' && Array.isArray(m.content) && (m.content as Array<{
-      type: string;
-      isError?: boolean;
-    }>).some((p) => p.type === 'tool_result' && p.isError));
+    const toolResultMsg = result.messages.find(
+      (m) =>
+        m.role === 'user' &&
+        Array.isArray(m.content) &&
+        (
+          m.content as Array<{
+            type: string;
+            isError?: boolean;
+          }>
+        ).some((p) => p.type === 'tool_result' && p.isError),
+    );
     t.ok(toolResultMsg, 'isError tool result appended for unknown tool');
   });
   it('stream() forwards events and result() matches generate()', async (t) => {
-    const turns: StreamEvent[][] = [[
-      {
-        type: 'text_delta',
-        index: 0,
-        text: 'He'
-      },
-      {
-        type: 'text_delta',
-        index: 0,
-        text: 'llo'
-      },
-      {
-        type: 'usage',
-        usage: {
-          inputTokens: 5,
-          outputTokens: 2
-        }
-      },
-      {
-        type: 'stop',
-        reason: 'end_turn'
-      }
-    ]];
+    const turns: StreamEvent[][] = [
+      [
+        {
+          type: 'text_delta',
+          index: 0,
+          text: 'He',
+        },
+        {
+          type: 'text_delta',
+          index: 0,
+          text: 'llo',
+        },
+        {
+          type: 'usage',
+          usage: {
+            inputTokens: 5,
+            outputTokens: 2,
+          },
+        },
+        {
+          type: 'stop',
+          reason: 'end_turn',
+        },
+      ],
+    ];
     const h = agent({ model: scriptModel(turns) });
-    const stream = h.stream({ messages: [{
-      role: 'user',
-      content: 'hi'
-    }] });
+    const stream = h.stream({
+      messages: [
+        {
+          role: 'user',
+          content: 'hi',
+        },
+      ],
+    });
     const collected: import('fino:ai/agent').AgentEvent[] = [];
     for await (const ev of stream.reader) {
       collected.push(ev);
     }
     const result = await stream.result;
     t.equal(result.text, 'Hello');
-    const textDeltas = collected.filter((e) => e.type === 'model_event' && e.event.type === 'text_delta');
+    const textDeltas = collected.filter(
+      (e) => e.type === 'model_event' && e.event.type === 'text_delta',
+    );
     t.equal(textDeltas.length, 2, 'both text_delta events forwarded');
   });
   it('stream() emits agent lifecycle events around model deltas', async (t) => {
     const h = agent({ model: scriptModel([endTurnEvents('Hello')]) });
-    const stream = h.stream({ messages: [{
-      role: 'user',
-      content: 'hi'
-    }] });
+    const stream = h.stream({
+      messages: [
+        {
+          role: 'user',
+          content: 'hi',
+        },
+      ],
+    });
     const types: string[] = [];
     for await (const ev of stream.reader) types.push(ev.type);
     await stream.result;
@@ -359,13 +427,19 @@ describe('Agent runtime', () => {
     const h = agent({ model: scriptModel([endTurnEvents('hi')]) });
     const controller = new AbortController();
     controller.abort(new Error('cancelled'));
-    await t.rejects(() => h.generate({
-      messages: [{
-        role: 'user',
-        content: 'hi'
-      }],
-      signal: controller.signal
-    }), /cancelled/);
+    await t.rejects(
+      () =>
+        h.generate({
+          messages: [
+            {
+              role: 'user',
+              content: 'hi',
+            },
+          ],
+          signal: controller.signal,
+        }),
+      /cancelled/,
+    );
   });
   it('SuspendSignal from a tool stops the step with suspend set', async (t) => {
     const suspendingTool = tool({
@@ -373,50 +447,63 @@ describe('Agent runtime', () => {
       description: 'Suspends the run',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       execute: () => {
         throw new SuspendSignal('waiting for input', { key: 'val' });
-      }
+      },
     });
     const h = agent({
       model: scriptModel([toolCallEvents('c1', 'pause', '{}')]),
-      tools: [suspendingTool]
+      tools: [suspendingTool],
     });
-    const result = await h.generate({ messages: [{
-      role: 'user',
-      content: 'go'
-    }] });
+    const result = await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'go',
+        },
+      ],
+    });
     t.equal(result.stopReason, 'tool_use');
     t.equal(result.steps.length, 1, 'one step ran before suspend');
   });
   it('runContext.get() inside a tool returns run metadata', async (t) => {
-    let capturedCtx: {
-      runId: string;
-      stepIndex: number;
-    } | undefined;
+    let capturedCtx:
+      | {
+          runId: string;
+          stepIndex: number;
+        }
+      | undefined;
     const ctxTool = tool({
       name: 'check',
       description: 'Checks run context',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       execute: async () => {
         capturedCtx = runContext.get();
         return 'ok';
-      }
+      },
     });
     const h = agent({
       model: scriptModel([toolCallEvents('c1', 'check', '{}'), endTurnEvents('done')]),
-      tools: [ctxTool]
+      tools: [ctxTool],
     });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'hi'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'hi',
+        },
+      ],
+    });
     t.ok(capturedCtx, 'run context available inside tool');
-    t.ok(typeof capturedCtx?.runId === 'string' && capturedCtx.runId.startsWith('run_'), 'runId is set');
+    t.ok(
+      typeof capturedCtx?.runId === 'string' && capturedCtx.runId.startsWith('run_'),
+      'runId is set',
+    );
     t.equal(typeof capturedCtx?.stepIndex, 'number', 'stepIndex is a number');
   });
 });

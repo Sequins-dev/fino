@@ -1,44 +1,44 @@
 /**
-* internal:package_manager — npm dependency installer for Fino projects.
-*
-* Backs the `fino install` command. Given a set of package specs (or an
-* existing `package.json`), it resolves versions against an npm-compatible
-* registry, downloads and integrity-checks each tarball, extracts packages into
-* `.fino/packages`, recursively installs their dependencies, and writes a flat
-* `.fino/package-map.json` that the internal module loader consumes to resolve
-* bare specifiers at runtime.
-*
-* Resolution follows npm semantics closely enough to be useful without cloning
-* npm: dist-tags are honored, semver ranges are matched via `fino:semver`, and
-* a package's entrypoints are derived from its `exports` map (including
-* conditional, array, and wildcard `*` forms) with a legacy `main`/`module`
-* fallback and deep-import probing when no `exports` field is present. Regular
-* and optional dependencies are installed transitively; optional failures are
-* downgraded to warnings while required failures propagate. Peer dependencies
-* are only warned about, never auto-installed.
-*
-* The registry defaults to the `FINO_NPM_REGISTRY` environment variable, or
-* `https://registry.npmjs.org` when unset. Builds that install from registries
-* should include OpenSSL so tarball integrity metadata is actually enforced;
-* without it, downloads are extracted unverified. SHA-1 `shasum` metadata is
-* accepted only as a legacy fallback when modern SRI (`sha256`/`sha384`/
-* `sha512`) metadata is absent or uses an unsupported algorithm.
-*
-* This is an `internal:*` module: it is importable only from other built-ins,
-* not from user code, and the public entry point is the `fino install` CLI.
-*
-* ```ts no_run
-*   import { installPackages } from 'internal:package_manager';
-*
-*   // Add packages to package.json and install everything into .fino/packages.
-*   await installPackages(['left-pad@^1.3.0', '@scope/util']);
-*
-*   // With no specs, install exactly what package.json already declares.
-*   await installPackages();
-* ```
-*
-* @internal
-*/
+ * internal:package_manager — npm dependency installer for Fino projects.
+ *
+ * Backs the `fino install` command. Given a set of package specs (or an
+ * existing `package.json`), it resolves versions against an npm-compatible
+ * registry, downloads and integrity-checks each tarball, extracts packages into
+ * `.fino/packages`, recursively installs their dependencies, and writes a flat
+ * `.fino/package-map.json` that the internal module loader consumes to resolve
+ * bare specifiers at runtime.
+ *
+ * Resolution follows npm semantics closely enough to be useful without cloning
+ * npm: dist-tags are honored, semver ranges are matched via `fino:semver`, and
+ * a package's entrypoints are derived from its `exports` map (including
+ * conditional, array, and wildcard `*` forms) with a legacy `main`/`module`
+ * fallback and deep-import probing when no `exports` field is present. Regular
+ * and optional dependencies are installed transitively; optional failures are
+ * downgraded to warnings while required failures propagate. Peer dependencies
+ * are only warned about, never auto-installed.
+ *
+ * The registry defaults to the `FINO_NPM_REGISTRY` environment variable, or
+ * `https://registry.npmjs.org` when unset. Builds that install from registries
+ * should include OpenSSL so tarball integrity metadata is actually enforced;
+ * without it, downloads are extracted unverified. SHA-1 `shasum` metadata is
+ * accepted only as a legacy fallback when modern SRI (`sha256`/`sha384`/
+ * `sha512`) metadata is absent or uses an unsupported algorithm.
+ *
+ * This is an `internal:*` module: it is importable only from other built-ins,
+ * not from user code, and the public entry point is the `fino install` CLI.
+ *
+ * ```ts no_run
+ *   import { installPackages } from 'internal:package_manager';
+ *
+ *   // Add packages to package.json and install everything into .fino/packages.
+ *   await installPackages(['left-pad@^1.3.0', '@scope/util']);
+ *
+ *   // With no specs, install exactly what package.json already declares.
+ *   await installPackages();
+ * ```
+ *
+ * @internal
+ */
 import { DiskFileSystem } from 'fino:file';
 import { extractArchive } from 'fino:archive';
 import { cwd, env } from 'fino:process';
@@ -49,22 +49,16 @@ const fs = new DiskFileSystem();
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const DEFAULT_REGISTRY = env.FINO_NPM_REGISTRY ?? 'https://registry.npmjs.org';
-const PROBE_EXTENSIONS = [
-  '.mjs',
-  '.js',
-  '.json',
-  '.ts',
-  '.ts'
-];
+const PROBE_EXTENSIONS = ['.mjs', '.js', '.json', '.ts', '.ts'];
 const SRI_ALGORITHMS: Record<string, string> = {
   sha256: 'sha-256',
   sha384: 'sha-384',
-  sha512: 'sha-512'
+  sha512: 'sha-512',
 };
 const SRI_STRENGTH: Record<string, number> = {
   sha256: 1,
   sha384: 2,
-  sha512: 3
+  sha512: 3,
 };
 type SriToken = {
   token: string;
@@ -72,15 +66,22 @@ type SriToken = {
   expectedB64: string;
 };
 function isSriAlgorithmCode(code: number): boolean {
-  return code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122;
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 function isBase64Code(code: number): boolean {
-  return code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code === 43 || code === 47 || code === 61;
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 43 ||
+    code === 47 ||
+    code === 61
+  );
 }
 function parseSriToken(token: string): SriToken {
   const sc = new Scanner(token, {
     encoding: 'ascii',
-    format: 'sri'
+    format: 'sri',
   });
   const tokenStart = sc.mark();
   const hashAlias = sc.eatWhile(isSriAlgorithmCode).toLowerCase();
@@ -91,7 +92,7 @@ function parseSriToken(token: string): SriToken {
   return {
     token: sc.text(tokenStart),
     hashAlias,
-    expectedB64
+    expectedB64,
   };
 }
 function parseSriTokens(integrity: string): {
@@ -110,7 +111,7 @@ function parseSriTokens(integrity: string): {
   }
   return {
     tokens,
-    malformed
+    malformed,
   };
 }
 function strongestSupportedSri(tokens: SriToken[]): SriToken | null {
@@ -131,45 +132,50 @@ function base64Digest(alg: string, bytes: Uint8Array): string {
     const b0 = actual[i]!;
     const b1 = actual[i + 1] ?? 0;
     const b2 = actual[i + 2] ?? 0;
-    actualB64 += chars[b0 >> 2]! + chars[(b0 & 3) << 4 | b1 >> 4]!;
-    actualB64 += i + 1 < actual.length ? chars[(b1 & 15) << 2 | b2 >> 6]! : '=';
+    actualB64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+    actualB64 += i + 1 < actual.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
     actualB64 += i + 2 < actual.length ? chars[b2 & 63]! : '=';
   }
   return actualB64;
 }
 /**
-* Verify downloaded tarball bytes against a package's npm integrity metadata.
-*
-* `integrity` holds one or more SRI tokens from the registry's `dist.integrity`
-* field, such as `sha512-base64…`; when several supported tokens are present
-* the strongest algorithm (`sha512` over `sha384` over `sha256`) is the one
-* actually checked. `shasum` is the registry's legacy `dist.shasum` SHA-1 hex
-* value, used only as a fallback. `packageId` (for example `left-pad@1.3.0`) is
-* interpolated into error messages so failures name the offending package.
-*
-* Verification is a no-op when OpenSSL is unavailable — `cryptoAvailable` is
-* false — or when neither metadata field is supplied, so callers must ensure
-* crypto is present for enforcement to mean anything. When a usable SRI token
-* exists it is checked and a `shasum` fallback is ignored; a digest mismatch
-* throws. If the only SRI tokens use unsupported algorithms, or the integrity
-* string is malformed, that is tolerated only when a `shasum` is available to
-* fall back to — otherwise it throws. The SHA-1 fallback throws on mismatch.
-*
-* Throws an `Error` whose message begins `Integrity check failed for <id>` on
-* any digest mismatch, unsupported-only SRI without a shasum, or unparseable
-* integrity string without a shasum.
-*
-* ```ts no_run
-*   import { verifyTarballIntegrity } from 'internal:package_manager';
-*
-*   const bytes = await fetchBytes(dist.tarball);
-*   // Throws if the bytes don't match the registry's advertised digest.
-*   verifyTarballIntegrity(bytes, dist.integrity, dist.shasum, 'left-pad@1.3.0');
-* ```
-*
-* @internal
-*/
-export function verifyTarballIntegrity(bytes: Uint8Array, integrity: string | undefined, shasum: string | undefined, packageId: string): void {
+ * Verify downloaded tarball bytes against a package's npm integrity metadata.
+ *
+ * `integrity` holds one or more SRI tokens from the registry's `dist.integrity`
+ * field, such as `sha512-base64…`; when several supported tokens are present
+ * the strongest algorithm (`sha512` over `sha384` over `sha256`) is the one
+ * actually checked. `shasum` is the registry's legacy `dist.shasum` SHA-1 hex
+ * value, used only as a fallback. `packageId` (for example `left-pad@1.3.0`) is
+ * interpolated into error messages so failures name the offending package.
+ *
+ * Verification is a no-op when OpenSSL is unavailable — `cryptoAvailable` is
+ * false — or when neither metadata field is supplied, so callers must ensure
+ * crypto is present for enforcement to mean anything. When a usable SRI token
+ * exists it is checked and a `shasum` fallback is ignored; a digest mismatch
+ * throws. If the only SRI tokens use unsupported algorithms, or the integrity
+ * string is malformed, that is tolerated only when a `shasum` is available to
+ * fall back to — otherwise it throws. The SHA-1 fallback throws on mismatch.
+ *
+ * Throws an `Error` whose message begins `Integrity check failed for <id>` on
+ * any digest mismatch, unsupported-only SRI without a shasum, or unparseable
+ * integrity string without a shasum.
+ *
+ * ```ts no_run
+ *   import { verifyTarballIntegrity } from 'internal:package_manager';
+ *
+ *   const bytes = await fetchBytes(dist.tarball);
+ *   // Throws if the bytes don't match the registry's advertised digest.
+ *   verifyTarballIntegrity(bytes, dist.integrity, dist.shasum, 'left-pad@1.3.0');
+ * ```
+ *
+ * @internal
+ */
+export function verifyTarballIntegrity(
+  bytes: Uint8Array,
+  integrity: string | undefined,
+  shasum: string | undefined,
+  packageId: string,
+): void {
   if (!openssl.cryptoAvailable) return;
   if (integrity) {
     const { tokens, malformed } = parseSriTokens(integrity);
@@ -185,15 +191,21 @@ export function verifyTarballIntegrity(bytes: Uint8Array, integrity: string | un
     }
     const unsupported = tokens.find((token) => !SRI_ALGORITHMS[token.hashAlias]);
     if (unsupported && !shasum) {
-      throw new Error(`Integrity check failed for ${packageId}: unsupported integrity algorithm "${unsupported.hashAlias}"`);
+      throw new Error(
+        `Integrity check failed for ${packageId}: unsupported integrity algorithm "${unsupported.hashAlias}"`,
+      );
     }
     if (malformed && !shasum) {
-      throw new Error(`Integrity check failed for ${packageId}: unrecognised integrity string "${integrity.slice(0, 30)}"`);
+      throw new Error(
+        `Integrity check failed for ${packageId}: unrecognised integrity string "${integrity.slice(0, 30)}"`,
+      );
     }
   }
   if (shasum) {
     const actual = openssl.digest('sha-1', bytes);
-    const actualHex = Array.from(actual).map((b) => b.toString(16).padStart(2, '0')).join('');
+    const actualHex = Array.from(actual)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
     if (actualHex !== shasum.toLowerCase()) {
       throw new Error(`Integrity check failed for ${packageId}: SHA-1 shasum mismatch`);
     }
@@ -207,41 +219,44 @@ function splitPackageSpec(input: string): {
   if (text.length === 0) throw new Error('Package name must not be empty');
   const scanner = new Scanner(text, {
     encoding: 'utf-8',
-    format: 'package-spec'
+    format: 'package-spec',
   });
   if (scanner.eatChar('@')) {
     const scopeStart = scanner.mark();
     scanner.eatUntil((code) => code === 47);
     const scope = scanner.text(scopeStart);
-    if (scope === '' || !scanner.eatChar('/')) throw new Error(`Invalid scoped package spec '${input}'`);
+    if (scope === '' || !scanner.eatChar('/'))
+      throw new Error(`Invalid scoped package spec '${input}'`);
     const nameStart = scanner.mark();
     scanner.eatUntil((code) => code === 64);
     const packageName = scanner.text(nameStart);
     if (packageName === '') throw new Error(`Invalid scoped package spec '${input}'`);
-    if (!scanner.eatChar('@')) return {
-      name: `@${scope}/${packageName}`,
-      range: null
-    };
+    if (!scanner.eatChar('@'))
+      return {
+        name: `@${scope}/${packageName}`,
+        range: null,
+      };
     const rangeStart = scanner.mark();
     scanner.eatWhile(() => true);
     return {
       name: `@${scope}/${packageName}`,
-      range: scanner.text(rangeStart) || null
+      range: scanner.text(rangeStart) || null,
     };
   }
   const nameStart = scanner.mark();
   scanner.eatUntil((code) => code === 64);
   const name = scanner.text(nameStart);
   if (name === '') throw new Error(`Invalid package spec '${input}'`);
-  if (!scanner.eatChar('@')) return {
-    name,
-    range: null
-  };
+  if (!scanner.eatChar('@'))
+    return {
+      name,
+      range: null,
+    };
   const rangeStart = scanner.mark();
   scanner.eatWhile(() => true);
   return {
     name,
-    range: scanner.text(rangeStart) || null
+    range: scanner.text(rangeStart) || null,
   };
 }
 function encodePackageDirName(name: string, version: string): string {
@@ -251,7 +266,7 @@ function normalizeRelativePath(path: string): string {
   const parts = [];
   const scanner = new Scanner(String(path).replace(/\\/g, '/'), {
     encoding: 'utf-8',
-    format: 'package-path'
+    format: 'package-path',
   });
   while (!scanner.done) {
     const start = scanner.mark();
@@ -290,10 +305,10 @@ async function ensureDir(path: string): Promise<void> {
   if (await exists(path)) return;
   const parent = dirname(path);
   if (parent && parent !== path) await ensureDir(parent);
-  if (!await exists(path)) await fs.mkdir(path);
+  if (!(await exists(path))) await fs.mkdir(path);
 }
 async function removeTree(path: string): Promise<void> {
-  if (!await exists(path)) return;
+  if (!(await exists(path))) return;
   const entry = await fs.entry(path);
   if (entry.isDirectory()) {
     const dir = await fs.dir(path);
@@ -383,7 +398,12 @@ function resolveExportsTarget(target: any): string | null {
   }
   return null;
 }
-function expandPatternEntrypoints(entrypoints: Record<string, string>, key: string, target: string, files: string[]): void {
+function expandPatternEntrypoints(
+  entrypoints: Record<string, string>,
+  key: string,
+  target: string,
+  files: string[],
+): void {
   const keyParts = splitExportPattern(key);
   const targetParts = splitExportPattern(target);
   if (!keyParts || !targetParts) return;
@@ -402,7 +422,7 @@ function splitExportPattern(pattern: string): {
 } | null {
   const scanner = new Scanner(pattern, {
     encoding: 'utf-8',
-    format: 'package-exports'
+    format: 'package-exports',
   });
   const prefixStart = scanner.mark();
   scanner.eatUntil((code) => code === 42);
@@ -414,14 +434,23 @@ function splitExportPattern(pattern: string): {
   if (!scanner.done) return null;
   return {
     prefix,
-    suffix
+    suffix,
   };
 }
-async function computeEntrypoints(packageDir: string, pkgJson: any): Promise<Record<string, string>> {
+async function computeEntrypoints(
+  packageDir: string,
+  pkgJson: any,
+): Promise<Record<string, string>> {
   const entrypoints: Record<string, string> = {};
   const files = await walkFiles(packageDir);
   const exportsField = pkgJson.exports;
-  if (typeof exportsField === 'string' || Array.isArray(exportsField) || exportsField && typeof exportsField === 'object' && !Object.keys(exportsField).some((key) => key.startsWith('.'))) {
+  if (
+    typeof exportsField === 'string' ||
+    Array.isArray(exportsField) ||
+    (exportsField &&
+      typeof exportsField === 'object' &&
+      !Object.keys(exportsField).some((key) => key.startsWith('.')))
+  ) {
     const target = resolveExportsTarget(exportsField);
     if (target) addEntrypoint(entrypoints, '.', target);
   } else if (exportsField && typeof exportsField === 'object') {
@@ -462,11 +491,18 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
 async function fetchPackument(ctx: InstallContext, name: string): Promise<any> {
   const cached = ctx.packumentCache.get(name);
   if (cached) return cached;
-  const data = await fetchJson(`${ctx.registry.replace(/\/$/, '')}/${encodeRegistryPackageName(name)}`);
+  const data = await fetchJson(
+    `${ctx.registry.replace(/\/$/, '')}/${encodeRegistryPackageName(name)}`,
+  );
   ctx.packumentCache.set(name, data);
   return data;
 }
-async function resolveAndInstall(ctx: InstallContext, name: string, range: string | null, optional: boolean = false): Promise<string | null> {
+async function resolveAndInstall(
+  ctx: InstallContext,
+  name: string,
+  range: string | null,
+  optional: boolean = false,
+): Promise<string | null> {
   try {
     const packument = await fetchPackument(ctx, name);
     const version = chooseVersion(packument, range);
@@ -486,7 +522,12 @@ async function resolveAndInstall(ctx: InstallContext, name: string, range: strin
     if (!tarball) throw new Error(`Package '${packageId}' has no dist.tarball`);
     const tarballBytes = await fetchBytes(tarball);
     // Verify tarball integrity before extracting to prevent supply-chain attacks.
-    verifyTarballIntegrity(tarballBytes, versionMeta.dist.integrity as string | undefined, versionMeta.dist.shasum as string | undefined, packageId);
+    verifyTarballIntegrity(
+      tarballBytes,
+      versionMeta.dist.integrity as string | undefined,
+      versionMeta.dist.shasum as string | undefined,
+      packageId,
+    );
     await fs.writeFile(tmpArchivePath, tarballBytes);
     try {
       await extractArchive(tmpArchivePath, tmpExtractDir);
@@ -511,21 +552,25 @@ async function resolveAndInstall(ctx: InstallContext, name: string, range: strin
       if (depId) dependencies[depName] = depId;
     }
     for (const depName of Object.keys(pkgJson.peerDependencies ?? {})) {
-      ctx.warnings.push(`peer dependency not installed automatically: ${pkgJson.name} -> ${depName}`);
+      ctx.warnings.push(
+        `peer dependency not installed automatically: ${pkgJson.name} -> ${depName}`,
+      );
     }
     const record = {
       name,
       version,
       dir: `.fino/packages/${packageDirName}/package`,
       entrypoints,
-      dependencies
+      dependencies,
     };
     ctx.packageCache.set(packageId, record);
     return packageId;
   } catch (error) {
     if (optional) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.warnings.push(`optional dependency failed: ${name}${range ? '@' + range : ''} (${message})`);
+      ctx.warnings.push(
+        `optional dependency failed: ${name}${range ? '@' + range : ''} (${message})`,
+      );
       return null;
     }
     throw error;
@@ -536,10 +581,13 @@ async function loadOrCreateRootPackageJson(root: string): Promise<any> {
   if (await exists(path)) return await readJson(path);
   return {
     name: 'fino-app',
-    type: 'module'
+    type: 'module',
   };
 }
-async function buildInstallPlan(root: string, packageSpecs: string[]): Promise<{
+async function buildInstallPlan(
+  root: string,
+  packageSpecs: string[],
+): Promise<{
   pkgJson: any;
   roots: Record<string, string>;
   explicitRequests: Map<string, string | null>;
@@ -547,7 +595,7 @@ async function buildInstallPlan(root: string, packageSpecs: string[]): Promise<{
   const pkgJson = await loadOrCreateRootPackageJson(root);
   const explicitRequests = new Map<string, string | null>();
   if (packageSpecs.length > 0) {
-    const dependencies = { ...pkgJson.dependencies ?? {} };
+    const dependencies = { ...(pkgJson.dependencies ?? {}) };
     for (const spec of packageSpecs) {
       const { name, range } = splitPackageSpec(spec);
       dependencies[name] = range ?? '*';
@@ -555,58 +603,58 @@ async function buildInstallPlan(root: string, packageSpecs: string[]): Promise<{
     }
     pkgJson.dependencies = dependencies;
     await writeJson(`${root}/package.json`, pkgJson);
-  } else if (!await exists(`${root}/package.json`)) {
+  } else if (!(await exists(`${root}/package.json`))) {
     throw new Error('fino install: package.json not found');
   }
   const roots = {
-    ...pkgJson.dependencies ?? {},
-    ...pkgJson.devDependencies ?? {},
-    ...pkgJson.optionalDependencies ?? {}
+    ...(pkgJson.dependencies ?? {}),
+    ...(pkgJson.devDependencies ?? {}),
+    ...(pkgJson.optionalDependencies ?? {}),
   };
   return {
     pkgJson,
     roots,
-    explicitRequests
+    explicitRequests,
   };
 }
 /**
-* Install a project's dependencies and write the Fino package map.
-*
-* This is the entry point behind `fino install`. It operates on the current
-* working directory as the project root. Each entry in `packageSpecs` is a
-* bare name (`left-pad`, `@scope/util`) or a `name@range` spec (`left-pad@^1.3`,
-* `@scope/util@latest`); when any specs are given they are merged into the root
-* `package.json`'s `dependencies` (creating a minimal `package.json` if none
-* exists) before resolution. When `packageSpecs` is empty an existing
-* `package.json` is required, and the union of its `dependencies`,
-* `devDependencies`, and `optionalDependencies` is installed.
-*
-* Resolution walks the dependency graph transitively, downloading and
-* integrity-checking each tarball and extracting it under `.fino/packages`.
-* Newly requested packages are pinned back into `package.json`: a spec given
-* without a range is rewritten to the exact resolved version, while an explicit
-* range is preserved as written. On completion the flat resolution graph is
-* serialized to `.fino/package-map.json` (schema `version: 1`, with the
-* registry, top-level `rootDependencies`, and every installed `packages`
-* record) for the loader to consume.
-*
-* Required-dependency failures propagate: network errors, missing
-* `dist.tarball`, unmatched semver ranges, and integrity mismatches all throw.
-* Optional-dependency and unsatisfiable-optional failures are collected as
-* warnings and printed via `console.warn` at the end rather than aborting the
-* install; peer dependencies are likewise only warned about, never installed.
-*
-* ```ts no_run
-*   import { installPackages } from 'internal:package_manager';
-*
-*   // From a project directory, add and install two packages.
-*   await installPackages(['left-pad@^1.3.0', '@scope/util']);
-*   // .fino/package-map.json and .fino/packages/* now exist; package.json
-*   // has left-pad pinned to its resolved range and @scope/util to a version.
-* ```
-*
-* @internal
-*/
+ * Install a project's dependencies and write the Fino package map.
+ *
+ * This is the entry point behind `fino install`. It operates on the current
+ * working directory as the project root. Each entry in `packageSpecs` is a
+ * bare name (`left-pad`, `@scope/util`) or a `name@range` spec (`left-pad@^1.3`,
+ * `@scope/util@latest`); when any specs are given they are merged into the root
+ * `package.json`'s `dependencies` (creating a minimal `package.json` if none
+ * exists) before resolution. When `packageSpecs` is empty an existing
+ * `package.json` is required, and the union of its `dependencies`,
+ * `devDependencies`, and `optionalDependencies` is installed.
+ *
+ * Resolution walks the dependency graph transitively, downloading and
+ * integrity-checking each tarball and extracting it under `.fino/packages`.
+ * Newly requested packages are pinned back into `package.json`: a spec given
+ * without a range is rewritten to the exact resolved version, while an explicit
+ * range is preserved as written. On completion the flat resolution graph is
+ * serialized to `.fino/package-map.json` (schema `version: 1`, with the
+ * registry, top-level `rootDependencies`, and every installed `packages`
+ * record) for the loader to consume.
+ *
+ * Required-dependency failures propagate: network errors, missing
+ * `dist.tarball`, unmatched semver ranges, and integrity mismatches all throw.
+ * Optional-dependency and unsatisfiable-optional failures are collected as
+ * warnings and printed via `console.warn` at the end rather than aborting the
+ * install; peer dependencies are likewise only warned about, never installed.
+ *
+ * ```ts no_run
+ *   import { installPackages } from 'internal:package_manager';
+ *
+ *   // From a project directory, add and install two packages.
+ *   await installPackages(['left-pad@^1.3.0', '@scope/util']);
+ *   // .fino/package-map.json and .fino/packages/* now exist; package.json
+ *   // has left-pad pinned to its resolved range and @scope/util to a version.
+ * ```
+ *
+ * @internal
+ */
 export async function installPackages(packageSpecs: string[] = []): Promise<void> {
   const root = cwd();
   const ctx: InstallContext = {
@@ -614,7 +662,7 @@ export async function installPackages(packageSpecs: string[] = []): Promise<void
     registry: DEFAULT_REGISTRY,
     packageCache: new Map(),
     packumentCache: new Map(),
-    warnings: []
+    warnings: [],
   };
   const { pkgJson, roots, explicitRequests } = await buildInstallPlan(root, packageSpecs);
   await ensureDir(`${root}/.fino`);
@@ -626,7 +674,7 @@ export async function installPackages(packageSpecs: string[] = []): Promise<void
     if (packageId) rootDependencies[name] = packageId;
   }
   if (explicitRequests.size > 0) {
-    const dependencies = { ...pkgJson.dependencies ?? {} };
+    const dependencies = { ...(pkgJson.dependencies ?? {}) };
     for (const [name, requestedRange] of explicitRequests.entries()) {
       if (requestedRange == null) {
         const packageId = rootDependencies[name];
@@ -643,7 +691,9 @@ export async function installPackages(packageSpecs: string[] = []): Promise<void
     root,
     registry: ctx.registry,
     rootDependencies,
-    packages: Object.fromEntries([...ctx.packageCache.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+    packages: Object.fromEntries(
+      [...ctx.packageCache.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    ),
   };
   await writeJson(`${root}/.fino/package-map.json`, packageMap);
   if (ctx.warnings.length > 0) {

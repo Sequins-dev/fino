@@ -1,8 +1,8 @@
 /**
-* Fixture: exercises file-backed sqlite from inside a child realm. The JS
-* VFS trampolines callbacks from blocking-pool threads, so this covers the
-* cross-realm promise settling path in the FFI bridge.
-*/
+ * Fixture: exercises file-backed sqlite from inside a child realm. The JS
+ * VFS trampolines callbacks from blocking-pool threads, so this covers the
+ * cross-realm promise settling path in the FFI bridge.
+ */
 import { Database } from 'fino:database/sqlite';
 
 export default async function sqliteInChild(path: string): Promise<number> {

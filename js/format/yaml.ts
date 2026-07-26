@@ -1,58 +1,58 @@
 /**
-* fino:format/yaml - YAML 1.2 core schema parser and serializer.
-*
-* YAML is a human-oriented data serialization format often used for
-* configuration, manifests, and multi-document files. This module implements
-* the YAML 1.2 core schema with a security-first surface: it resolves core
-* scalar types, expands anchors and aliases within configured limits, and never
-* constructs arbitrary application objects from tags.
-*
-* YAML 1.2.2 conformance matrix:
-*
-* | Area | Status |
-* | --- | --- |
-* | Block mappings/sequences | Supported for indentation-driven collections. |
-* | Flow collections | Supported for `[]` sequences and `{}` mappings. |
-* | Scalar styles | Plain, single-quoted, double-quoted, literal `|`, and folded `>` scalars are supported. |
-* | Core scalar resolution | YAML 1.2 core `null`, booleans, integers, floats, and strings are resolved; YAML 1.1 words such as `yes`, `on`, and `Off` stay strings. |
-* | Anchors and aliases | Supported within one document under an expansion budget; undefined, recursive, and cross-document aliases are rejected. |
-* | Explicit core tags | `!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!seq`, `!!map`, `!!binary`, and `!!timestamp` are supported. |
-* | Merge keys | `<<: *anchor` and `<<: [*a, *b]` are absorbed into the enclosing mapping. |
-* | Complex keys | `? key` is supported; mappings with non-string keys return `Map<unknown, YamlValue>`. |
-* | Comments and markers | Comments, `---`, `...`, and `parseAll()` multi-document streams are supported; comments and markers are not re-emitted. |
-* | Stringify normalization | Output preserves the value graph but normalizes comments, source anchor names, document markers, and merge syntax. |
-* | Security limits | Alias expansion is bounded by an estimated-size budget, and arbitrary object construction is never performed. |
-* | Intentional limits | `%YAML`/`%TAG` directives, custom tags, local tags, and application object construction are rejected. |
-*
-* This parser targets Fino's core-schema configuration use cases, not complete
-* YAML processor parity.
-*
-* YAML directives (`%YAML`, `%TAG`) are outside the release baseline and are
-* rejected.
-*
-* **Permanently excluded** (security baseline - never executes code):
-*   - Arbitrary type construction (!!ruby/object, etc.)
-*   - Custom user-defined tags
-*   - Local tags (!foo) - use !! core tags only
-*
-* **Note on merge keys**: merge pairs (<<) are absorbed at parse time into the
-* enclosing mapping. stringify does not re-emit them. The round-trip invariant
-* `deepEqual(parse(stringify(parse(x))), parse(x))` holds; text-exact
-* round-trip does not for documents with merge keys, comments, document
-* markers, or source anchor names.
-*
-* ```ts no_run
-* import { parse, stringify, parseAll } from 'fino:format/yaml';
-*
-* const cfg = parse('server:\n  port: 8080\nhosts:\n  - a\n  - b\n');
-* const text = stringify({ x: 1, y: [2, 3] });
-* const docs = parseAll('---\na: 1\n---\nb: 2\n');
-* ```
-*
-* Useful references:
-*   - YAML 1.2.2 specification: https://yaml.org/spec/1.2.2/
-*   - YAML core schema: https://yaml.org/spec/1.2.2/#103-core-schema
-*/
+ * fino:format/yaml - YAML 1.2 core schema parser and serializer.
+ *
+ * YAML is a human-oriented data serialization format often used for
+ * configuration, manifests, and multi-document files. This module implements
+ * the YAML 1.2 core schema with a security-first surface: it resolves core
+ * scalar types, expands anchors and aliases within configured limits, and never
+ * constructs arbitrary application objects from tags.
+ *
+ * YAML 1.2.2 conformance matrix:
+ *
+ * | Area | Status |
+ * | --- | --- |
+ * | Block mappings/sequences | Supported for indentation-driven collections. |
+ * | Flow collections | Supported for `[]` sequences and `{}` mappings. |
+ * | Scalar styles | Plain, single-quoted, double-quoted, literal `|`, and folded `>` scalars are supported. |
+ * | Core scalar resolution | YAML 1.2 core `null`, booleans, integers, floats, and strings are resolved; YAML 1.1 words such as `yes`, `on`, and `Off` stay strings. |
+ * | Anchors and aliases | Supported within one document under an expansion budget; undefined, recursive, and cross-document aliases are rejected. |
+ * | Explicit core tags | `!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!seq`, `!!map`, `!!binary`, and `!!timestamp` are supported. |
+ * | Merge keys | `<<: *anchor` and `<<: [*a, *b]` are absorbed into the enclosing mapping. |
+ * | Complex keys | `? key` is supported; mappings with non-string keys return `Map<unknown, YamlValue>`. |
+ * | Comments and markers | Comments, `---`, `...`, and `parseAll()` multi-document streams are supported; comments and markers are not re-emitted. |
+ * | Stringify normalization | Output preserves the value graph but normalizes comments, source anchor names, document markers, and merge syntax. |
+ * | Security limits | Alias expansion is bounded by an estimated-size budget, and arbitrary object construction is never performed. |
+ * | Intentional limits | `%YAML`/`%TAG` directives, custom tags, local tags, and application object construction are rejected. |
+ *
+ * This parser targets Fino's core-schema configuration use cases, not complete
+ * YAML processor parity.
+ *
+ * YAML directives (`%YAML`, `%TAG`) are outside the release baseline and are
+ * rejected.
+ *
+ * **Permanently excluded** (security baseline - never executes code):
+ *   - Arbitrary type construction (!!ruby/object, etc.)
+ *   - Custom user-defined tags
+ *   - Local tags (!foo) - use !! core tags only
+ *
+ * **Note on merge keys**: merge pairs (<<) are absorbed at parse time into the
+ * enclosing mapping. stringify does not re-emit them. The round-trip invariant
+ * `deepEqual(parse(stringify(parse(x))), parse(x))` holds; text-exact
+ * round-trip does not for documents with merge keys, comments, document
+ * markers, or source anchor names.
+ *
+ * ```ts no_run
+ * import { parse, stringify, parseAll } from 'fino:format/yaml';
+ *
+ * const cfg = parse('server:\n  port: 8080\nhosts:\n  - a\n  - b\n');
+ * const text = stringify({ x: 1, y: [2, 3] });
+ * const docs = parseAll('---\na: 1\n---\nb: 2\n');
+ * ```
+ *
+ * Useful references:
+ *   - YAML 1.2.2 specification: https://yaml.org/spec/1.2.2/
+ *   - YAML core schema: https://yaml.org/spec/1.2.2/#103-core-schema
+ */
 import { ParseError } from 'fino:parsing/scanner';
 import { decodeUtf8 } from 'internal:encoding';
 // ---------------------------------------------------------------------------
@@ -69,252 +69,261 @@ const CORE_TAGS = new Set([
   'seq',
   'map',
   'binary',
-  'timestamp'
+  'timestamp',
 ]);
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 /**
-* Error thrown when YAML input is malformed or violates configured limits.
-*
-* The error extends `ParseError` and carries YAML format metadata plus line,
-* column, and offset information where available. Duplicate keys, unsupported
-* tags, undefined aliases, alias expansion limits, and syntax errors are
-* reported through this type.
-*
-* ```ts no_run
-* import { YamlParseError, parse } from 'fino:format/yaml';
-*
-* try {
-*   parse('a: 1\na: 2\n');
-* } catch (error) {
-*   if (error instanceof YamlParseError) console.error(error.render());
-* }
-* ```
-*/
+ * Error thrown when YAML input is malformed or violates configured limits.
+ *
+ * The error extends `ParseError` and carries YAML format metadata plus line,
+ * column, and offset information where available. Duplicate keys, unsupported
+ * tags, undefined aliases, alias expansion limits, and syntax errors are
+ * reported through this type.
+ *
+ * ```ts no_run
+ * import { YamlParseError, parse } from 'fino:format/yaml';
+ *
+ * try {
+ *   parse('a: 1\na: 2\n');
+ * } catch (error) {
+ *   if (error instanceof YamlParseError) console.error(error.render());
+ * }
+ * ```
+ */
 export class YamlParseError extends ParseError {
   /**
-  * Error name, always `'YamlParseError'`.
-  *
-  * Useful for distinguishing YAML failures from other `ParseError` subclasses
-  * in logs or serialized error reports where `instanceof` is unavailable.
-  */
+   * Error name, always `'YamlParseError'`.
+   *
+   * Useful for distinguishing YAML failures from other `ParseError` subclasses
+   * in logs or serialized error reports where `instanceof` is unavailable.
+   */
   name = 'YamlParseError';
 }
 /**
-* Value types produced by the YAML core schema parser and accepted by stringify.
-*
-* Core tags resolve to JavaScript primitives, `Uint8Array` for `!!binary`,
-* `Date` for `!!timestamp`, arrays for sequences, plain objects for mappings
-* with string keys, and `Map` for mappings with complex keys.
-*
-* ```ts no_run
-* import { parse, stringify, type YamlValue } from 'fino:format/yaml';
-*
-* const value: YamlValue = parse('enabled: true\ncount: 3\n');
-* stringify(value);
-* ```
-*/
-export type YamlValue = null | boolean | number | string | Uint8Array | Date | YamlValue[] | YamlMapping | Map<unknown, YamlValue>;
+ * Value types produced by the YAML core schema parser and accepted by stringify.
+ *
+ * Core tags resolve to JavaScript primitives, `Uint8Array` for `!!binary`,
+ * `Date` for `!!timestamp`, arrays for sequences, plain objects for mappings
+ * with string keys, and `Map` for mappings with complex keys.
+ *
+ * ```ts no_run
+ * import { parse, stringify, type YamlValue } from 'fino:format/yaml';
+ *
+ * const value: YamlValue = parse('enabled: true\ncount: 3\n');
+ * stringify(value);
+ * ```
+ */
+export type YamlValue =
+  | null
+  | boolean
+  | number
+  | string
+  | Uint8Array
+  | Date
+  | YamlValue[]
+  | YamlMapping
+  | Map<unknown, YamlValue>;
 /**
-* Plain-object YAML mapping with string keys.
-*
-* Mappings with non-string keys are returned as `Map<unknown, YamlValue>`
-* instead, because JavaScript object keys cannot preserve arbitrary YAML key
-* values.
-*
-* ```ts no_run
-* import { parse, type YamlMapping } from 'fino:format/yaml';
-*
-* const mapping = parse('server:\n  port: 8080\n') as YamlMapping;
-* (mapping.server as YamlMapping).port;
-* ```
-*/
+ * Plain-object YAML mapping with string keys.
+ *
+ * Mappings with non-string keys are returned as `Map<unknown, YamlValue>`
+ * instead, because JavaScript object keys cannot preserve arbitrary YAML key
+ * values.
+ *
+ * ```ts no_run
+ * import { parse, type YamlMapping } from 'fino:format/yaml';
+ *
+ * const mapping = parse('server:\n  port: 8080\n') as YamlMapping;
+ * (mapping.server as YamlMapping).port;
+ * ```
+ */
 export type YamlMapping = {
   /**
-  * Entry keyed by the mapping key's string form.
-  *
-  * The parser produces this object shape only when every key in the mapping
-  * is a plain string; a mapping with any non-string key is returned as
-  * `Map<unknown, YamlValue>` instead.
-  */
+   * Entry keyed by the mapping key's string form.
+   *
+   * The parser produces this object shape only when every key in the mapping
+   * is a plain string; a mapping with any non-string key is returned as
+   * `Map<unknown, YamlValue>` instead.
+   */
   [k: string]: YamlValue;
 };
 /**
-* Options controlling YAML parsing limits and duplicate-key behavior.
-*
-* Defaults reject duplicate keys and cap total alias expansion at 1,000,000
-* estimated characters.
-*
-* ```ts no_run
-* import { parse, type YamlParseOptions } from 'fino:format/yaml';
-*
-* const options: YamlParseOptions = { maxAliasExpansion: 10_000 };
-* parse('a: 1\n', options);
-* ```
-*/
+ * Options controlling YAML parsing limits and duplicate-key behavior.
+ *
+ * Defaults reject duplicate keys and cap total alias expansion at 1,000,000
+ * estimated characters.
+ *
+ * ```ts no_run
+ * import { parse, type YamlParseOptions } from 'fino:format/yaml';
+ *
+ * const options: YamlParseOptions = { maxAliasExpansion: 10_000 };
+ * parse('a: 1\n', options);
+ * ```
+ */
 export interface YamlParseOptions {
   /**
-  * Permit later duplicate keys to replace earlier values. Defaults to `false`.
-  *
-  * When disabled, duplicate keys throw `YamlParseError`. For complex keys,
-  * duplicate detection uses a JSON string form and is best-effort.
-  *
-  * ```ts no_run
-  * import { parse } from 'fino:format/yaml';
-  *
-  * parse('a: 1\na: 2\n', { allowDuplicateKeys: true });
-  * ```
-  */
+   * Permit later duplicate keys to replace earlier values. Defaults to `false`.
+   *
+   * When disabled, duplicate keys throw `YamlParseError`. For complex keys,
+   * duplicate detection uses a JSON string form and is best-effort.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/yaml';
+   *
+   * parse('a: 1\na: 2\n', { allowDuplicateKeys: true });
+   * ```
+   */
   allowDuplicateKeys?: boolean;
   /**
-  * Maximum estimated expanded character count from aliases.
-  *
-  * Defaults to `1_000_000`. Lower values can reject hostile or accidental
-  * alias amplification earlier for untrusted inputs.
-  *
-  * ```ts no_run
-  * import { parse } from 'fino:format/yaml';
-  *
-  * parse('a: &a hello\nb: *a\n', { maxAliasExpansion: 100 });
-  * ```
-  */
+   * Maximum estimated expanded character count from aliases.
+   *
+   * Defaults to `1_000_000`. Lower values can reject hostile or accidental
+   * alias amplification earlier for untrusted inputs.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/yaml';
+   *
+   * parse('a: &a hello\nb: *a\n', { maxAliasExpansion: 100 });
+   * ```
+   */
   maxAliasExpansion?: number;
   /**
-  * Reserved cap on nested alias expansion depth. Defaults to `100`.
-  *
-  * The current parser resolves an alias against a node that is already fully
-  * constructed (an anchor is only bound once its value is complete, which is
-  * also why self-referential aliases fail as undefined), so depth cannot grow
-  * during resolution and this option is not separately enforced. Alias
-  * amplification attacks are instead caught by the `maxAliasExpansion`
-  * budget. The option is accepted so configurations remain valid if a future
-  * parser needs an explicit depth check.
-  */
+   * Reserved cap on nested alias expansion depth. Defaults to `100`.
+   *
+   * The current parser resolves an alias against a node that is already fully
+   * constructed (an anchor is only bound once its value is complete, which is
+   * also why self-referential aliases fail as undefined), so depth cannot grow
+   * during resolution and this option is not separately enforced. Alias
+   * amplification attacks are instead caught by the `maxAliasExpansion`
+   * budget. The option is accepted so configurations remain valid if a future
+   * parser needs an explicit depth check.
+   */
   maxAliasDepth?: number;
 }
 /**
-* Options controlling YAML serialization style.
-*
-* Stringification emits a readable block style for objects and arrays and does
-* not preserve source comments, anchor names, or merge keys from parsed
-* input.
-*
-* ```ts no_run
-* import { stringify, type YamlStringifyOptions } from 'fino:format/yaml';
-*
-* const options: YamlStringifyOptions = { indent: 4 };
-* stringify({ server: { port: 8080 } }, options);
-* ```
-*/
+ * Options controlling YAML serialization style.
+ *
+ * Stringification emits a readable block style for objects and arrays and does
+ * not preserve source comments, anchor names, or merge keys from parsed
+ * input.
+ *
+ * ```ts no_run
+ * import { stringify, type YamlStringifyOptions } from 'fino:format/yaml';
+ *
+ * const options: YamlStringifyOptions = { indent: 4 };
+ * stringify({ server: { port: 8080 } }, options);
+ * ```
+ */
 export interface YamlStringifyOptions {
   /**
-  * Spaces per nesting level. Defaults to `2`.
-  *
-  * Values are used directly by the formatter; choose a positive integer for
-  * conventional YAML output.
-  *
-  * ```ts no_run
-  * import { stringify } from 'fino:format/yaml';
-  *
-  * stringify({ a: { b: 1 } }, { indent: 4 });
-  * ```
-  */
+   * Spaces per nesting level. Defaults to `2`.
+   *
+   * Values are used directly by the formatter; choose a positive integer for
+   * conventional YAML output.
+   *
+   * ```ts no_run
+   * import { stringify } from 'fino:format/yaml';
+   *
+   * stringify({ a: { b: 1 } }, { indent: 4 });
+   * ```
+   */
   indent?: number;
   /**
-  * Reserved preferred scalar wrapping width.
-  *
-  * The current formatter never wraps scalars: long strings stay on one line
-  * (quoted when required), and short all-scalar sequences are inlined using a
-  * fixed internal width. This option is accepted but has no effect on output
-  * today; it exists so configurations remain valid if wrapping is added.
-  */
+   * Reserved preferred scalar wrapping width.
+   *
+   * The current formatter never wraps scalars: long strings stay on one line
+   * (quoted when required), and short all-scalar sequences are inlined using a
+   * fixed internal width. This option is accepted but has no effect on output
+   * today; it exists so configurations remain valid if wrapping is added.
+   */
   lineWidth?: number;
 }
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 /**
-* Parse one YAML document, returning the first document from a stream.
-*
-* String input is parsed directly; byte input is decoded as UTF-8. If the input
-* contains no document content, the function returns `null`. For multi-document
-* streams, use `parseAll()` to keep every document.
-*
-* Throws `YamlParseError` when the input is malformed, uses an unsupported
-* feature (directives, custom or local tags), repeats a key without
-* `allowDuplicateKeys`, or exceeds the alias expansion budget.
-*
-* ```ts no_run
-* import { parse, type YamlMapping } from 'fino:format/yaml';
-*
-* const config = parse(`
-* server:
-*   host: 0.0.0.0
-*   port: 8080
-* features:
-*   - metrics
-*   - tracing
-* `) as YamlMapping;
-*
-* const server = config.server as YamlMapping;
-* server.port;    // 8080 (number, resolved by the core schema)
-* config.features; // ['metrics', 'tracing']
-* ```
-*/
+ * Parse one YAML document, returning the first document from a stream.
+ *
+ * String input is parsed directly; byte input is decoded as UTF-8. If the input
+ * contains no document content, the function returns `null`. For multi-document
+ * streams, use `parseAll()` to keep every document.
+ *
+ * Throws `YamlParseError` when the input is malformed, uses an unsupported
+ * feature (directives, custom or local tags), repeats a key without
+ * `allowDuplicateKeys`, or exceeds the alias expansion budget.
+ *
+ * ```ts no_run
+ * import { parse, type YamlMapping } from 'fino:format/yaml';
+ *
+ * const config = parse(`
+ * server:
+ *   host: 0.0.0.0
+ *   port: 8080
+ * features:
+ *   - metrics
+ *   - tracing
+ * `) as YamlMapping;
+ *
+ * const server = config.server as YamlMapping;
+ * server.port;    // 8080 (number, resolved by the core schema)
+ * config.features; // ['metrics', 'tracing']
+ * ```
+ */
 export function parse(input: string | Uint8Array, options: YamlParseOptions = {}): YamlValue {
   const src = typeof input === 'string' ? input : decodeUtf8(input, true, true);
   const docs = new YamlParser(src, options).parseAll();
   return docs[0] ?? null;
 }
 /**
-* Parse all YAML documents from a multi-document stream.
-*
-* Document markers (`---` and `...`) are consumed between documents. Anchors
-* are scoped per document and cleared before parsing the next document, so an
-* alias in one document cannot reference an anchor from a previous one. Empty
-* input returns an empty array.
-*
-* Throws `YamlParseError` under the same conditions as `parse()`; a syntax
-* error anywhere in the stream fails the whole call.
-*
-* ```ts no_run
-* import { parseAll } from 'fino:format/yaml';
-*
-* const docs = parseAll('---\na: 1\n---\nb: 2\n');
-* docs.length; // 2
-* ```
-*/
+ * Parse all YAML documents from a multi-document stream.
+ *
+ * Document markers (`---` and `...`) are consumed between documents. Anchors
+ * are scoped per document and cleared before parsing the next document, so an
+ * alias in one document cannot reference an anchor from a previous one. Empty
+ * input returns an empty array.
+ *
+ * Throws `YamlParseError` under the same conditions as `parse()`; a syntax
+ * error anywhere in the stream fails the whole call.
+ *
+ * ```ts no_run
+ * import { parseAll } from 'fino:format/yaml';
+ *
+ * const docs = parseAll('---\na: 1\n---\nb: 2\n');
+ * docs.length; // 2
+ * ```
+ */
 export function parseAll(input: string | Uint8Array, options: YamlParseOptions = {}): YamlValue[] {
   const src = typeof input === 'string' ? input : decodeUtf8(input, true, true);
   return new YamlParser(src, options).parseAll();
 }
 /**
-* Serialize a YAML-compatible value.
-*
-* Serialization emits YAML core-schema values from JavaScript primitives,
-* arrays, plain mappings, `Map`, `Uint8Array` (as `!!binary`), and `Date` (as
-* `!!timestamp`). It does not re-emit comments, merge keys, document markers,
-* or anchor names from parsed input; however, an object referenced more than
-* once in the value graph is emitted once with a generated anchor (`&a1`) and
-* aliased (`*a1`) at later occurrences, so shared identity survives a
-* round-trip. Strings that would otherwise resolve as another scalar type, or
-* that start with an indicator character or contain newlines, are
-* single-quoted.
-*
-* ```ts no_run
-* import { stringify } from 'fino:format/yaml';
-*
-* stringify({
-*   server: { host: '0.0.0.0', port: 8080 },
-*   hosts: ['a', 'b'],
-* });
-* // server:
-* //   host: 0.0.0.0
-* //   port: 8080
-* // hosts: [a, b]
-* ```
-*/
+ * Serialize a YAML-compatible value.
+ *
+ * Serialization emits YAML core-schema values from JavaScript primitives,
+ * arrays, plain mappings, `Map`, `Uint8Array` (as `!!binary`), and `Date` (as
+ * `!!timestamp`). It does not re-emit comments, merge keys, document markers,
+ * or anchor names from parsed input; however, an object referenced more than
+ * once in the value graph is emitted once with a generated anchor (`&a1`) and
+ * aliased (`*a1`) at later occurrences, so shared identity survives a
+ * round-trip. Strings that would otherwise resolve as another scalar type, or
+ * that start with an indicator character or contain newlines, are
+ * single-quoted.
+ *
+ * ```ts no_run
+ * import { stringify } from 'fino:format/yaml';
+ *
+ * stringify({
+ *   server: { host: '0.0.0.0', port: 8080 },
+ *   hosts: ['a', 'b'],
+ * });
+ * // server:
+ * //   host: 0.0.0.0
+ * //   port: 8080
+ * // hosts: [a, b]
+ * ```
+ */
 export function stringify(value: YamlValue, options: YamlStringifyOptions = {}): string {
   const indent = options.indent ?? 2;
   return new YamlStringifier(indent).stringify(value);
@@ -354,7 +363,7 @@ class YamlParser {
       offset: this.#pos,
       line: this.#line,
       column: this.#col(),
-      source: new Uint8Array(0)
+      source: new Uint8Array(0),
     });
   }
   #col(): number {
@@ -380,7 +389,10 @@ class YamlParser {
     return this.#pos >= this.#src.length;
   }
   #skipSpaces(): void {
-    while (this.#pos < this.#src.length && (this.#src[this.#pos] === ' ' || this.#src[this.#pos] === '	')) {
+    while (
+      this.#pos < this.#src.length &&
+      (this.#src[this.#pos] === ' ' || this.#src[this.#pos] === '	')
+    ) {
       this.#pos++;
     }
   }
@@ -431,13 +443,23 @@ class YamlParser {
       if (this.#src[this.#pos] === '%') {
         this.#err('YAML directives are not supported');
       }
-      if (this.#src.startsWith('---', this.#pos) && (this.#src[this.#pos + 3] === '\n' || this.#src[this.#pos + 3] === ' ' || !this.#src[this.#pos + 3])) {
+      if (
+        this.#src.startsWith('---', this.#pos) &&
+        (this.#src[this.#pos + 3] === '\n' ||
+          this.#src[this.#pos + 3] === ' ' ||
+          !this.#src[this.#pos + 3])
+      ) {
         this.#pos += 3;
         this.#skipLine();
         this.#skipWsAndComments();
         continue;
       }
-      if (this.#src.startsWith('...', this.#pos) && (this.#src[this.#pos + 3] === '\n' || this.#src[this.#pos + 3] === ' ' || !this.#src[this.#pos + 3])) {
+      if (
+        this.#src.startsWith('...', this.#pos) &&
+        (this.#src[this.#pos + 3] === '\n' ||
+          this.#src[this.#pos + 3] === ' ' ||
+          !this.#src[this.#pos + 3])
+      ) {
         this.#pos += 3;
         this.#skipLine();
         this.#skipWsAndComments();
@@ -471,7 +493,11 @@ class YamlParser {
     const ch = this.#peek();
     if (!ch || this.#atEnd()) {
       value = null;
-    } else if (!inFlow && ch === '?' && (this.#peek(1) === ' ' || this.#peek(1) === '\n' || this.#peek(1) === '\r')) {
+    } else if (
+      !inFlow &&
+      ch === '?' &&
+      (this.#peek(1) === ' ' || this.#peek(1) === '\n' || this.#peek(1) === '\r')
+    ) {
       // Complex mapping key at the start of a value position
       value = this.#parseBlockMap(valueIndent);
     } else if (ch === '-' && (this.#peek(1) === ' ' || this.#peek(1) === '\n') && !inFlow) {
@@ -484,7 +510,7 @@ class YamlParser {
       value = this.#parseBlockScalar(valueIndent, 'literal');
     } else if (ch === '>') {
       value = this.#parseBlockScalar(valueIndent, 'folded');
-    } else if (ch === '\'') {
+    } else if (ch === "'") {
       value = this.#parseSingleQuoted();
     } else if (ch === '"') {
       value = this.#parseDoubleQuoted();
@@ -523,7 +549,7 @@ class YamlParser {
     }
     return {
       anchor,
-      tag
+      tag,
     };
   }
   #parseAnchorName(): string {
@@ -531,7 +557,13 @@ class YamlParser {
     const start = this.#pos;
     while (this.#pos < this.#src.length) {
       const c = this.#src[this.#pos]!;
-      if (c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c === '_' || c === '-') {
+      if (
+        (c >= 'A' && c <= 'Z') ||
+        (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') ||
+        c === '_' ||
+        c === '-'
+      ) {
         this.#pos++;
       } else {
         break;
@@ -543,7 +575,11 @@ class YamlParser {
   #parseTagName(): string {
     this.#pos++;
     if (this.#src[this.#pos] !== '!') {
-      while (this.#pos < this.#src.length && this.#src[this.#pos] !== ' ' && this.#src[this.#pos] !== '\n') {
+      while (
+        this.#pos < this.#src.length &&
+        this.#src[this.#pos] !== ' ' &&
+        this.#src[this.#pos] !== '\n'
+      ) {
         this.#pos++;
       }
       this.#err('local tags not supported (use !! core tags only)');
@@ -552,7 +588,7 @@ class YamlParser {
     const start = this.#pos;
     while (this.#pos < this.#src.length) {
       const c = this.#src[this.#pos]!;
-      if (c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+      if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
         this.#pos++;
       } else {
         break;
@@ -568,7 +604,13 @@ class YamlParser {
     const start = this.#pos;
     while (this.#pos < this.#src.length) {
       const c = this.#src[this.#pos]!;
-      if (c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c === '_' || c === '-') {
+      if (
+        (c >= 'A' && c <= 'Z') ||
+        (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') ||
+        c === '_' ||
+        c === '-'
+      ) {
         this.#pos++;
       } else {
         break;
@@ -641,9 +683,19 @@ class YamlParser {
     }
   }
   #isMapping(v: YamlValue): boolean {
-    return v !== null && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Uint8Array) && !(v instanceof Date);
+    return (
+      v !== null &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      !(v instanceof Uint8Array) &&
+      !(v instanceof Date)
+    );
   }
-  #insertMappingEntry(container: YamlMapping | Map<unknown, YamlValue>, key: YamlValue, value: YamlValue): YamlMapping | Map<unknown, YamlValue> {
+  #insertMappingEntry(
+    container: YamlMapping | Map<unknown, YamlValue>,
+    key: YamlValue,
+    value: YamlValue,
+  ): YamlMapping | Map<unknown, YamlValue> {
     if (container instanceof Map) {
       container.set(key, value);
       return container;
@@ -658,11 +710,15 @@ class YamlParser {
     m.set(key, value);
     return m;
   }
-  #applyMerge(target: YamlMapping | Map<unknown, YamlValue>, src: YamlValue): YamlMapping | Map<unknown, YamlValue> {
+  #applyMerge(
+    target: YamlMapping | Map<unknown, YamlValue>,
+    src: YamlValue,
+  ): YamlMapping | Map<unknown, YamlValue> {
     const sources: Array<YamlMapping | Map<unknown, YamlValue>> = [];
     if (Array.isArray(src)) {
       for (const item of src) {
-        if (!this.#isMapping(item)) this.#err('merge value must be a mapping or sequence of mappings');
+        if (!this.#isMapping(item))
+          this.#err('merge value must be a mapping or sequence of mappings');
         sources.push(item as YamlMapping | Map<unknown, YamlValue>);
       }
     } else if (this.#isMapping(src)) {
@@ -671,10 +727,14 @@ class YamlParser {
       this.#err('merge value must be a mapping or sequence of mappings');
     }
     for (const source of sources) {
-      const entries: Array<[unknown, YamlValue]> = source instanceof Map ? [...source.entries()] : Object.entries(source as YamlMapping);
+      const entries: Array<[unknown, YamlValue]> =
+        source instanceof Map ? [...source.entries()] : Object.entries(source as YamlMapping);
       for (const [k, v] of entries) {
         const key = k as YamlValue;
-        const hasKey = target instanceof Map ? target.has(key) : typeof key === 'string' && key in (target as YamlMapping);
+        const hasKey =
+          target instanceof Map
+            ? target.has(key)
+            : typeof key === 'string' && key in (target as YamlMapping);
         if (!hasKey) target = this.#insertMappingEntry(target, key, v);
       }
     }
@@ -685,8 +745,9 @@ class YamlParser {
     while (i < this.#src.length) {
       const c = this.#src[i]!;
       if (c === '\n' || c === '\r') return -1;
-      if (c === ':' && (this.#src[i + 1] === ' ' || this.#src[i + 1] === '\n' || !this.#src[i + 1])) return i;
-      if (c === '"' || c === '\'') {
+      if (c === ':' && (this.#src[i + 1] === ' ' || this.#src[i + 1] === '\n' || !this.#src[i + 1]))
+        return i;
+      if (c === '"' || c === "'") {
         const q = c;
         i++;
         while (i < this.#src.length && this.#src[i] !== q) {
@@ -712,17 +773,27 @@ class YamlParser {
       this.#skipSpaces();
       let key: YamlValue;
       let isMerge = false;
-      if (this.#peek() === '?' && (this.#peek(1) === ' ' || this.#peek(1) === '\n' || this.#peek(1) === '\r')) {
+      if (
+        this.#peek() === '?' &&
+        (this.#peek(1) === ' ' || this.#peek(1) === '\n' || this.#peek(1) === '\r')
+      ) {
         // Complex key: ? <value>
         this.#pos++;
         this.#skipSpaces();
-        if (this.#src[this.#pos] === '\n' || this.#src[this.#pos] === '\r') this.#skipWsAndComments();
+        if (this.#src[this.#pos] === '\n' || this.#src[this.#pos] === '\r')
+          this.#skipWsAndComments();
         key = this.#atEnd() ? null : this.#parseValue(colIndent + 1, false);
         this.#skipWsAndComments();
         if (this.#src[this.#pos] !== ':') this.#err('expected ":" after complex mapping key');
         this.#pos++;
         if (this.#src[this.#pos] === ' ') this.#pos++;
-      } else if (this.#src.startsWith('<<', this.#pos) && (this.#src[this.#pos + 2] === ':' || this.#src[this.#pos + 2] === ' ' || this.#src[this.#pos + 2] === '\n' || !this.#src[this.#pos + 2])) {
+      } else if (
+        this.#src.startsWith('<<', this.#pos) &&
+        (this.#src[this.#pos + 2] === ':' ||
+          this.#src[this.#pos + 2] === ' ' ||
+          this.#src[this.#pos + 2] === '\n' ||
+          !this.#src[this.#pos + 2])
+      ) {
         // Merge key: <<: <value>
         isMerge = true;
         this.#pos += 2;
@@ -784,13 +855,19 @@ class YamlParser {
   }
   #parseKey(): string {
     const ch = this.#peek();
-    if (ch === '\'') return this.#parseSingleQuoted() as string;
+    if (ch === "'") return this.#parseSingleQuoted() as string;
     if (ch === '"') return this.#parseDoubleQuoted() as string;
     const start = this.#pos;
     while (this.#pos < this.#src.length) {
       const c = this.#src[this.#pos]!;
       if (c === '\n' || c === '\r') break;
-      if (c === ':' && (this.#src[this.#pos + 1] === ' ' || this.#src[this.#pos + 1] === '\n' || !this.#src[this.#pos + 1])) break;
+      if (
+        c === ':' &&
+        (this.#src[this.#pos + 1] === ' ' ||
+          this.#src[this.#pos + 1] === '\n' ||
+          !this.#src[this.#pos + 1])
+      )
+        break;
       this.#pos++;
     }
     return this.#src.slice(start, this.#pos).trim();
@@ -869,7 +946,10 @@ class YamlParser {
         this.#skipWsAndComments();
         if (this.#src[this.#pos] === ':') this.#pos++;
         this.#skipSpaces();
-      } else if (this.#src.startsWith('<<', this.#pos) && (this.#src[this.#pos + 2] === ':' || this.#src[this.#pos + 2] === ' ')) {
+      } else if (
+        this.#src.startsWith('<<', this.#pos) &&
+        (this.#src[this.#pos + 2] === ':' || this.#src[this.#pos + 2] === ' ')
+      ) {
         isMerge = true;
         this.#pos += 2;
         this.#skipWsAndComments();
@@ -1000,10 +1080,10 @@ class YamlParser {
     let s = '';
     while (this.#pos < this.#src.length) {
       const ch = this.#src[this.#pos]!;
-      if (ch === '\'') {
+      if (ch === "'") {
         this.#pos++;
-        if (this.#src[this.#pos] === '\'') {
-          s += '\'';
+        if (this.#src[this.#pos] === "'") {
+          s += "'";
           this.#pos++;
           continue;
         }
@@ -1068,7 +1148,8 @@ class YamlParser {
           case '\n':
             this.#line++;
             break;
-          default: s += esc;
+          default:
+            s += esc;
         }
         continue;
       }
@@ -1105,7 +1186,8 @@ function _resolveScalar(raw: string): YamlValue {
   if (/^[-+]?(?:0|[1-9][0-9]*)$/.test(raw)) return parseInt(raw, 10);
   if (/^0x[0-9a-fA-F]+$/.test(raw)) return parseInt(raw, 16);
   if (/^0o[0-7]+$/.test(raw)) return parseInt(raw.slice(2), 8);
-  if (/^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?$/.test(raw)) return parseFloat(raw);
+  if (/^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?$/.test(raw))
+    return parseFloat(raw);
   return raw;
 }
 function _estimateSize(value: YamlValue): number {
@@ -1113,7 +1195,7 @@ function _estimateSize(value: YamlValue): number {
   if (typeof value === 'boolean') return 5;
   if (typeof value === 'number') return String(value).length;
   if (typeof value === 'string') return value.length + 2;
-  if (value instanceof Uint8Array) return Math.ceil(value.byteLength * 4 / 3) + 10;
+  if (value instanceof Uint8Array) return Math.ceil((value.byteLength * 4) / 3) + 10;
   if (value instanceof Date) return 30;
   if (Array.isArray(value)) {
     let s = 2;
@@ -1126,7 +1208,8 @@ function _estimateSize(value: YamlValue): number {
     return s;
   }
   let s = 2;
-  for (const [k, v] of Object.entries(value as YamlMapping)) s += k.length + 2 + _estimateSize(v) + 2;
+  for (const [k, v] of Object.entries(value as YamlMapping))
+    s += k.length + 2 + _estimateSize(v) + 2;
   return s;
 }
 function _decodeBase64(s: string): Uint8Array {
@@ -1147,10 +1230,13 @@ function _encodeBase64(bytes: Uint8Array): string {
 class YamlStringifier {
   #indent: number;
   #refCounts: Map<object, number> = new Map();
-  #anchorIds: Map<object, {
-    id: number;
-    emitted: boolean;
-  }> = new Map();
+  #anchorIds: Map<
+    object,
+    {
+      id: number;
+      emitted: boolean;
+    }
+  > = new Map();
   #nextId: number = 0;
   constructor(indent: number) {
     this.#indent = indent;
@@ -1158,10 +1244,11 @@ class YamlStringifier {
   stringify(value: YamlValue): string {
     this.#countRefs(value);
     for (const [obj, count] of this.#refCounts) {
-      if (count >= 2) this.#anchorIds.set(obj, {
-        id: ++this.#nextId,
-        emitted: false
-      });
+      if (count >= 2)
+        this.#anchorIds.set(obj, {
+          id: ++this.#nextId,
+          emitted: false,
+        });
     }
     return this.#val(value, 0) + '\n';
   }
@@ -1211,10 +1298,10 @@ class YamlStringifier {
     return this.#map(v as YamlMapping, depth);
   }
   #str(s: string): string {
-    if (s === '') return '\'\'';
-    if (_resolveScalar(s) !== s) return `'${s.replace(/'/g, '\'\'')}'`;
-    if (/[:\[\]{},#&*!|>'"%@`]/.test(s[0]!)) return `'${s.replace(/'/g, '\'\'')}'`;
-    if (s.includes('\n')) return `'${s.replace(/'/g, '\'\'')}'`;
+    if (s === '') return "''";
+    if (_resolveScalar(s) !== s) return `'${s.replace(/'/g, "''")}'`;
+    if (/[:\[\]{},#&*!|>'"%@`]/.test(s[0]!)) return `'${s.replace(/'/g, "''")}'`;
+    if (s.includes('\n')) return `'${s.replace(/'/g, "''")}'`;
     return s;
   }
   #seq(arr: YamlValue[], depth: number): string {
@@ -1225,22 +1312,26 @@ class YamlStringifier {
       const items = arr.map((e) => this.#val(e, 0)).join(', ');
       if (items.length < 60) return `[${items}]`;
     }
-    return arr.map((e) => {
-      const v = this.#val(e, depth + 1);
-      return `\n${pad}- ${v}`;
-    }).join('');
+    return arr
+      .map((e) => {
+        const v = this.#val(e, depth + 1);
+        return `\n${pad}- ${v}`;
+      })
+      .join('');
   }
   #map(obj: YamlMapping, depth: number): string {
     const keys = Object.keys(obj);
     if (keys.length === 0) return '{}';
     const pad = ' '.repeat(this.#indent * depth);
-    return keys.map((k) => {
-      const key = this.#str(k);
-      const v = obj[k]!;
-      const valStr = this.#val(v, depth + 1);
-      const sep = valStr.startsWith('\n') ? ':' : ': ';
-      return `\n${pad}${key}${sep}${valStr}`;
-    }).join('');
+    return keys
+      .map((k) => {
+        const key = this.#str(k);
+        const v = obj[k]!;
+        const valStr = this.#val(v, depth + 1);
+        const sep = valStr.startsWith('\n') ? ':' : ': ';
+        return `\n${pad}${key}${sep}${valStr}`;
+      })
+      .join('');
   }
   #mapMap(m: Map<unknown, YamlValue>, depth: number): string {
     if (m.size === 0) return '{}';
@@ -1248,7 +1339,8 @@ class YamlStringifier {
     const lines: string[] = [];
     for (const [k, v] of m) {
       const valStr = this.#val(v, depth + 1);
-      const isComplex = typeof k !== 'string' && typeof k !== 'number' && typeof k !== 'boolean' && k !== null;
+      const isComplex =
+        typeof k !== 'string' && typeof k !== 'number' && typeof k !== 'boolean' && k !== null;
       if (isComplex) {
         const keyStr = this.#val(k as YamlValue, depth + 1);
         const sep = valStr.startsWith('\n') ? '' : ' ';

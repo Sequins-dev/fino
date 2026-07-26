@@ -6,11 +6,15 @@ describe('fino:test/mock', () => {
     let thrown: unknown;
     try {
       await mockFetch(async (mock) => {
-        mock.post('http://collector.example/v1/traces').header('x-test-header', 'present').body('payload').reply(202, 'ok');
+        mock
+          .post('http://collector.example/v1/traces')
+          .header('x-test-header', 'present')
+          .body('payload')
+          .reply(202, 'ok');
         const response = await fetch('http://collector.example/v1/traces', {
           method: 'POST',
           headers: { 'x-test-header': 'present' },
-          body: 'payload'
+          body: 'payload',
         });
         t.equal(response.status, 202, 'configured response returned');
         t.equal(await response.text(), 'ok', 'response body returned');
@@ -19,67 +23,105 @@ describe('fino:test/mock', () => {
     } catch (error) {
       thrown = error;
     }
-    t.equal(thrown instanceof Error ? thrown.message : String(thrown), 'boom', 'callback error propagated');
+    t.equal(
+      thrown instanceof Error ? thrown.message : String(thrown),
+      'boom',
+      'callback error propagated',
+    );
     t.equal(globalThis.fetch, originalFetch, 'fetch restored after scope exits');
   });
   it('fails when expected fetch calls are missing', async (t) => {
     const originalFetch = globalThis.fetch;
-    await t.rejects(() => mockFetch(async (mock) => {
-      mock.get('http://collector.example/v1/logs').reply(200, 'ok');
-    }), /expected 1 more fetch mock call/, 'missing mock calls fail the scope');
+    await t.rejects(
+      () =>
+        mockFetch(async (mock) => {
+          mock.get('http://collector.example/v1/logs').reply(200, 'ok');
+        }),
+      /expected 1 more fetch mock call/,
+      'missing mock calls fail the scope',
+    );
     t.equal(globalThis.fetch, originalFetch, 'fetch restored after verification failure');
   });
   it('fails on unexpected extra fetch calls', async (t) => {
-    await t.rejects(() => mockFetch(async () => {
-      await fetch('http://collector.example/v1/metrics');
-    }), /unexpected fetch call #1/, 'unexpected calls fail immediately');
+    await t.rejects(
+      () =>
+        mockFetch(async () => {
+          await fetch('http://collector.example/v1/metrics');
+        }),
+      /unexpected fetch call #1/,
+      'unexpected calls fail immediately',
+    );
   });
   it('reports method, header, and body mismatches', async (t) => {
-    await t.rejects(() => mockFetch(async (mock) => {
-      mock.get('http://api.example/items').reply(200);
-      await fetch('http://api.example/items', { method: 'POST' });
-    }), /method mismatch: expected GET, got POST/, 'method mismatch is reported');
-    await t.rejects(() => mockFetch(async (mock) => {
-      mock.get('http://api.example/items').header('x-mode', 'test').reply(200);
-      await fetch('http://api.example/items', { headers: { 'x-mode': 'prod' } });
-    }), /header mismatch for x-mode/, 'header mismatch is reported');
-    await t.rejects(() => mockFetch(async (mock) => {
-      mock.post('http://api.example/items').body('expected').reply(200);
-      await fetch('http://api.example/items', {
-        method: 'POST',
-        body: 'actual'
-      });
-    }), /body mismatch/, 'body mismatch is reported');
+    await t.rejects(
+      () =>
+        mockFetch(async (mock) => {
+          mock.get('http://api.example/items').reply(200);
+          await fetch('http://api.example/items', { method: 'POST' });
+        }),
+      /method mismatch: expected GET, got POST/,
+      'method mismatch is reported',
+    );
+    await t.rejects(
+      () =>
+        mockFetch(async (mock) => {
+          mock.get('http://api.example/items').header('x-mode', 'test').reply(200);
+          await fetch('http://api.example/items', { headers: { 'x-mode': 'prod' } });
+        }),
+      /header mismatch for x-mode/,
+      'header mismatch is reported',
+    );
+    await t.rejects(
+      () =>
+        mockFetch(async (mock) => {
+          mock.post('http://api.example/items').body('expected').reply(200);
+          await fetch('http://api.example/items', {
+            method: 'POST',
+            body: 'actual',
+          });
+        }),
+      /body mismatch/,
+      'body mismatch is reported',
+    );
   });
   it('supports times, base URLs, Request inputs, binary bodies, and response factories', async (t) => {
-    const binary = new Uint8Array([
-      1,
-      2,
-      3,
-      4
-    ]);
+    const binary = new Uint8Array([1, 2, 3, 4]);
     await mockFetch('http://api.example', async (mock) => {
       mock.get('/ping').times(2).reply(204);
-      mock.post('/echo').header('content-type', /octet-stream/).body(binary).replyWith((call) => {
-        t.equal(call.callIndex, 3, 'factory sees third call');
-        t.deepEqual(Array.from(call.body), Array.from(binary), 'factory sees binary request body');
-        return new Response(call.body, {
-          status: 201,
-          headers: { 'x-method': call.method }
+      mock
+        .post('/echo')
+        .header('content-type', /octet-stream/)
+        .body(binary)
+        .replyWith((call) => {
+          t.equal(call.callIndex, 3, 'factory sees third call');
+          t.deepEqual(
+            Array.from(call.body),
+            Array.from(binary),
+            'factory sees binary request body',
+          );
+          return new Response(call.body, {
+            status: 201,
+            headers: { 'x-method': call.method },
+          });
         });
-      });
       const first = await fetch('http://api.example/ping');
       const second = await fetch(new Request('http://api.example/ping'));
-      const echo = await fetch(new Request('http://api.example/echo', {
-        method: 'POST',
-        headers: { 'content-type': 'application/octet-stream' },
-        body: binary
-      }));
+      const echo = await fetch(
+        new Request('http://api.example/echo', {
+          method: 'POST',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: binary,
+        }),
+      );
       t.equal(first.status, 204, 'first counted call matched');
       t.equal(second.status, 204, 'second counted call matched');
       t.equal(echo.status, 201, 'factory response status returned');
       t.equal(echo.headers.get('x-method'), 'POST', 'factory response headers returned');
-      t.deepEqual(Array.from(await echo.bytes()), Array.from(binary), 'factory response body returned');
+      t.deepEqual(
+        Array.from(await echo.bytes()),
+        Array.from(binary),
+        'factory response body returned',
+      );
     });
   });
   it('routes nested mockFetch scopes to the innermost active scope', async (t) => {
@@ -111,7 +153,11 @@ describe('fino:test/mock', () => {
       const response = await fetch('http://api.example/second');
       return await response.text();
     });
-    t.deepEqual(await Promise.all([first, second]), ['first', 'second'], 'overlapping scopes stay isolated');
+    t.deepEqual(
+      await Promise.all([first, second]),
+      ['first', 'second'],
+      'overlapping scopes stay isolated',
+    );
   });
   it('supports passthrough responses to the original fetch', async (t) => {
     const originalFetch = globalThis.fetch;
@@ -123,7 +169,11 @@ describe('fino:test/mock', () => {
         mock.get('http://api.example/live').passthrough();
         const response = await fetch('http://api.example/live');
         t.equal(response.status, 203, 'original fetch response status returned');
-        t.equal(await response.text(), 'passthrough:http://api.example/live', 'original fetch body returned');
+        t.equal(
+          await response.text(),
+          'passthrough:http://api.example/live',
+          'original fetch body returned',
+        );
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -132,13 +182,21 @@ describe('fino:test/mock', () => {
   it('supports forced network errors', async (t) => {
     await mockFetch(async (mock) => {
       mock.get('http://api.example/down').networkError('socket hang up');
-      await t.rejects(() => fetch('http://api.example/down'), /socket hang up/, 'network error rejects fetch');
+      await t.rejects(
+        () => fetch('http://api.example/down'),
+        /socket hang up/,
+        'network error rejects fetch',
+      );
     });
   });
   it('supports forced abort responses', async (t) => {
     await mockFetch(async (mock) => {
       mock.get('http://api.example/slow').abort();
-      await t.rejects(() => fetch('http://api.example/slow'), /abort/i, 'abort helper rejects fetch');
+      await t.rejects(
+        () => fetch('http://api.example/slow'),
+        /abort/i,
+        'abort helper rejects fetch',
+      );
     });
   });
   it('rejects pre-aborted fetch calls without consuming expectations', async (t) => {
@@ -146,7 +204,11 @@ describe('fino:test/mock', () => {
     controller.abort();
     await mockFetch(async (mock) => {
       mock.get('http://api.example/after-abort').reply(200, 'ok');
-      await t.rejects(() => fetch('http://api.example/after-abort', { signal: controller.signal }), /abort/i, 'aborted signal rejects before dispatch');
+      await t.rejects(
+        () => fetch('http://api.example/after-abort', { signal: controller.signal }),
+        /abort/i,
+        'aborted signal rejects before dispatch',
+      );
       const response = await fetch('http://api.example/after-abort');
       t.equal(await response.text(), 'ok', 'expectation remains available after aborted call');
     });

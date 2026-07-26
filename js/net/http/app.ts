@@ -1,66 +1,66 @@
 /**
-* fino:net/http/app — middleware, routing, and OpenAPI for HTTP services.
-*
-* This module builds a small application framework on top of Fino's existing
-* `Request`, `Response`, and `serve()` APIs. It is intended for APIs that need
-* composable middleware, URLPattern routing, request-scoped values, and a
-* machine-readable OpenAPI document without giving up direct access to the
-* underlying Fetch-compatible HTTP primitives.
-*
-* The middleware model has two explicit forms. `use()` installs one-way branch
-* middleware that may short-circuit by returning a `Response` or continue by
-* returning nothing. `layer()` installs Koa-style wrappers that receive
-* `(ctx, next)` and can run before and after downstream dispatch. Builders
-* (`App`, `Router`, `RouteBuilder`, and `MethodBuilder`) share `.use()`,
-* `.layer()`, `.value()`, and `.meta()` as immutable enrichments of a routing
-* tree: each call records a node, terminals such as `.handle()` resolve the
-* branch they hang off, and a later `value()` with the same name shadows an
-* earlier one. Everything that binds a routing path goes through `route()` —
-* HTTP verbs fork method branches finished by `.handle()`, while `websocket()`,
-* `sse()`, `webtransport()`, `rpc()`, and `mount()` are terminals that register
-* directly.
-*
-* Routing uses the platform `URLPattern` implementation with pathname patterns
-* such as `/users/:id`. Path parameters are available through the built-in
-* `schema.params()` producer, which reserves the usual `params` slot and
-* validates the matched parameter object. `app.context()` returns the active
-* request context from anywhere in the async call chain by using
-* `fino:context`.
-*
-* Server sessions are part of this same application surface. `sessions()`
-* accepts a caller-owned `RevisionedCache` directly, seals browser identifiers,
-* supports key rotation and fixed or rolling expiry, and uses conditional
-* writes so stale requests cannot silently overwrite newer state. Applications
-* choose and close their cache backend; the middleware owns only session
-* lifecycle and cookie policy.
-*
-* OpenAPI generation targets OpenAPI 3.1 and embeds JSON Schema objects from
-* `fino:validate` directly. Middleware can describe documentation effects with
-* `defineMiddleware(fn, meta)` and `defineProducer(fn, meta)`, making runtime
-* logic independent from documentation generation.
-*
-* ```ts no_run
-* import { App, body, schema } from 'fino:net/http/app';
-* import { v } from 'fino:validate';
-*
-* const app = new App({ name: 'Example API' });
-* const api = app.layer(errorHandler());
-* api.route('/users/:id')
-*   .meta({ tags: ['users'] })
-*   .value('params', schema.params(v.object({ id: v.string() })))
-*   .post()
-*   .value('body', body.json(v.object({ name: v.string() })))
-*   .handle((ctx) => Response.json({ id: ctx.params.id, name: ctx.body.name }));
-*
-* app.get('/openapi.json').handle(app.openapiHandler({ version: '1.0.0' }));
-* app.listen({ port: 3000 });
-* ```
-*
-* Learn more:
-* - OpenAPI 3.1: https://spec.openapis.org/oas/v3.1.0
-* - URLPattern: https://wicg.github.io/urlpattern/
-* - HTTP cookies: https://www.rfc-editor.org/rfc/rfc6265
-*/
+ * fino:net/http/app — middleware, routing, and OpenAPI for HTTP services.
+ *
+ * This module builds a small application framework on top of Fino's existing
+ * `Request`, `Response`, and `serve()` APIs. It is intended for APIs that need
+ * composable middleware, URLPattern routing, request-scoped values, and a
+ * machine-readable OpenAPI document without giving up direct access to the
+ * underlying Fetch-compatible HTTP primitives.
+ *
+ * The middleware model has two explicit forms. `use()` installs one-way branch
+ * middleware that may short-circuit by returning a `Response` or continue by
+ * returning nothing. `layer()` installs Koa-style wrappers that receive
+ * `(ctx, next)` and can run before and after downstream dispatch. Builders
+ * (`App`, `Router`, `RouteBuilder`, and `MethodBuilder`) share `.use()`,
+ * `.layer()`, `.value()`, and `.meta()` as immutable enrichments of a routing
+ * tree: each call records a node, terminals such as `.handle()` resolve the
+ * branch they hang off, and a later `value()` with the same name shadows an
+ * earlier one. Everything that binds a routing path goes through `route()` —
+ * HTTP verbs fork method branches finished by `.handle()`, while `websocket()`,
+ * `sse()`, `webtransport()`, `rpc()`, and `mount()` are terminals that register
+ * directly.
+ *
+ * Routing uses the platform `URLPattern` implementation with pathname patterns
+ * such as `/users/:id`. Path parameters are available through the built-in
+ * `schema.params()` producer, which reserves the usual `params` slot and
+ * validates the matched parameter object. `app.context()` returns the active
+ * request context from anywhere in the async call chain by using
+ * `fino:context`.
+ *
+ * Server sessions are part of this same application surface. `sessions()`
+ * accepts a caller-owned `RevisionedCache` directly, seals browser identifiers,
+ * supports key rotation and fixed or rolling expiry, and uses conditional
+ * writes so stale requests cannot silently overwrite newer state. Applications
+ * choose and close their cache backend; the middleware owns only session
+ * lifecycle and cookie policy.
+ *
+ * OpenAPI generation targets OpenAPI 3.1 and embeds JSON Schema objects from
+ * `fino:validate` directly. Middleware can describe documentation effects with
+ * `defineMiddleware(fn, meta)` and `defineProducer(fn, meta)`, making runtime
+ * logic independent from documentation generation.
+ *
+ * ```ts no_run
+ * import { App, body, schema } from 'fino:net/http/app';
+ * import { v } from 'fino:validate';
+ *
+ * const app = new App({ name: 'Example API' });
+ * const api = app.layer(errorHandler());
+ * api.route('/users/:id')
+ *   .meta({ tags: ['users'] })
+ *   .value('params', schema.params(v.object({ id: v.string() })))
+ *   .post()
+ *   .value('body', body.json(v.object({ name: v.string() })))
+ *   .handle((ctx) => Response.json({ id: ctx.params.id, name: ctx.body.name }));
+ *
+ * app.get('/openapi.json').handle(app.openapiHandler({ version: '1.0.0' }));
+ * app.listen({ port: 3000 });
+ * ```
+ *
+ * Learn more:
+ * - OpenAPI 3.1: https://spec.openapis.org/oas/v3.1.0
+ * - URLPattern: https://wicg.github.io/urlpattern/
+ * - HTTP cookies: https://www.rfc-editor.org/rfc/rfc6265
+ */
 import { Context } from '../../context/index.ts';
 import { DiskFileSystem } from '../../file/fs.ts';
 import { join, normalize } from '../../file/path.ts';
@@ -68,61 +68,76 @@ import { CookieJar } from '../../security/cookie.ts';
 import { compile } from '../../validate.ts';
 import { Headers, Request, Response } from './index.ts';
 import { serve } from './server.ts';
-import type { AcceptedHttpRequest, HttpHandlerResult, HttpSession, HttpProtocol, IncomingHttp, IncomingHttpRequest, IncomingWebSocketRequest, IncomingWebTransportRequest } from './server.ts';
+import type {
+  AcceptedHttpRequest,
+  HttpHandlerResult,
+  HttpSession,
+  HttpProtocol,
+  IncomingHttp,
+  IncomingHttpRequest,
+  IncomingWebSocketRequest,
+  IncomingWebTransportRequest,
+} from './server.ts';
 import { WebSocketConnection } from './websocket.ts';
 import { WebTransport } from './webtransport.ts';
 import { EventSourceWriter } from './eventstream.ts';
 import { Channel } from '../../internal/stream.ts';
 export { CookieJar } from '../../security/cookie.ts';
 export { SessionConflictError, sessions } from './session.ts';
-export type { Session, SessionClock, SessionKey, SessionOptions, SessionRecord } from './session.ts';
+export type {
+  Session,
+  SessionClock,
+  SessionKey,
+  SessionOptions,
+  SessionRecord,
+} from './session.ts';
 /**
-* Standard HTTP methods supported by route builders.
-*
-* ```ts no_run
-* const method: HttpMethod = 'GET';
-* ```
-*/
+ * Standard HTTP methods supported by route builders.
+ *
+ * ```ts no_run
+ * const method: HttpMethod = 'GET';
+ * ```
+ */
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
 /**
-* Request context object passed through app middleware and handlers.
-*
-* Producers can add additional keys, so application-specific context values are
-* exposed through the index signature. Built-in helpers commonly add `params`,
-* `query`, `headers`, `body`, `cookies`, and `session`.
-*
-* ```ts no_run
-* const handler: Handler = (ctx) => Response.json({ route: ctx.route });
-* ```
-*/
+ * Request context object passed through app middleware and handlers.
+ *
+ * Producers can add additional keys, so application-specific context values are
+ * exposed through the index signature. Built-in helpers commonly add `params`,
+ * `query`, `headers`, `body`, `cookies`, and `session`.
+ *
+ * ```ts no_run
+ * const handler: Handler = (ctx) => Response.json({ route: ctx.route });
+ * ```
+ */
 export interface HttpContext {
   /** Fetch-compatible request being handled.
-  *
-  * ```ts no_run
-  * console.log(ctx.request.method);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * console.log(ctx.request.method);
+   * ```
+   */
   request: Request;
   /** App instance that is dispatching this request.
-  *
-  * ```ts no_run
-  * console.log(ctx.app.context());
-  * ```
-  */
+   *
+   * ```ts no_run
+   * console.log(ctx.app.context());
+   * ```
+   */
   app: App;
   /** Matched route pathname pattern, such as `/users/:id`.
-  *
-  * ```ts no_run
-  * console.log(ctx.route);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * console.log(ctx.route);
+   * ```
+   */
   route: string;
   /** Matched HTTP method.
-  *
-  * ```ts no_run
-  * console.log(ctx.method);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * console.log(ctx.method);
+   * ```
+   */
   method: string;
   /** Protocol carrying the current request. */
   protocol: HttpProtocol;
@@ -131,329 +146,340 @@ export interface HttpContext {
   /** Accept object that produced this request, when dispatched by `App.listen()`. */
   incoming?: IncomingHttp;
   /** URLPattern path parameters when a route matched.
-  *
-  * ```ts no_run
-  * console.log(ctx.params?.id);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * console.log(ctx.params?.id);
+   * ```
+   */
   params?: Record<string, string>;
   /** Application-defined values populated by producers.
-  *
-  * ```ts no_run
-  * console.log(ctx.user);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * console.log(ctx.user);
+   * ```
+   */
   [key: string]: unknown;
 }
 /**
-* Request context passed to WebSocket route handlers.
-*
-* Identical to `HttpContext` except that `incoming` is narrowed to the pending
-* WebSocket upgrade, which the route framework accepts on the handler's behalf
-* before the handler runs. Middleware on the branch still sees the request as a
-* plain `HttpContext`, so producers and values populate this context the same
-* way they do for HTTP routes.
-*
-* ```ts no_run
-* app.route('/chat').websocket((socket, ctx: WebSocketContext) => {
-*   console.log('upgraded', ctx.route, ctx.params);
-*   socket.addEventListener('message', (e) => socket.send(e.data));
-* });
-* ```
-*/
+ * Request context passed to WebSocket route handlers.
+ *
+ * Identical to `HttpContext` except that `incoming` is narrowed to the pending
+ * WebSocket upgrade, which the route framework accepts on the handler's behalf
+ * before the handler runs. Middleware on the branch still sees the request as a
+ * plain `HttpContext`, so producers and values populate this context the same
+ * way they do for HTTP routes.
+ *
+ * ```ts no_run
+ * app.route('/chat').websocket((socket, ctx: WebSocketContext) => {
+ *   console.log('upgraded', ctx.route, ctx.params);
+ *   socket.addEventListener('message', (e) => socket.send(e.data));
+ * });
+ * ```
+ */
 export interface WebSocketContext extends HttpContext {
   /** Pending WebSocket upgrade the route accepted to produce `socket`. */
   incoming: IncomingWebSocketRequest;
 }
 /**
-* Request context passed to WebTransport route handlers.
-*
-* Like `WebSocketContext`, this narrows `incoming` to the pending WebTransport
-* upgrade the route accepts before the handler runs. All other context values
-* — matched `route`, `params`, and anything added by producers on the branch —
-* are populated exactly as they are for HTTP routes.
-*
-* ```ts no_run
-* app.route('/wt/:room').webtransport(async (session, ctx: WebTransportContext) => {
-*   console.log('room', ctx.params?.room);
-*   await session.ready;
-* });
-* ```
-*/
+ * Request context passed to WebTransport route handlers.
+ *
+ * Like `WebSocketContext`, this narrows `incoming` to the pending WebTransport
+ * upgrade the route accepts before the handler runs. All other context values
+ * — matched `route`, `params`, and anything added by producers on the branch —
+ * are populated exactly as they are for HTTP routes.
+ *
+ * ```ts no_run
+ * app.route('/wt/:room').webtransport(async (session, ctx: WebTransportContext) => {
+ *   console.log('room', ctx.params?.room);
+ *   await session.ready;
+ * });
+ * ```
+ */
 export interface WebTransportContext extends HttpContext {
   /** Pending WebTransport upgrade the route accepted to produce `session`. */
   incoming: IncomingWebTransportRequest;
 }
 /**
-* Request context passed to server-sent events route handlers.
-*
-* SSE is not an HTTP upgrade. It is an ordinary HTTP request whose response
-* body remains open with `text/event-stream`, so `incoming` is narrowed to the
-* plain request variant when the app is dispatching from `listen()`. Middleware
-* can still reject before the SSE stream starts by returning a `Response`.
-*
-* ```ts no_run
-* app.route('/events').sse(async (events, ctx: SseContext) => {
-*   console.log(ctx.request.headers.get('last-event-id'));
-*   await events.write({ data: 'connected' });
-* });
-* ```
-*/
+ * Request context passed to server-sent events route handlers.
+ *
+ * SSE is not an HTTP upgrade. It is an ordinary HTTP request whose response
+ * body remains open with `text/event-stream`, so `incoming` is narrowed to the
+ * plain request variant when the app is dispatching from `listen()`. Middleware
+ * can still reject before the SSE stream starts by returning a `Response`.
+ *
+ * ```ts no_run
+ * app.route('/events').sse(async (events, ctx: SseContext) => {
+ *   console.log(ctx.request.headers.get('last-event-id'));
+ *   await events.write({ data: 'connected' });
+ * });
+ * ```
+ */
 export interface SseContext extends HttpContext {
   /**
-  * Incoming plain HTTP request, when dispatched by `App.listen()`.
-  *
-  * This is not an upgrade request; it has already been accepted as ordinary
-  * HTTP before the route handler starts streaming.
-  */
+   * Incoming plain HTTP request, when dispatched by `App.listen()`.
+   *
+   * This is not an upgrade request; it has already been accepted as ordinary
+   * HTTP before the route handler starts streaming.
+   */
   incoming?: IncomingHttpRequest;
 }
 /**
-* What a handler or middleware may ultimately resolve to.
-*
-* Re-exported from the server module so app code can name the return type of
-* `Handler` and `Middleware` without a second import. The value is either a
-* `Response` (the normal case) or a protocol-takeover object — a
-* `WebSocketConnection` or `WebTransport` — when a route has upgraded the
-* connection and is speaking a different protocol from there on.
-*
-* ```ts no_run
-* import type { HttpHandlerResult } from 'fino:net/http/app';
-*
-* async function log(res: Promise<HttpHandlerResult>): Promise<HttpHandlerResult> {
-*   const value = await res;
-*   if (value instanceof Response) console.log(value.status);
-*   return value;
-* }
-* ```
-*/
+ * What a handler or middleware may ultimately resolve to.
+ *
+ * Re-exported from the server module so app code can name the return type of
+ * `Handler` and `Middleware` without a second import. The value is either a
+ * `Response` (the normal case) or a protocol-takeover object — a
+ * `WebSocketConnection` or `WebTransport` — when a route has upgraded the
+ * connection and is speaking a different protocol from there on.
+ *
+ * ```ts no_run
+ * import type { HttpHandlerResult } from 'fino:net/http/app';
+ *
+ * async function log(res: Promise<HttpHandlerResult>): Promise<HttpHandlerResult> {
+ *   const value = await res;
+ *   if (value instanceof Response) console.log(value.status);
+ *   return value;
+ * }
+ * ```
+ */
 export type { HttpHandlerResult } from './server.ts';
 /**
-* One-way branch middleware run before downstream handlers.
-*
-* Each middleware receives the shared request context. Returning a
-* `HttpHandlerResult` short-circuits the chain and skips everything downstream;
-* returning `undefined` (or nothing) continues to the next branch item. Use
-* `LayerMiddleware` with `.layer()` when code needs a `next` callback or needs
-* to inspect the downstream response.
-*
-* ```ts no_run
-* const requireUser: Middleware = async (ctx) => {
-*   if (ctx.user === undefined) return Response.json({ error: 'Unauthorized' }, { status: 401 });
-* };
-* app.route('/account').use(requireUser).get().handle(showAccount);
-* ```
-*/
-export type Middleware = (ctx: HttpContext) => HttpHandlerResult | void | Promise<HttpHandlerResult | void>;
+ * One-way branch middleware run before downstream handlers.
+ *
+ * Each middleware receives the shared request context. Returning a
+ * `HttpHandlerResult` short-circuits the chain and skips everything downstream;
+ * returning `undefined` (or nothing) continues to the next branch item. Use
+ * `LayerMiddleware` with `.layer()` when code needs a `next` callback or needs
+ * to inspect the downstream response.
+ *
+ * ```ts no_run
+ * const requireUser: Middleware = async (ctx) => {
+ *   if (ctx.user === undefined) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+ * };
+ * app.route('/account').use(requireUser).get().handle(showAccount);
+ * ```
+ */
+export type Middleware = (
+  ctx: HttpContext,
+) => HttpHandlerResult | void | Promise<HttpHandlerResult | void>;
 /**
-* Koa-style wrapper layer run around downstream dispatch.
-*
-* A layer receives the shared request context and a `next` callback. Calling
-* `await next()` continues dispatch and yields the downstream result, which the
-* layer may inspect or mutate before returning. Returning a response without
-* calling `next()` short-circuits the rest of dispatch.
-*
-* `next()` must be called at most once per invocation — calling it a second
-* time throws `next() called multiple times`.
-*
-* ```ts no_run
-* const timing: LayerMiddleware = async (ctx, next) => {
-*   const res = await next();
-*   if (res instanceof Response) res.headers.set('x-route', ctx.route);
-*   return res;
-* };
-* app.layer(timing);
-* ```
-*/
-export type LayerMiddleware = (ctx: HttpContext, next: () => Promise<HttpHandlerResult>) => HttpHandlerResult | void | Promise<HttpHandlerResult | void>;
+ * Koa-style wrapper layer run around downstream dispatch.
+ *
+ * A layer receives the shared request context and a `next` callback. Calling
+ * `await next()` continues dispatch and yields the downstream result, which the
+ * layer may inspect or mutate before returning. Returning a response without
+ * calling `next()` short-circuits the rest of dispatch.
+ *
+ * `next()` must be called at most once per invocation — calling it a second
+ * time throws `next() called multiple times`.
+ *
+ * ```ts no_run
+ * const timing: LayerMiddleware = async (ctx, next) => {
+ *   const res = await next();
+ *   if (res instanceof Response) res.headers.set('x-route', ctx.route);
+ *   return res;
+ * };
+ * app.layer(timing);
+ * ```
+ */
+export type LayerMiddleware = (
+  ctx: HttpContext,
+  next: () => Promise<HttpHandlerResult>,
+) => HttpHandlerResult | void | Promise<HttpHandlerResult | void>;
 /**
-* Terminal route handler.
-*
-* Handlers must return a `Response` or a protocol takeover such as a WebSocket
-* connection. Throwing is normally handled by `errorHandler()`.
-*
-* ```ts no_run
-* const handler: Handler = (ctx) => Response.json({ id: ctx.params?.id });
-* ```
-*/
+ * Terminal route handler.
+ *
+ * Handlers must return a `Response` or a protocol takeover such as a WebSocket
+ * connection. Throwing is normally handled by `errorHandler()`.
+ *
+ * ```ts no_run
+ * const handler: Handler = (ctx) => Response.json({ id: ctx.params?.id });
+ * ```
+ */
 export type Handler = (ctx: HttpContext) => HttpHandlerResult | Promise<HttpHandlerResult>;
 /**
-* Terminal handler for a WebSocket route.
-*
-* The upgrade is already accepted by the time the handler runs, so it receives
-* a live `WebSocketConnection` and the request context. Register event
-* listeners and start reading before the handler returns; returning does not
-* close the socket, so keep the promise pending only as long as setup requires.
-*
-* ```ts no_run
-* const echo: WebSocketHandler = (socket) => {
-*   socket.addEventListener('message', (event) => socket.send(event.data));
-* };
-* app.route('/echo').websocket(echo);
-* ```
-*/
-export type WebSocketHandler = (socket: WebSocketConnection, ctx: WebSocketContext) => void | Promise<void>;
+ * Terminal handler for a WebSocket route.
+ *
+ * The upgrade is already accepted by the time the handler runs, so it receives
+ * a live `WebSocketConnection` and the request context. Register event
+ * listeners and start reading before the handler returns; returning does not
+ * close the socket, so keep the promise pending only as long as setup requires.
+ *
+ * ```ts no_run
+ * const echo: WebSocketHandler = (socket) => {
+ *   socket.addEventListener('message', (event) => socket.send(event.data));
+ * };
+ * app.route('/echo').websocket(echo);
+ * ```
+ */
+export type WebSocketHandler = (
+  socket: WebSocketConnection,
+  ctx: WebSocketContext,
+) => void | Promise<void>;
 /**
-* Terminal handler for a WebTransport route.
-*
-* Runs after the session upgrade is accepted, receiving a live `WebTransport`
-* session and the request context. Await `session.ready` before opening or
-* accepting streams; as with WebSocket handlers, returning does not close the
-* session.
-*
-* ```ts no_run
-* const handler: WebTransportHandler = async (session) => {
-*   await session.ready;
-* };
-* app.route('/wt').webtransport(handler);
-* ```
-*/
-export type WebTransportHandler = (session: WebTransport, ctx: WebTransportContext) => void | Promise<void>;
+ * Terminal handler for a WebTransport route.
+ *
+ * Runs after the session upgrade is accepted, receiving a live `WebTransport`
+ * session and the request context. Await `session.ready` before opening or
+ * accepting streams; as with WebSocket handlers, returning does not close the
+ * session.
+ *
+ * ```ts no_run
+ * const handler: WebTransportHandler = async (session) => {
+ *   await session.ready;
+ * };
+ * app.route('/wt').webtransport(handler);
+ * ```
+ */
+export type WebTransportHandler = (
+  session: WebTransport,
+  ctx: WebTransportContext,
+) => void | Promise<void>;
 /**
-* Terminal handler for a server-sent events route.
-*
-* The handler receives an `EventSourceWriter` connected to the response body.
-* The response streams while the handler runs and ends when it returns. Unlike
-* WebSocket and WebTransport handlers, there is no protocol upgrade to accept:
-* SSE is a normal HTTP response with a long-lived body.
-*
-* ```ts no_run
-* const clock: SseHandler = async (events) => {
-*   await events.write({ event: 'tick', data: new Date().toISOString() });
-* };
-* app.route('/clock').sse(clock);
-* ```
-*/
+ * Terminal handler for a server-sent events route.
+ *
+ * The handler receives an `EventSourceWriter` connected to the response body.
+ * The response streams while the handler runs and ends when it returns. Unlike
+ * WebSocket and WebTransport handlers, there is no protocol upgrade to accept:
+ * SSE is a normal HTTP response with a long-lived body.
+ *
+ * ```ts no_run
+ * const clock: SseHandler = async (events) => {
+ *   await events.write({ event: 'tick', data: new Date().toISOString() });
+ * };
+ * app.route('/clock').sse(clock);
+ * ```
+ */
 export type SseHandler = (events: EventSourceWriter, ctx: SseContext) => void | Promise<void>;
 /**
-* Context value producer used by `.value(name, producer)`.
-*
-* The producer runs at its position in the middleware stack and stores its
-* return value under the declared context key.
-*
-* ```ts no_run
-* const currentUser: Producer = async (ctx) => loadUser(ctx.request);
-* ```
-*/
+ * Context value producer used by `.value(name, producer)`.
+ *
+ * The producer runs at its position in the middleware stack and stores its
+ * return value under the declared context key.
+ *
+ * ```ts no_run
+ * const currentUser: Producer = async (ctx) => loadUser(ctx.request);
+ * ```
+ */
 export type Producer = (ctx: HttpContext) => unknown | Promise<unknown>;
 /**
-* OpenAPI metadata that can be attached to builders, middleware, or producers.
-*
-* Metadata is merged as routes are built. Later metadata overrides earlier
-* metadata key by key: parameters replace by `(in, name)`, request bodies and
-* per-status responses replace outright.
-*
-* ```ts no_run
-* app.route('/users').meta({ tags: ['users'], summary: 'List users' });
-* ```
-*/
+ * OpenAPI metadata that can be attached to builders, middleware, or producers.
+ *
+ * Metadata is merged as routes are built. Later metadata overrides earlier
+ * metadata key by key: parameters replace by `(in, name)`, request bodies and
+ * per-status responses replace outright.
+ *
+ * ```ts no_run
+ * app.route('/users').meta({ tags: ['users'], summary: 'List users' });
+ * ```
+ */
 export interface OperationMeta {
   /** Explicit OpenAPI operationId.
-  *
-  * ```ts no_run
-  * route.meta({ operationId: 'getUser' });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ operationId: 'getUser' });
+   * ```
+   */
   operationId?: string;
   /** Short OpenAPI summary.
-  *
-  * ```ts no_run
-  * route.meta({ summary: 'Create a user' });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ summary: 'Create a user' });
+   * ```
+   */
   summary?: string;
   /** Longer OpenAPI description.
-  *
-  * ```ts no_run
-  * route.meta({ description: 'Creates a user account.' });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ description: 'Creates a user account.' });
+   * ```
+   */
   description?: string;
   /** OpenAPI tags for grouping operations.
-  *
-  * ```ts no_run
-  * route.meta({ tags: ['users'] });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ tags: ['users'] });
+   * ```
+   */
   tags?: string[];
   /** OpenAPI security requirement object or array.
-  *
-  * ```ts no_run
-  * route.meta({ security: [{ bearerAuth: [] }] });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ security: [{ bearerAuth: [] }] });
+   * ```
+   */
   security?: unknown;
   /** Additional OpenAPI parameters.
-  *
-  * ```ts no_run
-  * route.meta({ parameters: [{ name: 'id', in: 'path', required: true }] });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ parameters: [{ name: 'id', in: 'path', required: true }] });
+   * ```
+   */
   parameters?: OpenApiParameter[];
   /** OpenAPI requestBody metadata.
-  *
-  * ```ts no_run
-  * route.meta({ requestBody: { required: true, content: { 'application/json': { schema } } } });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ requestBody: { required: true, content: { 'application/json': { schema } } } });
+   * ```
+   */
   requestBody?: OpenApiRequestBody;
   /** OpenAPI responses keyed by status code.
-  *
-  * ```ts no_run
-  * route.meta({ responses: { '200': { description: 'OK' } } });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * route.meta({ responses: { '200': { description: 'OK' } } });
+   * ```
+   */
   responses?: Record<string, OpenApiResponse>;
 }
 /**
-* Options passed to `App.openapi()`.
-*
-* `version` is required and becomes `info.version`. `title` defaults to the app
-* name passed to `new App()`.
-*
-* ```ts no_run
-* const doc = app.openapi({ version: '1.0.0', title: 'Admin API' });
-* ```
-*/
+ * Options passed to `App.openapi()`.
+ *
+ * `version` is required and becomes `info.version`. `title` defaults to the app
+ * name passed to `new App()`.
+ *
+ * ```ts no_run
+ * const doc = app.openapi({ version: '1.0.0', title: 'Admin API' });
+ * ```
+ */
 export interface OpenApiOptions {
   /** OpenAPI info title; defaults to the app name.
-  *
-  * ```ts no_run
-  * app.openapi({ title: 'Example API', version: '1.0.0' });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.openapi({ title: 'Example API', version: '1.0.0' });
+   * ```
+   */
   title?: string;
   /** OpenAPI info version.
-  *
-  * ```ts no_run
-  * app.openapi({ version: '1.0.0' });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.openapi({ version: '1.0.0' });
+   * ```
+   */
   version: string;
   /** Optional OpenAPI servers array.
-  *
-  * ```ts no_run
-  * app.openapi({ version: '1.0.0', servers: [{ url: 'https://api.example.com' }] });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.openapi({ version: '1.0.0', servers: [{ url: 'https://api.example.com' }] });
+   * ```
+   */
   servers?: Array<Record<string, unknown>>;
 }
 /**
-* OpenAPI parameter object accepted by `OperationMeta.parameters`.
-*
-* Parameters are merged by `(in, name)` when metadata from builders,
-* middleware, and producers is combined. `schema` should be an OpenAPI 3.1 JSON
-* Schema object or a `fino:validate` schema converted through `toJSON()`.
-*
-* ```ts no_run
-* const parameter: OpenApiParameter = {
-*   name: 'id',
-*   in: 'path',
-*   required: true,
-*   schema: { type: 'string' },
-* };
-* ```
-*/
+ * OpenAPI parameter object accepted by `OperationMeta.parameters`.
+ *
+ * Parameters are merged by `(in, name)` when metadata from builders,
+ * middleware, and producers is combined. `schema` should be an OpenAPI 3.1 JSON
+ * Schema object or a `fino:validate` schema converted through `toJSON()`.
+ *
+ * ```ts no_run
+ * const parameter: OpenApiParameter = {
+ *   name: 'id',
+ *   in: 'path',
+ *   required: true,
+ *   schema: { type: 'string' },
+ * };
+ * ```
+ */
 export interface OpenApiParameter {
   /** Parameter name as it appears in the path, query string, header, or cookie. */
   name: string;
@@ -467,69 +493,78 @@ export interface OpenApiParameter {
   description?: string;
 }
 /**
-* OpenAPI request body object accepted by `OperationMeta.requestBody`.
-*
-* The `content` map is keyed by media type. Each entry carries a schema object
-* that is copied into the generated OpenAPI document.
-*
-* ```ts no_run
-* const body: OpenApiRequestBody = {
-*   required: true,
-*   content: {
-*     'application/json': { schema: { type: 'object' } },
-*   },
-* };
-* ```
-*/
+ * OpenAPI request body object accepted by `OperationMeta.requestBody`.
+ *
+ * The `content` map is keyed by media type. Each entry carries a schema object
+ * that is copied into the generated OpenAPI document.
+ *
+ * ```ts no_run
+ * const body: OpenApiRequestBody = {
+ *   required: true,
+ *   content: {
+ *     'application/json': { schema: { type: 'object' } },
+ *   },
+ * };
+ * ```
+ */
 export interface OpenApiRequestBody {
   /** Whether the request body is required. */
   required?: boolean;
   /** Human-readable request body description. */
   description?: string;
   /** Media-type map for request body schemas. */
-  content: Record<string, {
-    /** OpenAPI 3.1 schema for this media type. */
-    schema: unknown;
-  }>;
+  content: Record<
+    string,
+    {
+      /** OpenAPI 3.1 schema for this media type. */
+      schema: unknown;
+    }
+  >;
 }
 /**
-* OpenAPI response object accepted by `OperationMeta.responses`.
-*
-* Responses are keyed by status code in `OperationMeta.responses`. `content` is
-* optional for status codes that do not return a body.
-*
-* ```ts no_run
-* const response: OpenApiResponse = {
-*   description: 'OK',
-*   content: {
-*     'application/json': { schema: { type: 'object' } },
-*   },
-* };
-* ```
-*/
+ * OpenAPI response object accepted by `OperationMeta.responses`.
+ *
+ * Responses are keyed by status code in `OperationMeta.responses`. `content` is
+ * optional for status codes that do not return a body.
+ *
+ * ```ts no_run
+ * const response: OpenApiResponse = {
+ *   description: 'OK',
+ *   content: {
+ *     'application/json': { schema: { type: 'object' } },
+ *   },
+ * };
+ * ```
+ */
 export interface OpenApiResponse {
   /** Required human-readable response description. */
   description: string;
   /** Optional media-type map for response body schemas. */
-  content?: Record<string, {
-    /** OpenAPI 3.1 schema for this media type. */
-    schema: unknown;
-  }>;
+  content?: Record<
+    string,
+    {
+      /** OpenAPI 3.1 schema for this media type. */
+      schema: unknown;
+    }
+  >;
 }
-type StackItem = {
-  type: 'middleware';
-  fn: Middleware;
-  meta?: OperationMeta;
-} | {
-  type: 'layer';
-  fn: LayerMiddleware;
-  meta?: OperationMeta;
-} | {
-  type: 'producer';
-  name: string;
-  fn: Producer;
-  meta?: OperationMeta;
-};
+type StackItem =
+  | {
+      type: 'middleware';
+      fn: Middleware;
+      meta?: OperationMeta;
+    }
+  | {
+      type: 'layer';
+      fn: LayerMiddleware;
+      meta?: OperationMeta;
+    }
+  | {
+      type: 'producer';
+      name: string;
+      fn: Producer;
+      meta?: OperationMeta;
+    };
 type OperationKind = 'http' | 'websocket' | 'webtransport' | 'sse';
 type Operation = {
   kind: OperationKind;
@@ -541,48 +576,63 @@ type Operation = {
   meta: OperationMeta;
   handler: Handler;
 };
-type BuilderNode = {
-  kind: 'root';
-  owner: RouterBase<unknown>;
-} | {
-  kind: 'middleware';
-  fn: Middleware;
-  meta?: OperationMeta;
-  parent: BuilderNode;
-} | {
-  kind: 'layer';
-  fn: LayerMiddleware;
-  meta?: OperationMeta;
-  parent: BuilderNode;
-} | {
-  kind: 'value';
-  name: string;
-  fn: Producer;
-  meta?: OperationMeta;
-  parent: BuilderNode;
-} | {
-  kind: 'meta';
-  meta: OperationMeta;
-  parent: BuilderNode;
-} | {
-  kind: 'path';
-  fragment: string;
-  parent: BuilderNode;
-} | {
-  kind: 'op';
-  method: HttpMethod;
-  parent: BuilderNode;
-};
+type BuilderNode =
+  | {
+      kind: 'root';
+      owner: RouterBase<unknown>;
+    }
+  | {
+      kind: 'middleware';
+      fn: Middleware;
+      meta?: OperationMeta;
+      parent: BuilderNode;
+    }
+  | {
+      kind: 'layer';
+      fn: LayerMiddleware;
+      meta?: OperationMeta;
+      parent: BuilderNode;
+    }
+  | {
+      kind: 'value';
+      name: string;
+      fn: Producer;
+      meta?: OperationMeta;
+      parent: BuilderNode;
+    }
+  | {
+      kind: 'meta';
+      meta: OperationMeta;
+      parent: BuilderNode;
+    }
+  | {
+      kind: 'path';
+      fragment: string;
+      parent: BuilderNode;
+    }
+  | {
+      kind: 'op';
+      method: HttpMethod;
+      parent: BuilderNode;
+    };
 const middlewareMeta = Symbol('fino.http.app.middlewareMeta');
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 function cloneSchema(schema: unknown): unknown {
-  if (schema && typeof (schema as {
-    toJSON?: unknown;
-  }).toJSON === 'function') return (schema as {
-    toJSON(): unknown;
-  }).toJSON();
+  if (
+    schema &&
+    typeof (
+      schema as {
+        toJSON?: unknown;
+      }
+    ).toJSON === 'function'
+  )
+    return (
+      schema as {
+        toJSON(): unknown;
+      }
+    ).toJSON();
   return schema;
 }
 function cloneMeta(meta: OperationMeta): OperationMeta {
@@ -591,36 +641,49 @@ function cloneMeta(meta: OperationMeta): OperationMeta {
     tags: meta.tags?.slice(),
     parameters: meta.parameters?.map((p) => ({
       ...p,
-      schema: cloneSchema(p.schema)
+      schema: cloneSchema(p.schema),
     })),
     requestBody: meta.requestBody === undefined ? undefined : cloneRequestBody(meta.requestBody),
-    responses: meta.responses === undefined ? undefined : cloneResponses(meta.responses)
+    responses: meta.responses === undefined ? undefined : cloneResponses(meta.responses),
   };
 }
 function cloneRequestBody(body: OpenApiRequestBody): OpenApiRequestBody {
-  const content: Record<string, {
-    schema: unknown;
-  }> = {};
-  for (const type of Object.keys(body.content)) content[type] = { schema: cloneSchema(body.content[type]!.schema) };
+  const content: Record<
+    string,
+    {
+      schema: unknown;
+    }
+  > = {};
+  for (const type of Object.keys(body.content))
+    content[type] = { schema: cloneSchema(body.content[type]!.schema) };
   return {
     ...body,
-    content
+    content,
   };
 }
-function cloneResponses(responses: Record<string, OpenApiResponse>): Record<string, OpenApiResponse> {
+function cloneResponses(
+  responses: Record<string, OpenApiResponse>,
+): Record<string, OpenApiResponse> {
   const out: Record<string, OpenApiResponse> = {};
   for (const status of Object.keys(responses)) {
     const response = responses[status]!;
-    const content: Record<string, {
-      schema: unknown;
-    }> = {};
+    const content: Record<
+      string,
+      {
+        schema: unknown;
+      }
+    > = {};
     if (response.content !== undefined) {
-      for (const type of Object.keys(response.content)) content[type] = { schema: cloneSchema(response.content[type]!.schema) };
+      for (const type of Object.keys(response.content))
+        content[type] = { schema: cloneSchema(response.content[type]!.schema) };
     }
-    out[status] = response.content === undefined ? { description: response.description } : {
-      description: response.description,
-      content
-    };
+    out[status] =
+      response.content === undefined
+        ? { description: response.description }
+        : {
+            description: response.description,
+            content,
+          };
   }
   return out;
 }
@@ -634,17 +697,20 @@ function mergeMeta(base: OperationMeta, next: OperationMeta): OperationMeta {
   if (next.parameters !== undefined) {
     out.parameters ??= [];
     for (const parameter of next.parameters) {
-      out.parameters = out.parameters.filter((current) => current.in !== parameter.in || current.name !== parameter.name);
+      out.parameters = out.parameters.filter(
+        (current) => current.in !== parameter.in || current.name !== parameter.name,
+      );
       out.parameters.push({
         ...parameter,
-        schema: cloneSchema(parameter.schema)
+        schema: cloneSchema(parameter.schema),
       });
     }
   }
   if (next.requestBody !== undefined) out.requestBody = cloneRequestBody(next.requestBody);
   if (next.responses !== undefined) {
     out.responses ??= {};
-    for (const status of Object.keys(next.responses)) out.responses[status] = cloneResponses({ [status]: next.responses[status]! })[status]!;
+    for (const status of Object.keys(next.responses))
+      out.responses[status] = cloneResponses({ [status]: next.responses[status]! })[status]!;
   }
   return out;
 }
@@ -682,20 +748,20 @@ function resolveChain(node: BuilderNode): ResolvedChain {
       stack.push({
         type: 'middleware',
         fn: item.fn,
-        meta: item.meta
+        meta: item.meta,
       });
     } else if (item.kind === 'layer') {
       stack.push({
         type: 'layer',
         fn: item.fn,
-        meta: item.meta
+        meta: item.meta,
       });
     } else if (item.kind === 'value') {
       stack.push({
         type: 'producer',
         name: item.name,
         fn: item.fn,
-        meta: item.meta
+        meta: item.meta,
       });
       if (!slots.includes(item.name)) slots.push(item.name);
     } else if (item.kind === 'meta') {
@@ -714,7 +780,7 @@ function resolveChain(node: BuilderNode): ResolvedChain {
     method,
     stack,
     slots,
-    meta
+    meta,
   };
 }
 function registerOperation(node: BuilderNode, kind: OperationKind, handler: Handler): void {
@@ -727,25 +793,25 @@ function registerOperation(node: BuilderNode, kind: OperationKind, handler: Hand
     stack: chain.stack,
     slots: chain.slots,
     meta: chain.meta,
-    handler
+    handler,
   });
 }
 /**
-* Shared immutable enrichment base for app, router, route, and method builders.
-*
-* Application code usually works with `App`, `Router`, `RouteBuilder`, or
-* `MethodBuilder` directly. This base class is exported so shared builder
-* helpers can accept any fluent builder while preserving the return type.
-*
-* ```ts no_run
-* type ValueBuilder<T extends BuilderBranch<T>> =
-*   T & { value(name: string, producer: Producer): T };
-*
-* function withRequestId<T extends BuilderBranch<T>>(builder: ValueBuilder<T>): T {
-*   return builder.value('requestId', () => crypto.randomUUID());
-* }
-* ```
-*/
+ * Shared immutable enrichment base for app, router, route, and method builders.
+ *
+ * Application code usually works with `App`, `Router`, `RouteBuilder`, or
+ * `MethodBuilder` directly. This base class is exported so shared builder
+ * helpers can accept any fluent builder while preserving the return type.
+ *
+ * ```ts no_run
+ * type ValueBuilder<T extends BuilderBranch<T>> =
+ *   T & { value(name: string, producer: Producer): T };
+ *
+ * function withRequestId<T extends BuilderBranch<T>>(builder: ValueBuilder<T>): T {
+ *   return builder.value('requestId', () => crypto.randomUUID());
+ * }
+ * ```
+ */
 const builderBranchFactories = new WeakMap<object, (node: BuilderNode) => object>();
 export abstract class BuilderBranch<TSelf extends BuilderBranch<TSelf>> {
   /** @internal */
@@ -755,36 +821,37 @@ export abstract class BuilderBranch<TSelf extends BuilderBranch<TSelf>> {
     this._node = node;
   }
   /** Return a new builder with one-way middleware appended to this branch.
-  *
-  * The middleware runs only when dispatch is flowing toward a candidate
-  * terminal below this branch. Returning a response short-circuits; returning
-  * nothing continues.
-  *
-  * ```ts no_run
-  * const authed = app.use(requireUser);
-  * authed.get('/account').handle(showAccount);
-  * ```
-  */
+   *
+   * The middleware runs only when dispatch is flowing toward a candidate
+   * terminal below this branch. Returning a response short-circuits; returning
+   * nothing continues.
+   *
+   * ```ts no_run
+   * const authed = app.use(requireUser);
+   * authed.get('/account').handle(showAccount);
+   * ```
+   */
   use(...middleware: Middleware[]): TSelf {
     resolveChain(this._node).owner._assertMutable();
     let node = this._node;
-    for (const fn of middleware) node = {
-      kind: 'middleware',
-      fn,
-      meta: metadataOf(fn),
-      parent: node
-    };
+    for (const fn of middleware)
+      node = {
+        kind: 'middleware',
+        fn,
+        meta: metadataOf(fn),
+        parent: node,
+      };
     return this.#createBranch(node);
   }
   /** Return a new builder with wrapper layers appended to this branch.
-  *
-  * Layers receive `(ctx, next)` and may wrap downstream dispatch, including
-  * fallback responses when this branch's routing constraints match.
-  *
-  * ```ts no_run
-  * const logged = app.layer(accessLog);
-  * ```
-  */
+   *
+   * Layers receive `(ctx, next)` and may wrap downstream dispatch, including
+   * fallback responses when this branch's routing constraints match.
+   *
+   * ```ts no_run
+   * const logged = app.layer(accessLog);
+   * ```
+   */
   layer(...layers: LayerMiddleware[]): TSelf {
     resolveChain(this._node).owner._assertMutable();
     let node = this._node;
@@ -793,18 +860,18 @@ export abstract class BuilderBranch<TSelf extends BuilderBranch<TSelf>> {
         kind: 'layer',
         fn,
         meta: metadataOf(fn),
-        parent: node
+        parent: node,
       };
       resolveChain(node).owner._registerLayer(node);
     }
     return this.#createBranch(node);
   }
   /** Return a new builder with a context value appended to this branch.
-  *
-  * ```ts no_run
-  * const withSession = app.value('session', sessions(sessionOptions));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * const withSession = app.value('session', sessions(sessionOptions));
+   * ```
+   */
   value(name: string, producer: Producer): TSelf {
     resolveChain(this._node).owner._assertMutable();
     return this.#createBranch({
@@ -812,21 +879,21 @@ export abstract class BuilderBranch<TSelf extends BuilderBranch<TSelf>> {
       name,
       fn: producer,
       meta: metadataOf(producer),
-      parent: this._node
+      parent: this._node,
     });
   }
   /** Return a new builder with OpenAPI metadata appended to this branch.
-  *
-  * ```ts no_run
-  * const users = app.meta({ tags: ['users'] });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * const users = app.meta({ tags: ['users'] });
+   * ```
+   */
   meta(meta: OperationMeta): TSelf {
     resolveChain(this._node).owner._assertMutable();
     return this.#createBranch({
       kind: 'meta',
       meta: cloneMeta(meta),
-      parent: this._node
+      parent: this._node,
     });
   }
   #createBranch(node: BuilderNode): TSelf {
@@ -857,24 +924,28 @@ type NearMisses = {
 };
 function fallbackResponse(near: NearMisses): Response {
   if (near.allowed.size > 0) {
-    return Response.json({ error: 'Method Not Allowed' }, {
-      status: 405,
-      headers: { allow: [...near.allowed].sort().join(', ') }
-    });
+    return Response.json(
+      { error: 'Method Not Allowed' },
+      {
+        status: 405,
+        headers: { allow: [...near.allowed].sort().join(', ') },
+      },
+    );
   }
   if (near.upgrade !== undefined) {
     return new Response('Upgrade Required', {
       status: 426,
       headers: {
         upgrade: near.upgrade,
-        connection: 'Upgrade'
-      }
+        connection: 'Upgrade',
+      },
     });
   }
   return defaultNotFound();
 }
 function chainMatches(chain: ResolvedChain, path: string, method: HttpMethod): boolean {
-  if (chain.hasPath && new URLPattern({ pathname: chain.path }).exec({ pathname: path }) === null) return false;
+  if (chain.hasPath && new URLPattern({ pathname: chain.path }).exec({ pathname: path }) === null)
+    return false;
   if (chain.method !== undefined && chain.method !== method) return false;
   return true;
 }
@@ -926,8 +997,8 @@ function wrapSse(handler: SseHandler): Handler {
     return new Response(channel.reader, {
       headers: {
         'content-type': 'text/event-stream',
-        'cache-control': 'no-store'
-      }
+        'cache-control': 'no-store',
+      },
     });
   };
 }
@@ -946,10 +1017,17 @@ function routePathToOpenApi(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
 }
 function generatedOperationId(method: string, path: string): string {
-  const parts = path.split('/').filter(Boolean).map((part) => {
-    const clean = part.startsWith(':') ? `by-${part.slice(1)}` : part;
-    return clean.split(/[^A-Za-z0-9]+/).filter(Boolean).map((segment) => segment[0]!.toUpperCase() + segment.slice(1)).join('');
-  });
+  const parts = path
+    .split('/')
+    .filter(Boolean)
+    .map((part) => {
+      const clean = part.startsWith(':') ? `by-${part.slice(1)}` : part;
+      return clean
+        .split(/[^A-Za-z0-9]+/)
+        .filter(Boolean)
+        .map((segment) => segment[0]!.toUpperCase() + segment.slice(1))
+        .join('');
+    });
   return method.toLowerCase() + parts.join('');
 }
 function defaultNotFound(): Response {
@@ -968,13 +1046,20 @@ interface HandleInfo {
 function seedSlots(ctx: HttpContext, slots: string[]): void {
   for (const slot of slots) ctx[slot] = undefined;
 }
-function makeInitialContext(app: App, op: Operation, req: Request, params: Record<string, string>, info: HandleInfo, method: HttpMethod): HttpContext {
+function makeInitialContext(
+  app: App,
+  op: Operation,
+  req: Request,
+  params: Record<string, string>,
+  info: HandleInfo,
+  method: HttpMethod,
+): HttpContext {
   const ctx: HttpContext = {
     request: req,
     app,
     route: op.path,
     method: op.method ?? method,
-    protocol: info.protocol ?? 'http/1.1'
+    protocol: info.protocol ?? 'http/1.1',
   };
   if (info.session !== undefined) ctx.session = info.session;
   if (info.incoming !== undefined) ctx.incoming = info.incoming;
@@ -982,13 +1067,20 @@ function makeInitialContext(app: App, op: Operation, req: Request, params: Recor
   ctx.params = params;
   return ctx;
 }
-function makeFallbackContext(app: App, req: Request, path: string, method: HttpMethod, slots: string[], info: HandleInfo): HttpContext {
+function makeFallbackContext(
+  app: App,
+  req: Request,
+  path: string,
+  method: HttpMethod,
+  slots: string[],
+  info: HandleInfo,
+): HttpContext {
   const ctx: HttpContext = {
     request: req,
     app,
     route: path,
     method,
-    protocol: info.protocol ?? 'http/1.1'
+    protocol: info.protocol ?? 'http/1.1',
   };
   if (info.session !== undefined) ctx.session = info.session;
   if (info.incoming !== undefined) ctx.incoming = info.incoming;
@@ -996,7 +1088,12 @@ function makeFallbackContext(app: App, req: Request, path: string, method: HttpM
   ctx.params = {};
   return ctx;
 }
-function makeUpgradeContext(app: App, op: Operation, incoming: IncomingWebSocketRequest | IncomingWebTransportRequest, params: Record<string, string>): HttpContext {
+function makeUpgradeContext(
+  app: App,
+  op: Operation,
+  incoming: IncomingWebSocketRequest | IncomingWebTransportRequest,
+  params: Record<string, string>,
+): HttpContext {
   const ctx = {
     request: incoming.request,
     app,
@@ -1005,12 +1102,16 @@ function makeUpgradeContext(app: App, op: Operation, incoming: IncomingWebSocket
     protocol: incoming.protocol,
     session: incoming.session,
     incoming,
-    params
+    params,
   } as HttpContext;
   seedSlots(ctx, op.slots);
   return ctx;
 }
-async function runStack(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<HttpHandlerResult> {
+async function runStack(
+  ctx: HttpContext,
+  stack: StackItem[],
+  handler: Handler,
+): Promise<HttpHandlerResult> {
   let index = -1;
   async function dispatch(i: number): Promise<HttpHandlerResult> {
     if (i <= index) throw new Error('next() called multiple times');
@@ -1043,15 +1144,21 @@ async function finalize(ctx: HttpContext, res: HttpHandlerResult): Promise<void>
     if (ctx.cookies instanceof CookieJar) ctx.cookies._apply(res);
   }
 }
-async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<HttpHandlerResult> {
+async function compose(
+  ctx: HttpContext,
+  stack: StackItem[],
+  handler: Handler,
+): Promise<HttpHandlerResult> {
   const res = await runStack(ctx, stack, handler);
   await finalize(ctx, res);
   return res;
 }
 function pathFromRequest(req: Request): string {
-  const trusted = (req as {
-    _trustedPath?: () => string | null;
-  })._trustedPath?.();
+  const trusted = (
+    req as {
+      _trustedPath?: () => string | null;
+    }
+  )._trustedPath?.();
   if (trusted !== undefined && trusted !== null) {
     const query = trusted.indexOf('?');
     return query < 0 ? trusted : trusted.slice(0, query);
@@ -1075,16 +1182,21 @@ function objectSchemaProperties(schema: unknown): Record<string, unknown> {
 }
 function objectSchemaRequired(schema: unknown): Set<string> {
   const actual = cloneSchema(schema);
-  return new Set(isRecord(actual) && Array.isArray(actual.required) ? actual.required.map(String) : []);
+  return new Set(
+    isRecord(actual) && Array.isArray(actual.required) ? actual.required.map(String) : [],
+  );
 }
-function parametersFromObject(schemaValue: unknown, location: 'path' | 'query' | 'header'): OpenApiParameter[] {
+function parametersFromObject(
+  schemaValue: unknown,
+  location: 'path' | 'query' | 'header',
+): OpenApiParameter[] {
   const properties = objectSchemaProperties(schemaValue);
   const required = objectSchemaRequired(schemaValue);
   return Object.keys(properties).map((name) => ({
     name: location === 'header' ? name.toLowerCase() : name,
     in: location,
     required: location === 'path' ? true : required.has(name),
-    schema: cloneSchema(properties[name])
+    schema: cloneSchema(properties[name]),
   }));
 }
 function parseQueryObject(params: URLSearchParams): Record<string, unknown> {
@@ -1111,221 +1223,227 @@ function responseWithBody(status: number, message: string): Response {
   return Response.json({ error: message }, { status });
 }
 /**
-* Attach static OpenAPI metadata to a middleware or layer function.
-*
-* The returned function is the original function with non-enumerable metadata
-* attached. Metadata is read when the middleware is installed in a route stack.
-*
-* ```ts no_run
-* const auth = defineMiddleware((ctx) => {
-*   if (ctx.user === undefined) return Response.json({ error: 'Unauthorized' }, { status: 401 });
-* }, {
-*   security: [{ bearerAuth: [] }],
-* });
-* ```
-*/
-export function defineMiddleware<T extends Middleware | LayerMiddleware>(fn: T, meta: OperationMeta = {}): T {
+ * Attach static OpenAPI metadata to a middleware or layer function.
+ *
+ * The returned function is the original function with non-enumerable metadata
+ * attached. Metadata is read when the middleware is installed in a route stack.
+ *
+ * ```ts no_run
+ * const auth = defineMiddleware((ctx) => {
+ *   if (ctx.user === undefined) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+ * }, {
+ *   security: [{ bearerAuth: [] }],
+ * });
+ * ```
+ */
+export function defineMiddleware<T extends Middleware | LayerMiddleware>(
+  fn: T,
+  meta: OperationMeta = {},
+): T {
   Object.defineProperty(fn, middlewareMeta, {
     value: cloneMeta(meta),
-    configurable: true
+    configurable: true,
   });
   return fn;
 }
 /**
-* Attach static OpenAPI metadata to a context value producer.
-*
-* The returned producer is the original function with metadata attached. Use
-* this for reusable body, params, query, or session producers.
-*
-* ```ts no_run
-* const user = defineProducer(async (ctx) => loadUser(ctx), {
-*   parameters: [{ name: 'user-id', in: 'header' }],
-* });
-* ```
-*/
+ * Attach static OpenAPI metadata to a context value producer.
+ *
+ * The returned producer is the original function with metadata attached. Use
+ * this for reusable body, params, query, or session producers.
+ *
+ * ```ts no_run
+ * const user = defineProducer(async (ctx) => loadUser(ctx), {
+ *   parameters: [{ name: 'user-id', in: 'header' }],
+ * });
+ * ```
+ */
 export function defineProducer<T extends Producer>(fn: T, meta: OperationMeta = {}): T {
   Object.defineProperty(fn, middlewareMeta, {
     value: cloneMeta(meta),
-    configurable: true
+    configurable: true,
   });
   return fn;
 }
 /**
-* Shared route-container surface for `App`, `Router`, and immutable root
-* branches.
-*
-* Container builders can start path branches with `route()` or path-taking verb
-* shortcuts. Enrichments such as `use()`, `layer()`, `value()`, and `meta()` are
-* inherited from `BuilderBranch` and return immutable branch builders; they do
-* not mutate the original container.
-*/
+ * Shared route-container surface for `App`, `Router`, and immutable root
+ * branches.
+ *
+ * Container builders can start path branches with `route()` or path-taking verb
+ * shortcuts. Enrichments such as `use()`, `layer()`, `value()`, and `meta()` are
+ * inherited from `BuilderBranch` and return immutable branch builders; they do
+ * not mutate the original container.
+ */
 export abstract class RouterBase<TSelf> extends BuilderBranch<RouterBranch> {
   /**
-  * Resolved operations registered on this container.
-  *
-  * @internal
-  */
+   * Resolved operations registered on this container.
+   *
+   * @internal
+   */
   _operations: Operation[] = [];
   /**
-  * Layer branch nodes that can wrap fallback dispatch.
-  *
-  * @internal
-  */
+   * Layer branch nodes that can wrap fallback dispatch.
+   *
+   * @internal
+   */
   _layers: BuilderNode[] = [];
   constructor() {
     const root = {
       kind: 'root',
-      owner: undefined as unknown as RouterBase<unknown>
+      owner: undefined as unknown as RouterBase<unknown>,
     };
     super(root);
     root.owner = this as RouterBase<unknown>;
     builderBranchFactories.set(this, (next) => new RouterBranch(next));
   }
   /** Start a route branch for one URLPattern pathname.
-  *
-  * ```ts no_run
-  * app.route('/users/:id').get().handle((ctx) => Response.json(ctx.params));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/users/:id').get().handle((ctx) => Response.json(ctx.params));
+   * ```
+   */
   route(path: string): RouteBuilder {
     this._assertMutable();
     return new RouteBuilder({
       kind: 'path',
       fragment: path,
-      parent: this._node
+      parent: this._node,
     });
   }
   /** Start a GET method branch; register the handler with `.handle()`.
-  *
-  * ```ts no_run
-  * app.get('/health').handle(() => Response.json({ ok: true }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.get('/health').handle(() => Response.json({ ok: true }));
+   * ```
+   */
   get(path: string, ...rest: never[]): MethodBuilder {
     assertPathOnly('get', rest);
     return this.route(path).get();
   }
   /** Start a POST method branch; register the handler with `.handle()`.
-  *
-  * ```ts no_run
-  * app.post('/users').handle((ctx) => Response.json({}, { status: 201 }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.post('/users').handle((ctx) => Response.json({}, { status: 201 }));
+   * ```
+   */
   post(path: string, ...rest: never[]): MethodBuilder {
     assertPathOnly('post', rest);
     return this.route(path).post();
   }
   /** Start a PUT method branch; register the handler with `.handle()`.
-  *
-  * ```ts no_run
-  * app.put('/users/:id').handle((ctx) => Response.json(ctx.params));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.put('/users/:id').handle((ctx) => Response.json(ctx.params));
+   * ```
+   */
   put(path: string, ...rest: never[]): MethodBuilder {
     assertPathOnly('put', rest);
     return this.route(path).put();
   }
   /** Start a PATCH method branch; register the handler with `.handle()`.
-  *
-  * ```ts no_run
-  * app.patch('/users/:id').handle((ctx) => Response.json(ctx.params));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.patch('/users/:id').handle((ctx) => Response.json(ctx.params));
+   * ```
+   */
   patch(path: string, ...rest: never[]): MethodBuilder {
     assertPathOnly('patch', rest);
     return this.route(path).patch();
   }
   /** Start a DELETE method branch; register the handler with `.handle()`.
-  *
-  * ```ts no_run
-  * app.delete('/users/:id').handle(() => new Response(null, { status: 204 }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.delete('/users/:id').handle(() => new Response(null, { status: 204 }));
+   * ```
+   */
   delete(path: string, ...rest: never[]): MethodBuilder {
     assertPathOnly('delete', rest);
     return this.route(path).delete();
   }
   /** Start a HEAD method branch; register the handler with `.handle()`.
-  *
-  * ```ts no_run
-  * app.head('/health').handle(() => new Response(null, { status: 204 }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.head('/health').handle(() => new Response(null, { status: 204 }));
+   * ```
+   */
   head(path: string, ...rest: never[]): MethodBuilder {
     assertPathOnly('head', rest);
     return this.route(path).head();
   }
   /** Start an OPTIONS method branch; register the handler with `.handle()`.
-  *
-  * ```ts no_run
-  * app.options('/users').handle(() => new Response(null, { status: 204 }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.options('/users').handle(() => new Response(null, { status: 204 }));
+   * ```
+   */
   options(path: string, ...rest: never[]): MethodBuilder {
     assertPathOnly('options', rest);
     return this.route(path).options();
   }
   /**
-  * Register a resolved operation, rejecting duplicates.
-  *
-  * @internal
-  */
+   * Register a resolved operation, rejecting duplicates.
+   *
+   * @internal
+   */
   _register(op: Operation): void {
     this._assertMutable();
-    const exists = this._operations.some((current) => current.kind === op.kind && current.method === op.method && current.path === op.path);
+    const exists = this._operations.some(
+      (current) =>
+        current.kind === op.kind && current.method === op.method && current.path === op.path,
+    );
     if (exists) throw new Error(duplicateOperationMessage(op));
     this._operations.push(op);
   }
   /**
-  * Register a layer branch so fallback dispatch can wrap through it.
-  *
-  * @internal
-  */
+   * Register a layer branch so fallback dispatch can wrap through it.
+   *
+   * @internal
+   */
   _registerLayer(node: BuilderNode): void {
     this._assertMutable();
     this._layers.push(node);
   }
   /**
-  * Guard invoked before any mutation; mounted routers throw.
-  *
-  * @internal
-  */
+   * Guard invoked before any mutation; mounted routers throw.
+   *
+   * @internal
+   */
   _assertMutable(): void {}
 }
 /**
-* Immutable app/router branch with path-taking route helpers.
-*
-* Instances are returned by root-level enrichments such as `app.use(auth)` or
-* `router.layer(log)`. Hold the returned branch to register multiple routes
-* under the same inherited chain.
-*
-* ```ts no_run
-* const authed = app.use(requireUser);
-* authed.get('/account').handle(showAccount);
-* authed.post('/logout').handle(logout);
-* ```
-*/
+ * Immutable app/router branch with path-taking route helpers.
+ *
+ * Instances are returned by root-level enrichments such as `app.use(auth)` or
+ * `router.layer(log)`. Hold the returned branch to register multiple routes
+ * under the same inherited chain.
+ *
+ * ```ts no_run
+ * const authed = app.use(requireUser);
+ * authed.get('/account').handle(showAccount);
+ * authed.post('/logout').handle(logout);
+ * ```
+ */
 export class RouterBranch extends BuilderBranch<RouterBranch> {
   /**
-  * Create a branch around a routing-tree node.
-  *
-  * @internal
-  */
+   * Create a branch around a routing-tree node.
+   *
+   * @internal
+   */
   constructor(node: BuilderNode) {
     super(node);
     builderBranchFactories.set(this, (next) => new RouterBranch(next));
   }
   /** Start a route branch for one URLPattern pathname.
-  *
-  * ```ts no_run
-  * branch.route('/users/:id').get().handle((ctx) => Response.json(ctx.params));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * branch.route('/users/:id').get().handle((ctx) => Response.json(ctx.params));
+   * ```
+   */
   route(path: string): RouteBuilder {
     return new RouteBuilder({
       kind: 'path',
       fragment: path,
-      parent: this._node
+      parent: this._node,
     });
   }
   /** Start a GET method branch; register the handler with `.handle()`. */
@@ -1365,42 +1483,44 @@ export class RouterBranch extends BuilderBranch<RouterBranch> {
   }
 }
 /**
-* HTTP application with middleware, routes, async context, serving, and docs.
-*
-* ```ts no_run
-* const app = new App({ name: 'Example API' });
-* app.get('/').handle(() => new Response('ok'));
-* ```
-*/
+ * HTTP application with middleware, routes, async context, serving, and docs.
+ *
+ * ```ts no_run
+ * const app = new App({ name: 'Example API' });
+ * app.get('/').handle(() => new Response('ok'));
+ * ```
+ */
 export class App extends RouterBase<App> {
   #name: string;
   #requestContext = new Context<HttpContext>('fino:http:app');
-  constructor(options: {
-    name?: string;
-  } = {}) {
+  constructor(
+    options: {
+      name?: string;
+    } = {},
+  ) {
     super();
     this.#name = options.name ?? 'Fino API';
   }
   /** Return the active request context from anywhere in the async call chain.
-  *
-  * ```ts no_run
-  * const ctx = app.context();
-  * ```
-  */
+   *
+   * ```ts no_run
+   * const ctx = app.context();
+   * ```
+   */
   context(): HttpContext | undefined {
     return this.#requestContext.get();
   }
   /** Dispatch one request through the matching operation chain.
-  *
-  * A path that matches with no matching method returns 405 with an `Allow`
-  * header. A path served only by WebSocket or WebTransport operations returns
-  * 426 Upgrade Required. Otherwise unmatched requests return a JSON 404 after
-  * running the app-level middleware chain.
-  *
-  * ```ts no_run
-  * const response = await app.handle(new Request('http://local/health'));
-  * ```
-  */
+   *
+   * A path that matches with no matching method returns 405 with an `Allow`
+   * header. A path served only by WebSocket or WebTransport operations returns
+   * 426 Upgrade Required. Otherwise unmatched requests return a JSON 404 after
+   * running the app-level middleware chain.
+   *
+   * ```ts no_run
+   * const response = await app.handle(new Request('http://local/health'));
+   * ```
+   */
   async handle(req: Request, info: HandleInfo = {}): Promise<HttpHandlerResult> {
     const path = pathFromRequest(req);
     const method = methodName(req.method);
@@ -1426,11 +1546,15 @@ export class App extends RouterBase<App> {
     }
     const stack = fallbackStack(this, path, method);
     if (stack.length === 0) return fallbackResponse(near);
-    const slots = stack.flatMap((item) => item.type === 'producer' ? [item.name] : []);
+    const slots = stack.flatMap((item) => (item.type === 'producer' ? [item.name] : []));
     const ctx = makeFallbackContext(this, req, path, method, [...new Set(slots)], info);
-    return this.#requestContext.runWithValue(ctx, () => compose(ctx, stack, () => fallbackResponse(near)));
+    return this.#requestContext.runWithValue(ctx, () =>
+      compose(ctx, stack, () => fallbackResponse(near)),
+    );
   }
-  async #handleUpgrade(incoming: IncomingWebSocketRequest | IncomingWebTransportRequest): Promise<void> {
+  async #handleUpgrade(
+    incoming: IncomingWebSocketRequest | IncomingWebTransportRequest,
+  ): Promise<void> {
     const path = pathFromRequest(incoming.request);
     for (const op of this._operations) {
       if (op.kind !== incoming.kind) continue;
@@ -1463,21 +1587,21 @@ export class App extends RouterBase<App> {
     await incoming.reject();
   }
   /**
-  * Dispatch a synthetic upgrade request for focused app tests.
-  *
-  * @internal
-  */
+   * Dispatch a synthetic upgrade request for focused app tests.
+   *
+   * @internal
+   */
   _handleWebTransportForTest(incoming: IncomingWebTransportRequest): Promise<void> {
     return this.#handleUpgrade(incoming);
   }
   /** Start an HTTP server that dispatches requests to this app.
-  *
-  * The returned server is the same object returned by `serve()`.
-  *
-  * ```ts no_run
-  * const server = app.listen({ port: 3000 });
-  * ```
-  */
+   *
+   * The returned server is the same object returned by `serve()`.
+   *
+   * ```ts no_run
+   * const server = app.listen({ port: 3000 });
+   * ```
+   */
   listen(options: Parameters<typeof serve>[0]): ReturnType<typeof serve> {
     return serve(options, async (incoming, session) => {
       if (incoming.kind === 'websocket' || incoming.kind === 'webtransport') {
@@ -1488,22 +1612,22 @@ export class App extends RouterBase<App> {
       const result = await this.handle(accepted.request, {
         protocol: accepted.protocol,
         session,
-        incoming
+        incoming,
       });
       await accepted.respond(result);
     });
   }
   /** Generate an OpenAPI 3.1 document from registered operations and metadata.
-  *
-  * HTTP and SSE operations are documented; SSE paths emit GET and POST
-  * operations with a `text/event-stream` response. WebSocket and WebTransport
-  * operations are not part of the OpenAPI surface. Throws when generated or
-  * explicit operation IDs collide.
-  *
-  * ```ts no_run
-  * const doc = app.openapi({ version: '1.0.0' });
-  * ```
-  */
+   *
+   * HTTP and SSE operations are documented; SSE paths emit GET and POST
+   * operations with a `text/event-stream` response. WebSocket and WebTransport
+   * operations are not part of the OpenAPI surface. Throws when generated or
+   * explicit operation IDs collide.
+   *
+   * ```ts no_run
+   * const doc = app.openapi({ version: '1.0.0' });
+   * ```
+   */
   openapi(options: OpenApiOptions): Record<string, unknown> {
     const paths: Record<string, Record<string, unknown>> = {};
     const operationIds = new Set<string>();
@@ -1515,7 +1639,8 @@ export class App extends RouterBase<App> {
       }
       if (op.kind === 'sse') meta.operationId = generatedOperationId(method, op.path);
       meta.operationId ??= generatedOperationId(method, op.path);
-      if (operationIds.has(meta.operationId)) throw new Error(`Duplicate OpenAPI operationId "${meta.operationId}"`);
+      if (operationIds.has(meta.operationId))
+        throw new Error(`Duplicate OpenAPI operationId "${meta.operationId}"`);
       operationIds.add(meta.operationId);
       const openPath = routePathToOpenApi(op.path);
       paths[openPath] ??= {};
@@ -1524,16 +1649,19 @@ export class App extends RouterBase<App> {
       if (meta.description !== undefined) operation.description = meta.description;
       if (meta.tags !== undefined) operation.tags = meta.tags;
       if (meta.security !== undefined) operation.security = meta.security;
-      if (meta.parameters !== undefined && meta.parameters.length > 0) operation.parameters = meta.parameters;
+      if (meta.parameters !== undefined && meta.parameters.length > 0)
+        operation.parameters = meta.parameters;
       if (meta.requestBody !== undefined) operation.requestBody = meta.requestBody;
       operation.responses = meta.responses ?? { '200': { description: 'OK' } };
       paths[openPath]![method.toLowerCase()] = operation;
     };
     const sseBaseline: OperationMeta = {
-      responses: { '200': {
-        description: 'Server-sent event stream',
-        content: { 'text/event-stream': { schema: { type: 'string' } } }
-      } }
+      responses: {
+        '200': {
+          description: 'Server-sent event stream',
+          content: { 'text/event-stream': { schema: { type: 'string' } } },
+        },
+      },
     };
     for (const op of this._operations) {
       if (op.kind === 'http') {
@@ -1547,286 +1675,293 @@ export class App extends RouterBase<App> {
       openapi: '3.1.0',
       info: {
         title: options.title ?? this.#name,
-        version: options.version
+        version: options.version,
       },
-      paths
+      paths,
     };
     if (options.servers !== undefined) doc.servers = options.servers;
     return doc;
   }
   /** Return a handler that serves this app's OpenAPI document as JSON.
-  *
-  * ```ts no_run
-  * app.get('/openapi.json').handle(app.openapiHandler({ version: '1.0.0' }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.get('/openapi.json').handle(app.openapiHandler({ version: '1.0.0' }));
+   * ```
+   */
   openapiHandler(options: OpenApiOptions): Handler {
     return () => Response.json(this.openapi(options));
   }
 }
 /**
-* Reusable route collection mountable under a route prefix.
-*
-* Mounting resolves the router's operations into the target; a router cannot
-* be changed after it has been mounted.
-*
-* ```ts no_run
-* const router = new Router();
-* router.get('/users').handle(() => Response.json([]));
-* app.route('/api').mount(router);
-* ```
-*/
+ * Reusable route collection mountable under a route prefix.
+ *
+ * Mounting resolves the router's operations into the target; a router cannot
+ * be changed after it has been mounted.
+ *
+ * ```ts no_run
+ * const router = new Router();
+ * router.get('/users').handle(() => Response.json([]));
+ * app.route('/api').mount(router);
+ * ```
+ */
 export class Router extends RouterBase<Router> {
   /**
-  * Route prefix this router was mounted under, once mounted.
-  *
-  * @internal
-  */
+   * Route prefix this router was mounted under, once mounted.
+   *
+   * @internal
+   */
   _mountedAt: string | undefined;
   override _assertMutable(): void {
     if (this._mountedAt !== undefined) {
-      throw new Error(`Router already mounted under "${this._mountedAt}"; register routes before mounting`);
+      throw new Error(
+        `Router already mounted under "${this._mountedAt}"; register routes before mounting`,
+      );
     }
   }
 }
 /**
-* Builder for one URLPattern pathname and its enrichment branch.
-*
-* Enrichment methods return a new builder; a held reference is a fixed point
-* in the routing tree, so chain or reassign to accumulate. Verb methods start
-* HTTP method branches finished by `.handle()`; `websocket()`, `sse()`,
-* `webtransport()`, `rpc()`, and `mount()` are terminals that register
-* directly.
-*
-* ```ts no_run
-* app.route('/users/:id').meta({ tags: ['users'] }).get().handle((ctx) => Response.json(ctx.params));
-* ```
-*/
+ * Builder for one URLPattern pathname and its enrichment branch.
+ *
+ * Enrichment methods return a new builder; a held reference is a fixed point
+ * in the routing tree, so chain or reassign to accumulate. Verb methods start
+ * HTTP method branches finished by `.handle()`; `websocket()`, `sse()`,
+ * `webtransport()`, `rpc()`, and `mount()` are terminals that register
+ * directly.
+ *
+ * ```ts no_run
+ * app.route('/users/:id').meta({ tags: ['users'] }).get().handle((ctx) => Response.json(ctx.params));
+ * ```
+ */
 export class RouteBuilder extends BuilderBranch<RouteBuilder> {
   /**
-  * Create a route builder around a routing-tree node.
-  *
-  * This is normally created through `app.route()` or `router.route()`.
-  *
-  * @internal
-  */
+   * Create a route builder around a routing-tree node.
+   *
+   * This is normally created through `app.route()` or `router.route()`.
+   *
+   * @internal
+   */
   constructor(node: BuilderNode) {
     super(node);
     builderBranchFactories.set(this, (next) => new RouteBuilder(next));
   }
   /** Return a new builder with middleware appended to this branch.
-  *
-  * ```ts no_run
-  * app.route('/admin').use(requireAdmin).get().handle(showAdmin);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/admin').use(requireAdmin).get().handle(showAdmin);
+   * ```
+   */
   use(...middleware: Middleware[]): RouteBuilder {
     return super.use(...middleware);
   }
   /** Return a new builder with wrapper layers appended to this branch.
-  *
-  * ```ts no_run
-  * app.route('/admin').layer(auditLog).get().handle(showAdmin);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/admin').layer(auditLog).get().handle(showAdmin);
+   * ```
+   */
   layer(...layers: LayerMiddleware[]): RouteBuilder {
     return super.layer(...layers);
   }
   /** Return a new builder with a context value appended to this branch.
-  *
-  * ```ts no_run
-  * app.route('/users/:id').value('params', schema.params(idSchema));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/users/:id').value('params', schema.params(idSchema));
+   * ```
+   */
   value(name: string, producer: Producer): RouteBuilder {
     return super.value(name, producer);
   }
   /** Return a new builder with OpenAPI metadata appended to this branch.
-  *
-  * ```ts no_run
-  * app.route('/users').meta({ tags: ['users'] });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/users').meta({ tags: ['users'] });
+   * ```
+   */
   meta(meta: OperationMeta): RouteBuilder {
     return super.meta(meta);
   }
   /** Start a nested route branch under this one.
-  *
-  * The nested path appends to this route's path and the nested branch
-  * inherits everything accumulated above it.
-  *
-  * ```ts no_run
-  * const users = app.route('/users');
-  * users.get().handle(listUsers);
-  * users.route('/:id').get().handle(showUser);
-  * ```
-  */
+   *
+   * The nested path appends to this route's path and the nested branch
+   * inherits everything accumulated above it.
+   *
+   * ```ts no_run
+   * const users = app.route('/users');
+   * users.get().handle(listUsers);
+   * users.route('/:id').get().handle(showUser);
+   * ```
+   */
   route(path: string): RouteBuilder {
     return new RouteBuilder({
       kind: 'path',
       fragment: path,
-      parent: this._node
+      parent: this._node,
     });
   }
   /** Start a GET method branch on this route.
-  *
-  * ```ts no_run
-  * app.route('/items').get().handle(() => Response.json([]));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').get().handle(() => Response.json([]));
+   * ```
+   */
   get(...rest: never[]): MethodBuilder {
     assertNoArgs('get', rest);
     return this.#method('GET');
   }
   /** Start a POST method branch on this route.
-  *
-  * ```ts no_run
-  * app.route('/items').post().value('body', body.json()).handle((ctx) => Response.json(ctx.body));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').post().value('body', body.json()).handle((ctx) => Response.json(ctx.body));
+   * ```
+   */
   post(...rest: never[]): MethodBuilder {
     assertNoArgs('post', rest);
     return this.#method('POST');
   }
   /** Start a PUT method branch on this route.
-  *
-  * ```ts no_run
-  * app.route('/items/:id').put().handle((ctx) => Response.json(ctx.params));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items/:id').put().handle((ctx) => Response.json(ctx.params));
+   * ```
+   */
   put(...rest: never[]): MethodBuilder {
     assertNoArgs('put', rest);
     return this.#method('PUT');
   }
   /** Start a PATCH method branch on this route.
-  *
-  * ```ts no_run
-  * app.route('/items/:id').patch().handle((ctx) => Response.json(ctx.params));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items/:id').patch().handle((ctx) => Response.json(ctx.params));
+   * ```
+   */
   patch(...rest: never[]): MethodBuilder {
     assertNoArgs('patch', rest);
     return this.#method('PATCH');
   }
   /** Start a DELETE method branch on this route.
-  *
-  * ```ts no_run
-  * app.route('/items/:id').delete().handle(() => new Response(null, { status: 204 }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items/:id').delete().handle(() => new Response(null, { status: 204 }));
+   * ```
+   */
   delete(...rest: never[]): MethodBuilder {
     assertNoArgs('delete', rest);
     return this.#method('DELETE');
   }
   /** Start a HEAD method branch on this route.
-  *
-  * ```ts no_run
-  * app.route('/items').head().handle(() => new Response(null, { status: 204 }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').head().handle(() => new Response(null, { status: 204 }));
+   * ```
+   */
   head(...rest: never[]): MethodBuilder {
     assertNoArgs('head', rest);
     return this.#method('HEAD');
   }
   /** Start an OPTIONS method branch on this route.
-  *
-  * ```ts no_run
-  * app.route('/items').options().handle(() => new Response(null, { status: 204 }));
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').options().handle(() => new Response(null, { status: 204 }));
+   * ```
+   */
   options(...rest: never[]): MethodBuilder {
     assertNoArgs('options', rest);
     return this.#method('OPTIONS');
   }
   #method(method: HttpMethod): MethodBuilder {
-    return new MethodBuilder({
-      kind: 'op',
-      method,
-      parent: this._node
-    }, this);
+    return new MethodBuilder(
+      {
+        kind: 'op',
+        method,
+        parent: this._node,
+      },
+      this,
+    );
   }
   /** Register a WebSocket operation at this route. Terminal.
-  *
-  * Middleware on the branch runs before the upgrade is accepted and can
-  * reject it by returning a `Response`.
-  *
-  * ```ts no_run
-  * app.route('/chat').websocket(async (socket, ctx) => {
-  *   socket.addEventListener('message', (event) => socket.send(event.data));
-  * });
-  * ```
-  */
+   *
+   * Middleware on the branch runs before the upgrade is accepted and can
+   * reject it by returning a `Response`.
+   *
+   * ```ts no_run
+   * app.route('/chat').websocket(async (socket, ctx) => {
+   *   socket.addEventListener('message', (event) => socket.send(event.data));
+   * });
+   * ```
+   */
   websocket(handler: WebSocketHandler): RouteBuilder {
     registerOperation(this._node, 'websocket', wrapWebSocket(handler));
     return this;
   }
   /** Register a WebTransport operation at this route. Terminal.
-  *
-  * ```ts no_run
-  * app.route('/wt').webtransport(async (session, ctx) => {
-  *   await session.ready;
-  * });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/wt').webtransport(async (session, ctx) => {
+   *   await session.ready;
+   * });
+   * ```
+   */
   webtransport(handler: WebTransportHandler): RouteBuilder {
     registerOperation(this._node, 'webtransport', wrapWebTransport(handler));
     return this;
   }
   /** Register a server-sent events operation at this route. Terminal.
-  *
-  * The handler receives an `EventSourceWriter` wired to the response body.
-  * The route responds with `text/event-stream` immediately, streams every
-  * event the handler writes, and ends the stream when the handler returns.
-  * This uses the ordinary HTTP request path rather than the WebSocket or
-  * WebTransport upgrade path.
-  * The operation matches GET (for `EventSource` clients) and POST (for
-  * fetch-based clients that send a request body).
-  *
-  * ```ts no_run
-  * app.route('/events').sse(async (events, ctx) => {
-  *   await events.write({ data: 'connected' });
-  * });
-  * ```
-  */
+   *
+   * The handler receives an `EventSourceWriter` wired to the response body.
+   * The route responds with `text/event-stream` immediately, streams every
+   * event the handler writes, and ends the stream when the handler returns.
+   * This uses the ordinary HTTP request path rather than the WebSocket or
+   * WebTransport upgrade path.
+   * The operation matches GET (for `EventSource` clients) and POST (for
+   * fetch-based clients that send a request body).
+   *
+   * ```ts no_run
+   * app.route('/events').sse(async (events, ctx) => {
+   *   await events.write({ data: 'connected' });
+   * });
+   * ```
+   */
   sse(handler: SseHandler): RouteBuilder {
     registerOperation(this._node, 'sse', wrapSse(handler));
     return this;
   }
   /** Mount a JSON-RPC service at this route. Terminal.
-  *
-  * POST requests dispatch as JSON-RPC 2.0 messages; other methods return 405
-  * with an `Allow` header.
-  *
-  * ```ts no_run
-  * import { JsonRpcService } from 'fino:jsonrpc';
-  * const svc = new JsonRpcService();
-  * svc.method('add').handle((p) => (p as { a: number; b: number }).a + (p as { a: number; b: number }).b);
-  * app.route('/rpc').rpc(svc);
-  * ```
-  */
-  rpc(service: {
-    httpHandler(): (req: Request) => Promise<Response>;
-  }): RouteBuilder {
+   *
+   * POST requests dispatch as JSON-RPC 2.0 messages; other methods return 405
+   * with an `Allow` header.
+   *
+   * ```ts no_run
+   * import { JsonRpcService } from 'fino:jsonrpc';
+   * const svc = new JsonRpcService();
+   * svc.method('add').handle((p) => (p as { a: number; b: number }).a + (p as { a: number; b: number }).b);
+   * app.route('/rpc').rpc(svc);
+   * ```
+   */
+  rpc(service: { httpHandler(): (req: Request) => Promise<Response> }): RouteBuilder {
     const handler = service.httpHandler();
-    registerOperation({
-      kind: 'op',
-      method: 'POST',
-      parent: this._node
-    }, 'http', (ctx) => handler(ctx.request));
+    registerOperation(
+      {
+        kind: 'op',
+        method: 'POST',
+        parent: this._node,
+      },
+      'http',
+      (ctx) => handler(ctx.request),
+    );
     return this;
   }
   /** Mount a router's operations under this route. Terminal.
-  *
-  * The router's operations are resolved into the owning container with this
-  * route's path prefixed and this branch's chain prepended. The router cannot
-  * be changed afterwards.
-  *
-  * ```ts no_run
-  * const api = new Router();
-  * api.get('/users').handle(() => Response.json([]));
-  * app.route('/v1').mount(api);
-  * ```
-  */
+   *
+   * The router's operations are resolved into the owning container with this
+   * route's path prefixed and this branch's chain prepended. The router cannot
+   * be changed afterwards.
+   *
+   * ```ts no_run
+   * const api = new Router();
+   * api.get('/users').handle(() => Response.json([]));
+   * app.route('/v1').mount(api);
+   * ```
+   */
   mount(router: Router): RouteBuilder {
     router._assertMutable();
     const chain = resolveChain(this._node);
@@ -1841,306 +1976,359 @@ export class RouteBuilder extends BuilderBranch<RouteBuilder> {
         stack: [...chain.stack, ...op.stack],
         slots: [...new Set([...chain.slots, ...op.slots])],
         meta: mergeMeta(chain.meta, op.meta),
-        handler: op.handler
+        handler: op.handler,
       });
     }
     return this;
   }
 }
 /**
-* Builder for one HTTP method branch. Call `.handle()` to register.
-*
-* ```ts no_run
-* app.route('/items').post().value('body', body.json()).handle((ctx) => Response.json(ctx.body));
-* ```
-*/
+ * Builder for one HTTP method branch. Call `.handle()` to register.
+ *
+ * ```ts no_run
+ * app.route('/items').post().value('body', body.json()).handle((ctx) => Response.json(ctx.body));
+ * ```
+ */
 export class MethodBuilder extends BuilderBranch<MethodBuilder> {
   #route: RouteBuilder;
   /**
-  * Create a method builder around a routing-tree node.
-  *
-  * This is normally created by a `RouteBuilder` verb such as `.get()`.
-  *
-  * @internal
-  */
+   * Create a method builder around a routing-tree node.
+   *
+   * This is normally created by a `RouteBuilder` verb such as `.get()`.
+   *
+   * @internal
+   */
   constructor(node: BuilderNode, route: RouteBuilder) {
     super(node);
     builderBranchFactories.set(this, (next) => new MethodBuilder(next, route));
     this.#route = route;
   }
   /** Return a new builder with middleware appended to this method branch.
-  *
-  * ```ts no_run
-  * app.route('/items').post().use(rateLimit).handle(createItem);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').post().use(rateLimit).handle(createItem);
+   * ```
+   */
   use(...middleware: Middleware[]): MethodBuilder {
     return super.use(...middleware);
   }
   /** Return a new builder with wrapper layers appended to this method branch.
-  *
-  * ```ts no_run
-  * app.route('/items').get().layer(cacheHeaders).handle(listItems);
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').get().layer(cacheHeaders).handle(listItems);
+   * ```
+   */
   layer(...layers: LayerMiddleware[]): MethodBuilder {
     return super.layer(...layers);
   }
   /** Return a new builder with a context value appended to this method branch.
-  *
-  * ```ts no_run
-  * app.route('/items').post().value('body', body.json());
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').post().value('body', body.json());
+   * ```
+   */
   value(name: string, producer: Producer): MethodBuilder {
     return super.value(name, producer);
   }
   /** Return a new builder with OpenAPI metadata appended to this method branch.
-  *
-  * ```ts no_run
-  * app.route('/items').get().meta({ summary: 'List items' });
-  * ```
-  */
+   *
+   * ```ts no_run
+   * app.route('/items').get().meta({ summary: 'List items' });
+   * ```
+   */
   meta(meta: OperationMeta): MethodBuilder {
     return super.meta(meta);
   }
   /** Register the handler for this method branch. Terminal.
-  *
-  * Resolves the branch into a frozen operation and returns the parent route
-  * builder for further registrations on the same route.
-  *
-  * ```ts no_run
-  * app.route('/items').get().handle(() => Response.json([]));
-  * ```
-  */
+   *
+   * Resolves the branch into a frozen operation and returns the parent route
+   * builder for further registrations on the same route.
+   *
+   * ```ts no_run
+   * app.route('/items').get().handle(() => Response.json([]));
+   * ```
+   */
   handle(handler: Handler): RouteBuilder {
     registerOperation(this._node, 'http', handler);
     return this.#route;
   }
 }
 /**
-* Validation and OpenAPI helpers for parameters and responses.
-*
-* These helpers wrap `fino:validate` schemas and attach matching OpenAPI
-* metadata. Runtime validation failures throw from middleware or producer
-* execution.
-*
-* ```ts no_run
-* app.get('/users').use(schema.query(v.object({ q: v.string() }))).handle((ctx) => Response.json(ctx.query));
-* ```
-*/
+ * Validation and OpenAPI helpers for parameters and responses.
+ *
+ * These helpers wrap `fino:validate` schemas and attach matching OpenAPI
+ * metadata. Runtime validation failures throw from middleware or producer
+ * execution.
+ *
+ * ```ts no_run
+ * app.get('/users').use(schema.query(v.object({ q: v.string() }))).handle((ctx) => Response.json(ctx.query));
+ * ```
+ */
 export const schema = {
   /** Validate URLPattern path parameters and expose them as `ctx.params`.
-  *
-  * The returned producer parses `ctx.params` against the schema and stores the
-  * validated object back under the reserved `params` slot; install it with
-  * `.value('params', schema.params(...))`. The schema's object properties are
-  * emitted as required OpenAPI `path` parameters. Throws from producer
-  * execution when a parameter is missing or fails validation.
-  *
-  * ```ts no_run
-  * app.route('/users/:id').value('params', schema.params(v.object({ id: v.string() })));
-  * ```
-  */
+   *
+   * The returned producer parses `ctx.params` against the schema and stores the
+   * validated object back under the reserved `params` slot; install it with
+   * `.value('params', schema.params(...))`. The schema's object properties are
+   * emitted as required OpenAPI `path` parameters. Throws from producer
+   * execution when a parameter is missing or fails validation.
+   *
+   * ```ts no_run
+   * app.route('/users/:id').value('params', schema.params(v.object({ id: v.string() })));
+   * ```
+   */
   params(schemaValue: unknown): Producer {
     const validator = compile<Record<string, string>>(schemaValue);
-    return defineProducer((ctx) => validator.parse(ctx.params ?? {}), { parameters: parametersFromObject(schemaValue, 'path') });
+    return defineProducer((ctx) => validator.parse(ctx.params ?? {}), {
+      parameters: parametersFromObject(schemaValue, 'path'),
+    });
   },
   /** Validate the request query string and expose it as `ctx.query`.
-  *
-  * The returned middleware parses the URL search parameters into an object
-  * (repeated keys become arrays), validates it, and assigns the result to
-  * `ctx.query`. Properties become OpenAPI `query` parameters, required when the
-  * schema marks them required. Throws when validation fails.
-  *
-  * ```ts no_run
-  * app.get('/search').use(schema.query(v.object({ q: v.string() }))).handle((ctx) => Response.json(ctx.query));
-  * ```
-  */
+   *
+   * The returned middleware parses the URL search parameters into an object
+   * (repeated keys become arrays), validates it, and assigns the result to
+   * `ctx.query`. Properties become OpenAPI `query` parameters, required when the
+   * schema marks them required. Throws when validation fails.
+   *
+   * ```ts no_run
+   * app.get('/search').use(schema.query(v.object({ q: v.string() }))).handle((ctx) => Response.json(ctx.query));
+   * ```
+   */
   query(schemaValue: unknown): Middleware {
     const validator = compile<Record<string, unknown>>(schemaValue);
-    return defineMiddleware((ctx) => {
-      ctx.query = validator.parse(parseQueryObject(queryFromRequest(ctx.request)));
-    }, { parameters: parametersFromObject(schemaValue, 'query') });
+    return defineMiddleware(
+      (ctx) => {
+        ctx.query = validator.parse(parseQueryObject(queryFromRequest(ctx.request)));
+      },
+      { parameters: parametersFromObject(schemaValue, 'query') },
+    );
   },
   /** Validate request headers and expose them as `ctx.headers`.
-  *
-  * Header names are lowercased before validation and in the generated OpenAPI
-  * `header` parameters. The validated object is assigned to `ctx.headers`.
-  * Throws when a required header is missing or malformed.
-  *
-  * ```ts no_run
-  * app.get('/me').use(schema.headers(v.object({ authorization: v.string() }))).handle((ctx) => Response.json(ctx.headers));
-  * ```
-  */
+   *
+   * Header names are lowercased before validation and in the generated OpenAPI
+   * `header` parameters. The validated object is assigned to `ctx.headers`.
+   * Throws when a required header is missing or malformed.
+   *
+   * ```ts no_run
+   * app.get('/me').use(schema.headers(v.object({ authorization: v.string() }))).handle((ctx) => Response.json(ctx.headers));
+   * ```
+   */
   headers(schemaValue: unknown): Middleware {
     const validator = compile<Record<string, unknown>>(schemaValue);
-    return defineMiddleware((ctx) => {
-      ctx.headers = validator.parse(parseHeaderObject(ctx.request.headers));
-    }, { parameters: parametersFromObject(schemaValue, 'header') });
+    return defineMiddleware(
+      (ctx) => {
+        ctx.headers = validator.parse(parseHeaderObject(ctx.request.headers));
+      },
+      { parameters: parametersFromObject(schemaValue, 'header') },
+    );
   },
   /** Validate the outgoing response body and document it in OpenAPI.
-  *
-  * The returned middleware runs downstream, then — only when the response
-  * status and content type match `opts` (defaults: status 200,
-  * `application/json`) — clones the response and validates its parsed body,
-  * throwing on mismatch. The response itself is passed through unchanged. The
-  * schema is recorded as the response body schema for the given status.
-  *
-  * ```ts no_run
-  * app.get('/users/:id')
-  *   .layer(schema.response(v.object({ id: v.string() }), { status: 200 }))
-  *   .handle((ctx) => Response.json({ id: ctx.params?.id }));
-  * ```
-  */
-  response(schemaValue: unknown, opts: {
-    status?: number;
-    description?: string;
-    contentType?: string;
-  } = {}): LayerMiddleware {
+   *
+   * The returned middleware runs downstream, then — only when the response
+   * status and content type match `opts` (defaults: status 200,
+   * `application/json`) — clones the response and validates its parsed body,
+   * throwing on mismatch. The response itself is passed through unchanged. The
+   * schema is recorded as the response body schema for the given status.
+   *
+   * ```ts no_run
+   * app.get('/users/:id')
+   *   .layer(schema.response(v.object({ id: v.string() }), { status: 200 }))
+   *   .handle((ctx) => Response.json({ id: ctx.params?.id }));
+   * ```
+   */
+  response(
+    schemaValue: unknown,
+    opts: {
+      status?: number;
+      description?: string;
+      contentType?: string;
+    } = {},
+  ): LayerMiddleware {
     const status = String(opts.status ?? 200);
     const content = opts.contentType ?? 'application/json';
     const validator = compile(schemaValue);
-    return defineMiddleware(async (_ctx, next) => {
-      const res = await next();
-      if (res instanceof Response && res.status === Number(status) && contentTypeFromResponse(res) === content) {
-        const clone = res.clone();
-        validator.parse(await clone.json());
-      }
-      return res;
-    }, { responses: { [status]: {
-      description: opts.description ?? 'OK',
-      content: { [content]: { schema: cloneSchema(schemaValue) } }
-    } } });
-  }
+    return defineMiddleware(
+      async (_ctx, next) => {
+        const res = await next();
+        if (
+          res instanceof Response &&
+          res.status === Number(status) &&
+          contentTypeFromResponse(res) === content
+        ) {
+          const clone = res.clone();
+          validator.parse(await clone.json());
+        }
+        return res;
+      },
+      {
+        responses: {
+          [status]: {
+            description: opts.description ?? 'OK',
+            content: { [content]: { schema: cloneSchema(schemaValue) } },
+          },
+        },
+      },
+    );
+  },
 };
 function contentTypeFromResponse(res: Response): string {
-  return (res.headers.get('content-type') ?? 'application/json').split(';')[0]!.trim().toLowerCase();
+  return (res.headers.get('content-type') ?? 'application/json')
+    .split(';')[0]!
+    .trim()
+    .toLowerCase();
 }
 /**
-* Request body producers for `.value('body', body.json(...))` and friends.
-*
-* Body producers consume the request body exactly once. Install them at the
-* point in the stack where the parsed body should become available.
-*
-* ```ts no_run
-* app.post('/items').value('body', body.json()).handle((ctx) => Response.json(ctx.body));
-* ```
-*/
+ * Request body producers for `.value('body', body.json(...))` and friends.
+ *
+ * Body producers consume the request body exactly once. Install them at the
+ * point in the stack where the parsed body should become available.
+ *
+ * ```ts no_run
+ * app.post('/items').value('body', body.json()).handle((ctx) => Response.json(ctx.body));
+ * ```
+ */
 export const body = {
   /** Parse the request body as JSON, optionally validating it against a schema.
-  *
-  * The producer stores the parsed value under the slot it is bound to
-  * (conventionally `body`). When a schema is passed, the parsed value is
-  * validated and the validated value is stored. Throws when the request
-  * declares a content type other than `application/json`, and when the body is
-  * not valid JSON or fails schema validation.
-  *
-  * ```ts no_run
-  * app.post('/items').value('body', body.json(v.object({ name: v.string() }))).handle((ctx) => Response.json(ctx.body));
-  * ```
-  */
+   *
+   * The producer stores the parsed value under the slot it is bound to
+   * (conventionally `body`). When a schema is passed, the parsed value is
+   * validated and the validated value is stored. Throws when the request
+   * declares a content type other than `application/json`, and when the body is
+   * not valid JSON or fails schema validation.
+   *
+   * ```ts no_run
+   * app.post('/items').value('body', body.json(v.object({ name: v.string() }))).handle((ctx) => Response.json(ctx.body));
+   * ```
+   */
   json(schemaValue?: unknown): Producer {
     const validator = schemaValue === undefined ? null : compile(schemaValue);
-    return defineProducer(async (ctx) => {
-      if (contentType(ctx.request) !== '' && contentType(ctx.request) !== 'application/json') {
-        throw new Error(`Expected application/json body, got ${contentType(ctx.request)}`);
-      }
-      const parsed = await ctx.request.json();
-      return validator === null ? parsed : validator.parse(parsed);
-    }, { requestBody: {
-      required: true,
-      content: { 'application/json': { schema: schemaValue === undefined ? {} : cloneSchema(schemaValue) } }
-    } });
+    return defineProducer(
+      async (ctx) => {
+        if (contentType(ctx.request) !== '' && contentType(ctx.request) !== 'application/json') {
+          throw new Error(`Expected application/json body, got ${contentType(ctx.request)}`);
+        }
+        const parsed = await ctx.request.json();
+        return validator === null ? parsed : validator.parse(parsed);
+      },
+      {
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: schemaValue === undefined ? {} : cloneSchema(schemaValue),
+            },
+          },
+        },
+      },
+    );
   },
   /** Read the request body as a UTF-8 string.
-  *
-  * The producer resolves to the decoded body text and documents a required
-  * `text/plain` request body in OpenAPI.
-  *
-  * ```ts no_run
-  * app.post('/notes').value('body', body.text()).handle((ctx) => new Response(ctx.body as string));
-  * ```
-  */
+   *
+   * The producer resolves to the decoded body text and documents a required
+   * `text/plain` request body in OpenAPI.
+   *
+   * ```ts no_run
+   * app.post('/notes').value('body', body.text()).handle((ctx) => new Response(ctx.body as string));
+   * ```
+   */
   text(): Producer {
-    return defineProducer((ctx) => ctx.request.text(), { requestBody: {
-      required: true,
-      content: { 'text/plain': { schema: { type: 'string' } } }
-    } });
+    return defineProducer((ctx) => ctx.request.text(), {
+      requestBody: {
+        required: true,
+        content: { 'text/plain': { schema: { type: 'string' } } },
+      },
+    });
   },
   /** Read the request body as raw bytes.
-  *
-  * The producer resolves to a `Uint8Array` and documents a required
-  * `application/octet-stream` binary request body in OpenAPI.
-  *
-  * ```ts no_run
-  * app.put('/blob').value('body', body.bytes()).handle((ctx) => Response.json({ size: (ctx.body as Uint8Array).byteLength }));
-  * ```
-  */
+   *
+   * The producer resolves to a `Uint8Array` and documents a required
+   * `application/octet-stream` binary request body in OpenAPI.
+   *
+   * ```ts no_run
+   * app.put('/blob').value('body', body.bytes()).handle((ctx) => Response.json({ size: (ctx.body as Uint8Array).byteLength }));
+   * ```
+   */
   bytes(): Producer {
-    return defineProducer((ctx) => ctx.request.bytes(), { requestBody: {
-      required: true,
-      content: { 'application/octet-stream': { schema: {
-        type: 'string',
-        format: 'binary'
-      } } }
-    } });
+    return defineProducer((ctx) => ctx.request.bytes(), {
+      requestBody: {
+        required: true,
+        content: {
+          'application/octet-stream': {
+            schema: {
+              type: 'string',
+              format: 'binary',
+            },
+          },
+        },
+      },
+    });
   },
   /** Parse a URL-encoded or multipart form body into `FormData`.
-  *
-  * The producer resolves to the request's `FormData` and documents both
-  * `application/x-www-form-urlencoded` and `multipart/form-data` request
-  * bodies. Throws when the underlying request does not support `formData()`.
-  *
-  * ```ts no_run
-  * app.post('/upload').value('body', body.form()).handle((ctx) => Response.json({ ok: true }));
-  * ```
-  */
+   *
+   * The producer resolves to the request's `FormData` and documents both
+   * `application/x-www-form-urlencoded` and `multipart/form-data` request
+   * bodies. Throws when the underlying request does not support `formData()`.
+   *
+   * ```ts no_run
+   * app.post('/upload').value('body', body.form()).handle((ctx) => Response.json({ ok: true }));
+   * ```
+   */
   form(): Producer {
-    return defineProducer(async (ctx) => {
-      const req = ctx.request as Request & {
-        formData?: () => Promise<unknown>;
-      };
-      if (typeof req.formData !== 'function') throw new Error('Request.formData() is not available');
-      return req.formData();
-    }, { requestBody: {
-      required: true,
-      content: {
-        'application/x-www-form-urlencoded': { schema: { type: 'object' } },
-        'multipart/form-data': { schema: { type: 'object' } }
-      }
-    } });
-  }
+    return defineProducer(
+      async (ctx) => {
+        const req = ctx.request as Request & {
+          formData?: () => Promise<unknown>;
+        };
+        if (typeof req.formData !== 'function')
+          throw new Error('Request.formData() is not available');
+        return req.formData();
+      },
+      {
+        requestBody: {
+          required: true,
+          content: {
+            'application/x-www-form-urlencoded': { schema: { type: 'object' } },
+            'multipart/form-data': { schema: { type: 'object' } },
+          },
+        },
+      },
+    );
+  },
 };
 /** Producer that creates a `CookieJar` and appends queued cookies downstream.
-*
-* Use with `.value('cookies', cookies())` so handlers can read and mutate
-* cookies through `ctx.cookies`.
-*
-* ```ts no_run
-* app.value('cookies', cookies());
-* ```
-*/
+ *
+ * Use with `.value('cookies', cookies())` so handlers can read and mutate
+ * cookies through `ctx.cookies`.
+ *
+ * ```ts no_run
+ * app.value('cookies', cookies());
+ * ```
+ */
 export function cookies(): Producer {
   return defineProducer((ctx) => {
-    const unsafeCookie = (ctx.request as Request & {
-      _getUnsafeHeader?: (name: string) => string | null;
-    })._getUnsafeHeader?.('cookie') ?? null;
+    const unsafeCookie =
+      (
+        ctx.request as Request & {
+          _getUnsafeHeader?: (name: string) => string | null;
+        }
+      )._getUnsafeHeader?.('cookie') ?? null;
     return new CookieJar(ctx.request.headers.get('cookie') ?? unsafeCookie);
   });
 }
 /** Middleware that converts uncaught errors to a JSON error response.
-*
-* By default, error messages are hidden. Pass `{ expose: true }` for development
-* or trusted internal APIs.
-*
-* ```ts no_run
-* app.layer(errorHandler({ expose: false }));
-* ```
-*/
-export function errorHandler(opts: {
-  expose?: boolean;
-} = {}): LayerMiddleware {
+ *
+ * By default, error messages are hidden. Pass `{ expose: true }` for development
+ * or trusted internal APIs.
+ *
+ * ```ts no_run
+ * app.layer(errorHandler({ expose: false }));
+ * ```
+ */
+export function errorHandler(
+  opts: {
+    expose?: boolean;
+  } = {},
+): LayerMiddleware {
   return defineMiddleware(async (_ctx, next) => {
     try {
       return await next();
@@ -2151,19 +2339,22 @@ export function errorHandler(opts: {
   });
 }
 /** Serve files from a local root directory, short-circuiting matched requests.
-*
-* The request path must start with `opts.prefix` (default `/`). Paths are
-* normalized and `..` traversal is rejected with 403. Missing files fall
-* through to downstream middleware.
-*
-* ```ts no_run
-* app.layer(staticFiles('/var/www', { index: 'index.html', prefix: '/' }));
-* ```
-*/
-export function staticFiles(root: string, opts: {
-  index?: string;
-  prefix?: string;
-} = {}): LayerMiddleware {
+ *
+ * The request path must start with `opts.prefix` (default `/`). Paths are
+ * normalized and `..` traversal is rejected with 403. Missing files fall
+ * through to downstream middleware.
+ *
+ * ```ts no_run
+ * app.layer(staticFiles('/var/www', { index: 'index.html', prefix: '/' }));
+ * ```
+ */
+export function staticFiles(
+  root: string,
+  opts: {
+    index?: string;
+    prefix?: string;
+  } = {},
+): LayerMiddleware {
   const index = opts.index ?? 'index.html';
   const prefix = opts.prefix ?? '/';
   const fs = new DiskFileSystem();

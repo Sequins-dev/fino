@@ -1,8 +1,8 @@
 /**
-* HTTP/2 integration tests.
-*
-* Steps 5–8: bindings smoke test, session shell, server happy path, body echo.
-*/
+ * HTTP/2 integration tests.
+ *
+ * Steps 5–8: bindings smoke test, session shell, server happy path, body echo.
+ */
 import { describe, it } from 'fino:test/test';
 import { h2Available, h2Version } from '../../js/net/http/h2.ts';
 import { H2ClientDriver } from '../../js/internal/net/http/h2/client.ts';
@@ -11,8 +11,14 @@ import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
 import * as loop from 'internal:runtime/loop';
-import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.ts';
-import { NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_FRAME_TYPE_HEADERS } from '../../js/internal/net/http/h2/bindings.ts';
+import {
+  _parseH2ContentLength,
+  _parseH2StatusHeader,
+} from '../../js/internal/net/http/h2/server.ts';
+import {
+  NGHTTP2_FRAME_TYPE_DATA,
+  NGHTTP2_FRAME_TYPE_HEADERS,
+} from '../../js/internal/net/http/h2/bindings.ts';
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
   throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
 }
@@ -21,9 +27,11 @@ if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
 // ---------------------------------------------------------------------------
 const _enc = new TextEncoder();
 const _dec = new TextDecoder();
-const tlsAvailable = (globalThis as typeof globalThis & {
-  tlsAvailable?: boolean;
-}).tlsAvailable;
+const tlsAvailable = (
+  globalThis as typeof globalThis & {
+    tlsAvailable?: boolean;
+  }
+).tlsAvailable;
 const skipTlsH2 = (!h2Available || !tlsAvailable) && 'requires libnghttp2 + OpenSSL';
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH = new URL('./fixtures/test.key', import.meta.url).pathname;
@@ -38,20 +46,50 @@ interface RawFrame {
   payload: Uint8Array;
 }
 // H2 client connection preface (24 bytes)
-const H2_PREFACE = hexBytes(80, 82, 73, 32, 42, 32, 72, 84, 84, 80, 47, 50, 46, 48, 13, 10, 13, 10, 83, 77, 13, 10, 13, 10);
+const H2_PREFACE = hexBytes(
+  80,
+  82,
+  73,
+  32,
+  42,
+  32,
+  72,
+  84,
+  84,
+  80,
+  47,
+  50,
+  46,
+  48,
+  13,
+  10,
+  13,
+  10,
+  83,
+  77,
+  13,
+  10,
+  13,
+  10,
+);
 // Empty SETTINGS frame (9 bytes, stream 0)
 const SETTINGS_EMPTY = hexBytes(0, 0, 0, 4, 0, 0, 0, 0, 0);
-function frame(type: number, flags: number, streamId: number, payload = new Uint8Array(0)): Uint8Array {
+function frame(
+  type: number,
+  flags: number,
+  streamId: number,
+  payload = new Uint8Array(0),
+): Uint8Array {
   const out = new Uint8Array(9 + payload.byteLength);
   const len = payload.byteLength;
-  out[0] = len >> 16 & 255;
-  out[1] = len >> 8 & 255;
+  out[0] = (len >> 16) & 255;
+  out[1] = (len >> 8) & 255;
   out[2] = len & 255;
   out[3] = type & 255;
   out[4] = flags & 255;
-  out[5] = streamId >> 24 & 127;
-  out[6] = streamId >> 16 & 255;
-  out[7] = streamId >> 8 & 255;
+  out[5] = (streamId >> 24) & 127;
+  out[6] = (streamId >> 16) & 255;
+  out[7] = (streamId >> 8) & 255;
   out[8] = streamId & 255;
   out.set(payload, 9);
   return out;
@@ -60,13 +98,44 @@ function dataFrameFor(streamId: number, body: Uint8Array, flags = 1): Uint8Array
   return frame(0, flags, streamId, body);
 }
 function priorityFrame(streamId: number, dependency: number): Uint8Array {
-  return frame(2, 0, streamId, hexBytes(dependency >> 24 & 127, dependency >> 16 & 255, dependency >> 8 & 255, dependency & 255, 16));
+  return frame(
+    2,
+    0,
+    streamId,
+    hexBytes(
+      (dependency >> 24) & 127,
+      (dependency >> 16) & 255,
+      (dependency >> 8) & 255,
+      dependency & 255,
+      16,
+    ),
+  );
 }
 function rstStreamFrame(streamId: number, errorCode: number): Uint8Array {
-  return frame(3, 0, streamId, hexBytes(errorCode >> 24 & 255, errorCode >> 16 & 255, errorCode >> 8 & 255, errorCode & 255));
+  return frame(
+    3,
+    0,
+    streamId,
+    hexBytes(
+      (errorCode >> 24) & 255,
+      (errorCode >> 16) & 255,
+      (errorCode >> 8) & 255,
+      errorCode & 255,
+    ),
+  );
 }
 function windowUpdateFrame(streamId: number, increment: number): Uint8Array {
-  return frame(8, 0, streamId, hexBytes(increment >> 24 & 127, increment >> 16 & 255, increment >> 8 & 255, increment & 255));
+  return frame(
+    8,
+    0,
+    streamId,
+    hexBytes(
+      (increment >> 24) & 127,
+      (increment >> 16) & 255,
+      (increment >> 8) & 255,
+      increment & 255,
+    ),
+  );
 }
 async function readRawFrames(reader: any, limit = 16): Promise<RawFrame[]> {
   const frames: RawFrame[] = [];
@@ -86,34 +155,30 @@ async function readRawFrame(reader: any): Promise<RawFrame | null> {
     return null;
   }
   if (!header || header.byteLength < 9) return null;
-  const length = header[0] << 16 | header[1] << 8 | header[2];
+  const length = (header[0] << 16) | (header[1] << 8) | header[2];
   const payload = length > 0 ? await reader.readExactly(length) : new Uint8Array(0);
   if (!payload || payload.byteLength < length) return null;
   return {
     length,
     type: header[3],
     flags: header[4],
-    streamId: (header[5] & 127) << 24 | header[6] << 16 | header[7] << 8 | header[8],
-    payload
+    streamId: ((header[5] & 127) << 24) | (header[6] << 16) | (header[7] << 8) | header[8],
+    payload,
   };
 }
 function frameErrorCode(f: RawFrame): number {
   const p = f.payload;
   const off = f.type === 7 ? 4 : 0;
-  return (p[off]! << 24 | p[off + 1]! << 16 | p[off + 2]! << 8 | p[off + 3]!) >>> 0;
+  return ((p[off]! << 24) | (p[off + 1]! << 16) | (p[off + 2]! << 8) | p[off + 3]!) >>> 0;
 }
 async function rawH2Exchange(port: number, frames: Uint8Array): Promise<RawFrame[]> {
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
-  await writer.write(new Uint8Array([
-    ...H2_PREFACE,
-    ...SETTINGS_EMPTY,
-    ...frames
-  ]));
+  await writer.write(new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...frames]));
   await writer.flush();
   await writer.close();
   const rawFrames = await readRawFrames(reader);
@@ -123,25 +188,24 @@ async function rawH2Exchange(port: number, frames: Uint8Array): Promise<RawFrame
   return rawFrames;
 }
 async function rawTlsH2Exchange(port: number, frames: Uint8Array): Promise<RawFrame[]> {
-  const sock = await TlsSocket.connect({
-    family: 'ipv4',
-    ip: '127.0.0.1',
-    port
-  }, {
-    hostname: '127.0.0.1',
-    rejectUnauthorized: false,
-    alpn: ['h2']
-  });
+  const sock = await TlsSocket.connect(
+    {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port,
+    },
+    {
+      hostname: '127.0.0.1',
+      rejectUnauthorized: false,
+      alpn: ['h2'],
+    },
+  );
   if (sock.negotiatedProtocol !== 'h2') {
     sock.close();
     throw new Error(`expected ALPN h2, got ${sock.negotiatedProtocol}`);
   }
   const [reader, writer] = sock.split();
-  await writer.write(new Uint8Array([
-    ...H2_PREFACE,
-    ...SETTINGS_EMPTY,
-    ...frames
-  ]));
+  await writer.write(new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...frames]));
   await writer.flush();
   const rawFrames = await readRawFrames(reader);
   try {
@@ -152,26 +216,29 @@ async function rawTlsH2Exchange(port: number, frames: Uint8Array): Promise<RawFr
   } catch {}
   return rawFrames;
 }
-async function rawTlsH2ExchangeReadFrames(port: number, frames: Uint8Array, limit: number): Promise<RawFrame[]> {
-  const sock = await TlsSocket.connect({
-    family: 'ipv4',
-    ip: '127.0.0.1',
-    port
-  }, {
-    hostname: '127.0.0.1',
-    rejectUnauthorized: false,
-    alpn: ['h2']
-  });
+async function rawTlsH2ExchangeReadFrames(
+  port: number,
+  frames: Uint8Array,
+  limit: number,
+): Promise<RawFrame[]> {
+  const sock = await TlsSocket.connect(
+    {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port,
+    },
+    {
+      hostname: '127.0.0.1',
+      rejectUnauthorized: false,
+      alpn: ['h2'],
+    },
+  );
   if (sock.negotiatedProtocol !== 'h2') {
     sock.close();
     throw new Error(`expected ALPN h2, got ${sock.negotiatedProtocol}`);
   }
   const [reader, writer] = sock.split();
-  await writer.write(new Uint8Array([
-    ...H2_PREFACE,
-    ...SETTINGS_EMPTY,
-    ...frames
-  ]));
+  await writer.write(new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...frames]));
   await writer.flush();
   const rawFrames = await readRawFrames(reader, limit);
   try {
@@ -183,7 +250,10 @@ async function rawTlsH2ExchangeReadFrames(port: number, frames: Uint8Array, limi
   return rawFrames;
 }
 function findFrame(frames: RawFrame[], type: number, streamId?: number): RawFrame | null {
-  return frames.find((f) => f.type === type && (streamId === undefined || f.streamId === streamId)) ?? null;
+  return (
+    frames.find((f) => f.type === type && (streamId === undefined || f.streamId === streamId)) ??
+    null
+  );
 }
 // HEADERS frame for GET / (stream 1, END_STREAM+END_HEADERS)
 // HPACK: :method=GET(idx2), :path=/(idx4), :scheme=http(idx6),
@@ -213,28 +283,103 @@ const H2_GET_ROOT_LOCALHOST = hexBytes(
   104,
   111,
   115,
-  116
+  116,
 );
 const H2_GET_ROOT_LOCALHOST_PAYLOAD = H2_GET_ROOT_LOCALHOST.subarray(9);
 function h2GetRootLocalhostFrame(streamId: number): Uint8Array {
   return frame(1, 5, streamId, H2_GET_ROOT_LOCALHOST_PAYLOAD);
 }
 // GET / HPACK block with :method, :path, and :authority, but no :scheme.
-const H2_GET_ROOT_LOCALHOST_NO_SCHEME = hexBytes(130, 132, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
+const H2_GET_ROOT_LOCALHOST_NO_SCHEME = hexBytes(
+  130,
+  132,
+  65,
+  9,
+  108,
+  111,
+  99,
+  97,
+  108,
+  104,
+  111,
+  115,
+  116,
+);
 // HEADERS frame for POST / (stream 1, END_HEADERS only — body follows)
 // HPACK: :method=POST(idx3), :path=/(idx4), :scheme=http(idx6), :authority=localhost
-const H2_POST_ROOT_LOCALHOST = hexBytes(0, 0, 14, 1, 4, 0, 0, 0, 1, 131, 132, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
+const H2_POST_ROOT_LOCALHOST = hexBytes(
+  0,
+  0,
+  14,
+  1,
+  4,
+  0,
+  0,
+  0,
+  1,
+  131,
+  132,
+  134,
+  65,
+  9,
+  108,
+  111,
+  99,
+  97,
+  108,
+  104,
+  111,
+  115,
+  116,
+);
 // POST / with content-length: 4.
 // HPACK: POST, /, http, :authority=localhost, content-length=4.
-const H2_POST_ROOT_LOCALHOST_CL4 = hexBytes(131, 132, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116, 92, 1, 52);
+const H2_POST_ROOT_LOCALHOST_CL4 = hexBytes(
+  131,
+  132,
+  134,
+  65,
+  9,
+  108,
+  111,
+  99,
+  97,
+  108,
+  104,
+  111,
+  115,
+  116,
+  92,
+  1,
+  52,
+);
 // POST / with malformed content-length: "4x".
-const H2_POST_ROOT_LOCALHOST_CL4X = hexBytes(131, 132, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116, 92, 2, 52, 120);
+const H2_POST_ROOT_LOCALHOST_CL4X = hexBytes(
+  131,
+  132,
+  134,
+  65,
+  9,
+  108,
+  111,
+  99,
+  97,
+  108,
+  104,
+  111,
+  115,
+  116,
+  92,
+  2,
+  52,
+  120,
+);
 /** Build a DATA frame for stream 1 with END_STREAM. */
 function dataFrame(body: Uint8Array): Uint8Array {
   const len = body.byteLength;
   const frame = new Uint8Array(9 + len);
-  frame[0] = len >> 16 & 255;
-  frame[1] = len >> 8 & 255;
+  frame[0] = (len >> 16) & 255;
+  frame[1] = (len >> 8) & 255;
   frame[2] = len & 255;
   frame[3] = 0;
   frame[4] = 1;
@@ -247,14 +392,14 @@ async function h2RoundTrip(port: number, extraFrames?: Uint8Array): Promise<stri
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
   const toSend = new Uint8Array([
     ...H2_PREFACE,
     ...SETTINGS_EMPTY,
     ...H2_GET_ROOT_LOCALHOST,
-    ...extraFrames ?? []
+    ...(extraFrames ?? []),
   ]);
   await writer.write(toSend);
   writer.close();
@@ -296,7 +441,11 @@ describe('H2 scanner-backed header parsers', () => {
   it('parses duplicate content-length strictly', (t) => {
     t.equal(_parseH2ContentLength('5'), 5, 'single value parsed');
     t.equal(_parseH2ContentLength('5, 5'), 5, 'identical duplicate accepted');
-    t.throws(() => _parseH2ContentLength('5, 6'), /content-length/, 'conflicting duplicate rejected');
+    t.throws(
+      () => _parseH2ContentLength('5, 6'),
+      /content-length/,
+      'conflicting duplicate rejected',
+    );
     t.throws(() => _parseH2ContentLength('5x'), /content-length/, 'malformed length rejected');
   });
 });
@@ -364,7 +513,7 @@ async function h2PostRoundTrip(port: number, body: string): Promise<string> {
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
   const bodyBytes = _enc.encode(body);
@@ -372,7 +521,7 @@ async function h2PostRoundTrip(port: number, body: string): Promise<string> {
     ...H2_PREFACE,
     ...SETTINGS_EMPTY,
     ...H2_POST_ROOT_LOCALHOST,
-    ...dataFrame(bodyBytes)
+    ...dataFrame(bodyBytes),
   ]);
   await writer.write(toSend);
   writer.close();
@@ -404,7 +553,7 @@ describe('H2 server — request bodies', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     let streamId = 0;
@@ -419,7 +568,7 @@ describe('H2 server — request bodies', () => {
       },
       onStreamClose(id: number) {
         if (id === streamId) responseClosed = true;
-      }
+      },
     });
     async function flushClient() {
       while (client.wantWrite()) {
@@ -432,7 +581,7 @@ describe('H2 server — request bodies', () => {
       [':method', 'POST'],
       [':path', '/'],
       [':scheme', 'http'],
-      [':authority', `127.0.0.1:${port}`]
+      [':authority', `127.0.0.1:${port}`],
     ];
     streamId = client.submitRequest(requestHeaders, true);
     await flushClient();
@@ -488,18 +637,23 @@ describe('H2 server — request bodies', () => {
 // Step 12 — H2ClientDriver
 // ---------------------------------------------------------------------------
 const _h2Client = new H2ClientDriver();
-async function h2ClientFetch(port: number, path: string, method = 'GET', body?: string): Promise<Response> {
+async function h2ClientFetch(
+  port: number,
+  path: string,
+  method = 'GET',
+  body?: string,
+): Promise<Response> {
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
   const url = `http://127.0.0.1:${port}${path}`;
   const reqBody = body !== undefined ? _enc.encode(body) : null;
   const req = new (globalThis as any).Request(url, {
     method,
-    body: reqBody?.buffer ?? null
+    body: reqBody?.buffer ?? null,
   });
   return _h2Client.send(req, reader as any, writer, { signal: null });
 }
@@ -534,7 +688,7 @@ describe('H2ClientDriver', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const req = new (globalThis as any).Request(`http://127.0.0.1:${port}/`);
@@ -588,13 +742,13 @@ describe('H2ClientDriver', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const url = `http://127.0.0.1:${port}/`;
     const req = new (globalThis as any).Request(url, {
       method: 'GET',
-      headers: { 'x-custom': 'test-value' }
+      headers: { 'x-custom': 'test-value' },
     });
     await _h2Client.send(req, reader as any, writer, { signal: null });
     await server.close();
@@ -611,14 +765,14 @@ describe('H2 server — ConnectionTakeover rejection', () => {
       // Simulate WebSocket: a ConnectionTakeover not compatible with h2.
       return {
         compatibleProtocols: new Set(['http/1.1']),
-        _takeOver: async () => {}
+        _takeOver: async () => {},
       } as any;
     });
     const port = server.port;
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const url = `http://127.0.0.1:${port}/`;
@@ -640,12 +794,7 @@ describe('H2 server — ConnectionTakeover rejection', () => {
 // ---------------------------------------------------------------------------
 // Step 11 — h2c Upgrade dance (RFC 7540 §3.2)
 // ---------------------------------------------------------------------------
-const CRLFCRLF = new Uint8Array([
-  13,
-  10,
-  13,
-  10
-]);
+const CRLFCRLF = new Uint8Array([13, 10, 13, 10]);
 // Read until \r\n\r\n and return the header block as text.
 async function readHeaders(reader: any): Promise<string> {
   const bytes = await reader.readUntil(CRLFCRLF);
@@ -654,19 +803,29 @@ async function readHeaders(reader: any): Promise<string> {
 describe('H2 server — h2c Upgrade (RFC 7540 §3.2)', () => {
   it('server responds with 101 Switching Protocols and serves stream 1 over h2', async (t) => {
     if (!h2Available) return;
-    const server = serveHttp({
-      port: 0,
-      allowH2cUpgrade: true
-    }, async (req) => new Response('upgraded:' + new URL(req.url).pathname));
+    const server = serveHttp(
+      {
+        port: 0,
+        allowH2cUpgrade: true,
+      },
+      async (req) => new Response('upgraded:' + new URL(req.url).pathname),
+    );
     const port = server.port;
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     // Send HTTP/1.1 Upgrade request. HTTP2-Settings value is empty (default settings).
-    const upgradeReq = _enc.encode(`GET / HTTP/1.1\r\n` + `Host: 127.0.0.1:${port}\r\n` + `Connection: Upgrade, HTTP2-Settings\r\n` + `Upgrade: h2c\r\n` + `HTTP2-Settings: \r\n` + `\r\n`);
+    const upgradeReq = _enc.encode(
+      `GET / HTTP/1.1\r\n` +
+        `Host: 127.0.0.1:${port}\r\n` +
+        `Connection: Upgrade, HTTP2-Settings\r\n` +
+        `Upgrade: h2c\r\n` +
+        `HTTP2-Settings: \r\n` +
+        `\r\n`,
+    );
     await writer.write(upgradeReq);
     await writer.flush();
     // Read 101 response headers.
@@ -689,7 +848,7 @@ describe('H2 server — h2c Upgrade (RFC 7540 §3.2)', () => {
       },
       onStreamClose(streamId: number, _errorCode: number): void {
         if (streamId === 1) stream1Closed = true;
-      }
+      },
     };
     const clientSession = (Nghttp2Session as any).createClient(clientCallbacks);
     // Empty settings payload — we declared an empty HTTP2-Settings header.
@@ -718,18 +877,23 @@ describe('H2 server — h2c Upgrade (RFC 7540 §3.2)', () => {
   });
   it('normal h1 requests still work when allowH2cUpgrade is true but client does not upgrade', async (t) => {
     if (!h2Available) return;
-    const server = serveHttp({
-      port: 0,
-      allowH2cUpgrade: true
-    }, async (_req) => new Response('hello h1'));
+    const server = serveHttp(
+      {
+        port: 0,
+        allowH2cUpgrade: true,
+      },
+      async (_req) => new Response('hello h1'),
+    );
     const port = server.port;
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
-    await writer.write(_enc.encode(`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`));
+    await writer.write(
+      _enc.encode(`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`),
+    );
     await writer.flush();
     const resp = await readHeaders(reader);
     t.ok(resp.startsWith('HTTP/1.1 200'), `got 200 from h1: ${resp.split('\r\n')[0]}`);
@@ -757,16 +921,24 @@ async function flushH2Client(client: any, writer: any): Promise<void> {
   }
   await writer.flush();
 }
-function submitClientRequest(client: any, port: number, path: string, options: {
-  method?: string;
-  hasBody?: boolean;
-} = {}): number {
-  return client.submitRequest([
-    [':method', options.method ?? 'GET'],
-    [':path', path],
-    [':scheme', 'http'],
-    [':authority', `127.0.0.1:${port}`]
-  ], options.hasBody ?? false);
+function submitClientRequest(
+  client: any,
+  port: number,
+  path: string,
+  options: {
+    method?: string;
+    hasBody?: boolean;
+  } = {},
+): number {
+  return client.submitRequest(
+    [
+      [':method', options.method ?? 'GET'],
+      [':path', path],
+      [':scheme', 'http'],
+      [':authority', `127.0.0.1:${port}`],
+    ],
+    options.hasBody ?? false,
+  );
 }
 function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -782,9 +954,20 @@ function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> 
 type RuntimeLoopHandleSnapshot = ReturnType<typeof loop._activeHandleCounts>;
 function runtimeLoopHandlesAtOrBelow(baseline: RuntimeLoopHandleSnapshot): boolean {
   const counts = loop._activeHandleCounts();
-  return counts.reads <= baseline.reads && counts.writes <= baseline.writes && counts.timers <= baseline.timers && counts.procs <= baseline.procs && counts.completions <= baseline.completions && counts.vnodes <= baseline.vnodes && counts.atomicsWaiters <= baseline.atomicsWaiters;
+  return (
+    counts.reads <= baseline.reads &&
+    counts.writes <= baseline.writes &&
+    counts.timers <= baseline.timers &&
+    counts.procs <= baseline.procs &&
+    counts.completions <= baseline.completions &&
+    counts.vnodes <= baseline.vnodes &&
+    counts.atomicsWaiters <= baseline.atomicsWaiters
+  );
 }
-async function waitForRuntimeLoopAtOrBelow(baseline: RuntimeLoopHandleSnapshot, turns = 16): Promise<boolean> {
+async function waitForRuntimeLoopAtOrBelow(
+  baseline: RuntimeLoopHandleSnapshot,
+  turns = 16,
+): Promise<boolean> {
   for (let i = 0; i < turns; i++) {
     if (runtimeLoopHandlesAtOrBelow(baseline)) return true;
     loop.tick(0);
@@ -800,7 +983,7 @@ function runtimeLoopHandleCounts(counts = loop._activeHandleCounts()): string {
     procs: counts.procs,
     completions: counts.completions,
     vnodes: counts.vnodes,
-    atomicsWaiters: counts.atomicsWaiters
+    atomicsWaiters: counts.atomicsWaiters,
   });
 }
 interface CapturedH2Response {
@@ -818,10 +1001,15 @@ function makeCapturedResponse(): CapturedH2Response {
     closed: false,
     errorCode: null,
     dataFrames: 0,
-    headerFrames: 0
+    headerFrames: 0,
   };
 }
-async function readUntil(reader: any, client: any, writer: any, done: () => boolean): Promise<void> {
+async function readUntil(
+  reader: any,
+  client: any,
+  writer: any,
+  done: () => boolean,
+): Promise<void> {
   for await (const chunk of reader as any) {
     await client.recv(chunk);
     await flushH2Client(client, writer);
@@ -850,7 +1038,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const responses = new Map<number, CapturedH2Response>();
@@ -871,7 +1059,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
           response.closed = true;
           response.errorCode = errorCode;
         }
-      }
+      },
     });
     const slowId = submitClientRequest(client, port, '/slow');
     responses.set(slowId, makeCapturedResponse());
@@ -879,12 +1067,22 @@ describe('H2 server — multiplexing and connection reuse', () => {
     responses.set(fastId, makeCapturedResponse());
     await flushH2Client(client, writer);
     try {
-      await timeout(readUntil(reader, client, writer, () => responses.get(fastId)!.closed), 'fast H2 stream did not complete while slow stream was blocked');
+      await timeout(
+        readUntil(reader, client, writer, () => responses.get(fastId)!.closed),
+        'fast H2 stream did not complete while slow stream was blocked',
+      );
       t.equal(responses.get(fastId)!.status, 200, 'fast stream status is 200');
       t.equal(responses.get(fastId)!.body, 'fast', 'fast stream body completed');
-      t.equal(responses.get(slowId)!.closed, false, 'slow stream remains open while fast stream completes');
+      t.equal(
+        responses.get(slowId)!.closed,
+        false,
+        'slow stream remains open while fast stream completes',
+      );
       releaseSlow?.();
-      await timeout(readUntil(reader, client, writer, () => responses.get(slowId)!.closed), 'slow H2 stream did not complete after release');
+      await timeout(
+        readUntil(reader, client, writer, () => responses.get(slowId)!.closed),
+        'slow H2 stream did not complete after release',
+      );
       t.equal(responses.get(slowId)!.status, 200, 'slow stream status is 200');
       t.equal(responses.get(slowId)!.body, 'slow', 'slow stream body completed after release');
     } finally {
@@ -920,7 +1118,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const responses = new Map<number, CapturedH2Response>();
@@ -941,11 +1139,11 @@ describe('H2 server — multiplexing and connection reuse', () => {
           response.closed = true;
           response.errorCode = errorCode;
         }
-      }
+      },
     });
     const waitId = submitClientRequest(client, port, '/wait', {
       method: 'POST',
-      hasBody: true
+      hasBody: true,
     });
     responses.set(waitId, makeCapturedResponse());
     const okId = submitClientRequest(client, port, '/ok');
@@ -955,7 +1153,10 @@ describe('H2 server — multiplexing and connection reuse', () => {
       await timeout(entered, 'pending stream handler did not start');
       client.submitRstStream(waitId, 0);
       await flushH2Client(client, writer);
-      await timeout(readUntil(reader, client, writer, () => responses.get(okId)!.closed), 'concurrent H2 stream did not complete after reset');
+      await timeout(
+        readUntil(reader, client, writer, () => responses.get(okId)!.closed),
+        'concurrent H2 stream did not complete after reset',
+      );
       t.equal(responses.get(okId)!.status, 200, 'concurrent stream status is 200');
       t.equal(responses.get(okId)!.body, 'ok', 'concurrent stream body completed');
       t.equal(responses.get(okId)!.errorCode, 0, 'concurrent stream closed normally');
@@ -979,7 +1180,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const responses = new Map<number, CapturedH2Response>();
@@ -1006,7 +1207,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
           response.closed = true;
           response.errorCode = errorCode;
         }
-      }
+      },
     });
     try {
       for (let start = 0; start < total; start += batchSize) {
@@ -1018,14 +1219,37 @@ describe('H2 server — multiplexing and connection reuse', () => {
           batchIds.push(streamId);
         }
         await flushH2Client(client, writer);
-        await timeout(readUntil(reader, client, writer, () => batchIds.every((streamId) => responses.get(streamId)!.closed)), 'tiny H2 response batch did not complete', 2e3);
+        await timeout(
+          readUntil(reader, client, writer, () =>
+            batchIds.every((streamId) => responses.get(streamId)!.closed),
+          ),
+          'tiny H2 response batch did not complete',
+          2e3,
+        );
       }
       const allResponses = streamIds.map((streamId) => responses.get(streamId)!);
-      t.ok(allResponses.every((response) => response.status === 200), 'all tiny response statuses are 200');
-      t.ok(allResponses.every((response) => response.body === 'x'), 'all tiny response bodies are intact');
-      t.ok(allResponses.every((response) => response.errorCode === 0), 'all tiny response streams close normally');
-      t.equal(allResponses.reduce((n, response) => n + response.headerFrames, 0), total, 'each tiny response has one HEADERS frame');
-      t.equal(allResponses.reduce((n, response) => n + response.dataFrames, 0), total, 'each tiny fixed response uses one DATA frame with END_STREAM');
+      t.ok(
+        allResponses.every((response) => response.status === 200),
+        'all tiny response statuses are 200',
+      );
+      t.ok(
+        allResponses.every((response) => response.body === 'x'),
+        'all tiny response bodies are intact',
+      );
+      t.ok(
+        allResponses.every((response) => response.errorCode === 0),
+        'all tiny response streams close normally',
+      );
+      t.equal(
+        allResponses.reduce((n, response) => n + response.headerFrames, 0),
+        total,
+        'each tiny response has one HEADERS frame',
+      );
+      t.equal(
+        allResponses.reduce((n, response) => n + response.dataFrames, 0),
+        total,
+        'each tiny fixed response uses one DATA frame with END_STREAM',
+      );
     } finally {
       client.close();
       try {
@@ -1044,7 +1268,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const responses = new Map<number, CapturedH2Response>();
@@ -1070,15 +1294,23 @@ describe('H2 server — multiplexing and connection reuse', () => {
           response.closed = true;
           response.errorCode = errorCode;
         }
-      }
+      },
     });
     try {
       const streamId = submitClientRequest(client, port, '/one');
       responses.set(streamId, makeCapturedResponse());
       await flushH2Client(client, writer);
-      await timeout(readUntil(reader, client, writer, () => responses.get(streamId)!.closed), 'fixed H2 response did not complete', 2e3);
+      await timeout(
+        readUntil(reader, client, writer, () => responses.get(streamId)!.closed),
+        'fixed H2 response did not complete',
+        2e3,
+      );
       t.equal(responses.get(streamId)!.body, 'x', 'fixed response body is intact');
-      t.equal(responses.get(streamId)!.dataFrames, 1, 'fixed response body is sent in one DATA frame');
+      t.equal(
+        responses.get(streamId)!.dataFrames,
+        1,
+        'fixed response body is sent in one DATA frame',
+      );
     } finally {
       client.close();
       try {
@@ -1091,26 +1323,37 @@ describe('H2 server — multiplexing and connection reuse', () => {
     }
   });
   it('accepts fresh TLS handshakes after H2 connection churn', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async (req) => new Response(new URL(req.url).pathname));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async (req) => new Response(new URL(req.url).pathname),
+    );
     try {
       const connectionCount = 100;
       const streamsPerConnection = 8;
-      const requestFrameParts = Array.from({ length: streamsPerConnection }, (_, i) => h2GetRootLocalhostFrame(1 + i * 2));
+      const requestFrameParts = Array.from({ length: streamsPerConnection }, (_, i) =>
+        h2GetRootLocalhostFrame(1 + i * 2),
+      );
       const requestFrames = new Uint8Array(requestFrameParts.reduce((n, f) => n + f.byteLength, 0));
       let offset = 0;
       for (const requestFrame of requestFrameParts) {
         requestFrames.set(requestFrame, offset);
         offset += requestFrame.byteLength;
       }
-      const batches = await Promise.all(Array.from({ length: connectionCount }, () => {
-        return timeout(rawTlsH2ExchangeReadFrames(server.port, requestFrames, 4), 'fresh TLS H2 client did not receive bounded response frames', 1e4);
-      }));
+      const batches = await Promise.all(
+        Array.from({ length: connectionCount }, () => {
+          return timeout(
+            rawTlsH2ExchangeReadFrames(server.port, requestFrames, 4),
+            'fresh TLS H2 client did not receive bounded response frames',
+            1e4,
+          );
+        }),
+      );
       t.equal(batches.length, connectionCount, 'all fresh TLS H2 clients completed');
       for (const frames of batches) {
         t.ok(findFrame(frames, 1, 1) !== null, 'fresh TLS H2 client received response HEADERS');
@@ -1122,13 +1365,21 @@ describe('H2 server — multiplexing and connection reuse', () => {
       const response = await fetch(`https://127.0.0.1:${server.port}/after-h2-burst`, {
         signal: controller.signal,
         tls: { rejectUnauthorized: false },
-        protocol: 'http/1.1'
+        protocol: 'http/1.1',
       } as any).finally(function clearFetchTimeout() {
         clearTimeout(fetchTimer);
       });
       t.equal(response.status, 200, 'HTTP/1.1 request after H2 burst succeeds');
-      t.equal(await response.text(), '/after-h2-burst', 'HTTP/1.1 response body after H2 burst is intact');
-      const h2Frames = await timeout(rawTlsH2ExchangeReadFrames(server.port, H2_GET_ROOT_LOCALHOST, 4), 'fresh TLS H2 client after churn did not receive response frames', 5e3);
+      t.equal(
+        await response.text(),
+        '/after-h2-burst',
+        'HTTP/1.1 response body after H2 burst is intact',
+      );
+      const h2Frames = await timeout(
+        rawTlsH2ExchangeReadFrames(server.port, H2_GET_ROOT_LOCALHOST, 4),
+        'fresh TLS H2 client after churn did not receive response frames',
+        5e3,
+      );
       t.ok(findFrame(h2Frames, 1, 1) !== null, 'HTTP/2 request after H2 burst succeeds');
     } finally {
       await server.close();
@@ -1145,7 +1396,10 @@ describe('H2 server — robustness', () => {
     });
     const port = server.port;
     const body = new Uint8Array(16 * 1024);
-    const frames = await rawH2Exchange(port, new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...dataFrameFor(1, body, 1)]));
+    const frames = await rawH2Exchange(
+      port,
+      new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...dataFrameFor(1, body, 1)]),
+    );
     await server.close();
     t.equal(captured, 16 * 1024, 'handler received exact 16 KiB DATA payload');
     t.ok(findFrame(frames, 1, 1) !== null, 'server sent response HEADERS');
@@ -1153,7 +1407,13 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY when a new client stream id is lower than a previous stream id', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 5, 3, H2_GET_ROOT_LOCALHOST.subarray(9)), ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9))]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 5, 3, H2_GET_ROOT_LOCALHOST.subarray(9)),
+        ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ]),
+    );
     await server.close();
     const goaway = findFrame(frames, 7);
     t.ok(goaway !== null, 'server sent GOAWAY');
@@ -1166,7 +1426,11 @@ describe('H2 server — robustness', () => {
     const rstFrames = await rawH2Exchange(server.port, rstStreamFrame(1, 0));
     await server.close();
     t.equal(frameErrorCode(findFrame(dataFrames, 7)!), 1, 'idle DATA gets GOAWAY PROTOCOL_ERROR');
-    t.equal(frameErrorCode(findFrame(rstFrames, 7)!), 1, 'idle RST_STREAM gets GOAWAY PROTOCOL_ERROR');
+    t.equal(
+      frameErrorCode(findFrame(rstFrames, 7)!),
+      1,
+      'idle RST_STREAM gets GOAWAY PROTOCOL_ERROR',
+    );
   });
   it('sends GOAWAY for RST_STREAM on stream 0', async (t) => {
     if (!h2Available) return;
@@ -1196,8 +1460,17 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs DATA and HEADERS sent after the client half-closes the stream', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const dataFrames = await rawH2Exchange(server.port, new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...dataFrameFor(1, _enc.encode('late'), 1)]));
-    const headersFrames = await rawH2Exchange(server.port, new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9))]));
+    const dataFrames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...dataFrameFor(1, _enc.encode('late'), 1)]),
+    );
+    const headersFrames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_GET_ROOT_LOCALHOST,
+        ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ]),
+    );
     await server.close();
     const dataRst = findFrame(dataFrames, 3, 1);
     const headersRst = findFrame(headersFrames, 3, 1);
@@ -1209,16 +1482,22 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs DATA and HEADERS sent after client RST_STREAM closes a stream', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const dataFrames = await rawH2Exchange(server.port, new Uint8Array([
-      ...H2_POST_ROOT_LOCALHOST,
-      ...rstStreamFrame(1, 0),
-      ...dataFrameFor(1, _enc.encode('late'), 1)
-    ]));
-    const headersFrames = await rawH2Exchange(server.port, new Uint8Array([
-      ...H2_POST_ROOT_LOCALHOST,
-      ...rstStreamFrame(1, 0),
-      ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9))
-    ]));
+    const dataFrames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_POST_ROOT_LOCALHOST,
+        ...rstStreamFrame(1, 0),
+        ...dataFrameFor(1, _enc.encode('late'), 1),
+      ]),
+    );
+    const headersFrames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_POST_ROOT_LOCALHOST,
+        ...rstStreamFrame(1, 0),
+        ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ]),
+    );
     await server.close();
     const dataRst = findFrame(dataFrames, 3, 1);
     const headersRst = findFrame(headersFrames, 3, 1);
@@ -1230,7 +1509,10 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for malformed DATA padding', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...frame(0, 8, 1, hexBytes(8, 1, 2, 3))]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...frame(0, 8, 1, hexBytes(8, 1, 2, 3))]),
+    );
     await server.close();
     const goaway = findFrame(frames, 7);
     t.ok(goaway !== null, 'server sent GOAWAY');
@@ -1239,7 +1521,10 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for malformed DATA padding after END_STREAM', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...frame(0, 8, 1, hexBytes(8, 1, 2, 3))]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...frame(0, 8, 1, hexBytes(8, 1, 2, 3))]),
+    );
     await server.close();
     const goaway = findFrame(frames, 7);
     t.ok(goaway !== null, 'server sent GOAWAY');
@@ -1249,7 +1534,10 @@ describe('H2 server — robustness', () => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const oversizedHeaderOnly = frame(0, 0, 1, new Uint8Array(16 * 1024 + 1)).subarray(0, 9);
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...oversizedHeaderOnly]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...oversizedHeaderOnly]),
+    );
     await server.close();
     const goaway = findFrame(frames, 7);
     t.ok(goaway !== null, 'server sent GOAWAY');
@@ -1275,10 +1563,17 @@ describe('H2 server — robustness', () => {
     const invalidPing = await rawH2Exchange(server.port, frame(6, 0, 0, new Uint8Array(7)));
     const ackPing = await rawH2Exchange(server.port, frame(6, 1, 0, new Uint8Array(8)));
     await server.close();
-    t.equal(frameErrorCode(findFrame(invalidPing, 7)!), 6, 'invalid PING length gets FRAME_SIZE_ERROR');
+    t.equal(
+      frameErrorCode(findFrame(invalidPing, 7)!),
+      6,
+      'invalid PING length gets FRAME_SIZE_ERROR',
+    );
     t.ok(findFrame(ackPing, 6) === null, 'client PING ACK is ignored');
     const goaway = findFrame(ackPing, 7);
-    t.ok(goaway === null || frameErrorCode(goaway) === 0, 'client PING ACK does not cause an error GOAWAY');
+    t.ok(
+      goaway === null || frameErrorCode(goaway) === 0,
+      'client PING ACK does not cause an error GOAWAY',
+    );
   });
   it('sends GOAWAY for PING frames on nonzero streams', async (t) => {
     if (!h2Available) return;
@@ -1329,156 +1624,262 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for representative CONTINUATION ordering errors', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const interrupted = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 1, 1, H2_GET_ROOT_LOCALHOST.subarray(9)), ...frame(0, 0, 1, new Uint8Array(0))]));
-    const interruptedByExtension = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 1, 1, H2_GET_ROOT_LOCALHOST.subarray(9)), ...frame(11, 0, 1, new Uint8Array(0))]));
+    const interrupted = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 1, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+        ...frame(0, 0, 1, new Uint8Array(0)),
+      ]),
+    );
+    const interruptedByExtension = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 1, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+        ...frame(11, 0, 1, new Uint8Array(0)),
+      ]),
+    );
     const stream0 = await rawH2Exchange(server.port, frame(9, 4, 0, new Uint8Array(0)));
-    const unexpectedOnOpen = await rawH2Exchange(server.port, new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...frame(9, 4, 1, new Uint8Array(0))]));
-    const dataThenContinuation = await rawH2Exchange(server.port, new Uint8Array([
-      ...H2_POST_ROOT_LOCALHOST,
-      ...frame(0, 0, 1, _enc.encode('body')),
-      ...frame(9, 4, 1, new Uint8Array(0))
-    ]));
-    const onHalfClosed = await rawH2Exchange(server.port, new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...frame(9, 4, 1, new Uint8Array(0))]));
-    const afterRstStream = await rawH2Exchange(server.port, new Uint8Array([
-      ...H2_POST_ROOT_LOCALHOST,
-      ...rstStreamFrame(1, 0),
-      ...frame(9, 4, 1, new Uint8Array(0))
-    ]));
-    await server.close();
-    t.equal(frameErrorCode(findFrame(interrupted, 7)!), 1, 'interrupted header block gets PROTOCOL_ERROR');
-    t.equal(frameErrorCode(findFrame(interruptedByExtension, 7)!), 1, 'extension frame during header block gets PROTOCOL_ERROR');
-    t.equal(frameErrorCode(findFrame(stream0, 7)!), 1, 'CONTINUATION stream 0 gets PROTOCOL_ERROR');
-    t.equal(frameErrorCode(findFrame(unexpectedOnOpen, 7)!), 1, 'unexpected CONTINUATION gets PROTOCOL_ERROR');
-    t.equal(frameErrorCode(findFrame(dataThenContinuation, 7)!), 1, 'DATA followed by CONTINUATION gets PROTOCOL_ERROR');
-    t.equal(frameErrorCode(findFrame(onHalfClosed, 7)!), 1, 'half-closed CONTINUATION without an active header block gets PROTOCOL_ERROR');
-    t.equal(frameErrorCode(findFrame(afterRstStream, 7)!), 1, 'closed-stream CONTINUATION after RST_STREAM gets PROTOCOL_ERROR');
-  });
-  it('TLS sends GOAWAY before response HEADERS for extra CONTINUATION after END_HEADERS', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
-    try {
-      const headerBlock = H2_GET_ROOT_LOCALHOST.subarray(9);
-      const frames = await rawTlsH2Exchange(server.port, new Uint8Array([
-        ...frame(1, 1, 1, headerBlock.subarray(0, 3)),
-        ...frame(9, 4, 1, headerBlock.subarray(3)),
-        ...frame(9, 4, 1)
-      ]));
-      const goawayIndex = frames.findIndex((f) => f.type === 7);
-      const responseHeadersIndex = frames.findIndex((f) => f.type === 1 && f.streamId === 1);
-      t.ok(goawayIndex >= 0, 'extra CONTINUATION gets GOAWAY');
-      t.equal(frameErrorCode(frames[goawayIndex]!), 1, 'GOAWAY uses PROTOCOL_ERROR');
-      t.ok(responseHeadersIndex === -1 || goawayIndex < responseHeadersIndex, 'GOAWAY is visible before application response HEADERS');
-    } finally {
-      await server.close();
-    }
-  });
-  it('TLS sends GOAWAY before response HEADERS when DATA interrupts a header block', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
-    try {
-      const headerBlock = H2_GET_ROOT_LOCALHOST.subarray(9);
-      const frames = await rawTlsH2Exchange(server.port, new Uint8Array([...frame(1, 1, 1, headerBlock.subarray(0, 3)), ...dataFrameFor(1, _enc.encode('x'), 1)]));
-      const goawayIndex = frames.findIndex((f) => f.type === 7);
-      const responseHeadersIndex = frames.findIndex((f) => f.type === 1 && f.streamId === 1);
-      t.ok(goawayIndex >= 0, 'interrupted header block gets GOAWAY');
-      t.equal(frameErrorCode(frames[goawayIndex]!), 1, 'GOAWAY uses PROTOCOL_ERROR');
-      t.ok(responseHeadersIndex === -1 || goawayIndex < responseHeadersIndex, 'GOAWAY is visible before application response HEADERS');
-    } finally {
-      await server.close();
-    }
-  });
-  it('TLS sends RST_STREAM before response HEADERS for HEADERS after client RST_STREAM', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
-    try {
-      const frames = await rawTlsH2ExchangeReadFrames(server.port, new Uint8Array([
-        ...H2_GET_ROOT_LOCALHOST,
+    const unexpectedOnOpen = await rawH2Exchange(
+      server.port,
+      new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...frame(9, 4, 1, new Uint8Array(0))]),
+    );
+    const dataThenContinuation = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_POST_ROOT_LOCALHOST,
+        ...frame(0, 0, 1, _enc.encode('body')),
+        ...frame(9, 4, 1, new Uint8Array(0)),
+      ]),
+    );
+    const onHalfClosed = await rawH2Exchange(
+      server.port,
+      new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...frame(9, 4, 1, new Uint8Array(0))]),
+    );
+    const afterRstStream = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_POST_ROOT_LOCALHOST,
         ...rstStreamFrame(1, 0),
-        ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9))
-      ]), 2);
-      const rstIndex = frames.findIndex((f) => f.type === 3 && f.streamId === 1);
-      const responseHeadersIndex = frames.findIndex((f) => f.type === 1 && f.streamId === 1);
-      t.ok(rstIndex >= 0, 'HEADERS after client RST_STREAM gets RST_STREAM');
-      t.equal(frameErrorCode(frames[rstIndex]!), 5, 'reset uses STREAM_CLOSED');
-      t.ok(responseHeadersIndex === -1 || rstIndex < responseHeadersIndex, 'RST_STREAM is visible before application response HEADERS');
-    } finally {
-      await server.close();
-    }
+        ...frame(9, 4, 1, new Uint8Array(0)),
+      ]),
+    );
+    await server.close();
+    t.equal(
+      frameErrorCode(findFrame(interrupted, 7)!),
+      1,
+      'interrupted header block gets PROTOCOL_ERROR',
+    );
+    t.equal(
+      frameErrorCode(findFrame(interruptedByExtension, 7)!),
+      1,
+      'extension frame during header block gets PROTOCOL_ERROR',
+    );
+    t.equal(frameErrorCode(findFrame(stream0, 7)!), 1, 'CONTINUATION stream 0 gets PROTOCOL_ERROR');
+    t.equal(
+      frameErrorCode(findFrame(unexpectedOnOpen, 7)!),
+      1,
+      'unexpected CONTINUATION gets PROTOCOL_ERROR',
+    );
+    t.equal(
+      frameErrorCode(findFrame(dataThenContinuation, 7)!),
+      1,
+      'DATA followed by CONTINUATION gets PROTOCOL_ERROR',
+    );
+    t.equal(
+      frameErrorCode(findFrame(onHalfClosed, 7)!),
+      1,
+      'half-closed CONTINUATION without an active header block gets PROTOCOL_ERROR',
+    );
+    t.equal(
+      frameErrorCode(findFrame(afterRstStream, 7)!),
+      1,
+      'closed-stream CONTINUATION after RST_STREAM gets PROTOCOL_ERROR',
+    );
   });
-  it('TLS sends GOAWAY for HEADERS after a stream is fully closed', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
+  it(
+    'TLS sends GOAWAY before response HEADERS for extra CONTINUATION after END_HEADERS',
+    { skip: skipTlsH2 },
+    async (t) => {
+      const server = serveHttp(
+        {
+          port: 0,
+          tls: {
+            cert: CERT_PATH,
+            key: KEY_PATH,
+          },
+        },
+        async () => new Response('ok'),
+      );
+      try {
+        const headerBlock = H2_GET_ROOT_LOCALHOST.subarray(9);
+        const frames = await rawTlsH2Exchange(
+          server.port,
+          new Uint8Array([
+            ...frame(1, 1, 1, headerBlock.subarray(0, 3)),
+            ...frame(9, 4, 1, headerBlock.subarray(3)),
+            ...frame(9, 4, 1),
+          ]),
+        );
+        const goawayIndex = frames.findIndex((f) => f.type === 7);
+        const responseHeadersIndex = frames.findIndex((f) => f.type === 1 && f.streamId === 1);
+        t.ok(goawayIndex >= 0, 'extra CONTINUATION gets GOAWAY');
+        t.equal(frameErrorCode(frames[goawayIndex]!), 1, 'GOAWAY uses PROTOCOL_ERROR');
+        t.ok(
+          responseHeadersIndex === -1 || goawayIndex < responseHeadersIndex,
+          'GOAWAY is visible before application response HEADERS',
+        );
+      } finally {
+        await server.close();
       }
-    }, async () => new Response('ok'));
-    try {
-      const sock = await TlsSocket.connect({
-        family: 'ipv4',
-        ip: '127.0.0.1',
-        port: server.port
-      }, {
-        hostname: '127.0.0.1',
-        rejectUnauthorized: false,
-        alpn: ['h2']
-      });
-      if (sock.negotiatedProtocol !== 'h2') {
-        sock.close();
-        throw new Error(`expected ALPN h2, got ${sock.negotiatedProtocol}`);
+    },
+  );
+  it(
+    'TLS sends GOAWAY before response HEADERS when DATA interrupts a header block',
+    { skip: skipTlsH2 },
+    async (t) => {
+      const server = serveHttp(
+        {
+          port: 0,
+          tls: {
+            cert: CERT_PATH,
+            key: KEY_PATH,
+          },
+        },
+        async () => new Response('ok'),
+      );
+      try {
+        const headerBlock = H2_GET_ROOT_LOCALHOST.subarray(9);
+        const frames = await rawTlsH2Exchange(
+          server.port,
+          new Uint8Array([
+            ...frame(1, 1, 1, headerBlock.subarray(0, 3)),
+            ...dataFrameFor(1, _enc.encode('x'), 1),
+          ]),
+        );
+        const goawayIndex = frames.findIndex((f) => f.type === 7);
+        const responseHeadersIndex = frames.findIndex((f) => f.type === 1 && f.streamId === 1);
+        t.ok(goawayIndex >= 0, 'interrupted header block gets GOAWAY');
+        t.equal(frameErrorCode(frames[goawayIndex]!), 1, 'GOAWAY uses PROTOCOL_ERROR');
+        t.ok(
+          responseHeadersIndex === -1 || goawayIndex < responseHeadersIndex,
+          'GOAWAY is visible before application response HEADERS',
+        );
+      } finally {
+        await server.close();
       }
-      const [reader, writer] = sock.split();
-      await writer.write(new Uint8Array([
-        ...H2_PREFACE,
-        ...SETTINGS_EMPTY,
-        ...H2_GET_ROOT_LOCALHOST
-      ]));
-      await writer.flush();
-      for (;;) {
-        const received = await readRawFrame(reader);
-        t.ok(received !== null, 'server sent response frames before close');
-        if (received!.streamId === 1 && (received!.type === 0 || received!.type === 1) && (received!.flags & 1) !== 0) {
-          break;
+    },
+  );
+  it(
+    'TLS sends RST_STREAM before response HEADERS for HEADERS after client RST_STREAM',
+    { skip: skipTlsH2 },
+    async (t) => {
+      const server = serveHttp(
+        {
+          port: 0,
+          tls: {
+            cert: CERT_PATH,
+            key: KEY_PATH,
+          },
+        },
+        async () => new Response('ok'),
+      );
+      try {
+        const frames = await rawTlsH2ExchangeReadFrames(
+          server.port,
+          new Uint8Array([
+            ...H2_GET_ROOT_LOCALHOST,
+            ...rstStreamFrame(1, 0),
+            ...frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+          ]),
+          2,
+        );
+        const rstIndex = frames.findIndex((f) => f.type === 3 && f.streamId === 1);
+        const responseHeadersIndex = frames.findIndex((f) => f.type === 1 && f.streamId === 1);
+        t.ok(rstIndex >= 0, 'HEADERS after client RST_STREAM gets RST_STREAM');
+        t.equal(frameErrorCode(frames[rstIndex]!), 5, 'reset uses STREAM_CLOSED');
+        t.ok(
+          responseHeadersIndex === -1 || rstIndex < responseHeadersIndex,
+          'RST_STREAM is visible before application response HEADERS',
+        );
+      } finally {
+        await server.close();
+      }
+    },
+  );
+  it(
+    'TLS sends GOAWAY for HEADERS after a stream is fully closed',
+    { skip: skipTlsH2 },
+    async (t) => {
+      const server = serveHttp(
+        {
+          port: 0,
+          tls: {
+            cert: CERT_PATH,
+            key: KEY_PATH,
+          },
+        },
+        async () => new Response('ok'),
+      );
+      try {
+        const sock = await TlsSocket.connect(
+          {
+            family: 'ipv4',
+            ip: '127.0.0.1',
+            port: server.port,
+          },
+          {
+            hostname: '127.0.0.1',
+            rejectUnauthorized: false,
+            alpn: ['h2'],
+          },
+        );
+        if (sock.negotiatedProtocol !== 'h2') {
+          sock.close();
+          throw new Error(`expected ALPN h2, got ${sock.negotiatedProtocol}`);
         }
+        const [reader, writer] = sock.split();
+        await writer.write(
+          new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...H2_GET_ROOT_LOCALHOST]),
+        );
+        await writer.flush();
+        for (;;) {
+          const received = await readRawFrame(reader);
+          t.ok(received !== null, 'server sent response frames before close');
+          if (
+            received!.streamId === 1 &&
+            (received!.type === 0 || received!.type === 1) &&
+            (received!.flags & 1) !== 0
+          ) {
+            break;
+          }
+        }
+        await writer.write(frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9)));
+        await writer.flush();
+        const frames = await readRawFrames(reader, 4);
+        const goaway = findFrame(frames, 7);
+        t.ok(goaway !== null, 'HEADERS on closed stream gets GOAWAY');
+        t.equal(frameErrorCode(goaway!), 5, 'GOAWAY uses STREAM_CLOSED');
+        try {
+          await reader.close();
+        } catch {}
+        try {
+          await writer.close();
+        } catch {}
+      } finally {
+        await server.close();
       }
-      await writer.write(frame(1, 5, 1, H2_GET_ROOT_LOCALHOST.subarray(9)));
-      await writer.flush();
-      const frames = await readRawFrames(reader, 4);
-      const goaway = findFrame(frames, 7);
-      t.ok(goaway !== null, 'HEADERS on closed stream gets GOAWAY');
-      t.equal(frameErrorCode(goaway!), 5, 'GOAWAY uses STREAM_CLOSED');
-      try {
-        await reader.close();
-      } catch {}
-      try {
-        await writer.close();
-      } catch {}
-    } finally {
-      await server.close();
-    }
-  });
+    },
+  );
   it('ACKs peer SETTINGS frames after the initial SETTINGS exchange', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, frame(4, 0, 0, hexBytes(0, 3, 0, 0, 0, 64)));
     await server.close();
     const settingsAcks = frames.filter((f) => f.type === 4 && f.flags === 1 && f.length === 0);
-    t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
+    t.ok(
+      settingsAcks.length >= 2,
+      `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`,
+    );
   });
   it('sends GOAWAY for connection WINDOW_UPDATE increment 0', async (t) => {
     if (!h2Available) return;
@@ -1492,7 +1893,13 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs stream WINDOW_UPDATE increment 0', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST.subarray(9)), ...windowUpdateFrame(1, 0)]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST.subarray(9)),
+        ...windowUpdateFrame(1, 0),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(rst !== null, 'stream WINDOW_UPDATE increment 0 gets RST_STREAM');
@@ -1519,7 +1926,13 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs when stream WINDOW_UPDATE overflows', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST.subarray(9)), ...windowUpdateFrame(1, 2147483647)]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST.subarray(9)),
+        ...windowUpdateFrame(1, 2147483647),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(rst !== null, 'stream window overflow gets RST_STREAM');
@@ -1537,66 +1950,107 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for SETTINGS_INITIAL_WINDOW_SIZE with all bits set', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, frame(4, 0, 0, hexBytes(0, 4, 255, 255, 255, 255)));
+    const frames = await rawH2Exchange(
+      server.port,
+      frame(4, 0, 0, hexBytes(0, 4, 255, 255, 255, 255)),
+    );
     await server.close();
     const goaway = findFrame(frames, 7);
     t.ok(goaway !== null, 'all-bits-set SETTINGS_INITIAL_WINDOW_SIZE gets GOAWAY');
     t.equal(frameErrorCode(goaway!), 3, 'GOAWAY uses FLOW_CONTROL_ERROR');
   });
-  it('TLS ACKs peer SETTINGS frames after the initial SETTINGS exchange', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
+  it(
+    'TLS ACKs peer SETTINGS frames after the initial SETTINGS exchange',
+    { skip: skipTlsH2 },
+    async (t) => {
+      const server = serveHttp(
+        {
+          port: 0,
+          tls: {
+            cert: CERT_PATH,
+            key: KEY_PATH,
+          },
+        },
+        async () => new Response('ok'),
+      );
+      try {
+        const frames = await rawTlsH2ExchangeReadFrames(
+          server.port,
+          frame(4, 0, 0, hexBytes(0, 3, 0, 0, 0, 64)),
+          3,
+        );
+        const settingsAcks = frames.filter((f) => f.type === 4 && f.flags === 1 && f.length === 0);
+        const errorGoaway = frames.find((f) => f.type === 7 && frameErrorCode(f) !== 0);
+        t.ok(
+          settingsAcks.length >= 2,
+          `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`,
+        );
+        t.equal(errorGoaway, undefined, 'follow-up SETTINGS does not trigger an error GOAWAY');
+      } finally {
+        await server.close();
       }
-    }, async () => new Response('ok'));
-    try {
-      const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(4, 0, 0, hexBytes(0, 3, 0, 0, 0, 64)), 3);
-      const settingsAcks = frames.filter((f) => f.type === 4 && f.flags === 1 && f.length === 0);
-      const errorGoaway = frames.find((f) => f.type === 7 && frameErrorCode(f) !== 0);
-      t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
-      t.equal(errorGoaway, undefined, 'follow-up SETTINGS does not trigger an error GOAWAY');
-    } finally {
-      await server.close();
-    }
-  });
+    },
+  );
   it('h2spec 6.9.2 ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, frame(4, 0, 0, hexBytes(0, 4, 0, 1, 0, 0, 0, 4, 0, 0, 255, 255)));
+    const frames = await rawH2Exchange(
+      server.port,
+      frame(4, 0, 0, hexBytes(0, 4, 0, 1, 0, 0, 0, 4, 0, 0, 255, 255)),
+    );
     await server.close();
     const settingsAcks = frames.filter((f) => f.type === 4 && f.flags === 1 && f.length === 0);
     const goaway = findFrame(frames, 7);
-    t.ok(settingsAcks.length >= 2, `server ACKed initial and duplicate SETTINGS frames (${settingsAcks.length})`);
-    if (goaway) t.equal(frameErrorCode(goaway), 0, 'duplicate SETTINGS entries do not trigger an error GOAWAY');
+    t.ok(
+      settingsAcks.length >= 2,
+      `server ACKed initial and duplicate SETTINGS frames (${settingsAcks.length})`,
+    );
+    if (goaway)
+      t.equal(
+        frameErrorCode(goaway),
+        0,
+        'duplicate SETTINGS entries do not trigger an error GOAWAY',
+      );
   });
   it('TLS ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('ok'),
+    );
     try {
-      const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(4, 0, 0, hexBytes(0, 4, 0, 1, 0, 0, 0, 4, 0, 0, 255, 255)), 3);
+      const frames = await rawTlsH2ExchangeReadFrames(
+        server.port,
+        frame(4, 0, 0, hexBytes(0, 4, 0, 1, 0, 0, 0, 4, 0, 0, 255, 255)),
+        3,
+      );
       const settingsAcks = frames.filter((f) => f.type === 4 && f.flags === 1 && f.length === 0);
       const errorGoaway = frames.find((f) => f.type === 7 && frameErrorCode(f) !== 0);
-      t.ok(settingsAcks.length >= 2, `server ACKed initial and duplicate SETTINGS frames (${settingsAcks.length})`);
+      t.ok(
+        settingsAcks.length >= 2,
+        `server ACKed initial and duplicate SETTINGS frames (${settingsAcks.length})`,
+      );
       t.equal(errorGoaway, undefined, 'duplicate SETTINGS entries do not trigger an error GOAWAY');
     } finally {
       await server.close();
     }
   });
   it('TLS sends PING ACK frames with matching payloads', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('ok'),
+    );
     try {
       const payload = hexBytes(222, 173, 190, 239, 16, 32, 48, 64);
       const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(6, 0, 0, payload), 3);
@@ -1610,15 +2064,22 @@ describe('H2 server — robustness', () => {
     }
   });
   it('TLS ignores client PING ACK frames', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('ok'),
+    );
     try {
-      const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(6, 1, 0, new Uint8Array(8)), 2);
+      const frames = await rawTlsH2ExchangeReadFrames(
+        server.port,
+        frame(6, 1, 0, new Uint8Array(8)),
+        2,
+      );
       const responsePing = frames.find((f) => f.type === 6);
       const errorGoaway = frames.find((f) => f.type === 7 && frameErrorCode(f) !== 0);
       t.equal(responsePing, undefined, 'client PING ACK does not get a response PING');
@@ -1637,15 +2098,21 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(goaway!), 6, 'GOAWAY uses FRAME_SIZE_ERROR');
   });
   it('sends TLS GOAWAY for SETTINGS ACK frames with payload', { skip: skipTlsH2 }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('ok'),
+    );
     try {
-      const frames = await rawTlsH2Exchange(server.port, frame(4, 1, 0, hexBytes(0, 3, 0, 0, 0, 64)));
+      const frames = await rawTlsH2Exchange(
+        server.port,
+        frame(4, 1, 0, hexBytes(0, 3, 0, 0, 0, 64)),
+      );
       const goaway = findFrame(frames, 7);
       t.ok(goaway !== null, 'server sent GOAWAY before TLS close');
       t.equal(frameErrorCode(goaway!), 6, 'GOAWAY uses FRAME_SIZE_ERROR');
@@ -1656,7 +2123,13 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY when a client sends PUSH_PROMISE', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...H2_GET_ROOT_LOCALHOST, ...frame(5, 4, 1, hexBytes(0, 0, 0, 2, 130, 132, 134))]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_GET_ROOT_LOCALHOST,
+        ...frame(5, 4, 1, hexBytes(0, 0, 0, 2, 130, 132, 134)),
+      ]),
+    );
     await server.close();
     const goaway = findFrame(frames, 7);
     t.ok(goaway !== null, 'server sent GOAWAY');
@@ -1668,7 +2141,7 @@ describe('H2 server — robustness', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: server.port
+      port: server.port,
     });
     const [reader, writer] = sock.split();
     await writer.write(_enc.encode('PRI * HTTP/2.0\r\n\r\nbad-preface'));
@@ -1680,7 +2153,10 @@ describe('H2 server — robustness', () => {
     } catch {}
     await server.close();
     const goaway = findFrame(frames, 7);
-    t.ok(goaway === null || frameErrorCode(goaway) === 1, 'server closed or sent GOAWAY(PROTOCOL_ERROR)');
+    t.ok(
+      goaway === null || frameErrorCode(goaway) === 1,
+      'server closed or sent GOAWAY(PROTOCOL_ERROR)',
+    );
   });
   it('RST_STREAMs request HEADERS with response-only pseudo-headers', async (t) => {
     if (!h2Available) return;
@@ -1695,7 +2171,31 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs request HEADERS with uppercase field names', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const uppercaseHeaderBlock = hexBytes(130, 132, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116, 64, 5, 85, 112, 112, 101, 114, 1, 120);
+    const uppercaseHeaderBlock = hexBytes(
+      130,
+      132,
+      134,
+      65,
+      9,
+      108,
+      111,
+      99,
+      97,
+      108,
+      104,
+      111,
+      115,
+      116,
+      64,
+      5,
+      85,
+      112,
+      112,
+      101,
+      114,
+      1,
+      120,
+    );
     const frames = await rawH2Exchange(server.port, frame(1, 5, 1, uppercaseHeaderBlock));
     await server.close();
     const rst = findFrame(frames, 3, 1);
@@ -1705,7 +2205,27 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs request HEADERS with pseudo-header after a regular header', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const pseudoAfterRegularBlock = hexBytes(130, 132, 134, 64, 1, 120, 1, 121, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
+    const pseudoAfterRegularBlock = hexBytes(
+      130,
+      132,
+      134,
+      64,
+      1,
+      120,
+      1,
+      121,
+      65,
+      9,
+      108,
+      111,
+      99,
+      97,
+      108,
+      104,
+      111,
+      115,
+      116,
+    );
     const frames = await rawH2Exchange(server.port, frame(1, 5, 1, pseudoAfterRegularBlock));
     await server.close();
     const rst = findFrame(frames, 3, 1);
@@ -1715,7 +2235,23 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs request HEADERS with duplicate :scheme', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const duplicateSchemeBlock = hexBytes(130, 132, 134, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
+    const duplicateSchemeBlock = hexBytes(
+      130,
+      132,
+      134,
+      134,
+      65,
+      9,
+      108,
+      111,
+      99,
+      97,
+      108,
+      104,
+      111,
+      115,
+      116,
+    );
     const frames = await rawH2Exchange(server.port, frame(1, 5, 1, duplicateSchemeBlock));
     await server.close();
     const rst = findFrame(frames, 3, 1);
@@ -1726,11 +2262,14 @@ describe('H2 server — robustness', () => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const trailersWithPseudoBlock = hexBytes(132);
-    const frames = await rawH2Exchange(server.port, new Uint8Array([
-      ...H2_POST_ROOT_LOCALHOST,
-      ...dataFrameFor(1, _enc.encode('body'), 0),
-      ...frame(1, 5, 1, trailersWithPseudoBlock)
-    ]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_POST_ROOT_LOCALHOST,
+        ...dataFrameFor(1, _enc.encode('body'), 0),
+        ...frame(1, 5, 1, trailersWithPseudoBlock),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(rst !== null, 'pseudo-header in trailers gets RST_STREAM');
@@ -1740,7 +2279,23 @@ describe('H2 server — robustness', () => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const missingPathBlock = hexBytes(130, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
-    const emptyPathBlock = hexBytes(130, 68, 0, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
+    const emptyPathBlock = hexBytes(
+      130,
+      68,
+      0,
+      134,
+      65,
+      9,
+      108,
+      111,
+      99,
+      97,
+      108,
+      104,
+      111,
+      115,
+      116,
+    );
     const missingFrames = await rawH2Exchange(server.port, frame(1, 5, 1, missingPathBlock));
     const emptyFrames = await rawH2Exchange(server.port, frame(1, 5, 1, emptyPathBlock));
     await server.close();
@@ -1758,7 +2313,10 @@ describe('H2 server — robustness', () => {
       dispatched = true;
       return new Response('ok');
     });
-    const frames = await rawH2Exchange(server.port, frame(1, 5, 1, H2_GET_ROOT_LOCALHOST_NO_SCHEME));
+    const frames = await rawH2Exchange(
+      server.port,
+      frame(1, 5, 1, H2_GET_ROOT_LOCALHOST_NO_SCHEME),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(rst !== null, 'missing :scheme gets RST_STREAM');
@@ -1768,7 +2326,13 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs a second request HEADERS frame on an open stream', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...H2_POST_ROOT_LOCALHOST, ...frame(1, 4, 1, H2_GET_ROOT_LOCALHOST.subarray(9))]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...H2_POST_ROOT_LOCALHOST,
+        ...frame(1, 4, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(rst !== null, 'second non-trailer HEADERS gets RST_STREAM');
@@ -1777,7 +2341,13 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs requests whose content-length does not match DATA length', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4), ...dataFrameFor(1, _enc.encode('bad'), 1)]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4),
+        ...dataFrameFor(1, _enc.encode('bad'), 1),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(rst !== null, 'mismatched content-length gets RST_STREAM');
@@ -1790,7 +2360,13 @@ describe('H2 server — robustness', () => {
       dispatched = true;
       return new Response('ok');
     });
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4X), ...dataFrameFor(1, _enc.encode('body'), 1)]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4X),
+        ...dataFrameFor(1, _enc.encode('body'), 1),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(rst !== null, 'malformed content-length gets RST_STREAM');
@@ -1808,7 +2384,13 @@ describe('H2 server — robustness', () => {
       }
       return new Response('should-not-send');
     });
-    const frames = await rawH2Exchange(server.port, new Uint8Array([...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4), ...dataFrameFor(1, _enc.encode('bad'), 1)]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4),
+        ...dataFrameFor(1, _enc.encode('bad'), 1),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.ok(bodyRejected, 'handler body read rejects');
@@ -1834,11 +2416,14 @@ describe('H2 server — robustness', () => {
       }
       return new Response('should-not-send');
     });
-    const frames = await rawH2Exchange(server.port, new Uint8Array([
-      ...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4),
-      ...dataFrameFor(1, _enc.encode('1234'), 0),
-      ...dataFrameFor(1, _enc.encode('5'), 1)
-    ]));
+    const frames = await rawH2Exchange(
+      server.port,
+      new Uint8Array([
+        ...frame(1, 4, 1, H2_POST_ROOT_LOCALHOST_CL4),
+        ...dataFrameFor(1, _enc.encode('1234'), 0),
+        ...dataFrameFor(1, _enc.encode('5'), 1),
+      ]),
+    );
     await server.close();
     const rst = findFrame(frames, 3, 1);
     t.equal(captured, '1234', 'handler did not receive overrun bytes');
@@ -1862,7 +2447,7 @@ describe('H2 server — robustness', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     const noopCallbacks = {
@@ -1870,16 +2455,19 @@ describe('H2 server — robustness', () => {
       onHeader() {},
       onFrameRecv() {},
       onDataChunk() {},
-      onStreamClose() {}
+      onStreamClose() {},
     };
     const cs = await openClientSession(writer, noopCallbacks);
     // Submit a POST with hasBody=true but never provide data → server waits.
-    const streamId = cs.submitRequest([
-      [':method', 'POST'],
-      [':path', '/'],
-      [':scheme', 'http'],
-      [':authority', `127.0.0.1:${port}`]
-    ], true);
+    const streamId = cs.submitRequest(
+      [
+        [':method', 'POST'],
+        [':path', '/'],
+        [':scheme', 'http'],
+        [':authority', `127.0.0.1:${port}`],
+      ],
+      true,
+    );
     while (cs.wantWrite()) {
       const bytes = await cs.flush();
       if (bytes && bytes.byteLength > 0) await writer.write(bytes);
@@ -1913,7 +2501,7 @@ describe('H2 server — robustness', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     // Send h2 connection preface + empty SETTINGS.
@@ -1924,15 +2512,19 @@ describe('H2 server — robustness', () => {
     const settingsFrame = await (reader as any).readExactly(9);
     t.ok(settingsFrame !== null, 'got server SETTINGS header');
     const frameType = settingsFrame![3];
-    const payloadLen = settingsFrame![0] << 16 | settingsFrame![1] << 8 | settingsFrame![2];
+    const payloadLen = (settingsFrame![0] << 16) | (settingsFrame![1] << 8) | settingsFrame![2];
     t.equal(frameType, 4, 'frame type is SETTINGS (0x04)');
     t.ok(payloadLen >= 6, `SETTINGS has at least one entry (payload=${payloadLen})`);
     // Read the payload and scan for MAX_CONCURRENT_STREAMS (id=0x0003).
     const payload = await (reader as any).readExactly(payloadLen);
     let foundMaxConcurrent = false;
     for (let i = 0; i + 5 < payloadLen!; i += 6) {
-      const id = payload![i] << 8 | payload![i + 1];
-      const val = payload![i + 2] << 24 | payload![i + 3] << 16 | payload![i + 4] << 8 | payload![i + 5];
+      const id = (payload![i] << 8) | payload![i + 1];
+      const val =
+        (payload![i + 2] << 24) |
+        (payload![i + 3] << 16) |
+        (payload![i + 4] << 8) |
+        payload![i + 5];
       if (id === 3) {
         foundMaxConcurrent = true;
         t.ok(val > 0, `MAX_CONCURRENT_STREAMS=${val}`);
@@ -1949,7 +2541,7 @@ describe('H2 server — robustness', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     // Send h2 preface + SETTINGS, then junk bytes where a valid frame should be.
@@ -1963,7 +2555,8 @@ describe('H2 server — robustness', () => {
     // Server should send a GOAWAY or close — read until EOF without crashing.
     let gotEof = false;
     try {
-      for await (const _ of reader as any) {}
+      for await (const _ of reader as any) {
+      }
       gotEof = true;
     } catch {
       gotEof = true;
@@ -1979,6 +2572,10 @@ describe('H2 server — cleanup', () => {
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     await rawH2Exchange(server.port, H2_GET_ROOT_LOCALHOST);
     await server.close();
-    t.equal(await waitForRuntimeLoopAtOrBelow(baseline), true, `closed H2 sessions leave no additional runtime loop handles: current=${runtimeLoopHandleCounts()} baseline=${runtimeLoopHandleCounts(baseline)}`);
+    t.equal(
+      await waitForRuntimeLoopAtOrBelow(baseline),
+      true,
+      `closed H2 sessions leave no additional runtime loop handles: current=${runtimeLoopHandleCounts()} baseline=${runtimeLoopHandleCounts(baseline)}`,
+    );
   });
 });

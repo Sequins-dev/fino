@@ -1,48 +1,59 @@
 /**
-* fino:commands/doc — reusable API documentation command task.
-*
-* Builds the `fino doc` command tree and contains the source parser, Markdown
-* and HTML renderers, search database generation, and doc-test runner used by
-* that command. The `build` path parses commented TypeScript and JavaScript
-* sources (plus Markdown guide pages), extracts module and symbol doc
-* comments, resolves supported re-exports, and writes generated documentation
-* under `docs/`: one Markdown and/or HTML page per module and guide, an
-* `api.json` snapshot, and a SQLite index (`docs.db`) with full-text search.
-* Stale generated pages are pruned after each build, and per-file parse
-* results are cached in the index keyed by size and mtime so unchanged files
-* are not re-parsed.
-*
-* `show` and `search` query the generated index, transparently refreshing it
-* from the recorded input roots when a lookup misses. `test` extracts fenced
-* `ts`/`js` code blocks from doc comments and executes each one in an
-* isolated realm: blocks tagged `no_run` or `ignore` are skipped, and blocks
-* tagged `throws` must reject.
-*
-* Use this module when another interface needs to mount the built-in docs
-* workflow as a `Task`. Helper functions remain module-private because they
-* assume Fino command context, runtime filesystem APIs, and documentation
-* output conventions.
-*
-* ## Example
-*
-* ```ts no_run
-* import docCommand from 'fino:commands/doc';
-*
-* await docCommand.parse([
-*   'build',
-*   '--format',
-*   'markdown',
-*   'js/internal/stream.ts',
-* ]);
-* ```
-*
-*/
+ * fino:commands/doc — reusable API documentation command task.
+ *
+ * Builds the `fino doc` command tree and contains the source parser, Markdown
+ * and HTML renderers, search database generation, and doc-test runner used by
+ * that command. The `build` path parses commented TypeScript and JavaScript
+ * sources (plus Markdown guide pages), extracts module and symbol doc
+ * comments, resolves supported re-exports, and writes generated documentation
+ * under `docs/`: one Markdown and/or HTML page per module and guide, an
+ * `api.json` snapshot, and a SQLite index (`docs.db`) with full-text search.
+ * Stale generated pages are pruned after each build, and per-file parse
+ * results are cached in the index keyed by size and mtime so unchanged files
+ * are not re-parsed.
+ *
+ * `show` and `search` query the generated index, transparently refreshing it
+ * from the recorded input roots when a lookup misses. `test` extracts fenced
+ * `ts`/`js` code blocks from doc comments and executes each one in an
+ * isolated realm: blocks tagged `no_run` or `ignore` are skipped, and blocks
+ * tagged `throws` must reject.
+ *
+ * Use this module when another interface needs to mount the built-in docs
+ * workflow as a `Task`. Helper functions remain module-private because they
+ * assume Fino command context, runtime filesystem APIs, and documentation
+ * output conventions.
+ *
+ * ## Example
+ *
+ * ```ts no_run
+ * import docCommand from 'fino:commands/doc';
+ *
+ * await docCommand.parse([
+ *   'build',
+ *   '--format',
+ *   'markdown',
+ *   'js/internal/stream.ts',
+ * ]);
+ * ```
+ *
+ */
 import { DiskFileSystem } from '../file/fs.ts';
 import { Task, type TaskContext } from '../task.ts';
 import { cwd } from '../process.ts';
-import { parseMarkdown, renderMarkdown, renderMarkdownInline, type MarkdownNode, type MarkdownOptions } from '../format/markdown.ts';
+import {
+  parseMarkdown,
+  renderMarkdown,
+  renderMarkdownInline,
+  type MarkdownNode,
+  type MarkdownOptions,
+} from '../format/markdown.ts';
 import { escapeHtml, render as renderTemplate } from '../template.ts';
-import { format as formatTypeScript, parse as parseTypeScript, type ParseComment, type ParseResult } from '../format/typescript.ts';
+import {
+  format as formatTypeScript,
+  parse as parseTypeScript,
+  type ParseComment,
+  type ParseResult,
+} from '../format/typescript.ts';
 import { parse as parseYaml } from '../format/yaml.ts';
 import { Scanner } from '../parsing/scanner.ts';
 import * as sqlite from '../database/sqlite.ts';
@@ -71,7 +82,7 @@ const DOC_DISCOVERY_IGNORES = new Set([
   'docs',
   'node_modules',
   'target',
-  'vendor'
+  'vendor',
 ]);
 async function readTextFile(path: string): Promise<string> {
   return textDecoder.decode(await fs.readFile(path));
@@ -277,13 +288,17 @@ const DOCS_INDEX_SCHEMA = `
   CREATE TABLE doc_blocks (symbol_id TEXT NOT NULL, ordinal INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT, lang TEXT, meta TEXT, code TEXT, name TEXT, description TEXT);
   CREATE VIRTUAL TABLE docs_fts USING fts5(id UNINDEXED, name, kind, signature, doc);
 `;
-const DOCS_INDEX_SCHEMA_STATEMENTS = DOCS_INDEX_SCHEMA.split(';').map((statement) => statement.trim()).filter(Boolean);
+const DOCS_INDEX_SCHEMA_STATEMENTS = DOCS_INDEX_SCHEMA.split(';')
+  .map((statement) => statement.trim())
+  .filter(Boolean);
 const DOCS_CACHE_SCHEMA = `
   CREATE TABLE IF NOT EXISTS doc_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS doc_files (path TEXT NOT NULL, kind TEXT NOT NULL, include_private INTEGER NOT NULL, mtime_ms REAL NOT NULL, size INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (path, kind, include_private));
   CREATE TABLE IF NOT EXISTS doc_outputs (path TEXT PRIMARY KEY);
 `;
-const DOCS_CACHE_SCHEMA_STATEMENTS = DOCS_CACHE_SCHEMA.split(';').map((statement) => statement.trim()).filter(Boolean);
+const DOCS_CACHE_SCHEMA_STATEMENTS = DOCS_CACHE_SCHEMA.split(';')
+  .map((statement) => statement.trim())
+  .filter(Boolean);
 const DOCS_CSS = `:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--table-header:#f6f8fa;--table-row:#ffffff;--table-row-alt:#fbfcfd;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--table-header:#161b22;--table-row:#0d1117;--table-row-alt:#111820;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-layout-api{grid-template-columns:280px minmax(0,1fr) 240px}.docs-sidebar{grid-column:1;grid-row:1;background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px;grid-column:2;grid-row:1}.docs-page-index{border-left:1px solid var(--border);padding:40px 18px 72px;overflow:auto;position:sticky;top:0;height:100vh;grid-column:3;grid-row:1}.docs-page-index-title{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px}.docs-page-index ul{list-style:none;margin:0;padding-left:14px}.docs-page-index>ul{padding-left:0}.docs-page-index li{margin:4px 0}.docs-page-index a{display:inline-block;padding:2px 0}.docs-page-index-members{font-size:.92rem}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}table{width:100%;border-collapse:separate;border-spacing:0;margin:16px 0 24px;border:1px solid var(--border);border-radius:7px;overflow:hidden;font-size:.95rem;background:var(--table-row)}th,td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:top;text-align:left}th{background:var(--table-header);font-size:.82rem;font-weight:700;color:var(--muted);text-transform:uppercase}tbody tr:nth-child(even) td{background:var(--table-row-alt)}tbody tr:last-child td{border-bottom:0}td+td,th+th{border-left:1px solid var(--border)}td code,th code{white-space:nowrap}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout,.docs-layout-api{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,.docs-page-index,main{height:auto}.docs-page-index{border-left:0;border-bottom:1px solid var(--border);padding:18px 20px;position:static;max-height:none}main{padding:28px 20px 48px;overflow:visible}table{display:block;overflow-x:auto}th,td{padding:9px 12px}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}`;
 const DOCS_HTML_CSS = `${DOCS_CSS}.docs-page-index-heading-3{padding-left:10px}.docs-page-index-heading-4{padding-left:20px}.docs-page-index-heading-5{padding-left:30px}.docs-page-index-heading-6{padding-left:40px}.docs-loading{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:.95rem}.docs-loading-spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--muted);border-radius:50%;animation:docs-spin .8s linear infinite}@keyframes docs-spin{to{transform:rotate(360deg)}}@media(prefers-color-scheme:dark){main img[src$=".svg"]{filter:invert(1) brightness(1.25)}}`;
 const DOCS_CLIENT_JS = `
@@ -477,8 +492,9 @@ async function withDocsWriteLock<T>(fn: () => Promise<T>): Promise<T> {
       await fs.mkdir(lockPath);
       acquired = true;
     } catch (err) {
-      if (!await exists(lockPath)) throw err;
-      if (Date.now() - started > 1e4) throw new Error('fino doc: timed out waiting for docs index lock');
+      if (!(await exists(lockPath))) throw err;
+      if (Date.now() - started > 1e4)
+        throw new Error('fino doc: timed out waiting for docs index lock');
       await timeout(25);
     }
   }
@@ -491,7 +507,7 @@ async function withDocsWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 async function removeTree(path: string): Promise<void> {
-  if (!await exists(path)) return;
+  if (!(await exists(path))) return;
   const entry = await fs.entry(path);
   if (entry.isDirectory()) {
     const dir = await fs.dir(path);
@@ -533,19 +549,14 @@ function normalizeModuleSpecifier(path: string): string {
 async function expandInput(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
   const absolute = normalizePath(arg);
-  const dir = !isGlob && await isDirectory(absolute);
+  const dir = !isGlob && (await isDirectory(absolute));
   if (!isGlob && !dir) return [arg];
-  const patterns = dir ? [
-    '**/*.ts',
-    '**/*.ts',
-    '**/*.js',
-    '**/*.mjs'
-  ] : [arg];
+  const patterns = dir ? ['**/*.ts', '**/*.ts', '**/*.js', '**/*.mjs'] : [arg];
   const files: string[] = [];
   for (const pattern of patterns) {
     for await (const entry of fs.glob(pattern, {
       cwd: dir ? absolute : cwd(),
-      onlyFiles: true
+      onlyFiles: true,
     })) {
       const path = entry.path.toString();
       files.push(dir ? await normalizeDirectoryGlobEntry(path, absolute) : path);
@@ -556,7 +567,7 @@ async function expandInput(arg: string): Promise<string[]> {
 async function expandInputs(rawFiles: unknown): Promise<string[]> {
   const files = Array.isArray(rawFiles) ? rawFiles.map(String) : [];
   const out: string[] = [];
-  for (const file of files) out.push(...await expandInput(file));
+  for (const file of files) out.push(...(await expandInput(file)));
   return [...new Set(out)].sort();
 }
 interface DocInputs {
@@ -571,7 +582,7 @@ interface ExpandedDocFile {
 async function expandDocInput(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
   const absolute = normalizePath(arg);
-  const dir = !isGlob && await isDirectory(absolute);
+  const dir = !isGlob && (await isDirectory(absolute));
   if (dir) {
     const files: string[] = [];
     await walkDocInputFiles(absolute, files);
@@ -581,7 +592,7 @@ async function expandDocInput(arg: string): Promise<string[]> {
   const files: string[] = [];
   for await (const entry of fs.glob(arg, {
     cwd: cwd(),
-    onlyFiles: true
+    onlyFiles: true,
   })) {
     const path = entry.path.toString();
     files.push(path);
@@ -600,23 +611,23 @@ async function walkDocInputFiles(root: string, out: string[]): Promise<void> {
   }
 }
 function isIgnoredDocDirectory(name: string): boolean {
-  return DOC_DISCOVERY_IGNORES.has(name) || name.startsWith('.') && name !== '.';
+  return DOC_DISCOVERY_IGNORES.has(name) || (name.startsWith('.') && name !== '.');
 }
 async function expandDocInputFiles(arg: string): Promise<ExpandedDocFile[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
   const absolute = normalizePath(arg);
-  const dir = !isGlob && await isDirectory(absolute);
+  const dir = !isGlob && (await isDirectory(absolute));
   const files = await expandDocInput(arg);
   if (!dir) return files.map((file) => ({ file }));
   return files.map((file) => ({
     file,
-    outputPath: docPathRelativeToBase(file, absolute)
+    outputPath: docPathRelativeToBase(file, absolute),
   }));
 }
 async function expandDocInputs(rawFiles: unknown): Promise<DocInputs> {
   const files = Array.isArray(rawFiles) ? rawFiles.map(String) : [];
   const expanded: ExpandedDocFile[] = [];
-  for (const file of files) expanded.push(...await expandDocInputFiles(file));
+  for (const file of files) expanded.push(...(await expandDocInputFiles(file)));
   return splitDocInputs(expanded);
 }
 async function docDiscoveryRoots(rawFiles: unknown): Promise<string[]> {
@@ -658,7 +669,7 @@ function splitDocInputs(files: ExpandedDocFile[]): DocInputs {
   return {
     sourceFiles: [...new Set(sourceFiles)].sort(compareAscii),
     guideFiles: [...new Set(guideFiles)].sort(compareAscii),
-    outputPaths
+    outputPaths,
   };
 }
 function docPathRelativeToBase(file: string, base: string): string {
@@ -669,7 +680,11 @@ function docPathRelativeToBase(file: string, base: string): string {
   return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 }
 function isDocsOutputPath(path: string): boolean {
-  return path === DOCS_DIR_NAME || path.startsWith(`${DOCS_DIR_NAME}/`) || path.includes(`/${DOCS_DIR_NAME}/`);
+  return (
+    path === DOCS_DIR_NAME ||
+    path.startsWith(`${DOCS_DIR_NAME}/`) ||
+    path.includes(`/${DOCS_DIR_NAME}/`)
+  );
 }
 function isMarkdownPath(path: string): boolean {
   return /\.md$/i.test(path);
@@ -680,29 +695,37 @@ function isRootReadmePath(path: string): boolean {
 function isSourcePath(path: string): boolean {
   return /\.(m?ts|m?js)$/i.test(path);
 }
-function signaturesOf(item: {
-  signature: string;
-  signatures?: string[];
-}): string[] {
+function signaturesOf(item: { signature: string; signatures?: string[] }): string[] {
   if (Array.isArray(item.signatures) && item.signatures.length > 0) return item.signatures;
   return item.signature ? [item.signature] : [];
 }
-async function extractModulesFromSource(path: string, includePrivate: boolean): Promise<ParsedModuleDoc[]> {
+async function extractModulesFromSource(
+  path: string,
+  includePrivate: boolean,
+): Promise<ParsedModuleDoc[]> {
   const source = await readTextFile(path);
   const parsed = parseTypeScript(source, {
     filename: path,
-    tokens: true
+    tokens: true,
   });
   if (!parsed.ok) {
-    throw new Error(`failed to parse ${path}:\n${parsed.errors.map((error) => error.message).join('\n')}`);
+    throw new Error(
+      `failed to parse ${path}:\n${parsed.errors.map((error) => error.message).join('\n')}`,
+    );
   }
   const comments = parsed.comments;
-  const body = Array.isArray(parsed.ast?.body) ? parsed.ast.body as AstNode[] : [];
+  const body = Array.isArray(parsed.ast?.body) ? (parsed.ast.body as AstNode[]) : [];
   const ambientModules = collectAmbientModules(path, body, comments, source, includePrivate);
   if (ambientModules.length > 0) return ambientModules;
   return [extractModuleFromBody(path, body, comments, source, includePrivate)];
 }
-function extractModuleFromBody(path: string, body: AstNode[], comments: ParseComment[], source: string, includePrivate: boolean): ParsedModuleDoc {
+function extractModuleFromBody(
+  path: string,
+  body: AstNode[],
+  comments: ParseComment[],
+  source: string,
+  includePrivate: boolean,
+): ParsedModuleDoc {
   const locals = collectLocalBindings(body, comments, source, includePrivate);
   const exports: DocExport[] = [];
   const reExports: ReExportSpec[] = [];
@@ -713,12 +736,20 @@ function extractModuleFromBody(path: string, body: AstNode[], comments: ParseCom
     } else if (statement.type === 'ExportAllDeclaration') {
       reExports.push(...collectReExportSpecs(statement));
     } else if (statement.type === 'ExportDefaultDeclaration') {
-      const item = collectDeclarationExport(statement.declaration, statement, comments, source, includePrivate, 'default');
+      const item = collectDeclarationExport(
+        statement.declaration,
+        statement,
+        comments,
+        source,
+        includePrivate,
+        'default',
+      );
       if (item) exports.push(item);
     }
   }
   const moduleName = basename(path).replace(/\.(m?ts|m?js)$/i, '') || 'module';
-  const moduleDocBlock = firstJsdocBefore(comments, body[0]?.start ?? Number.MAX_SAFE_INTEGER, source) ?? emptyDoc();
+  const moduleDocBlock =
+    firstJsdocBefore(comments, body[0]?.start ?? Number.MAX_SAFE_INTEGER, source) ?? emptyDoc();
   const moduleDoc: ParsedModuleDoc = {
     id: `module:${moduleName}`,
     path: projectRelativePath(path),
@@ -727,18 +758,26 @@ function extractModuleFromBody(path: string, body: AstNode[], comments: ParseCom
     doc: moduleDocBlock,
     exports,
     internal: hasDocTag(moduleDocBlock, 'internal'),
-    reExports
+    reExports,
   };
   groupOverloads(moduleDoc.exports);
   assignDocIds(moduleDoc);
   return moduleDoc;
 }
-function collectAmbientModules(path: string, body: AstNode[], comments: ParseComment[], source: string, includePrivate: boolean): ParsedModuleDoc[] {
+function collectAmbientModules(
+  path: string,
+  body: AstNode[],
+  comments: ParseComment[],
+  source: string,
+  includePrivate: boolean,
+): ParsedModuleDoc[] {
   const modules: ParsedModuleDoc[] = [];
   for (const statement of body) {
     if (statement.type !== 'TSModuleDeclaration') continue;
     const specifier = ambientModuleSpecifier(statement);
-    const moduleBody = Array.isArray(statement.body?.body) ? statement.body.body as AstNode[] : [];
+    const moduleBody = Array.isArray(statement.body?.body)
+      ? (statement.body.body as AstNode[])
+      : [];
     if (!specifier || moduleBody.length === 0) continue;
     const moduleName = ambientModuleDocName(specifier);
     const moduleDocBlock = docForSpan(comments, statement.start, source) ?? emptyDoc();
@@ -752,7 +791,7 @@ function collectAmbientModules(path: string, body: AstNode[], comments: ParseCom
         doc: moduleDocBlock,
         exports: [],
         internal: true,
-        reExports: []
+        reExports: [],
       });
       continue;
     }
@@ -781,7 +820,12 @@ function ambientModuleDocName(specifier: string): string {
 function ambientModuleOutputPath(specifier: string): string {
   return ambientModuleDocName(specifier).replace(/[^A-Za-z0-9_./-]+/g, '-');
 }
-function collectLocalBindings(body: AstNode[], comments: ParseComment[], source: string, includePrivate: boolean): Map<string, DocExport> {
+function collectLocalBindings(
+  body: AstNode[],
+  comments: ParseComment[],
+  source: string,
+  includePrivate: boolean,
+): Map<string, DocExport> {
   const locals = new Map<string, DocExport>();
   for (const statement of body) {
     const declarations = localDeclarations(statement, comments, source, includePrivate);
@@ -789,23 +833,60 @@ function collectLocalBindings(body: AstNode[], comments: ParseComment[], source:
   }
   return locals;
 }
-function localDeclarations(statement: AstNode, comments: ParseComment[], source: string, includePrivate: boolean): DocExport[] {
+function localDeclarations(
+  statement: AstNode,
+  comments: ParseComment[],
+  source: string,
+  includePrivate: boolean,
+): DocExport[] {
   const out: DocExport[] = [];
-  if (statement.type === 'FunctionDeclaration' || statement.type === 'TSDeclareFunction' || statement.type === 'ClassDeclaration' || statement.type === 'TSInterfaceDeclaration' || statement.type === 'TSTypeAliasDeclaration' || statement.type === 'TSEnumDeclaration') {
+  if (
+    statement.type === 'FunctionDeclaration' ||
+    statement.type === 'TSDeclareFunction' ||
+    statement.type === 'ClassDeclaration' ||
+    statement.type === 'TSInterfaceDeclaration' ||
+    statement.type === 'TSTypeAliasDeclaration' ||
+    statement.type === 'TSEnumDeclaration'
+  ) {
     const item = collectDeclarationExport(statement, statement, comments, source, includePrivate);
     if (item) out.push(item);
   } else if (statement.type === 'VariableDeclaration') {
-    out.push(...collectVariableExports(statement, statement, comments, source, false, includePrivate));
+    out.push(
+      ...collectVariableExports(statement, statement, comments, source, false, includePrivate),
+    );
   }
   return out;
 }
-function collectNamedExport(exports: DocExport[], statement: AstNode, comments: ParseComment[], locals: Map<string, DocExport>, source: string, includePrivate: boolean): void {
+function collectNamedExport(
+  exports: DocExport[],
+  statement: AstNode,
+  comments: ParseComment[],
+  locals: Map<string, DocExport>,
+  source: string,
+  includePrivate: boolean,
+): void {
   if (statement.declaration) {
     if (statement.declaration.type === 'VariableDeclaration') {
-      exports.push(...collectVariableExports(statement.declaration, statement, comments, source, true, includePrivate, locals));
+      exports.push(
+        ...collectVariableExports(
+          statement.declaration,
+          statement,
+          comments,
+          source,
+          true,
+          includePrivate,
+          locals,
+        ),
+      );
       return;
     }
-    const item = collectDeclarationExport(statement.declaration, statement, comments, source, includePrivate);
+    const item = collectDeclarationExport(
+      statement.declaration,
+      statement,
+      comments,
+      source,
+      includePrivate,
+    );
     if (item) exports.push(item);
     return;
   }
@@ -824,29 +905,35 @@ function collectReExportSpecs(statement: AstNode): ReExportSpec[] {
   if (!source) return [];
   if (statement.type === 'ExportAllDeclaration') {
     const exportedName = statement.exported?.name ?? statement.exported?.value;
-    if (exportedName) return [{
-      source,
-      exportedName,
-      sourceName: '*',
-      namespace: true
-    }];
-    return [{
-      source,
-      exportedName: '*',
-      sourceName: '*',
-      all: true
-    }];
+    if (exportedName)
+      return [
+        {
+          source,
+          exportedName,
+          sourceName: '*',
+          namespace: true,
+        },
+      ];
+    return [
+      {
+        source,
+        exportedName: '*',
+        sourceName: '*',
+        all: true,
+      },
+    ];
   }
   const out: ReExportSpec[] = [];
   for (const specifier of statement.specifiers ?? []) {
     if (specifier.type === 'ExportNamespaceSpecifier') {
       const exportedName = specifier.exported?.name ?? specifier.exported?.value;
-      if (exportedName) out.push({
-        source,
-        exportedName,
-        sourceName: '*',
-        namespace: true
-      });
+      if (exportedName)
+        out.push({
+          source,
+          exportedName,
+          sourceName: '*',
+          namespace: true,
+        });
       continue;
     }
     const sourceName = specifier.local?.name ?? specifier.local?.value;
@@ -855,35 +942,84 @@ function collectReExportSpecs(statement: AstNode): ReExportSpec[] {
     out.push({
       source,
       exportedName,
-      sourceName
+      sourceName,
     });
   }
   return out;
 }
-function collectDeclarationExport(declaration: AstNode | undefined, owner: AstNode, comments: ParseComment[], source: string, includePrivate: boolean, forcedName?: string): DocExport | undefined {
+function collectDeclarationExport(
+  declaration: AstNode | undefined,
+  owner: AstNode,
+  comments: ParseComment[],
+  source: string,
+  includePrivate: boolean,
+  forcedName?: string,
+): DocExport | undefined {
   if (!declaration) return undefined;
   const name = forcedName ?? declaration.id?.name;
   if (!name) return undefined;
   const doc = docForNode(comments, owner, declaration, source);
   if (!includePrivate && hasDocTag(doc, 'internal')) return undefined;
   if (declaration.type === 'FunctionDeclaration' || declaration.type === 'TSDeclareFunction') {
-    return exportDoc(name, 'function', functionSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start), [], declaration.type === 'TSDeclareFunction');
+    return exportDoc(
+      name,
+      'function',
+      functionSignature(owner, declaration, source),
+      doc,
+      locationFor(source, owner.start ?? declaration.start),
+      [],
+      declaration.type === 'TSDeclareFunction',
+    );
   }
   if (declaration.type === 'ClassDeclaration') {
-    return exportDoc(name, 'class', classSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start), classMembers(declaration, comments, source, includePrivate));
+    return exportDoc(
+      name,
+      'class',
+      classSignature(owner, declaration, source),
+      doc,
+      locationFor(source, owner.start ?? declaration.start),
+      classMembers(declaration, comments, source, includePrivate),
+    );
   }
   if (declaration.type === 'TSInterfaceDeclaration') {
-    return exportDoc(name, 'interface', interfaceSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start), interfaceMembers(declaration, comments, source, includePrivate));
+    return exportDoc(
+      name,
+      'interface',
+      interfaceSignature(owner, declaration, source),
+      doc,
+      locationFor(source, owner.start ?? declaration.start),
+      interfaceMembers(declaration, comments, source, includePrivate),
+    );
   }
   if (declaration.type === 'TSTypeAliasDeclaration') {
-    return exportDoc(name, 'type', statementSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start));
+    return exportDoc(
+      name,
+      'type',
+      statementSignature(owner, declaration, source),
+      doc,
+      locationFor(source, owner.start ?? declaration.start),
+    );
   }
   if (declaration.type === 'TSEnumDeclaration') {
-    return exportDoc(name, 'enum', enumSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start));
+    return exportDoc(
+      name,
+      'enum',
+      enumSignature(owner, declaration, source),
+      doc,
+      locationFor(source, owner.start ?? declaration.start),
+    );
   }
   return undefined;
 }
-function collectVariableExports(declaration: AstNode, owner: AstNode, comments: ParseComment[], source: string, exported: boolean, includePrivate: boolean, locals: Map<string, DocExport> = new Map()): DocExport[] {
+function collectVariableExports(
+  declaration: AstNode,
+  owner: AstNode,
+  comments: ParseComment[],
+  source: string,
+  exported: boolean,
+  includePrivate: boolean,
+  locals: Map<string, DocExport> = new Map(),
+): DocExport[] {
   const out: DocExport[] = [];
   const kind = declaration.kind ?? 'const';
   for (const declarator of declaration.declarations ?? []) {
@@ -892,15 +1028,37 @@ function collectVariableExports(declaration: AstNode, owner: AstNode, comments: 
     const doc = docForNode(comments, owner, declarator, source);
     if (!includePrivate && hasDocTag(doc, 'internal')) continue;
     const start = exported ? owner.start : declaration.start;
-    const end = declarator.id?.typeAnnotation?.end ?? declarator.init?.start ?? declarator.id?.end ?? declarator.end;
+    const end =
+      declarator.id?.typeAnnotation?.end ??
+      declarator.init?.start ??
+      declarator.id?.end ??
+      declarator.end;
     const prefix = `${kind} `;
-    const body = sourceSlice(source, declarator.id?.start ?? declarator.start, end).trim().replace(/=$/, '').trim();
+    const body = sourceSlice(source, declarator.id?.start ?? declarator.start, end)
+      .trim()
+      .replace(/=$/, '')
+      .trim();
     const members = objectMembers(declarator.init, comments, source, locals);
-    out.push(exportDoc(name, kind, cleanSignature(prefix + body), doc, locationFor(source, owner.start ?? declaration.start), members));
+    out.push(
+      exportDoc(
+        name,
+        kind,
+        cleanSignature(prefix + body),
+        doc,
+        locationFor(source, owner.start ?? declaration.start),
+        members,
+      ),
+    );
   }
   return out;
 }
-function objectMembers(node: AstNode | undefined, comments: ParseComment[], source: string, locals: Map<string, DocExport>, prefix = ''): DocMember[] {
+function objectMembers(
+  node: AstNode | undefined,
+  comments: ParseComment[],
+  source: string,
+  locals: Map<string, DocExport>,
+  prefix = '',
+): DocMember[] {
   if (!node || node.type !== 'ObjectExpression') return [];
   const members: DocMember[] = [];
   for (const property of node.properties ?? []) {
@@ -920,7 +1078,7 @@ function objectMembers(node: AstNode | undefined, comments: ParseComment[], sour
       signatures: [],
       aliases: [],
       doc,
-      location: locationFor(source, property.start)
+      location: locationFor(source, property.start),
     });
     if (value?.type === 'ObjectExpression') {
       members.push(...objectMembers(value, comments, source, locals, memberName));
@@ -932,9 +1090,9 @@ function objectMembers(node: AstNode | undefined, comments: ParseComment[], sour
             ...child,
             id: '',
             name: `${memberName}.${child.name}`,
-            signatures: [...child.signatures ?? []],
-            aliases: [...child.aliases ?? []],
-            doc: cloneDoc(child.doc)
+            signatures: [...(child.signatures ?? [])],
+            aliases: [...(child.aliases ?? [])],
+            doc: cloneDoc(child.doc),
           });
         }
       }
@@ -945,10 +1103,19 @@ function objectMembers(node: AstNode | undefined, comments: ParseComment[], sour
 function objectMemberKind(property: AstNode, value: AstNode | undefined): string {
   if (property.kind === 'get') return 'getter';
   if (property.kind === 'set') return 'setter';
-  if (property.method || value?.type === 'FunctionExpression' || value?.type === 'ArrowFunctionExpression') return 'method';
+  if (
+    property.method ||
+    value?.type === 'FunctionExpression' ||
+    value?.type === 'ArrowFunctionExpression'
+  )
+    return 'method';
   return 'property';
 }
-function objectMemberSignature(property: AstNode, value: AstNode | undefined, source: string): string {
+function objectMemberSignature(
+  property: AstNode,
+  value: AstNode | undefined,
+  source: string,
+): string {
   if (property.method || property.kind === 'get' || property.kind === 'set') {
     const end = value?.body?.start ?? property.end;
     return cleanSignature(sourceSlice(source, property.start, end));
@@ -957,7 +1124,15 @@ function objectMemberSignature(property: AstNode, value: AstNode | undefined, so
   const end = property.key?.end ?? value?.start ?? property.end;
   return cleanSignature(sourceSlice(source, keyStart, end).replace(/:$/, ''));
 }
-function exportDoc(name: string, kind: string, signature: string, doc: DocBlock, location: Location, members: DocMember[] = [], overload = false): DocExport {
+function exportDoc(
+  name: string,
+  kind: string,
+  signature: string,
+  doc: DocBlock,
+  location: Location,
+  members: DocMember[] = [],
+  overload = false,
+): DocExport {
   return {
     id: '',
     name,
@@ -968,7 +1143,7 @@ function exportDoc(name: string, kind: string, signature: string, doc: DocBlock,
     doc,
     members,
     location,
-    overload
+    overload,
   } as DocExport & {
     overload: boolean;
   };
@@ -976,24 +1151,24 @@ function exportDoc(name: string, kind: string, signature: string, doc: DocBlock,
 function cloneExport(item: DocExport): DocExport {
   return {
     ...item,
-    signatures: [...item.signatures ?? []],
-    aliases: [...item.aliases ?? []],
+    signatures: [...(item.signatures ?? [])],
+    aliases: [...(item.aliases ?? [])],
     reExport: item.reExport ? { ...item.reExport } : undefined,
     doc: cloneDoc(item.doc),
     members: item.members.map((member) => ({
       ...member,
-      signatures: [...member.signatures ?? []],
-      aliases: [...member.aliases ?? []],
+      signatures: [...(member.signatures ?? [])],
+      aliases: [...(member.aliases ?? [])],
       reExport: member.reExport ? { ...member.reExport } : undefined,
-      doc: cloneDoc(member.doc)
-    }))
+      doc: cloneDoc(member.doc),
+    })),
   };
 }
 function cloneDoc(doc: DocBlock): DocBlock {
   return {
     text: doc.text,
     tags: doc.tags.map((tag) => ({ ...tag })),
-    blocks: (doc.blocks ?? []).map((block) => ({ ...block }))
+    blocks: (doc.blocks ?? []).map((block) => ({ ...block })),
   };
 }
 function functionSignature(owner: AstNode, declaration: AstNode, source: string): string {
@@ -1006,7 +1181,12 @@ function classSignature(owner: AstNode, declaration: AstNode, source: string): s
 function interfaceSignature(owner: AstNode, declaration: AstNode, source: string): string {
   return headerSignature(owner.start ?? declaration.start, declaration.end ?? owner.end, source);
 }
-function interfaceMembers(declaration: AstNode, comments: ParseComment[], source: string, includePrivate: boolean): DocMember[] {
+function interfaceMembers(
+  declaration: AstNode,
+  comments: ParseComment[],
+  source: string,
+  includePrivate: boolean,
+): DocMember[] {
   const members: DocMember[] = [];
   for (const item of declaration.body?.body ?? []) {
     const doc = docForNode(comments, item, item, source);
@@ -1016,17 +1196,27 @@ function interfaceMembers(declaration: AstNode, comments: ParseComment[], source
     members.push({
       id: '',
       name,
-      kind: item.type === 'TSMethodSignature' ? 'method' : item.readonly ? 'readonly-property' : 'property',
+      kind:
+        item.type === 'TSMethodSignature'
+          ? 'method'
+          : item.readonly
+            ? 'readonly-property'
+            : 'property',
       signature: interfaceMemberSignature(item, source),
       signatures: [],
       aliases: [],
       doc,
-      location: locationFor(source, item.start)
+      location: locationFor(source, item.start),
     });
   }
   return members;
 }
-function classMembers(declaration: AstNode, comments: ParseComment[], source: string, includePrivate: boolean): DocMember[] {
+function classMembers(
+  declaration: AstNode,
+  comments: ParseComment[],
+  source: string,
+  includePrivate: boolean,
+): DocMember[] {
   const members: DocMember[] = [];
   for (const item of declaration.body?.body ?? []) {
     const doc = docForNode(comments, item, item, source);
@@ -1042,7 +1232,7 @@ function classMembers(declaration: AstNode, comments: ParseComment[], source: st
       signatures: [],
       aliases: [],
       doc,
-      location: locationFor(source, item.start)
+      location: locationFor(source, item.start),
     });
   }
   return members;
@@ -1099,7 +1289,7 @@ function findStatementEnd(source: string, startIndex: number): number {
   for (let index = startIndex; index < source.length; index++) {
     const ch = source[index]!;
     const next = source[index + 1] ?? '';
-    if (ch === '"' || ch === '\'' || ch === '`') {
+    if (ch === '"' || ch === "'" || ch === '`') {
       index = skipQuoted(source, index, ch);
       continue;
     }
@@ -1147,18 +1337,36 @@ function propertyName(key: AstNode | undefined): string {
 function bindingName(pattern: AstNode | undefined): string | undefined {
   return pattern?.type === 'Identifier' ? pattern.name : undefined;
 }
-function docForNode(comments: ParseComment[], owner: AstNode, declaration: AstNode, source: string): DocBlock {
-  return docForSpan(comments, owner.start, source) ?? docForSpan(comments, declaration.start, source) ?? emptyDoc();
+function docForNode(
+  comments: ParseComment[],
+  owner: AstNode,
+  declaration: AstNode,
+  source: string,
+): DocBlock {
+  return (
+    docForSpan(comments, owner.start, source) ??
+    docForSpan(comments, declaration.start, source) ??
+    emptyDoc()
+  );
 }
-function firstJsdocBefore(comments: ParseComment[], end: number, source: string): DocBlock | undefined {
+function firstJsdocBefore(
+  comments: ParseComment[],
+  end: number,
+  source: string,
+): DocBlock | undefined {
   const comment = comments.find((item) => item.jsdoc && item.leading && item.start < end);
   return comment ? parseDocComment(comment, source) : undefined;
 }
-function docForSpan(comments: ParseComment[], start: number | undefined, source: string): DocBlock | undefined {
+function docForSpan(
+  comments: ParseComment[],
+  start: number | undefined,
+  source: string,
+): DocBlock | undefined {
   if (start === undefined) return undefined;
   for (let index = comments.length - 1; index >= 0; index--) {
     const comment = comments[index]!;
-    if (comment.jsdoc && comment.leading && comment.attachedTo === start) return parseDocComment(comment, source);
+    if (comment.jsdoc && comment.leading && comment.attachedTo === start)
+      return parseDocComment(comment, source);
   }
   return undefined;
 }
@@ -1182,13 +1390,13 @@ function parseDocComment(comment: ParseComment, _source: string): DocBlock {
   return {
     text: trimJoinLines(textLines),
     tags,
-    blocks: blocksForFreeText(freeLines)
+    blocks: blocksForFreeText(freeLines),
   };
 }
 function scannerLines(text: string): string[] {
   const scanner = new Scanner(text, {
     encoding: 'utf-8',
-    format: 'doc'
+    format: 'doc',
   });
   const lines: string[] = [];
   while (!scanner.done) {
@@ -1204,7 +1412,7 @@ function docCommentLines(text: string): string[] {
   return scannerLines(text).map((rawLine) => {
     const scanner = new Scanner(rawLine, {
       encoding: 'utf-8',
-      format: 'doc'
+      format: 'doc',
     });
     scanner.skipWhitespace();
     if (scanner.eatChar('*')) {
@@ -1218,22 +1426,24 @@ function docCommentLines(text: string): string[] {
 function parseDocTag(line: string): DocTag | undefined {
   const scanner = new Scanner(line, {
     encoding: 'utf-8',
-    format: 'doc'
+    format: 'doc',
   });
   if (!scanner.eatChar('@')) return undefined;
   const name = scanner.eatWhile((code) => code !== 32 && code !== 9 && code !== 10 && code !== 13);
   scanner.skipWhitespace();
   const valueStart = scanner.mark();
   scanner.eatWhile(() => true);
-  return name ? {
-    name,
-    value: scanner.text(valueStart)
-  } : undefined;
+  return name
+    ? {
+        name,
+        value: scanner.text(valueStart),
+      }
+    : undefined;
 }
 function stripInlineDirective(line: string): string {
   const scanner = new Scanner(line, {
     encoding: 'utf-8',
-    format: 'doc'
+    format: 'doc',
   });
   let outEnd = scanner.mark();
   while (!scanner.done) {
@@ -1242,12 +1452,25 @@ function stripInlineDirective(line: string): string {
       scanner.eat();
       if (scanner.eatChar('@')) {
         const name = scanner.eatWhile((code) => code >= 97 && code <= 122);
-        if (name === 'param' || name === 'return' || name === 'returns' || name === 'throws' || name === 'example' || name === 'see' || name === 'deprecated') {
-          return scanner.text({
-            offset: 0,
-            line: 1,
-            column: 1
-          }, beforeDirective).trimEnd();
+        if (
+          name === 'param' ||
+          name === 'return' ||
+          name === 'returns' ||
+          name === 'throws' ||
+          name === 'example' ||
+          name === 'see' ||
+          name === 'deprecated'
+        ) {
+          return scanner
+            .text(
+              {
+                offset: 0,
+                line: 1,
+                column: 1,
+              },
+              beforeDirective,
+            )
+            .trimEnd();
         }
       }
       scanner.restore(beforeDirective);
@@ -1255,17 +1478,22 @@ function stripInlineDirective(line: string): string {
     scanner.eat();
     outEnd = scanner.mark();
   }
-  return scanner.text({
-    offset: 0,
-    line: 1,
-    column: 1
-  }, outEnd).trimEnd();
+  return scanner
+    .text(
+      {
+        offset: 0,
+        line: 1,
+        column: 1,
+      },
+      outEnd,
+    )
+    .trimEnd();
 }
 function emptyDoc(): DocBlock {
   return {
     text: '',
     tags: [],
-    blocks: []
+    blocks: [],
   };
 }
 function blocksForFreeText(lines: string[]): DocBlockItem[] {
@@ -1274,10 +1502,11 @@ function blocksForFreeText(lines: string[]): DocBlockItem[] {
   let index = 0;
   const pushParagraph = () => {
     const text = trimJoinLines(paragraph);
-    if (text) blocks.push({
-      kind: 'paragraph',
-      text
-    });
+    if (text)
+      blocks.push({
+        kind: 'paragraph',
+        text,
+      });
     paragraph = [];
   };
   while (index < lines.length) {
@@ -1309,7 +1538,7 @@ function parseFenceInfo(fence: string): {
 } {
   const scanner = new Scanner(fence, {
     encoding: 'utf-8',
-    format: 'doc'
+    format: 'doc',
   });
   scanner.skipWhitespace();
   const lang = scanner.eatWhile((code) => code !== 32 && code !== 9 && code !== 10 && code !== 13);
@@ -1318,7 +1547,7 @@ function parseFenceInfo(fence: string): {
   scanner.eatWhile(() => true);
   return {
     lang,
-    meta: scanner.text(metaStart).trim()
+    meta: scanner.text(metaStart).trim(),
   };
 }
 function codeBlock(lang: string, meta: string, rawLines: string[]): DocBlockItem {
@@ -1337,19 +1566,21 @@ function codeBlock(lang: string, meta: string, rawLines: string[]): DocBlockItem
     lang,
     meta,
     code: trimJoinLines(visible),
-    hiddenCode: trimJoinLines(runnable)
+    hiddenCode: trimJoinLines(runnable),
   };
 }
 function dedentLines(lines: string[]): string[] {
-  const indents = lines.filter((line) => line.trim() !== '').map((line) => {
-    let width = 0;
-    for (const ch of line) {
-      if (ch === ' ') width++;
-      else if (ch === '	') width += 2;
-      else break;
-    }
-    return width;
-  });
+  const indents = lines
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      let width = 0;
+      for (const ch of line) {
+        if (ch === ' ') width++;
+        else if (ch === '	') width += 2;
+        else break;
+      }
+      return width;
+    });
   const indent = indents.length === 0 ? 0 : Math.min(...indents);
   return indent > 0 ? lines.map((line) => removeIndent(line, indent)) : lines;
 }
@@ -1373,14 +1604,20 @@ function trimJoinLines(lines: string[]): string {
   return lines.slice(start, end).join('\n');
 }
 function groupOverloads(exports: DocExport[]): void {
-  const grouped: Array<DocExport & {
-    overload?: boolean;
-  }> = [];
-  for (const item of exports as Array<DocExport & {
-    overload?: boolean;
-  }>) {
+  const grouped: Array<
+    DocExport & {
+      overload?: boolean;
+    }
+  > = [];
+  for (const item of exports as Array<
+    DocExport & {
+      overload?: boolean;
+    }
+  >) {
     if (item.kind === 'function') {
-      const existing = grouped.find((candidate) => candidate.kind === 'function' && candidate.name === item.name);
+      const existing = grouped.find(
+        (candidate) => candidate.kind === 'function' && candidate.name === item.name,
+      );
       if (existing) {
         if (item.overload) existing.signatures!.push(item.signature);
         else if ((existing.signatures?.length ?? 0) === 0) {
@@ -1404,16 +1641,28 @@ function assignDocIds(moduleDoc: ModuleDoc): void {
   for (const item of moduleDoc.exports) {
     const exportBase = `${moduleDoc.name}.${item.name}`;
     const exportCount = exportCounts.get(exportBase) ?? 0;
-    item.id = exportCount === 0 ? exportBase : exportCount === 1 ? `${exportBase}:${item.kind}` : `${exportBase}:${item.kind}-${exportCount}`;
+    item.id =
+      exportCount === 0
+        ? exportBase
+        : exportCount === 1
+          ? `${exportBase}:${item.kind}`
+          : `${exportBase}:${item.kind}-${exportCount}`;
     exportCounts.set(exportBase, exportCount + 1);
-    if ((!item.signatures || item.signatures.length === 0) && item.signature) item.signatures = [item.signature];
+    if ((!item.signatures || item.signatures.length === 0) && item.signature)
+      item.signatures = [item.signature];
     const memberCounts = new Map<string, number>();
     for (const member of item.members) {
       const base = `${item.id}.${member.name}`;
       const count = memberCounts.get(base) ?? 0;
-      member.id = count === 0 ? base : count === 1 ? `${base}:${member.kind}` : `${base}:${member.kind}-${count}`;
+      member.id =
+        count === 0
+          ? base
+          : count === 1
+            ? `${base}:${member.kind}`
+            : `${base}:${member.kind}-${count}`;
       memberCounts.set(base, count + 1);
-      if ((!member.signatures || member.signatures.length === 0) && member.signature) member.signatures = [member.signature];
+      if ((!member.signatures || member.signatures.length === 0) && member.signature)
+        member.signatures = [member.signature];
     }
   }
 }
@@ -1421,17 +1670,30 @@ function hasDocTag(doc: DocBlock, name: string): boolean {
   return doc.tags.some((tag) => tag.name === name);
 }
 function sourceSlice(source: string, start: number, end: number): string {
-  return source.slice(stringIndexForByteOffset(source, start), stringIndexForByteOffset(source, end));
+  return source.slice(
+    stringIndexForByteOffset(source, start),
+    stringIndexForByteOffset(source, end),
+  );
 }
 function cleanSignature(value: string): string {
-  const signature = compactSignature(stripSignatureComments(value).replace(/^export\s+default\s+/, '').replace(/^export\s+/, '').replace(/;+\s*$/, ''));
+  const signature = compactSignature(
+    stripSignatureComments(value)
+      .replace(/^export\s+default\s+/, '')
+      .replace(/^export\s+/, '')
+      .replace(/;+\s*$/, ''),
+  );
   return formatDocSignature(signature);
 }
 function compactSignature(value: string): string {
   return value.trim().replace(/\n/g, ' ').split(/\s+/).join(' ');
 }
 function formatDocSignature(signature: string): string {
-  const formatted = formatCompleteSignature(signature) ?? formatOpenDeclarationSignature(signature) ?? formatObjectMemberSignature(signature) ?? formatClassMemberSignature(signature) ?? signature;
+  const formatted =
+    formatCompleteSignature(signature) ??
+    formatOpenDeclarationSignature(signature) ??
+    formatObjectMemberSignature(signature) ??
+    formatClassMemberSignature(signature) ??
+    signature;
   return wrapLongSignature(formatted);
 }
 function formatCompleteSignature(signature: string): string | undefined {
@@ -1478,9 +1740,13 @@ function extractFormattedBody(code: string, prefix: string, suffix: string): str
 }
 function dedentText(value: string): string {
   const lines = value.replace(/^\n/, '').replace(/\n$/, '').split('\n');
-  const indents = lines.filter((line) => line.trim().length > 0).map((line) => line.match(/^ */)?.[0].length ?? 0);
+  const indents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^ */)?.[0].length ?? 0);
   const indent = indents.length === 0 ? 0 : Math.min(...indents);
-  return indent > 0 ? lines.map((line) => line.slice(Math.min(indent, line.length))).join('\n') : lines.join('\n');
+  return indent > 0
+    ? lines.map((line) => line.slice(Math.min(indent, line.length))).join('\n')
+    : lines.join('\n');
 }
 function wrapLongSignature(signature: string): string {
   if (signature.includes('\n') || signature.length <= SIGNATURE_WRAP_COLUMN) return signature;
@@ -1500,7 +1766,7 @@ function wrapLongSignature(signature: string): string {
   };
   for (let index = 0; index < signature.length; index++) {
     const ch = signature[index]!;
-    if (ch === '"' || ch === '\'' || ch === '`') {
+    if (ch === '"' || ch === "'" || ch === '`') {
       const end = skipQuoted(signature, index, ch);
       append(signature.slice(index, end + 1));
       index = end;
@@ -1562,7 +1828,7 @@ function stripSignatureComments(source: string): string {
   for (let index = 0; index < source.length; index++) {
     const ch = source[index]!;
     const next = source[index + 1] ?? '';
-    if (ch === '"' || ch === '\'' || ch === '`') {
+    if (ch === '"' || ch === "'" || ch === '`') {
       const end = skipQuoted(source, index, ch);
       out += source.slice(index, end + 1);
       index = end;
@@ -1596,7 +1862,7 @@ function locationFor(source: string, offset: number): Location {
   }
   return {
     line,
-    column
+    column,
   };
 }
 function stringIndexForByteOffset(source: string, byteOffset: number): number {
@@ -1615,7 +1881,7 @@ function byteToStringOffsetMap(source: string): number[] {
   if (map) return map;
   map = [];
   let byteOffset = 0;
-  for (let index = 0; index < source.length;) {
+  for (let index = 0; index < source.length; ) {
     map[byteOffset] = index;
     const codePoint = source.codePointAt(index)!;
     index += codePoint > 65535 ? 2 : 1;
@@ -1627,7 +1893,7 @@ function byteToStringOffsetMap(source: string): number[] {
 }
 function utf8ByteLength(value: string): number {
   let bytes = 0;
-  for (let index = 0; index < value.length;) {
+  for (let index = 0; index < value.length; ) {
     const codePoint = value.codePointAt(index)!;
     index += codePoint > 65535 ? 2 : 1;
     bytes += utf8ByteLengthForCodePoint(codePoint);
@@ -1661,7 +1927,11 @@ function renderDocBlock(doc: DocBlock): string[] {
       lines.push(block.code ?? '');
       lines.push('```');
     } else if (block.kind === 'param') {
-      lines.push(block.name ? `Parameter \`${block.name}\`: ${block.description ?? ''}`.trimEnd() : `Parameter: ${block.description ?? ''}`.trimEnd());
+      lines.push(
+        block.name
+          ? `Parameter \`${block.name}\`: ${block.description ?? ''}`.trimEnd()
+          : `Parameter: ${block.description ?? ''}`.trimEnd(),
+      );
     } else if (block.kind === 'returns') {
       lines.push(block.description ? `Returns: ${block.description}` : 'Returns.');
     } else if (block.kind === 'throws') {
@@ -1672,33 +1942,18 @@ function renderDocBlock(doc: DocBlock): string[] {
   }
   return lines;
 }
-function renderSignatureBlock(item: {
-  signature: string;
-  signatures?: string[];
-}): string[] {
+function renderSignatureBlock(item: { signature: string; signatures?: string[] }): string[] {
   const signatures = signaturesOf(item);
-  return [
-    '```ts',
-    ...signatures,
-    '```'
-  ];
+  return ['```ts', ...signatures, '```'];
 }
 function renderMember(member: DocMember): string {
-  const lines = [
-    `### ${member.name}`,
-    '',
-    ...renderSignatureBlock(member)
-  ];
+  const lines = [`### ${member.name}`, '', ...renderSignatureBlock(member)];
   const docLines = renderDocBlock(member.doc);
   if (docLines.length > 0) lines.push('', ...docLines);
   return lines.join('\n');
 }
 function renderExport(item: DocExport): string {
-  const lines = [
-    `## ${item.name}`,
-    '',
-    ...renderSignatureBlock(item)
-  ];
+  const lines = [`## ${item.name}`, '', ...renderSignatureBlock(item)];
   const reExportLines = renderReExportMarkdown(item);
   if (reExportLines.length > 0) lines.push('', ...reExportLines);
   const docLines = renderDocBlock(item.doc);
@@ -1708,7 +1963,8 @@ function renderExport(item: DocExport): string {
 }
 function renderReExportMarkdown(item: DocExport): string[] {
   if (item.reExport?.mode !== 'link') return [];
-  const target = item.reExport.sourceId ?? `${item.reExport.sourceModule}.${item.reExport.sourceName}`;
+  const target =
+    item.reExport.sourceId ?? `${item.reExport.sourceModule}.${item.reExport.sourceName}`;
   return [`Re-exported from \`${target}\`.`];
 }
 function renderModule(moduleDoc: ModuleDoc): string {
@@ -1726,28 +1982,39 @@ function renderDocHtml(doc: DocBlock, ctx: HtmlRenderContext, headingOffset: num
     headingOffset,
     references: collectMarkdownReferences(doc),
     resolveLink: buildLinkResolver(ctx.api, ctx.module),
-    renderCode: (code, lang) => renderCodeHtml(lang, code, ctx)
+    renderCode: (code, lang) => renderCodeHtml(lang, code, ctx),
   };
   const blocks = doc.blocks ?? [];
   if (blocks.length === 0) {
-    return renderDocBlock(doc).map((line) => {
-      if (line.startsWith('@')) return `<p class="tag">${renderMarkdownInline(line, markdownOptions)}</p>`;
-      if (line.trim() === '') return '';
-      return renderMarkdown(line, markdownOptions);
-    }).filter(Boolean).join('\n');
+    return renderDocBlock(doc)
+      .map((line) => {
+        if (line.startsWith('@'))
+          return `<p class="tag">${renderMarkdownInline(line, markdownOptions)}</p>`;
+        if (line.trim() === '') return '';
+        return renderMarkdown(line, markdownOptions);
+      })
+      .filter(Boolean)
+      .join('\n');
   }
-  return blocks.map((block) => {
-    if (block.kind === 'paragraph' && block.text) return renderMarkdown(block.text, markdownOptions);
-    if (block.kind === 'code') return renderCodeHtml(block.lang ?? '', block.code ?? '');
-    if (block.kind === 'param') {
-      const name = block.name ? ` <code>${escapeHtml(block.name)}</code>` : '';
-      return `<p class="tag">Parameter${name}: ${renderMarkdownInline(block.description ?? '', markdownOptions)}</p>`;
-    }
-    if (block.kind === 'returns') return `<p class="tag">Returns: ${renderMarkdownInline(block.description ?? '', markdownOptions)}</p>`;
-    if (block.kind === 'throws') return `<p class="tag">Throws: ${renderMarkdownInline(block.description ?? '', markdownOptions)}</p>`;
-    if (block.description) return `<p class="tag">${renderMarkdownInline(block.description, markdownOptions)}</p>`;
-    return '';
-  }).filter(Boolean).join('\n');
+  return blocks
+    .map((block) => {
+      if (block.kind === 'paragraph' && block.text)
+        return renderMarkdown(block.text, markdownOptions);
+      if (block.kind === 'code') return renderCodeHtml(block.lang ?? '', block.code ?? '');
+      if (block.kind === 'param') {
+        const name = block.name ? ` <code>${escapeHtml(block.name)}</code>` : '';
+        return `<p class="tag">Parameter${name}: ${renderMarkdownInline(block.description ?? '', markdownOptions)}</p>`;
+      }
+      if (block.kind === 'returns')
+        return `<p class="tag">Returns: ${renderMarkdownInline(block.description ?? '', markdownOptions)}</p>`;
+      if (block.kind === 'throws')
+        return `<p class="tag">Throws: ${renderMarkdownInline(block.description ?? '', markdownOptions)}</p>`;
+      if (block.description)
+        return `<p class="tag">${renderMarkdownInline(block.description, markdownOptions)}</p>`;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
 }
 function collectMarkdownReferences(doc: DocBlock): Record<string, string> {
   const references: Record<string, string> = {};
@@ -1773,7 +2040,7 @@ function renderModuleHtml(api: ApiDoc, moduleDoc: ModuleDoc, title: string): str
     hasPageIndex: htmlModule.hasSymbolIndex,
     sidebarHtml: renderSidebarHtml(api, htmlModule.href, title),
     pageIndexHtml: htmlModule.symbolIndexHtml,
-    contentHtml
+    contentHtml,
   });
 }
 function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
@@ -1786,11 +2053,13 @@ function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
     hasPageIndex: htmlGuide.hasPageIndex,
     sidebarHtml: renderSidebarHtml(api, guide.href, title),
     pageIndexHtml: htmlGuide.pageIndexHtml,
-    contentHtml
+    contentHtml,
   });
 }
 async function renderIndexHtml(api: ApiDoc, title: string): Promise<string> {
-  const contentHtml = renderTemplate(INDEX_PAGE_TEMPLATE, { readmeHtml: await renderReadmeHtml(api) });
+  const contentHtml = renderTemplate(INDEX_PAGE_TEMPLATE, {
+    readmeHtml: await renderReadmeHtml(api),
+  });
   return renderTemplate(HTML_PAGE_TEMPLATE, {
     title,
     cssHref: DOCS_CSS_NAME,
@@ -1798,7 +2067,7 @@ async function renderIndexHtml(api: ApiDoc, title: string): Promise<string> {
     hasPageIndex: false,
     sidebarHtml: renderSidebarHtml(api, 'index.html', title),
     pageIndexHtml: '',
-    contentHtml
+    contentHtml,
   });
 }
 function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
@@ -1806,7 +2075,7 @@ function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
   const ctx = {
     api,
     module: moduleDoc,
-    currentHref: href
+    currentHref: href,
   };
   const exports = moduleDoc.exports.map((item) => toHtmlExport(item, ctx));
   const summary = firstSummary(moduleDoc.doc);
@@ -1825,7 +2094,7 @@ function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
     symbolIndexHtml,
     hasSymbolIndex: symbolIndexHtml.length > 0,
     groups,
-    hasGroups: groups.length > 0
+    hasGroups: groups.length > 0,
   };
 }
 function toHtmlGuide(api: ApiDoc, guide: GuideDoc): HtmlGuide {
@@ -1833,7 +2102,7 @@ function toHtmlGuide(api: ApiDoc, guide: GuideDoc): HtmlGuide {
   const markdownOptions: MarkdownOptions = {
     headingOffset: 0,
     resolveLink: buildSourceLinkResolver(api, guide.path, guide.href),
-    renderCode: (code, lang) => renderCodeHtml(lang, code)
+    renderCode: (code, lang) => renderCodeHtml(lang, code),
   };
   const headings = collectGuideHeadings(markdown, markdownOptions);
   const html = addGuideHeadingAnchors(renderMarkdown(markdown, markdownOptions), headings);
@@ -1845,7 +2114,7 @@ function toHtmlGuide(api: ApiDoc, guide: GuideDoc): HtmlGuide {
     href: guide.href,
     html,
     pageIndexHtml,
-    hasPageIndex: pageIndexHtml.length > 0
+    hasPageIndex: pageIndexHtml.length > 0,
   };
 }
 interface GuideHeading {
@@ -1866,7 +2135,7 @@ function collectGuideHeadings(markdown: string, options: MarkdownOptions): Guide
         headings.push({
           id: count === 0 ? base : `${base}-${count + 1}`,
           level,
-          titleHtml: renderMarkdownInline(node.text, options)
+          titleHtml: renderMarkdownInline(node.text, options),
         });
       } else if (node.kind === 'blockquote') {
         visit(node.nodes);
@@ -1886,19 +2155,31 @@ function addGuideHeadingAnchors(html: string, headings: GuideHeading[]): string 
 }
 function renderGuideHeadingIndexHtml(headings: GuideHeading[]): string {
   if (headings.length === 0) return '';
-  const items = headings.map((heading) => `<li class="docs-page-index-heading docs-page-index-heading-${heading.level}"><a href="#${escapeHtml(heading.id)}">${heading.titleHtml}</a></li>`).join('');
+  const items = headings
+    .map(
+      (heading) =>
+        `<li class="docs-page-index-heading docs-page-index-heading-${heading.level}"><a href="#${escapeHtml(heading.id)}">${heading.titleHtml}</a></li>`,
+    )
+    .join('');
   return `<nav class="docs-page-index" aria-label="Page table of contents"><p class="docs-page-index-title">On This Page</p><ul>${items}</ul></nav>`;
 }
 function renderSymbolIndexHtml(moduleDoc: ModuleDoc): string {
   if (moduleDoc.exports.length === 0) return '';
-  const items = moduleDoc.exports.map((item) => {
-    const href = `#${escapeHtml(slug(item.id ?? item.name))}`;
-    const members = item.members.length === 0 ? '' : `<ul class="docs-page-index-members">${item.members.map((member) => {
-      const memberHref = `#${escapeHtml(slug(member.id ?? member.name))}`;
-      return `<li><a href="${memberHref}">${escapeHtml(member.name)}</a></li>`;
-    }).join('')}</ul>`;
-    return `<li><a href="${href}">${escapeHtml(item.name)}</a>${members}</li>`;
-  }).join('');
+  const items = moduleDoc.exports
+    .map((item) => {
+      const href = `#${escapeHtml(slug(item.id ?? item.name))}`;
+      const members =
+        item.members.length === 0
+          ? ''
+          : `<ul class="docs-page-index-members">${item.members
+              .map((member) => {
+                const memberHref = `#${escapeHtml(slug(member.id ?? member.name))}`;
+                return `<li><a href="${memberHref}">${escapeHtml(member.name)}</a></li>`;
+              })
+              .join('')}</ul>`;
+      return `<li><a href="${href}">${escapeHtml(item.name)}</a>${members}</li>`;
+    })
+    .join('');
   return `<nav class="docs-page-index" aria-label="Page symbol index"><p class="docs-page-index-title">On This Page</p><ul>${items}</ul></nav>`;
 }
 function stripFirstHeading(markdown: string): string {
@@ -1906,12 +2187,13 @@ function stripFirstHeading(markdown: string): string {
 }
 async function renderReadmeHtml(api: ApiDoc): Promise<string> {
   const readmePath = `${cwd().replace(/\/+$/, '')}/README.md`;
-  if (!await exists(readmePath)) return '<h1>API Documentation</h1>\n<p class="muted">No README.md found.</p>';
+  if (!(await exists(readmePath)))
+    return '<h1>API Documentation</h1>\n<p class="muted">No README.md found.</p>';
   const assets = new Map<string, SourceAssetRef>();
   const html = renderMarkdown(await readTextFile(readmePath), {
     headingOffset: 0,
     resolveLink: buildSourceLinkResolver(api, 'README.md', 'index.html', undefined, { assets }),
-    renderCode: (code, lang) => renderCodeHtml(lang, code)
+    renderCode: (code, lang) => renderCodeHtml(lang, code),
   });
   await copySourceAssets(assets);
   return html;
@@ -1926,14 +2208,21 @@ function projectRelativePath(path: string): string {
   return value;
 }
 function normalizeDocPath(path: string): string {
-  return projectRelativePath(path).replace(/\\/g, '/').replace(/\/\.\//g, '/').replace(/^\.\//, '');
+  return projectRelativePath(path)
+    .replace(/\\/g, '/')
+    .replace(/\/\.\//g, '/')
+    .replace(/^\.\//, '');
 }
 function moduleHref(moduleDoc: ModuleDoc): string {
-  const path = moduleDoc.outputPath ? normalizeDocPath(moduleDoc.outputPath) : foldedModulePath(moduleDoc.path);
+  const path = moduleDoc.outputPath
+    ? normalizeDocPath(moduleDoc.outputPath)
+    : foldedModulePath(moduleDoc.path);
   return `${path || moduleDoc.name}.html`;
 }
 function foldedModulePath(path: string): string {
-  const withoutExtension = normalizeDocPath(path).replace(/\.d\.ts$/i, '').replace(/\.(m?ts|m?js)$/i, '');
+  const withoutExtension = normalizeDocPath(path)
+    .replace(/\.d\.ts$/i, '')
+    .replace(/\.(m?ts|m?js)$/i, '');
   return withoutExtension.replace(/\/index$/i, '');
 }
 function symbolAnchor(symbol: FlatSymbol): string {
@@ -1942,26 +2231,50 @@ function symbolAnchor(symbol: FlatSymbol): string {
 function symbolHref(symbol: FlatSymbol, fromHref = 'index.html'): string {
   return `${relativeHref(fromHref, moduleHref(symbol.module))}#${symbolAnchor(symbol)}`;
 }
-function findSymbolInModule(api: ApiDoc, moduleDoc: ModuleDoc, fragment: string): FlatSymbol | undefined {
+function findSymbolInModule(
+  api: ApiDoc,
+  moduleDoc: ModuleDoc,
+  fragment: string,
+): FlatSymbol | undefined {
   const normalized = decodeURIComponent(fragment).replace(/^#/, '');
   const symbols = flatten(api).filter((symbol) => symbol.module === moduleDoc);
-  return symbols.find((symbol) => symbol.id === normalized) ?? symbols.find((symbol) => symbol.name === normalized) ?? symbols.find((symbol) => symbol.qualifiedName === `${moduleDoc.name}.${normalized}`) ?? symbols.find((symbol) => symbol.qualifiedName.endsWith(`.${normalized}`)) ?? symbols.find((symbol) => symbol.id.endsWith(`.${normalized}`));
+  return (
+    symbols.find((symbol) => symbol.id === normalized) ??
+    symbols.find((symbol) => symbol.name === normalized) ??
+    symbols.find((symbol) => symbol.qualifiedName === `${moduleDoc.name}.${normalized}`) ??
+    symbols.find((symbol) => symbol.qualifiedName.endsWith(`.${normalized}`)) ??
+    symbols.find((symbol) => symbol.id.endsWith(`.${normalized}`))
+  );
 }
-function resolveSourceModule(api: ApiDoc, fromModule: ModuleDoc, hrefPath: string): ModuleDoc | undefined {
+function resolveSourceModule(
+  api: ApiDoc,
+  fromModule: ModuleDoc,
+  hrefPath: string,
+): ModuleDoc | undefined {
   const currentDir = dirname(normalizeDocPath(fromModule.path));
-  const target = hrefPath.startsWith('./') || hrefPath.startsWith('../') ? normalizeRelativePath(currentDir === '.' ? hrefPath : `${currentDir}/${hrefPath}`) : normalizeDocPath(hrefPath);
+  const target =
+    hrefPath.startsWith('./') || hrefPath.startsWith('../')
+      ? normalizeRelativePath(currentDir === '.' ? hrefPath : `${currentDir}/${hrefPath}`)
+      : normalizeDocPath(hrefPath);
   return api.modules.find((moduleDoc) => normalizeDocPath(moduleDoc.path) === target);
 }
-function resolveSourceGuide(api: ApiDoc, sourcePath: string, hrefPath: string): GuideDoc | undefined {
+function resolveSourceGuide(
+  api: ApiDoc,
+  sourcePath: string,
+  hrefPath: string,
+): GuideDoc | undefined {
   const currentDir = dirname(normalizeDocPath(sourcePath));
-  const target = hrefPath.startsWith('./') || hrefPath.startsWith('../') ? normalizeRelativePath(currentDir === '.' ? hrefPath : `${currentDir}/${hrefPath}`) : normalizeDocPath(hrefPath);
+  const target =
+    hrefPath.startsWith('./') || hrefPath.startsWith('../')
+      ? normalizeRelativePath(currentDir === '.' ? hrefPath : `${currentDir}/${hrefPath}`)
+      : normalizeDocPath(hrefPath);
   return (api.guides ?? []).find((guide) => normalizeDocPath(guide.path) === target);
 }
 function normalizeRelativePath(path: string): string {
   const out: string[] = [];
   const scanner = new Scanner(path, {
     encoding: 'utf-8',
-    format: 'doc-path'
+    format: 'doc-path',
   });
   while (!scanner.done) {
     const start = scanner.mark();
@@ -1974,10 +2287,19 @@ function normalizeRelativePath(path: string): string {
   }
   return out.join('/');
 }
-function buildLinkResolver(api: ApiDoc, moduleDoc: ModuleDoc): (href: string, label: string) => string | undefined {
+function buildLinkResolver(
+  api: ApiDoc,
+  moduleDoc: ModuleDoc,
+): (href: string, label: string) => string | undefined {
   return buildSourceLinkResolver(api, moduleDoc.path, moduleHref(moduleDoc), moduleDoc);
 }
-function buildSourceLinkResolver(api: ApiDoc, sourcePath: string, outputHref: string, moduleDoc?: ModuleDoc, options: SourceLinkResolverOptions = {}): (href: string, label: string) => string | undefined {
+function buildSourceLinkResolver(
+  api: ApiDoc,
+  sourcePath: string,
+  outputHref: string,
+  moduleDoc?: ModuleDoc,
+  options: SourceLinkResolverOptions = {},
+): (href: string, label: string) => string | undefined {
   return (href) => {
     if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
     const [pathPart, fragment = ''] = href.split('#', 2);
@@ -1986,37 +2308,61 @@ function buildSourceLinkResolver(api: ApiDoc, sourcePath: string, outputHref: st
       return symbol ? symbolHref(symbol, outputHref) : href;
     }
     const targetGuide = pathPart ? resolveSourceGuide(api, sourcePath, pathPart) : undefined;
-    if (targetGuide) return `${relativeHref(outputHref, targetGuide.href)}${fragment ? `#${slug(fragment)}` : ''}`;
-    const targetModule = moduleDoc ? resolveSourceModule(api, moduleDoc, pathPart) : resolveSourceModuleFromPath(api, sourcePath, pathPart);
+    if (targetGuide)
+      return `${relativeHref(outputHref, targetGuide.href)}${fragment ? `#${slug(fragment)}` : ''}`;
+    const targetModule = moduleDoc
+      ? resolveSourceModule(api, moduleDoc, pathPart)
+      : resolveSourceModuleFromPath(api, sourcePath, pathPart);
     if (!targetModule) return rewriteSourceRelativeHref(sourcePath, outputHref, href, options);
     if (!fragment) return relativeHref(outputHref, moduleHref(targetModule));
     const symbol = findSymbolInModule(api, targetModule, fragment);
-    return symbol ? symbolHref(symbol, outputHref) : `${relativeHref(outputHref, moduleHref(targetModule))}#${slug(fragment)}`;
+    return symbol
+      ? symbolHref(symbol, outputHref)
+      : `${relativeHref(outputHref, moduleHref(targetModule))}#${slug(fragment)}`;
   };
 }
-function resolveSourceModuleFromPath(api: ApiDoc, sourcePath: string, hrefPath: string): ModuleDoc | undefined {
+function resolveSourceModuleFromPath(
+  api: ApiDoc,
+  sourcePath: string,
+  hrefPath: string,
+): ModuleDoc | undefined {
   const currentDir = dirname(normalizeDocPath(sourcePath));
-  const target = hrefPath.startsWith('./') || hrefPath.startsWith('../') ? normalizeRelativePath(currentDir === '.' ? hrefPath : `${currentDir}/${hrefPath}`) : normalizeDocPath(hrefPath);
+  const target =
+    hrefPath.startsWith('./') || hrefPath.startsWith('../')
+      ? normalizeRelativePath(currentDir === '.' ? hrefPath : `${currentDir}/${hrefPath}`)
+      : normalizeDocPath(hrefPath);
   return api.modules.find((moduleDoc) => normalizeDocPath(moduleDoc.path) === target);
 }
-function rewriteSourceRelativeHref(sourcePath: string, outputHref: string, href: string, options: SourceLinkResolverOptions = {}): string {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('/')) return href;
+function rewriteSourceRelativeHref(
+  sourcePath: string,
+  outputHref: string,
+  href: string,
+  options: SourceLinkResolverOptions = {},
+): string {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('/'))
+    return href;
   const suffixIndex = firstHrefSuffixIndex(href);
   const pathPart = suffixIndex >= 0 ? href.slice(0, suffixIndex) : href;
   const suffix = suffixIndex >= 0 ? href.slice(suffixIndex) : '';
   if (!pathPart || pathPart.startsWith('#')) return href;
   const sourceDir = dirname(normalizeDocPath(sourcePath));
-  const targetPath = normalizeRelativePath(sourceDir === '.' ? pathPart : `${sourceDir}/${pathPart}`);
+  const targetPath = normalizeRelativePath(
+    sourceDir === '.' ? pathPart : `${sourceDir}/${pathPart}`,
+  );
   const copiedAsset = sourceAssetHref(targetPath, href, options);
   if (copiedAsset) return copiedAsset;
   return relativeHref(`${DOCS_DIR_NAME}/${outputHref}`, targetPath) + suffix;
 }
-function sourceAssetHref(sourcePath: string, href: string, options: SourceLinkResolverOptions): string | undefined {
+function sourceAssetHref(
+  sourcePath: string,
+  href: string,
+  options: SourceLinkResolverOptions,
+): string | undefined {
   if (!options.assets || !isCopyableDocAsset(sourcePath)) return undefined;
   const outputPath = normalizeDocPath(sourcePath);
   options.assets.set(outputPath, {
     sourcePath: joinPath(cwd(), sourcePath),
-    outputPath: joinPath(docsDir(), outputPath)
+    outputPath: joinPath(docsDir(), outputPath),
   });
   return href;
 }
@@ -2025,7 +2371,7 @@ function isCopyableDocAsset(path: string): boolean {
 }
 async function copySourceAssets(assets: Map<string, SourceAssetRef>): Promise<void> {
   for (const asset of assets.values()) {
-    if (!await exists(asset.sourcePath)) continue;
+    if (!(await exists(asset.sourcePath))) continue;
     await ensureDir(dirname(asset.outputPath));
     await fs.copyFile(asset.sourcePath, asset.outputPath);
   }
@@ -2033,7 +2379,7 @@ async function copySourceAssets(assets: Map<string, SourceAssetRef>): Promise<vo
 function firstHrefSuffixIndex(href: string): number {
   const scanner = new Scanner(href, {
     encoding: 'utf-8',
-    format: 'doc-link'
+    format: 'doc-link',
   });
   while (!scanner.done) {
     if (scanner.peekCode() === 63 || scanner.peekCode() === 35) return scanner.offset;
@@ -2055,7 +2401,7 @@ function toHtmlExport(item: DocExport, ctx: HtmlRenderContext): HtmlExport {
     overloadsHtml: renderOverloadsHtml(signatures, ctx),
     docHtml,
     memberGroups,
-    hasMemberGroups: memberGroups.length > 0
+    hasMemberGroups: memberGroups.length > 0,
   };
 }
 function renderReExportHtml(item: DocExport, ctx: HtmlRenderContext): string {
@@ -2074,12 +2420,14 @@ function toHtmlMember(member: DocMember, ctx: HtmlRenderContext): HtmlMember {
     kind: member.kind,
     titleHtml: renderSignatureTitleHtml(member.name, signatures, ctx),
     overloadsHtml: renderOverloadsHtml(signatures, ctx),
-    docHtml: renderDocHtml(member.doc, ctx, 5)
+    docHtml: renderDocHtml(member.doc, ctx, 5),
   };
 }
-function groupHtmlItems<T extends {
-  kind: string;
-}>(items: T[]): HtmlGroup<T>[] {
+function groupHtmlItems<
+  T extends {
+    kind: string;
+  },
+>(items: T[]): HtmlGroup<T>[] {
   const groups = new Map<string, T[]>();
   for (const item of items) {
     const title = displayKind(item.kind);
@@ -2089,7 +2437,7 @@ function groupHtmlItems<T extends {
   }
   return [...groups].map(([title, groupItems]) => ({
     title,
-    items: groupItems
+    items: groupItems,
   }));
 }
 function displayKind(kind: string): string {
@@ -2110,37 +2458,41 @@ function displayKind(kind: string): string {
     'static-readonly-property': 'Static Readonly Properties',
     setter: 'Setters',
     type: 'Types',
-    variable: 'Variables'
+    variable: 'Variables',
   };
   if (special[kind]) return special[kind]!;
-  return normalized.split(/\s+/).map((word) => word.slice(0, 1).toUpperCase() + word.slice(1)).join(' ') + 's';
+  return (
+    normalized
+      .split(/\s+/)
+      .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
+      .join(' ') + 's'
+  );
 }
-function renderSignatureTitleHtml(name: string, signatures: string[], ctx: HtmlRenderContext): string {
+function renderSignatureTitleHtml(
+  name: string,
+  signatures: string[],
+  ctx: HtmlRenderContext,
+): string {
   return `<code>${renderHighlightedTypeScript(signatures[0] ?? name, {
     ...ctx,
-    linkIdentifiers: true
+    linkIdentifiers: true,
   })}</code>`;
 }
 function renderOverloadsHtml(signatures: string[], ctx: HtmlRenderContext): string {
   if (signatures.length <= 1) return '';
   return renderCodeHtml('ts', signatures.join('\n'), {
     ...ctx,
-    linkIdentifiers: true
+    linkIdentifiers: true,
   });
 }
 function renderCodeHtml(lang: string, code: string, ctx?: HighlightContext): string {
   const label = lang ? ` class="language-${escapeHtml(lang)}"` : '';
-  const body = shouldHighlightLanguage(lang) ? renderHighlightedTypeScript(code, ctx) : escapeHtml(code);
+  const body = shouldHighlightLanguage(lang)
+    ? renderHighlightedTypeScript(code, ctx)
+    : escapeHtml(code);
   return `<pre><code${label}>${body}</code></pre>`;
 }
-const HIGHLIGHT_LANGUAGES = new Set([
-  'ts',
-  'mts',
-  'typescript',
-  'js',
-  'mjs',
-  'javascript'
-]);
+const HIGHLIGHT_LANGUAGES = new Set(['ts', 'mts', 'typescript', 'js', 'mjs', 'javascript']);
 const KEYWORD_TOKENS = new Set([
   'abstract',
   'any',
@@ -2212,17 +2564,21 @@ const KEYWORD_TOKENS = new Set([
   'void',
   'while',
   'with',
-  'yield'
+  'yield',
 ]);
 const MDN_SIGNATURE_TYPES: Record<string, string> = {
   AbortController: 'https://developer.mozilla.org/en-US/docs/Web/API/AbortController',
   AbortSignal: 'https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal',
   Array: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array',
-  ArrayBuffer: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer',
+  ArrayBuffer:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer',
   ArrayBufferView: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Typed_arrays',
-  AsyncGenerator: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator',
-  AsyncIterable: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator',
-  AsyncIterator: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator',
+  AsyncGenerator:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator',
+  AsyncIterable:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator',
+  AsyncIterator:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator',
   BigInt: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt',
   Blob: 'https://developer.mozilla.org/en-US/docs/Web/API/Blob',
   Date: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date',
@@ -2230,20 +2586,25 @@ const MDN_SIGNATURE_TYPES: Record<string, string> = {
   Event: 'https://developer.mozilla.org/en-US/docs/Web/API/Event',
   EventTarget: 'https://developer.mozilla.org/en-US/docs/Web/API/EventTarget',
   File: 'https://developer.mozilla.org/en-US/docs/Web/API/File',
-  Float32Array: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array',
+  Float32Array:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array',
   Headers: 'https://developer.mozilla.org/en-US/docs/Web/API/Headers',
   Iterable: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols',
-  IteratorResult: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols',
+  IteratorResult:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols',
   Map: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map',
   Partial: 'https://www.typescriptlang.org/docs/handbook/utility-types.html#partialtype',
-  Promise: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise',
+  Promise:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise',
   Record: 'https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type',
   Request: 'https://developer.mozilla.org/en-US/docs/Web/API/Request',
   Response: 'https://developer.mozilla.org/en-US/docs/Web/API/Response',
   Set: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set',
-  Uint8Array: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array',
+  Uint8Array:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array',
   URL: 'https://developer.mozilla.org/en-US/docs/Web/API/URL',
-  WeakMap: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap'
+  WeakMap:
+    'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap',
 };
 function shouldHighlightLanguage(lang: string): boolean {
   return HIGHLIGHT_LANGUAGES.has((lang || 'ts').toLowerCase());
@@ -2273,39 +2634,58 @@ function highlightSpans(code: string): HighlightSpan[] {
   const prefix = 'class __Doc { ';
   const wrapped = `${prefix}${code} }`;
   const startByte = utf8ByteLength(prefix);
-  return parseHighlightSpans(wrapped, code, startByte, startByte + utf8ByteLength(code), prefix.length);
+  return parseHighlightSpans(
+    wrapped,
+    code,
+    startByte,
+    startByte + utf8ByteLength(code),
+    prefix.length,
+  );
 }
-function parseHighlightSpans(source: string, original: string, startByte: number, endByte: number, startIndex: number): HighlightSpan[] {
+function parseHighlightSpans(
+  source: string,
+  original: string,
+  startByte: number,
+  endByte: number,
+  startIndex: number,
+): HighlightSpan[] {
   let parsed: ParseResult;
   try {
     parsed = parseTypeScript(source, {
       sourceType: 'ts',
-      tokens: true
+      tokens: true,
     });
   } catch (_) {
     return [];
   }
-  const spans = [...parsed.comments.map((comment) => ({
-    start: comment.start,
-    end: comment.end,
-    kind: 'comment'
-  })), ...parsed.tokens.map((token) => ({
-    start: token.start,
-    end: token.end,
-    kind: token.kind
-  }))];
-  return spans.filter((span) => span.end > span.start && span.start >= startByte && span.end <= endByte).map((span) => {
-    const sourceStart = stringIndexForByteOffset(source, span.start);
-    const sourceEnd = stringIndexForByteOffset(source, span.end);
-    const start = sourceStart - startIndex;
-    const end = sourceEnd - startIndex;
-    return {
-      start,
-      end,
-      kind: span.kind,
-      text: original.slice(start, end)
-    };
-  }).filter((span) => span.text.length > 0).sort((a, b) => a.start - b.start || b.end - a.end);
+  const spans = [
+    ...parsed.comments.map((comment) => ({
+      start: comment.start,
+      end: comment.end,
+      kind: 'comment',
+    })),
+    ...parsed.tokens.map((token) => ({
+      start: token.start,
+      end: token.end,
+      kind: token.kind,
+    })),
+  ];
+  return spans
+    .filter((span) => span.end > span.start && span.start >= startByte && span.end <= endByte)
+    .map((span) => {
+      const sourceStart = stringIndexForByteOffset(source, span.start);
+      const sourceEnd = stringIndexForByteOffset(source, span.end);
+      const start = sourceStart - startIndex;
+      const end = sourceEnd - startIndex;
+      return {
+        start,
+        end,
+        kind: span.kind,
+        text: original.slice(start, end),
+      };
+    })
+    .filter((span) => span.text.length > 0)
+    .sort((a, b) => a.start - b.start || b.end - a.end);
 }
 function renderTokenSpan(text: string, kind: string, ctx?: HighlightContext): string {
   if (kind === 'comment') return `<span class="tok-comment">${escapeHtml(text)}</span>`;
@@ -2317,8 +2697,17 @@ function renderTokenSpan(text: string, kind: string, ctx?: HighlightContext): st
   return cls ? `<span class="${cls}">${escapeHtml(text)}</span>` : escapeHtml(text);
 }
 function tokenClass(text: string, kind: string): string {
-  if (kind === 'jsx' || text.startsWith('"') || text.startsWith('\'') || text.startsWith('`')) return 'tok-string';
-  if (kind.includes('bigint') || kind === 'decimal' || kind === 'float' || kind === 'binary' || kind === 'octal' || kind === 'hex') return 'tok-number';
+  if (kind === 'jsx' || text.startsWith('"') || text.startsWith("'") || text.startsWith('`'))
+    return 'tok-string';
+  if (
+    kind.includes('bigint') ||
+    kind === 'decimal' ||
+    kind === 'float' ||
+    kind === 'binary' ||
+    kind === 'octal' ||
+    kind === 'hex'
+  )
+    return 'tok-number';
   if (kind === '/regexp/') return 'tok-regexp';
   if (KEYWORD_TOKENS.has(kind) || KEYWORD_TOKENS.has(text)) return 'tok-keyword';
   return '';
@@ -2326,27 +2715,40 @@ function tokenClass(text: string, kind: string): string {
 function signatureIdentifierHref(name: string, ctx: HtmlRenderContext): string | undefined {
   if (!/^[A-Z]/.test(name) && !MDN_SIGNATURE_TYPES[name]) return undefined;
   const symbols = flatten(ctx.api);
-  const local = symbols.find((symbol) => symbol.module === ctx.module && symbol.name === name) ?? symbols.find((symbol) => symbol.module === ctx.module && symbol.qualifiedName.endsWith(`.${name}`)) ?? symbols.find((symbol) => symbol.name === name) ?? symbols.find((symbol) => symbol.qualifiedName.endsWith(`.${name}`));
+  const local =
+    symbols.find((symbol) => symbol.module === ctx.module && symbol.name === name) ??
+    symbols.find(
+      (symbol) => symbol.module === ctx.module && symbol.qualifiedName.endsWith(`.${name}`),
+    ) ??
+    symbols.find((symbol) => symbol.name === name) ??
+    symbols.find((symbol) => symbol.qualifiedName.endsWith(`.${name}`));
   if (local) return symbolHref(local, ctx.currentHref);
   return MDN_SIGNATURE_TYPES[name];
 }
 function firstSummary(doc: DocBlock): string {
   const paragraph = (doc.blocks ?? []).find((block) => block.kind === 'paragraph' && block.text);
-  const text = String(paragraph?.text ?? doc.text ?? '').trim().split(/\n\s*\n/)[0] ?? '';
+  const text =
+    String(paragraph?.text ?? doc.text ?? '')
+      .trim()
+      .split(/\n\s*\n/)[0] ?? '';
   return text.length > 180 ? text.slice(0, 177).trimEnd() + '...' : text;
 }
 function renderSidebarHtml(api: ApiDoc, currentHref: string, title: string): string {
-  const guideEntries: SidebarEntry[] = (api.guides ?? []).map((guide) => ({
-    label: guide.title,
-    href: guide.href,
-    kind: 'guide' as const,
-    weight: guide.weight
-  })).sort((a, b) => compareAscii(a.href, b.href));
-  const apiEntries: SidebarEntry[] = api.modules.map((moduleDoc) => ({
-    label: moduleDoc.name.split('/').pop() ?? moduleDoc.name,
-    href: moduleHref(moduleDoc),
-    kind: 'api' as const
-  })).sort((a, b) => compareAscii(a.href, b.href));
+  const guideEntries: SidebarEntry[] = (api.guides ?? [])
+    .map((guide) => ({
+      label: guide.title,
+      href: guide.href,
+      kind: 'guide' as const,
+      weight: guide.weight,
+    }))
+    .sort((a, b) => compareAscii(a.href, b.href));
+  const apiEntries: SidebarEntry[] = api.modules
+    .map((moduleDoc) => ({
+      label: moduleDoc.name.split('/').pop() ?? moduleDoc.name,
+      href: moduleHref(moduleDoc),
+      kind: 'api' as const,
+    }))
+    .sort((a, b) => compareAscii(a.href, b.href));
   const guideTree = sidebarTree(guideEntries, 'Docs');
   const apiTree = sidebarTree(apiEntries, 'API Reference');
   return `<nav class="docs-sidebar" aria-label="Documentation navigation">
@@ -2370,20 +2772,27 @@ function sidebarTree(entries: SidebarEntry[], rootName?: string): SidebarNode[] 
   if (entries.length === 0) return [];
   const root = new Map<string, SidebarNode>();
   const base = sharedSidebarBase(entries);
-  const ensureNode = (siblings: Map<string, SidebarNode>, name: string, path: string): SidebarNode => {
+  const ensureNode = (
+    siblings: Map<string, SidebarNode>,
+    name: string,
+    path: string,
+  ): SidebarNode => {
     let node = siblings.get(name);
     if (!node) {
       node = {
         name,
         path,
-        children: new Map()
+        children: new Map(),
       };
       siblings.set(name, node);
     }
     return node;
   };
   for (const entry of entries) {
-    const hrefParts = entry.href.replace(/\.html$/i, '').split('/').filter(Boolean);
+    const hrefParts = entry.href
+      .replace(/\.html$/i, '')
+      .split('/')
+      .filter(Boolean);
     const parts = base === undefined ? hrefParts : hrefParts.slice(1);
     let siblings = root;
     let currentPath = '';
@@ -2398,11 +2807,13 @@ function sidebarTree(entries: SidebarEntry[], rootName?: string): SidebarNode[] 
   promoteIndexGuideEntries(root);
   const sorted = collapseSidebarDirectories(sortSidebarNodes([...root.values()]));
   if (rootName === undefined) return sorted;
-  return [{
-    name: rootName,
-    path: rootName,
-    children: new Map(sorted.map((node) => [node.name, node]))
-  }];
+  return [
+    {
+      name: rootName,
+      path: rootName,
+      children: new Map(sorted.map((node) => [node.name, node])),
+    },
+  ];
 }
 function promoteIndexGuideEntries(siblings: Map<string, SidebarNode>): void {
   for (const node of siblings.values()) {
@@ -2420,7 +2831,10 @@ function sharedSidebarBase(entries: SidebarEntry[]): string | undefined {
   let first: string | undefined;
   let hasNested = false;
   for (const entry of entries) {
-    const parts = entry.href.replace(/\.html$/i, '').split('/').filter(Boolean);
+    const parts = entry.href
+      .replace(/\.html$/i, '')
+      .split('/')
+      .filter(Boolean);
     if (parts.length === 0) return undefined;
     first ??= parts[0];
     if (parts[0] !== first) return undefined;
@@ -2432,7 +2846,9 @@ function collapseSidebarDirectories(nodes: SidebarNode[]): SidebarNode[] {
   return nodes.map(collapseSidebarDirectory);
 }
 function collapseSidebarDirectory(node: SidebarNode): SidebarNode {
-  node.children = new Map(collapseSidebarDirectories([...node.children.values()]).map((child) => [child.name, child]));
+  node.children = new Map(
+    collapseSidebarDirectories([...node.children.values()]).map((child) => [child.name, child]),
+  );
   let collapsed = node;
   while (!collapsed.entry && collapsed.children.size === 1) {
     const child = [...collapsed.children.values()][0]!;
@@ -2440,19 +2856,21 @@ function collapseSidebarDirectory(node: SidebarNode): SidebarNode {
     collapsed = {
       name: `${collapsed.name}/${child.name}`,
       path: child.path,
-      children: child.children
+      children: child.children,
     };
   }
   return collapsed;
 }
 function sortSidebarNodes(nodes: SidebarNode[]): SidebarNode[] {
   return nodes.sort(compareSidebarNodes).map((node) => {
-    node.children = new Map(sortSidebarNodes([...node.children.values()]).map((child) => [child.name, child]));
+    node.children = new Map(
+      sortSidebarNodes([...node.children.values()]).map((child) => [child.name, child]),
+    );
     return node;
   });
 }
 function compareSidebarNodes(a: SidebarNode, b: SidebarNode): number {
-  const rank = (node: SidebarNode) => node.entry?.kind === 'guide' ? 0 : 1;
+  const rank = (node: SidebarNode) => (node.entry?.kind === 'guide' ? 0 : 1);
   return rank(a) - rank(b) || compareGuideWeight(a, b) || compareAscii(a.name, b.name);
 }
 function compareGuideWeight(a: SidebarNode, b: SidebarNode): number {
@@ -2500,14 +2918,16 @@ async function readApi(path: string): Promise<ApiDoc> {
 async function extractApi(files: string[], includePrivate: boolean = false): Promise<ApiDoc> {
   const modules: ParsedModuleDoc[] = [];
   for (const file of files) {
-    modules.push(...await extractModulesFromSource(String(file), includePrivate));
+    modules.push(...(await extractModulesFromSource(String(file), includePrivate)));
   }
   disambiguateModules(modules);
   resolveReExports(modules, includePrivate);
-  const visibleModules = includePrivate ? modules : modules.filter((moduleDoc) => !moduleDoc.internal);
+  const visibleModules = includePrivate
+    ? modules
+    : modules.filter((moduleDoc) => !moduleDoc.internal);
   return {
     schemaVersion: 4,
-    modules: visibleModules.map(stripParsedModuleFields)
+    modules: visibleModules.map(stripParsedModuleFields),
   };
 }
 async function extractDocs(inputs: DocInputs, includePrivate: boolean = false): Promise<ApiDoc> {
@@ -2525,14 +2945,20 @@ async function extractDocs(inputs: DocInputs, includePrivate: boolean = false): 
   }
   disambiguateModules(parsedModules);
   resolveReExports(parsedModules, includePrivate);
-  const visibleModules = includePrivate ? parsedModules : parsedModules.filter((moduleDoc) => !moduleDoc.internal);
+  const visibleModules = includePrivate
+    ? parsedModules
+    : parsedModules.filter((moduleDoc) => !moduleDoc.internal);
   return {
     schemaVersion: 4,
     modules: visibleModules.map(stripParsedModuleFields),
-    guides: guides.sort((a, b) => compareAscii(a.href, b.href))
+    guides: guides.sort((a, b) => compareAscii(a.href, b.href)),
   };
 }
-async function extractDocsCached(inputs: DocInputs, includePrivate: boolean = false, options: DocCacheOptions = {}): Promise<ApiDoc> {
+async function extractDocsCached(
+  inputs: DocInputs,
+  includePrivate: boolean = false,
+  options: DocCacheOptions = {},
+): Promise<ApiDoc> {
   if (!sqlite.sqliteAvailable) return extractDocs(inputs, includePrivate);
   const db = await openDocsDb();
   try {
@@ -2547,8 +2973,8 @@ async function openDocsDb(): Promise<DocsDatabase> {
   return sqlite.Database.open(docsDbPath()) as Promise<DocsDatabase>;
 }
 async function readDocInputMetadata(): Promise<DocInputMetadata | undefined> {
-  if (sqlite.sqliteAvailable && await exists(docsDbPath())) {
-    const db = await sqlite.Database.open(docsDbPath()) as DocsDatabase;
+  if (sqlite.sqliteAvailable && (await exists(docsDbPath()))) {
+    const db = (await sqlite.Database.open(docsDbPath())) as DocsDatabase;
     try {
       await ensureDocsCacheSchema(db);
       const stmt = db.prepare('SELECT key, value FROM doc_meta WHERE key IN (?, ?)');
@@ -2557,10 +2983,14 @@ async function readDocInputMetadata(): Promise<DocInputMetadata | undefined> {
         const byKey = new Map(rows.map((row) => [String(row.key), String(row.value)]));
         const files = JSON.parse(byKey.get('input_roots') ?? '[]') as unknown;
         const types = JSON.parse(byKey.get('type_roots') ?? '[]') as unknown;
-        if (Array.isArray(files) && Array.isArray(types) && (files.length > 0 || types.length > 0)) {
+        if (
+          Array.isArray(files) &&
+          Array.isArray(types) &&
+          (files.length > 0 || types.length > 0)
+        ) {
           return {
             files: files.map(String),
-            types: types.map(String)
+            types: types.map(String),
           };
         }
       } finally {
@@ -2571,10 +3001,14 @@ async function readDocInputMetadata(): Promise<DocInputMetadata | undefined> {
     }
   }
   const existingApi = await readExistingApiJson();
-  if (existingApi?.input && Array.isArray(existingApi.input.files) && Array.isArray(existingApi.input.types)) {
+  if (
+    existingApi?.input &&
+    Array.isArray(existingApi.input.files) &&
+    Array.isArray(existingApi.input.types)
+  ) {
     return {
       files: existingApi.input.files.map(String),
-      types: existingApi.input.types.map(String)
+      types: existingApi.input.types.map(String),
     };
   }
   return undefined;
@@ -2584,17 +3018,37 @@ async function writeDocInputMetadata(files: string[], types: string[]): Promise<
   const db = await openDocsDb();
   try {
     await ensureDocsCacheSchema(db);
-    await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)', 'input_roots', JSON.stringify(files));
-    await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)', 'type_roots', JSON.stringify(types));
+    await runDocsStatement(
+      db,
+      'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)',
+      'input_roots',
+      JSON.stringify(files),
+    );
+    await runDocsStatement(
+      db,
+      'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)',
+      'type_roots',
+      JSON.stringify(types),
+    );
   } finally {
     await db.close();
   }
 }
 async function ensureDocsCacheSchema(db: DocsDatabase): Promise<void> {
   for (const statement of DOCS_CACHE_SCHEMA_STATEMENTS) await db.exec(statement);
-  await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)', 'cache_schema_version', '1');
+  await runDocsStatement(
+    db,
+    'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)',
+    'cache_schema_version',
+    '1',
+  );
 }
-async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, includePrivate: boolean, options: DocCacheOptions = {}): Promise<ApiDoc> {
+async function extractDocsFromCache(
+  db: DocsDatabase,
+  inputs: DocInputs,
+  includePrivate: boolean,
+  options: DocCacheOptions = {},
+): Promise<ApiDoc> {
   const current = await currentDocFiles(inputs);
   const currentKeys = new Set(current.map((file) => file.path));
   const cached = await readCachedDocFiles(db, includePrivate);
@@ -2607,12 +3061,18 @@ async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, include
   }
   for (const file of current) {
     const cachedFile = cached.get(file.path);
-    const fresh = cachedFile && cachedFile.kind === file.kind && cachedFile.mtimeMs === file.mtimeMs && cachedFile.size === file.size;
+    const fresh =
+      cachedFile &&
+      cachedFile.kind === file.kind &&
+      cachedFile.mtimeMs === file.mtimeMs &&
+      cachedFile.size === file.size;
     let json: string | undefined;
     if (fresh) {
       json = await readCachedDocFileJson(db, cachedFile.path, cachedFile.kind, includePrivate);
-    } else if (options.shouldParseChanged && !await options.shouldParseChanged(file)) {
-      json = cachedFile ? await readCachedDocFileJson(db, cachedFile.path, cachedFile.kind, includePrivate) : undefined;
+    } else if (options.shouldParseChanged && !(await options.shouldParseChanged(file))) {
+      json = cachedFile
+        ? await readCachedDocFileJson(db, cachedFile.path, cachedFile.kind, includePrivate)
+        : undefined;
     } else {
       json = JSON.stringify(await parseCurrentDocFile(file, includePrivate));
       await writeCachedDocFile(db, file, includePrivate, json);
@@ -2620,39 +3080,52 @@ async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, include
     if (json === undefined) continue;
     const parsed = JSON.parse(json);
     if (file.kind === 'source') {
-      const modules = Array.isArray(parsed) ? parsed as ParsedModuleDoc[] : [parsed as ParsedModuleDoc];
+      const modules = Array.isArray(parsed)
+        ? (parsed as ParsedModuleDoc[])
+        : [parsed as ParsedModuleDoc];
       applySourceOutputPaths(modules, file);
       parsedModules.push(...modules);
     } else guides.push(parsed as GuideDoc);
   }
   disambiguateModules(parsedModules);
   resolveReExports(parsedModules, includePrivate);
-  const visibleModules = includePrivate ? parsedModules : parsedModules.filter((moduleDoc) => !moduleDoc.internal);
+  const visibleModules = includePrivate
+    ? parsedModules
+    : parsedModules.filter((moduleDoc) => !moduleDoc.internal);
   return {
     schemaVersion: 4,
     modules: visibleModules.map(stripParsedModuleFields),
-    guides: guides.sort((a, b) => compareAscii(a.href, b.href))
+    guides: guides.sort((a, b) => compareAscii(a.href, b.href)),
   };
 }
 async function currentDocFiles(inputs: DocInputs): Promise<CurrentDocFile[]> {
   const files: CurrentDocFile[] = [];
-  for (const file of inputs.sourceFiles) files.push(await currentDocFile(file, 'source', inputs.outputPaths[normalizeDocPath(file)]));
-  for (const file of inputs.guideFiles) files.push(await currentDocFile(file, 'guide', inputs.outputPaths[normalizeDocPath(file)]));
+  for (const file of inputs.sourceFiles)
+    files.push(await currentDocFile(file, 'source', inputs.outputPaths[normalizeDocPath(file)]));
+  for (const file of inputs.guideFiles)
+    files.push(await currentDocFile(file, 'guide', inputs.outputPaths[normalizeDocPath(file)]));
   return files.sort((a, b) => compareAscii(a.path, b.path) || compareAscii(a.kind, b.kind));
 }
-async function currentDocFile(file: string, kind: DocFileKind, outputPath?: string): Promise<CurrentDocFile> {
+async function currentDocFile(
+  file: string,
+  kind: DocFileKind,
+  outputPath?: string,
+): Promise<CurrentDocFile> {
   const stat = await fs.lstat(file);
   const current: CurrentDocFile = {
     path: normalizeDocPath(file),
     file,
     kind,
     mtimeMs: stat.mtimeMs,
-    size: stat.size
+    size: stat.size,
   };
   if (outputPath !== undefined) current.outputPath = outputPath;
   return current;
 }
-async function parseCurrentDocFile(file: CurrentDocFile, includePrivate: boolean): Promise<ParsedModuleDoc[] | GuideDoc> {
+async function parseCurrentDocFile(
+  file: CurrentDocFile,
+  includePrivate: boolean,
+): Promise<ParsedModuleDoc[] | GuideDoc> {
   if (file.kind === 'source') return extractModulesFromSource(file.file, includePrivate);
   const parsed = parseGuideMarkdown(file.path, await readTextFile(file.file));
   const guidePath = parsed.virtualPath ?? file.outputPath ?? file.path;
@@ -2662,7 +3135,7 @@ async function parseCurrentDocFile(file: CurrentDocFile, includePrivate: boolean
     href: guideHref(guidePath),
     title: guideTitle(file.path, parsed.text),
     summary: guideSummary(parsed.text),
-    text: parsed.text
+    text: parsed.text,
   };
   if (parsed.weight !== undefined) guide.weight = parsed.weight;
   return guide;
@@ -2674,26 +3147,40 @@ function applySourceOutputPaths(modules: ParsedModuleDoc[], file: CurrentDocFile
     if (moduleDoc.outputPath === undefined) moduleDoc.outputPath = outputPath;
   }
 }
-async function readCachedDocFiles(db: DocsDatabase, includePrivate: boolean): Promise<Map<string, CachedDocFile>> {
-  const stmt = db.prepare('SELECT path, kind, include_private, mtime_ms, size FROM doc_files WHERE include_private = ?');
+async function readCachedDocFiles(
+  db: DocsDatabase,
+  includePrivate: boolean,
+): Promise<Map<string, CachedDocFile>> {
+  const stmt = db.prepare(
+    'SELECT path, kind, include_private, mtime_ms, size FROM doc_files WHERE include_private = ?',
+  );
   try {
     const rows = await stmt.all(includePrivate ? 1 : 0);
-    return new Map(rows.map((row) => {
-      const cached: CachedDocFile = {
-        path: String(row.path),
-        kind: String(row.kind) as DocFileKind,
-        includePrivate: Number(row.include_private) === 1,
-        mtimeMs: Number(row.mtime_ms),
-        size: Number(row.size)
-      };
-      return [cached.path, cached];
-    }));
+    return new Map(
+      rows.map((row) => {
+        const cached: CachedDocFile = {
+          path: String(row.path),
+          kind: String(row.kind) as DocFileKind,
+          includePrivate: Number(row.include_private) === 1,
+          mtimeMs: Number(row.mtime_ms),
+          size: Number(row.size),
+        };
+        return [cached.path, cached];
+      }),
+    );
   } finally {
     stmt.finalize();
   }
 }
-async function readCachedDocFileJson(db: DocsDatabase, path: string, kind: DocFileKind, includePrivate: boolean): Promise<string | undefined> {
-  const stmt = db.prepare('SELECT json FROM doc_files WHERE path = ? AND kind = ? AND include_private = ?');
+async function readCachedDocFileJson(
+  db: DocsDatabase,
+  path: string,
+  kind: DocFileKind,
+  includePrivate: boolean,
+): Promise<string | undefined> {
+  const stmt = db.prepare(
+    'SELECT json FROM doc_files WHERE path = ? AND kind = ? AND include_private = ?',
+  );
   try {
     const rows = await stmt.all(path, kind, includePrivate ? 1 : 0);
     return rows.length > 0 ? String(rows[0]!.json) : undefined;
@@ -2701,11 +3188,36 @@ async function readCachedDocFileJson(db: DocsDatabase, path: string, kind: DocFi
     stmt.finalize();
   }
 }
-async function writeCachedDocFile(db: DocsDatabase, file: CurrentDocFile, includePrivate: boolean, json: string): Promise<void> {
-  await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_files VALUES (?, ?, ?, ?, ?, ?)', file.path, file.kind, includePrivate ? 1 : 0, file.mtimeMs, file.size, json);
+async function writeCachedDocFile(
+  db: DocsDatabase,
+  file: CurrentDocFile,
+  includePrivate: boolean,
+  json: string,
+): Promise<void> {
+  await runDocsStatement(
+    db,
+    'INSERT OR REPLACE INTO doc_files VALUES (?, ?, ?, ?, ?, ?)',
+    file.path,
+    file.kind,
+    includePrivate ? 1 : 0,
+    file.mtimeMs,
+    file.size,
+    json,
+  );
 }
-async function deleteCachedDocFile(db: DocsDatabase, path: string, kind: DocFileKind, includePrivate: boolean): Promise<void> {
-  await runDocsStatement(db, 'DELETE FROM doc_files WHERE path = ? AND kind = ? AND include_private = ?', path, kind, includePrivate ? 1 : 0);
+async function deleteCachedDocFile(
+  db: DocsDatabase,
+  path: string,
+  kind: DocFileKind,
+  includePrivate: boolean,
+): Promise<void> {
+  await runDocsStatement(
+    db,
+    'DELETE FROM doc_files WHERE path = ? AND kind = ? AND include_private = ?',
+    path,
+    kind,
+    includePrivate ? 1 : 0,
+  );
 }
 async function extractGuides(files: string[]): Promise<GuideDoc[]> {
   const guides: GuideDoc[] = [];
@@ -2718,7 +3230,7 @@ async function extractGuides(files: string[]): Promise<GuideDoc[]> {
       href: guideHref(parsed.virtualPath ?? path),
       title: guideTitle(path, parsed.text),
       summary: guideSummary(parsed.text),
-      text: parsed.text
+      text: parsed.text,
     };
     if (parsed.weight !== undefined) guide.weight = parsed.weight;
     guides.push(guide);
@@ -2753,12 +3265,18 @@ function parseGuideMarkdown(path: string, raw: string): ParsedGuideMarkdown {
 function normalizeGuideVirtualPath(sourcePath: string, value: string): string {
   const path = value.trim().replace(/\\/g, '/').replace(/^\/+/, '');
   if (!path || path.includes('\0') || path.split('/').some((part) => part === '..')) {
-    throw new Error(`fino doc: guide ${sourcePath} frontmatter path must stay within the docs output`);
+    throw new Error(
+      `fino doc: guide ${sourcePath} frontmatter path must stay within the docs output`,
+    );
   }
-  if (!/\.md$/i.test(path)) throw new Error(`fino doc: guide ${sourcePath} frontmatter path must end with .md`);
+  if (!/\.md$/i.test(path))
+    throw new Error(`fino doc: guide ${sourcePath} frontmatter path must end with .md`);
   return normalizeDocPath(path);
 }
-function extractGuideFrontmatter(path: string, raw: string): {
+function extractGuideFrontmatter(
+  path: string,
+  raw: string,
+): {
   data: Record<string, unknown>;
   text: string;
 } | null {
@@ -2773,7 +3291,9 @@ function extractGuideFrontmatter(path: string, raw: string): {
   try {
     data = parseYaml(yaml);
   } catch (err: unknown) {
-    throw new Error(`fino doc: guide ${path} has invalid frontmatter: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `fino doc: guide ${path} has invalid frontmatter: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
   if (data === null) data = {};
   if (typeof data !== 'object' || Array.isArray(data)) {
@@ -2781,7 +3301,7 @@ function extractGuideFrontmatter(path: string, raw: string): {
   }
   return {
     data: data as Record<string, unknown>,
-    text: raw.slice(closeEnd)
+    text: raw.slice(closeEnd),
   };
 }
 function guideId(path: string): string {
@@ -2811,16 +3331,34 @@ function guideSummary(markdown: string): string {
   return summary.length > 180 ? summary.slice(0, 177).trimEnd() + '...' : summary;
 }
 function plainMarkdownText(markdown: string): string {
-  return markdown.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1').replace(/[_#]/g, '').replace(/\s+/g, ' ');
+  return markdown
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/[_#]/g, '')
+    .replace(/\s+/g, ' ');
 }
 function stripParsedModuleFields(moduleDoc: ParsedModuleDoc): ModuleDoc {
-  const { internal: _internal, reExports: _reExports, reExportsResolved: _resolved, ...publicDoc } = moduleDoc;
+  const {
+    internal: _internal,
+    reExports: _reExports,
+    reExportsResolved: _resolved,
+    ...publicDoc
+  } = moduleDoc;
   return publicDoc;
 }
 function resolveReExports(modules: ParsedModuleDoc[], includePrivate: boolean): void {
-  for (const moduleDoc of modules) resolveModuleReExports(moduleDoc, modules, includePrivate, new Set());
+  for (const moduleDoc of modules)
+    resolveModuleReExports(moduleDoc, modules, includePrivate, new Set());
 }
-function resolveModuleReExports(moduleDoc: ParsedModuleDoc, modules: ParsedModuleDoc[], includePrivate: boolean, stack: Set<string>): void {
+function resolveModuleReExports(
+  moduleDoc: ParsedModuleDoc,
+  modules: ParsedModuleDoc[],
+  includePrivate: boolean,
+  stack: Set<string>,
+): void {
   if (moduleDoc.reExportsResolved) return;
   const key = normalizeDocPath(moduleDoc.path);
   if (stack.has(key)) return;
@@ -2833,7 +3371,12 @@ function resolveModuleReExports(moduleDoc: ParsedModuleDoc, modules: ParsedModul
     if (spec.all) {
       for (const sourceExport of sourceModule.exports) {
         if (sourceExport.name === 'default' || existingNames.has(sourceExport.name)) continue;
-        const item = materializeReExport(sourceExport, sourceExport.name, sourceModule, includePrivate);
+        const item = materializeReExport(
+          sourceExport,
+          sourceExport.name,
+          sourceModule,
+          includePrivate,
+        );
         if (!item) continue;
         moduleDoc.exports.push(item);
         existingNames.add(item.name);
@@ -2861,10 +3404,16 @@ function resolveModuleReExports(moduleDoc: ParsedModuleDoc, modules: ParsedModul
   moduleDoc.reExportsResolved = true;
   stack.delete(key);
 }
-function resolveReExportModule(modules: ParsedModuleDoc[], fromModule: ParsedModuleDoc, specifier: string): ParsedModuleDoc | undefined {
+function resolveReExportModule(
+  modules: ParsedModuleDoc[],
+  fromModule: ParsedModuleDoc,
+  specifier: string,
+): ParsedModuleDoc | undefined {
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
     const currentDir = dirname(normalizeDocPath(fromModule.path));
-    const target = normalizeRelativePath(currentDir === '.' ? specifier : `${currentDir}/${specifier}`);
+    const target = normalizeRelativePath(
+      currentDir === '.' ? specifier : `${currentDir}/${specifier}`,
+    );
     const candidates = modulePathCandidates(target);
     return modules.find((moduleDoc) => candidates.has(normalizeDocPath(moduleDoc.path)));
   }
@@ -2874,80 +3423,116 @@ function resolveReExportModule(modules: ParsedModuleDoc[], fromModule: ParsedMod
     const firstSegment = fromPath.includes('/') ? fromPath.slice(0, fromPath.indexOf('/')) : '';
     const candidates = modulePathCandidates(`internal/${source}`);
     if (firstSegment) {
-      for (const candidate of modulePathCandidates(`${firstSegment}/internal/${source}`)) candidates.add(candidate);
+      for (const candidate of modulePathCandidates(`${firstSegment}/internal/${source}`))
+        candidates.add(candidate);
     }
     const match = modules.find((moduleDoc) => candidates.has(normalizeDocPath(moduleDoc.path)));
     if (match) return match;
   }
-  return modules.find((moduleDoc) => moduleDoc.sourceModule === specifier || moduleDoc.name === specifier || normalizeDocPath(moduleDoc.path) === specifier);
+  return modules.find(
+    (moduleDoc) =>
+      moduleDoc.sourceModule === specifier ||
+      moduleDoc.name === specifier ||
+      normalizeDocPath(moduleDoc.path) === specifier,
+  );
 }
 function modulePathCandidates(path: string): Set<string> {
   const out = new Set<string>([normalizeDocPath(path)]);
   if (!/\.(m?ts|m?js)$/i.test(path)) {
-    for (const ext of [
-      '.ts',
-      '.mts',
-      '.mjs',
-      '.js'
-    ]) out.add(normalizeDocPath(path + ext));
-    for (const ext of [
-      '.ts',
-      '.mts',
-      '.mjs',
-      '.js'
-    ]) out.add(normalizeDocPath(`${path}/index${ext}`));
+    for (const ext of ['.ts', '.mts', '.mjs', '.js']) out.add(normalizeDocPath(path + ext));
+    for (const ext of ['.ts', '.mts', '.mjs', '.js'])
+      out.add(normalizeDocPath(`${path}/index${ext}`));
   }
   return out;
 }
-function materializeReExport(sourceExport: DocExport, exportedName: string, sourceModule: ParsedModuleDoc, includePrivate: boolean): DocExport | undefined {
+function materializeReExport(
+  sourceExport: DocExport,
+  exportedName: string,
+  sourceModule: ParsedModuleDoc,
+  includePrivate: boolean,
+): DocExport | undefined {
   if (sourceExport.reExport?.mode === 'link') {
-    return linkedReExport(sourceExport, exportedName, sourceExport.reExport.sourceModule, sourceExport.reExport.sourceName, sourceExport.reExport.sourceId);
+    return linkedReExport(
+      sourceExport,
+      exportedName,
+      sourceExport.reExport.sourceModule,
+      sourceExport.reExport.sourceName,
+      sourceExport.reExport.sourceId,
+    );
   }
   const sourceVisible = includePrivate || !sourceModule.internal;
   if (sourceVisible) {
-    return linkedReExport(sourceExport, exportedName, sourceModule.name, sourceExport.name, sourceExport.id);
+    return linkedReExport(
+      sourceExport,
+      exportedName,
+      sourceModule.name,
+      sourceExport.name,
+      sourceExport.id,
+    );
   }
   const item = cloneExport(sourceExport);
   item.name = exportedName;
   item.signature = aliasSignature(item.signature, sourceExport.name, exportedName);
-  item.signatures = signaturesOf(item).map((signature) => aliasSignature(signature, sourceExport.name, exportedName));
+  item.signatures = signaturesOf(item).map((signature) =>
+    aliasSignature(signature, sourceExport.name, exportedName),
+  );
   item.reExport = {
     mode: 'inline',
     sourceModule: sourceModule.name,
     sourceName: sourceExport.name,
-    sourceId: sourceExport.id
+    sourceId: sourceExport.id,
   };
   return item;
 }
-function linkedReExport(sourceExport: DocExport, exportedName: string, sourceModule: string, sourceName: string, sourceId?: string): DocExport {
+function linkedReExport(
+  sourceExport: DocExport,
+  exportedName: string,
+  sourceModule: string,
+  sourceName: string,
+  sourceId?: string,
+): DocExport {
   const item = cloneExport(sourceExport);
   item.name = exportedName;
   item.signature = aliasSignature(item.signature, sourceExport.name, exportedName);
-  item.signatures = signaturesOf(item).map((signature) => aliasSignature(signature, sourceExport.name, exportedName));
+  item.signatures = signaturesOf(item).map((signature) =>
+    aliasSignature(signature, sourceExport.name, exportedName),
+  );
   item.doc = emptyDoc();
   item.members = [];
   item.reExport = {
     mode: 'link',
     sourceModule,
     sourceName,
-    sourceId
+    sourceId,
   };
   return item;
 }
-function materializeNamespaceReExport(exportedName: string, sourceModule: ParsedModuleDoc, includePrivate: boolean): DocExport {
+function materializeNamespaceReExport(
+  exportedName: string,
+  sourceModule: ParsedModuleDoc,
+  includePrivate: boolean,
+): DocExport {
   const sourceVisible = includePrivate || !sourceModule.internal;
-  const item = exportDoc(exportedName, 'namespace', `namespace ${exportedName}`, sourceVisible ? emptyDoc() : cloneDoc(sourceModule.doc), {
-    line: 1,
-    column: 1
-  });
+  const item = exportDoc(
+    exportedName,
+    'namespace',
+    `namespace ${exportedName}`,
+    sourceVisible ? emptyDoc() : cloneDoc(sourceModule.doc),
+    {
+      line: 1,
+      column: 1,
+    },
+  );
   item.reExport = {
     mode: sourceVisible ? 'link' : 'inline',
     sourceModule: sourceModule.name,
     sourceName: '*',
-    sourceId: sourceModule.id
+    sourceId: sourceModule.id,
   };
   if (!sourceVisible) {
-    item.members = sourceModule.exports.filter((sourceExport) => sourceExport.name !== 'default').map((sourceExport) => exportAsMember(sourceExport));
+    item.members = sourceModule.exports
+      .filter((sourceExport) => sourceExport.name !== 'default')
+      .map((sourceExport) => exportAsMember(sourceExport));
   }
   return item;
 }
@@ -2958,10 +3543,10 @@ function exportAsMember(item: DocExport): DocMember {
     kind: item.kind,
     signature: item.signature,
     signatures: signaturesOf(item),
-    aliases: [...item.aliases ?? []],
+    aliases: [...(item.aliases ?? [])],
     reExport: item.reExport ? { ...item.reExport } : undefined,
     doc: cloneDoc(item.doc),
-    location: item.location
+    location: item.location,
   };
 }
 function aliasSignature(signature: string, sourceName: string, exportedName: string): string {
@@ -2971,7 +3556,8 @@ function aliasSignature(signature: string, sourceName: string, exportedName: str
 }
 function disambiguateModules(modules: ModuleDoc[]): void {
   const counts = new Map<string, number>();
-  for (const moduleDoc of modules) counts.set(moduleDoc.name, (counts.get(moduleDoc.name) ?? 0) + 1);
+  for (const moduleDoc of modules)
+    counts.set(moduleDoc.name, (counts.get(moduleDoc.name) ?? 0) + 1);
   for (const moduleDoc of modules) {
     if (isAmbientSourceModule(moduleDoc)) continue;
     if ((counts.get(moduleDoc.name) ?? 0) <= 1 && moduleDoc.name !== 'index') continue;
@@ -3000,7 +3586,8 @@ function rewriteSymbolIds(moduleDoc: ModuleDoc, oldName: string, newName: string
   for (const item of moduleDoc.exports) {
     if (item.id?.startsWith(oldPrefix)) item.id = newPrefix + item.id.slice(oldPrefix.length);
     for (const member of item.members) {
-      if (member.id?.startsWith(oldPrefix)) member.id = newPrefix + member.id.slice(oldPrefix.length);
+      if (member.id?.startsWith(oldPrefix))
+        member.id = newPrefix + member.id.slice(oldPrefix.length);
     }
   }
 }
@@ -3008,18 +3595,25 @@ async function discoverProjectDocInputs(): Promise<DocInputs> {
   const metadata = await readDocInputMetadata();
   const inputs = await expandDocInputs(metadata?.files ?? []);
   const typeInputs = await expandDocInputs(metadata?.types ?? []);
-  inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(compareAscii);
-  inputs.guideFiles = [...new Set([...inputs.guideFiles, ...typeInputs.guideFiles])].sort(compareAscii);
+  inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(
+    compareAscii,
+  );
+  inputs.guideFiles = [...new Set([...inputs.guideFiles, ...typeInputs.guideFiles])].sort(
+    compareAscii,
+  );
   inputs.outputPaths = {
     ...inputs.outputPaths,
-    ...typeInputs.outputPaths
+    ...typeInputs.outputPaths,
   };
   return inputs;
 }
 async function ensureApiJson(): Promise<ApiDoc> {
   const path = apiJsonPath();
   const inputs = await discoverProjectDocInputs();
-  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no prior doc build found; run `fino doc build <files...>` first');
+  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0)
+    throw new Error(
+      'fino doc search: no prior doc build found; run `fino doc build <files...>` first',
+    );
   const api = await extractDocsCached(inputs);
   disambiguateGuideOutputPaths(api);
   const metadata = await readDocInputMetadata();
@@ -3052,7 +3646,7 @@ function flatten(api: ApiDoc): FlatSymbol[] {
         signature: item.signature,
         signatures: signaturesOf(item),
         doc: item.doc,
-        location: item.location
+        location: item.location,
       });
       for (const member of item.members) {
         const memberId = member.id ?? `${exportId}.${member.name}`;
@@ -3067,7 +3661,7 @@ function flatten(api: ApiDoc): FlatSymbol[] {
           signature: member.signature,
           signatures: signaturesOf(member),
           doc: member.doc,
-          location: member.location
+          location: member.location,
         });
       }
     }
@@ -3082,17 +3676,17 @@ function searchableText(symbol: FlatSymbol): string {
     symbol.qualifiedName,
     symbol.kind,
     symbol.signatures.join('\n'),
-    symbol.member?.reExport ? `${symbol.member.reExport.sourceModule} ${symbol.member.reExport.sourceName} ${symbol.member.reExport.sourceId ?? ''}` : '',
-    symbol.export.reExport ? `${symbol.export.reExport.sourceModule} ${symbol.export.reExport.sourceName} ${symbol.export.reExport.sourceId ?? ''}` : '',
+    symbol.member?.reExport
+      ? `${symbol.member.reExport.sourceModule} ${symbol.member.reExport.sourceName} ${symbol.member.reExport.sourceId ?? ''}`
+      : '',
+    symbol.export.reExport
+      ? `${symbol.export.reExport.sourceModule} ${symbol.export.reExport.sourceName} ${symbol.export.reExport.sourceId ?? ''}`
+      : '',
     symbol.doc.text,
     ...symbol.doc.tags.map((tag) => `${tag.name} ${tag.value}`),
-    ...blocks.map((block) => [
-      block.kind,
-      block.text,
-      block.name,
-      block.description,
-      block.code
-    ].filter(Boolean).join(' '))
+    ...blocks.map((block) =>
+      [block.kind, block.text, block.name, block.description, block.code].filter(Boolean).join(' '),
+    ),
   ].join('\n');
 }
 function scoreSymbol(symbol: FlatSymbol, query: string): number {
@@ -3114,10 +3708,14 @@ function scoreSymbol(symbol: FlatSymbol, query: string): number {
 }
 function findSymbols(api: ApiDoc, query: string): FlatSymbol[] {
   const symbols = flatten(api);
-  return symbols.map((symbol) => ({
-    symbol,
-    score: scoreSymbol(symbol, query)
-  })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || compareAscii(a.symbol.id, b.symbol.id)).map((item) => item.symbol);
+  return symbols
+    .map((symbol) => ({
+      symbol,
+      score: scoreSymbol(symbol, query),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || compareAscii(a.symbol.id, b.symbol.id))
+    .map((item) => item.symbol);
 }
 function compareAscii(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -3125,7 +3723,13 @@ function compareAscii(a: string, b: string): number {
 function resolveSymbol(api: ApiDoc, query: string): FlatSymbol | FlatSymbol[] | null {
   const symbols = flatten(api);
   const q = query.toLowerCase();
-  const exact = symbols.filter((symbol) => symbol.id.toLowerCase() === q || symbol.qualifiedName.toLowerCase() === q || symbol.name.toLowerCase() === q || `${symbol.export.name}.${symbol.name}`.toLowerCase() === q);
+  const exact = symbols.filter(
+    (symbol) =>
+      symbol.id.toLowerCase() === q ||
+      symbol.qualifiedName.toLowerCase() === q ||
+      symbol.name.toLowerCase() === q ||
+      `${symbol.export.name}.${symbol.name}`.toLowerCase() === q,
+  );
   if (exact.length === 1) return exact[0]!;
   if (exact.length > 1) return query.includes('.') ? exact[0]! : exact;
   const matches = findSymbols(api, query).slice(0, 8);
@@ -3137,16 +3741,18 @@ function renderFlatSymbol(symbol: FlatSymbol): string {
   return renderExport(symbol.export);
 }
 function renderCandidates(title: string, candidates: FlatSymbol[]): string {
-  return [
-    title,
-    '',
-    ...candidates.map((symbol) => `${symbol.id} (${symbol.kind}) - ${symbol.signature}`)
-  ].join('\n') + '\n';
+  return (
+    [
+      title,
+      '',
+      ...candidates.map((symbol) => `${symbol.id} (${symbol.kind}) - ${symbol.signature}`),
+    ].join('\n') + '\n'
+  );
 }
 async function writeSqliteIndex(api: ApiDoc, dbPath: string): Promise<string> {
   if (!sqlite.sqliteAvailable) throw new Error('fino doc: sqlite unavailable');
   await ensureDir(dirname(dbPath));
-  const db = await sqlite.Database.open(dbPath) as DocsDatabase;
+  const db = (await sqlite.Database.open(dbPath)) as DocsDatabase;
   try {
     await ensureDocsCacheSchema(db);
     await resetDocsIndex(db);
@@ -3157,45 +3763,96 @@ async function writeSqliteIndex(api: ApiDoc, dbPath: string): Promise<string> {
   }
 }
 async function resetDocsIndex(db: DocsDatabase): Promise<void> {
-  for (const table of [
-    'docs_fts',
-    'doc_blocks',
-    'aliases',
-    'symbols',
-    'guides',
-    'modules'
-  ]) {
+  for (const table of ['docs_fts', 'doc_blocks', 'aliases', 'symbols', 'guides', 'modules']) {
     await db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
 }
 async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
   for (const statement of DOCS_INDEX_SCHEMA_STATEMENTS) await db.exec(statement);
   for (const guide of api.guides ?? []) {
-    await runDocsStatement(db, 'INSERT INTO guides VALUES (?, ?, ?, ?, ?, ?)', guide.id, guide.title, guide.path, guide.href, guide.summary, guide.text);
-    await runDocsStatement(db, 'INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)', guide.id, guide.title, 'guide', guide.href, [
+    await runDocsStatement(
+      db,
+      'INSERT INTO guides VALUES (?, ?, ?, ?, ?, ?)',
+      guide.id,
       guide.title,
-      guide.summary,
       guide.path,
-      guide.text
-    ].join('\n'));
+      guide.href,
+      guide.summary,
+      guide.text,
+    );
+    await runDocsStatement(
+      db,
+      'INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)',
+      guide.id,
+      guide.title,
+      'guide',
+      guide.href,
+      [guide.title, guide.summary, guide.path, guide.text].join('\n'),
+    );
   }
   for (const moduleDoc of api.modules) {
-    await runDocsStatement(db, 'INSERT INTO modules VALUES (?, ?, ?, ?)', moduleDoc.id ?? `module:${moduleDoc.name}`, moduleDoc.name, moduleDoc.path, moduleDoc.sourceModule ?? moduleDoc.name);
+    await runDocsStatement(
+      db,
+      'INSERT INTO modules VALUES (?, ?, ?, ?)',
+      moduleDoc.id ?? `module:${moduleDoc.name}`,
+      moduleDoc.name,
+      moduleDoc.path,
+      moduleDoc.sourceModule ?? moduleDoc.name,
+    );
     for (const symbol of flatten({ modules: [moduleDoc] })) {
-      const parentId = symbol.member ? symbol.export.id ?? `${moduleDoc.name}.${symbol.export.name}` : null;
+      const parentId = symbol.member
+        ? (symbol.export.id ?? `${moduleDoc.name}.${symbol.export.name}`)
+        : null;
       const docText = searchableText(symbol);
-      await runDocsStatement(db, 'INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', symbol.id, moduleDoc.id ?? `module:${moduleDoc.name}`, parentId, symbol.name, symbol.kind, symbol.signatures.join('\n'), docText, BigInt(symbol.location.line), BigInt(symbol.location.column));
-      await runDocsStatement(db, 'INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)', symbol.id, symbol.name, symbol.kind, symbol.signatures.join('\n'), docText);
-      const aliases = symbol.member ? symbol.member.aliases ?? [] : symbol.export.aliases ?? [];
-      for (const alias of aliases) await runDocsStatement(db, 'INSERT INTO aliases VALUES (?, ?)', symbol.id, alias);
+      await runDocsStatement(
+        db,
+        'INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        symbol.id,
+        moduleDoc.id ?? `module:${moduleDoc.name}`,
+        parentId,
+        symbol.name,
+        symbol.kind,
+        symbol.signatures.join('\n'),
+        docText,
+        BigInt(symbol.location.line),
+        BigInt(symbol.location.column),
+      );
+      await runDocsStatement(
+        db,
+        'INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)',
+        symbol.id,
+        symbol.name,
+        symbol.kind,
+        symbol.signatures.join('\n'),
+        docText,
+      );
+      const aliases = symbol.member ? (symbol.member.aliases ?? []) : (symbol.export.aliases ?? []);
+      for (const alias of aliases)
+        await runDocsStatement(db, 'INSERT INTO aliases VALUES (?, ?)', symbol.id, alias);
       let ordinal = 0;
       for (const block of symbol.doc.blocks ?? []) {
-        await runDocsStatement(db, 'INSERT INTO doc_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', symbol.id, BigInt(ordinal++), block.kind, block.text ?? '', block.lang ?? '', block.meta ?? '', block.code ?? '', block.name ?? '', block.description ?? '');
+        await runDocsStatement(
+          db,
+          'INSERT INTO doc_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          symbol.id,
+          BigInt(ordinal++),
+          block.kind,
+          block.text ?? '',
+          block.lang ?? '',
+          block.meta ?? '',
+          block.code ?? '',
+          block.name ?? '',
+          block.description ?? '',
+        );
       }
     }
   }
 }
-async function runDocsStatement(db: DocsDatabase, sql: string, ...params: unknown[]): Promise<void> {
+async function runDocsStatement(
+  db: DocsDatabase,
+  sql: string,
+  ...params: unknown[]
+): Promise<void> {
   const stmt = db.prepare(sql);
   try {
     await stmt.run(...params);
@@ -3203,7 +3860,10 @@ async function runDocsStatement(db: DocsDatabase, sql: string, ...params: unknow
     stmt.finalize();
   }
 }
-async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
+async function runBuildCommand(
+  input: Record<string, unknown>,
+  ctx: TaskContext,
+): Promise<string | Record<string, unknown>> {
   const outDir = docsDir();
   const format = String(input.format ?? 'markdown');
   const title = ctx.optionProvided?.('title') ? String(input.title ?? '') : await inferDocsTitle();
@@ -3213,19 +3873,24 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   const typeRoots = await docDiscoveryRoots(input.types);
   const inputs = await expandDocInputs(input.files);
   const typeInputs = await expandDocInputs(input.types);
-  inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(compareAscii);
-  inputs.guideFiles = [...new Set([...inputs.guideFiles, ...typeInputs.guideFiles])].sort(compareAscii);
+  inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(
+    compareAscii,
+  );
+  inputs.guideFiles = [...new Set([...inputs.guideFiles, ...typeInputs.guideFiles])].sort(
+    compareAscii,
+  );
   inputs.outputPaths = {
     ...inputs.outputPaths,
-    ...typeInputs.outputPaths
+    ...typeInputs.outputPaths,
   };
-  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc: no source files specified');
+  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0)
+    throw new Error('fino doc: no source files specified');
   await ensureDir(outDir);
   const api = await extractDocsCached(inputs, includePrivate);
   disambiguateGuideOutputPaths(api);
   api.input = {
     files: inputRoots,
-    types: typeRoots
+    types: typeRoots,
   };
   validateOutputPaths(api, format);
   const expectedOutputs = expectedDocOutputs(api, format);
@@ -3291,7 +3956,7 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
       sourceFiles: inputs.sourceFiles,
       guideFiles: inputs.guideFiles,
       written,
-      message
+      message,
     };
     await ctx.writer.writeJson(result);
     return result;
@@ -3307,7 +3972,7 @@ async function inferDocsTitle(): Promise<string> {
   return 'API';
 }
 async function inferPackageJsonTitle(path: string): Promise<string | undefined> {
-  if (!await exists(path)) return undefined;
+  if (!(await exists(path))) return undefined;
   let data: unknown;
   try {
     data = JSON.parse(await readTextFile(path));
@@ -3316,18 +3981,14 @@ async function inferPackageJsonTitle(path: string): Promise<string | undefined> 
   }
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return undefined;
   const record = data as Record<string, unknown>;
-  for (const key of [
-    'title',
-    'displayName',
-    'name'
-  ]) {
+  for (const key of ['title', 'displayName', 'name']) {
     const value = record[key];
     if (typeof value === 'string' && value.trim().length > 0) return value.trim();
   }
   return undefined;
 }
 async function inferCargoPackageTitle(path: string): Promise<string | undefined> {
-  if (!await exists(path)) return undefined;
+  if (!(await exists(path))) return undefined;
   let inPackage = false;
   for (const line of (await readTextFile(path)).split(/\r?\n/)) {
     const section = /^\s*\[([^\]]+)\]\s*$/.exec(line);
@@ -3342,7 +4003,11 @@ async function inferCargoPackageTitle(path: string): Promise<string | undefined>
   return undefined;
 }
 function disambiguateGuideOutputPaths(api: ApiDoc): void {
-  const directoryModuleHrefs = new Set(api.modules.filter((moduleDoc) => moduleDoc.outputPath !== undefined).map((moduleDoc) => moduleHref(moduleDoc)));
+  const directoryModuleHrefs = new Set(
+    api.modules
+      .filter((moduleDoc) => moduleDoc.outputPath !== undefined)
+      .map((moduleDoc) => moduleHref(moduleDoc)),
+  );
   if (directoryModuleHrefs.size === 0) return;
   const claimedGuideHrefs = new Set<string>();
   for (const guide of api.guides ?? []) {
@@ -3362,26 +4027,32 @@ function validateOutputPaths(api: ApiDoc, format: string): void {
   const claims = new Map<string, string>();
   const claim = (path: string, owner: string) => {
     const existing = claims.get(path);
-    if (existing) throw new Error(`fino doc: output path collision for ${path} (${existing} and ${owner})`);
+    if (existing)
+      throw new Error(`fino doc: output path collision for ${path} (${existing} and ${owner})`);
     claims.set(path, owner);
   };
   for (const moduleDoc of api.modules) {
-    if (format === 'markdown' || format === 'both') claim(moduleHref(moduleDoc).replace(/\.html$/i, '.md'), `module ${moduleDoc.name}`);
-    if (format === 'html' || format === 'both') claim(moduleHref(moduleDoc), `module ${moduleDoc.name}`);
+    if (format === 'markdown' || format === 'both')
+      claim(moduleHref(moduleDoc).replace(/\.html$/i, '.md'), `module ${moduleDoc.name}`);
+    if (format === 'html' || format === 'both')
+      claim(moduleHref(moduleDoc), `module ${moduleDoc.name}`);
   }
   for (const guide of api.guides ?? []) {
-    if (format === 'markdown' || format === 'both') claim(guide.href.replace(/\.html$/i, '.md'), `guide ${guide.path}`);
+    if (format === 'markdown' || format === 'both')
+      claim(guide.href.replace(/\.html$/i, '.md'), `guide ${guide.path}`);
     if (format === 'html' || format === 'both') claim(guide.href, `guide ${guide.path}`);
   }
 }
 function expectedDocOutputs(api: ApiDoc, format: string): Set<string> {
   const outputs = new Set<string>([API_JSON_NAME, DOCS_DB_NAME]);
   for (const moduleDoc of api.modules) {
-    if (format === 'markdown' || format === 'both') outputs.add(moduleHref(moduleDoc).replace(/\.html$/i, '.md'));
+    if (format === 'markdown' || format === 'both')
+      outputs.add(moduleHref(moduleDoc).replace(/\.html$/i, '.md'));
     if (format === 'html' || format === 'both') outputs.add(moduleHref(moduleDoc));
   }
   for (const guide of api.guides ?? []) {
-    if (format === 'markdown' || format === 'both') outputs.add(guide.href.replace(/\.html$/i, '.md'));
+    if (format === 'markdown' || format === 'both')
+      outputs.add(guide.href.replace(/\.html$/i, '.md'));
     if (format === 'html' || format === 'both') outputs.add(guide.href);
   }
   if (format === 'html' || format === 'both') outputs.add('index.html');
@@ -3393,14 +4064,17 @@ function expectedDocOutputs(api: ApiDoc, format: string): Set<string> {
 }
 async function pruneGeneratedOutputs(expected: Set<string>): Promise<void> {
   const root = docsDir();
-  if (!await exists(root)) return;
+  if (!(await exists(root))) return;
   await pruneGeneratedOutputsIn(root, expected);
 }
 async function pruneGeneratedOutputsIn(dirPath: string, expected: Set<string>): Promise<void> {
   const dir = await fs.dir(dirPath);
   for (const child of await dir.entries()) {
     const path = child.path.toString();
-    const rel = normalizeDocPath(path).replace(new RegExp(`^${escapeRegExp(normalizeDocPath(docsDir()))}/?`), '');
+    const rel = normalizeDocPath(path).replace(
+      new RegExp(`^${escapeRegExp(normalizeDocPath(docsDir()))}/?`),
+      '',
+    );
     if (child.isDirectory()) {
       await pruneGeneratedOutputsIn(path, expected);
       if (await isEmptyDirectory(path)) await fs.rmdir(path);
@@ -3415,23 +4089,32 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
   return (await dir.entries()).length === 0;
 }
 function isPrunableDocOutput(path: string): boolean {
-  return /\.(html|md)$/i.test(path) || path === API_JSON_NAME || path === DOCS_CSS_NAME || path === DOCS_JS_NAME;
+  return (
+    /\.(html|md)$/i.test(path) ||
+    path === API_JSON_NAME ||
+    path === DOCS_CSS_NAME ||
+    path === DOCS_JS_NAME
+  );
 }
 function escapeRegExp(value: string): string {
   return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }
 async function writeOutputManifest(outputs: Set<string>): Promise<void> {
-  if (!sqlite.sqliteAvailable || !await exists(docsDbPath())) return;
-  const db = await sqlite.Database.open(docsDbPath()) as DocsDatabase;
+  if (!sqlite.sqliteAvailable || !(await exists(docsDbPath()))) return;
+  const db = (await sqlite.Database.open(docsDbPath())) as DocsDatabase;
   try {
     await ensureDocsCacheSchema(db);
     await db.exec('DELETE FROM doc_outputs');
-    for (const output of [...outputs].sort(compareAscii)) await runDocsStatement(db, 'INSERT INTO doc_outputs VALUES (?)', output);
+    for (const output of [...outputs].sort(compareAscii))
+      await runDocsStatement(db, 'INSERT INTO doc_outputs VALUES (?)', output);
   } finally {
     await db.close();
   }
 }
-async function runShowCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
+async function runShowCommand(
+  input: Record<string, unknown>,
+  ctx: TaskContext,
+): Promise<string | Record<string, unknown>> {
   const symbol = String(input.symbol ?? '');
   const existingApi = await readExistingApiJson();
   const existing = existingApi ? renderShowResult(existingApi, symbol) : undefined;
@@ -3442,7 +4125,7 @@ async function runShowCommand(input: Record<string, unknown>, ctx: TaskContext):
         ok: true,
         symbol,
         found: true,
-        output: existing
+        output: existing,
       };
       await ctx.writer.writeJson(result);
       return result;
@@ -3458,7 +4141,7 @@ async function runShowCommand(input: Record<string, unknown>, ctx: TaskContext):
       ok: true,
       symbol,
       found: output !== undefined,
-      output: message
+      output: message,
     };
     await ctx.writer.writeJson(result);
     return result;
@@ -3467,7 +4150,7 @@ async function runShowCommand(input: Record<string, unknown>, ctx: TaskContext):
 }
 async function readExistingApiJson(): Promise<ApiDoc | undefined> {
   const path = apiJsonPath();
-  if (!await exists(path)) return undefined;
+  if (!(await exists(path))) return undefined;
   return readApi(path);
 }
 function renderShowResult(api: ApiDoc, symbol: string): string | undefined {
@@ -3479,9 +4162,14 @@ function renderShowResult(api: ApiDoc, symbol: string): string | undefined {
 }
 function renderShowMiss(api: ApiDoc, symbol: string): string {
   const suggestions = findSymbols(api, symbol).slice(0, 8);
-  return suggestions.length === 0 ? `No documentation found for ${symbol}\n` : renderCandidates(`No exact match for ${symbol}. Did you mean:`, suggestions);
+  return suggestions.length === 0
+    ? `No documentation found for ${symbol}\n`
+    : renderCandidates(`No exact match for ${symbol}. Did you mean:`, suggestions);
 }
-async function runSearchCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
+async function runSearchCommand(
+  input: Record<string, unknown>,
+  ctx: TaskContext,
+): Promise<string | Record<string, unknown>> {
   const parts = Array.isArray(input.query) ? input.query.map(String) : [String(input.query ?? '')];
   const query = parts.join(' ').trim();
   const existingDbPath = docsDbPath();
@@ -3495,7 +4183,7 @@ async function runSearchCommand(input: Record<string, unknown>, ctx: TaskContext
             ok: true,
             query,
             found: true,
-            output: existing
+            output: existing,
           };
           await ctx.writer.writeJson(result);
           return result;
@@ -3504,7 +4192,9 @@ async function runSearchCommand(input: Record<string, unknown>, ctx: TaskContext
       }
     } catch (_) {}
   }
-  const dbPath = await exists(existingDbPath) ? await refreshDocsDbForQuery(query) : await ensureDocsDb();
+  const dbPath = (await exists(existingDbPath))
+    ? await refreshDocsDbForQuery(query)
+    : await ensureDocsDb();
   const output = await searchSqlite(dbPath, query);
   if (ctx.writer.mode === 'json') {
     const result = {
@@ -3512,7 +4202,7 @@ async function runSearchCommand(input: Record<string, unknown>, ctx: TaskContext
       ok: true,
       query,
       found: !isNoResults(output, query),
-      output
+      output,
     };
     await ctx.writer.writeJson(result);
     return result;
@@ -3532,9 +4222,14 @@ async function refreshDocsDbForQuery(query: string): Promise<string> {
 }
 async function refreshDocsForQuery(query: string): Promise<ApiDoc> {
   const inputs = await discoverProjectDocInputs();
-  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no prior doc build found; run `fino doc build <files...>` first');
+  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0)
+    throw new Error(
+      'fino doc search: no prior doc build found; run `fino doc build <files...>` first',
+    );
   const terms = docQueryTerms(query);
-  const api = await extractDocsCached(inputs, false, { shouldParseChanged: (file) => docFileContainsAnyTerm(file.file, terms) });
+  const api = await extractDocsCached(inputs, false, {
+    shouldParseChanged: (file) => docFileContainsAnyTerm(file.file, terms),
+  });
   const metadata = await readDocInputMetadata();
   if (metadata) api.input = metadata;
   await ensureDir(docsDir());
@@ -3565,18 +4260,28 @@ async function searchSqlite(dbPath: string, query: string): Promise<string> {
   if (!sqlite.sqliteAvailable) throw new Error('fino doc search: sqlite unavailable');
   const ftsQuery = toFtsQuery(query);
   if (!ftsQuery) return `No results for ${query}\n`;
-  const db = await sqlite.Database.open(dbPath, { readonly: true }) as DocsDatabase;
+  const db = (await sqlite.Database.open(dbPath, { readonly: true })) as DocsDatabase;
   try {
-    const stmt = db.prepare('SELECT id, name, kind, signature FROM docs_fts WHERE docs_fts MATCH ? ORDER BY bm25(docs_fts) LIMIT 20');
+    const stmt = db.prepare(
+      'SELECT id, name, kind, signature FROM docs_fts WHERE docs_fts MATCH ? ORDER BY bm25(docs_fts) LIMIT 20',
+    );
     const rows = await stmt.all(ftsQuery).finally(() => stmt.finalize());
     if (rows.length === 0) return `No results for ${query}\n`;
-    return rows.map((row) => `${String(row.id)} (${String(row.kind)})\n  ${String(row.signature)}`).join('\n') + '\n';
+    return (
+      rows
+        .map((row) => `${String(row.id)} (${String(row.kind)})\n  ${String(row.signature)}`)
+        .join('\n') + '\n'
+    );
   } finally {
     await db.close();
   }
 }
 function toFtsQuery(query: string): string {
-  return query.split(/\s+/).map((token) => token.replace(/[^A-Za-z0-9_:.*-]/g, '')).filter(Boolean).join(' ');
+  return query
+    .split(/\s+/)
+    .map((token) => token.replace(/[^A-Za-z0-9_:.*-]/g, ''))
+    .filter(Boolean)
+    .join(' ');
 }
 function docTestExamples(api: ApiDoc): Array<{
   module: ModuleDoc;
@@ -3595,18 +4300,13 @@ function docTestExamples(api: ApiDoc): Array<{
     for (const block of symbol.doc.blocks ?? []) {
       if (block.kind !== 'code') continue;
       const lang = (block.lang ?? '').toLowerCase();
-      if (lang && ![
-        'ts',
-        'mts',
-        'js',
-        'mjs'
-      ].includes(lang)) continue;
+      if (lang && !['ts', 'mts', 'js', 'mjs'].includes(lang)) continue;
       index += 1;
       examples.push({
         module: symbol.module,
         symbol,
         block,
-        index
+        index,
       });
     }
   }
@@ -3618,7 +4318,13 @@ function docTestSpecifier(example: {
   index: number;
 }): string {
   const rawPath = example.module.path;
-  const modulePath = rawPath.startsWith('/') || rawPath.startsWith('file://') || rawPath.startsWith('./') || rawPath.startsWith('../') ? normalizePath(rawPath) : joinPath(cwd(), rawPath);
+  const modulePath =
+    rawPath.startsWith('/') ||
+    rawPath.startsWith('file://') ||
+    rawPath.startsWith('./') ||
+    rawPath.startsWith('../')
+      ? normalizePath(rawPath)
+      : joinPath(cwd(), rawPath);
   const safeId = example.symbol.id.replace(/[^A-Za-z0-9_.-]/g, '_');
   const suffix = `.doc-test-${safeId}-${example.index}`;
   const slash = modulePath.lastIndexOf('/');
@@ -3627,7 +4333,10 @@ function docTestSpecifier(example: {
   const ext = dot > slash ? modulePath.slice(dot) : '.ts';
   return modulePath.slice(0, insertAt) + suffix + ext;
 }
-async function runDocTestCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
+async function runDocTestCommand(
+  input: Record<string, unknown>,
+  ctx: TaskContext,
+): Promise<string | Record<string, unknown>> {
   const files = await expandInputs(input.files);
   if (files.length === 0) throw new Error('fino doc test: no source files specified');
   const api = await extractApi(files, false);
@@ -3639,26 +4348,33 @@ async function runDocTestCommand(input: Record<string, unknown>, ctx: TaskContex
     `import { describe, it } from 'fino:test/test';`,
     `import { Realm } from 'fino:realm';`,
     ``,
-    `describe('fino doc examples', () => {`
+    `describe('fino doc examples', () => {`,
   ];
   let runnable = 0;
   let ignored = 0;
   for (const example of examples) {
     const meta = (example.block.meta ?? '').split(/\s+/).filter(Boolean);
     const skip = meta.includes('ignore') || meta.includes('no_run');
-    const throws = meta.includes('throws') || meta.includes('should_panic') || meta.includes('should-panic');
+    const throws =
+      meta.includes('throws') || meta.includes('should_panic') || meta.includes('should-panic');
     const name = `${example.symbol.id} code block ${example.index}`;
     const code = example.block.hiddenCode || example.block.code || '';
     if (skip) ignored += 1;
     else runnable += 1;
-    lines.push(`  it(${JSON.stringify(name)}, ${skip ? `{ skip: 'ignored' }, ` : ''}async (t) => {`);
+    lines.push(
+      `  it(${JSON.stringify(name)}, ${skip ? `{ skip: 'ignored' }, ` : ''}async (t) => {`,
+    );
     if (skip) {
       lines.push(`    // ignored doc example`);
     } else if (throws) {
-      lines.push(`    const realm = Realm.fromSource(${JSON.stringify(code)}, { specifier: ${JSON.stringify(docTestSpecifier(example))} });`);
+      lines.push(
+        `    const realm = Realm.fromSource(${JSON.stringify(code)}, { specifier: ${JSON.stringify(docTestSpecifier(example))} });`,
+      );
       lines.push(`    await t.rejects(() => realm.run(), null, 'expected example to throw');`);
     } else {
-      lines.push(`    const realm = Realm.fromSource(${JSON.stringify(code)}, { specifier: ${JSON.stringify(docTestSpecifier(example))} });`);
+      lines.push(
+        `    const realm = Realm.fromSource(${JSON.stringify(code)}, { specifier: ${JSON.stringify(docTestSpecifier(example))} });`,
+      );
       lines.push(`    await realm.run();`);
     }
     lines.push(`  });`);
@@ -3676,7 +4392,7 @@ async function runDocTestCommand(input: Record<string, unknown>, ctx: TaskContex
       files,
       runnable,
       ignored,
-      message
+      message,
     };
     await ctx.writer.writeJson(result);
     return result;
@@ -3689,119 +4405,129 @@ function buildOptions() {
       flags: '--format',
       type: 'string' as const,
       description: 'Output format: markdown, html, or both',
-      default: 'markdown'
+      default: 'markdown',
     },
     {
       flags: '--title',
       type: 'string' as const,
-      description: 'Title used for generated HTML pages'
+      description: 'Title used for generated HTML pages',
     },
     {
       flags: '--include-private',
       type: 'boolean' as const,
-      description: 'Include private and internal members'
+      description: 'Include private and internal members',
     },
     {
       flags: '--types',
       type: 'string' as const,
       multiple: true,
-      description: 'Additional declaration files, directories, or globs to merge into the API docs'
-    }
+      description: 'Additional declaration files, directories, or globs to merge into the API docs',
+    },
   ];
 }
 function filesPositional() {
-  return [{
-    name: 'files',
-    type: 'string' as const,
-    multiple: true,
-    required: true,
-    description: 'Source files, directories, or globs to document'
-  }];
+  return [
+    {
+      name: 'files',
+      type: 'string' as const,
+      multiple: true,
+      required: true,
+      description: 'Source files, directories, or globs to document',
+    },
+  ];
 }
 /**
-* The `doc` command task mounted as `fino doc` by the root CLI.
-*
-* Invoking the command without a subcommand runs the build path. Four
-* subcommands are available:
-*
-* - `build <files...>` — generate documentation from source files,
-*   directories, or globs. `--format` selects `markdown` (default), `html`,
-*   or `both`; `--title` overrides the page title otherwise inferred from
-*   `package.json` or `Cargo.toml`; `--types` merges additional declaration
-*   inputs into the same docs; `--include-private` also documents `@internal`
-*   and private declarations.
-* - `show <symbol>` — print one documented symbol as Markdown by id or name,
-*   with "did you mean" suggestions when nothing matches exactly.
-* - `search <query...>` — full-text search over the generated docs index.
-* - `test <files...>` — extract fenced examples from doc comments and run
-*   each one in an isolated realm.
-*
-* Parser, filesystem, rendering, and doc-test failures propagate as command
-* errors. Throws from `build` and `test` if no source files are specified,
-* and from `show` and `search` when no prior doc build exists to refresh
-* from.
-*
-* ```ts no_run
-* import doc from 'fino:commands/doc';
-*
-* await doc.parse(['build', '--format', 'both', 'js/internal/stream.ts']);
-* await doc.parse(['search', 'Stream']);
-* await doc.parse(['show', 'stream.Stream']);
-* ```
-*
-*/
+ * The `doc` command task mounted as `fino doc` by the root CLI.
+ *
+ * Invoking the command without a subcommand runs the build path. Four
+ * subcommands are available:
+ *
+ * - `build <files...>` — generate documentation from source files,
+ *   directories, or globs. `--format` selects `markdown` (default), `html`,
+ *   or `both`; `--title` overrides the page title otherwise inferred from
+ *   `package.json` or `Cargo.toml`; `--types` merges additional declaration
+ *   inputs into the same docs; `--include-private` also documents `@internal`
+ *   and private declarations.
+ * - `show <symbol>` — print one documented symbol as Markdown by id or name,
+ *   with "did you mean" suggestions when nothing matches exactly.
+ * - `search <query...>` — full-text search over the generated docs index.
+ * - `test <files...>` — extract fenced examples from doc comments and run
+ *   each one in an isolated realm.
+ *
+ * Parser, filesystem, rendering, and doc-test failures propagate as command
+ * errors. Throws from `build` and `test` if no source files are specified,
+ * and from `show` and `search` when no prior doc build exists to refresh
+ * from.
+ *
+ * ```ts no_run
+ * import doc from 'fino:commands/doc';
+ *
+ * await doc.parse(['build', '--format', 'both', 'js/internal/stream.ts']);
+ * await doc.parse(['search', 'Stream']);
+ * await doc.parse(['show', 'stream.Stream']);
+ * ```
+ *
+ */
 const command = new Task({
-    name: 'doc',
-    description: 'Generate, search, and test API docs from commented source files',
-    outputMode: 'both',
-    run: runBuildCommand,
-    cli: {
-      options: buildOptions(),
-      positionals: filesPositional()
-    },
-    children: [
-      new Task({
-        name: 'build',
-        description: 'Generate API docs',
-        outputMode: 'both',
-        run: runBuildCommand,
-        cli: {
-          options: buildOptions(),
-          positionals: filesPositional()
-        }
-      }),
-      new Task({
-        name: 'show',
-        description: 'Print one documented symbol as Markdown',
-        outputMode: 'both',
-        run: runShowCommand,
-        cli: { positionals: [{
-          name: 'symbol',
-          type: 'string',
-          required: true,
-          description: 'Symbol id or name to show'
-        }] }
-      }),
-      new Task({
-        name: 'search',
-        description: 'Search generated docs',
-        outputMode: 'both',
-        run: runSearchCommand,
-        cli: { positionals: [{
-          name: 'query',
-          type: 'string',
-          multiple: true,
-          required: true,
-          description: 'Search query'
-        }] }
-      }),
-      new Task({
-        name: 'test',
-        description: 'Run examples from documentation comments',
-        outputMode: 'both',
-        run: runDocTestCommand,
-        cli: { positionals: filesPositional() }
-      })
-    ]
+  name: 'doc',
+  description: 'Generate, search, and test API docs from commented source files',
+  outputMode: 'both',
+  run: runBuildCommand,
+  cli: {
+    options: buildOptions(),
+    positionals: filesPositional(),
+  },
+  children: [
+    new Task({
+      name: 'build',
+      description: 'Generate API docs',
+      outputMode: 'both',
+      run: runBuildCommand,
+      cli: {
+        options: buildOptions(),
+        positionals: filesPositional(),
+      },
+    }),
+    new Task({
+      name: 'show',
+      description: 'Print one documented symbol as Markdown',
+      outputMode: 'both',
+      run: runShowCommand,
+      cli: {
+        positionals: [
+          {
+            name: 'symbol',
+            type: 'string',
+            required: true,
+            description: 'Symbol id or name to show',
+          },
+        ],
+      },
+    }),
+    new Task({
+      name: 'search',
+      description: 'Search generated docs',
+      outputMode: 'both',
+      run: runSearchCommand,
+      cli: {
+        positionals: [
+          {
+            name: 'query',
+            type: 'string',
+            multiple: true,
+            required: true,
+            description: 'Search query',
+          },
+        ],
+      },
+    }),
+    new Task({
+      name: 'test',
+      description: 'Run examples from documentation comments',
+      outputMode: 'both',
+      run: runDocTestCommand,
+      cli: { positionals: filesPositional() },
+    }),
+  ],
 });
 export { command as default };

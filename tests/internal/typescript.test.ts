@@ -1,10 +1,10 @@
 /**
-* Tests for TypeScript support.
-*
-* Verifies that .ts files are type-stripped before evaluation, that
-* import.meta reflects the original .ts path, and that extension
-* probing finds .ts files when no extension is given.
-*/
+ * Tests for TypeScript support.
+ *
+ * Verifies that .ts files are type-stripped before evaluation, that
+ * import.meta reflects the original .ts path, and that extension
+ * probing finds .ts files when no extension is given.
+ */
 import { describe, it } from 'fino:test/test';
 import { add, identity, Stack, origin } from '../fixtures/typescript-sample.ts';
 import { throwFromTypedTs } from '../fixtures/source-map-throw.ts';
@@ -59,7 +59,10 @@ describe('source maps', () => {
     }
     t.ok(err instanceof Error, 'throws an Error');
     const error = err as Error;
-    t.ok(error.stack?.includes('source-map-throw.ts:14') === true, 'stack points at original ts line');
+    t.ok(
+      error.stack?.includes('source-map-throw.ts:14') === true,
+      'stack points at original ts line',
+    );
   });
   it('maps builtin stack traces back to the original ts source', (t) => {
     let err = null;
@@ -70,6 +73,9 @@ describe('source maps', () => {
     }
     t.ok(err instanceof Error, 'throws an Error');
     const error = err as Error;
-    t.ok(/js\/globals\/time\.ts:\d+/.test(error.stack ?? ''), 'stack points at original builtin ts file');
+    t.ok(
+      /js\/globals\/time\.ts:\d+/.test(error.stack ?? ''),
+      'stack points at original builtin ts file',
+    );
   });
 });

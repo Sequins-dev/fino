@@ -10,13 +10,13 @@ const WSSL_HQ_CLIENT_CANDIDATES = [
   '/opt/homebrew/bin/wsslhqclient',
   '/usr/local/bin/wsslhqclient',
   '/private/tmp/libngtcp2-1.23.0/examples/wsslhqclient',
-  '/private/tmp/libngtcp2-1.22.0/examples/wsslhqclient'
+  '/private/tmp/libngtcp2-1.22.0/examples/wsslhqclient',
 ];
 const WSSL_HQ_SERVER_CANDIDATES = [
   '/opt/homebrew/bin/wsslhqserver',
   '/usr/local/bin/wsslhqserver',
   '/private/tmp/libngtcp2-1.23.0/examples/wsslhqserver',
-  '/private/tmp/libngtcp2-1.22.0/examples/wsslhqserver'
+  '/private/tmp/libngtcp2-1.22.0/examples/wsslhqserver',
 ];
 async function exists(path: string): Promise<boolean> {
   try {
@@ -27,7 +27,7 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 async function ensureHqRoot(): Promise<void> {
-  if (!await exists(HQ_ROOT)) await fs.mkdir(HQ_ROOT);
+  if (!(await exists(HQ_ROOT))) await fs.mkdir(HQ_ROOT);
   await fs.writeFile(`${HQ_ROOT}/echo`, enc.encode('ossl-hq-ok\n'));
 }
 async function findFirst(paths: string[]): Promise<string | null> {
@@ -36,7 +36,10 @@ async function findFirst(paths: string[]): Promise<string | null> {
   }
   return null;
 }
-async function collect(reader: AsyncIterable<Uint8Array>, onChunk?: (text: string) => void): Promise<string> {
+async function collect(
+  reader: AsyncIterable<Uint8Array>,
+  onChunk?: (text: string) => void,
+): Promise<string> {
   let out = '';
   for await (const chunk of reader) {
     const text = dec.decode(chunk);
@@ -49,9 +52,12 @@ function delay(ms: number): Promise<void> {
   return loop.timeout(ms);
 }
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([promise, delay(ms).then(() => {
-    throw new Error(`${label} timed out after ${ms}ms`);
-  })]);
+  return Promise.race([
+    promise,
+    delay(ms).then(() => {
+      throw new Error(`${label} timed out after ${ms}ms`);
+    }),
+  ]);
 }
 function spawnFino(script: string): Process {
   const proc = new Process('./target/debug/fino', [script]);
@@ -76,7 +82,7 @@ describe('QUIC HQ interop', () => {
       '127.0.0.1',
       '4444',
       'tests/net/fixtures/test.key',
-      'tests/net/fixtures/test.crt'
+      'tests/net/fixtures/test.crt',
     ]);
     hqServer.stdin.close();
     const hqServerOut = collect(hqServer.stdout);
@@ -113,13 +119,13 @@ describe('QUIC HQ interop', () => {
       '--exit-on-all-streams-close',
       '127.0.0.1',
       '4445',
-      'http://127.0.0.1:4445/echo'
+      'http://127.0.0.1:4445/echo',
     ]);
     hqClient.stdin.close();
     const hqClientOut = collect(hqClient.stdout);
     const hqClientErr = collect(hqClient.stderr);
     const hqClientStatus = await withTimeout(hqClient.wait(), 5e3, 'ngtcp2 HQ client');
-    t.equal(hqClientStatus.code, 0, await hqClientErr + await hqClientOut);
+    t.equal(hqClientStatus.code, 0, (await hqClientErr) + (await hqClientOut));
     const finoServerStatus = await withTimeout(finoServer.wait(), 5e3, 'Fino HQ server');
     const serverOut = await finoServerOut;
     t.equal(finoServerStatus.code, 0, await finoServerErr);

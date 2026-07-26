@@ -1,6 +1,6 @@
 /**
-* Tests for fino:cache — namespaces, TTL, tags, backends, and HTTP middleware.
-*/
+ * Tests for fino:cache — namespaces, TTL, tags, backends, and HTTP middleware.
+ */
 import { describe, it } from 'fino:test/test';
 import { memoryCache, responseCache, sqliteCache, type RevisionedCache } from 'fino:cache';
 import { App } from 'fino:net/http/app';
@@ -12,7 +12,7 @@ function fakeClock(now = 1e3) {
     clock: { now: () => now },
     advance(ms: number) {
       now += ms;
-    }
+    },
   };
 }
 function tmpPath(): string {
@@ -44,7 +44,7 @@ describe('fino:cache', () => {
     } catch {}
     const cache = await sqliteCache({
       path,
-      fs
+      fs,
     });
     try {
       await assertRevisionedCache(t, cache);
@@ -76,17 +76,23 @@ describe('fino:cache', () => {
       tag TEXT NOT NULL,
       PRIMARY KEY(namespace, key, tag)
     )`);
-    await db.prepare(`INSERT INTO fino_cache_entries(namespace, key, value, expires_at, touched_at) VALUES(?, ?, ?, ?, ?)`).run('default', 'legacy', '"value"', null, 1);
+    await db
+      .prepare(
+        `INSERT INTO fino_cache_entries(namespace, key, value, expires_at, touched_at) VALUES(?, ?, ?, ?, ?)`,
+      )
+      .run('default', 'legacy', '"value"', null, 1);
     await db.close();
     const cache = await sqliteCache({
       path,
-      fs
+      fs,
     });
     try {
       const entry = await cache.getEntry<string>('legacy');
       t.equal(entry!.value, 'value');
       t.ok(entry!.revision.length > 0, 'legacy entry receives an opaque revision');
-      const updated = await cache.compareAndSet('legacy', 'updated', { ifRevision: entry!.revision });
+      const updated = await cache.compareAndSet('legacy', 'updated', {
+        ifRevision: entry!.revision,
+      });
       t.equal(updated!.value, 'updated');
     } finally {
       await cache.close();
@@ -99,12 +105,16 @@ describe('fino:cache', () => {
     const time = fakeClock();
     const cache = memoryCache({
       maxEntries: 2,
-      clock: time.clock
+      clock: time.clock,
     });
-    await cache.set('a', { n: 1 }, {
-      ttlMs: 50,
-      tags: ['group']
-    });
+    await cache.set(
+      'a',
+      { n: 1 },
+      {
+        ttlMs: 50,
+        tags: ['group'],
+      },
+    );
     t.deepEqual(await cache.get('a'), { n: 1 });
     time.advance(51);
     t.equal(await cache.get('a'), null, 'expired entries return null');
@@ -134,7 +144,7 @@ describe('fino:cache', () => {
     } catch {}
     const cache = await sqliteCache({
       path,
-      fs
+      fs,
     });
     try {
       await cache.set('k', { ok: true }, { tags: ['tag'] });
@@ -154,22 +164,33 @@ describe('fino:cache', () => {
   it('responseCache stores cacheable GET responses and respects vary headers', async (t) => {
     const cache = memoryCache();
     const app = new App();
-    const cached = app.layer(responseCache(cache, {
-      ttlMs: 1e3,
-      vary: ['accept-language']
-    }));
+    const cached = app.layer(
+      responseCache(cache, {
+        ttlMs: 1e3,
+        vary: ['accept-language'],
+      }),
+    );
     let calls = 0;
     cached.get('/hello').handle((ctx) => {
       calls++;
-      return new Response(`hello ${ctx.request.headers.get('accept-language') ?? 'none'} ${calls}`, { headers: { 'content-type': 'text/plain' } });
+      return new Response(
+        `hello ${ctx.request.headers.get('accept-language') ?? 'none'} ${calls}`,
+        { headers: { 'content-type': 'text/plain' } },
+      );
     });
-    const first = await app.handle(new Request('http://example.test/hello', { headers: { 'accept-language': 'en' } }));
+    const first = await app.handle(
+      new Request('http://example.test/hello', { headers: { 'accept-language': 'en' } }),
+    );
     t.equal(await first.text(), 'hello en 1');
     t.equal(first.headers.get('x-fino-cache'), 'MISS');
-    const second = await app.handle(new Request('http://example.test/hello', { headers: { 'accept-language': 'en' } }));
+    const second = await app.handle(
+      new Request('http://example.test/hello', { headers: { 'accept-language': 'en' } }),
+    );
     t.equal(await second.text(), 'hello en 1');
     t.equal(second.headers.get('x-fino-cache'), 'HIT');
-    const third = await app.handle(new Request('http://example.test/hello', { headers: { 'accept-language': 'fr' } }));
+    const third = await app.handle(
+      new Request('http://example.test/hello', { headers: { 'accept-language': 'fr' } }),
+    );
     t.equal(await third.text(), 'hello fr 2');
     t.equal(third.headers.get('x-fino-cache'), 'MISS');
   });

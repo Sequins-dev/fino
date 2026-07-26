@@ -1,9 +1,9 @@
 /**
-* Tests for fino:realm/pool — RealmPool with load-based dispatch.
-*
-* RealmPool maintains a set of warm thread realms, dispatches tasks to the
-* least-loaded worker, and supports multiple concurrent tasks per worker.
-*/
+ * Tests for fino:realm/pool — RealmPool with load-based dispatch.
+ *
+ * RealmPool maintains a set of warm thread realms, dispatches tasks to the
+ * least-loaded worker, and supports multiple concurrent tasks per worker.
+ */
 import { describe, it } from 'fino:test/test';
 import { RealmPool } from 'fino:realm/pool';
 import { ImportMap } from 'fino:realm';
@@ -16,15 +16,20 @@ import type neverFn from './fixtures/never-fn.ts';
 import type slowFn from './fixtures/slow-fn.ts';
 describe('RealmPool basics', () => {
   it('rejects an empty pool size at construction', (t) => {
-    t.throws(() => new RealmPool({
-      entry: new URL('./fixtures/sum-fn.ts', import.meta.url).pathname,
-      size: 0
-    }), /size/i, 'empty pool size is rejected before dispatch');
+    t.throws(
+      () =>
+        new RealmPool({
+          entry: new URL('./fixtures/sum-fn.ts', import.meta.url).pathname,
+          size: 0,
+        }),
+      /size/i,
+      'empty pool size is rejected before dispatch',
+    );
   });
   it('dispatches a call to a worker and returns the result', async (t) => {
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('./fixtures/sum-fn.ts', import.meta.url).pathname,
-      size: 2
+      size: 2,
     });
     const result = await pool.call(1, 2, 3);
     t.equal(result, 6, 'sum of 1+2+3 is 6');
@@ -33,12 +38,12 @@ describe('RealmPool basics', () => {
   it('dispatches multiple concurrent calls', async (t) => {
     const pool = new RealmPool<typeof echoFn>({
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
-      size: 2
+      size: 2,
     });
     const [a, b, c] = await Promise.all([
       pool.call('alpha'),
       pool.call('beta'),
-      pool.call('gamma')
+      pool.call('gamma'),
     ]);
     t.equal(a, 'alpha', 'first call echoed');
     t.equal(b, 'beta', 'second call echoed');
@@ -48,7 +53,7 @@ describe('RealmPool basics', () => {
   it('stats signal follows pending and completed work', async (t) => {
     const pool = new RealmPool<typeof slowFn>({
       entry: new URL('./fixtures/slow-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const snapshots: number[] = [];
     const dispose = pool.stats.subscribe((stats) => snapshots.push(stats.pending));
@@ -66,7 +71,7 @@ describe('RealmPool basics', () => {
   it('propagates errors thrown inside the worker', async (t) => {
     const pool = new RealmPool<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     try {
       await pool.call('anything');
@@ -85,16 +90,12 @@ describe('RealmPool basics', () => {
     };
     const pool = new RealmPool<(input: Payload) => Payload>({
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const input: Payload = {
       x: 42,
-      y: [
-        1,
-        2,
-        3
-      ],
-      z: true
+      y: [1, 2, 3],
+      z: true,
     };
     const result = await pool.call(input);
     t.equal(result.x, 42, 'x correct');
@@ -105,7 +106,7 @@ describe('RealmPool basics', () => {
   it('close() waits for in-flight tasks then terminates workers', async (t) => {
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('./fixtures/sum-fn.ts', import.meta.url).pathname,
-      size: 2
+      size: 2,
     });
     const p = pool.call(10, 20);
     await pool.close();
@@ -115,7 +116,7 @@ describe('RealmPool basics', () => {
   it('rejects new calls after close()', async (t) => {
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('./fixtures/sum-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     await pool.close();
     try {
@@ -128,7 +129,7 @@ describe('RealmPool basics', () => {
   it('propagates correlationId to the worker via async context', async (t) => {
     const pool = new RealmPool<typeof corrFn>({
       entry: new URL('./fixtures/corr-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const corrId = await pool.call();
     t.ok(typeof corrId === 'string' && corrId.length > 0, 'correlation ID is a non-empty string');
@@ -137,7 +138,7 @@ describe('RealmPool basics', () => {
   it('replays early __pool_call messages sent before worker handlers are installed', async (t) => {
     const pool = new RealmPool<typeof slowFn>({
       entry: new URL('./fixtures/slow-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const result = await pool.call(5, 'early-pool-ok');
     t.equal(result, 'early-pool-ok', 'early pool call was replayed after child load');
@@ -149,14 +150,17 @@ describe('RealmPool — timeout', () => {
     const pool = new RealmPool({
       entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname,
       size: 1,
-      timeout: 50
+      timeout: 50,
     });
     try {
       await pool.call();
       t.fail('should have timed out');
     } catch (err) {
       t.ok(err instanceof Error, 'rejects with Error on timeout');
-      t.ok((err as Error).message.includes('timed out') || (err as Error).message.includes('timeout'), 'error message mentions timeout: ' + (err as Error).message);
+      t.ok(
+        (err as Error).message.includes('timed out') || (err as Error).message.includes('timeout'),
+        'error message mentions timeout: ' + (err as Error).message,
+      );
     }
     await pool.close();
   });
@@ -165,7 +169,7 @@ describe('RealmPool — worker crash + respawn', () => {
   it('worker crash rejects the in-flight call and pool respawns for next call', async (t) => {
     const pool = new RealmPool<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     // First call should reject with the worker's thrown error
     try {
@@ -178,7 +182,7 @@ describe('RealmPool — worker crash + respawn', () => {
     // After the crash, the pool should respawn and accept new calls
     const pool2 = new RealmPool({
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     const result = await pool2.call('after-respawn');
     t.equal(result, 'after-respawn', 'pool accepts calls after worker crash+respawn');
@@ -192,7 +196,7 @@ describe('RealmPool — multi-worker crash isolation', () => {
     // After the error worker crashes, the two healthy workers must still serve calls.
     const pool = new RealmPool<typeof echoFn>({
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
-      size: 3
+      size: 3,
     });
     // Fire 6 concurrent calls. All should succeed (the echo fixture never crashes).
     const results = await Promise.all([
@@ -201,16 +205,9 @@ describe('RealmPool — multi-worker crash isolation', () => {
       pool.call('c'),
       pool.call('d'),
       pool.call('e'),
-      pool.call('f')
+      pool.call('f'),
     ]);
-    t.deepEqual(results.sort(), [
-      'a',
-      'b',
-      'c',
-      'd',
-      'e',
-      'f'
-    ], 'all 6 calls succeed');
+    t.deepEqual(results.sort(), ['a', 'b', 'c', 'd', 'e', 'f'], 'all 6 calls succeed');
     await pool.close();
   });
   it('surviving workers continue serving calls after one worker crashes', async (t) => {
@@ -220,7 +217,7 @@ describe('RealmPool — multi-worker crash isolation', () => {
     // worker still handles calls.
     const errorPool = new RealmPool<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,
-      size: 1
+      size: 1,
     });
     // Make the error worker crash.
     try {
@@ -230,7 +227,7 @@ describe('RealmPool — multi-worker crash isolation', () => {
     // Use a separate echo pool to confirm the pool infrastructure is still healthy.
     const echoPool = new RealmPool<typeof echoFn>({
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
-      size: 2
+      size: 2,
     });
     const r1 = await echoPool.call('post-crash-1');
     const r2 = await echoPool.call('post-crash-2');
@@ -246,7 +243,7 @@ describe('RealmPool — close() drain timeout', () => {
       entry: new URL('./fixtures/never-fn.ts', import.meta.url).pathname,
       size: 1,
       timeout: 0,
-      closeTimeout: 50
+      closeTimeout: 50,
     });
     const inflight = pool.call();
     const closeStart = performance.now();
@@ -258,7 +255,10 @@ describe('RealmPool — close() drain timeout', () => {
       t.fail('in-flight call should have been rejected');
     } catch (err) {
       t.ok(err instanceof Error, 'rejects with Error');
-      t.ok((err as Error).message.includes('timed out') || (err as Error).message.includes('close'), 'error message references close/timeout: ' + (err as Error).message);
+      t.ok(
+        (err as Error).message.includes('timed out') || (err as Error).message.includes('close'),
+        'error message references close/timeout: ' + (err as Error).message,
+      );
     }
   });
 });
@@ -269,17 +269,25 @@ describe('RealmPool — pool module import failure', () => {
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('./fixtures/sum-fn.ts', import.meta.url).pathname,
       size: 1,
-      realm: { overrides: ImportMap.deny([{
-        pattern: 'fino:realm/pool',
-        directive: 'block'
-      }]) }
+      realm: {
+        overrides: ImportMap.deny([
+          {
+            pattern: 'fino:realm/pool',
+            directive: 'block',
+          },
+        ]),
+      },
     });
     try {
       await pool.call(1, 2);
       t.fail('should have rejected');
     } catch (err) {
       t.ok(err instanceof Error, 'rejects with Error');
-      t.ok((err as Error).message.includes('failed to load') || (err as Error).message.includes('blocked'), 'error message explains the import failure: ' + (err as Error).message);
+      t.ok(
+        (err as Error).message.includes('failed to load') ||
+          (err as Error).message.includes('blocked'),
+        'error message explains the import failure: ' + (err as Error).message,
+      );
     }
     await pool.close();
   });
@@ -288,13 +296,16 @@ describe('RealmPool — dispatch fairness', () => {
   it('concurrent calls are distributed across multiple workers', async (t) => {
     const pool = new RealmPool<typeof workerIdFn>({
       entry: new URL('./fixtures/worker-id-fn.ts', import.meta.url).pathname,
-      size: 2
+      size: 2,
     });
     // Fire 6 concurrent calls; with 2 workers and EMA-based dispatch,
     // both workers should be utilized.
     const results = await Promise.all(Array.from({ length: 6 }, () => pool.call()));
     const distinctWorkers = new Set(results);
-    t.ok(distinctWorkers.size >= 2, `calls distributed across ≥2 workers (got ${distinctWorkers.size})`);
+    t.ok(
+      distinctWorkers.size >= 2,
+      `calls distributed across ≥2 workers (got ${distinctWorkers.size})`,
+    );
     await pool.close();
   });
 });

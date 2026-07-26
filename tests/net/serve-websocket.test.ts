@@ -1,10 +1,10 @@
 /**
-* Tests for WebSocket upgrade through serve().
-*
-* Verifies that a serve() handler can return a WebSocketConnection obtained
-* from WebSocketConnection.accept(req), and that the same server also handles
-* plain HTTP requests correctly.
-*/
+ * Tests for WebSocket upgrade through serve().
+ *
+ * Verifies that a serve() handler can return a WebSocketConnection obtained
+ * from WebSocketConnection.accept(req), and that the same server also handles
+ * plain HTTP requests correctly.
+ */
 import { describe, it } from 'fino:test/test';
 import { serve, serveHttp } from 'fino:net/http/server';
 import { WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/http/websocket';
@@ -13,17 +13,25 @@ import type { Event, EventTarget } from 'internal:globals/eventtarget';
 // Helper: wait for a named event on an EventTarget
 // ---------------------------------------------------------------------------
 import * as loop from 'internal:runtime/loop';
-function waitForEvent<T extends Event>(target: EventTarget, name: string, timeoutMs = 5e3): Promise<T> {
+function waitForEvent<T extends Event>(
+  target: EventTarget,
+  name: string,
+  timeoutMs = 5e3,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = loop.timeout(timeoutMs);
     t.then(() => {
       reject(new Error('waitForEvent timed out waiting for: ' + name));
     }).catch(() => {});
-    target.addEventListener(name, function handler(e) {
-      t.cancel();
-      target.removeEventListener(name, handler);
-      resolve(e as T);
-    }, { once: true });
+    target.addEventListener(
+      name,
+      function handler(e) {
+        t.cancel();
+        target.removeEventListener(name, handler);
+        resolve(e as T);
+      },
+      { once: true },
+    );
   });
 }
 // ---------------------------------------------------------------------------
@@ -45,12 +53,12 @@ describe('serve() WebSocket upgrade', () => {
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
       // Wait for the client message — open will have fired before message arrives.
-      const msgEvt = await waitForEvent<MessageEvent>((client as unknown) as EventTarget, 'message');
+      const msgEvt = await waitForEvent<MessageEvent>(client as unknown as EventTarget, 'message');
       t.equal(client.readyState, WebSocketConnection.OPEN, 'client is OPEN after handshake');
       t.equal((msgEvt as MessageEvent).data, 'hello from server', 'client received server message');
       // Close cleanly from client side.
       // Register the close listener before initiating close so we don't miss it.
-      const closePromise = waitForEvent<CloseEvent>((client as unknown) as EventTarget, 'close');
+      const closePromise = waitForEvent<CloseEvent>(client as unknown as EventTarget, 'close');
       await client.close(1e3, 'done');
       const closeEvt = await closePromise;
       t.ok(closeEvt.wasClean, 'client close was clean');
@@ -72,9 +80,13 @@ describe('serve() WebSocket upgrade', () => {
     });
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/`);
-      const msgEvt = await waitForEvent<MessageEvent>((client as unknown) as EventTarget, 'message');
-      t.equal((msgEvt as MessageEvent).data, 'goodbye', 'client received server message before close');
-      const closeEvt = await waitForEvent<CloseEvent>((client as unknown) as EventTarget, 'close');
+      const msgEvt = await waitForEvent<MessageEvent>(client as unknown as EventTarget, 'message');
+      t.equal(
+        (msgEvt as MessageEvent).data,
+        'goodbye',
+        'client received server message before close',
+      );
+      const closeEvt = await waitForEvent<CloseEvent>(client as unknown as EventTarget, 'close');
       t.ok(closeEvt.wasClean, 'close was clean (code 1000)');
       t.equal(closeEvt.code, 1e3, 'close code is 1000');
     } finally {

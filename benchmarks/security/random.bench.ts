@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:security/random
-*/
+ * Benchmarks for fino:security/random
+ */
 import { randomBase64Url, randomBytes, randomInt } from 'fino:security/random';
 import { bench } from 'fino:bench';
 bench('security/random', (b) => {

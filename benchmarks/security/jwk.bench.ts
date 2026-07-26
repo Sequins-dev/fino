@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:security/jwk
-*/
+ * Benchmarks for fino:security/jwk
+ */
 import { jwkFromSecret, jwkThumbprint, selectJwk } from 'fino:security/jwk';
 import { bench } from 'fino:bench';
 const key = jwkFromSecret('secret', 'HS256', 'bench');

@@ -1,6 +1,6 @@
 /**
-* Tests for async: true FFI symbols — thread-pool offload, Promise return.
-*/
+ * Tests for async: true FFI symbols — thread-pool offload, Promise return.
+ */
 import { describe, it } from 'fino:test/test';
 import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';
@@ -8,21 +8,23 @@ const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 // Two separate opens of the same library — one for sync access, one for async.
 // The key in the dlopen object is the actual C symbol name; async: true changes
 // the calling convention, not the symbol lookup.
-const libSync = dlopen(LIBC, { getpid: {
-  parameters: [],
-  result: 'i32'
-} });
+const libSync = dlopen(LIBC, {
+  getpid: {
+    parameters: [],
+    result: 'i32',
+  },
+});
 const libAsync = dlopen(LIBC, {
   getpid: {
     parameters: [],
     result: 'i32',
-    async: true
+    async: true,
   },
   usleep: {
     parameters: ['u32'],
     result: 'i32',
-    async: true
-  }
+    async: true,
+  },
 });
 async function elapsed(fn: () => Promise<unknown>): Promise<number> {
   const start = Date.now();
@@ -62,10 +64,13 @@ describe('async FFI', () => {
         libAsync.symbols.usleep(1e5),
         libAsync.symbols.usleep(1e5),
         libAsync.symbols.usleep(1e5),
-        libAsync.symbols.usleep(1e5)
+        libAsync.symbols.usleep(1e5),
       ]);
     });
-    t.ok(concurrent < sequential * .85, `parallel calls took ${concurrent}ms vs ${sequential}ms sequential`);
+    t.ok(
+      concurrent < sequential * .85,
+      `parallel calls took ${concurrent}ms vs ${sequential}ms sequential`,
+    );
   });
   it('async call with i32 result converts correctly', async (t) => {
     const pid = await libAsync.symbols.getpid();

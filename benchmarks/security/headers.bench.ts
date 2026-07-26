@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:security/headers
-*/
+ * Benchmarks for fino:security/headers
+ */
 import { createSecurityHeaders, mergeHeaders } from 'fino:security/headers';
 import { bench } from 'fino:bench';
 bench('security/headers', (b) => {

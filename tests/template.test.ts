@@ -2,7 +2,11 @@ import { describe, it } from 'fino:test/test';
 import { compile, escapeHtml, render } from 'fino:template';
 describe('fino:template — mustache core', () => {
   it('renders escaped, triple, and ampersand variables', (t) => {
-    t.equal(escapeHtml('<b>"&\''), '&lt;b&gt;&quot;&amp;&#39;', 'escapeHtml escapes HTML-sensitive characters');
+    t.equal(
+      escapeHtml('<b>"&\''),
+      '&lt;b&gt;&quot;&amp;&#39;',
+      'escapeHtml escapes HTML-sensitive characters',
+    );
     t.equal(render('Hello {{name}}', { name: '<Fino>' }), 'Hello &lt;Fino&gt;');
     t.equal(render('Hello {{{name}}}', { name: '<Fino>' }), 'Hello <Fino>');
     t.equal(render('Hello {{& name}}', { name: '<Fino>' }), 'Hello <Fino>');
@@ -11,19 +15,22 @@ describe('fino:template — mustache core', () => {
     t.equal(render('A{{missing}}B', {}), 'AB');
   });
   it('renders sections, arrays, current value, and inverted sections', (t) => {
-    const out = render('{{#enabled}}yes{{/enabled}}{{^disabled}} no{{/disabled}} {{#items}}[{{.}}/{{../name}}]{{/items}}', {
-      enabled: true,
-      disabled: false,
-      name: 'root',
-      items: ['a', 'b']
-    });
+    const out = render(
+      '{{#enabled}}yes{{/enabled}}{{^disabled}} no{{/disabled}} {{#items}}[{{.}}/{{../name}}]{{/items}}',
+      {
+        enabled: true,
+        disabled: false,
+        name: 'root',
+        items: ['a', 'b'],
+      },
+    );
     t.equal(out, 'yes no [a/root][b/root]');
   });
   it('supports object sections and dotted lookups with parent fallback', (t) => {
     const out = render('{{#user}}{{profile.name}}:{{role}}:{{site.name}}{{/user}}', {
       role: 'admin',
       site: { name: 'docs' },
-      user: { profile: { name: 'Ada' } }
+      user: { profile: { name: 'Ada' } },
     });
     t.equal(out, 'Ada:admin:docs');
   });
@@ -42,7 +49,11 @@ describe('fino:template — mustache core', () => {
     t.throws(() => compile('{{> partial}}'), /partials are not supported/, 'partials rejected');
   });
   it('rejects delimiter changes as unsupported release behavior', (t) => {
-    t.throws(() => compile('{{=<% %>=}}<% name %>'), /delimiter changes are not supported/, 'delimiter changes rejected');
+    t.throws(
+      () => compile('{{=<% %>=}}<% name %>'),
+      /delimiter changes are not supported/,
+      'delimiter changes rejected',
+    );
   });
   it('preserves standalone whitespace instead of Mustache standalone trimming', (t) => {
     const out = render('A\n  {{#ok}}\nB\n  {{/ok}}\nC', { ok: true });
@@ -58,20 +69,34 @@ describe('fino:template — mustache core', () => {
       enabled(...args: unknown[]) {
         calls.push(args);
         return true;
-      }
+      },
     });
-    t.equal(out, '&lt;Ada&gt; yes', 'function return values are rendered through normal lookup paths');
+    t.equal(
+      out,
+      '&lt;Ada&gt; yes',
+      'function return values are rendered through normal lookup paths',
+    );
     t.deepEqual(calls, [[], []], 'functions are called without section text or render callback');
   });
   it('documents unsupported full Mustache features through explicit behavior', (t) => {
     const lambdaCalls: string[] = [];
-    const out = render('{{#lambda}}value{{/lambda}}', { lambda() {
-      lambdaCalls.push('called');
-      return true;
-    } });
+    const out = render('{{#lambda}}value{{/lambda}}', {
+      lambda() {
+        lambdaCalls.push('called');
+        return true;
+      },
+    });
     t.equal(out, 'value', 'function values are called as truthy section values');
     t.deepEqual(lambdaCalls, ['called'], 'function section value is invoked once');
-    t.throws(() => compile('{{> partial}}'), /partials are not supported/, 'partial loading remains out of scope');
-    t.throws(() => compile('{{=<% %>=}}<% name %>'), /delimiter changes are not supported/, 'custom delimiters remain out of scope');
+    t.throws(
+      () => compile('{{> partial}}'),
+      /partials are not supported/,
+      'partial loading remains out of scope',
+    );
+    t.throws(
+      () => compile('{{=<% %>=}}<% name %>'),
+      /delimiter changes are not supported/,
+      'custom delimiters remain out of scope',
+    );
   });
 });

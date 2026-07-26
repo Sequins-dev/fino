@@ -6,9 +6,9 @@ const conn = await endpoint.connect({
   address: {
     family: 'ipv4',
     ip: '127.0.0.1',
-    port: 4444
+    port: 4444,
   },
-  alpnProtocols: ['hq-interop']
+  alpnProtocols: ['hq-interop'],
 });
 const stream = await conn.openBidirectionalStream();
 await stream.writer.write(enc.encode('GET /echo\r\n'));

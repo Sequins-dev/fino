@@ -1,8 +1,8 @@
 /**
-* Benchmarks for Blob and File globals
-*
-* Run with: cargo run -- --bench benchmarks/blob.bench.mjs
-*/
+ * Benchmarks for Blob and File globals
+ *
+ * Run with: cargo run -- --bench benchmarks/blob.bench.mjs
+ */
 import { bench } from 'fino:bench';
 const KB_STR = 'x'.repeat(1024);
 const LARGE_STR = 'x'.repeat(65536);
@@ -15,15 +15,10 @@ bench('Blob construction', (b) => {
   b.measure('64KB string', () => new Blob([LARGE_STR]));
   b.measure('from Uint8Array 1KB', () => new Blob([KB_BUF]));
   b.measure('from Uint8Array 64KB', () => new Blob([LARGE_BUF]));
-  b.measure('multiple string parts', () => new Blob([
-    'hello',
-    ' ',
-    'world',
-    '!'
-  ]));
+  b.measure('multiple string parts', () => new Blob(['hello', ' ', 'world', '!']));
   b.measure('nested Blob', {
     setup: () => new Blob(['inner']),
-    fn: (inner) => new Blob([inner, ' outer'])
+    fn: (inner) => new Blob([inner, ' outer']),
   });
   b.measure('with type', () => new Blob(['{"ok":true}'], { type: 'application/json' }));
 });
@@ -38,27 +33,27 @@ bench('Blob.slice', (b) => {
 bench('Blob body reading', (b) => {
   b.measure('text() 16 bytes', {
     setup: () => new Blob(['hello, world!!!!!']),
-    fn: async (blob) => await blob.text()
+    fn: async (blob) => await blob.text(),
   });
   b.measure('text() 1KB', {
     setup: () => new Blob([KB_STR]),
-    fn: async (blob) => await blob.text()
+    fn: async (blob) => await blob.text(),
   });
   b.measure('text() 64KB', {
     setup: () => new Blob([LARGE_STR]),
-    fn: async (blob) => await blob.text()
+    fn: async (blob) => await blob.text(),
   });
   b.measure('arrayBuffer() 1KB', {
     setup: () => new Blob([KB_BUF]),
-    fn: async (blob) => await blob.arrayBuffer()
+    fn: async (blob) => await blob.arrayBuffer(),
   });
   b.measure('arrayBuffer() 64KB', {
     setup: () => new Blob([LARGE_BUF]),
-    fn: async (blob) => await blob.arrayBuffer()
+    fn: async (blob) => await blob.arrayBuffer(),
   });
   b.measure('bytes() 1KB', {
     setup: () => new Blob([KB_BUF]),
-    fn: async (blob) => await blob.bytes()
+    fn: async (blob) => await blob.bytes(),
   });
 });
 bench('Blob properties', (b) => {
@@ -69,9 +64,12 @@ bench('Blob properties', (b) => {
 bench('File construction', (b) => {
   b.measure('empty File', () => new File([], 'empty.txt'));
   b.measure('File with string', () => new File(['content'], 'data.txt', { type: 'text/plain' }));
-  b.measure('File with lastModified', () => new File(['data'], 'file.bin', { lastModified: Date.now() }));
+  b.measure(
+    'File with lastModified',
+    () => new File(['data'], 'file.bin', { lastModified: Date.now() }),
+  );
   b.measure('File properties', {
     setup: () => new File(['data'], 'file.txt', { type: 'text/plain' }),
-    fn: (f) => f.name + f.size + f.type
+    fn: (f) => f.name + f.size + f.type,
   });
 });

@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:cluster
-*
-* Run with: cargo run -- bench benchmarks/cluster.bench.ts
-*/
+ * Benchmarks for fino:cluster
+ *
+ * Run with: cargo run -- bench benchmarks/cluster.bench.ts
+ */
 import { getCluster, joinCluster, leaveCluster, startCluster } from 'fino:cluster';
 import { bench } from 'fino:bench';
 import { Realm } from 'fino:realm';
@@ -18,9 +18,12 @@ function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
   return new TextDecoder().decode(b);
 }
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([promise, loop.timeout(ms).then(() => {
-    throw new Error(`${label} timed out after ${ms}ms`);
-  })]);
+  return Promise.race([
+    promise,
+    loop.timeout(ms).then(() => {
+      throw new Error(`${label} timed out after ${ms}ms`);
+    }),
+  ]);
 }
 async function readLine(proc: Process): Promise<string> {
   const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
@@ -28,7 +31,10 @@ async function readLine(proc: Process): Promise<string> {
   return decodeUtf8(bytes).trim();
 }
 async function waitForWorker(seedPort: number): Promise<Process> {
-  const proc = new Process(execPath, ['tests/cluster/fixtures/worker-process.ts', String(seedPort)]);
+  const proc = new Process(execPath, [
+    'tests/cluster/fixtures/worker-process.ts',
+    String(seedPort),
+  ]);
   try {
     const line = await withTimeout(readLine(proc), 2e3, 'worker readiness');
     if (line !== 'worker ready') throw new Error(`unexpected worker readiness line: ${line}`);
@@ -52,7 +58,12 @@ bench('cluster state', (b) => {
 });
 bench('cluster public API references', (b) => {
   b.measure('operation references', () => {
-    return startCluster !== undefined && joinCluster !== undefined && leaveCluster !== undefined && getCluster !== undefined;
+    return (
+      startCluster !== undefined &&
+      joinCluster !== undefined &&
+      leaveCluster !== undefined &&
+      getCluster !== undefined
+    );
   });
 });
 bench('cluster loopback lifecycle', (b) => {
@@ -60,7 +71,7 @@ bench('cluster loopback lifecycle', (b) => {
     const seedPort = port();
     await startCluster({
       port: seedPort,
-      nodeId: `bench-seed-${seedPort}`
+      nodeId: `bench-seed-${seedPort}`,
     });
     leaveCluster();
   });
@@ -70,14 +81,14 @@ bench('cluster remote realm', (b) => {
     const seedPort = port();
     await startCluster({
       port: seedPort,
-      nodeId: `bench-call-${seedPort}`
+      nodeId: `bench-call-${seedPort}`,
     });
     let worker: Process | null = null;
     try {
       worker = await waitForWorker(seedPort);
       const realm = new Realm<(name: string) => string>({
         entry: remoteCallEntry,
-        remote: true
+        remote: true,
       });
       await realm.call('bench');
     } finally {
@@ -89,14 +100,14 @@ bench('cluster remote realm', (b) => {
     const seedPort = port();
     await startCluster({
       port: seedPort,
-      nodeId: `bench-loss-${seedPort}`
+      nodeId: `bench-loss-${seedPort}`,
     });
     let worker: Process | null = null;
     try {
       worker = await waitForWorker(seedPort);
       const realm = new Realm<() => Promise<never>>({
         entry: neverFnEntry,
-        remote: true
+        remote: true,
       });
       const pending = realm.call().catch(() => undefined);
       await loop.timeout(5);

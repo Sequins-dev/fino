@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:format/flatbuffers
-*/
+ * Benchmarks for fino:format/flatbuffers
+ */
 import { Builder, FlatBuffer } from 'fino:format/flatbuffers';
 import { bench } from 'fino:bench';
 function buildScalarTable(): Uint8Array {

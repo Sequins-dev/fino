@@ -1,9 +1,9 @@
 /**
-* Tests for internal:jobs/store — claims, leases, dedupe, and wake math.
-*
-* The first test gates the UPDATE...RETURNING claim strategy; if it fails,
-* the store must fall back to a manual BEGIN IMMEDIATE claim.
-*/
+ * Tests for internal:jobs/store — claims, leases, dedupe, and wake math.
+ *
+ * The first test gates the UPDATE...RETURNING claim strategy; if it fails,
+ * the store must fall back to a manual BEGIN IMMEDIATE claim.
+ */
 import { describe, it } from 'fino:test/test';
 import { JobsStore, backoffDelayMs } from 'internal:jobs/store';
 import { sqliteAvailable } from 'fino:database/sqlite';
@@ -42,7 +42,10 @@ describe('JobsStore', () => {
     // Interleave claims until the queue drains; flock contention surfaces as
     // busy errors that a claimer simply retries.
     for (let round = 0; round < 40 && fromA.length + fromB.length < 10; round++) {
-      const [ra, rb] = await Promise.allSettled([a.claimReady('worker-a', 30_000, 2), b.claimReady('worker-b', 30_000, 2)]);
+      const [ra, rb] = await Promise.allSettled([
+        a.claimReady('worker-a', 30_000, 2),
+        b.claimReady('worker-b', 30_000, 2),
+      ]);
       if (ra.status === 'fulfilled') fromA.push(...ra.value);
       if (rb.status === 'fulfilled') fromB.push(...rb.value);
     }
@@ -55,7 +58,10 @@ describe('JobsStore', () => {
     for (let i = 0; i < 10; i++) {
       await store.insertJob({ queue: 'default', task: `t${i}`, input: i, runAt: Date.now() - 1 });
     }
-    const [fromA, fromB] = await Promise.all([store.claimReady('worker-a', 30_000, 6), store.claimReady('worker-b', 30_000, 6)]);
+    const [fromA, fromB] = await Promise.all([
+      store.claimReady('worker-a', 30_000, 6),
+      store.claimReady('worker-b', 30_000, 6),
+    ]);
     const ids = new Set([...fromA.map((j) => j.id), ...fromB.map((j) => j.id)]);
     t.equal(fromA.length + fromB.length, 10, 'every job claimed exactly once across claimants');
     t.equal(ids.size, 10, 'no job claimed twice');
@@ -73,7 +79,7 @@ describe('JobsStore', () => {
       state: {},
       signals: [],
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
     };
     await wf.save(state);
     const loaded = await wf.load('wf-1');
@@ -84,21 +90,57 @@ describe('JobsStore', () => {
   });
   it('dedupes active jobs per (queue, key) and frees the key on completion', async (t) => {
     await using store = await JobsStore.open(tempPath());
-    const first = await store.insertJob({ queue: 'q', task: 'send', input: 1, runAt: Date.now(), dedupeKey: 'k1' });
+    const first = await store.insertJob({
+      queue: 'q',
+      task: 'send',
+      input: 1,
+      runAt: Date.now(),
+      dedupeKey: 'k1',
+    });
     t.equal(first.deduped, false, 'first push inserts');
-    const dup = await store.insertJob({ queue: 'q', task: 'send', input: 2, runAt: Date.now(), dedupeKey: 'k1' });
+    const dup = await store.insertJob({
+      queue: 'q',
+      task: 'send',
+      input: 2,
+      runAt: Date.now(),
+      dedupeKey: 'k1',
+    });
     t.equal(dup.deduped, true, 'second push dedupes');
     t.equal(dup.job.id, first.job.id, 'existing active job returned');
-    const other = await store.insertJob({ queue: 'other', task: 'send', input: 3, runAt: Date.now(), dedupeKey: 'k1' });
+    const other = await store.insertJob({
+      queue: 'other',
+      task: 'send',
+      input: 3,
+      runAt: Date.now(),
+      dedupeKey: 'k1',
+    });
     t.equal(other.deduped, false, 'same key in another queue is distinct');
     await store.markDone(first.job.id, null);
-    const again = await store.insertJob({ queue: 'q', task: 'send', input: 4, runAt: Date.now(), dedupeKey: 'k1' });
+    const again = await store.insertJob({
+      queue: 'q',
+      task: 'send',
+      input: 4,
+      runAt: Date.now(),
+      dedupeKey: 'k1',
+    });
     t.equal(again.deduped, false, 'terminal job frees the dedupe key');
   });
   it('sweeps expired leases: requeue with backoff, dead-letter when exhausted', async (t) => {
     await using store = await JobsStore.open(tempPath());
-    const fresh = await store.insertJob({ queue: 'default', task: 'retryable', input: null, runAt: Date.now() - 1, maxAttempts: 3 });
-    const doomed = await store.insertJob({ queue: 'default', task: 'doomed', input: null, runAt: Date.now() - 1, maxAttempts: 1 });
+    const fresh = await store.insertJob({
+      queue: 'default',
+      task: 'retryable',
+      input: null,
+      runAt: Date.now() - 1,
+      maxAttempts: 3,
+    });
+    const doomed = await store.insertJob({
+      queue: 'default',
+      task: 'doomed',
+      input: null,
+      runAt: Date.now() - 1,
+      maxAttempts: 1,
+    });
     const claimed = await store.claimReady('me', 50, 10);
     t.equal(claimed.length, 2, 'both jobs claimed');
     const swept = await store.sweepLeases(Date.now() + 100);
@@ -112,10 +154,21 @@ describe('JobsStore', () => {
   });
   it('claiming a waiting job does not consume an attempt', async (t) => {
     await using store = await JobsStore.open(tempPath());
-    const { job } = await store.insertJob({ queue: 'default', task: 'durable', input: null, runAt: Date.now() - 1, maxAttempts: 2 });
+    const { job } = await store.insertJob({
+      queue: 'default',
+      task: 'durable',
+      input: null,
+      runAt: Date.now() - 1,
+      maxAttempts: 2,
+    });
     const [first] = await store.claimReady('me', 30_000, 1);
     t.equal(first!.attempts, 1, 'pending claim consumed attempt');
-    await store.markWaiting(job.id, 'wf-run-1', { type: 'timer', dueAt: Date.now() - 1 }, Date.now() - 1);
+    await store.markWaiting(
+      job.id,
+      'wf-run-1',
+      { type: 'timer', dueAt: Date.now() - 1 },
+      Date.now() - 1,
+    );
     const [resumed] = await store.claimReady('me', 30_000, 1);
     t.equal(resumed!.id, job.id, 'waiting job reclaimed when due');
     t.equal(resumed!.attempts, 1, 'waiting claim did not consume an attempt');
@@ -124,8 +177,20 @@ describe('JobsStore', () => {
   it('orders claims by priority then run_at', async (t) => {
     await using store = await JobsStore.open(tempPath());
     const now = Date.now();
-    await store.insertJob({ queue: 'default', task: 'low-old', input: null, runAt: now - 100, priority: 0 });
-    await store.insertJob({ queue: 'default', task: 'high-new', input: null, runAt: now - 10, priority: 5 });
+    await store.insertJob({
+      queue: 'default',
+      task: 'low-old',
+      input: null,
+      runAt: now - 100,
+      priority: 0,
+    });
+    await store.insertJob({
+      queue: 'default',
+      task: 'high-new',
+      input: null,
+      runAt: now - 10,
+      priority: 5,
+    });
     const claimed = await store.claimReady('me', 30_000, 2);
     t.equal(claimed[0]!.task, 'high-new', 'higher priority first');
     t.equal(claimed[1]!.task, 'low-old', 'then older run_at');
@@ -145,13 +210,18 @@ describe('JobsStore', () => {
       overlap: 'skip',
       catchup: 'skip',
       retry: null,
-      nextRunAt: soon - 1_000
+      nextRunAt: soon - 1_000,
     });
     t.equal(await store.nextWakeAt(), soon - 1_000, 'earlier schedule wins');
   });
   it('cancel and retry transitions', async (t) => {
     await using store = await JobsStore.open(tempPath());
-    const { job } = await store.insertJob({ queue: 'default', task: 'x', input: null, runAt: Date.now() });
+    const { job } = await store.insertJob({
+      queue: 'default',
+      task: 'x',
+      input: null,
+      runAt: Date.now(),
+    });
     t.equal(await store.cancel(job.id), true, 'pending job cancels');
     t.equal(await store.cancel(job.id), false, 'terminal job does not cancel again');
     t.equal(await store.retry(job.id), true, 'cancelled job can be retried');

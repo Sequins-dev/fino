@@ -3,11 +3,7 @@ import { Scanner, ParseError } from 'fino:parsing/scanner';
 // ── Binary ops ────────────────────────────────────────────────────────────
 describe('Scanner — binary ops', () => {
   it('peekByte reads without advancing', (t) => {
-    const s = new Scanner(new Uint8Array([
-      1,
-      2,
-      3
-    ]));
+    const s = new Scanner(new Uint8Array([1, 2, 3]));
     t.equal(s.peekByte(), 1, 'peekByte() at 0');
     t.equal(s.peekByte(1), 2, 'peekByte(1)');
     t.equal(s.peekByte(2), 3, 'peekByte(2)');
@@ -22,29 +18,14 @@ describe('Scanner — binary ops', () => {
     t.throws(() => s.eatByte(), /unexpected end of input/, 'throws at EOF');
   });
   it('eatBytes returns subarray and advances', (t) => {
-    const s = new Scanner(new Uint8Array([
-      1,
-      2,
-      3,
-      4,
-      5
-    ]));
+    const s = new Scanner(new Uint8Array([1, 2, 3, 4, 5]));
     const slice = s.eatBytes(3);
-    t.deepEqual(Array.from(slice), [
-      1,
-      2,
-      3
-    ]);
+    t.deepEqual(Array.from(slice), [1, 2, 3]);
     t.equal(s.offset, 3);
     t.throws(() => s.eatBytes(3), /expected 3 bytes, got 2/, 'throws on underflow');
   });
   it('matchBytes consumes iff prefix matches', (t) => {
-    const s = new Scanner(new Uint8Array([
-      72,
-      84,
-      84,
-      80
-    ]));
+    const s = new Scanner(new Uint8Array([72, 84, 84, 80]));
     t.equal(s.matchBytes([72, 84]), true, 'matched HT');
     t.equal(s.offset, 2);
     t.equal(s.matchBytes([84, 80]), true, 'matched TP');
@@ -54,45 +35,24 @@ describe('Scanner — binary ops', () => {
     t.equal(s2.offset, 0, 'offset unchanged on no match');
   });
   it('eatUntilByte stops before delimiter', (t) => {
-    const s = new Scanner(new Uint8Array([
-      97,
-      98,
-      10,
-      99
-    ]));
+    const s = new Scanner(new Uint8Array([97, 98, 10, 99]));
     const before = s.eatUntilByte(10);
     t.deepEqual(Array.from(before), [97, 98]);
     t.equal(s.peekByte(), 10, 'delimiter not consumed');
   });
   it('eatUntilByte respects max', (t) => {
-    const s = new Scanner(new Uint8Array([
-      1,
-      2,
-      3,
-      4,
-      5
-    ]));
+    const s = new Scanner(new Uint8Array([1, 2, 3, 4, 5]));
     const chunk = s.eatUntilByte(255, 3);
     t.equal(chunk.length, 3);
     t.equal(s.offset, 3);
   });
   it('bytesSlice returns correct subarray', (t) => {
-    const s = new Scanner(new Uint8Array([
-      10,
-      20,
-      30,
-      40,
-      50
-    ]));
+    const s = new Scanner(new Uint8Array([10, 20, 30, 40, 50]));
     const m1 = s.mark();
     s.eatBytes(3);
     const m2 = s.mark();
     const slice = s.bytesSlice(m1, m2);
-    t.deepEqual(Array.from(slice), [
-      10,
-      20,
-      30
-    ]);
+    t.deepEqual(Array.from(slice), [10, 20, 30]);
   });
   it('readU8 / readI8', (t) => {
     const s = new Scanner(new Uint8Array([255, 127]));
@@ -103,57 +63,21 @@ describe('Scanner — binary ops', () => {
     t.equal(s3.readI8(), 127);
   });
   it('readU16BE / readU16LE', (t) => {
-    const s = new Scanner(new Uint8Array([
-      1,
-      2,
-      1,
-      2
-    ]));
+    const s = new Scanner(new Uint8Array([1, 2, 1, 2]));
     t.equal(s.readU16BE(), 258);
     t.equal(s.readU16LE(), 513);
   });
   it('readU32BE / readU32LE', (t) => {
-    const s = new Scanner(new Uint8Array([
-      222,
-      173,
-      190,
-      239,
-      222,
-      173,
-      190,
-      239
-    ]));
+    const s = new Scanner(new Uint8Array([222, 173, 190, 239, 222, 173, 190, 239]));
     t.equal(s.readU32BE(), 3735928559);
     t.equal(s.readU32LE(), 4022250974);
   });
   it('readI32BE handles negative values', (t) => {
-    const s = new Scanner(new Uint8Array([
-      255,
-      255,
-      255,
-      255
-    ]));
+    const s = new Scanner(new Uint8Array([255, 255, 255, 255]));
     t.equal(s.readI32BE(), -1);
   });
   it('readU64BE / readU64LE', (t) => {
-    const s = new Scanner(new Uint8Array([
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      5,
-      5,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0
-    ]));
+    const s = new Scanner(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0, 0, 0]));
     t.equal(s.readU64BE(), 5n);
     t.equal(s.readU64LE(), 5n);
   });
@@ -189,7 +113,7 @@ describe('Scanner — text ops require encoding', () => {
     ['expect', (s) => s.expect('a')],
     ['text', (s) => s.text({ offset: 0 })],
     ['line', (s) => void s.line],
-    ['column', (s) => void s.column]
+    ['column', (s) => void s.column],
   ];
   for (const [name, fn] of OPS) {
     it(`${name} throws without encoding`, (t) => {
@@ -303,18 +227,7 @@ describe('Scanner — text ops (utf-8)', () => {
 });
 describe('Scanner — text encodings and malformed boundaries', () => {
   it('decodes and matches utf-16be text', (t) => {
-    const bytes = new Uint8Array([
-      0,
-      65,
-      0,
-      10,
-      32,
-      172,
-      216,
-      61,
-      222,
-      0
-    ]);
+    const bytes = new Uint8Array([0, 65, 0, 10, 32, 172, 216, 61, 222, 0]);
     const s = new Scanner(bytes, { encoding: 'utf-16be' });
     t.equal(s.peek(), 'A', 'peek decodes first BE code unit');
     t.equal(s.eat(), 'A', 'eat decodes first BE code unit');
@@ -329,18 +242,10 @@ describe('Scanner — text encodings and malformed boundaries', () => {
     t.equal(s.done, true, 'scanner consumed full utf-16be input');
   });
   it('handles partial utf-16 code units at byte boundaries', (t) => {
-    const s = new Scanner(new Uint8Array([
-      0,
-      65,
-      0
-    ]), { encoding: 'utf-16be' });
+    const s = new Scanner(new Uint8Array([0, 65, 0]), { encoding: 'utf-16be' });
     t.equal(s.eatText(3), 'A', 'fixed-byte decode ignores dangling byte');
     t.equal(s.done, true, 'eatText still consumes requested bytes');
-    const textScanner = new Scanner(new Uint8Array([
-      0,
-      65,
-      0
-    ]), { encoding: 'utf-16be' });
+    const textScanner = new Scanner(new Uint8Array([0, 65, 0]), { encoding: 'utf-16be' });
     t.equal(textScanner.eat(), 'A', 'complete code unit decodes');
     t.equal(textScanner.peekCode(), -1, 'dangling byte is not exposed as a codepoint');
   });
@@ -355,11 +260,7 @@ describe('Scanner — text encodings and malformed boundaries', () => {
 // ── Spans + backtracking ───────────────────────────────────────────────────
 describe('Scanner — spans and backtracking', () => {
   it('mark captures byte offset', (t) => {
-    const s = new Scanner(new Uint8Array([
-      1,
-      2,
-      3
-    ]));
+    const s = new Scanner(new Uint8Array([1, 2, 3]));
     const m = s.mark();
     t.equal(m.offset, 0);
     s.eatBytes(2);
@@ -418,7 +319,7 @@ describe('Scanner — error and ParseError', () => {
   it('error() returns a ParseError instance', (t) => {
     const s = new Scanner('foo', {
       encoding: 'utf-8',
-      format: 'myformat'
+      format: 'myformat',
     });
     s.eat(2);
     const err = s.error('unexpected char');
@@ -431,7 +332,7 @@ describe('Scanner — error and ParseError', () => {
   it('error message includes format and position', (t) => {
     const s = new Scanner('abc\ndef', {
       encoding: 'utf-8',
-      format: 'toml'
+      format: 'toml',
     });
     s.eat(4);
     const err = s.error('bad value');
@@ -439,11 +340,7 @@ describe('Scanner — error and ParseError', () => {
     t.ok(err.message.includes('line 2'), 'includes line');
   });
   it('binary mode error includes offset', (t) => {
-    const s = new Scanner(new Uint8Array([
-      0,
-      1,
-      2
-    ]), { format: 'http2' });
+    const s = new Scanner(new Uint8Array([0, 1, 2]), { format: 'http2' });
     s.eatBytes(2);
     const err = s.error('bad byte');
     t.ok(err.message.includes('0x'), 'includes hex offset');
@@ -452,7 +349,7 @@ describe('Scanner — error and ParseError', () => {
   it('render() produces text snippet for text errors', (t) => {
     const s = new Scanner('foo = + 1', {
       encoding: 'utf-8',
-      format: 'toml'
+      format: 'toml',
     });
     s.eat(6);
     const err = s.error('unexpected char');
@@ -464,7 +361,7 @@ describe('Scanner — error and ParseError', () => {
   it('render() with color wraps in ANSI codes', (t) => {
     const s = new Scanner('bad', {
       encoding: 'utf-8',
-      format: 'test'
+      format: 'test',
     });
     const err = s.error('oops');
     const colored = err.render({ color: true });
@@ -485,7 +382,7 @@ describe('Scanner — error and ParseError', () => {
     const longLine = 'a'.repeat(200) + 'X' + 'b'.repeat(200);
     const s = new Scanner(longLine, {
       encoding: 'utf-8',
-      format: 'test'
+      format: 'test',
     });
     s.eat(200);
     const err = s.error('here');
@@ -497,7 +394,7 @@ describe('Scanner — error and ParseError', () => {
     const src = 'line1\nline2\nline3\nline4\nline5';
     const s = new Scanner(src, {
       encoding: 'utf-8',
-      format: 'test'
+      format: 'test',
     });
     s.eat(12);
     const err = s.error('problem');
@@ -512,12 +409,7 @@ describe('Scanner — mixed binary/text (HTTP/1-style)', () => {
   it('reads ASCII headers then binary body', (t) => {
     // Simulated HTTP/1 response: status line + one header + CRLF + binary body
     const header = 'HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n';
-    const body = new Uint8Array([
-      222,
-      173,
-      190,
-      239
-    ]);
+    const body = new Uint8Array([222, 173, 190, 239]);
     const enc = new TextEncoder();
     const hdrBuf = enc.encode(header);
     const full = new Uint8Array(hdrBuf.length + body.length);
@@ -525,7 +417,7 @@ describe('Scanner — mixed binary/text (HTTP/1-style)', () => {
     full.set(body, hdrBuf.length);
     const s = new Scanner(full, {
       encoding: 'utf-8',
-      format: 'http'
+      format: 'http',
     });
     // Read status line
     const statusLine = s.eatUntil((c) => c === 13 || c === 10);
@@ -539,12 +431,7 @@ describe('Scanner — mixed binary/text (HTTP/1-style)', () => {
     s.expect('\r\n');
     // Switch to byte ops for body
     const bodySlice = s.eatBytes(4);
-    t.deepEqual(Array.from(bodySlice), [
-      222,
-      173,
-      190,
-      239
-    ]);
+    t.deepEqual(Array.from(bodySlice), [222, 173, 190, 239]);
     t.equal(s.done, true);
   });
 });
@@ -553,14 +440,14 @@ describe('Scanner — parser toolkit helpers', () => {
   it('readLineCRLF reads CRLF-terminated lines and rejects bare LF', (t) => {
     const s = new Scanner('alpha\r\nbeta\r\n', {
       encoding: 'ascii',
-      format: 'lines'
+      format: 'lines',
     });
     t.equal(s.readLineCRLF(), 'alpha');
     t.equal(s.readLineCRLF(), 'beta');
     t.equal(s.done, true);
     const bad = new Scanner('alpha\n', {
       encoding: 'ascii',
-      format: 'lines'
+      format: 'lines',
     });
     t.throws(() => bad.readLineCRLF(), /expected CRLF/);
   });
@@ -579,55 +466,34 @@ describe('Scanner — parser toolkit helpers', () => {
   });
   it('readDelimitedList trims and omits empty values', (t) => {
     const s = new Scanner(' keep-alive, Upgrade, , close ', { encoding: 'ascii' });
-    t.deepEqual(s.readDelimitedList(','), [
-      'keep-alive',
-      'Upgrade',
-      'close'
-    ]);
+    t.deepEqual(s.readDelimitedList(','), ['keep-alive', 'Upgrade', 'close']);
     t.equal(s.done, true);
   });
   it('readToken and expectToken parse protocol tokens', (t) => {
     const s = new Scanner('HTTP/1.1 200', { encoding: 'ascii' });
     t.equal(s.readToken('version'), 'HTTP/1.1');
     s.expect(' ');
-    t.equal(s.readStrictInt({
-      name: 'status',
-      min: 100,
-      max: 999
-    }), 200);
+    t.equal(
+      s.readStrictInt({
+        name: 'status',
+        min: 100,
+        max: 999,
+      }),
+      200,
+    );
     const bad = new Scanner('20x', { encoding: 'ascii' });
     t.throws(() => bad.readStrictInt({ name: 'status' }), /invalid status/);
   });
   it('subScanner bounds nested reads and advances parent', (t) => {
-    const s = new Scanner(new Uint8Array([
-      0,
-      4,
-      1,
-      2,
-      3,
-      4,
-      9
-    ]));
+    const s = new Scanner(new Uint8Array([0, 4, 1, 2, 3, 4, 9]));
     const len = s.readU16BEField('length');
     const sub = s.subScanner(len, { format: 'field' });
-    t.deepEqual(Array.from(sub.eatBytes(4)), [
-      1,
-      2,
-      3,
-      4
-    ]);
+    t.deepEqual(Array.from(sub.eatBytes(4)), [1, 2, 3, 4]);
     t.equal(sub.done, true);
     t.equal(s.readU8(), 9);
   });
   it('jump moves to absolute offsets for pointer-based protocols', (t) => {
-    const s = new Scanner(new Uint8Array([
-      192,
-      4,
-      3,
-      1,
-      2,
-      3
-    ]));
+    const s = new Scanner(new Uint8Array([192, 4, 3, 1, 2, 3]));
     const pointer = s.readU16BEField('pointer') & 16383;
     const back = s.snapshot();
     s.jump(pointer);
@@ -639,11 +505,7 @@ describe('Scanner — parser toolkit helpers', () => {
 // ── Encodings ─────────────────────────────────────────────────────────────
 describe('Scanner — latin1 encoding', () => {
   it('reads latin1 bytes as codepoints directly', (t) => {
-    const buf = new Uint8Array([
-      97,
-      233,
-      99
-    ]);
+    const buf = new Uint8Array([97, 233, 99]);
     const s = new Scanner(buf, { encoding: 'latin1' });
     t.equal(s.peekCode(), 97);
     t.equal(s.eat(), 'a');
@@ -655,12 +517,7 @@ describe('Scanner — latin1 encoding', () => {
 describe('Scanner — utf-16le encoding', () => {
   it('reads UTF-16LE codepoints', (t) => {
     // 'AB' in UTF-16LE: 0x41 0x00 0x42 0x00
-    const buf = new Uint8Array([
-      65,
-      0,
-      66,
-      0
-    ]);
+    const buf = new Uint8Array([65, 0, 66, 0]);
     const s = new Scanner(buf, { encoding: 'utf-16le' });
     t.equal(s.eat(), 'A');
     t.equal(s.eat(), 'B');

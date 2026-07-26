@@ -1,5 +1,14 @@
 import { describe, it } from 'fino:test/test';
-import { createConsoleSink, createJsonSink, createLogger, createOtelSink, getLogContext, runWithLogContext, subscribeLogs, withLogContext } from 'fino:log';
+import {
+  createConsoleSink,
+  createJsonSink,
+  createLogger,
+  createOtelSink,
+  getLogContext,
+  runWithLogContext,
+  subscribeLogs,
+  withLogContext,
+} from 'fino:log';
 import { topic } from 'fino:context/topic';
 import { LoggerProvider, runWithLoggerProvider } from 'fino:opentelemetry/logs';
 import { Process, execPath } from 'fino:process';
@@ -30,12 +39,12 @@ async function runFixture(mode: string): Promise<{
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait()
+    proc.wait(),
   ]);
   return {
     stdout,
     stderr,
-    code: result.code
+    code: result.code,
   };
 }
 describe('fino:log', () => {
@@ -58,7 +67,7 @@ describe('fino:log', () => {
     const handle = subscribeLogs((record) => records.push(record as Record<string, unknown>));
     const logger = createLogger({
       name: 'ctx.logger',
-      level: 'warn'
+      level: 'warn',
     });
     await runWithLogContext({ requestId: 'req-1' }, async () => {
       await Promise.resolve();
@@ -77,7 +86,11 @@ describe('fino:log', () => {
       using scope = withLogContext({ requestId: 'req-copy' });
       const context = getLogContext();
       context.requestId = 'mutated';
-      t.deepEqual(getLogContext(), { requestId: 'req-copy' }, 'mutating returned context does not alter active context');
+      t.deepEqual(
+        getLogContext(),
+        { requestId: 'req-copy' },
+        'mutating returned context does not alter active context',
+      );
     }
     t.deepEqual(getLogContext(), {}, 'context clears after scope');
   });
@@ -87,9 +100,17 @@ describe('fino:log', () => {
       t.deepEqual(getLogContext(), { requestId: 'outer', tenant: 'acme' }, 'outer scope is active');
       {
         using inner = withLogContext({ requestId: 'inner', route: '/health' });
-        t.deepEqual(getLogContext(), { requestId: 'inner', tenant: 'acme', route: '/health' }, 'inner scope merges over outer');
+        t.deepEqual(
+          getLogContext(),
+          { requestId: 'inner', tenant: 'acme', route: '/health' },
+          'inner scope merges over outer',
+        );
       }
-      t.deepEqual(getLogContext(), { requestId: 'outer', tenant: 'acme' }, 'disposing inner restores outer');
+      t.deepEqual(
+        getLogContext(),
+        { requestId: 'outer', tenant: 'acme' },
+        'disposing inner restores outer',
+      );
     }
     t.deepEqual(getLogContext(), {}, 'disposing outer clears context');
   });
@@ -99,26 +120,32 @@ describe('fino:log', () => {
     const logger = createLogger({
       name: 'root',
       level: 'warn',
-      context: { service: 'api' }
+      context: { service: 'api' },
     }).child({
       name: 'worker',
       level: 'debug',
-      shard: 'a'
+      shard: 'a',
     });
     logger.info('visible');
     handle.dispose();
     t.equal(records.length, 1, 'child level overrides parent level');
     t.equal(records[0].logger, 'root.worker', 'child name appends to parent name');
-    t.deepEqual(records[0].context, {
-      service: 'api',
-      shard: 'a'
-    }, 'child context merges with parent context');
+    t.deepEqual(
+      records[0].context,
+      {
+        service: 'api',
+        shard: 'a',
+      },
+      'child context merges with parent context',
+    );
   });
   it('formats records through an explicit JSON sink', (t) => {
     const lines: string[] = [];
-    const sink = createJsonSink({ write(line) {
-      lines.push(line);
-    } });
+    const sink = createJsonSink({
+      write(line) {
+        lines.push(line);
+      },
+    });
     const logger = createLogger({ name: 'json.logger' });
     logger.warn('careful', { retry: true });
     sink.dispose();
@@ -134,7 +161,7 @@ describe('fino:log', () => {
       level: 'warn',
       write(line) {
         lines.push(line);
-      }
+      },
     });
     const logger = createLogger({ name: 'console.logger' });
     logger.info('hidden');
@@ -147,7 +174,9 @@ describe('fino:log', () => {
   });
   it('forwards records through the OpenTelemetry sink', (t) => {
     const records: Array<Record<string, unknown>> = [];
-    const handle = topic<Record<string, unknown>>('otel:log:record').subscribe((record) => records.push(record));
+    const handle = topic<Record<string, unknown>>('otel:log:record').subscribe((record) =>
+      records.push(record),
+    );
     const provider = new LoggerProvider();
     runWithLoggerProvider(provider, () => {
       const sink = createOtelSink();
@@ -158,8 +187,16 @@ describe('fino:log', () => {
     t.equal(records.length, 1, 'otel sink emits one OTel log record');
     t.equal(records[0].body, 'boom', 'otel body uses log message');
     t.equal(records[0].severityText, 'ERROR', 'otel severity text maps from log level');
-    t.equal((records[0].attributes as Record<string, unknown>).code, 'E_TEST', 'otel attributes include fields');
-    t.equal((records[0].attributes as Record<string, unknown>)['exception.message'], 'boom', 'otel attributes include error details');
+    t.equal(
+      (records[0].attributes as Record<string, unknown>).code,
+      'E_TEST',
+      'otel attributes include fields',
+    );
+    t.equal(
+      (records[0].attributes as Record<string, unknown>)['exception.message'],
+      'boom',
+      'otel attributes include error details',
+    );
   });
   it('publishes records on broad, per-level, and per-logger topics', (t) => {
     const broad: unknown[] = [];
@@ -167,7 +204,9 @@ describe('fino:log', () => {
     const loggerTopic: unknown[] = [];
     const broadHandle = topic('fino:log').subscribe((record) => broad.push(record));
     const levelHandle = topic('fino:log:warn').subscribe((record) => level.push(record));
-    const loggerHandle = topic('fino:log:topic.logger').subscribe((record) => loggerTopic.push(record));
+    const loggerHandle = topic('fino:log:topic.logger').subscribe((record) =>
+      loggerTopic.push(record),
+    );
     createLogger({ name: 'topic.logger' }).warn('topic message');
     broadHandle.dispose();
     levelHandle.dispose();
@@ -181,15 +220,27 @@ describe('fino:log', () => {
   it('validates logger names and levels', (t) => {
     t.throws(() => createLogger({ name: '' }), /non-empty string/, 'empty name is rejected');
     t.throws(() => createLogger({ name: '   ' }), /non-empty string/, 'blank name is rejected');
-    t.throws(() => createLogger({
-      name: 'bad.level',
-      level: 'verbose' as any
-    }), /Unknown log level/, 'invalid constructor level is rejected');
-    t.throws(() => createLogger({ name: 'bad.log' }).log('verbose' as any, 'nope'), /Unknown log level/, 'invalid log() level is rejected');
+    t.throws(
+      () =>
+        createLogger({
+          name: 'bad.level',
+          level: 'verbose' as any,
+        }),
+      /Unknown log level/,
+      'invalid constructor level is rejected',
+    );
+    t.throws(
+      () => createLogger({ name: 'bad.log' }).log('verbose' as any, 'nope'),
+      /Unknown log level/,
+      'invalid log() level is rejected',
+    );
   });
   it('emits fatal records and filters fatal through level thresholds', (t) => {
     const records: Array<Record<string, unknown>> = [];
-    const handle = subscribeLogs((record) => records.push((record as unknown) as Record<string, unknown>), { level: 'fatal' });
+    const handle = subscribeLogs(
+      (record) => records.push(record as unknown as Record<string, unknown>),
+      { level: 'fatal' },
+    );
     const logger = createLogger({ name: 'fatal.logger' });
     logger.error('hidden');
     logger.fatal('fatal message', { exitCode: 1 });
@@ -201,7 +252,9 @@ describe('fino:log', () => {
   });
   it('copies active span fields onto LogRecord', (t) => {
     const records: Array<Record<string, unknown>> = [];
-    const handle = subscribeLogs((record) => records.push((record as unknown) as Record<string, unknown>));
+    const handle = subscribeLogs((record) =>
+      records.push(record as unknown as Record<string, unknown>),
+    );
     const provider = new TracerProvider();
     const span = provider.getTracer('log.active').startSpan('active-work');
     runWithActiveSpan(span, () => {
@@ -225,10 +278,25 @@ describe('fino:log', () => {
   it('routes default console sink warning and error levels to stderr', async (t) => {
     const result = await runFixture('console');
     t.equal(result.code, 0, 'fixture exits successfully');
-    t.ok(result.stdout.includes('INFO routing.console info message'), 'info console record is on stdout');
-    t.ok(!result.stdout.includes('ERROR routing.console error message'), 'error console record is not on stdout');
-    t.ok(!result.stdout.includes('FATAL routing.console fatal message'), 'fatal console record is not on stdout');
-    t.ok(result.stderr.includes('ERROR routing.console error message'), 'error console record is on stderr');
-    t.ok(result.stderr.includes('FATAL routing.console fatal message'), 'fatal console record is on stderr');
+    t.ok(
+      result.stdout.includes('INFO routing.console info message'),
+      'info console record is on stdout',
+    );
+    t.ok(
+      !result.stdout.includes('ERROR routing.console error message'),
+      'error console record is not on stdout',
+    );
+    t.ok(
+      !result.stdout.includes('FATAL routing.console fatal message'),
+      'fatal console record is not on stdout',
+    );
+    t.ok(
+      result.stderr.includes('ERROR routing.console error message'),
+      'error console record is on stderr',
+    );
+    t.ok(
+      result.stderr.includes('FATAL routing.console fatal message'),
+      'fatal console record is on stderr',
+    );
   });
 });

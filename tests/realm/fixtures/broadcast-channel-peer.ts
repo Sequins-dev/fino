@@ -1,6 +1,6 @@
 /**
-* Realm fixture — bridge BroadcastChannel messages through realmPort.
-*/
+ * Realm fixture — bridge BroadcastChannel messages through realmPort.
+ */
 const port = (globalThis as any).realmPort as MessagePort | undefined;
 if (!port) {
   throw new Error('broadcast-channel-peer: expected a realmPort');
@@ -18,7 +18,7 @@ port.onmessage = (ev) => {
     channel.onmessage = (event) => {
       port.postMessage({
         type: 'broadcast',
-        data: event.data
+        data: event.data,
       });
     };
     port.postMessage({ type: 'ready' });

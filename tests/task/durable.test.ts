@@ -1,9 +1,14 @@
 /**
-* Tests for fino:task/durable — durable tasks over fino:workflow.
-*/
+ * Tests for fino:task/durable — durable tasks over fino:workflow.
+ */
 import { describe, it } from 'fino:test/test';
 import { durableTask } from 'fino:task/durable';
-import { InMemoryWorkflowStore, SqliteWorkflowStore, type WorkflowState, type WorkflowStore } from 'fino:workflow';
+import {
+  InMemoryWorkflowStore,
+  SqliteWorkflowStore,
+  type WorkflowState,
+  type WorkflowStore,
+} from 'fino:workflow';
 import { sqliteAvailable } from 'fino:database/sqlite';
 import * as loop from 'internal:runtime/loop';
 
@@ -45,7 +50,7 @@ describe('DurableTask', () => {
           return 22;
         });
         return a + b;
-      }
+      },
     });
     const result = await task.run(undefined);
     t.equal(result, 42, 'handler result propagates through the task surface');
@@ -60,7 +65,7 @@ describe('DurableTask', () => {
         handlerEntries++;
         await ctx.sleep('nap', 60);
         return 'woke';
-      }
+      },
     });
     const before = Date.now();
     const result = await task.run(undefined);
@@ -76,22 +81,23 @@ describe('DurableTask', () => {
     }
     const path = `/tmp/fino-durable-test-${Math.floor(Math.random() * 1e9)}.db`;
     const sideEffects: string[] = [];
-    const makeTask = () => durableTask({
-      name: 'restartable',
-      store: () => SqliteWorkflowStore.open(path),
-      run: async (_input: undefined, ctx) => {
-        await ctx.step('first', () => {
-          sideEffects.push('first');
-          return 1;
-        });
-        await ctx.waitForSignal('approve');
-        await ctx.step('second', () => {
-          sideEffects.push('second');
-          return 2;
-        });
-        return sideEffects.length;
-      }
-    });
+    const makeTask = () =>
+      durableTask({
+        name: 'restartable',
+        store: () => SqliteWorkflowStore.open(path),
+        run: async (_input: undefined, ctx) => {
+          await ctx.step('first', () => {
+            sideEffects.push('first');
+            return 1;
+          });
+          await ctx.waitForSignal('approve');
+          await ctx.step('second', () => {
+            sideEffects.push('second');
+            return 2;
+          });
+          return sideEffects.length;
+        },
+      });
     const before = makeTask();
     const parked = await before.start(undefined, { runId: 'restart-run' });
     t.equal(parked.status, 'waiting', 'run parked on the signal');
@@ -110,7 +116,7 @@ describe('DurableTask', () => {
       run: async (_input: undefined, ctx) => {
         const payload = await ctx.waitForSignal<{ ok: boolean }>('go');
         return payload.ok;
-      }
+      },
     });
     const running = task.run(undefined, { runId: 'gate-1' });
     await loop.timeout(30);
@@ -123,7 +129,7 @@ describe('DurableTask', () => {
       name: 'idempotent',
       run: async (_input: undefined, ctx) => {
         return await ctx.step('only', () => ++runs);
-      }
+      },
     });
     const first = await task.run(undefined, { runId: 'idem-1' });
     const second = await task.run(undefined, { runId: 'idem-1' });
@@ -140,37 +146,46 @@ describe('DurableTask', () => {
         await ctx.step(attempt === 1 ? 'a' : 'changed', () => 1);
         await ctx.waitForSignal('never');
         return null;
-      }
+      },
     });
     const parked = await task.start(undefined, { runId: 'det-1' });
     t.equal(parked.status, 'waiting', 'first drive parked');
     const resumed = await task.resume('det-1');
     t.equal(resumed.status, 'error', 'replay with mismatched step id fails');
-    t.ok(/determinism|mismatch|expected/i.test(resumed.error?.message ?? ''), `error explains the mismatch: ${resumed.error?.message}`);
+    t.ok(
+      /determinism|mismatch|expected/i.test(resumed.error?.message ?? ''),
+      `error explains the mismatch: ${resumed.error?.message}`,
+    );
   });
   it('suspend() throws an explanatory error', async (t) => {
     const task = durableTask({
       name: 'no-suspend',
       run: async (_input: undefined, ctx) => {
         ctx.suspend();
-      }
+      },
     });
-    await t.rejects(() => task.run(undefined), /suspend\(\) is not available in durable tasks/, 'suspend is rejected with guidance');
+    await t.rejects(
+      () => task.run(undefined),
+      /suspend\(\) is not available in durable tasks/,
+      'suspend is rejected with guidance',
+    );
   });
   it('works through the CLI parse() surface', async (t) => {
     const task = durableTask({
       name: 'cli-durable',
       outputMode: 'text',
       cli: {
-        positionals: [{
-          name: 'word',
-          type: 'string',
-          required: true
-        }]
+        positionals: [
+          {
+            name: 'word',
+            type: 'string',
+            required: true,
+          },
+        ],
       },
       run: async (input: { word: string }, ctx) => {
         return await ctx.step('shout', () => input.word.toUpperCase());
-      }
+      },
     });
     const result = await task.parse(['hello']);
     t.equal(result, 'HELLO', 'CLI-parsed durable task ran through the workflow driver');
@@ -181,11 +196,14 @@ describe('DurableTask', () => {
       run: async (_input: undefined, ctx) => {
         await ctx.sleep('nap', '1h');
         return 'woke';
-      }
+      },
     });
     const handle = await task.start(undefined, { runId: 'nap-1' });
     t.equal(handle.status, 'waiting', 'one drive returned immediately');
     t.equal(handle.waitingOn?.type, 'timer', 'park is a timer wait');
-    t.ok((handle.waitingOn as { dueAt: number }).dueAt > Date.now() + 30 * 60 * 1000, 'due time is in the far future');
+    t.ok(
+      (handle.waitingOn as { dueAt: number }).dueAt > Date.now() + 30 * 60 * 1000,
+      'due time is in the far future',
+    );
   });
 });

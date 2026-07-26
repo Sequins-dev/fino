@@ -1,48 +1,48 @@
 /**
-* internal:database/postgres/scram — Postgres password authentication helpers.
-*
-* Implements the two password-based authentication exchanges of the
-* PostgreSQL frontend/backend protocol: the legacy MD5 challenge/response
-* (`AuthenticationMD5Password`, code 5) and SCRAM-SHA-256 SASL
-* authentication (`AuthenticationSASL`, codes 10–12). The `fino:database`
-* postgres driver consumes both from its authentication handler; nothing
-* here touches the wire — callers feed it the decoded text payloads of
-* backend messages and send back the strings it produces.
-*
-* SCRAM state lives in a `ScramSha256Client` instance: one instance per
-* connection attempt, driven through `initialResponse` → `finalMessage` →
-* `verifyServerFinal` in that order. The client advertises no channel
-* binding (GS2 header `n,,`), matching what PostgreSQL accepts on both
-* plain and TLS connections when the server was not started with
-* channel-binding enforcement. Passwords are fed to PBKDF2 as raw UTF-8
-* bytes without SASLprep normalization, which matches the behavior of
-* common drivers for ASCII passwords.
-*
-* SHA-256 primitives (PBKDF2, HMAC, digest) come from `internal:openssl`.
-* MD5 is implemented locally in pure JS because hardened libcrypto builds
-* (FIPS providers) often omit it, yet `md5Password` must keep working
-* against servers configured for `md5` auth.
-*
-* ```ts no_run
-* import { ScramSha256Client, md5Password } from 'internal:database/postgres/scram';
-*
-* // SCRAM-SHA-256 (AuthenticationSASL): three messages per handshake.
-* const scram = new ScramSha256Client(password);
-* send(saslInitialResponse('SCRAM-SHA-256', scram.initialResponse(user)));
-* const challenge = await recvText();               // AuthenticationSASLContinue
-* send(saslResponse(await scram.finalMessage(challenge)));
-* await scram.verifyServerFinal(await recvText());  // AuthenticationSASLFinal
-*
-* // Legacy MD5 (AuthenticationMD5Password): single response.
-* send(passwordMessage(md5Password(password, user, saltFromServer)));
-* ```
-*
-* SCRAM-SHA-256 mechanism: https://www.rfc-editor.org/rfc/rfc7677
-* SCRAM framework and message grammar: https://www.rfc-editor.org/rfc/rfc5802
-* PostgreSQL password authentication: https://www.postgresql.org/docs/current/auth-password.html
-*
-* @internal
-*/
+ * internal:database/postgres/scram — Postgres password authentication helpers.
+ *
+ * Implements the two password-based authentication exchanges of the
+ * PostgreSQL frontend/backend protocol: the legacy MD5 challenge/response
+ * (`AuthenticationMD5Password`, code 5) and SCRAM-SHA-256 SASL
+ * authentication (`AuthenticationSASL`, codes 10–12). The `fino:database`
+ * postgres driver consumes both from its authentication handler; nothing
+ * here touches the wire — callers feed it the decoded text payloads of
+ * backend messages and send back the strings it produces.
+ *
+ * SCRAM state lives in a `ScramSha256Client` instance: one instance per
+ * connection attempt, driven through `initialResponse` → `finalMessage` →
+ * `verifyServerFinal` in that order. The client advertises no channel
+ * binding (GS2 header `n,,`), matching what PostgreSQL accepts on both
+ * plain and TLS connections when the server was not started with
+ * channel-binding enforcement. Passwords are fed to PBKDF2 as raw UTF-8
+ * bytes without SASLprep normalization, which matches the behavior of
+ * common drivers for ASCII passwords.
+ *
+ * SHA-256 primitives (PBKDF2, HMAC, digest) come from `internal:openssl`.
+ * MD5 is implemented locally in pure JS because hardened libcrypto builds
+ * (FIPS providers) often omit it, yet `md5Password` must keep working
+ * against servers configured for `md5` auth.
+ *
+ * ```ts no_run
+ * import { ScramSha256Client, md5Password } from 'internal:database/postgres/scram';
+ *
+ * // SCRAM-SHA-256 (AuthenticationSASL): three messages per handshake.
+ * const scram = new ScramSha256Client(password);
+ * send(saslInitialResponse('SCRAM-SHA-256', scram.initialResponse(user)));
+ * const challenge = await recvText();               // AuthenticationSASLContinue
+ * send(saslResponse(await scram.finalMessage(challenge)));
+ * await scram.verifyServerFinal(await recvText());  // AuthenticationSASLFinal
+ *
+ * // Legacy MD5 (AuthenticationMD5Password): single response.
+ * send(passwordMessage(md5Password(password, user, saltFromServer)));
+ * ```
+ *
+ * SCRAM-SHA-256 mechanism: https://www.rfc-editor.org/rfc/rfc7677
+ * SCRAM framework and message grammar: https://www.rfc-editor.org/rfc/rfc5802
+ * PostgreSQL password authentication: https://www.postgresql.org/docs/current/auth-password.html
+ *
+ * @internal
+ */
 import { digest, hmac, pbkdf2 } from '../../openssl.ts';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -61,7 +61,11 @@ function base64(input: Uint8Array): string {
     const c = input[index + 2];
     out += b64chars[a >> 2];
     out += b === undefined ? b64chars[(a & 3) << 4] + '==' : b64chars[((a & 3) << 4) | (b >> 4)];
-    if (b !== undefined) out += c === undefined ? b64chars[(b & 15) << 2] + '=' : b64chars[((b & 15) << 2) | (c >> 6)] + b64chars[c & 63];
+    if (b !== undefined)
+      out +=
+        c === undefined
+          ? b64chars[(b & 15) << 2] + '='
+          : b64chars[((b & 15) << 2) | (c >> 6)] + b64chars[c & 63];
   }
   return out;
 }
@@ -143,17 +147,36 @@ function md5(data: Uint8Array): Uint8Array {
   let b0 = 0xefcdab89;
   let c0 = 0x98badcfe;
   let d0 = 0x10325476;
-  const s = [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21];
-  const k = Array.from({ length: 64 }, (_, i) => Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0);
+  const s = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+  ];
+  const k = Array.from(
+    { length: 64 },
+    (_, i) => Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0,
+  );
   for (let offset = 0; offset < paddedLen; offset += 64) {
-    let a = a0, b = b0, c = c0, d = d0;
+    let a = a0,
+      b = b0,
+      c = c0,
+      d = d0;
     const m = Array.from({ length: 16 }, (_, i) => view.getUint32(offset + i * 4, true));
     for (let i = 0; i < 64; i++) {
       let f: number, g: number;
-      if (i < 16) { f = (b & c) | (~b & d); g = i; }
-      else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) % 16; }
-      else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; }
-      else { f = c ^ (b | ~d); g = (7 * i) % 16; }
+      if (i < 16) {
+        f = (b & c) | (~b & d);
+        g = i;
+      } else if (i < 32) {
+        f = (d & b) | (~d & c);
+        g = (5 * i + 1) % 16;
+      } else if (i < 48) {
+        f = b ^ c ^ d;
+        g = (3 * i + 5) % 16;
+      } else {
+        f = c ^ (b | ~d);
+        g = (7 * i) % 16;
+      }
       const tmp = d;
       d = c;
       c = b;
@@ -302,10 +325,12 @@ export class ScramSha256Client {
   async finalMessage(serverFirst: string): Promise<string> {
     const attrs = parseAttributes(serverFirst);
     const nonce = attrs.r;
-    if (!nonce?.startsWith(this.#nonce)) throw new Error('SCRAM server nonce does not extend client nonce');
+    if (!nonce?.startsWith(this.#nonce))
+      throw new Error('SCRAM server nonce does not extend client nonce');
     const salt = unbase64(attrs.s ?? '');
     const iterations = Number(attrs.i);
-    if (!Number.isInteger(iterations) || iterations <= 0) throw new Error('Invalid SCRAM iteration count');
+    if (!Number.isInteger(iterations) || iterations <= 0)
+      throw new Error('Invalid SCRAM iteration count');
     const clientFinalWithoutProof = `c=biws,r=${nonce}`;
     const authMessage = `${this.#clientFirstBare},${serverFirst},${clientFinalWithoutProof}`;
     const saltedPassword = pbkdf2(bytes(this.#password), salt, iterations, 'sha-256', 32);
@@ -342,6 +367,7 @@ export class ScramSha256Client {
    */
   async verifyServerFinal(serverFinal: string): Promise<void> {
     const attrs = parseAttributes(serverFinal);
-    if (!this.#serverSignature || attrs.v !== this.#serverSignature) throw new Error('SCRAM server signature mismatch');
+    if (!this.#serverSignature || attrs.v !== this.#serverSignature)
+      throw new Error('SCRAM server signature mismatch');
   }
 }

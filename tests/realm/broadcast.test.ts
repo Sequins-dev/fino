@@ -1,6 +1,6 @@
 /**
-* Tests for BroadcastChannel — same-Realm and cross-Realm pub/sub.
-*/
+ * Tests for BroadcastChannel — same-Realm and cross-Realm pub/sub.
+ */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import { publish } from 'internal:broadcast';
@@ -9,7 +9,10 @@ function uniqueName(prefix: string): string {
 }
 function nextPortMessage(port: MessagePort, timeout = 2e3): Promise<MessageEvent> {
   return new Promise((resolve, reject) => {
-    const tid = setTimeout(() => reject(new Error('timeout waiting for realm port message')), timeout);
+    const tid = setTimeout(
+      () => reject(new Error('timeout waiting for realm port message')),
+      timeout,
+    );
     port.onmessage = (ev) => {
       clearTimeout(tid);
       resolve(ev);
@@ -106,7 +109,7 @@ describe('BroadcastChannel', () => {
           resolve({
             currentTarget: ev.currentTarget,
             target: ev.target,
-            eventPhase: ev.eventPhase
+            eventPhase: ev.eventPhase,
           });
         };
         sender.postMessage('state');
@@ -158,7 +161,14 @@ describe('BroadcastChannel', () => {
   it('postMessage on closed channel throws', (t) => {
     const bc = new BroadcastChannel('throw-test');
     bc.close();
-    t.throws(() => bc.postMessage('oops'), (err) => err instanceof DOMException && err.name === 'InvalidStateError' && /closed/.test(err.message), 'throws InvalidStateError on closed channel');
+    t.throws(
+      () => bc.postMessage('oops'),
+      (err) =>
+        err instanceof DOMException &&
+        err.name === 'InvalidStateError' &&
+        /closed/.test(err.message),
+      'throws InvalidStateError on closed channel',
+    );
   });
   it('postMessage requires an argument', (t) => {
     const bc = new BroadcastChannel(uniqueName('broadcast-missing-message'));
@@ -171,7 +181,11 @@ describe('BroadcastChannel', () => {
   it('postMessage wraps clone failures in DataCloneError', (t) => {
     const bc = new BroadcastChannel(uniqueName('broadcast-clone-fail'));
     try {
-      t.throws(() => bc.postMessage(Symbol()), (err) => err instanceof DOMException && err.name === 'DataCloneError', 'uncloneable payload throws DataCloneError');
+      t.throws(
+        () => bc.postMessage(Symbol()),
+        (err) => err instanceof DOMException && err.name === 'DataCloneError',
+        'uncloneable payload throws DataCloneError',
+      );
     } finally {
       bc.close();
     }
@@ -194,11 +208,7 @@ describe('BroadcastChannel', () => {
     const r1 = new BroadcastChannel('multi-test');
     const r2 = new BroadcastChannel('multi-test');
     const r3 = new BroadcastChannel('multi-test');
-    const counts = [
-      0,
-      0,
-      0
-    ];
+    const counts = [0, 0, 0];
     r1.onmessage = () => {
       counts[0]++;
     };
@@ -222,32 +232,39 @@ describe('BroadcastChannel', () => {
     const name = uniqueName('thread-broadcast');
     const realm = new Realm({
       thread: true,
-      entry: new URL('./fixtures/broadcast-channel-peer.ts', import.meta.url).pathname
+      entry: new URL('./fixtures/broadcast-channel-peer.ts', import.meta.url).pathname,
     });
     const run = realm.run().catch(() => undefined);
     const parent = new BroadcastChannel(name);
     try {
       realm.port.postMessage({
         type: 'listen',
-        name
+        name,
       });
       const ready = await nextPortMessage(realm.port);
       t.deepEqual(ready.data, { type: 'ready' }, 'thread realm subscribed');
       parent.postMessage({ from: 'parent' });
       const fromParent = await nextPortMessage(realm.port);
-      t.deepEqual(fromParent.data, {
-        type: 'broadcast',
-        data: { from: 'parent' }
-      }, 'thread realm received parent broadcast');
+      t.deepEqual(
+        fromParent.data,
+        {
+          type: 'broadcast',
+          data: { from: 'parent' },
+        },
+        'thread realm received parent broadcast',
+      );
       const fromThread = await new Promise<unknown>((resolve, reject) => {
-        const tid = setTimeout(() => reject(new Error('timeout waiting for parent broadcast')), 2e3);
+        const tid = setTimeout(
+          () => reject(new Error('timeout waiting for parent broadcast')),
+          2e3,
+        );
         parent.onmessage = (ev) => {
           clearTimeout(tid);
           resolve(ev.data);
         };
         realm.port.postMessage({
           type: 'broadcast',
-          data: { from: 'thread' }
+          data: { from: 'thread' },
         });
       });
       t.deepEqual(fromThread, { from: 'thread' }, 'parent received thread realm broadcast');
@@ -277,11 +294,7 @@ describe('BroadcastChannel', () => {
           resolve(ev);
         };
       });
-      publish(name, new Uint8Array([
-        255,
-        0,
-        255
-      ]), -1);
+      publish(name, new Uint8Array([255, 0, 255]), -1);
       const ev = await error;
       t.equal(ev.type, 'messageerror', 'invalid payload dispatches messageerror');
       t.equal(ev.data, null, 'messageerror data is null');

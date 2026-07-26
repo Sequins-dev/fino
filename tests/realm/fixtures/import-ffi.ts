@@ -1,7 +1,7 @@
 /**
-* Fixture: child realm that attempts to import a blocked module.
-* Throws if the import unexpectedly succeeds (regression guard).
-*/
+ * Fixture: child realm that attempts to import a blocked module.
+ * Throws if the import unexpectedly succeeds (regression guard).
+ */
 class _ImportFfiSentinel extends Error {}
 try {
   await import('fino:ffi');

@@ -1,39 +1,39 @@
 /**
-* fino:format/flatbuffers - schema-less FlatBuffers reading and writing.
-*
-* FlatBuffers is a zero-copy binary serialization format: tables store fields
-* through a vtable indirection so readers can access individual fields without
-* unpacking, and all scalars are little-endian at fixed offsets. This module
-* implements the wire format directly — no schema compiler or generated code.
-* Callers address table fields by their schema field id (the `id` attribute in
-* a `.fbs` file, or declaration order starting at 0).
-*
-* The reader (`FlatBuffer`, `Table`, `Vector`) validates bounds on every
-* access and throws `FlatbufferError` with a hex-dump diagnostic for malformed
-* buffers. The writer (`Builder`) implements the standard back-to-front
-* construction algorithm with vtable deduplication, producing buffers
-* byte-compatible with the reference implementation.
-*
-* ```ts no_run
-* import { Builder, FlatBuffer } from 'fino:format/flatbuffers';
-*
-* const b = new Builder();
-* const name = b.createString('fino');
-* b.startTable(2);
-* b.addFieldOffset(0, name);
-* b.addFieldInt32(1, 42, 0);
-* const root = b.endTable();
-* b.finish(root);
-*
-* const table = FlatBuffer.from(b.bytes()).rootTable();
-* table.string(0); // 'fino'
-* table.i32(1, 0); // 42
-* ```
-*
-* Useful references:
-*   - FlatBuffers internals: https://flatbuffers.dev/internals/
-*   - Format specification: https://flatbuffers.dev/formats/
-*/
+ * fino:format/flatbuffers - schema-less FlatBuffers reading and writing.
+ *
+ * FlatBuffers is a zero-copy binary serialization format: tables store fields
+ * through a vtable indirection so readers can access individual fields without
+ * unpacking, and all scalars are little-endian at fixed offsets. This module
+ * implements the wire format directly — no schema compiler or generated code.
+ * Callers address table fields by their schema field id (the `id` attribute in
+ * a `.fbs` file, or declaration order starting at 0).
+ *
+ * The reader (`FlatBuffer`, `Table`, `Vector`) validates bounds on every
+ * access and throws `FlatbufferError` with a hex-dump diagnostic for malformed
+ * buffers. The writer (`Builder`) implements the standard back-to-front
+ * construction algorithm with vtable deduplication, producing buffers
+ * byte-compatible with the reference implementation.
+ *
+ * ```ts no_run
+ * import { Builder, FlatBuffer } from 'fino:format/flatbuffers';
+ *
+ * const b = new Builder();
+ * const name = b.createString('fino');
+ * b.startTable(2);
+ * b.addFieldOffset(0, name);
+ * b.addFieldInt32(1, 42, 0);
+ * const root = b.endTable();
+ * b.finish(root);
+ *
+ * const table = FlatBuffer.from(b.bytes()).rootTable();
+ * table.string(0); // 'fino'
+ * table.i32(1, 0); // 42
+ * ```
+ *
+ * Useful references:
+ *   - FlatBuffers internals: https://flatbuffers.dev/internals/
+ *   - Format specification: https://flatbuffers.dev/formats/
+ */
 import { ParseError } from 'fino:parsing/scanner';
 const SIZEOF_SHORT = 2;
 const SIZEOF_INT = 4;
@@ -41,27 +41,27 @@ const FILE_IDENTIFIER_LENGTH = 4;
 const _encoder = new TextEncoder();
 const _decoder = new TextDecoder();
 /**
-* Error thrown when a FlatBuffer is malformed or an access runs out of bounds.
-*
-* `FlatbufferError` extends `ParseError` with a binary source, so `render()`
-* produces a hex dump around the failing offset.
-*
-* ```ts no_run
-* import { FlatBuffer, FlatbufferError } from 'fino:format/flatbuffers';
-*
-* try {
-*   FlatBuffer.from(new Uint8Array([1, 2])).rootTable();
-* } catch (error) {
-*   if (error instanceof FlatbufferError) console.error(error.render());
-* }
-* ```
-*/
+ * Error thrown when a FlatBuffer is malformed or an access runs out of bounds.
+ *
+ * `FlatbufferError` extends `ParseError` with a binary source, so `render()`
+ * produces a hex dump around the failing offset.
+ *
+ * ```ts no_run
+ * import { FlatBuffer, FlatbufferError } from 'fino:format/flatbuffers';
+ *
+ * try {
+ *   FlatBuffer.from(new Uint8Array([1, 2])).rootTable();
+ * } catch (error) {
+ *   if (error instanceof FlatbufferError) console.error(error.render());
+ * }
+ * ```
+ */
 export class FlatbufferError extends ParseError {
   /**
-  * Error name reported by `FlatbufferError` instances.
-  *
-  * @internal
-  */
+   * Error name reported by `FlatbufferError` instances.
+   *
+   * @internal
+   */
   override name = 'FlatbufferError';
 }
 function _fail(source: Uint8Array, offset: number, detail: string): never {
@@ -69,54 +69,57 @@ function _fail(source: Uint8Array, offset: number, detail: string): never {
     detail,
     format: 'flatbuffers',
     offset,
-    source
+    source,
   });
 }
 /**
-* A read-only FlatBuffer with bounds-checked positional accessors.
-*
-* Wraps a byte buffer and resolves the root table. Positional readers
-* (`u8At`, `i32At`, `f64At`, ...) are used for inline structs, whose layout
-* only the caller knows.
-*
-* ```ts no_run
-* import { FlatBuffer } from 'fino:format/flatbuffers';
-*
-* // wireBytes: a Uint8Array received over the network or read from disk
-* const fb = FlatBuffer.from(wireBytes, { sizePrefixed: true });
-* if (!fb.hasIdentifier('MONS')) throw new Error('not a Monster buffer');
-* const root = fb.rootTable();
-*
-* // Inline structs have no self-describing layout; read their members
-* // with the positional accessors from the struct's absolute position.
-* const posOffset = root.struct(0);
-* if (posOffset !== null) {
-*   const x = fb.f32At(posOffset);
-*   const y = fb.f32At(posOffset + 4);
-* }
-* ```
-*/
+ * A read-only FlatBuffer with bounds-checked positional accessors.
+ *
+ * Wraps a byte buffer and resolves the root table. Positional readers
+ * (`u8At`, `i32At`, `f64At`, ...) are used for inline structs, whose layout
+ * only the caller knows.
+ *
+ * ```ts no_run
+ * import { FlatBuffer } from 'fino:format/flatbuffers';
+ *
+ * // wireBytes: a Uint8Array received over the network or read from disk
+ * const fb = FlatBuffer.from(wireBytes, { sizePrefixed: true });
+ * if (!fb.hasIdentifier('MONS')) throw new Error('not a Monster buffer');
+ * const root = fb.rootTable();
+ *
+ * // Inline structs have no self-describing layout; read their members
+ * // with the positional accessors from the struct's absolute position.
+ * const posOffset = root.struct(0);
+ * if (posOffset !== null) {
+ *   const x = fb.f32At(posOffset);
+ *   const y = fb.f32At(posOffset + 4);
+ * }
+ * ```
+ */
 export class FlatBuffer {
   /**
-  * Underlying bytes of the buffer (after any size prefix).
-  *
-  * @internal
-  */
+   * Underlying bytes of the buffer (after any size prefix).
+   *
+   * @internal
+   */
   #bytes: Uint8Array;
   /**
-  * DataView over `#bytes`, respecting the byte offset of the view.
-  *
-  * @internal
-  */
+   * DataView over `#bytes`, respecting the byte offset of the view.
+   *
+   * @internal
+   */
   #view: DataView;
   /**
-  * Wrap `bytes` as a FlatBuffer. Pass `sizePrefixed: true` when the buffer
-  * begins with the standard 4-byte length prefix (`finish(..., { sizePrefixed:
-  * true })` output); the prefix is validated and stripped.
-  */
-  static from(bytes: Uint8Array | ArrayBuffer, options?: {
-    sizePrefixed?: boolean;
-  }): FlatBuffer {
+   * Wrap `bytes` as a FlatBuffer. Pass `sizePrefixed: true` when the buffer
+   * begins with the standard 4-byte length prefix (`finish(..., { sizePrefixed:
+   * true })` output); the prefix is validated and stripped.
+   */
+  static from(
+    bytes: Uint8Array | ArrayBuffer,
+    options?: {
+      sizePrefixed?: boolean;
+    },
+  ): FlatBuffer {
     let u8 = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
     if (options?.sizePrefixed) {
       if (u8.byteLength < SIZEOF_INT) {
@@ -125,42 +128,50 @@ export class FlatBuffer {
       const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
       const declared = view.getUint32(0, true);
       if (declared > u8.byteLength - SIZEOF_INT) {
-        _fail(u8, 0, `size prefix ${declared} exceeds remaining ${u8.byteLength - SIZEOF_INT} bytes`);
+        _fail(
+          u8,
+          0,
+          `size prefix ${declared} exceeds remaining ${u8.byteLength - SIZEOF_INT} bytes`,
+        );
       }
       u8 = u8.subarray(SIZEOF_INT, SIZEOF_INT + declared);
     }
     return new FlatBuffer(u8);
   }
   /**
-  * Construct directly over bytes with no size prefix. Prefer
-  * `FlatBuffer.from()`.
-  */
+   * Construct directly over bytes with no size prefix. Prefer
+   * `FlatBuffer.from()`.
+   */
   constructor(bytes: Uint8Array) {
     this.#bytes = bytes;
     this.#view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
   /**
-  * The wrapped bytes (a view, not a copy).
-  */
+   * The wrapped bytes (a view, not a copy).
+   */
   get bytes(): Uint8Array {
     return this.#bytes;
   }
   /**
-  * Bounds check `size` bytes at `pos`, throwing `FlatbufferError` on
-  * violation.
-  *
-  * @internal
-  */
+   * Bounds check `size` bytes at `pos`, throwing `FlatbufferError` on
+   * violation.
+   *
+   * @internal
+   */
   _check(pos: number, size: number): void {
     if (pos < 0 || pos + size > this.#bytes.byteLength) {
-      _fail(this.#bytes, Math.max(0, Math.min(pos, this.#bytes.byteLength - 1)), `read of ${size} byte(s) at ${pos} exceeds buffer of ${this.#bytes.byteLength}`);
+      _fail(
+        this.#bytes,
+        Math.max(0, Math.min(pos, this.#bytes.byteLength - 1)),
+        `read of ${size} byte(s) at ${pos} exceeds buffer of ${this.#bytes.byteLength}`,
+      );
     }
   }
   /**
-  * Raise a `FlatbufferError` at `pos` with `detail`.
-  *
-  * @internal
-  */
+   * Raise a `FlatbufferError` at `pos` with `detail`.
+   *
+   * @internal
+   */
   _fail(pos: number, detail: string): never {
     _fail(this.#bytes, pos, detail);
   }
@@ -215,24 +226,24 @@ export class FlatBuffer {
     return this.#view.getFloat64(pos, true);
   }
   /**
-  * Follow the unsigned relative offset stored at `pos` (tables, strings,
-  * vectors).
-  *
-  * @internal
-  */
+   * Follow the unsigned relative offset stored at `pos` (tables, strings,
+   * vectors).
+   *
+   * @internal
+   */
   _indirect(pos: number): number {
     return pos + this.u32At(pos);
   }
   /**
-  * Resolve the root table of the buffer.
-  */
+   * Resolve the root table of the buffer.
+   */
   rootTable(): Table {
     const rootPos = this._indirect(0);
     return this.tableAt(rootPos);
   }
   /**
-  * Wrap the table at absolute position `pos`, validating its vtable.
-  */
+   * Wrap the table at absolute position `pos`, validating its vtable.
+   */
   tableAt(pos: number): Table {
     const vtablePos = pos - this.i32At(pos);
     const vtableSize = this.u16At(vtablePos);
@@ -243,11 +254,11 @@ export class FlatBuffer {
     return new Table(this, pos, vtablePos, vtableSize);
   }
   /**
-  * The 4-character file identifier stored after the root offset, or `null`
-  * when the buffer is too short to carry one. FlatBuffers has no in-band flag
-  * for identifiers, so a buffer without one returns 4 arbitrary bytes —
-  * compare with `hasIdentifier()` instead of trusting this value.
-  */
+   * The 4-character file identifier stored after the root offset, or `null`
+   * when the buffer is too short to carry one. FlatBuffers has no in-band flag
+   * for identifiers, so a buffer without one returns 4 arbitrary bytes —
+   * compare with `hasIdentifier()` instead of trusting this value.
+   */
   identifier(): string | null {
     if (this.#bytes.byteLength < SIZEOF_INT + FILE_IDENTIFIER_LENGTH) return null;
     let id = '';
@@ -257,22 +268,24 @@ export class FlatBuffer {
     return id;
   }
   /**
-  * Whether the buffer carries the given 4-character file identifier.
-  *
-  * Throws a `TypeError` if `id` is not exactly 4 characters.
-  */
+   * Whether the buffer carries the given 4-character file identifier.
+   *
+   * Throws a `TypeError` if `id` is not exactly 4 characters.
+   */
   hasIdentifier(id: string): boolean {
     if (id.length !== FILE_IDENTIFIER_LENGTH) {
-      throw new TypeError(`FlatBuffers: file identifier must be exactly ${FILE_IDENTIFIER_LENGTH} characters`);
+      throw new TypeError(
+        `FlatBuffers: file identifier must be exactly ${FILE_IDENTIFIER_LENGTH} characters`,
+      );
     }
     return this.identifier() === id;
   }
   /**
-  * Decode the string whose data begins at absolute position `pos`
-  * (u32 length + UTF-8 bytes).
-  *
-  * @internal
-  */
+   * Decode the string whose data begins at absolute position `pos`
+   * (u32 length + UTF-8 bytes).
+   *
+   * @internal
+   */
   _stringAt(pos: number): string {
     const len = this.u32At(pos);
     this._check(pos + SIZEOF_INT, len);
@@ -280,55 +293,55 @@ export class FlatBuffer {
   }
 }
 /**
-* A table within a `FlatBuffer`, with field accessors keyed by schema field
-* id. Missing fields return the supplied default (scalars) or `null`
-* (offsets), exactly like generated FlatBuffers accessors.
-*
-* Unions follow the standard two-field convention: the type tag is a `u8`
-* field at id N and the value is a table field at id N + 1 — read them with
-* `u8(N, 0)` and `table(N + 1)`.
-*
-* ```ts no_run
-* import { FlatBuffer } from 'fino:format/flatbuffers';
-*
-* // Schema: table Monster { name: string; hp: short = 100; friend: Monster; }
-* const monster = FlatBuffer.from(wireBytes).rootTable();
-* monster.string(0);          // name, or null when absent
-* monster.i16(1, 100);        // hp, falling back to the schema default
-* monster.table(2)?.string(0); // friend's name, if a friend is set
-* ```
-*/
+ * A table within a `FlatBuffer`, with field accessors keyed by schema field
+ * id. Missing fields return the supplied default (scalars) or `null`
+ * (offsets), exactly like generated FlatBuffers accessors.
+ *
+ * Unions follow the standard two-field convention: the type tag is a `u8`
+ * field at id N and the value is a table field at id N + 1 — read them with
+ * `u8(N, 0)` and `table(N + 1)`.
+ *
+ * ```ts no_run
+ * import { FlatBuffer } from 'fino:format/flatbuffers';
+ *
+ * // Schema: table Monster { name: string; hp: short = 100; friend: Monster; }
+ * const monster = FlatBuffer.from(wireBytes).rootTable();
+ * monster.string(0);          // name, or null when absent
+ * monster.i16(1, 100);        // hp, falling back to the schema default
+ * monster.table(2)?.string(0); // friend's name, if a friend is set
+ * ```
+ */
 export class Table {
   /**
-  * Owning buffer.
-  *
-  * @internal
-  */
+   * Owning buffer.
+   *
+   * @internal
+   */
   #fb: FlatBuffer;
   /**
-  * Absolute position of the table.
-  *
-  * @internal
-  */
+   * Absolute position of the table.
+   *
+   * @internal
+   */
   #pos: number;
   /**
-  * Absolute position of the table's vtable.
-  *
-  * @internal
-  */
+   * Absolute position of the table's vtable.
+   *
+   * @internal
+   */
   #vtablePos: number;
   /**
-  * Byte size of the vtable.
-  *
-  * @internal
-  */
+   * Byte size of the vtable.
+   *
+   * @internal
+   */
   #vtableSize: number;
   /**
-  * Wrap a validated table. Use `FlatBuffer.rootTable()` / `tableAt()` rather
-  * than constructing directly.
-  *
-  * @internal
-  */
+   * Wrap a validated table. Use `FlatBuffer.rootTable()` / `tableAt()` rather
+   * than constructing directly.
+   *
+   * @internal
+   */
   constructor(fb: FlatBuffer, pos: number, vtablePos: number, vtableSize: number) {
     this.#fb = fb;
     this.#pos = pos;
@@ -336,15 +349,15 @@ export class Table {
     this.#vtableSize = vtableSize;
   }
   /**
-  * Absolute position of this table in the buffer.
-  */
+   * Absolute position of this table in the buffer.
+   */
   get position(): number {
     return this.#pos;
   }
   /**
-  * Absolute position of field `id`'s inline data, or 0 when the field is
-  * absent. This is the raw vtable lookup all typed accessors build on.
-  */
+   * Absolute position of field `id`'s inline data, or 0 when the field is
+   * absent. This is the raw vtable lookup all typed accessors build on.
+   */
   fieldPos(id: number): number {
     const slot = 2 * SIZEOF_SHORT + id * SIZEOF_SHORT;
     if (slot + SIZEOF_SHORT > this.#vtableSize) return 0;
@@ -419,10 +432,10 @@ export class Table {
     return this.#fb.tableAt(this.#fb._indirect(pos));
   }
   /**
-  * Absolute position of an inline struct field, or `null` when absent. Read
-  * the struct's members with the buffer's positional accessors
-  * (`fb.f32At(pos + 4)`, ...).
-  */
+   * Absolute position of an inline struct field, or `null` when absent. Read
+   * the struct's members with the buffer's positional accessors
+   * (`fb.f32At(pos + 4)`, ...).
+   */
   struct(id: number): number | null {
     const pos = this.fieldPos(id);
     return pos === 0 ? null : pos;
@@ -437,70 +450,70 @@ export class Table {
   }
 }
 /**
-* A vector within a `FlatBuffer`. Element accessors are typed by the caller
-* (the wire format does not carry element types); indexes are bounds-checked.
-*
-* ```ts no_run
-* import { FlatBuffer } from 'fino:format/flatbuffers';
-*
-* // Schema: table Monster { ...; inventory: [ubyte]; weapons: [Weapon]; }
-* const monster = FlatBuffer.from(wireBytes).rootTable();
-*
-* const inventory = monster.vector(3);
-* inventory?.bytes(); // zero-copy Uint8Array view of the [ubyte] contents
-*
-* const weapons = monster.vector(4);
-* for (let i = 0; i < (weapons?.length ?? 0); i++) {
-*   const weapon = weapons!.table(i);
-*   console.log(weapon.string(0), weapon.i16(1, 0));
-* }
-* ```
-*/
+ * A vector within a `FlatBuffer`. Element accessors are typed by the caller
+ * (the wire format does not carry element types); indexes are bounds-checked.
+ *
+ * ```ts no_run
+ * import { FlatBuffer } from 'fino:format/flatbuffers';
+ *
+ * // Schema: table Monster { ...; inventory: [ubyte]; weapons: [Weapon]; }
+ * const monster = FlatBuffer.from(wireBytes).rootTable();
+ *
+ * const inventory = monster.vector(3);
+ * inventory?.bytes(); // zero-copy Uint8Array view of the [ubyte] contents
+ *
+ * const weapons = monster.vector(4);
+ * for (let i = 0; i < (weapons?.length ?? 0); i++) {
+ *   const weapon = weapons!.table(i);
+ *   console.log(weapon.string(0), weapon.i16(1, 0));
+ * }
+ * ```
+ */
 export class Vector {
   /**
-  * Owning buffer.
-  *
-  * @internal
-  */
+   * Owning buffer.
+   *
+   * @internal
+   */
   #fb: FlatBuffer;
   /**
-  * Absolute position of element 0.
-  *
-  * @internal
-  */
+   * Absolute position of element 0.
+   *
+   * @internal
+   */
   #elemsPos: number;
   /**
-  * Element count.
-  *
-  * @internal
-  */
+   * Element count.
+   *
+   * @internal
+   */
   #length: number;
   /**
-  * Wrap vector data. Use `Table.vector()` rather than constructing directly.
-  *
-  * @internal
-  */
+   * Wrap vector data. Use `Table.vector()` rather than constructing directly.
+   *
+   * @internal
+   */
   constructor(fb: FlatBuffer, elemsPos: number, length: number) {
     this.#fb = fb;
     this.#elemsPos = elemsPos;
     this.#length = length;
   }
   /**
-  * Number of elements.
-  */
+   * Number of elements.
+   */
   get length(): number {
     return this.#length;
   }
   /**
-  * The owning `FlatBuffer`, for reading inline-struct members at absolute
-  * positions returned by `structAt`.
-  */
+   * The owning `FlatBuffer`, for reading inline-struct members at absolute
+   * positions returned by `structAt`.
+   */
   get buffer(): FlatBuffer {
     return this.#fb;
   }
   /**
-  * Absolute position of element `i`, given the element byte size.
-  */
+   * Absolute position of element `i`, given the element byte size.
+   */
   elemPos(i: number, elemSize: number): number {
     if (i < 0 || i >= this.#length) {
       this.#fb._fail(this.#elemsPos, `vector index ${i} out of range 0..${this.#length - 1}`);
@@ -560,16 +573,16 @@ export class Vector {
     return this.#fb.tableAt(this.#fb._indirect(this.elemPos(i, 4)));
   }
   /**
-  * Absolute position of inline-struct element `i`, given the struct's byte
-  * size.
-  */
+   * Absolute position of inline-struct element `i`, given the struct's byte
+   * size.
+   */
   structAt(i: number, structSize: number): number {
     return this.elemPos(i, structSize);
   }
   /**
-  * A raw byte view over all elements (no copy), given the element byte size.
-  * For a `[ubyte]` vector this is the vector's contents directly.
-  */
+   * A raw byte view over all elements (no copy), given the element byte size.
+   * For a `[ubyte]` vector this is the vector's contents directly.
+   */
   bytes(elemSize = 1): Uint8Array {
     const total = this.#length * elemSize;
     this.#fb._check(this.#elemsPos, total);
@@ -577,100 +590,100 @@ export class Vector {
   }
 }
 /**
-* FlatBuffers builder implementing the standard back-to-front construction
-* algorithm with vtable deduplication.
-*
-* Usage follows the reference Builder: create strings/vectors/nested tables
-* first (bottom-up), then `startTable(fieldCount)`, add fields by id,
-* `endTable()`, and `finish(root)`.
-*
-* ```ts no_run
-* import { Builder } from 'fino:format/flatbuffers';
-*
-* const b = new Builder();
-* const s = b.createString('hi');
-* b.startTable(1);
-* b.addFieldOffset(0, s);
-* b.finish(b.endTable());
-* const bytes = b.bytes();
-* ```
-*/
+ * FlatBuffers builder implementing the standard back-to-front construction
+ * algorithm with vtable deduplication.
+ *
+ * Usage follows the reference Builder: create strings/vectors/nested tables
+ * first (bottom-up), then `startTable(fieldCount)`, add fields by id,
+ * `endTable()`, and `finish(root)`.
+ *
+ * ```ts no_run
+ * import { Builder } from 'fino:format/flatbuffers';
+ *
+ * const b = new Builder();
+ * const s = b.createString('hi');
+ * b.startTable(1);
+ * b.addFieldOffset(0, s);
+ * b.finish(b.endTable());
+ * const bytes = b.bytes();
+ * ```
+ */
 export class Builder {
   /**
-  * Backing storage; data grows downward from the end.
-  *
-  * @internal
-  */
+   * Backing storage; data grows downward from the end.
+   *
+   * @internal
+   */
   #buf: Uint8Array;
   /**
-  * DataView over `#buf`.
-  *
-  * @internal
-  */
+   * DataView over `#buf`.
+   *
+   * @internal
+   */
   #view: DataView;
   /**
-  * Lowest used byte index; writes decrement this.
-  *
-  * @internal
-  */
+   * Lowest used byte index; writes decrement this.
+   *
+   * @internal
+   */
   #space: number;
   /**
-  * Largest alignment seen so far.
-  *
-  * @internal
-  */
+   * Largest alignment seen so far.
+   *
+   * @internal
+   */
   #minalign = 1;
   /**
-  * Field offsets (builder offsets, not positions) for the table being built.
-  *
-  * @internal
-  */
+   * Field offsets (builder offsets, not positions) for the table being built.
+   *
+   * @internal
+   */
   #vtable: number[] | null = null;
   /**
-  * Number of field slots in the current table.
-  *
-  * @internal
-  */
+   * Number of field slots in the current table.
+   *
+   * @internal
+   */
   #vtableInUse = 0;
   /**
-  * Whether a table or vector is currently being constructed.
-  *
-  * @internal
-  */
+   * Whether a table or vector is currently being constructed.
+   *
+   * @internal
+   */
   #isNested = false;
   /**
-  * Builder offset where the current table started.
-  *
-  * @internal
-  */
+   * Builder offset where the current table started.
+   *
+   * @internal
+   */
   #objectStart = 0;
   /**
-  * Builder offsets of all written vtables, for deduplication.
-  *
-  * @internal
-  */
+   * Builder offsets of all written vtables, for deduplication.
+   *
+   * @internal
+   */
   #vtables: number[] = [];
   /**
-  * Element count for the vector being built.
-  *
-  * @internal
-  */
+   * Element count for the vector being built.
+   *
+   * @internal
+   */
   #vectorNumElems = 0;
   /**
-  * Whether `finish()` has been called.
-  *
-  * @internal
-  */
+   * Whether `finish()` has been called.
+   *
+   * @internal
+   */
   #finished = false;
   /**
-  * Write scalar fields even when they equal their default.
-  *
-  * @internal
-  */
+   * Write scalar fields even when they equal their default.
+   *
+   * @internal
+   */
   #forceDefaults = false;
   /**
-  * Create a builder with an optional initial capacity (bytes).
-  */
+   * Create a builder with an optional initial capacity (bytes).
+   */
   constructor(initialSize = 1024) {
     const size = Math.max(1, initialSize);
     this.#buf = new Uint8Array(size);
@@ -678,24 +691,24 @@ export class Builder {
     this.#space = size;
   }
   /**
-  * When true, scalar fields equal to their default are still written.
-  * Defaults to false (matching the reference Builder).
-  */
+   * When true, scalar fields equal to their default are still written.
+   * Defaults to false (matching the reference Builder).
+   */
   forceDefaults(value: boolean): void {
     this.#forceDefaults = value;
   }
   /**
-  * Current builder offset (bytes written so far). Offsets returned by
-  * `createString`/`endTable`/`endVector` are in this space.
-  */
+   * Current builder offset (bytes written so far). Offsets returned by
+   * `createString`/`endTable`/`endVector` are in this space.
+   */
   offset(): number {
     return this.#buf.length - this.#space;
   }
   /**
-  * Grow the backing buffer, keeping existing data at the end.
-  *
-  * @internal
-  */
+   * Grow the backing buffer, keeping existing data at the end.
+   *
+   * @internal
+   */
   #grow(): void {
     const oldSize = this.#buf.length;
     if (oldSize & 3221225472) {
@@ -709,21 +722,21 @@ export class Builder {
     this.#space += newSize - oldSize;
   }
   /**
-  * Write `n` zero padding bytes.
-  */
+   * Write `n` zero padding bytes.
+   */
   pad(n: number): void {
     for (let i = 0; i < n; i++) {
       this.#buf[--this.#space] = 0;
     }
   }
   /**
-  * Prepare to write `additionalBytes` after aligning to `size`. Grows the
-  * buffer as needed. Public so callers can build inline structs with the raw
-  * `write*` methods.
-  */
+   * Prepare to write `additionalBytes` after aligning to `size`. Grows the
+   * buffer as needed. Public so callers can build inline structs with the raw
+   * `write*` methods.
+   */
   prep(size: number, additionalBytes: number): void {
     if (size > this.#minalign) this.#minalign = size;
-    const alignSize = ~(this.#buf.length - this.#space + additionalBytes) + 1 & size - 1;
+    const alignSize = (~(this.#buf.length - this.#space + additionalBytes) + 1) & (size - 1);
     while (this.#space < alignSize + size + additionalBytes) {
       this.#grow();
     }
@@ -789,17 +802,17 @@ export class Builder {
     this.writeFloat64(value);
   }
   /**
-  * Align and write a relative offset to a previously written object.
-  */
+   * Align and write a relative offset to a previously written object.
+   */
   addOffset(offset: number): void {
     this.prep(SIZEOF_INT, 0);
     this.writeInt32(this.offset() - offset + SIZEOF_INT);
   }
   /**
-  * Record that field `id` of the current table lives at the current offset.
-  *
-  * @internal
-  */
+   * Record that field `id` of the current table lives at the current offset.
+   *
+   * @internal
+   */
   #slot(id: number): void {
     if (this.#vtable === null) {
       throw new Error('FlatBuffers: field added outside startTable/endTable');
@@ -853,9 +866,9 @@ export class Builder {
     }
   }
   /**
-  * Add an offset field (string, vector, or nested table) to the current
-  * table. Zero offsets (absent) are skipped.
-  */
+   * Add an offset field (string, vector, or nested table) to the current
+   * table. Zero offsets (absent) are skipped.
+   */
   addFieldOffset(id: number, offset: number): void {
     if (offset !== 0) {
       this.addOffset(offset);
@@ -863,42 +876,44 @@ export class Builder {
     }
   }
   /**
-  * Add an inline struct field to the current table. The struct must have
-  * been written immediately before this call (its offset must equal the
-  * current builder offset); otherwise this throws.
-  *
-  * Structs are written with `prep()` plus the raw `write*` methods, members
-  * in reverse declaration order (the builder writes back-to-front):
-  *
-  * ```ts no_run
-  * import { Builder } from 'fino:format/flatbuffers';
-  *
-  * // struct Vec3 { x: float; y: float; z: float; } — 12 bytes, align 4
-  * const b = new Builder();
-  * b.startTable(1);
-  * b.prep(4, 12);
-  * b.writeFloat32(z);
-  * b.writeFloat32(y);
-  * b.writeFloat32(x);
-  * b.addFieldStruct(0, b.offset());
-  * b.finish(b.endTable());
-  * ```
-  */
+   * Add an inline struct field to the current table. The struct must have
+   * been written immediately before this call (its offset must equal the
+   * current builder offset); otherwise this throws.
+   *
+   * Structs are written with `prep()` plus the raw `write*` methods, members
+   * in reverse declaration order (the builder writes back-to-front):
+   *
+   * ```ts no_run
+   * import { Builder } from 'fino:format/flatbuffers';
+   *
+   * // struct Vec3 { x: float; y: float; z: float; } — 12 bytes, align 4
+   * const b = new Builder();
+   * b.startTable(1);
+   * b.prep(4, 12);
+   * b.writeFloat32(z);
+   * b.writeFloat32(y);
+   * b.writeFloat32(x);
+   * b.addFieldStruct(0, b.offset());
+   * b.finish(b.endTable());
+   * ```
+   */
   addFieldStruct(id: number, offset: number): void {
     if (offset !== 0) {
       if (offset !== this.offset()) {
-        throw new Error('FlatBuffers: struct must be serialized inline, immediately before addFieldStruct');
+        throw new Error(
+          'FlatBuffers: struct must be serialized inline, immediately before addFieldStruct',
+        );
       }
       this.#slot(id);
     }
   }
   /**
-  * Begin a table with `numFields` field slots.
-  *
-  * Throws if another table or vector is already being built — tables do not
-  * nest during construction; build inner objects first and reference them by
-  * offset.
-  */
+   * Begin a table with `numFields` field slots.
+   *
+   * Throws if another table or vector is already being built — tables do not
+   * nest during construction; build inner objects first and reference them by
+   * offset.
+   */
   startTable(numFields: number): void {
     if (this.#isNested) {
       throw new Error('FlatBuffers: startTable inside another table or vector');
@@ -909,11 +924,11 @@ export class Builder {
     this.#objectStart = this.offset();
   }
   /**
-  * Finish the current table, writing (or reusing) its vtable. Returns the
-  * table's builder offset.
-  *
-  * Throws if no table is being built.
-  */
+   * Finish the current table, writing (or reusing) its vtable. Returns the
+   * table's builder offset.
+   *
+   * Throws if no table is being built.
+   */
   endTable(): number {
     if (this.#vtable === null || !this.#isNested) {
       throw new Error('FlatBuffers: endTable without startTable');
@@ -956,28 +971,28 @@ export class Builder {
     return vtableLoc;
   }
   /**
-  * Begin a vector of `numElems` elements of `elemSize` bytes, aligned to
-  * `alignment`. Write elements back-to-front with the raw `write*` methods or
-  * `addOffset`, then call `endVector()`.
-  *
-  * Because the builder writes toward lower addresses, the *last* element is
-  * written first. Throws if a table or vector is already being built.
-  *
-  * ```ts no_run
-  * import { Builder } from 'fino:format/flatbuffers';
-  *
-  * // Build [10, 20, 30] as an [int] vector.
-  * const b = new Builder();
-  * b.startVector(4, 3, 4);
-  * b.writeInt32(30);
-  * b.writeInt32(20);
-  * b.writeInt32(10);
-  * const vec = b.endVector();
-  * b.startTable(1);
-  * b.addFieldOffset(0, vec);
-  * b.finish(b.endTable());
-  * ```
-  */
+   * Begin a vector of `numElems` elements of `elemSize` bytes, aligned to
+   * `alignment`. Write elements back-to-front with the raw `write*` methods or
+   * `addOffset`, then call `endVector()`.
+   *
+   * Because the builder writes toward lower addresses, the *last* element is
+   * written first. Throws if a table or vector is already being built.
+   *
+   * ```ts no_run
+   * import { Builder } from 'fino:format/flatbuffers';
+   *
+   * // Build [10, 20, 30] as an [int] vector.
+   * const b = new Builder();
+   * b.startVector(4, 3, 4);
+   * b.writeInt32(30);
+   * b.writeInt32(20);
+   * b.writeInt32(10);
+   * const vec = b.endVector();
+   * b.startTable(1);
+   * b.addFieldOffset(0, vec);
+   * b.finish(b.endTable());
+   * ```
+   */
   startVector(elemSize: number, numElems: number, alignment: number): void {
     if (this.#isNested) {
       throw new Error('FlatBuffers: startVector inside another table or vector');
@@ -988,10 +1003,10 @@ export class Builder {
     this.prep(alignment, elemSize * numElems);
   }
   /**
-  * Finish the current vector and return its builder offset.
-  *
-  * Throws if no vector is being built.
-  */
+   * Finish the current vector and return its builder offset.
+   *
+   * Throws if no vector is being built.
+   */
   endVector(): number {
     if (!this.#isNested) {
       throw new Error('FlatBuffers: endVector without startVector');
@@ -1001,9 +1016,9 @@ export class Builder {
     return this.offset();
   }
   /**
-  * Write a UTF-8 string (with NUL terminator, per the format) and return its
-  * builder offset.
-  */
+   * Write a UTF-8 string (with NUL terminator, per the format) and return its
+   * builder offset.
+   */
   createString(value: string): number {
     const utf8 = _encoder.encode(value);
     this.addInt8(0);
@@ -1013,8 +1028,8 @@ export class Builder {
     return this.endVector();
   }
   /**
-  * Write a `[ubyte]` vector from raw bytes and return its builder offset.
-  */
+   * Write a `[ubyte]` vector from raw bytes and return its builder offset.
+   */
   createByteVector(bytes: Uint8Array): number {
     this.startVector(1, bytes.length, 1);
     this.#space -= bytes.length;
@@ -1022,21 +1037,26 @@ export class Builder {
     return this.endVector();
   }
   /**
-  * Finalize the buffer with `rootTable` as the root. An optional 4-character
-  * `fileIdentifier` is stored after the root offset; `sizePrefixed` writes
-  * the standard 4-byte length prefix.
-  *
-  * Throws a `TypeError` if `fileIdentifier` is not exactly 4 characters.
-  */
-  finish(rootTable: number, options?: {
-    fileIdentifier?: string;
-    sizePrefixed?: boolean;
-  }): void {
+   * Finalize the buffer with `rootTable` as the root. An optional 4-character
+   * `fileIdentifier` is stored after the root offset; `sizePrefixed` writes
+   * the standard 4-byte length prefix.
+   *
+   * Throws a `TypeError` if `fileIdentifier` is not exactly 4 characters.
+   */
+  finish(
+    rootTable: number,
+    options?: {
+      fileIdentifier?: string;
+      sizePrefixed?: boolean;
+    },
+  ): void {
     const sizePrefix = options?.sizePrefixed ? SIZEOF_INT : 0;
     const fid = options?.fileIdentifier;
     if (fid !== undefined) {
       if (fid.length !== FILE_IDENTIFIER_LENGTH) {
-        throw new TypeError(`FlatBuffers: file identifier must be exactly ${FILE_IDENTIFIER_LENGTH} characters`);
+        throw new TypeError(
+          `FlatBuffers: file identifier must be exactly ${FILE_IDENTIFIER_LENGTH} characters`,
+        );
       }
       this.prep(this.#minalign, SIZEOF_INT + FILE_IDENTIFIER_LENGTH + sizePrefix);
       for (let i = FILE_IDENTIFIER_LENGTH - 1; i >= 0; i--) {
@@ -1051,9 +1071,9 @@ export class Builder {
     this.#finished = true;
   }
   /**
-  * The finished buffer contents (a view over the builder's storage, not a
-  * copy). Throws if called before `finish()`.
-  */
+   * The finished buffer contents (a view over the builder's storage, not a
+   * copy). Throws if called before `finish()`.
+   */
   bytes(): Uint8Array {
     if (!this.#finished) {
       throw new Error('FlatBuffers: bytes() called before finish()');

@@ -1,6 +1,6 @@
 /**
-* Tests for the URLPattern global.
-*/
+ * Tests for the URLPattern global.
+ */
 import { describe, it } from 'fino:test/test';
 type SymbolRecord = Record<symbol, unknown>;
 describe('constructor — object form', () => {
@@ -15,7 +15,7 @@ describe('constructor — object form', () => {
       protocol: 'https',
       hostname: 'example.com',
       pathname: '/api/:version',
-      search: 'key=:val'
+      search: 'key=:val',
     });
     t.equal(p.protocol, 'https');
     t.equal(p.hostname, 'example.com');
@@ -44,7 +44,7 @@ describe('test()', () => {
   it('URLPattern -- test() matches full URL', (t) => {
     const p = new URLPattern({
       hostname: 'example.com',
-      pathname: '/users/:id'
+      pathname: '/users/:id',
     });
     t.equal(p.test('https://example.com/users/42'), true);
     t.equal(p.test('https://example.com/posts/42'), false);
@@ -102,7 +102,7 @@ describe('exec()', () => {
     const p = new URLPattern({
       protocol: ':proto',
       hostname: 'example.com',
-      pathname: '/'
+      pathname: '/',
     });
     const m = p.exec('https://example.com/');
     t.ok(m !== null);
@@ -112,7 +112,7 @@ describe('exec()', () => {
   it('URLPattern -- exec() search groups', (t) => {
     const p = new URLPattern({
       pathname: '/search',
-      search: 'q=:query'
+      search: 'q=:query',
     });
     const m = p.exec('https://example.com/search?q=hello');
     t.ok(m !== null);
@@ -142,7 +142,7 @@ describe('advanced patterns', () => {
   it('URLPattern -- wildcard hostname', (t) => {
     const p = new URLPattern({
       hostname: '*.example.com',
-      pathname: '/'
+      pathname: '/',
     });
     t.equal(p.test('https://api.example.com/'), true);
     t.equal(p.test('https://cdn.example.com/'), true);
@@ -181,7 +181,7 @@ describe('exec() and test() with baseURL', () => {
   it('test() with baseURL string resolves relative URL', (t) => {
     const p = new URLPattern({
       hostname: 'example.com',
-      pathname: '/api/:version'
+      pathname: '/api/:version',
     });
     t.equal(p.test('/api/v1', 'https://example.com'), true);
     t.equal(p.test('/api/v1', 'https://other.com'), false);
@@ -197,7 +197,7 @@ describe('exec() and test() with baseURL', () => {
   it('constructor object form inherits from baseURL', (t) => {
     const p = new URLPattern({
       pathname: '/users/:id',
-      baseURL: 'https://example.com:8443/root?query#hash'
+      baseURL: 'https://example.com:8443/root?query#hash',
     });
     t.equal(p.protocol, 'https');
     t.equal(p.hostname, 'example.com');
@@ -209,19 +209,22 @@ describe('exec() and test() with baseURL', () => {
   it('constructor object form escapes inherited baseURL pathname literals', (t) => {
     const p = new URLPattern({
       search: 'foo',
-      baseURL: 'https://example.com/a/+/b'
+      baseURL: 'https://example.com/a/+/b',
     });
     t.equal(p.pathname, '/a/\\+/b');
-    t.equal(p.test({
-      search: 'foo',
-      baseURL: 'https://example.com/a/+/b'
-    }), true);
+    t.equal(
+      p.test({
+        search: 'foo',
+        baseURL: 'https://example.com/a/+/b',
+      }),
+      true,
+    );
   });
   it('test() and exec() resolve URLPatternInit input baseURL', (t) => {
     const p = new URLPattern({ pathname: '/users/:id' });
     const input = {
       pathname: '/users/42',
-      baseURL: 'https://example.com'
+      baseURL: 'https://example.com',
     };
     t.equal(p.test(input), true);
     const m = p.exec(input);
@@ -280,7 +283,11 @@ describe('repeat modifiers', () => {
   it(':name+ (one-or-more) matches one segment', (t) => {
     const p = new URLPattern({ pathname: '/:name+' });
     t.equal(p.test('https://example.com/foo'), true, 'matches single segment');
-    t.equal(p.exec('https://example.com/foo')?.pathname.groups.name, 'foo', 'captures the single segment');
+    t.equal(
+      p.exec('https://example.com/foo')?.pathname.groups.name,
+      'foo',
+      'captures the single segment',
+    );
   });
   it(':name+ (one-or-more) matches multiple segments', (t) => {
     const p = new URLPattern({ pathname: '/:name+' });
@@ -302,8 +309,16 @@ describe('repeat modifiers', () => {
   });
   it(':name? (optional) matches present and absent segments', (t) => {
     const p = new URLPattern({ pathname: '/users/:id?' });
-    t.equal(p.exec('https://example.com/users/42')?.pathname.groups.id, '42', 'captures present optional segment');
-    t.equal(p.exec('https://example.com/users/')?.pathname.groups.id, undefined, 'absent optional segment is undefined');
+    t.equal(
+      p.exec('https://example.com/users/42')?.pathname.groups.id,
+      '42',
+      'captures present optional segment',
+    );
+    t.equal(
+      p.exec('https://example.com/users/')?.pathname.groups.id,
+      undefined,
+      'absent optional segment is undefined',
+    );
   });
 });
 describe('escaped characters in patterns', () => {
@@ -314,8 +329,16 @@ describe('escaped characters in patterns', () => {
   });
   it('\\/ matches literal slash', (t) => {
     const p = new URLPattern({ pathname: '/files\\/path' });
-    t.equal(p.test('https://example.com/files/path'), true, 'escaped slash matches a literal slash');
-    t.equal(p.test('https://example.com/filesXpath'), false, 'escaped slash does not match another character');
+    t.equal(
+      p.test('https://example.com/files/path'),
+      true,
+      'escaped slash matches a literal slash',
+    );
+    t.equal(
+      p.test('https://example.com/filesXpath'),
+      false,
+      'escaped slash does not match another character',
+    );
   });
   it('captures named groups beside escaped literals', (t) => {
     const p = new URLPattern({ pathname: '/files\\/:name\\:raw' });
@@ -329,7 +352,7 @@ describe('protocol case sensitivity', () => {
     const p = new URLPattern({
       protocol: 'https',
       hostname: 'example.com',
-      pathname: '/'
+      pathname: '/',
     });
     // Protocol in URL is lowercased by URL parser so this should match
     t.equal(p.test('https://example.com/'), true, 'lowercase https matches');
@@ -339,21 +362,30 @@ describe('protocol case sensitivity', () => {
 });
 describe('URLPattern ignoreCase option', () => {
   it('matches components case-insensitively when enabled', (t) => {
-    const p = new URLPattern({
-      pathname: '/foo/:id',
-      search: 'bar',
-      hash: 'baz'
-    }, { ignoreCase: true });
-    t.equal(p.test({
-      pathname: '/FOO/ABC',
-      search: 'BAR',
-      hash: 'BAZ'
-    }), true);
-    t.equal(p.exec({
-      pathname: '/FOO/ABC',
-      search: 'BAR',
-      hash: 'BAZ'
-    })?.pathname.groups.id, 'ABC');
+    const p = new URLPattern(
+      {
+        pathname: '/foo/:id',
+        search: 'bar',
+        hash: 'baz',
+      },
+      { ignoreCase: true },
+    );
+    t.equal(
+      p.test({
+        pathname: '/FOO/ABC',
+        search: 'BAR',
+        hash: 'BAZ',
+      }),
+      true,
+    );
+    t.equal(
+      p.exec({
+        pathname: '/FOO/ABC',
+        search: 'BAR',
+        hash: 'BAZ',
+      })?.pathname.groups.id,
+      'ABC',
+    );
   });
   it('keeps matching case-sensitive by default', (t) => {
     const p = new URLPattern({ pathname: '/foo/:id' });
@@ -361,18 +393,21 @@ describe('URLPattern ignoreCase option', () => {
   });
   it('accepts ignoreCase with string patterns and baseURL', (t) => {
     const p = new URLPattern('/foo?bar#baz', 'https://example.com:8080', { ignoreCase: true });
-    t.equal(p.test({
-      pathname: '/FOO',
-      search: 'BAR',
-      hash: 'BAZ',
-      baseURL: 'https://example.com:8080'
-    }), true);
+    t.equal(
+      p.test({
+        pathname: '/FOO',
+        search: 'BAR',
+        hash: 'BAZ',
+        baseURL: 'https://example.com:8080',
+      }),
+      true,
+    );
   });
 });
 describe('URLPattern [Symbol.toStringTag]', () => {
   it('URLPattern [Symbol.toStringTag] is "URLPattern"', (t) => {
     const p = new URLPattern({ pathname: '/test' });
-    t.equal(((p as unknown) as SymbolRecord)[Symbol.toStringTag], 'URLPattern');
+    t.equal((p as unknown as SymbolRecord)[Symbol.toStringTag], 'URLPattern');
   });
 });
 describe('URLPattern :name+ modifier (multi-segment)', () => {
@@ -548,8 +583,16 @@ describe('URLPattern — named param in search component', () => {
 describe('URLPattern percent-encoding boundaries', () => {
   it('percent-encoded tokenizer characters in pathname patterns are literal text', (t) => {
     const p = new URLPattern({ pathname: '/files/%3Aid/%28raw%29' });
-    t.equal(p.test('https://example.com/files/%3Aid/%28raw%29'), true, 'encoded colon and parens match literally');
-    t.equal(p.test('https://example.com/files/:id/(raw)'), false, 'encoded tokenizer characters do not match decoded characters');
+    t.equal(
+      p.test('https://example.com/files/%3Aid/%28raw%29'),
+      true,
+      'encoded colon and parens match literally',
+    );
+    t.equal(
+      p.test('https://example.com/files/:id/(raw)'),
+      false,
+      'encoded tokenizer characters do not match decoded characters',
+    );
   });
   it('percent-encoded path delimiters stay inside named captures', (t) => {
     const p = new URLPattern({ pathname: '/files/:name' });
@@ -562,7 +605,11 @@ describe('URLPattern percent-encoding boundaries', () => {
     t.equal(p.pathname, '/a%3Fb', 'encoded question mark remains in pathname pattern');
     t.equal(p.search, '*', 'encoded question mark does not start a search pattern');
     t.equal(p.test('https://example.com/a%3Fb'), true, 'encoded question mark pathname matches');
-    t.equal(p.test('https://example.com/a?b'), false, 'decoded question mark is a URL delimiter, not pathname text');
+    t.equal(
+      p.test('https://example.com/a?b'),
+      false,
+      'decoded question mark is a URL delimiter, not pathname text',
+    );
   });
   it('canonicalizes raw component text to percent-encoded text', (t) => {
     const p = new URLPattern({
@@ -570,20 +617,23 @@ describe('URLPattern percent-encoding boundaries', () => {
       password: 'café',
       pathname: '/café',
       search: 'q=café',
-      hash: 'café'
+      hash: 'café',
     });
     t.equal(p.username, 'caf%C3%A9');
     t.equal(p.password, 'caf%C3%A9');
     t.equal(p.pathname, '/caf%C3%A9');
     t.equal(p.search, 'q=caf%C3%A9');
     t.equal(p.hash, 'caf%C3%A9');
-    t.equal(p.test({
-      username: 'café',
-      password: 'café',
-      pathname: '/café',
-      search: 'q=café',
-      hash: 'café'
-    }), true);
+    t.equal(
+      p.test({
+        username: 'café',
+        password: 'café',
+        pathname: '/café',
+        search: 'q=café',
+        hash: 'café',
+      }),
+      true,
+    );
   });
   it('preserves valid percent escapes and encodes escaped literal text', (t) => {
     t.equal(new URLPattern({ pathname: '/caf%C3%A9' }).pathname, '/caf%C3%A9');
@@ -595,24 +645,42 @@ describe('URLPattern generate()', () => {
   it('generates literal and named pathname groups', (t) => {
     t.equal(new URLPattern({ pathname: '/foo' }).generate('pathname', {}), '/foo');
     t.equal(new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: 'bar' }), '/bar');
-    t.equal(new URLPattern({ pathname: '/foo:bar' }).generate('pathname', { bar: 'baz' }), '/foobaz');
-    t.equal(new URLPattern({ pathname: '/:foo/:bar' }).generate('pathname', {
-      foo: 'baz',
-      bar: 'qux'
-    }), '/baz/qux');
+    t.equal(
+      new URLPattern({ pathname: '/foo:bar' }).generate('pathname', { bar: 'baz' }),
+      '/foobaz',
+    );
+    t.equal(
+      new URLPattern({ pathname: '/:foo/:bar' }).generate('pathname', {
+        foo: 'baz',
+        bar: 'qux',
+      }),
+      '/baz/qux',
+    );
   });
   it('encodes generated pathname groups for special schemes', (t) => {
-    t.equal(new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: '🍅' }), '/%F0%9F%8D%85');
+    t.equal(
+      new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: '🍅' }),
+      '/%F0%9F%8D%85',
+    );
     t.equal(new URLPattern('https://example.com/:foo').generate('pathname', { foo: ' ' }), '/%20');
-    t.equal(new URLPattern('original-scheme://example.com/:foo').generate('pathname', { foo: ' ' }), '/ ');
+    t.equal(
+      new URLPattern('original-scheme://example.com/:foo').generate('pathname', { foo: ' ' }),
+      '/ ',
+    );
   });
   it('canonicalizes generated hostnames', (t) => {
-    t.equal(new URLPattern({ hostname: '{:foo}.example.com' }).generate('hostname', { foo: '🍅' }), 'xn--fi8h.example.com');
+    t.equal(
+      new URLPattern({ hostname: '{:foo}.example.com' }).generate('hostname', { foo: '🍅' }),
+      'xn--fi8h.example.com',
+    );
   });
   it('rejects unsupported generate inputs', (t) => {
     t.throws(() => new URLPattern({ pathname: '/foo' }).generate('invalid', {}), TypeError);
     t.throws(() => new URLPattern({ pathname: '/:foo' }).generate('pathname', {}), TypeError);
-    t.throws(() => new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: 'bar/baz' }), TypeError);
+    t.throws(
+      () => new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: 'bar/baz' }),
+      TypeError,
+    );
     t.throws(() => new URLPattern({ pathname: '*' }).generate('pathname', {}), TypeError);
     t.throws(() => new URLPattern({ pathname: '/{foo}?' }).generate('pathname', {}), TypeError);
     t.throws(() => new URLPattern({ pathname: '/(regexp)' }).generate('pathname', {}), TypeError);
@@ -620,15 +688,71 @@ describe('URLPattern generate()', () => {
 });
 describe('URLPattern.compareComponent()', () => {
   it('orders literal, named, wildcard, regexp, and modifier patterns', (t) => {
-    t.equal(URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/a' }), new URLPattern({ pathname: '/foo/b' })), -1);
-    t.equal(URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/bar' }), new URLPattern({ pathname: '/foo/:bar' })), 1);
-    t.equal(URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/:bar' }), new URLPattern({ pathname: '/foo/*' })), 1);
-    t.equal(URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/{bar}+' }), new URLPattern({ pathname: '/foo/{bar}?' })), 1);
-    t.equal(URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/:b' }), new URLPattern({ pathname: '/foo/:a' })), 0);
+    t.equal(
+      URLPattern.compareComponent(
+        'pathname',
+        new URLPattern({ pathname: '/foo/a' }),
+        new URLPattern({ pathname: '/foo/b' }),
+      ),
+      -1,
+    );
+    t.equal(
+      URLPattern.compareComponent(
+        'pathname',
+        new URLPattern({ pathname: '/foo/bar' }),
+        new URLPattern({ pathname: '/foo/:bar' }),
+      ),
+      1,
+    );
+    t.equal(
+      URLPattern.compareComponent(
+        'pathname',
+        new URLPattern({ pathname: '/foo/:bar' }),
+        new URLPattern({ pathname: '/foo/*' }),
+      ),
+      1,
+    );
+    t.equal(
+      URLPattern.compareComponent(
+        'pathname',
+        new URLPattern({ pathname: '/foo/{bar}+' }),
+        new URLPattern({ pathname: '/foo/{bar}?' }),
+      ),
+      1,
+    );
+    t.equal(
+      URLPattern.compareComponent(
+        'pathname',
+        new URLPattern({ pathname: '/foo/:b' }),
+        new URLPattern({ pathname: '/foo/:a' }),
+      ),
+      0,
+    );
   });
   it('compares the requested URL component', (t) => {
-    t.equal(URLPattern.compareComponent('protocol', new URLPattern({ protocol: 'a' }), new URLPattern({ protocol: 'b' })), -1);
-    t.equal(URLPattern.compareComponent('port', new URLPattern({ port: '9' }), new URLPattern({ port: '100' })), 1);
-    t.equal(URLPattern.compareComponent('pathname', new URLPattern('https://a.example.com/b?a'), new URLPattern('https://b.example.com/a?b')), 1);
+    t.equal(
+      URLPattern.compareComponent(
+        'protocol',
+        new URLPattern({ protocol: 'a' }),
+        new URLPattern({ protocol: 'b' }),
+      ),
+      -1,
+    );
+    t.equal(
+      URLPattern.compareComponent(
+        'port',
+        new URLPattern({ port: '9' }),
+        new URLPattern({ port: '100' }),
+      ),
+      1,
+    );
+    t.equal(
+      URLPattern.compareComponent(
+        'pathname',
+        new URLPattern('https://a.example.com/b?a'),
+        new URLPattern('https://b.example.com/a?b'),
+      ),
+      1,
+    );
   });
 });

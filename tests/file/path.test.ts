@@ -1,8 +1,19 @@
 /**
-* Tests for fino:path — Path class and module-level helpers.
-*/
+ * Tests for fino:path — Path class and module-level helpers.
+ */
 import { describe, it } from 'fino:test/test';
-import { Path, join, resolve, normalize, dirname, basename, extname, isAbsolute, relative, sep } from 'fino:file/path';
+import {
+  Path,
+  join,
+  resolve,
+  normalize,
+  dirname,
+  basename,
+  extname,
+  isAbsolute,
+  relative,
+  sep,
+} from 'fino:file/path';
 describe('Constructor / coercion', () => {
   it('constructs from string', (t) => {
     const p = new Path('/usr/local/bin');
@@ -45,7 +56,11 @@ describe('sep', () => {
     const drivePath = String.raw`C:\temp\file.txt`;
     const dottedDrivePath = String.raw`C:\temp\..\file.txt`;
     t.equal(isAbsolute(drivePath), false, 'drive-letter paths are not absolute on POSIX');
-    t.equal(normalize(dottedDrivePath).toString(), dottedDrivePath, 'backslashes are ordinary characters on POSIX');
+    t.equal(
+      normalize(dottedDrivePath).toString(),
+      dottedDrivePath,
+      'backslashes are ordinary characters on POSIX',
+    );
     t.equal(basename(drivePath), drivePath, 'backslashes are not path separators on POSIX');
   });
 });

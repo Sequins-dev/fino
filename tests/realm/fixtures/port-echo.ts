@@ -1,10 +1,10 @@
 /**
-* Fixture: listens for raw port messages and echoes data back.
-*
-* Receives `{ tag: number, data: unknown }` and replies with `{ tag, data }`.
-* Useful for testing low-level ThreadPort transfer semantics.
-* Stays alive until terminated.
-*/
+ * Fixture: listens for raw port messages and echoes data back.
+ *
+ * Receives `{ tag: number, data: unknown }` and replies with `{ tag, data }`.
+ * Useful for testing low-level ThreadPort transfer semantics.
+ * Stays alive until terminated.
+ */
 import { port } from 'fino:realm/self';
 const activePort = port ?? (globalThis as any).realmPort;
 if (activePort === undefined) {
@@ -18,7 +18,7 @@ activePort.onmessage = (ev) => {
   if (msg && typeof msg === 'object' && typeof msg.tag === 'number') {
     activePort.postMessage({
       tag: msg.tag,
-      data: msg.data
+      data: msg.data,
     });
   }
 };

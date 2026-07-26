@@ -1,40 +1,40 @@
 /**
-* h2spec — RFC 7540/7541 conformance suite.
-*
-* Runs the external `h2spec` binary against a live fino HTTPS server (TLS +
-* ALPN h2). h2spec is skipped if HTTP/2 or TLS support is unavailable in the
-* runtime. Missing `h2spec` harness binaries are hard failures, not skips.
-*
-* ## Pass/fail
-*
-* The test parses h2spec's JUnit XML output and fails when any scheduled case
-* fails. h2spec v2.6 exposes no server-side `http2/6.6` PUSH_PROMISE cases in
-* `--dryrun`; Fino still covers client-sent PUSH_PROMISE rejection locally.
-* Every scheduled h2spec unit is its own test so failures identify the exact
-* Generic, HTTP/2, or HPACK leaf that failed.
-*
-* ## Per-unit invocation
-*
-* h2spec v2.6 has a Go-level panic in its inter-section transition code when
-* passed multiple section args in one invocation. Running sections 3-8 in a
-* single call reliably crashes before writing JUnit. The fix: invoke h2spec
-* once per dry-run leaf; each invocation writes its own JUnit file and maps to
-* one Fino test.
-*
-* ## Case IDs
-*
-* h2spec uses classname+testname from its JUnit XML to form IDs:
-*   classname="http2/6.5.3"  name="1" → id "http2/6.5.3/1"
-*   classname="hpack/2.3"    name="1" → id "hpack/2.3/1"
-*
-* ## Running locally
-*
-*   brew install h2spec          # macOS
-*   go install github.com/summerwind/h2spec/cmd/h2spec@latest  # any platform
-*
-* Then:
-*   cargo run -- test tests/integration/h2spec.test.ts
-*/
+ * h2spec — RFC 7540/7541 conformance suite.
+ *
+ * Runs the external `h2spec` binary against a live fino HTTPS server (TLS +
+ * ALPN h2). h2spec is skipped if HTTP/2 or TLS support is unavailable in the
+ * runtime. Missing `h2spec` harness binaries are hard failures, not skips.
+ *
+ * ## Pass/fail
+ *
+ * The test parses h2spec's JUnit XML output and fails when any scheduled case
+ * fails. h2spec v2.6 exposes no server-side `http2/6.6` PUSH_PROMISE cases in
+ * `--dryrun`; Fino still covers client-sent PUSH_PROMISE rejection locally.
+ * Every scheduled h2spec unit is its own test so failures identify the exact
+ * Generic, HTTP/2, or HPACK leaf that failed.
+ *
+ * ## Per-unit invocation
+ *
+ * h2spec v2.6 has a Go-level panic in its inter-section transition code when
+ * passed multiple section args in one invocation. Running sections 3-8 in a
+ * single call reliably crashes before writing JUnit. The fix: invoke h2spec
+ * once per dry-run leaf; each invocation writes its own JUnit file and maps to
+ * one Fino test.
+ *
+ * ## Case IDs
+ *
+ * h2spec uses classname+testname from its JUnit XML to form IDs:
+ *   classname="http2/6.5.3"  name="1" → id "http2/6.5.3/1"
+ *   classname="hpack/2.3"    name="1" → id "hpack/2.3/1"
+ *
+ * ## Running locally
+ *
+ *   brew install h2spec          # macOS
+ *   go install github.com/summerwind/h2spec/cmd/h2spec@latest  # any platform
+ *
+ * Then:
+ *   cargo run -- test tests/integration/h2spec.test.ts
+ */
 import { describe, it, before, after } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
 import { DiskFileSystem } from 'fino:file';
@@ -58,7 +58,7 @@ const _H2SPEC_CANDIDATES = [
   '/usr/local/bin/h2spec',
   `${(globalThis as any).process?.env?.HOME ?? ''}/go/bin/h2spec`,
   '/usr/bin/h2spec',
-  '/usr/local/go/bin/h2spec'
+  '/usr/local/go/bin/h2spec',
 ];
 async function _findH2spec(): Promise<string | null> {
   const fs = new DiskFileSystem('/');
@@ -100,7 +100,13 @@ interface H2specTestContext {
   fail(message?: string): void;
 }
 function _decodeXml(s: string): string {
-  return s.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10))).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, '\'');
+  return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
 }
 function _parseJunit(xml: string): H2specResults {
   const passing: string[] = [];
@@ -115,7 +121,7 @@ function _parseJunit(xml: string): H2specResults {
   while ((m = tagRe.exec(xml)) !== null) {
     const attrs = m[1];
     const isSelfClosing = m[2] === '/>';
-    const body = isSelfClosing ? '' : m[3] ?? '';
+    const body = isSelfClosing ? '' : (m[3] ?? '');
     const pkg = _decodeXml(pkgRe.exec(attrs)?.[1] ?? '');
     const cls = _decodeXml(clsRe.exec(attrs)?.[1] ?? '');
     if (!pkg && !cls) continue;
@@ -128,7 +134,7 @@ function _parseJunit(xml: string): H2specResults {
   }
   return {
     passing,
-    failing
+    failing,
   };
 }
 function _mergeH2specResults(aggregate: H2specAggregate, results: H2specResults): void {
@@ -174,7 +180,7 @@ function _parseH2specDryrun(stdout: string): H2specDryrunInfo {
       stack.push({
         indent,
         number: section[2],
-        path
+        path,
       });
       labels.set(path, section[3].trim());
       continue;
@@ -191,7 +197,7 @@ function _parseH2specDryrun(stdout: string): H2specDryrunInfo {
   }
   return {
     units,
-    labels
+    labels,
   };
 }
 // ---------------------------------------------------------------------------
@@ -364,12 +370,12 @@ const _H2SPEC_UNITS = [
   'hpack/5.2/2',
   'hpack/5.2/3',
   'hpack/6.1/1',
-  'hpack/6.3/1'
+  'hpack/6.3/1',
 ];
 function _newH2specUnitGroup(): H2specUnitGroup {
   return {
     children: new Map(),
-    leaves: []
+    leaves: [],
   };
 }
 function _groupH2specUnits(units: string[]): H2specUnitGroup {
@@ -391,11 +397,20 @@ function _groupH2specUnits(units: string[]): H2specUnitGroup {
   }
   return root;
 }
-function _h2specLabel(kind: 'suite' | 'section' | 'case', number: string, path: string, labels: Map<string, string>): string {
+function _h2specLabel(
+  kind: 'suite' | 'section' | 'case',
+  number: string,
+  path: string,
+  labels: Map<string, string>,
+): string {
   const title = labels.get(path);
   return title ? `${kind} ${number} - ${title}` : `${kind} ${number}`;
 }
-async function _runSection(h2specPath: string, section: string, port: number): Promise<{
+async function _runSection(
+  h2specPath: string,
+  section: string,
+  port: number,
+): Promise<{
   xml: string;
   stderr: string;
 }> {
@@ -416,7 +431,7 @@ async function _runSection(h2specPath: string, section: string, port: number): P
       '-t',
       '-k',
       '-j',
-      junitPath
+      junitPath,
     ]);
     // Close stdin immediately — h2spec doesn't read it, and leaving it open
     // leaks the stdinW fd across sections.
@@ -429,7 +444,8 @@ async function _runSection(h2specPath: string, section: string, port: number): P
     })();
     // stdout is progress output; drain but discard
     const drainOut = (async () => {
-      for await (const _ of proc.stdout) {}
+      for await (const _ of proc.stdout) {
+      }
     })();
     await proc.wait();
     await drainOut;
@@ -450,14 +466,15 @@ async function _runSection(h2specPath: string, section: string, port: number): P
       xml = decodeUtf8(await file.bytes());
       await file.close();
     } catch {}
-    if (xml.length > 0) return {
-      xml,
-      stderr: lastStderr
-    };
+    if (xml.length > 0)
+      return {
+        xml,
+        stderr: lastStderr,
+      };
   }
   return {
     xml: '',
-    stderr: lastStderr
+    stderr: lastStderr,
   };
 }
 async function _runDryrun(h2specPath: string): Promise<string> {
@@ -487,7 +504,11 @@ async function _runDryrun(h2specPath: string): Promise<string> {
   }
   return decodeUtf8(_concat(stdoutChunks));
 }
-async function _assertH2specUnitPasses(t: H2specTestContext, unit: string, port: number): Promise<void> {
+async function _assertH2specUnitPasses(
+  t: H2specTestContext,
+  unit: string,
+  port: number,
+): Promise<void> {
   let lastFailing: string[] = [];
   let lastStderr = '';
   for (let attempt = 1; attempt <= 6; attempt++) {
@@ -513,12 +534,23 @@ async function _assertH2specUnitPasses(t: H2specTestContext, unit: string, port:
     lastFailing = parsed.failing;
   }
   const lines = lastFailing.map((id) => `  ${id}`).join('\n');
-  t.fail(`${lastFailing.length} h2spec case(s) failed after retries:\n${lines}` + (lastStderr.trim() ? `\n\nstderr:\n${lastStderr.trim()}` : ''));
+  t.fail(
+    `${lastFailing.length} h2spec case(s) failed after retries:\n${lines}` +
+      (lastStderr.trim() ? `\n\nstderr:\n${lastStderr.trim()}` : ''),
+  );
 }
-function _defineH2specUnitTests(group: H2specUnitGroup, prefix: string[], getPort: () => number, labels: Map<string, string>): void {
+function _defineH2specUnitTests(
+  group: H2specUnitGroup,
+  prefix: string[],
+  getPort: () => number,
+  labels: Map<string, string>,
+): void {
   for (const [name, child] of group.children) {
     const path = [...prefix, name].join('/');
-    const label = prefix.length === 0 ? _h2specLabel('suite', name, path, labels) : _h2specLabel('section', name, path, labels);
+    const label =
+      prefix.length === 0
+        ? _h2specLabel('suite', name, path, labels)
+        : _h2specLabel('section', name, path, labels);
     describe(label, () => {
       _defineH2specUnitTests(child, [...prefix, name], getPort, labels);
     });
@@ -539,10 +571,13 @@ const skip = (!h2Available || !tlsAvailable) && 'requires libnghttp2 and OpenSSL
 if (specSuitesEnabled && !skip && !h2specPath) {
   throw new Error(`h2spec harness unavailable: install h2spec (${_H2SPEC_CANDIDATES[0]})`);
 }
-const h2specDryrunInfo = specSuitesEnabled && !skip ? _parseH2specDryrun(await _runDryrun(h2specPath!)) : {
-  units: [],
-  labels: new Map<string, string>()
-};
+const h2specDryrunInfo =
+  specSuitesEnabled && !skip
+    ? _parseH2specDryrun(await _runDryrun(h2specPath!))
+    : {
+        units: [],
+        labels: new Map<string, string>(),
+      };
 describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
   if (!specSuitesEnabled) {
     it('preflight', { skip: specSuiteSkipReason }, () => {});
@@ -552,20 +587,24 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
   let port: number;
   before(async () => {
     if (skip) return;
-    server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
+    server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('ok'),
+    );
     port = server.port;
   });
   after(async () => {
     if (server) await server.close();
   });
   it('treats a later duplicate pass as clearing an earlier failure', (t) => {
-    const caseId = 'http2/5.1.2/5 Sends a RST_STREAM frame to idle stream after reaching the concurrent stream limit';
+    const caseId =
+      'http2/5.1.2/5 Sends a RST_STREAM frame to idle stream after reaching the concurrent stream limit';
     const first = _parseJunit(`
       <testsuite>
         <testcase package="http2/5.1.2" classname="5 Sends a RST_STREAM frame to idle stream after reaching the concurrent stream limit">
@@ -580,7 +619,7 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     `);
     const aggregate: H2specAggregate = {
       passing: new Set(),
-      failing: new Set()
+      failing: new Set(),
     };
     _mergeH2specResults(aggregate, first);
     _mergeH2specResults(aggregate, second);
@@ -592,13 +631,17 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     const scheduled = [..._H2SPEC_UNITS];
     const missing = actual.filter((unit) => !scheduled.includes(unit));
     const extra = scheduled.filter((unit) => !actual.includes(unit));
-    t.deepEqual({
-      missing,
-      extra
-    }, {
-      missing: [],
-      extra: []
-    }, 'scheduled leaves match h2spec --dryrun');
+    t.deepEqual(
+      {
+        missing,
+        extra,
+      },
+      {
+        missing: [],
+        extra: [],
+      },
+      'scheduled leaves match h2spec --dryrun',
+    );
   });
   _defineH2specUnitTests(_groupH2specUnits(_H2SPEC_UNITS), [], () => port, h2specDryrunInfo.labels);
 });

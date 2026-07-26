@@ -1,117 +1,121 @@
 /**
-* internal:net/http/h3/client - HTTP/3 client session over QUIC.
-*
-* Drives the client half of an HTTP/3 connection: it wraps an
-* already-established `QuicConnection`, binds the three mandatory local
-* unidirectional streams (control + QPACK encoder/decoder), and translates
-* nghttp3's stream callbacks into Fetch-compatible `Response` objects. Request
-* submission, response header/body/trailer assembly, GOAWAY handling, and
-* stream close/error propagation all live here. Public client APIs — `fetch()`
-* and `HttpClient` in `fino:net/http` — reach this module indirectly; callers
-* rarely instantiate an `H3ClientSession` directly.
-*
-* A session is created with `H3ClientSession.create(conn)` after the QUIC
-* handshake completes with ALPN `h3`. Each `request()` opens a fresh
-* bidirectional stream, streams the body, and resolves as soon as the response
-* headers arrive — the body is exposed as a streaming `Response` whose bytes and
-* trailers are pumped in lazily by the nghttp3 callbacks. The session multiplexes
-* any number of concurrent requests over the single connection.
-*
-* Two failure modes are handled beyond ordinary stream resets. A server GOAWAY
-* marks the highest stream id the peer will still service; requests numbered
-* above it (or opened after GOAWAY) are rejected rather than left hanging, and
-* the underlying QUIC connection closing rejects every in-flight request. The
-* session also supports WebTransport over HTTP/3 via `webtransport()`, which
-* performs an Extended CONNECT after confirming the peer advertised the required
-* SETTINGS.
-*
-* The session is disposable: `close()` (or a `using` binding via
-* `Symbol.dispose`) shuts the nghttp3 session down once outstanding streams
-* drain.
-*
-* ```ts no_run
-* import { H3ClientSession } from 'internal:net/http/h3/client';
-* import { QuicEndpoint } from 'fino:net/quic';
-*
-* const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
-* const conn = await endpoint.connect({ address: '203.0.113.5:443', alpnProtocols: ['h3'] });
-* using session = await H3ClientSession.create(conn);
-*
-* const response = await session.request('https://example.com/api', {
-*   method: 'POST',
-*   headers: { 'content-type': 'application/json' },
-*   body: JSON.stringify({ hello: 'world' }),
-* });
-* console.log(response.status, await response.text());
-* await endpoint.close();
-* ```
-*
-* HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
-*
-* @internal
-*/
+ * internal:net/http/h3/client - HTTP/3 client session over QUIC.
+ *
+ * Drives the client half of an HTTP/3 connection: it wraps an
+ * already-established `QuicConnection`, binds the three mandatory local
+ * unidirectional streams (control + QPACK encoder/decoder), and translates
+ * nghttp3's stream callbacks into Fetch-compatible `Response` objects. Request
+ * submission, response header/body/trailer assembly, GOAWAY handling, and
+ * stream close/error propagation all live here. Public client APIs — `fetch()`
+ * and `HttpClient` in `fino:net/http` — reach this module indirectly; callers
+ * rarely instantiate an `H3ClientSession` directly.
+ *
+ * A session is created with `H3ClientSession.create(conn)` after the QUIC
+ * handshake completes with ALPN `h3`. Each `request()` opens a fresh
+ * bidirectional stream, streams the body, and resolves as soon as the response
+ * headers arrive — the body is exposed as a streaming `Response` whose bytes and
+ * trailers are pumped in lazily by the nghttp3 callbacks. The session multiplexes
+ * any number of concurrent requests over the single connection.
+ *
+ * Two failure modes are handled beyond ordinary stream resets. A server GOAWAY
+ * marks the highest stream id the peer will still service; requests numbered
+ * above it (or opened after GOAWAY) are rejected rather than left hanging, and
+ * the underlying QUIC connection closing rejects every in-flight request. The
+ * session also supports WebTransport over HTTP/3 via `webtransport()`, which
+ * performs an Extended CONNECT after confirming the peer advertised the required
+ * SETTINGS.
+ *
+ * The session is disposable: `close()` (or a `using` binding via
+ * `Symbol.dispose`) shuts the nghttp3 session down once outstanding streams
+ * drain.
+ *
+ * ```ts no_run
+ * import { H3ClientSession } from 'internal:net/http/h3/client';
+ * import { QuicEndpoint } from 'fino:net/quic';
+ *
+ * const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+ * const conn = await endpoint.connect({ address: '203.0.113.5:443', alpnProtocols: ['h3'] });
+ * using session = await H3ClientSession.create(conn);
+ *
+ * const response = await session.request('https://example.com/api', {
+ *   method: 'POST',
+ *   headers: { 'content-type': 'application/json' },
+ *   body: JSON.stringify({ hello: 'world' }),
+ * });
+ * console.log(response.status, await response.text());
+ * await endpoint.close();
+ * ```
+ *
+ * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ *
+ * @internal
+ */
 import { Nghttp3Session } from './session.ts';
 import type { H3BodySource, H3SessionCallbacks } from './session.ts';
 import { H3BodyQueue } from './body-queue.ts';
 import { h3Available, NGHTTP3_ERR_CONN_CLOSING } from './bindings.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
-import { WebTransport, _acceptIncomingQuicWebTransportStream, _fromHttp3WebTransport } from '../../../../net/http/webtransport.ts';
+import {
+  WebTransport,
+  _acceptIncomingQuicWebTransportStream,
+  _fromHttp3WebTransport,
+} from '../../../../net/http/webtransport.ts';
 import type { WebTransportOptions } from '../../../../net/http/webtransport.ts';
 import { quicIncomingStreamHook } from '../../quic/endpoint.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
 /**
-* Request options for an HTTP/3 request, extending the standard Fetch
-* `RequestInit` with HTTP/3-specific fields.
-*
-* Everything a normal `fetch()` accepts — `method`, `headers`, `body` — is
-* honoured. Pseudo-headers may be supplied through `headers` (for example a
-* `:authority` or `:protocol` entry) and are extracted before the ordinary
-* headers are serialized; regular header names are lowercased to satisfy HTTP/3
-* field-name rules. The two extra fields carry request trailers and the tuning
-* options used when the request is a WebTransport CONNECT.
-*
-* ```ts no_run
-* import type { H3RequestInit } from 'internal:net/http/h3/client';
-*
-* const init: H3RequestInit = {
-*   method: 'POST',
-*   headers: { 'content-type': 'text/plain' },
-*   body: 'streamed payload',
-*   trailers: [['x-checksum', 'a1b2c3']],
-* };
-* ```
-*/
+ * Request options for an HTTP/3 request, extending the standard Fetch
+ * `RequestInit` with HTTP/3-specific fields.
+ *
+ * Everything a normal `fetch()` accepts — `method`, `headers`, `body` — is
+ * honoured. Pseudo-headers may be supplied through `headers` (for example a
+ * `:authority` or `:protocol` entry) and are extracted before the ordinary
+ * headers are serialized; regular header names are lowercased to satisfy HTTP/3
+ * field-name rules. The two extra fields carry request trailers and the tuning
+ * options used when the request is a WebTransport CONNECT.
+ *
+ * ```ts no_run
+ * import type { H3RequestInit } from 'internal:net/http/h3/client';
+ *
+ * const init: H3RequestInit = {
+ *   method: 'POST',
+ *   headers: { 'content-type': 'text/plain' },
+ *   body: 'streamed payload',
+ *   trailers: [['x-checksum', 'a1b2c3']],
+ * };
+ * ```
+ */
 export interface H3RequestInit extends RequestInit {
   /**
-  * Trailing header fields to send after the request body completes.
-  *
-  * Each entry is a `[name, value]` pair emitted as an HTTP/3 trailer section
-  * once the body stream ends. Useful for integrity digests or other metadata
-  * that can only be computed after the full body is known.
-  */
+   * Trailing header fields to send after the request body completes.
+   *
+   * Each entry is a `[name, value]` pair emitted as an HTTP/3 trailer section
+   * once the body stream ends. Useful for integrity digests or other metadata
+   * that can only be computed after the full body is known.
+   */
   trailers?: Array<[string, string]>;
   /**
-  * Tuning options forwarded to the `WebTransport` session when this request is
-  * an Extended CONNECT initiated through `H3ClientSession.webtransport()`.
-  *
-  * Ignored for ordinary requests.
-  */
+   * Tuning options forwarded to the `WebTransport` session when this request is
+   * an Extended CONNECT initiated through `H3ClientSession.webtransport()`.
+   *
+   * Ignored for ordinary requests.
+   */
   webTransportOptions?: WebTransportOptions;
 }
 /**
-* Per-stream bookkeeping for a request whose response is still being assembled.
-*
-* One entry lives in the session's pending map keyed by QUIC stream id from the
-* moment a request is submitted until the stream is done or errors. It threads
-* the incrementally received `:status`, response headers, streaming body, and
-* trailers together with the resolver/rejecter handles for the response and
-* trailer promises. `inTrailers` tracks whether incoming header callbacks belong
-* to the trailer section; `done` and `responseResolved` guard against
-* double-resolution when several terminal callbacks fire.
-*
-* @internal
-*/
+ * Per-stream bookkeeping for a request whose response is still being assembled.
+ *
+ * One entry lives in the session's pending map keyed by QUIC stream id from the
+ * moment a request is submitted until the stream is done or errors. It threads
+ * the incrementally received `:status`, response headers, streaming body, and
+ * trailers together with the resolver/rejecter handles for the response and
+ * trailer promises. `inTrailers` tracks whether incoming header callbacks belong
+ * to the trailer section; `done` and `responseResolved` guard against
+ * double-resolution when several terminal callbacks fire.
+ *
+ * @internal
+ */
 interface PendingRequest {
   status: string;
   responseHeaders: Array<[string, string]>;
@@ -127,15 +131,15 @@ interface PendingRequest {
   trailerReject: ((reason: unknown) => void) | null;
 }
 /**
-* Normalizes a request `init.body` into the `H3BodySource` nghttp3 expects.
-*
-* Returns `undefined` for a missing or empty body so no DATA frames are sent.
-* `Uint8Array` and `ArrayBuffer` bodies are passed through as a single buffer;
-* anything else is routed through a throwaway `Request` to obtain a
-* `ReadableStream`, which is streamed frame by frame.
-*
-* @internal
-*/
+ * Normalizes a request `init.body` into the `H3BodySource` nghttp3 expects.
+ *
+ * Returns `undefined` for a missing or empty body so no DATA frames are sent.
+ * `Uint8Array` and `ArrayBuffer` bodies are passed through as a single buffer;
+ * anything else is routed through a throwaway `Request` to obtain a
+ * `ReadableStream`, which is streamed frame by frame.
+ *
+ * @internal
+ */
 function bodySourceFromInit(url: string | URL, init?: H3RequestInit): H3BodySource | undefined {
   if (init?.body == null) return undefined;
   if (init.body instanceof Uint8Array) return init.body.byteLength > 0 ? init.body : undefined;
@@ -143,19 +147,19 @@ function bodySourceFromInit(url: string | URL, init?: H3RequestInit): H3BodySour
     return init.body.byteLength > 0 ? new Uint8Array(init.body) : undefined;
   }
   const stream = new Request(url, init).body;
-  return stream === null ? undefined : stream as any;
+  return stream === null ? undefined : (stream as any);
 }
 /**
-* Looks up a single header value from a request `init` by lowercase name.
-*
-* Handles all three `HeadersInit` shapes — a `Headers` instance, an array of
-* pairs, or a plain object — matching case-insensitively. Used to pull
-* pseudo-headers such as `:authority` and `:protocol` out of caller-supplied
-* headers before the remaining fields are serialized. Returns `null` when the
-* header is absent.
-*
-* @internal
-*/
+ * Looks up a single header value from a request `init` by lowercase name.
+ *
+ * Handles all three `HeadersInit` shapes — a `Headers` instance, an array of
+ * pairs, or a plain object — matching case-insensitively. Used to pull
+ * pseudo-headers such as `:authority` and `:protocol` out of caller-supplied
+ * headers before the remaining fields are serialized. Returns `null` when the
+ * header is absent.
+ *
+ * @internal
+ */
 function getPseudoHeader(init: H3RequestInit | undefined, name: string): string | null {
   const headers = init?.headers;
   if (headers === undefined) return null;
@@ -175,36 +179,36 @@ function getPseudoHeader(init: H3RequestInit | undefined, name: string): string 
   return value === undefined ? null : String(value);
 }
 /**
-* An HTTP/3 client session multiplexed over a single QUIC connection.
-*
-* Construct instances with the async `create()` factory rather than `new` — the
-* constructor is private because setup requires opening streams and installing
-* connection callbacks. Once created, the session lets you issue any number of
-* concurrent requests with `request()`, each of which opens its own
-* bidirectional QUIC stream and resolves to a streaming `Response`. WebTransport
-* sessions are established with `webtransport()`.
-*
-* The session listens for the connection's `close` event and for server GOAWAY:
-* both reject every affected in-flight request with a descriptive error rather
-* than leaving promises pending. Call `close()` when finished, or bind the
-* session with `using` so `Symbol.dispose` closes it automatically.
-*
-* ```ts no_run
-* import { H3ClientSession } from 'internal:net/http/h3/client';
-* import { QuicEndpoint } from 'fino:net/quic';
-*
-* const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
-* const conn = await endpoint.connect({ address: '203.0.113.5:443', alpnProtocols: ['h3'] });
-* using session = await H3ClientSession.create(conn);
-*
-* const [a, b] = await Promise.all([
-*   session.request('https://example.com/a'),
-*   session.request('https://example.com/b'),
-* ]);
-* console.log(a.status, b.status);
-* await endpoint.close();
-* ```
-*/
+ * An HTTP/3 client session multiplexed over a single QUIC connection.
+ *
+ * Construct instances with the async `create()` factory rather than `new` — the
+ * constructor is private because setup requires opening streams and installing
+ * connection callbacks. Once created, the session lets you issue any number of
+ * concurrent requests with `request()`, each of which opens its own
+ * bidirectional QUIC stream and resolves to a streaming `Response`. WebTransport
+ * sessions are established with `webtransport()`.
+ *
+ * The session listens for the connection's `close` event and for server GOAWAY:
+ * both reject every affected in-flight request with a descriptive error rather
+ * than leaving promises pending. Call `close()` when finished, or bind the
+ * session with `using` so `Symbol.dispose` closes it automatically.
+ *
+ * ```ts no_run
+ * import { H3ClientSession } from 'internal:net/http/h3/client';
+ * import { QuicEndpoint } from 'fino:net/quic';
+ *
+ * const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+ * const conn = await endpoint.connect({ address: '203.0.113.5:443', alpnProtocols: ['h3'] });
+ * using session = await H3ClientSession.create(conn);
+ *
+ * const [a, b] = await Promise.all([
+ *   session.request('https://example.com/a'),
+ *   session.request('https://example.com/b'),
+ * ]);
+ * console.log(a.status, b.status);
+ * await endpoint.close();
+ * ```
+ */
 export class H3ClientSession {
   #conn: QuicConnection;
   #session: Nghttp3Session;
@@ -227,25 +231,25 @@ export class H3ClientSession {
     });
   }
   /**
-  * Creates a client session over an established QUIC connection.
-  *
-  * Wires up the nghttp3 client callbacks, installs the connection's
-  * incoming-stream hook (so remote control, QPACK, and WebTransport streams are
-  * captured immediately), and opens and binds the three mandatory local
-  * unidirectional streams: the HTTP/3 control stream and the QPACK
-  * encoder/decoder streams. The connection must already have completed its
-  * handshake with ALPN `h3`.
-  *
-  * Throws if libnghttp3 is unavailable, or if opening/binding the local
-  * unidirectional streams fails (in which case the nghttp3 session is closed
-  * before the error propagates).
-  *
-  * ```ts no_run
-  * import { H3ClientSession } from 'internal:net/http/h3/client';
-  *
-  * const session = await H3ClientSession.create(conn);
-  * ```
-  */
+   * Creates a client session over an established QUIC connection.
+   *
+   * Wires up the nghttp3 client callbacks, installs the connection's
+   * incoming-stream hook (so remote control, QPACK, and WebTransport streams are
+   * captured immediately), and opens and binds the three mandatory local
+   * unidirectional streams: the HTTP/3 control stream and the QPACK
+   * encoder/decoder streams. The connection must already have completed its
+   * handshake with ALPN `h3`.
+   *
+   * Throws if libnghttp3 is unavailable, or if opening/binding the local
+   * unidirectional streams fails (in which case the nghttp3 session is closed
+   * before the error propagates).
+   *
+   * ```ts no_run
+   * import { H3ClientSession } from 'internal:net/http/h3/client';
+   *
+   * const session = await H3ClientSession.create(conn);
+   * ```
+   */
   static async create(conn: QuicConnection): Promise<H3ClientSession> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
     let session: Nghttp3Session;
@@ -272,7 +276,7 @@ export class H3ClientSession {
             reject: null,
             trailers: Promise.resolve(new Headers()),
             trailerResolve: null,
-            trailerReject: null
+            trailerReject: null,
           });
         }
       },
@@ -339,7 +343,9 @@ export class H3ClientSession {
           if (sid > lastStreamId) {
             if (!req.done) {
               req.done = true;
-              const error = new Error(`H3 stream rejected: server GOAWAY (last accepted: ${lastStreamId})`);
+              const error = new Error(
+                `H3 stream rejected: server GOAWAY (last accepted: ${lastStreamId})`,
+              );
               req.body.error(error);
               req.trailerReject?.(error);
               req.reject?.(error);
@@ -350,23 +356,27 @@ export class H3ClientSession {
       },
       onRecvSettings() {
         instance.#markPeerSettingsReceived();
-      }
+      },
     };
     session = Nghttp3Session.createClient(callbacks, { webTransport: true });
     instance = new H3ClientSession(conn, session);
-    conn.addEventListener('close', () => {
-      for (const [, req] of instance.#pending) {
-        if (!req.done) {
-          req.done = true;
-          const error = new Error('H3 stream closed: connection closed');
-          req.body.error(error);
-          req.trailerReject?.(error);
-          req.reject?.(error);
+    conn.addEventListener(
+      'close',
+      () => {
+        for (const [, req] of instance.#pending) {
+          if (!req.done) {
+            req.done = true;
+            const error = new Error('H3 stream closed: connection closed');
+            req.body.error(error);
+            req.trailerReject?.(error);
+            req.reject?.(error);
+          }
         }
-      }
-      instance.#pending.clear();
-      void instance.#session.closeWhenIdle();
-    }, { once: true });
+        instance.#pending.clear();
+        void instance.#session.closeWhenIdle();
+      },
+      { once: true },
+    );
     // Install the incoming-stream hook early so remote control/QPACK and
     // WebTransport streams are captured as soon as they arrive. The hook bypasses
     // the QuicStreamEvent/EventTarget/#streamQueue path (the session is the sole
@@ -378,7 +388,7 @@ export class H3ClientSession {
           if (instance.#webTransports.size === 0) {
             if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
             while (true) {
-              const bytes = await stream.reader.read() as Uint8Array | null;
+              const bytes = (await stream.reader.read()) as Uint8Array | null;
               const fin = bytes === null;
               session.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -400,7 +410,7 @@ export class H3ClientSession {
           if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
           session.readStream(sid, routed.buffer, false);
           while (true) {
-            const bytes = await stream.reader.read() as Uint8Array | null;
+            const bytes = (await stream.reader.read()) as Uint8Array | null;
             const fin = bytes === null;
             session.readStream(sid, bytes ?? new Uint8Array(0), fin);
             if (fin) break;
@@ -410,16 +420,12 @@ export class H3ClientSession {
     };
     // Bind the 3 mandatory local unidirectional streams.
     try {
-      const [controlStream, qencStream, qdecStream] = await Promise.all([
+      const [controlStream, qencStream, qdecStream] = (await Promise.all([
         conn.openUnidirectionalStream(),
         conn.openUnidirectionalStream(),
-        conn.openUnidirectionalStream()
-      ]) as QuicStream[];
-      for (const s of [
-        controlStream,
-        qencStream,
-        qdecStream
-      ]) {
+        conn.openUnidirectionalStream(),
+      ])) as QuicStream[];
+      for (const s of [controlStream, qencStream, qdecStream]) {
         session.addQuicStream(BigInt(s.id), s.writer);
       }
       session.bindControlStream(BigInt(controlStream.id));
@@ -432,36 +438,38 @@ export class H3ClientSession {
     return instance;
   }
   /**
-  * Sends an HTTP/3 request and resolves once the response headers arrive.
-  *
-  * Opens a fresh bidirectional QUIC stream, builds the pseudo-header block
-  * (`:method`, `:path`, `:scheme`, `:authority`, and an optional `:protocol`)
-  * plus the caller's lowercased headers, and submits the request. The body is
-  * derived from `init.body` and any `init.trailers` are appended after it. The
-  * returned `Response` streams: its status and headers are final on resolution,
-  * but body bytes and trailers continue to be filled in by the connection's
-  * read loop, so read the body (for example with `response.text()` or
-  * `.arrayBuffer()`) before closing the connection.
-  *
-  * The response is rejected — and the body/trailers errored — if the stream is
-  * reset or closed with an error, if the connection closes, or if the peer
-  * returns a missing or out-of-range `:status`. Throws synchronously if the
-  * session is already closed, or immediately rejects if a server GOAWAY has
-  * arrived and this request would exceed the last accepted stream id.
-  *
-  * ```ts no_run
-  * const res = await session.request('https://example.com/upload', {
-  *   method: 'PUT',
-  *   headers: { 'content-type': 'application/octet-stream' },
-  *   body: new Uint8Array([1, 2, 3]),
-  * });
-  * if (res.ok) console.log(await res.text());
-  * ```
-  */
+   * Sends an HTTP/3 request and resolves once the response headers arrive.
+   *
+   * Opens a fresh bidirectional QUIC stream, builds the pseudo-header block
+   * (`:method`, `:path`, `:scheme`, `:authority`, and an optional `:protocol`)
+   * plus the caller's lowercased headers, and submits the request. The body is
+   * derived from `init.body` and any `init.trailers` are appended after it. The
+   * returned `Response` streams: its status and headers are final on resolution,
+   * but body bytes and trailers continue to be filled in by the connection's
+   * read loop, so read the body (for example with `response.text()` or
+   * `.arrayBuffer()`) before closing the connection.
+   *
+   * The response is rejected — and the body/trailers errored — if the stream is
+   * reset or closed with an error, if the connection closes, or if the peer
+   * returns a missing or out-of-range `:status`. Throws synchronously if the
+   * session is already closed, or immediately rejects if a server GOAWAY has
+   * arrived and this request would exceed the last accepted stream id.
+   *
+   * ```ts no_run
+   * const res = await session.request('https://example.com/upload', {
+   *   method: 'PUT',
+   *   headers: { 'content-type': 'application/octet-stream' },
+   *   body: new Uint8Array([1, 2, 3]),
+   * });
+   * if (res.ok) console.log(await res.text());
+   * ```
+   */
   async request(url: string | URL, init?: H3RequestInit): Promise<Response> {
     if (this.#closed) throw new Error('H3 session is closed');
     if (this.#goawayLastStreamId !== null) {
-      throw new Error(`H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`);
+      throw new Error(
+        `H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`,
+      );
     }
     const parsed = typeof url === 'string' ? new URL(url) : url;
     const method = init?.method ?? 'GET';
@@ -470,7 +478,7 @@ export class H3ClientSession {
       [':method', method],
       [':path', parsed.pathname + parsed.search],
       [':scheme', parsed.protocol.replace(':', '')],
-      [':authority', authority]
+      [':authority', authority],
     ];
     const protocol = getPseudoHeader(init, ':protocol');
     if (protocol !== null) reqHeaders.push([':protocol', protocol]);
@@ -494,14 +502,16 @@ export class H3ClientSession {
     // immediately rather than letting it linger until connection close.
     if (this.#goawayLastStreamId !== null && sid > this.#goawayLastStreamId) {
       void quicStream.writer.close();
-      throw new Error(`H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`);
+      throw new Error(
+        `H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`,
+      );
     }
     this.#session.addQuicStream(sid, quicStream.writer);
     // Start reading the response on this stream.
     void (async () => {
       try {
         while (true) {
-          const bytes = await quicStream.reader.read() as Uint8Array | null;
+          const bytes = (await quicStream.reader.read()) as Uint8Array | null;
           const fin = bytes === null;
           this.#session.readStream(sid, bytes ?? new Uint8Array(0), fin);
           if (fin) break;
@@ -539,7 +549,7 @@ export class H3ClientSession {
         reject: null,
         trailers,
         trailerResolve,
-        trailerReject
+        trailerReject,
       };
       pending.resolve = (response) => resolve(response);
       pending.reject = reject;
@@ -551,13 +561,22 @@ export class H3ClientSession {
     } catch (e) {
       const pending = this.#pending.get(sid);
       this.#pending.delete(sid);
-      const message = typeof (e as {
-        message?: unknown;
-      })?.message === 'string' ? (e as {
-        message: string;
-      }).message : String(e);
+      const message =
+        typeof (
+          e as {
+            message?: unknown;
+          }
+        )?.message === 'string'
+          ? (
+              e as {
+                message: string;
+              }
+            ).message
+          : String(e);
       if (message.includes(`failed: ${NGHTTP3_ERR_CONN_CLOSING}`)) {
-        const error = new Error(`H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId ?? 'unknown'})`);
+        const error = new Error(
+          `H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId ?? 'unknown'})`,
+        );
         pending?.body.error(error);
         pending?.trailerReject?.(error);
         pending?.reject?.(error);
@@ -568,32 +587,34 @@ export class H3ClientSession {
     return responsePromise;
   }
   /**
-  * Opens a WebTransport session over this HTTP/3 connection.
-  *
-  * Waits for the peer's SETTINGS, then performs an Extended CONNECT with
-  * `:protocol` set to `webtransport-h3` at the given URL. On a 2xx response it
-  * wraps the CONNECT stream in a `WebTransport` object that shares this
-  * connection and routes its own incoming streams; a non-2xx status is treated
-  * as a rejection. The returned session is tracked until its `closed` promise
-  * settles.
-  *
-  * Throws if the session is closed, if the peer did not advertise the SETTINGS
-  * required for Extended CONNECT / H3 DATAGRAM / WebTransport, or if the server
-  * rejects the CONNECT (non-2xx status) or fails to expose the CONNECT stream
-  * id.
-  *
-  * ```ts no_run
-  * const wt = await session.webtransport('https://example.com/wt', {
-  *   webTransportOptions: { allowPooling: false },
-  * });
-  * const stream = await wt.createBidirectionalStream();
-  * ```
-  */
+   * Opens a WebTransport session over this HTTP/3 connection.
+   *
+   * Waits for the peer's SETTINGS, then performs an Extended CONNECT with
+   * `:protocol` set to `webtransport-h3` at the given URL. On a 2xx response it
+   * wraps the CONNECT stream in a `WebTransport` object that shares this
+   * connection and routes its own incoming streams; a non-2xx status is treated
+   * as a rejection. The returned session is tracked until its `closed` promise
+   * settles.
+   *
+   * Throws if the session is closed, if the peer did not advertise the SETTINGS
+   * required for Extended CONNECT / H3 DATAGRAM / WebTransport, or if the server
+   * rejects the CONNECT (non-2xx status) or fails to expose the CONNECT stream
+   * id.
+   *
+   * ```ts no_run
+   * const wt = await session.webtransport('https://example.com/wt', {
+   *   webTransportOptions: { allowPooling: false },
+   * });
+   * const stream = await wt.createBidirectionalStream();
+   * ```
+   */
   async webtransport(url: string | URL, init: H3RequestInit = {}): Promise<WebTransport> {
     if (this.#closed) throw new Error('H3 session is closed');
     await this.#waitForPeerSettings();
     if (!this.#session.peerWebTransportReady) {
-      throw new Error('WebTransport over HTTP/3 requires peer SETTINGS for Extended CONNECT, H3 DATAGRAM, and WebTransport readiness');
+      throw new Error(
+        'WebTransport over HTTP/3 requires peer SETTINGS for Extended CONNECT, H3 DATAGRAM, and WebTransport readiness',
+      );
     }
     const headers: Array<[string, string]> = [];
     const sourceHeaders = init.headers;
@@ -610,20 +631,21 @@ export class H3ClientSession {
     const response = await this.request(url, {
       ...init,
       method: 'CONNECT',
-      headers
+      headers,
     } as H3RequestInit);
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`WebTransport over HTTP/3 rejected with status ${response.status}`);
     }
     const streamId = (response as any).__h3StreamId as bigint | undefined;
-    if (streamId === undefined) throw new Error('WebTransport over HTTP/3 response did not expose a CONNECT stream id');
+    if (streamId === undefined)
+      throw new Error('WebTransport over HTTP/3 response did not expose a CONNECT stream id');
     const wt = _fromHttp3WebTransport(String(url), {
       connection: this.#conn,
       sessionStreamId: streamId,
       responseHeaders: response.headers,
       protocol: response.headers.get('sec-webtransport-protocol') ?? '',
       options: init.webTransportOptions,
-      routeIncomingStreams: false
+      routeIncomingStreams: false,
     });
     this.#webTransports.set(streamId, wt);
     wt.closed.finally(() => this.#webTransports.delete(streamId)).catch(() => {});
@@ -638,14 +660,14 @@ export class H3ClientSession {
     await this.#peerSettingsReceived;
   }
   /**
-  * Resolves once a server GOAWAY has been observed on this session.
-  *
-  * A test-only helper: it resolves immediately if a GOAWAY has already been
-  * recorded, otherwise it awaits the next one. Not part of the public client
-  * surface.
-  *
-  * @internal
-  */
+   * Resolves once a server GOAWAY has been observed on this session.
+   *
+   * A test-only helper: it resolves immediately if a GOAWAY has already been
+   * recorded, otherwise it awaits the next one. Not part of the public client
+   * surface.
+   *
+   * @internal
+   */
   _waitForGoawayForTest(): Promise<void> {
     if (this.#goawayLastStreamId !== null) return Promise.resolve();
     return this.#goawayReceived;
@@ -656,16 +678,19 @@ export class H3ClientSession {
     pending.responseResolved = true;
     const statusNum = Number(pending.status);
     if (!pending.status || !Number.isInteger(statusNum) || statusNum < 100 || statusNum > 999) {
-      pending.reject?.(new Error(`H3: missing or invalid :status pseudo-header (got: "${pending.status}")`));
+      pending.reject?.(
+        new Error(`H3: missing or invalid :status pseudo-header (got: "${pending.status}")`),
+      );
       this.#pending.delete(streamId);
       return;
     }
     const headers = new Headers(pending.responseHeaders as HeadersInit);
-    const body = statusNum === 204 || statusNum === 205 || statusNum === 304 ? null : pending.body as any;
+    const body =
+      statusNum === 204 || statusNum === 205 || statusNum === 304 ? null : (pending.body as any);
     const response = new Response(body, {
       status: statusNum,
       headers,
-      trailers: () => pending.trailers
+      trailers: () => pending.trailers,
     } as any);
     (response as any).__h3StreamId = streamId;
     pending.resolve?.(response);
@@ -680,45 +705,45 @@ export class H3ClientSession {
     this.#pending.delete(streamId);
   }
   /**
-  * Marks the session closed and shuts down nghttp3 once streams drain.
-  *
-  * Idempotent — a second call is a no-op. New `request()` and `webtransport()`
-  * calls after this throw, but requests already in flight are allowed to finish
-  * as the underlying session closes when idle.
-  *
-  * ```ts no_run
-  * const session = await H3ClientSession.create(conn);
-  * try {
-  *   await session.request('https://example.com/');
-  * } finally {
-  *   session.close();
-  * }
-  * ```
-  */
+   * Marks the session closed and shuts down nghttp3 once streams drain.
+   *
+   * Idempotent — a second call is a no-op. New `request()` and `webtransport()`
+   * calls after this throw, but requests already in flight are allowed to finish
+   * as the underlying session closes when idle.
+   *
+   * ```ts no_run
+   * const session = await H3ClientSession.create(conn);
+   * try {
+   *   await session.request('https://example.com/');
+   * } finally {
+   *   session.close();
+   * }
+   * ```
+   */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     void this.#session.closeWhenIdle();
   }
   /**
-  * Disposes the session by delegating to `close()`, enabling `using` bindings.
-  *
-  * ```ts no_run
-  * using session = await H3ClientSession.create(conn);
-  * // session.close() runs automatically at end of scope
-  * ```
-  */
+   * Disposes the session by delegating to `close()`, enabling `using` bindings.
+   *
+   * ```ts no_run
+   * using session = await H3ClientSession.create(conn);
+   * // session.close() runs automatically at end of scope
+   * ```
+   */
   [Symbol.dispose](): void {
     this.close();
   }
 }
 /**
-* Concatenates byte chunks into a single contiguous `Uint8Array`.
-*
-* Returns the sole chunk unchanged when there is only one, avoiding a copy.
-*
-* @internal
-*/
+ * Concatenates byte chunks into a single contiguous `Uint8Array`.
+ *
+ * Returns the sole chunk unchanged when there is only one, avoiding a copy.
+ *
+ * @internal
+ */
 function concatBytes(parts: Uint8Array[]): Uint8Array {
   if (parts.length === 1) return parts[0]!;
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
@@ -731,35 +756,35 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 /**
-* Reads from an incoming stream until its WebTransport routing prefix is known.
-*
-* Buffers chunks until `inspectWebTransportStreamPrefix` can classify the
-* stream (resolving with the accumulated buffer and parsed prefix), or until the
-* stream ends first (resolving with a `null` prefix, and a `null` buffer if no
-* bytes were seen). Used by the incoming-stream hook to decide whether a new
-* QUIC stream belongs to a WebTransport session or to the HTTP/3 session itself.
-*
-* @internal
-*/
-async function readWebTransportPrefix(reader: {
-  read(): Promise<Uint8Array | null>;
-}): Promise<{
+ * Reads from an incoming stream until its WebTransport routing prefix is known.
+ *
+ * Buffers chunks until `inspectWebTransportStreamPrefix` can classify the
+ * stream (resolving with the accumulated buffer and parsed prefix), or until the
+ * stream ends first (resolving with a `null` prefix, and a `null` buffer if no
+ * bytes were seen). Used by the incoming-stream hook to decide whether a new
+ * QUIC stream belongs to a WebTransport session or to the HTTP/3 session itself.
+ *
+ * @internal
+ */
+async function readWebTransportPrefix(reader: { read(): Promise<Uint8Array | null> }): Promise<{
   buffer: Uint8Array | null;
   prefix: ReturnType<typeof inspectWebTransportStreamPrefix> | null;
 }> {
   const chunks: Uint8Array[] = [];
   while (true) {
     const chunk = await reader.read();
-    if (chunk === null) return {
-      buffer: chunks.length === 0 ? null : concatBytes(chunks),
-      prefix: null
-    };
+    if (chunk === null)
+      return {
+        buffer: chunks.length === 0 ? null : concatBytes(chunks),
+        prefix: null,
+      };
     chunks.push(chunk);
     const buffer = concatBytes(chunks);
     const prefix = inspectWebTransportStreamPrefix(buffer);
-    if (prefix.state !== 'incomplete') return {
-      buffer,
-      prefix
-    };
+    if (prefix.state !== 'incomplete')
+      return {
+        buffer,
+        prefix,
+      };
   }
 }

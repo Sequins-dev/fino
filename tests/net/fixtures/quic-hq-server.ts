@@ -6,11 +6,11 @@ await endpoint.listen({
   address: {
     family: 'ipv4',
     ip: '127.0.0.1',
-    port: 4445
+    port: 4445,
   },
   alpnProtocols: ['hq-interop'],
   certificateFile: 'tests/net/fixtures/test.crt',
-  privateKeyFile: 'tests/net/fixtures/test.key'
+  privateKeyFile: 'tests/net/fixtures/test.key',
 });
 console.log('ready');
 const conn = await endpoint.accept();

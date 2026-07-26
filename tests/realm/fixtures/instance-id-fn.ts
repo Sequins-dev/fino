@@ -1,8 +1,8 @@
 /**
-* Pool worker: returns a module-level random id plus timing marks.
-* A fresh realm re-evaluates the module and produces a new id, so exclusive
-* pools can prove per-call recycling; the timestamps prove sole occupancy.
-*/
+ * Pool worker: returns a module-level random id plus timing marks.
+ * A fresh realm re-evaluates the module and produces a new id, so exclusive
+ * pools can prove per-call recycling; the timestamps prove sole occupancy.
+ */
 const instanceId = Math.random();
 export default async function instanceInfo(delayMs = 0): Promise<{
   id: number;

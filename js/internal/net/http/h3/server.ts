@@ -1,130 +1,137 @@
 /**
-* internal:net/http/h3/server — HTTP/3 server driver over QUIC.
-*
-* This module turns a single established `QuicConnection` into an HTTP/3
-* request/response pump. It drives an `Nghttp3Session` in server mode: nghttp3
-* raises stream callbacks (begin headers, receive header, end headers, data,
-* trailers, stream close/reset), and the driver reassembles each request stream
-* into a Fetch-compatible `Request`, invokes the configured handler, and
-* serializes the returned `Response` — status, header fields, body, and
-* trailers — back over the QUIC stream via `session.submitResponse`.
-*
-* One `H3ServerDriver` instance handles one connection. The transport-level
-* server (`fino:net/http/h3`'s `serve()`) constructs a fresh driver per accepted
-* connection and calls `run()`, so this layer never touches listeners, TLS, or
-* ALPN — it assumes a connection whose ALPN already negotiated `h3`.
-*
-* Request validation follows RFC 9114 strictly: pseudo-headers must precede
-* regular fields, may not repeat, and must be a recognized set; regular field
-* names must be lowercase; connection-specific fields (`connection`,
-* `keep-alive`, `transfer-encoding`, `upgrade`, `proxy-connection`) are
-* rejected. A malformed control block yields a `400` without ever reaching the
-* handler. Bodies stream through an `H3BodyQueue` so the handler can consume the
-* request body incrementally while later frames are still arriving.
-*
-* Beyond plain request/response, the driver understands the `CONNECT` +
-* `:protocol: webtransport-h3` extended-CONNECT handshake. When an
-* `onWebTransport` option is supplied and peer SETTINGS confirm WebTransport
-* support, a matching CONNECT stream is surfaced to the handler as a
-* `WebTransport` session; incoming client-initiated QUIC streams are then routed
-* to the session by inspecting each stream's WebTransport frame prefix rather
-* than feeding it to nghttp3.
-*
-* This is an internal driver — application code should start an HTTP/3 server
-* through `fino:net/http/h3`'s `serve()` or the general `serve()` in
-* `fino:net/http`, both of which own the listener and wire drivers up for you.
-*
-* ```ts no_run
-* import { H3ServerDriver } from 'internal:net/http/h3/server';
-* import type { QuicConnection } from 'fino:net/quic';
-*
-* async function handleConnection(conn: QuicConnection) {
-*   const driver = new H3ServerDriver();
-*   await driver.run(conn, (request) => {
-*     return new Response(`Hello over ${request.url}`, {
-*       headers: { 'content-type': 'text/plain' },
-*     });
-*   });
-* }
-* ```
-*
-* Learn more:
-* - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
-* - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
-* - WebTransport over HTTP/3: https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/
-*
-* @internal
-*/
+ * internal:net/http/h3/server — HTTP/3 server driver over QUIC.
+ *
+ * This module turns a single established `QuicConnection` into an HTTP/3
+ * request/response pump. It drives an `Nghttp3Session` in server mode: nghttp3
+ * raises stream callbacks (begin headers, receive header, end headers, data,
+ * trailers, stream close/reset), and the driver reassembles each request stream
+ * into a Fetch-compatible `Request`, invokes the configured handler, and
+ * serializes the returned `Response` — status, header fields, body, and
+ * trailers — back over the QUIC stream via `session.submitResponse`.
+ *
+ * One `H3ServerDriver` instance handles one connection. The transport-level
+ * server (`fino:net/http/h3`'s `serve()`) constructs a fresh driver per accepted
+ * connection and calls `run()`, so this layer never touches listeners, TLS, or
+ * ALPN — it assumes a connection whose ALPN already negotiated `h3`.
+ *
+ * Request validation follows RFC 9114 strictly: pseudo-headers must precede
+ * regular fields, may not repeat, and must be a recognized set; regular field
+ * names must be lowercase; connection-specific fields (`connection`,
+ * `keep-alive`, `transfer-encoding`, `upgrade`, `proxy-connection`) are
+ * rejected. A malformed control block yields a `400` without ever reaching the
+ * handler. Bodies stream through an `H3BodyQueue` so the handler can consume the
+ * request body incrementally while later frames are still arriving.
+ *
+ * Beyond plain request/response, the driver understands the `CONNECT` +
+ * `:protocol: webtransport-h3` extended-CONNECT handshake. When an
+ * `onWebTransport` option is supplied and peer SETTINGS confirm WebTransport
+ * support, a matching CONNECT stream is surfaced to the handler as a
+ * `WebTransport` session; incoming client-initiated QUIC streams are then routed
+ * to the session by inspecting each stream's WebTransport frame prefix rather
+ * than feeding it to nghttp3.
+ *
+ * This is an internal driver — application code should start an HTTP/3 server
+ * through `fino:net/http/h3`'s `serve()` or the general `serve()` in
+ * `fino:net/http`, both of which own the listener and wire drivers up for you.
+ *
+ * ```ts no_run
+ * import { H3ServerDriver } from 'internal:net/http/h3/server';
+ * import type { QuicConnection } from 'fino:net/quic';
+ *
+ * async function handleConnection(conn: QuicConnection) {
+ *   const driver = new H3ServerDriver();
+ *   await driver.run(conn, (request) => {
+ *     return new Response(`Hello over ${request.url}`, {
+ *       headers: { 'content-type': 'text/plain' },
+ *     });
+ *   });
+ * }
+ * ```
+ *
+ * Learn more:
+ * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
+ * - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
+ * - WebTransport over HTTP/3: https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/
+ *
+ * @internal
+ */
 import { Nghttp3Session } from './session.ts';
 import type { H3SessionCallbacks } from './session.ts';
 import { H3BodyQueue } from './body-queue.ts';
 import { h3Available } from './bindings.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
-import { WebTransport, _acceptIncomingQuicWebTransportStream, _fromHttp3WebTransport } from '../../../../net/http/webtransport.ts';
+import {
+  WebTransport,
+  _acceptIncomingQuicWebTransportStream,
+  _fromHttp3WebTransport,
+} from '../../../../net/http/webtransport.ts';
 import { buildWireRequest } from '../../../../net/http/index.ts';
 import { quicIncomingStreamHook } from '../../quic/endpoint.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
 /**
-* Request handler for an HTTP/3 server.
-*
-* Receives the reassembled request as a Fetch `Request` and returns the
-* `Response` to serialize back over the QUIC stream, either synchronously or as
-* a promise. If the handler throws, or returns a value that is not a `Response`,
-* the driver replies with `500 Internal Server Error` rather than tearing down
-* the connection, so a single failing request cannot take down the whole
-* session.
-*/
+ * Request handler for an HTTP/3 server.
+ *
+ * Receives the reassembled request as a Fetch `Request` and returns the
+ * `Response` to serialize back over the QUIC stream, either synchronously or as
+ * a promise. If the handler throws, or returns a value that is not a `Response`,
+ * the driver replies with `500 Internal Server Error` rather than tearing down
+ * the connection, so a single failing request cannot take down the whole
+ * session.
+ */
 export type H3Handler = (request: Request) => Response | Promise<Response>;
 /**
-* Handler for extended-CONNECT WebTransport sessions over HTTP/3.
-*
-* Invoked when a client opens a `CONNECT` stream carrying
-* `:protocol: webtransport-h3` and the driver was configured with an
-* `onWebTransport` option. The first argument is the CONNECT request (its method
-* is normalized to `GET` for the handler's convenience, with the original
-* CONNECT method and protocol preserved on the request object); the second is a
-* live `WebTransport` session bound to the CONNECT stream.
-*
-* Return the `WebTransport` to accept the session — the driver responds `200`,
-* keeps the CONNECT stream open, and routes subsequent client streams to the
-* session. Return a `Response` instead to reject the upgrade with that status.
-*/
-export type H3WebTransportHandler = (request: Request, session: WebTransport) => WebTransport | Response | Promise<WebTransport | Response>;
+ * Handler for extended-CONNECT WebTransport sessions over HTTP/3.
+ *
+ * Invoked when a client opens a `CONNECT` stream carrying
+ * `:protocol: webtransport-h3` and the driver was configured with an
+ * `onWebTransport` option. The first argument is the CONNECT request (its method
+ * is normalized to `GET` for the handler's convenience, with the original
+ * CONNECT method and protocol preserved on the request object); the second is a
+ * live `WebTransport` session bound to the CONNECT stream.
+ *
+ * Return the `WebTransport` to accept the session — the driver responds `200`,
+ * keeps the CONNECT stream open, and routes subsequent client streams to the
+ * session. Return a `Response` instead to reject the upgrade with that status.
+ */
+export type H3WebTransportHandler = (
+  request: Request,
+  session: WebTransport,
+) => WebTransport | Response | Promise<WebTransport | Response>;
 /**
-* Options controlling optional HTTP/3 driver capabilities.
-*
-* Passed as the third argument to `H3ServerDriver.run`. With no options the
-* driver serves ordinary request/response traffic only; extended-CONNECT
-* upgrades are enabled by supplying handlers here.
-*
-* ```ts no_run
-* import { H3ServerDriver } from 'internal:net/http/h3/server';
-* import type { QuicConnection } from 'fino:net/quic';
-*
-* async function serve(conn: QuicConnection) {
-*   const driver = new H3ServerDriver();
-*   await driver.run(
-*     conn,
-*     () => new Response('ok'),
-*     {
-*       onWebTransport(request, session) {
-*         console.log('WebTransport session for', request.url);
-*         return session; // accept
-*       },
-*     },
-*   );
-* }
-* ```
-*/
+ * Options controlling optional HTTP/3 driver capabilities.
+ *
+ * Passed as the third argument to `H3ServerDriver.run`. With no options the
+ * driver serves ordinary request/response traffic only; extended-CONNECT
+ * upgrades are enabled by supplying handlers here.
+ *
+ * ```ts no_run
+ * import { H3ServerDriver } from 'internal:net/http/h3/server';
+ * import type { QuicConnection } from 'fino:net/quic';
+ *
+ * async function serve(conn: QuicConnection) {
+ *   const driver = new H3ServerDriver();
+ *   await driver.run(
+ *     conn,
+ *     () => new Response('ok'),
+ *     {
+ *       onWebTransport(request, session) {
+ *         console.log('WebTransport session for', request.url);
+ *         return session; // accept
+ *       },
+ *     },
+ *   );
+ * }
+ * ```
+ */
 export interface H3ServerDriverOptions {
   /**
-  * Handler invoked for `webtransport-h3` extended-CONNECT streams.
-  *
-  * When omitted, WebTransport CONNECT requests are rejected with `501`. When
-  * present but the peer's SETTINGS do not advertise WebTransport support, the
-  * driver replies `400` before calling the handler.
-  */
+   * Handler invoked for `webtransport-h3` extended-CONNECT streams.
+   *
+   * When omitted, WebTransport CONNECT requests are rejected with `501`. When
+   * present but the peer's SETTINGS do not advertise WebTransport support, the
+   * driver replies `400` before calling the handler.
+   */
   onWebTransport?: H3WebTransportHandler;
 }
 const _FORBIDDEN_RESP = new Set([
@@ -132,14 +139,14 @@ const _FORBIDDEN_RESP = new Set([
   'keep-alive',
   'proxy-connection',
   'transfer-encoding',
-  'upgrade'
+  'upgrade',
 ]);
 const _FORBIDDEN_REQ = new Set([
   'connection',
   'keep-alive',
   'proxy-connection',
   'transfer-encoding',
-  'upgrade'
+  'upgrade',
 ]);
 const _PSEUDO_AUTHORITY = 1 << 0;
 const _PSEUDO_METHOD = 1 << 1;
@@ -167,11 +174,16 @@ interface H3ServerStream {
 }
 function pseudoHeaderBit(token: number, name: string): number {
   switch (token) {
-    case 0: return _PSEUDO_AUTHORITY;
-    case 1: return _PSEUDO_METHOD;
-    case 8: return _PSEUDO_PATH;
-    case 9: return _PSEUDO_SCHEME;
-    case 1007: return _PSEUDO_PROTOCOL;
+    case 0:
+      return _PSEUDO_AUTHORITY;
+    case 1:
+      return _PSEUDO_METHOD;
+    case 8:
+      return _PSEUDO_PATH;
+    case 9:
+      return _PSEUDO_SCHEME;
+    case 1007:
+      return _PSEUDO_PROTOCOL;
     default:
       if (name === ':authority') return _PSEUDO_AUTHORITY;
       if (name === ':method') return _PSEUDO_METHOD;
@@ -199,7 +211,7 @@ function makeStream(streamId: bigint): H3ServerStream {
     dispatched: false,
     dispatchDone: false,
     seenPseudos: 0,
-    seenRegular: false
+    seenRegular: false,
   };
 }
 function hasInvalidRequestControlData(st: H3ServerStream): boolean {
@@ -217,70 +229,74 @@ function trustedHeaders(headers: Array<[string, string]>, authority: string): He
   return out;
 }
 /**
-* Drives HTTP/3 request/response exchange over one QUIC connection.
-*
-* A driver instance is single-use and connection-scoped: create one, call
-* `run()`, and let it live for the duration of the connection. It has no
-* configuration state of its own — everything is passed to `run()` — so the
-* class exists mainly to give the connection pump a stable identity that
-* `serve()` can spawn per connection.
-*
-* ```ts no_run
-* import { H3ServerDriver } from 'internal:net/http/h3/server';
-* import type { QuicConnection } from 'fino:net/quic';
-*
-* function onNewConnection(conn: QuicConnection) {
-*   const driver = new H3ServerDriver();
-*   // run() resolves when the connection closes; failures are swallowed so one
-*   // bad connection cannot crash the accept loop.
-*   void driver.run(conn, (request) => Response.json({ path: new URL(request.url).pathname }))
-*     .catch(() => {});
-* }
-* ```
-*/
+ * Drives HTTP/3 request/response exchange over one QUIC connection.
+ *
+ * A driver instance is single-use and connection-scoped: create one, call
+ * `run()`, and let it live for the duration of the connection. It has no
+ * configuration state of its own — everything is passed to `run()` — so the
+ * class exists mainly to give the connection pump a stable identity that
+ * `serve()` can spawn per connection.
+ *
+ * ```ts no_run
+ * import { H3ServerDriver } from 'internal:net/http/h3/server';
+ * import type { QuicConnection } from 'fino:net/quic';
+ *
+ * function onNewConnection(conn: QuicConnection) {
+ *   const driver = new H3ServerDriver();
+ *   // run() resolves when the connection closes; failures are swallowed so one
+ *   // bad connection cannot crash the accept loop.
+ *   void driver.run(conn, (request) => Response.json({ path: new URL(request.url).pathname }))
+ *     .catch(() => {});
+ * }
+ * ```
+ */
 export class H3ServerDriver {
   /**
-  * Serve HTTP/3 requests on `conn` until the connection closes.
-  *
-  * Opens the three mandatory local unidirectional streams (control plus the two
-  * QPACK encoder/decoder streams), installs an incoming-stream hook that feeds
-  * client request streams into the nghttp3 session, and dispatches each complete
-  * request to `handler`. The returned promise resolves once the QUIC connection
-  * closes and all in-flight request dispatches have finished; the session is
-  * always drained to idle in a `finally` block, even on early return.
-  *
-  * Handler results are serialized with connection-specific header fields
-  * stripped, response bodies extracted from the `Response`, and any declared
-  * response trailers appended. `HEAD` requests suppress the response body; a
-  * handler that throws or returns a non-`Response` yields a `500`.
-  *
-  * If `options.onWebTransport` is set, `CONNECT` streams negotiating
-  * `webtransport-h3` are handed to that handler and — when accepted — the
-  * connection switches to routing raw client streams to WebTransport sessions by
-  * their frame prefix. Without the option such requests are answered `501`, and
-  * plain `CONNECT` requests always receive `405`.
-  *
-  * Throws immediately if libnghttp3 is not available in this build. Per-request
-  * handler errors do not propagate out of `run()`; they are converted into `500`
-  * responses so the connection keeps serving other streams.
-  *
-  * ```ts no_run
-  * import { H3ServerDriver } from 'internal:net/http/h3/server';
-  * import type { QuicConnection } from 'fino:net/quic';
-  *
-  * async function serveConnection(conn: QuicConnection) {
-  *   const driver = new H3ServerDriver();
-  *   await driver.run(conn, async (request) => {
-  *     if (request.method === 'POST') {
-  *       const body = await request.text();
-  *       return new Response(`echo: ${body}`);
-  *     }
-  *     return new Response('hello');
-  *   });
-  * }
-  * ```
-  */
-  async run(conn: QuicConnection, handler: H3Handler, options: H3ServerDriverOptions = {}): Promise<void> {
+   * Serve HTTP/3 requests on `conn` until the connection closes.
+   *
+   * Opens the three mandatory local unidirectional streams (control plus the two
+   * QPACK encoder/decoder streams), installs an incoming-stream hook that feeds
+   * client request streams into the nghttp3 session, and dispatches each complete
+   * request to `handler`. The returned promise resolves once the QUIC connection
+   * closes and all in-flight request dispatches have finished; the session is
+   * always drained to idle in a `finally` block, even on early return.
+   *
+   * Handler results are serialized with connection-specific header fields
+   * stripped, response bodies extracted from the `Response`, and any declared
+   * response trailers appended. `HEAD` requests suppress the response body; a
+   * handler that throws or returns a non-`Response` yields a `500`.
+   *
+   * If `options.onWebTransport` is set, `CONNECT` streams negotiating
+   * `webtransport-h3` are handed to that handler and — when accepted — the
+   * connection switches to routing raw client streams to WebTransport sessions by
+   * their frame prefix. Without the option such requests are answered `501`, and
+   * plain `CONNECT` requests always receive `405`.
+   *
+   * Throws immediately if libnghttp3 is not available in this build. Per-request
+   * handler errors do not propagate out of `run()`; they are converted into `500`
+   * responses so the connection keeps serving other streams.
+   *
+   * ```ts no_run
+   * import { H3ServerDriver } from 'internal:net/http/h3/server';
+   * import type { QuicConnection } from 'fino:net/quic';
+   *
+   * async function serveConnection(conn: QuicConnection) {
+   *   const driver = new H3ServerDriver();
+   *   await driver.run(conn, async (request) => {
+   *     if (request.method === 'POST') {
+   *       const body = await request.text();
+   *       return new Response(`echo: ${body}`);
+   *     }
+   *     return new Response('hello');
+   *   });
+   * }
+   * ```
+   */
+  async run(
+    conn: QuicConnection,
+    handler: H3Handler,
+    options: H3ServerDriverOptions = {},
+  ): Promise<void> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
     const streams = new Map<bigint, H3ServerStream>();
     const webTransports = new Map<bigint, WebTransport>();
@@ -346,7 +362,8 @@ export class H3ServerDriver {
           startDispatch(st);
           return;
         }
-        const noBody = fin || st.method === 'GET' || st.method === 'HEAD' || st.method === 'CONNECT';
+        const noBody =
+          fin || st.method === 'GET' || st.method === 'HEAD' || st.method === 'CONNECT';
         if (noBody) {
           st.bodyDone = true;
           st.body.close();
@@ -398,7 +415,7 @@ export class H3ServerDriver {
       onRecvSettings() {
         resolvePeerSettingsReceived?.();
         resolvePeerSettingsReceived = null;
-      }
+      },
     };
     session = Nghttp3Session.createServer(callbacks, { webTransport: true });
     // Dispatch a request to the handler once headers are complete.
@@ -406,9 +423,11 @@ export class H3ServerDriver {
       if (st.dispatched) return;
       if (st.cancelled && !st.badRequest) return;
       st.dispatched = true;
-      const p: Promise<void> = dispatch(st).catch(() => {}).then(() => {
-        inFlight.delete(p);
-      });
+      const p: Promise<void> = dispatch(st)
+        .catch(() => {})
+        .then(() => {
+          inFlight.delete(p);
+        });
       inFlight.add(p);
     }
     function cleanupStream(st: H3ServerStream): void {
@@ -433,7 +452,14 @@ export class H3ServerDriver {
         if (!session.peerSettingsReceived) await peerSettingsReceived;
         if (!session.peerWebTransportReady) {
           try {
-            session.submitResponse(st.streamId, [[':status', '400'], ['content-type', 'text/plain']], new TextEncoder().encode('WebTransport over HTTP/3 requires complete peer SETTINGS'));
+            session.submitResponse(
+              st.streamId,
+              [
+                [':status', '400'],
+                ['content-type', 'text/plain'],
+              ],
+              new TextEncoder().encode('WebTransport over HTTP/3 requires complete peer SETTINGS'),
+            );
             session.drainWrites();
           } catch {}
           return;
@@ -443,14 +469,14 @@ export class H3ServerDriver {
           const reqHeaders = trustedHeaders(st.headers, st.authority);
           const request = new Request(url, {
             method: 'GET',
-            headers: reqHeaders
+            headers: reqHeaders,
           });
           (request as any).methodOverride = 'CONNECT';
           (request as any).protocol = 'webtransport-h3';
           const wt = _fromHttp3WebTransport(url, {
             connection: conn,
             sessionStreamId: st.streamId,
-            routeIncomingStreams: false
+            routeIncomingStreams: false,
           });
           let result: WebTransport | Response;
           try {
@@ -465,19 +491,33 @@ export class H3ServerDriver {
             session.drainWrites();
             return;
           }
-          session.submitResponse(st.streamId, [[':status', String(result.status)]], (result as any)._extractBytes?.() ?? result.body as any ?? undefined);
+          session.submitResponse(
+            st.streamId,
+            [[':status', String(result.status)]],
+            (result as any)._extractBytes?.() ?? (result.body as any) ?? undefined,
+          );
           session.drainWrites();
           return;
         }
         try {
-          session.submitResponse(st.streamId, [[':status', '501'], ['content-type', 'text/plain']], new TextEncoder().encode('WebTransport over HTTP/3 is not available yet'));
+          session.submitResponse(
+            st.streamId,
+            [
+              [':status', '501'],
+              ['content-type', 'text/plain'],
+            ],
+            new TextEncoder().encode('WebTransport over HTTP/3 is not available yet'),
+          );
           session.drainWrites();
         } catch {}
         return;
       }
       if (st.method === 'CONNECT') {
         try {
-          session.submitResponse(st.streamId, [[':status', '405'], ['allow', 'GET, HEAD, POST, PUT, DELETE, OPTIONS, PATCH']]);
+          session.submitResponse(st.streamId, [
+            [':status', '405'],
+            ['allow', 'GET, HEAD, POST, PUT, DELETE, OPTIONS, PATCH'],
+          ]);
           session.drainWrites();
         } catch {}
         return;
@@ -500,7 +540,7 @@ export class H3ServerDriver {
           url,
           path: st.path,
           headers: reqHeaders,
-          body: body as any
+          body: body as any,
         });
       } catch {
         try {
@@ -549,7 +589,7 @@ export class H3ServerDriver {
       }
       let respBody: any;
       if (st.method !== 'HEAD') {
-        respBody = (response as any)._extractBytes?.() ?? response.body as any ?? undefined;
+        respBody = (response as any)._extractBytes?.() ?? (response.body as any) ?? undefined;
       }
       session.submitResponse(st.streamId, respHeaders, respBody, respTrailers);
       session.drainWrites();
@@ -557,10 +597,13 @@ export class H3ServerDriver {
       cleanupStream(st);
     }
     try {
-      const connectionClosed = conn.state === 'closed' ? Promise.resolve() : new Promise<void>((resolve) => {
-        conn.addEventListener('close', () => resolve(), { once: true });
-        conn.addEventListener('error', () => resolve(), { once: true });
-      });
+      const connectionClosed =
+        conn.state === 'closed'
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              conn.addEventListener('close', () => resolve(), { once: true });
+              conn.addEventListener('error', () => resolve(), { once: true });
+            });
       let resolveLocalStreamsReady!: () => void;
       const localStreamsReady = new Promise<void>((resolve) => {
         resolveLocalStreamsReady = resolve;
@@ -579,7 +622,7 @@ export class H3ServerDriver {
             if (webTransports.size === 0) {
               if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
               while (true) {
-                const bytes = await stream.reader.read() as Uint8Array | null;
+                const bytes = (await stream.reader.read()) as Uint8Array | null;
                 const fin = bytes === null;
                 session.readStream(sid, bytes ?? new Uint8Array(0), fin);
                 if (fin) break;
@@ -604,7 +647,7 @@ export class H3ServerDriver {
             }
             session.readStream(sid, first, false);
             while (true) {
-              const bytes = await stream.reader.read() as Uint8Array | null;
+              const bytes = (await stream.reader.read()) as Uint8Array | null;
               const fin = bytes === null;
               session.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -629,21 +672,20 @@ export class H3ServerDriver {
         })();
       };
       // Open the 3 mandatory local unidirectional streams.
-      const openedStreams = await Promise.race([Promise.all([
-        conn.openUnidirectionalStream(),
-        conn.openUnidirectionalStream(),
-        conn.openUnidirectionalStream()
-      ]), connectionClosed.then(() => null)]);
+      const openedStreams = await Promise.race([
+        Promise.all([
+          conn.openUnidirectionalStream(),
+          conn.openUnidirectionalStream(),
+          conn.openUnidirectionalStream(),
+        ]),
+        connectionClosed.then(() => null),
+      ]);
       if (openedStreams === null) {
         resolveLocalStreamsReady();
         return;
       }
       const [controlStream, qencStream, qdecStream] = openedStreams;
-      for (const s of [
-        controlStream,
-        qencStream,
-        qdecStream
-      ] as QuicStream[]) {
+      for (const s of [controlStream, qencStream, qdecStream] as QuicStream[]) {
         session.addQuicStream(BigInt(s.id), s.writer);
       }
       session.bindControlStream(BigInt(controlStream.id));
@@ -672,25 +714,25 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
-async function readWebTransportPrefix(reader: {
-  read(): Promise<Uint8Array | null>;
-}): Promise<{
+async function readWebTransportPrefix(reader: { read(): Promise<Uint8Array | null> }): Promise<{
   buffer: Uint8Array | null;
   prefix: ReturnType<typeof inspectWebTransportStreamPrefix> | null;
 }> {
   const chunks: Uint8Array[] = [];
   while (true) {
     const chunk = await reader.read();
-    if (chunk === null) return {
-      buffer: chunks.length === 0 ? null : concatBytes(chunks),
-      prefix: null
-    };
+    if (chunk === null)
+      return {
+        buffer: chunks.length === 0 ? null : concatBytes(chunks),
+        prefix: null,
+      };
     chunks.push(chunk);
     const buffer = concatBytes(chunks);
     const prefix = inspectWebTransportStreamPrefix(buffer);
-    if (prefix.state !== 'incomplete') return {
-      buffer,
-      prefix
-    };
+    if (prefix.state !== 'incomplete')
+      return {
+        buffer,
+        prefix,
+      };
   }
 }

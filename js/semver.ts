@@ -1,46 +1,46 @@
 /**
-* fino:semver — semantic version parsing, comparison, and range matching.
-*
-* Implements the SemVer 2.0.0 precedence rules plus the npm-style range forms
-* used by the Fino package installer: comparators, hyphen ranges, wildcards,
-* tilde ranges, caret ranges, and `||` disjunctions. Build metadata is parsed
-* and preserved but ignored for precedence comparisons.
-*
-* The release API surface is intentionally smaller than npm's `semver`
-* package. This module supports strict parsing, strict comparison, range
-* matching, `valid()`, `validRange()`, and `maxSatisfying()`. It does not
-* provide loose parsing, coercion, `includePrerelease`, mutation helpers such
-* as `inc()`/`diff()`, range set helpers such as `minVersion()`,
-* `intersects()`, or `subset()`, or sort helpers. Use the package loader to
-* install npm `semver` when an application needs that larger compatibility
-* surface.
-*
-* @example
-* ```ts no_run
-* import { parse, satisfies, maxSatisfying } from 'fino:semver';
-*
-* const version = parse('1.2.3-beta.1+build.5');
-* const ok = satisfies(version.version, '^1.0.0');
-* const selected = maxSatisfying(['1.0.0', '1.4.0', '2.0.0'], '^1');
-* ```
-*/
+ * fino:semver — semantic version parsing, comparison, and range matching.
+ *
+ * Implements the SemVer 2.0.0 precedence rules plus the npm-style range forms
+ * used by the Fino package installer: comparators, hyphen ranges, wildcards,
+ * tilde ranges, caret ranges, and `||` disjunctions. Build metadata is parsed
+ * and preserved but ignored for precedence comparisons.
+ *
+ * The release API surface is intentionally smaller than npm's `semver`
+ * package. This module supports strict parsing, strict comparison, range
+ * matching, `valid()`, `validRange()`, and `maxSatisfying()`. It does not
+ * provide loose parsing, coercion, `includePrerelease`, mutation helpers such
+ * as `inc()`/`diff()`, range set helpers such as `minVersion()`,
+ * `intersects()`, or `subset()`, or sort helpers. Use the package loader to
+ * install npm `semver` when an application needs that larger compatibility
+ * surface.
+ *
+ * @example
+ * ```ts no_run
+ * import { parse, satisfies, maxSatisfying } from 'fino:semver';
+ *
+ * const version = parse('1.2.3-beta.1+build.5');
+ * const ok = satisfies(version.version, '^1.0.0');
+ * const selected = maxSatisfying(['1.0.0', '1.4.0', '2.0.0'], '^1');
+ * ```
+ */
 import { Scanner } from 'fino:parsing/scanner';
 /**
-* Parsed SemVer components with prerelease identifiers split by segment.
-*
-* Numeric prerelease identifiers are converted to numbers so comparisons can
-* follow SemVer precedence. Build metadata is preserved in `build` and
-* `version`, but is ignored by `compare()` and range matching.
-*
-* ```ts no_run
-* import { parse } from 'fino:semver';
-*
-* const parsed = parse('1.2.3-beta.1+build.5');
-* parsed.major;      // 1
-* parsed.prerelease; // ['beta', 1]
-* parsed.build;      // ['build', '5']
-* ```
-*/
+ * Parsed SemVer components with prerelease identifiers split by segment.
+ *
+ * Numeric prerelease identifiers are converted to numbers so comparisons can
+ * follow SemVer precedence. Build metadata is preserved in `build` and
+ * `version`, but is ignored by `compare()` and range matching.
+ *
+ * ```ts no_run
+ * import { parse } from 'fino:semver';
+ *
+ * const parsed = parse('1.2.3-beta.1+build.5');
+ * parsed.major;      // 1
+ * parsed.prerelease; // ['beta', 1]
+ * parsed.build;      // ['build', '5']
+ * ```
+ */
 export interface SemVer {
   major: number;
   minor: number;
@@ -64,12 +64,13 @@ function isDigit(code: number): boolean {
   return code >= 48 && code <= 57;
 }
 function isAlphaNumHyphen(code: number): boolean {
-  return isDigit(code) || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code === 45;
+  return isDigit(code) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 45;
 }
 function readNumericIdentifier(sc: Scanner, input: string, name: string): string {
   const value = sc.eatWhile(isDigit);
   if (value === '') throw new Error(`Invalid semver ${name} '${input}'`);
-  if (value.length > 1 && value.startsWith('0')) throw new Error(`Invalid semver ${name} '${input}'`);
+  if (value.length > 1 && value.startsWith('0'))
+    throw new Error(`Invalid semver ${name} '${input}'`);
   if (!Number.isSafeInteger(Number(value))) throw new Error(`Invalid semver ${name} '${input}'`);
   return value;
 }
@@ -81,15 +82,29 @@ function readXRangePart(sc: Scanner, input: string): string {
 function readIdentifier(sc: Scanner, input: string, name: string, strictNumeric: boolean): string {
   const value = sc.eatWhile(isAlphaNumHyphen);
   if (value === '') throw new Error(`Invalid semver ${name} '${input}'`);
-  if (strictNumeric && value.length > 1 && value.startsWith('0') && [...value].every((ch) => ch >= '0' && ch <= '9')) {
+  if (
+    strictNumeric &&
+    value.length > 1 &&
+    value.startsWith('0') &&
+    [...value].every((ch) => ch >= '0' && ch <= '9')
+  ) {
     throw new Error(`Invalid semver ${name} '${input}'`);
   }
-  if (strictNumeric && [...value].every((ch) => ch >= '0' && ch <= '9') && !Number.isSafeInteger(Number(value))) {
+  if (
+    strictNumeric &&
+    [...value].every((ch) => ch >= '0' && ch <= '9') &&
+    !Number.isSafeInteger(Number(value))
+  ) {
     throw new Error(`Invalid semver ${name} '${input}'`);
   }
   return value;
 }
-function readIdentifierList(sc: Scanner, input: string, name: string, strictNumeric: boolean): string[] {
+function readIdentifierList(
+  sc: Scanner,
+  input: string,
+  name: string,
+  strictNumeric: boolean,
+): string[] {
   const out = [readIdentifier(sc, input, name, strictNumeric)];
   while (sc.eatChar('.')) out.push(readIdentifier(sc, input, name, strictNumeric));
   return out;
@@ -113,10 +128,12 @@ function cloneSemVer(version: SemVer): SemVer {
     patch: version.patch,
     prerelease: [...version.prerelease],
     build: [...version.build],
-    version: version.version
+    version: version.version,
   };
 }
-function formatSemVer(version: Pick<SemVer, 'major' | 'minor' | 'patch' | 'prerelease' | 'build'>): string {
+function formatSemVer(
+  version: Pick<SemVer, 'major' | 'minor' | 'patch' | 'prerelease' | 'build'>,
+): string {
   let value = `${version.major}.${version.minor}.${version.patch}`;
   if (version.prerelease.length > 0) value += `-${version.prerelease.join('.')}`;
   if (version.build.length > 0) value += `+${version.build.join('.')}`;
@@ -152,7 +169,7 @@ function parsePartialVersion(input: string): {
   const text = String(input).trim();
   const sc = new Scanner(text, {
     encoding: 'ascii',
-    format: 'semver'
+    format: 'semver',
   });
   let major: string;
   let minor: string | undefined;
@@ -171,9 +188,9 @@ function parsePartialVersion(input: string): {
   }
   return {
     major,
-    ...minor !== undefined ? { minor } : {},
-    ...patch !== undefined ? { patch } : {},
-    prerelease
+    ...(minor !== undefined ? { minor } : {}),
+    ...(patch !== undefined ? { patch } : {}),
+    prerelease,
   };
 }
 function toSemVer(parts: {
@@ -198,8 +215,8 @@ function toSemVer(parts: {
       minor,
       patch,
       prerelease,
-      build
-    })
+      build,
+    }),
   };
 }
 function increment(version: SemVer, part: 'major' | 'minor' | 'patch'): SemVer {
@@ -219,11 +236,7 @@ function increment(version: SemVer, part: 'major' | 'minor' | 'patch'): SemVer {
   next.version = formatSemVer(next);
   return next;
 }
-function hasWildcard(parts: {
-  major: string;
-  minor?: string;
-  patch?: string;
-}): boolean {
+function hasWildcard(parts: { major: string; minor?: string; patch?: string }): boolean {
   return isWildcard(parts.major) || isWildcard(parts.minor) || isWildcard(parts.patch);
 }
 function xRangeToComparators(input: string): Comparator[] {
@@ -231,27 +244,35 @@ function xRangeToComparators(input: string): Comparator[] {
   if (isWildcard(parts.major)) return [];
   const lower = toSemVer(parts);
   if (isWildcard(parts.minor)) {
-    return [{
-      op: '>=',
-      version: lower
-    }, {
-      op: '<',
-      version: increment(lower, 'major')
-    }];
+    return [
+      {
+        op: '>=',
+        version: lower,
+      },
+      {
+        op: '<',
+        version: increment(lower, 'major'),
+      },
+    ];
   }
   if (isWildcard(parts.patch)) {
-    return [{
-      op: '>=',
-      version: lower
-    }, {
-      op: '<',
-      version: increment(lower, 'minor')
-    }];
+    return [
+      {
+        op: '>=',
+        version: lower,
+      },
+      {
+        op: '<',
+        version: increment(lower, 'minor'),
+      },
+    ];
   }
-  return [{
-    op: '',
-    version: lower
-  }];
+  return [
+    {
+      op: '',
+      version: lower,
+    },
+  ];
 }
 function tildeComparators(input: string): Comparator[] {
   const parts = parsePartialVersion(input);
@@ -262,13 +283,16 @@ function tildeComparators(input: string): Comparator[] {
   } else {
     upper = increment(lower, 'minor');
   }
-  return [{
-    op: '>=',
-    version: lower
-  }, {
-    op: '<',
-    version: upper
-  }];
+  return [
+    {
+      op: '>=',
+      version: lower,
+    },
+    {
+      op: '<',
+      version: upper,
+    },
+  ];
 }
 function caretComparators(input: string): Comparator[] {
   const parts = parsePartialVersion(input);
@@ -281,13 +305,16 @@ function caretComparators(input: string): Comparator[] {
   } else {
     upper = increment(lower, 'patch');
   }
-  return [{
-    op: '>=',
-    version: lower
-  }, {
-    op: '<',
-    version: upper
-  }];
+  return [
+    {
+      op: '>=',
+      version: lower,
+    },
+    {
+      op: '<',
+      version: upper,
+    },
+  ];
 }
 function comparatorFromParts(op: '' | '>' | '>=' | '<' | '<=', input: string): Comparator[] {
   const parts = parsePartialVersion(input);
@@ -299,20 +326,28 @@ function comparatorFromParts(op: '' | '>' | '>=' | '<' | '<=', input: string): C
     const upper = comparators[1];
     if (!lower || !upper) return [];
     if (op === '>=') return [lower];
-    if (op === '>') return [{
-      op: '>=',
-      version: upper.version
-    }];
-    if (op === '<') return [{
-      op: '<',
-      version: lower.version
-    }];
+    if (op === '>')
+      return [
+        {
+          op: '>=',
+          version: upper.version,
+        },
+      ];
+    if (op === '<')
+      return [
+        {
+          op: '<',
+          version: lower.version,
+        },
+      ];
     if (op === '<=') return [upper];
   }
-  return [{
-    op,
-    version: toSemVer(parts)
-  }];
+  return [
+    {
+      op,
+      version: toSemVer(parts),
+    },
+  ];
 }
 function expandToken(token: string): Comparator[] {
   if (token === '' || token === '*' || token.toLowerCase() === 'x') return [];
@@ -320,7 +355,7 @@ function expandToken(token: string): Comparator[] {
   if (token.startsWith('~')) return tildeComparators(token.slice(1));
   const sc = new Scanner(token, {
     encoding: 'ascii',
-    format: 'semver'
+    format: 'semver',
   });
   let op: '' | '>' | '>=' | '<' | '<=' = '';
   if (sc.match('<=')) op = '<=';
@@ -336,7 +371,7 @@ function expandToken(token: string): Comparator[] {
 function tokenizeRangeSet(text: string): string[] {
   const sc = new Scanner(text, {
     encoding: 'ascii',
-    format: 'semver'
+    format: 'semver',
   });
   const tokens: string[] = [];
   while (!sc.done) {
@@ -355,12 +390,13 @@ function parseRangeSet(text: string): ComparatorSet {
     if (!rawToken) continue;
     for (const comparator of expandToken(rawToken)) {
       comparators.push(comparator);
-      if (comparator.version.prerelease.length > 0) prereleaseBases.add(baseKey(comparator.version));
+      if (comparator.version.prerelease.length > 0)
+        prereleaseBases.add(baseKey(comparator.version));
     }
   }
   return {
     comparators,
-    prereleaseBases
+    prereleaseBases,
   };
 }
 function normalizeHyphenRanges(input: string): string {
@@ -378,13 +414,16 @@ function normalizeHyphenRanges(input: string): string {
 }
 function parseRange(input: string | null | undefined): ComparatorSet[] {
   const text = String(input ?? '').trim();
-  if (text === '' || text === '*' || text.toLowerCase() === 'latest') return [{
-    comparators: [],
-    prereleaseBases: new Set()
-  }];
+  if (text === '' || text === '*' || text.toLowerCase() === 'latest')
+    return [
+      {
+        comparators: [],
+        prereleaseBases: new Set(),
+      },
+    ];
   const sc = new Scanner(text, {
     encoding: 'ascii',
-    format: 'semver'
+    format: 'semver',
   });
   const sets: ComparatorSet[] = [];
   let branchStart = sc.mark();
@@ -419,19 +458,19 @@ function testComparator(version: SemVer, comparator: Comparator): boolean {
   return result <= 0;
 }
 /**
-* Parse a version string and return its structured components.
-*
-* ```ts no_run
-* import { parse } from 'fino:semver';
-*
-* parse('1.2.3-beta.1+build.5').prerelease; // ['beta', 1]
-* ```
-*/
+ * Parse a version string and return its structured components.
+ *
+ * ```ts no_run
+ * import { parse } from 'fino:semver';
+ *
+ * parse('1.2.3-beta.1+build.5').prerelease; // ['beta', 1]
+ * ```
+ */
 export function parse(version: string): SemVer {
   const input = String(version).trim();
   const sc = new Scanner(input, {
     encoding: 'ascii',
-    format: 'semver'
+    format: 'semver',
   });
   try {
     const major = Number(readNumericIdentifier(sc, version, 'version'));
@@ -439,7 +478,9 @@ export function parse(version: string): SemVer {
     const minor = Number(readNumericIdentifier(sc, version, 'version'));
     sc.expect('.');
     const patch = Number(readNumericIdentifier(sc, version, 'version'));
-    const prerelease = sc.eatChar('-') ? readIdentifierList(sc, version, 'version', true).map(parseIdentifier) : [];
+    const prerelease = sc.eatChar('-')
+      ? readIdentifierList(sc, version, 'version', true).map(parseIdentifier)
+      : [];
     const build = sc.eatChar('+') ? readIdentifierList(sc, version, 'version', false) : [];
     if (!sc.done) throw new Error();
     const parsed: SemVer = {
@@ -448,7 +489,7 @@ export function parse(version: string): SemVer {
       patch,
       prerelease,
       build,
-      version: ''
+      version: '',
     };
     parsed.version = formatSemVer(parsed);
     return parsed;
@@ -457,19 +498,19 @@ export function parse(version: string): SemVer {
   }
 }
 /**
-* Return the normalized version string, or `null` when the input is invalid.
-*
-* This is the non-throwing companion to `parse()`. It trims input, validates
-* strict SemVer syntax, normalizes prerelease numeric identifiers, and returns
-* `null` instead of raising when the string is not a version.
-*
-* ```ts no_run
-* import { valid } from 'fino:semver';
-*
-* valid('1.2.3+build.5'); // '1.2.3+build.5'
-* valid('01.2.3');        // null
-* ```
-*/
+ * Return the normalized version string, or `null` when the input is invalid.
+ *
+ * This is the non-throwing companion to `parse()`. It trims input, validates
+ * strict SemVer syntax, normalizes prerelease numeric identifiers, and returns
+ * `null` instead of raising when the string is not a version.
+ *
+ * ```ts no_run
+ * import { valid } from 'fino:semver';
+ *
+ * valid('1.2.3+build.5'); // '1.2.3+build.5'
+ * valid('01.2.3');        // null
+ * ```
+ */
 export function valid(version: string): string | null {
   try {
     return parse(version).version;
@@ -478,34 +519,34 @@ export function valid(version: string): string | null {
   }
 }
 /**
-* Compare two versions using SemVer precedence.
-*
-* Returns a negative number when `a < b`, zero when they are equal, and a
-* positive number when `a > b`.
-*
-* Build metadata is ignored by SemVer precedence, so `1.0.0+one` and
-* `1.0.0+two` compare as equal. Invalid inputs throw.
-*
-* ```ts no_run
-* import { compare } from 'fino:semver';
-*
-* compare('1.0.0-alpha', '1.0.0'); // negative
-* compare('2.0.0', '1.9.9');       // positive
-* ```
-*/
+ * Compare two versions using SemVer precedence.
+ *
+ * Returns a negative number when `a < b`, zero when they are equal, and a
+ * positive number when `a > b`.
+ *
+ * Build metadata is ignored by SemVer precedence, so `1.0.0+one` and
+ * `1.0.0+two` compare as equal. Invalid inputs throw.
+ *
+ * ```ts no_run
+ * import { compare } from 'fino:semver';
+ *
+ * compare('1.0.0-alpha', '1.0.0'); // negative
+ * compare('2.0.0', '1.9.9');       // positive
+ * ```
+ */
 export function compare(a: string, b: string): number {
   return compareParsed(parse(a), parse(b));
 }
 /**
-* Test whether a version satisfies a range expression.
-*
-* ```ts no_run
-* import { satisfies } from 'fino:semver';
-*
-* satisfies('1.4.2', '^1.2.0'); // true
-* satisfies('2.0.0', '^1.2.0'); // false
-* ```
-*/
+ * Test whether a version satisfies a range expression.
+ *
+ * ```ts no_run
+ * import { satisfies } from 'fino:semver';
+ *
+ * satisfies('1.4.2', '^1.2.0'); // true
+ * satisfies('2.0.0', '^1.2.0'); // false
+ * ```
+ */
 export function satisfies(version: string, range: string | null | undefined): boolean {
   const parsedVersion = parse(version);
   for (const set of parseRange(range)) {
@@ -517,7 +558,11 @@ export function satisfies(version: string, range: string | null | undefined): bo
       }
     }
     if (!matches) continue;
-    if (parsedVersion.prerelease.length > 0 && !set.prereleaseBases.has(baseKey(parsedVersion)) && set.comparators.length > 0) {
+    if (
+      parsedVersion.prerelease.length > 0 &&
+      !set.prereleaseBases.has(baseKey(parsedVersion)) &&
+      set.comparators.length > 0
+    ) {
       continue;
     }
     return true;
@@ -525,18 +570,18 @@ export function satisfies(version: string, range: string | null | undefined): bo
   return false;
 }
 /**
-* Return the highest version in `versions` that satisfies `range`.
-*
-* Invalid versions or ranges throw because this helper delegates to
-* `satisfies()` and `compare()`. The returned string is the original matching
-* entry from `versions`, not a normalized copy.
-*
-* ```ts no_run
-* import { maxSatisfying } from 'fino:semver';
-*
-* maxSatisfying(['1.0.0', '1.5.0', '2.0.0'], '^1.0.0'); // '1.5.0'
-* ```
-*/
+ * Return the highest version in `versions` that satisfies `range`.
+ *
+ * Invalid versions or ranges throw because this helper delegates to
+ * `satisfies()` and `compare()`. The returned string is the original matching
+ * entry from `versions`, not a normalized copy.
+ *
+ * ```ts no_run
+ * import { maxSatisfying } from 'fino:semver';
+ *
+ * maxSatisfying(['1.0.0', '1.5.0', '2.0.0'], '^1.0.0'); // '1.5.0'
+ * ```
+ */
 export function maxSatisfying(versions: string[], range: string | null | undefined): string | null {
   let best: string | null = null;
   for (const version of versions) {
@@ -546,19 +591,19 @@ export function maxSatisfying(versions: string[], range: string | null | undefin
   return best;
 }
 /**
-* Validate a range expression and return its trimmed form, or `null`.
-*
-* Empty ranges, `*`, and `latest` are accepted as wildcard ranges. Other
-* ranges may use comparators, wildcards, tilde, caret, hyphen ranges, and `||`
-* disjunctions. The return value is suitable for display or reuse.
-*
-* ```ts no_run
-* import { validRange } from 'fino:semver';
-*
-* validRange(' ^1.2.3 '); // '^1.2.3'
-* validRange('bad range'); // null
-* ```
-*/
+ * Validate a range expression and return its trimmed form, or `null`.
+ *
+ * Empty ranges, `*`, and `latest` are accepted as wildcard ranges. Other
+ * ranges may use comparators, wildcards, tilde, caret, hyphen ranges, and `||`
+ * disjunctions. The return value is suitable for display or reuse.
+ *
+ * ```ts no_run
+ * import { validRange } from 'fino:semver';
+ *
+ * validRange(' ^1.2.3 '); // '^1.2.3'
+ * validRange('bad range'); // null
+ * ```
+ */
 export function validRange(range: string | null | undefined): string | null {
   try {
     parseRange(range);

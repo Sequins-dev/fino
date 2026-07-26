@@ -1,4 +1,9 @@
-import { getLoggerProvider, getMeterProvider, getTracerProvider, runWithActiveSpan } from 'fino:opentelemetry';
+import {
+  getLoggerProvider,
+  getMeterProvider,
+  getTracerProvider,
+  runWithActiveSpan,
+} from 'fino:opentelemetry';
 import { argv } from 'fino:process';
 if (argv[1] !== 'test') {
   globalThis.fetch = async function otelCliFetch(url) {

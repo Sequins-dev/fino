@@ -25,7 +25,7 @@ describe('Event', () => {
     const e = new Event('submit', {
       bubbles: true,
       cancelable: true,
-      composed: true
+      composed: true,
     });
     t.equal(e.bubbles, true, 'bubbles');
     t.equal(e.cancelable, true, 'cancelable');
@@ -125,7 +125,7 @@ describe('addEventListener / removeEventListener', () => {
   });
   it('non-function callback is silently ignored', (t) => {
     const target = new EventTarget();
-    target.addEventListener('test', ('not a function' as unknown) as EventListener);
+    target.addEventListener('test', 'not a function' as unknown as EventListener);
     target.dispatchEvent(new Event('test'));
     t.ok(true, 'no throw');
   });
@@ -136,11 +136,7 @@ describe('addEventListener / removeEventListener', () => {
     target.addEventListener('test', () => results.push(2));
     target.addEventListener('test', () => results.push(3));
     target.dispatchEvent(new Event('test'));
-    t.deepEqual(results, [
-      1,
-      2,
-      3
-    ], 'all called in order');
+    t.deepEqual(results, [1, 2, 3], 'all called in order');
   });
   it('listener error does not prevent subsequent listeners', (t) => {
     const target = new EventTarget();
@@ -159,9 +155,13 @@ describe('once / stopImmediatePropagation / signal / passive options', () => {
   it('once option — fires once then auto-removes', (t) => {
     const target = new EventTarget();
     let count = 0;
-    target.addEventListener('test', () => {
-      count++;
-    }, { once: true });
+    target.addEventListener(
+      'test',
+      () => {
+        count++;
+      },
+      { once: true },
+    );
     target.dispatchEvent(new Event('test'));
     target.dispatchEvent(new Event('test'));
     t.equal(count, 1, 'called exactly once');
@@ -184,9 +184,13 @@ describe('once / stopImmediatePropagation / signal / passive options', () => {
     const controller = new AbortController();
     const target = new EventTarget();
     let count = 0;
-    target.addEventListener('test', () => {
-      count++;
-    }, { signal: controller.signal });
+    target.addEventListener(
+      'test',
+      () => {
+        count++;
+      },
+      { signal: controller.signal },
+    );
     target.dispatchEvent(new Event('test'));
     controller.abort();
     target.dispatchEvent(new Event('test'));
@@ -197,9 +201,13 @@ describe('once / stopImmediatePropagation / signal / passive options', () => {
     const signal = AbortSignal.abort();
     const target = new EventTarget();
     let called = false;
-    target.addEventListener('test', () => {
-      called = true;
-    }, { signal });
+    target.addEventListener(
+      'test',
+      () => {
+        called = true;
+      },
+      { signal },
+    );
     target.dispatchEvent(new Event('test'));
     t.equal(called, false, 'listener never added');
   });
@@ -212,25 +220,41 @@ describe('once / stopImmediatePropagation / signal / passive options', () => {
   it('addEventListener reads passive option even when callback is null', (t) => {
     const target = new EventTarget();
     let read = false;
-    target.addEventListener('test', null, { get passive() {
-      read = true;
-      return false;
-    } });
+    target.addEventListener('test', null, {
+      get passive() {
+        read = true;
+        return false;
+      },
+    });
     t.equal(read, true, 'passive getter was read');
   });
   it('removeEventListener does not read passive option', (t) => {
     const target = new EventTarget();
     let read = false;
-    target.removeEventListener('test', (null as unknown) as EventListener, { get passive() {
-      read = true;
-      return false;
-    } } as AddEventListenerOptions);
+    target.removeEventListener(
+      'test',
+      null as unknown as EventListener,
+      {
+        get passive() {
+          read = true;
+          return false;
+        },
+      } as AddEventListenerOptions,
+    );
     t.equal(read, false, 'passive getter was not read');
   });
   it('addEventListener throws when signal option is null', (t) => {
     const target = new EventTarget();
-    t.throws(() => target.addEventListener('test', () => {}, { signal: (null as unknown) as AbortSignal }), (error) => error instanceof TypeError, 'null signal throws TypeError');
-    t.throws(() => target.addEventListener('test', null, { signal: (null as unknown) as AbortSignal }), (error) => error instanceof TypeError, 'null signal throws even when callback is null');
+    t.throws(
+      () => target.addEventListener('test', () => {}, { signal: null as unknown as AbortSignal }),
+      (error) => error instanceof TypeError,
+      'null signal throws TypeError',
+    );
+    t.throws(
+      () => target.addEventListener('test', null, { signal: null as unknown as AbortSignal }),
+      (error) => error instanceof TypeError,
+      'null signal throws even when callback is null',
+    );
   });
 });
 describe('event properties during dispatch', () => {
@@ -265,7 +289,10 @@ describe('event properties during dispatch', () => {
     });
     target.dispatchEvent(new Event('test'));
     const composedPath = path as EventTarget[];
-    t.ok(Array.isArray(composedPath) && composedPath.length === 1 && composedPath[0] === target, 'composedPath = [target]');
+    t.ok(
+      Array.isArray(composedPath) && composedPath.length === 1 && composedPath[0] === target,
+      'composedPath = [target]',
+    );
   });
 });
 describe('dispatchEvent', () => {
@@ -303,9 +330,11 @@ describe('handleEvent object listeners', () => {
   it('object with handleEvent method is called as a listener', (t) => {
     const target = new EventTarget();
     let received: Event | null = null;
-    const handler = { handleEvent(e: Event) {
-      received = e;
-    } };
+    const handler = {
+      handleEvent(e: Event) {
+        received = e;
+      },
+    };
     target.addEventListener('test', handler);
     const evt = new Event('test');
     target.dispatchEvent(evt);
@@ -314,9 +343,11 @@ describe('handleEvent object listeners', () => {
   it('object with handleEvent is deduplicated by same (object, capture) pair', (t) => {
     const target = new EventTarget();
     let count = 0;
-    const handler = { handleEvent() {
-      count++;
-    } };
+    const handler = {
+      handleEvent() {
+        count++;
+      },
+    };
     target.addEventListener('test', handler);
     target.addEventListener('test', handler);
     target.dispatchEvent(new Event('test'));
@@ -396,12 +427,16 @@ describe('once + signal interaction', () => {
     const ctrl = new AbortController();
     const target = new EventTarget();
     let count = 0;
-    target.addEventListener('test', () => {
-      count++;
-    }, {
-      once: true,
-      signal: ctrl.signal
-    });
+    target.addEventListener(
+      'test',
+      () => {
+        count++;
+      },
+      {
+        once: true,
+        signal: ctrl.signal,
+      },
+    );
     target.dispatchEvent(new Event('test'));
     target.dispatchEvent(new Event('test'));
     t.equal(count, 1, 'only fired once');
@@ -410,12 +445,16 @@ describe('once + signal interaction', () => {
     const ctrl = new AbortController();
     const target = new EventTarget();
     let count = 0;
-    target.addEventListener('test', () => {
-      count++;
-    }, {
-      once: true,
-      signal: ctrl.signal
-    });
+    target.addEventListener(
+      'test',
+      () => {
+        count++;
+      },
+      {
+        once: true,
+        signal: ctrl.signal,
+      },
+    );
     ctrl.abort();
     target.dispatchEvent(new Event('test'));
     t.equal(count, 0, 'listener removed by abort before dispatch');
@@ -425,9 +464,11 @@ describe('handleEvent throws — other listeners still fire', () => {
   it('handleEvent method that throws does not prevent subsequent listeners', (t) => {
     const target = new EventTarget();
     let secondFired = false;
-    const handler = { handleEvent() {
-      throw new Error('handler error');
-    } };
+    const handler = {
+      handleEvent() {
+        throw new Error('handler error');
+      },
+    };
     target.addEventListener('test', handler);
     target.addEventListener('test', () => {
       secondFired = true;
@@ -461,15 +502,23 @@ describe('globalThis EventTarget methods', () => {
     const globalObject = globalThis as typeof globalThis & {
       removeEventListener(type: string, callback: EventListener | null, options?: boolean): void;
     };
-    t.equal(typeof globalObject.removeEventListener, 'function', 'global removeEventListener exists');
-    t.equal(globalObject.removeEventListener('x', null, false), undefined, 'false capture succeeds');
+    t.equal(
+      typeof globalObject.removeEventListener,
+      'function',
+      'global removeEventListener exists',
+    );
+    t.equal(
+      globalObject.removeEventListener('x', null, false),
+      undefined,
+      'false capture succeeds',
+    );
     t.equal(globalObject.removeEventListener('x', null, true), undefined, 'true capture succeeds');
     t.equal(globalObject.removeEventListener('x', null), undefined, 'omitted capture succeeds');
   });
 });
 describe('Event() with no arguments', () => {
   it('Event() with no arguments throws TypeError per spec', (t) => {
-    const EventCtor = (Event as unknown) as {
+    const EventCtor = Event as unknown as {
       new (): Event;
     };
     t.throws(() => new EventCtor(), /argument required/, 'no-arg Event() throws TypeError');
@@ -481,7 +530,7 @@ describe('CustomEvent — full init options', () => {
       bubbles: true,
       cancelable: true,
       composed: true,
-      detail: { key: 'value' }
+      detail: { key: 'value' },
     });
     t.equal(e.bubbles, true, 'bubbles');
     t.equal(e.cancelable, true, 'cancelable');
@@ -504,15 +553,23 @@ describe('Event static phase constants via constructor reference', () => {
 describe('Symbol.toStringTag', () => {
   it('EventTarget [Symbol.toStringTag] is "EventTarget"', (t) => {
     const target = new EventTarget();
-    t.equal(((target as unknown) as SymbolRecord)[Symbol.toStringTag], 'EventTarget', 'toStringTag is EventTarget');
+    t.equal(
+      (target as unknown as SymbolRecord)[Symbol.toStringTag],
+      'EventTarget',
+      'toStringTag is EventTarget',
+    );
   });
   it('Event [Symbol.toStringTag] is "Event"', (t) => {
     const e = new Event('test');
-    t.equal(((e as unknown) as SymbolRecord)[Symbol.toStringTag], 'Event', 'toStringTag is Event');
+    t.equal((e as unknown as SymbolRecord)[Symbol.toStringTag], 'Event', 'toStringTag is Event');
   });
   it('CustomEvent [Symbol.toStringTag] is "CustomEvent"', (t) => {
     const e = new CustomEvent('test');
-    t.equal(((e as unknown) as SymbolRecord)[Symbol.toStringTag], 'CustomEvent', 'toStringTag is CustomEvent');
+    t.equal(
+      (e as unknown as SymbolRecord)[Symbol.toStringTag],
+      'CustomEvent',
+      'toStringTag is CustomEvent',
+    );
   });
 });
 describe('Event phase constants on prototype', () => {
@@ -535,7 +592,7 @@ describe('Event legacy methods', () => {
   it('initEvent re-initializes type, bubbles, cancelable', (t) => {
     const e = new Event('click', {
       bubbles: true,
-      cancelable: true
+      cancelable: true,
     });
     e.initEvent('change', false, false);
     t.equal(e.type, 'change', 'type updated');
@@ -568,7 +625,7 @@ describe('CustomEvent.initCustomEvent', () => {
   it('re-initializes type, bubbles, cancelable, and detail', (t) => {
     const ce = new CustomEvent<unknown>('click', {
       bubbles: true,
-      detail: 42
+      detail: 42,
     });
     ce.initCustomEvent('change', false, false, 'newDetail');
     t.equal(ce.type, 'change', 'type updated');
@@ -599,9 +656,11 @@ describe('handleEvent removal via removeEventListener', () => {
   it('removes object listener with handleEvent', (t) => {
     const et = new EventTarget();
     let count = 0;
-    const obj = { handleEvent() {
-      count++;
-    } };
+    const obj = {
+      handleEvent() {
+        count++;
+      },
+    };
     et.addEventListener('test', obj);
     et.removeEventListener('test', obj);
     et.dispatchEvent(new Event('test'));
@@ -613,14 +672,18 @@ describe('passive + once interaction', () => {
     const et = new EventTarget();
     let fired = 0;
     let prevented = false;
-    et.addEventListener('test', (e) => {
-      fired++;
-      e.preventDefault();
-      prevented = e.defaultPrevented;
-    }, {
-      passive: true,
-      once: true
-    });
+    et.addEventListener(
+      'test',
+      (e) => {
+        fired++;
+        e.preventDefault();
+        prevented = e.defaultPrevented;
+      },
+      {
+        passive: true,
+        once: true,
+      },
+    );
     et.dispatchEvent(new Event('test', { cancelable: true }));
     et.dispatchEvent(new Event('test', { cancelable: true }));
     t.equal(fired, 1, 'listener fired only once');

@@ -1,6 +1,6 @@
 /**
-* Tests for fino:process/argv — config-based nested command parsing and execution.
-*/
+ * Tests for fino:process/argv — config-based nested command parsing and execution.
+ */
 import { describe, it } from 'fino:test/test';
 import { Command, type CommandContext, type CommandInvocation } from 'fino:process/argv';
 import { PromptSession } from 'fino:tty/prompt';
@@ -20,7 +20,7 @@ class RecordingCommand extends Command {
       path: ctx.path,
       args: ctx.args,
       options: ctx.options,
-      positionals: ctx.positionals
+      positionals: ctx.positionals,
     };
   }
 }
@@ -36,27 +36,33 @@ function makeParser() {
   const http = new RecordingCommand({
     name: 'http',
     description: 'Serve HTTP traffic',
-    options: [{
-      flags: '--header',
-      type: 'string',
-      multiple: true,
-      description: 'Attach response header'
-    }, {
-      flags: '--tls',
-      type: 'boolean',
-      description: 'Enable TLS'
-    }],
-    positionals: [{
-      name: 'port',
-      type: 'number',
-      required: true,
-      description: 'Listen port'
-    }, {
-      name: 'files',
-      type: 'string',
-      multiple: true,
-      description: 'Static files'
-    }]
+    options: [
+      {
+        flags: '--header',
+        type: 'string',
+        multiple: true,
+        description: 'Attach response header',
+      },
+      {
+        flags: '--tls',
+        type: 'boolean',
+        description: 'Enable TLS',
+      },
+    ],
+    positionals: [
+      {
+        name: 'port',
+        type: 'number',
+        required: true,
+        description: 'Listen port',
+      },
+      {
+        name: 'files',
+        type: 'string',
+        multiple: true,
+        description: 'Static files',
+      },
+    ],
   });
   const serve = new RecordingCommand({
     name: 'serve',
@@ -65,24 +71,26 @@ function makeParser() {
       {
         flags: '--host, -H',
         type: 'string',
-        default: '127.0.0.1'
+        default: '127.0.0.1',
       },
       {
         flags: '--port, -p',
         type: 'number',
-        required: true
+        required: true,
       },
       {
         flags: '--watch, -w',
-        type: 'boolean'
-      }
+        type: 'boolean',
+      },
     ],
-    positionals: [{
-      name: 'entry',
-      type: 'string',
-      description: 'Entry module'
-    }],
-    commands: [http]
+    positionals: [
+      {
+        name: 'entry',
+        type: 'string',
+        description: 'Entry module',
+      },
+    ],
+    commands: [http],
   });
   const root = new RecordingCommand({
     description: 'Root command',
@@ -90,29 +98,29 @@ function makeParser() {
       {
         flags: '--verbose, -v',
         type: 'boolean',
-        description: 'Enable verbose mode'
+        description: 'Enable verbose mode',
       },
       {
         flags: '--config, -c',
-        type: 'string'
+        type: 'string',
       },
       {
         flags: '--tag, -t',
         type: 'string',
-        multiple: true
+        multiple: true,
       },
       {
         flags: '--retries, -r',
         type: 'number',
-        default: 1
-      }
+        default: 1,
+      },
     ],
-    commands: [serve]
+    commands: [serve],
   });
   return {
     root,
     serve,
-    http
+    http,
   };
 }
 describe('Command execution', () => {
@@ -123,7 +131,7 @@ describe('Command execution', () => {
       '--config=app.json',
       '--tag',
       'alpha',
-      '--tag=beta'
+      '--tag=beta',
     ]) as ParsedExecution;
     t.deepEqual(result.path, [], 'root execution path is empty');
     t.equal(result.options.verbose, true, 'boolean flag parsed');
@@ -147,7 +155,7 @@ describe('Command execution', () => {
       '--tls',
       '8080',
       'index.ts',
-      'about.ts'
+      'about.ts',
     ]) as ParsedExecution;
     t.equal(root.lastContext, null, 'root run not called when a child matched');
     t.equal(serve.lastContext, null, 'intermediate run not called when a child matched');
@@ -156,11 +164,11 @@ describe('Command execution', () => {
     t.equal(result.args.port, 8080, 'typed positional exposed by name');
     t.deepEqual(result.args.files, ['index.ts', 'about.ts'], 'rest positional exposed by name');
     t.equal(result.options.tls, true, 'final command options returned');
-    t.deepEqual(result.positionals, [
-      8080,
-      'index.ts',
-      'about.ts'
-    ], 'final command positionals returned as typed values');
+    t.deepEqual(
+      result.positionals,
+      [8080, 'index.ts', 'about.ts'],
+      'final command positionals returned as typed values',
+    );
     const httpChain = requireChain(http);
     t.equal(httpChain.length, 3, 'full chain was constructed');
     t.equal(httpChain[0]!.command, root, 'chain includes root');
@@ -173,21 +181,25 @@ describe('Command execution', () => {
   it('prefers a matching subcommand over parent positional capture', (t) => {
     const child = new RecordingCommand({
       name: 'deploy',
-      positionals: [{
-        name: 'env',
-        type: 'string',
-        required: true,
-        description: 'Deployment environment'
-      }]
+      positionals: [
+        {
+          name: 'env',
+          type: 'string',
+          required: true,
+          description: 'Deployment environment',
+        },
+      ],
     });
     const root = new RecordingCommand({
-      positionals: [{
-        name: 'target',
-        type: 'string',
-        required: true,
-        description: 'Fallback target'
-      }],
-      commands: [child]
+      positionals: [
+        {
+          name: 'target',
+          type: 'string',
+          required: true,
+          description: 'Fallback target',
+        },
+      ],
+      commands: [child],
     });
     const result = root.parse(['deploy', 'prod']) as ParsedExecution;
     t.equal(root.lastContext, null, 'root positional was not consumed before child match');
@@ -196,108 +208,117 @@ describe('Command execution', () => {
     t.equal(result.args.env, 'prod', 'child positional was consumed by child');
   });
   it('parses grouped short flags and short options with values before execution', (t) => {
-    const root = new RecordingCommand({ options: [
-      {
-        flags: '--alpha, -a',
-        type: 'boolean'
-      },
-      {
-        flags: '--beta, -b',
-        type: 'boolean'
-      },
-      {
-        flags: '--count, -c',
-        type: 'number'
-      }
-    ] });
+    const root = new RecordingCommand({
+      options: [
+        {
+          flags: '--alpha, -a',
+          type: 'boolean',
+        },
+        {
+          flags: '--beta, -b',
+          type: 'boolean',
+        },
+        {
+          flags: '--count, -c',
+          type: 'number',
+        },
+      ],
+    });
     const result = root.parse(['-abc', '4']) as ParsedExecution;
     t.equal(result.options.alpha, true, 'short boolean a parsed');
     t.equal(result.options.beta, true, 'short boolean b parsed');
     t.equal(result.options.count, 4, 'last short option consumed next token as value');
   });
   it('supports boolean long negation with --no-flag', (t) => {
-    const root = new RecordingCommand({ options: [{
-      flags: '--watch',
-      type: 'boolean',
-      default: true
-    }, {
-      flags: '--color',
-      type: 'boolean'
-    }] });
+    const root = new RecordingCommand({
+      options: [
+        {
+          flags: '--watch',
+          type: 'boolean',
+          default: true,
+        },
+        {
+          flags: '--color',
+          type: 'boolean',
+        },
+      ],
+    });
     const result = root.parse(['--no-watch', '--color=false']) as ParsedExecution;
     t.equal(result.options.watch, false, 'boolean long option can be negated');
     t.equal(result.options.color, false, 'explicit boolean false still parses');
-    t.equal(requireContext(root).optionProvided('watch'), true, 'negated option is marked provided');
+    t.equal(
+      requireContext(root).optionProvided('watch'),
+      true,
+      'negated option is marked provided',
+    );
   });
   it('supports multiple long and short aliases for one option key', (t) => {
-    const root = new RecordingCommand({ options: [{
-      flags: '--environment, --env, -e, -E',
-      type: 'string'
-    }] });
+    const root = new RecordingCommand({
+      options: [
+        {
+          flags: '--environment, --env, -e, -E',
+          type: 'string',
+        },
+      ],
+    });
     const longAlias = root.parse(['--env', 'prod']) as ParsedExecution;
     const shortAlias = root.parse(['-E', 'stage']) as ParsedExecution;
     t.equal(longAlias.options.environment, 'prod', 'secondary long alias maps to primary long key');
-    t.equal(shortAlias.options.environment, 'stage', 'secondary short alias maps to primary long key');
+    t.equal(
+      shortAlias.options.environment,
+      'stage',
+      'secondary short alias maps to primary long key',
+    );
   });
   it('validates choices for options and positionals', (t) => {
     const root = new RecordingCommand({
-      options: [{
-        flags: '--mode, -m',
-        type: 'string',
-        choices: ['dev', 'prod']
-      }, {
-        flags: '--count, -c',
-        type: 'number',
-        choices: [
-          1,
-          2,
-          3
-        ]
-      }],
-      positionals: [{
-        name: 'target',
-        type: 'string',
-        choices: ['api', 'worker'],
-        required: true
-      }]
+      options: [
+        {
+          flags: '--mode, -m',
+          type: 'string',
+          choices: ['dev', 'prod'],
+        },
+        {
+          flags: '--count, -c',
+          type: 'number',
+          choices: [1, 2, 3],
+        },
+      ],
+      positionals: [
+        {
+          name: 'target',
+          type: 'string',
+          choices: ['api', 'worker'],
+          required: true,
+        },
+      ],
     });
-    const result = root.parse([
-      '--mode',
-      'prod',
-      '--count=2',
-      'worker'
-    ]) as ParsedExecution;
+    const result = root.parse(['--mode', 'prod', '--count=2', 'worker']) as ParsedExecution;
     const help = root.help();
     t.equal(result.options.mode, 'prod', 'string choice accepted');
     t.equal(result.options.count, 2, 'number choice accepted');
     t.equal(result.args.target, 'worker', 'positional choice accepted');
     t.ok(help.includes('--mode, -m {dev|prod}'), 'option choices are shown in help');
     t.ok(help.includes('target (string) {api|worker}'), 'positional choices are shown in help');
-    t.throws(() => root.parse([
-      '--mode',
-      'test',
-      'api'
-    ]), /Invalid choice "test"/, 'invalid string choice rejected');
-    t.throws(() => root.parse([
-      '--count',
-      '4',
-      'api'
-    ]), /Invalid choice "4"/, 'invalid number choice rejected');
-    t.throws(() => root.parse([
-      '--mode',
-      'dev',
-      'web'
-    ]), /Invalid choice "web"/, 'invalid positional choice rejected');
+    t.throws(
+      () => root.parse(['--mode', 'test', 'api']),
+      /Invalid choice "test"/,
+      'invalid string choice rejected',
+    );
+    t.throws(
+      () => root.parse(['--count', '4', 'api']),
+      /Invalid choice "4"/,
+      'invalid number choice rejected',
+    );
+    t.throws(
+      () => root.parse(['--mode', 'dev', 'web']),
+      /Invalid choice "web"/,
+      'invalid positional choice rejected',
+    );
   });
   it('stops option parsing for the current command after --', (t) => {
     const { root, serve } = makeParser();
-    const result = root.parse([
-      'serve',
-      '--port',
-      '3000',
-      '--',
-      '--watch'
-    ]) as ParsedExecution;
+    const result = root.parse(['serve', '--port', '3000', '--', '--watch']) as ParsedExecution;
     t.equal(requireContext(serve).command, serve, 'serve executed');
     t.deepEqual(result.path, ['serve'], 'stayed on serve');
     t.equal(result.args.entry, '--watch', 'declared positional captured after stop marker');
@@ -307,50 +328,53 @@ describe('Command execution', () => {
   it('keeps unknown option-like tokens as positionals when configured', (t) => {
     const root = new RecordingCommand({
       allowUnknown: true,
-      options: [{
-        flags: '--verbose, -v',
-        type: 'boolean'
-      }]
+      options: [
+        {
+          flags: '--verbose, -v',
+          type: 'boolean',
+        },
+      ],
     });
-    const result = root.parse([
-      '--mystery',
-      'value',
-      '--verbose'
-    ]) as ParsedExecution;
-    t.deepEqual(result.positionals, [
-      '--mystery',
-      'value',
-      '--verbose'
-    ], 'unknown tokens remained positionals once unknown option was encountered');
+    const result = root.parse(['--mystery', 'value', '--verbose']) as ParsedExecution;
+    t.deepEqual(
+      result.positionals,
+      ['--mystery', 'value', '--verbose'],
+      'unknown tokens remained positionals once unknown option was encountered',
+    );
     t.equal(result.options.verbose, false, 'known options after passthrough are not parsed');
   });
   it('can pass --help through as a positional when configured', (t) => {
     const root = new RecordingCommand({
       allowHelp: false,
       allowUnknown: true,
-      positionals: [{
-        name: 'args',
-        type: 'string',
-        multiple: true
-      }]
+      positionals: [
+        {
+          name: 'args',
+          type: 'string',
+          multiple: true,
+        },
+      ],
     });
-    const result = root.parse([
-      '--help',
-      'build',
-      '--flag'
-    ]) as ParsedExecution;
-    t.deepEqual(result.args.args, [
-      '--help',
-      'build',
-      '--flag'
-    ], '--help was forwarded with the remaining delegated argv');
+    const result = root.parse(['--help', 'build', '--flag']) as ParsedExecution;
+    t.deepEqual(
+      result.args.args,
+      ['--help', 'build', '--flag'],
+      '--help was forwarded with the remaining delegated argv',
+    );
   });
   it('renders command-local usage and help text', (t) => {
     const { root, serve, http } = makeParser();
     t.equal(root.usage('fino'), 'Usage: fino [options] [command]', 'root usage includes commands');
-    t.equal(serve.usage('fino'), 'Usage: fino serve [options] [entry] [command]', 'nested usage includes declared positional');
+    t.equal(
+      serve.usage('fino'),
+      'Usage: fino serve [options] [entry] [command]',
+      'nested usage includes declared positional',
+    );
     const help = http.help('fino');
-    t.ok(help.includes('Usage: fino serve http [options] <port> [files...]'), 'help contains nested usage');
+    t.ok(
+      help.includes('Usage: fino serve http [options] <port> [files...]'),
+      'help contains nested usage',
+    );
     t.ok(help.includes('Serve HTTP traffic'), 'help contains command description');
     t.ok(help.includes('--header'), 'help lists command-local options');
     t.ok(help.includes('--tls'), 'help lists boolean options');
@@ -379,29 +403,32 @@ describe('Command execution', () => {
   });
   it('throws when a required positional is missing', (t) => {
     const { root } = makeParser();
-    t.throws(() => root.parse([
-      'serve',
-      '--port',
-      '3000',
-      'http'
-    ]), /Missing required positional/, 'required positional enforced');
+    t.throws(
+      () => root.parse(['serve', '--port', '3000', 'http']),
+      /Missing required positional/,
+      'required positional enforced',
+    );
   });
   it('does not require parent positionals when parsing descends into a child command', (t) => {
     const child = new RecordingCommand({
       name: 'test',
-      positionals: [{
-        name: 'file',
-        type: 'string',
-        required: true
-      }]
+      positionals: [
+        {
+          name: 'file',
+          type: 'string',
+          required: true,
+        },
+      ],
     });
     const root = new RecordingCommand({
-      positionals: [{
-        name: 'script',
-        type: 'string',
-        required: true
-      }],
-      commands: [child]
+      positionals: [
+        {
+          name: 'script',
+          type: 'string',
+          required: true,
+        },
+      ],
+      commands: [child],
     });
     const result = root.parse(['test', 'suite.test.ts']) as ParsedExecution;
     t.deepEqual(result.path, ['test'], 'child command still matched');
@@ -413,21 +440,23 @@ describe('Command execution', () => {
   });
   it('exposes a prompt session on the command context', async (t) => {
     const prompts: string[] = [];
-    const root = new Command({ async run(ctx: CommandContext) {
-      const value = await ctx.prompt.text({
-        label: 'Project name',
-        defaultValue: 'demo'
-      });
-      prompts.push(value);
-      return value;
-    } });
+    const root = new Command({
+      async run(ctx: CommandContext) {
+        const value = await ctx.prompt.text({
+          label: 'Project name',
+          defaultValue: 'demo',
+        });
+        prompts.push(value);
+        return value;
+      },
+    });
     const prompt = new PromptSession({
       isInteractive: true,
       async readLine() {
         return 'from-prompt';
       },
       async write() {},
-      async writeError() {}
+      async writeError() {},
     });
     const result = await root.parse([], { prompt });
     t.equal(result, 'from-prompt', 'run handler can await ctx.prompt');
@@ -435,25 +464,27 @@ describe('Command execution', () => {
   });
   it('resolves async option defaults before run and tracks whether an option was provided', async (t) => {
     const root = new Command({
-      options: [{
-        flags: '--name',
-        type: 'string',
-        default: async function defaultName() {
-          return 'resolved-default';
-        }
-      }],
+      options: [
+        {
+          flags: '--name',
+          type: 'string',
+          default: async function defaultName() {
+            return 'resolved-default';
+          },
+        },
+      ],
       async run(ctx) {
         return {
           name: ctx.options.name,
-          provided: ctx.optionProvided('name')
+          provided: ctx.optionProvided('name'),
         };
-      }
+      },
     });
-    const withDefault = await root.parse([]) as {
+    const withDefault = (await root.parse([])) as {
       name: string;
       provided: boolean;
     };
-    const withFlag = await root.parse(['--name', 'explicit']) as {
+    const withFlag = (await root.parse(['--name', 'explicit'])) as {
       name: string;
       provided: boolean;
     };

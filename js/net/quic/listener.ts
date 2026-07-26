@@ -19,7 +19,4 @@
  * ```
  */
 export { QuicListener } from '../../internal/net/quic/listener.ts';
-export type {
-  QuicListenOptions,
-  QuicSNIContextOptions
-} from '../../internal/net/quic/listener.ts';
+export type { QuicListenOptions, QuicSNIContextOptions } from '../../internal/net/quic/listener.ts';

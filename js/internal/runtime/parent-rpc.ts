@@ -1,50 +1,50 @@
 /**
-* internal:parent-rpc — RPC channel from a child Realm to its parent's Facade handlers.
-*
-* When a facade proxy module calls `call(specifier, method, args)`, this module:
-*   1. Allocates a request id and stores a Promise resolver in `_pending`.
-*   2. Serialises `{__rpc_req, specifier, method, reqId, args}` and sends it to
-*      the parent via the realm's native channel (nativeSend).
-*   3. Returns the Promise.
-*
-* When the parent sends back `{__rpc_res, reqId, result|error}`, the port drain
-* loop in `internal:realm/transport-port` calls `resolveRpc` or `rejectRpc` here
-* to settle the pending Promise.
-*
-* Streaming calls use `callStream(specifier, method, args)` which returns an
-* `AsyncIterable<unknown>` directly.  The parent sends `__rpc_chunk` / `__rpc_end` /
-* `__rpc_err` envelopes instead of a single `__rpc_res`; the transport-port drain
-* routes those to `pushChunk` / `endStream` / `errStream` below.
-*
-* Write-streams (`callSink`) run in the opposite direction: the child pushes
-* chunks to the parent through a `WriteSink` handle, and the parent's terminal
-* result settles the sink via `resolveSink` / `rejectSink`.
-*
-* This module keeps all pending state in module-level registries, so a child
-* Realm has exactly one shared RPC channel to its parent. Request ids are
-* allocated from a single monotonic counter across scalar, stream, and sink
-* calls, which lets one drain path disambiguate a response by its id.
-*
-* Only available in thread and process child Realms (where `nativeSend` has a live
-* channel_tx). Embedded child Realms are not a primary facade target.
-*
-* This is an internal transport primitive; application code should use the
-* `fino:realm` Facade proxy modules, which build on top of it.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* const result = await rpc.call('facade:kv', 'get', ['users:42']);
-*
-* for await (const chunk of rpc.callStream('facade:kv', 'scan', ['users:'])) {
-*   console.log(chunk);
-* }
-*
-* console.log(result);
-* ```
-*
-* @internal
-*/
+ * internal:parent-rpc — RPC channel from a child Realm to its parent's Facade handlers.
+ *
+ * When a facade proxy module calls `call(specifier, method, args)`, this module:
+ *   1. Allocates a request id and stores a Promise resolver in `_pending`.
+ *   2. Serialises `{__rpc_req, specifier, method, reqId, args}` and sends it to
+ *      the parent via the realm's native channel (nativeSend).
+ *   3. Returns the Promise.
+ *
+ * When the parent sends back `{__rpc_res, reqId, result|error}`, the port drain
+ * loop in `internal:realm/transport-port` calls `resolveRpc` or `rejectRpc` here
+ * to settle the pending Promise.
+ *
+ * Streaming calls use `callStream(specifier, method, args)` which returns an
+ * `AsyncIterable<unknown>` directly.  The parent sends `__rpc_chunk` / `__rpc_end` /
+ * `__rpc_err` envelopes instead of a single `__rpc_res`; the transport-port drain
+ * routes those to `pushChunk` / `endStream` / `errStream` below.
+ *
+ * Write-streams (`callSink`) run in the opposite direction: the child pushes
+ * chunks to the parent through a `WriteSink` handle, and the parent's terminal
+ * result settles the sink via `resolveSink` / `rejectSink`.
+ *
+ * This module keeps all pending state in module-level registries, so a child
+ * Realm has exactly one shared RPC channel to its parent. Request ids are
+ * allocated from a single monotonic counter across scalar, stream, and sink
+ * calls, which lets one drain path disambiguate a response by its id.
+ *
+ * Only available in thread and process child Realms (where `nativeSend` has a live
+ * channel_tx). Embedded child Realms are not a primary facade target.
+ *
+ * This is an internal transport primitive; application code should use the
+ * `fino:realm` Facade proxy modules, which build on top of it.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * const result = await rpc.call('facade:kv', 'get', ['users:42']);
+ *
+ * for await (const chunk of rpc.callStream('facade:kv', 'scan', ['users:'])) {
+ *   console.log(chunk);
+ * }
+ *
+ * console.log(result);
+ * ```
+ *
+ * @internal
+ */
 import { nativeSend } from 'internal:thread-port';
 import { serialize } from 'internal:serializer';
 // ---------------------------------------------------------------------------
@@ -63,10 +63,13 @@ import { serialize } from 'internal:serializer';
 // Pending scalar call registry
 // ---------------------------------------------------------------------------
 let _nextId = 0;
-const _pending = new Map<number, {
-  resolve: (v: unknown) => void;
-  reject: (e: unknown) => void;
-}>();
+const _pending = new Map<
+  number,
+  {
+    resolve: (v: unknown) => void;
+    reject: (e: unknown) => void;
+  }
+>();
 // ---------------------------------------------------------------------------
 // Pending stream registry
 // ---------------------------------------------------------------------------
@@ -93,22 +96,24 @@ class _StreamQueue {
   }
   [Symbol.asyncIterator](): AsyncIterator<unknown> {
     const self = this;
-    return { async next(): Promise<IteratorResult<unknown>> {
-      while (self.#queue.length === 0 && !self.#done) {
-        await new Promise<void>((resolve) => self.#waiters.push(resolve));
-      }
-      if (self.#queue.length > 0) {
+    return {
+      async next(): Promise<IteratorResult<unknown>> {
+        while (self.#queue.length === 0 && !self.#done) {
+          await new Promise<void>((resolve) => self.#waiters.push(resolve));
+        }
+        if (self.#queue.length > 0) {
+          return {
+            value: self.#queue.shift()!,
+            done: false,
+          };
+        }
+        if (self.#error !== null) throw new Error(self.#error);
         return {
-          value: self.#queue.shift()!,
-          done: false
+          value: undefined as unknown,
+          done: true,
         };
-      }
-      if (self.#error !== null) throw new Error(self.#error);
-      return {
-        value: undefined as unknown,
-        done: true
-      };
-    } };
+      },
+    };
   }
 }
 const _pendingStreams = new Map<number, _StreamQueue>();
@@ -122,9 +127,11 @@ const _send = nativeSend;
 // ---------------------------------------------------------------------------
 function _sendMsg(msg: unknown): void {
   // Prefer the realm port (works for all realm types including embedded).
-  const port = (globalThis as Record<string, unknown>).realmPort as {
-    postMessage(m: unknown): void;
-  } | undefined;
+  const port = (globalThis as Record<string, unknown>).realmPort as
+    | {
+        postMessage(m: unknown): void;
+      }
+    | undefined;
   if (port) {
     port.postMessage(msg);
     return;
@@ -137,72 +144,78 @@ function _sendMsg(msg: unknown): void {
 // Public API — scalar calls
 // ---------------------------------------------------------------------------
 /**
-* Make an RPC call to the parent's registered Facade handler.
-* Returns a Promise that settles when the parent sends back `__rpc_res`.
-*
-* Rejections are wrapped as `Error` objects by `rejectRpc`. When the parent's
-* handler returns an opaque handle (a `{ __handle }` object), the result is
-* automatically wrapped in a method proxy whose property accesses dispatch
-* further calls back through this module (see `resolveRpc`).
-*
-* The returned Promise never resolves on its own; it only settles once the
-* transport-port drain delivers the matching `__rpc_res` for this request id, so
-* a call outlives the turn in which it was made.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* const value = await rpc.call('facade:kv', 'get', ['users:42']);
-* console.log(value);
-* ```
-*/
+ * Make an RPC call to the parent's registered Facade handler.
+ * Returns a Promise that settles when the parent sends back `__rpc_res`.
+ *
+ * Rejections are wrapped as `Error` objects by `rejectRpc`. When the parent's
+ * handler returns an opaque handle (a `{ __handle }` object), the result is
+ * automatically wrapped in a method proxy whose property accesses dispatch
+ * further calls back through this module (see `resolveRpc`).
+ *
+ * The returned Promise never resolves on its own; it only settles once the
+ * transport-port drain delivers the matching `__rpc_res` for this request id, so
+ * a call outlives the turn in which it was made.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * const value = await rpc.call('facade:kv', 'get', ['users:42']);
+ * console.log(value);
+ * ```
+ */
 export function call(specifier: string, method: string, args: unknown[]): Promise<unknown> {
   const reqId = _nextId++;
   return new Promise<unknown>((resolve, reject) => {
     _pending.set(reqId, {
       resolve,
-      reject
+      reject,
     });
     _sendMsg({
       __rpc_req: true,
       specifier,
       method,
       reqId,
-      args
+      args,
     });
   });
 }
 /**
-* Settle a pending scalar call with a successful result.
-*
-* Called by the transport-port drain loop on an incoming `__rpc_res` envelope.
-* Returns `true` if the request id matched a pending scalar call; `false` means
-* the id was not a scalar call, in which case it is forwarded to `resolveSink`
-* (the id may belong to a write-stream whose handler has just returned).
-*
-* When `result` carries `{ __handle: id, streams?: [...], sinks?: [...] }`, the
-* pending promise resolves with a Proxy instead of the raw object: reading a
-* property named in `streams` yields a function that calls `callStream`, one in
-* `sinks` yields a function that calls `callSink`, and any other property yields
-* a function that calls `call` — all using the handle id as the specifier. This
-* is what makes a remote handle behave like a local object.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* // Invoked by the drain path, not usually by application code.
-* const handled = rpc.resolveRpc(1, { ok: true });
-* if (!handled) console.log('reqId 1 was not a pending scalar call');
-* ```
-*/
+ * Settle a pending scalar call with a successful result.
+ *
+ * Called by the transport-port drain loop on an incoming `__rpc_res` envelope.
+ * Returns `true` if the request id matched a pending scalar call; `false` means
+ * the id was not a scalar call, in which case it is forwarded to `resolveSink`
+ * (the id may belong to a write-stream whose handler has just returned).
+ *
+ * When `result` carries `{ __handle: id, streams?: [...], sinks?: [...] }`, the
+ * pending promise resolves with a Proxy instead of the raw object: reading a
+ * property named in `streams` yields a function that calls `callStream`, one in
+ * `sinks` yields a function that calls `callSink`, and any other property yields
+ * a function that calls `call` — all using the handle id as the specifier. This
+ * is what makes a remote handle behave like a local object.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * // Invoked by the drain path, not usually by application code.
+ * const handled = rpc.resolveRpc(1, { ok: true });
+ * if (!handled) console.log('reqId 1 was not a pending scalar call');
+ * ```
+ */
 export function resolveRpc(reqId: number, result: unknown): boolean {
   const entry = _pending.get(reqId);
   if (entry) {
     _pending.delete(reqId);
     // Auto-wrap handle results in a transparent method proxy.
-    if (result !== null && typeof result === 'object' && typeof (result as {
-      __handle?: unknown;
-    }).__handle === 'string') {
+    if (
+      result !== null &&
+      typeof result === 'object' &&
+      typeof (
+        result as {
+          __handle?: unknown;
+        }
+      ).__handle === 'string'
+    ) {
       const h = result as {
         __handle: string;
         streams?: string[];
@@ -218,41 +231,43 @@ export function resolveRpc(reqId: number, result: unknown): boolean {
   return resolveSink(reqId, result);
 }
 /**
-* Create a Proxy for a handle returned from a Facade handler.
-*
-* Any property access on the proxy returns a function that dispatches
-* through parent-rpc using the handle ID as the specifier.  Methods listed
-* in `streams` call `callStream()`; all others call `call()`.
-*/
+ * Create a Proxy for a handle returned from a Facade handler.
+ *
+ * Any property access on the proxy returns a function that dispatches
+ * through parent-rpc using the handle ID as the specifier.  Methods listed
+ * in `streams` call `callStream()`; all others call `call()`.
+ */
 function _makeHandleProxy(handleId: string, streams: string[], sinks: string[]): object {
   const streamSet = new Set(streams);
   const sinkSet = new Set(sinks);
-  return new Proxy(Object.create(null) as object, { get(_target, prop: string | symbol) {
-    if (typeof prop !== 'string') return undefined;
-    // Prevent the proxy from appearing thenable — if 'then' returns a function,
-    // V8 treats the object as a Promise and calls .then(), causing infinite chains.
-    if (prop === 'then' || prop === 'catch' || prop === 'finally') return undefined;
-    if (streamSet.has(prop)) return (...args: unknown[]) => callStream(handleId, prop, args);
-    if (sinkSet.has(prop)) return (...args: unknown[]) => callSink(handleId, prop, args);
-    return (...args: unknown[]) => call(handleId, prop, args);
-  } });
+  return new Proxy(Object.create(null) as object, {
+    get(_target, prop: string | symbol) {
+      if (typeof prop !== 'string') return undefined;
+      // Prevent the proxy from appearing thenable — if 'then' returns a function,
+      // V8 treats the object as a Promise and calls .then(), causing infinite chains.
+      if (prop === 'then' || prop === 'catch' || prop === 'finally') return undefined;
+      if (streamSet.has(prop)) return (...args: unknown[]) => callStream(handleId, prop, args);
+      if (sinkSet.has(prop)) return (...args: unknown[]) => callSink(handleId, prop, args);
+      return (...args: unknown[]) => call(handleId, prop, args);
+    },
+  });
 }
 /**
-* Settle a pending scalar call with an error.
-*
-* The `error` string is wrapped in a fresh `Error` and used to reject the
-* pending promise. Returns `true` if the request id matched a pending scalar
-* call; `false` means the id was not a scalar call, and the caller should try
-* `errStream` (for a read-stream) or `rejectSink` (for a write-stream) next.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* if (!rpc.rejectRpc(1, 'handler failed')) {
-*   rpc.errStream(1, 'handler failed');
-* }
-* ```
-*/
+ * Settle a pending scalar call with an error.
+ *
+ * The `error` string is wrapped in a fresh `Error` and used to reject the
+ * pending promise. Returns `true` if the request id matched a pending scalar
+ * call; `false` means the id was not a scalar call, and the caller should try
+ * `errStream` (for a read-stream) or `rejectSink` (for a write-stream) next.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * if (!rpc.rejectRpc(1, 'handler failed')) {
+ *   rpc.errStream(1, 'handler failed');
+ * }
+ * ```
+ */
 export function rejectRpc(reqId: number, error: string): boolean {
   const entry = _pending.get(reqId);
   if (entry) {
@@ -267,25 +282,29 @@ export function rejectRpc(reqId: number, error: string): boolean {
 // Public API — streaming calls
 // ---------------------------------------------------------------------------
 /**
-* Make a streaming (parent-to-child) RPC call.
-*
-* Returns an `AsyncIterable` immediately, before any chunk has arrived. The
-* returned queue buffers `__rpc_chunk` payloads delivered by the drain path and
-* the consumer pulls them with `for await`. The iterator completes when the
-* parent sends `__rpc_end`, and throws when it sends `__rpc_err` (or an
-* `__rpc_res` carrying an error, which is routed here when the handler threw
-* before yielding). Chunks that arrive before the consumer starts iterating are
-* held in the buffer rather than dropped.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* for await (const row of rpc.callStream('facade:kv', 'scan', ['users:'])) {
-*   console.log(row);
-* }
-* ```
-*/
-export function callStream(specifier: string, method: string, args: unknown[]): AsyncIterable<unknown> {
+ * Make a streaming (parent-to-child) RPC call.
+ *
+ * Returns an `AsyncIterable` immediately, before any chunk has arrived. The
+ * returned queue buffers `__rpc_chunk` payloads delivered by the drain path and
+ * the consumer pulls them with `for await`. The iterator completes when the
+ * parent sends `__rpc_end`, and throws when it sends `__rpc_err` (or an
+ * `__rpc_res` carrying an error, which is routed here when the handler threw
+ * before yielding). Chunks that arrive before the consumer starts iterating are
+ * held in the buffer rather than dropped.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * for await (const row of rpc.callStream('facade:kv', 'scan', ['users:'])) {
+ *   console.log(row);
+ * }
+ * ```
+ */
+export function callStream(
+  specifier: string,
+  method: string,
+  args: unknown[],
+): AsyncIterable<unknown> {
   const reqId = _nextId++;
   const q = new _StreamQueue();
   _pendingStreams.set(reqId, q);
@@ -294,41 +313,41 @@ export function callStream(specifier: string, method: string, args: unknown[]): 
     specifier,
     method,
     reqId,
-    args
+    args,
   });
   return q;
 }
 /**
-* Deliver a chunk to a pending streaming call.
-*
-* Called by the transport-port drain loop on an `__rpc_chunk` envelope. The
-* chunk is appended to the stream's buffer and wakes any consumer currently
-* awaiting the next value. Request ids with no live stream are ignored, so a
-* late chunk that arrives after `endStream` or `errStream` is a harmless no-op.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* rpc.pushChunk(1, new Uint8Array([1, 2, 3]));
-* ```
-*/
+ * Deliver a chunk to a pending streaming call.
+ *
+ * Called by the transport-port drain loop on an `__rpc_chunk` envelope. The
+ * chunk is appended to the stream's buffer and wakes any consumer currently
+ * awaiting the next value. Request ids with no live stream are ignored, so a
+ * late chunk that arrives after `endStream` or `errStream` is a harmless no-op.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * rpc.pushChunk(1, new Uint8Array([1, 2, 3]));
+ * ```
+ */
 export function pushChunk(reqId: number, chunk: unknown): void {
   _pendingStreams.get(reqId)?.push(chunk);
 }
 /**
-* Signal end-of-stream for a pending streaming call.
-*
-* Called by the transport-port drain loop on an `__rpc_end` envelope. The stream
-* is removed from the pending registry and its consumer's `for await` loop
-* completes normally after draining any buffered chunks. Unknown request ids are
-* ignored.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* rpc.endStream(1);
-* ```
-*/
+ * Signal end-of-stream for a pending streaming call.
+ *
+ * Called by the transport-port drain loop on an `__rpc_end` envelope. The stream
+ * is removed from the pending registry and its consumer's `for await` loop
+ * completes normally after draining any buffered chunks. Unknown request ids are
+ * ignored.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * rpc.endStream(1);
+ * ```
+ */
 export function endStream(reqId: number): void {
   const q = _pendingStreams.get(reqId);
   if (!q) return;
@@ -336,20 +355,20 @@ export function endStream(reqId: number): void {
   q.end();
 }
 /**
-* Signal an error on a pending streaming call.
-*
-* Called by the transport-port drain loop on an `__rpc_err` envelope, or on an
-* `__rpc_res` carrying an error when the request id turns out to belong to a
-* stream (the handler threw before yielding its first chunk). The stream is
-* removed from the registry and the consumer's next `for await` step throws an
-* `Error` built from `error`. Unknown request ids are ignored.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* rpc.errStream(1, 'stream failed');
-* ```
-*/
+ * Signal an error on a pending streaming call.
+ *
+ * Called by the transport-port drain loop on an `__rpc_err` envelope, or on an
+ * `__rpc_res` carrying an error when the request id turns out to belong to a
+ * stream (the handler threw before yielding its first chunk). The stream is
+ * removed from the registry and the consumer's next `for await` step throws an
+ * `Error` built from `error`. Unknown request ids are ignored.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * rpc.errStream(1, 'stream failed');
+ * ```
+ */
 export function errStream(reqId: number, error: string): void {
   const q = _pendingStreams.get(reqId);
   if (!q) return;
@@ -372,83 +391,83 @@ export function errStream(reqId: number, error: string): void {
 //   __rpc_res         →  response (on response stream / same bidi stream)
 // ---------------------------------------------------------------------------
 /**
-* A write-stream handle returned by `callSink`.
-*
-* A `WriteSink` lets a child push a sequence of chunks up to a parent handler
-* without a round-trip per chunk. `write()`, `close()`, and `abort()` are
-* synchronous fire-and-forget: each just enqueues a wire envelope. The only
-* asynchronous signal is `result`, a Promise that settles once the parent's
-* handler finishes and its terminal response is routed back through
-* `resolveSink` / `rejectSink`.
-*
-* Because there is no per-chunk acknowledgement or backpressure, a sink is best
-* suited to bounded uploads where the parent consumes chunks as fast as they
-* arrive. Instances also implement `Symbol.dispose`, so a `using` binding closes
-* the stream when it leaves scope.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* const sink = rpc.callSink('facade:blob', 'upload', ['avatar.png']);
-* sink.write(new Uint8Array([0x89, 0x50]));
-* sink.write(new Uint8Array([0x4e, 0x47]));
-* sink.close();
-* const stored = await sink.result;
-* console.log(stored);
-* ```
-*
-* @internal
-*/
+ * A write-stream handle returned by `callSink`.
+ *
+ * A `WriteSink` lets a child push a sequence of chunks up to a parent handler
+ * without a round-trip per chunk. `write()`, `close()`, and `abort()` are
+ * synchronous fire-and-forget: each just enqueues a wire envelope. The only
+ * asynchronous signal is `result`, a Promise that settles once the parent's
+ * handler finishes and its terminal response is routed back through
+ * `resolveSink` / `rejectSink`.
+ *
+ * Because there is no per-chunk acknowledgement or backpressure, a sink is best
+ * suited to bounded uploads where the parent consumes chunks as fast as they
+ * arrive. Instances also implement `Symbol.dispose`, so a `using` binding closes
+ * the stream when it leaves scope.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * const sink = rpc.callSink('facade:blob', 'upload', ['avatar.png']);
+ * sink.write(new Uint8Array([0x89, 0x50]));
+ * sink.write(new Uint8Array([0x4e, 0x47]));
+ * sink.close();
+ * const stored = await sink.result;
+ * console.log(stored);
+ * ```
+ *
+ * @internal
+ */
 export class WriteSink {
   /**
-  * Result returned by the parent sink handler.
-  *
-  * Resolves on `__rpc_res` and rejects on an error response.
-  *
-  * ```typescript no_run
-  * const result = await sink.result;
-  * ```
-  */
+   * Result returned by the parent sink handler.
+   *
+   * Resolves on `__rpc_res` and rejects on an error response.
+   *
+   * ```typescript no_run
+   * const result = await sink.result;
+   * ```
+   */
   readonly result: Promise<unknown>;
   /**
-  * The request id this sink was opened with.
-  *
-  * Every wire envelope the sink emits (`__rpc_send_chunk`, `__rpc_send_end`,
-  * `__rpc_send_err`) carries this id so the parent can correlate the chunk
-  * stream, and so the matching `resolveSink` / `rejectSink` finds this instance.
-  *
-  * @internal
-  */
+   * The request id this sink was opened with.
+   *
+   * Every wire envelope the sink emits (`__rpc_send_chunk`, `__rpc_send_end`,
+   * `__rpc_send_err`) carries this id so the parent can correlate the chunk
+   * stream, and so the matching `resolveSink` / `rejectSink` finds this instance.
+   *
+   * @internal
+   */
   readonly #reqId: number;
   /**
-  * Resolver captured from the `result` promise's executor.
-  *
-  * Invoked by `_resolve` when the parent's terminal response arrives, settling
-  * `result` with the handler's return value.
-  *
-  * @internal
-  */
+   * Resolver captured from the `result` promise's executor.
+   *
+   * Invoked by `_resolve` when the parent's terminal response arrives, settling
+   * `result` with the handler's return value.
+   *
+   * @internal
+   */
   #resolve!: (v: unknown) => void;
   /**
-  * Rejecter captured from the `result` promise's executor.
-  *
-  * Invoked by `_reject` when the parent reports a failure, rejecting `result`
-  * with an `Error` built from the reported message.
-  *
-  * @internal
-  */
+   * Rejecter captured from the `result` promise's executor.
+   *
+   * Invoked by `_reject` when the parent reports a failure, rejecting `result`
+   * with an `Error` built from the reported message.
+   *
+   * @internal
+   */
   #reject!: (e: Error) => void;
   /**
-  * Create a sink bound to a request ID.
-  *
-  * Usually constructed by `callSink`, not by application code.
-  *
-  * ```typescript no_run
-  * const sink = new WriteSink(1);
-  * ```
-  *
-  * @internal
-  */
+   * Create a sink bound to a request ID.
+   *
+   * Usually constructed by `callSink`, not by application code.
+   *
+   * ```typescript no_run
+   * const sink = new WriteSink(1);
+   * ```
+   *
+   * @internal
+   */
   constructor(reqId: number) {
     this.#reqId = reqId;
     this.result = new Promise<unknown>((res, rej) => {
@@ -457,116 +476,116 @@ export class WriteSink {
     });
   }
   /**
-  * Push a chunk to the parent.
-  *
-  * This is fire-and-forget: there is no per-chunk acknowledgement or
-  * backpressure signal. The final handler result is exposed through `result`.
-  *
-  * ```typescript no_run
-  * sink.write('chunk');
-  * ```
-  */
+   * Push a chunk to the parent.
+   *
+   * This is fire-and-forget: there is no per-chunk acknowledgement or
+   * backpressure signal. The final handler result is exposed through `result`.
+   *
+   * ```typescript no_run
+   * sink.write('chunk');
+   * ```
+   */
   write(chunk: unknown): void {
     _sendMsg({
       __rpc_send_chunk: true,
       reqId: this.#reqId,
-      chunk
+      chunk,
     });
   }
   /**
-  * Signal end-of-stream.
-  *
-  * After closing, no more chunks should be written. The parent may still send a
-  * final result that settles `result`.
-  *
-  * ```typescript no_run
-  * sink.close();
-  * ```
-  */
+   * Signal end-of-stream.
+   *
+   * After closing, no more chunks should be written. The parent may still send a
+   * final result that settles `result`.
+   *
+   * ```typescript no_run
+   * sink.close();
+   * ```
+   */
   close(): void {
     _sendMsg({
       __rpc_send_end: true,
-      reqId: this.#reqId
+      reqId: this.#reqId,
     });
   }
   /**
-  * Close the stream when a `using` binding leaves scope.
-  *
-  * This is an alias for `close()`, letting a sink participate in explicit
-  * resource management. It does not abort: any chunks already written are still
-  * delivered and the parent may still settle `result`.
-  *
-  * ```typescript no_run
-  * import * as rpc from 'internal:parent-rpc';
-  *
-  * {
-  *   using sink = rpc.callSink('facade:blob', 'upload', ['log.txt']);
-  *   sink.write(new Uint8Array([0x68, 0x69]));
-  * } // sink.close() runs here
-  * ```
-  */
+   * Close the stream when a `using` binding leaves scope.
+   *
+   * This is an alias for `close()`, letting a sink participate in explicit
+   * resource management. It does not abort: any chunks already written are still
+   * delivered and the parent may still settle `result`.
+   *
+   * ```typescript no_run
+   * import * as rpc from 'internal:parent-rpc';
+   *
+   * {
+   *   using sink = rpc.callSink('facade:blob', 'upload', ['log.txt']);
+   *   sink.write(new Uint8Array([0x68, 0x69]));
+   * } // sink.close() runs here
+   * ```
+   */
   [Symbol.dispose](): void {
     this.close();
   }
   /**
-  * Abort the stream with an error.
-  *
-  * Sends a reset-style envelope to the parent. The local `result` promise is
-  * settled only when the parent response is routed back.
-  *
-  * ```typescript no_run
-  * sink.abort('cancelled');
-  * ```
-  */
+   * Abort the stream with an error.
+   *
+   * Sends a reset-style envelope to the parent. The local `result` promise is
+   * settled only when the parent response is routed back.
+   *
+   * ```typescript no_run
+   * sink.abort('cancelled');
+   * ```
+   */
   abort(error: string): void {
     _sendMsg({
       __rpc_send_err: true,
       reqId: this.#reqId,
-      error
+      error,
     });
   }
   /**
-  * Settle `result` with a value.
-  *
-  * Called only by `resolveSink` from the drain path; not part of the sink's
-  * public surface.
-  *
-  * @internal
-  */
+   * Settle `result` with a value.
+   *
+   * Called only by `resolveSink` from the drain path; not part of the sink's
+   * public surface.
+   *
+   * @internal
+   */
   _resolve(v: unknown) {
     this.#resolve(v);
   }
   /**
-  * Settle `result` with an `Error` built from `e`.
-  *
-  * Called only by `rejectSink` from the drain path; not part of the sink's
-  * public surface.
-  *
-  * @internal
-  */
+   * Settle `result` with an `Error` built from `e`.
+   *
+   * Called only by `rejectSink` from the drain path; not part of the sink's
+   * public surface.
+   *
+   * @internal
+   */
   _reject(e: string) {
     this.#reject(new Error(e));
   }
 }
 const _pendingSinks = new Map<number, WriteSink>();
 /**
-* Open a write stream to the parent.
-*
-* Returns a `WriteSink` immediately, having sent only the `__rpc_send_start`
-* envelope; subsequent chunks written to the sink flow child-to-parent without a
-* round-trip per chunk. On the parent side the handler is invoked as
-* `(args, source)` where `source` is an `AsyncIterable<unknown>` of the chunks
-* the child writes, and its return value settles `sink.result`.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* const sink = rpc.callSink('facade:blob', 'upload', ['name']);
-* sink.write(new Uint8Array([1, 2, 3]));
-* sink.close();
-* await sink.result;
-* ```
-*/
+ * Open a write stream to the parent.
+ *
+ * Returns a `WriteSink` immediately, having sent only the `__rpc_send_start`
+ * envelope; subsequent chunks written to the sink flow child-to-parent without a
+ * round-trip per chunk. On the parent side the handler is invoked as
+ * `(args, source)` where `source` is an `AsyncIterable<unknown>` of the chunks
+ * the child writes, and its return value settles `sink.result`.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * const sink = rpc.callSink('facade:blob', 'upload', ['name']);
+ * sink.write(new Uint8Array([1, 2, 3]));
+ * sink.close();
+ * await sink.result;
+ * ```
+ */
 export function callSink(specifier: string, method: string, args: unknown[]): WriteSink {
   const reqId = _nextId++;
   const sink = new WriteSink(reqId);
@@ -576,26 +595,26 @@ export function callSink(specifier: string, method: string, args: unknown[]): Wr
     specifier,
     method,
     reqId,
-    args
+    args,
   });
   return sink;
 }
 /**
-* Settle a sink's result promise with a successful value.
-*
-* Called from `resolveRpc` when an incoming `__rpc_res` did not match a pending
-* scalar call — the request id may instead belong to a write-stream whose
-* handler has just returned. Returns `false` when the id does not match a
-* pending sink either, so `resolveRpc` can report the response as unhandled.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* const handled = rpc.resolveSink(1, { stored: true });
-* ```
-*
-* @internal
-*/
+ * Settle a sink's result promise with a successful value.
+ *
+ * Called from `resolveRpc` when an incoming `__rpc_res` did not match a pending
+ * scalar call — the request id may instead belong to a write-stream whose
+ * handler has just returned. Returns `false` when the id does not match a
+ * pending sink either, so `resolveRpc` can report the response as unhandled.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * const handled = rpc.resolveSink(1, { stored: true });
+ * ```
+ *
+ * @internal
+ */
 export function resolveSink(reqId: number, result: unknown): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;
@@ -604,21 +623,21 @@ export function resolveSink(reqId: number, result: unknown): boolean {
   return true;
 }
 /**
-* Reject a sink's result promise with an error.
-*
-* Called from `rejectRpc` when an error response did not match a pending scalar
-* call. The `error` string is wrapped in a fresh `Error` and used to reject the
-* sink's `result`. Returns `false` when the id does not match a pending sink, so
-* `rejectRpc` can report the error as unhandled.
-*
-* ```typescript no_run
-* import * as rpc from 'internal:parent-rpc';
-*
-* const handled = rpc.rejectSink(1, 'upload rejected');
-* ```
-*
-* @internal
-*/
+ * Reject a sink's result promise with an error.
+ *
+ * Called from `rejectRpc` when an error response did not match a pending scalar
+ * call. The `error` string is wrapped in a fresh `Error` and used to reject the
+ * sink's `result`. Returns `false` when the id does not match a pending sink, so
+ * `rejectRpc` can report the error as unhandled.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:parent-rpc';
+ *
+ * const handled = rpc.rejectSink(1, 'upload rejected');
+ * ```
+ *
+ * @internal
+ */
 export function rejectSink(reqId: number, error: string): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;

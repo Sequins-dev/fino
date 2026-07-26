@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:archive
-*
-* Run with: cargo run -- bench benchmarks/archive.bench.ts
-*/
+ * Benchmarks for fino:archive
+ *
+ * Run with: cargo run -- bench benchmarks/archive.bench.ts
+ */
 import { createArchive, extractArchive, listArchive, openArchive } from 'fino:archive';
 import { bench } from 'fino:bench';
 import { DiskFileSystem } from 'fino:file';
@@ -28,7 +28,7 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 async function removeTree(path: string): Promise<void> {
-  if (!await exists(path)) return;
+  if (!(await exists(path))) return;
   const entry = await fs.entry(path);
   if (entry.isDirectory()) {
     const dir = await fs.dir(path);
@@ -67,13 +67,7 @@ await writeSampleArchive(SAMPLE_ZIP);
 await writeSampleArchive(SAMPLE_TAR);
 await writeSampleArchive(SAMPLE_TGZ);
 await writeManyEntryArchive(MANY_ZIP);
-await fs.writeFile(MALFORMED_ZIP, new Uint8Array([
-  80,
-  75,
-  3,
-  4,
-  0
-]));
+await fs.writeFile(MALFORMED_ZIP, new Uint8Array([80, 75, 3, 4, 0]));
 const zipEntries = await listArchive(SAMPLE_ZIP);
 const zipArchive = await openArchive(SAMPLE_ZIP);
 const zipText = await zipArchive.readText('hello.txt');

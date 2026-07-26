@@ -1,8 +1,8 @@
 /**
-* Benchmarks for Encoding globals
-*
-* Run with: cargo run -- --bench benchmarks/encoding.bench.mjs
-*/
+ * Benchmarks for Encoding globals
+ *
+ * Run with: cargo run -- --bench benchmarks/encoding.bench.mjs
+ */
 import { bench } from 'fino:bench';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -63,27 +63,19 @@ bench('structuredClone', (b) => {
   const smallObj = {
     a: 1,
     b: 'hello',
-    c: true
+    c: true,
   };
-  const nestedObj = { a: { b: { c: [
-    1,
-    2,
-    3
-  ] } } };
+  const nestedObj = { a: { b: { c: [1, 2, 3] } } };
   const arr100 = Array.from({ length: 100 }, (_, i) => i);
   const complexObj = {
     id: 1,
     name: 'test',
-    tags: [
-      'a',
-      'b',
-      'c'
-    ],
+    tags: ['a', 'b', 'c'],
     nested: {
       x: 1,
-      y: [2, 3]
+      y: [2, 3],
     },
-    active: true
+    active: true,
   };
   b.measure('number', () => structuredClone(primitive));
   b.measure('small flat obj', () => structuredClone(smallObj));

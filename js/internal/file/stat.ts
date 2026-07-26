@@ -1,155 +1,180 @@
 /**
-* POSIX `struct stat` parser for internal `fino:file` providers.
-*
-* This module converts native `stat(2)`, `lstat(2)`, and `fstat(2)` result
-* buffers into the JavaScript `Stat` value used by file providers and entries.
-* It handles the platform layouts currently supported by the runtime and
-* exposes convenience predicates for common POSIX file types.
-*
-* Parsed timestamp values are milliseconds since the Unix epoch. The Linux
-* layout used here does not provide birth time, so `birthtimeMs` is zero there;
-* callers that need creation time should treat that value as best-effort.
-*
-* ## Example
-*
-* ```typescript no_run
-* import { Stat } from 'internal:file/stat';
-*
-* const stat = await file.stat();
-* if (stat.isFile()) {
-*   console.log(stat.size, stat.permissions.toString(8));
-* }
-* ```
-*
-* @internal
-*/
-import { isDarwin, S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR } from './bindings.ts';
+ * POSIX `struct stat` parser for internal `fino:file` providers.
+ *
+ * This module converts native `stat(2)`, `lstat(2)`, and `fstat(2)` result
+ * buffers into the JavaScript `Stat` value used by file providers and entries.
+ * It handles the platform layouts currently supported by the runtime and
+ * exposes convenience predicates for common POSIX file types.
+ *
+ * Parsed timestamp values are milliseconds since the Unix epoch. The Linux
+ * layout used here does not provide birth time, so `birthtimeMs` is zero there;
+ * callers that need creation time should treat that value as best-effort.
+ *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import { Stat } from 'internal:file/stat';
+ *
+ * const stat = await file.stat();
+ * if (stat.isFile()) {
+ *   console.log(stat.size, stat.permissions.toString(8));
+ * }
+ * ```
+ *
+ * @internal
+ */
+import {
+  isDarwin,
+  S_IFMT,
+  S_IFREG,
+  S_IFDIR,
+  S_IFLNK,
+  S_IFSOCK,
+  S_IFIFO,
+  S_IFBLK,
+  S_IFCHR,
+} from './bindings.ts';
 import { arch } from 'internal:process';
 /**
-* File metadata parsed from a struct stat buffer.
-*
-* Numeric fields that may be large (ino, dev, size, blocks) are returned as
-* Numbers; they fit within JS safe-integer range for all practical file sizes.
-*
-* ```typescript no_run
-* import { Stat } from 'internal:file/stat';
-* const stat = new Stat(1, 2, 0o100644, 1, 501, 20, 0, 12, 4096, 1, 0, 0, 0, 0);
-* stat.isFile(); // true
-* ```
-*
-*/
+ * File metadata parsed from a struct stat buffer.
+ *
+ * Numeric fields that may be large (ino, dev, size, blocks) are returned as
+ * Numbers; they fit within JS safe-integer range for all practical file sizes.
+ *
+ * ```typescript no_run
+ * import { Stat } from 'internal:file/stat';
+ * const stat = new Stat(1, 2, 0o100644, 1, 501, 20, 0, 12, 4096, 1, 0, 0, 0, 0);
+ * stat.isFile(); // true
+ * ```
+ *
+ */
 export class Stat {
   /**
-  * Backing store for the `dev` getter: the raw `st_dev` value, identifying the
-  * device (filesystem) that contains the inode.
-  *
-  * @internal
-  */
+   * Backing store for the `dev` getter: the raw `st_dev` value, identifying the
+   * device (filesystem) that contains the inode.
+   *
+   * @internal
+   */
   #dev: number;
   /**
-  * Backing store for the `ino` getter: the inode number, narrowed from the
-  * native `u64` to a JS Number.
-  *
-  * @internal
-  */
+   * Backing store for the `ino` getter: the inode number, narrowed from the
+   * native `u64` to a JS Number.
+   *
+   * @internal
+   */
   #ino: number;
   /**
-  * Backing store for the `mode` getter: the raw `st_mode` bits, combining the
-  * file-type field (`S_IFMT`) with the permission bits. The `permissions`
-  * getter and the `isFile`/`isDirectory`/etc. predicates all derive from this.
-  *
-  * @internal
-  */
+   * Backing store for the `mode` getter: the raw `st_mode` bits, combining the
+   * file-type field (`S_IFMT`) with the permission bits. The `permissions`
+   * getter and the `isFile`/`isDirectory`/etc. predicates all derive from this.
+   *
+   * @internal
+   */
   #mode: number;
   /**
-  * Backing store for the `nlink` getter: the number of hard links to the
-  * inode.
-  *
-  * @internal
-  */
+   * Backing store for the `nlink` getter: the number of hard links to the
+   * inode.
+   *
+   * @internal
+   */
   #nlink: number;
   /**
-  * Backing store for the `uid` getter: the owning user's numeric ID.
-  *
-  * @internal
-  */
+   * Backing store for the `uid` getter: the owning user's numeric ID.
+   *
+   * @internal
+   */
   #uid: number;
   /**
-  * Backing store for the `gid` getter: the owning group's numeric ID.
-  *
-  * @internal
-  */
+   * Backing store for the `gid` getter: the owning group's numeric ID.
+   *
+   * @internal
+   */
   #gid: number;
   /**
-  * Backing store for the `rdev` getter: the device ID described by the inode
-  * when it is a block or character special file (zero otherwise).
-  *
-  * @internal
-  */
+   * Backing store for the `rdev` getter: the device ID described by the inode
+   * when it is a block or character special file (zero otherwise).
+   *
+   * @internal
+   */
   #rdev: number;
   /**
-  * Backing store for the `size` getter: the file size in bytes, narrowed from
-  * the native `i64` to a JS Number.
-  *
-  * @internal
-  */
+   * Backing store for the `size` getter: the file size in bytes, narrowed from
+   * the native `i64` to a JS Number.
+   *
+   * @internal
+   */
   #size: number;
   /**
-  * Backing store for the `blksize` getter: the preferred block size for
-  * efficient filesystem I/O, in bytes.
-  *
-  * @internal
-  */
+   * Backing store for the `blksize` getter: the preferred block size for
+   * efficient filesystem I/O, in bytes.
+   *
+   * @internal
+   */
   #blksize: number;
   /**
-  * Backing store for the `blocks` getter: the number of 512-byte blocks
-  * actually allocated to the file (may be less than `size / 512` for sparse
-  * files).
-  *
-  * @internal
-  */
+   * Backing store for the `blocks` getter: the number of 512-byte blocks
+   * actually allocated to the file (may be less than `size / 512` for sparse
+   * files).
+   *
+   * @internal
+   */
   #blocks: number;
   /**
-  * Backing store for the `atimeMs` getter: last access time, in milliseconds
-  * since the Unix epoch, combined from the `timespec` seconds and nanoseconds.
-  *
-  * @internal
-  */
+   * Backing store for the `atimeMs` getter: last access time, in milliseconds
+   * since the Unix epoch, combined from the `timespec` seconds and nanoseconds.
+   *
+   * @internal
+   */
   #atimeMs: number;
   /**
-  * Backing store for the `mtimeMs` getter: last content-modification time, in
-  * milliseconds since the Unix epoch.
-  *
-  * @internal
-  */
+   * Backing store for the `mtimeMs` getter: last content-modification time, in
+   * milliseconds since the Unix epoch.
+   *
+   * @internal
+   */
   #mtimeMs: number;
   /**
-  * Backing store for the `ctimeMs` getter: last status-change time (inode
-  * metadata change), in milliseconds since the Unix epoch.
-  *
-  * @internal
-  */
+   * Backing store for the `ctimeMs` getter: last status-change time (inode
+   * metadata change), in milliseconds since the Unix epoch.
+   *
+   * @internal
+   */
   #ctimeMs: number;
   /**
-  * Backing store for the `birthtimeMs` getter: creation (birth) time, in
-  * milliseconds since the Unix epoch. Populated on macOS; left at zero on Linux
-  * because the parsed `struct stat` layout does not carry a birth-time field.
-  *
-  * @internal
-  */
+   * Backing store for the `birthtimeMs` getter: creation (birth) time, in
+   * milliseconds since the Unix epoch. Populated on macOS; left at zero on Linux
+   * because the parsed `struct stat` layout does not carry a birth-time field.
+   *
+   * @internal
+   */
   #birthtimeMs: number;
   /**
-  * Create a parsed stat value.
-  *
-  * Timestamps are milliseconds since the Unix epoch. `birthtimeMs` is zero on
-  * Linux because the parsed layout does not include creation time.
-  *
-  * ```typescript no_run
-  * import { Stat } from 'internal:file/stat';
-  * const stat = new Stat(1, 2, 0o100644, 1, 501, 20, 0, 12, 4096, 1, 0, 0, 0, 0);
-  * ```
-  */
-  constructor(dev: number, ino: number, mode: number, nlink: number, uid: number, gid: number, rdev: number, size: number, blksize: number, blocks: number, atimeMs: number, mtimeMs: number, ctimeMs: number, birthtimeMs: number) {
+   * Create a parsed stat value.
+   *
+   * Timestamps are milliseconds since the Unix epoch. `birthtimeMs` is zero on
+   * Linux because the parsed layout does not include creation time.
+   *
+   * ```typescript no_run
+   * import { Stat } from 'internal:file/stat';
+   * const stat = new Stat(1, 2, 0o100644, 1, 501, 20, 0, 12, 4096, 1, 0, 0, 0, 0);
+   * ```
+   */
+  constructor(
+    dev: number,
+    ino: number,
+    mode: number,
+    nlink: number,
+    uid: number,
+    gid: number,
+    rdev: number,
+    size: number,
+    blksize: number,
+    blocks: number,
+    atimeMs: number,
+    mtimeMs: number,
+    ctimeMs: number,
+    birthtimeMs: number,
+  ) {
     this.#dev = dev;
     this.#ino = ino;
     this.#mode = mode;
@@ -166,244 +191,245 @@ export class Stat {
     this.#birthtimeMs = birthtimeMs;
   }
   /**
-  * Device ID containing the inode.
-  *
-  * ```typescript no_run
-  * const dev = stat.dev;
-  * ```
-  */
+   * Device ID containing the inode.
+   *
+   * ```typescript no_run
+   * const dev = stat.dev;
+   * ```
+   */
   get dev() {
     return this.#dev;
   }
   /**
-  * Inode number.
-  *
-  * ```typescript no_run
-  * const ino = stat.ino;
-  * ```
-  */
+   * Inode number.
+   *
+   * ```typescript no_run
+   * const ino = stat.ino;
+   * ```
+   */
   get ino() {
     return this.#ino;
   }
   /**
-  * Raw POSIX mode bits, including file type and permissions.
-  *
-  * ```typescript no_run
-  * const mode = stat.mode;
-  * ```
-  */
+   * Raw POSIX mode bits, including file type and permissions.
+   *
+   * ```typescript no_run
+   * const mode = stat.mode;
+   * ```
+   */
   get mode() {
     return this.#mode;
   }
   /**
-  * Hard-link count.
-  *
-  * ```typescript no_run
-  * const links = stat.nlink;
-  * ```
-  */
+   * Hard-link count.
+   *
+   * ```typescript no_run
+   * const links = stat.nlink;
+   * ```
+   */
   get nlink() {
     return this.#nlink;
   }
   /**
-  * Owner user ID.
-  *
-  * ```typescript no_run
-  * const uid = stat.uid;
-  * ```
-  */
+   * Owner user ID.
+   *
+   * ```typescript no_run
+   * const uid = stat.uid;
+   * ```
+   */
   get uid() {
     return this.#uid;
   }
   /**
-  * Owner group ID.
-  *
-  * ```typescript no_run
-  * const gid = stat.gid;
-  * ```
-  */
+   * Owner group ID.
+   *
+   * ```typescript no_run
+   * const gid = stat.gid;
+   * ```
+   */
   get gid() {
     return this.#gid;
   }
   /**
-  * Device ID for special files.
-  *
-  * ```typescript no_run
-  * const rdev = stat.rdev;
-  * ```
-  */
+   * Device ID for special files.
+   *
+   * ```typescript no_run
+   * const rdev = stat.rdev;
+   * ```
+   */
   get rdev() {
     return this.#rdev;
   }
   /**
-  * File size in bytes.
-  *
-  * ```typescript no_run
-  * const size = stat.size;
-  * ```
-  */
+   * File size in bytes.
+   *
+   * ```typescript no_run
+   * const size = stat.size;
+   * ```
+   */
   get size() {
     return this.#size;
   }
   /**
-  * Preferred block size for filesystem I/O.
-  *
-  * ```typescript no_run
-  * const blockSize = stat.blksize;
-  * ```
-  */
+   * Preferred block size for filesystem I/O.
+   *
+   * ```typescript no_run
+   * const blockSize = stat.blksize;
+   * ```
+   */
   get blksize() {
     return this.#blksize;
   }
   /**
-  * Allocated block count.
-  *
-  * ```typescript no_run
-  * const blocks = stat.blocks;
-  * ```
-  */
+   * Allocated block count.
+   *
+   * ```typescript no_run
+   * const blocks = stat.blocks;
+   * ```
+   */
   get blocks() {
     return this.#blocks;
   }
   /**
-  * Last access time in milliseconds since Unix epoch.
-  *
-  * ```typescript no_run
-  * const atime = stat.atimeMs;
-  * ```
-  */
+   * Last access time in milliseconds since Unix epoch.
+   *
+   * ```typescript no_run
+   * const atime = stat.atimeMs;
+   * ```
+   */
   get atimeMs() {
     return this.#atimeMs;
   }
   /**
-  * Last modification time in milliseconds since Unix epoch.
-  *
-  * ```typescript no_run
-  * const mtime = stat.mtimeMs;
-  * ```
-  */
+   * Last modification time in milliseconds since Unix epoch.
+   *
+   * ```typescript no_run
+   * const mtime = stat.mtimeMs;
+   * ```
+   */
   get mtimeMs() {
     return this.#mtimeMs;
   }
   /**
-  * Last status-change time in milliseconds since Unix epoch.
-  *
-  * ```typescript no_run
-  * const ctime = stat.ctimeMs;
-  * ```
-  */
+   * Last status-change time in milliseconds since Unix epoch.
+   *
+   * ```typescript no_run
+   * const ctime = stat.ctimeMs;
+   * ```
+   */
   get ctimeMs() {
     return this.#ctimeMs;
   }
   /**
-  * Creation time in milliseconds since Unix epoch when available.
-  *
-  * Linux parsing returns zero because the current struct layout does not expose
-  * birth time.
-  *
-  * ```typescript no_run
-  * const birth = stat.birthtimeMs;
-  * ```
-  */
+   * Creation time in milliseconds since Unix epoch when available.
+   *
+   * Linux parsing returns zero because the current struct layout does not expose
+   * birth time.
+   *
+   * ```typescript no_run
+   * const birth = stat.birthtimeMs;
+   * ```
+   */
   get birthtimeMs() {
     return this.#birthtimeMs;
   }
   /**
-  * Permission bits (`mode & 0o7777`).
-  *
-  * ```typescript no_run
-  * const perms = stat.permissions;
-  * ```
-  */
+   * Permission bits (`mode & 0o7777`).
+   *
+   * ```typescript no_run
+   * const perms = stat.permissions;
+   * ```
+   */
   get permissions(): number {
     return this.#mode & 4095;
   }
   /**
-  * Return true when the mode identifies a regular file.
-  *
-  * ```typescript no_run
-  * if (stat.isFile()) void stat.size;
-  * ```
-  */
+   * Return true when the mode identifies a regular file.
+   *
+   * ```typescript no_run
+   * if (stat.isFile()) void stat.size;
+   * ```
+   */
   isFile(): boolean {
     return (this.#mode & S_IFMT) === S_IFREG;
   }
   /**
-  * Return true when the mode identifies a directory.
-  *
-  * ```typescript no_run
-  * const dir = stat.isDirectory();
-  * ```
-  */
+   * Return true when the mode identifies a directory.
+   *
+   * ```typescript no_run
+   * const dir = stat.isDirectory();
+   * ```
+   */
   isDirectory(): boolean {
     return (this.#mode & S_IFMT) === S_IFDIR;
   }
   /**
-  * Return true when the mode identifies a symbolic link.
-  *
-  * ```typescript no_run
-  * const link = stat.isSymlink();
-  * ```
-  */
+   * Return true when the mode identifies a symbolic link.
+   *
+   * ```typescript no_run
+   * const link = stat.isSymlink();
+   * ```
+   */
   isSymlink(): boolean {
     return (this.#mode & S_IFMT) === S_IFLNK;
   }
   /**
-  * Return true when the mode identifies a socket.
-  *
-  * ```typescript no_run
-  * const socket = stat.isSocket();
-  * ```
-  */
+   * Return true when the mode identifies a socket.
+   *
+   * ```typescript no_run
+   * const socket = stat.isSocket();
+   * ```
+   */
   isSocket(): boolean {
     return (this.#mode & S_IFMT) === S_IFSOCK;
   }
   /**
-  * Return true when the mode identifies a FIFO.
-  *
-  * ```typescript no_run
-  * const fifo = stat.isFIFO();
-  * ```
-  */
+   * Return true when the mode identifies a FIFO.
+   *
+   * ```typescript no_run
+   * const fifo = stat.isFIFO();
+   * ```
+   */
   isFIFO(): boolean {
     return (this.#mode & S_IFMT) === S_IFIFO;
   }
   /**
-  * Return true when the mode identifies a block device.
-  *
-  * ```typescript no_run
-  * const block = stat.isBlockDevice();
-  * ```
-  */
+   * Return true when the mode identifies a block device.
+   *
+   * ```typescript no_run
+   * const block = stat.isBlockDevice();
+   * ```
+   */
   isBlockDevice(): boolean {
     return (this.#mode & S_IFMT) === S_IFBLK;
   }
   /**
-  * Return true when the mode identifies a character device.
-  *
-  * ```typescript no_run
-  * const chr = stat.isCharacterDevice();
-  * ```
-  */
+   * Return true when the mode identifies a character device.
+   *
+   * ```typescript no_run
+   * const chr = stat.isCharacterDevice();
+   * ```
+   */
   isCharacterDevice(): boolean {
     return (this.#mode & S_IFMT) === S_IFCHR;
   }
   /**
-  * Parse a struct stat from a 256-byte ArrayBuffer.
-  * Layout differs between macOS arm64 and Linux x86_64.
-  *
-  * Throws only if the supplied buffer is too small for `DataView` reads. The
-  * caller is responsible for passing a buffer filled by `stat`, `lstat`, or
-  * `fstat`.
-  *
-  * ```typescript no_run
-  * import { Stat } from 'internal:file/stat';
-  * const stat = Stat.parse(new ArrayBuffer(256));
-  * ```
-  */
+   * Parse a struct stat from a 256-byte ArrayBuffer.
+   * Layout differs between macOS arm64 and Linux x86_64.
+   *
+   * Throws only if the supplied buffer is too small for `DataView` reads. The
+   * caller is responsible for passing a buffer filled by `stat`, `lstat`, or
+   * `fstat`.
+   *
+   * ```typescript no_run
+   * import { Stat } from 'internal:file/stat';
+   * const stat = Stat.parse(new ArrayBuffer(256));
+   * ```
+   */
   static parse(buf: ArrayBuffer | ArrayBufferView): Stat {
     const v = new DataView(buf instanceof ArrayBuffer ? buf : buf.buffer);
-    const toMs = (sec: number | bigint, ns: number | bigint): number => Number(sec) * 1e3 + Number(ns) / 1e6;
+    const toMs = (sec: number | bigint, ns: number | bigint): number =>
+      Number(sec) * 1e3 + Number(ns) / 1e6;
     if (isDarwin) {
       // macOS arm64 struct stat (144 bytes):
       //  0: i32 dev      4: u16 mode    6: u16 nlink
@@ -432,7 +458,22 @@ export class Stat {
       const size = Number(v.getBigInt64(96, true));
       const blocks = Number(v.getBigInt64(104, true));
       const blksize = v.getInt32(112, true);
-      return new Stat(dev, ino, mode, nlink, uid, gid, rdev, size, blksize, blocks, toMs(atimeSec, atimeNs), toMs(mtimeSec, mtimeNs), toMs(ctimeSec, ctimeNs), toMs(btimeSec, btimeNs));
+      return new Stat(
+        dev,
+        ino,
+        mode,
+        nlink,
+        uid,
+        gid,
+        rdev,
+        size,
+        blksize,
+        blocks,
+        toMs(atimeSec, atimeNs),
+        toMs(mtimeSec, mtimeNs),
+        toMs(ctimeSec, ctimeNs),
+        toMs(btimeSec, btimeNs),
+      );
     } else if (arch === 'aarch64') {
       // Linux aarch64 glibc struct stat (128 bytes):
       //  0: u64 dev     8: u64 ino    16: u32 mode   20: u32 nlink
@@ -457,7 +498,22 @@ export class Stat {
       const mtimeNs = v.getBigInt64(96, true);
       const ctimeSec = v.getBigInt64(104, true);
       const ctimeNs = v.getBigInt64(112, true);
-      return new Stat(dev, ino, mode, nlink, uid, gid, rdev, size, blksize, blocks, toMs(atimeSec, atimeNs), toMs(mtimeSec, mtimeNs), toMs(ctimeSec, ctimeNs), 0);
+      return new Stat(
+        dev,
+        ino,
+        mode,
+        nlink,
+        uid,
+        gid,
+        rdev,
+        size,
+        blksize,
+        blocks,
+        toMs(atimeSec, atimeNs),
+        toMs(mtimeSec, mtimeNs),
+        toMs(ctimeSec, ctimeNs),
+        0,
+      );
     } else {
       // Linux x86_64 struct stat (144 bytes):
       //  0: u64 dev     8: u64 ino    16: u64 nlink
@@ -483,7 +539,22 @@ export class Stat {
       const mtimeNs = v.getBigInt64(96, true);
       const ctimeSec = v.getBigInt64(104, true);
       const ctimeNs = v.getBigInt64(112, true);
-      return new Stat(dev, ino, mode, nlink, uid, gid, rdev, size, blksize, blocks, toMs(atimeSec, atimeNs), toMs(mtimeSec, mtimeNs), toMs(ctimeSec, ctimeNs), 0);
+      return new Stat(
+        dev,
+        ino,
+        mode,
+        nlink,
+        uid,
+        gid,
+        rdev,
+        size,
+        blksize,
+        blocks,
+        toMs(atimeSec, atimeNs),
+        toMs(mtimeSec, mtimeNs),
+        toMs(ctimeSec, ctimeNs),
+        0,
+      );
     }
   }
 }

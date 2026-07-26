@@ -22,5 +22,5 @@ export {
   CidRoutingTable,
   QuicEndpoint,
   __inspectQuicCallbackTable,
-  __inspectQuicRuntimeTuning
+  __inspectQuicRuntimeTuning,
 } from '../../internal/net/quic/core.ts';

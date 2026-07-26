@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:tty
-*
-* Run with: cargo run -- bench benchmarks/tty.bench.ts
-*/
+ * Benchmarks for fino:tty
+ *
+ * Run with: cargo run -- bench benchmarks/tty.bench.ts
+ */
 import { isatty, stderrIsTTY, stdinIsTTY, stdoutIsTTY } from 'fino:tty';
 import { bench } from 'fino:bench';
 bench('tty', (b) => {

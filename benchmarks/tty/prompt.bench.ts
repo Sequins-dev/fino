@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:tty/prompt
-*
-* Run with: cargo run -- bench benchmarks/tty/prompt.bench.ts
-*/
+ * Benchmarks for fino:tty/prompt
+ *
+ * Run with: cargo run -- bench benchmarks/tty/prompt.bench.ts
+ */
 import { PromptSession } from 'fino:tty/prompt';
 import { bench } from 'fino:bench';
 const prompt = new PromptSession({ isInteractive: false });

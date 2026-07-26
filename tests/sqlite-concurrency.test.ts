@@ -1,14 +1,14 @@
 /**
-* Regression tests for sqlite concurrency:
-*
-* - interleaved statement execution on one connection (used to race
-*   blocking-pool threads inside one sqlite3* and segfault or hang; now
-*   serialized by the per-connection operation queue),
-* - real advisory locking between connections (the VFS used to no-op
-*   xLock/xUnlock),
-* - file-backed sqlite inside a child realm (the FFI bridge used to attach
-*   promise reactions in the wrong realm, deadlocking VFS trampolines).
-*/
+ * Regression tests for sqlite concurrency:
+ *
+ * - interleaved statement execution on one connection (used to race
+ *   blocking-pool threads inside one sqlite3* and segfault or hang; now
+ *   serialized by the per-connection operation queue),
+ * - real advisory locking between connections (the VFS used to no-op
+ *   xLock/xUnlock),
+ * - file-backed sqlite inside a child realm (the FFI bridge used to attach
+ *   promise reactions in the wrong realm, deadlocking VFS trampolines).
+ */
 import { describe, it } from 'fino:test/test';
 import { Database, sqliteAvailable } from 'fino:database/sqlite';
 import { Realm } from 'fino:realm';
@@ -76,7 +76,10 @@ describe('sqlite concurrency', () => {
       await b.exec('ROLLBACK');
     } catch (err) {
       blocked = true;
-      t.ok(/locked|busy/i.test(err instanceof Error ? err.message : ''), `second writer saw the lock: ${err instanceof Error ? err.message : err}`);
+      t.ok(
+        /locked|busy/i.test(err instanceof Error ? err.message : ''),
+        `second writer saw the lock: ${err instanceof Error ? err.message : err}`,
+      );
     }
     t.ok(blocked, 'concurrent write transaction was refused while the first held the lock');
     await a.exec('COMMIT');
@@ -88,7 +91,7 @@ describe('sqlite concurrency', () => {
   });
   it('runs file-backed sqlite inside a child realm', async (t) => {
     const realm = new Realm<typeof sqliteChildFn>({
-      entry: new URL('./realm/fixtures/sqlite-child-fn.ts', import.meta.url).pathname
+      entry: new URL('./realm/fixtures/sqlite-child-fn.ts', import.meta.url).pathname,
     });
     const result = await realm.call(tempPath());
     t.equal(result, 42, 'child realm completed VFS-backed sqlite work');

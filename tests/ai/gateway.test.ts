@@ -10,9 +10,9 @@ function modelNamed(name: string, calls: string[]): Model {
     toolCalls: [],
     usage: {
       inputTokens: 1,
-      outputTokens: 1
+      outputTokens: 1,
     },
-    stopReason: 'end_turn'
+    stopReason: 'end_turn',
   };
   return {
     name,
@@ -23,15 +23,15 @@ function modelNamed(name: string, calls: string[]): Model {
         yield {
           type: 'text_delta' as const,
           index: 0,
-          text: name
+          text: name,
         };
         yield {
           type: 'usage' as const,
-          usage: result.usage
+          usage: result.usage,
         };
         yield {
           type: 'stop' as const,
-          reason: 'end_turn' as const
+          reason: 'end_turn' as const,
         };
       }
       return new ModelStreamImpl(events());
@@ -42,7 +42,7 @@ function modelNamed(name: string, calls: string[]): Model {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 describe('AI gateway policy', () => {
@@ -53,7 +53,7 @@ describe('AI gateway policy', () => {
       cache,
       requests: 2,
       windowMs: 100,
-      clock: () => now
+      clock: () => now,
     });
     await policy.acquire('tenant-a');
     await policy.acquire('tenant-a');
@@ -74,20 +74,32 @@ describe('AI gateway policy', () => {
     const policy = new GatewayPolicy({
       cache: memoryCache(),
       requests: 1,
-      windowMs: 1e3
+      windowMs: 1e3,
     });
     const wrapped = gatewayModel(modelNamed('parent-provider', calls), {
       policy,
-      key: 'tenant-a'
+      key: 'tenant-a',
     });
-    await wrapped.generate({ messages: [{
-      role: 'user',
-      content: 'hi'
-    }] });
-    await t.rejects(() => wrapped.generate({ messages: [{
-      role: 'user',
-      content: 'again'
-    }] }), GatewayRateLimitError);
+    await wrapped.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'hi',
+        },
+      ],
+    });
+    await t.rejects(
+      () =>
+        wrapped.generate({
+          messages: [
+            {
+              role: 'user',
+              content: 'again',
+            },
+          ],
+        }),
+      GatewayRateLimitError,
+    );
     t.deepEqual(calls, ['parent-provider']);
   });
   it('resolves the parent model on every facade call for rotation and revocation', async (t) => {
@@ -98,13 +110,16 @@ describe('AI gateway policy', () => {
       const realm = new Realm<() => Promise<string>>({
         thread: true,
         entry: new URL('../realm/fixtures/model-facade-call.ts', import.meta.url).pathname,
-        overrides: ImportMap.deny([{
-          pattern: 'internal:runtime/loop',
-          directive: 'inherit'
-        }, {
-          pattern: 'app:model',
-          directive: facade
-        }])
+        overrides: ImportMap.deny([
+          {
+            pattern: 'internal:runtime/loop',
+            directive: 'inherit',
+          },
+          {
+            pattern: 'app:model',
+            directive: facade,
+          },
+        ]),
       });
       try {
         return await realm.call();

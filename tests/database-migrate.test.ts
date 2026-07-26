@@ -7,13 +7,9 @@ import {
   defineMigration,
   loadMigrations,
   migrate,
-  rollback
+  rollback,
 } from 'fino:database/migrate';
-import {
-  compileSqlModule,
-  parseSqlModule,
-  toSqlModuleSource
-} from 'fino:database/sql';
+import { compileSqlModule, parseSqlModule, toSqlModuleSource } from 'fino:database/sql';
 
 if (!sqliteAvailable) {
   if (process.env['FINO_REQUIRE_SQLITE'] === '1') {
@@ -64,54 +60,66 @@ WHERE id = {{ input.id }}
   });
 
   it('renders structural placeholders and raw trusted fragments', (t) => {
-    const mod = compileSqlModule(parseSqlModule(`-- function byUser(input: { id: string; status: string; order: string })
+    const mod = compileSqlModule(
+      parseSqlModule(`-- function byUser(input: { id: string; status: string; order: string })
 SELECT * FROM users
 WHERE id = '{{ input.id }}'
   AND status = '{{ input.status }}'
 ORDER BY {{! input.order }}
-`));
+`),
+    );
     t.equal(
       mod.byUser({ id: "O'Brien", status: 'active', order: 'created_at DESC' }),
-      "SELECT * FROM users\nWHERE id = 'O\\'Brien'\n  AND status = 'active'\nORDER BY created_at DESC"
+      "SELECT * FROM users\nWHERE id = 'O\\'Brien'\n  AND status = 'active'\nORDER BY created_at DESC",
     );
   });
 
   it('throws on missing structural fields', (t) => {
-    const mod = compileSqlModule(parseSqlModule('-- function q(input: { id: string })\nSELECT {{ input.id }}'));
+    const mod = compileSqlModule(
+      parseSqlModule('-- function q(input: { id: string })\nSELECT {{ input.id }}'),
+    );
     t.throws(() => mod.q({}), /input\.id/);
   });
 
   it('generates a module source with type imports and up/down exports', (t) => {
-    const source = toSqlModuleSource(parseSqlModule(`-- import type { User } from './types.ts'
+    const source = toSqlModuleSource(
+      parseSqlModule(`-- import type { User } from './types.ts'
 -- function up(input: User)
 CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL);
 
 -- function down()
 DROP TABLE users;
-`));
+`),
+    );
     t.ok(source.includes(`import type { User } from './types.ts';`), 'type import is preserved');
-    t.ok(source.includes('export function up(input: User): string'), 'up is exported with its type signature');
+    t.ok(
+      source.includes('export function up(input: User): string'),
+      'up is exported with its type signature',
+    );
     t.ok(source.includes('export function down(): string'), 'down is exported');
   });
 
   it('reports TypeScript signature errors as MigrationParseError', (t) => {
     t.throws(
       () => parseSqlModule('-- function bad(input: )\nSELECT 1', { source: 'bad.sql' }),
-      (err) => err instanceof MigrationParseError && /bad\.sql:1/.test(String(err))
+      (err) => err instanceof MigrationParseError && /bad\.sql:1/.test(String(err)),
     );
   });
 
   it('imports .sql files as generated SQL modules', async (t) => {
     const dir = tmpName('import');
     await mkdirp(dir);
-    await writeText(`${dir}/queries.sql`, `-- import type { User } from './types.ts'
+    await writeText(
+      `${dir}/queries.sql`,
+      `-- import type { User } from './types.ts'
 -- function findUser(input: User)
 SELECT * FROM users WHERE id = '{{ input.id }}'
 
 -- function allUsers()
 SELECT * FROM users
-`);
-    const mod = await import(`file://${dir}/queries.sql`) as {
+`,
+    );
+    const mod = (await import(`file://${dir}/queries.sql`)) as {
       findUser(input: { id: string }): string;
       allUsers(): string;
       default: {
@@ -131,8 +139,8 @@ describe('fino:database/migrate — runner', () => {
       defineMigration({
         id: '001_create_users',
         up: 'CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
-        down: 'DROP TABLE users'
-      })
+        down: 'DROP TABLE users',
+      }),
     ]);
     t.equal(applied.length, 1);
     await db.prepare('INSERT INTO users VALUES (?, ?)').run('1', 'Ada');
@@ -140,8 +148,8 @@ describe('fino:database/migrate — runner', () => {
       defineMigration({
         id: '001_create_users',
         up: 'CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
-        down: 'DROP TABLE users'
-      })
+        down: 'DROP TABLE users',
+      }),
     ]);
     const rows = await db.prepare('SELECT id FROM users').all();
     t.equal(rows.length, 1, 'migrate is idempotent');
@@ -149,8 +157,8 @@ describe('fino:database/migrate — runner', () => {
       defineMigration({
         id: '001_create_users',
         up: 'CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
-        down: 'DROP TABLE users'
-      })
+        down: 'DROP TABLE users',
+      }),
     ]);
     t.equal(rolledBack.length, 1);
     await t.rejects(() => db.prepare('SELECT * FROM users').all(), /no such table|prepare/i);
@@ -159,18 +167,21 @@ describe('fino:database/migrate — runner', () => {
   it('rejects checksum drift before applying later migrations', async (t) => {
     await using db = await Database.open(':memory:');
     await migrate(db, [
-      defineMigration({ id: '001_create_users', up: 'CREATE TABLE users (id TEXT)' })
+      defineMigration({ id: '001_create_users', up: 'CREATE TABLE users (id TEXT)' }),
     ]);
     let checksumError: unknown;
     try {
       await migrate(db, [
         defineMigration({ id: '001_create_users', up: 'CREATE TABLE users (id TEXT, name TEXT)' }),
-        defineMigration({ id: '002_never_runs', up: 'CREATE TABLE never_runs (id TEXT)' })
+        defineMigration({ id: '002_never_runs', up: 'CREATE TABLE never_runs (id TEXT)' }),
       ]);
     } catch (err) {
       checksumError = err;
     }
-    t.ok(checksumError instanceof MigrationError, `expected MigrationError, got ${String(checksumError)}`);
+    t.ok(
+      checksumError instanceof MigrationError,
+      `expected MigrationError, got ${String(checksumError)}`,
+    );
     t.ok(/checksum/i.test(String(checksumError)), 'checksum drift is reported');
     await t.rejects(() => db.prepare('SELECT * FROM never_runs').all(), /no such table|prepare/i);
   });
@@ -178,12 +189,15 @@ describe('fino:database/migrate — runner', () => {
   it('loads directive SQL files and executes exported up/down functions', async (t) => {
     const dir = tmpName('files');
     await mkdirp(dir);
-    await writeText(`${dir}/001_users.sql`, `-- function up()
+    await writeText(
+      `${dir}/001_users.sql`,
+      `-- function up()
 CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL);
 
 -- function down()
 DROP TABLE users;
-`);
+`,
+    );
     const migrations = await loadMigrations(`${dir}/*.sql`);
     t.equal(migrations[0]!.id, '001_users');
     await using db = await Database.open(':memory:');
@@ -198,17 +212,15 @@ DROP TABLE users;
   it('rolls back transaction state when a migration fails', async (t) => {
     await using db = await Database.open(':memory:');
     await t.rejects(
-      () => migrate(db, [
-        defineMigration({
-          id: '001_broken',
-          up: [
-            'CREATE TABLE broken (id TEXT)',
-            'INSERT INTO missing_table VALUES (1)'
-          ],
-          down: 'DROP TABLE broken'
-        })
-      ]),
-      /missing_table|prepare|no such table/i
+      () =>
+        migrate(db, [
+          defineMigration({
+            id: '001_broken',
+            up: ['CREATE TABLE broken (id TEXT)', 'INSERT INTO missing_table VALUES (1)'],
+            down: 'DROP TABLE broken',
+          }),
+        ]),
+      /missing_table|prepare|no such table/i,
     );
     await t.rejects(() => db.prepare('SELECT * FROM broken').all(), /no such table|prepare/i);
     const rows = await db.prepare('SELECT id FROM fino_migrations').all();
@@ -217,8 +229,13 @@ DROP TABLE users;
 
   it('requires down SQL for rollback', async (t) => {
     await using db = await Database.open(':memory:');
-    const migrations = [defineMigration({ id: '001_create_users', up: 'CREATE TABLE users (id TEXT)' })];
+    const migrations = [
+      defineMigration({ id: '001_create_users', up: 'CREATE TABLE users (id TEXT)' }),
+    ];
     await migrate(db, migrations);
-    await t.rejects(() => rollback(db, migrations), (err) => err instanceof MigrationError && /down/i.test(String(err)));
+    await t.rejects(
+      () => rollback(db, migrations),
+      (err) => err instanceof MigrationError && /down/i.test(String(err)),
+    );
   });
 });

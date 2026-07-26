@@ -5,11 +5,11 @@ describe('SyntheticModule — install/import/uninstall lifecycle', () => {
   it('value export is accessible after install', async (t) => {
     const mod = new SyntheticModule('testValues', {
       answer: 42,
-      greeting: 'hello'
+      greeting: 'hello',
     });
     mod.install();
     try {
-      const ns = await import('testValues') as {
+      const ns = (await import('testValues')) as {
         answer: number;
         greeting: string;
       };
@@ -24,7 +24,7 @@ describe('SyntheticModule — install/import/uninstall lifecycle', () => {
     const mod = new SyntheticModule('testFunctions', { add });
     mod.install();
     try {
-      const ns = await import('testFunctions') as {
+      const ns = (await import('testFunctions')) as {
         add: (a: number, b: number) => number;
       };
       t.equal(ns.add(3, 4), 7);
@@ -39,16 +39,12 @@ describe('SyntheticModule — install/import/uninstall lifecycle', () => {
     const mod = new SyntheticModule('testStream', { counter });
     mod.install();
     try {
-      const ns = await import('testStream') as {
+      const ns = (await import('testStream')) as {
         counter: (n: number) => AsyncGenerator<number>;
       };
       const results: number[] = [];
       for await (const v of ns.counter(3)) results.push(v);
-      t.deepEqual(results, [
-        0,
-        1,
-        2
-      ]);
+      t.deepEqual(results, [0, 1, 2]);
     } finally {
       mod.uninstall();
     }
@@ -62,7 +58,7 @@ describe('SyntheticModule — install/import/uninstall lifecycle', () => {
     const mod = new SyntheticModule('testSink', { collectAll });
     mod.install();
     try {
-      const ns = await import('testSink') as {
+      const ns = (await import('testSink')) as {
         collectAll: (src: AsyncIterable<number>) => Promise<number[]>;
       };
       async function* gen() {
@@ -71,11 +67,7 @@ describe('SyntheticModule — install/import/uninstall lifecycle', () => {
         yield 30;
       }
       const result = await ns.collectAll(gen());
-      t.deepEqual(result, [
-        10,
-        20,
-        30
-      ]);
+      t.deepEqual(result, [10, 20, 30]);
     } finally {
       mod.uninstall();
     }
@@ -123,7 +115,7 @@ describe('SyntheticModule — uninstall then re-install', () => {
     const specifier = 'testReinstall';
     const mod1 = new SyntheticModule(specifier, { version: 1 });
     mod1.install();
-    const ns1 = await import(specifier) as {
+    const ns1 = (await import(specifier)) as {
       version: number;
     };
     t.equal(ns1.version, 1);
@@ -131,7 +123,7 @@ describe('SyntheticModule — uninstall then re-install', () => {
     const mod2 = new SyntheticModule(specifier, { version: 2 });
     mod2.install();
     try {
-      const ns2 = await import(specifier) as {
+      const ns2 = (await import(specifier)) as {
         version: number;
       };
       t.equal(ns2.version, 2);

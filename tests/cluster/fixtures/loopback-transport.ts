@@ -1,16 +1,16 @@
 /**
-* In-memory ClusterTransport for cluster tests.
-*
-* LoopbackTransport pairs two transport instances so that messages sent
-* on one are delivered to the other synchronously (via a queued task),
-* with no real network or file descriptors. This lets cluster tests run
-* fully in-process without spawning OS processes or WebTransport servers.
-*
-* Usage:
-*   const [a, b] = LoopbackTransport.pair('nodeA', 'nodeB');
-*   // a.send('nodeB', msg) delivers to b's handlers
-*   // b.send('nodeA', msg) delivers to a's handlers
-*/
+ * In-memory ClusterTransport for cluster tests.
+ *
+ * LoopbackTransport pairs two transport instances so that messages sent
+ * on one are delivered to the other synchronously (via a queued task),
+ * with no real network or file descriptors. This lets cluster tests run
+ * fully in-process without spawning OS processes or WebTransport servers.
+ *
+ * Usage:
+ *   const [a, b] = LoopbackTransport.pair('nodeA', 'nodeB');
+ *   // a.send('nodeB', msg) delivers to b's handlers
+ *   // b.send('nodeA', msg) delivers to a's handlers
+ */
 import type { ClusterTransport } from 'internal:cluster/transport';
 import type { ClusterMessage } from 'internal:cluster/protocol';
 export class LoopbackTransport implements ClusterTransport {

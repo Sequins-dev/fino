@@ -1,91 +1,91 @@
 /**
-* Blob and File globals (WHATWG File API).
-*
-* `Blob` is an immutable byte sequence with an associated MIME type. It is
-* the standard way to carry binary data in web APIs: fetch Request/Response
-* bodies, FormData values, FileReader, and FileReaderSync all work in terms of
-* Blobs. `File` extends `Blob` with a `name` and `lastModified` timestamp.
-*
-* Alongside the two globals this module implements the reader interfaces from
-* the same spec: `FileReader` (asynchronous, event-based), `FileReaderSync`
-* (the worker-only synchronous variant), and the array-like `FileList`. The
-* WebIDL surface details WPT checks for — enumerable prototype members,
-* constructor `length` values, readonly `FileReader` state constants, and
-* string tags — are patched onto the classes at the bottom of the file.
-*
-* WHATWG File API: https://w3c.github.io/FileAPI/
-*
-*
-* ## Internal byte storage
-*
-* All Blob content is eagerly concatenated into a single `Uint8Array` on
-* construction. String parts honor `endings: 'native'` by normalizing CRLF,
-* CR, and LF sequences to the runtime's native newline before UTF-8 encoding;
-* non-string parts remain byte-preserving. The WHATWG spec allows lazy
-* concatenation (Blob objects can reference other Blobs by ref), but eager
-* flattening is simpler and correct for our use case where Blobs are typically
-* small-to-medium in-memory values rather than multi-GB file handles.
-*
-*
-* ## The BYTES_INIT sentinel
-*
-* `slice()` needs to construct a Blob directly from raw bytes, bypassing the
-* normal `parts` iteration and normalization logic. Rather than adding a
-* public constructor overload or a static factory, we use a module-private
-* `Symbol('bytes-init')` as a sentinel first argument. When the constructor
-* sees `parts === BYTES_INIT`, it treats the second argument as
-* `{ bytes: Uint8Array, type: string }` and uses those values directly.
-* This keeps the fast path clean and invisible to external callers.
-*
-*
-* ## The _blobBytes WeakMap
-*
-* `_normalizePart()` needs to read the internal bytes of a Blob (or File)
-* that appears as a part in another Blob's constructor. Since `#bytes` is a
-* private field only accessible within the class body, module-level helpers
-* can't reach it directly. The `_blobBytes` WeakMap is populated in the
-* constructor (`_blobBytes.set(this, this.#bytes)`) to give module-level
-* code read access to internal bytes without exposing a public getter.
-*
-*
-* ## arrayBuffer() returns a copy
-*
-* `blob.arrayBuffer()` returns a copy of the internal buffer (via
-* `buffer.slice()`), not a view into it. This prevents callers from mutating
-* the Blob's internal state through the returned ArrayBuffer. `bytes()`
-* similarly returns a fresh `new Uint8Array(this.#bytes)` copy. The `stream()`
-* method returns a byte-oriented `ReadableStream` that enqueues one copied
-* chunk and closes, and `textStream()` does the same with the decoded UTF-8
-* text — sufficient for piping Blob bodies without a chunking layer.
-*
-*
-* ## slice() semantics
-*
-* `slice(start, end, contentType)` follows the WHATWG spec: negative indices
-* are resolved relative to the blob size, values are clamped to [0, size],
-* and `end < start` produces an empty Blob. The content type of the resulting
-* Blob is the provided `contentType` (lowercased), or empty string if omitted.
-*
-*
-* ```ts no_run
-* // Blob and File are available via globalThis
-*
-* const blob = new Blob(['hello, ', 'world'], { type: 'text/plain' });
-* blob.size;                // 12
-* await blob.text();        // 'hello, world'
-* await blob.bytes();       // Uint8Array
-* await blob.arrayBuffer(); // ArrayBuffer
-* blob.slice(0, 5);         // new Blob containing 'hello'
-*
-* const file = new File([blob], 'hello.txt', { type: 'text/plain' });
-* file.name;                // 'hello.txt'
-* file.lastModified;        // number (ms since epoch)
-*
-* const syncReader = new FileReaderSync();
-* syncReader.readAsText(blob); // 'hello, world'
-* ```
-*
-*/
+ * Blob and File globals (WHATWG File API).
+ *
+ * `Blob` is an immutable byte sequence with an associated MIME type. It is
+ * the standard way to carry binary data in web APIs: fetch Request/Response
+ * bodies, FormData values, FileReader, and FileReaderSync all work in terms of
+ * Blobs. `File` extends `Blob` with a `name` and `lastModified` timestamp.
+ *
+ * Alongside the two globals this module implements the reader interfaces from
+ * the same spec: `FileReader` (asynchronous, event-based), `FileReaderSync`
+ * (the worker-only synchronous variant), and the array-like `FileList`. The
+ * WebIDL surface details WPT checks for — enumerable prototype members,
+ * constructor `length` values, readonly `FileReader` state constants, and
+ * string tags — are patched onto the classes at the bottom of the file.
+ *
+ * WHATWG File API: https://w3c.github.io/FileAPI/
+ *
+ *
+ * ## Internal byte storage
+ *
+ * All Blob content is eagerly concatenated into a single `Uint8Array` on
+ * construction. String parts honor `endings: 'native'` by normalizing CRLF,
+ * CR, and LF sequences to the runtime's native newline before UTF-8 encoding;
+ * non-string parts remain byte-preserving. The WHATWG spec allows lazy
+ * concatenation (Blob objects can reference other Blobs by ref), but eager
+ * flattening is simpler and correct for our use case where Blobs are typically
+ * small-to-medium in-memory values rather than multi-GB file handles.
+ *
+ *
+ * ## The BYTES_INIT sentinel
+ *
+ * `slice()` needs to construct a Blob directly from raw bytes, bypassing the
+ * normal `parts` iteration and normalization logic. Rather than adding a
+ * public constructor overload or a static factory, we use a module-private
+ * `Symbol('bytes-init')` as a sentinel first argument. When the constructor
+ * sees `parts === BYTES_INIT`, it treats the second argument as
+ * `{ bytes: Uint8Array, type: string }` and uses those values directly.
+ * This keeps the fast path clean and invisible to external callers.
+ *
+ *
+ * ## The _blobBytes WeakMap
+ *
+ * `_normalizePart()` needs to read the internal bytes of a Blob (or File)
+ * that appears as a part in another Blob's constructor. Since `#bytes` is a
+ * private field only accessible within the class body, module-level helpers
+ * can't reach it directly. The `_blobBytes` WeakMap is populated in the
+ * constructor (`_blobBytes.set(this, this.#bytes)`) to give module-level
+ * code read access to internal bytes without exposing a public getter.
+ *
+ *
+ * ## arrayBuffer() returns a copy
+ *
+ * `blob.arrayBuffer()` returns a copy of the internal buffer (via
+ * `buffer.slice()`), not a view into it. This prevents callers from mutating
+ * the Blob's internal state through the returned ArrayBuffer. `bytes()`
+ * similarly returns a fresh `new Uint8Array(this.#bytes)` copy. The `stream()`
+ * method returns a byte-oriented `ReadableStream` that enqueues one copied
+ * chunk and closes, and `textStream()` does the same with the decoded UTF-8
+ * text — sufficient for piping Blob bodies without a chunking layer.
+ *
+ *
+ * ## slice() semantics
+ *
+ * `slice(start, end, contentType)` follows the WHATWG spec: negative indices
+ * are resolved relative to the blob size, values are clamped to [0, size],
+ * and `end < start` produces an empty Blob. The content type of the resulting
+ * Blob is the provided `contentType` (lowercased), or empty string if omitted.
+ *
+ *
+ * ```ts no_run
+ * // Blob and File are available via globalThis
+ *
+ * const blob = new Blob(['hello, ', 'world'], { type: 'text/plain' });
+ * blob.size;                // 12
+ * await blob.text();        // 'hello, world'
+ * await blob.bytes();       // Uint8Array
+ * await blob.arrayBuffer(); // ArrayBuffer
+ * blob.slice(0, 5);         // new Blob containing 'hello'
+ *
+ * const file = new File([blob], 'hello.txt', { type: 'text/plain' });
+ * file.name;                // 'hello.txt'
+ * file.lastModified;        // number (ms since epoch)
+ *
+ * const syncReader = new FileReaderSync();
+ * syncReader.readAsText(blob); // 'hello, world'
+ * ```
+ *
+ */
 import { btoa, DOMException, TextDecoder, _registerBlobCloneHelper } from './encoding.ts';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { Event, EventTarget } from './eventtarget.ts';
@@ -100,40 +100,40 @@ const BYTES_INIT = Symbol('bytes-init');
 // All Blob and File instances register here on construction.
 const _blobBytes = new WeakMap<Blob, Uint8Array>();
 /**
-* Return the internal byte store for a Blob or File.
-*
-* This helper is exported for other internal modules, notably structuredClone.
-* It returns the module-owned Uint8Array, so callers must treat it as read-only
-* and copy before exposing bytes to user code.
-*
-* ```typescript no_run
-* const blob = new Blob(['hello']);
-* const bytes = _getBlobBytes(blob);
-* bytes.byteLength; // 5
-* ```
-*
-* @internal
-*/
+ * Return the internal byte store for a Blob or File.
+ *
+ * This helper is exported for other internal modules, notably structuredClone.
+ * It returns the module-owned Uint8Array, so callers must treat it as read-only
+ * and copy before exposing bytes to user code.
+ *
+ * ```typescript no_run
+ * const blob = new Blob(['hello']);
+ * const bytes = _getBlobBytes(blob);
+ * bytes.byteLength; // 5
+ * ```
+ *
+ * @internal
+ */
 export function _getBlobBytes(blob: Blob): Uint8Array {
   return _blobBytes.get(blob)!;
 }
 /**
-* Value accepted by the Blob and File constructors as one input part.
-*
-* Strings are UTF-8 encoded after optional line-ending normalization.
-* ArrayBuffer and ArrayBufferView values are copied as bytes, and Blob/File
-* parts contribute their immutable byte contents.
-*/
+ * Value accepted by the Blob and File constructors as one input part.
+ *
+ * Strings are UTF-8 encoded after optional line-ending normalization.
+ * ArrayBuffer and ArrayBufferView values are copied as bytes, and Blob/File
+ * parts contribute their immutable byte contents.
+ */
 export type BlobPart = string | ArrayBuffer | ArrayBufferView | Blob;
 type EndingType = 'transparent' | 'native';
 /**
-* Options accepted by the Blob constructor.
-*
-* `type` is lowercased and must contain only printable ASCII characters or it
-* is normalized to the empty string. `endings` controls only string parts:
-* `'transparent'` preserves line endings and `'native'` normalizes CRLF, CR,
-* and LF sequences to the runtime's native newline before UTF-8 encoding.
-*/
+ * Options accepted by the Blob constructor.
+ *
+ * `type` is lowercased and must contain only printable ASCII characters or it
+ * is normalized to the empty string. `endings` controls only string parts:
+ * `'transparent'` preserves line endings and `'native'` normalizes CRLF, CR,
+ * and LF sequences to the runtime's native newline before UTF-8 encoding.
+ */
 export interface BlobOptions {
   type?: string;
   endings?: EndingType;
@@ -142,12 +142,12 @@ interface InternalBlobOptions extends BlobOptions {
   bytes?: Uint8Array;
 }
 /**
-* Options accepted by the File constructor.
-*
-* In addition to Blob options, `lastModified` supplies the millisecond Unix
-* timestamp exposed by the File instance. When omitted, construction captures
-* `Date.now()`.
-*/
+ * Options accepted by the File constructor.
+ *
+ * In addition to Blob options, `lastModified` supplies the millisecond Unix
+ * timestamp exposed by the File instance. When omitted, construction captures
+ * `Date.now()`.
+ */
 export interface FileOptions extends BlobOptions {
   lastModified?: number;
 }
@@ -155,7 +155,9 @@ function _normalizeLineEndings(value: string, endings: EndingType): string {
   if (endings !== 'native') return value;
   return value.replace(/\r\n|\r|\n/g, '\n');
 }
-function _normalizeOptions(options: BlobOptions | null | undefined): BlobOptions | null | undefined {
+function _normalizeOptions(
+  options: BlobOptions | null | undefined,
+): BlobOptions | null | undefined {
   if (options == null) return options;
   const kind = typeof options;
   if (kind !== 'object' && kind !== 'function') {
@@ -214,67 +216,70 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 // Blob
 // ---------------------------------------------------------------------------
 /**
-* Web Blob facade backed by an immutable in-memory byte store.
-*
-* Blob parts are eagerly normalized and concatenated during construction.
-* MIME types are lowercased and rejected to the empty string when they contain
-* non-ASCII printable characters. Methods that expose bytes return copies.
-*
-* ```typescript no_run
-* const blob = new Blob(['hello'], { type: 'TEXT/PLAIN' });
-* blob.type; // "text/plain"
-* await blob.text(); // "hello"
-* ```
-*/
+ * Web Blob facade backed by an immutable in-memory byte store.
+ *
+ * Blob parts are eagerly normalized and concatenated during construction.
+ * MIME types are lowercased and rejected to the empty string when they contain
+ * non-ASCII printable characters. Methods that expose bytes return copies.
+ *
+ * ```typescript no_run
+ * const blob = new Blob(['hello'], { type: 'TEXT/PLAIN' });
+ * blob.type; // "text/plain"
+ * await blob.text(); // "hello"
+ * ```
+ */
 export class Blob {
   /**
-  * Immutable byte store holding the Blob's full contents.
-  *
-  * Assigned exactly once in the constructor — either the eager concatenation
-  * of normalized parts or, on the BYTES_INIT fast path, the pre-sliced bytes
-  * handed in by slice(). Never mutated afterwards; public methods copy from
-  * it rather than exposing it. Also registered in the module-level
-  * `_blobBytes` WeakMap so module helpers can read it.
-  *
-  * @internal
-  */
+   * Immutable byte store holding the Blob's full contents.
+   *
+   * Assigned exactly once in the constructor — either the eager concatenation
+   * of normalized parts or, on the BYTES_INIT fast path, the pre-sliced bytes
+   * handed in by slice(). Never mutated afterwards; public methods copy from
+   * it rather than exposing it. Also registered in the module-level
+   * `_blobBytes` WeakMap so module helpers can read it.
+   *
+   * @internal
+   */
   #bytes: Uint8Array;
   /**
-  * Normalized MIME type backing the `type` getter.
-  *
-  * Lowercased at construction, or forced to the empty string when the raw
-  * value contains characters outside U+0020 through U+007E.
-  *
-  * @internal
-  */
+   * Normalized MIME type backing the `type` getter.
+   *
+   * Lowercased at construction, or forced to the empty string when the raw
+   * value contains characters outside U+0020 through U+007E.
+   *
+   * @internal
+   */
   #type: string;
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new Blob()); // "[object Blob]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new Blob()); // "[object Blob]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'Blob';
   }
   /**
-  * Create a Blob from strings, buffers, views, or other Blobs.
-  *
-  * Omitted parts create an empty Blob. Non-iterable parts, including `null`,
-  * throw a TypeError. `endings: 'native'` normalizes string-part line endings
-  * before encoding; the default `transparent` preserves them. The internal
-  * BYTES_INIT path is private to this module and is used by slice() to avoid
-  * re-normalizing already-owned bytes.
-  *
-  * ```typescript no_run
-  * const bytes = new Uint8Array([104, 105]);
-  * const blob = new Blob(['prefix-', bytes], { type: 'text/plain' });
-  * blob.size; // 9
-  * ```
-  */
+   * Create a Blob from strings, buffers, views, or other Blobs.
+   *
+   * Omitted parts create an empty Blob. Non-iterable parts, including `null`,
+   * throw a TypeError. `endings: 'native'` normalizes string-part line endings
+   * before encoding; the default `transparent` preserves them. The internal
+   * BYTES_INIT path is private to this module and is used by slice() to avoid
+   * re-normalizing already-owned bytes.
+   *
+   * ```typescript no_run
+   * const bytes = new Uint8Array([104, 105]);
+   * const blob = new Blob(['prefix-', bytes], { type: 'text/plain' });
+   * blob.size; // 9
+   * ```
+   */
   constructor(parts?: Iterable<BlobPart> | null, options?: BlobOptions | null);
-  constructor(parts?: Iterable<BlobPart> | typeof BYTES_INIT | null, options?: BlobOptions | InternalBlobOptions | null) {
+  constructor(
+    parts?: Iterable<BlobPart> | typeof BYTES_INIT | null,
+    options?: BlobOptions | InternalBlobOptions | null,
+  ) {
     if (parts === BYTES_INIT) {
       // Internal path: options is { bytes: Uint8Array, type: string }
       this.#bytes = (options as InternalBlobOptions).bytes!;
@@ -293,8 +298,14 @@ export class Blob {
       _blobBytes.set(this, this.#bytes);
       return;
     }
-    if (typeof parts === 'string' || parts === null || typeof (parts as any)[Symbol.iterator] !== 'function') {
-      throw new TypeError('Failed to construct Blob: The provided value cannot be converted to a sequence.');
+    if (
+      typeof parts === 'string' ||
+      parts === null ||
+      typeof (parts as any)[Symbol.iterator] !== 'function'
+    ) {
+      throw new TypeError(
+        'Failed to construct Blob: The provided value cannot be converted to a sequence.',
+      );
     }
     const chunks: Uint8Array[] = [];
     for (const part of parts) {
@@ -304,42 +315,42 @@ export class Blob {
     _blobBytes.set(this, this.#bytes);
   }
   /**
-  * Number of bytes in the Blob.
-  *
-  * The value is computed from the immutable internal byte store.
-  *
-  * ```typescript no_run
-  * new Blob(['abc']).size; // 3
-  * ```
-  */
+   * Number of bytes in the Blob.
+   *
+   * The value is computed from the immutable internal byte store.
+   *
+   * ```typescript no_run
+   * new Blob(['abc']).size; // 3
+   * ```
+   */
   get size() {
     return this.#bytes.byteLength;
   }
   /**
-  * Normalized MIME type for the Blob.
-  *
-  * The value is lowercased. Invalid type strings containing characters outside
-  * U+0020 through U+007E become the empty string.
-  *
-  * ```typescript no_run
-  * new Blob([], { type: 'Application/JSON' }).type; // "application/json"
-  * ```
-  */
+   * Normalized MIME type for the Blob.
+   *
+   * The value is lowercased. Invalid type strings containing characters outside
+   * U+0020 through U+007E become the empty string.
+   *
+   * ```typescript no_run
+   * new Blob([], { type: 'Application/JSON' }).type; // "application/json"
+   * ```
+   */
   get type() {
     return this.#type;
   }
   /**
-  * Return a new Blob containing a byte range from this Blob.
-  *
-  * Negative indexes are resolved from the end, bounds are clamped to the Blob
-  * size, and end values before start produce an empty Blob. The contentType
-  * argument becomes the returned Blob type after the same normalization rules.
-  *
-  * ```typescript no_run
-  * const blob = new Blob(['abcdef']);
-  * await blob.slice(1, 4).text(); // "bcd"
-  * ```
-  */
+   * Return a new Blob containing a byte range from this Blob.
+   *
+   * Negative indexes are resolved from the end, bounds are clamped to the Blob
+   * size, and end values before start produce an empty Blob. The contentType
+   * argument becomes the returned Blob type after the same normalization rules.
+   *
+   * ```typescript no_run
+   * const blob = new Blob(['abcdef']);
+   * await blob.slice(1, 4).text(); // "bcd"
+   * ```
+   */
   slice(start?: number, end?: number, contentType?: string): Blob {
     const size = this.#bytes.byteLength;
     let s = start === undefined ? 0 : _toWebIdlLongLong(start);
@@ -355,177 +366,191 @@ export class Blob {
     const type = /[^\x20-\x7E]/.test(rawType) ? '' : rawType;
     return new Blob(BYTES_INIT, {
       bytes: sliced,
-      type
+      type,
     });
   }
   /**
-  * Decode the Blob bytes as UTF-8 text.
-  *
-  * Invalid UTF-8 sequences follow the internal decoder's replacement behavior.
-  * The method resolves to a string and does not mutate the Blob.
-  *
-  * ```typescript no_run
-  * const text = await new Blob(['hello']).text();
-  * ```
-  */
+   * Decode the Blob bytes as UTF-8 text.
+   *
+   * Invalid UTF-8 sequences follow the internal decoder's replacement behavior.
+   * The method resolves to a string and does not mutate the Blob.
+   *
+   * ```typescript no_run
+   * const text = await new Blob(['hello']).text();
+   * ```
+   */
   async text(): Promise<string> {
     return decodeUtf8(this.#bytes);
   }
   /**
-  * Create a ReadableStream that emits the Blob contents as UTF-8 text.
-  *
-  * The MIME type charset parameter is ignored, matching the File API text
-  * decoding rules used by text(). Empty blobs close without emitting chunks.
-  *
-  * ```typescript no_run
-  * const chunks = [];
-  * for await (const chunk of new Blob(['hi']).textStream()) chunks.push(chunk);
-  * ```
-  */
+   * Create a ReadableStream that emits the Blob contents as UTF-8 text.
+   *
+   * The MIME type charset parameter is ignored, matching the File API text
+   * decoding rules used by text(). Empty blobs close without emitting chunks.
+   *
+   * ```typescript no_run
+   * const chunks = [];
+   * for await (const chunk of new Blob(['hi']).textStream()) chunks.push(chunk);
+   * ```
+   */
   textStream(): ReadableStream<string> {
     const text = decodeUtf8(this.#bytes);
-    return new ReadableStream({ pull(controller: ReadableStreamDefaultController<string>) {
-      if (text.length > 0) controller.enqueue(text);
-      controller.close();
-    } }, undefined);
+    return new ReadableStream(
+      {
+        pull(controller: ReadableStreamDefaultController<string>) {
+          if (text.length > 0) controller.enqueue(text);
+          controller.close();
+        },
+      },
+      undefined,
+    );
   }
   /**
-  * Copy the Blob bytes into a new ArrayBuffer.
-  *
-  * The returned buffer is detached from Blob storage, so modifications to a
-  * view over it cannot change the Blob.
-  *
-  * ```typescript no_run
-  * const buffer = await new Blob(['hi']).arrayBuffer();
-  * new Uint8Array(buffer).byteLength; // 2
-  * ```
-  */
+   * Copy the Blob bytes into a new ArrayBuffer.
+   *
+   * The returned buffer is detached from Blob storage, so modifications to a
+   * view over it cannot change the Blob.
+   *
+   * ```typescript no_run
+   * const buffer = await new Blob(['hi']).arrayBuffer();
+   * new Uint8Array(buffer).byteLength; // 2
+   * ```
+   */
   async arrayBuffer(): Promise<ArrayBuffer> {
     // Return a copy to prevent mutation of internal state.
-    return this.#bytes.buffer.slice(this.#bytes.byteOffset, this.#bytes.byteOffset + this.#bytes.byteLength) as ArrayBuffer;
+    return this.#bytes.buffer.slice(
+      this.#bytes.byteOffset,
+      this.#bytes.byteOffset + this.#bytes.byteLength,
+    ) as ArrayBuffer;
   }
   /**
-  * Copy the Blob bytes into a new Uint8Array.
-  *
-  * This is a convenience over arrayBuffer() when callers want a typed array.
-  * The returned array is safe to mutate.
-  *
-  * ```typescript no_run
-  * const bytes = await new Blob(['hi']).bytes();
-  * bytes[0]; // 104
-  * ```
-  */
+   * Copy the Blob bytes into a new Uint8Array.
+   *
+   * This is a convenience over arrayBuffer() when callers want a typed array.
+   * The returned array is safe to mutate.
+   *
+   * ```typescript no_run
+   * const bytes = await new Blob(['hi']).bytes();
+   * bytes[0]; // 104
+   * ```
+   */
   async bytes(): Promise<Uint8Array> {
     return new Uint8Array(this.#bytes);
   }
   /**
-  * Create a ReadableStream for the Blob contents.
-  *
-  * The current implementation emits one copied Uint8Array chunk and then
-  * closes. It is suitable for piping Blob bodies without exposing storage.
-  *
-  * ```typescript no_run
-  * const stream = new Blob(['hi']).stream();
-  * const reader = stream.getReader();
-  * await reader.read();
-  * ```
-  */
+   * Create a ReadableStream for the Blob contents.
+   *
+   * The current implementation emits one copied Uint8Array chunk and then
+   * closes. It is suitable for piping Blob bodies without exposing storage.
+   *
+   * ```typescript no_run
+   * const stream = new Blob(['hi']).stream();
+   * const reader = stream.getReader();
+   * await reader.read();
+   * ```
+   */
   stream(): ReadableStream {
     const bytes = this.#bytes;
-    return new ReadableStream({
-      type: 'bytes',
-      pull(controller: ReadableByteStreamController) {
-        if (bytes.byteLength > 0) controller.enqueue(new Uint8Array(bytes));
-        controller.close();
-      }
-    }, undefined);
+    return new ReadableStream(
+      {
+        type: 'bytes',
+        pull(controller: ReadableByteStreamController) {
+          if (bytes.byteLength > 0) controller.enqueue(new Uint8Array(bytes));
+          controller.close();
+        },
+      },
+      undefined,
+    );
   }
 }
 // ---------------------------------------------------------------------------
 // File (extends Blob)
 // ---------------------------------------------------------------------------
 /**
-* File extends Blob with a filename and lastModified timestamp.
-*
-* File contents use the same eager in-memory byte store as Blob. The name is
-* string-coerced and lastModified defaults to Date.now() when omitted.
-*
-* ```typescript no_run
-* const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
-* file.name; // "hello.txt"
-* ```
-*/
+ * File extends Blob with a filename and lastModified timestamp.
+ *
+ * File contents use the same eager in-memory byte store as Blob. The name is
+ * string-coerced and lastModified defaults to Date.now() when omitted.
+ *
+ * ```typescript no_run
+ * const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
+ * file.name; // "hello.txt"
+ * ```
+ */
 export class File extends Blob {
   /**
-  * String-coerced file name backing the `name` getter.
-  *
-  * Stored verbatim after String() coercion — no path normalization or
-  * sanitization is applied.
-  *
-  * @internal
-  */
+   * String-coerced file name backing the `name` getter.
+   *
+   * Stored verbatim after String() coercion — no path normalization or
+   * sanitization is applied.
+   *
+   * @internal
+   */
   #name: string;
   /**
-  * Integer millisecond timestamp backing the `lastModified` getter.
-  *
-  * Truncated from the `lastModified` option, or captured from `Date.now()`
-  * at construction when the option is absent.
-  *
-  * @internal
-  */
+   * Integer millisecond timestamp backing the `lastModified` getter.
+   *
+   * Truncated from the `lastModified` option, or captured from `Date.now()`
+   * at construction when the option is absent.
+   *
+   * @internal
+   */
   #lastModified: number;
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new File([], 'x')); // "[object File]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new File([], 'x')); // "[object File]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'File';
   }
   /**
-  * Create a File from Blob parts and metadata.
-  *
-  * The options type and endings are passed through Blob normalization.
-  * lastModified is truncated to an integer millisecond timestamp; when absent,
-  * Date.now() is captured at construction time.
-  *
-  * ```typescript no_run
-  * const file = new File(['data'], 'data.bin', { lastModified: 0 });
-  * file.lastModified; // 0
-  * ```
-  */
+   * Create a File from Blob parts and metadata.
+   *
+   * The options type and endings are passed through Blob normalization.
+   * lastModified is truncated to an integer millisecond timestamp; when absent,
+   * Date.now() is captured at construction time.
+   *
+   * ```typescript no_run
+   * const file = new File(['data'], 'data.bin', { lastModified: 0 });
+   * file.lastModified; // 0
+   * ```
+   */
   constructor(parts: Iterable<BlobPart> | null, name: string, options?: FileOptions | null) {
     if (arguments.length < 2) {
       throw new TypeError('Failed to construct File: 2 arguments required.');
     }
     super(parts, options);
     this.#name = String(name);
-    this.#lastModified = options != null && options.lastModified != null ? Math.trunc(Number(options.lastModified)) : Date.now();
+    this.#lastModified =
+      options != null && options.lastModified != null
+        ? Math.trunc(Number(options.lastModified))
+        : Date.now();
   }
   /**
-  * File name supplied at construction.
-  *
-  * The name is not path-normalized or sanitized; callers should validate it
-  * before using it on a filesystem.
-  *
-  * ```typescript no_run
-  * new File([], 'avatar.png').name; // "avatar.png"
-  * ```
-  */
+   * File name supplied at construction.
+   *
+   * The name is not path-normalized or sanitized; callers should validate it
+   * before using it on a filesystem.
+   *
+   * ```typescript no_run
+   * new File([], 'avatar.png').name; // "avatar.png"
+   * ```
+   */
   get name() {
     return this.#name;
   }
   /**
-  * Last modified time in Unix epoch milliseconds.
-  *
-  * The value is an integer and defaults to the construction time.
-  *
-  * ```typescript no_run
-  * new File([], 'x', { lastModified: 123 }).lastModified; // 123
-  * ```
-  */
+   * Last modified time in Unix epoch milliseconds.
+   *
+   * The value is an integer and defaults to the construction time.
+   *
+   * ```typescript no_run
+   * new File([], 'x', { lastModified: 123 }).lastModified; // 123
+   * ```
+   */
   get lastModified() {
     return this.#lastModified;
   }
@@ -534,27 +559,27 @@ export class File extends Blob {
 // FileList
 // ---------------------------------------------------------------------------
 /**
-* Array-like list of File objects.
-*
-* FileList objects are produced by web APIs such as file inputs and drag/drop.
-* Fino exposes the interface for File API compatibility; there is no public
-* constructor, matching browsers.
-*
-* ```typescript no_run
-* try { new FileList(); } catch (err) { console.log(err instanceof TypeError); }
-* ```
-*/
+ * Array-like list of File objects.
+ *
+ * FileList objects are produced by web APIs such as file inputs and drag/drop.
+ * Fino exposes the interface for File API compatibility; there is no public
+ * constructor, matching browsers.
+ *
+ * ```typescript no_run
+ * try { new FileList(); } catch (err) { console.log(err instanceof TypeError); }
+ * ```
+ */
 export interface FileList {
   /**
-  * Number of File objects in the list.
-  */
+   * Number of File objects in the list.
+   */
   readonly length: number;
   /**
-  * Return the File at the given index, or null when out of range.
-  *
-  * The index is coerced to an unsigned 32-bit integer, matching WebIDL.
-  * Throws a TypeError when called with no arguments.
-  */
+   * Return the File at the given index, or null when out of range.
+   *
+   * The index is coerced to an unsigned 32-bit integer, matching WebIDL.
+   * Throws a TypeError when called with no arguments.
+   */
   item(index: number): File | null;
 }
 type FileListConstructor = {
@@ -563,79 +588,79 @@ type FileListConstructor = {
 };
 const _fileListItems = new WeakMap<FileList, File[]>();
 /**
-* FileList constructor global — always throws, matching browsers.
-*
-* FileList has no public constructor; `new FileList()` throws a TypeError with
-* the standard "Illegal constructor" message. Instances are created only by
-* the runtime (via `_createFileList`) for web API integrations. The global is
-* still installed so `instanceof` checks and prototype inspection work.
-*
-* ```ts no_run
-* try {
-*   new FileList();
-* } catch (err) {
-*   err instanceof TypeError; // true
-* }
-* ```
-*/
-export const FileList = ((function FileList(): never {
+ * FileList constructor global — always throws, matching browsers.
+ *
+ * FileList has no public constructor; `new FileList()` throws a TypeError with
+ * the standard "Illegal constructor" message. Instances are created only by
+ * the runtime (via `_createFileList`) for web API integrations. The global is
+ * still installed so `instanceof` checks and prototype inspection work.
+ *
+ * ```ts no_run
+ * try {
+ *   new FileList();
+ * } catch (err) {
+ *   err instanceof TypeError; // true
+ * }
+ * ```
+ */
+export const FileList = function FileList(): never {
   throw new TypeError('Illegal constructor');
-}) as unknown) as FileListConstructor;
+} as unknown as FileListConstructor;
 function item(this: FileList, index: number): File | null {
   if (arguments.length < 1) throw new TypeError('FileList.item requires 1 argument');
   const items = _fileListItems.get(this);
   if (items === undefined) throw new TypeError('FileList receiver expected');
   return items[Number(index) >>> 0] ?? null;
 }
-const fileListLengthGetter = function(this: FileList): number {
+const fileListLengthGetter = function (this: FileList): number {
   const items = _fileListItems.get(this);
   if (items === undefined) throw new TypeError('FileList receiver expected');
   return items.length;
 };
 Object.defineProperty(fileListLengthGetter, 'name', {
   value: 'get length',
-  configurable: true
+  configurable: true,
 });
 Object.defineProperties(FileList.prototype, {
   item: {
     value: item,
     writable: true,
     enumerable: true,
-    configurable: true
+    configurable: true,
   },
   length: {
     get: fileListLengthGetter,
     enumerable: true,
-    configurable: true
+    configurable: true,
   },
   [Symbol.toStringTag]: {
     value: 'FileList',
-    configurable: true
-  }
+    configurable: true,
+  },
 });
 Object.defineProperty(FileList, 'length', {
   value: 0,
-  configurable: true
+  configurable: true,
 });
 Object.defineProperty(FileList, 'prototype', { writable: false });
 /**
-* Create a FileList for internal web API integrations.
-*
-* This is the only way to construct a FileList, since the public constructor
-* always throws. The files are snapshotted into an internal array and exposed
-* through `length`, `item()`, and enumerable indexed properties, so the list
-* does not change if the source iterable is mutated afterwards.
-*
-* ```ts no_run
-* const list = _createFileList([new File(['a'], 'a.txt')]);
-* list.length;     // 1
-* list.item(0);    // File "a.txt"
-* list[0];         // same File via indexed access
-* list.item(9);    // null
-* ```
-*
-* @internal
-*/
+ * Create a FileList for internal web API integrations.
+ *
+ * This is the only way to construct a FileList, since the public constructor
+ * always throws. The files are snapshotted into an internal array and exposed
+ * through `length`, `item()`, and enumerable indexed properties, so the list
+ * does not change if the source iterable is mutated afterwards.
+ *
+ * ```ts no_run
+ * const list = _createFileList([new File(['a'], 'a.txt')]);
+ * list.length;     // 1
+ * list.item(0);    // File "a.txt"
+ * list[0];         // same File via indexed access
+ * list.item(9);    // null
+ * ```
+ *
+ * @internal
+ */
 export function _createFileList(files: Iterable<File> = []): FileList {
   const list = Object.create(FileList.prototype) as FileList;
   const items = Array.from(files);
@@ -644,7 +669,7 @@ export function _createFileList(files: Iterable<File> = []): FileList {
     Object.defineProperty(list, i, {
       value: items[i],
       enumerable: true,
-      configurable: true
+      configurable: true,
     });
   }
   return list;
@@ -652,12 +677,12 @@ export function _createFileList(files: Iterable<File> = []): FileList {
 type FileReaderResult = string | ArrayBuffer | null;
 type FileReaderReadKind = 'arrayBuffer' | 'binaryString' | 'dataURL' | 'text';
 /**
-* Event handler attribute type used by FileReader.
-*
-* Assigning a function installs the handler for the corresponding event.
-* Assigning `null` or a non-function value clears it, matching WebIDL event
-* handler attribute behavior.
-*/
+ * Event handler attribute type used by FileReader.
+ *
+ * Assigning a function installs the handler for the corresponding event.
+ * Assigning `null` or a non-function value clears it, matching WebIDL event
+ * handler attribute behavior.
+ */
 export type FileReaderHandler = ((event: Event) => void) | null;
 type FileReaderHandlerName = 'loadstart' | 'progress' | 'load' | 'abort' | 'error' | 'loadend';
 function _bytesToBinaryString(bytes: Uint8Array): string {
@@ -695,44 +720,44 @@ function _readBlobResult(blob: Blob, kind: FileReaderReadKind, label?: string): 
   return _decodeFileReaderText(bytes, blob, label);
 }
 /**
-* Asynchronous Blob reader from the File API.
-*
-* `FileReader` reads an in-memory `Blob` or `File` as text, an `ArrayBuffer`,
-* a binary string, or a data URL. Reads transition through `EMPTY`, `LOADING`,
-* and `DONE`, dispatching the standard `loadstart`, `progress`, `load`,
-* `abort`, `error`, and `loadend` events. Fino supports Blob-backed reads and
-* does not install filesystem-backed browser file handles.
-*
-* ```typescript no_run
-* const reader = new FileReader();
-* reader.onload = () => console.log(reader.result);
-* reader.readAsText(new Blob(['hello']));
-* ```
-*/
+ * Asynchronous Blob reader from the File API.
+ *
+ * `FileReader` reads an in-memory `Blob` or `File` as text, an `ArrayBuffer`,
+ * a binary string, or a data URL. Reads transition through `EMPTY`, `LOADING`,
+ * and `DONE`, dispatching the standard `loadstart`, `progress`, `load`,
+ * `abort`, `error`, and `loadend` events. Fino supports Blob-backed reads and
+ * does not install filesystem-backed browser file handles.
+ *
+ * ```typescript no_run
+ * const reader = new FileReader();
+ * reader.onload = () => console.log(reader.result);
+ * reader.readAsText(new Blob(['hello']));
+ * ```
+ */
 export class FileReader extends EventTarget {
   /**
-  * No read has started.
-  *
-  * ```typescript no_run
-  * new FileReader().readyState === FileReader.EMPTY; // true
-  * ```
-  */
+   * No read has started.
+   *
+   * ```typescript no_run
+   * new FileReader().readyState === FileReader.EMPTY; // true
+   * ```
+   */
   static EMPTY = 0;
   /**
-  * A read is currently in progress.
-  *
-  * ```typescript no_run
-  * FileReader.LOADING; // 1
-  * ```
-  */
+   * A read is currently in progress.
+   *
+   * ```typescript no_run
+   * FileReader.LOADING; // 1
+   * ```
+   */
   static LOADING = 1;
   /**
-  * The read completed, failed, or was aborted.
-  *
-  * ```typescript no_run
-  * FileReader.DONE; // 2
-  * ```
-  */
+   * The read completed, failed, or was aborted.
+   *
+   * ```typescript no_run
+   * FileReader.DONE; // 2
+   * ```
+   */
   static DONE = 2;
   #eventHandlers: Record<FileReaderHandlerName, FileReaderHandler> = {
     loadstart: null,
@@ -740,29 +765,29 @@ export class FileReader extends EventTarget {
     load: null,
     abort: null,
     error: null,
-    loadend: null
+    loadend: null,
   };
   #readyState = FileReader.EMPTY;
   #result: FileReaderResult = null;
   #error: DOMException | null = null;
   #readToken = 0;
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```ts no_run
-  * Object.prototype.toString.call(new FileReader()); // "[object FileReader]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```ts no_run
+   * Object.prototype.toString.call(new FileReader()); // "[object FileReader]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'FileReader';
   }
   /**
-  * Event handler invoked when a read begins (the `loadstart` event).
-  *
-  * Assigning a non-function clears the handler to null, matching WebIDL
-  * event handler attributes. Handlers run in addition to any listeners added
-  * via addEventListener.
-  */
+   * Event handler invoked when a read begins (the `loadstart` event).
+   *
+   * Assigning a non-function clears the handler to null, matching WebIDL
+   * event handler attributes. Handlers run in addition to any listeners added
+   * via addEventListener.
+   */
   get onloadstart() {
     return this.#eventHandlers.loadstart;
   }
@@ -770,11 +795,11 @@ export class FileReader extends EventTarget {
     this.#eventHandlers.loadstart = typeof value === 'function' ? value : null;
   }
   /**
-  * Event handler for `progress` events.
-  *
-  * Fino dispatches a single progress event per read, and only for non-empty
-  * Blobs — reads are in-memory so there is no incremental progress to report.
-  */
+   * Event handler for `progress` events.
+   *
+   * Fino dispatches a single progress event per read, and only for non-empty
+   * Blobs — reads are in-memory so there is no incremental progress to report.
+   */
   get onprogress() {
     return this.#eventHandlers.progress;
   }
@@ -782,17 +807,17 @@ export class FileReader extends EventTarget {
     this.#eventHandlers.progress = typeof value === 'function' ? value : null;
   }
   /**
-  * Event handler invoked when a read completes successfully (`load`).
-  *
-  * By the time this fires, `result` holds the decoded value and `readyState`
-  * is DONE.
-  *
-  * ```ts no_run
-  * const reader = new FileReader();
-  * reader.onload = () => console.log(reader.result);
-  * reader.readAsText(new Blob(['hi']));
-  * ```
-  */
+   * Event handler invoked when a read completes successfully (`load`).
+   *
+   * By the time this fires, `result` holds the decoded value and `readyState`
+   * is DONE.
+   *
+   * ```ts no_run
+   * const reader = new FileReader();
+   * reader.onload = () => console.log(reader.result);
+   * reader.readAsText(new Blob(['hi']));
+   * ```
+   */
   get onload() {
     return this.#eventHandlers.load;
   }
@@ -800,8 +825,8 @@ export class FileReader extends EventTarget {
     this.#eventHandlers.load = typeof value === 'function' ? value : null;
   }
   /**
-  * Event handler invoked when an in-progress read is cancelled via abort().
-  */
+   * Event handler invoked when an in-progress read is cancelled via abort().
+   */
   get onabort() {
     return this.#eventHandlers.abort;
   }
@@ -809,11 +834,11 @@ export class FileReader extends EventTarget {
     this.#eventHandlers.abort = typeof value === 'function' ? value : null;
   }
   /**
-  * Event handler invoked when a read fails (`error`).
-  *
-  * The failure is available on the `error` property as a DOMException;
-  * `result` is null.
-  */
+   * Event handler invoked when a read fails (`error`).
+   *
+   * The failure is available on the `error` property as a DOMException;
+   * `result` is null.
+   */
   get onerror() {
     return this.#eventHandlers.error;
   }
@@ -821,10 +846,10 @@ export class FileReader extends EventTarget {
     this.#eventHandlers.error = typeof value === 'function' ? value : null;
   }
   /**
-  * Event handler for `loadend`, fired after load, error, or abort.
-  *
-  * Use this for cleanup that must run regardless of how the read finished.
-  */
+   * Event handler for `loadend`, fired after load, error, or abort.
+   *
+   * Use this for cleanup that must run regardless of how the read finished.
+   */
   get onloadend() {
     return this.#eventHandlers.loadend;
   }
@@ -832,59 +857,59 @@ export class FileReader extends EventTarget {
     this.#eventHandlers.loadend = typeof value === 'function' ? value : null;
   }
   /**
-  * Instance mirror of FileReader.EMPTY, required by WebIDL.
-  */
+   * Instance mirror of FileReader.EMPTY, required by WebIDL.
+   */
   get EMPTY() {
     return FileReader.EMPTY;
   }
   /**
-  * Instance mirror of FileReader.LOADING, required by WebIDL.
-  */
+   * Instance mirror of FileReader.LOADING, required by WebIDL.
+   */
   get LOADING() {
     return FileReader.LOADING;
   }
   /**
-  * Instance mirror of FileReader.DONE, required by WebIDL.
-  */
+   * Instance mirror of FileReader.DONE, required by WebIDL.
+   */
   get DONE() {
     return FileReader.DONE;
   }
   /**
-  * Current read state: EMPTY (0), LOADING (1), or DONE (2).
-  *
-  * A new reader starts at EMPTY, moves to LOADING when a readAs* method is
-  * called, and settles at DONE after load, error, or abort.
-  */
+   * Current read state: EMPTY (0), LOADING (1), or DONE (2).
+   *
+   * A new reader starts at EMPTY, moves to LOADING when a readAs* method is
+   * called, and settles at DONE after load, error, or abort.
+   */
   get readyState() {
     return this.#readyState;
   }
   /**
-  * Value produced by the last completed read, or null.
-  *
-  * The type depends on the read method: an ArrayBuffer for
-  * readAsArrayBuffer, otherwise a string. The value stays null while a read
-  * is in flight and is reset to null when a new read starts, on failure, and
-  * on abort.
-  */
+   * Value produced by the last completed read, or null.
+   *
+   * The type depends on the read method: an ArrayBuffer for
+   * readAsArrayBuffer, otherwise a string. The value stays null while a read
+   * is in flight and is reset to null when a new read starts, on failure, and
+   * on abort.
+   */
   get result() {
     return this.#result;
   }
   /**
-  * DOMException describing the last read failure, or null.
-  *
-  * Non-DOMException failures are wrapped in a NotReadableError DOMException.
-  */
+   * DOMException describing the last read failure, or null.
+   *
+   * Non-DOMException failures are wrapped in a NotReadableError DOMException.
+   */
   get error() {
     return this.#error;
   }
   /**
-  * Dispatch an event to listeners and the matching on* handler.
-  *
-  * After regular EventTarget dispatch, the corresponding event handler
-  * property (onload for a `load` event, and so on) is invoked with the same
-  * event. Exceptions thrown by that handler are swallowed so a faulty
-  * handler cannot break the read state machine.
-  */
+   * Dispatch an event to listeners and the matching on* handler.
+   *
+   * After regular EventTarget dispatch, the corresponding event handler
+   * property (onload for a `load` event, and so on) is invoked with the same
+   * event. Exceptions thrown by that handler are swallowed so a faulty
+   * handler cannot break the read state machine.
+   */
   dispatchEvent(event: Event): boolean {
     const ok = super.dispatchEvent(event);
     const handler = this.#eventHandlers[event.type as FileReaderHandlerName];
@@ -896,71 +921,71 @@ export class FileReader extends EventTarget {
     return ok;
   }
   /**
-  * Start reading the Blob; `result` becomes a copied ArrayBuffer on load.
-  *
-  * Throws a TypeError if the argument is not a Blob, and an
-  * InvalidStateError DOMException if a read is already in progress. Events
-  * fire asynchronously in the order loadstart, progress (non-empty Blobs
-  * only), load or error, loadend.
-  *
-  * ```ts no_run
-  * const reader = new FileReader();
-  * reader.onload = () => new Uint8Array(reader.result as ArrayBuffer);
-  * reader.readAsArrayBuffer(new Blob([new Uint8Array([1, 2, 3])]));
-  * ```
-  */
+   * Start reading the Blob; `result` becomes a copied ArrayBuffer on load.
+   *
+   * Throws a TypeError if the argument is not a Blob, and an
+   * InvalidStateError DOMException if a read is already in progress. Events
+   * fire asynchronously in the order loadstart, progress (non-empty Blobs
+   * only), load or error, loadend.
+   *
+   * ```ts no_run
+   * const reader = new FileReader();
+   * reader.onload = () => new Uint8Array(reader.result as ArrayBuffer);
+   * reader.readAsArrayBuffer(new Blob([new Uint8Array([1, 2, 3])]));
+   * ```
+   */
   readAsArrayBuffer(blob: Blob): void {
     this.#read(blob, 'arrayBuffer');
   }
   /**
-  * Start reading the Blob; `result` becomes a binary string on load.
-  *
-  * Each byte maps to one code unit with the same numeric value. Error
-  * conditions and event sequencing match readAsArrayBuffer.
-  */
+   * Start reading the Blob; `result` becomes a binary string on load.
+   *
+   * Each byte maps to one code unit with the same numeric value. Error
+   * conditions and event sequencing match readAsArrayBuffer.
+   */
   readAsBinaryString(blob: Blob): void {
     this.#read(blob, 'binaryString');
   }
   /**
-  * Start reading the Blob; `result` becomes a base64 data URL on load.
-  *
-  * A Blob with an empty type is labeled `application/octet-stream` in the
-  * URL. Error conditions and event sequencing match readAsArrayBuffer.
-  *
-  * ```ts no_run
-  * const reader = new FileReader();
-  * reader.onload = () => reader.result; // "data:text/plain;base64,aGk="
-  * reader.readAsDataURL(new Blob(['hi'], { type: 'text/plain' }));
-  * ```
-  */
+   * Start reading the Blob; `result` becomes a base64 data URL on load.
+   *
+   * A Blob with an empty type is labeled `application/octet-stream` in the
+   * URL. Error conditions and event sequencing match readAsArrayBuffer.
+   *
+   * ```ts no_run
+   * const reader = new FileReader();
+   * reader.onload = () => reader.result; // "data:text/plain;base64,aGk="
+   * reader.readAsDataURL(new Blob(['hi'], { type: 'text/plain' }));
+   * ```
+   */
   readAsDataURL(blob: Blob): void {
     this.#read(blob, 'dataURL');
   }
   /**
-  * Start reading the Blob; `result` becomes decoded text on load.
-  *
-  * The encoding is chosen in order of precedence: the explicit encoding
-  * label, a `charset` parameter in the Blob type, a UTF-16 byte order mark,
-  * and finally UTF-8. Error conditions and event sequencing match
-  * readAsArrayBuffer.
-  *
-  * ```ts no_run
-  * const reader = new FileReader();
-  * reader.onload = () => reader.result; // "héllo"
-  * reader.readAsText(new Blob(['héllo']), 'utf-8');
-  * ```
-  */
+   * Start reading the Blob; `result` becomes decoded text on load.
+   *
+   * The encoding is chosen in order of precedence: the explicit encoding
+   * label, a `charset` parameter in the Blob type, a UTF-16 byte order mark,
+   * and finally UTF-8. Error conditions and event sequencing match
+   * readAsArrayBuffer.
+   *
+   * ```ts no_run
+   * const reader = new FileReader();
+   * reader.onload = () => reader.result; // "héllo"
+   * reader.readAsText(new Blob(['héllo']), 'utf-8');
+   * ```
+   */
   readAsText(blob: Blob, encoding?: string): void {
     this.#read(blob, 'text', encoding);
   }
   /**
-  * Cancel an in-progress read.
-  *
-  * When a read is LOADING, the pending result is discarded, `readyState`
-  * becomes DONE, and `abort` then `loadend` events fire; the read's
-  * remaining load/error events are suppressed. When no read is in progress
-  * the call only clears `result`, without dispatching events.
-  */
+   * Cancel an in-progress read.
+   *
+   * When a read is LOADING, the pending result is discarded, `readyState`
+   * becomes DONE, and `abort` then `loadend` events fire; the read's
+   * remaining load/error events are suppressed. When no read is in progress
+   * the call only clears `result`, without dispatching events.
+   */
   abort(): void {
     if (this.#readyState === FileReader.EMPTY) {
       this.#result = null;
@@ -1016,7 +1041,10 @@ export class FileReader extends EventTarget {
       this.dispatchEvent(new Event('load'));
     } catch (err) {
       this.#result = null;
-      this.#error = err instanceof DOMException ? err : new DOMException(err instanceof Error ? err.message : String(err), 'NotReadableError');
+      this.#error =
+        err instanceof DOMException
+          ? err
+          : new DOMException(err instanceof Error ? err.message : String(err), 'NotReadableError');
       this.#readyState = FileReader.DONE;
       this.dispatchEvent(new Event('error'));
     }
@@ -1028,69 +1056,69 @@ export class FileReader extends EventTarget {
   }
 }
 /**
-* Synchronous Blob reader from the File API.
-*
-* `FileReaderSync` exposes the worker-only synchronous read methods for
-* Blob-backed data. Fino does not install it on the normal global object; the
-* WPT worker harness installs it only for worker tests. Like `FileReader`,
-* reads are limited to in-memory `Blob` and `File` objects.
-*
-* ```typescript no_run
-* const reader = new FileReaderSync();
-* reader.readAsText(new Blob(['hello'])); // "hello"
-* ```
-*/
+ * Synchronous Blob reader from the File API.
+ *
+ * `FileReaderSync` exposes the worker-only synchronous read methods for
+ * Blob-backed data. Fino does not install it on the normal global object; the
+ * WPT worker harness installs it only for worker tests. Like `FileReader`,
+ * reads are limited to in-memory `Blob` and `File` objects.
+ *
+ * ```typescript no_run
+ * const reader = new FileReaderSync();
+ * reader.readAsText(new Blob(['hello'])); // "hello"
+ * ```
+ */
 export class FileReaderSync {
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new FileReaderSync()); // "[object FileReaderSync]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new FileReaderSync()); // "[object FileReaderSync]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'FileReaderSync';
   }
   /**
-  * Read Blob bytes into a new ArrayBuffer.
-  *
-  * The returned buffer is detached from Blob storage.
-  */
+   * Read Blob bytes into a new ArrayBuffer.
+   *
+   * The returned buffer is detached from Blob storage.
+   */
   readAsArrayBuffer(blob: Blob): ArrayBuffer {
     return this.#read(blob, 'arrayBuffer') as ArrayBuffer;
   }
   /**
-  * Read Blob bytes as a binary string.
-  *
-  * Each byte becomes one code unit with the same numeric value.
-  */
+   * Read Blob bytes as a binary string.
+   *
+   * Each byte becomes one code unit with the same numeric value.
+   */
   readAsBinaryString(blob: Blob): string {
     return this.#read(blob, 'binaryString') as string;
   }
   /**
-  * Read Blob bytes as a data URL.
-  *
-  * Empty Blob types use `application/octet-stream`, matching FileReader.
-  *
-  * ```ts no_run
-  * new FileReaderSync().readAsDataURL(new Blob(['hi'], { type: 'text/plain' }));
-  * // "data:text/plain;base64,aGk="
-  * ```
-  */
+   * Read Blob bytes as a data URL.
+   *
+   * Empty Blob types use `application/octet-stream`, matching FileReader.
+   *
+   * ```ts no_run
+   * new FileReaderSync().readAsDataURL(new Blob(['hi'], { type: 'text/plain' }));
+   * // "data:text/plain;base64,aGk="
+   * ```
+   */
   readAsDataURL(blob: Blob): string {
     return this.#read(blob, 'dataURL') as string;
   }
   /**
-  * Read Blob bytes as text.
-  *
-  * The optional encoding label follows the same decoding rules as
-  * `FileReader.readAsText`: explicit label, then Blob type charset, then a
-  * UTF-16 byte order mark, then UTF-8.
-  *
-  * ```ts no_run
-  * new FileReaderSync().readAsText(new Blob(['hello'])); // "hello"
-  * ```
-  */
+   * Read Blob bytes as text.
+   *
+   * The optional encoding label follows the same decoding rules as
+   * `FileReader.readAsText`: explicit label, then Blob type charset, then a
+   * UTF-16 byte order mark, then UTF-8.
+   *
+   * ```ts no_run
+   * new FileReaderSync().readAsText(new Blob(['hello'])); // "hello"
+   * ```
+   */
   readAsText(blob: Blob, encoding?: string): string {
     return this.#read(blob, 'text', encoding) as string;
   }
@@ -1104,13 +1132,13 @@ export class FileReaderSync {
 function _setConstructorLength(ctor: Function, length: number): void {
   Object.defineProperty(ctor, 'length', {
     value: length,
-    configurable: true
+    configurable: true,
   });
 }
 function _setPrototypeToStringTag(proto: object, tag: string): void {
   Object.defineProperty(proto, Symbol.toStringTag, {
     value: tag,
-    configurable: true
+    configurable: true,
   });
 }
 function _makePrototypeMembersEnumerable(proto: object, names: PropertyKey[]): void {
@@ -1126,7 +1154,7 @@ function _setPrototypeMemberLength(proto: object, name: PropertyKey, length: num
   if (descriptor === undefined || typeof descriptor.value !== 'function') return;
   Object.defineProperty(descriptor.value, 'length', {
     value: length,
-    configurable: true
+    configurable: true,
   });
 }
 function _defineReadonlyConstant(target: object, name: string, value: number): void {
@@ -1134,7 +1162,7 @@ function _defineReadonlyConstant(target: object, name: string, value: number): v
     value,
     writable: false,
     enumerable: true,
-    configurable: false
+    configurable: false,
   });
 }
 _setConstructorLength(Blob, 0);
@@ -1147,7 +1175,7 @@ _makePrototypeMembersEnumerable(Blob.prototype, [
   'text',
   'arrayBuffer',
   'textStream',
-  'bytes'
+  'bytes',
 ]);
 _setPrototypeMemberLength(Blob.prototype, 'slice', 0);
 _setConstructorLength(File, 2);
@@ -1158,7 +1186,7 @@ _setPrototypeToStringTag(FileReader.prototype, 'FileReader');
 for (const [name, value] of [
   ['EMPTY', 0],
   ['LOADING', 1],
-  ['DONE', 2]
+  ['DONE', 2],
 ] as const) {
   _defineReadonlyConstant(FileReader, name, value);
   _defineReadonlyConstant(FileReader.prototype, name, value);
@@ -1177,7 +1205,7 @@ _makePrototypeMembersEnumerable(FileReader.prototype, [
   'readAsBinaryString',
   'readAsDataURL',
   'readAsText',
-  'abort'
+  'abort',
 ]);
 _setPrototypeMemberLength(FileReader.prototype, 'readAsText', 1);
 _setConstructorLength(FileReaderSync, 0);
@@ -1186,22 +1214,29 @@ _makePrototypeMembersEnumerable(FileReaderSync.prototype, [
   'readAsArrayBuffer',
   'readAsBinaryString',
   'readAsDataURL',
-  'readAsText'
+  'readAsText',
 ]);
 _setPrototypeMemberLength(FileReaderSync.prototype, 'readAsText', 1);
 // Register the Blob clone helper with encoding.ts so structuredClone can
 // clone Blob/File instances synchronously without a circular import.
 _registerBlobCloneHelper({
   getBlobBytes: (b) => _blobBytes.get(b as Blob)!,
-  BlobCtor: (Blob as unknown) as new (parts: Iterable<unknown>, opts?: {
-    type?: string;
-  }) => object,
-  FileCtor: (File as unknown) as new (parts: Iterable<unknown>, name: string, opts?: {
-    type?: string;
-    lastModified?: number;
-  }) => object,
+  BlobCtor: Blob as unknown as new (
+    parts: Iterable<unknown>,
+    opts?: {
+      type?: string;
+    },
+  ) => object,
+  FileCtor: File as unknown as new (
+    parts: Iterable<unknown>,
+    name: string,
+    opts?: {
+      type?: string;
+      lastModified?: number;
+    },
+  ) => object,
   isBlob: (v) => v instanceof Blob,
   isFile: (v) => v instanceof File,
   getName: (v) => (v as File).name,
-  getLastModified: (v) => (v as File).lastModified
+  getLastModified: (v) => (v as File).lastModified,
 });

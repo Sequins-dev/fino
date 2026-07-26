@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:file/watch
-*
-* Run with: cargo run -- bench benchmarks/file/watch.bench.ts
-*/
+ * Benchmarks for fino:file/watch
+ *
+ * Run with: cargo run -- bench benchmarks/file/watch.bench.ts
+ */
 import { Watcher } from 'fino:file/watch';
 import { bench } from 'fino:bench';
 import { DiskFileSystem } from 'fino:file';
@@ -14,7 +14,9 @@ try {
   await fs.mkdir(ROOT);
 } catch {}
 function timeout(ms: number): Promise<never> {
-  return new Promise((_, reject) => setTimeout(() => reject(new Error('watch event timed out')), ms));
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('watch event timed out')), ms),
+  );
 }
 bench('file/watch', (b) => {
   b.measure('Watcher construct/close', () => {
@@ -36,7 +38,8 @@ bench('file/watch', (b) => {
     const watcher = new Watcher();
     try {
       watcher.watch(MISSING_PATH);
-    } catch {} finally {
+    } catch {
+    } finally {
       watcher.close();
     }
   });

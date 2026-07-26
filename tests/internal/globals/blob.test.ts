@@ -1,6 +1,6 @@
 /**
-* Tests for Blob and File globals.
-*/
+ * Tests for Blob and File globals.
+ */
 import { describe, it } from 'fino:test/test';
 import { Blob as ModuleBlob, FileReaderSync, _createFileList } from '../../../js/globals/blob.ts';
 function descriptor(target: object, key: PropertyKey): PropertyDescriptor {
@@ -15,12 +15,7 @@ function waitFor(target: EventTarget, type: string): Promise<Event> {
 }
 describe('File API WebIDL descriptors', () => {
   it('installs File API globals as non-enumerable global properties', (t) => {
-    for (const name of [
-      'Blob',
-      'File',
-      'FileList',
-      'FileReader'
-    ]) {
+    for (const name of ['Blob', 'File', 'FileList', 'FileReader']) {
       const desc = descriptor(globalThis, name);
       t.equal(desc.enumerable, false, `${name} global is non-enumerable`);
       t.equal(desc.writable, true, `${name} global is writable`);
@@ -37,9 +32,21 @@ describe('File API WebIDL descriptors', () => {
     t.equal(FileReader.prototype.readAsText.length, 1, 'FileReader.prototype.readAsText.length');
     t.equal(Object.prototype.toString.call(new Blob()), '[object Blob]', 'Blob toStringTag');
     t.equal(Object.prototype.toString.call(new File([], 'x')), '[object File]', 'File toStringTag');
-    t.equal(Object.prototype.toString.call(_createFileList()), '[object FileList]', 'FileList toStringTag');
-    t.equal(Object.prototype.toString.call(new FileReader()), '[object FileReader]', 'FileReader toStringTag');
-    t.equal(Object.prototype.toString.call(new FileReaderSync()), '[object FileReaderSync]', 'FileReaderSync toStringTag');
+    t.equal(
+      Object.prototype.toString.call(_createFileList()),
+      '[object FileList]',
+      'FileList toStringTag',
+    );
+    t.equal(
+      Object.prototype.toString.call(new FileReader()),
+      '[object FileReader]',
+      'FileReader toStringTag',
+    );
+    t.equal(
+      Object.prototype.toString.call(new FileReaderSync()),
+      '[object FileReaderSync]',
+      'FileReaderSync toStringTag',
+    );
   });
   it('exposes WebIDL prototype members as enumerable', (t) => {
     for (const [proto, name] of [
@@ -52,9 +59,13 @@ describe('File API WebIDL descriptors', () => {
       [FileReader.prototype, 'readyState'],
       [FileReader.prototype, 'readAsText'],
       [FileReader.prototype, 'onload'],
-      [FileReaderSync.prototype, 'readAsText']
+      [FileReaderSync.prototype, 'readAsText'],
     ] as const) {
-      t.equal(descriptor(proto, name).enumerable, true, `${proto.constructor.name}.${String(name)} is enumerable`);
+      t.equal(
+        descriptor(proto, name).enumerable,
+        true,
+        `${proto.constructor.name}.${String(name)} is enumerable`,
+      );
     }
   });
   it('defines FileReader constants as readonly enumerable properties', (t) => {
@@ -62,7 +73,7 @@ describe('File API WebIDL descriptors', () => {
       for (const [name, value] of [
         ['EMPTY', 0],
         ['LOADING', 1],
-        ['DONE', 2]
+        ['DONE', 2],
       ] as const) {
         const desc = descriptor(target, name);
         t.equal(desc.value, value, `${name} value`);
@@ -92,11 +103,23 @@ describe('File API WebIDL descriptors', () => {
     t.equal(FileList.prototype.item.name, 'item', 'item function name');
     t.equal(descriptor(FileList.prototype, 'length').get?.name, 'get length', 'length getter name');
     t.throws(() => list.item(), TypeError, 'item requires index');
-    t.throws(() => Reflect.get(FileList.prototype, 'length', FileList.prototype), TypeError, 'length getter requires FileList receiver');
+    t.throws(
+      () => Reflect.get(FileList.prototype, 'length', FileList.prototype),
+      TypeError,
+      'length getter requires FileList receiver',
+    );
   });
   it('exposes FileAPI URL static operations as enumerable', (t) => {
-    t.equal(descriptor(URL, 'createObjectURL').enumerable, true, 'URL.createObjectURL is enumerable');
-    t.equal(descriptor(URL, 'revokeObjectURL').enumerable, true, 'URL.revokeObjectURL is enumerable');
+    t.equal(
+      descriptor(URL, 'createObjectURL').enumerable,
+      true,
+      'URL.createObjectURL is enumerable',
+    );
+    t.equal(
+      descriptor(URL, 'revokeObjectURL').enumerable,
+      true,
+      'URL.revokeObjectURL is enumerable',
+    );
   });
   it('does not install worker-only FileReaderSync on the normal global', (t) => {
     t.equal('FileReaderSync' in globalThis, false, 'normal global omits FileReaderSync');
@@ -106,18 +129,21 @@ describe('FileReaderSync', () => {
   it('reads Blob data synchronously as ArrayBuffer, text, binary string, and data URL', (t) => {
     const reader = new FileReaderSync();
     t.equal(reader.readAsText(new ModuleBlob(['TEST'])), 'TEST', 'text result');
-    t.deepEqual(Array.from(new Uint8Array(reader.readAsArrayBuffer(new ModuleBlob(['TEST'])))), [
-      84,
-      69,
-      83,
-      84
-    ], 'ArrayBuffer bytes');
-    t.equal(reader.readAsBinaryString(new ModuleBlob([new Uint8Array([
-      0,
-      65,
-      255
-    ])])), '\0Aÿ', 'binary string result');
-    t.equal(reader.readAsDataURL(new ModuleBlob(['TEST'], { type: 'text/plain' })), 'data:text/plain;base64,VEVTVA==', 'data URL result');
+    t.deepEqual(
+      Array.from(new Uint8Array(reader.readAsArrayBuffer(new ModuleBlob(['TEST'])))),
+      [84, 69, 83, 84],
+      'ArrayBuffer bytes',
+    );
+    t.equal(
+      reader.readAsBinaryString(new ModuleBlob([new Uint8Array([0, 65, 255])])),
+      '\0Aÿ',
+      'binary string result',
+    );
+    t.equal(
+      reader.readAsDataURL(new ModuleBlob(['TEST'], { type: 'text/plain' })),
+      'data:text/plain;base64,VEVTVA==',
+      'data URL result',
+    );
   });
 });
 describe('Blob construction', () => {
@@ -136,11 +162,7 @@ describe('Blob construction', () => {
     t.equal(b.type, '', 'type defaults to empty string');
   });
   it('multiple string parts concatenated', (t) => {
-    const b = new Blob([
-      'hello',
-      ', ',
-      'world'
-    ]);
+    const b = new Blob(['hello', ', ', 'world']);
     t.equal(b.size, 12);
   });
   it('type option is lowercased', (t) => {
@@ -148,21 +170,12 @@ describe('Blob construction', () => {
     t.equal(b.type, 'text/plain', 'type is lowercased');
   });
   it('ArrayBuffer part', (t) => {
-    const buf = new Uint8Array([
-      1,
-      2,
-      3
-    ]).buffer;
+    const buf = new Uint8Array([1, 2, 3]).buffer;
     const b = new Blob([buf]);
     t.equal(b.size, 3);
   });
   it('Uint8Array part', (t) => {
-    const arr = new Uint8Array([
-      10,
-      20,
-      30,
-      40
-    ]);
+    const arr = new Uint8Array([10, 20, 30, 40]);
     const b = new Blob([arr]);
     t.equal(b.size, 4);
   });
@@ -173,71 +186,62 @@ describe('Blob construction', () => {
   });
   it('mixed parts', (t) => {
     const a = new Blob(['hi']);
-    const b = new Blob([
-      a,
-      new Uint8Array([32]),
-      'there'
-    ]);
+    const b = new Blob([a, new Uint8Array([32]), 'there']);
     t.equal(b.size, 2 + 1 + 5);
   });
   it('normalizes string part line endings when endings is native', async (t) => {
-    const b = new Blob([
-      'a\nb',
-      'c\r\nd',
-      'e\rf'
-    ], { endings: 'native' } as BlobPropertyBag);
-    const expected = [
-      'a',
-      'bc',
-      'de',
-      'f'
-    ].join('\n');
+    const b = new Blob(['a\nb', 'c\r\nd', 'e\rf'], { endings: 'native' } as BlobPropertyBag);
+    const expected = ['a', 'bc', 'de', 'f'].join('\n');
     t.equal(await b.text(), expected, 'native endings normalize string parts to platform newlines');
   });
   it('preserves string part line endings by default and with transparent endings', async (t) => {
     const input = 'a\nb\r\nc\rd';
-    t.equal(await new Blob([input]).text(), input, 'default endings preserve original line endings');
-    t.equal(await new Blob([input], { endings: 'transparent' } as BlobPropertyBag).text(), input, 'transparent endings preserve original line endings');
+    t.equal(
+      await new Blob([input]).text(),
+      input,
+      'default endings preserve original line endings',
+    );
+    t.equal(
+      await new Blob([input], { endings: 'transparent' } as BlobPropertyBag).text(),
+      input,
+      'transparent endings preserve original line endings',
+    );
   });
   it('does not normalize non-string parts when endings is native', async (t) => {
-    const bytes = new Uint8Array([
-      97,
-      13,
-      98,
-      10,
-      99
-    ]);
+    const bytes = new Uint8Array([97, 13, 98, 10, 99]);
     const b = new Blob([bytes], { endings: 'native' } as BlobPropertyBag);
     t.deepEqual(Array.from(await b.bytes()), Array.from(bytes), 'binary parts are byte-preserving');
   });
   it('throws TypeError for invalid endings option values', (t) => {
-    for (const endings of [
-      null,
-      '',
-      'invalidEnumValue',
-      'Transparent',
-      'NATIVE',
-      0,
-      {}
-    ]) {
-      t.throws(() => new Blob([], { endings } as any), TypeError, `invalid endings value ${String(endings)} throws`);
+    for (const endings of [null, '', 'invalidEnumValue', 'Transparent', 'NATIVE', 0, {}]) {
+      t.throws(
+        () => new Blob([], { endings } as any),
+        TypeError,
+        `invalid endings value ${String(endings)} throws`,
+      );
     }
   });
   it('throws TypeError for primitive property bags', (t) => {
-    for (const options of [
-      123,
-      123.4,
-      true,
-      'abc'
-    ]) {
-      t.throws(() => new Blob([], options as any), TypeError, `primitive property bag ${String(options)} throws`);
+    for (const options of [123, 123.4, true, 'abc']) {
+      t.throws(
+        () => new Blob([], options as any),
+        TypeError,
+        `primitive property bag ${String(options)} throws`,
+      );
     }
   });
   it('propagates exceptions from the endings option getter', (t) => {
     const thrown = { name: 'test' };
-    t.throws(() => new Blob([], { get endings() {
-      throw thrown;
-    } } as any), (err) => err === thrown, 'endings getter exception is propagated');
+    t.throws(
+      () =>
+        new Blob([], {
+          get endings() {
+            throw thrown;
+          },
+        } as any),
+      (err) => err === thrown,
+      'endings getter exception is propagated',
+    );
   });
 });
 describe('text() / arrayBuffer() / bytes()', () => {
@@ -354,22 +358,21 @@ describe('File', () => {
     t.throws(() => new File('hello' as any, 'hello.txt'), TypeError, 'string fileBits throws');
   });
   it('throws TypeError for primitive property bags', (t) => {
-    for (const options of [
-      123,
-      123.4,
-      true,
-      'abc'
-    ]) {
-      t.throws(() => new File(['bits'], 'name.txt', options as any), TypeError, `primitive property bag ${String(options)} throws`);
+    for (const options of [123, 123.4, true, 'abc']) {
+      t.throws(
+        () => new File(['bits'], 'name.txt', options as any),
+        TypeError,
+        `primitive property bag ${String(options)} throws`,
+      );
     }
   });
   it('normalizes string part line endings when endings is native', async (t) => {
     const f = new File(['a\rb\nc'], 'lines.txt', { endings: 'native' } as FilePropertyBag);
-    t.equal(await f.text(), [
-      'a',
-      'b',
-      'c'
-    ].join('\n'), 'File passes endings through Blob construction');
+    t.equal(
+      await f.text(),
+      ['a', 'b', 'c'].join('\n'),
+      'File passes endings through Blob construction',
+    );
   });
 });
 describe('slice() edge cases', () => {
@@ -448,19 +451,18 @@ describe('textStream()', () => {
   it('returns a ReadableStream of UTF-8 text chunks', async (t) => {
     const stream = new Blob(['hello ', new TextEncoder().encode('world')]).textStream();
     t.ok(stream instanceof ReadableStream, 'textStream() returns ReadableStream');
-    t.deepEqual(await readAll(stream), ['hello world'], 'decoded text is emitted as a string chunk');
+    t.deepEqual(
+      await readAll(stream),
+      ['hello world'],
+      'decoded text is emitted as a string chunk',
+    );
   });
   it('empty Blob produces no text chunks', async (t) => {
     const chunks = await readAll(new Blob().textStream());
     t.equal(chunks.length, 0, 'empty blob produces no chunks');
   });
   it('ignores the type charset and always decodes as UTF-8', async (t) => {
-    const bytes = new Uint8Array([
-      104,
-      0,
-      105,
-      0
-    ]);
+    const bytes = new Uint8Array([104, 0, 105, 0]);
     const blob = new Blob([bytes], { type: 'text/plain; charset=utf-16le' });
     t.deepEqual(await readAll(blob.textStream()), ['h\0i\0']);
   });
@@ -504,11 +506,19 @@ describe('File.slice() returns Blob (not File)', () => {
 describe('[Symbol.toStringTag]', () => {
   it('Blob has correct toStringTag', (t) => {
     const b = new Blob(['x']);
-    t.equal(((b as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'Blob', 'Blob toStringTag');
+    t.equal(
+      (b as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'Blob',
+      'Blob toStringTag',
+    );
   });
   it('File has correct toStringTag', (t) => {
     const f = new File(['x'], 'x.txt');
-    t.equal(((f as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'File', 'File toStringTag');
+    t.equal(
+      (f as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'File',
+      'File toStringTag',
+    );
   });
 });
 describe('Blob.slice() contentType casing', () => {
@@ -568,7 +578,11 @@ describe('Blob.stream() creates new stream each call', () => {
 describe('Blob constructor — invalid parts argument', () => {
   it('non-iterable non-null parts throws TypeError', (t) => {
     t.throws(() => new Blob(42 as any), /sequence|iterable|converted/i, 'number parts throws');
-    t.throws(() => new Blob({} as any), /sequence|iterable|converted/i, 'plain object parts throws');
+    t.throws(
+      () => new Blob({} as any),
+      /sequence|iterable|converted/i,
+      'plain object parts throws',
+    );
   });
   it('explicit null parts throws TypeError', (t) => {
     t.throws(() => new Blob(null as any), /sequence|iterable|converted/i, 'null parts throws');
@@ -605,12 +619,11 @@ describe('FileReader', () => {
     const arrayDone = waitFor(arrayReader, 'loadend');
     arrayReader.readAsArrayBuffer(new Blob(['TEST']));
     await arrayDone;
-    t.deepEqual(Array.from(new Uint8Array(arrayReader.result as ArrayBuffer)), [
-      84,
-      69,
-      83,
-      84
-    ], 'ArrayBuffer bytes');
+    t.deepEqual(
+      Array.from(new Uint8Array(arrayReader.result as ArrayBuffer)),
+      [84, 69, 83, 84],
+      'ArrayBuffer bytes',
+    );
     const textReader = new FileReader();
     const textDone = waitFor(textReader, 'loadend');
     textReader.readAsText(new Blob(['TEST']));
@@ -618,11 +631,7 @@ describe('FileReader', () => {
     t.equal(textReader.result, 'TEST', 'text result');
     const binaryReader = new FileReader();
     const binaryDone = waitFor(binaryReader, 'loadend');
-    binaryReader.readAsBinaryString(new Blob([new Uint8Array([
-      0,
-      65,
-      255
-    ])]));
+    binaryReader.readAsBinaryString(new Blob([new Uint8Array([0, 65, 255])]));
     await binaryDone;
     t.equal(binaryReader.result, '\0Aÿ', 'binary string result');
     const urlReader = new FileReader();
@@ -634,7 +643,11 @@ describe('FileReader', () => {
   it('rejects concurrent reads with InvalidStateError', (t) => {
     const reader = new FileReader();
     reader.readAsText(new Blob(['one']));
-    t.throws(() => reader.readAsText(new Blob(['two'])), (err: unknown) => err instanceof DOMException && err.name === 'InvalidStateError', 'concurrent read throws InvalidStateError');
+    t.throws(
+      () => reader.readAsText(new Blob(['two'])),
+      (err: unknown) => err instanceof DOMException && err.name === 'InvalidStateError',
+      'concurrent read throws InvalidStateError',
+    );
   });
   it('aborts active reads and dispatches abort before loadend', async (t) => {
     const reader = new FileReader();
@@ -654,24 +667,12 @@ describe('FileReader', () => {
   it('detects UTF-16 labels and BOMs for readAsText', async (t) => {
     const explicit = new FileReader();
     const explicitDone = waitFor(explicit, 'loadend');
-    explicit.readAsText(new Blob([new Uint8Array([
-      0,
-      104,
-      0,
-      105
-    ])]), 'UTF-16BE');
+    explicit.readAsText(new Blob([new Uint8Array([0, 104, 0, 105])]), 'UTF-16BE');
     await explicitDone;
     t.equal(explicit.result, 'hi', 'explicit UTF-16BE label');
     const bom = new FileReader();
     const bomDone = waitFor(bom, 'loadend');
-    bom.readAsText(new Blob([new Uint8Array([
-      255,
-      254,
-      104,
-      0,
-      105,
-      0
-    ])]));
+    bom.readAsText(new Blob([new Uint8Array([255, 254, 104, 0, 105, 0])]));
     await bomDone;
     t.equal(bom.result, 'hi', 'UTF-16LE BOM');
   });

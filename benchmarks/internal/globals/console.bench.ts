@@ -1,13 +1,13 @@
 /**
-* Benchmarks for the console global
-*
-* Run with: cargo run -- --bench benchmarks/console.bench.mjs
-*
-* Note: Each iteration writes to stdout/stderr — this file produces significant
-* output. Run it separately from the other benchmarks if you want clean output:
-*
-*   cargo run -- --bench benchmarks/console.bench.mjs 2>/dev/null
-*/
+ * Benchmarks for the console global
+ *
+ * Run with: cargo run -- --bench benchmarks/console.bench.mjs
+ *
+ * Note: Each iteration writes to stdout/stderr — this file produces significant
+ * output. Run it separately from the other benchmarks if you want clean output:
+ *
+ *   cargo run -- --bench benchmarks/console.bench.mjs 2>/dev/null
+ */
 import { bench } from 'fino:bench';
 // Pre-build test values to isolate formatting cost from allocation
 const STR = 'hello, world';
@@ -15,22 +15,16 @@ const NUM = 42;
 const OBJ_FLAT = {
   a: 1,
   b: 'hello',
-  c: true
+  c: true,
 };
 const OBJ_DEEP = { a: { b: { c: { d: 1 } } } };
 const ARR10 = Array.from({ length: 10 }, (_, i) => i);
-const ARR_MIX = [
-  1,
-  'two',
-  true,
-  null,
-  { x: 1 }
-];
+const ARR_MIX = [1, 'two', true, null, { x: 1 }];
 const COMPLEX = {
   id: 1,
   name: 'test',
   tags: ['a', 'b'],
-  nested: { x: 1 }
+  nested: { x: 1 },
 };
 bench('console.log value types', (b) => {
   b.measure('string', () => console.log(STR));

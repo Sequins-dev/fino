@@ -9,19 +9,19 @@ function modelWithText(text: string): Model {
     {
       type: 'text_delta',
       index: 0,
-      text
+      text,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 1,
-        outputTokens: 1
-      }
+        outputTokens: 1,
+      },
     },
     {
       type: 'stop',
-      reason: 'end_turn'
-    }
+      reason: 'end_turn',
+    },
   ];
   return {
     id: 'surface-test',
@@ -39,7 +39,7 @@ function modelWithText(text: string): Model {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 describe('AI public surface', () => {
@@ -65,7 +65,10 @@ describe('AI public surface', () => {
     t.equal('AgentRuntime' in runtime, false, 'AgentRuntime is not public API');
   });
   it('legacy harness specifier is not available', async (t) => {
-    await t.rejects(() => import('fino:ai/harness'), /dynamic import failed|Cannot find module|Unable to resolve|not found|unknown/i);
+    await t.rejects(
+      () => import('fino:ai/harness'),
+      /dynamic import failed|Cannot find module|Unable to resolve|not found|unknown/i,
+    );
   });
   it('Agent constructor and factory both default to append-only history', async (t) => {
     const direct = new Agent({ model: modelWithText('direct') });

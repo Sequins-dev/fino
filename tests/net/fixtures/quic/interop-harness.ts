@@ -11,7 +11,10 @@ export async function exists(path: string): Promise<boolean> {
     return false;
   }
 }
-export async function collect(reader: AsyncIterable<Uint8Array>, onChunk?: (text: string) => void): Promise<string> {
+export async function collect(
+  reader: AsyncIterable<Uint8Array>,
+  onChunk?: (text: string) => void,
+): Promise<string> {
   let out = '';
   for await (const chunk of reader) {
     const text = dec.decode(chunk);
@@ -24,9 +27,12 @@ export function delay(ms: number): Promise<void> {
   return loop.timeout(ms);
 }
 export async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([promise, delay(ms).then(() => {
-    throw new Error(`${label} timed out after ${ms}ms`);
-  })]);
+  return Promise.race([
+    promise,
+    delay(ms).then(() => {
+      throw new Error(`${label} timed out after ${ms}ms`);
+    }),
+  ]);
 }
 export function spawnNodeQuic(nodeBin: string, script: string, args: string[] = []): Process {
   const proc = new Process(nodeBin, [
@@ -34,7 +40,7 @@ export function spawnNodeQuic(nodeBin: string, script: string, args: string[] = 
     '--experimental-stream-iter',
     '--no-warnings',
     script,
-    ...args
+    ...args,
   ]);
   proc.stdin.close();
   return proc;
@@ -45,7 +51,7 @@ export async function supportsNodeQuic(nodeBin: string): Promise<boolean> {
     '--no-warnings',
     '--input-type=module',
     '-e',
-    'await import(\'node:quic\')'
+    "await import('node:quic')",
   ]);
   proc.stdin.close();
   const err = collect(proc.stderr);
@@ -75,6 +81,6 @@ export function parseReadyAddress(output: string): {
 }
 export async function configuredNodeQuicAvailable(): Promise<string | null> {
   const nodeBin = env.NODE_QUIC_BIN;
-  if (nodeBin === undefined || nodeBin.length === 0 || !await exists(nodeBin)) return null;
-  return await supportsNodeQuic(nodeBin) ? nodeBin : null;
+  if (nodeBin === undefined || nodeBin.length === 0 || !(await exists(nodeBin))) return null;
+  return (await supportsNodeQuic(nodeBin)) ? nodeBin : null;
 }

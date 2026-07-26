@@ -1,14 +1,14 @@
 /**
-* Benchmarks for the crypto global
-*
-* Run with: cargo run -- --bench benchmarks/crypto.bench.ts
-*
-* Notes:
-* - The bench framework's setup() is synchronous, but key import/generation is
-*   async. For sign/verify/encrypt/decrypt benchmarks we include the key import
-*   cost in the measured fn (it's realistic overhead anyway).
-* - Raw key bytes are generated once at module level using getRandomValues() (sync).
-*/
+ * Benchmarks for the crypto global
+ *
+ * Run with: cargo run -- --bench benchmarks/crypto.bench.ts
+ *
+ * Notes:
+ * - The bench framework's setup() is synchronous, but key import/generation is
+ *   async. For sign/verify/encrypt/decrypt benchmarks we include the key import
+ *   cost in the measured fn (it's realistic overhead anyway).
+ * - Raw key bytes are generated once at module level using getRandomValues() (sync).
+ */
 import { bench } from 'fino:bench';
 const crypto = globalThis.crypto;
 // Pre-generate raw key material synchronously — used in async import inside fn
@@ -46,76 +46,181 @@ bench('digest', (b) => {
   });
 });
 bench('HMAC', (b) => {
-  b.measure('sign 1KB', { fn: async () => {
-    const key = await crypto.subtle.importKey('raw', HMAC_KEY_BYTES, {
-      name: 'HMAC',
-      hash: 'SHA-256'
-    }, false, ['sign']);
-    return await crypto.subtle.sign('HMAC', key, DATA_1KB);
-  } });
-  b.measure('verify 1KB', { fn: async () => {
-    const key = await crypto.subtle.importKey('raw', HMAC_KEY_BYTES, {
-      name: 'HMAC',
-      hash: 'SHA-256'
-    }, false, ['sign', 'verify']);
-    const sig = await crypto.subtle.sign('HMAC', key, DATA_1KB);
-    return await crypto.subtle.verify('HMAC', key, sig, DATA_1KB);
-  } });
+  b.measure('sign 1KB', {
+    fn: async () => {
+      const key = await crypto.subtle.importKey(
+        'raw',
+        HMAC_KEY_BYTES,
+        {
+          name: 'HMAC',
+          hash: 'SHA-256',
+        },
+        false,
+        ['sign'],
+      );
+      return await crypto.subtle.sign('HMAC', key, DATA_1KB);
+    },
+  });
+  b.measure('verify 1KB', {
+    fn: async () => {
+      const key = await crypto.subtle.importKey(
+        'raw',
+        HMAC_KEY_BYTES,
+        {
+          name: 'HMAC',
+          hash: 'SHA-256',
+        },
+        false,
+        ['sign', 'verify'],
+      );
+      const sig = await crypto.subtle.sign('HMAC', key, DATA_1KB);
+      return await crypto.subtle.verify('HMAC', key, sig, DATA_1KB);
+    },
+  });
   b.group('importKey', (g) => {
-    g.measure('HMAC-SHA256', async () => await crypto.subtle.importKey('raw', HMAC_KEY_BYTES, {
-      name: 'HMAC',
-      hash: 'SHA-256'
-    }, false, ['sign']));
-    g.measure('HMAC-SHA512', async () => await crypto.subtle.importKey('raw', HMAC_KEY_BYTES, {
-      name: 'HMAC',
-      hash: 'SHA-512'
-    }, false, ['sign']));
+    g.measure(
+      'HMAC-SHA256',
+      async () =>
+        await crypto.subtle.importKey(
+          'raw',
+          HMAC_KEY_BYTES,
+          {
+            name: 'HMAC',
+            hash: 'SHA-256',
+          },
+          false,
+          ['sign'],
+        ),
+    );
+    g.measure(
+      'HMAC-SHA512',
+      async () =>
+        await crypto.subtle.importKey(
+          'raw',
+          HMAC_KEY_BYTES,
+          {
+            name: 'HMAC',
+            hash: 'SHA-512',
+          },
+          false,
+          ['sign'],
+        ),
+    );
   });
 });
 bench('AES-GCM', (b) => {
   b.group('encrypt by size', (g) => {
-    g.measure('64 bytes', { fn: async () => {
-      const key = await crypto.subtle.importKey('raw', AES_KEY_BYTES, { name: 'AES-GCM' }, false, ['encrypt']);
-      return await crypto.subtle.encrypt({
-        name: 'AES-GCM',
-        iv: IV
-      }, key, DATA_64);
-    } });
-    g.measure('1KB', { fn: async () => {
-      const key = await crypto.subtle.importKey('raw', AES_KEY_BYTES, { name: 'AES-GCM' }, false, ['encrypt']);
-      return await crypto.subtle.encrypt({
-        name: 'AES-GCM',
-        iv: IV
-      }, key, DATA_1KB);
-    } });
-    g.measure('64KB', { fn: async () => {
-      const key = await crypto.subtle.importKey('raw', AES_KEY_BYTES, { name: 'AES-GCM' }, false, ['encrypt']);
-      return await crypto.subtle.encrypt({
-        name: 'AES-GCM',
-        iv: IV
-      }, key, DATA_64KB);
-    } });
+    g.measure('64 bytes', {
+      fn: async () => {
+        const key = await crypto.subtle.importKey(
+          'raw',
+          AES_KEY_BYTES,
+          { name: 'AES-GCM' },
+          false,
+          ['encrypt'],
+        );
+        return await crypto.subtle.encrypt(
+          {
+            name: 'AES-GCM',
+            iv: IV,
+          },
+          key,
+          DATA_64,
+        );
+      },
+    });
+    g.measure('1KB', {
+      fn: async () => {
+        const key = await crypto.subtle.importKey(
+          'raw',
+          AES_KEY_BYTES,
+          { name: 'AES-GCM' },
+          false,
+          ['encrypt'],
+        );
+        return await crypto.subtle.encrypt(
+          {
+            name: 'AES-GCM',
+            iv: IV,
+          },
+          key,
+          DATA_1KB,
+        );
+      },
+    });
+    g.measure('64KB', {
+      fn: async () => {
+        const key = await crypto.subtle.importKey(
+          'raw',
+          AES_KEY_BYTES,
+          { name: 'AES-GCM' },
+          false,
+          ['encrypt'],
+        );
+        return await crypto.subtle.encrypt(
+          {
+            name: 'AES-GCM',
+            iv: IV,
+          },
+          key,
+          DATA_64KB,
+        );
+      },
+    });
   });
-  b.measure('decrypt 1KB', { fn: async () => {
-    const key = await crypto.subtle.importKey('raw', AES_KEY_BYTES, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-    const ct = await crypto.subtle.encrypt({
-      name: 'AES-GCM',
-      iv: IV
-    }, key, DATA_1KB);
-    return await crypto.subtle.decrypt({
-      name: 'AES-GCM',
-      iv: IV
-    }, key, ct);
-  } });
+  b.measure('decrypt 1KB', {
+    fn: async () => {
+      const key = await crypto.subtle.importKey('raw', AES_KEY_BYTES, { name: 'AES-GCM' }, false, [
+        'encrypt',
+        'decrypt',
+      ]);
+      const ct = await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: IV,
+        },
+        key,
+        DATA_1KB,
+      );
+      return await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: IV,
+        },
+        key,
+        ct,
+      );
+    },
+  });
 });
 bench('key management', (b) => {
-  b.measure('generateKey HMAC-SHA256', async () => await crypto.subtle.generateKey({
-    name: 'HMAC',
-    hash: 'SHA-256'
-  }, false, ['sign', 'verify']));
-  b.measure('generateKey AES-GCM-256', async () => await crypto.subtle.generateKey({
-    name: 'AES-GCM',
-    length: 256
-  }, false, ['encrypt', 'decrypt']));
-  b.measure('importKey raw AES-GCM', async () => await crypto.subtle.importKey('raw', AES_KEY_BYTES, { name: 'AES-GCM' }, false, ['encrypt']));
+  b.measure(
+    'generateKey HMAC-SHA256',
+    async () =>
+      await crypto.subtle.generateKey(
+        {
+          name: 'HMAC',
+          hash: 'SHA-256',
+        },
+        false,
+        ['sign', 'verify'],
+      ),
+  );
+  b.measure(
+    'generateKey AES-GCM-256',
+    async () =>
+      await crypto.subtle.generateKey(
+        {
+          name: 'AES-GCM',
+          length: 256,
+        },
+        false,
+        ['encrypt', 'decrypt'],
+      ),
+  );
+  b.measure(
+    'importKey raw AES-GCM',
+    async () =>
+      await crypto.subtle.importKey('raw', AES_KEY_BYTES, { name: 'AES-GCM' }, false, ['encrypt']),
+  );
 });

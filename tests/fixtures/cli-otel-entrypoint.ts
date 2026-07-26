@@ -1,4 +1,9 @@
-import { getLoggerProvider, getMeterProvider, getTracerProvider, runWithActiveSpan } from 'fino:opentelemetry';
+import {
+  getLoggerProvider,
+  getMeterProvider,
+  getTracerProvider,
+  runWithActiveSpan,
+} from 'fino:opentelemetry';
 import { decompress } from 'fino:compress';
 import { argv } from 'fino:process';
 function headerValue(headers, key) {
@@ -29,10 +34,16 @@ if (argv[1] !== 'test') {
   globalThis.fetch = async function otelEntrypointFetch(url) {
     console.log(`export:${String(url)}`);
     const options = arguments[1] || {};
-    const headers = options.headers && typeof options.headers[Symbol.iterator] === 'function' ? Object.fromEntries(options.headers) : options.headers || {};
+    const headers =
+      options.headers && typeof options.headers[Symbol.iterator] === 'function'
+        ? Object.fromEntries(options.headers)
+        : options.headers || {};
     console.log(JSON.stringify(headers));
     const bytes = await bodyBytes(options.body);
-    const decoded = headerValue(headers, 'content-encoding') === 'gzip' ? decompress(bytes, { format: 'gzip' }) : bytes;
+    const decoded =
+      headerValue(headers, 'content-encoding') === 'gzip'
+        ? decompress(bytes, { format: 'gzip' })
+        : bytes;
     console.log(new TextDecoder().decode(decoded));
     return new Response('{}', { status: 200 });
   };

@@ -1,26 +1,36 @@
 /**
-* Benchmarks for EventTarget and Event globals
-*
-* Run with: cargo run -- --bench benchmarks/eventtarget.bench.mjs
-*/
+ * Benchmarks for EventTarget and Event globals
+ *
+ * Run with: cargo run -- --bench benchmarks/eventtarget.bench.mjs
+ */
 import { bench } from 'fino:bench';
 bench('Event construction', (b) => {
   b.measure('Event bare', () => new Event('click'));
   b.measure('Event cancelable', () => new Event('submit', { cancelable: true }));
-  b.measure('Event bubbles', () => new Event('change', {
-    bubbles: true,
-    cancelable: true
-  }));
+  b.measure(
+    'Event bubbles',
+    () =>
+      new Event('change', {
+        bubbles: true,
+        cancelable: true,
+      }),
+  );
   b.measure('CustomEvent no detail', () => new CustomEvent('data'));
-  b.measure('CustomEvent detail', () => new CustomEvent('data', { detail: {
-    x: 1,
-    y: 2
-  } }));
+  b.measure(
+    'CustomEvent detail',
+    () =>
+      new CustomEvent('data', {
+        detail: {
+          x: 1,
+          y: 2,
+        },
+      }),
+  );
 });
 bench('Event property access', (b) => {
   const ev = new Event('test', {
     bubbles: true,
-    cancelable: true
+    cancelable: true,
   });
   b.measure('type', () => ev.type);
   b.measure('bubbles', () => ev.bubbles);
@@ -32,7 +42,7 @@ bench('EventTarget.addEventListener', (b) => {
   const noop = () => {};
   b.measure('add 1st listener', {
     setup: () => new EventTarget(),
-    fn: (t) => t.addEventListener('test', noop)
+    fn: (t) => t.addEventListener('test', noop),
   });
   b.measure('add to populated (5)', {
     setup: () => {
@@ -40,11 +50,11 @@ bench('EventTarget.addEventListener', (b) => {
       for (let i = 0; i < 5; i++) t.addEventListener('test', () => {});
       return t;
     },
-    fn: (t) => t.addEventListener('test', noop)
+    fn: (t) => t.addEventListener('test', noop),
   });
   b.measure('add once listener', {
     setup: () => new EventTarget(),
-    fn: (t) => t.addEventListener('test', noop, { once: true })
+    fn: (t) => t.addEventListener('test', noop, { once: true }),
   });
 });
 bench('EventTarget.dispatchEvent', (b) => {
@@ -68,7 +78,7 @@ bench('EventTarget.dispatchEvent', (b) => {
       t.addEventListener('click', () => {});
       return t;
     },
-    fn: (t) => t.dispatchEvent(new Event('keydown'))
+    fn: (t) => t.dispatchEvent(new Event('keydown')),
   });
 });
 bench('EventTarget add+remove cycle', (b) => {
@@ -78,10 +88,10 @@ bench('EventTarget add+remove cycle', (b) => {
     fn: (t) => {
       t.addEventListener('x', noop);
       t.removeEventListener('x', noop);
-    }
+    },
   });
   b.measure('remove missing', {
     setup: () => new EventTarget(),
-    fn: (t) => t.removeEventListener('x', noop)
+    fn: (t) => t.removeEventListener('x', noop),
   });
 });

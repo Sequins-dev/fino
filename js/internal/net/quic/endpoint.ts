@@ -1,13 +1,13 @@
 /**
-* internal:net/quic/endpoint — QUIC endpoint public-internal entry point.
-*
-* This module preserves the historical `internal:net/quic/endpoint` specifier
-* while the QUIC object model is split into focused modules. Import
-* `internal:net/quic/connection`, `internal:net/quic/listener`, or
-* `internal:net/quic/stream` when code needs a class-specific dependency.
-*
-* @internal
-*/
+ * internal:net/quic/endpoint — QUIC endpoint public-internal entry point.
+ *
+ * This module preserves the historical `internal:net/quic/endpoint` specifier
+ * while the QUIC object model is split into focused modules. Import
+ * `internal:net/quic/connection`, `internal:net/quic/listener`, or
+ * `internal:net/quic/stream` when code needs a class-specific dependency.
+ *
+ * @internal
+ */
 export {
   CidRoutingTable,
   QuicEndpoint,
@@ -23,7 +23,7 @@ export {
   quicEndpointInternals,
   quicIncomingStreamHook,
   quicListenerInternals,
-  quicStreamInternals
+  quicStreamInternals,
 } from './core.ts';
 export type {
   QuicAddress,
@@ -58,7 +58,7 @@ export type {
   QuicTlsCipherSuite,
   QuicTransportOptions,
   QuicTransportParameterSnapshot,
-  QuicVersion
+  QuicVersion,
 } from './core.ts';
 export {
   QuicConnectionEvent,
@@ -72,5 +72,5 @@ export {
   QuicStreamBlockedEvent,
   QuicStreamEvent,
   QuicStreamResetEvent,
-  QuicVersionNegotiationError
+  QuicVersionNegotiationError,
 } from './core.ts';

@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:file
-*
-* Run with: cargo run -- --bench benchmarks/file.bench.ts
-*/
+ * Benchmarks for fino:file
+ *
+ * Run with: cargo run -- --bench benchmarks/file.bench.ts
+ */
 import { DiskFileSystem } from 'fino:file';
 import { bench } from 'fino:bench';
 const WRITE_PATH = '/tmp/surge_bench_file.txt';

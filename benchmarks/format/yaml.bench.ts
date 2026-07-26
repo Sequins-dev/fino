@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:format/yaml
-*
-* Run with: cargo run -- --bench benchmarks/yaml.bench.mjs
-*/
+ * Benchmarks for fino:format/yaml
+ *
+ * Run with: cargo run -- --bench benchmarks/yaml.bench.mjs
+ */
 import { parse, stringify, parseAll } from 'fino:format/yaml';
 import { bench } from 'fino:bench';
 const SMALL_YAML = `
@@ -59,7 +59,9 @@ el: Ελληνικά κείμενα
 ar: نص عربي
 ko: 한국어 텍스트
 `;
-const MULTI_DOC_YAML = Array.from({ length: 10 }, (_, i) => `id: ${i}\nname: doc-${i}`).join('\n---\n');
+const MULTI_DOC_YAML = Array.from({ length: 10 }, (_, i) => `id: ${i}\nname: doc-${i}`).join(
+  '\n---\n',
+);
 const enc = new TextEncoder();
 bench('parse by size', (b) => {
   b.measure('small mapping', () => parse(SMALL_YAML));

@@ -1,76 +1,76 @@
 /**
-* fino:signals — retained reactive values for runtime read models.
-*
-* Signals model state: the latest value is retained, subscribers are notified
-* when that value changes, and `Object.is` skips redundant writes. They are a
-* good fit for UI render dependencies, queue statistics, run status, counters,
-* and other "what is true now" views. They are not an event log; streams,
-* topics, and async iterators remain the right surface when every intermediate
-* value matters.
-*
-* ## Design
-*
-* Writable `Signal` instances are owned by producers. Public APIs should expose
-* `ReadonlySignal` when consumers must observe but not update the value.
-* `batch()` coalesces synchronous writes into one notification pass, while
-* `computed()` and `effect()` use `observeReads()` to track whichever signals
-* were read on the latest run.
-*
-* `lazy()` and `fromIterable()` are cold bridges: upstream work starts only
-* when the first subscriber attaches and is disposed after the last subscriber
-* leaves. The current value remains readable even while the producer is cold.
-*
-* ```ts no_run
-* import { computed, createSignal, effect } from 'fino:signals';
-*
-* const count = createSignal(0);
-* const doubled = computed(() => count.get() * 2);
-*
-* const stop = effect(() => {
-*   console.log(doubled.get());
-* });
-*
-* count.set(2);
-* stop();
-* ```
-*/
+ * fino:signals — retained reactive values for runtime read models.
+ *
+ * Signals model state: the latest value is retained, subscribers are notified
+ * when that value changes, and `Object.is` skips redundant writes. They are a
+ * good fit for UI render dependencies, queue statistics, run status, counters,
+ * and other "what is true now" views. They are not an event log; streams,
+ * topics, and async iterators remain the right surface when every intermediate
+ * value matters.
+ *
+ * ## Design
+ *
+ * Writable `Signal` instances are owned by producers. Public APIs should expose
+ * `ReadonlySignal` when consumers must observe but not update the value.
+ * `batch()` coalesces synchronous writes into one notification pass, while
+ * `computed()` and `effect()` use `observeReads()` to track whichever signals
+ * were read on the latest run.
+ *
+ * `lazy()` and `fromIterable()` are cold bridges: upstream work starts only
+ * when the first subscriber attaches and is disposed after the last subscriber
+ * leaves. The current value remains readable even while the producer is cold.
+ *
+ * ```ts no_run
+ * import { computed, createSignal, effect } from 'fino:signals';
+ *
+ * const count = createSignal(0);
+ * const doubled = computed(() => count.get() * 2);
+ *
+ * const stop = effect(() => {
+ *   console.log(doubled.get());
+ * });
+ *
+ * count.set(2);
+ * stop();
+ * ```
+ */
 
 /**
-* Callback invoked after a signal value changes.
-*
-* The callback receives the current value and the previous value. Batched
-* writes call subscribers once with the value before the first write and the
-* final value after the outermost batch completes.
-*/
+ * Callback invoked after a signal value changes.
+ *
+ * The callback receives the current value and the previous value. Batched
+ * writes call subscribers once with the value before the first write and the
+ * final value after the outermost batch completes.
+ */
 export type SignalSubscriber<T> = (value: T, previous: T) => void;
 
 /**
-* Value or updater accepted by `Signal.set()`.
-*/
+ * Value or updater accepted by `Signal.set()`.
+ */
 export type SignalSetter<T> = T | ((value: T) => T);
 
 /**
-* Read-only signal handle for consumers.
-*
-* A `ReadonlySignal` exposes the current value and change notifications but
-* does not allow callers to write. Producers should prefer this shape for
-* public runtime read models.
-*/
+ * Read-only signal handle for consumers.
+ *
+ * A `ReadonlySignal` exposes the current value and change notifications but
+ * does not allow callers to write. Producers should prefer this shape for
+ * public runtime read models.
+ */
 export interface ReadonlySignal<T> {
   /** Return the current retained value. */
   get(): T;
   /**
-  * Subscribe to future value changes.
-  *
-  * The callback is not called immediately. The returned function removes the
-  * subscription and is safe to call more than once.
-  */
+   * Subscribe to future value changes.
+   *
+   * The callback is not called immediately. The returned function removes the
+   * subscription and is safe to call more than once.
+   */
   subscribe(subscriber: SignalSubscriber<T>): () => void;
 }
 
 /**
-* Result returned by `observeReads()`.
-*/
+ * Result returned by `observeReads()`.
+ */
 export interface ObservedReads<T> {
   /** Value returned by the observed callback. */
   value: T;
@@ -95,11 +95,11 @@ function flushSignals(): void {
 }
 
 /**
-* Run multiple signal writes as one notification pass.
-*
-* Subscribers are called after the outermost batch completes, and each changed
-* signal notifies at most once with its final value.
-*/
+ * Run multiple signal writes as one notification pass.
+ *
+ * Subscribers are called after the outermost batch completes, and each changed
+ * signal notifies at most once with its final value.
+ */
 export function batch<T>(fn: () => T): T {
   batchDepth++;
   try {
@@ -111,12 +111,12 @@ export function batch<T>(fn: () => T): T {
 }
 
 /**
-* Explicit mutable reactive value.
-*
-* Use `get()` to read the retained value, `set()` to replace or derive the
-* next value, and `subscribe()` to observe later changes. Redundant writes are
-* skipped with `Object.is`.
-*/
+ * Explicit mutable reactive value.
+ *
+ * Use `get()` to read the retained value, `set()` to replace or derive the
+ * next value, and `subscribe()` to observe later changes. Redundant writes are
+ * skipped with `Object.is`.
+ */
 export class Signal<T> implements ReadonlySignal<T> {
   #value: T;
   #previous: T;
@@ -135,10 +135,10 @@ export class Signal<T> implements ReadonlySignal<T> {
   }
 
   /**
-  * Replace the value or derive the next value from the current one.
-  *
-  * Subscribers are skipped when `Object.is(previous, next)` is true.
-  */
+   * Replace the value or derive the next value from the current one.
+   *
+   * Subscribers are skipped when `Object.is(previous, next)` is true.
+   */
   set(next: SignalSetter<T>): void {
     const previous = this.#value;
     const value = typeof next === 'function' ? (next as (value: T) => T)(previous) : next;
@@ -154,11 +154,11 @@ export class Signal<T> implements ReadonlySignal<T> {
   }
 
   /**
-  * Subscribe to value changes.
-  *
-  * The returned function removes the subscriber. Subscriptions do not fire
-  * immediately; they only observe subsequent writes.
-  */
+   * Subscribe to value changes.
+   *
+   * The returned function removes the subscriber. Subscriptions do not fire
+   * immediately; they only observe subsequent writes.
+   */
   subscribe(subscriber: SignalSubscriber<T>): () => void {
     this.#subscribers.add(subscriber);
     let active = true;
@@ -180,18 +180,18 @@ export class Signal<T> implements ReadonlySignal<T> {
 }
 
 /**
-* Create a writable signal with explicit `get`, `set`, and `subscribe` methods.
-*/
+ * Create a writable signal with explicit `get`, `set`, and `subscribe` methods.
+ */
 export function createSignal<T>(initial: T): Signal<T> {
   return new Signal(initial);
 }
 
 /**
-* Run `fn` and return the signals read during that run.
-*
-* This is the low-level hook used by renderers and reactive helpers. Nested
-* calls are isolated, and duplicate reads of the same signal are reported once.
-*/
+ * Run `fn` and return the signals read during that run.
+ *
+ * This is the low-level hook used by renderers and reactive helpers. Nested
+ * calls are isolated, and duplicate reads of the same signal are reported once.
+ */
 export function observeReads<T>(fn: () => T): ObservedReads<T> {
   const seen = new Set<ReadonlySignal<unknown>>();
   const signals: ReadonlySignal<unknown>[] = [];
@@ -203,7 +203,7 @@ export function observeReads<T>(fn: () => T): ObservedReads<T> {
   try {
     return {
       value: fn(),
-      signals
+      signals,
     };
   } finally {
     readObservers.pop();
@@ -221,11 +221,11 @@ function subscribeAll(signals: ReadonlySignal<unknown>[], fn: () => void): () =>
 }
 
 /**
-* Create a read-only signal derived from other signals.
-*
-* The derivation runs immediately, then re-runs whenever any signal read during
-* the latest run changes. Conditional dependencies are re-tracked each time.
-*/
+ * Create a read-only signal derived from other signals.
+ *
+ * The derivation runs immediately, then re-runs whenever any signal read during
+ * the latest run changes. Conditional dependencies are re-tracked each time.
+ */
 export function computed<T>(fn: () => T): ReadonlySignal<T> {
   const out = createSignal<T>(undefined as T);
   let disposeDeps: (() => void) | undefined;
@@ -247,11 +247,11 @@ export function computed<T>(fn: () => T): ReadonlySignal<T> {
 }
 
 /**
-* Run a side effect now and whenever its read dependencies change.
-*
-* The returned function disposes the current dependencies and prevents future
-* re-runs. Dependencies are re-tracked on every execution.
-*/
+ * Run a side effect now and whenever its read dependencies change.
+ *
+ * The returned function disposes the current dependencies and prevents future
+ * re-runs. Dependencies are re-tracked on every execution.
+ */
 export function effect(fn: () => void): () => void {
   let disposeDeps: (() => void) | undefined;
   let disposed = false;
@@ -313,24 +313,31 @@ class LazySignal<T> implements ReadonlySignal<T> {
 }
 
 /**
-* Create a cold read-only signal.
-*
-* `start` is called when the first subscriber attaches. It receives a setter for
-* publishing retained values and returns a cleanup callback, which runs after
-* the last subscriber unsubscribes.
-*/
-export function lazy<T>(initial: T, start: (set: (value: T) => void) => () => void): ReadonlySignal<T> {
+ * Create a cold read-only signal.
+ *
+ * `start` is called when the first subscriber attaches. It receives a setter for
+ * publishing retained values and returns a cleanup callback, which runs after
+ * the last subscriber unsubscribes.
+ */
+export function lazy<T>(
+  initial: T,
+  start: (set: (value: T) => void) => () => void,
+): ReadonlySignal<T> {
   return new LazySignal(initial, start);
 }
 
 /**
-* Fold an async iterable into a cold retained signal.
-*
-* The iterable is consumed only while the signal has subscribers. On teardown,
-* the active iterator's `return()` method is called when present so upstream
-* subscriptions and readers can release resources.
-*/
-export function fromIterable<T, S>(src: AsyncIterable<T>, fold: (acc: S, item: T) => S, initial: S): ReadonlySignal<S> {
+ * Fold an async iterable into a cold retained signal.
+ *
+ * The iterable is consumed only while the signal has subscribers. On teardown,
+ * the active iterator's `return()` method is called when present so upstream
+ * subscriptions and readers can release resources.
+ */
+export function fromIterable<T, S>(
+  src: AsyncIterable<T>,
+  fold: (acc: S, item: T) => S,
+  initial: S,
+): ReadonlySignal<S> {
   let current = initial;
   return lazy(initial, (set) => {
     let active = true;

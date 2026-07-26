@@ -1,6 +1,6 @@
 /**
-* Runtime module-loader coverage for TSX and JSX files.
-*/
+ * Runtime module-loader coverage for TSX and JSX files.
+ */
 import { describe, it } from 'fino:test/test';
 describe('JSX module loading', () => {
   it('loads TSX through the Fino automatic JSX runtime', async (t) => {

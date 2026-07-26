@@ -14,11 +14,11 @@ function deterministicEmbedder(dim: number): Embedder {
             h ^= t.charCodeAt(j) + i;
             h = Math.imul(h, 16777619) >>> 0;
           }
-          arr[i] = h % 1e4 / 1e4 - .5;
+          arr[i] = (h % 1e4) / 1e4 - .5;
         }
         return arr;
       });
-    }
+    },
   };
 }
 function tmpPath(): string {
@@ -33,20 +33,20 @@ describe('SqliteMemory', () => {
     } catch {}
     const mem = await SqliteMemory.open({
       path,
-      embedder: deterministicEmbedder(4)
+      embedder: deterministicEmbedder(4),
     });
     try {
       const m1 = await mem.append({
         role: 'user',
-        content: 'hello'
+        content: 'hello',
       });
       const m2 = await mem.append({
         role: 'assistant',
-        content: 'hi there'
+        content: 'hi there',
       });
       const m3 = await mem.append({
         role: 'user',
-        content: 'bye'
+        content: 'bye',
       });
       t.equal(m1.role, 'user');
       t.equal(m1.threadId, mem.threadId);
@@ -60,7 +60,10 @@ describe('SqliteMemory', () => {
       t.equal(last2.length, 2, 'last:2 limits correctly');
       t.equal(last2[0].content, 'hi there');
       const before = await mem.history({ before: m3.createdAt });
-      t.ok(before.every((m) => m.createdAt < m3.createdAt), 'before filter applied');
+      t.ok(
+        before.every((m) => m.createdAt < m3.createdAt),
+        'before filter applied',
+      );
     } finally {
       await mem.close();
       try {
@@ -76,16 +79,18 @@ describe('SqliteMemory', () => {
     } catch {}
     const mem = await SqliteMemory.open({
       path,
-      embedder: deterministicEmbedder(4)
+      embedder: deterministicEmbedder(4),
     });
     try {
-      const parts = [{
-        type: 'text',
-        text: 'structured message'
-      }];
+      const parts = [
+        {
+          type: 'text',
+          text: 'structured message',
+        },
+      ];
       const appended = await mem.append({
         role: 'assistant',
-        content: parts as never
+        content: parts as never,
       });
       t.deepEqual(appended.content, parts, 'content returned from append');
       const history = await mem.history();
@@ -105,27 +110,38 @@ describe('SqliteMemory', () => {
     } catch {}
     const mem = await SqliteMemory.open({
       path,
-      embedder: deterministicEmbedder(4)
+      embedder: deterministicEmbedder(4),
     });
     try {
       t.equal(await mem.getWorkingMemory(), null, 'null before first write');
       await mem.setWorkingMemory({
         name: 'Alice',
-        score: 10
+        score: 10,
       });
-      t.deepEqual(await mem.getWorkingMemory(), {
-        name: 'Alice',
-        score: 10
-      }, 'initial set');
-      await mem.setWorkingMemory({
-        score: 20,
-        rank: 1
-      }, 'merge');
-      t.deepEqual(await mem.getWorkingMemory(), {
-        name: 'Alice',
-        score: 20,
-        rank: 1
-      }, 'merge preserves existing keys');
+      t.deepEqual(
+        await mem.getWorkingMemory(),
+        {
+          name: 'Alice',
+          score: 10,
+        },
+        'initial set',
+      );
+      await mem.setWorkingMemory(
+        {
+          score: 20,
+          rank: 1,
+        },
+        'merge',
+      );
+      t.deepEqual(
+        await mem.getWorkingMemory(),
+        {
+          name: 'Alice',
+          score: 20,
+          rank: 1,
+        },
+        'merge preserves existing keys',
+      );
       await mem.setWorkingMemory({ x: 99 }, 'replace');
       t.deepEqual(await mem.getWorkingMemory(), { x: 99 }, 'replace discards prior state');
       t.deepEqual(mem.workingMemory.get(), { x: 99 }, 'working memory signal retains replacement');
@@ -144,16 +160,16 @@ describe('SqliteMemory', () => {
     } catch {}
     const mem = await SqliteMemory.open({
       path,
-      embedder: deterministicEmbedder(4)
+      embedder: deterministicEmbedder(4),
     });
     try {
       await mem.append({
         role: 'user',
-        content: 'msg1'
+        content: 'msg1',
       });
       await mem.append({
         role: 'assistant',
-        content: 'msg2'
+        content: 'msg2',
       });
       await mem.setWorkingMemory({ task: 'active' });
       const ctx = await mem.recall({});
@@ -175,18 +191,18 @@ describe('SqliteMemory', () => {
     } catch {}
     const memA = await SqliteMemory.open({
       path,
-      embedder: deterministicEmbedder(4)
+      embedder: deterministicEmbedder(4),
     });
     try {
       await memA.append({
         role: 'user',
-        content: 'in thread A'
+        content: 'in thread A',
       });
       const memB = memA.thread('thread-B');
       t.ok(memB.threadId !== memA.threadId, 'different threadId');
       await memB.append({
         role: 'user',
-        content: 'in thread B'
+        content: 'in thread B',
       });
       const histA = await memA.history();
       t.equal(histA.length, 1, 'thread A has its message');
@@ -211,27 +227,27 @@ describe('SqliteMemory', () => {
     const mem = await SqliteMemory.open({
       path,
       embedder: deterministicEmbedder(dim),
-      dimensions: dim
+      dimensions: dim,
     });
     try {
       if (mem.semanticAvailable) {
         await mem.ingest([
           {
             text: 'the quick brown fox',
-            metadata: { tag: 'fox' }
+            metadata: { tag: 'fox' },
           },
           {
             text: 'lazy dog sleeping',
-            metadata: { tag: 'dog' }
+            metadata: { tag: 'dog' },
           },
           {
             text: 'a fast orange fox running',
-            metadata: { tag: 'fox2' }
-          }
+            metadata: { tag: 'fox2' },
+          },
         ]);
         const ctx = await mem.recall({
           text: 'quick fox',
-          topK: 2
+          topK: 2,
         });
         t.ok(ctx.recalled.length > 0, 'KNN returned results');
         t.ok(ctx.recalled.length <= 2, 'topK honoured');
@@ -264,8 +280,15 @@ describe('SqliteMemory', () => {
       dispose();
       t.equal(mem.ingestProgress.get().active, false, 'ingest progress ends inactive');
       t.ok(mem.ingestProgress.get().chunks > 1, 'ingest progress records chunk count');
-      t.equal(mem.ingestProgress.get().stored, mem.ingestProgress.get().chunks, 'all chunks are stored');
-      t.ok(seen.some((stored) => stored > 0), 'subscriber saw stored progress');
+      t.equal(
+        mem.ingestProgress.get().stored,
+        mem.ingestProgress.get().chunks,
+        'all chunks are stored',
+      );
+      t.ok(
+        seen.some((stored) => stored > 0),
+        'subscriber saw stored progress',
+      );
     } finally {
       await mem.close();
       try {
@@ -283,33 +306,39 @@ describe('SqliteMemory', () => {
     const mem = await SqliteMemory.open({
       path,
       embedder: deterministicEmbedder(dim),
-      dimensions: dim
+      dimensions: dim,
     });
     try {
       if (!mem.semanticAvailable) {
         t.equal(mem.semanticAvailable, false, 'semantic recall unavailable on this sqlite build');
         return;
       }
-      await mem.ingest([{
-        text: 'refund policy is thirty days',
-        metadata: {
-          topic: 'billing',
-          source: 'policy'
-        }
-      }, {
-        text: 'deployment runbook uses blue green',
-        metadata: {
-          topic: 'ops',
-          source: 'runbook'
-        }
-      }]);
+      await mem.ingest([
+        {
+          text: 'refund policy is thirty days',
+          metadata: {
+            topic: 'billing',
+            source: 'policy',
+          },
+        },
+        {
+          text: 'deployment runbook uses blue green',
+          metadata: {
+            topic: 'ops',
+            source: 'runbook',
+          },
+        },
+      ]);
       const ctx = await mem.recall({
         text: 'refund',
         topK: 5,
-        filter: { metadata: { topic: 'billing' } }
+        filter: { metadata: { topic: 'billing' } },
       });
       t.ok(ctx.recalled.length > 0, 'filtered recall returned a hit');
-      t.equal(ctx.recalled.every((hit) => hit.metadata?.topic === 'billing'), true);
+      t.equal(
+        ctx.recalled.every((hit) => hit.metadata?.topic === 'billing'),
+        true,
+      );
       t.ok(ctx.recalled[0].id, 'hit id is exposed');
       t.equal(ctx.recalled[0].citation?.id, ctx.recalled[0].id, 'citation points at the hit');
       t.deepEqual(ctx.recalled[0].citation?.metadata, ctx.recalled[0].metadata);
@@ -330,27 +359,34 @@ describe('SqliteMemory', () => {
     const mem = await SqliteMemory.open({
       path,
       embedder: deterministicEmbedder(dim),
-      dimensions: dim
+      dimensions: dim,
     });
     try {
       if (!mem.semanticAvailable) {
         t.equal(mem.semanticAvailable, false, 'semantic recall unavailable on this sqlite build');
         return;
       }
-      await mem.ingest([{
-        text: 'refund policy is thirty days',
-        metadata: { topic: 'billing' }
-      }, {
-        text: 'incident runbook escalates pages',
-        metadata: { topic: 'ops' }
-      }]);
+      await mem.ingest([
+        {
+          text: 'refund policy is thirty days',
+          metadata: { topic: 'billing' },
+        },
+        {
+          text: 'incident runbook escalates pages',
+          metadata: { topic: 'ops' },
+        },
+      ]);
       const retrieveBilling = retriever(mem, {
         topK: 3,
-        filter: { metadata: { topic: 'billing' } }
+        filter: { metadata: { topic: 'billing' } },
       });
       const hits = await retrieveBilling.retrieve('refund');
       t.ok(hits.length > 0, 'retriever returned hits');
-      t.equal(hits.every((hit) => hit.metadata?.topic === 'billing'), true, 'default metadata filter applied');
+      t.equal(
+        hits.every((hit) => hit.metadata?.topic === 'billing'),
+        true,
+        'default metadata filter applied',
+      );
     } finally {
       await mem.close();
       try {

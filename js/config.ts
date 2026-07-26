@@ -1,36 +1,36 @@
 /**
-* fino:config — explicit ordered config loading over fino:validate.
-*
-* Config loading is intentionally explicit. Callers provide a `sources` list,
-* and that list is both the set of enabled source types and the precedence
-* order. Earlier sources are lower precedence; later sources override them.
-*
-* The final merged value is validated through `fino:validate`, so config can
-* use fluent builders or raw JSON Schema loaded from disk. Environment and argv
-* sources produce strings by default, then the loader coerces scalar values
-* according to the schema before validating.
-*
-* ```ts no_run
-* import { loadConfig } from 'fino:config';
-* import { v } from 'fino:validate';
-*
-* const loaded = await loadConfig({
-*   schema: v.object({
-*     server: v.object({ port: v.integer().default(3000) }),
-*   }),
-*   sources: [
-*     { type: 'defaults', value: { server: { port: 3000 } } },
-*     { type: 'file', path: './app.toml' },
-*     { type: 'env', prefix: 'APP_' },
-*     { type: 'argv', args: ['--server.port', '8080'] },
-*   ],
-* });
-*
-* loaded.value.server.port; // 8080
-* ```
-*
-* JSON Schema specification: https://json-schema.org/specification
-*/
+ * fino:config — explicit ordered config loading over fino:validate.
+ *
+ * Config loading is intentionally explicit. Callers provide a `sources` list,
+ * and that list is both the set of enabled source types and the precedence
+ * order. Earlier sources are lower precedence; later sources override them.
+ *
+ * The final merged value is validated through `fino:validate`, so config can
+ * use fluent builders or raw JSON Schema loaded from disk. Environment and argv
+ * sources produce strings by default, then the loader coerces scalar values
+ * according to the schema before validating.
+ *
+ * ```ts no_run
+ * import { loadConfig } from 'fino:config';
+ * import { v } from 'fino:validate';
+ *
+ * const loaded = await loadConfig({
+ *   schema: v.object({
+ *     server: v.object({ port: v.integer().default(3000) }),
+ *   }),
+ *   sources: [
+ *     { type: 'defaults', value: { server: { port: 3000 } } },
+ *     { type: 'file', path: './app.toml' },
+ *     { type: 'env', prefix: 'APP_' },
+ *     { type: 'argv', args: ['--server.port', '8080'] },
+ *   ],
+ * });
+ *
+ * loaded.value.server.port; // 8080
+ * ```
+ *
+ * JSON Schema specification: https://json-schema.org/specification
+ */
 import { DiskFileSystem } from './file/fs.ts';
 import { parse as parseToml } from './format/toml.ts';
 import { argv as processArgv, env as processEnv } from './process.ts';
@@ -40,517 +40,525 @@ import { ValidationError, parse as validateParse } from './validate.ts';
 import type { JsonSchema, ValidationIssue } from './validate.ts';
 const textDecoder = new TextDecoder();
 /**
-* Plain object value produced by config sources before schema validation.
-*
-* Config sources merge object-shaped data. Nested values may be strings,
-* numbers, booleans, arrays, nulls, or other objects at runtime, but the
-* top-level source value must be an object so precedence merging can apply.
-*/
+ * Plain object value produced by config sources before schema validation.
+ *
+ * Config sources merge object-shaped data. Nested values may be strings,
+ * numbers, booleans, arrays, nulls, or other objects at runtime, but the
+ * top-level source value must be an object so precedence merging can apply.
+ */
 export type ConfigValue = Record<string, unknown>;
 /**
-* One config input source.
-*
-* Sources are loaded in array order. The merged result from each source
-* overrides values from all earlier sources.
-*
-* Each union arm is selected by its `type` field. File-backed sources throw
-* when the file cannot be read or parsed. Env-like sources produce string
-* values first; `loadConfig()` performs schema-guided scalar coercion before
-* validation.
-*
-* ```ts no_run
-* import { loadConfig } from 'fino:config';
-*
-* const loaded = await loadConfig({
-*   schema: { type: 'object' },
-*   sources: [
-*     { type: 'defaults', value: { server: { port: 3000 } } },
-*     { type: 'env', values: { APP_SERVER_PORT: '8080' }, prefix: 'APP_' },
-*   ],
-* });
-* loaded.value;
-* ```
-*/
-export type ConfigSource = {
-  /**
-  * Select an inline default-value source.
-  *
-  * Defaults are usually placed early in the source list so later sources
-  * can override them.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'defaults', value: { debug: false } }],
-  * });
-  * ```
-  */
-  type: 'defaults';
-  /**
-  * Inline default values to merge into the config object.
-  *
-  * The value is cloned before merging, so later loader work does not mutate
-  * the caller's object. Non-object nested values are replaced by later
-  * sources.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig<{ server: { port: number } }>({
-  *   schema: {
-  *     type: 'object',
-  *     properties: { server: { type: 'object', properties: { port: { type: 'integer' } } } },
-  *   },
-  *   sources: [{ type: 'defaults', value: { server: { port: 3000 } } }],
-  * });
-  * loaded.value.server.port;
-  * ```
-  */
-  value: ConfigValue;
-} | {
-  /**
-  * Select a JSON or TOML file source.
-  *
-  * File sources are parsed into objects and then merged. A missing file,
-  * invalid JSON, or invalid TOML causes `loadConfig()` to reject.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'file', path: './app.toml' }],
-  * });
-  * ```
-  */
-  type: 'file';
-  /**
-  * Path to the JSON or TOML config file.
-  *
-  * Relative paths are resolved by the runtime filesystem provider in the
-  * usual way. The loader reads the entire file as UTF-8 text.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'file', path: './config.json' }],
-  * });
-  * loaded.sources[0].path;
-  * ```
-  */
-  path: string;
-  /**
-  * Optional file format override.
-  *
-  * When omitted, `.toml` selects TOML and all other extensions default to
-  * JSON. Use this when a file extension does not match its contents.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'file', path: './settings', format: 'json' }],
-  * });
-  * ```
-  */
-  format?: 'json' | 'toml';
-} | {
-  /**
-  * Select a dotenv file source.
-  *
-  * The loader supports common `.env` syntax with comments, blank lines,
-  * and quoted values. Parsed keys are mapped into nested config paths.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }],
-  * });
-  * ```
-  */
-  type: 'dotenv';
-  /**
-  * Path to the dotenv file.
-  *
-  * The file is read as UTF-8. Missing files or read errors reject
-  * `loadConfig()`.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'dotenv', path: './.env.local' }],
-  * });
-  * loaded.sources[0].path;
-  * ```
-  */
-  path: string;
-  /**
-  * Explicit source-key to config-path mapping.
-  *
-  * Map keys are raw dotenv variable names. Values are dotted config paths,
-  * such as `server.port`. Explicit mappings take precedence over prefix
-  * based default mapping.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{
-  *     type: 'dotenv',
-  *     path: './.env',
-  *     map: { PORT: 'server.port' },
-  *   }],
-  * });
-  * ```
-  */
-  map?: Record<string, string>;
-  /**
-  * Optional variable prefix for default dotenv mapping.
-  *
-  * Variables outside the prefix are ignored. Matching names have the
-  * prefix removed, are lowercased, and `_` separators become dotted path
-  * separators.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }],
-  * });
-  * ```
-  */
-  prefix?: string;
-} | {
-  /**
-  * Select an environment variable source.
-  *
-  * When `values` is omitted, the process environment is used. Values are
-  * strings until schema-guided coercion runs during `loadConfig()`.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'env', prefix: 'APP_' }],
-  * });
-  * ```
-  */
-  type: 'env';
-  /**
-  * Environment-like key/value object to read instead of process env.
-  *
-  * Supplying this is useful for tests or embedding. Keys and values are
-  * treated the same way as real environment variables.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'env', values: { APP_PORT: '8080' }, prefix: 'APP_' }],
-  * });
-  * ```
-  */
-  values?: Record<string, string>;
-  /**
-  * Explicit environment-key to config-path mapping.
-  *
-  * Map keys are raw environment names. Values are dotted config paths.
-  * Explicit mappings are applied before prefix-based default mapping.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{
-  *     type: 'env',
-  *     values: { DATABASE_URL: 'sqlite://app.db' },
-  *     map: { DATABASE_URL: 'database.url' },
-  *   }],
-  * });
-  * ```
-  */
-  map?: Record<string, string>;
-  /**
-  * Optional variable prefix for default environment mapping.
-  *
-  * Variables without the prefix are ignored. For matching variables, the
-  * prefix is stripped, names are lowercased, and underscores become dots.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'env', values: { APP_DEBUG: 'true' }, prefix: 'APP_' }],
-  * });
-  * ```
-  */
-  prefix?: string;
-} | {
-  /**
-  * Select an environment source whose mapped values are secrets.
-  *
-  * This source maps values like `env`, then automatically tags every produced
-  * leaf as a `SecretValue`. Use `values` to avoid ambient process state when
-  * deploying or testing.
-  */
-  type: 'secret-env';
-  /**
-  * Environment-like values to read instead of the ambient process environment.
-  *
-  * Omit this only when the current process environment is the intended secret
-  * provider.
-  */
-  values?: Record<string, string>;
-  /**
-  * Explicit environment-name to dotted config-path mapping.
-  *
-  * Every mapped destination is tagged as secret after validation.
-  */
-  map?: Record<string, string>;
-  /**
-  * Optional prefix used for default environment mapping.
-  *
-  * Matching names are lowercased and underscores become path separators.
-  */
-  prefix?: string;
-} | {
-  /**
-  * Select an authenticated encrypted secret file.
-  *
-  * The file contains one value produced by `sealCookie()` over a JSON or TOML
-  * object. Authentication is checked before parsing and all leaves are tagged
-  * as secrets.
-  */
-  type: 'secret-file';
-  /**
-  * Path to the sealed UTF-8 file.
-  */
-  path: string;
-  /**
-  * Key used to authenticate and decrypt the sealed file.
-  *
-  * Applications should obtain this capability from their deployment
-  * environment rather than placing it in source code.
-  */
-  key: BufferLike;
-  /**
-  * Plaintext object format inside the sealed envelope.
-  *
-  * Defaults to JSON because sealed file names generally have no format-bearing
-  * extension.
-  */
-  format?: 'json' | 'toml';
-} | {
-  /**
-  * Select a command-line argument source.
-  *
-  * The parser accepts `--path value`, `--path=value`, and bare boolean
-  * flags. Parsed values are merged as strings or booleans before schema
-  * coercion.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'argv', args: ['--server.port', '8080'] }],
-  * });
-  * ```
-  */
-  type: 'argv';
-  /**
-  * Argument tokens to parse instead of process arguments.
-  *
-  * When omitted, `loadConfig()` uses process arguments after the executable
-  * and script name. Supplying tokens is useful for tests.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'argv', args: ['--debug'] }],
-  * });
-  * ```
-  */
-  args?: string[];
-  /**
-  * Explicit flag to config-path mapping.
-  *
-  * Map keys include the leading `--`, for example `--port`. Values are
-  * dotted config paths. Unmapped flags use their flag name without `--`.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'argv', args: ['--port', '8080'], map: { '--port': 'server.port' } }],
-  * });
-  * ```
-  */
-  map?: Record<string, string>;
-} | {
-  /**
-  * Select an inline override source.
-  *
-  * Overrides are usually placed last because later sources take
-  * precedence over earlier sources.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'override', value: { debug: true } }],
-  * });
-  * ```
-  */
-  type: 'override';
-  /**
-  * Inline override values to merge into the config object.
-  *
-  * Values are cloned before merging. Since source order controls
-  * precedence, this object replaces earlier scalar and array values at the
-  * same paths.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig<{ server: { port: number } }>({
-  *   schema: { type: 'object' },
-  *   sources: [
-  *     { type: 'defaults', value: { server: { port: 3000 } } },
-  *     { type: 'override', value: { server: { port: 0 } } },
-  *   ],
-  * });
-  * loaded.value.server.port;
-  * ```
-  */
-  value: ConfigValue;
-};
+ * One config input source.
+ *
+ * Sources are loaded in array order. The merged result from each source
+ * overrides values from all earlier sources.
+ *
+ * Each union arm is selected by its `type` field. File-backed sources throw
+ * when the file cannot be read or parsed. Env-like sources produce string
+ * values first; `loadConfig()` performs schema-guided scalar coercion before
+ * validation.
+ *
+ * ```ts no_run
+ * import { loadConfig } from 'fino:config';
+ *
+ * const loaded = await loadConfig({
+ *   schema: { type: 'object' },
+ *   sources: [
+ *     { type: 'defaults', value: { server: { port: 3000 } } },
+ *     { type: 'env', values: { APP_SERVER_PORT: '8080' }, prefix: 'APP_' },
+ *   ],
+ * });
+ * loaded.value;
+ * ```
+ */
+export type ConfigSource =
+  | {
+      /**
+       * Select an inline default-value source.
+       *
+       * Defaults are usually placed early in the source list so later sources
+       * can override them.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'defaults', value: { debug: false } }],
+       * });
+       * ```
+       */
+      type: 'defaults';
+      /**
+       * Inline default values to merge into the config object.
+       *
+       * The value is cloned before merging, so later loader work does not mutate
+       * the caller's object. Non-object nested values are replaced by later
+       * sources.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * const loaded = await loadConfig<{ server: { port: number } }>({
+       *   schema: {
+       *     type: 'object',
+       *     properties: { server: { type: 'object', properties: { port: { type: 'integer' } } } },
+       *   },
+       *   sources: [{ type: 'defaults', value: { server: { port: 3000 } } }],
+       * });
+       * loaded.value.server.port;
+       * ```
+       */
+      value: ConfigValue;
+    }
+  | {
+      /**
+       * Select a JSON or TOML file source.
+       *
+       * File sources are parsed into objects and then merged. A missing file,
+       * invalid JSON, or invalid TOML causes `loadConfig()` to reject.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'file', path: './app.toml' }],
+       * });
+       * ```
+       */
+      type: 'file';
+      /**
+       * Path to the JSON or TOML config file.
+       *
+       * Relative paths are resolved by the runtime filesystem provider in the
+       * usual way. The loader reads the entire file as UTF-8 text.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * const loaded = await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'file', path: './config.json' }],
+       * });
+       * loaded.sources[0].path;
+       * ```
+       */
+      path: string;
+      /**
+       * Optional file format override.
+       *
+       * When omitted, `.toml` selects TOML and all other extensions default to
+       * JSON. Use this when a file extension does not match its contents.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'file', path: './settings', format: 'json' }],
+       * });
+       * ```
+       */
+      format?: 'json' | 'toml';
+    }
+  | {
+      /**
+       * Select a dotenv file source.
+       *
+       * The loader supports common `.env` syntax with comments, blank lines,
+       * and quoted values. Parsed keys are mapped into nested config paths.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }],
+       * });
+       * ```
+       */
+      type: 'dotenv';
+      /**
+       * Path to the dotenv file.
+       *
+       * The file is read as UTF-8. Missing files or read errors reject
+       * `loadConfig()`.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * const loaded = await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'dotenv', path: './.env.local' }],
+       * });
+       * loaded.sources[0].path;
+       * ```
+       */
+      path: string;
+      /**
+       * Explicit source-key to config-path mapping.
+       *
+       * Map keys are raw dotenv variable names. Values are dotted config paths,
+       * such as `server.port`. Explicit mappings take precedence over prefix
+       * based default mapping.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{
+       *     type: 'dotenv',
+       *     path: './.env',
+       *     map: { PORT: 'server.port' },
+       *   }],
+       * });
+       * ```
+       */
+      map?: Record<string, string>;
+      /**
+       * Optional variable prefix for default dotenv mapping.
+       *
+       * Variables outside the prefix are ignored. Matching names have the
+       * prefix removed, are lowercased, and `_` separators become dotted path
+       * separators.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }],
+       * });
+       * ```
+       */
+      prefix?: string;
+    }
+  | {
+      /**
+       * Select an environment variable source.
+       *
+       * When `values` is omitted, the process environment is used. Values are
+       * strings until schema-guided coercion runs during `loadConfig()`.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'env', prefix: 'APP_' }],
+       * });
+       * ```
+       */
+      type: 'env';
+      /**
+       * Environment-like key/value object to read instead of process env.
+       *
+       * Supplying this is useful for tests or embedding. Keys and values are
+       * treated the same way as real environment variables.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'env', values: { APP_PORT: '8080' }, prefix: 'APP_' }],
+       * });
+       * ```
+       */
+      values?: Record<string, string>;
+      /**
+       * Explicit environment-key to config-path mapping.
+       *
+       * Map keys are raw environment names. Values are dotted config paths.
+       * Explicit mappings are applied before prefix-based default mapping.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{
+       *     type: 'env',
+       *     values: { DATABASE_URL: 'sqlite://app.db' },
+       *     map: { DATABASE_URL: 'database.url' },
+       *   }],
+       * });
+       * ```
+       */
+      map?: Record<string, string>;
+      /**
+       * Optional variable prefix for default environment mapping.
+       *
+       * Variables without the prefix are ignored. For matching variables, the
+       * prefix is stripped, names are lowercased, and underscores become dots.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'env', values: { APP_DEBUG: 'true' }, prefix: 'APP_' }],
+       * });
+       * ```
+       */
+      prefix?: string;
+    }
+  | {
+      /**
+       * Select an environment source whose mapped values are secrets.
+       *
+       * This source maps values like `env`, then automatically tags every produced
+       * leaf as a `SecretValue`. Use `values` to avoid ambient process state when
+       * deploying or testing.
+       */
+      type: 'secret-env';
+      /**
+       * Environment-like values to read instead of the ambient process environment.
+       *
+       * Omit this only when the current process environment is the intended secret
+       * provider.
+       */
+      values?: Record<string, string>;
+      /**
+       * Explicit environment-name to dotted config-path mapping.
+       *
+       * Every mapped destination is tagged as secret after validation.
+       */
+      map?: Record<string, string>;
+      /**
+       * Optional prefix used for default environment mapping.
+       *
+       * Matching names are lowercased and underscores become path separators.
+       */
+      prefix?: string;
+    }
+  | {
+      /**
+       * Select an authenticated encrypted secret file.
+       *
+       * The file contains one value produced by `sealCookie()` over a JSON or TOML
+       * object. Authentication is checked before parsing and all leaves are tagged
+       * as secrets.
+       */
+      type: 'secret-file';
+      /**
+       * Path to the sealed UTF-8 file.
+       */
+      path: string;
+      /**
+       * Key used to authenticate and decrypt the sealed file.
+       *
+       * Applications should obtain this capability from their deployment
+       * environment rather than placing it in source code.
+       */
+      key: BufferLike;
+      /**
+       * Plaintext object format inside the sealed envelope.
+       *
+       * Defaults to JSON because sealed file names generally have no format-bearing
+       * extension.
+       */
+      format?: 'json' | 'toml';
+    }
+  | {
+      /**
+       * Select a command-line argument source.
+       *
+       * The parser accepts `--path value`, `--path=value`, and bare boolean
+       * flags. Parsed values are merged as strings or booleans before schema
+       * coercion.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'argv', args: ['--server.port', '8080'] }],
+       * });
+       * ```
+       */
+      type: 'argv';
+      /**
+       * Argument tokens to parse instead of process arguments.
+       *
+       * When omitted, `loadConfig()` uses process arguments after the executable
+       * and script name. Supplying tokens is useful for tests.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'argv', args: ['--debug'] }],
+       * });
+       * ```
+       */
+      args?: string[];
+      /**
+       * Explicit flag to config-path mapping.
+       *
+       * Map keys include the leading `--`, for example `--port`. Values are
+       * dotted config paths. Unmapped flags use their flag name without `--`.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'argv', args: ['--port', '8080'], map: { '--port': 'server.port' } }],
+       * });
+       * ```
+       */
+      map?: Record<string, string>;
+    }
+  | {
+      /**
+       * Select an inline override source.
+       *
+       * Overrides are usually placed last because later sources take
+       * precedence over earlier sources.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * await loadConfig({
+       *   schema: { type: 'object' },
+       *   sources: [{ type: 'override', value: { debug: true } }],
+       * });
+       * ```
+       */
+      type: 'override';
+      /**
+       * Inline override values to merge into the config object.
+       *
+       * Values are cloned before merging. Since source order controls
+       * precedence, this object replaces earlier scalar and array values at the
+       * same paths.
+       *
+       * ```ts no_run
+       * import { loadConfig } from 'fino:config';
+       *
+       * const loaded = await loadConfig<{ server: { port: number } }>({
+       *   schema: { type: 'object' },
+       *   sources: [
+       *     { type: 'defaults', value: { server: { port: 3000 } } },
+       *     { type: 'override', value: { server: { port: 0 } } },
+       *   ],
+       * });
+       * loaded.value.server.port;
+       * ```
+       */
+      value: ConfigValue;
+    };
 /**
-* A value tagged as secret after config validation.
-*
-* Rendering a secret through strings, JSON, or template interpolation produces
-* `[redacted]`. Call `reveal()` only at the boundary that consumes the secret.
-*
-* ```ts no_run
-* import { SecretValue } from 'fino:config';
-*
-* const token = new SecretValue('token');
-* String(token); // [redacted]
-* token.reveal(); // token
-* ```
-*/
+ * A value tagged as secret after config validation.
+ *
+ * Rendering a secret through strings, JSON, or template interpolation produces
+ * `[redacted]`. Call `reveal()` only at the boundary that consumes the secret.
+ *
+ * ```ts no_run
+ * import { SecretValue } from 'fino:config';
+ *
+ * const token = new SecretValue('token');
+ * String(token); // [redacted]
+ * token.reveal(); // token
+ * ```
+ */
 export class SecretValue<T = unknown> {
   readonly #value: T;
   /**
-  * Tag a validated value as secret.
-  *
-  * @param value Value retained behind the explicit reveal boundary.
-  */
+   * Tag a validated value as secret.
+   *
+   * @param value Value retained behind the explicit reveal boundary.
+   */
   constructor(value: T) {
     this.#value = value;
   }
   /**
-  * Return the underlying secret value.
-  *
-  * Keep this call close to the API that needs the plaintext so logs and
-  * telemetry continue to receive the redacting wrapper by default.
-  */
+   * Return the underlying secret value.
+   *
+   * Keep this call close to the API that needs the plaintext so logs and
+   * telemetry continue to receive the redacting wrapper by default.
+   */
   reveal(): T {
     return this.#value;
   }
   /**
-  * Render a redaction marker instead of the secret.
-  */
+   * Render a redaction marker instead of the secret.
+   */
   toString(): string {
     return '[redacted]';
   }
   /**
-  * Serialize a redaction marker instead of the secret.
-  */
+   * Serialize a redaction marker instead of the secret.
+   */
   toJSON(): string {
     return '[redacted]';
   }
   /**
-  * Redact implicit primitive coercion, including template interpolation.
-  */
+   * Redact implicit primitive coercion, including template interpolation.
+   */
   [Symbol.toPrimitive](): string {
     return '[redacted]';
   }
 }
 /**
-* Provider seam used to resolve secrets by deployment-defined name.
-*
-* A local config provider, cluster secret store, or managed secret service can
-* implement this interface without changing realm grant code.
-*/
+ * Provider seam used to resolve secrets by deployment-defined name.
+ *
+ * A local config provider, cluster secret store, or managed secret service can
+ * implement this interface without changing realm grant code.
+ */
 export interface SecretProvider {
   /**
-  * Resolve one named secret, or return `undefined` when it does not exist.
-  */
+   * Resolve one named secret, or return `undefined` when it does not exist.
+   */
   get(name: string): Promise<SecretValue | undefined>;
 }
 /**
-* Expose tagged values from loaded config through the `SecretProvider` seam.
-*
-* Only values already tagged as `SecretValue` are returned.
-*/
+ * Expose tagged values from loaded config through the `SecretProvider` seam.
+ *
+ * Only values already tagged as `SecretValue` are returned.
+ */
 export class ConfigSecretProvider implements SecretProvider {
   readonly #config: LoadedConfig;
   /**
-  * Create a provider over one loaded config result.
-  */
+   * Create a provider over one loaded config result.
+   */
   constructor(config: LoadedConfig) {
     this.#config = config;
   }
   /**
-  * Resolve one dotted config path when it contains a tagged secret.
-  */
+   * Resolve one dotted config path when it contains a tagged secret.
+   */
   async get(name: string): Promise<SecretValue | undefined> {
     const value = this.#config.get(name);
     return value instanceof SecretValue ? value : undefined;
   }
 }
 /**
-* An exact allowlist granting selected provider secrets to a consumer.
-*
-* The grant can be used directly or converted to a Realm `Facade`. The facade
-* reveals plaintext only after its name passes the grant allowlist, avoiding
-* ambient process environment access in the child.
-*/
+ * An exact allowlist granting selected provider secrets to a consumer.
+ *
+ * The grant can be used directly or converted to a Realm `Facade`. The facade
+ * reveals plaintext only after its name passes the grant allowlist, avoiding
+ * ambient process environment access in the child.
+ */
 export class SecretGrant {
   readonly #provider: SecretProvider;
   readonly #names: Set<string>;
   /**
-  * Create an exact-name grant over a provider.
-  */
+   * Create an exact-name grant over a provider.
+   */
   constructor(provider: SecretProvider, names: Iterable<string>) {
     this.#provider = provider;
     this.#names = new Set(names);
   }
   /**
-  * Resolve a granted secret.
-  *
-  * Ungranted and missing names reject without disclosing any secret value.
-  */
+   * Resolve a granted secret.
+   *
+   * Ungranted and missing names reject without disclosing any secret value.
+   */
   async get(name: string): Promise<SecretValue> {
     if (!this.#names.has(name)) {
       throw new ConfigError(`Secret '${name}' is not granted`);
@@ -562,10 +570,10 @@ export class SecretGrant {
     return value;
   }
   /**
-  * Create a synthetic module exposing `get(name)` to a child Realm.
-  *
-  * The child receives only the revealed value of an explicitly granted name.
-  */
+   * Create a synthetic module exposing `get(name)` to a child Realm.
+   *
+   * The child receives only the revealed value of an explicitly granted name.
+   */
   facade(specifier = 'fino:config/secrets'): Facade {
     return new Facade(specifier, ['get']).handle('get', async (name) => {
       if (typeof name !== 'string') {
@@ -576,282 +584,282 @@ export class SecretGrant {
   }
 }
 /**
-* Options for `loadConfig()`.
-*
-* Provide a validation schema and the ordered list of enabled sources. The
-* loader rejects with `ConfigError` when validation fails.
-*
-* ```ts no_run
-* import { loadConfig } from 'fino:config';
-*
-* const loaded = await loadConfig({
-*   schema: { type: 'object' },
-*   sources: [{ type: 'defaults', value: {} }],
-* });
-* loaded.sources;
-* ```
-*/
+ * Options for `loadConfig()`.
+ *
+ * Provide a validation schema and the ordered list of enabled sources. The
+ * loader rejects with `ConfigError` when validation fails.
+ *
+ * ```ts no_run
+ * import { loadConfig } from 'fino:config';
+ *
+ * const loaded = await loadConfig({
+ *   schema: { type: 'object' },
+ *   sources: [{ type: 'defaults', value: {} }],
+ * });
+ * loaded.sources;
+ * ```
+ */
 export interface LoadConfigOptions<T = unknown> {
   /**
-  * Fluent builder or raw JSON Schema object used for final validation.
-  *
-  * Builders with `toJSON()` are converted before scalar coercion. Schema
-  * defaults are applied by `fino:validate` when supported by the provided
-  * schema.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * await loadConfig({
-  *   schema: {
-  *     type: 'object',
-  *     properties: { port: { type: 'integer' } },
-  *   },
-  *   sources: [{ type: 'defaults', value: { port: 3000 } }],
-  * });
-  * ```
-  */
+   * Fluent builder or raw JSON Schema object used for final validation.
+   *
+   * Builders with `toJSON()` are converted before scalar coercion. Schema
+   * defaults are applied by `fino:validate` when supported by the provided
+   * schema.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * await loadConfig({
+   *   schema: {
+   *     type: 'object',
+   *     properties: { port: { type: 'integer' } },
+   *   },
+   *   sources: [{ type: 'defaults', value: { port: 3000 } }],
+   * });
+   * ```
+   */
   schema: unknown;
   /**
-  * Ordered source list. Later entries override earlier entries.
-  *
-  * The array also controls which source types are enabled; there is no
-  * implicit loading from files, env, or argv.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [
-  *     { type: 'defaults', value: { debug: false } },
-  *     { type: 'override', value: { debug: true } },
-  *   ],
-  * });
-  * loaded.value;
-  * ```
-  */
+   * Ordered source list. Later entries override earlier entries.
+   *
+   * The array also controls which source types are enabled; there is no
+   * implicit loading from files, env, or argv.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * const loaded = await loadConfig({
+   *   schema: { type: 'object' },
+   *   sources: [
+   *     { type: 'defaults', value: { debug: false } },
+   *     { type: 'override', value: { debug: true } },
+   *   ],
+   * });
+   * loaded.value;
+   * ```
+   */
   sources: ConfigSource[];
   /**
-  * Config paths whose values should be tagged and redacted.
-  *
-  * Paths use the same dotted form as source mappings. Validated values become
-  * `SecretValue` instances, and validation messages plus structured
-  * `ConfigError.issues` replace received values with `[redacted]`.
-  *
-  * ```ts no_run
-  * import { ConfigError, loadConfig } from 'fino:config';
-  *
-  * try {
-  *   await loadConfig({
-  *     schema: { type: 'object', required: ['database'] },
-  *     sources: [{ type: 'defaults', value: { database: { password: 'secret' } } }],
-  *     secrets: ['database.password'],
-  *   });
-  * } catch (error) {
-  *   if (error instanceof ConfigError) error.message;
-  * }
-  * ```
-  */
+   * Config paths whose values should be tagged and redacted.
+   *
+   * Paths use the same dotted form as source mappings. Validated values become
+   * `SecretValue` instances, and validation messages plus structured
+   * `ConfigError.issues` replace received values with `[redacted]`.
+   *
+   * ```ts no_run
+   * import { ConfigError, loadConfig } from 'fino:config';
+   *
+   * try {
+   *   await loadConfig({
+   *     schema: { type: 'object', required: ['database'] },
+   *     sources: [{ type: 'defaults', value: { database: { password: 'secret' } } }],
+   *     secrets: ['database.password'],
+   *   });
+   * } catch (error) {
+   *   if (error instanceof ConfigError) error.message;
+   * }
+   * ```
+   */
   secrets?: string[];
 }
 /**
-* Metadata describing values loaded from a source.
-*
-* Reports are returned in the same order as the input `sources` array. They
-* include source type, optional file path, and flattened keys produced by the
-* source after mapping.
-*
-* ```ts no_run
-* import { loadConfig } from 'fino:config';
-*
-* const loaded = await loadConfig({
-*   schema: { type: 'object' },
-*   sources: [{ type: 'env', values: { APP_SERVER_PORT: '8080' }, prefix: 'APP_' }],
-* });
-* loaded.sources[0].keys;
-* ```
-*/
+ * Metadata describing values loaded from a source.
+ *
+ * Reports are returned in the same order as the input `sources` array. They
+ * include source type, optional file path, and flattened keys produced by the
+ * source after mapping.
+ *
+ * ```ts no_run
+ * import { loadConfig } from 'fino:config';
+ *
+ * const loaded = await loadConfig({
+ *   schema: { type: 'object' },
+ *   sources: [{ type: 'env', values: { APP_SERVER_PORT: '8080' }, prefix: 'APP_' }],
+ * });
+ * loaded.sources[0].keys;
+ * ```
+ */
 export interface ConfigSourceReport {
   /**
-  * Source type, matching the input source discriminant.
-  *
-  * This is a string so reports can describe future source types without a type
-  * change.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'env', values: { APP_DEBUG: 'true' }, prefix: 'APP_' }],
-  * });
-  * loaded.sources.find((source) => source.type === 'env');
-  * ```
-  */
+   * Source type, matching the input source discriminant.
+   *
+   * This is a string so reports can describe future source types without a type
+   * change.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * const loaded = await loadConfig({
+   *   schema: { type: 'object' },
+   *   sources: [{ type: 'env', values: { APP_DEBUG: 'true' }, prefix: 'APP_' }],
+   * });
+   * loaded.sources.find((source) => source.type === 'env');
+   * ```
+   */
   type: string;
   /**
-  * File path for file-backed sources.
-  *
-  * This is present for `file` and `dotenv` reports and omitted for inline,
-  * environment, and argv sources.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'file', path: './app.toml' }],
-  * });
-  * loaded.sources[0].path;
-  * ```
-  */
+   * File path for file-backed sources.
+   *
+   * This is present for `file` and `dotenv` reports and omitted for inline,
+   * environment, and argv sources.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * const loaded = await loadConfig({
+   *   schema: { type: 'object' },
+   *   sources: [{ type: 'file', path: './app.toml' }],
+   * });
+   * loaded.sources[0].path;
+   * ```
+   */
   path?: string;
   /**
-  * Flattened config paths produced by this source.
-  *
-  * Nested objects are represented as dotted paths. Empty sources produce an
-  * empty array.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'defaults', value: { server: { port: 3000 } } }],
-  * });
-  * loaded.sources[0].keys.includes('server.port');
-  * ```
-  */
+   * Flattened config paths produced by this source.
+   *
+   * Nested objects are represented as dotted paths. Empty sources produce an
+   * empty array.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * const loaded = await loadConfig({
+   *   schema: { type: 'object' },
+   *   sources: [{ type: 'defaults', value: { server: { port: 3000 } } }],
+   * });
+   * loaded.sources[0].keys.includes('server.port');
+   * ```
+   */
   keys: string[];
 }
 /**
-* Result returned from `loadConfig()`.
-*
-* The value has already been merged, coerced, and validated. Source reports
-* describe what each source contributed.
-*
-* ```ts no_run
-* import { loadConfig } from 'fino:config';
-*
-* const loaded = await loadConfig<{ debug: boolean }>({
-*   schema: { type: 'object', properties: { debug: { type: 'boolean' } } },
-*   sources: [{ type: 'override', value: { debug: true } }],
-* });
-* loaded.value.debug;
-* ```
-*/
+ * Result returned from `loadConfig()`.
+ *
+ * The value has already been merged, coerced, and validated. Source reports
+ * describe what each source contributed.
+ *
+ * ```ts no_run
+ * import { loadConfig } from 'fino:config';
+ *
+ * const loaded = await loadConfig<{ debug: boolean }>({
+ *   schema: { type: 'object', properties: { debug: { type: 'boolean' } } },
+ *   sources: [{ type: 'override', value: { debug: true } }],
+ * });
+ * loaded.value.debug;
+ * ```
+ */
 export interface LoadedConfig<T = unknown> {
   /**
-  * Validated config value, including defaults applied by the schema.
-  *
-  * Its type is the generic `T` supplied to `loadConfig<T>()`.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig<{ port: number }>({
-  *   schema: { type: 'object', properties: { port: { type: 'integer' } } },
-  *   sources: [{ type: 'defaults', value: { port: 3000 } }],
-  * });
-  * loaded.value.port;
-  * ```
-  */
+   * Validated config value, including defaults applied by the schema.
+   *
+   * Its type is the generic `T` supplied to `loadConfig<T>()`.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * const loaded = await loadConfig<{ port: number }>({
+   *   schema: { type: 'object', properties: { port: { type: 'integer' } } },
+   *   sources: [{ type: 'defaults', value: { port: 3000 } }],
+   * });
+   * loaded.value.port;
+   * ```
+   */
   value: T;
   /**
-  * Per-source load metadata in the same order as `sources`.
-  *
-  * Reports are useful for diagnostics and for explaining where configuration
-  * came from. They do not include secret redaction metadata.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [
-  *     { type: 'defaults', value: { port: 3000 } },
-  *     { type: 'argv', args: ['--port', '8080'] },
-  *   ],
-  * });
-  * loaded.sources.map((source) => source.type);
-  * ```
-  */
+   * Per-source load metadata in the same order as `sources`.
+   *
+   * Reports are useful for diagnostics and for explaining where configuration
+   * came from. They do not include secret redaction metadata.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * const loaded = await loadConfig({
+   *   schema: { type: 'object' },
+   *   sources: [
+   *     { type: 'defaults', value: { port: 3000 } },
+   *     { type: 'argv', args: ['--port', '8080'] },
+   *   ],
+   * });
+   * loaded.sources.map((source) => source.type);
+   * ```
+   */
   sources: ConfigSourceReport[];
   /**
-  * Read a dotted path from the validated config value.
-  *
-  * Missing paths return `undefined`. Only plain objects are traversed:
-  * a path segment that lands on an array, scalar, or `null` resolves to
-  * `undefined` rather than throwing.
-  *
-  * ```ts no_run
-  * import { loadConfig } from 'fino:config';
-  *
-  * const loaded = await loadConfig({
-  *   schema: { type: 'object' },
-  *   sources: [{ type: 'defaults', value: { server: { port: 3000 } } }],
-  * });
-  * loaded.get('server.port');
-  * ```
-  */
+   * Read a dotted path from the validated config value.
+   *
+   * Missing paths return `undefined`. Only plain objects are traversed:
+   * a path segment that lands on an array, scalar, or `null` resolves to
+   * `undefined` rather than throwing.
+   *
+   * ```ts no_run
+   * import { loadConfig } from 'fino:config';
+   *
+   * const loaded = await loadConfig({
+   *   schema: { type: 'object' },
+   *   sources: [{ type: 'defaults', value: { server: { port: 3000 } } }],
+   * });
+   * loaded.get('server.port');
+   * ```
+   */
   get(path: string): unknown;
 }
 /**
-* Error thrown when loading or validating config fails.
-*
-* Validation failures include redacted `ValidationIssue` objects in `issues`.
-* Source parsing and unknown-source errors may throw `ConfigError` without
-* issues.
-*
-* ```ts no_run
-* import { ConfigError, loadConfig } from 'fino:config';
-*
-* try {
-*   await loadConfig({
-*     schema: { type: 'object', required: ['port'] },
-*     sources: [{ type: 'defaults', value: {} }],
-*   });
-* } catch (error) {
-*   if (error instanceof ConfigError) error.issues;
-* }
-* ```
-*/
+ * Error thrown when loading or validating config fails.
+ *
+ * Validation failures include redacted `ValidationIssue` objects in `issues`.
+ * Source parsing and unknown-source errors may throw `ConfigError` without
+ * issues.
+ *
+ * ```ts no_run
+ * import { ConfigError, loadConfig } from 'fino:config';
+ *
+ * try {
+ *   await loadConfig({
+ *     schema: { type: 'object', required: ['port'] },
+ *     sources: [{ type: 'defaults', value: {} }],
+ *   });
+ * } catch (error) {
+ *   if (error instanceof ConfigError) error.issues;
+ * }
+ * ```
+ */
 export class ConfigError extends Error {
   /**
-  * Validation issues when the failure came from `fino:validate`.
-  *
-  * This array is empty for loader errors that are not validation failures.
-  * Received values at secret paths are replaced with `[redacted]`.
-  *
-  * ```ts no_run
-  * import { ConfigError, loadConfig } from 'fino:config';
-  *
-  * try {
-  *   await loadConfig({
-  *     schema: { type: 'object', required: ['port'] },
-  *     sources: [{ type: 'defaults', value: {} }],
-  *   });
-  * } catch (error) {
-  *   if (error instanceof ConfigError) error.issues.map((issue) => String(issue));
-  * }
-  * ```
-  */
+   * Validation issues when the failure came from `fino:validate`.
+   *
+   * This array is empty for loader errors that are not validation failures.
+   * Received values at secret paths are replaced with `[redacted]`.
+   *
+   * ```ts no_run
+   * import { ConfigError, loadConfig } from 'fino:config';
+   *
+   * try {
+   *   await loadConfig({
+   *     schema: { type: 'object', required: ['port'] },
+   *     sources: [{ type: 'defaults', value: {} }],
+   *   });
+   * } catch (error) {
+   *   if (error instanceof ConfigError) error.issues.map((issue) => String(issue));
+   * }
+   * ```
+   */
   issues: ValidationIssue[];
   /**
-  * Create a config error.
-  *
-  * When the failure came from validation, pass the `ValidationIssue` list as
-  * the second argument; it defaults to an empty array. The `name` property is
-  * set to `'ConfigError'` for callers that distinguish config failures from
-  * other exceptions.
-  *
-  * ```ts no_run
-  * import { ConfigError } from 'fino:config';
-  *
-  * throw new ConfigError('Invalid config');
-  * ```
-  */
+   * Create a config error.
+   *
+   * When the failure came from validation, pass the `ValidationIssue` list as
+   * the second argument; it defaults to an empty array. The `name` property is
+   * set to `'ConfigError'` for callers that distinguish config failures from
+   * other exceptions.
+   *
+   * ```ts no_run
+   * import { ConfigError } from 'fino:config';
+   *
+   * throw new ConfigError('Invalid config');
+   * ```
+   */
   constructor(message: string, issues: ValidationIssue[] = []) {
     super(message);
     this.name = 'ConfigError';
@@ -868,7 +876,8 @@ function clone(value: unknown): unknown {
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(clone);
   const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>)) out[key] = clone((value as Record<string, unknown>)[key]);
+  for (const key of Object.keys(value as Record<string, unknown>))
+    out[key] = clone((value as Record<string, unknown>)[key]);
   return out;
 }
 function deepMerge(base: unknown, next: unknown): unknown {
@@ -913,7 +922,9 @@ function sourceKeys(value: unknown, prefix = ''): string[] {
 }
 function secretPathRelated(path: string, secretPath: string): boolean {
   if (path === '' || secretPath === '') return true;
-  return path === secretPath || path.startsWith(`${secretPath}.`) || secretPath.startsWith(`${path}.`);
+  return (
+    path === secretPath || path.startsWith(`${secretPath}.`) || secretPath.startsWith(`${path}.`)
+  );
 }
 function tagSecrets<T>(value: T, secretPaths: Set<string>): T {
   let tagged: unknown = value;
@@ -939,11 +950,11 @@ function inferFormat(path: string): 'json' | 'toml' {
 // Source parsers and mappers
 // ---------------------------------------------------------------------------
 /**
-* Parse a dotenv file into raw key/value strings.
-*
-* This parser deliberately covers the common `.env` subset used for local
-* development: comments, blank lines, and single/double-quoted values.
-*/
+ * Parse a dotenv file into raw key/value strings.
+ *
+ * This parser deliberately covers the common `.env` subset used for local
+ * development: comments, blank lines, and single/double-quoted values.
+ */
 function parseDotenv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const rawLine of text.split(/\r?\n/)) {
@@ -953,7 +964,10 @@ function parseDotenv(text: string): Record<string, string> {
     if (index === -1) continue;
     const key = line.slice(0, index).trim();
     let value = line.slice(index + 1).trim();
-    if (value.startsWith('"') && value.endsWith('"') || value.startsWith('\'') && value.endsWith('\'')) {
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
       value = value.slice(1, -1);
     }
     out[key] = value;
@@ -961,11 +975,11 @@ function parseDotenv(text: string): Record<string, string> {
   return out;
 }
 /**
-* Convert an environment variable name into a dotted config path.
-*
-* With a prefix, variables outside that prefix are ignored. For example,
-* `APP_SERVER_PORT` with prefix `APP_` becomes `server.port`.
-*/
+ * Convert an environment variable name into a dotted config path.
+ *
+ * With a prefix, variables outside that prefix are ignored. For example,
+ * `APP_SERVER_PORT` with prefix `APP_` becomes `server.port`.
+ */
 function defaultEnvPath(key: string, prefix?: string): string | null {
   let name = key;
   if (prefix !== undefined) {
@@ -975,24 +989,28 @@ function defaultEnvPath(key: string, prefix?: string): string | null {
   return name.toLowerCase().split('_').filter(Boolean).join('.');
 }
 /** Map env-like key/value strings into a nested config object. */
-function mapEnvLike(values: Record<string, string>, options: {
-  map?: Record<string, string>;
-  prefix?: string;
-} = {}): ConfigValue {
+function mapEnvLike(
+  values: Record<string, string>,
+  options: {
+    map?: Record<string, string>;
+    prefix?: string;
+  } = {},
+): ConfigValue {
   const out: ConfigValue = {};
   for (const key of Object.keys(values)) {
     const target = options.map?.[key] ?? defaultEnvPath(key, options.prefix);
-    if (target !== null && target !== undefined && target.length > 0) setPath(out, target, values[key]);
+    if (target !== null && target !== undefined && target.length > 0)
+      setPath(out, target, values[key]);
   }
   return out;
 }
 /**
-* Parse simple CLI flag arguments into a nested config object.
-*
-* Supports `--path value`, `--path=value`, and boolean flags. The optional map
-* lets callers remap external flags such as `--port` to nested paths such as
-* `server.port`.
-*/
+ * Parse simple CLI flag arguments into a nested config object.
+ *
+ * Supports `--path value`, `--path=value`, and boolean flags. The optional map
+ * lets callers remap external flags such as `--port` to nested paths such as
+ * `server.port`.
+ */
 function parseArgv(args: string[], map: Record<string, string> = {}): ConfigValue {
   const out: ConfigValue = {};
   for (let i = 0; i < args.length; i++) {
@@ -1017,12 +1035,20 @@ function parseArgv(args: string[], map: Record<string, string> = {}): ConfigValu
 // Schema-guided scalar coercion
 // ---------------------------------------------------------------------------
 function schemaObject(schema: unknown): JsonSchema {
-  if (schema !== null && typeof schema === 'object' && typeof (schema as {
-    toJSON?: unknown;
-  }).toJSON === 'function') {
-    return (schema as {
-      toJSON(): JsonSchema;
-    }).toJSON();
+  if (
+    schema !== null &&
+    typeof schema === 'object' &&
+    typeof (
+      schema as {
+        toJSON?: unknown;
+      }
+    ).toJSON === 'function'
+  ) {
+    return (
+      schema as {
+        toJSON(): JsonSchema;
+      }
+    ).toJSON();
   }
   return schema as JsonSchema;
 }
@@ -1062,14 +1088,15 @@ function arrayItemSchema(schema: unknown, index: number): JsonSchema | null {
   return null;
 }
 /**
-* Walk a merged config object and coerce env/argv strings before validation.
-*
-* Coercion is intentionally conservative: only schema-backed integer, number,
-* and boolean values are converted. Everything else remains unchanged and is
-* left for validation to accept or reject.
-*/
+ * Walk a merged config object and coerce env/argv strings before validation.
+ *
+ * Coercion is intentionally conservative: only schema-backed integer, number,
+ * and boolean values are converted. Everything else remains unchanged and is
+ * left for validation to accept or reject.
+ */
 function coerceScalars(value: unknown, schema: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item, index) => coerceScalars(item, arrayItemSchema(schema, index) ?? {}));
+  if (Array.isArray(value))
+    return value.map((item, index) => coerceScalars(item, arrayItemSchema(schema, index) ?? {}));
   if (isRecord(value)) {
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value)) {
@@ -1091,13 +1118,18 @@ function redactIssue(issue: ValidationIssue, secretPaths: Set<string>): string {
 /** Clone a validation issue without retaining received secret values. */
 function redactStructuredIssue(issue: ValidationIssue, secretPaths: Set<string>): ValidationIssue {
   const secret = [...secretPaths].some((path) => secretPathRelated(issue.path, path));
-  return secret ? {
-    ...issue,
-    value: '[redacted]'
-  } : { ...issue };
+  return secret
+    ? {
+        ...issue,
+        value: '[redacted]',
+      }
+    : { ...issue };
 }
 /** Load one configured source into a nested object plus a source report. */
-async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
+async function loadSource(
+  source: ConfigSource,
+  fs: DiskFileSystem,
+): Promise<{
   value: ConfigValue;
   report: ConfigSourceReport;
   secretPaths: string[];
@@ -1107,23 +1139,24 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
       value: clone(source.value) as ConfigValue,
       report: {
         type: source.type,
-        keys: sourceKeys(source.value)
+        keys: sourceKeys(source.value),
       },
-      secretPaths: []
+      secretPaths: [],
     };
   }
   if (source.type === 'file') {
     const text = textDecoder.decode(await fs.readFile(source.path));
     const format = source.format ?? inferFormat(source.path);
-    const value = format === 'toml' ? parseToml(text) as ConfigValue : JSON.parse(text) as ConfigValue;
+    const value =
+      format === 'toml' ? (parseToml(text) as ConfigValue) : (JSON.parse(text) as ConfigValue);
     return {
       value,
       report: {
         type: 'file',
         path: source.path,
-        keys: sourceKeys(value)
+        keys: sourceKeys(value),
       },
-      secretPaths: []
+      secretPaths: [],
     };
   }
   if (source.type === 'dotenv') {
@@ -1134,9 +1167,9 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
       report: {
         type: 'dotenv',
         path: source.path,
-        keys: sourceKeys(value)
+        keys: sourceKeys(value),
       },
-      secretPaths: []
+      secretPaths: [],
     };
   }
   if (source.type === 'env' || source.type === 'secret-env') {
@@ -1147,9 +1180,9 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
       value,
       report: {
         type: source.type,
-        keys
+        keys,
       },
-      secretPaths: source.type === 'secret-env' ? keys : []
+      secretPaths: source.type === 'secret-env' ? keys : [],
     };
   }
   if (source.type === 'secret-file') {
@@ -1161,7 +1194,10 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
     const format = source.format ?? 'json';
     let value: ConfigValue;
     try {
-      value = format === 'toml' ? parseToml(plaintext) as ConfigValue : JSON.parse(plaintext) as ConfigValue;
+      value =
+        format === 'toml'
+          ? (parseToml(plaintext) as ConfigValue)
+          : (JSON.parse(plaintext) as ConfigValue);
     } catch {
       throw new ConfigError(`Unable to parse sealed secret file '${source.path}' as ${format}`);
     }
@@ -1174,9 +1210,9 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
       report: {
         type: 'secret-file',
         path: source.path,
-        keys
+        keys,
       },
-      secretPaths: keys
+      secretPaths: keys,
     };
   }
   if (source.type === 'argv') {
@@ -1186,51 +1222,59 @@ async function loadSource(source: ConfigSource, fs: DiskFileSystem): Promise<{
       value,
       report: {
         type: 'argv',
-        keys: sourceKeys(value)
+        keys: sourceKeys(value),
       },
-      secretPaths: []
+      secretPaths: [],
     };
   }
-  throw new ConfigError(`Unknown config source type '${(source as {
-    type?: unknown;
-  }).type}'`);
+  throw new ConfigError(
+    `Unknown config source type '${
+      (
+        source as {
+          type?: unknown;
+        }
+      ).type
+    }'`,
+  );
 }
 /**
-* Load, merge, coerce, and validate config from an explicit source list.
-*
-* Source order is the precedence model: later sources override earlier sources.
-* The returned `value` is the post-validation object.
-*
-* The loader reads each source in order, deep-merges object values, performs
-* conservative schema-guided coercion for strings from env and argv sources,
-* and validates through `fino:validate`. Validation failures throw
-* `ConfigError` with `issues`; file parse errors and unsupported sources also
-* reject. There are no implicit defaults beyond what you provide in `sources`
-* or the validation schema. The resolved `LoadedConfig` carries the validated
-* value, per-source reports, and a dotted-path `get()` accessor.
-*
-* ```ts no_run
-* import { loadConfig } from 'fino:config';
-*
-* const loaded = await loadConfig<{ server: { port: number } }>({
-*   schema: {
-*     type: 'object',
-*     properties: {
-*       server: {
-*         type: 'object',
-*         properties: { port: { type: 'integer' } },
-*       },
-*     },
-*   },
-*   sources: [
-*     { type: 'defaults', value: { server: { port: 3000 } } },
-*     { type: 'argv', args: ['--server.port', '8080'] },
-*   ],
-* });
-* loaded.value.server.port;
-* ```
-*/
-export async function loadConfig<T = unknown>(options: LoadConfigOptions<T>): Promise<LoadedConfig<T>> {
+ * Load, merge, coerce, and validate config from an explicit source list.
+ *
+ * Source order is the precedence model: later sources override earlier sources.
+ * The returned `value` is the post-validation object.
+ *
+ * The loader reads each source in order, deep-merges object values, performs
+ * conservative schema-guided coercion for strings from env and argv sources,
+ * and validates through `fino:validate`. Validation failures throw
+ * `ConfigError` with `issues`; file parse errors and unsupported sources also
+ * reject. There are no implicit defaults beyond what you provide in `sources`
+ * or the validation schema. The resolved `LoadedConfig` carries the validated
+ * value, per-source reports, and a dotted-path `get()` accessor.
+ *
+ * ```ts no_run
+ * import { loadConfig } from 'fino:config';
+ *
+ * const loaded = await loadConfig<{ server: { port: number } }>({
+ *   schema: {
+ *     type: 'object',
+ *     properties: {
+ *       server: {
+ *         type: 'object',
+ *         properties: { port: { type: 'integer' } },
+ *       },
+ *     },
+ *   },
+ *   sources: [
+ *     { type: 'defaults', value: { server: { port: 3000 } } },
+ *     { type: 'argv', args: ['--server.port', '8080'] },
+ *   ],
+ * });
+ * loaded.value.server.port;
+ * ```
+ */
+export async function loadConfig<T = unknown>(
+  options: LoadConfigOptions<T>,
+): Promise<LoadedConfig<T>> {
   const fs = new DiskFileSystem();
   let merged: unknown = {};
   const reports: ConfigSourceReport[] = [];
@@ -1249,12 +1293,15 @@ export async function loadConfig<T = unknown>(options: LoadConfigOptions<T>): Pr
       sources: reports,
       get(path: string): unknown {
         return getPath(value, path);
-      }
+      },
     };
   } catch (err) {
     if (err instanceof ValidationError) {
       const issues = err.issues.map((issue) => redactStructuredIssue(issue, secretPaths));
-      throw new ConfigError(`Invalid config: ${err.issues.map((issue) => redactIssue(issue, secretPaths)).join('; ')}`, issues);
+      throw new ConfigError(
+        `Invalid config: ${err.issues.map((issue) => redactIssue(issue, secretPaths)).join('; ')}`,
+        issues,
+      );
     }
     throw err;
   }

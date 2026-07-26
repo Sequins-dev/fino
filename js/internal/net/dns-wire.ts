@@ -1,11 +1,11 @@
 /**
-* internal:net/dns-wire - DNS packet helpers shared by DNS-family modules.
-*
-* This module is intentionally internal. Public code should use
-* `fino:net/dns` and `fino:net/mdns`; these helpers expose raw packet
-* encoding, decoding, and parser behavior for runtime modules and focused
-* protocol tests.
-*/
+ * internal:net/dns-wire - DNS packet helpers shared by DNS-family modules.
+ *
+ * This module is intentionally internal. Public code should use
+ * `fino:net/dns` and `fino:net/mdns`; these helpers expose raw packet
+ * encoding, decoding, and parser behavior for runtime modules and focused
+ * protocol tests.
+ */
 import * as sock from '../../net/socket.ts';
 import { Scanner } from '../../parsing/scanner.ts';
 import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
@@ -44,27 +44,33 @@ export const RECORD_TYPES = {
   NSEC: QTYPE_NSEC,
   DNSKEY: QTYPE_DNSKEY,
   NSEC3: QTYPE_NSEC3,
-  NSEC3PARAM: QTYPE_NSEC3PARAM
+  NSEC3PARAM: QTYPE_NSEC3PARAM,
 };
 
-const DEFAULT_SERVERS = [{
-  ip: '8.8.8.8',
-  family: 'ipv4',
-  port: 53
-}, {
-  ip: '8.8.4.4',
-  family: 'ipv4',
-  port: 53
-}] satisfies DnsServer[];
+const DEFAULT_SERVERS = [
+  {
+    ip: '8.8.8.8',
+    family: 'ipv4',
+    port: 53,
+  },
+  {
+    ip: '8.8.4.4',
+    family: 'ipv4',
+    port: 53,
+  },
+] satisfies DnsServer[];
 const isDarwin = os === 'darwin';
 
 function isIpv4Literal(value: string): boolean {
   const parts = value.split('.');
-  return parts.length === 4 && parts.every((part) => {
-    if (!/^\d{1,3}$/.test(part)) return false;
-    const octet = Number(part);
-    return octet >= 0 && octet <= 255 && String(octet) === String(Number(part));
-  });
+  return (
+    parts.length === 4 &&
+    parts.every((part) => {
+      if (!/^\d{1,3}$/.test(part)) return false;
+      const octet = Number(part);
+      return octet >= 0 && octet <= 255 && String(octet) === String(Number(part));
+    })
+  );
 }
 
 function isIpv6Literal(value: string): boolean {
@@ -104,7 +110,7 @@ function _adaptPunycodeBias(delta: number, numPoints: number, firstTime: boolean
     delta = Math.floor(delta / 35);
     k += 36;
   }
-  return k + Math.floor(36 * delta / (delta + 38));
+  return k + Math.floor((36 * delta) / (delta + 38));
 }
 
 function _encodePunycodeDigit(digit: number): string {
@@ -136,10 +142,10 @@ function _normalizeDnsLabel(label: string): string {
       if (cp < n) delta++;
       if (cp !== n) continue;
       let q = delta;
-      for (let k = 36;; k += 36) {
+      for (let k = 36; ; k += 36) {
         const t = k <= bias ? 1 : k >= bias + 26 ? 26 : k - bias;
         if (q < t) break;
-        output += _encodePunycodeDigit(t + (q - t) % (36 - t));
+        output += _encodePunycodeDigit(t + ((q - t) % (36 - t)));
         q = Math.floor((q - t) / (36 - t));
       }
       output += _encodePunycodeDigit(q);
@@ -176,10 +182,15 @@ export function _encodeName(name: string): Uint8Array {
   return out;
 }
 
-export function _buildQuery(id: number, name: string, qtype: number, options: {
-  dnssec?: boolean;
-  udpPayloadSize?: number;
-} = {}): Uint8Array {
+export function _buildQuery(
+  id: number,
+  name: string,
+  qtype: number,
+  options: {
+    dnssec?: boolean;
+    udpPayloadSize?: number;
+  } = {},
+): Uint8Array {
   const encodedName = _encodeName(name);
   const addOpt = options.dnssec === true;
   const totalLen = 12 + encodedName.length + 4 + (addOpt ? 11 : 0);
@@ -205,7 +216,10 @@ export function _buildQuery(id: number, name: string, qtype: number, options: {
   return out;
 }
 
-export function _decodeName(msg: Uint8Array, startOffset: number): {
+export function _decodeName(
+  msg: Uint8Array,
+  startOffset: number,
+): {
   name: string;
   nextOffset: number;
 } {
@@ -226,7 +240,7 @@ export function _decodeName(msg: Uint8Array, startOffset: number): {
       const lo = scanner.readU8();
       if (endOffset === -1) endOffset = scanner.offset;
       if (hops++ > 128) throw new Error('DNS: compression pointer loop detected');
-      const pointer = (len & 63) << 8 | lo;
+      const pointer = ((len & 63) << 8) | lo;
       if (pointer >= msg.length) throw new Error('DNS: compression pointer out of range');
       scanner.jump(pointer);
       continue;
@@ -250,11 +264,12 @@ function decodeTypeBitmap(bytes: Uint8Array): number[] {
     const window = bytes[offset++]!;
     const length = bytes[offset++]!;
     if (length === 0 || length > 32) throw new Error('DNS: invalid DNSSEC type bitmap length');
-    if (offset + length > bytes.byteLength) throw new Error('DNS: truncated DNSSEC type bitmap window');
+    if (offset + length > bytes.byteLength)
+      throw new Error('DNS: truncated DNSSEC type bitmap window');
     for (let i = 0; i < length; i++) {
       const value = bytes[offset + i]!;
       for (let bit = 0; bit < 8; bit++) {
-        if ((value & 1 << 7 - bit) !== 0) types.push(window * 256 + i * 8 + bit);
+        if ((value & (1 << (7 - bit))) !== 0) types.push(window * 256 + i * 8 + bit);
       }
     }
     offset += length;
@@ -262,7 +277,10 @@ function decodeTypeBitmap(bytes: Uint8Array): number[] {
   return types;
 }
 
-function parseResourceRecord(msg: Uint8Array, offset: number): {
+function parseResourceRecord(
+  msg: Uint8Array,
+  offset: number,
+): {
   record: DnsResourceRecord;
   nextOffset: number;
 } {
@@ -328,7 +346,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
         refresh: soa.readU32BEField('SOA refresh'),
         retry: soa.readU32BEField('SOA retry'),
         expire: soa.readU32BEField('SOA expire'),
-        minttl: soa.readU32BEField('SOA minimum ttl')
+        minttl: soa.readU32BEField('SOA minimum ttl'),
       };
       break;
     }
@@ -349,7 +367,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
         keyTag: rdata.readU16BEField('DS key tag'),
         algorithm: rdata.readU8(),
         digestType: rdata.readU8(),
-        digest: msg.slice(rdataStart + 4, rdataEnd)
+        digest: msg.slice(rdataStart + 4, rdataEnd),
       };
       break;
     }
@@ -360,7 +378,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
         flags: rdata.readU16BEField('DNSKEY flags'),
         protocol: rdata.readU8(),
         algorithm: rdata.readU8(),
-        publicKey: msg.slice(rdataStart + 4, rdataEnd)
+        publicKey: msg.slice(rdataStart + 4, rdataEnd),
       };
       break;
     }
@@ -376,7 +394,17 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
       const keyTag = rdata.readU16BEField('RRSIG key tag');
       const { name: signerName, nextOffset: afterSigner } = _decodeName(msg, rdataStart + 18);
       if (afterSigner > rdataEnd) throw new Error('DNS: truncated RRSIG signer name');
-      data = { typeCovered, algorithm, labels, originalTtl, expiration, inception, keyTag, signerName, signature: msg.slice(afterSigner, rdataEnd) };
+      data = {
+        typeCovered,
+        algorithm,
+        labels,
+        originalTtl,
+        expiration,
+        inception,
+        keyTag,
+        signerName,
+        signature: msg.slice(afterSigner, rdataEnd),
+      };
       break;
     }
     case QTYPE_NSEC: {
@@ -395,7 +423,8 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
       if (rdata.remainingBytes < saltLength + 1) throw new Error('DNS: truncated NSEC3 salt');
       const salt = rdata.eatBytes(saltLength);
       const hashLength = rdata.readU8();
-      if (rdata.remainingBytes < hashLength) throw new Error('DNS: truncated NSEC3 next hashed owner');
+      if (rdata.remainingBytes < hashLength)
+        throw new Error('DNS: truncated NSEC3 next hashed owner');
       const nextHashedOwnerName = rdata.eatBytes(hashLength);
       data = {
         hashAlgorithm,
@@ -403,7 +432,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
         iterations,
         salt,
         nextHashedOwnerName,
-        types: decodeTypeBitmap(msg.subarray(rdataStart + rdata.offset, rdataEnd))
+        types: decodeTypeBitmap(msg.subarray(rdataStart + rdata.offset, rdataEnd)),
       };
       break;
     }
@@ -414,7 +443,8 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
       const flags = rdata.readU8();
       const iterations = rdata.readU16BEField('NSEC3PARAM iterations');
       const saltLength = rdata.readU8();
-      if (rdata.remainingBytes !== saltLength) throw new Error('DNS: invalid NSEC3PARAM salt length');
+      if (rdata.remainingBytes !== saltLength)
+        throw new Error('DNS: invalid NSEC3PARAM salt length');
       data = { hashAlgorithm, flags, iterations, salt: rdata.eatBytes(saltLength) };
       break;
     }
@@ -427,7 +457,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): {
   }
   return {
     record: { name, type, classCode, cacheFlush, ttl, rawData, data },
-    nextOffset: rdataEnd
+    nextOffset: rdataEnd,
   };
 }
 
@@ -441,7 +471,7 @@ export function _parseResponse(msg: Uint8Array): DnsResponse {
   const nscount = scanner.readU16BEField('authority count');
   const arcount = scanner.readU16BEField('additional count');
   const rcode = flags & 15;
-  const truncated = Boolean(flags >> 9 & 1);
+  const truncated = Boolean((flags >> 9) & 1);
   for (let i = 0; i < qdcount; i++) {
     const { nextOffset } = _decodeName(msg, scanner.offset);
     scanner.jump(nextOffset);
@@ -475,9 +505,9 @@ export function _parseResponse(msg: Uint8Array): DnsResponse {
       edns = {
         udpPayloadSize,
         dnssecOk: (flags & 32768) !== 0,
-        extendedRcode: ttl >>> 24 & 255,
-        version: ttl >>> 16 & 255,
-        flags
+        extendedRcode: (ttl >>> 24) & 255,
+        version: (ttl >>> 16) & 255,
+        flags,
       };
       continue;
     }

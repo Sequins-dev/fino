@@ -5,7 +5,9 @@ if (!sqliteAvailable) {
   if (process.env['FINO_REQUIRE_SQLITE'] === '1') {
     throw new Error('libsqlite3 not found and FINO_REQUIRE_SQLITE=1');
   }
-  console.log('SKIP: libsqlite3 not found (install via: brew install sqlite or apt install libsqlite3-0)');
+  console.log(
+    'SKIP: libsqlite3 not found (install via: brew install sqlite or apt install libsqlite3-0)',
+  );
   process.exit(0);
 }
 describe('fino:database/sqlite — basic', () => {
@@ -16,7 +18,11 @@ describe('fino:database/sqlite — basic', () => {
       await db.exec('CREATE TABLE scoped (value TEXT)');
       dbRef = db;
     }
-    await t.rejects(() => dbRef!.exec('SELECT 1'), /closed/, 'database closes when await using scope exits');
+    await t.rejects(
+      () => dbRef!.exec('SELECT 1'),
+      /closed/,
+      'database closes when await using scope exits',
+    );
   });
   it('opens and closes an in-memory database', async (t) => {
     const db = await Database.open(':memory:');
@@ -26,7 +32,7 @@ describe('fino:database/sqlite — basic', () => {
   it('exec CREATE TABLE and INSERT', async (t) => {
     const db = await Database.open(':memory:');
     await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
-    await db.exec('INSERT INTO t VALUES (1, \'hello\')');
+    await db.exec("INSERT INTO t VALUES (1, 'hello')");
     t.equal(db.changes, 1, 'one row inserted');
     await db.close();
   });
@@ -40,14 +46,20 @@ describe('fino:database/sqlite — basic', () => {
     try {
       await db.exec('CREATE TABLE modules (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
       await db.exec('CREATE TABLE guides (id TEXT PRIMARY KEY, title TEXT NOT NULL)');
-      await db.exec('CREATE TABLE symbols (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, name TEXT NOT NULL)');
-      const row = await db.prepare(`
+      await db.exec(
+        'CREATE TABLE symbols (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, name TEXT NOT NULL)',
+      );
+      const row = await db
+        .prepare(`
         SELECT COUNT(*) AS n
         FROM sqlite_master
         WHERE type = 'table' AND name IN ('modules', 'guides', 'symbols')
-      `).get();
+      `)
+        .get();
       t.equal(row!['n'], 3n, 'schema tables are visible on the same connection');
-      await db.prepare('INSERT INTO symbols VALUES (?, ?, ?)').run('symbol:one', 'module:one', 'one');
+      await db
+        .prepare('INSERT INTO symbols VALUES (?, ?, ?)')
+        .run('symbol:one', 'module:one', 'one');
       const inserted = await db.prepare('SELECT name FROM symbols WHERE id = ?').get('symbol:one');
       t.equal(inserted!['name'], 'one', 'prepared insert can use file-backed schema');
     } finally {
@@ -74,7 +86,11 @@ describe('fino:database/sqlite — basic', () => {
     try {
       const row = await readonly.prepare('SELECT value FROM t').get();
       t.equal(row!['value'], 'stored', 'readonly connection can read existing data');
-      await t.rejects(() => readonly.exec('INSERT INTO t VALUES (\'blocked\')'), /readonly|attempt to write/i, 'readonly connection rejects writes');
+      await t.rejects(
+        () => readonly.exec("INSERT INTO t VALUES ('blocked')"),
+        /readonly|attempt to write/i,
+        'readonly connection rejects writes',
+      );
     } finally {
       await readonly.close();
       try {
@@ -88,21 +104,37 @@ describe('fino:database/sqlite — basic', () => {
     try {
       await fs.unlink(dbPath);
     } catch {}
-    await t.rejects(() => Database.open(dbPath, { readonly: true }), /open|unable|cannot|IOERR|ENOENT/i, 'readonly mode does not create missing databases');
+    await t.rejects(
+      () => Database.open(dbPath, { readonly: true }),
+      /open|unable|cannot|IOERR|ENOENT/i,
+      'readonly mode does not create missing databases',
+    );
   });
   it('closed database operations reject consistently', async (t) => {
     const db = await Database.open(':memory:');
     await db.close();
     await t.rejects(() => db.exec('SELECT 1'), /closed/i, 'exec rejects after close');
     t.throws(() => db.prepare('SELECT 1'), /closed/i, 'prepare rejects after close');
-    await t.rejects(() => db.transaction(async () => {}), /closed/i, 'transaction rejects after close');
-    t.throws(() => db.loadExtension('/definitely/missing.so'), /closed/i, 'loadExtension rejects after close');
+    await t.rejects(
+      () => db.transaction(async () => {}),
+      /closed/i,
+      'transaction rejects after close',
+    );
+    t.throws(
+      () => db.loadExtension('/definitely/missing.so'),
+      /closed/i,
+      'loadExtension rejects after close',
+    );
     t.throws(() => db.vectorsAvailable, /closed/i, 'vectorsAvailable rejects after close');
   });
   it('prepare failures do not poison the connection', async (t) => {
     const db = await Database.open(':memory:');
     try {
-      await t.rejects(() => db.prepare('SELECT * FROM').get(), /prepare|syntax|incomplete/i, 'invalid SQL rejects during lazy prepare');
+      await t.rejects(
+        () => db.prepare('SELECT * FROM').get(),
+        /prepare|syntax|incomplete/i,
+        'invalid SQL rejects during lazy prepare',
+      );
       const row = await db.prepare('SELECT 42 AS value').get();
       t.equal(row!['value'], 42n, 'connection remains usable after prepare failure');
     } finally {
@@ -112,7 +144,11 @@ describe('fino:database/sqlite — basic', () => {
   it('extension loading failures leave the connection usable', async (t) => {
     const db = await Database.open(':memory:');
     try {
-      t.throws(() => db.loadExtension('/definitely/missing/fino-sqlite-extension.so'), /sqlite3_load_extension/i, 'missing extension rejects with sqlite load error');
+      t.throws(
+        () => db.loadExtension('/definitely/missing/fino-sqlite-extension.so'),
+        /sqlite3_load_extension/i,
+        'missing extension rejects with sqlite load error',
+      );
       const row = await db.prepare('SELECT 1 AS ok').get();
       t.equal(row!['ok'], 1n, 'connection remains usable after load failure');
     } finally {
@@ -122,14 +158,8 @@ describe('fino:database/sqlite — basic', () => {
   it('release baseline keeps convenience backup and busy-timeout APIs absent', async (t) => {
     const db = await Database.open(':memory:');
     try {
-      const surface = (db as unknown) as Record<string, unknown>;
-      for (const name of [
-        'backup',
-        'serialize',
-        'deserialize',
-        'busyTimeout',
-        'setBusyTimeout'
-      ]) {
+      const surface = db as unknown as Record<string, unknown>;
+      for (const name of ['backup', 'serialize', 'deserialize', 'busyTimeout', 'setBusyTimeout']) {
         t.equal(surface[name], undefined, `${name} is not a public Database helper`);
       }
       await db.exec('PRAGMA busy_timeout = 25');
@@ -186,7 +216,7 @@ describe('fino:database/sqlite — basic', () => {
     const stmt = db.prepare('INSERT INTO t VALUES (:id, :val)');
     const res = await stmt.run({
       id: 1n,
-      val: 'named'
+      val: 'named',
     });
     t.equal(res.changes, 1, 'changes = 1');
     stmt.finalize();
@@ -197,7 +227,11 @@ describe('fino:database/sqlite — basic', () => {
     try {
       await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
       const stmt = db.prepare('INSERT INTO t VALUES (:id, :val)');
-      await t.rejects(() => stmt.run({ id: 1n }), /missing named parameter.*val/i, 'missing named parameter is rejected');
+      await t.rejects(
+        () => stmt.run({ id: 1n }),
+        /missing named parameter.*val/i,
+        'missing named parameter is rejected',
+      );
       stmt.finalize();
     } finally {
       await db.close();
@@ -208,11 +242,16 @@ describe('fino:database/sqlite — basic', () => {
     try {
       await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
       const stmt = db.prepare('INSERT INTO t VALUES (:id, :val)');
-      await t.rejects(() => stmt.run({
-        id: 1n,
-        val: 'ok',
-        extra: 'unused'
-      }), /extra named parameter.*extra/i, 'extra named parameter is rejected');
+      await t.rejects(
+        () =>
+          stmt.run({
+            id: 1n,
+            val: 'ok',
+            extra: 'unused',
+          }),
+        /extra named parameter.*extra/i,
+        'extra named parameter is rejected',
+      );
       stmt.finalize();
     } finally {
       await db.close();
@@ -223,7 +262,11 @@ describe('fino:database/sqlite — basic', () => {
     try {
       await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
       const stmt = db.prepare('INSERT INTO t VALUES (?, ?)');
-      await t.rejects(() => stmt.run(1n), /expected 2 positional parameters, got 1/i, 'too few positional parameters are rejected');
+      await t.rejects(
+        () => stmt.run(1n),
+        /expected 2 positional parameters, got 1/i,
+        'too few positional parameters are rejected',
+      );
       stmt.finalize();
     } finally {
       await db.close();
@@ -234,7 +277,11 @@ describe('fino:database/sqlite — basic', () => {
     try {
       await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
       const stmt = db.prepare('INSERT INTO t VALUES (?, ?)');
-      await t.rejects(() => stmt.run(1n, 'ok', 'extra'), /expected 2 positional parameters, got 3/i, 'too many positional parameters are rejected');
+      await t.rejects(
+        () => stmt.run(1n, 'ok', 'extra'),
+        /expected 2 positional parameters, got 3/i,
+        'too many positional parameters are rejected',
+      );
       stmt.finalize();
     } finally {
       await db.close();
@@ -277,31 +324,21 @@ describe('fino:database/sqlite — type round-trips', () => {
   });
   it('TEXT → string', async (t) => {
     const db = await Database.open(':memory:');
-    const row = await db.prepare('SELECT \'hello\' AS v').get();
+    const row = await db.prepare("SELECT 'hello' AS v").get();
     t.equal(row!['v'], 'hello', 'text round-trip');
     await db.close();
   });
   it('BLOB → Uint8Array', async (t) => {
     const db = await Database.open(':memory:');
     await db.exec('CREATE TABLE t (v BLOB)');
-    const data = new Uint8Array([
-      1,
-      2,
-      3,
-      4
-    ]);
+    const data = new Uint8Array([1, 2, 3, 4]);
     const stmt = db.prepare('INSERT INTO t VALUES (?)');
     await stmt.run(data);
     stmt.finalize();
     const row = await db.prepare('SELECT v FROM t').get();
     const got = row!['v'] as Uint8Array;
     t.equal(got.byteLength, 4, 'blob length');
-    t.deepEqual(Array.from(got), [
-      1,
-      2,
-      3,
-      4
-    ], 'blob bytes');
+    t.deepEqual(Array.from(got), [1, 2, 3, 4], 'blob bytes');
     await db.close();
   });
   it('bound TEXT round-trips', async (t) => {
@@ -351,11 +388,7 @@ describe('fino:database/sqlite — query methods', () => {
     for await (const row of db.prepare('SELECT name FROM t ORDER BY id').iterate()) {
       names.push(row['name'] as string);
     }
-    t.deepEqual(names, [
-      'alice',
-      'bob',
-      'carol'
-    ], 'iterate yields all rows');
+    t.deepEqual(names, ['alice', 'bob', 'carol'], 'iterate yields all rows');
     await db.close();
   });
 });
@@ -395,7 +428,11 @@ describe('fino:database/sqlite — Statement finalize', () => {
         t.equal((await stmt.get())!['value'], 1n, 'statement works inside using scope');
         stmtRef = stmt;
       }
-      await t.rejects(() => stmtRef.get(), /finalized/, 'statement finalizes when using scope exits');
+      await t.rejects(
+        () => stmtRef.get(),
+        /finalized/,
+        'statement finalizes when using scope exits',
+      );
     } finally {
       await db.close();
     }
@@ -433,19 +470,11 @@ describe('fino:database/sqlite — Statement finalize', () => {
 });
 describe('fino:database/sqlite — vector helpers', () => {
   it('vec() encodes a float array as sqlite-vec text', (t) => {
-    t.equal(vec([
-      1,
-      2,
-      3
-    ]), '[1,2,3]', 'number[] encoding');
+    t.equal(vec([1, 2, 3]), '[1,2,3]', 'number[] encoding');
     t.equal(vec(new Float32Array([.5, -1])), '[0.5,-1]', 'Float32Array encoding');
   });
   it('vecDecode() decodes a float32 blob', (t) => {
-    const arr = new Float32Array([
-      1.5,
-      -2.5,
-      3
-    ]);
+    const arr = new Float32Array([1.5, -2.5, 3]);
     const blob = new Uint8Array(arr.buffer);
     const decoded = vecDecode(blob);
     t.equal(decoded.length, 3, 'correct length');

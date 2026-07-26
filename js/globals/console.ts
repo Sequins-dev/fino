@@ -1,240 +1,248 @@
 /**
-* Console globals available as `globalThis.console`.
-*
-* The console API provides synchronous diagnostic output for programs and
-* runtime tooling. Methods write formatted text directly to stdout or stderr,
-* so logging is available before stream globals or the event loop are fully
-* initialized.
-*
-* Values are formatted with a small inspector that understands primitives,
-* arrays, plain objects, errors, dates, maps, sets, typed arrays, and circular
-* references. String-first calls support printf-style substitutions such as
-* `%s`, `%d`, `%f`, `%o`, `%O`, `%c`, and `%%`.
-*
-* Grouping indents later output until `groupEnd()` is called. Timers and
-* counters are stored per label, matching the shape of the WHATWG Console API
-* while keeping terminal-only operations such as `clear()` and `timeStamp()`
-* as no-ops.
-*
-* ```ts no_run
-* console.group('request');
-* console.log({ method: 'GET', url: '/health' });
-* console.time('work');
-* console.timeEnd('work');
-* console.groupEnd();
-* ```
-*
-* Console Standard: https://console.spec.whatwg.org/
-*/
+ * Console globals available as `globalThis.console`.
+ *
+ * The console API provides synchronous diagnostic output for programs and
+ * runtime tooling. Methods write formatted text directly to stdout or stderr,
+ * so logging is available before stream globals or the event loop are fully
+ * initialized.
+ *
+ * Values are formatted with a small inspector that understands primitives,
+ * arrays, plain objects, errors, dates, maps, sets, typed arrays, and circular
+ * references. String-first calls support printf-style substitutions such as
+ * `%s`, `%d`, `%f`, `%o`, `%O`, `%c`, and `%%`.
+ *
+ * Grouping indents later output until `groupEnd()` is called. Timers and
+ * counters are stored per label, matching the shape of the WHATWG Console API
+ * while keeping terminal-only operations such as `clear()` and `timeStamp()`
+ * as no-ops.
+ *
+ * ```ts no_run
+ * console.group('request');
+ * console.log({ method: 'GET', url: '/health' });
+ * console.time('work');
+ * console.timeEnd('work');
+ * console.groupEnd();
+ * ```
+ *
+ * Console Standard: https://console.spec.whatwg.org/
+ */
 import { writeLine } from 'internal:runtime/libc';
 // ---------------------------------------------------------------------------
 // Value formatting
 // ---------------------------------------------------------------------------
 const INDENT = '  ';
 /**
-* The console object installed on `globalThis.console`.
-*
-* Console methods synchronously format their arguments and write one line to
-* stdout or stderr. Formatting supports common JavaScript values, `%` style
-* substitutions in string-first calls, indentation groups, timers, and
-* counters.
-*
-* The runtime installs a singleton implementing this interface on
-* `globalThis.console`, so no import is needed:
-*
-* ```ts no_run
-* console.log('user %s logged in', 'ada');   // stdout: user ada logged in
-* console.error(new Error('boom'));          // stderr: [error] Error: boom ...
-* console.time('parse');
-* JSON.parse('{"large": "payload"}');
-* console.timeEnd('parse');                  // stdout: parse: 0.42ms
-* console.count('requests');                 // stdout: requests: 1
-* ```
-*/
+ * The console object installed on `globalThis.console`.
+ *
+ * Console methods synchronously format their arguments and write one line to
+ * stdout or stderr. Formatting supports common JavaScript values, `%` style
+ * substitutions in string-first calls, indentation groups, timers, and
+ * counters.
+ *
+ * The runtime installs a singleton implementing this interface on
+ * `globalThis.console`, so no import is needed:
+ *
+ * ```ts no_run
+ * console.log('user %s logged in', 'ada');   // stdout: user ada logged in
+ * console.error(new Error('boom'));          // stderr: [error] Error: boom ...
+ * console.time('parse');
+ * JSON.parse('{"large": "payload"}');
+ * console.timeEnd('parse');                  // stdout: parse: 0.42ms
+ * console.count('requests');                 // stdout: requests: 1
+ * ```
+ */
 export interface Console {
   /**
-  * Brand string used by `Object.prototype.toString.call(console)`.
-  */
+   * Brand string used by `Object.prototype.toString.call(console)`.
+   */
   readonly [Symbol.toStringTag]: string;
   /**
-  * Write a formatted line to stdout.
-  */
+   * Write a formatted line to stdout.
+   */
   log(...args: unknown[]): void;
   /**
-  * Write a formatted informational line to stdout.
-  */
+   * Write a formatted informational line to stdout.
+   */
   info(...args: unknown[]): void;
   /**
-  * Write a formatted debug line to stdout.
-  */
+   * Write a formatted debug line to stdout.
+   */
   debug(...args: unknown[]): void;
   /**
-  * Write a formatted warning line to stderr with a warning prefix.
-  */
+   * Write a formatted warning line to stderr with a warning prefix.
+   */
   warn(...args: unknown[]): void;
   /**
-  * Write a formatted error line to stderr with an error prefix.
-  */
+   * Write a formatted error line to stderr with an error prefix.
+   */
   error(...args: unknown[]): void;
   /**
-  * Write an assertion failure to stderr when `condition` is falsy.
-  */
+   * Write an assertion failure to stderr when `condition` is falsy.
+   */
   assert(condition: unknown, ...args: unknown[]): void;
   /**
-  * Inspect `obj` and write the result to stdout.
-  *
-  * `depth` controls object and array recursion. `colors` is accepted for
-  * compatibility but ignored because console output is plain text.
-  */
-  dir(obj: unknown, opts?: {
-    depth?: number;
-    colors?: boolean;
-  }): void;
+   * Inspect `obj` and write the result to stdout.
+   *
+   * `depth` controls object and array recursion. `colors` is accepted for
+   * compatibility but ignored because console output is plain text.
+   */
+  dir(
+    obj: unknown,
+    opts?: {
+      depth?: number;
+      colors?: boolean;
+    },
+  ): void;
   /**
-  * Write table data to stdout.
-  *
-  * Fino currently prints JSON when possible and falls back to normal object
-  * inspection for values that cannot be serialized.
-  */
+   * Write table data to stdout.
+   *
+   * Fino currently prints JSON when possible and falls back to normal object
+   * inspection for values that cannot be serialized.
+   */
   table(data: unknown): void;
   /**
-  * Write an optional heading and indent subsequent console output.
-  */
+   * Write an optional heading and indent subsequent console output.
+   */
   group(...args: unknown[]): void;
   /**
-  * Write an optional heading and indent subsequent output.
-  *
-  * This is equivalent to `group()` in the terminal runtime because there is no
-  * DevTools UI that can collapse groups.
-  */
+   * Write an optional heading and indent subsequent output.
+   *
+   * This is equivalent to `group()` in the terminal runtime because there is no
+   * DevTools UI that can collapse groups.
+   */
   groupCollapsed(...args: unknown[]): void;
   /**
-  * End the current indentation group.
-  */
+   * End the current indentation group.
+   */
   groupEnd(): void;
   /**
-  * Start or replace a timer for `label`.
-  *
-  * Omitting `label` uses the label `'default'`. Starting a timer that already
-  * exists silently restarts it.
-  */
+   * Start or replace a timer for `label`.
+   *
+   * Omitting `label` uses the label `'default'`. Starting a timer that already
+   * exists silently restarts it.
+   */
   time(label?: string): void;
   /**
-  * Print the elapsed time for `label` to stdout and remove the timer.
-  *
-  * If no timer with that label exists, a `[warn]` line is written to stderr
-  * instead.
-  */
+   * Print the elapsed time for `label` to stdout and remove the timer.
+   *
+   * If no timer with that label exists, a `[warn]` line is written to stderr
+   * instead.
+   */
   timeEnd(label?: string): void;
   /**
-  * Print the elapsed time for `label` without removing the timer.
-  *
-  * Extra arguments are formatted and appended after the elapsed time. If no
-  * timer with that label exists, a `[warn]` line is written to stderr instead.
-  */
+   * Print the elapsed time for `label` without removing the timer.
+   *
+   * Extra arguments are formatted and appended after the elapsed time. If no
+   * timer with that label exists, a `[warn]` line is written to stderr instead.
+   */
   timeLog(label?: string, ...args: unknown[]): void;
   /**
-  * Increment and print the counter for `label`.
-  *
-  * Omitting `label` uses the label `'default'`. The first call for a label
-  * prints `1`.
-  */
+   * Increment and print the counter for `label`.
+   *
+   * Omitting `label` uses the label `'default'`. The first call for a label
+   * prints `1`.
+   */
   count(label?: string): void;
   /**
-  * Reset the counter for `label`.
-  *
-  * If no counter with that label exists, a `[warn]` line is written to stderr.
-  */
+   * Reset the counter for `label`.
+   *
+   * If no counter with that label exists, a `[warn]` line is written to stderr.
+   */
   countReset(label?: string): void;
   /**
-  * Clear the console when an interactive console is available.
-  *
-  * This is a no-op in Fino's terminal runtime.
-  */
+   * Clear the console when an interactive console is available.
+   *
+   * This is a no-op in Fino's terminal runtime.
+   */
   clear(): void;
   /**
-  * Write a stack trace to stdout with optional formatted leading text.
-  */
+   * Write a stack trace to stdout with optional formatted leading text.
+   */
   trace(...args: unknown[]): void;
   /**
-  * Write XML-like diagnostic output.
-  *
-  * Because Fino has no DOM renderer, this delegates to normal console
-  * formatting.
-  */
+   * Write XML-like diagnostic output.
+   *
+   * Because Fino has no DOM renderer, this delegates to normal console
+   * formatting.
+   */
   dirxml(...args: unknown[]): void;
   /**
-  * Record a performance timestamp when a DevTools timeline is available.
-  *
-  * This is a no-op in Fino's terminal runtime.
-  */
+   * Record a performance timestamp when a DevTools timeline is available.
+   *
+   * This is a no-op in Fino's terminal runtime.
+   */
   timeStamp(label?: string): void;
 }
 /**
-* One fully formatted console line captured by a `ConsoleCaptureSink`.
-*
-* The record is produced after all formatting has been applied: printf-style
-* substitution, value inspection, group indentation, and level prefixes such
-* as `[warn]` or `[error]` are already part of `text`. The trailing newline
-* that would be written to the file descriptor is not included.
-*
-* ```ts no_run
-* import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
-*
-* const lines: ConsoleCaptureRecord[] = [];
-* const release = _pushConsoleCapture((record) => lines.push(record));
-* console.warn('careful');
-* release();
-* // lines[0] is { fd: 2, text: '[warn] careful' }
-* ```
-*
-* @internal
-*/
+ * One fully formatted console line captured by a `ConsoleCaptureSink`.
+ *
+ * The record is produced after all formatting has been applied: printf-style
+ * substitution, value inspection, group indentation, and level prefixes such
+ * as `[warn]` or `[error]` are already part of `text`. The trailing newline
+ * that would be written to the file descriptor is not included.
+ *
+ * ```ts no_run
+ * import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
+ *
+ * const lines: ConsoleCaptureRecord[] = [];
+ * const release = _pushConsoleCapture((record) => lines.push(record));
+ * console.warn('careful');
+ * release();
+ * // lines[0] is { fd: 2, text: '[warn] careful' }
+ * ```
+ *
+ * @internal
+ */
 export interface ConsoleCaptureRecord {
   /**
-  * Which file descriptor the line was destined for: `1` for stdout
-  * (`log`, `info`, `debug`, `dir`, `table`, timers, counters) or `2` for
-  * stderr (`warn`, `error`, `assert`, and missing-label warnings). */
+   * Which file descriptor the line was destined for: `1` for stdout
+   * (`log`, `info`, `debug`, `dir`, `table`, timers, counters) or `2` for
+   * stderr (`warn`, `error`, `assert`, and missing-label warnings). */
   fd: 1 | 2;
   /**
-  * The complete formatted line, including group indentation and any level
-  * prefix, without a trailing newline. */
+   * The complete formatted line, including group indentation and any level
+   * prefix, without a trailing newline. */
   text: string;
 }
 /**
-* Callback that receives formatted console lines while capture is active.
-*
-* Called synchronously from inside each console method, once per output
-* line, with the line that would otherwise have been written to stdout or
-* stderr. Install one with `_pushConsoleCapture`.
-*
-* @internal
-*/
+ * Callback that receives formatted console lines while capture is active.
+ *
+ * Called synchronously from inside each console method, once per output
+ * line, with the line that would otherwise have been written to stdout or
+ * stderr. Install one with `_pushConsoleCapture`.
+ *
+ * @internal
+ */
 export type ConsoleCaptureSink = (record: ConsoleCaptureRecord) => void;
 /**
-* Convert a single value to a human-readable string, similar to a
-* simplified version of Node's util.inspect.
-*
-* `depth` is the remaining nesting budget: arrays and plain objects recurse
-* with `depth - 1` and collapse to `[Array]` / `[Object]` once it reaches
-* zero. At the top-level default (`depth === 2`) strings are printed bare;
-* at any other depth they are quoted with JSON.stringify. Errors render
-* their stack, Dates their ISO string, Maps/Sets their entries, and typed
-* arrays their first 100 elements. The `seen` set breaks reference cycles
-* by rendering revisited objects as `[Circular *]`.
-*/
+ * Convert a single value to a human-readable string, similar to a
+ * simplified version of Node's util.inspect.
+ *
+ * `depth` is the remaining nesting budget: arrays and plain objects recurse
+ * with `depth - 1` and collapse to `[Array]` / `[Object]` once it reaches
+ * zero. At the top-level default (`depth === 2`) strings are printed bare;
+ * at any other depth they are quoted with JSON.stringify. Errors render
+ * their stack, Dates their ISO string, Maps/Sets their entries, and typed
+ * arrays their first 100 elements. The `seen` set breaks reference cycles
+ * by rendering revisited objects as `[Circular *]`.
+ */
 function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new WeakSet()): string {
   switch (typeof value) {
     case 'string':
- // When inspect is called as the top-level formatter for console.log,
-    // strings are printed bare (no quotes). Nested strings get quotes.
-    return depth === 2 ? value : JSON.stringify(value);
-    case 'number': return Object.is(value, -0) ? '-0' : String(value);
-    case 'bigint': return `${value}n`;
+      // When inspect is called as the top-level formatter for console.log,
+      // strings are printed bare (no quotes). Nested strings get quotes.
+      return depth === 2 ? value : JSON.stringify(value);
+    case 'number':
+      return Object.is(value, -0) ? '-0' : String(value);
+    case 'bigint':
+      return `${value}n`;
     case 'boolean':
-    case 'undefined': return String(value);
-    case 'symbol': return value.toString();
-    case 'function': return `[Function: ${value.name || '(anonymous)'}]`;
+    case 'undefined':
+      return String(value);
+    case 'symbol':
+      return value.toString();
+    case 'function':
+      return `[Function: ${value.name || '(anonymous)'}]`;
     case 'object': {
       if (value === null) return 'null';
       if (depth <= 0) return Array.isArray(value) ? '[Array]' : '[Object]';
@@ -247,7 +255,9 @@ function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new 
       seen.add(value);
       try {
         if (value instanceof Map) {
-          const entries = [...value.entries()].map(([k, v]) => `${inspect(k, depth - 1, seen)} => ${inspect(v, depth - 1, seen)}`);
+          const entries = [...value.entries()].map(
+            ([k, v]) => `${inspect(k, depth - 1, seen)} => ${inspect(v, depth - 1, seen)}`,
+          );
           return `Map(${value.size}) { ${entries.join(', ')} }`;
         }
         if (value instanceof Set) {
@@ -255,13 +265,15 @@ function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new 
           return `Set(${value.size}) { ${items.join(', ')} }`;
         }
         if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-          const ta = (value as unknown) as {
+          const ta = value as unknown as {
             constructor: {
               name: string;
             };
             length: number;
           };
-          const items = Array.from(value as Uint8Array).slice(0, 100).map(String);
+          const items = Array.from(value as Uint8Array)
+            .slice(0, 100)
+            .map(String);
           const tail = ta.length > 100 ? ', ...' : '';
           return `${ta.constructor.name}(${ta.length}) [ ${items.join(', ')}${tail} ]`;
         }
@@ -284,18 +296,19 @@ function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new 
         seen.delete(value);
       }
     }
-    default: return String(value);
+    default:
+      return String(value);
   }
 }
 /**
-* Format an argument list the way console.log does.
-*
-* When the first argument is a string and more arguments follow, printf-style
-* specifiers (`%s`, `%d`, `%i`, `%f`, `%o`, `%O`, `%c`, `%%`) are substituted
-* left to right; a specifier with no remaining argument is left in place, and
-* arguments left over after substitution are appended with `inspect()`.
-* Otherwise every argument is inspected and joined with single spaces.
-*/
+ * Format an argument list the way console.log does.
+ *
+ * When the first argument is a string and more arguments follow, printf-style
+ * specifiers (`%s`, `%d`, `%i`, `%f`, `%o`, `%O`, `%c`, `%%`) are substituted
+ * left to right; a specifier with no remaining argument is left in place, and
+ * arguments left over after substitution are appended with `inspect()`.
+ * Otherwise every argument is inspected and joined with single spaces.
+ */
 function format(args: unknown[]): string {
   if (args.length === 0) return '';
   const first = args[0];
@@ -307,14 +320,20 @@ function format(args: unknown[]): string {
       if (idx >= args.length) return spec;
       const arg = args[idx++];
       switch (spec) {
-        case '%s': return String(arg);
+        case '%s':
+          return String(arg);
         case '%d':
-        case '%i': return String(Math.trunc(Number(arg)));
-        case '%f': return String(Number(arg));
+        case '%i':
+          return String(Math.trunc(Number(arg)));
+        case '%f':
+          return String(Number(arg));
         case '%o':
-        case '%O': return inspect(arg, 2);
-        case '%c': return '';
-        default: return spec;
+        case '%O':
+          return inspect(arg, 2);
+        case '%c':
+          return '';
+        default:
+          return spec;
       }
     });
     // Append any remaining args
@@ -334,7 +353,9 @@ function labelToString(label: unknown): string {
 }
 // Use a monotonic clock when available (performance.now()), fall back to Date.now().
 function _now(): number {
-  return typeof (globalThis as any).performance?.now === 'function' ? (globalThis as any).performance.now() : Date.now();
+  return typeof (globalThis as any).performance?.now === 'function'
+    ? (globalThis as any).performance.now()
+    : Date.now();
 }
 function prefix(): string {
   return INDENT.repeat(_groupDepth);
@@ -344,34 +365,34 @@ function prefix(): string {
 // ---------------------------------------------------------------------------
 const _captureStack: ConsoleCaptureSink[] = [];
 /**
-* Capture formatted console output until the returned release function runs.
-*
-* While a sink is installed, every console line is delivered to it as a
-* `ConsoleCaptureRecord` instead of being written to stdout/stderr. Sinks
-* form a stack: only the most recently pushed sink receives output, and
-* releasing it restores the previous sink (or direct fd output when the
-* stack is empty). The release function is idempotent and tolerates
-* out-of-order release — releasing a sink that is no longer on top removes
-* it from wherever it sits in the stack.
-*
-* This is intentionally internal: normal console calls still write directly to
-* stdout/stderr unless a runtime tool such as the test runner or benchmark
-* harness installs a sink.
-*
-* ```ts no_run
-* import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
-*
-* const records: ConsoleCaptureRecord[] = [];
-* const release = _pushConsoleCapture((record) => records.push(record));
-* try {
-*   console.log('hello %s', 'world'); // → { fd: 1, text: 'hello world' }
-* } finally {
-*   release();
-* }
-* ```
-*
-* @internal
-*/
+ * Capture formatted console output until the returned release function runs.
+ *
+ * While a sink is installed, every console line is delivered to it as a
+ * `ConsoleCaptureRecord` instead of being written to stdout/stderr. Sinks
+ * form a stack: only the most recently pushed sink receives output, and
+ * releasing it restores the previous sink (or direct fd output when the
+ * stack is empty). The release function is idempotent and tolerates
+ * out-of-order release — releasing a sink that is no longer on top removes
+ * it from wherever it sits in the stack.
+ *
+ * This is intentionally internal: normal console calls still write directly to
+ * stdout/stderr unless a runtime tool such as the test runner or benchmark
+ * harness installs a sink.
+ *
+ * ```ts no_run
+ * import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
+ *
+ * const records: ConsoleCaptureRecord[] = [];
+ * const release = _pushConsoleCapture((record) => records.push(record));
+ * try {
+ *   console.log('hello %s', 'world'); // → { fd: 1, text: 'hello world' }
+ * } finally {
+ *   release();
+ * }
+ * ```
+ *
+ * @internal
+ */
 export function _pushConsoleCapture(sink: ConsoleCaptureSink): () => void {
   _captureStack.push(sink);
   let active = true;
@@ -390,7 +411,7 @@ function writeConsoleLine(fd: 1 | 2, text: string): void {
   if (sink !== undefined) {
     sink({
       fd,
-      text
+      text,
     });
     return;
   }
@@ -404,17 +425,17 @@ function out(fd: 1 | 2, label: string, args: unknown[]): void {
 // Exported console object
 // ---------------------------------------------------------------------------
 /**
-* Runtime console singleton exposed as globalThis.console.
-*
-* Methods write directly to stdout or stderr through internal libc bindings.
-* Formatting is intentionally small and synchronous so console works before
-* stream globals or the event loop are fully initialized.
-*
-* ```ts no_run
-* console.log('ready');
-* console.warn('slow path');
-* ```
-*/
+ * Runtime console singleton exposed as globalThis.console.
+ *
+ * Methods write directly to stdout or stderr through internal libc bindings.
+ * Formatting is intentionally small and synchronous so console works before
+ * stream globals or the event loop are fully initialized.
+ *
+ * ```ts no_run
+ * console.log('ready');
+ * console.warn('slow path');
+ * ```
+ */
 const console: Console = {
   [Symbol.toStringTag]: 'console',
   log(...args) {
@@ -438,10 +459,13 @@ const console: Console = {
       out(2, '[assert]', [msg]);
     }
   },
-  dir(obj: unknown, opts?: {
-    depth?: number;
-    colors?: boolean;
-  }) {
+  dir(
+    obj: unknown,
+    opts?: {
+      depth?: number;
+      colors?: boolean;
+    },
+  ) {
     const depth = opts != null && typeof opts.depth === 'number' ? opts.depth : 4;
     out(1, '', [inspect(obj, depth)]);
   },
@@ -516,14 +540,14 @@ const console: Console = {
   },
   timeStamp(_label?: string) {
     // Performance marker — no-op in non-DevTools environment.
-  }
+  },
 };
 Object.setPrototypeOf(console, Object.create(Object.prototype));
 Object.defineProperty(console, Symbol.toStringTag, {
   value: 'console',
   writable: false,
   enumerable: false,
-  configurable: true
+  configurable: true,
 });
 for (const method of [
   'assert',
@@ -533,13 +557,13 @@ for (const method of [
   'countReset',
   'time',
   'timeLog',
-  'timeEnd'
+  'timeEnd',
 ] as const) {
   Object.defineProperty(console[method], 'length', {
     value: 0,
     writable: false,
     enumerable: false,
-    configurable: true
+    configurable: true,
   });
 }
 export default console;

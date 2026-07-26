@@ -1,7 +1,7 @@
 /**
-* Tests for AbortController and AbortSignal globals.
-* Uses the global instances registered by internal/main.mjs.
-*/
+ * Tests for AbortController and AbortSignal globals.
+ * Uses the global instances registered by internal/main.mjs.
+ */
 import { describe, it } from 'fino:test/test';
 describe('AbortController', () => {
   it('signal starts non-aborted', (t) => {
@@ -57,7 +57,11 @@ describe('AbortSignal', () => {
     const reason = new Error('stop');
     reason.name = 'AbortError';
     ctrl.abort(reason);
-    t.throws(() => ctrl.signal.throwIfAborted(), (e) => e === reason, 'throws the abort reason');
+    t.throws(
+      () => ctrl.signal.throwIfAborted(),
+      (e) => e === reason,
+      'throws the abort reason',
+    );
   });
   it('addEventListener fires on abort', (t) => {
     const ctrl = new AbortController();
@@ -110,7 +114,7 @@ describe('AbortSignal', () => {
   });
   it('onabort null does nothing', (t) => {
     const ctrl = new AbortController();
-    ctrl.signal.onabort = (42 as unknown) as ((this: AbortSignal, ev: Event) => any);
+    ctrl.signal.onabort = 42 as unknown as (this: AbortSignal, ev: Event) => any;
     t.equal(ctrl.signal.onabort, null, 'non-function sets onabort to null');
     let threw = false;
     try {
@@ -185,7 +189,7 @@ describe('AbortSignal.timeout()', () => {
     t.equal(reason.message, 'The operation timed out.', 'reason.message is stable');
   });
   it('coerces finite non-negative delay values with Number()', async (t) => {
-    const signal = AbortSignal.timeout(('0' as unknown) as number);
+    const signal = AbortSignal.timeout('0' as unknown as number);
     await new Promise((resolve) => {
       signal.addEventListener('abort', resolve);
     });
@@ -193,10 +197,26 @@ describe('AbortSignal.timeout()', () => {
     t.equal(signal.reason.name, 'TimeoutError', 'reason.name is TimeoutError');
   });
   it('rejects NaN, negative, and infinite delay values', (t) => {
-    t.throws(() => AbortSignal.timeout(NaN), (e) => e instanceof RangeError, 'NaN throws RangeError');
-    t.throws(() => AbortSignal.timeout(-1), (e) => e instanceof RangeError, 'negative throws RangeError');
-    t.throws(() => AbortSignal.timeout(Infinity), (e) => e instanceof RangeError, 'Infinity throws RangeError');
-    t.throws(() => AbortSignal.timeout(-Infinity), (e) => e instanceof RangeError, '-Infinity throws RangeError');
+    t.throws(
+      () => AbortSignal.timeout(NaN),
+      (e) => e instanceof RangeError,
+      'NaN throws RangeError',
+    );
+    t.throws(
+      () => AbortSignal.timeout(-1),
+      (e) => e instanceof RangeError,
+      'negative throws RangeError',
+    );
+    t.throws(
+      () => AbortSignal.timeout(Infinity),
+      (e) => e instanceof RangeError,
+      'Infinity throws RangeError',
+    );
+    t.throws(
+      () => AbortSignal.timeout(-Infinity),
+      (e) => e instanceof RangeError,
+      '-Infinity throws RangeError',
+    );
   });
 });
 describe('AbortSignal.abort() — additional cases', () => {
@@ -234,7 +254,7 @@ describe('AbortSignal.any() — additional cases', () => {
       controller.signal,
       AbortSignal.any([controller.signal]),
       AbortSignal.any([controller.signal]),
-      AbortSignal.any([controller.signal])
+      AbortSignal.any([controller.signal]),
     ];
     signals.push(AbortSignal.any([signals[1]!]));
     let order = '';
@@ -250,7 +270,11 @@ describe('AbortSignal.any() — additional cases', () => {
 describe('AbortSignal — throwIfAborted with string reason', () => {
   it('throwIfAborted throws the string itself when reason is a string', (t) => {
     const signal = AbortSignal.abort('cancelled');
-    t.throws(() => signal.throwIfAborted(), (e) => e === 'cancelled', 'throws the string reason directly');
+    t.throws(
+      () => signal.throwIfAborted(),
+      (e) => e === 'cancelled',
+      'throws the string reason directly',
+    );
   });
 });
 describe('AbortController — signal identity', () => {
@@ -279,7 +303,11 @@ describe('AbortSignal — throwIfAborted with default reason', () => {
   it('throwIfAborted() with no-argument abort throws an AbortError', (t) => {
     const ctrl = new AbortController();
     ctrl.abort();
-    t.throws(() => ctrl.signal.throwIfAborted(), (e) => e instanceof DOMException && e.name === 'AbortError' && e.code === 20, 'throws with AbortError name');
+    t.throws(
+      () => ctrl.signal.throwIfAborted(),
+      (e) => e instanceof DOMException && e.name === 'AbortError' && e.code === 20,
+      'throws with AbortError name',
+    );
   });
 });
 describe('AbortController — abort(undefined) uses default reason', () => {
@@ -367,11 +395,19 @@ describe('AbortSignal — manual dispatchEvent fires onabort', () => {
 describe('Symbol.toStringTag', () => {
   it('AbortSignal [Symbol.toStringTag] is "AbortSignal"', (t) => {
     const signal = new AbortController().signal;
-    t.equal(((signal as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'AbortSignal', 'toStringTag is AbortSignal');
+    t.equal(
+      (signal as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'AbortSignal',
+      'toStringTag is AbortSignal',
+    );
   });
   it('AbortController [Symbol.toStringTag] is "AbortController"', (t) => {
     const ctrl = new AbortController();
-    t.equal(((ctrl as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'AbortController', 'toStringTag is AbortController');
+    t.equal(
+      (ctrl as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'AbortController',
+      'toStringTag is AbortController',
+    );
   });
 });
 describe('AbortSignal.abort() — falsy non-undefined reasons', () => {
@@ -396,7 +432,11 @@ describe('AbortSignal.any() — input validation', () => {
     t.throws(() => AbortSignal.any(null as any), /iterable/i, 'null throws with iterable message');
   });
   it('throws when array contains non-AbortSignal values', (t) => {
-    t.throws(() => AbortSignal.any([{} as any]), /AbortSignal/i, 'non-signal in array throws with AbortSignal message');
+    t.throws(
+      () => AbortSignal.any([{} as any]),
+      /AbortSignal/i,
+      'non-signal in array throws with AbortSignal message',
+    );
   });
 });
 describe('AbortSignal.timeout() — input validation', () => {

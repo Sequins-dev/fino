@@ -1,72 +1,98 @@
 /**
-* fino:ai/model/anthropic — Anthropic provider adapter for the shared `Model`.
-*
-* Anthropic Messages API reference: https://docs.anthropic.com/en/api/messages
-*
-* `anthropic()` returns a provider-neutral `Model` backed by Anthropic's
-* Messages API. `anthropicProvider()` returns a discovery-capable provider that
-* calls Anthropic's `GET /v1/models` endpoint and can construct models from
-* discovered ids. Both paths translate Fino message parts into Anthropic content
-* blocks, map server-sent events into `StreamEvent` values, normalize usage and
-* stop reasons, and expose native JSON Schema response-format support through
-* model capabilities.
-*
-* ## Defaults and limits
-*
-* `apiKey` defaults to `ANTHROPIC_API_KEY`, `baseUrl` defaults to the public
-* Anthropic API, and `model` defaults to `claude-opus-4-8`. The adapter supports
-* text, image, document, tool-use, and tool-result content parts. Anthropic does
-* not provide a native embeddings endpoint through this adapter; `embed()`
-* rejects with a clear error. Use an embeddings-capable provider for memory or
-* semantic-similarity workflows.
-*
-* Pass a custom `client` for tests, proxies, or runtimes that need their own
-* HTTP transport. This adapter does not retry; retry and fallback policy belong
-* to `fino:ai/agent`.
-*
-* ```ts no_run
-* import { agent } from 'fino:ai/agent';
-* import { anthropicProvider } from 'fino:ai/model/anthropic';
-*
-* const [info] = await anthropicProvider().listModels();
-* const bot = agent({
-*   model: await info.create(),
-*   instructions: 'Prefer explicit assumptions.',
-* });
-*
-* const result = await bot.generate('Review this migration plan.');
-* console.log(result.text);
-* ```
-*/
-import type { GenerateRequest, GenerateResult, StreamEvent, ProviderOptions, Model, ModelCreateOptions, ModelInfo, ModelProvider, ModelStream, TextPart, StopReason, ToolCall } from 'fino:ai/model';
+ * fino:ai/model/anthropic — Anthropic provider adapter for the shared `Model`.
+ *
+ * Anthropic Messages API reference: https://docs.anthropic.com/en/api/messages
+ *
+ * `anthropic()` returns a provider-neutral `Model` backed by Anthropic's
+ * Messages API. `anthropicProvider()` returns a discovery-capable provider that
+ * calls Anthropic's `GET /v1/models` endpoint and can construct models from
+ * discovered ids. Both paths translate Fino message parts into Anthropic content
+ * blocks, map server-sent events into `StreamEvent` values, normalize usage and
+ * stop reasons, and expose native JSON Schema response-format support through
+ * model capabilities.
+ *
+ * ## Defaults and limits
+ *
+ * `apiKey` defaults to `ANTHROPIC_API_KEY`, `baseUrl` defaults to the public
+ * Anthropic API, and `model` defaults to `claude-opus-4-8`. The adapter supports
+ * text, image, document, tool-use, and tool-result content parts. Anthropic does
+ * not provide a native embeddings endpoint through this adapter; `embed()`
+ * rejects with a clear error. Use an embeddings-capable provider for memory or
+ * semantic-similarity workflows.
+ *
+ * Pass a custom `client` for tests, proxies, or runtimes that need their own
+ * HTTP transport. This adapter does not retry; retry and fallback policy belong
+ * to `fino:ai/agent`.
+ *
+ * ```ts no_run
+ * import { agent } from 'fino:ai/agent';
+ * import { anthropicProvider } from 'fino:ai/model/anthropic';
+ *
+ * const [info] = await anthropicProvider().listModels();
+ * const bot = agent({
+ *   model: await info.create(),
+ *   instructions: 'Prefer explicit assumptions.',
+ * });
+ *
+ * const result = await bot.generate('Review this migration plan.');
+ * console.log(result.text);
+ * ```
+ */
+import type {
+  GenerateRequest,
+  GenerateResult,
+  StreamEvent,
+  ProviderOptions,
+  Model,
+  ModelCreateOptions,
+  ModelInfo,
+  ModelProvider,
+  ModelStream,
+  TextPart,
+  StopReason,
+  ToolCall,
+} from 'fino:ai/model';
 import type { SseEvent } from 'fino:net/http/eventstream';
-import { resolveApiKey, streamFromResponse, ModelStreamImpl, ModelError, ModelListingUnsupportedError, ClientLike, ANTHROPIC_BASE_URL } from 'internal:ai/shared';
+import {
+  resolveApiKey,
+  streamFromResponse,
+  ModelStreamImpl,
+  ModelError,
+  ModelListingUnsupportedError,
+  ClientLike,
+  ANTHROPIC_BASE_URL,
+} from 'internal:ai/shared';
 import { HttpClient } from 'fino:net/http/client';
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MAX_TOKENS = 4096;
 function mapStopReason(raw: string): StopReason {
   switch (raw) {
-    case 'end_turn': return 'end_turn';
-    case 'tool_use': return 'tool_use';
-    case 'max_tokens': return 'max_tokens';
-    case 'stop_sequence': return 'stop_sequence';
-    case 'refusal': return 'refusal';
-    default: return 'end_turn';
+    case 'end_turn':
+      return 'end_turn';
+    case 'tool_use':
+      return 'tool_use';
+    case 'max_tokens':
+      return 'max_tokens';
+    case 'stop_sequence':
+      return 'stop_sequence';
+    case 'refusal':
+      return 'refusal';
+    default:
+      return 'end_turn';
   }
 }
-function convertContentPart(part: {
-  type: string;
-  [k: string]: unknown;
-}): Record<string, unknown> {
+function convertContentPart(part: { type: string; [k: string]: unknown }): Record<string, unknown> {
   if (part.type === 'text') {
-    return part.cache ? {
-      type: 'text',
-      text: part.text,
-      cache_control: { type: 'ephemeral' }
-    } : {
-      type: 'text',
-      text: part.text
-    };
+    return part.cache
+      ? {
+          type: 'text',
+          text: part.text,
+          cache_control: { type: 'ephemeral' },
+        }
+      : {
+          type: 'text',
+          text: part.text,
+        };
   }
   if (part.type === 'image') {
     return {
@@ -74,8 +100,8 @@ function convertContentPart(part: {
       source: {
         type: 'base64',
         media_type: part.mediaType,
-        data: part.data
-      }
+        data: part.data,
+      },
     };
   }
   if (part.type === 'tool_use') {
@@ -83,7 +109,7 @@ function convertContentPart(part: {
       type: 'tool_use',
       id: part.id,
       name: part.name,
-      input: part.args
+      input: part.args,
     };
   }
   if (part.type === 'tool_result') {
@@ -91,7 +117,7 @@ function convertContentPart(part: {
       type: 'tool_result',
       tool_use_id: part.toolCallId,
       content: part.content,
-      ...part.isError ? { is_error: true } : {}
+      ...(part.isError ? { is_error: true } : {}),
     };
   }
   if (part.type === 'document') {
@@ -100,46 +126,70 @@ function convertContentPart(part: {
       source: {
         type: 'base64',
         media_type: part.mediaType,
-        data: part.data
+        data: part.data,
       },
-      ...part.name ? { title: part.name } : {}
+      ...(part.name ? { title: part.name } : {}),
     };
   }
   return part;
 }
-function buildAnthropicRequest(req: GenerateRequest, modelName: string, maxTokens: number, temperature: number | undefined, topP: number | undefined, providerOptions: Record<string, unknown> | undefined): Record<string, unknown> {
+function buildAnthropicRequest(
+  req: GenerateRequest,
+  modelName: string,
+  maxTokens: number,
+  temperature: number | undefined,
+  topP: number | undefined,
+  providerOptions: Record<string, unknown> | undefined,
+): Record<string, unknown> {
   const messages: Array<Record<string, unknown>> = [];
   let system: unknown;
   for (const msg of req.messages) {
     if (msg.role === 'system') {
-      system = typeof msg.content === 'string' ? msg.content : (msg.content as Array<{
-        type: string;
-        [k: string]: unknown;
-      }>).map(convertContentPart);
+      system =
+        typeof msg.content === 'string'
+          ? msg.content
+          : (
+              msg.content as Array<{
+                type: string;
+                [k: string]: unknown;
+              }>
+            ).map(convertContentPart);
       continue;
     }
     messages.push({
       role: msg.role,
-      content: typeof msg.content === 'string' ? msg.content : (msg.content as Array<{
-        type: string;
-        [k: string]: unknown;
-      }>).map(convertContentPart)
+      content:
+        typeof msg.content === 'string'
+          ? msg.content
+          : (
+              msg.content as Array<{
+                type: string;
+                [k: string]: unknown;
+              }>
+            ).map(convertContentPart),
     });
   }
   if (req.system != null && system == null) {
-    system = typeof req.system === 'string' ? req.system : (req.system as TextPart[]).map((p) => p.cache ? {
-      type: 'text',
-      text: p.text,
-      cache_control: { type: 'ephemeral' }
-    } : {
-      type: 'text',
-      text: p.text
-    });
+    system =
+      typeof req.system === 'string'
+        ? req.system
+        : (req.system as TextPart[]).map((p) =>
+            p.cache
+              ? {
+                  type: 'text',
+                  text: p.text,
+                  cache_control: { type: 'ephemeral' },
+                }
+              : {
+                  type: 'text',
+                  text: p.text,
+                },
+          );
   }
   const body: Record<string, unknown> = {
     model: modelName,
     max_tokens: req.maxTokens ?? maxTokens,
-    messages
+    messages,
   };
   if (system != null) body.system = system;
   const temp = req.temperature ?? temperature;
@@ -150,43 +200,55 @@ function buildAnthropicRequest(req: GenerateRequest, modelName: string, maxToken
     body.tools = req.tools.map((t) => ({
       name: t.name,
       description: t.description,
-      input_schema: t.parameters
+      input_schema: t.parameters,
     }));
   }
   if (req.toolChoice != null) {
     if (req.toolChoice === 'auto') body.tool_choice = { type: 'auto' };
     else if (req.toolChoice === 'any') body.tool_choice = { type: 'any' };
     else if (req.toolChoice === 'none') body.tool_choice = { type: 'none' };
-    else body.tool_choice = {
-      type: 'tool',
-      name: (req.toolChoice as {
-        name: string;
-      }).name
-    };
+    else
+      body.tool_choice = {
+        type: 'tool',
+        name: (
+          req.toolChoice as {
+            name: string;
+          }
+        ).name,
+      };
   }
   if (req.stopSequences?.length) body.stop_sequences = req.stopSequences;
   if (req.responseFormat?.type === 'json_schema') {
-    body.output_config = { format: {
-      type: 'json_schema',
-      json_schema: {
-        name: req.responseFormat.name ?? 'response',
-        schema: req.responseFormat.schema,
-        ...req.responseFormat.strict != null ? { strict: req.responseFormat.strict } : {}
-      }
-    } };
+    body.output_config = {
+      format: {
+        type: 'json_schema',
+        json_schema: {
+          name: req.responseFormat.name ?? 'response',
+          schema: req.responseFormat.schema,
+          ...(req.responseFormat.strict != null ? { strict: req.responseFormat.strict } : {}),
+        },
+      },
+    };
   }
   const anthropicOptions = req.providerOptions?.anthropic ?? providerOptions?.anthropic;
-  if (anthropicOptions && typeof anthropicOptions === 'object' && !Array.isArray(anthropicOptions)) {
+  if (
+    anthropicOptions &&
+    typeof anthropicOptions === 'object' &&
+    !Array.isArray(anthropicOptions)
+  ) {
     Object.assign(body, anthropicOptions);
   }
   return body;
 }
 interface AnthropicStreamState {
-  blocks: Map<number, {
-    type: string;
-    id?: string;
-    name?: string;
-  }>;
+  blocks: Map<
+    number,
+    {
+      type: string;
+      id?: string;
+      name?: string;
+    }
+  >;
   inputTokens: number;
   cacheRead: number;
   cacheCreation: number;
@@ -223,7 +285,7 @@ function mapAnthropicEvent(event: SseEvent, state: AnthropicStreamState): Stream
           type: 'tool_call_start',
           index: frame.index,
           id: frame.content_block.id!,
-          name: frame.content_block.name!
+          name: frame.content_block.name!,
         });
       }
       break;
@@ -241,13 +303,13 @@ function mapAnthropicEvent(event: SseEvent, state: AnthropicStreamState): Stream
         results.push({
           type: 'text_delta',
           index: frame.index,
-          text: frame.delta.text
+          text: frame.delta.text,
         });
       } else if (frame.delta.type === 'input_json_delta' && frame.delta.partial_json != null) {
         results.push({
           type: 'tool_call_delta',
           index: frame.index,
-          json: frame.delta.partial_json
+          json: frame.delta.partial_json,
         });
       }
       break;
@@ -260,7 +322,7 @@ function mapAnthropicEvent(event: SseEvent, state: AnthropicStreamState): Stream
       if (block?.type === 'tool_use') {
         results.push({
           type: 'tool_call_end',
-          index: frame.index
+          index: frame.index,
         });
       }
       break;
@@ -279,14 +341,14 @@ function mapAnthropicEvent(event: SseEvent, state: AnthropicStreamState): Stream
         usage: {
           inputTokens: state.inputTokens,
           outputTokens: frame.usage?.output_tokens ?? 0,
-          ...state.cacheRead ? { cacheReadInputTokens: state.cacheRead } : {},
-          ...state.cacheCreation ? { cacheCreationInputTokens: state.cacheCreation } : {}
-        }
+          ...(state.cacheRead ? { cacheReadInputTokens: state.cacheRead } : {}),
+          ...(state.cacheCreation ? { cacheCreationInputTokens: state.cacheCreation } : {}),
+        },
       });
       if (frame.delta.stop_reason) {
         results.push({
           type: 'stop',
-          reason: mapStopReason(frame.delta.stop_reason)
+          reason: mapStopReason(frame.delta.stop_reason),
         });
       }
       break;
@@ -295,7 +357,7 @@ function mapAnthropicEvent(event: SseEvent, state: AnthropicStreamState): Stream
   return results;
 }
 function normalizeAnthropicResponse(data: Record<string, unknown>): GenerateResult {
-  const content = data.content as Array<Record<string, unknown>> ?? [];
+  const content = (data.content as Array<Record<string, unknown>>) ?? [];
   let text = '';
   const toolCalls: ToolCall[] = [];
   for (const block of content) {
@@ -305,22 +367,26 @@ function normalizeAnthropicResponse(data: Record<string, unknown>): GenerateResu
       toolCalls.push({
         id: block.id as string,
         name: block.name as string,
-        args: block.input
+        args: block.input,
       });
     }
   }
-  const usage = data.usage as Record<string, number> ?? {};
+  const usage = (data.usage as Record<string, number>) ?? {};
   return {
     text,
     toolCalls,
-    stopReason: mapStopReason(data.stop_reason as string ?? 'end_turn'),
+    stopReason: mapStopReason((data.stop_reason as string) ?? 'end_turn'),
     usage: {
       inputTokens: usage.input_tokens ?? 0,
       outputTokens: usage.output_tokens ?? 0,
-      ...usage.cache_read_input_tokens ? { cacheReadInputTokens: usage.cache_read_input_tokens } : {},
-      ...usage.cache_creation_input_tokens ? { cacheCreationInputTokens: usage.cache_creation_input_tokens } : {}
+      ...(usage.cache_read_input_tokens
+        ? { cacheReadInputTokens: usage.cache_read_input_tokens }
+        : {}),
+      ...(usage.cache_creation_input_tokens
+        ? { cacheCreationInputTokens: usage.cache_creation_input_tokens }
+        : {}),
     },
-    providerMetadata: { anthropic: data }
+    providerMetadata: { anthropic: data },
   };
 }
 class AnthropicModel implements Model {
@@ -334,24 +400,24 @@ class AnthropicModel implements Model {
       auto: true,
       any: true,
       none: true,
-      named: true
+      named: true,
     },
     structuredOutput: {
       jsonSchema: true,
       strictJsonSchema: true,
-      native: true
+      native: true,
     },
     input: {
       text: true,
       image: true,
-      document: true
+      document: true,
     },
     sampling: {
       temperature: true,
       topP: true,
       seed: false,
-      stopSequences: true
-    }
+      stopSequences: true,
+    },
   };
   readonly dimensions = 0;
   #client: ClientLike;
@@ -362,7 +428,17 @@ class AnthropicModel implements Model {
   #temperature: number | undefined;
   #topP: number | undefined;
   #providerOptions: Record<string, unknown> | undefined;
-  constructor(modelName: string, apiKey: string, client: ClientLike, baseUrl: string, headers: Record<string, string>, maxTokens: number, temperature: number | undefined, topP: number | undefined, providerOptions: Record<string, unknown> | undefined) {
+  constructor(
+    modelName: string,
+    apiKey: string,
+    client: ClientLike,
+    baseUrl: string,
+    headers: Record<string, string>,
+    maxTokens: number,
+    temperature: number | undefined,
+    topP: number | undefined,
+    providerOptions: Record<string, unknown> | undefined,
+  ) {
     this.id = modelName;
     this.name = modelName;
     this.#client = client;
@@ -385,28 +461,35 @@ class AnthropicModel implements Model {
     const providerOptions = this.#providerOptions;
     const modelName = this.name;
     async function* gen(): AsyncGenerator<StreamEvent> {
-      const body = buildAnthropicRequest(req, modelName, maxTokens, temperature, topP, providerOptions);
+      const body = buildAnthropicRequest(
+        req,
+        modelName,
+        maxTokens,
+        temperature,
+        topP,
+        providerOptions,
+      );
       const res = await client.request(`${baseUrl}/v1/messages`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'accept': 'text/event-stream',
+          accept: 'text/event-stream',
           'x-api-key': apiKey,
           'anthropic-version': ANTHROPIC_VERSION,
-          ...headers
+          ...headers,
         },
         body: JSON.stringify({
           ...body,
-          stream: true
+          stream: true,
         }),
-        signal: req.signal ?? null
+        signal: req.signal ?? null,
       });
       const reader = await streamFromResponse(res);
       const state: AnthropicStreamState = {
         blocks: new Map(),
         inputTokens: 0,
         cacheRead: 0,
-        cacheCreation: 0
+        cacheCreation: 0,
       };
       for await (const event of reader) {
         for (const mapped of mapAnthropicEvent(event, state)) {
@@ -417,33 +500,44 @@ class AnthropicModel implements Model {
     return new ModelStreamImpl(gen());
   }
   async generate(req: GenerateRequest): Promise<GenerateResult> {
-    const body = buildAnthropicRequest(req, this.name, this.#maxTokens, this.#temperature, this.#topP, this.#providerOptions);
+    const body = buildAnthropicRequest(
+      req,
+      this.name,
+      this.#maxTokens,
+      this.#temperature,
+      this.#topP,
+      this.#providerOptions,
+    );
     const res = await this.#client.request(`${this.#baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'accept': 'application/json',
+        accept: 'application/json',
         'x-api-key': this.#apiKey,
         'anthropic-version': ANTHROPIC_VERSION,
-        ...this.#headers
+        ...this.#headers,
       },
       body: JSON.stringify({
         ...body,
-        stream: false
+        stream: false,
       }),
-      signal: req.signal ?? null
+      signal: req.signal ?? null,
     });
     if (res.status < 200 || res.status >= 300) {
       const body = await res.text();
       throw new ModelError(`Anthropic API error ${res.status}: ${body}`, {
         status: res.status,
-        body
+        body,
       });
     }
-    return normalizeAnthropicResponse(await res.json() as Record<string, unknown>);
+    return normalizeAnthropicResponse((await res.json()) as Record<string, unknown>);
   }
   embed(_texts: string[]): Promise<Float32Array[]> {
-    return Promise.reject(new Error('Anthropic does not provide a native embeddings endpoint. Use an OpenAI-compatible provider for embeddings.'));
+    return Promise.reject(
+      new Error(
+        'Anthropic does not provide a native embeddings endpoint. Use an OpenAI-compatible provider for embeddings.',
+      ),
+    );
   }
 }
 class AnthropicModelProvider implements ModelProvider {
@@ -458,7 +552,10 @@ class AnthropicModelProvider implements ModelProvider {
   #providerOptions: Record<string, unknown> | undefined;
   constructor(opts: ProviderOptions = {}) {
     this.#apiKey = resolveApiKey(opts, 'ANTHROPIC_API_KEY');
-    this.#client = opts.client != null ? (opts.client as unknown) as ClientLike : (new HttpClient() as unknown) as ClientLike;
+    this.#client =
+      opts.client != null
+        ? (opts.client as unknown as ClientLike)
+        : (new HttpClient() as unknown as ClientLike);
     this.#baseUrl = opts.baseUrl ?? ANTHROPIC_BASE_URL;
     this.#headers = opts.headers ?? {};
     this.#maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
@@ -469,55 +566,71 @@ class AnthropicModelProvider implements ModelProvider {
   #authHeaders(headers?: Record<string, string>): Record<string, string> {
     return {
       'content-type': 'application/json',
-      'accept': 'application/json',
+      accept: 'application/json',
       'x-api-key': this.#apiKey,
       'anthropic-version': ANTHROPIC_VERSION,
       ...this.#headers,
-      ...headers ?? {}
+      ...(headers ?? {}),
     };
   }
-  async listModels(opts: {
-    signal?: AbortSignal;
-  } = {}): Promise<ModelInfo[]> {
+  async listModels(
+    opts: {
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<ModelInfo[]> {
     const url = `${this.#baseUrl}/v1/models`;
-    const res = await this.#client.request(url, {
+    const res = (await this.#client.request(url, {
       method: 'GET',
       headers: this.#authHeaders(),
-      signal: opts.signal ?? null
-    }) as ResponseLike;
+      signal: opts.signal ?? null,
+    })) as ResponseLike;
     if (res.status < 200 || res.status >= 300) {
       const body = await res.text();
       if (res.status === 404) {
-        throw new ModelListingUnsupportedError(`Anthropic provider at ${this.#baseUrl} does not support model listing (${url})`, {
-          provider: this.provider,
-          status: res.status,
-          body
-        });
+        throw new ModelListingUnsupportedError(
+          `Anthropic provider at ${this.#baseUrl} does not support model listing (${url})`,
+          {
+            provider: this.provider,
+            status: res.status,
+            body,
+          },
+        );
       }
       throw new ModelError(`Anthropic API error ${res.status}: ${body}`, {
         status: res.status,
-        body
+        body,
       });
     }
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       data?: Array<Record<string, unknown>>;
     };
     return (data.data ?? []).map((entry) => this.#info(entry));
   }
   async createModel(id: string, opts: ModelCreateOptions = {}): Promise<Model> {
-    return new AnthropicModel(id, this.#apiKey, this.#client, this.#baseUrl, {
-      ...this.#headers,
-      ...opts.headers ?? {}
-    }, opts.maxTokens ?? this.#maxTokens, opts.temperature ?? this.#temperature, opts.topP ?? this.#topP, opts.providerOptions ?? this.#providerOptions);
+    return new AnthropicModel(
+      id,
+      this.#apiKey,
+      this.#client,
+      this.#baseUrl,
+      {
+        ...this.#headers,
+        ...(opts.headers ?? {}),
+      },
+      opts.maxTokens ?? this.#maxTokens,
+      opts.temperature ?? this.#temperature,
+      opts.topP ?? this.#topP,
+      opts.providerOptions ?? this.#providerOptions,
+    );
   }
   #info(entry: Record<string, unknown>): ModelInfo {
     const id = String(entry.id);
-    const createdAt = typeof entry.created_at === 'string' ? Date.parse(entry.created_at) : undefined;
+    const createdAt =
+      typeof entry.created_at === 'string' ? Date.parse(entry.created_at) : undefined;
     return {
       id,
       provider: this.provider,
-      ...typeof entry.display_name === 'string' ? { displayName: entry.display_name } : {},
-      ...createdAt !== undefined && !Number.isNaN(createdAt) ? { createdAt } : {},
+      ...(typeof entry.display_name === 'string' ? { displayName: entry.display_name } : {}),
+      ...(createdAt !== undefined && !Number.isNaN(createdAt) ? { createdAt } : {}),
       capabilities: {
         streaming: true,
         toolCalling: true,
@@ -525,109 +638,121 @@ class AnthropicModelProvider implements ModelProvider {
           auto: true,
           any: true,
           none: true,
-          named: true
+          named: true,
         },
         structuredOutput: {
           jsonSchema: true,
           strictJsonSchema: true,
-          native: true
+          native: true,
         },
         input: {
           text: true,
           image: true,
-          document: true
+          document: true,
         },
         sampling: {
           temperature: true,
           topP: true,
           seed: false,
-          stopSequences: true
-        }
+          stopSequences: true,
+        },
       },
       metadata: { ...entry },
-      create: (opts?: ModelCreateOptions) => this.createModel(id, opts)
+      create: (opts?: ModelCreateOptions) => this.createModel(id, opts),
     };
   }
 }
 /**
-* Create a discovery-capable Anthropic model provider.
-*
-* Options passed here become the defaults for every model the provider
-* constructs: `apiKey` (defaults to the `ANTHROPIC_API_KEY` environment
-* variable), `baseUrl`, extra `headers`, `maxTokens`, `temperature`, `topP`,
-* and provider-specific `providerOptions`. `createModel()` accepts per-model
-* overrides that are layered on top of those defaults.
-*
-* `listModels()` calls `GET /v1/models` on `baseUrl` — the public Anthropic
-* API origin by default — and returns one `ModelInfo` per discovered id,
-* carrying the raw listing entry in `metadata` and a `create()` closure that
-* delegates to `createModel()`. If the endpoint responds 404, common for
-* Anthropic-compatible proxies that only implement `/v1/messages`, listing
-* throws `ModelListingUnsupportedError`; any other non-2xx response throws
-* `ModelError` with the HTTP status and body.
-*
-* Throws if no API key is passed and `ANTHROPIC_API_KEY` is unset.
-*
-* ```ts no_run
-* import { anthropicProvider } from 'fino:ai/model/anthropic';
-*
-* const provider = anthropicProvider({ maxTokens: 2048 });
-*
-* const models = await provider.listModels();
-* const opus = models.find((info) => info.id.startsWith('claude-opus'));
-* const model = await opus!.create({ temperature: 0.2 });
-*
-* const result = await model.generate({
-*   messages: [{ role: 'user', content: 'Summarize the release notes.' }],
-* });
-* console.log(result.text, result.usage.outputTokens);
-* ```
-*/
+ * Create a discovery-capable Anthropic model provider.
+ *
+ * Options passed here become the defaults for every model the provider
+ * constructs: `apiKey` (defaults to the `ANTHROPIC_API_KEY` environment
+ * variable), `baseUrl`, extra `headers`, `maxTokens`, `temperature`, `topP`,
+ * and provider-specific `providerOptions`. `createModel()` accepts per-model
+ * overrides that are layered on top of those defaults.
+ *
+ * `listModels()` calls `GET /v1/models` on `baseUrl` — the public Anthropic
+ * API origin by default — and returns one `ModelInfo` per discovered id,
+ * carrying the raw listing entry in `metadata` and a `create()` closure that
+ * delegates to `createModel()`. If the endpoint responds 404, common for
+ * Anthropic-compatible proxies that only implement `/v1/messages`, listing
+ * throws `ModelListingUnsupportedError`; any other non-2xx response throws
+ * `ModelError` with the HTTP status and body.
+ *
+ * Throws if no API key is passed and `ANTHROPIC_API_KEY` is unset.
+ *
+ * ```ts no_run
+ * import { anthropicProvider } from 'fino:ai/model/anthropic';
+ *
+ * const provider = anthropicProvider({ maxTokens: 2048 });
+ *
+ * const models = await provider.listModels();
+ * const opus = models.find((info) => info.id.startsWith('claude-opus'));
+ * const model = await opus!.create({ temperature: 0.2 });
+ *
+ * const result = await model.generate({
+ *   messages: [{ role: 'user', content: 'Summarize the release notes.' }],
+ * });
+ * console.log(result.text, result.usage.outputTokens);
+ * ```
+ */
 export function anthropicProvider(opts: ProviderOptions = {}): ModelProvider {
   return new AnthropicModelProvider(opts);
 }
 /**
-* Create an Anthropic-backed `Model` in one call.
-*
-* `model` selects the Anthropic model id and defaults to `claude-opus-4-8`.
-* `apiKey` defaults to the `ANTHROPIC_API_KEY` environment variable; the call
-* throws immediately when neither is available. Anthropic requires
-* `max_tokens` on every request, so the adapter fills in `maxTokens` (default
-* 4096) whenever a request does not set its own. `temperature`, `topP`, extra
-* `headers`, and `baseUrl` set per-model defaults, and fields under
-* `providerOptions.anthropic` are merged verbatim into the request body — the
-* escape hatch for Anthropic parameters the neutral request shape does not
-* model.
-*
-* The returned model supports `generate()` for buffered responses and
-* `stream()` for incremental `StreamEvent` values — text deltas, tool-call
-* assembly, and usage including cache read/creation token counts. Tool
-* calling works with every `toolChoice` mode, and `responseFormat` with
-* `type: 'json_schema'` maps to Anthropic's native structured-output support.
-* Non-2xx responses from either path reject with `ModelError` carrying the
-* HTTP status and body. `embed()` always rejects: Anthropic exposes no
-* embeddings endpoint through this adapter.
-*
-* Override `client` in tests or custom runtimes that provide their own HTTP
-* transport.
-*
-* ```ts no_run
-* import { anthropic } from 'fino:ai/model/anthropic';
-*
-* const model = anthropic({ model: 'claude-opus-4-8', maxTokens: 8192 });
-*
-* const stream = model.stream({
-*   system: 'You are a terse release-note writer.',
-*   messages: [{ role: 'user', content: 'Draft notes for the 1.4 release.' }],
-* });
-* let text = '';
-* for await (const event of stream) {
-*   if (event.type === 'text_delta') text += event.text;
-* }
-* const result = await stream.result();
-* console.log(text, result.stopReason, result.usage.outputTokens);
-* ```
-*/
+ * Create an Anthropic-backed `Model` in one call.
+ *
+ * `model` selects the Anthropic model id and defaults to `claude-opus-4-8`.
+ * `apiKey` defaults to the `ANTHROPIC_API_KEY` environment variable; the call
+ * throws immediately when neither is available. Anthropic requires
+ * `max_tokens` on every request, so the adapter fills in `maxTokens` (default
+ * 4096) whenever a request does not set its own. `temperature`, `topP`, extra
+ * `headers`, and `baseUrl` set per-model defaults, and fields under
+ * `providerOptions.anthropic` are merged verbatim into the request body — the
+ * escape hatch for Anthropic parameters the neutral request shape does not
+ * model.
+ *
+ * The returned model supports `generate()` for buffered responses and
+ * `stream()` for incremental `StreamEvent` values — text deltas, tool-call
+ * assembly, and usage including cache read/creation token counts. Tool
+ * calling works with every `toolChoice` mode, and `responseFormat` with
+ * `type: 'json_schema'` maps to Anthropic's native structured-output support.
+ * Non-2xx responses from either path reject with `ModelError` carrying the
+ * HTTP status and body. `embed()` always rejects: Anthropic exposes no
+ * embeddings endpoint through this adapter.
+ *
+ * Override `client` in tests or custom runtimes that provide their own HTTP
+ * transport.
+ *
+ * ```ts no_run
+ * import { anthropic } from 'fino:ai/model/anthropic';
+ *
+ * const model = anthropic({ model: 'claude-opus-4-8', maxTokens: 8192 });
+ *
+ * const stream = model.stream({
+ *   system: 'You are a terse release-note writer.',
+ *   messages: [{ role: 'user', content: 'Draft notes for the 1.4 release.' }],
+ * });
+ * let text = '';
+ * for await (const event of stream) {
+ *   if (event.type === 'text_delta') text += event.text;
+ * }
+ * const result = await stream.result();
+ * console.log(text, result.stopReason, result.usage.outputTokens);
+ * ```
+ */
 export function anthropic(opts: ProviderOptions = {}): Model {
-  return new AnthropicModel(opts.model ?? 'claude-opus-4-8', resolveApiKey(opts, 'ANTHROPIC_API_KEY'), opts.client != null ? (opts.client as unknown) as ClientLike : (new HttpClient() as unknown) as ClientLike, opts.baseUrl ?? ANTHROPIC_BASE_URL, opts.headers ?? {}, opts.maxTokens ?? DEFAULT_MAX_TOKENS, opts.temperature, opts.topP, opts.providerOptions);
+  return new AnthropicModel(
+    opts.model ?? 'claude-opus-4-8',
+    resolveApiKey(opts, 'ANTHROPIC_API_KEY'),
+    opts.client != null
+      ? (opts.client as unknown as ClientLike)
+      : (new HttpClient() as unknown as ClientLike),
+    opts.baseUrl ?? ANTHROPIC_BASE_URL,
+    opts.headers ?? {},
+    opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+    opts.temperature,
+    opts.topP,
+    opts.providerOptions,
+  );
 }

@@ -1,5 +1,14 @@
 import { describe, it } from 'fino:test/test';
-import { batch, computed, createSignal, effect, fromIterable, lazy, observeReads, type ReadonlySignal } from 'fino:signals';
+import {
+  batch,
+  computed,
+  createSignal,
+  effect,
+  fromIterable,
+  lazy,
+  observeReads,
+  type ReadonlySignal,
+} from 'fino:signals';
 import { createSignal as createUiSignal, batch as uiBatch } from 'fino:ui';
 
 describe('fino:signals basics', () => {
@@ -16,14 +25,21 @@ describe('fino:signals basics', () => {
     dispose();
     count.set(4);
     t.equal(count.get(), 4, 'value updates after unsubscribe');
-    t.deepEqual(seen, [[1, 0], [3, 1]], 'batch reports previous and final values once');
+    t.deepEqual(
+      seen,
+      [
+        [1, 0],
+        [3, 1],
+      ],
+      'batch reports previous and final values once',
+    );
   });
 
   it('tracks reads for computed values and effects with dynamic dependencies', (t) => {
     const useA = createSignal(true);
     const a = createSignal(1);
     const b = createSignal(10);
-    const selected = computed(() => useA.get() ? a.get() : b.get());
+    const selected = computed(() => (useA.get() ? a.get() : b.get()));
     const values: number[] = [];
     const stop = effect(() => {
       values.push(selected.get());
@@ -43,7 +59,10 @@ describe('fino:signals basics', () => {
     const reads = observeReads(() => `${a.get()}-${b.get()}`);
     t.equal(reads.value, 'a-b', 'returns callback value');
     t.equal(reads.signals.length, 2, 'captures both read signals');
-    t.ok(reads.signals.every((sig) => typeof sig.subscribe === 'function'), 'captures readonly signal handles');
+    t.ok(
+      reads.signals.every((sig) => typeof sig.subscribe === 'function'),
+      'captures readonly signal handles',
+    );
   });
 
   it('starts lazy producers only while subscribed', (t) => {

@@ -1,13 +1,13 @@
 /**
-* Tests for CompressionStream and DecompressionStream globals.
-*
-* Verifies:
-*   - Format support: 'gzip', 'deflate', 'deflate-raw'
-*   - Invalid format rejection
-*   - Roundtrip identity (compress → decompress recovers original data)
-*   - Interop with fino:compress one-shot API
-*   - pipeThrough integration with ReadableStream
-*/
+ * Tests for CompressionStream and DecompressionStream globals.
+ *
+ * Verifies:
+ *   - Format support: 'gzip', 'deflate', 'deflate-raw'
+ *   - Invalid format rejection
+ *   - Roundtrip identity (compress → decompress recovers original data)
+ *   - Interop with fino:compress one-shot API
+ *   - pipeThrough integration with ReadableStream
+ */
 import { describe, it } from 'fino:test/test';
 import { brotliAvailable, compress, decompress } from 'fino:compress';
 /** Encode a string to Uint8Array. */
@@ -38,7 +38,10 @@ async function collect(readable: ReadableStream<Uint8Array>): Promise<Uint8Array
   return out;
 }
 /** Pipe data through a compression/decompression stream and collect output. */
-async function pipe(stream: CompressionStream | DecompressionStream, data: string | Uint8Array): Promise<Uint8Array> {
+async function pipe(
+  stream: CompressionStream | DecompressionStream,
+  data: string | Uint8Array,
+): Promise<Uint8Array> {
   const writer = stream.writable.getWriter();
   await writer.write((data instanceof Uint8Array ? data : enc(data)) as any);
   await writer.close();
@@ -86,7 +89,11 @@ describe('roundtrips', () => {
   });
   it('CompressionStream / DecompressionStream: brotli roundtrip when available', async (t) => {
     if (!brotliAvailable) {
-      t.throws(() => new CompressionStream('brotli' as any), /brotli library not available/i, 'brotli construction reports missing backend');
+      t.throws(
+        () => new CompressionStream('brotli' as any),
+        /brotli library not available/i,
+        'brotli construction reports missing backend',
+      );
       return;
     }
     const original = enc('brotli stream '.repeat(50));
@@ -110,21 +117,21 @@ describe('interop', () => {
   });
   it('pipeThrough CompressionStream then DecompressionStream', async (t) => {
     const original = enc('pipeThrough test '.repeat(30));
-    const source = new ReadableStream({ start(controller) {
-      controller.enqueue(original);
-      controller.close();
-    } });
-    const result = await collect(source.pipeThrough(new CompressionStream('gzip')).pipeThrough(new DecompressionStream('gzip')));
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(original);
+        controller.close();
+      },
+    });
+    const result = await collect(
+      source
+        .pipeThrough(new CompressionStream('gzip'))
+        .pipeThrough(new DecompressionStream('gzip')),
+    );
     t.equal(dec(result), dec(original), 'pipeThrough roundtrip');
   });
   it('CompressionStream handles multiple write() calls', async (t) => {
-    const parts = [
-      'hello ',
-      'world',
-      ', this ',
-      'is ',
-      'multi-chunk'
-    ];
+    const parts = ['hello ', 'world', ', this ', 'is ', 'multi-chunk'];
     const original = enc(parts.join(''));
     const cs = new CompressionStream('gzip');
     const writer = cs.writable.getWriter();
@@ -160,7 +167,10 @@ describe('ArrayBuffer input', () => {
   it('CompressionStream accepts ArrayBuffer (not Uint8Array) input', async (t) => {
     const original = enc('ArrayBuffer input test');
     // Pass raw ArrayBuffer instead of Uint8Array
-    const ab = original.buffer.slice(original.byteOffset, original.byteOffset + original.byteLength);
+    const ab = original.buffer.slice(
+      original.byteOffset,
+      original.byteOffset + original.byteLength,
+    );
     const cs = new CompressionStream('gzip');
     const writer = cs.writable.getWriter();
     await writer.write(ab as any);
@@ -173,14 +183,7 @@ describe('ArrayBuffer input', () => {
 describe('invalid/truncated compressed data', () => {
   it('DecompressionStream: non-gzip data propagates an error on readable', async (t) => {
     // Bytes that are clearly not gzip (no 0x1f 0x8b magic number)
-    const garbage = new Uint8Array([
-      0,
-      1,
-      2,
-      3,
-      4,
-      5
-    ]);
+    const garbage = new Uint8Array([0, 1, 2, 3, 4, 5]);
     const ds = new DecompressionStream('gzip');
     const writer = ds.writable.getWriter();
     writer.write(garbage as any);
@@ -198,7 +201,11 @@ describe('non-buffer data written to writable side', () => {
   it('writing a string to CompressionStream throws TypeError', async (t) => {
     const cs = new CompressionStream('gzip');
     const writer = cs.writable.getWriter();
-    await t.rejects(() => writer.write('this is a string, not a buffer' as any), /BufferSource/, 'string input throws TypeError');
+    await t.rejects(
+      () => writer.write('this is a string, not a buffer' as any),
+      /BufferSource/,
+      'string input throws TypeError',
+    );
   });
   it('DataView input is accepted', async (t) => {
     const original = enc('DataView input test');
@@ -223,7 +230,11 @@ describe('non-buffer data written to writable side', () => {
     await writer.close();
     const compressed = await collect(cs.readable);
     const decompressed = decompress(compressed, { format: 'gzip' });
-    t.equal(dec(decompressed.slice(0, original.byteLength)), dec(original), 'Int32Array input accepted');
+    t.equal(
+      dec(decompressed.slice(0, original.byteLength)),
+      dec(original),
+      'Int32Array input accepted',
+    );
   });
 });
 describe('truncated compressed data', () => {
@@ -253,10 +264,18 @@ describe('truncated compressed data', () => {
 describe('[Symbol.toStringTag]', () => {
   it('CompressionStream has correct toStringTag', (t) => {
     const cs = new CompressionStream('gzip');
-    t.equal(((cs as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'CompressionStream', 'CompressionStream toStringTag');
+    t.equal(
+      (cs as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'CompressionStream',
+      'CompressionStream toStringTag',
+    );
   });
   it('DecompressionStream has correct toStringTag', (t) => {
     const ds = new DecompressionStream('gzip');
-    t.equal(((ds as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'DecompressionStream', 'DecompressionStream toStringTag');
+    t.equal(
+      (ds as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'DecompressionStream',
+      'DecompressionStream toStringTag',
+    );
   });
 });

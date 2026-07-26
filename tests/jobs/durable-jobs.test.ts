@@ -1,7 +1,7 @@
 /**
-* Tests for durable tasks running as jobs: parking, scheduler-driven
-* resumption, signals, and restart recovery.
-*/
+ * Tests for durable tasks running as jobs: parking, scheduler-driven
+ * resumption, signals, and restart recovery.
+ */
 import { describe, it } from 'fino:test/test';
 import { Jobs } from 'fino:jobs';
 import { durableTask } from 'fino:task/durable';
@@ -35,12 +35,12 @@ describe('fino:jobs durable tasks', () => {
           return null;
         });
         return phases.length;
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
       tasks: [napper],
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     const job = await jobs.push('napper', null);
     const deadline = Date.now() + 3_000;
@@ -65,12 +65,12 @@ describe('fino:jobs durable tasks', () => {
       run: async (_input: null, ctx) => {
         const approval = await ctx.waitForSignal<{ by: string }>('approve');
         return approval.by;
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
       tasks: [gate],
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     const job = await jobs.push('gate', null);
     const deadline = Date.now() + 5_000;
@@ -87,25 +87,26 @@ describe('fino:jobs durable tasks', () => {
   it('recovers a parked job across a restart without re-running steps', async (t) => {
     const path = tempPath();
     const sideEffects: string[] = [];
-    const makeTask = () => durableTask({
-      name: 'restartable-job',
-      run: async (_input: null, ctx) => {
-        await ctx.step('first', () => {
-          sideEffects.push('first');
-          return null;
-        });
-        await ctx.sleep('nap', 200);
-        await ctx.step('second', () => {
-          sideEffects.push('second');
-          return null;
-        });
-        return sideEffects.join(',');
-      }
-    });
+    const makeTask = () =>
+      durableTask({
+        name: 'restartable-job',
+        run: async (_input: null, ctx) => {
+          await ctx.step('first', () => {
+            sideEffects.push('first');
+            return null;
+          });
+          await ctx.sleep('nap', 200);
+          await ctx.step('second', () => {
+            sideEffects.push('second');
+            return null;
+          });
+          return sideEffects.join(',');
+        },
+      });
     const first = await Jobs.open({
       path,
       tasks: [makeTask()],
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     const job = await first.push('restartable-job', null);
     const deadline = Date.now() + 3_000;
@@ -120,7 +121,7 @@ describe('fino:jobs durable tasks', () => {
     await using second = await Jobs.open({
       path,
       tasks: [makeTask()],
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     const done = await second.wait(job.id, { timeoutMs: 10_000 });
     t.equal(done.status, 'done', 'parked job completed after restart');
@@ -135,15 +136,15 @@ describe('fino:jobs durable tasks', () => {
           await ctx.sleep(`nap-${i}`, 40);
         }
         return 'rested';
-      }
+      },
     });
     await using jobs = await Jobs.open({
       path: tempPath(),
       tasks: [multiNap],
-      pollIntervalMs: 25
+      pollIntervalMs: 25,
     });
     const job = await jobs.push('multi-nap', null, {
-      retry: { maxAttempts: 2 }
+      retry: { maxAttempts: 2 },
     });
     const done = await jobs.wait(job.id, { timeoutMs: 15_000 });
     t.equal(done.status, 'done', 'four parks resumed despite maxAttempts of 2');

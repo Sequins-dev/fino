@@ -1,10 +1,10 @@
 /**
-* Tests for verifyTarballIntegrity in internal:package_manager.
-*
-* These tests are hermetic: they compute SRI / SHA-1 over a known byte
-* sequence at runtime using the same openssl helpers the production code
-* uses, so they don't rely on external packages or network access.
-*/
+ * Tests for verifyTarballIntegrity in internal:package_manager.
+ *
+ * These tests are hermetic: they compute SRI / SHA-1 over a known byte
+ * sequence at runtime using the same openssl helpers the production code
+ * uses, so they don't rely on external packages or network access.
+ */
 import { describe, it } from 'fino:test/test';
 import { verifyTarballIntegrity } from '../../js/internal/package_manager.ts';
 import * as openssl from '../../js/internal/openssl.ts';
@@ -19,14 +19,16 @@ function toBase64(bytes: Uint8Array): string {
     const b1 = bytes[i + 1] ?? 0;
     const b2 = bytes[i + 2] ?? 0;
     b64 += chars[b0 >> 2]!;
-    b64 += chars[(b0 & 3) << 4 | b1 >> 4]!;
-    b64 += i + 1 < bytes.length ? chars[(b1 & 15) << 2 | b2 >> 6]! : '=';
+    b64 += chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+    b64 += i + 1 < bytes.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
     b64 += i + 2 < bytes.length ? chars[b2 & 63]! : '=';
   }
   return b64;
 }
 function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 const PAYLOAD = new TextEncoder().encode('fino test tarball payload');
 // ---------------------------------------------------------------------------
@@ -73,7 +75,11 @@ describe('verifyTarballIntegrity — SRI (dist.integrity)', () => {
       t.ok(true, 'OpenSSL not available — skipping');
       return;
     }
-    t.throws(() => verifyTarballIntegrity(PAYLOAD, 'sha3-abc123', undefined, 'test-pkg@1.0.0'), /unsupported integrity algorithm/, 'unknown algorithm rejected');
+    t.throws(
+      () => verifyTarballIntegrity(PAYLOAD, 'sha3-abc123', undefined, 'test-pkg@1.0.0'),
+      /unsupported integrity algorithm/,
+      'unknown algorithm rejected',
+    );
   });
 });
 describe('verifyTarballIntegrity — shasum (dist.shasum, SHA-1 legacy)', () => {
@@ -128,7 +134,11 @@ describe('verifyTarballIntegrity — malformed / unrecognised SRI (B3)', () => {
     }
   });
   it('throws when integrity uses an unsupported algorithm and no shasum', (t) => {
-    t.throws(() => verifyTarballIntegrity(PAYLOAD, 'md5-deadbeef', undefined, 'test-pkg@1.0.0'), /unsupported integrity algorithm/, 'unknown algorithm rejected without legacy shasum fallback');
+    t.throws(
+      () => verifyTarballIntegrity(PAYLOAD, 'md5-deadbeef', undefined, 'test-pkg@1.0.0'),
+      /unsupported integrity algorithm/,
+      'unknown algorithm rejected without legacy shasum fallback',
+    );
   });
   it('falls through to shasum when integrity has unknown algorithm and shasum is correct', (t) => {
     if (!openssl.cryptoAvailable) {
@@ -162,7 +172,12 @@ describe('B3 regression: verifyTarballIntegrity throws on mismatch (cleanup guar
     const correctSha256 = toBase64(sha256Digest);
     const wrongSha512 = toBase64(new Uint8Array(64));
     try {
-      verifyTarballIntegrity(PAYLOAD, `sha256-${correctSha256} sha512-${wrongSha512}`, undefined, 'mismatch-pkg@1.0.0');
+      verifyTarballIntegrity(
+        PAYLOAD,
+        `sha256-${correctSha256} sha512-${wrongSha512}`,
+        undefined,
+        'mismatch-pkg@1.0.0',
+      );
       t.fail('should have thrown on wrong strongest-supported hash');
     } catch (err) {
       t.ok(err instanceof Error, 'throws Error on mismatch');
@@ -178,7 +193,12 @@ describe('verifyTarballIntegrity — multi-value SRI (space-separated)', () => {
     }
     const digest = openssl.digest('sha-512', PAYLOAD);
     const correctHash = toBase64(digest);
-    verifyTarballIntegrity(PAYLOAD, `sha3-unsupported sha512-${correctHash}`, undefined, 'test-pkg@1.0.0');
+    verifyTarballIntegrity(
+      PAYLOAD,
+      `sha3-unsupported sha512-${correctHash}`,
+      undefined,
+      'test-pkg@1.0.0',
+    );
     t.ok(true, 'multi-value SRI: supported token after unsupported token verified');
   });
   it('verifies the strongest supported token in a multi-value SRI string', (t) => {
@@ -190,7 +210,12 @@ describe('verifyTarballIntegrity — multi-value SRI (space-separated)', () => {
     const correctSha256 = toBase64(sha256Digest);
     const wrongSha512 = toBase64(new Uint8Array(64));
     try {
-      verifyTarballIntegrity(PAYLOAD, `sha256-${correctSha256} sha512-${wrongSha512}`, undefined, 'bad-pkg@1.0.0');
+      verifyTarballIntegrity(
+        PAYLOAD,
+        `sha256-${correctSha256} sha512-${wrongSha512}`,
+        undefined,
+        'bad-pkg@1.0.0',
+      );
       t.fail('should have thrown on wrong strongest-supported hash');
     } catch (err) {
       t.ok(err instanceof Error, 'throws an Error');
