@@ -149,9 +149,9 @@ export interface SerializedSpawnConfig {
   /**
    * Entry module path for the child realm.
    *
-   * The path is passed through unchanged to `createThreadContext`; resolution
-   * failures happen when the target node starts the realm, not during protocol
-   * decoding.
+   * The path is passed through unchanged to the target node's reactor
+   * scheduler; resolution failures happen when the target node starts the
+   * realm, not during protocol decoding.
    *
    * ```ts
    * const config = { entry: '/app/main.ts', root: '/app', rules: [] };
@@ -188,7 +188,7 @@ export interface SerializedSpawnConfig {
    *
    * The cluster layer treats this value as opaque JSON. The target node
    * serializes it for `internal:realm-bridge.getRealmBootstrapData()` when it
-   * creates the child thread realm.
+   * creates the reactor-pooled child realm.
    *
    * ```ts
    * const config = { entry: 'main.ts', root: '.', rules: [], bootstrapData: { cliOtel: { endpoint: 'http://127.0.0.1:4318' } } };

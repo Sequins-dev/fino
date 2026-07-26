@@ -294,7 +294,7 @@ export class DiskFileSystem extends FileSystem {
       fd = result.res;
       if (fd < 0) throwErrnoCode('open', s, fd);
     } else {
-      // macOS: synchronous open(2).
+      // macOS and reactor-pooled Linux: open in this TypeScript isolate.
       // Note: libffi on macOS ARM64 may not correctly pass the mode argument
       // to the variadic open(2) syscall. Use fchmod to ensure newly-created
       // files get standard permissions (rw-r--r--) regardless.

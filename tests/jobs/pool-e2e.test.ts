@@ -1,14 +1,11 @@
 /**
- * End-to-end tests for pool processors: Task files as worker definitions,
- * exclusive-pool execution, facade-proxied durable checkpoints, and generic
- * Task-as-worker pools outside fino:jobs.
+ * End-to-end tests for reactor-pooled job processors: Task files as worker
+ * definitions, fresh Realm execution, and facade-proxied checkpoints.
  */
 import { describe, it } from 'fino:test/test';
 import { Jobs } from 'fino:jobs';
-import { RealmPool } from 'fino:realm/pool';
 import { sqliteAvailable } from 'fino:database/sqlite';
 import { env, exit } from 'fino:process';
-import type { JobsWireResult } from 'internal:jobs/runner';
 
 if (!sqliteAvailable) {
   if (env.FINO_REQUIRE_SQLITE === '1') throw new Error('sqlite required but unavailable');
@@ -21,8 +18,8 @@ function tempPath(suffix = 'db'): string {
 }
 const workerEntry = new URL('./fixtures/worker-task.ts', import.meta.url).pathname;
 
-describe('fino:jobs pool processors', () => {
-  it('runs jobs in an exclusive pool from a Task-file entry', async (t) => {
+describe('fino:jobs Realm processors', () => {
+  it('runs jobs in fresh pooled Realms from a Task-file entry', async (t) => {
     await using jobs = await Jobs.open({
       path: tempPath(),
       pollIntervalMs: 50,
@@ -39,7 +36,7 @@ describe('fino:jobs pool processors', () => {
     const rootDone = await jobs.wait(root.id, { timeoutMs: 30_000 });
     t.equal(rootDone.result, 'root-ok', 'task-tree root is registered too');
   });
-  it('durable job in a pool worker checkpoints through the facade', async (t) => {
+  it('durable job in a Realm worker checkpoints through the facade', async (t) => {
     await using jobs = await Jobs.open({
       path: tempPath(),
       pollIntervalMs: 40,
@@ -79,27 +76,5 @@ describe('fino:jobs pool processors', () => {
     t.equal(done.status, 'done', 'second attempt succeeded');
     t.equal(done.result, 'second-try', 'retry ran in a fresh realm and saw the marker');
     t.equal(done.attempts, 2, 'exactly two attempts consumed');
-  });
-  it('a plain RealmPool accepts a Task-file entry directly', async (t) => {
-    const pool = new RealmPool({
-      entry: workerEntry,
-      size: 1,
-      exclusive: true,
-    });
-    try {
-      const names = (await pool.call({ kind: 'tasks' })) as string[];
-      t.ok(names.includes('pool-double'), 'worker reports its task registry');
-      const result = (await pool.call({
-        kind: 'run',
-        jobId: 'adhoc-1',
-        task: 'pool-double',
-        input: { v: 5 },
-        attempt: 1,
-      })) as JobsWireResult;
-      t.ok('ok' in result && result.ok, 'dispatcher executed the task');
-      t.equal((result as { output: unknown }).output, 10, 'result came back over the pool wire');
-    } finally {
-      await pool.close();
-    }
   });
 });

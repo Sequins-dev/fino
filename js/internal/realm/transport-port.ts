@@ -12,7 +12,7 @@ import { EventTarget, _markEventTrusted } from '../../globals/eventtarget.ts';
 import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
 import { nativeSend, nativeRecv } from 'internal:thread-port';
-import { threadPortSend, threadPortRecv } from 'internal:realm-native';
+import { scheduledRealmRecv, scheduledRealmSend } from 'internal:scheduler-native';
 import { createTransitChannel } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
@@ -182,11 +182,8 @@ export abstract class BaseTransportPort extends EventTarget {
 /**
  * Drain one batch of messages from a thread-port receive queue.
  */
-function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, number][]][] {
-  const raw =
-    handle !== null
-      ? (threadPortRecv as (h: number) => unknown)(handle)
-      : (nativeRecv as () => unknown)();
+function _recvThreadMessages(): [Uint8Array[], [number, number][]][] {
+  const raw = (nativeRecv as () => unknown)();
   return raw as [Uint8Array[], [number, number][]][];
 }
 
@@ -209,14 +206,6 @@ export class ThreadPort extends BaseTransportPort {
    */
   #wakeReadFd: number;
   /**
-   * Thread context handle. Non-null on the parent side, which routes through
-   * handle-indexed native ops; null on the child side, which uses the FinoState
-   * channel.
-   *
-   * @internal
-   */
-  #handle: number | null;
-  /**
    * Current onmessageerror handler.
    *
    * @internal
@@ -227,10 +216,9 @@ export class ThreadPort extends BaseTransportPort {
    *
    * @internal
    */
-  constructor(wakeReadFd: number, handle?: number) {
+  constructor(wakeReadFd: number) {
     super();
     this.#wakeReadFd = wakeReadFd;
-    this.#handle = handle ?? null;
   }
   /**
    * Serialize and send a message to the opposite thread endpoint.
@@ -270,17 +258,11 @@ export class ThreadPort extends BaseTransportPort {
     );
     const data = serResult[0];
     const stores = serResult.length > 1 ? serResult.slice(1) : ([] as Uint8Array[]);
-    if (this.#handle !== null) {
-      (
-        threadPortSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void
-      )(this.#handle, data, stores, portInfos);
-    } else {
-      (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
-        data,
-        stores,
-        portInfos,
-      );
-    }
+    (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
+      data,
+      stores,
+      portInfos,
+    );
   }
   /**
    * Start watching the wake fd for incoming messages.
@@ -331,13 +313,100 @@ export class ThreadPort extends BaseTransportPort {
    * @internal
    */
   _drain(): void {
-    const messages = _recvThreadMessages(this.#handle);
+    const messages = _recvThreadMessages();
     for (const [byteArr, portArr] of messages as any[]) {
       const [buf, ...stores] = byteArr as Uint8Array[];
       if (!buf) continue;
       const ports = (portArr as [number, number][]).map(([h, wfd]) =>
         MessagePort._fromTransit(h, wfd),
       );
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
+    }
+  }
+}
+
+/**
+ * Parent-side transport for a realm scheduled on the process reactor pool.
+ *
+ * @internal
+ */
+export class ScheduledPort extends BaseTransportPort {
+  #wakeReadFd: number;
+  #handle: number;
+  #onmessageerror: ((ev: Event) => void) | null = null;
+
+  constructor(wakeReadFd: number, handle: number) {
+    super();
+    this.#wakeReadFd = wakeReadFd;
+    this.#handle = handle;
+  }
+
+  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
+    if (this._closed) return;
+    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
+      ? (transferOrOpts as Transferable[])
+      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
+    const transferABs: ArrayBuffer[] = [];
+    const portInfos: [number, number][] = [];
+    for (const item of rawTransfer ?? []) {
+      if (item instanceof ArrayBuffer) {
+        transferABs.push(item);
+      } else if (item instanceof MessagePort) {
+        const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (
+          createTransitChannel as () => {
+            p2Handle: number;
+            p2WakeReadFd: number;
+            qHandle: number;
+            qWakeReadFd: number;
+          }
+        )();
+        item._transferCrossThread(p2Handle, p2WakeReadFd);
+        portInfos.push([qHandle, qWakeReadFd]);
+      } else {
+        throw new TypeError(
+          'ScheduledPort transfer list only supports ArrayBuffer and MessagePort values',
+        );
+      }
+    }
+    const [data, ...stores] = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+      message,
+      transferABs.length > 0 ? transferABs : undefined,
+    );
+    scheduledRealmSend(this.#handle, data!, stores, portInfos);
+  }
+
+  protected override _onStart(): void {
+    void this.#watchLoop();
+  }
+
+  protected override _onClose(): void {
+    removeRead(this.#wakeReadFd);
+  }
+
+  get onmessageerror() {
+    return this.#onmessageerror;
+  }
+
+  set onmessageerror(fn: ((ev: Event) => void) | null) {
+    if (this.#onmessageerror !== null)
+      this.removeEventListener('messageerror', this.#onmessageerror);
+    this.#onmessageerror = typeof fn === 'function' ? fn : null;
+    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror);
+  }
+
+  async #watchLoop(): Promise<void> {
+    while (!this._closed) {
+      await readable(this.#wakeReadFd);
+      if (this._closed) break;
+      this.#drain();
+    }
+  }
+
+  #drain(): void {
+    for (const [byteArr, portArr] of scheduledRealmRecv(this.#handle)) {
+      const [buf, ...stores] = byteArr;
+      if (!buf) continue;
+      const ports = portArr.map(([handle, wakeFd]) => MessagePort._fromTransit(handle, wakeFd));
       this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
     }
   }

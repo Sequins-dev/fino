@@ -351,7 +351,7 @@ describe('I/O watchers', () => {
   });
 });
 describe('Backend-specific loop hooks', () => {
-  it('registerWakeSource does not keep the loop alive and wakes tick()', (t) => {
+  it('registerWakeSource is omitted from reactor-pooled workload loops', async (t) => {
     const { server, client, peer } = connectedPair();
     let wakes = 0;
     try {
@@ -360,9 +360,10 @@ describe('Backend-specific loop hooks', () => {
       });
       t.equal(loop.alive(), false, 'wake source alone does not keep loop alive');
       sock.send(client, encodeUtf8('wake'), 0);
-      const dispatched = loop.tick(100);
-      t.ok(dispatched >= 1, 'wake source produced a backend event');
-      t.equal(wakes, 1, 'wake source callback ran');
+      const dispatched = loop.tick(0);
+      t.equal(dispatched, 0, 'workload does not create a private readiness backend');
+      t.equal(wakes, 0, 'workload leaves wake dispatch to the process reactor');
+      await loop.readable(peer);
       t.equal(
         decodeUtf8(requireRecv(sock.recv(peer, 64, 0))),
         'wake',
@@ -373,7 +374,7 @@ describe('Backend-specific loop hooks', () => {
       closeAll(peer, client, server);
     }
   });
-  it('vnode reports file writes on macOS and throws explicitly elsewhere', (t) => {
+  it('vnode reports file writes on macOS and throws explicitly elsewhere', async (t) => {
     const path = `/tmp/fino-loop-vnode-${Math.floor(Math.random() * 1e6)}.txt`;
     const fd = fileBindings.lib.symbols.open(
       fileBindings.cstr(path),
@@ -391,13 +392,25 @@ describe('Backend-specific loop hooks', () => {
         return;
       }
       let fflags = 0;
+      let resolveVnode!: () => void;
+      const vnodeReady = new Promise<void>((resolve) => {
+        resolveVnode = resolve;
+      });
       loop.vnode(fd, NOTE_WRITE | NOTE_EXTEND, (event) => {
         fflags |= event.fflags;
+        resolveVnode();
       });
       const bytes = encodeUtf8('vnode');
       const written = fileBindings.lib.symbols.write(fd, bytes, bytes.byteLength);
       t.equal(Number(written), bytes.byteLength, 'fixture write succeeded');
-      loop.tick(1e3);
+      const timeout = loop.timeout(1e3);
+      await Promise.race([
+        vnodeReady,
+        timeout.then(() => {
+          throw new Error('vnode event timed out');
+        }),
+      ]);
+      timeout.cancel();
       loop.removeVnode(fd);
       t.ok((fflags & (NOTE_WRITE | NOTE_EXTEND)) !== 0, 'vnode callback saw write or extend flag');
     } finally {
@@ -410,7 +423,7 @@ describe('Backend-specific loop hooks', () => {
     if (backend.EVFILT_COMPLETION === undefined) {
       t.throws(
         () => loop.submit(() => {}),
-        /not supported/,
+        /not supported|unavailable/,
         'submit throws when completion backend is unavailable',
       );
       return;

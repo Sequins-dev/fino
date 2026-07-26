@@ -128,7 +128,6 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
     source_builtin!("fino:realm", "realm/index"),
     source_builtin!("fino:module", "module"),
-    source_builtin!("fino:realm/pool", "realm/pool"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
     source_builtin!(
@@ -598,9 +597,11 @@ static BUILTINS: &[BuiltinEntry] = &[
     // orchestrator + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
     source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
-    source_builtin!("internal:scheduler/command", "internal/scheduler/command"),
+    source_builtin!(
+        "internal:scheduler/bootstrap",
+        "internal/scheduler/bootstrap"
+    ),
     source_builtin!("internal:scheduler/reactor", "internal/scheduler/reactor"),
-    source_builtin!("internal:scheduler/workload", "internal/scheduler/workload"),
     source_builtin!(
         "internal:scheduler/readiness",
         "internal/scheduler/readiness"

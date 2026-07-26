@@ -1,7 +1,7 @@
 /**
  * internal:jobs/control — orchestrator-side jobs control facade.
  *
- * The orchestrator runs the real jobs service (poller, worker pools, and the
+ * The orchestrator runs the real jobs service (poller, Realm workers, and the
  * one SQLite connection) in its own realm and exposes a thin, capability-scoped
  * control surface to each app workload realm under the specifier
  * `fino:jobs/control`. The app-side `fino:jobs` module probes for this facade
@@ -75,7 +75,7 @@ async function ensureService(opts: {
       ).JobsService.open(opts);
       service.start();
       _service = service;
-      // The service's poller and worker pools keep the orchestrator loop
+      // The service's poller and Realm workers keep the orchestrator loop
       // alive; stop them when the CLI command settles so the process exits.
       registerShutdownHook(async () => {
         await service.stop();
@@ -108,7 +108,7 @@ function requireService(): JobsService {
  * @internal
  */
 class InlineRelay implements JobProcessor {
-  /** Marks this processor as inline so the service routes calls through the relay rather than a worker pool. */
+  /** Marks this processor as inline so the service routes calls through the relay rather than a Realm worker. */
   readonly kind = 'inline' as const;
   /** Task names this relay accepts; the service dispatches matching jobs to `run`. */
   readonly taskNames: string[];

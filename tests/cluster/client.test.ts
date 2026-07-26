@@ -1,6 +1,6 @@
 /**
  * Tests for internal:cluster/client — ClusterClient message handling and
- * ClusterPort._deliver, without spawning real thread realms.
+ * ClusterPort._deliver, without spawning real reactor-pooled realms.
  *
  * Uses an in-memory TestClientTransport (similar to TestSeedTransport in
  * seed.test.ts) so we can inject messages as if they arrived from the seed

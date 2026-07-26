@@ -5,11 +5,10 @@
  * microtask queue, and event loop. The parent's import rule list governs every
  * module resolution in the child; the child can layer overrides on top.
  *
- * The release baseline covers embedded realms plus isolated `thread`,
- * `process`, and `remote` modes. Thread and process realms provide lifecycle,
- * messaging, `run()`, `call()`, facade, and import-rule behavior with transport
- * parity where the underlying serializers allow it. Remote realms run over the
- * current trusted `fino:cluster` WebTransport transport and require an active
+ * Realms in the current process run as movable isolates on the shared reactor
+ * thread pool. Process realms provide hard sandbox isolation, while remote
+ * realms run on another node's reactor pool over the current trusted
+ * `fino:cluster` WebTransport transport. Remote realms require an active
  * cluster before construction. Cluster authentication, hostile-peer handling,
  * and remote `watch` / `repl` modes are outside this baseline.
  *
@@ -25,7 +24,6 @@
  *
  * const realm = new Realm({
  *   entry: './worker.ts',
- *   thread: true,
  *   overrides: ImportMap.inherit([
  *     { pattern: 'fino:process', directive: 'block' },
  *   ]),
@@ -38,11 +36,6 @@ import {
   createContext,
   stepContext,
   terminateChild,
-  createThreadContext,
-  stepThreadContext,
-  threadPortSend,
-  threadPortRecv,
-  getThreadPortWakeReadFd,
   createProcessContext,
   stepProcessContext,
   processPortSend,
@@ -52,8 +45,14 @@ import {
 } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
-import { ThreadPort, BaseTransportPort } from 'internal:realm/transport-port';
+import { ScheduledPort, BaseTransportPort } from 'internal:realm/transport-port';
 import { readable, removeRead } from 'internal:runtime/loop';
+import {
+  closeScheduledRealm,
+  createScheduledRealm,
+  registerReactorWake,
+  takeScheduledRealmStatus,
+} from 'internal:scheduler-native';
 import { serialize as _ser } from 'internal:serializer';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
@@ -740,7 +739,7 @@ class _WriteSource {
 // portObj -> (reqId -> _WriteSource) for active write streams on this port.
 const _portWriteSources = new WeakMap<object, Map<number, _WriteSource>>();
 function _getOrCreateWriteSourceRegistry(
-  port: MessagePort | ThreadPort | ProcessPort | ClusterPort,
+  port: MessagePort | ScheduledPort | ProcessPort | ClusterPort,
 ): Map<number, _WriteSource> {
   const key = port as object;
   let reg = _portWriteSources.get(key);
@@ -762,7 +761,7 @@ interface _HandleEntry {
 const _portHandleRegistries = new WeakMap<object, Map<string, _HandleEntry>>();
 let _nextHandleSeq = 0;
 function _getOrCreateHandleRegistry(
-  port: MessagePort | ThreadPort | ProcessPort | ClusterPort,
+  port: MessagePort | ScheduledPort | ProcessPort | ClusterPort,
 ): Map<string, _HandleEntry> {
   const key = port as object;
   let reg = _portHandleRegistries.get(key);
@@ -1285,7 +1284,7 @@ export class Facade {
    *
    * @internal
    */
-  _bind(port: MessagePort | ThreadPort | ProcessPort | ClusterPort): void {
+  _bind(port: MessagePort | ScheduledPort | ProcessPort | ClusterPort): void {
     const specifier = this.#specifier;
     const handlers = this.#handlers;
     const streamHandlers = this.#streamHandlers;
@@ -1823,15 +1822,14 @@ export interface RealmProviders {
 /**
  * Options for constructing and running a child realm.
  *
- * Exactly one of `thread`, `process`, or `remote` may be used for isolated
- * execution modes; enabling more than one throws during construction. Without
- * those flags, the realm is embedded in the current isolate with its own
- * context and module graph.
+ * Realms run as movable isolates on the process-wide reactor thread pool.
+ * `process: true` selects a separate sandbox process, while `remote: true`
+ * routes the realm to another cluster node.
  *
  * ```ts no_run
  * import { Realm, type RealmOptions } from 'fino:realm';
  *
- * const options: RealmOptions = { entry: './worker.ts', thread: true };
+ * const options: RealmOptions = { entry: './worker.ts' };
  * const realm = new Realm(options);
  * ```
  */
@@ -1905,21 +1903,9 @@ export interface RealmOptions {
    */
   blocked?: string[];
   /**
-   * If true, spawn the child Realm on a separate OS thread with its own
-   * V8 Isolate. Messaging uses V8 ValueSerializer over Rust mpsc channels
-   * instead of same-Isolate structured clone.
-   *
-   * ```ts no_run
-   * import type { RealmOptions } from 'fino:realm';
-   *
-   * const options: RealmOptions = { entry: './worker.ts', thread: true };
-   * ```
-   */
-  thread?: boolean;
-  /**
    * If true, spawn the child Realm as a separate OS process for hard crash
    * isolation. Messaging uses framed binary over a Unix socketpair.
-   * Mutually exclusive with `thread`.
+   * Mutually exclusive with `remote`.
    *
    * ```ts no_run
    * import type { RealmOptions } from 'fino:realm';
@@ -1932,7 +1918,7 @@ export interface RealmOptions {
    * If true, spawn the child Realm on a remote cluster node. Requires a
    * prior call to `startCluster()` or `joinCluster()` from `fino:cluster`.
    * Messaging uses the cluster PORT_MSG protocol over WebTransport.
-   * Mutually exclusive with `thread` and `process`.
+   * Mutually exclusive with `process`.
    *
    * ```ts no_run
    * import type { RealmOptions } from 'fino:realm';
@@ -1944,7 +1930,7 @@ export interface RealmOptions {
   /**
    * If true, automatically restart the child Realm whenever any file it
    * imported changes on disk. The JS `Realm` instance is stable across
-   * reloads; only the underlying V8 context / thread / process is replaced.
+   * reloads; only the underlying V8 isolate or process is replaced.
    * Not supported with `remote: true`.
    *
    * ```ts no_run
@@ -1957,8 +1943,8 @@ export interface RealmOptions {
   /**
    * If true, run this child Realm in REPL mode. The child listens for
    * `{ __eval, id, code }` messages on its port and responds with
-   * `{ __eval_result }` or `{ __eval_error }`. Embedded-only - not
-   * compatible with `thread`, `process`, `remote`, or `watch`.
+   * `{ __eval_result }` or `{ __eval_error }`. Not compatible with `process`,
+   * `remote`, or `watch`.
    *
    * ```ts no_run
    * import type { RealmOptions } from 'fino:realm';
@@ -2002,8 +1988,8 @@ export interface RealmOptions {
    */
   otlpEndpoint?: string | false;
   /**
-   * Parent-side MessagePort for communication with the child.
-   * Ignored when `thread: true` or `process: true`.
+   * Legacy parent-side MessagePort for communication with an embedded child.
+   * Ignored by reactor-pooled, process, and remote realms.
    *
    * Must be paired with `output`. If omitted, the realm constructor creates a
    * fresh `MessageChannel` and exposes the parent side as `realm.port`.
@@ -2020,7 +2006,7 @@ export interface RealmOptions {
   /**
    * Child-side MessagePort passed into the child Realm.
    * Must be provided together with `input`.
-   * Ignored when `thread: true` or `process: true`.
+   * Ignored by reactor-pooled, process, and remote realms.
    *
    * The child can import `fino:realm/self` to access this port. Passing only
    * `output` without `input` is ignored by the embedded constructor path.
@@ -2077,7 +2063,7 @@ export interface RealmSourceOptions extends Omit<RealmOptions, 'entry' | 'watch'
 // Entry function type constraint
 // ---------------------------------------------------------------------------
 /**
- * Function shape used by `Realm.call()` and `RealmPool.call()`.
+ * Function shape used by `Realm.call()`.
  *
  * A child entry module should default-export a function compatible with this
  * type when the parent intends to call it. Arguments and return values must be
@@ -2092,12 +2078,12 @@ export interface RealmSourceOptions extends Omit<RealmOptions, 'entry' | 'watch'
  */
 export type RealmFn = (...args: any[]) => any;
 // ---------------------------------------------------------------------------
-// ProcessPort - cross-process transport (mirrors ThreadPort)
+// ProcessPort - cross-process transport
 // ---------------------------------------------------------------------------
 /**
- * ProcessPort wraps the process realm native functions with the same event-loop
- * integration as ThreadPort: register the wake-fd with loop.readable(), drain
- * messages on each wake, dispatch as MessageEvents.
+ * ProcessPort wraps the process realm native functions, registers its wake fd
+ * with `loop.readable()`, drains messages on each wake, and dispatches
+ * MessageEvents.
  *
  * Process ports are created by `new Realm({ process: true })`; application code
  * normally uses the port through `realm.port`. Posting to a closed port is a
@@ -2314,7 +2300,7 @@ export class ProcessPort extends BaseTransportPort {
 // ---------------------------------------------------------------------------
 // Active children tracking
 // ---------------------------------------------------------------------------
-type RealmKind = 'embedded' | 'thread' | 'process' | 'remote';
+type RealmKind = 'embedded' | 'scheduled' | 'process' | 'remote';
 let _nextPortHandle = 0;
 let _nextSourceRealmId = 0;
 interface ActiveChild {
@@ -2328,6 +2314,19 @@ interface ActiveChild {
   onReload?: () => number | null;
 }
 const _activeChildren: ActiveChild[] = [];
+let _childStepper: ReturnType<typeof setInterval> | null = null;
+
+function _trackChild(child: ActiveChild): void {
+  _activeChildren.push(child);
+  if (_childStepper !== null) return;
+  _childStepper = setInterval(() => {
+    _stepChildren();
+    if (_activeChildren.length === 0 && _childStepper !== null) {
+      clearInterval(_childStepper);
+      _childStepper = null;
+    }
+  }, 1);
+}
 /**
  * Step all active child realms by one event-loop iteration.
  *
@@ -2351,14 +2350,7 @@ export function _stepChildren(): void {
     // Step returns: true = alive, false = clean exit, null = reload requested
     let stepResult: boolean | null;
     let stepError: unknown = undefined;
-    if (child.kind === 'thread') {
-      try {
-        stepResult = stepThreadContext(child.handle) as boolean | null;
-      } catch (err) {
-        stepResult = false;
-        stepError = err;
-      }
-    } else if (child.kind === 'process') {
+    if (child.kind === 'process') {
       try {
         stepResult = stepProcessContext(child.handle) as boolean | null;
       } catch (err) {
@@ -2458,9 +2450,9 @@ function _resolveCallResponse<R>(
 /**
  * Isolated child realm with its own module graph and communication port.
  *
- * A realm can run embedded in the current isolate, in a thread, in a process,
- * or on a remote cluster node. Use `run()` for entry modules with side effects
- * and `call()` for entry modules that default-export a callable function.
+ * A realm runs as a movable isolate on the shared reactor pool, in a sandbox
+ * process, or on a remote cluster node. Use `run()` for entry modules with side
+ * effects and `call()` for entry modules that default-export a function.
  *
  * ```ts no_run
  * import { Realm } from 'fino:realm';
@@ -2518,9 +2510,9 @@ export class Realm<F extends RealmFn = RealmFn> {
   /**
    * Parent-side port for general communication with the child realm.
    *
-   * Embedded realms expose a `MessagePort`, thread realms expose a
-   * `ThreadPort`, process realms expose a `ProcessPort`, and remote realms
-   * expose a `ClusterPort`. Start the port before listening for messages.
+   * Reactor-pooled realms expose a `ScheduledPort`, process realms expose a
+   * `ProcessPort`, and remote realms expose a `ClusterPort`. Start the port
+   * before listening for messages.
    *
    * ```ts no_run
    * import { Realm } from 'fino:realm';
@@ -2530,7 +2522,13 @@ export class Realm<F extends RealmFn = RealmFn> {
    * realm.port.start();
    * ```
    */
-  readonly port: MessagePort | ThreadPort | ProcessPort | ClusterPort;
+  port: MessagePort | ScheduledPort | ProcessPort | ClusterPort;
+  /** Completion driven by the process scheduler for a scheduled realm. @internal */
+  #scheduledCompletion: Promise<void> | null = null;
+  /** Construction data retained only while a scheduled watch realm may reload. @internal */
+  #scheduledOpts: RealmOptions | null = null;
+  /** Import rules rebound to a replacement scheduled watch port. @internal */
+  #scheduledRules: ImportRule[] = [];
   /** Pending spawn for remote realms; resolves to childPortId after SPAWN_ACK. */
   /**
    * Private property `#spawnPromise` used by `Realm`.
@@ -2621,7 +2619,7 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @internal
    */
   #watchTerminated = false;
-  // For thread/process watch mode: tracks the current child's port so that
+  // For process watch mode: tracks the current child's port so that
   // terminate() reaches the most-recently-spawned child, not the original one.
   /**
    * Private property `#activeChildPort` used by `Realm`.
@@ -2644,7 +2642,7 @@ export class Realm<F extends RealmFn = RealmFn> {
    *
    * @internal
    */
-  #activeChildPort: ThreadPort | ProcessPort | null = null;
+  #activeChildPort: ProcessPort | null = null;
   /**
    * Create a Realm whose entrypoint is in-memory module source.
    *
@@ -2732,6 +2730,55 @@ export class Realm<F extends RealmFn = RealmFn> {
       overrides: rules,
     });
   }
+
+  /** Create one movable isolate and await its scalar completion signal. @internal */
+  #startScheduledRealm(
+    opts: RealmOptions,
+    serializedRules: string,
+    rules: ImportRule[],
+    reloading = false,
+  ): Promise<void> {
+    const scheduled = createScheduledRealm(
+      opts.root ?? '',
+      opts.entry,
+      serializedRules,
+      opts.watch ?? false,
+      serializeRealmData(opts.data),
+      serializeRealmBootstrapData(opts),
+      opts.repl ?? false,
+    );
+    this.#handle = scheduled.handle;
+    const port = new ScheduledPort(scheduled.portWakeFd, scheduled.handle);
+    this.port = port;
+    registerReactorWake(scheduled.owner, scheduled.wakeFd);
+    if (reloading) {
+      for (const rule of rules) {
+        if (rule.directive instanceof Facade) rule.directive._bind(port);
+      }
+    }
+    return (async () => {
+      await readable(scheduled.completionFd);
+      const status = takeScheduledRealmStatus(scheduled.handle);
+      removeRead(scheduled.completionFd);
+      port.close();
+      closeScheduledRealm(scheduled.handle);
+      if (status.kind === 'error') {
+        const message = status.error ?? 'scheduled realm failed';
+        const error = new Error(message.replace(/^Error:\s*/, '').split('\n', 1)[0]);
+        error.stack = message;
+        throw error;
+      }
+      if (status.kind === 'reload' && !this.#watchTerminated && this.#scheduledOpts !== null) {
+        return this.#startScheduledRealm(
+          this.#scheduledOpts,
+          this.#watchSerializedRules,
+          this.#scheduledRules,
+          true,
+        );
+      }
+    })();
+  }
+
   /**
    * Create a child realm and its parent-side communication port.
    *
@@ -2744,7 +2791,6 @@ export class Realm<F extends RealmFn = RealmFn> {
    *
    * const realm = new Realm({
    *   entry: './worker.ts',
-   *   thread: true,
    *   overrides: ImportMap.inherit([]),
    * });
    * ```
@@ -2752,21 +2798,17 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @param opts Realm construction and loader options.
    */
   constructor(opts: RealmOptions) {
-    const isolatedModes = [opts.thread, opts.process, opts.remote].filter(Boolean).length;
+    const isolatedModes = [opts.process, opts.remote].filter(Boolean).length;
     if (isolatedModes > 1) {
-      throw new Error(
-        'fino:realm — exactly one isolated mode may be enabled: thread, process, or remote',
-      );
+      throw new Error('fino:realm — process and remote execution are mutually exclusive');
     }
     if (opts.watch && opts.remote) {
       throw new Error('fino:realm — watch: true is not supported with remote: true');
     }
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;
-    if (repl && (opts.thread || opts.process || opts.remote || opts.watch)) {
-      throw new Error(
-        'fino:realm — repl: true is only supported for embedded realms (not thread, process, remote, or watch)',
-      );
+    if (repl && (opts.process || opts.remote || opts.watch)) {
+      throw new Error('fino:realm — repl: true is not supported with process, remote, or watch');
     }
     // Build the child-specific rule list from overrides / legacy providers+blocked.
     const rules: ImportRule[] = [];
@@ -2841,19 +2883,19 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
-    } else if (opts.thread) {
-      this.#kind = 'thread';
-      const handle = createThreadContext(
-        opts.root ?? '',
-        opts.entry,
-        serializedRules,
-        watch,
-        serializedData,
-        serializedBootstrapData,
-      ) as number;
-      this.#handle = handle;
-      const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
-      this.port = new ThreadPort(wakeReadFd, handle);
+    } else if (
+      (
+        globalThis as {
+          __finoProcessReadiness?: boolean;
+        }
+      ).__finoProcessReadiness === true
+    ) {
+      this.#kind = 'scheduled';
+      this.#handle = -1;
+      this.port = undefined as unknown as ScheduledPort;
+      this.#scheduledOpts = opts.watch ? opts : null;
+      this.#scheduledRules = rules;
+      this.#scheduledCompletion = this.#startScheduledRealm(opts, serializedRules, rules);
     } else {
       this.#kind = 'embedded';
       let parentPort: MessagePort;
@@ -2880,7 +2922,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
-      const port = this.port as MessagePort | ThreadPort | ProcessPort | ClusterPort;
+      const port = this.port as MessagePort | ScheduledPort | ProcessPort | ClusterPort;
       for (const rule of rules) {
         if (rule.directive instanceof Facade) {
           (rule.directive as Facade)._bind(port);
@@ -2938,17 +2980,6 @@ export class Realm<F extends RealmFn = RealmFn> {
       ) as number;
       this.#activeChildPort = new ProcessPort(getProcessSocketFd(h) as number, h);
       return h;
-    } else if (opts.thread) {
-      const h = createThreadContext(
-        opts.root ?? '',
-        opts.entry,
-        rules,
-        true,
-        data,
-        bootstrapData,
-      ) as number;
-      this.#activeChildPort = new ThreadPort(getThreadPortWakeReadFd(h) as number, h);
-      return h;
     } else {
       const { port2: childPort } = new MessageChannel();
       return createContext(
@@ -2978,6 +3009,9 @@ export class Realm<F extends RealmFn = RealmFn> {
    * ```
    */
   run(): Promise<void> {
+    if (this.#kind === 'scheduled') {
+      return this.#scheduledCompletion!;
+    }
     if (this.#kind === 'remote') {
       const clusterPort = this.port as ClusterPort;
       const cluster = getCluster()!;
@@ -2991,7 +3025,7 @@ export class Realm<F extends RealmFn = RealmFn> {
               reject,
               clusterPort,
             };
-            _activeChildren.push(entry);
+            _trackChild(entry);
             cluster.onRealmExit(childPortId, (error?: string) => {
               const idx = _activeChildren.indexOf(entry);
               if (idx >= 0) _activeChildren.splice(idx, 1);
@@ -3016,11 +3050,11 @@ export class Realm<F extends RealmFn = RealmFn> {
             return newHandle;
           },
         };
-        _activeChildren.push(entry);
+        _trackChild(entry);
       });
     }
     return new Promise<void>((resolve, reject) => {
-      _activeChildren.push({
+      _trackChild({
         handle: this.#handle,
         kind: this.#kind,
         resolve,
@@ -3052,7 +3086,38 @@ export class Realm<F extends RealmFn = RealmFn> {
       _topicRealmCall.publish(otelRuntimeEvent('realm', 'call', 'start', { kind }));
     }
     let base: Promise<Awaited<ReturnType<F>>>;
-    if (kind === 'remote') {
+    if (kind === 'scheduled') {
+      const port = this.port as ScheduledPort;
+      base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
+        let settled = false;
+        const handler = (ev: Event) => {
+          if (settled) return;
+          settled = true;
+          const data = (ev as MessageEvent).data;
+          port.removeEventListener('message', handler);
+          port.close();
+          _resolveCallResponse(data, resolve, reject);
+        };
+        port.addEventListener('message', handler);
+        port.start();
+        port.postMessage({
+          __call: true,
+          args,
+        });
+        void this.#scheduledCompletion!.then(
+          () => {
+            if (settled) return;
+            settled = true;
+            reject(new Error('Realm exited before returning a call result'));
+          },
+          (error) => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          },
+        );
+      });
+    } else if (kind === 'remote') {
       const clusterPort = this.port as ClusterPort;
       const cluster = getCluster()!;
       base = (this.#spawnPromise ?? Promise.resolve('')).then(
@@ -3066,7 +3131,7 @@ export class Realm<F extends RealmFn = RealmFn> {
               reject: (err: unknown) => reject(err),
               clusterPort,
             };
-            _activeChildren.push(entry);
+            _trackChild(entry);
             cluster.onRealmExit(childPortId, (error?: string) => {
               setTimeout(() => {
                 if (settled) return;
@@ -3101,7 +3166,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       );
     } else {
       base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        _activeChildren.push({
+        _trackChild({
           handle: this.#handle,
           kind,
           resolve: () => reject(new Error('Realm exited before returning a call result')),
@@ -3151,15 +3216,14 @@ export class Realm<F extends RealmFn = RealmFn> {
    * `{ force: true }` to send `SIGKILL` when untrusted synchronous code cannot
    * service that message. Other realm kinds ignore `force`.
    *
-   * Embedded realms are terminated through the native child handle. Thread,
-   * process, and remote realms receive a `__terminate` message and their
-   * parent-side port is closed. The method is synchronous and does not wait for
-   * `run()` to settle.
+   * Embedded realms are terminated through the native child handle. Scheduled,
+   * process, and remote realms receive a `__terminate` message. The method is
+   * synchronous and does not wait for `run()` to settle.
    *
    * ```ts no_run
    * import { Realm } from 'fino:realm';
    *
-   * const realm = new Realm({ entry: './worker.ts', thread: true });
+   * const realm = new Realm({ entry: './worker.ts' });
    * realm.terminate();
    * ```
    */
@@ -3169,18 +3233,20 @@ export class Realm<F extends RealmFn = RealmFn> {
     } = {},
   ): void {
     this.#watchTerminated = true;
-    if (this.#kind === 'remote') {
+    if (this.#kind === 'scheduled') {
+      this.port.postMessage({ __terminate: true });
+    } else if (this.#kind === 'remote') {
       this.port.postMessage({ __terminate: true });
       this.port.close();
     } else if (this.#kind === 'process' && options.force === true) {
       killProcessContext(this.#handle);
       const activePort = this.#activeChildPort ?? (this.port as ProcessPort);
       activePort.close();
-    } else if (this.#kind === 'thread' || this.#kind === 'process') {
+    } else if (this.#kind === 'process') {
       // After a watch-mode reload, this.port still points to the first child's
       // port.  Use #activeChildPort when set (updated by #spawnChild on reload)
       // so the terminate message reaches the currently-running child.
-      const activePort = this.#activeChildPort ?? (this.port as ThreadPort | ProcessPort);
+      const activePort = this.#activeChildPort ?? (this.port as ProcessPort);
       activePort.postMessage({ __terminate: true });
       activePort.close();
     } else {

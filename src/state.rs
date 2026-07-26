@@ -59,7 +59,7 @@ pub struct ChildRealm {
 /// Virtualised process-level identity for a Realm.
 ///
 /// Collected once from the real environment in `main.rs` and stored on the
-/// root `FinoState`. Child and thread realms inherit this by default; it can
+/// root `FinoState`. Child and reactor-pooled realms inherit this by default; it can
 /// be overridden at creation time to produce fully isolated sandboxes.
 #[derive(Clone)]
 pub struct ProcessEnv {
@@ -409,13 +409,6 @@ pub struct FinoState {
     /// when a bare `HandleScope<()>` is available.
     pub pending_creates: Vec<PendingRealm>,
 
-    /// Live thread realm handles indexed by the JS handle returned from
-    /// `createThreadContext`. Slot is `None` when the thread has exited and the
-    /// handle has been reaped.
-    // `allow(dead_code)`: used by `realm.rs` native functions via `crate::state`.
-    #[allow(dead_code)]
-    pub thread_contexts: Vec<Option<crate::realm::thread::ThreadRealmHandle>>,
-
     /// Live process realm handles indexed by the JS handle returned from
     /// `createProcessContext`.
     #[allow(dead_code)]
@@ -454,9 +447,9 @@ pub struct FinoState {
     /// Runtime-owned bootstrap metadata, separate from `RealmOptions.data`.
     pub realm_bootstrap_data: Option<String>,
 
-    /// Shared atomic for thread realms: `requestReload()` writes `true` here
-    /// so the parent's `ThreadRealmHandle` can observe the reload intent
-    /// without entering the child's V8 context. `None` for embedded/process.
+    /// Shared atomic for reactor-pooled realms: `requestReload()` writes `true`
+    /// here so the scheduler can observe the reload intent without entering
+    /// the child's V8 context. `None` for embedded/process.
     pub reload_requested_signal: Option<Arc<AtomicBool>>,
 
     /// Error recorded by the child's entry module if it threw at top level.
@@ -476,7 +469,7 @@ pub struct FinoState {
     pub inspector_state: Option<*mut std::ffi::c_void>,
 
     // ---------------------------------------------------------------------------
-    // Thread Realm channels (populated only in thread-realm Isolates)
+    // Cross-isolate Realm channels
     // ---------------------------------------------------------------------------
     // `allow(dead_code)`: used by thread-realm native send/recv functions.
     #[allow(dead_code)]
@@ -540,12 +533,11 @@ impl FinoState {
             channel_tx: None,
             wake_read_fd: None,
             wake_write_fd: None,
-            thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }
     }
 
-    /// Create a child-Realm state (embedded, thread, or process).
+    /// Create a child-Realm state (embedded, reactor-pooled, or process).
     ///
     /// Fields that differ from `new_root` are taken as parameters; all
     /// module-cache and callback fields start empty/None.
@@ -603,7 +595,6 @@ impl FinoState {
             channel_tx,
             wake_read_fd,
             wake_write_fd,
-            thread_contexts: Vec::new(),
             process_contexts: Vec::new(),
         }
     }
@@ -809,18 +800,6 @@ mod tests {
                 Some("/app/main.ts"),
                 "internal:opentelemetry/bootstrap"
             ),
-            Some(&ImportDirective::Block)
-        ));
-    }
-
-    #[test]
-    fn child_block_rule_restricts_bootstrap_dynamic_public_import() {
-        let mut rules = default_import_rules();
-        rules.push(rule("*", ImportDirective::Block));
-        rules.push(rule("fino:realm/pool", ImportDirective::Block));
-
-        assert!(matches!(
-            resolve_directive(&rules, Some("internal/bootstrap.mjs"), "fino:realm/pool"),
             Some(&ImportDirective::Block)
         ));
     }

@@ -1,9 +1,8 @@
 /**
- * Tests for fino:realm — thread Realm (thread: true).
+ * Tests for fino:realm reactor-pooled isolates.
  *
- * Thread realms run in a separate V8 Isolate on an OS thread. Messaging uses
- * V8 ValueSerializer over Rust mpsc channels instead of same-Isolate
- * structured clone.
+ * Realm isolates move between worker threads under the shared reactor
+ * scheduler. Messaging uses V8 ValueSerializer across isolates.
  */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
@@ -11,47 +10,45 @@ import { Realm } from 'fino:realm';
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
-describe('Thread Realm basics', () => {
-  it('rejects multiple isolated mode flags at construction', (t) => {
-    t.throws(
-      () =>
-        new Realm({
-          thread: true,
-          process: true,
-          entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
-        }),
-      /thread.*process.*remote|isolated mode/i,
-      'thread and process cannot both be enabled',
-    );
-  });
-  it('spawns a thread realm that runs to completion', async (t) => {
+import type asyncFn from './fixtures/async-fn.ts';
+describe('Reactor-pooled Realm basics', () => {
+  it('runs a pooled realm to completion', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
     });
     // hello.ts has no default function — it completes after module evaluation.
     await realm.run();
-    t.ok(true, 'thread realm ran to completion');
+    t.ok(true, 'pooled realm ran to completion');
   });
-  it('call() invokes the default-export function in a thread realm', async (t) => {
+  it('call() invokes the default-export function in a pooled realm', async (t) => {
     const realm = new Realm<typeof echoFn>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
     });
-    const result = await realm.call('hello from thread');
-    t.equal(result, 'hello from thread', 'echo result matches input');
+    const result = await realm.call('hello from pool');
+    t.equal(result, 'hello from pool', 'echo result matches input');
   });
-  it('call() passes multiple arguments to the thread realm function', async (t) => {
+  it('call() passes multiple arguments to the pooled realm function', async (t) => {
     const realm = new Realm<typeof sumFn>({
-      thread: true,
       entry: new URL('./fixtures/multi-arg-fn.ts', import.meta.url).pathname,
     });
     const result = await realm.call(1, 2, 3, 4);
     t.equal(result, 10, 'sum of 1+2+3+4 is 10');
   });
-  it('call() propagates errors thrown inside the thread realm', async (t) => {
+  it('routes colliding realm-local timer ids to their owning isolates', async (t) => {
+    const entry = new URL('./fixtures/async-fn.ts', import.meta.url).pathname;
+    const realms = [
+      new Realm<typeof asyncFn>({ entry }),
+      new Realm<typeof asyncFn>({ entry }),
+      new Realm<typeof asyncFn>({ entry }),
+    ];
+    t.deepEqual(
+      await Promise.all(realms.map((realm, index) => realm.call(index + 1))),
+      [2, 4, 6],
+      'all sibling realm timers resolve independently',
+    );
+  });
+  it('call() propagates errors thrown inside the pooled realm', async (t) => {
     const realm = new Realm<typeof errorFn>({
-      thread: true,
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,
     });
     try {
@@ -69,7 +66,6 @@ describe('Thread Realm basics', () => {
       z: boolean;
     };
     const realm = new Realm<(input: Payload) => Payload>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
     });
     const input: Payload = {
@@ -86,7 +82,6 @@ describe('Thread Realm basics', () => {
   it('Map is preserved as Map through realm.call() (not converted to plain object)', async (t) => {
     type MapFn = (m: Map<string, number>) => Map<string, number>;
     const realm = new Realm<MapFn>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
     });
     const input = new Map<string, number>([
@@ -102,7 +97,6 @@ describe('Thread Realm basics', () => {
   it('Set is preserved as Set through realm.call()', async (t) => {
     type SetFn = (s: Set<string>) => Set<string>;
     const realm = new Realm<SetFn>({
-      thread: true,
       entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
     });
     const input = new Set(['x', 'y', 'z']);
@@ -113,7 +107,6 @@ describe('Thread Realm basics', () => {
   });
   it('Error subclass name and message are preserved through realm.call()', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/type-error-fn.ts', import.meta.url).pathname,
     });
     try {
@@ -125,9 +118,8 @@ describe('Thread Realm basics', () => {
       t.ok((err as Error).message.includes('expected a string'), 'message content preserved');
     }
   });
-  it('terminate() stops a thread realm', async (t) => {
+  it('terminate() stops a pooled realm', async (t) => {
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname,
     });
     const runPromise = realm.run();
@@ -135,6 +127,6 @@ describe('Thread Realm basics', () => {
     await new Promise<void>((res) => setTimeout(res, 10));
     realm.terminate();
     await runPromise;
-    t.ok(true, 'thread realm terminated successfully');
+    t.ok(true, 'pooled realm terminated successfully');
   });
 });

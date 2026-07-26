@@ -397,6 +397,37 @@ describe('CLI commands', () => {
       },
     );
   });
+  it('runs every CLI command inside a process-reactor workload', async (t) => {
+    await withTempProject(
+      {
+        'tasks/location.ts': [
+          "import { task } from 'fino:task';",
+          'export default task({',
+          "  name: 'location',",
+          '  run: async (_input, ctx) => {',
+          '    const runtime = globalThis as {',
+          '      __finoProcessReadiness?: boolean;',
+          '      __finoSchedulerWorkloadId?: number;',
+          '    };',
+          '    await ctx.writer.writeText(',
+          "      `reactor:${runtime.__finoProcessReadiness === true}:${typeof runtime.__finoSchedulerWorkloadId === 'number'}\\n`,",
+          '    );',
+          '  }',
+          '});',
+          '',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stdout, stderr, result } = await runCli(['task', 'location'], { cwd: dir });
+        t.equal(result.code, 0, 'project task exits successfully');
+        t.equal(stderr, '', 'project task does not write stderr');
+        t.ok(
+          stdout.includes('reactor:true:true'),
+          'project task runs inside an owner-tagged process-reactor workload',
+        );
+      },
+    );
+  });
   it('loads multiple task files as sibling commands', async (t) => {
     await withTempProject(
       {

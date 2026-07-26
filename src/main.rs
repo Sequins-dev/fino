@@ -65,7 +65,6 @@ fn main() {
         return;
     }
 
-    // Normal CLI mode.
     let process_env = state::ProcessEnv {
         root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         args,

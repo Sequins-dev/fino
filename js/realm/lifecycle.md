@@ -87,11 +87,14 @@ Arguments and return values must be serializable by the active transport. Plain 
 
 Errors thrown by the child function propagate to the parent as a rejected promise with the original error message and name preserved.
 
-`call()` closes the port after the first response, so a single `Realm` instance is one-shot when used this way. For repeated calls to a pool of workers, see `fino:realm/pool`.
+`call()` closes the port after the first response, so a single `Realm` instance
+is one-shot. Construct a Realm for each independent call; the process-wide
+reactor pool schedules those isolates across its worker threads.
 
 ## Terminating a realm
 
-`terminate()` stops the child. For embedded realms the V8 context is torn down synchronously. For thread and process realms a `__terminate` message is sent and the parent-side port is closed. For remote realms the cluster is notified.
+`terminate()` stops the child. Reactor-pooled and process realms receive a
+`__terminate` message. For remote realms the cluster is notified.
 
 ```ts
 realm.terminate();
@@ -103,7 +106,7 @@ The `using` declaration triggers `terminate()` automatically when the block exit
 
 ```ts
 {
-  using realm = new Realm({ entry: './worker.ts', thread: true });
+  using realm = new Realm({ entry: './worker.ts' });
   const result = await realm.call(payload);
 } // realm.terminate() called here
 ```
@@ -130,4 +133,5 @@ realm.terminate();
 await done;
 ```
 
-Watch mode works with embedded, thread, and process realms. It is not available with `remote: true`.
+Watch mode works with reactor-pooled and process realms. It is not available
+with `remote: true`.

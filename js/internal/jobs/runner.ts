@@ -10,7 +10,7 @@
  * pool-worker default export all funnel through `dispatchJob`.
  *
  * Errors are returned as values, never thrown across a processor boundary.
- * A `RealmPool` worker communicates over a serialization wire that flattens a
+ * A Realm worker communicates over a serialization wire that flattens a
  * thrown `Error` to `{message, stack}` and drops everything else, so the
  * scheduler-critical fields — whether a failure is `retryable`, and whether a
  * durable run `parked` rather than finished — would not survive the trip. By
@@ -271,14 +271,12 @@ export async function dispatchJob(
 }
 
 /**
- * Build the pool-worker dispatcher for a task tree.
+ * Build the Realm worker dispatcher for a task tree.
  *
- * Returns the function a `RealmPool` worker realm default-exports: the pool
- * invokes it once per delivered envelope. It collects `root` and its
- * descendants into a registry once, then handles two envelope kinds. A
- * `{ kind: 'tasks' }` control envelope returns the list of registered task
- * names (the pool owner uses this to route jobs to workers that can serve
- * them). A `{ kind: 'run', ... }` envelope is dispatched through `dispatchJob`.
+ * Returns the function a worker realm default-exports. It collects `root` and
+ * its descendants into a registry once, then handles two envelope kinds. A
+ * `{ kind: 'tasks' }` control envelope returns the registered task names. A
+ * `{ kind: 'run', ... }` envelope is dispatched through `dispatchJob`.
  * Anything else is rejected as a malformed, non-retryable call rather than
  * throwing across the wire.
  *
@@ -292,7 +290,7 @@ export async function dispatchJob(
  * surfaced as a retryable error result explaining that the facade is missing.
  *
  * ```ts no_run
- * // Inside a pool-worker entry module:
+ * // Inside a worker entry module:
  * import { taskWorker } from 'internal:jobs/runner';
  * import { emailTasks } from '../tasks/email.ts';
  *

@@ -150,9 +150,11 @@ const _ERRNO_CODES: Record<number, string> = {
  */
 export let loopModule: LoopModule | null = null;
 /**
- * Linux io_uring async file operation bindings.
+ * Linux io_uring async file operation bindings for a locally owned loop.
  *
- * `null` on macOS, where file reads use kqueue-assisted synchronous reads.
+ * `null` on macOS and in reactor-pooled realms. Pooled realms keep buffer
+ * ownership and the actual filesystem syscall in their own TypeScript isolate
+ * instead of submitting completion work to the shared readiness reactor.
  *
  * ```typescript no_run
  * import { asyncOps } from 'internal:file/bindings';
@@ -163,7 +165,13 @@ export let loopModule: LoopModule | null = null;
  */
 export let asyncOps: AsyncOpsModule | null = null;
 loopModule = await import('internal:runtime/loop');
-if (!isDarwin) {
+const processReadiness =
+  (
+    globalThis as {
+      __finoProcessReadiness?: boolean;
+    }
+  ).__finoProcessReadiness === true;
+if (!isDarwin && !processReadiness) {
   asyncOps = await import('internal:runtime/loop-backend');
 }
 const errnoFn = isDarwin ? '__error' : '__errno_location';

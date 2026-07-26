@@ -20,7 +20,6 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/lint` | not yet benchmarked |
 | `fino:realm` | `benchmarks/realm/index.bench.ts` |
 | `fino:module` | `benchmarks/module.bench.ts` |
-| `fino:realm/pool` | `benchmarks/realm/pool.bench.ts` |
 | `fino:realm/self` | `benchmarks/realm/self.bench.ts` |
 | `fino:realm/messaging` | `benchmarks/realm/messaging.bench.ts` |
 | `fino:database` | not yet benchmarked |
@@ -154,6 +153,5 @@ smoke-only:
 | Area | Stress/failure benchmark coverage |
 | --- | --- |
 | Cluster | `benchmarks/cluster.bench.ts` covers loopback lifecycle, remote spawn/call throughput, and worker-loss cleanup. |
-| Realm remote/pool | `benchmarks/realm/pool.bench.ts` covers warm call batches, concurrent dispatch, timeout cleanup, and close drain timeout cleanup. |
 | OpenTelemetry | `benchmarks/opentelemetry.bench.ts` and `benchmarks/opentelemetry/sdk.bench.ts` cover runtime instrumentation traffic, processor queue pressure, exporter failure paths, and shutdown drains. |
 | Logging sinks | `benchmarks/log.bench.ts` covers JSON, console, OpenTelemetry sink forwarding, and sink level filtering. |

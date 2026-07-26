@@ -129,8 +129,8 @@ The process and sandbox APIs are documented in the generated API reference.
 
 The context APIs provide async-local state, and topics provide publish/subscribe
 style coordination. They are used by runtime systems such as OpenTelemetry and
-realm pools, and they are useful when application code needs request-scoped
-state or decoupled event publishing.
+the realm scheduler, and they are useful when application code needs
+request-scoped state or decoupled event publishing.
 
 Use context for values that should flow through async work, such as request
 IDs. A `Context` value follows the causal chain of async execution — `await`,

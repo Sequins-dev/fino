@@ -72,6 +72,7 @@ import * as backend from 'internal:runtime/loop-backend';
 import {
   pollSharedReactor,
   registerProcessReadiness,
+  registerProcessPersistentReadiness,
   registerSharedReadiness,
   routeSharedLoopEvent,
   takeSharedLoopEvents,
@@ -148,6 +149,7 @@ const _removeTimer = backend.removeTimer as ((raw: object, id: number) => void) 
 const _addProc = backend.addProc as
   | ((raw: object, pid: number, ident?: number) => boolean)
   | undefined;
+const _removeProc = backend.removeProc as ((raw: object, pid: number) => void) | undefined;
 const _addVnode = backend.addVnode as
   | ((raw: object, fd: number, fflags: number, ident?: number) => void)
   | undefined;
@@ -221,6 +223,7 @@ const _workloadOwner =
     }
   ).__finoSchedulerWorkloadId ?? 0;
 const EV_ADD_ENABLE_ONESHOT = 1 | 4 | 16;
+const EV_ADD_ENABLE_CLEAR = 1 | 4 | 32;
 const EV_DELETE = 2;
 const _foreignReadyOwners: number[] = [];
 function taskToken(fd: number): number {
@@ -446,6 +449,19 @@ export function alive(): boolean {
     hasPendingV8Tasks() ||
     _atomicsWaiters > 0
   );
+}
+/**
+ * Report whether a scheduled realm needs occasional foreground-task polling.
+ *
+ * Readiness-backed handles wake their owner through the process reactor.
+ * V8 background tasks and `Atomics.waitAsync` have no pollable descriptor, so
+ * a reactor thread uses this bit to timed-wait and re-pump the same entered
+ * isolate without making unrelated I/O realms spin.
+ *
+ * @internal
+ */
+export function _schedulerPollingRequired(): boolean {
+  return hasPendingV8Tasks() || _atomicsWaiters > 0;
 }
 /**
  * Return a snapshot of the loop's live handle counts for diagnostics and tests.
@@ -680,6 +696,10 @@ export function proc(pid: number): Promise<void> {
   return new Promise(function onProc(resolve) {
     // Register before calling addProc so the event can never be missed.
     _procs.set(pid, resolve);
+    if (_processReadiness) {
+      registerProcessReadiness(pid, EVFILT_PROC!, EV_ADD_ENABLE_ONESHOT, 0, 0, taskToken(pid));
+      return;
+    }
     const registered = _addProc(rawBackend(), pid, taskToken(pid));
     if (registered === false) {
       // Process already exited — kevent rejected the filter.
@@ -688,6 +708,16 @@ export function proc(pid: number): Promise<void> {
       resolve();
     }
   });
+}
+/** Cancel a pending process-exit watch without settling its promise. */
+export function removeProc(pid: number): void {
+  if (!_procs.has(pid)) return;
+  _procs.delete(pid);
+  if (_processReadiness) {
+    registerProcessReadiness(pid, EVFILT_PROC!, EV_DELETE, 0, 0, taskToken(pid));
+  } else if (_removeProc) {
+    _removeProc(rawBackend(), pid);
+  }
 }
 /**
  * Submit a generic io_uring async operation and resolve when it completes
@@ -715,6 +745,9 @@ export function proc(pid: number): Promise<void> {
 export function submit(submitter: (raw: object, id: number) => void): Promise<{
   res: number;
 }> {
+  if (_processReadiness) {
+    throw new Error('submit() is unavailable when the process reactor owns readiness');
+  }
   if (EVFILT_COMPLETION === null) throw new Error('submit() is not supported on this platform');
   const id = _nextCompletionId++;
   return new Promise(function onSubmit(resolve) {
@@ -745,7 +778,7 @@ export function registerWakeSource(fd: number, onWake?: () => void): void {
   // The scheduler already watches this isolate's async-runtime wake fd and
   // re-pumps the isolate when it fires. Registering it locally would create an
   // unused second backend inside the parked isolate.
-  if (_delegatesReadiness) return;
+  if (_delegatesReadiness || _processReadiness) return;
   _wakeSources.add(fd);
   if (onWake) _wakeSourceCallbacks.set(fd, onWake);
   else _wakeSourceCallbacks.delete(fd);
@@ -765,7 +798,7 @@ export function registerWakeSource(fd: number, onWake?: () => void): void {
 export function unregisterWakeSource(fd: number): void {
   _wakeSources.delete(fd);
   _wakeSourceCallbacks.delete(fd);
-  if (_delegatesReadiness || _raw === undefined) return;
+  if (_delegatesReadiness || _processReadiness || _raw === undefined) return;
   backend.removeRead(rawBackend(), fd);
 }
 /**
@@ -796,7 +829,7 @@ export function removeRead(fd: number): void {
       EV_DELETE,
       0,
       0,
-      0,
+      taskToken(fd),
     );
   } else {
     backend.removeRead(rawBackend(), fd);
@@ -829,7 +862,7 @@ export function removeWrite(fd: number): void {
       EV_DELETE,
       0,
       0,
-      0,
+      taskToken(fd),
     );
   } else {
     backend.removeWrite(rawBackend(), fd);
@@ -865,7 +898,18 @@ export function vnode(
 ): void {
   if (_addVnode === undefined) throw new Error('vnode() is not supported on this platform');
   _vnodes.set(fd, callback);
-  _addVnode(rawBackend(), fd, fflags, taskToken(fd));
+  if (_nativeReadinessRegistration && EVFILT_VNODE !== null) {
+    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
+      fd,
+      EVFILT_VNODE,
+      EV_ADD_ENABLE_CLEAR,
+      fflags,
+      0,
+      taskToken(fd),
+    );
+  } else {
+    _addVnode(rawBackend(), fd, fflags, taskToken(fd));
+  }
 }
 /**
  * Remove a persistent vnode watch previously registered with `vnode()`.
@@ -883,7 +927,18 @@ export function vnode(
 export function removeVnode(fd: number): void {
   if (!_vnodes.has(fd)) return;
   _vnodes.delete(fd);
-  if (backend.removeVnode) backend.removeVnode(rawBackend(), fd);
+  if (_nativeReadinessRegistration && EVFILT_VNODE !== null) {
+    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
+      fd,
+      EVFILT_VNODE,
+      EV_DELETE,
+      0,
+      0,
+      taskToken(fd),
+    );
+  } else if (backend.removeVnode) {
+    backend.removeVnode(rawBackend(), fd);
+  }
 }
 /**
  * Register a persistent watch for OS signal `signo` (kqueue native on macOS,
@@ -912,7 +967,18 @@ export function removeVnode(fd: number): void {
 export function signal(signo: number, callback: () => void): void {
   if (_addSignal === undefined) throw new Error('signal() is not supported on this platform');
   _signals.set(signo, callback);
-  _addSignal(rawBackend(), signo, taskToken(signo));
+  if (_nativeReadinessRegistration && EVFILT_SIGNAL !== null) {
+    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
+      signo,
+      EVFILT_SIGNAL,
+      EV_ADD_ENABLE_CLEAR,
+      0,
+      0,
+      taskToken(signo),
+    );
+  } else {
+    _addSignal(rawBackend(), signo, taskToken(signo));
+  }
 }
 /**
  * Remove a signal watch previously registered with `signal()` and restore the
@@ -932,7 +998,18 @@ export function signal(signo: number, callback: () => void): void {
 export function removeSignal(signo: number): void {
   if (!_signals.has(signo)) return;
   _signals.delete(signo);
-  if (backend.removeSignal) backend.removeSignal(rawBackend(), signo);
+  if (_nativeReadinessRegistration && EVFILT_SIGNAL !== null) {
+    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
+      signo,
+      EVFILT_SIGNAL,
+      EV_DELETE,
+      0,
+      0,
+      taskToken(signo),
+    );
+  } else if (backend.removeSignal) {
+    backend.removeSignal(rawBackend(), signo);
+  }
 }
 // ---------------------------------------------------------------------------
 // Synchronous spinning

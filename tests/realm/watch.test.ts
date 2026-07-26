@@ -82,7 +82,7 @@ describe('Realm watch mode', () => {
       'constructing with watch + remote throws',
     );
   });
-  it('embedded realm reloads when entry file changes', async (t) => {
+  it('pooled realm reloads when entry file changes', async (t) => {
     const dir = TEST_DIR + '/embed-entry';
     await fs.mkdir(dir);
     const entryPath = dir + '/entry.ts';
@@ -103,9 +103,9 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then((n) => n >= 2), 3e3);
     realm.terminate();
     await runP;
-    t.ok((await readCounter(counterPath)) >= 2, 'embedded realm reloaded after entry change');
+    t.ok((await readCounter(counterPath)) >= 2, 'pooled realm reloaded after entry change');
   });
-  it('embedded realm reloads when a transitively imported file changes', async (t) => {
+  it('pooled realm reloads when a transitively imported file changes', async (t) => {
     const dir = TEST_DIR + '/embed-transitive';
     await fs.mkdir(dir);
     const helperPath = dir + '/helper.ts';
@@ -213,26 +213,6 @@ describe('Realm watch mode', () => {
     await writeText(entryPath, entryCode(counterPath) + '\n// post-terminate');
     await loop.timeout(150);
     t.equal(await readCounter(counterPath), countBefore, 'no reload after terminate()');
-  });
-  it('thread realm reloads when entry file changes', async (t) => {
-    const dir = TEST_DIR + '/thread-entry';
-    await fs.mkdir(dir);
-    const entryPath = dir + '/entry.ts';
-    const counterPath = dir + '/counter.txt';
-    await writeText(entryPath, entryCode(counterPath));
-    const realm = new Realm({
-      thread: true,
-      entry: entryPath,
-      watch: true,
-    });
-    const runP = realm.run();
-    await poll(() => readCounter(counterPath).then((n) => n >= 1), 5e3);
-    await loop.timeout(150);
-    await writeText(entryPath, entryCode(counterPath) + '\n// trigger reload');
-    await poll(() => readCounter(counterPath).then((n) => n >= 2), 5e3);
-    realm.terminate();
-    await runP;
-    t.ok((await readCounter(counterPath)) >= 2, 'thread realm reloaded after entry change');
   });
   it('process realm reloads when entry file changes', async (t) => {
     const dir = TEST_DIR + '/process-entry';

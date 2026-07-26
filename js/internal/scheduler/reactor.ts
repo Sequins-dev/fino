@@ -11,7 +11,12 @@
  */
 import * as loop from 'internal:runtime/loop';
 import * as backend from 'internal:runtime/loop-backend';
-import { routeProcessReadiness, takeSharedReadinessChanges } from 'internal:scheduler-native';
+import {
+  acknowledgeProcessReadiness,
+  routeProcessReadiness,
+  signalReactorOwner,
+  takeSharedReadinessChanges,
+} from 'internal:scheduler-native';
 
 interface ReadinessChange {
   ident: number;
@@ -21,11 +26,16 @@ interface ReadinessChange {
   data: number;
   udata: number;
   cancelOwner?: number;
+  schedulerWake?: boolean;
+  acknowledgement?: number;
 }
 
 const EVFILT_READ = -1;
 const EVFILT_WRITE = -2;
 const EVFILT_TIMER = backend.EVFILT_TIMER;
+const EVFILT_PROC = backend.EVFILT_PROC;
+const EVFILT_VNODE = backend.EVFILT_VNODE;
+const EVFILT_SIGNAL = backend.EVFILT_SIGNAL;
 const EV_DELETE = 2;
 const TOKEN_BASE = 4294967296;
 
@@ -52,7 +62,7 @@ export class ProcessReadinessController {
   #running = false;
   constructor(readonly controlFd: number) {}
   #key(change: ReadinessChange): string {
-    return `${change.filter}:${change.ident}`;
+    return `${Math.floor(change.udata / TOKEN_BASE)}:${change.filter}:${change.ident}`;
   }
   #apply(change: ReadinessChange): void {
     if (change.cancelOwner !== undefined) {
@@ -63,6 +73,29 @@ export class ProcessReadinessController {
       }
       return;
     }
+    if (change.schedulerWake === true) {
+      const owner = change.udata;
+      const registration = `scheduler:${owner}`;
+      const previous = this.#registrations.get(registration);
+      const generation = (previous?.generation ?? 0) + 1;
+      previous?.cancel();
+      const arm = (): void => {
+        const ready = loop.readable(change.ident);
+        this.#registrations.set(registration, {
+          generation,
+          owner,
+          change,
+          cancel: () => loop.removeRead(change.ident),
+        });
+        void ready.then(() => {
+          if (this.#registrations.get(registration)?.generation !== generation) return;
+          signalReactorOwner(owner);
+          arm();
+        });
+      };
+      arm();
+      return;
+    }
     const registration = this.#key(change);
     const previous = this.#registrations.get(registration);
     const generation = (previous?.generation ?? 0) + 1;
@@ -70,6 +103,54 @@ export class ProcessReadinessController {
     previous?.cancel();
     this.#registrations.delete(registration);
     if ((change.flags & EV_DELETE) !== 0) return;
+    if (change.filter === EVFILT_VNODE) {
+      const cancel = () => loop.removeVnode(change.ident);
+      this.#registrations.set(registration, {
+        generation,
+        owner,
+        change,
+        cancel,
+      });
+      loop.vnode(change.ident, change.fflags, (event) => {
+        if (this.#registrations.get(registration)?.generation !== generation) return;
+        routeProcessReadiness(
+          owner,
+          change.ident,
+          change.filter,
+          0,
+          event.fflags,
+          0,
+          change.udata,
+          !this.#readyListeners.has(owner),
+        );
+        this.#readyListeners.get(owner)?.();
+      });
+      return;
+    }
+    if (change.filter === EVFILT_SIGNAL) {
+      const cancel = () => loop.removeSignal(change.ident);
+      this.#registrations.set(registration, {
+        generation,
+        owner,
+        change,
+        cancel,
+      });
+      loop.signal(change.ident, () => {
+        if (this.#registrations.get(registration)?.generation !== generation) return;
+        routeProcessReadiness(
+          owner,
+          change.ident,
+          change.filter,
+          0,
+          0,
+          0,
+          change.udata,
+          !this.#readyListeners.has(owner),
+        );
+        this.#readyListeners.get(owner)?.();
+      });
+      return;
+    }
     let cancel: () => void;
     let ready: Promise<number | void>;
     if (change.filter === EVFILT_READ) {
@@ -82,6 +163,9 @@ export class ProcessReadinessController {
       const timer = loop.timeout(change.data);
       ready = timer;
       cancel = () => timer.cancel();
+    } else if (change.filter === EVFILT_PROC) {
+      ready = loop.proc(change.ident);
+      cancel = () => loop.removeProc(change.ident);
     } else {
       throw new Error(`unsupported process readiness filter: ${change.filter}`);
     }
@@ -109,7 +193,15 @@ export class ProcessReadinessController {
   }
   #drainCommands(): void {
     const changes = JSON.parse(takeSharedReadinessChanges()) as ReadinessChange[];
-    for (const change of changes) this.#apply(change);
+    for (const change of changes) {
+      try {
+        this.#apply(change);
+      } finally {
+        if (change.acknowledgement !== undefined) {
+          acknowledgeProcessReadiness(change.acknowledgement);
+        }
+      }
+    }
   }
   /** Drain queued registrations and begin watching the native mailbox. */
   start(): void {

@@ -683,12 +683,10 @@ export class Task<Input = unknown, Output = unknown> {
     };
   }
   /**
-   * Turn this task (and its children) into a job-worker dispatcher — the
-   * default-export-function contract of `fino:realm/pool`.
+   * Turn this task and its children into a Realm job-worker dispatcher.
    *
    * A module that default-exports a `Task` gets this applied automatically by
-   * the realm bootstrap, so `new RealmPool({ entry: './my-task.ts' })` and
-   * `fino:jobs` pool processors work on plain task files.
+   * the realm bootstrap, so `fino:jobs` workers accept plain task files.
    *
    * ```ts no_run
    * import { task } from 'fino:task';

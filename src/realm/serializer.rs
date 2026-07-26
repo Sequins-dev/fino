@@ -198,40 +198,6 @@ fn vec_to_u8a<'s>(
     v8::Uint8Array::new(scope, ab, 0, len)
 }
 
-/// Serialize one structured-cloneable value for an in-process isolate
-/// boundary. Transfer lists are intentionally unsupported here; callers that
-/// need transfer semantics should use the `internal:serializer` module.
-pub(crate) fn serialize_value(
-    scope: &mut v8::HandleScope,
-    value: v8::Local<v8::Value>,
-) -> Result<Vec<u8>, String> {
-    let context = scope.get_current_context();
-    let serializer = v8::ValueSerializer::new(scope, Box::new(FinoSerializer));
-    use v8::ValueSerializerHelper;
-    serializer.write_header();
-    serializer
-        .write_value(context, value)
-        .ok_or_else(|| "value is not structured-cloneable".to_string())?;
-    Ok(serializer.release())
-}
-
-/// Deserialize one value produced by [`serialize_value`] in the destination
-/// isolate.
-pub(crate) fn deserialize_value<'s>(
-    scope: &mut v8::HandleScope<'s>,
-    bytes: &[u8],
-) -> Result<v8::Local<'s, v8::Value>, String> {
-    let context = scope.get_current_context();
-    let deserializer = v8::ValueDeserializer::new(scope, Box::new(FinoDeserializer), bytes);
-    use v8::ValueDeserializerHelper;
-    deserializer
-        .read_header(context)
-        .ok_or_else(|| "invalid structured-clone header".to_string())?;
-    deserializer
-        .read_value(context)
-        .ok_or_else(|| "failed to deserialize structured-clone value".to_string())
-}
-
 // ---------------------------------------------------------------------------
 // serialize(value: any, transferList?: ArrayBuffer[]) → Uint8Array[]
 //

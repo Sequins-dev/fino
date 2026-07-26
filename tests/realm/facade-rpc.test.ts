@@ -16,14 +16,13 @@ import type facadeStreamFn from './fixtures/facade-stream-fn.ts';
 import type facadeStreamErrorFn from './fixtures/facade-stream-error-fn.ts';
 import type facadeHandleFn from './fixtures/facade-handle-fn.ts';
 import type facadeSinkFn from './fixtures/facade-sink-fn.ts';
-describe('Facade RPC — thread realm', () => {
+describe('Facade RPC — reactor-pooled realm', () => {
   it('basic call-response round-trip', async (t) => {
     const facade = new Facade('fino:test-facade', ['greet']).handle(
       'greet',
       async (name) => `hello ${name}`,
     );
     const realm = new Realm<typeof facadeCallFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -44,7 +43,6 @@ describe('Facade RPC — thread realm', () => {
       throw new Error('handler exploded');
     });
     const realm = new Realm<typeof facadeCallFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -75,7 +73,6 @@ describe('Facade RPC — thread realm', () => {
     );
     // Note: 'unknownMethod' is in exports but has no handler registered
     const realm = new Realm<typeof facadeUnknownFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -108,7 +105,6 @@ describe('Facade RPC — thread realm', () => {
       yield 'gamma';
     });
     const realm = new Realm<typeof facadeStreamFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -130,7 +126,6 @@ describe('Facade RPC — thread realm', () => {
       throw new Error('stream exploded');
     });
     const realm = new Realm<typeof facadeStreamErrorFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -157,7 +152,6 @@ describe('Facade RPC — thread realm', () => {
       // yield nothing
     });
     const realm = new Realm<typeof facadeStreamFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -181,7 +175,6 @@ describe('Facade RPC — thread realm', () => {
     };
     const facade = Facade.from(service, { specifier: 'fino:test-facade' });
     const realm = new Realm<typeof facadeCallFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -274,7 +267,7 @@ describe('Facade RPC — embedded realm', () => {
 // ---------------------------------------------------------------------------
 // FacadeHandle — stateful handle protocol
 // ---------------------------------------------------------------------------
-describe('Facade RPC — FacadeHandle (thread realm)', () => {
+describe('Facade RPC — FacadeHandle (reactor-pooled realm)', () => {
   it('handle with scalar and streaming methods round-trips correctly', async (t) => {
     const facade = new Facade('fino:test-facade', ['openHandle']).handle(
       'openHandle',
@@ -293,7 +286,6 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
       },
     );
     const realm = new Realm<typeof facadeHandleFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -334,7 +326,6 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
       );
     });
     const realm = new Realm<typeof facadeHandleFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -361,7 +352,6 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
       return new FacadeHandle({}, { readChunks: async function* () {} });
     });
     const realm = new Realm<typeof facadeHandleFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -389,7 +379,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
 // ---------------------------------------------------------------------------
 // callSink — write stream (child→parent, QUIC client-initiated stream model)
 // ---------------------------------------------------------------------------
-describe('Facade RPC — callSink / sendStream (thread realm)', () => {
+describe('Facade RPC — callSink / sendStream (reactor-pooled realm)', () => {
   it('sink delivers all chunks to the parent handler without per-chunk ack', async (t) => {
     const received: string[] = [];
     const facade = new Facade('fino:test-facade', []).sendStream(
@@ -403,7 +393,6 @@ describe('Facade RPC — callSink / sendStream (thread realm)', () => {
       },
     );
     const realm = new Realm<typeof facadeSinkFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',
@@ -431,7 +420,6 @@ describe('Facade RPC — callSink / sendStream (thread realm)', () => {
       },
     );
     const realm = new Realm<typeof facadeSinkFn>({
-      thread: true,
       overrides: ImportMap.deny([
         {
           pattern: 'internal:runtime/loop',

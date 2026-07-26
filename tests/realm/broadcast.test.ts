@@ -228,10 +228,9 @@ describe('BroadcastChannel', () => {
     r2.close();
     r3.close();
   });
-  it('delivers messages between parent and thread Realm subscribers', async (t) => {
+  it('delivers messages between parent and pooled Realm subscribers', async (t) => {
     const name = uniqueName('thread-broadcast');
     const realm = new Realm({
-      thread: true,
       entry: new URL('./fixtures/broadcast-channel-peer.ts', import.meta.url).pathname,
     });
     const run = realm.run().catch(() => undefined);
@@ -242,7 +241,7 @@ describe('BroadcastChannel', () => {
         name,
       });
       const ready = await nextPortMessage(realm.port);
-      t.deepEqual(ready.data, { type: 'ready' }, 'thread realm subscribed');
+      t.deepEqual(ready.data, { type: 'ready' }, 'pooled realm subscribed');
       parent.postMessage({ from: 'parent' });
       const fromParent = await nextPortMessage(realm.port);
       t.deepEqual(
@@ -251,7 +250,7 @@ describe('BroadcastChannel', () => {
           type: 'broadcast',
           data: { from: 'parent' },
         },
-        'thread realm received parent broadcast',
+        'pooled realm received parent broadcast',
       );
       const fromThread = await new Promise<unknown>((resolve, reject) => {
         const tid = setTimeout(
@@ -267,7 +266,7 @@ describe('BroadcastChannel', () => {
           data: { from: 'thread' },
         });
       });
-      t.deepEqual(fromThread, { from: 'thread' }, 'parent received thread realm broadcast');
+      t.deepEqual(fromThread, { from: 'thread' }, 'parent received pooled realm broadcast');
     } finally {
       parent.close();
       realm.port.postMessage({ type: 'close' });

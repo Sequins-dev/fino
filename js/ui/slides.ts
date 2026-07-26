@@ -372,7 +372,7 @@ export class Presentation {
         meta: PresentationMeta;
         theme: PresentationTheme;
       }
-    >(wrapper, { thread: true });
+    >(wrapper);
     try {
       const loaded = await realm.call();
       if (!loaded?.vnode || typeof loaded.vnode.type !== 'string')

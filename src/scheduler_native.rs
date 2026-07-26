@@ -1,20 +1,19 @@
-//! Parked V8 isolates and readiness scheduling.
+//! Minimal native substrate for the TypeScript process scheduler.
 //!
-//! Native code owns isolate transitions and the scalar readiness boundary:
-//! the legacy path shares one kqueue/io_uring per thread, while the process
-//! pool routes owner-tagged registrations through the main TypeScript
-//! orchestration realm. Ready metadata is dispatched back into the owning
-//! isolate.
-//! Promise state, actual reads and writes, buffers, retries, and protocol
-//! policy remain in TypeScript.
+//! TypeScript owns readiness registration, runnable priority, worker placement,
+//! lifecycle, and metrics. Native code is limited to the operations TypeScript
+//! cannot perform: moving V8 isolates between OS threads, entering and pumping
+//! an isolate, and carrying scalar readiness metadata across isolate boundaries.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{BinaryHeap, HashMap, HashSet, VecDeque},
+    os::unix::io::RawFd,
     rc::Rc,
     sync::{
-        Arc, Condvar, Mutex, OnceLock, Weak,
-        atomic::{AtomicU32, Ordering},
+        Arc, Condvar, Mutex, Weak,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        mpsc,
     },
 };
 
@@ -22,127 +21,185 @@ use ::v8;
 
 use crate::{
     loader,
-    state::{FinoState, ProcessEnv, default_import_rules, get_state},
+    state::{FinoState, ProcessEnv, get_state},
 };
 
-struct ParkedWorkload {
-    owner_id: u32,
+struct Workload {
+    owner: u32,
     context: v8::Global<v8::Context>,
-    dispatch_fn: v8::Global<v8::Function>,
-    take_ops_fn: v8::Global<v8::Function>,
-    complete_fn: v8::Global<v8::Function>,
-    settled_fn: v8::Global<v8::Function>,
-    tick_fn: v8::Global<v8::Function>,
-    flush_fn: v8::Global<v8::Function>,
-    readiness_fn: v8::Global<v8::Function>,
-    active_promise: Option<v8::Global<v8::Promise>>,
-    async_state: Option<crate::async_rt::IsolateAsyncState>,
-    _state: Rc<RefCell<FinoState>>,
+    state: Rc<RefCell<FinoState>>,
+    polling_fn: Option<v8::Global<v8::Function>>,
     _module: v8::Global<v8::Module>,
     isolate: v8::OwnedIsolate,
-    moved_between_threads: bool,
-    process_readiness: bool,
+    async_state: Option<crate::async_rt::IsolateAsyncState>,
+    scheduled: Option<Arc<ScheduledRealmState>>,
+    port_fds: Option<(RawFd, RawFd)>,
 }
 
-struct WorkloadTable(Vec<Option<ParkedWorkload>>);
+struct TransferWorkload(Workload);
 
-struct TransferWorkload(ParkedWorkload);
-
-// SAFETY: a transfer is constructed only after the isolate has been exited and
-// all V8 scopes have been dropped. Exactly one worker owns the wrapper, and
-// every cross-thread entry is protected by V8's Locker.
+// SAFETY: Workloads cross a thread boundary only while their isolate is exited.
+// The receiving worker acquires V8's Locker before entering it, and exactly one
+// worker owns the value at a time.
 unsafe impl Send for TransferWorkload {}
 
 struct ActiveWorkload {
     saved_async_state: Option<crate::async_rt::IsolateAsyncState>,
-    _locker: Option<crate::v8_threading::IsolateLocker>,
+    _locker: crate::v8_threading::IsolateLocker,
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct ReadinessPriority {
-    signals: usize,
-    generation: u64,
-    owner: u32,
+thread_local! {
+    static WORKLOADS: RefCell<Vec<Option<Workload>>> = const { RefCell::new(Vec::new()) };
+    static REACTOR_QUEUES: RefCell<Vec<Option<Arc<PoolShared>>>> = const { RefCell::new(Vec::new()) };
+    static REACTOR_THREADS: RefCell<Vec<Option<ReactorThread>>> = const { RefCell::new(Vec::new()) };
 }
 
-#[derive(Default)]
-struct ReadinessPriorityQueue {
-    heap: BinaryHeap<ReadinessPriority>,
-    pending: HashMap<u32, usize>,
-    generations: HashMap<u32, u64>,
-    queued: HashSet<u32>,
+#[derive(Clone)]
+enum ScheduledRealmResult {
+    Done,
+    Reload,
+    Error(String),
 }
 
-impl ReadinessPriorityQueue {
-    fn record(&mut self, owner: u32) {
-        let signals = self.pending.entry(owner).or_default();
-        *signals += 1;
-        let generation = self.generations.entry(owner).or_default();
-        *generation += 1;
-        self.queued.insert(owner);
-        self.heap.push(ReadinessPriority {
-            signals: *signals,
-            generation: *generation,
-            owner,
-        });
-    }
+struct ScheduledRealmState {
+    result: Mutex<Option<ScheduledRealmResult>>,
+    parent_wake_write: RawFd,
+}
 
-    fn pending(&self, owner: u32) -> usize {
-        self.pending.get(&owner).copied().unwrap_or(0)
-    }
-
-    #[cfg(test)]
-    fn queued_len(&self) -> usize {
-        self.queued.len()
-    }
-
-    fn claim_higher_than(&mut self, current_owner: u32, current_signals: usize) -> Option<u32> {
-        loop {
-            let candidate = *self.heap.peek()?;
-            let current_generation = self.generations.get(&candidate.owner).copied().unwrap_or(0);
-            if !self.queued.contains(&candidate.owner)
-                || candidate.generation != current_generation
-                || candidate.signals != self.pending(candidate.owner)
-            {
-                self.heap.pop();
-                continue;
-            }
-            if candidate.owner == current_owner || candidate.signals <= current_signals {
-                return None;
-            }
-            self.heap.pop();
-            self.queued.remove(&candidate.owner);
-            return Some(candidate.owner);
+impl ScheduledRealmState {
+    fn complete(&self, result: ScheduledRealmResult) {
+        *self.result.lock().unwrap() = Some(result);
+        let byte = [1u8];
+        unsafe {
+            libc::write(self.parent_wake_write, byte.as_ptr().cast(), byte.len());
         }
     }
+}
 
-    fn remove(&mut self, owner: u32) {
-        self.queued.remove(&owner);
+impl Drop for ScheduledRealmState {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.parent_wake_write);
+        }
     }
+}
 
-    fn consume(&mut self, owner: u32) -> usize {
-        self.queued.remove(&owner);
-        self.pending.remove(&owner).unwrap_or(0)
+struct ScheduledRealmHandle {
+    tx: mpsc::Sender<crate::realm::thread::ThreadMessage>,
+    rx: mpsc::Receiver<crate::realm::thread::ThreadMessage>,
+    child_wake_write: RawFd,
+    parent_wake_read: RawFd,
+    completion_wake_read: RawFd,
+    state: Arc<ScheduledRealmState>,
+}
+
+impl Drop for ScheduledRealmHandle {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.child_wake_write);
+            libc::close(self.parent_wake_read);
+            libc::close(self.completion_wake_read);
+        }
     }
+}
+
+fn scheduled_realms() -> &'static Mutex<Vec<Option<ScheduledRealmHandle>>> {
+    static REALMS: std::sync::OnceLock<Mutex<Vec<Option<ScheduledRealmHandle>>>> =
+        std::sync::OnceLock::new();
+    REALMS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn process_pool() -> &'static Mutex<Option<Arc<PoolShared>>> {
+    static POOL: std::sync::OnceLock<Mutex<Option<Arc<PoolShared>>>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(None))
+}
+
+fn owner_pools() -> &'static Mutex<HashMap<u32, Weak<PoolShared>>> {
+    static POOLS: std::sync::OnceLock<Mutex<HashMap<u32, Weak<PoolShared>>>> =
+        std::sync::OnceLock::new();
+    POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn create_pipe() -> Result<(RawFd, RawFd), String> {
+    let mut fds = [-1; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "pipe() failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    for fd in fds {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+        }
+    }
+    Ok((fds[0], fds[1]))
+}
+
+fn next_owner() -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    loop {
+        let owner = NEXT.fetch_add(1, Ordering::Relaxed);
+        if owner != 0 {
+            return owner;
+        }
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoopEvent {
+    ident: f64,
+    filter: i32,
+    flags: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fflags: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    res: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    udata: Option<f64>,
+    #[serde(default)]
+    routed: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadinessChange {
+    ident: f64,
+    filter: i32,
+    flags: u32,
+    fflags: u32,
+    data: f64,
+    udata: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cancel_owner: Option<u32>,
+    #[serde(default)]
+    scheduler_wake: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acknowledgement: Option<u64>,
+}
+
+struct ReadinessAcknowledgement {
+    installed: Mutex<bool>,
+    changed: Condvar,
 }
 
 #[derive(Default)]
-struct SharedReadinessInner {
-    events: HashMap<u32, VecDeque<RoutedLoopEvent>>,
-    priorities: ReadinessPriorityQueue,
-    process_changes: Vec<ReadinessChange>,
-    retired: HashSet<u32>,
-    version: u64,
+struct MailboxInner {
+    changes: Vec<ReadinessChange>,
+    events: HashMap<u32, VecDeque<LoopEvent>>,
+    acknowledgements: HashMap<u64, Arc<ReadinessAcknowledgement>>,
 }
 
-struct SharedReadiness {
-    inner: Mutex<SharedReadinessInner>,
-    changed: Condvar,
+struct Mailbox {
+    inner: Mutex<MailboxInner>,
     wake_read: i32,
     wake_write: i32,
 }
 
-impl SharedReadiness {
+impl Mailbox {
     fn new() -> Self {
         let mut fds = [-1; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
@@ -152,15 +209,13 @@ impl SharedReadiness {
             }
         }
         Self {
-            inner: Mutex::new(SharedReadinessInner::default()),
-            changed: Condvar::new(),
+            inner: Mutex::new(MailboxInner::default()),
             wake_read: fds[0],
             wake_write: fds[1],
         }
     }
 
     fn notify(&self) {
-        self.changed.notify_all();
         let byte = [1u8];
         unsafe {
             libc::write(self.wake_write, byte.as_ptr().cast(), byte.len());
@@ -173,599 +228,9 @@ impl SharedReadiness {
     }
 }
 
-fn shared_readiness() -> &'static SharedReadiness {
-    static SHARED: OnceLock<SharedReadiness> = OnceLock::new();
-    SHARED.get_or_init(SharedReadiness::new)
-}
-
-fn orchestrated_owner_pools() -> &'static Mutex<HashMap<u32, Weak<OrchestratedPoolShared>>> {
-    static POOLS: OnceLock<Mutex<HashMap<u32, Weak<OrchestratedPoolShared>>>> = OnceLock::new();
-    POOLS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn notify_orchestrated_owner_ready(owner: u32) {
-    let pool = orchestrated_owner_pools()
-        .lock()
-        .unwrap()
-        .get(&owner)
-        .and_then(Weak::upgrade);
-    if let Some(pool) = pool {
-        notify_orchestrated_pool(
-            &pool,
-            OrchestratedPoolEvent {
-                kind: OrchestratedPoolEventKind::Ready,
-                worker: usize::MAX,
-                owner,
-                value: None,
-                error: None,
-                loop_turns: 0,
-            },
-        );
-    }
-}
-
-struct SharedLoopDescriptor {
-    json: String,
-    fd: i32,
-    kind: SharedLoopKind,
-}
-
-#[derive(Clone, Copy)]
-enum SharedLoopKind {
-    Kqueue,
-    IoUring,
-}
-
-#[derive(Clone, Copy)]
-enum WorkloadReadiness {
-    Delegated,
-    ThreadShared,
-    ProcessShared,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct RoutedLoopEvent {
-    ident: f64,
-    filter: i32,
-    flags: u32,
-    fflags: Option<u32>,
-    data: Option<f64>,
-    res: Option<i32>,
-    udata: Option<f64>,
-    #[serde(default)]
-    routed: bool,
-}
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-#[derive(serde::Serialize)]
-struct ReadinessChange {
-    ident: u64,
-    filter: i16,
-    flags: u16,
-    fflags: u32,
-    data: i64,
-    udata: u64,
-    #[serde(rename = "cancelOwner", skip_serializing_if = "Option::is_none")]
-    cancel_owner: Option<u32>,
-}
-
-impl Drop for SharedLoopDescriptor {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.fd);
-        }
-    }
-}
-
-impl Drop for WorkloadTable {
-    fn drop(&mut self) {
-        for workload in self.0.drain(..).flatten() {
-            drop_parked(workload);
-        }
-    }
-}
-
-thread_local! {
-    static WORKLOADS: RefCell<WorkloadTable> = const { RefCell::new(WorkloadTable(Vec::new())) };
-    static ORCHESTRATED_POOLS: RefCell<Vec<Option<OrchestratedPool>>> = const { RefCell::new(Vec::new()) };
-    static SHARED_LOOP_DESCRIPTOR: RefCell<Option<SharedLoopDescriptor>> = const { RefCell::new(None) };
-    static NEXT_SHARED_POLL_ID: Cell<u64> = const { Cell::new(1 << 32) };
-    static SHARED_POLLS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
-    static READINESS_CHANGES: RefCell<Vec<ReadinessChange>> = const { RefCell::new(Vec::new()) };
-}
-
-fn next_workload_owner() -> u32 {
-    static NEXT: AtomicU32 = AtomicU32::new(1);
-    NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |owner| {
-        owner.checked_add(1)
-    })
-    .expect("workload owner id overflow")
-}
-
-pub(crate) fn configure_reactor_workload(scope: &mut v8::HandleScope) -> Result<u32, String> {
-    let owner_id = next_workload_owner();
-    install_reactor_workload(scope, owner_id, false)?;
-    Ok(owner_id)
-}
-
-fn install_reactor_workload(
-    scope: &mut v8::HandleScope,
-    owner_id: u32,
-    process_shared: bool,
-) -> Result<(), String> {
-    let owner_key = v8::String::new(scope, "__finoSchedulerWorkloadId")
-        .ok_or_else(|| "failed to allocate scheduler owner marker".to_string())?;
-    let owner_value = v8::Integer::new_from_unsigned(scope, owner_id);
-    context_global(scope)
-        .set(scope, owner_key.into(), owner_value.into())
-        .ok_or_else(|| "failed to install scheduler owner marker".to_string())?;
-    if !process_shared {
-        let key = v8::String::new(scope, "__finoSchedulerSharesReadiness")
-            .ok_or_else(|| "failed to allocate shared readiness marker".to_string())?;
-        let value = v8::Boolean::new(scope, true);
-        context_global(scope)
-            .set(scope, key.into(), value.into())
-            .ok_or_else(|| "failed to install shared readiness marker".to_string())?;
-    }
-    if process_shared || cfg!(target_os = "macos") {
-        let key = v8::String::new(scope, "__finoNativeReadinessRegistration")
-            .ok_or_else(|| "failed to allocate native readiness marker".to_string())?;
-        let value = v8::Boolean::new(scope, true);
-        context_global(scope)
-            .set(scope, key.into(), value.into())
-            .ok_or_else(|| "failed to install native readiness marker".to_string())?;
-    }
-    if process_shared {
-        let key = v8::String::new(scope, "__finoProcessReadiness")
-            .ok_or_else(|| "failed to allocate process readiness marker".to_string())?;
-        let value = v8::Boolean::new(scope, true);
-        context_global(scope)
-            .set(scope, key.into(), value.into())
-            .ok_or_else(|| "failed to install process readiness marker".to_string())?;
-    }
-    Ok(())
-}
-
-fn context_global<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Object> {
-    scope.get_current_context().global(scope)
-}
-
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = [
-        "createWorkload",
-        "dispatchWorkload",
-        "driveResidentWorkload",
-        "driveSharedResidentWorkloads",
-        "createOrchestratedPool",
-        "scheduleOrchestratedWorker",
-        "takeOrchestratedPoolEvents",
-        "closeOrchestratedPool",
-        "processReadinessControlFd",
-        "completeHostOperation",
-        "terminateWorkload",
-        "workloadWakeFd",
-        "workloadOwner",
-        "sharedLoopDescriptor",
-        "routeSharedLoopEvent",
-        "routeProcessReadiness",
-        "takeSharedLoopEvents",
-        "registerSharedPoll",
-        "takeSharedPoll",
-        "cancelSharedPoll",
-        "registerSharedReadiness",
-        "registerProcessReadiness",
-        "takeSharedReadinessChanges",
-        "pollSharedReactor",
-    ]
-    .iter()
-    .map(|name| v8::String::new(scope, name).unwrap())
-    .collect();
-    let module_name = v8::String::new(scope, "internal:scheduler-native").unwrap();
-    v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
-}
-
-fn eval_steps<'a>(
-    context: v8::Local<'a, v8::Context>,
-    module: v8::Local<'a, v8::Module>,
-) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
-
-    macro_rules! set_fn {
-        ($name:literal, $callback:path) => {{
-            let template = v8::FunctionTemplate::new(scope, $callback);
-            let function = template.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, function.into())?;
-        }};
-    }
-
-    set_fn!("createWorkload", create_workload);
-    set_fn!("dispatchWorkload", dispatch_workload);
-    set_fn!("driveResidentWorkload", drive_resident_workload);
-    set_fn!(
-        "driveSharedResidentWorkloads",
-        drive_shared_resident_workloads
-    );
-    set_fn!("createOrchestratedPool", create_orchestrated_pool);
-    set_fn!("scheduleOrchestratedWorker", schedule_orchestrated_worker);
-    set_fn!("takeOrchestratedPoolEvents", take_orchestrated_pool_events);
-    set_fn!("closeOrchestratedPool", close_orchestrated_pool);
-    set_fn!("processReadinessControlFd", process_readiness_control_fd);
-    set_fn!("completeHostOperation", complete_host_operation);
-    set_fn!("terminateWorkload", terminate_workload);
-    set_fn!("workloadWakeFd", workload_wake_fd);
-    set_fn!("workloadOwner", workload_owner);
-    set_fn!("sharedLoopDescriptor", shared_loop_descriptor);
-    set_fn!("routeSharedLoopEvent", route_shared_loop_event);
-    set_fn!("routeProcessReadiness", route_process_readiness);
-    set_fn!("takeSharedLoopEvents", take_shared_loop_events);
-    set_fn!("registerSharedPoll", register_shared_poll);
-    set_fn!("takeSharedPoll", take_shared_poll);
-    set_fn!("cancelSharedPoll", cancel_shared_poll);
-    set_fn!("registerSharedReadiness", register_shared_readiness);
-    set_fn!("registerProcessReadiness", register_process_readiness);
-    set_fn!("takeSharedReadinessChanges", take_shared_readiness_changes);
-    set_fn!("pollSharedReactor", poll_shared_reactor);
-    Some(v8::undefined(scope).into())
-}
-
-fn register_shared_readiness(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    READINESS_CHANGES.with(|changes| {
-        changes
-            .borrow_mut()
-            .push(readiness_change_from_args(scope, &args));
-    });
-}
-
-fn register_process_readiness(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let readiness = shared_readiness();
-    {
-        let mut inner = readiness.inner.lock().unwrap();
-        inner
-            .process_changes
-            .push(readiness_change_from_args(scope, &args));
-    }
-    readiness.notify();
-}
-
-fn readiness_change_from_args(
-    scope: &mut v8::HandleScope,
-    args: &v8::FunctionCallbackArguments,
-) -> ReadinessChange {
-    ReadinessChange {
-        ident: args.get(0).integer_value(scope).unwrap_or(0) as u64,
-        filter: args.get(1).int32_value(scope).unwrap_or(0) as i16,
-        flags: args.get(2).uint32_value(scope).unwrap_or(0) as u16,
-        fflags: args.get(3).uint32_value(scope).unwrap_or(0),
-        data: args.get(4).integer_value(scope).unwrap_or(0),
-        udata: args.get(5).integer_value(scope).unwrap_or(0) as u64,
-        cancel_owner: None,
-    }
-}
-
-fn take_shared_readiness_changes(
-    scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let readiness = shared_readiness();
-    readiness.drain_wake();
-    let changes = {
-        let mut inner = readiness.inner.lock().unwrap();
-        std::mem::take(&mut inner.process_changes)
-    };
-    match serde_json::to_string(&changes) {
-        Ok(json) => {
-            if let Some(value) = v8::String::new(scope, &json) {
-                rv.set(value.into());
-            }
-        }
-        Err(error) => throw_error(
-            scope,
-            &format!("failed to encode readiness registrations: {error}"),
-        ),
-    }
-}
-
-fn poll_shared_reactor(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let timeout_ms = if args.get(0).is_null() {
-        -1
-    } else {
-        args.get(0).int32_value(scope).unwrap_or(0)
-    };
-    match wait_for_reactor(timeout_ms) {
-        Ok(ready) => rv.set(v8::Boolean::new(scope, ready).into()),
-        Err(error) => throw_error(scope, &error),
-    }
-}
-
-fn register_shared_poll(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    const FIRST_POLL_ID: u64 = 1 << 32;
-    const LAST_POLL_ID: u64 = (1 << 48) - 1;
-
-    let user_data = args.get(0).integer_value(scope).unwrap_or(0) as u64;
-    let poll_id = NEXT_SHARED_POLL_ID.with(|next| {
-        SHARED_POLLS.with(|polls| {
-            let mut polls = polls.borrow_mut();
-            loop {
-                let candidate = next.get();
-                next.set(if candidate == LAST_POLL_ID {
-                    FIRST_POLL_ID
-                } else {
-                    candidate + 1
-                });
-                if let std::collections::hash_map::Entry::Vacant(entry) = polls.entry(candidate) {
-                    entry.insert(user_data);
-                    return candidate;
-                }
-            }
-        })
-    });
-    rv.set(v8::Number::new(scope, poll_id as f64).into());
-}
-
-fn take_shared_poll(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let poll_id = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
-    let user_data = SHARED_POLLS.with(|polls| polls.borrow_mut().remove(&poll_id));
-    if let Some(user_data) = user_data {
-        rv.set(v8::Number::new(scope, user_data as f64).into());
-    } else {
-        rv.set(v8::null(scope).into());
-    }
-}
-
-fn cancel_shared_poll(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let poll_id = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
-    SHARED_POLLS.with(|polls| {
-        polls.borrow_mut().remove(&poll_id);
-    });
-}
-
-fn route_shared_loop_event(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    let json = args
-        .get(1)
-        .to_string(scope)
-        .map(|value| value.to_rust_string_lossy(scope))
-        .unwrap_or_default();
-    let event = match serde_json::from_str::<RoutedLoopEvent>(&json) {
-        Ok(event) => event,
-        Err(error) => {
-            throw_error(scope, &format!("invalid routed loop event: {error}"));
-            return;
-        }
-    };
-    queue_routed_event(owner, event, true, false);
-}
-
-fn route_process_readiness(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    queue_routed_event(
-        owner,
-        RoutedLoopEvent {
-            ident: args.get(1).number_value(scope).unwrap_or(0.0),
-            filter: args.get(2).int32_value(scope).unwrap_or(0),
-            flags: args.get(3).uint32_value(scope).unwrap_or(0),
-            fflags: Some(args.get(4).uint32_value(scope).unwrap_or(0)),
-            data: Some(args.get(5).number_value(scope).unwrap_or(0.0)),
-            res: None,
-            udata: Some(args.get(6).number_value(scope).unwrap_or(0.0)),
-            routed: true,
-        },
-        false,
-        args.get(7).is_undefined() || args.get(7).boolean_value(scope),
-    );
-}
-
-fn queue_routed_event(
-    owner: u32,
-    event: RoutedLoopEvent,
-    record_priority: bool,
-    notify_owner: bool,
-) {
-    let readiness = shared_readiness();
-    {
-        let mut inner = readiness.inner.lock().unwrap();
-        if inner.retired.contains(&owner) {
-            return;
-        }
-        inner.events.entry(owner).or_default().push_back(event);
-        if record_priority {
-            inner.priorities.record(owner);
-        }
-        inner.version = inner.version.wrapping_add(1);
-    }
-    readiness.changed.notify_all();
-    if notify_owner {
-        notify_orchestrated_owner_ready(owner);
-    }
-}
-
-fn retire_process_readiness_owner(owner: u32) {
-    let readiness = shared_readiness();
-    {
-        let mut inner = readiness.inner.lock().unwrap();
-        inner.retired.insert(owner);
-        inner.priorities.consume(owner);
-        inner.events.remove(&owner);
-        inner.process_changes.push(ReadinessChange {
-            ident: 0,
-            filter: 0,
-            flags: 0,
-            fflags: 0,
-            data: 0,
-            udata: 0,
-            cancel_owner: Some(owner),
-        });
-        inner.version = inner.version.wrapping_add(1);
-    }
-    readiness.notify();
-}
-
-fn take_ready_workload(preferred: u32) -> Option<u32> {
-    let mut inner = shared_readiness().inner.lock().unwrap();
-    if inner.priorities.pending(preferred) > 0 {
-        inner.priorities.remove(preferred);
-        Some(preferred)
-    } else {
-        inner.priorities.claim_higher_than(preferred, 0)
-    }
-}
-
-fn remove_ready_workload(owner: u32) {
-    shared_readiness()
-        .inner
-        .lock()
-        .unwrap()
-        .priorities
-        .remove(owner);
-}
-
-fn reactor_routes_completions() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        SHARED_LOOP_DESCRIPTOR.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .is_some_and(|descriptor| matches!(descriptor.kind, SharedLoopKind::Kqueue))
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
-}
-
-pub(crate) fn clear_ready_workloads() {
-    shared_readiness().inner.lock().unwrap().priorities = ReadinessPriorityQueue::default();
-}
-
-fn take_shared_loop_events(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    remove_ready_workload(owner);
-    let events = {
-        let mut inner = shared_readiness().inner.lock().unwrap();
-        inner.priorities.consume(owner);
-        inner
-            .events
-            .remove(&owner)
-            .map(VecDeque::into_iter)
-            .map(Iterator::collect::<Vec<_>>)
-            .unwrap_or_default()
-    };
-    match serde_json::to_string(&events) {
-        Ok(json) => {
-            if let Some(value) = v8::String::new(scope, &json) {
-                rv.set(value.into());
-            }
-        }
-        Err(error) => throw_error(
-            scope,
-            &format!("failed to encode routed loop events: {error}"),
-        ),
-    }
-}
-
-fn shared_loop_descriptor(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let candidate = if args.get(0).is_string() {
-        args.get(0)
-            .to_string(scope)
-            .map(|value| value.to_rust_string_lossy(scope))
-    } else {
-        None
-    };
-    let descriptor = SHARED_LOOP_DESCRIPTOR.with(|slot| -> Result<Option<String>, String> {
-        let mut slot = slot.borrow_mut();
-        if let Some(descriptor) = slot.as_ref() {
-            return Ok(Some(descriptor.json.clone()));
-        }
-        let Some(candidate) = candidate else {
-            return Ok(None);
-        };
-        let mut value: serde_json::Value = serde_json::from_str(&candidate)
-            .map_err(|error| format!("invalid shared loop descriptor: {error}"))?;
-        let fd_key = if value.get("ringFd").is_some() {
-            "ringFd"
-        } else {
-            "fd"
-        };
-        let kind = match value.get("kind").and_then(serde_json::Value::as_str) {
-            Some("kqueue") => SharedLoopKind::Kqueue,
-            Some("io_uring") => SharedLoopKind::IoUring,
-            Some(kind) => return Err(format!("unsupported shared loop kind: {kind}")),
-            None => return Err("shared loop descriptor is missing its kind".to_string()),
-        };
-        let fd = value
-            .get(fd_key)
-            .and_then(serde_json::Value::as_i64)
-            .and_then(|fd| i32::try_from(fd).ok())
-            .ok_or_else(|| "shared loop descriptor is missing its fd".to_string())?;
-        let shared_fd = unsafe { libc::dup(fd) };
-        if shared_fd < 0 {
-            return Err(format!(
-                "failed to retain shared loop fd: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        value[fd_key] = serde_json::Value::from(shared_fd);
-        let json = serde_json::to_string(&value)
-            .map_err(|error| format!("failed to encode shared loop descriptor: {error}"))?;
-        *slot = Some(SharedLoopDescriptor {
-            json: json.clone(),
-            fd: shared_fd,
-            kind,
-        });
-        Ok(Some(json))
-    });
-    match descriptor {
-        Err(error) => throw_error(scope, &error),
-        Ok(Some(descriptor)) => {
-            if let Some(value) = v8::String::new(scope, &descriptor) {
-                rv.set(value.into());
-            }
-        }
-        Ok(None) => rv.set(v8::null(scope).into()),
-    }
+fn mailbox() -> &'static Mailbox {
+    static MAILBOX: std::sync::OnceLock<Mailbox> = std::sync::OnceLock::new();
+    MAILBOX.get_or_init(Mailbox::new)
 }
 
 fn throw_error(scope: &mut v8::HandleScope, message: &str) {
@@ -781,18 +246,14 @@ fn js_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String
         .unwrap_or_else(|| "unknown exception".to_string())
 }
 
-fn json_quote(input: &str) -> String {
-    serde_json::to_string(input).unwrap_or_else(|_| "\"\"".to_string())
-}
-
 fn global_function(
     scope: &mut v8::HandleScope,
-    context: v8::Local<v8::Context>,
     name: &str,
 ) -> Result<v8::Global<v8::Function>, String> {
     let key =
         v8::String::new(scope, name).ok_or_else(|| format!("failed to allocate {name} key"))?;
-    let value = context
+    let value = scope
+        .get_current_context()
         .global(scope)
         .get(scope, key.into())
         .ok_or_else(|| format!("{name} is missing"))?;
@@ -801,15 +262,50 @@ fn global_function(
     Ok(v8::Global::new(scope, function))
 }
 
+fn install_workload_globals(scope: &mut v8::HandleScope, owner: u32) -> Result<(), String> {
+    let global = scope.get_current_context().global(scope);
+    for (name, value) in [
+        (
+            "__finoSchedulerWorkloadId",
+            v8::Integer::new_from_unsigned(scope, owner).into(),
+        ),
+        (
+            "__finoNativeReadinessRegistration",
+            v8::Boolean::new(scope, true).into(),
+        ),
+        (
+            "__finoProcessReadiness",
+            v8::Boolean::new(scope, true).into(),
+        ),
+    ] {
+        let key =
+            v8::String::new(scope, name).ok_or_else(|| format!("failed to allocate {name}"))?;
+        global
+            .set(scope, key.into(), value)
+            .ok_or_else(|| format!("failed to install {name}"))?;
+    }
+    Ok(())
+}
+
 fn setup_workload(
-    entry_path: String,
+    entry: String,
     process_env: ProcessEnv,
     package_map_json: Option<String>,
-    readiness: WorkloadReadiness,
-    owner_id: u32,
-) -> Result<ParkedWorkload, String> {
+    import_rules: Vec<crate::state::ImportRule>,
+    owner: u32,
+    channel_rx: Option<mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
+    channel_tx: Option<mpsc::Sender<crate::realm::thread::ThreadMessage>>,
+    wake_read_fd: Option<RawFd>,
+    wake_write_fd: Option<RawFd>,
+    watch_mode: bool,
+    repl_mode: bool,
+    realm_data: Option<String>,
+    realm_bootstrap_data: Option<String>,
+    reload_requested_signal: Option<Arc<AtomicBool>>,
+    scheduled: Option<Arc<ScheduledRealmState>>,
+    port_fds: Option<(RawFd, RawFd)>,
+) -> Result<Workload, String> {
     crate::runtime::init_v8();
-
     let params = v8::CreateParams::default()
         .array_buffer_allocator(crate::runtime::shared_allocator().clone());
     let mut isolate = v8::Isolate::new(params);
@@ -821,1041 +317,303 @@ fn setup_workload(
     let saved_async_state = crate::async_rt::swap_state(Some(crate::async_rt::new_state()));
     let initialized = (|| {
         let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
-        let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
+        let queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
         let context = v8::Context::new(isolate_scope, Default::default());
-        context.set_microtask_queue(&root_queue);
+        context.set_microtask_queue(&queue);
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
-        let state = FinoState::new_root(
+        let state = FinoState::new_child(
             process_env,
             package_map_json,
-            root_queue,
-            default_import_rules(),
+            queue,
+            import_rules,
+            (!entry.is_empty()).then_some(entry),
+            None,
+            channel_rx,
+            channel_tx,
+            wake_read_fd,
+            wake_write_fd,
+            watch_mode,
+            repl_mode,
+            realm_data,
+            realm_bootstrap_data,
+            reload_requested_signal,
         );
         context.set_slot(Rc::new(RefCell::new(state)));
+        install_workload_globals(scope, owner)?;
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
-        match readiness {
-            WorkloadReadiness::Delegated => {
-                let marker_key = v8::String::new(scope, "__finoSchedulerDelegatesReadiness")
-                    .ok_or_else(|| "failed to allocate scheduler marker".to_string())?;
-                let marker_value = v8::Boolean::new(scope, true);
-                context
-                    .global(scope)
-                    .set(scope, marker_key.into(), marker_value.into());
-                let owner_key = v8::String::new(scope, "__finoSchedulerWorkloadId")
-                    .ok_or_else(|| "failed to allocate scheduler owner marker".to_string())?;
-                let owner_value = v8::Integer::new_from_unsigned(scope, owner_id);
-                context
-                    .global(scope)
-                    .set(scope, owner_key.into(), owner_value.into());
-            }
-            WorkloadReadiness::ThreadShared => {
-                install_reactor_workload(scope, owner_id, false)?;
-            }
-            WorkloadReadiness::ProcessShared => {
-                install_reactor_workload(scope, owner_id, true)?;
-            }
-        }
 
-        let delegates_readiness = matches!(readiness, WorkloadReadiness::Delegated);
-        let runner = format!(
-            "import 'internal:bootstrap';\n\
-             import {{ configureWorkload }} from 'internal:scheduler/workload';\n\
-             configureWorkload(import({}), {});\n",
-            json_quote(&entry_path),
-            delegates_readiness
-        );
-
+        let source = "import 'internal:bootstrap';";
         let module = {
             let tc = &mut v8::TryCatch::new(scope);
-            loader::compile_source_module(tc, &runner, "internal:scheduler-workload", None)
-                .ok_or_else(|| {
+            loader::compile_source_module(tc, source, "internal:scheduled-realm", None).ok_or_else(
+                || {
                     crate::realm::child::catch_message(tc)
-                        .unwrap_or_else(|| "failed to compile scheduler workload".to_string())
-                })?
+                        .unwrap_or_else(|| "failed to compile scheduled realm".to_string())
+                },
+            )?
         };
-        loader::register_as_builtin(scope, module, "internal:scheduler-workload");
+        loader::register_as_builtin(scope, module, "internal:scheduled-realm");
         {
             let tc = &mut v8::TryCatch::new(scope);
             module
                 .instantiate_module(tc, loader::resolve_module_callback)
                 .ok_or_else(|| {
                     crate::realm::child::catch_message(tc)
-                        .unwrap_or_else(|| "failed to instantiate scheduler workload".to_string())
+                        .unwrap_or_else(|| "failed to instantiate scheduled realm".to_string())
                 })?;
         }
         {
             let tc = &mut v8::TryCatch::new(scope);
             module.evaluate(tc).ok_or_else(|| {
                 crate::realm::child::catch_message(tc)
-                    .unwrap_or_else(|| "failed to evaluate scheduler workload".to_string())
+                    .unwrap_or_else(|| "failed to evaluate scheduled realm".to_string())
             })?;
         }
-        crate::realm::child::pump_and_checkpoint(scope);
         if module.get_status() == v8::ModuleStatus::Errored {
             return Err(js_string(scope, module.get_exception()));
         }
-
         Ok((
             v8::Global::new(scope, context),
-            global_function(scope, context, "__finoSchedulerDispatch")?,
-            global_function(scope, context, "__finoSchedulerTakeHostOps")?,
-            global_function(scope, context, "__finoSchedulerCompleteHostOp")?,
-            global_function(scope, context, "__finoSchedulerSettled")?,
-            global_function(scope, context, "__finoSchedulerTick")?,
-            global_function(scope, context, "__finoSchedulerFlush")?,
-            global_function(scope, context, "__finoSchedulerCompleteReadiness")?,
             get_state(scope),
             v8::Global::new(scope, module),
         ))
     })();
-    let workload_async_state = crate::async_rt::swap_state(saved_async_state);
-    let (
+    let async_state = crate::async_rt::swap_state(saved_async_state);
+    let (context, state, module) = initialized?;
+    unsafe {
+        isolate.exit();
+    }
+    Ok(Workload {
+        owner,
         context,
-        dispatch_fn,
-        take_ops_fn,
-        complete_fn,
-        settled_fn,
-        tick_fn,
-        flush_fn,
-        readiness_fn,
         state,
-        module,
-    ) = initialized?;
-
-    let mut workload = ParkedWorkload {
-        owner_id,
-        context,
-        dispatch_fn,
-        take_ops_fn,
-        complete_fn,
-        settled_fn,
-        tick_fn,
-        flush_fn,
-        readiness_fn,
-        active_promise: None,
-        async_state: workload_async_state,
-        _state: state,
+        polling_fn: None,
         _module: module,
         isolate,
-        moved_between_threads: false,
-        process_readiness: matches!(readiness, WorkloadReadiness::ProcessShared),
-    };
-    unsafe {
-        workload.isolate.exit();
-    }
-    Ok(workload)
+        async_state,
+        scheduled,
+        port_fds,
+    })
 }
 
-fn create_workload(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let entry_path = args
-        .get(0)
-        .to_string(scope)
-        .map(|value| value.to_rust_string_lossy(scope))
-        .unwrap_or_default();
-    if entry_path.is_empty() {
-        throw_error(scope, "createWorkload: entry path is required");
-        return;
-    }
-    let parent_state = get_state(scope);
-    let delegates_readiness = args.get(1).is_undefined() || args.get(1).boolean_value(scope);
-    let process_shared = args.get(2).boolean_value(scope);
-    let owner_id = next_workload_owner();
-    let (process_env, package_map_json) = {
-        let state = parent_state.borrow();
-        (state.process_env.clone(), state.package_map_json.clone())
-    };
-    let readiness = if delegates_readiness {
-        WorkloadReadiness::Delegated
-    } else if process_shared {
-        WorkloadReadiness::ProcessShared
-    } else {
-        WorkloadReadiness::ThreadShared
-    };
-    let workload = match setup_workload(
-        entry_path,
-        process_env,
-        package_map_json,
-        readiness,
-        owner_id,
-    ) {
-        Ok(workload) => workload,
-        Err(error) => {
-            throw_error(scope, &format!("createWorkload: {error}"));
-            return;
-        }
-    };
-    let handle = WORKLOADS.with(|table| {
-        let mut table = table.borrow_mut();
-        if let Some(index) = table.0.iter().position(Option::is_none) {
-            table.0[index] = Some(workload);
-            index
-        } else {
-            let index = table.0.len();
-            table.0.push(Some(workload));
-            index
-        }
-    });
-    rv.set(v8::Integer::new(scope, handle as i32).into());
-}
-
-fn call_string_function(
-    scope: &mut v8::HandleScope,
-    function: &v8::Global<v8::Function>,
-    args: &[v8::Local<v8::Value>],
-) -> Result<String, String> {
-    let function = v8::Local::new(scope, function);
-    let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-    let tc = &mut v8::TryCatch::new(scope);
-    let value = function.call(tc, receiver, args).ok_or_else(|| {
-        crate::realm::child::catch_message(tc)
-            .unwrap_or_else(|| "scheduler helper threw".to_string())
-    })?;
-    value
-        .to_string(tc)
-        .map(|value| value.to_rust_string_lossy(tc))
-        .ok_or_else(|| "scheduler helper did not return a string".to_string())
-}
-
-fn take_host_operations(
-    scope: &mut v8::HandleScope,
-    context: v8::Local<v8::Context>,
-    take_ops_fn: &v8::Global<v8::Function>,
-) -> Result<Option<String>, String> {
-    let key = v8::String::new(scope, "__finoSchedulerHostOps")
-        .ok_or_else(|| "failed to allocate host operation key".to_string())?;
-    let value = context
-        .global(scope)
-        .get(scope, key.into())
-        .ok_or_else(|| "host operation queue is missing".to_string())?;
-    let operations = v8::Local::<v8::Array>::try_from(value)
-        .map_err(|_| "host operation queue is not an array".to_string())?;
-    if operations.length() == 0 {
-        return Ok(None);
-    }
-    let json = call_string_function(scope, take_ops_fn, &[])?;
-    Ok(Some(format!(
-        "{{\"kind\":\"hostOperations\",\"operations\":{json}}}"
-    )))
-}
-
-fn dispatch_entered(workload: &mut ParkedWorkload, request_json: &str) -> Result<String, String> {
-    let context_global = workload.context.clone();
-    let dispatch_fn = workload.dispatch_fn.clone();
-    let take_ops_fn = workload.take_ops_fn.clone();
-    let settled_fn = workload.settled_fn.clone();
-    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
-    let context = v8::Local::new(isolate_scope, &context_global);
-    let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-    if workload.active_promise.is_none() {
-        let function = v8::Local::new(scope, &dispatch_fn);
-        let request = v8::String::new(scope, request_json)
-            .ok_or_else(|| "failed to allocate workload request".to_string())?;
-        let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-        let promise = {
-            let tc = &mut v8::TryCatch::new(scope);
-            let value = function
-                .call(tc, receiver, &[request.into()])
-                .ok_or_else(|| {
-                    crate::realm::child::catch_message(tc)
-                        .unwrap_or_else(|| "scheduler workload dispatch threw".to_string())
-                })?;
-            let promise = v8::Local::<v8::Promise>::try_from(value)
-                .map_err(|_| "scheduler workload dispatch did not return a promise".to_string())?;
-            v8::Global::new(tc, promise)
-        };
-        workload.active_promise = Some(promise);
-    }
-
-    crate::realm::child::pump_and_checkpoint(scope);
-    if let Some(operations) = take_host_operations(scope, context, &take_ops_fn)? {
-        return Ok(operations);
-    }
-
-    let promise = v8::Local::new(scope, workload.active_promise.as_ref().unwrap());
-    match promise.state() {
-        v8::PromiseState::Pending => Ok("{\"kind\":\"pending\"}".to_string()),
-        v8::PromiseState::Fulfilled => {
-            let value = promise.result(scope);
-            workload.active_promise = None;
-            call_string_function(scope, &settled_fn, &[value])
-        }
-        v8::PromiseState::Rejected => {
-            let value = promise.result(scope);
-            workload.active_promise = None;
-            Err(js_string(scope, value))
-        }
-    }
-}
-
-fn with_entered_workload<T>(
-    workload: &mut ParkedWorkload,
-    callback: impl FnOnce(&mut ParkedWorkload) -> Result<T, String>,
-) -> Result<T, String> {
-    let saved_async_state = crate::async_rt::swap_state(workload.async_state.take());
+fn activate(workload: &mut Workload) -> ActiveWorkload {
+    let locker = crate::v8_threading::IsolateLocker::new(&mut workload.isolate);
     unsafe {
         workload.isolate.enter();
     }
-    let result = callback(workload);
-    unsafe {
-        workload.isolate.exit();
-    }
-    workload.async_state = crate::async_rt::swap_state(saved_async_state);
-    result
-}
-
-fn activate_workload(workload: &mut ParkedWorkload) -> ActiveWorkload {
-    let locker = workload
-        .moved_between_threads
-        .then(|| crate::v8_threading::IsolateLocker::new(&mut workload.isolate));
     let saved_async_state = crate::async_rt::swap_state(workload.async_state.take());
-    unsafe {
-        workload.isolate.enter();
-    }
     ActiveWorkload {
         saved_async_state,
         _locker: locker,
     }
 }
 
-fn deactivate_workload(workload: &mut ParkedWorkload, active: ActiveWorkload) {
+fn deactivate(workload: &mut Workload, active: ActiveWorkload) {
+    workload.async_state = crate::async_rt::swap_state(active.saved_async_state);
     unsafe {
         workload.isolate.exit();
     }
-    let ActiveWorkload {
-        saved_async_state,
-        _locker,
-    } = active;
-    workload.async_state = crate::async_rt::swap_state(saved_async_state);
-    drop(_locker);
 }
 
-fn dispatch_workload(
+fn service_scheduled_sync_call(
     scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let request_json = args
-        .get(1)
-        .to_string(scope)
-        .map(|value| value.to_rust_string_lossy(scope))
-        .unwrap_or_else(|| "{}".to_string());
-    let result = WORKLOADS.with(|table| {
-        let mut table = table.borrow_mut();
-        let workload = table
-            .0
-            .get_mut(handle)
-            .and_then(Option::as_mut)
-            .ok_or_else(|| "dispatchWorkload: invalid workload handle".to_string())?;
-        with_entered_workload(workload, |workload| {
-            dispatch_entered(workload, &request_json)
-        })
-    });
-    match result {
-        Ok(json) => {
-            if let Some(value) = v8::String::new(scope, &json) {
-                rv.set(value.into());
+    state: &Rc<RefCell<FinoState>>,
+) -> bool {
+    let (maybe_fn, maybe_resolver) = {
+        let mut state = state.borrow_mut();
+        (state.sync_call_fn.take(), state.sync_call_resolver.take())
+    };
+    let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) else {
+        return false;
+    };
+    let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
+        let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
+        let tc = &mut v8::TryCatch::new(scope);
+        let function = v8::Local::new(tc, &fn_ref);
+        match function.call(tc, receiver, &[]) {
+            Some(result) => Ok(v8::Global::new(tc, result)),
+            None => {
+                let exception = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
+                Err(v8::Global::new(tc, exception))
             }
         }
-        Err(error) => throw_error(scope, &error),
+    };
+    let resolver = v8::Local::new(scope, &resolver_ref);
+    match call_result {
+        Ok(result) => {
+            let result = v8::Local::new(scope, &result);
+            let _ = resolver.resolve(scope, result);
+        }
+        Err(exception) => {
+            let exception = v8::Local::new(scope, &exception);
+            let _ = resolver.reject(scope, exception);
+        }
     }
+    true
 }
 
-fn drive_resident_entered(
-    workload: &mut ParkedWorkload,
-    request_bytes: &[u8],
-) -> Result<(Vec<u8>, u64), String> {
-    let routes_completions = workload.process_readiness || reactor_routes_completions();
+enum Slice {
+    Quiescent(bool),
+    Settled,
+}
+
+fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
     let context_global = workload.context.clone();
-    let dispatch_fn = workload.dispatch_fn.clone();
-    let tick_fn = workload.tick_fn.clone();
-    let flush_fn = workload.flush_fn.clone();
-    let readiness_fn = workload.readiness_fn.clone();
     let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
     let context = v8::Local::new(isolate_scope, &context_global);
     let scope = &mut v8::ContextScope::new(isolate_scope, context);
-    if workload.active_promise.is_some() {
-        return Err("resident workload already has an active dispatch".to_string());
+    crate::realm::child::pump_and_checkpoint(scope);
+    if workload.polling_fn.is_none() {
+        workload.polling_fn = global_function(scope, "__finoSchedulerPollingRequired").ok();
     }
-    let function = v8::Local::new(scope, &dispatch_fn);
-    let request = crate::realm::serializer::deserialize_value(scope, request_bytes)?;
-    let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-    let promise = {
-        let tc = &mut v8::TryCatch::new(scope);
-        let value = function.call(tc, receiver, &[request]).ok_or_else(|| {
-            crate::realm::child::catch_message(tc)
-                .unwrap_or_else(|| "resident workload dispatch threw".to_string())
-        })?;
-        let promise = v8::Local::<v8::Promise>::try_from(value)
-            .map_err(|_| "resident workload dispatch did not return a promise".to_string())?;
-        v8::Global::new(tc, promise)
+
+    let loop_step_fn = workload.state.borrow().loop_step_fn.clone();
+    let Some(loop_step_fn) = loop_step_fn else {
+        return Ok((Slice::Quiescent(true), 1));
     };
-    workload.active_promise = Some(promise);
-
-    let mut loop_turns = 0u64;
-    loop {
-        crate::realm::child::pump_and_checkpoint(scope);
-        let promise = v8::Local::new(scope, workload.active_promise.as_ref().unwrap());
-        match promise.state() {
-            v8::PromiseState::Pending => {
-                if !routes_completions {
-                    call_number_function(scope, &flush_fn, &[])?;
-                }
-                if take_ready_workload(workload.owner_id).is_none() {
-                    wait_for_reactor(-1)?;
-                }
-                if routes_completions {
-                    remove_ready_workload(workload.owner_id);
-                    dispatch_ready_events(scope, workload.owner_id, &readiness_fn)?;
-                } else {
-                    let function = v8::Local::new(scope, &tick_fn);
-                    let timeout = v8::Number::new(scope, 0.0);
-                    let tc = &mut v8::TryCatch::new(scope);
-                    function
-                        .call(tc, receiver, &[timeout.into()])
-                        .ok_or_else(|| {
-                            crate::realm::child::catch_message(tc)
-                                .unwrap_or_else(|| "resident workload loop tick threw".to_string())
-                        })?;
-                }
-                loop_turns += 1;
-            }
-            v8::PromiseState::Fulfilled => {
-                let result = promise.result(scope);
-                workload.active_promise = None;
-                let bytes = crate::realm::serializer::serialize_value(scope, result)?;
-                return Ok((bytes, loop_turns));
-            }
-            v8::PromiseState::Rejected => {
-                let value = promise.result(scope);
-                workload.active_promise = None;
-                return Err(js_string(scope, value));
-            }
-        }
-    }
-}
-
-fn drive_resident_workload(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let request_bytes = match crate::realm::serializer::serialize_value(scope, args.get(1)) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            throw_error(scope, &format!("driveResidentWorkload: {error}"));
-            return;
-        }
-    };
-    let result = WORKLOADS.with(|table| {
-        let mut table = table.borrow_mut();
-        let workload = table
-            .0
-            .get_mut(handle)
-            .and_then(Option::as_mut)
-            .ok_or_else(|| "driveResidentWorkload: invalid workload handle".to_string())?;
-        with_entered_workload(workload, |workload| {
-            drive_resident_entered(workload, &request_bytes)
-        })
-    });
-    match result {
-        Ok((bytes, loop_turns)) => {
-            let value = match crate::realm::serializer::deserialize_value(scope, &bytes) {
-                Ok(value) => value,
-                Err(error) => {
-                    throw_error(scope, &format!("driveResidentWorkload: {error}"));
-                    return;
-                }
-            };
-            let result = v8::Object::new(scope);
-            for (name, value) in [
-                ("value", value),
-                (
-                    "loopTurns",
-                    v8::Number::new(scope, loop_turns as f64).into(),
-                ),
-                ("isolateEntries", v8::Integer::new(scope, 1).into()),
-                ("isolateExits", v8::Integer::new(scope, 1).into()),
-            ] {
-                let Some(key) = v8::String::new(scope, name) else {
-                    throw_error(
-                        scope,
-                        "driveResidentWorkload: failed to allocate result key",
-                    );
-                    return;
-                };
-                if result.set(scope, key.into(), value).is_none() {
-                    throw_error(scope, "driveResidentWorkload: failed to build result");
-                    return;
-                }
-            }
-            rv.set(result.into());
-        }
-        Err(error) => throw_error(scope, &error),
-    }
-}
-
-enum ResidentSliceOutcome {
-    Pending,
-    Switch(u32),
-    Settled(Vec<u8>),
-}
-
-fn call_number_function(
-    scope: &mut v8::HandleScope,
-    function: &v8::Global<v8::Function>,
-    args: &[v8::Local<v8::Value>],
-) -> Result<i64, String> {
-    let function = v8::Local::new(scope, function);
     let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
     let tc = &mut v8::TryCatch::new(scope);
-    let value = function.call(tc, receiver, args).ok_or_else(|| {
-        crate::realm::child::catch_message(tc)
-            .unwrap_or_else(|| "scheduler numeric helper threw".to_string())
-    })?;
-    value
-        .integer_value(tc)
-        .ok_or_else(|| "scheduler numeric helper did not return a number".to_string())
-}
-
-fn dispatch_ready_events(
-    scope: &mut v8::HandleScope,
-    owner: u32,
-    readiness_fn: &v8::Global<v8::Function>,
-) -> Result<usize, String> {
-    let events = {
-        let mut inner = shared_readiness().inner.lock().unwrap();
-        inner.priorities.consume(owner);
-        inner
-            .events
-            .remove(&owner)
-            .map(VecDeque::into_iter)
-            .map(Iterator::collect::<Vec<_>>)
-            .unwrap_or_default()
-    };
-    let function = v8::Local::new(scope, readiness_fn);
-    let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-    for event in &events {
-        let args: [v8::Local<v8::Value>; 7] = [
-            v8::Number::new(scope, event.ident).into(),
-            v8::Integer::new(scope, event.filter).into(),
-            v8::Integer::new_from_unsigned(scope, event.flags).into(),
-            v8::Integer::new_from_unsigned(scope, event.fflags.unwrap_or(0)).into(),
-            v8::Number::new(scope, event.data.unwrap_or(0.0)).into(),
-            v8::Integer::new(scope, event.res.unwrap_or(0)).into(),
-            v8::Number::new(scope, event.udata.unwrap_or(event.ident)).into(),
-        ];
-        let tc = &mut v8::TryCatch::new(scope);
-        function.call(tc, receiver, &args).ok_or_else(|| {
-            crate::realm::child::catch_message(tc)
-                .unwrap_or_else(|| "readiness completion callback threw".to_string())
-        })?;
-    }
-    Ok(events.len())
-}
-
-pub(crate) fn wait_for_reactor(timeout_ms: i32) -> Result<bool, String> {
-    let descriptor = SHARED_LOOP_DESCRIPTOR
-        .with(|slot| slot.borrow().as_ref().map(|value| (value.fd, value.kind)));
-    let Some((fd, kind)) = descriptor else {
-        if timeout_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
-        }
-        return Ok(false);
-    };
-    #[cfg(target_os = "macos")]
-    if matches!(kind, SharedLoopKind::Kqueue) {
-        return wait_for_kqueue(fd, timeout_ms);
-    }
-    let _ = kind;
-    let mut poll_fd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    loop {
-        let result = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
-        if result > 0 {
-            return Ok(true);
-        }
-        if result == 0 {
-            return Ok(false);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(format!("thread reactor poll failed: {error}"));
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn wait_for_kqueue(fd: i32, timeout_ms: i32) -> Result<bool, String> {
-    const MAX_EVENTS: usize = 256;
-    const EV_ERROR: u16 = 0x4000;
-    let mut events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
-    let timeout = libc::timespec {
-        tv_sec: i64::from(timeout_ms.max(0) / 1000),
-        tv_nsec: i64::from(timeout_ms.max(0) % 1000) * 1_000_000,
-    };
-    let timeout_ptr = if timeout_ms < 0 {
-        std::ptr::null()
-    } else {
-        &timeout
-    };
-    let changes = READINESS_CHANGES.with(|changes| {
-        std::mem::take(&mut *changes.borrow_mut())
-            .into_iter()
-            .map(|change| libc::kevent {
-                ident: change.ident as usize,
-                filter: change.filter,
-                flags: change.flags,
-                fflags: change.fflags,
-                data: change.data as isize,
-                udata: change.udata as usize as *mut libc::c_void,
-            })
-            .collect::<Vec<_>>()
-    });
-    let change_ptr = if changes.is_empty() {
-        std::ptr::null()
-    } else {
-        changes.as_ptr()
-    };
-    let count = loop {
-        let count = unsafe {
-            libc::kevent(
-                fd,
-                change_ptr,
-                changes.len() as i32,
-                events.as_mut_ptr(),
-                MAX_EVENTS as i32,
-                timeout_ptr,
-            )
-        };
-        if count >= 0 {
-            break count as usize;
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(format!("thread reactor kevent failed: {error}"));
-        }
-    };
-    for event in &events[..count] {
-        if event.flags & EV_ERROR != 0 {
-            let errno = event.data as i32;
-            if errno == libc::ENOENT || errno == libc::EBADF {
-                continue;
-            }
-            let ident = event.ident;
-            let filter = event.filter;
-            return Err(format!(
-                "thread reactor kevent change failed: errno={errno} ident={} filter={}",
-                ident, filter
-            ));
-        }
-        let token = event.udata as usize as u64;
-        let owner = (token >> 32) as u32;
-        queue_routed_event(
-            owner,
-            RoutedLoopEvent {
-                ident: event.ident as f64,
-                filter: i32::from(event.filter),
-                flags: u32::from(event.flags),
-                fflags: Some(event.fflags),
-                data: Some(event.data as f64),
-                res: None,
-                udata: Some(token as f64),
-                routed: true,
-            },
-            true,
-            false,
-        );
-    }
-    Ok(count > 0)
-}
-
-fn drive_resident_slice_entered(
-    workload: &mut ParkedWorkload,
-    request_bytes: Option<&[u8]>,
-    wait: bool,
-) -> Result<(ResidentSliceOutcome, u64), String> {
-    let routes_completions = workload.process_readiness || reactor_routes_completions();
-    let context_global = workload.context.clone();
-    let dispatch_fn = workload.dispatch_fn.clone();
-    let tick_fn = workload.tick_fn.clone();
-    let flush_fn = workload.flush_fn.clone();
-    let readiness_fn = workload.readiness_fn.clone();
-    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
-    let context = v8::Local::new(isolate_scope, &context_global);
-    let scope = &mut v8::ContextScope::new(isolate_scope, context);
-    let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-
-    let continuing = request_bytes.is_none();
-    if let Some(request_bytes) = request_bytes {
-        if workload.active_promise.is_some() {
-            return Err("resident workload already has an active dispatch".to_string());
-        }
-        let function = v8::Local::new(scope, &dispatch_fn);
-        let request = crate::realm::serializer::deserialize_value(scope, request_bytes)?;
-        let promise = {
-            let tc = &mut v8::TryCatch::new(scope);
-            let value = function.call(tc, receiver, &[request]).ok_or_else(|| {
+    let mut loop_turns = 0;
+    let mut should_continue = true;
+    // Run a bounded batch before reconsidering pool priority. This is large
+    // enough to drain deeply chained Promise continuations while still giving
+    // another ready realm a frequent opportunity to preempt at quiescence.
+    while should_continue && loop_turns < 64 {
+        should_continue = v8::Local::new(tc, &loop_step_fn)
+            .call(tc, receiver, &[])
+            .ok_or_else(|| {
                 crate::realm::child::catch_message(tc)
-                    .unwrap_or_else(|| "resident workload dispatch threw".to_string())
-            })?;
-            let promise = v8::Local::<v8::Promise>::try_from(value)
-                .map_err(|_| "resident workload dispatch did not return a promise".to_string())?;
-            v8::Global::new(tc, promise)
-        };
-        workload.active_promise = Some(promise);
-    } else if workload.active_promise.is_none() {
-        return Err("resident workload has no active dispatch".to_string());
-    }
-
-    let mut loop_turns = 0u64;
-    let mut foreign_owner = -1i64;
-    if continuing && routes_completions {
-        remove_ready_workload(workload.owner_id);
-        if dispatch_ready_events(scope, workload.owner_id, &readiness_fn)? > 0 {
-            loop_turns += 1;
-        }
-    } else if continuing && wait {
-        if !routes_completions {
-            let timeout: v8::Local<v8::Value> = v8::Number::new(scope, 0.0).into();
-            foreign_owner = call_number_function(scope, &tick_fn, &[timeout])?;
+                    .unwrap_or_else(|| "scheduled realm loop step threw".to_string())
+            })?
+            .boolean_value(tc);
+        crate::realm::child::pump_and_checkpoint(tc);
+        if service_scheduled_sync_call(tc, &workload.state) {
+            crate::realm::child::pump_and_checkpoint(tc);
         }
         loop_turns += 1;
     }
-    loop {
-        crate::realm::child::pump_and_checkpoint(scope);
-        let promise = v8::Local::new(scope, workload.active_promise.as_ref().unwrap());
-        match promise.state() {
-            v8::PromiseState::Fulfilled => {
-                let result = promise.result(scope);
-                workload.active_promise = None;
-                let bytes = crate::realm::serializer::serialize_value(scope, result)?;
-                return Ok((ResidentSliceOutcome::Settled(bytes), loop_turns));
-            }
-            v8::PromiseState::Rejected => {
-                let value = promise.result(scope);
-                workload.active_promise = None;
-                return Err(js_string(scope, value));
-            }
-            v8::PromiseState::Pending => {
-                if foreign_owner >= 0 {
-                    if !routes_completions {
-                        call_number_function(scope, &flush_fn, &[])?;
-                    }
-                    return Ok((
-                        ResidentSliceOutcome::Switch(foreign_owner as u32),
-                        loop_turns,
-                    ));
-                }
-                if !wait {
-                    if !routes_completions {
-                        call_number_function(scope, &flush_fn, &[])?;
-                    }
-                    return Ok((ResidentSliceOutcome::Pending, loop_turns));
-                }
-                if !routes_completions {
-                    call_number_function(scope, &flush_fn, &[])?;
-                }
-                if let Some(owner) = take_ready_workload(workload.owner_id) {
-                    if owner != workload.owner_id {
-                        return Ok((ResidentSliceOutcome::Switch(owner), loop_turns));
-                    }
-                    if routes_completions {
-                        dispatch_ready_events(scope, workload.owner_id, &readiness_fn)?;
-                    } else {
-                        let timeout: v8::Local<v8::Value> = v8::Number::new(scope, 0.0).into();
-                        foreign_owner = call_number_function(scope, &tick_fn, &[timeout])?;
-                    }
-                    loop_turns += 1;
-                    continue;
-                }
-                wait_for_reactor(-1)?;
-                if routes_completions {
-                    continue;
-                }
-                let timeout: v8::Local<v8::Value> = v8::Number::new(scope, 0.0).into();
-                foreign_owner = call_number_function(scope, &tick_fn, &[timeout])?;
-                loop_turns += 1;
-            }
-        }
-    }
-}
-
-fn drive_shared_resident_workloads(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let Ok(handles_array) = v8::Local::<v8::Array>::try_from(args.get(0)) else {
-        throw_error(
-            scope,
-            "driveSharedResidentWorkloads: handles must be an array",
-        );
-        return;
-    };
-    let Ok(inputs_array) = v8::Local::<v8::Array>::try_from(args.get(1)) else {
-        throw_error(
-            scope,
-            "driveSharedResidentWorkloads: inputs must be an array",
-        );
-        return;
-    };
-    if handles_array.length() != inputs_array.length() {
-        throw_error(
-            scope,
-            "driveSharedResidentWorkloads: handles and inputs must have equal length",
-        );
-        return;
-    }
-    let mut handles = Vec::with_capacity(handles_array.length() as usize);
-    let mut requests = Vec::with_capacity(inputs_array.length() as usize);
-    for index in 0..handles_array.length() {
-        let Some(handle) = handles_array.get_index(scope, index) else {
-            throw_error(scope, "driveSharedResidentWorkloads: missing handle");
-            return;
-        };
-        handles.push(handle.integer_value(scope).unwrap_or(-1) as usize);
-        let Some(input) = inputs_array.get_index(scope, index) else {
-            throw_error(scope, "driveSharedResidentWorkloads: missing input");
-            return;
-        };
-        let bytes = match crate::realm::serializer::serialize_value(scope, input) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                throw_error(scope, &format!("driveSharedResidentWorkloads: {error}"));
-                return;
-            }
-        };
-        requests.push(bytes);
-    }
-
-    let driven = WORKLOADS.with(|table| -> Result<_, String> {
-        let mut table = table.borrow_mut();
-        let mut owner_to_position = HashMap::new();
-        for (position, handle) in handles.iter().copied().enumerate() {
-            let workload = table
-                .0
-                .get(handle)
-                .and_then(Option::as_ref)
-                .ok_or_else(|| {
-                    format!("driveSharedResidentWorkloads: invalid workload handle {handle}")
-                })?;
-            owner_to_position.insert(workload.owner_id, position);
-        }
-
-        let mut values: Vec<Option<Vec<u8>>> = vec![None; handles.len()];
-        let mut pending = vec![true; handles.len()];
-        let mut isolate_entries = 0u64;
-        let mut isolate_exits = 0u64;
-        let mut loop_turns = 0u64;
-        let mut workload_switches = 0u64;
-
-        for (position, handle) in handles.iter().copied().enumerate() {
-            let workload = table
-                .0
-                .get_mut(handle)
-                .and_then(Option::as_mut)
-                .ok_or_else(|| {
-                    format!("driveSharedResidentWorkloads: invalid workload handle {handle}")
-                })?;
-            isolate_entries += 1;
-            let outcome = with_entered_workload(workload, |workload| {
-                drive_resident_slice_entered(workload, Some(requests[position].as_slice()), false)
-            });
-            isolate_exits += 1;
-            let (outcome, turns) = outcome?;
-            loop_turns += turns;
-            match outcome {
-                ResidentSliceOutcome::Settled(value) => {
-                    values[position] = Some(value);
-                    pending[position] = false;
-                }
-                ResidentSliceOutcome::Pending => {}
-                ResidentSliceOutcome::Switch(_) => {
-                    return Err(
-                        "driveSharedResidentWorkloads: initial dispatch requested a switch"
-                            .to_string(),
-                    );
-                }
-            }
-        }
-
-        let mut current = pending.iter().position(|pending| *pending);
-        let mut previous = None;
-        while let Some(position) = current {
-            if previous.is_some_and(|previous| previous != position) {
-                workload_switches += 1;
-            }
-            previous = Some(position);
-            let handle = handles[position];
-            let workload = table
-                .0
-                .get_mut(handle)
-                .and_then(Option::as_mut)
-                .ok_or_else(|| {
-                    format!("driveSharedResidentWorkloads: invalid workload handle {handle}")
-                })?;
-            isolate_entries += 1;
-            let outcome = with_entered_workload(workload, |workload| {
-                drive_resident_slice_entered(workload, None, true)
-            });
-            isolate_exits += 1;
-            let (outcome, turns) = outcome?;
-            loop_turns += turns;
-            current = match outcome {
-                ResidentSliceOutcome::Settled(value) => {
-                    values[position] = Some(value);
-                    pending[position] = false;
-                    pending.iter().position(|pending| *pending)
-                }
-                ResidentSliceOutcome::Switch(owner) => {
-                    let next = owner_to_position.get(&owner).copied().ok_or_else(|| {
-                        format!(
-                            "driveSharedResidentWorkloads: readiness targets unknown owner {owner}"
-                        )
-                    })?;
-                    if !pending[next] {
-                        return Err(format!(
-                            "driveSharedResidentWorkloads: readiness targets settled owner {owner}"
-                        ));
-                    }
-                    Some(next)
-                }
-                ResidentSliceOutcome::Pending => {
-                    return Err(
-                        "driveSharedResidentWorkloads: blocking slice returned pending".to_string(),
-                    );
-                }
-            };
-        }
-
-        let values = values
-            .into_iter()
-            .map(|value| {
-                value.ok_or_else(|| {
-                    "driveSharedResidentWorkloads: workload result is missing".to_string()
-                })
+    if should_continue {
+        let polling = workload
+            .polling_fn
+            .as_ref()
+            .and_then(|polling_fn| {
+                v8::Local::new(tc, polling_fn)
+                    .call(tc, receiver, &[])
+                    .map(|value| value.boolean_value(tc))
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((
-            values,
-            workload_switches,
-            isolate_entries,
-            isolate_exits,
-            loop_turns,
-        ))
+            .unwrap_or(false);
+        return Ok((Slice::Quiescent(polling), loop_turns));
+    }
+
+    if let Some(on_done) = workload.state.borrow().on_done_fn.clone() {
+        let tc = &mut v8::TryCatch::new(tc);
+        v8::Local::new(tc, &on_done)
+            .call(tc, receiver, &[])
+            .ok_or_else(|| {
+                crate::realm::child::catch_message(tc)
+                    .unwrap_or_else(|| "scheduled realm completion hook threw".to_string())
+            })?;
+        crate::realm::child::pump_and_checkpoint(tc);
+    }
+    if let Some(error) = workload.state.borrow_mut().entry_error.take() {
+        return Err(error);
+    }
+    Ok((Slice::Settled, loop_turns))
+}
+
+fn retire_owner(owner: u32) {
+    let mut inner = mailbox().inner.lock().unwrap();
+    inner.events.remove(&owner);
+    inner.changes.push(ReadinessChange {
+        ident: 0.0,
+        filter: 0,
+        flags: 0,
+        fflags: 0,
+        data: 0.0,
+        udata: 0.0,
+        cancel_owner: Some(owner),
+        scheduler_wake: false,
+        acknowledgement: None,
     });
+    drop(inner);
+    mailbox().notify();
+}
 
-    let (values, workload_switches, isolate_entries, isolate_exits, loop_turns) = match driven {
-        Ok(result) => result,
-        Err(error) => {
-            throw_error(scope, &error);
-            return;
+fn drop_workload(mut workload: Workload) {
+    let active = activate(&mut workload);
+    retire_owner(workload.owner);
+    workload.state.borrow_mut().loop_step_fn = None;
+    workload.state.borrow_mut().on_done_fn = None;
+    workload.state.borrow_mut().sync_call_fn = None;
+    workload.state.borrow_mut().sync_call_resolver = None;
+    deactivate(&mut workload, active);
+    // OwnedIsolate requires itself to be current during Drop. The Locker must
+    // already be gone because its destructor reads isolate-owned thread state.
+    unsafe {
+        workload.isolate.enter();
+    }
+    if let Some((wake_read, partner_write)) = workload.port_fds.take() {
+        unsafe {
+            libc::close(wake_read);
+            libc::close(partner_write);
         }
-    };
-    let result = v8::Object::new(scope);
-    let values_array = v8::Array::new(scope, values.len() as i32);
-    for (index, bytes) in values.iter().enumerate() {
-        let value = match crate::realm::serializer::deserialize_value(scope, bytes) {
-            Ok(value) => value,
-            Err(error) => {
-                throw_error(scope, &format!("driveSharedResidentWorkloads: {error}"));
-                return;
-            }
-        };
-        values_array.set_index(scope, index as u32, value);
     }
-    let fields: [(&str, v8::Local<v8::Value>); 5] = [
-        ("values", values_array.into()),
-        (
-            "workloadSwitches",
-            v8::Number::new(scope, workload_switches as f64).into(),
-        ),
-        (
-            "isolateEntries",
-            v8::Number::new(scope, isolate_entries as f64).into(),
-        ),
-        (
-            "isolateExits",
-            v8::Number::new(scope, isolate_exits as f64).into(),
-        ),
-        (
-            "loopTurns",
-            v8::Number::new(scope, loop_turns as f64).into(),
-        ),
-    ];
-    for (name, value) in fields {
-        let key = v8::String::new(scope, name).unwrap();
-        result.set(scope, key.into(), value);
-    }
-    rv.set(result.into());
+    drop(workload);
 }
 
-struct PoolItem {
-    workload: TransferWorkload,
-    request: Option<Vec<u8>>,
-    last_worker: Option<usize>,
-}
-
-struct PoolResident {
-    item: PoolItem,
-    active: ActiveWorkload,
-}
-
-enum OrchestratedWorkerCommand {
-    Run(u32),
-    Shutdown,
-}
-
-enum OrchestratedPoolEventKind {
-    Ready,
-    Quiescent,
+#[derive(Clone, Copy)]
+enum PoolEventKind {
+    Activated,
     Settled,
     Error,
 }
 
-struct OrchestratedPoolEvent {
-    kind: OrchestratedPoolEventKind,
+struct PoolEvent {
+    kind: PoolEventKind,
     worker: usize,
     owner: u32,
-    value: Option<Vec<u8>>,
+    previous: Option<u32>,
     error: Option<String>,
     loop_turns: u64,
 }
 
-#[derive(Clone, Copy, Default)]
-struct OrchestratedPoolMetrics {
-    workload_switches: u64,
-    workload_migrations: u64,
-    isolate_entries: u64,
-    isolate_exits: u64,
-    loop_turns: u64,
+struct PoolItem {
+    workload: TransferWorkload,
 }
 
-struct OrchestratedPoolInner {
+struct Resident {
+    item: PoolItem,
+    active: ActiveWorkload,
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct ReadyEntry {
+    priority: usize,
+    generation: u64,
+    owner: u32,
+}
+
+struct PoolSharedInner {
     parked: HashMap<u32, PoolItem>,
-    events: VecDeque<OrchestratedPoolEvent>,
-    metrics: OrchestratedPoolMetrics,
+    events: VecDeque<PoolEvent>,
+    ready: BinaryHeap<ReadyEntry>,
+    priorities: HashMap<u32, usize>,
+    generations: HashMap<u32, u64>,
+    active: HashSet<u32>,
+    shutdown: bool,
+    next_worker: usize,
 }
 
-struct OrchestratedPoolShared {
-    inner: Mutex<OrchestratedPoolInner>,
+struct PoolShared {
+    inner: Mutex<PoolSharedInner>,
+    changed: Condvar,
     wake_read: i32,
     wake_write: i32,
 }
 
-impl OrchestratedPoolShared {
-    fn new(inner: OrchestratedPoolInner) -> Self {
+impl PoolShared {
+    fn new(parked: HashMap<u32, PoolItem>) -> Self {
         let mut fds = [-1; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         for fd in fds {
@@ -1863,14 +621,136 @@ impl OrchestratedPoolShared {
                 libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
             }
         }
+        let mut inner = PoolSharedInner {
+            parked,
+            events: VecDeque::new(),
+            ready: BinaryHeap::new(),
+            priorities: HashMap::new(),
+            generations: HashMap::new(),
+            active: HashSet::new(),
+            shutdown: false,
+            next_worker: 0,
+        };
+        for owner in inner.parked.keys().copied().collect::<Vec<_>>() {
+            Self::signal_inner(&mut inner, owner);
+        }
         Self {
             inner: Mutex::new(inner),
+            changed: Condvar::new(),
             wake_read: fds[0],
             wake_write: fds[1],
         }
     }
 
-    fn notify(&self) {
+    fn signal_inner(inner: &mut PoolSharedInner, owner: u32) {
+        if !inner.parked.contains_key(&owner) && !inner.active.contains(&owner) {
+            return;
+        }
+        let priority = inner.priorities.entry(owner).or_default();
+        *priority += 1;
+        let generation = inner.generations.entry(owner).or_default();
+        *generation += 1;
+        inner.ready.push(ReadyEntry {
+            priority: *priority,
+            generation: *generation,
+            owner,
+        });
+    }
+
+    fn signal(&self, owner: u32) {
+        Self::signal_inner(&mut self.inner.lock().unwrap(), owner);
+        self.changed.notify_all();
+    }
+
+    fn claim(&self, current: Option<u32>, stop: &AtomicBool, poll_current: bool) -> Claim {
+        let mut inner = self.inner.lock().unwrap();
+        loop {
+            if inner.shutdown || stop.load(Ordering::Acquire) {
+                return Claim::Shutdown;
+            }
+            let mut skipped = Vec::new();
+            let candidate = loop {
+                let Some(entry) = inner.ready.pop() else {
+                    break None;
+                };
+                let current_generation = inner.generations.get(&entry.owner).copied().unwrap_or(0);
+                let current_priority = inner.priorities.get(&entry.owner).copied().unwrap_or(0);
+                if entry.generation != current_generation || entry.priority != current_priority {
+                    continue;
+                }
+                if inner.active.contains(&entry.owner) && Some(entry.owner) != current {
+                    skipped.push(entry);
+                    continue;
+                }
+                break Some(entry);
+            };
+            for entry in skipped {
+                inner.ready.push(entry);
+            }
+
+            if let Some(candidate) = candidate {
+                let current_priority = current
+                    .and_then(|owner| inner.priorities.get(&owner).copied())
+                    .unwrap_or(0);
+                let owner = if let Some(current) = current {
+                    if candidate.owner != current && candidate.priority <= current_priority {
+                        current
+                    } else {
+                        candidate.owner
+                    }
+                } else {
+                    candidate.owner
+                };
+                inner.priorities.remove(&owner);
+                if owner != candidate.owner {
+                    inner.ready.push(candidate);
+                }
+                if Some(owner) == current {
+                    return Claim::Current;
+                }
+                let Some(item) = inner.parked.remove(&owner) else {
+                    continue;
+                };
+                inner.active.insert(owner);
+                return Claim::Work(item);
+            }
+            if poll_current && current.is_some() {
+                let (next, timeout) = self
+                    .changed
+                    .wait_timeout(inner, std::time::Duration::from_millis(1))
+                    .unwrap();
+                inner = next;
+                if timeout.timed_out() {
+                    return Claim::Current;
+                }
+            } else {
+                inner = self.changed.wait(inner).unwrap();
+            }
+        }
+    }
+
+    fn park(&self, mut resident: Resident) {
+        let owner = resident.item.workload.0.owner;
+        deactivate(&mut resident.item.workload.0, resident.active);
+        let mut inner = self.inner.lock().unwrap();
+        inner.active.remove(&owner);
+        inner.parked.insert(owner, resident.item);
+        drop(inner);
+        self.changed.notify_all();
+    }
+
+    fn finish(&self, owner: u32) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.active.remove(&owner);
+        inner.priorities.remove(&owner);
+        inner.generations.remove(&owner);
+        drop(inner);
+        owner_pools().lock().unwrap().remove(&owner);
+        self.changed.notify_all();
+    }
+
+    fn notify(&self, event: PoolEvent) {
+        self.inner.lock().unwrap().events.push_back(event);
         let byte = [1u8];
         unsafe {
             libc::write(self.wake_write, byte.as_ptr().cast(), byte.len());
@@ -1883,7 +763,7 @@ impl OrchestratedPoolShared {
     }
 }
 
-impl Drop for OrchestratedPoolShared {
+impl Drop for PoolShared {
     fn drop(&mut self) {
         unsafe {
             libc::close(self.wake_read);
@@ -1892,432 +772,823 @@ impl Drop for OrchestratedPoolShared {
     }
 }
 
-struct OrchestratedPool {
-    shared: Arc<OrchestratedPoolShared>,
-    senders: Vec<std::sync::mpsc::Sender<OrchestratedWorkerCommand>>,
-    workers: Vec<std::thread::JoinHandle<()>>,
+struct ReactorThread {
+    shared: Arc<PoolShared>,
+    stop: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
 }
 
-fn notify_orchestrated_pool(shared: &OrchestratedPoolShared, event: OrchestratedPoolEvent) {
-    shared.inner.lock().unwrap().events.push_back(event);
-    shared.notify();
-}
-
-fn activate_orchestrated_pool_item(
-    worker: usize,
-    shared: &OrchestratedPoolShared,
-    mut item: PoolItem,
-) -> PoolResident {
-    let migrated = item
-        .last_worker
-        .is_some_and(|last_worker| last_worker != worker);
-    item.last_worker = Some(worker);
-    item.workload.0.moved_between_threads = true;
-    let active = activate_workload(&mut item.workload.0);
-    let mut inner = shared.inner.lock().unwrap();
-    inner.metrics.isolate_entries += 1;
-    if migrated {
-        inner.metrics.workload_migrations += 1;
+impl ReactorThread {
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.shared.changed.notify_all();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
     }
-    drop(inner);
-    PoolResident { item, active }
 }
 
-fn park_orchestrated_pool_resident(
-    shared: &OrchestratedPoolShared,
-    mut resident: PoolResident,
-    switched: bool,
-) {
-    let owner = resident.item.workload.0.owner_id;
-    deactivate_workload(&mut resident.item.workload.0, resident.active);
-    let mut inner = shared.inner.lock().unwrap();
-    inner.metrics.isolate_exits += 1;
-    if switched {
-        inner.metrics.workload_switches += 1;
+impl Drop for ReactorThread {
+    fn drop(&mut self) {
+        self.shutdown();
     }
-    inner.parked.insert(owner, resident.item);
-    drop(inner);
 }
 
-fn finish_orchestrated_pool_resident(
-    worker: usize,
-    shared: &OrchestratedPoolShared,
-    mut resident: PoolResident,
-    result: Result<Vec<u8>, String>,
-    loop_turns: u64,
-) {
-    let owner = resident.item.workload.0.owner_id;
-    deactivate_workload(&mut resident.item.workload.0, resident.active);
-    retire_process_readiness_owner(owner);
-    drop_parked(resident.item.workload.0);
-    {
-        let mut inner = shared.inner.lock().unwrap();
-        inner.metrics.isolate_exits += 1;
-        inner.metrics.loop_turns += loop_turns;
-    }
-    let (kind, value, error) = match result {
-        Ok(value) => (OrchestratedPoolEventKind::Settled, Some(value), None),
-        Err(error) => (OrchestratedPoolEventKind::Error, None, Some(error)),
-    };
-    notify_orchestrated_pool(
-        shared,
-        OrchestratedPoolEvent {
-            kind,
-            worker,
-            owner,
-            value,
-            error,
-            loop_turns,
-        },
-    );
+enum Claim {
+    Current,
+    Work(PoolItem),
+    Shutdown,
 }
 
-fn run_orchestrated_pool_worker(
-    worker: usize,
-    shared: Arc<OrchestratedPoolShared>,
-    receiver: std::sync::mpsc::Receiver<OrchestratedWorkerCommand>,
-) {
-    let mut current: Option<PoolResident> = None;
-    while let Ok(command) = receiver.recv() {
-        let owner = match command {
-            OrchestratedWorkerCommand::Run(owner) => owner,
-            OrchestratedWorkerCommand::Shutdown => break,
-        };
-
-        if current
+fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
+    let mut current: Option<Resident> = None;
+    let mut poll_current = false;
+    loop {
+        let current_owner = current
             .as_ref()
-            .is_some_and(|resident| resident.item.workload.0.owner_id != owner)
-        {
-            park_orchestrated_pool_resident(
-                &shared,
-                current.take().expect("current workload disappeared"),
-                true,
-            );
-        }
-        if current.is_none() {
-            let item = shared.inner.lock().unwrap().parked.remove(&owner);
-            let Some(item) = item else {
-                notify_orchestrated_pool(
-                    &shared,
-                    OrchestratedPoolEvent {
-                        kind: OrchestratedPoolEventKind::Error,
-                        worker,
-                        owner,
-                        value: None,
-                        error: Some(format!(
-                            "orchestrated workload {owner} is not available to worker {worker}"
-                        )),
-                        loop_turns: 0,
-                    },
-                );
-                continue;
-            };
-            current = Some(activate_orchestrated_pool_item(worker, &shared, item));
+            .map(|resident| resident.item.workload.0.owner);
+        match shared.claim(current_owner, &stop, poll_current) {
+            Claim::Shutdown => break,
+            Claim::Current => {}
+            Claim::Work(mut item) => {
+                let previous = current_owner;
+                if let Some(resident) = current.take() {
+                    shared.park(resident);
+                }
+                let owner = item.workload.0.owner;
+                let active = activate(&mut item.workload.0);
+                current = Some(Resident { item, active });
+                shared.notify(PoolEvent {
+                    kind: PoolEventKind::Activated,
+                    worker,
+                    owner,
+                    previous,
+                    error: None,
+                    loop_turns: 0,
+                });
+            }
         }
 
-        let mut resident = current.take().expect("orchestrated workload is not active");
-        let request = resident.item.request.take();
-        match drive_resident_slice_entered(&mut resident.item.workload.0, request.as_deref(), false)
-        {
-            Ok((ResidentSliceOutcome::Pending, loop_turns)) => {
-                shared.inner.lock().unwrap().metrics.loop_turns += loop_turns;
+        let owner = current
+            .as_ref()
+            .expect("reactor worker claimed no workload")
+            .item
+            .workload
+            .0
+            .owner;
+        let mut resident = current.take().unwrap();
+        match drive_slice(&mut resident.item.workload.0) {
+            Ok((Slice::Quiescent(polling), _)) => {
+                poll_current = polling;
                 current = Some(resident);
-                notify_orchestrated_pool(
-                    &shared,
-                    OrchestratedPoolEvent {
-                        kind: OrchestratedPoolEventKind::Quiescent,
-                        worker,
-                        owner,
-                        value: None,
-                        error: None,
-                        loop_turns,
-                    },
-                );
             }
-            Ok((ResidentSliceOutcome::Settled(value), loop_turns)) => {
-                finish_orchestrated_pool_resident(worker, &shared, resident, Ok(value), loop_turns);
-            }
-            Ok((ResidentSliceOutcome::Switch(_), loop_turns)) => {
-                finish_orchestrated_pool_resident(
+            Ok((Slice::Settled, loop_turns)) => {
+                if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
+                    let result = if resident.item.workload.0.state.borrow().reload_requested {
+                        ScheduledRealmResult::Reload
+                    } else {
+                        ScheduledRealmResult::Done
+                    };
+                    scheduled.complete(result);
+                }
+                deactivate(&mut resident.item.workload.0, resident.active);
+                drop_workload(resident.item.workload.0);
+                shared.finish(owner);
+                poll_current = false;
+                shared.notify(PoolEvent {
+                    kind: PoolEventKind::Settled,
                     worker,
-                    &shared,
-                    resident,
-                    Err("orchestrated non-blocking slice requested an internal switch".to_string()),
+                    owner,
+                    previous: None,
+                    error: None,
                     loop_turns,
-                );
+                });
             }
             Err(error) => {
-                finish_orchestrated_pool_resident(worker, &shared, resident, Err(error), 0);
+                if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
+                    scheduled.complete(ScheduledRealmResult::Error(error.clone()));
+                }
+                deactivate(&mut resident.item.workload.0, resident.active);
+                drop_workload(resident.item.workload.0);
+                shared.finish(owner);
+                poll_current = false;
+                shared.notify(PoolEvent {
+                    kind: PoolEventKind::Error,
+                    worker,
+                    owner,
+                    previous: None,
+                    error: Some(error),
+                    loop_turns: 0,
+                });
             }
         }
     }
     if let Some(resident) = current {
-        park_orchestrated_pool_resident(&shared, resident, false);
+        shared.park(resident);
     }
 }
 
-impl OrchestratedPool {
-    fn shutdown(&mut self) {
-        for sender in &self.senders {
-            let _ = sender.send(OrchestratedWorkerCommand::Shutdown);
-        }
-        self.senders.clear();
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
+fn take_workload(handle: usize) -> Result<Workload, String> {
+    WORKLOADS.with(|workloads| {
+        workloads
+            .borrow_mut()
+            .get_mut(handle)
+            .and_then(Option::take)
+            .ok_or_else(|| format!("invalid workload handle {handle}"))
+    })
 }
 
-impl Drop for OrchestratedPool {
-    fn drop(&mut self) {
-        self.shutdown();
-        let shared = Arc::downgrade(&self.shared);
-        orchestrated_owner_pools()
-            .lock()
-            .unwrap()
-            .retain(|_, pool| !Weak::ptr_eq(pool, &shared));
-        let parked = std::mem::take(&mut self.shared.inner.lock().unwrap().parked);
-        for item in parked.into_values() {
-            retire_process_readiness_owner(item.workload.0.owner_id);
-            drop_parked(item.workload.0);
-        }
-    }
-}
-
-fn create_orchestrated_pool(
+fn create_workload(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let Ok(handles_array) = v8::Local::<v8::Array>::try_from(args.get(0)) else {
-        throw_error(scope, "createOrchestratedPool: handles must be an array");
+    let entry = args
+        .get(0)
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    if entry.is_empty() {
+        throw_error(scope, "createWorkload: entry path is required");
         return;
+    }
+    let parent = get_state(scope);
+    let (process_env, package_map_json, import_rules) = {
+        let parent = parent.borrow();
+        (
+            parent.process_env.clone(),
+            parent.package_map_json.clone(),
+            parent.import_rules.clone(),
+        )
     };
-    let Ok(inputs_array) = v8::Local::<v8::Array>::try_from(args.get(1)) else {
-        throw_error(scope, "createOrchestratedPool: inputs must be an array");
-        return;
-    };
-    if handles_array.length() != inputs_array.length() {
-        throw_error(
-            scope,
-            "createOrchestratedPool: handles and inputs must have equal length",
-        );
-        return;
-    }
-    if handles_array.length() == 0 {
-        throw_error(
-            scope,
-            "createOrchestratedPool: at least one workload is required",
-        );
-        return;
-    }
-
-    let available_threads = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1);
-    let worker_count = args
-        .get(2)
-        .uint32_value(scope)
-        .map(|count| count as usize)
-        .filter(|count| *count > 0)
-        .unwrap_or(available_threads)
-        .min(available_threads.max(1));
-    let mut handles = Vec::with_capacity(handles_array.length() as usize);
-    let mut requests = Vec::with_capacity(inputs_array.length() as usize);
-    for index in 0..handles_array.length() {
-        let Some(handle) = handles_array.get_index(scope, index) else {
-            throw_error(scope, "createOrchestratedPool: missing handle");
-            return;
-        };
-        handles.push(handle.integer_value(scope).unwrap_or(-1) as usize);
-        let Some(input) = inputs_array.get_index(scope, index) else {
-            throw_error(scope, "createOrchestratedPool: missing input");
-            return;
-        };
-        match crate::realm::serializer::serialize_value(scope, input) {
-            Ok(bytes) => requests.push(bytes),
-            Err(error) => {
-                throw_error(scope, &format!("createOrchestratedPool: {error}"));
-                return;
-            }
-        }
-    }
-    if handles.iter().copied().collect::<HashSet<_>>().len() != handles.len() {
-        throw_error(scope, "createOrchestratedPool: duplicate workload handle");
-        return;
-    }
-
-    let workloads = WORKLOADS.with(|table| -> Result<Vec<PoolItem>, String> {
-        let mut table = table.borrow_mut();
-        for handle in &handles {
-            let Some(workload) = table.0.get(*handle).and_then(Option::as_ref) else {
-                return Err(format!(
-                    "createOrchestratedPool: invalid workload handle {handle}"
-                ));
-            };
-            if !workload.process_readiness {
-                return Err(format!(
-                    "createOrchestratedPool: workload handle {handle} does not use process readiness"
-                ));
-            }
-        }
-        handles
-            .iter()
-            .copied()
-            .zip(requests)
-            .map(|(handle, request)| {
-                let workload = table.0[handle]
-                    .take()
-                    .ok_or_else(|| "workload disappeared during pool transfer".to_string())?;
-                Ok(PoolItem {
-                    workload: TransferWorkload(workload),
-                    request: Some(request),
-                    last_worker: None,
-                })
-            })
-            .collect()
-    });
-    let workloads = match workloads {
-        Ok(workloads) => workloads,
+    let owner = next_owner();
+    let workload = match setup_workload(
+        entry,
+        process_env,
+        package_map_json,
+        import_rules,
+        owner,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ) {
+        Ok(workload) => workload,
         Err(error) => {
-            throw_error(scope, &error);
+            throw_error(scope, &format!("createWorkload: {error}"));
             return;
         }
     };
-
-    let mut owners = Vec::with_capacity(workloads.len());
-    let mut parked = HashMap::with_capacity(workloads.len());
-    for item in workloads {
-        let owner = item.workload.0.owner_id;
-        owners.push(owner);
-        parked.insert(owner, item);
-    }
-    let shared = Arc::new(OrchestratedPoolShared::new(OrchestratedPoolInner {
-        parked,
-        events: VecDeque::new(),
-        metrics: OrchestratedPoolMetrics::default(),
-    }));
-    let control_fd = shared.wake_read;
-    {
-        let mut owner_pools = orchestrated_owner_pools().lock().unwrap();
-        for owner in &owners {
-            owner_pools.insert(*owner, Arc::downgrade(&shared));
-        }
-    }
-    let mut senders = Vec::with_capacity(worker_count);
-    let mut workers = Vec::with_capacity(worker_count);
-    for worker in 0..worker_count {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        senders.push(sender);
-        let shared = Arc::clone(&shared);
-        workers.push(std::thread::spawn(move || {
-            run_orchestrated_pool_worker(worker, shared, receiver)
-        }));
-    }
-    let pool = OrchestratedPool {
-        shared,
-        senders,
-        workers,
-    };
-    let handle = ORCHESTRATED_POOLS.with(|pools| {
-        let mut pools = pools.borrow_mut();
-        if let Some((handle, slot)) = pools
+    let handle = WORKLOADS.with(|workloads| {
+        let mut workloads = workloads.borrow_mut();
+        if let Some((index, slot)) = workloads
             .iter_mut()
             .enumerate()
-            .find(|(_, pool)| pool.is_none())
+            .find(|(_, workload)| workload.is_none())
         {
-            *slot = Some(pool);
-            handle
+            *slot = Some(workload);
+            index
         } else {
-            pools.push(Some(pool));
-            pools.len() - 1
+            workloads.push(Some(workload));
+            workloads.len() - 1
         }
     });
+    rv.set(v8::Integer::new_from_unsigned(scope, handle as u32).into());
+}
 
-    let result = v8::Object::new(scope);
-    let owners_array = v8::Array::new(scope, owners.len() as i32);
-    for (index, owner) in owners.into_iter().enumerate() {
-        let owner = v8::Integer::new_from_unsigned(scope, owner);
-        owners_array.set_index(scope, index as u32, owner.into());
+fn create_scheduled_realm(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(pool) = process_pool().lock().unwrap().clone() else {
+        throw_error(
+            scope,
+            "createScheduledRealm: process reactor is not running",
+        );
+        return;
+    };
+    let entry_value = args.get(1);
+    let entry = if entry_value.is_null_or_undefined() {
+        String::new()
+    } else {
+        entry_value
+            .to_string(scope)
+            .map(|value| value.to_rust_string_lossy(scope))
+            .unwrap_or_default()
+    };
+    let repl_mode = args.get(6).boolean_value(scope);
+    if entry.is_empty() && !repl_mode {
+        throw_error(scope, "createScheduledRealm: entry path is required");
+        return;
     }
-    let fields: [(&str, v8::Local<v8::Value>); 4] = [
+    let mut process_env = get_state(scope).borrow().process_env.clone();
+    let root = args
+        .get(0)
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    if !root.is_empty() {
+        process_env.root = std::path::PathBuf::from(root);
+    }
+    let import_rules = match crate::realm::native::parse_and_merge_rules(scope, args.get(2)) {
+        Ok(rules) => rules,
+        Err(error) => {
+            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            return;
+        }
+    };
+    let package_map_json =
+        crate::realm::native::resolve_child_package_map(scope, &process_env.root);
+    let watch_mode = args.get(3).boolean_value(scope);
+    let realm_data = optional_string(scope, args.get(4));
+    let realm_bootstrap_data = optional_string(scope, args.get(5));
+    let (parent_tx, child_rx) = mpsc::channel();
+    let (child_tx, parent_rx) = mpsc::channel();
+    let (child_wake_read, child_wake_write) = match create_pipe() {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            return;
+        }
+    };
+    let (parent_wake_read, parent_wake_write) = match create_pipe() {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            unsafe {
+                libc::close(child_wake_read);
+                libc::close(child_wake_write);
+            }
+            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            return;
+        }
+    };
+    let (completion_wake_read, completion_wake_write) = match create_pipe() {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            unsafe {
+                libc::close(child_wake_read);
+                libc::close(child_wake_write);
+                libc::close(parent_wake_read);
+                libc::close(parent_wake_write);
+            }
+            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            return;
+        }
+    };
+    let reload_requested = Arc::new(AtomicBool::new(false));
+    let scheduled = Arc::new(ScheduledRealmState {
+        result: Mutex::new(None),
+        parent_wake_write: completion_wake_write,
+    });
+    let owner = next_owner();
+    let workload = match setup_workload(
+        entry,
+        process_env,
+        package_map_json,
+        import_rules,
+        owner,
+        Some(child_rx),
+        Some(child_tx),
+        Some(child_wake_read),
+        Some(parent_wake_write),
+        watch_mode,
+        repl_mode,
+        realm_data,
+        realm_bootstrap_data,
+        Some(reload_requested),
+        Some(Arc::clone(&scheduled)),
+        Some((child_wake_read, parent_wake_write)),
+    ) {
+        Ok(workload) => workload,
+        Err(error) => {
+            unsafe {
+                libc::close(child_wake_read);
+                libc::close(child_wake_write);
+                libc::close(parent_wake_read);
+                libc::close(parent_wake_write);
+                libc::close(completion_wake_read);
+                libc::close(completion_wake_write);
+            }
+            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            return;
+        }
+    };
+    let wake_fd = workload
+        .async_state
+        .as_ref()
+        .map(|state| state.wake_read)
+        .unwrap_or(-1);
+    let handle = {
+        let mut realms = scheduled_realms().lock().unwrap();
+        let value = ScheduledRealmHandle {
+            tx: parent_tx,
+            rx: parent_rx,
+            child_wake_write,
+            parent_wake_read,
+            completion_wake_read,
+            state: scheduled,
+        };
+        if let Some((index, slot)) = realms
+            .iter_mut()
+            .enumerate()
+            .find(|(_, realm)| realm.is_none())
+        {
+            *slot = Some(value);
+            index
+        } else {
+            realms.push(Some(value));
+            realms.len() - 1
+        }
+    };
+    {
+        pool.inner.lock().unwrap().parked.insert(
+            owner,
+            PoolItem {
+                workload: TransferWorkload(workload),
+            },
+        );
+        owner_pools()
+            .lock()
+            .unwrap()
+            .insert(owner, Arc::downgrade(&pool));
+        pool.signal(owner);
+    }
+    let result = v8::Object::new(scope);
+    for (name, value) in [
         (
             "handle",
             v8::Integer::new_from_unsigned(scope, handle as u32).into(),
         ),
-        ("owners", owners_array.into()),
+        ("owner", v8::Integer::new_from_unsigned(scope, owner).into()),
+        ("wakeFd", v8::Integer::new(scope, wake_fd).into()),
         (
-            "workerThreads",
-            v8::Integer::new_from_unsigned(scope, worker_count as u32).into(),
+            "portWakeFd",
+            v8::Integer::new(scope, parent_wake_read).into(),
         ),
-        ("controlFd", v8::Integer::new(scope, control_fd).into()),
-    ];
-    for (name, value) in fields {
+        (
+            "completionFd",
+            v8::Integer::new(scope, completion_wake_read).into(),
+        ),
+    ] {
         let key = v8::String::new(scope, name).unwrap();
         result.set(scope, key.into(), value);
     }
     rv.set(result.into());
 }
 
-fn schedule_orchestrated_worker(
+fn optional_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> Option<String> {
+    if value.is_null_or_undefined() {
+        None
+    } else {
+        value
+            .to_string(scope)
+            .map(|value| value.to_rust_string_lossy(scope))
+    }
+}
+
+fn copy_uint8_array(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> Option<Vec<u8>> {
+    let array = v8::Local::<v8::Uint8Array>::try_from(value).ok()?;
+    let buffer = array.buffer(scope)?;
+    let data = buffer.data()?;
+    Some(
+        unsafe {
+            std::slice::from_raw_parts(
+                (data.as_ptr() as *const u8).add(array.byte_offset()),
+                array.byte_length(),
+            )
+        }
+        .to_vec(),
+    )
+}
+
+fn scheduled_realm_send(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
     let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let worker = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let owner = args.get(2).uint32_value(scope).unwrap_or(0);
-    let result = ORCHESTRATED_POOLS.with(|pools| -> Result<(), String> {
-        let pools = pools.borrow();
-        let pool = pools
-            .get(handle)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| format!("scheduleOrchestratedWorker: invalid pool handle {handle}"))?;
-        let sender = pool
-            .senders
-            .get(worker)
-            .ok_or_else(|| format!("scheduleOrchestratedWorker: invalid worker {worker}"))?;
-        sender
-            .send(OrchestratedWorkerCommand::Run(owner))
-            .map_err(|_| format!("scheduleOrchestratedWorker: worker {worker} stopped"))
+    let Some(data) = copy_uint8_array(scope, args.get(1)) else {
+        throw_error(
+            scope,
+            "scheduledRealmSend: second argument must be a Uint8Array",
+        );
+        return;
+    };
+    let transfer_stores = if let Ok(values) = v8::Local::<v8::Array>::try_from(args.get(2)) {
+        let mut stores = Vec::new();
+        for index in 0..values.length() {
+            if let Some(value) = values.get_index(scope, index)
+                && let Some(bytes) = copy_uint8_array(scope, value)
+            {
+                stores.push(bytes);
+            }
+        }
+        stores
+    } else {
+        Vec::new()
+    };
+    let transfer_ports = crate::realm::thread::extract_port_infos(scope, args.get(3));
+    let realms = scheduled_realms().lock().unwrap();
+    let Some(realm) = realms.get(handle).and_then(Option::as_ref) else {
+        throw_error(
+            scope,
+            &format!("scheduledRealmSend: invalid realm handle {handle}"),
+        );
+        return;
+    };
+    let _ = realm.tx.send(crate::realm::thread::ThreadMessage {
+        data,
+        transfer_stores,
+        transfer_ports,
     });
-    if let Err(error) = result {
-        throw_error(scope, &error);
+    let byte = [1u8];
+    unsafe {
+        libc::write(realm.child_wake_write, byte.as_ptr().cast(), byte.len());
     }
 }
 
-fn take_orchestrated_pool_events(
+fn scheduled_realm_recv(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let events = ORCHESTRATED_POOLS.with(|pools| -> Result<Vec<OrchestratedPoolEvent>, String> {
-        let pools = pools.borrow();
-        let pool = pools
+    let realms = scheduled_realms().lock().unwrap();
+    let Some(realm) = realms.get(handle).and_then(Option::as_ref) else {
+        throw_error(
+            scope,
+            &format!("scheduledRealmRecv: invalid realm handle {handle}"),
+        );
+        return;
+    };
+    let mut messages = Vec::new();
+    while let Ok(message) = realm.rx.try_recv() {
+        messages.push(message);
+    }
+    let mut discard = [0u8; 256];
+    while unsafe {
+        libc::read(
+            realm.parent_wake_read,
+            discard.as_mut_ptr().cast(),
+            discard.len(),
+        )
+    } > 0
+    {}
+    rv.set(crate::realm::transit::build_message_array(scope, messages).into());
+}
+
+fn take_scheduled_realm_status(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let realms = scheduled_realms().lock().unwrap();
+    let Some(realm) = realms.get(handle).and_then(Option::as_ref) else {
+        throw_error(
+            scope,
+            &format!("takeScheduledRealmStatus: invalid realm handle {handle}"),
+        );
+        return;
+    };
+    let mut discard = [0u8; 64];
+    while unsafe {
+        libc::read(
+            realm.completion_wake_read,
+            discard.as_mut_ptr().cast(),
+            discard.len(),
+        )
+    } > 0
+    {}
+    let status = realm.state.result.lock().unwrap().clone();
+    let result = v8::Object::new(scope);
+    let (kind, error) = match status {
+        None => ("pending", None),
+        Some(ScheduledRealmResult::Done) => ("done", None),
+        Some(ScheduledRealmResult::Reload) => ("reload", None),
+        Some(ScheduledRealmResult::Error(error)) => ("error", Some(error)),
+    };
+    let key = v8::String::new(scope, "kind").unwrap();
+    let value = v8::String::new(scope, kind).unwrap();
+    result.set(scope, key.into(), value.into());
+    if let Some(error) = error {
+        let key = v8::String::new(scope, "error").unwrap();
+        let value = v8::String::new(scope, &error).unwrap();
+        result.set(scope, key.into(), value.into());
+    }
+    rv.set(result.into());
+}
+
+fn close_scheduled_realm(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let realm = scheduled_realms()
+        .lock()
+        .unwrap()
+        .get_mut(handle)
+        .and_then(Option::take);
+    if realm.is_none() {
+        throw_error(
+            scope,
+            &format!("closeScheduledRealm: invalid realm handle {handle}"),
+        );
+    }
+}
+
+fn create_reactor_queue(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Ok(handles) = v8::Local::<v8::Array>::try_from(args.get(0)) else {
+        throw_error(scope, "createReactorQueue: handles must be an array");
+        return;
+    };
+    if handles.length() == 0 {
+        throw_error(
+            scope,
+            "createReactorQueue: at least one workload is required",
+        );
+        return;
+    }
+    let mut parked = HashMap::new();
+    let mut owners = Vec::new();
+    for index in 0..handles.length() {
+        let handle = handles
+            .get_index(scope, index)
+            .and_then(|value| value.uint32_value(scope))
+            .unwrap_or(u32::MAX) as usize;
+        let workload = match take_workload(handle) {
+            Ok(workload) => workload,
+            Err(error) => {
+                throw_error(scope, &format!("createReactorQueue: {error}"));
+                return;
+            }
+        };
+        owners.push(workload.owner);
+        parked.insert(
+            workload.owner,
+            PoolItem {
+                workload: TransferWorkload(workload),
+            },
+        );
+    }
+
+    let shared = Arc::new(PoolShared::new(parked));
+    {
+        *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
+        let mut pools = owner_pools().lock().unwrap();
+        for owner in &owners {
+            pools.insert(*owner, Arc::downgrade(&shared));
+        }
+    }
+    let control_fd = shared.wake_read;
+    let handle = REACTOR_QUEUES.with(|queues| {
+        let mut queues = queues.borrow_mut();
+        if let Some((index, slot)) = queues
+            .iter_mut()
+            .enumerate()
+            .find(|(_, queue)| queue.is_none())
+        {
+            *slot = Some(shared);
+            index
+        } else {
+            queues.push(Some(shared));
+            queues.len() - 1
+        }
+    });
+    let result = v8::Object::new(scope);
+    let owners_array = v8::Array::new(scope, owners.len() as i32);
+    for (index, owner) in owners.into_iter().enumerate() {
+        let owner = v8::Integer::new_from_unsigned(scope, owner);
+        owners_array.set_index(scope, index as u32, owner.into());
+    }
+    for (name, value) in [
+        (
+            "handle",
+            v8::Integer::new_from_unsigned(scope, handle as u32).into(),
+        ),
+        ("owners", owners_array.into()),
+        ("controlFd", v8::Integer::new(scope, control_fd).into()),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
+}
+
+fn create_reactor_thread(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let shared = REACTOR_QUEUES.with(|queues| {
+        queues
+            .borrow()
+            .get(queue_handle)
+            .and_then(Option::as_ref)
+            .cloned()
+    });
+    let Some(shared) = shared else {
+        throw_error(
+            scope,
+            &format!("createReactorThread: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    let worker = {
+        let mut inner = shared.inner.lock().unwrap();
+        let worker = inner.next_worker;
+        inner.next_worker += 1;
+        worker
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_shared = Arc::clone(&shared);
+    let thread_stop = Arc::clone(&stop);
+    let join = std::thread::spawn(move || run_worker(worker, thread_shared, thread_stop));
+    let reactor = ReactorThread {
+        shared,
+        stop,
+        join: Some(join),
+    };
+    let handle = REACTOR_THREADS.with(|threads| {
+        let mut threads = threads.borrow_mut();
+        if let Some((index, slot)) = threads
+            .iter_mut()
+            .enumerate()
+            .find(|(_, thread)| thread.is_none())
+        {
+            *slot = Some(reactor);
+            index
+        } else {
+            threads.push(Some(reactor));
+            threads.len() - 1
+        }
+    });
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        (
+            "handle",
+            v8::Integer::new_from_unsigned(scope, handle as u32).into(),
+        ),
+        (
+            "worker",
+            v8::Integer::new_from_unsigned(scope, worker as u32).into(),
+        ),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
+}
+
+fn close_reactor_thread(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let thread =
+        REACTOR_THREADS.with(|threads| threads.borrow_mut().get_mut(handle).and_then(Option::take));
+    let Some(mut thread) = thread else {
+        throw_error(
+            scope,
+            &format!("closeReactorThread: invalid thread {handle}"),
+        );
+        return;
+    };
+    thread.shutdown();
+}
+
+fn add_queue_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let workload_handle = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let workload = match take_workload(workload_handle) {
+        Ok(workload) => workload,
+        Err(error) => {
+            throw_error(scope, &format!("addReactorWorkload: {error}"));
+            return;
+        }
+    };
+    let owner = workload.owner;
+    let result = REACTOR_QUEUES.with(|queues| {
+        let queues = queues.borrow();
+        let queue = queues
+            .get(queue_handle)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| format!("invalid reactor queue {queue_handle}"))?;
+        queue.inner.lock().unwrap().parked.insert(
+            owner,
+            PoolItem {
+                workload: TransferWorkload(workload),
+            },
+        );
+        owner_pools()
+            .lock()
+            .unwrap()
+            .insert(owner, Arc::downgrade(queue));
+        queue.signal(owner);
+        Ok::<_, String>(())
+    });
+    if let Err(error) = result {
+        throw_error(scope, &format!("addReactorWorkload: {error}"));
+        return;
+    }
+    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
+}
+
+fn signal_reactor_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
+    let result = REACTOR_QUEUES.with(|queues| {
+        let queues = queues.borrow();
+        let queue = queues
+            .get(queue_handle)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| format!("invalid reactor queue {queue_handle}"))?;
+        queue.signal(owner);
+        Ok::<_, String>(())
+    });
+    if let Err(error) = result {
+        throw_error(scope, &format!("signalReactorWorkload: {error}"));
+    }
+}
+
+fn signal_reactor_owner(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
+    if let Some(pool) = owner_pools()
+        .lock()
+        .unwrap()
+        .get(&owner)
+        .and_then(Weak::upgrade)
+    {
+        pool.signal(owner);
+    }
+}
+
+fn take_reactor_events(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let events = REACTOR_QUEUES.with(|queues| {
+        let queues = queues.borrow();
+        let queue = queues
             .get(handle)
             .and_then(Option::as_ref)
-            .ok_or_else(|| format!("takeOrchestratedPoolEvents: invalid pool handle {handle}"))?;
-        pool.shared.drain_wake();
-        Ok(pool.shared.inner.lock().unwrap().events.drain(..).collect())
+            .ok_or_else(|| format!("invalid reactor queue {handle}"))?;
+        queue.drain_wake();
+        Ok::<_, String>(
+            queue
+                .inner
+                .lock()
+                .unwrap()
+                .events
+                .drain(..)
+                .collect::<Vec<_>>(),
+        )
     });
     let events = match events {
         Ok(events) => events,
         Err(error) => {
-            throw_error(scope, &error);
+            throw_error(scope, &format!("takeReactorEvents: {error}"));
             return;
         }
     };
     let result = v8::Array::new(scope, events.len() as i32);
     for (index, event) in events.into_iter().enumerate() {
-        let object = v8::Object::new(scope);
+        let value = v8::Object::new(scope);
         let kind = match event.kind {
-            OrchestratedPoolEventKind::Ready => "ready",
-            OrchestratedPoolEventKind::Quiescent => "quiescent",
-            OrchestratedPoolEventKind::Settled => "settled",
-            OrchestratedPoolEventKind::Error => "error",
+            PoolEventKind::Activated => "activated",
+            PoolEventKind::Settled => "settled",
+            PoolEventKind::Error => "error",
         };
-        let mut fields: Vec<(&str, v8::Local<v8::Value>)> = vec![
+        for (name, field) in [
             ("kind", v8::String::new(scope, kind).unwrap().into()),
             (
                 "worker",
@@ -2331,158 +1602,65 @@ fn take_orchestrated_pool_events(
                 "loopTurns",
                 v8::Number::new(scope, event.loop_turns as f64).into(),
             ),
-        ];
-        if let Some(bytes) = event.value {
-            let value = match crate::realm::serializer::deserialize_value(scope, &bytes) {
-                Ok(value) => value,
-                Err(error) => {
-                    throw_error(scope, &format!("takeOrchestratedPoolEvents: {error}"));
-                    return;
-                }
-            };
-            fields.push(("value", value));
+        ] {
+            let key = v8::String::new(scope, name).unwrap();
+            value.set(scope, key.into(), field);
         }
         if let Some(error) = event.error {
-            fields.push(("error", v8::String::new(scope, &error).unwrap().into()));
+            let key = v8::String::new(scope, "error").unwrap();
+            let error = v8::String::new(scope, &error).unwrap();
+            value.set(scope, key.into(), error.into());
         }
-        for (name, value) in fields {
-            let key = v8::String::new(scope, name).unwrap();
-            object.set(scope, key.into(), value);
+        if let Some(previous) = event.previous {
+            let key = v8::String::new(scope, "previous").unwrap();
+            let previous = v8::Integer::new_from_unsigned(scope, previous);
+            value.set(scope, key.into(), previous.into());
         }
-        result.set_index(scope, index as u32, object.into());
+        result.set_index(scope, index as u32, value.into());
     }
     rv.set(result.into());
 }
 
-fn close_orchestrated_pool(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let pool =
-        ORCHESTRATED_POOLS.with(|pools| pools.borrow_mut().get_mut(handle).and_then(Option::take));
-    let Some(mut pool) = pool else {
-        throw_error(
-            scope,
-            &format!("closeOrchestratedPool: invalid pool handle {handle}"),
-        );
-        return;
-    };
-    pool.shutdown();
-    let metrics = pool.shared.inner.lock().unwrap().metrics;
-    let result = v8::Object::new(scope);
-    let fields: [(&str, v8::Local<v8::Value>); 5] = [
-        (
-            "workloadSwitches",
-            v8::Number::new(scope, metrics.workload_switches as f64).into(),
-        ),
-        (
-            "workloadMigrations",
-            v8::Number::new(scope, metrics.workload_migrations as f64).into(),
-        ),
-        (
-            "isolateEntries",
-            v8::Number::new(scope, metrics.isolate_entries as f64).into(),
-        ),
-        (
-            "isolateExits",
-            v8::Number::new(scope, metrics.isolate_exits as f64).into(),
-        ),
-        (
-            "loopTurns",
-            v8::Number::new(scope, metrics.loop_turns as f64).into(),
-        ),
-    ];
-    for (name, value) in fields {
-        let key = v8::String::new(scope, name).unwrap();
-        result.set(scope, key.into(), value);
-    }
-    rv.set(result.into());
-}
-
-fn process_readiness_control_fd(
-    scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    rv.set(v8::Integer::new(scope, shared_readiness().wake_read).into());
-}
-
-fn complete_entered(
-    workload: &mut ParkedWorkload,
-    operation_id: i64,
-    ok: bool,
-    result_json: &str,
-) -> Result<(), String> {
-    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
-    let context = v8::Local::new(isolate_scope, &workload.context);
-    let scope = &mut v8::ContextScope::new(isolate_scope, context);
-    let function = v8::Local::new(scope, &workload.complete_fn);
-    let id = v8::Number::new(scope, operation_id as f64);
-    let ok = v8::Boolean::new(scope, ok);
-    let json = v8::String::new(scope, result_json)
-        .ok_or_else(|| "failed to allocate host operation result".to_string())?;
-    let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-    {
-        let tc = &mut v8::TryCatch::new(scope);
-        function
-            .call(tc, receiver, &[id.into(), ok.into(), json.into()])
-            .ok_or_else(|| {
-                crate::realm::child::catch_message(tc)
-                    .unwrap_or_else(|| "host operation completion threw".to_string())
-            })?;
-    }
-    crate::realm::child::pump_and_checkpoint(scope);
-    Ok(())
-}
-
-fn complete_host_operation(
+fn close_reactor_queue(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let operation_id = args.get(1).integer_value(scope).unwrap_or(-1);
-    let ok = args.get(2).boolean_value(scope);
-    let result_json = args
-        .get(3)
-        .to_string(scope)
-        .map(|value| value.to_rust_string_lossy(scope))
-        .unwrap_or_else(|| "null".to_string());
-    let result = WORKLOADS.with(|table| {
-        let mut table = table.borrow_mut();
-        let workload = table
-            .0
-            .get_mut(handle)
-            .and_then(Option::as_mut)
-            .ok_or_else(|| "completeHostOperation: invalid workload handle".to_string())?;
-        with_entered_workload(workload, |workload| {
-            complete_entered(workload, operation_id, ok, &result_json)
-        })
-    });
-    if let Err(error) = result {
-        throw_error(scope, &error);
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let queue =
+        REACTOR_QUEUES.with(|queues| queues.borrow_mut().get_mut(handle).and_then(Option::take));
+    let Some(queue) = queue else {
+        throw_error(
+            scope,
+            &format!("closeReactorQueue: invalid queue handle {handle}"),
+        );
+        return;
+    };
+    {
+        let mut inner = queue.inner.lock().unwrap();
+        inner.shutdown = true;
     }
-}
-
-fn drop_parked(mut workload: ParkedWorkload) {
-    if workload.moved_between_threads {
-        let locker = crate::v8_threading::IsolateLocker::new(&mut workload.isolate);
-        unsafe {
-            workload.isolate.enter();
-            workload.isolate.exit();
+    queue.changed.notify_all();
+    {
+        let mut registered = process_pool().lock().unwrap();
+        if registered
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, &queue))
+        {
+            *registered = None;
         }
-        // Locker::~Locker reads the isolate's ThreadManager, so it must run
-        // before OwnedIsolate disposes that state. TransferWorkload still gives
-        // this thread exclusive ownership during the final unguarded enter; it
-        // is only needed because OwnedIsolate's Drop expects the isolate current.
-        drop(locker);
     }
-    unsafe {
-        workload.isolate.enter();
+    let Ok(queue) = Arc::try_unwrap(queue) else {
+        throw_error(
+            scope,
+            "closeReactorQueue: reactor threads are still attached",
+        );
+        return;
+    };
+    let parked = std::mem::take(&mut queue.inner.lock().unwrap().parked);
+    for item in parked.into_values() {
+        drop_workload(item.workload.0);
     }
-    drop(workload);
 }
 
 fn terminate_workload(
@@ -2490,19 +1668,16 @@ fn terminate_workload(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    WORKLOADS.with(|table| {
-        let mut table = table.borrow_mut();
-        if let Some(workload) = table.0.get_mut(handle).and_then(Option::take) {
-            let owner_id = workload.owner_id;
-            SHARED_POLLS.with(|polls| {
-                polls
-                    .borrow_mut()
-                    .retain(|_, user_data| (*user_data >> 32) as u32 != owner_id);
-            });
-            drop_parked(workload);
-        }
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let workload = WORKLOADS.with(|workloads| {
+        workloads
+            .borrow_mut()
+            .get_mut(handle)
+            .and_then(Option::take)
     });
+    if let Some(workload) = workload {
+        drop_workload(workload);
+    }
 }
 
 fn workload_wake_fd(
@@ -2510,11 +1685,10 @@ fn workload_wake_fd(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let fd = WORKLOADS.with(|table| {
-        table
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let fd = WORKLOADS.with(|workloads| {
+        workloads
             .borrow()
-            .0
             .get(handle)
             .and_then(Option::as_ref)
             .and_then(|workload| workload.async_state.as_ref())
@@ -2529,63 +1703,347 @@ fn workload_owner(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let owner = WORKLOADS.with(|table| {
-        table
+    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let owner = WORKLOADS.with(|workloads| {
+        workloads
             .borrow()
-            .0
             .get(handle)
             .and_then(Option::as_ref)
-            .map(|workload| workload.owner_id)
+            .map(|workload| workload.owner)
             .unwrap_or(0)
     });
     rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ReadinessPriorityQueue, next_workload_owner};
-    use std::collections::HashSet;
-
-    #[test]
-    fn entered_workload_wins_a_readiness_tie() {
-        let mut queue = ReadinessPriorityQueue::default();
-        queue.record(2);
-
-        assert_eq!(queue.claim_higher_than(1, 1), None);
-        assert_eq!(queue.pending(2), 1);
+fn readiness_change_from_args(
+    scope: &mut v8::HandleScope,
+    args: &v8::FunctionCallbackArguments,
+) -> ReadinessChange {
+    ReadinessChange {
+        ident: args.get(0).number_value(scope).unwrap_or(0.0),
+        filter: args.get(1).int32_value(scope).unwrap_or(0),
+        flags: args.get(2).uint32_value(scope).unwrap_or(0),
+        fflags: args.get(3).uint32_value(scope).unwrap_or(0),
+        data: args.get(4).number_value(scope).unwrap_or(0.0),
+        udata: args.get(5).number_value(scope).unwrap_or(0.0),
+        cancel_owner: None,
+        scheduler_wake: false,
+        acknowledgement: None,
     }
+}
 
-    #[test]
-    fn parked_workload_with_more_readiness_is_claimed() {
-        let mut queue = ReadinessPriorityQueue::default();
-        queue.record(2);
-        queue.record(2);
+fn register_process_readiness(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let change = readiness_change_from_args(scope, &args);
+    mailbox().inner.lock().unwrap().changes.push(change);
+    mailbox().notify();
+}
 
-        assert_eq!(queue.claim_higher_than(1, 1), Some(2));
-        assert_eq!(queue.pending(2), 2);
+fn register_process_persistent_readiness(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    static NEXT_ACKNOWLEDGEMENT: AtomicU64 = AtomicU64::new(1);
+    let acknowledgement_id = NEXT_ACKNOWLEDGEMENT.fetch_add(1, Ordering::Relaxed);
+    let acknowledgement = Arc::new(ReadinessAcknowledgement {
+        installed: Mutex::new(false),
+        changed: Condvar::new(),
+    });
+    let mut change = readiness_change_from_args(scope, &args);
+    change.acknowledgement = Some(acknowledgement_id);
+    {
+        let mut inner = mailbox().inner.lock().unwrap();
+        inner
+            .acknowledgements
+            .insert(acknowledgement_id, acknowledgement.clone());
+        inner.changes.push(change);
     }
-
-    #[test]
-    fn repeated_readiness_updates_one_priority_entry() {
-        let mut queue = ReadinessPriorityQueue::default();
-        queue.record(7);
-        queue.record(7);
-        queue.record(7);
-
-        assert_eq!(queue.queued_len(), 1);
-        assert_eq!(queue.claim_higher_than(1, 0), Some(7));
-        assert_eq!(queue.claim_higher_than(1, 0), None);
+    mailbox().notify();
+    let mut installed = acknowledgement.installed.lock().unwrap();
+    while !*installed {
+        installed = acknowledgement.changed.wait(installed).unwrap();
     }
+}
 
-    #[test]
-    fn workload_owners_are_unique_across_threads() {
-        let owners = (0..8)
-            .map(|_| std::thread::spawn(next_workload_owner))
-            .map(|thread| thread.join().unwrap())
-            .collect::<HashSet<_>>();
-
-        assert_eq!(owners.len(), 8);
-        assert!(!owners.contains(&0));
+fn acknowledge_process_readiness(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let acknowledgement_id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    let acknowledgement = mailbox()
+        .inner
+        .lock()
+        .unwrap()
+        .acknowledgements
+        .remove(&acknowledgement_id);
+    if let Some(acknowledgement) = acknowledgement {
+        *acknowledgement.installed.lock().unwrap() = true;
+        acknowledgement.changed.notify_one();
     }
+}
+
+fn register_reactor_wake(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
+    let fd = args.get(1).int32_value(scope).unwrap_or(-1);
+    mailbox()
+        .inner
+        .lock()
+        .unwrap()
+        .changes
+        .push(ReadinessChange {
+            ident: fd as f64,
+            filter: -1,
+            flags: 0,
+            fflags: 0,
+            data: 0.0,
+            udata: owner as f64,
+            cancel_owner: None,
+            scheduler_wake: true,
+            acknowledgement: None,
+        });
+    mailbox().notify();
+}
+
+fn take_readiness_changes(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    mailbox().drain_wake();
+    let changes = std::mem::take(&mut mailbox().inner.lock().unwrap().changes);
+    let json = serde_json::to_string(&changes).unwrap_or_else(|_| "[]".to_string());
+    rv.set(v8::String::new(scope, &json).unwrap().into());
+}
+
+fn route_process_readiness(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
+    let event = LoopEvent {
+        ident: args.get(1).number_value(scope).unwrap_or(0.0),
+        filter: args.get(2).int32_value(scope).unwrap_or(0),
+        flags: args.get(3).uint32_value(scope).unwrap_or(0),
+        fflags: Some(args.get(4).uint32_value(scope).unwrap_or(0)),
+        data: Some(args.get(5).number_value(scope).unwrap_or(0.0)),
+        res: None,
+        udata: Some(args.get(6).number_value(scope).unwrap_or(0.0)),
+        routed: true,
+    };
+    mailbox()
+        .inner
+        .lock()
+        .unwrap()
+        .events
+        .entry(owner)
+        .or_default()
+        .push_back(event);
+    if args.get(7).boolean_value(scope)
+        && let Some(pool) = owner_pools()
+            .lock()
+            .unwrap()
+            .get(&owner)
+            .and_then(Weak::upgrade)
+    {
+        pool.signal(owner);
+    }
+}
+
+fn route_shared_loop_event(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
+    let json = args
+        .get(1)
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    if let Ok(event) = serde_json::from_str::<LoopEvent>(&json) {
+        mailbox()
+            .inner
+            .lock()
+            .unwrap()
+            .events
+            .entry(owner)
+            .or_default()
+            .push_back(event);
+    }
+}
+
+fn take_shared_loop_events(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
+    let events = mailbox()
+        .inner
+        .lock()
+        .unwrap()
+        .events
+        .remove(&owner)
+        .unwrap_or_default();
+    let json = serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string());
+    rv.set(v8::String::new(scope, &json).unwrap().into());
+}
+
+fn process_readiness_control_fd(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::Integer::new(scope, mailbox().wake_read).into());
+}
+
+fn shared_loop_descriptor(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::null(scope).into());
+}
+
+fn poll_shared_reactor(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::Boolean::new(scope, false).into());
+}
+
+fn register_shared_poll(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    static NEXT: AtomicU64 = AtomicU64::new(1 << 32);
+    static POLLS: std::sync::OnceLock<Mutex<HashMap<u64, u64>>> = std::sync::OnceLock::new();
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let value = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    POLLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(id, value);
+    rv.set(v8::Number::new(scope, id as f64).into());
+}
+
+fn take_shared_poll(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::null(scope).into());
+}
+
+fn cancel_shared_poll(
+    _scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+}
+
+pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+    let names = [
+        "createWorkload",
+        "createScheduledRealm",
+        "scheduledRealmSend",
+        "scheduledRealmRecv",
+        "takeScheduledRealmStatus",
+        "closeScheduledRealm",
+        "createReactorQueue",
+        "createReactorThread",
+        "closeReactorThread",
+        "addReactorWorkload",
+        "signalReactorWorkload",
+        "signalReactorOwner",
+        "takeReactorEvents",
+        "closeReactorQueue",
+        "terminateWorkload",
+        "workloadWakeFd",
+        "workloadOwner",
+        "processReadinessControlFd",
+        "registerProcessReadiness",
+        "registerProcessPersistentReadiness",
+        "acknowledgeProcessReadiness",
+        "registerReactorWake",
+        "registerSharedReadiness",
+        "takeSharedReadinessChanges",
+        "routeProcessReadiness",
+        "routeSharedLoopEvent",
+        "takeSharedLoopEvents",
+        "sharedLoopDescriptor",
+        "pollSharedReactor",
+        "registerSharedPoll",
+        "takeSharedPoll",
+        "cancelSharedPoll",
+    ];
+    let export_names: Vec<v8::Local<v8::String>> = names
+        .iter()
+        .map(|name| v8::String::new(scope, name).unwrap())
+        .collect();
+    let module_name = v8::String::new(scope, "internal:scheduler-native").unwrap();
+    v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
+}
+
+fn eval_steps<'a>(
+    context: v8::Local<'a, v8::Context>,
+    module: v8::Local<'a, v8::Module>,
+) -> Option<v8::Local<'a, v8::Value>> {
+    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    macro_rules! set_fn {
+        ($name:literal, $function:path) => {{
+            let function = v8::FunctionTemplate::new(scope, $function).get_function(scope)?;
+            let name = v8::String::new(scope, $name)?;
+            module.set_synthetic_module_export(scope, name, function.into())?;
+        }};
+    }
+    set_fn!("createWorkload", create_workload);
+    set_fn!("createScheduledRealm", create_scheduled_realm);
+    set_fn!("scheduledRealmSend", scheduled_realm_send);
+    set_fn!("scheduledRealmRecv", scheduled_realm_recv);
+    set_fn!("takeScheduledRealmStatus", take_scheduled_realm_status);
+    set_fn!("closeScheduledRealm", close_scheduled_realm);
+    set_fn!("createReactorQueue", create_reactor_queue);
+    set_fn!("createReactorThread", create_reactor_thread);
+    set_fn!("closeReactorThread", close_reactor_thread);
+    set_fn!("addReactorWorkload", add_queue_workload);
+    set_fn!("signalReactorWorkload", signal_reactor_workload);
+    set_fn!("signalReactorOwner", signal_reactor_owner);
+    set_fn!("takeReactorEvents", take_reactor_events);
+    set_fn!("closeReactorQueue", close_reactor_queue);
+    set_fn!("terminateWorkload", terminate_workload);
+    set_fn!("workloadWakeFd", workload_wake_fd);
+    set_fn!("workloadOwner", workload_owner);
+    set_fn!("processReadinessControlFd", process_readiness_control_fd);
+    set_fn!("registerProcessReadiness", register_process_readiness);
+    set_fn!(
+        "registerProcessPersistentReadiness",
+        register_process_persistent_readiness
+    );
+    set_fn!("acknowledgeProcessReadiness", acknowledge_process_readiness);
+    set_fn!("registerReactorWake", register_reactor_wake);
+    set_fn!("registerSharedReadiness", register_process_readiness);
+    set_fn!("takeSharedReadinessChanges", take_readiness_changes);
+    set_fn!("routeProcessReadiness", route_process_readiness);
+    set_fn!("routeSharedLoopEvent", route_shared_loop_event);
+    set_fn!("takeSharedLoopEvents", take_shared_loop_events);
+    set_fn!("sharedLoopDescriptor", shared_loop_descriptor);
+    set_fn!("pollSharedReactor", poll_shared_reactor);
+    set_fn!("registerSharedPoll", register_shared_poll);
+    set_fn!("takeSharedPoll", take_shared_poll);
+    set_fn!("cancelSharedPoll", cancel_shared_poll);
+    Some(v8::undefined(scope).into())
 }

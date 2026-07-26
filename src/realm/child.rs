@@ -1,9 +1,8 @@
 //! Shared V8 isolate bootstrap + host loop for isolated child Realms.
 //!
-//! Both thread Realms and process Realms run the same sequence: create a fresh
-//! V8 Isolate, evaluate `internal/bootstrap.mjs`, drive the host loop, then teardown.
-//! This module houses that shared code so neither `thread.rs` nor `process.rs`
-//! duplicates it.
+//! Process Realms use this path to create a fresh V8 Isolate, evaluate
+//! `internal/bootstrap.mjs`, drive the host loop, and tear it down. Movable
+//! reactor workloads are constructed through `scheduler_native`.
 
 use std::{
     cell::RefCell,
@@ -26,9 +25,8 @@ use crate::{
 
 /// All non-V8 inputs needed to bootstrap a child Isolate.
 ///
-/// Callers construct this from their realm-type-specific setup (wake-pipes for
-/// thread realms; socket bridge for process realms) and hand it to
-/// `run_child_isolate`.
+/// The process-realm launcher constructs this from its socket bridge and hands
+/// it to `run_child_isolate`.
 pub struct ChildConfig {
     pub process_env: ProcessEnv,
     pub package_map_json: Option<String>,
@@ -43,7 +41,7 @@ pub struct ChildConfig {
     /// Partner's wake-pipe write end, or `None` when the send path wakes the
     /// partner via a different mechanism (e.g., writing to a socket).
     pub wake_write_fd: Option<RawFd>,
-    /// Label used in `FINO_REALM_TIMING` output (e.g. "thread-realm").
+    /// Label used in `FINO_REALM_TIMING` output.
     pub timing_label: &'static str,
     /// Whether the realm was started with watch mode enabled.
     pub watch_mode: bool,
@@ -51,9 +49,8 @@ pub struct ChildConfig {
     pub realm_data: Option<String>,
     /// Runtime-owned bootstrap metadata, if any.
     pub realm_bootstrap_data: Option<String>,
-    /// For thread realms: shared atomic that `requestReload()` writes so the
-    /// parent can observe the reload intent without a V8 context-scope.
-    /// `None` for embedded and process realms.
+    /// Optional shared atomic that `requestReload()` writes so the parent can
+    /// observe the reload intent without a V8 context scope.
     pub reload_requested_signal: Option<Arc<AtomicBool>>,
 }
 
@@ -130,8 +127,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             config.reload_requested_signal,
         );
         context.set_slot(Rc::new(RefCell::new(state)));
-        crate::scheduler_native::configure_reactor_workload(scope)?;
-
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
@@ -223,7 +218,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     // -----------------------------------------------------------------------
     // Host loop
     // -----------------------------------------------------------------------
-    let mut empty_reactor_turns = 0u8;
     'main: loop {
         let should_continue = 'step: {
             let scope = &mut v8::ContextScope::new(isolate_scope, context);
@@ -286,13 +280,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             break 'main;
         }
         realm::process_pending_creates(isolate_scope, &state_rc);
-        crate::scheduler_native::clear_ready_workloads();
-        let timeout_ms = if empty_reactor_turns >= 3 { 25 } else { 0 };
-        if crate::scheduler_native::wait_for_reactor(timeout_ms)? {
-            empty_reactor_turns = 0;
-        } else {
-            empty_reactor_turns = empty_reactor_turns.saturating_add(1);
-        }
     }
 
     // -----------------------------------------------------------------------

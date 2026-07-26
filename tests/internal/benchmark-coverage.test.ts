@@ -58,7 +58,6 @@ describe('benchmark coverage map', () => {
       '`fino:net/http` | `benchmarks/net/http/index.bench.ts`',
       '`fino:module` | `benchmarks/module.bench.ts`',
       '`fino:process` | `benchmarks/process.bench.ts`',
-      '`fino:realm/pool` | `benchmarks/realm/pool.bench.ts`',
       '`fino:security/jwt` | `benchmarks/security/jwt.bench.ts`',
       '`fino:test/assert` | `benchmarks/test/assert.bench.ts`',
     ];
