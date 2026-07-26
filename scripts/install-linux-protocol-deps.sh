@@ -10,7 +10,7 @@ case $1 in
   /*) prefix=$1 ;;
   *) prefix="$(pwd)/$1" ;;
 esac
-bundle=openssl-3.6.2_nghttp2-1.69.0_nghttp3-1.15.0_ngtcp2-1.22.1
+bundle=openssl-3.6.2_nghttp2-1.69.0_nghttp3-1.15.0_ngtcp2-1.22.1-static-o2
 marker="$prefix/.fino-protocol-deps-$bundle"
 if [ -f "$marker" ]; then
   exit 0
@@ -54,29 +54,29 @@ mkdir -p "$prefix"
 
 (
   cd "$work/openssl-3.6.2"
-  ./Configure --prefix="$prefix" --libdir=lib shared
+  ./Configure --prefix="$prefix" --libdir=lib no-shared -fPIC
   make -s -j"$jobs"
   make -s install_sw
 )
 
 (
   cd "$work/nghttp2-1.69.0"
-  ./configure \
+  CFLAGS="-O2 -fPIC" ./configure \
     --prefix="$prefix" \
     --enable-lib-only \
-    --disable-static \
-    --enable-shared
+    --enable-static \
+    --disable-shared
   make -s -j"$jobs"
   make -s install
 )
 
 (
   cd "$work/nghttp3-1.15.0"
-  ./configure \
+  CFLAGS="-O2 -fPIC" ./configure \
     --prefix="$prefix" \
     --enable-lib-only \
-    --disable-static \
-    --enable-shared
+    --enable-static \
+    --disable-shared
   make -s -j"$jobs"
   make -s install
 )
@@ -84,12 +84,12 @@ mkdir -p "$prefix"
 (
   cd "$work/ngtcp2-1.22.1"
   PKG_CONFIG_PATH="$prefix/lib/pkgconfig" \
-    LDFLAGS="-Wl,-rpath,$prefix/lib" \
+    CFLAGS="-O2 -fPIC" \
     ./configure \
       --prefix="$prefix" \
       --enable-lib-only \
-      --disable-static \
-      --enable-shared \
+      --enable-static \
+      --disable-shared \
       --with-openssl
   make -s -j"$jobs"
   make -s install

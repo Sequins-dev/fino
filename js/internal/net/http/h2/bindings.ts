@@ -1,8 +1,8 @@
 /**
- * internal:net/http/h2/bindings — system libnghttp2 loaded via dlopen.
+ * internal:net/http/h2/bindings — embedded or system libnghttp2 via dlopen.
  *
- * This module is the raw FFI foundation for Fino's HTTP/2 stack. It locates a
- * system-installed `libnghttp2`, binds the subset of the C API the higher-level
+ * This module is the raw FFI foundation for Fino's HTTP/2 stack. It locates
+ * `libnghttp2`, binds the subset of the C API the higher-level
  * session code needs, and exposes the numeric constants, struct-layout offsets,
  * and byte-marshalling helpers required to drive nghttp2 from JavaScript. It
  * deliberately performs no protocol logic of its own — session lifecycle,
@@ -12,10 +12,11 @@
  * The library is discovered at module load by trying a list of candidate paths
  * in order and stopping at the first that `dlopen` accepts. Homebrew locations
  * come first on macOS so a `brew install libnghttp2` build wins over anything
- * older in the system prefix; Linux tries the SONAME plus the common
- * multiarch directories. The outcome is frozen into `h2Available`: when no
- * candidate loads, `sym` is `null` and `requireH2()` throws with install
- * guidance, letting callers degrade gracefully to HTTP/1.
+ * older in the system prefix. Linux first resolves the copy linked into the
+ * Fino executable, then tries the SONAME plus the common multiarch directories.
+ * The outcome is frozen into `h2Available`: when no candidate loads, `sym` is
+ * `null` and `requireH2()` throws with install guidance, letting callers
+ * degrade gracefully to HTTP/1.
  *
  * The in-memory session pump symbols (`nghttp2_session_mem_recv2` and
  * `nghttp2_session_mem_send2`) are bound synchronously rather than as
@@ -99,6 +100,7 @@ const _CANDIDATES = _IS_DARWIN
       '/opt/local/lib/libnghttp2.dylib',
     ]
   : [
+      null,
       'libnghttp2.so.14',
       '/usr/lib/x86_64-linux-gnu/libnghttp2.so.14',
       '/usr/lib/aarch64-linux-gnu/libnghttp2.so.14',

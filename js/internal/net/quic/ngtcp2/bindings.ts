@@ -1,9 +1,9 @@
 /**
- * internal:net/quic/ngtcp2/bindings — system libngtcp2 via dlopen.
+ * internal:net/quic/ngtcp2/bindings — embedded or system libngtcp2 via dlopen.
  *
  * This module is the narrow native boundary for Fino's low-level QUIC support.
- * It loads `libngtcp2` from Homebrew, MacPorts, and common Linux locations and
- * exposes only the symbols needed by the QUIC endpoint implementation:
+ * It loads `libngtcp2` from the Linux executable, Homebrew, MacPorts, or common
+ * system locations and exposes only the symbols needed by the QUIC endpoint:
  * connection creation/destruction, packet read/write, stream open/write,
  * timers, transport parameters, connection IDs, and error helpers. Everything
  * above this file — the endpoint, connection, and stream state machines — is
@@ -84,6 +84,7 @@ const _CANDIDATES = _IS_DARWIN
       '/opt/local/lib/libngtcp2.dylib',
     ]
   : [
+      null,
       'libngtcp2.so.16',
       'libngtcp2.so',
       '/usr/lib/x86_64-linux-gnu/libngtcp2.so.16',
@@ -483,7 +484,7 @@ function statelessResetTokenPointer(token: Uint8Array): ArrayBuffer {
     token.byteOffset === 0 && token.byteLength === token.buffer.byteLength ? token : token.slice();
   return Pointer.of(view.buffer);
 }
-function tryOpenResetStreamAt(path: string): ResetStreamAtWriter | null {
+function tryOpenResetStreamAt(path: string | null): ResetStreamAtWriter | null {
   const signature = {
     parameters: ['pointer', 'u32', 'i64', 'u64', 'u64'],
     result: 'i32',
@@ -511,7 +512,7 @@ function tryOpenResetStreamAt(path: string): ResetStreamAtWriter | null {
     }
   }
 }
-function tryOpenStatelessReset(path: string): StatelessResetWriter | null {
+function tryOpenStatelessReset(path: string | null): StatelessResetWriter | null {
   try {
     const lib = dlopen(path, {
       ngtcp2_pkt_write_stateless_reset2: {

@@ -2309,6 +2309,8 @@ interface ActiveChild {
   kind: RealmKind;
   resolve: () => void;
   reject: (err: unknown) => void;
+  /** Drain process messages before observing process exit. */
+  drainMessages?: () => void;
   clusterPort?: ClusterPort;
   /** Called when the child exits with reload_requested. Returns the new handle
    *  to keep running, or null to stop watching (after terminate()). */
@@ -2353,6 +2355,10 @@ export function _stepChildren(): void {
     let stepError: unknown = undefined;
     if (child.kind === 'process') {
       try {
+        // A short-lived child can queue its final response and exit before the
+        // parent isolate is scheduled again. Drain first so releasing the
+        // native process handle cannot discard that response.
+        child.drainMessages?.();
         stepResult = stepProcessContext(child.handle) as boolean | null;
       } catch (err) {
         stepResult = false;
@@ -3057,6 +3063,10 @@ export class Realm<F extends RealmFn = RealmFn> {
           kind: this.#kind,
           resolve,
           reject,
+          drainMessages:
+            this.#kind === 'process'
+              ? () => (self.#activeChildPort ?? (self.port as ProcessPort))._drain()
+              : undefined,
           onReload(): number | null {
             if (self.#watchTerminated) return null;
             const newHandle = self.#spawnChild();
@@ -3073,6 +3083,10 @@ export class Realm<F extends RealmFn = RealmFn> {
         kind: this.#kind,
         resolve,
         reject,
+        drainMessages:
+          this.#kind === 'process'
+            ? () => (this.#activeChildPort ?? (this.port as ProcessPort))._drain()
+            : undefined,
       });
     });
   }
@@ -3183,6 +3197,10 @@ export class Realm<F extends RealmFn = RealmFn> {
           kind,
           resolve: () => reject(new Error('Realm exited before returning a call result')),
           reject: (err: unknown) => reject(err),
+          drainMessages:
+            kind === 'process'
+              ? () => (this.#activeChildPort ?? (this.port as ProcessPort))._drain()
+              : undefined,
         });
         const handler = (ev: Event) => {
           const data = (ev as MessageEvent).data;

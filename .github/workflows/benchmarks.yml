@@ -55,18 +55,6 @@ jobs:
           path: target/release/fino
           if-no-files-found: error
 
-      - name: Package Linux protocol dependencies
-        run: |
-          tar -C "$RUNNER_TEMP/fino-protocol-deps" -czf \
-            "$RUNNER_TEMP/fino-linux-protocol-deps.tar.gz" lib
-
-      - name: Upload Linux protocol dependencies
-        uses: actions/upload-artifact@v4
-        with:
-          name: fino-linux-protocol-deps
-          path: ${{ runner.temp }}/fino-linux-protocol-deps.tar.gz
-          if-no-files-found: error
-
   linux-benchmarks:
     name: Linux Benchmarks (benchmarks/${{ matrix.path }})
     runs-on: blacksmith-2vcpu-ubuntu-2404
@@ -106,11 +94,6 @@ jobs:
 
       - name: Prepare binary
         run: chmod +x target/release/fino
-
-      - name: Restore Linux protocol dependencies
-        uses: ./.github/actions/restore-linux-protocol-deps
-        with:
-          prefix: ${{ github.workspace }}/.fino-protocol-deps
 
       - name: Run subsystem benchmarks
         run: FINO_REQUIRE_SQLITE=1 ./target/release/fino bench 'benchmarks/${{ matrix.path }}'

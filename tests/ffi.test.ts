@@ -61,6 +61,18 @@ const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6'
     result: 'void',
   },
 });
+describe('dlopen current process', () => {
+  it('resolves symbols when the path is null', (t) => {
+    const currentProcess = dlopen(null, {
+      strlen: {
+        parameters: ['buffer'],
+        result: 'usize',
+      },
+    });
+    const input = new TextEncoder().encode('fino\0');
+    t.equal(currentProcess.symbols.strlen(input), 4);
+  });
+});
 describe('read/write via malloc', () => {
   it('malloc returns an 8-byte pointer buffer (non-null)', (t) => {
     const ptr = libc.symbols.malloc(64);

@@ -10,10 +10,10 @@
  * GnuTLS-specific types.
  *
  * Loading is best effort. At import time the module walks a list of
- * platform-specific candidate paths (Homebrew and MacPorts locations on macOS,
- * the usual multiarch and `/usr/local` locations on Linux) and stops at the
- * first library that opens successfully. If none is found the module still
- * imports cleanly, but every accessor reports the backend as unavailable and
+ * platform-specific candidates. Linux first resolves the statically linked copy
+ * from the Fino executable, while macOS tries Homebrew and MacPorts; both retain
+ * system-library fallbacks. If none is found the module still imports cleanly,
+ * but every accessor reports the backend as unavailable and
  * `requireCryptoOssl()` throws with install guidance. Callers should branch on
  * `cryptoOsslAvailable` (or the unified `cryptoAvailable` in `crypto.ts`) before
  * touching `sym`, `ptr`, or `newCryptoOsslContext()`.
@@ -61,6 +61,7 @@ const _CANDIDATES = _IS_DARWIN
       '/opt/local/lib/libngtcp2_crypto_ossl.dylib',
     ]
   : [
+      null,
       'libngtcp2_crypto_ossl.so.0',
       'libngtcp2_crypto_ossl.so',
       '/usr/lib/x86_64-linux-gnu/libngtcp2_crypto_ossl.so.0',

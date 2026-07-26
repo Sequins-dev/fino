@@ -22,6 +22,20 @@ impl DynLib {
         Ok(Self { lib })
     }
 
+    #[cfg(unix)]
+    pub fn open_self() -> Result<Self, String> {
+        Ok(Self {
+            lib: libloading::os::unix::Library::this().into(),
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn open_self() -> Result<Self, String> {
+        let lib = libloading::os::windows::Library::this()
+            .map_err(|e| format!("failed to open current process: {e}"))?;
+        Ok(Self { lib: lib.into() })
+    }
+
     /// Look up `name` in the library and return a raw code pointer.
     pub fn symbol_ptr(&self, name: &str) -> Result<CodePtr, String> {
         // Append null terminator to avoid an allocation inside libloading.

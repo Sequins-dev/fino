@@ -1,5 +1,5 @@
 name: Install Linux protocol dependencies
-description: Cache and build the native TLS, HTTP/2, HTTP/3, and QUIC libraries Fino requires
+description: Cache and build the static TLS, HTTP/2, HTTP/3, and QUIC libraries embedded in Fino
 
 inputs:
   prefix:
@@ -19,6 +19,6 @@ runs:
       shell: bash
       run: scripts/install-linux-protocol-deps.sh '${{ inputs.prefix }}'
 
-    - name: Export native protocol library path
+    - name: Export native protocol dependency prefix
       shell: bash
-      run: echo 'LD_LIBRARY_PATH=${{ inputs.prefix }}/lib' >> "$GITHUB_ENV"
+      run: echo 'FINO_PROTOCOL_DEPS_PREFIX=${{ inputs.prefix }}' >> "$GITHUB_ENV"

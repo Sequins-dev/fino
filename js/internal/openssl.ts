@@ -1,9 +1,11 @@
 /**
  * internal:openssl — OpenSSL FFI bindings for libcrypto and libssl.
  *
- * Tries to dlopen OpenSSL at module load time. Sets `cryptoAvailable` and
- * `tlsAvailable` flags on success/failure. Callers (fino:crypto, fino:tls)
- * check these flags and throw descriptive errors if unavailable.
+ * Tries to dlopen OpenSSL at module load time. Linux first resolves the
+ * statically linked copy from the Fino executable, while other candidates use
+ * platform library paths. Sets `cryptoAvailable` and `tlsAvailable` flags on
+ * success/failure. Callers (fino:crypto, fino:tls) check these flags and throw
+ * descriptive errors if unavailable.
  *
  * This is an internal module — only fino:* built-ins may import it.
  *
@@ -94,20 +96,20 @@ const isDarwin = os === 'darwin';
 // resolves to the system library that no longer has a stable ABI — dyld now
 // aborts instead of warning. Use explicit versioned paths (Homebrew OpenSSL 3
 // or legacy 1.1) and never fall back to the bare name on macOS.
-const _cryptoPaths = isDarwin
+const _cryptoPaths: (string | null)[] = isDarwin
   ? [
       '/opt/homebrew/lib/libcrypto.3.dylib',
       '/usr/local/lib/libcrypto.3.dylib',
       '/usr/local/lib/libcrypto.1.1.dylib',
     ]
-  : ['libcrypto.so.3', 'libcrypto.so.1.1', 'libcrypto.so'];
-const _sslPaths = isDarwin
+  : [null, 'libcrypto.so.3', 'libcrypto.so.1.1', 'libcrypto.so'];
+const _sslPaths: (string | null)[] = isDarwin
   ? [
       '/opt/homebrew/lib/libssl.3.dylib',
       '/usr/local/lib/libssl.3.dylib',
       '/usr/local/lib/libssl.1.1.dylib',
     ]
-  : ['libssl.so.3', 'libssl.so.1.1', 'libssl.so'];
+  : [null, 'libssl.so.3', 'libssl.so.1.1', 'libssl.so'];
 // ---------------------------------------------------------------------------
 // FFI symbol tables
 // ---------------------------------------------------------------------------
@@ -871,7 +873,7 @@ type CryptoLibrary = DynamicLibrary<typeof _cryptoSymbols>;
 type SslLibrary = DynamicLibrary<typeof _sslSymbols>;
 type SslQuicLibrary = DynamicLibrary<typeof _sslQuicSymbols>;
 function _tryOpen<TSymbols extends NativeSymbolMap>(
-  paths: string[],
+  paths: (string | null)[],
   symbols: TSymbols,
 ): DynamicLibrary<TSymbols> | null {
   for (const p of paths) {

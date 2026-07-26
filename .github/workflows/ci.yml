@@ -56,11 +56,6 @@ jobs:
             pkg-config \
             python3
 
-      - name: Restore Linux protocol dependencies
-        uses: ./.github/actions/restore-linux-protocol-deps
-        with:
-          prefix: ${{ github.workspace }}/.fino-protocol-deps
-
       - name: Run Rust lint
         run: cargo clippy
 
@@ -124,18 +119,6 @@ jobs:
           path: target/debug/fino
           if-no-files-found: error
 
-      - name: Package Linux protocol dependencies
-        run: |
-          tar -C "$RUNNER_TEMP/fino-protocol-deps" -czf \
-            "$RUNNER_TEMP/fino-linux-protocol-deps.tar.gz" lib
-
-      - name: Upload Linux protocol dependencies
-        uses: actions/upload-artifact@v4
-        with:
-          name: fino-linux-protocol-deps
-          path: ${{ runner.temp }}/fino-linux-protocol-deps.tar.gz
-          if-no-files-found: error
-
   macos-build:
     name: macOS Build
     runs-on: blacksmith-6vcpu-macos-15
@@ -191,11 +174,6 @@ jobs:
       - name: Prepare binary
         run: chmod +x target/debug/fino
 
-      - name: Restore Linux protocol dependencies
-        uses: ./.github/actions/restore-linux-protocol-deps
-        with:
-          prefix: ${{ github.workspace }}/.fino-protocol-deps
-
       - name: Run full test suite
         run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
 
@@ -215,11 +193,6 @@ jobs:
 
       - name: Prepare binary
         run: chmod +x target/debug/fino
-
-      - name: Restore Linux protocol dependencies
-        uses: ./.github/actions/restore-linux-protocol-deps
-        with:
-          prefix: ${{ github.workspace }}/.fino-protocol-deps
 
       - name: Verify public builtin benchmark inventory
         run: ./target/debug/fino test tests/internal/benchmark-coverage.test.ts

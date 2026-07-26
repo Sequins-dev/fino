@@ -19,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/install-linux-protocol-deps.sh /usr/local/bin/
-RUN install-linux-protocol-deps.sh /usr/local && ldconfig
+RUN install-linux-protocol-deps.sh /usr/local
+ENV FINO_PROTOCOL_DEPS_PREFIX=/usr/local
 
 COPY . .
 
