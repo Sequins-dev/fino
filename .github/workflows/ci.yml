@@ -14,7 +14,7 @@ concurrency:
 jobs:
   fmt:
     name: Rust Format Check
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2604
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,7 +29,7 @@ jobs:
 
   lint:
     name: Lint Checks
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2604
     needs: linux-build
     steps:
       - name: Check out repository
@@ -78,7 +78,7 @@ jobs:
 
   linux-build:
     name: Linux Build
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2604
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -167,7 +167,7 @@ jobs:
 
   linux-tests:
     name: Linux Tests
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2604
     needs: linux-build
     env:
       FINO_REQUIRE_H2: "1"
@@ -201,7 +201,7 @@ jobs:
 
   release-readiness:
     name: Release Readiness
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2604
     needs: linux-build
     steps:
       - name: Check out repository
