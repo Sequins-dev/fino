@@ -1,136 +1,136 @@
 /**
-* WHATWG URL and URLSearchParams globals.
-*
-* This is a pure-JS implementation of the common WHATWG URL Standard
-* (https://url.spec.whatwg.org/) surface used by the runtime. It handles
-* absolute URL parsing, relative URL resolution against a base, URL property
-* mutation/serialization, and URLSearchParams construction, mutation, and
-* iteration semantics. No native binding or C library is used; all parsing is
-* done in JS.
-*
-* The release baseline is intentionally practical rather than WPT-complete.
-* Coverage locks common HTTP(S), file, special and non-special scheme behavior,
-* IDNA/Punycode host serialization, bracketed IPv6 normalization, numeric IPv4
-* forms, percent-encoding through setters, relative-path/query/hash
-* resolution, and live URLSearchParams mutation during iteration.
-*
-*
-* ## Architecture
-*
-* A parsed URL is stored as a plain object with eight string fields:
-*
-*   { scheme, username, password, host, port, pathname, search, hash }
-*
-* This "state object" is the single source of truth for all property getters.
-* Setters mutate the state object directly (e.g. `url.hostname = 'foo'` sets
-* `state.host`). Serialization via `_serialize()` concatenates the fields in
-* the correct order.
-*
-* `URLSearchParams` has an `#onUpdate` callback. When a `URLSearchParams`
-* instance is attached to a `URL` (via `url.searchParams`), mutations to
-* the params object call `onUpdate(queryString)`, which stores the new query
-* string back into `url.#state.search`. Conversely, when `url.search` is set
-* directly, `url.#params.setQuery()` is called to resync the params list.
-* This keeps the URL's `search` property and its `searchParams` in sync
-* without a round-trip through the full parser.
-*
-*
-* ## URL parsing
-*
-* `_parseURL(input, base)` is a hand-rolled parser, not the complete
-* state-machine/tokenizer specified by the WHATWG standard. It handles the
-* release baseline:
-*
-* - Absolute URLs with authority (`scheme://user:pass@host:port/path?q#f`)
-* - Opaque URLs without authority (`data:`, `javascript:`)
-* - Relative URLs resolved against a base via `_resolveRelative()`
-*
-* Relative resolution follows RFC 3986 §5.2: same-fragment, same-query,
-* protocol-relative, absolute-path, and relative-path references are each
-* handled as a special case before falling through to the generic merge-with-
-* base-directory logic.
-*
-* `_normalizePath()` resolves `.` and `..` segments in slash-based output
-* paths. Opaque non-special paths, such as `custom:opaque/./value`, preserve
-* their path text because relative path merging is not valid for opaque bases.
-*
-*
-* ## Default port stripping
-*
-* The WHATWG spec says that default ports must be excluded from the URL
-* serialization. `_parseURL` strips default ports on parse (e.g. `:80` for
-* HTTP, `:443` for HTTPS), so they never appear in `url.port` or `url.href`.
-* Setters that modify the scheme or port also strip defaults.
-*
-*
-* ## URLSearchParams encoding
-*
-* URLSearchParams uses `application/x-www-form-urlencoded` encoding, which
-* differs from URL component percent-encoding in two ways: spaces become `+`
-* (not `%20`), and the safe character set is narrower. The `_formEncode` /
-* `_formDecode` helpers implement this directly: they walk the string by code
-* point, encode each to UTF-8 bytes, and percent-escape them (decoding reverses
-* the process, running the decoded bytes through a UTF-8 decoder that emits
-* U+FFFD for malformed sequences). The runtime's `encodeURIComponent` /
-* `decodeURIComponent` are not used. Mutation methods preserve the
-* observable WHATWG ordering contract for common cases: `append()` adds to the
-* end, `set()` keeps the first matching position and removes later duplicates,
-* `sort()` is stable for duplicate names, and iterators observe live changes.
-*
-*
-* ## Host normalization
-*
-* Domain hostnames are lowercased and serialized through a small Punycode
-* encoder for IDNA-style labels. Bracketed IPv6 addresses are validated,
-* expanded, and compressed to canonical shortest-form text. Special-scheme
-* numeric IPv4 host forms are normalized to dotted decimal.
-*
-*
-* ## What is NOT implemented
-*
-* - Full WHATWG URL state machine/tokenizer parity with all parser states.
-* - The full host parser validation matrix for every invalid IPv4/domain edge.
-* - WPT-level coverage for every control-character, Windows path, and
-*   non-special scheme edge.
-*
-* These omissions are intentional. The implemented subset covers practical
-* runtime URL handling and documented release corpus behavior. Add missing
-* features only when a concrete use case requires them.
-*
-*
-* ```ts no_run
-* // URL and URLSearchParams are available via globalThis
-*
-* const url = new URL('https://user:pass@example.com:8080/path?q=1#frag');
-* url.protocol    // 'https:'
-* url.hostname    // 'example.com'
-* url.port        // '8080'
-* url.pathname    // '/path'
-* url.search      // '?q=1'
-* url.hash        // '#frag'
-* url.origin      // 'https://example.com:8080'
-*
-* // Relative URL resolution
-* const u = new URL('../other', 'http://example.com/a/b/');
-* u.href  // 'http://example.com/a/other'
-*
-* // URLSearchParams
-* const p = new URLSearchParams('a=1&b=hello+world');
-* p.get('b')  // 'hello world'
-* p.toString()  // 'a=1&b=hello+world'
-* ```
-*
-*/
+ * WHATWG URL and URLSearchParams globals.
+ *
+ * This is a pure-JS implementation of the common WHATWG URL Standard
+ * (https://url.spec.whatwg.org/) surface used by the runtime. It handles
+ * absolute URL parsing, relative URL resolution against a base, URL property
+ * mutation/serialization, and URLSearchParams construction, mutation, and
+ * iteration semantics. No native binding or C library is used; all parsing is
+ * done in JS.
+ *
+ * The release baseline is intentionally practical rather than WPT-complete.
+ * Coverage locks common HTTP(S), file, special and non-special scheme behavior,
+ * IDNA/Punycode host serialization, bracketed IPv6 normalization, numeric IPv4
+ * forms, percent-encoding through setters, relative-path/query/hash
+ * resolution, and live URLSearchParams mutation during iteration.
+ *
+ *
+ * ## Architecture
+ *
+ * A parsed URL is stored as a plain object with eight string fields:
+ *
+ *   { scheme, username, password, host, port, pathname, search, hash }
+ *
+ * This "state object" is the single source of truth for all property getters.
+ * Setters mutate the state object directly (e.g. `url.hostname = 'foo'` sets
+ * `state.host`). Serialization via `_serialize()` concatenates the fields in
+ * the correct order.
+ *
+ * `URLSearchParams` has an `#onUpdate` callback. When a `URLSearchParams`
+ * instance is attached to a `URL` (via `url.searchParams`), mutations to
+ * the params object call `onUpdate(queryString)`, which stores the new query
+ * string back into `url.#state.search`. Conversely, when `url.search` is set
+ * directly, `url.#params.setQuery()` is called to resync the params list.
+ * This keeps the URL's `search` property and its `searchParams` in sync
+ * without a round-trip through the full parser.
+ *
+ *
+ * ## URL parsing
+ *
+ * `_parseURL(input, base)` is a hand-rolled parser, not the complete
+ * state-machine/tokenizer specified by the WHATWG standard. It handles the
+ * release baseline:
+ *
+ * - Absolute URLs with authority (`scheme://user:pass@host:port/path?q#f`)
+ * - Opaque URLs without authority (`data:`, `javascript:`)
+ * - Relative URLs resolved against a base via `_resolveRelative()`
+ *
+ * Relative resolution follows RFC 3986 §5.2: same-fragment, same-query,
+ * protocol-relative, absolute-path, and relative-path references are each
+ * handled as a special case before falling through to the generic merge-with-
+ * base-directory logic.
+ *
+ * `_normalizePath()` resolves `.` and `..` segments in slash-based output
+ * paths. Opaque non-special paths, such as `custom:opaque/./value`, preserve
+ * their path text because relative path merging is not valid for opaque bases.
+ *
+ *
+ * ## Default port stripping
+ *
+ * The WHATWG spec says that default ports must be excluded from the URL
+ * serialization. `_parseURL` strips default ports on parse (e.g. `:80` for
+ * HTTP, `:443` for HTTPS), so they never appear in `url.port` or `url.href`.
+ * Setters that modify the scheme or port also strip defaults.
+ *
+ *
+ * ## URLSearchParams encoding
+ *
+ * URLSearchParams uses `application/x-www-form-urlencoded` encoding, which
+ * differs from URL component percent-encoding in two ways: spaces become `+`
+ * (not `%20`), and the safe character set is narrower. The `_formEncode` /
+ * `_formDecode` helpers implement this directly: they walk the string by code
+ * point, encode each to UTF-8 bytes, and percent-escape them (decoding reverses
+ * the process, running the decoded bytes through a UTF-8 decoder that emits
+ * U+FFFD for malformed sequences). The runtime's `encodeURIComponent` /
+ * `decodeURIComponent` are not used. Mutation methods preserve the
+ * observable WHATWG ordering contract for common cases: `append()` adds to the
+ * end, `set()` keeps the first matching position and removes later duplicates,
+ * `sort()` is stable for duplicate names, and iterators observe live changes.
+ *
+ *
+ * ## Host normalization
+ *
+ * Domain hostnames are lowercased and serialized through a small Punycode
+ * encoder for IDNA-style labels. Bracketed IPv6 addresses are validated,
+ * expanded, and compressed to canonical shortest-form text. Special-scheme
+ * numeric IPv4 host forms are normalized to dotted decimal.
+ *
+ *
+ * ## What is NOT implemented
+ *
+ * - Full WHATWG URL state machine/tokenizer parity with all parser states.
+ * - The full host parser validation matrix for every invalid IPv4/domain edge.
+ * - WPT-level coverage for every control-character, Windows path, and
+ *   non-special scheme edge.
+ *
+ * These omissions are intentional. The implemented subset covers practical
+ * runtime URL handling and documented release corpus behavior. Add missing
+ * features only when a concrete use case requires them.
+ *
+ *
+ * ```ts no_run
+ * // URL and URLSearchParams are available via globalThis
+ *
+ * const url = new URL('https://user:pass@example.com:8080/path?q=1#frag');
+ * url.protocol    // 'https:'
+ * url.hostname    // 'example.com'
+ * url.port        // '8080'
+ * url.pathname    // '/path'
+ * url.search      // '?q=1'
+ * url.hash        // '#frag'
+ * url.origin      // 'https://example.com:8080'
+ *
+ * // Relative URL resolution
+ * const u = new URL('../other', 'http://example.com/a/b/');
+ * u.href  // 'http://example.com/a/other'
+ *
+ * // URLSearchParams
+ * const p = new URLSearchParams('a=1&b=hello+world');
+ * p.get('b')  // 'hello world'
+ * p.toString()  // 'a=1&b=hello+world'
+ * ```
+ *
+ */
 import { v4 as _uuidV4 } from 'fino:uuid';
 import { Blob } from './blob.ts';
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
 /**
-* Parsed URL component state — the plain-object representation described in
-* the module header. All fields are already-normalized strings; `_serialize`
-* concatenates them into an href and every URL getter reads from one of them.
-*/
+ * Parsed URL component state — the plain-object representation described in
+ * the module header. All fields are already-normalized strings; `_serialize`
+ * concatenates them into an href and every URL getter reads from one of them.
+ */
 interface URLState {
   scheme: string;
   username: string;
@@ -143,9 +143,11 @@ interface URLState {
 }
 const _blobUrlStore = new Map<string, Blob>();
 function _currentObjectUrlOrigin(): string {
-  const location = (globalThis as {
-    location?: unknown;
-  }).location;
+  const location = (
+    globalThis as {
+      location?: unknown;
+    }
+  ).location;
   if (location === undefined || location === null) return 'null';
   const state = _parseURL(String(location), null);
   return state === null ? 'null' : _origin(state);
@@ -158,20 +160,20 @@ function _stripURLTabsAndNewlines(value: string): string {
   return value.replace(/[\x09\x0a\x0d]/g, '');
 }
 /**
-* Resolve a `blob:` object URL to the Blob it was created for.
-*
-* Fragment identifiers are ignored during resolution, matching the File API
-* dereferencing model. Query strings and extra path segments remain part of
-* the lookup key and therefore do not resolve unless they were present in the
-* original object URL.
-*
-* ```typescript no_run
-* const url = URL.createObjectURL(new Blob(['data']));
-* const blob = _resolveObjectURL(url);
-* ```
-*
-* @internal
-*/
+ * Resolve a `blob:` object URL to the Blob it was created for.
+ *
+ * Fragment identifiers are ignored during resolution, matching the File API
+ * dereferencing model. Query strings and extra path segments remain part of
+ * the lookup key and therefore do not resolve unless they were present in the
+ * original object URL.
+ *
+ * ```typescript no_run
+ * const url = URL.createObjectURL(new Blob(['data']));
+ * const blob = _resolveObjectURL(url);
+ * ```
+ *
+ * @internal
+ */
 export function _resolveObjectURL(url: string): Blob | null {
   // Only blob: URLs can resolve to an object; skip the full parse otherwise.
   // Request URLs are already-serialized hrefs, so a scheme prefix check is
@@ -200,11 +202,25 @@ function _pctEncodeCP(cp: number): string {
   // Multi-byte UTF-8
   let encoded = '';
   if (cp < 2048) {
-    encoded = '%' + _toHex2(192 | cp >> 6) + '%' + _toHex2(128 | cp & 63);
+    encoded = '%' + _toHex2(192 | (cp >> 6)) + '%' + _toHex2(128 | (cp & 63));
   } else if (cp < 65536) {
-    encoded = '%' + _toHex2(224 | cp >> 12) + '%' + _toHex2(128 | cp >> 6 & 63) + '%' + _toHex2(128 | cp & 63);
+    encoded =
+      '%' +
+      _toHex2(224 | (cp >> 12)) +
+      '%' +
+      _toHex2(128 | ((cp >> 6) & 63)) +
+      '%' +
+      _toHex2(128 | (cp & 63));
   } else {
-    encoded = '%' + _toHex2(240 | cp >> 18) + '%' + _toHex2(128 | cp >> 12 & 63) + '%' + _toHex2(128 | cp >> 6 & 63) + '%' + _toHex2(128 | cp & 63);
+    encoded =
+      '%' +
+      _toHex2(240 | (cp >> 18)) +
+      '%' +
+      _toHex2(128 | ((cp >> 12) & 63)) +
+      '%' +
+      _toHex2(128 | ((cp >> 6) & 63)) +
+      '%' +
+      _toHex2(128 | (cp & 63));
   }
   return encoded;
 }
@@ -241,7 +257,7 @@ function _percentEncode(str: string, encodeSet: string): string {
       if (code >= 55296 && code <= 56319 && i + 1 < str.length) {
         const lo = str.charCodeAt(i + 1);
         if (lo >= 56320 && lo <= 57343) {
-          cp = 65536 + (code - 55296 << 10) + (lo - 56320);
+          cp = 65536 + ((code - 55296) << 10) + (lo - 56320);
           i++;
         }
       }
@@ -269,9 +285,9 @@ function _encodeOpaquePath(path: string, hadSuffix: boolean): string {
   return encoded;
 }
 /**
-* Encode a string using application/x-www-form-urlencoded percent-encoding.
-* Spaces → '+'; other non-safe chars → %XX.
-*/
+ * Encode a string using application/x-www-form-urlencoded percent-encoding.
+ * Spaces → '+'; other non-safe chars → %XX.
+ */
 function _formEncode(str: string): string {
   str = _toUSVString(str);
   let result = '';
@@ -279,7 +295,15 @@ function _formEncode(str: string): string {
     const c = str[i];
     const code = str.charCodeAt(i);
     // Safe characters: A-Z a-z 0-9 * - . _
-    if (code >= 65 && code <= 90 || code >= 97 && code <= 122 || code >= 48 && code <= 57 || c === '*' || c === '-' || c === '.' || c === '_') {
+    if (
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      c === '*' ||
+      c === '-' ||
+      c === '.' ||
+      c === '_'
+    ) {
       result += c;
     } else if (code === 32) {
       result += '+';
@@ -288,7 +312,7 @@ function _formEncode(str: string): string {
       if (code >= 55296 && code <= 56319 && i + 1 < str.length) {
         const lo = str.charCodeAt(i + 1);
         if (lo >= 56320 && lo <= 57343) {
-          cp = 65536 + (code - 55296 << 10) + (lo - 56320);
+          cp = 65536 + ((code - 55296) << 10) + (lo - 56320);
           i++;
         }
       }
@@ -303,16 +327,16 @@ function _pushUTF8Bytes(bytes: number[], cp: number): void {
   if (cp < 128) {
     bytes.push(cp);
   } else if (cp < 2048) {
-    bytes.push(192 | cp >> 6, 128 | cp & 63);
+    bytes.push(192 | (cp >> 6), 128 | (cp & 63));
   } else if (cp < 65536) {
-    bytes.push(224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63);
+    bytes.push(224 | (cp >> 12), 128 | ((cp >> 6) & 63), 128 | (cp & 63));
   } else {
-    bytes.push(240 | cp >> 18, 128 | cp >> 12 & 63, 128 | cp >> 6 & 63, 128 | cp & 63);
+    bytes.push(240 | (cp >> 18), 128 | ((cp >> 12) & 63), 128 | ((cp >> 6) & 63), 128 | (cp & 63));
   }
 }
 function _utf8DecodeReplacement(bytes: number[]): string {
   let out = '';
-  for (let i = 0; i < bytes.length;) {
+  for (let i = 0; i < bytes.length; ) {
     const b0 = bytes[i++]!;
     if (b0 < 128) {
       out += String.fromCharCode(b0);
@@ -347,10 +371,10 @@ function _utf8DecodeReplacement(bytes: number[]): string {
         valid = false;
         break;
       }
-      cp = cp << 6 | b & 63;
+      cp = (cp << 6) | (b & 63);
       i++;
     }
-    if (!valid || cp < min || cp > max || cp >= 55296 && cp <= 57343) {
+    if (!valid || cp < min || cp > max || (cp >= 55296 && cp <= 57343)) {
       i = start;
       out += '�';
       continue;
@@ -383,7 +407,7 @@ function _toUSVString(value: unknown): string {
   return out;
 }
 /**
-*  Decode an application/x-www-form-urlencoded string. */
+ *  Decode an application/x-www-form-urlencoded string. */
 function _formDecode(str: string): string {
   const input = String(str);
   const bytes: number[] = [];
@@ -402,7 +426,7 @@ function _formDecode(str: string): string {
     if (cp >= 55296 && cp <= 56319 && i + 1 < input.length) {
       const lo = input.charCodeAt(i + 1);
       if (lo >= 56320 && lo <= 57343) {
-        cp = 65536 + (cp - 55296 << 10) + (lo - 56320);
+        cp = 65536 + ((cp - 55296) << 10) + (lo - 56320);
         i++;
       } else {
         cp = 65533;
@@ -415,7 +439,7 @@ function _formDecode(str: string): string {
   return _utf8DecodeReplacement(bytes);
 }
 /**
-*  Parse a query string into [[name, value], ...] pairs. */
+ *  Parse a query string into [[name, value], ...] pairs. */
 function _parseQueryString(qs: string, stripLeadingQuestion = true): [string, string][] {
   const list: [string, string][] = [];
   if (!qs) return list;
@@ -435,93 +459,102 @@ function _parseQueryString(qs: string, stripLeadingQuestion = true): [string, st
 // URLSearchParams
 // ---------------------------------------------------------------------------
 /**
-* WHATWG `URLSearchParams` global — an ordered multimap of query parameters.
-*
-* Entries are name/value string pairs; duplicate names are allowed and
-* insertion order is preserved. Serialization uses
-* application/x-www-form-urlencoded encoding (spaces become `+`), which is
-* what HTML form submission and query strings use — it is not the same as
-* URL percent-encoding.
-*
-* Instances work standalone, but when obtained through `url.searchParams`
-* they are live: every mutation writes the re-serialized query string back
-* into the owning URL, and setting `url.search` resynchronizes the params.
-* Iterators are also live — entries appended during traversal are observed,
-* and deleting the current entry shifts what the iterator sees next.
-*
-* ```ts no_run
-* // URLSearchParams is available via globalThis
-*
-* const params = new URLSearchParams('a=1&b=hello+world');
-* params.get('b');        // 'hello world'
-* params.append('a', '2');
-* params.getAll('a');     // ['1', '2']
-* params.set('a', '3');   // collapses duplicates, keeps first position
-* params.toString();      // 'a=3&b=hello+world'
-*
-* // Live view attached to a URL
-* const url = new URL('https://example.com/search');
-* url.searchParams.set('q', 'fino runtime');
-* url.href; // 'https://example.com/search?q=fino+runtime'
-* ```
-*/
+ * WHATWG `URLSearchParams` global — an ordered multimap of query parameters.
+ *
+ * Entries are name/value string pairs; duplicate names are allowed and
+ * insertion order is preserved. Serialization uses
+ * application/x-www-form-urlencoded encoding (spaces become `+`), which is
+ * what HTML form submission and query strings use — it is not the same as
+ * URL percent-encoding.
+ *
+ * Instances work standalone, but when obtained through `url.searchParams`
+ * they are live: every mutation writes the re-serialized query string back
+ * into the owning URL, and setting `url.search` resynchronizes the params.
+ * Iterators are also live — entries appended during traversal are observed,
+ * and deleting the current entry shifts what the iterator sees next.
+ *
+ * ```ts no_run
+ * // URLSearchParams is available via globalThis
+ *
+ * const params = new URLSearchParams('a=1&b=hello+world');
+ * params.get('b');        // 'hello world'
+ * params.append('a', '2');
+ * params.getAll('a');     // ['1', '2']
+ * params.set('a', '3');   // collapses duplicates, keeps first position
+ * params.toString();      // 'a=3&b=hello+world'
+ *
+ * // Live view attached to a URL
+ * const url = new URL('https://example.com/search');
+ * url.searchParams.set('q', 'fino runtime');
+ * url.href; // 'https://example.com/search?q=fino+runtime'
+ * ```
+ */
 export class URLSearchParams {
   /**
-  * Ordered entry list of decoded [name, value] pairs.
-  *
-  * Duplicates and insertion order are preserved. Iterators read this array
-  * live by index, which is what makes mutation-during-iteration observable.
-  *
-  * @internal
-  */
+   * Ordered entry list of decoded [name, value] pairs.
+   *
+   * Duplicates and insertion order are preserved. Iterators read this array
+   * live by index, which is what makes mutation-during-iteration observable.
+   *
+   * @internal
+   */
   #list: [string, string][];
   /**
-  * Callback invoked with the serialized query string after each mutation.
-  *
-  * Set by URL when it creates its attached `searchParams` instance; the
-  * callback writes the new query string back into the URL's state. `null`
-  * for standalone instances, in which case mutations notify nothing.
-  *
-  * @internal
-  */
+   * Callback invoked with the serialized query string after each mutation.
+   *
+   * Set by URL when it creates its attached `searchParams` instance; the
+   * callback writes the new query string back into the URL's state. `null`
+   * for standalone instances, in which case mutations notify nothing.
+   *
+   * @internal
+   */
   #onUpdate: ((qs: string) => void) | null;
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new URLSearchParams()); // "[object URLSearchParams]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new URLSearchParams()); // "[object URLSearchParams]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'URLSearchParams';
   }
   /**
-  * Create URLSearchParams from a query string, another URLSearchParams,
-  * entries, or a record.
-  *
-  * String input may start with "?". Object input uses own enumerable string
-  * keys. The onUpdate callback is internal and lets URL.searchParams update
-  * its owning URL.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams('a=1&b=hello+world');
-  * params.get('b'); // "hello world"
-  * ```
-  */
-  constructor(init?: string | URLSearchParams | [string, string][] | Record<string, string> | null, onUpdate: ((qs: string) => void) | null = null) {
+   * Create URLSearchParams from a query string, another URLSearchParams,
+   * entries, or a record.
+   *
+   * String input may start with "?". Object input uses own enumerable string
+   * keys. The onUpdate callback is internal and lets URL.searchParams update
+   * its owning URL.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams('a=1&b=hello+world');
+   * params.get('b'); // "hello world"
+   * ```
+   */
+  constructor(
+    init?: string | URLSearchParams | [string, string][] | Record<string, string> | null,
+    onUpdate: ((qs: string) => void) | null = null,
+  ) {
     this.#list = [];
     this.#onUpdate = onUpdate;
     if (init == null) return;
     if (typeof init === 'object' && init !== null && Symbol.iterator in init) {
       for (const pair of init as Iterable<unknown>) {
-        if (typeof pair === 'string' || pair === null || typeof pair !== 'object' || !(Symbol.iterator in pair)) {
+        if (
+          typeof pair === 'string' ||
+          pair === null ||
+          typeof pair !== 'object' ||
+          !(Symbol.iterator in pair)
+        ) {
           throw new TypeError('URLSearchParams: each entry must be iterable');
         }
         const values = Array.from(pair as Iterable<unknown>);
-        if (values.length !== 2) throw new TypeError('URLSearchParams: each entry must have exactly two elements');
+        if (values.length !== 2)
+          throw new TypeError('URLSearchParams: each entry must have exactly two elements');
         this.#list.push([_toUSVString(values[0]), _toUSVString(values[1])]);
       }
-    } else if (typeof init === 'object' && init !== null || typeof init === 'function') {
+    } else if ((typeof init === 'object' && init !== null) || typeof init === 'function') {
       const seen = new Map<string, number>();
       const record = init as Record<string, unknown>;
       for (const key of Object.keys(record)) {
@@ -540,48 +573,48 @@ export class URLSearchParams {
     }
   }
   /**
-  * Number of stored entries, including duplicates.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams('a=1&a=2');
-  * params.size; // 2
-  * ```
-  */
+   * Number of stored entries, including duplicates.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams('a=1&a=2');
+   * params.size; // 2
+   * ```
+   */
   get size() {
     return this.#list.length;
   }
   /**
-  * Append a new name/value pair and preserve existing entries.
-  *
-  * Names and values are string-coerced. Attached URLs are updated after the
-  * mutation.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams();
-  * params.append('a', '1');
-  * params.append('a', '2');
-  * ```
-  */
+   * Append a new name/value pair and preserve existing entries.
+   *
+   * Names and values are string-coerced. Attached URLs are updated after the
+   * mutation.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams();
+   * params.append('a', '1');
+   * params.append('a', '2');
+   * ```
+   */
   append(name: string, value: string): void {
     this.#list.push([String(name), String(value)]);
     this.#notifyURL();
   }
   /**
-  * Remove entries by name and optional value.
-  *
-  * When value is omitted, all entries with the name are removed. When value is
-  * provided, only exact name/value pairs are removed.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams('a=1&a=2');
-  * params.delete('a', '1');
-  * params.toString(); // "a=2"
-  * ```
-  */
+   * Remove entries by name and optional value.
+   *
+   * When value is omitted, all entries with the name are removed. When value is
+   * provided, only exact name/value pairs are removed.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams('a=1&a=2');
+   * params.delete('a', '1');
+   * params.toString(); // "a=2"
+   * ```
+   */
   delete(name: string, value?: string): void {
     name = String(name);
     const val = value === undefined ? undefined : String(value);
-    for (let i = 0; i < this.#list.length;) {
+    for (let i = 0; i < this.#list.length; ) {
       const entry = this.#list[i]!;
       if (entry[0] === name && (val === undefined || entry[1] === val)) {
         this.#list.splice(i, 1);
@@ -592,12 +625,12 @@ export class URLSearchParams {
     this.#notifyURL();
   }
   /**
-  * Return the first value for name, or null when absent.
-  *
-  * ```typescript no_run
-  * new URLSearchParams('a=1&a=2').get('a'); // "1"
-  * ```
-  */
+   * Return the first value for name, or null when absent.
+   *
+   * ```typescript no_run
+   * new URLSearchParams('a=1&a=2').get('a'); // "1"
+   * ```
+   */
   get(name: string): string | null {
     name = String(name);
     for (const entry of this.#list) {
@@ -606,56 +639,58 @@ export class URLSearchParams {
     return null;
   }
   /**
-  * Return all values for name in insertion order.
-  *
-  * The returned array is new and can be mutated by the caller.
-  *
-  * ```typescript no_run
-  * new URLSearchParams('a=1&a=2').getAll('a'); // ["1", "2"]
-  * ```
-  */
+   * Return all values for name in insertion order.
+   *
+   * The returned array is new and can be mutated by the caller.
+   *
+   * ```typescript no_run
+   * new URLSearchParams('a=1&a=2').getAll('a'); // ["1", "2"]
+   * ```
+   */
   getAll(name: string): string[] {
     name = String(name);
-    return this.#list.filter(function(e) {
-      return e[0] === name;
-    }).map(function(e) {
-      return e[1];
-    });
+    return this.#list
+      .filter(function (e) {
+        return e[0] === name;
+      })
+      .map(function (e) {
+        return e[1];
+      });
   }
   /**
-  * Return true if a matching entry exists.
-  *
-  * With a value argument, both name and value must match.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams('a=1');
-  * params.has('a', '1'); // true
-  * ```
-  */
+   * Return true if a matching entry exists.
+   *
+   * With a value argument, both name and value must match.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams('a=1');
+   * params.has('a', '1'); // true
+   * ```
+   */
   has(name: string, value?: string): boolean {
     name = String(name);
     if (value !== undefined) {
       const val = String(value);
-      return this.#list.some(function(e) {
+      return this.#list.some(function (e) {
         return e[0] === name && e[1] === val;
       });
     }
-    return this.#list.some(function(e) {
+    return this.#list.some(function (e) {
       return e[0] === name;
     });
   }
   /**
-  * Set the value for a name (removes existing entries for that name).
-  *
-  * If the name exists, the first occurrence is replaced and later duplicates
-  * are removed. Otherwise, a new entry is appended.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams('a=1&a=2');
-  * params.set('a', '3');
-  * params.toString(); // "a=3"
-  * ```
-  */
+   * Set the value for a name (removes existing entries for that name).
+   *
+   * If the name exists, the first occurrence is replaced and later duplicates
+   * are removed. Otherwise, a new entry is appended.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams('a=1&a=2');
+   * params.set('a', '3');
+   * params.toString(); // "a=3"
+   * ```
+   */
   set(name: string, value: string): void {
     name = String(name);
     value = String(value);
@@ -676,170 +711,180 @@ export class URLSearchParams {
     this.#notifyURL();
   }
   /**
-  * Sort entries by name using string comparison.
-  *
-  * Equal names preserve their relative order. Attached URLs are updated.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams('b=2&a=1');
-  * params.sort();
-  * params.toString(); // "a=1&b=2"
-  * ```
-  */
+   * Sort entries by name using string comparison.
+   *
+   * Equal names preserve their relative order. Attached URLs are updated.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams('b=2&a=1');
+   * params.sort();
+   * params.toString(); // "a=1&b=2"
+   * ```
+   */
   sort() {
-    this.#list.sort(function(a, b) {
+    this.#list.sort(function (a, b) {
       return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
     });
     this.#notifyURL();
   }
   /**
-  * Serialize entries as application/x-www-form-urlencoded.
-  *
-  * Spaces become "+", duplicate names are preserved, and the output does not
-  * include a leading question mark.
-  *
-  * ```typescript no_run
-  * new URLSearchParams({ q: 'hello world' }).toString(); // "q=hello+world"
-  * ```
-  */
+   * Serialize entries as application/x-www-form-urlencoded.
+   *
+   * Spaces become "+", duplicate names are preserved, and the output does not
+   * include a leading question mark.
+   *
+   * ```typescript no_run
+   * new URLSearchParams({ q: 'hello world' }).toString(); // "q=hello+world"
+   * ```
+   */
   toString() {
-    return this.#list.map(function(e) {
-      return _formEncode(e[0]) + '=' + _formEncode(e[1]);
-    }).join('&');
+    return this.#list
+      .map(function (e) {
+        return _formEncode(e[0]) + '=' + _formEncode(e[1]);
+      })
+      .join('&');
   }
   /**
-  * Iterate over [name, value] pairs.
-  *
-  * The iterator is live: entries appended during traversal can be observed by
-  * the same iterator, matching URLSearchParams iteration semantics.
-  *
-  * ```typescript no_run
-  * [...new URLSearchParams('a=1').entries()]; // [["a", "1"]]
-  * ```
-  */
+   * Iterate over [name, value] pairs.
+   *
+   * The iterator is live: entries appended during traversal can be observed by
+   * the same iterator, matching URLSearchParams iteration semantics.
+   *
+   * ```typescript no_run
+   * [...new URLSearchParams('a=1').entries()]; // [["a", "1"]]
+   * ```
+   */
   entries() {
     const params = this;
     let index = 0;
     return {
       next(): IteratorResult<[string, string]> {
-        if (index >= params.#list.length) return {
-          done: true,
-          value: undefined as any
-        };
+        if (index >= params.#list.length)
+          return {
+            done: true,
+            value: undefined as any,
+          };
         return {
           done: false,
-          value: params.#list[index++]!
+          value: params.#list[index++]!,
         };
       },
       [Symbol.iterator]() {
         return this;
-      }
+      },
     };
   }
   /**
-  * Iterate over names in insertion order.
-  *
-  * ```typescript no_run
-  * [...new URLSearchParams('a=1').keys()]; // ["a"]
-  * ```
-  */
+   * Iterate over names in insertion order.
+   *
+   * ```typescript no_run
+   * [...new URLSearchParams('a=1').keys()]; // ["a"]
+   * ```
+   */
   keys() {
     const iter = this.entries();
     return {
       next(): IteratorResult<string> {
         const entry = iter.next();
-        return entry.done ? {
-          done: true,
-          value: undefined as any
-        } : {
-          done: false,
-          value: entry.value[0]
-        };
+        return entry.done
+          ? {
+              done: true,
+              value: undefined as any,
+            }
+          : {
+              done: false,
+              value: entry.value[0],
+            };
       },
       [Symbol.iterator]() {
         return this;
-      }
+      },
     };
   }
   /**
-  * Iterate over values in insertion order.
-  *
-  * ```typescript no_run
-  * [...new URLSearchParams('a=1').values()]; // ["1"]
-  * ```
-  */
+   * Iterate over values in insertion order.
+   *
+   * ```typescript no_run
+   * [...new URLSearchParams('a=1').values()]; // ["1"]
+   * ```
+   */
   values() {
     const iter = this.entries();
     return {
       next(): IteratorResult<string> {
         const entry = iter.next();
-        return entry.done ? {
-          done: true,
-          value: undefined as any
-        } : {
-          done: false,
-          value: entry.value[1]
-        };
+        return entry.done
+          ? {
+              done: true,
+              value: undefined as any,
+            }
+          : {
+              done: false,
+              value: entry.value[1],
+            };
       },
       [Symbol.iterator]() {
         return this;
-      }
+      },
     };
   }
   /**
-  * Call callback for each [name, value] pair.
-  *
-  * Callback arguments are value, name, and this URLSearchParams object.
-  *
-  * ```typescript no_run
-  * const params = new URLSearchParams('a=1');
-  * params.forEach((value, name) => console.log(name, value));
-  * ```
-  */
-  forEach(callback: (value: string, name: string, parent: URLSearchParams) => void, thisArg?: unknown): void {
+   * Call callback for each [name, value] pair.
+   *
+   * Callback arguments are value, name, and this URLSearchParams object.
+   *
+   * ```typescript no_run
+   * const params = new URLSearchParams('a=1');
+   * params.forEach((value, name) => console.log(name, value));
+   * ```
+   */
+  forEach(
+    callback: (value: string, name: string, parent: URLSearchParams) => void,
+    thisArg?: unknown,
+  ): void {
     for (const entry of this.#list) {
       callback.call(thisArg, entry[1], entry[0], this);
     }
   }
   /**
-  * Default iterator over [name, value] pairs.
-  *
-  * ```typescript no_run
-  * for (const [name, value] of new URLSearchParams('a=1')) console.log(name, value);
-  * ```
-  */
+   * Default iterator over [name, value] pairs.
+   *
+   * ```typescript no_run
+   * for (const [name, value] of new URLSearchParams('a=1')) console.log(name, value);
+   * ```
+   */
   [Symbol.iterator]() {
     return this.entries();
   }
   /**
-  * Replace the entry list from a raw query string.
-  *
-  * This internal hook is the URL-to-params direction of the sync: URL calls
-  * it from its constructor, its `href` setter, and its `search` setter. The
-  * input must not carry a leading question mark (URL strips it first — a
-  * leading `?` here would become part of the first name). Does not call
-  * onUpdate, so it never loops back into the owning URL.
-  *
-  * ```ts no_run
-  * const params = new URLSearchParams();
-  * params.setQuery('a=1');
-  * params.get('a'); // "1"
-  * ```
-  *
-  * @internal
-  */
+   * Replace the entry list from a raw query string.
+   *
+   * This internal hook is the URL-to-params direction of the sync: URL calls
+   * it from its constructor, its `href` setter, and its `search` setter. The
+   * input must not carry a leading question mark (URL strips it first — a
+   * leading `?` here would become part of the first name). Does not call
+   * onUpdate, so it never loops back into the owning URL.
+   *
+   * ```ts no_run
+   * const params = new URLSearchParams();
+   * params.setQuery('a=1');
+   * params.get('a'); // "1"
+   * ```
+   *
+   * @internal
+   */
   setQuery(str: string): void {
     this.#list = _parseQueryString(str, false);
   }
   /**
-  * Push the serialized query string to the attached URL, if any.
-  *
-  * Called after every mutating method (`append`, `delete`, `set`, `sort`).
-  * `setQuery` deliberately does not call this, since it is the URL-to-params
-  * direction of the sync and notifying back would loop.
-  *
-  * @internal
-  */
+   * Push the serialized query string to the attached URL, if any.
+   *
+   * Called after every mutating method (`append`, `delete`, `set`, `sort`).
+   * `setQuery` deliberately does not call this, since it is the URL-to-params
+   * direction of the sync and notifying back would loop.
+   *
+   * @internal
+   */
   #notifyURL() {
     if (this.#onUpdate) this.#onUpdate(this.toString());
   }
@@ -848,16 +893,23 @@ export class URLSearchParams {
 // URL parsing internals
 // ---------------------------------------------------------------------------
 /**
-*  Default ports for special schemes (value is string for direct comparison). */
+ *  Default ports for special schemes (value is string for direct comparison). */
 const _DEFAULT_PORTS: Record<string, string> = {
   http: '80',
   https: '443',
   ws: '80',
   wss: '443',
-  ftp: '21'
+  ftp: '21',
 };
 function _isSpecialScheme(scheme: string): boolean {
-  return scheme === 'http' || scheme === 'https' || scheme === 'ws' || scheme === 'wss' || scheme === 'ftp' || scheme === 'file';
+  return (
+    scheme === 'http' ||
+    scheme === 'https' ||
+    scheme === 'ws' ||
+    scheme === 'wss' ||
+    scheme === 'ftp' ||
+    scheme === 'file'
+  );
 }
 function _adapt(delta: number, numPoints: number, firstTime: boolean): number {
   delta = firstTime ? Math.floor(delta / 700) : delta >> 1;
@@ -867,7 +919,7 @@ function _adapt(delta: number, numPoints: number, firstTime: boolean): number {
     delta = Math.floor(delta / 35);
     k += 36;
   }
-  return k + Math.floor(36 * delta / (delta + 38));
+  return k + Math.floor((36 * delta) / (delta + 38));
 }
 function _encodeDigit(digit: number): string {
   return String.fromCharCode(digit + 22 + 75 * (digit < 26 ? 1 : 0));
@@ -897,10 +949,10 @@ function _punycodeLabel(label: string): string {
       if (cp < n) delta++;
       if (cp !== n) continue;
       let q = delta;
-      for (let k = 36;; k += 36) {
+      for (let k = 36; ; k += 36) {
         const t = k <= bias ? 1 : k >= bias + 26 ? 26 : k - bias;
         if (q < t) break;
-        output += _encodeDigit(t + (q - t) % (36 - t));
+        output += _encodeDigit(t + ((q - t) % (36 - t)));
         q = Math.floor((q - t) / (36 - t));
       }
       output += _encodeDigit(q);
@@ -965,7 +1017,7 @@ function _normalizeIPv4(host: string): string | null {
     Math.floor(value / 16777216) & 255,
     Math.floor(value / 65536) & 255,
     Math.floor(value / 256) & 255,
-    value & 255
+    value & 255,
   ].join('.');
 }
 function _normalizeHost(host: string, scheme: string): string {
@@ -1000,16 +1052,12 @@ function _normalizeIPv6(host: string): string | null {
   const right = pieces.length === 2 ? parseSide(pieces[1]!) : [];
   if (left.some(Number.isNaN) || right.some(Number.isNaN)) return null;
   const missing = pieces.length === 2 ? 8 - left.length - right.length : 0;
-  if (missing < 0 || pieces.length === 1 && left.length !== 8) return null;
-  const nums = [
-    ...left,
-    ...Array(missing).fill(0),
-    ...right
-  ];
+  if (missing < 0 || (pieces.length === 1 && left.length !== 8)) return null;
+  const nums = [...left, ...Array(missing).fill(0), ...right];
   if (nums.length !== 8) return null;
   let bestStart = -1;
   let bestLen = 0;
-  for (let i = 0; i < nums.length;) {
+  for (let i = 0; i < nums.length; ) {
     if (nums[i] !== 0) {
       i++;
       continue;
@@ -1030,20 +1078,23 @@ function _normalizeIPv6(host: string): string | null {
   return '[' + nums.map((n) => n.toString(16)).join(':') + ']';
 }
 /**
-* Parse a URL string into a state object.
-*
-* `base` is a previously parsed state object used to resolve relative
-* references; pass null to require an absolute URL. Returns null instead of
-* throwing when the input cannot be parsed, so callers choose the failure
-* behavior (the URL constructor throws, `URL.parse` returns null).
-*/
+ * Parse a URL string into a state object.
+ *
+ * `base` is a previously parsed state object used to resolve relative
+ * references; pass null to require an absolute URL. Returns null instead of
+ * throwing when the input cannot be parsed, so callers choose the failure
+ * behavior (the URL constructor throws, `URL.parse` returns null).
+ */
 function _parseURL(input: string, base: URLState | null): URLState | null {
   // Per WHATWG URL spec: strip leading/trailing C0 controls and space,
   // then remove all ASCII tab (\x09) and newline (\x0A, \x0D) characters.
-  input = String(input).replace(/^[\x00-\x1f\x20]+|[\x00-\x1f\x20]+$/g, '').replace(/[\x09\x0a\x0d]/g, '');
+  input = String(input)
+    .replace(/^[\x00-\x1f\x20]+|[\x00-\x1f\x20]+$/g, '')
+    .replace(/[\x09\x0a\x0d]/g, '');
   // Check for a scheme.
   const schemeEnd = input.indexOf(':');
-  const looksAbsolute = schemeEnd > 0 && /^[a-zA-Z][a-zA-Z0-9+\-.]*$/.test(input.slice(0, schemeEnd));
+  const looksAbsolute =
+    schemeEnd > 0 && /^[a-zA-Z][a-zA-Z0-9+\-.]*$/.test(input.slice(0, schemeEnd));
   if (!looksAbsolute) {
     if (!base) return null;
     return _resolveRelative(input, base);
@@ -1136,7 +1187,9 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
     opaquePath = !_isSpecialScheme(scheme) && !pathname.startsWith('/');
   }
   const normalizedPath = opaquePath ? pathname : _normalizePath(pathname, hasAuthority);
-  const encodedPath = opaquePath ? _encodeOpaquePath(normalizedPath, search.length > 0 || hash.length > 0) : _percentEncode(normalizedPath, _PATH_ENCODE_SET);
+  const encodedPath = opaquePath
+    ? _encodeOpaquePath(normalizedPath, search.length > 0 || hash.length > 0)
+    : _percentEncode(normalizedPath, _PATH_ENCODE_SET);
   return {
     scheme,
     username,
@@ -1145,15 +1198,16 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
     port,
     pathname: encodedPath,
     search: _percentEncode(search, _QUERY_ENCODE_SET),
-    hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET)
+    hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET),
   };
 }
 /**
-* Resolve a relative reference against a parsed base URL.
-* Implements RFC 3986 §5.2.
-*/
+ * Resolve a relative reference against a parsed base URL.
+ * Implements RFC 3986 §5.2.
+ */
 function _resolveRelative(input: string, base: URLState): URLState {
-  const baseIsOpaque = !_isSpecialScheme(base.scheme) && base.host === '' && !base.pathname.startsWith('/');
+  const baseIsOpaque =
+    !_isSpecialScheme(base.scheme) && base.host === '' && !base.pathname.startsWith('/');
   if (!input) {
     return Object.assign({}, base);
   }
@@ -1161,20 +1215,21 @@ function _resolveRelative(input: string, base: URLState): URLState {
     return Object.assign({}, base, { hash: _percentEncode(input.slice(1), _FRAGMENT_ENCODE_SET) });
   }
   if (input.startsWith('?')) {
-    if (baseIsOpaque) return Object.assign({}, base, {
-      search: _percentEncode(input.slice(1), _QUERY_ENCODE_SET),
-      hash: ''
-    });
+    if (baseIsOpaque)
+      return Object.assign({}, base, {
+        search: _percentEncode(input.slice(1), _QUERY_ENCODE_SET),
+        hash: '',
+      });
     const qi = input.indexOf('#');
     if (qi >= 0) {
       return Object.assign({}, base, {
         search: _percentEncode(input.slice(1, qi), _QUERY_ENCODE_SET),
-        hash: _percentEncode(input.slice(qi + 1), _FRAGMENT_ENCODE_SET)
+        hash: _percentEncode(input.slice(qi + 1), _FRAGMENT_ENCODE_SET),
       });
     }
     return Object.assign({}, base, {
       search: _percentEncode(input.slice(1), _QUERY_ENCODE_SET),
-      hash: ''
+      hash: '',
     });
   }
   if (input.startsWith('//')) {
@@ -1199,7 +1254,7 @@ function _resolveRelative(input: string, base: URLState): URLState {
     return Object.assign({}, base, {
       pathname: _percentEncode(_normalizePath(rest, true), _PATH_ENCODE_SET),
       search: _percentEncode(search, _QUERY_ENCODE_SET),
-      hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET)
+      hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET),
     });
   }
   // Relative path: merge with base directory
@@ -1208,16 +1263,16 @@ function _resolveRelative(input: string, base: URLState): URLState {
   return Object.assign({}, base, {
     pathname: _percentEncode(_normalizePath(dir + rest, true), _PATH_ENCODE_SET),
     search: _percentEncode(search, _QUERY_ENCODE_SET),
-    hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET)
+    hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET),
   });
 }
 /**
-* Resolve `.` and `..` segments in a slash-delimited path.
-*
-* When `hasAuthority` is true the result always keeps a leading slash, since
-* a URL with an authority cannot have a rootless path. A trailing slash on
-* the input is preserved.
-*/
+ * Resolve `.` and `..` segments in a slash-delimited path.
+ *
+ * When `hasAuthority` is true the result always keeps a leading slash, since
+ * a URL with an authority cannot have a rootless path. A trailing slash on
+ * the input is preserved.
+ */
 function _normalizePath(path: string, hasAuthority: boolean): string {
   if (!path) return hasAuthority ? '/' : '';
   const leadingSlash = path.startsWith('/');
@@ -1225,7 +1280,8 @@ function _normalizePath(path: string, hasAuthority: boolean): string {
   const segments = path.split('/');
   const out = [];
   for (const seg of segments) {
-    if (seg === '.') {} else if (seg === '..') {
+    if (seg === '.') {
+    } else if (seg === '..') {
       if (out.length > 0 && out[out.length - 1] !== '') out.pop();
     } else {
       out.push(seg);
@@ -1237,7 +1293,7 @@ function _normalizePath(path: string, hasAuthority: boolean): string {
   return result;
 }
 /**
-*  Serialize a URL state object to a string. */
+ *  Serialize a URL state object to a string. */
 function _serialize(s: URLState): string {
   let href = s.scheme + ':';
   if (s.host !== '' || s.scheme === 'file') {
@@ -1256,10 +1312,16 @@ function _serialize(s: URLState): string {
   return href;
 }
 /**
-*  Compute the origin for a parsed URL state. */
+ *  Compute the origin for a parsed URL state. */
 function _origin(s: URLState): string {
   const { scheme, host, port } = s;
-  if (scheme === 'http' || scheme === 'https' || scheme === 'ws' || scheme === 'wss' || scheme === 'ftp') {
+  if (
+    scheme === 'http' ||
+    scheme === 'https' ||
+    scheme === 'ws' ||
+    scheme === 'wss' ||
+    scheme === 'ftp'
+  ) {
     return scheme + '://' + host + (port ? ':' + port : '');
   }
   if (scheme === 'blob') {
@@ -1272,81 +1334,81 @@ function _origin(s: URLState): string {
 // URL
 // ---------------------------------------------------------------------------
 /**
-* WHATWG `URL` global — parse, inspect, and mutate URLs.
-*
-* The constructor parses an absolute URL, or a relative reference resolved
-* against a base, and throws `TypeError` on unparseable input. Component
-* getters read from the parsed state; setters re-normalize their component
-* (lowercasing, default-port stripping, dot-segment resolution,
-* percent-encoding) and, per the WHATWG setter model, silently ignore
-* invalid values rather than throwing. `searchParams` is a live
-* `URLSearchParams` view that stays in sync with `search` in both
-* directions.
-*
-* The class also hosts the File API object-URL registry:
-* `URL.createObjectURL()` mints a `blob:` URL that keeps its Blob alive in a
-* module-level store until `URL.revokeObjectURL()` drops it.
-*
-* Installed on `globalThis`, so application code uses it without importing
-* this internal module.
-*
-* ```ts no_run
-* // URL is available via globalThis
-*
-* const url = new URL('/search?q=fino', 'https://example.com');
-* url.href;                  // 'https://example.com/search?q=fino'
-* url.searchParams.get('q'); // 'fino'
-*
-* url.port = '8443';
-* url.hash = 'results';
-* url.href; // 'https://example.com:8443/search?q=fino#results'
-*
-* URL.canParse('not a url'); // false
-* URL.parse('not a url');    // null (non-throwing variant)
-* ```
-*/
+ * WHATWG `URL` global — parse, inspect, and mutate URLs.
+ *
+ * The constructor parses an absolute URL, or a relative reference resolved
+ * against a base, and throws `TypeError` on unparseable input. Component
+ * getters read from the parsed state; setters re-normalize their component
+ * (lowercasing, default-port stripping, dot-segment resolution,
+ * percent-encoding) and, per the WHATWG setter model, silently ignore
+ * invalid values rather than throwing. `searchParams` is a live
+ * `URLSearchParams` view that stays in sync with `search` in both
+ * directions.
+ *
+ * The class also hosts the File API object-URL registry:
+ * `URL.createObjectURL()` mints a `blob:` URL that keeps its Blob alive in a
+ * module-level store until `URL.revokeObjectURL()` drops it.
+ *
+ * Installed on `globalThis`, so application code uses it without importing
+ * this internal module.
+ *
+ * ```ts no_run
+ * // URL is available via globalThis
+ *
+ * const url = new URL('/search?q=fino', 'https://example.com');
+ * url.href;                  // 'https://example.com/search?q=fino'
+ * url.searchParams.get('q'); // 'fino'
+ *
+ * url.port = '8443';
+ * url.hash = 'results';
+ * url.href; // 'https://example.com:8443/search?q=fino#results'
+ *
+ * URL.canParse('not a url'); // false
+ * URL.parse('not a url');    // null (non-throwing variant)
+ * ```
+ */
 export class URL {
   /**
-  * Parsed component state — the single source of truth for every getter.
-  *
-  * Setters mutate its fields directly; `href` and `toString()` serialize it
-  * on demand rather than caching a string.
-  *
-  * @internal
-  */
+   * Parsed component state — the single source of truth for every getter.
+   *
+   * Setters mutate its fields directly; `href` and `toString()` serialize it
+   * on demand rather than caching a string.
+   *
+   * @internal
+   */
   #state: URLState;
   /**
-  * The attached live URLSearchParams returned by `searchParams`.
-  *
-  * Created once in the constructor with an onUpdate callback that writes
-  * mutations back into `#state.search`; the `search` and `href` setters
-  * resync it in the other direction via `setQuery`.
-  *
-  * @internal
-  */
+   * The attached live URLSearchParams returned by `searchParams`.
+   *
+   * Created once in the constructor with an onUpdate callback that writes
+   * mutations back into `#state.search`; the `search` and `href` setters
+   * resync it in the other direction via `setQuery`.
+   *
+   * @internal
+   */
   #params: URLSearchParams;
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new URL('https://example.com')); // "[object URL]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new URL('https://example.com')); // "[object URL]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'URL';
   }
   /**
-  * Parse a URL from an absolute input or a relative input with base.
-  *
-  * Invalid inputs throw TypeError. The parser lowercases schemes and hosts,
-  * strips default ports, normalizes dot segments, and percent-encodes unsafe
-  * component characters.
-  *
-  * ```typescript no_run
-  * const url = new URL('../b', 'https://example.com/a/c');
-  * url.href; // "https://example.com/b"
-  * ```
-  */
+   * Parse a URL from an absolute input or a relative input with base.
+   *
+   * Invalid inputs throw TypeError. The parser lowercases schemes and hosts,
+   * strips default ports, normalizes dot segments, and percent-encodes unsafe
+   * component characters.
+   *
+   * ```typescript no_run
+   * const url = new URL('../b', 'https://example.com/a/c');
+   * url.href; // "https://example.com/b"
+   * ```
+   */
   constructor(input: string | URL, base?: string | URL) {
     let baseState = null;
     if (base !== undefined) {
@@ -1365,17 +1427,17 @@ export class URL {
     this.#params.setQuery(state.search);
   }
   /**
-  * Create a `blob:` URL for a Blob or File.
-  *
-  * The returned URL embeds the current `globalThis.location` origin when one
-  * is available and stores a reference to the Blob until revoked. Each call
-  * returns a fresh URL, even for the same Blob.
-  *
-  * ```typescript no_run
-  * const url = URL.createObjectURL(new Blob(['hello']));
-  * URL.revokeObjectURL(url);
-  * ```
-  */
+   * Create a `blob:` URL for a Blob or File.
+   *
+   * The returned URL embeds the current `globalThis.location` origin when one
+   * is available and stores a reference to the Blob until revoked. Each call
+   * returns a fresh URL, even for the same Blob.
+   *
+   * ```typescript no_run
+   * const url = URL.createObjectURL(new Blob(['hello']));
+   * URL.revokeObjectURL(url);
+   * ```
+   */
   static createObjectURL(object: Blob): string {
     if (!(object instanceof Blob)) {
       throw new TypeError('URL.createObjectURL: object must be a Blob.');
@@ -1385,43 +1447,43 @@ export class URL {
     return url;
   }
   /**
-  * Revoke a `blob:` URL created by `URL.createObjectURL()`.
-  *
-  * Revocation is an exact string match. Unknown URLs and non-blob strings are
-  * accepted as no-ops, matching browser behavior.
-  *
-  * ```typescript no_run
-  * URL.revokeObjectURL('blob:https://example.test/id');
-  * ```
-  */
+   * Revoke a `blob:` URL created by `URL.createObjectURL()`.
+   *
+   * Revocation is an exact string match. Unknown URLs and non-blob strings are
+   * accepted as no-ops, matching browser behavior.
+   *
+   * ```typescript no_run
+   * URL.revokeObjectURL('blob:https://example.test/id');
+   * ```
+   */
   static revokeObjectURL(url: string): void {
     _blobUrlStore.delete(String(url));
   }
   // --- Serialization ---
   /**
-  * Full serialized URL.
-  *
-  * Setting href reparses the value and resynchronizes searchParams. Invalid
-  * values throw TypeError.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com/');
-  * url.href = 'https://example.com/a?x=1';
-  * ```
-  */
+   * Full serialized URL.
+   *
+   * Setting href reparses the value and resynchronizes searchParams. Invalid
+   * values throw TypeError.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com/');
+   * url.href = 'https://example.com/a?x=1';
+   * ```
+   */
   get href() {
     return _serialize(this.#state);
   }
   /**
-  * Replace the full URL by parsing a new absolute URL string.
-  *
-  * Invalid input throws TypeError and leaves the previous URL unchanged.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.href = 'https://example.org/path';
-  * ```
-  */
+   * Replace the full URL by parsing a new absolute URL string.
+   *
+   * Invalid input throws TypeError and leaves the previous URL unchanged.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.href = 'https://example.org/path';
+   * ```
+   */
   set href(value) {
     const state = _parseURL(String(value), null);
     if (!state) throw new TypeError('Invalid URL: ' + value);
@@ -1429,66 +1491,66 @@ export class URL {
     this.#params.setQuery(state.search);
   }
   /**
-  * Return href as a string.
-  *
-  * ```typescript no_run
-  * new URL('https://example.com/').toString(); // "https://example.com/"
-  * ```
-  */
+   * Return href as a string.
+   *
+   * ```typescript no_run
+   * new URL('https://example.com/').toString(); // "https://example.com/"
+   * ```
+   */
   toString() {
     return this.href;
   }
   /**
-  * Return href for JSON serialization.
-  *
-  * ```typescript no_run
-  * JSON.stringify(new URL('https://example.com/')); // "\"https://example.com/\""
-  * ```
-  */
+   * Return href for JSON serialization.
+   *
+   * ```typescript no_run
+   * JSON.stringify(new URL('https://example.com/')); // "\"https://example.com/\""
+   * ```
+   */
   toJSON() {
     return this.href;
   }
   // --- Origin (read-only) ---
   /**
-  * Serialized origin, or the string "null" for opaque origins.
-  *
-  * Only http, https, ws, wss, and ftp URLs have a tuple origin; `blob:` URLs
-  * report the origin of their inner URL. Everything else (including `file:`
-  * and custom schemes) serializes as "null".
-  *
-  * ```typescript no_run
-  * new URL('https://example.com:443/a').origin; // "https://example.com"
-  * new URL('file:///tmp/x').origin;             // "null"
-  * ```
-  */
+   * Serialized origin, or the string "null" for opaque origins.
+   *
+   * Only http, https, ws, wss, and ftp URLs have a tuple origin; `blob:` URLs
+   * report the origin of their inner URL. Everything else (including `file:`
+   * and custom schemes) serializes as "null".
+   *
+   * ```typescript no_run
+   * new URL('https://example.com:443/a').origin; // "https://example.com"
+   * new URL('file:///tmp/x').origin;             // "null"
+   * ```
+   */
   get origin() {
     return _origin(this.#state);
   }
   // --- Scheme ---
   /**
-  * Scheme with trailing colon.
-  *
-  * Setting protocol accepts valid scheme strings and strips a trailing colon.
-  * Switching between special and non-special schemes is ignored.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.protocol = 'http:';
-  * ```
-  */
+   * Scheme with trailing colon.
+   *
+   * Setting protocol accepts valid scheme strings and strips a trailing colon.
+   * Switching between special and non-special schemes is ignored.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.protocol = 'http:';
+   * ```
+   */
   get protocol() {
     return this.#state.scheme + ':';
   }
   /**
-  * Replace the scheme when the change is allowed.
-  *
-  * Invalid schemes and special-to-non-special transitions are ignored.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.protocol = 'http';
-  * ```
-  */
+   * Replace the scheme when the change is allowed.
+   *
+   * Invalid schemes and special-to-non-special transitions are ignored.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.protocol = 'http';
+   * ```
+   */
   set protocol(value) {
     value = _stripURLTabsAndNewlines(String(value)).replace(/:$/, '').toLowerCase();
     if (/^[a-z][a-z0-9+\-.]*$/.test(value)) {
@@ -1504,77 +1566,77 @@ export class URL {
   }
   // --- Credentials ---
   /**
-  * Percent-encoded username component.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.username = 'user name';
-  * url.username; // "user%20name"
-  * ```
-  */
+   * Percent-encoded username component.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.username = 'user name';
+   * url.username; // "user%20name"
+   * ```
+   */
   get username() {
     return this.#state.username;
   }
   /**
-  * Set the username after userinfo percent-encoding.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.username = 'user name';
-  * ```
-  */
+   * Set the username after userinfo percent-encoding.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.username = 'user name';
+   * ```
+   */
   set username(value) {
     this.#state.username = _percentEncode(String(value), _USERINFO_ENCODE_SET);
   }
   /**
-  * Percent-encoded password component.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.password = 'p@ss';
-  * ```
-  */
+   * Percent-encoded password component.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.password = 'p@ss';
+   * ```
+   */
   get password() {
     return this.#state.password;
   }
   /**
-  * Set the password after userinfo percent-encoding.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.password = 'secret';
-  * ```
-  */
+   * Set the password after userinfo percent-encoding.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.password = 'secret';
+   * ```
+   */
   set password(value) {
     this.#state.password = _percentEncode(String(value), _USERINFO_ENCODE_SET);
   }
   // --- Host ---
   /**
-  * Hostname plus optional port.
-  *
-  * Setting host lowercases the hostname and strips default ports. Malformed
-  * bracketed IPv6 input is ignored.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.host = 'Example.com:443';
-  * url.host; // "example.com"
-  * ```
-  */
+   * Hostname plus optional port.
+   *
+   * Setting host lowercases the hostname and strips default ports. Malformed
+   * bracketed IPv6 input is ignored.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.host = 'Example.com:443';
+   * url.host; // "example.com"
+   * ```
+   */
   get host() {
     const { host, port } = this.#state;
     return port ? host + ':' + port : host;
   }
   /**
-  * Set hostname and optional port from a host string.
-  *
-  * IPv6 bracket notation is preserved. Default ports are normalized away.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.host = 'localhost:8443';
-  * ```
-  */
+   * Set hostname and optional port from a host string.
+   *
+   * IPv6 bracket notation is preserved. Default ports are normalized away.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.host = 'localhost:8443';
+   * ```
+   */
   set host(value) {
     value = _stripURLTabsAndNewlines(String(value));
     if (value.startsWith('[')) {
@@ -1602,28 +1664,28 @@ export class URL {
     }
   }
   /**
-  * Hostname without port.
-  *
-  * Forbidden host code points cause setter input to be ignored.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.hostname = 'API.EXAMPLE.COM';
-  * ```
-  */
+   * Hostname without port.
+   *
+   * Forbidden host code points cause setter input to be ignored.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.hostname = 'API.EXAMPLE.COM';
+   * ```
+   */
   get hostname() {
     return this.#state.host;
   }
   /**
-  * Set hostname without changing the port.
-  *
-  * Forbidden host characters cause the assignment to be ignored.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com:8443');
-  * url.hostname = 'localhost';
-  * ```
-  */
+   * Set hostname without changing the port.
+   *
+   * Forbidden host characters cause the assignment to be ignored.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com:8443');
+   * url.hostname = 'localhost';
+   * ```
+   */
   set hostname(value) {
     const str = _stripURLTabsAndNewlines(String(value));
     // Per WHATWG: reject if value contains forbidden host code points
@@ -1633,31 +1695,31 @@ export class URL {
     this.#state.host = host;
   }
   /**
-  * Port string without leading colon.
-  *
-  * Empty values clear the port. Non-numeric or out-of-range values are ignored,
-  * and default ports serialize as the empty string.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.port = '8443';
-  * ```
-  */
+   * Port string without leading colon.
+   *
+   * Empty values clear the port. Non-numeric or out-of-range values are ignored,
+   * and default ports serialize as the empty string.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.port = '8443';
+   * ```
+   */
   get port() {
     return this.#state.port;
   }
   /**
-  * Set or clear the port.
-  *
-  * Non-numeric and out-of-range values are ignored. Default ports serialize as
-  * empty for the current scheme.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.port = '443';
-  * url.port; // ""
-  * ```
-  */
+   * Set or clear the port.
+   *
+   * Non-numeric and out-of-range values are ignored. Default ports serialize as
+   * empty for the current scheme.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.port = '443';
+   * url.port; // ""
+   * ```
+   */
   set port(value) {
     value = _stripURLTabsAndNewlines(String(value)).trim();
     if (!value) {
@@ -1673,56 +1735,59 @@ export class URL {
   }
   // --- Path ---
   /**
-  * Percent-encoded path component.
-  *
-  * Setting pathname normalizes dot segments and ensures authority URLs keep a
-  * leading slash.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com/a');
-  * url.pathname = '/b c';
-  * ```
-  */
+   * Percent-encoded path component.
+   *
+   * Setting pathname normalizes dot segments and ensures authority URLs keep a
+   * leading slash.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com/a');
+   * url.pathname = '/b c';
+   * ```
+   */
   get pathname() {
     return this.#state.pathname;
   }
   /**
-  * Set the path component after normalization and percent-encoding.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com/a');
-  * url.pathname = '/b/../c';
-  * ```
-  */
+   * Set the path component after normalization and percent-encoding.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com/a');
+   * url.pathname = '/b/../c';
+   * ```
+   */
   set pathname(value) {
-    this.#state.pathname = _percentEncode(_normalizePath(_stripURLTabsAndNewlines(String(value)), !!this.#state.host), _PATH_ENCODE_SET);
+    this.#state.pathname = _percentEncode(
+      _normalizePath(_stripURLTabsAndNewlines(String(value)), !!this.#state.host),
+      _PATH_ENCODE_SET,
+    );
   }
   // --- Query ---
   /**
-  * Query string with a leading question mark, or empty string.
-  *
-  * Setting search accepts values with or without "?" and updates searchParams.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.search = 'a=1';
-  * url.searchParams.get('a'); // "1"
-  * ```
-  */
+   * Query string with a leading question mark, or empty string.
+   *
+   * Setting search accepts values with or without "?" and updates searchParams.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.search = 'a=1';
+   * url.searchParams.get('a'); // "1"
+   * ```
+   */
   get search() {
     return this.#state.search ? '?' + this.#state.search : '';
   }
   /**
-  * Set the query string and refresh searchParams.
-  *
-  * A leading question mark is optional. Unsafe query characters are
-  * percent-encoded and existing valid percent triplets are preserved.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.search = '?q=hello world';
-  * ```
-  */
+   * Set the query string and refresh searchParams.
+   *
+   * A leading question mark is optional. Unsafe query characters are
+   * percent-encoded and existing valid percent triplets are preserved.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.search = '?q=hello world';
+   * ```
+   */
   set search(value) {
     value = _stripURLTabsAndNewlines(String(value));
     if (value.startsWith('?')) value = value.slice(1);
@@ -1731,43 +1796,43 @@ export class URL {
     this.#params.setQuery(this.#state.search);
   }
   /**
-  * Live URLSearchParams view of the query string.
-  *
-  * Mutating this object updates the URL search component.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.searchParams.set('a', '1');
-  * url.search; // "?a=1"
-  * ```
-  */
+   * Live URLSearchParams view of the query string.
+   *
+   * Mutating this object updates the URL search component.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.searchParams.set('a', '1');
+   * url.search; // "?a=1"
+   * ```
+   */
   get searchParams() {
     return this.#params;
   }
   // --- Fragment ---
   /**
-  * Fragment with a leading hash, or empty string.
-  *
-  * Setting hash accepts values with or without "#".
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.hash = 'top';
-  * ```
-  */
+   * Fragment with a leading hash, or empty string.
+   *
+   * Setting hash accepts values with or without "#".
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.hash = 'top';
+   * ```
+   */
   get hash() {
     return this.#state.hash ? '#' + this.#state.hash : '';
   }
   /**
-  * Set the fragment component.
-  *
-  * A leading hash is optional. Unsafe fragment characters are percent-encoded.
-  *
-  * ```typescript no_run
-  * const url = new URL('https://example.com');
-  * url.hash = '#section';
-  * ```
-  */
+   * Set the fragment component.
+   *
+   * A leading hash is optional. Unsafe fragment characters are percent-encoded.
+   *
+   * ```typescript no_run
+   * const url = new URL('https://example.com');
+   * url.hash = '#section';
+   * ```
+   */
   set hash(value) {
     value = _stripURLTabsAndNewlines(String(value));
     if (value.startsWith('#')) value = value.slice(1);
@@ -1775,14 +1840,14 @@ export class URL {
   }
   // --- Static methods ---
   /**
-  * Return true if the input is a parseable URL.
-  *
-  * This is equivalent to trying new URL(input, base) and catching failures.
-  *
-  * ```typescript no_run
-  * URL.canParse('/a', 'https://example.com'); // true
-  * ```
-  */
+   * Return true if the input is a parseable URL.
+   *
+   * This is equivalent to trying new URL(input, base) and catching failures.
+   *
+   * ```typescript no_run
+   * URL.canParse('/a', 'https://example.com'); // true
+   * ```
+   */
   static canParse(input: string | URL, base?: string | URL): boolean {
     try {
       if (base === undefined) new URL(input);
@@ -1793,15 +1858,15 @@ export class URL {
     }
   }
   /**
-  * Parse and return a URL, or null if invalid.
-  *
-  * This avoids throwing for validation-style code paths.
-  *
-  * ```typescript no_run
-  * const url = URL.parse('not a url');
-  * url; // null
-  * ```
-  */
+   * Parse and return a URL, or null if invalid.
+   *
+   * This avoids throwing for validation-style code paths.
+   *
+   * ```typescript no_run
+   * const url = URL.parse('not a url');
+   * url; // null
+   * ```
+   */
   static parse(input: string | URL, base?: string | URL): URL | null {
     try {
       return base === undefined ? new URL(input) : new URL(input, base);

@@ -1,9 +1,9 @@
 /**
-* Tests for internal:cluster/seed — routing logic using an in-memory transport.
-*
-* SeedServer is tested against a TestSeedTransport that captures all sent
-* messages so we can assert routing decisions without network I/O.
-*/
+ * Tests for internal:cluster/seed — routing logic using an in-memory transport.
+ *
+ * SeedServer is tested against a TestSeedTransport that captures all sent
+ * messages so we can assert routing decisions without network I/O.
+ */
 import { describe, it, afterEach } from 'fino:test/test';
 import { SeedServer } from 'internal:cluster/seed';
 import { RealmRegistry } from 'internal:cluster/registry';
@@ -28,30 +28,43 @@ class TestSeedTransport {
     for (const h of this.#handlers) h(from, msg);
   }
   /** Filter sent messages by type. */
-  sentOfType<T extends ClusterMessage['t']>(t: T): Extract<ClusterMessage, {
-    t: T;
-  }>[] {
-    return this.sent.filter((s) => s.msg.t === t).map((s) => s.msg as Extract<ClusterMessage, {
+  sentOfType<T extends ClusterMessage['t']>(
+    t: T,
+  ): Extract<
+    ClusterMessage,
+    {
       t: T;
-    }>);
+    }
+  >[] {
+    return this.sent
+      .filter((s) => s.msg.t === t)
+      .map(
+        (s) =>
+          s.msg as Extract<
+            ClusterMessage,
+            {
+              t: T;
+            }
+          >,
+      );
   }
   // ClusterTransport + SeedTransport interface
   send(to: string, msg: ClusterMessage): void {
     this.sent.push({
       to,
-      msg
+      msg,
     });
   }
   broadcast(msg: ClusterMessage): void {
     this.sent.push({
       to: '__broadcast__',
-      msg
+      msg,
     });
   }
   broadcastExcept(except: string, msg: ClusterMessage): void {
     this.sent.push({
       to: `except:${except}`,
-      msg
+      msg,
     });
   }
   on(handler: (from: string, msg: ClusterMessage) => void): void {
@@ -75,7 +88,7 @@ async function makeSeed(nodeId = 'seed-node'): Promise<{
   _activeSeed = seed;
   return {
     seed,
-    transport
+    transport,
   };
 }
 function stopActiveSeed(): void {
@@ -98,13 +111,17 @@ describe('SeedServer — HELLO / WELCOME', () => {
       nodeId: 'worker-1',
       load: {
         cpu: .1,
-        memory: 100
-      }
+        memory: 100,
+      },
     });
     const welcomes = transport.sentOfType('WELCOME');
     t.equal(welcomes.length, 1, 'one WELCOME sent');
     const w = welcomes[0]!;
-    t.equal(transport.sent.find((s) => s.msg.t === 'WELCOME')!.to, 'worker-1', 'WELCOME sent to worker-1');
+    t.equal(
+      transport.sent.find((s) => s.msg.t === 'WELCOME')!.to,
+      'worker-1',
+      'WELCOME sent to worker-1',
+    );
     t.ok(Array.isArray(w.peers), 'peers is array');
   });
   it('second node gets PEER_UP for existing nodes in broadcast', async (t) => {
@@ -114,8 +131,8 @@ describe('SeedServer — HELLO / WELCOME', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.sent = [];
     transport.inject('worker-2', {
@@ -123,8 +140,8 @@ describe('SeedServer — HELLO / WELCOME', () => {
       nodeId: 'worker-2',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     const peerUps = transport.sentOfType('PEER_UP');
     t.ok(peerUps.length > 0, 'PEER_UP broadcast sent for new node');
@@ -140,8 +157,8 @@ describe('SeedServer — SPAWN routing', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.sent = [];
     transport.inject('worker-1', {
@@ -151,8 +168,8 @@ describe('SeedServer — SPAWN routing', () => {
       config: {
         entry: './fn.ts',
         root: '/app',
-        rules: []
-      }
+        rules: [],
+      },
     });
     const acks = transport.sentOfType('SPAWN_ACK');
     t.equal(acks.length, 1, 'one SPAWN_ACK sent');
@@ -166,16 +183,16 @@ describe('SeedServer — SPAWN routing', () => {
       nodeId: 'worker-1',
       load: {
         cpu: .8,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: .1,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.sent = [];
     transport.inject('worker-1', {
@@ -185,8 +202,8 @@ describe('SeedServer — SPAWN routing', () => {
       config: {
         entry: './fn.ts',
         root: '/app',
-        rules: []
-      }
+        rules: [],
+      },
     });
     // Seed should forward SPAWN to the lower-load worker (worker-2)
     const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
@@ -198,7 +215,7 @@ describe('SeedServer — SPAWN routing', () => {
       t: 'SPAWN_ACK',
       spawnReqId: 'req-2',
       childPortId: 'worker-2/0',
-      ok: true
+      ok: true,
     });
     const acks = transport.sent.filter((s) => s.msg.t === 'SPAWN_ACK');
     t.equal(acks.length, 1, 'SPAWN_ACK forwarded');
@@ -212,24 +229,24 @@ describe('SeedServer — SPAWN routing', () => {
       nodeId: 'worker-1',
       load: {
         cpu: .9,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: .1,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-3', {
       t: 'HELLO',
       nodeId: 'worker-3',
       load: {
         cpu: .2,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.sent = [];
     transport.inject('worker-1', {
@@ -239,14 +256,18 @@ describe('SeedServer — SPAWN routing', () => {
       config: {
         entry: './fn.ts',
         root: '/app',
-        rules: []
-      }
+        rules: [],
+      },
     });
-    t.equal(transport.sent.find((s) => s.msg.t === 'SPAWN')?.to, 'worker-2', 'first spawn chooses lowest-load worker');
+    t.equal(
+      transport.sent.find((s) => s.msg.t === 'SPAWN')?.to,
+      'worker-2',
+      'first spawn chooses lowest-load worker',
+    );
     transport.sent = [];
     transport.inject('worker-2', {
       t: 'PEER_DOWN',
-      nodeId: 'worker-2'
+      nodeId: 'worker-2',
     });
     transport.inject('worker-1', {
       t: 'SPAWN',
@@ -255,10 +276,14 @@ describe('SeedServer — SPAWN routing', () => {
       config: {
         entry: './fn.ts',
         root: '/app',
-        rules: []
-      }
+        rules: [],
+      },
     });
-    t.equal(transport.sent.find((s) => s.msg.t === 'SPAWN')?.to, 'worker-3', 'next spawn skips down peer');
+    t.equal(
+      transport.sent.find((s) => s.msg.t === 'SPAWN')?.to,
+      'worker-3',
+      'next spawn skips down peer',
+    );
   });
   it('rejects a pending SPAWN if the selected target goes down before SPAWN_ACK', async (t) => {
     const { transport } = await makeSeed();
@@ -267,16 +292,16 @@ describe('SeedServer — SPAWN routing', () => {
       nodeId: 'worker-1',
       load: {
         cpu: .9,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: .1,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.sent = [];
     transport.inject('worker-1', {
@@ -286,19 +311,22 @@ describe('SeedServer — SPAWN routing', () => {
       config: {
         entry: './fn.ts',
         root: '/app',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.sent = [];
     transport.inject('worker-2', {
       t: 'PEER_DOWN',
-      nodeId: 'worker-2'
+      nodeId: 'worker-2',
     });
     const acks = transport.sent.filter((s) => s.to === 'worker-1' && s.msg.t === 'SPAWN_ACK');
     t.equal(acks.length, 1, 'requester gets one failure ack when target disappears');
-    const ack = acks[0]!.msg as Extract<ClusterMessage, {
-      t: 'SPAWN_ACK';
-    }>;
+    const ack = acks[0]!.msg as Extract<
+      ClusterMessage,
+      {
+        t: 'SPAWN_ACK';
+      }
+    >;
     t.equal(ack.spawnReqId, 'req-target-down', 'failure ack uses pending spawn id');
     t.equal(ack.ok, false, 'pending spawn is rejected');
     t.ok(ack.error?.includes('worker-2'), 'failure mentions the down target');
@@ -313,16 +341,16 @@ describe('SeedServer — PORT_MSG routing', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: .5,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     // Register ports via a spawn cycle
     transport.inject('worker-1', {
@@ -332,14 +360,14 @@ describe('SeedServer — PORT_MSG routing', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'req-3',
       childPortId: 'worker-2/1',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     // worker-2 sends PORT_MSG to worker-1's parent port
@@ -347,7 +375,7 @@ describe('SeedServer — PORT_MSG routing', () => {
       t: 'PORT_MSG',
       fromPort: 'worker-2/1',
       toPort: 'worker-1/p-1',
-      payload: JSON.stringify([btoa('hello')])
+      payload: JSON.stringify([btoa('hello')]),
     });
     const portMsgs = transport.sent.filter((s) => s.msg.t === 'PORT_MSG');
     t.equal(portMsgs.length, 1, 'PORT_MSG forwarded');
@@ -360,15 +388,15 @@ describe('SeedServer — PORT_MSG routing', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.sent = [];
     transport.inject('worker-1', {
       t: 'PORT_MSG',
       fromPort: 'worker-1/0',
       toPort: 'worker-99/999',
-      payload: '["aGVsbG8="]'
+      payload: '["aGVsbG8="]',
     });
     t.equal(transport.sent.length, 0, 'no messages forwarded for unknown toPort');
   });
@@ -382,16 +410,16 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     // Spawn child from worker-1 (parent) onto worker-2 (child)
     transport.inject('worker-1', {
@@ -401,20 +429,20 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'r1',
       childPortId: 'worker-2/10',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     // Child on worker-2 exits gracefully
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
-      realmId: 'worker-2/10'
+      realmId: 'worker-2/10',
     });
     // The parent port on worker-1 is the PARENT, not the child — the child was
     // on worker-2 and exited itself, so no TERMINATE needed for worker-2/10.
@@ -428,16 +456,16 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-1', {
       t: 'SPAWN',
@@ -446,25 +474,31 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'r-parent-exit',
       childPortId: 'worker-2/11',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
-      realmId: 'worker-2/11'
+      realmId: 'worker-2/11',
     });
     const exits = transport.sent.filter((s) => s.to === 'worker-1' && s.msg.t === 'REALM_EXIT');
     t.equal(exits.length, 1, 'REALM_EXIT forwarded to parent host');
-    t.equal((exits[0]!.msg as {
-      realmId: string;
-    }).realmId, 'worker-2/11', 'child realmId preserved');
+    t.equal(
+      (
+        exits[0]!.msg as {
+          realmId: string;
+        }
+      ).realmId,
+      'worker-2/11',
+      'child realmId preserved',
+    );
   });
   it('REALM_EXIT sends TERMINATE to nodes hosting grandchildren', async (t) => {
     const { transport } = await makeSeed();
@@ -473,24 +507,24 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-3', {
       t: 'HELLO',
       nodeId: 'worker-3',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     // worker-1 spawns child onto worker-2
     transport.inject('worker-1', {
@@ -500,14 +534,14 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'r2',
       childPortId: 'worker-2/20',
-      ok: true
+      ok: true,
     });
     // worker-2's realm spawns grandchild onto worker-3
     transport.inject('worker-2', {
@@ -517,20 +551,20 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-3', {
       t: 'SPAWN_ACK',
       spawnReqId: 'r3',
       childPortId: 'worker-3/20',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     // Child on worker-2 exits gracefully — grandchild on worker-3 must be terminated
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
-      realmId: 'worker-2/20'
+      realmId: 'worker-2/20',
     });
     const terminates = transport.sentOfType('TERMINATE');
     t.ok(terminates.length >= 1, 'at least one TERMINATE sent for grandchild');
@@ -546,16 +580,16 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-1', {
       t: 'SPAWN',
@@ -564,42 +598,44 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'r4',
       childPortId: 'worker-2/30',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     // worker-2's realm exits
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
-      realmId: 'worker-2/30'
+      realmId: 'worker-2/30',
     });
     // No TERMINATE should go back to worker-2 for the realm that just exited
-    const toWorker2 = transport.sent.filter((s) => s.to === 'worker-2' && s.msg.t === 'TERMINATE' && (s.msg as {
-      realmId?: string;
-    }).realmId === 'worker-2/30');
+    const toWorker2 = transport.sent.filter(
+      (s) =>
+        s.to === 'worker-2' &&
+        s.msg.t === 'TERMINATE' &&
+        (
+          s.msg as {
+            realmId?: string;
+          }
+        ).realmId === 'worker-2/30',
+    );
     t.equal(toWorker2.length, 0, 'exiting realm does not receive TERMINATE for itself');
   });
   it('multi-level exit: all descendants across 3 nodes get TERMINATE', async (t) => {
     const { transport } = await makeSeed();
-    for (const w of [
-      'worker-1',
-      'worker-2',
-      'worker-3',
-      'worker-4'
-    ]) {
+    for (const w of ['worker-1', 'worker-2', 'worker-3', 'worker-4']) {
       transport.inject(w, {
         t: 'HELLO',
         nodeId: w,
         load: {
           cpu: 0,
-          memory: 0
-        }
+          memory: 0,
+        },
       });
     }
     // worker-1 spawns onto worker-2 (child)
@@ -610,14 +646,14 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'rA',
       childPortId: 'worker-2/40',
-      ok: true
+      ok: true,
     });
     // worker-2 spawns onto worker-3 (grandchild)
     transport.inject('worker-2', {
@@ -627,14 +663,14 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-3', {
       t: 'SPAWN_ACK',
       spawnReqId: 'rB',
       childPortId: 'worker-3/40',
-      ok: true
+      ok: true,
     });
     // worker-3 spawns onto worker-4 (great-grandchild)
     transport.inject('worker-3', {
@@ -644,20 +680,20 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-4', {
       t: 'SPAWN_ACK',
       spawnReqId: 'rC',
       childPortId: 'worker-4/40',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     // worker-2 exits gracefully — grandchild and great-grandchild must be terminated
     transport.inject('worker-2', {
       t: 'REALM_EXIT',
-      realmId: 'worker-2/40'
+      realmId: 'worker-2/40',
     });
     const terminates = transport.sentOfType('TERMINATE');
     const terminateIds = new Set(terminates.map((m) => m.realmId));
@@ -675,16 +711,16 @@ describe('SeedServer — nodeDown cascade', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     // Spawn child from worker-1 onto worker-2
     transport.inject('worker-1', {
@@ -694,24 +730,26 @@ describe('SeedServer — nodeDown cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'req-4',
       childPortId: 'worker-2/2',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     // worker-2 goes down — seed should TERMINATE the child on worker-1's parent port
     transport.inject('worker-2', {
       t: 'PEER_DOWN',
-      nodeId: 'worker-2'
+      nodeId: 'worker-2',
     });
     const terminates = transport.sentOfType('TERMINATE');
     t.ok(terminates.length > 0, 'TERMINATE sent after nodeDown');
-    const sentToWorker1 = transport.sent.filter((s) => s.to === 'worker-1' && s.msg.t === 'TERMINATE');
+    const sentToWorker1 = transport.sent.filter(
+      (s) => s.to === 'worker-1' && s.msg.t === 'TERMINATE',
+    );
     t.ok(sentToWorker1.length > 0, 'TERMINATE sent to surviving worker-1');
   });
   it('dead node does NOT receive TERMINATE for its own ports', async (t) => {
@@ -721,16 +759,16 @@ describe('SeedServer — nodeDown cascade', () => {
       nodeId: 'worker-1',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-2', {
       t: 'HELLO',
       nodeId: 'worker-2',
       load: {
         cpu: 0,
-        memory: 0
-      }
+        memory: 0,
+      },
     });
     transport.inject('worker-1', {
       t: 'SPAWN',
@@ -739,20 +777,20 @@ describe('SeedServer — nodeDown cascade', () => {
       config: {
         entry: './fn.ts',
         root: '',
-        rules: []
-      }
+        rules: [],
+      },
     });
     transport.inject('worker-2', {
       t: 'SPAWN_ACK',
       spawnReqId: 'req-5',
       childPortId: 'worker-2/3',
-      ok: true
+      ok: true,
     });
     transport.sent = [];
     // worker-2 (host of child) goes down
     transport.inject('worker-2', {
       t: 'PEER_DOWN',
-      nodeId: 'worker-2'
+      nodeId: 'worker-2',
     });
     // TERMINATE should NOT be sent to worker-2 (it's dead)
     const toWorker2 = transport.sent.filter((s) => s.to === 'worker-2' && s.msg.t === 'TERMINATE');
@@ -769,16 +807,16 @@ describe('SeedServer — nodeDown cascade', () => {
         nodeId: 'worker-1',
         load: {
           cpu: 0,
-          memory: 0
-        }
+          memory: 0,
+        },
       });
       transport.inject('worker-2', {
         t: 'HELLO',
         nodeId: 'worker-2',
         load: {
           cpu: 0,
-          memory: 0
-        }
+          memory: 0,
+        },
       });
       transport.inject('worker-1', {
         t: 'SPAWN',
@@ -787,20 +825,20 @@ describe('SeedServer — nodeDown cascade', () => {
         config: {
           entry: './fn.ts',
           root: '',
-          rules: []
-        }
+          rules: [],
+        },
       });
       transport.inject('worker-2', {
         t: 'SPAWN_ACK',
         spawnReqId: 'req-heartbeat',
         childPortId: 'worker-2/heartbeat',
-        ok: true
+        ok: true,
       });
       transport.sent = [];
       now += 4e3;
       transport.inject('worker-1', {
         t: 'HEARTBEAT',
-        ts: now
+        ts: now,
       });
       now += 4e3;
       seed._checkHeartbeatsForTest();
@@ -808,12 +846,23 @@ describe('SeedServer — nodeDown cascade', () => {
       Date.now = realNow;
     }
     const peerDowns = transport.sentOfType('PEER_DOWN');
-    t.ok(peerDowns.some((msg) => msg.nodeId === 'worker-2'), 'timeout announces worker-2 down');
+    t.ok(
+      peerDowns.some((msg) => msg.nodeId === 'worker-2'),
+      'timeout announces worker-2 down',
+    );
     const terminates = transport.sent.filter((s) => s.to === 'worker-1' && s.msg.t === 'TERMINATE');
     t.equal(terminates.length, 1, 'timeout terminates parent-side child port');
-    t.equal((terminates[0]!.msg as Extract<ClusterMessage, {
-      t: 'TERMINATE';
-    }>).realmId, 'worker-2/heartbeat');
+    t.equal(
+      (
+        terminates[0]!.msg as Extract<
+          ClusterMessage,
+          {
+            t: 'TERMINATE';
+          }
+        >
+      ).realmId,
+      'worker-2/heartbeat',
+    );
   });
   it('stale worker heartbeat timestamp does not evict a peer just received by the seed', async (t) => {
     const { seed, transport } = await makeSeed();
@@ -826,14 +875,14 @@ describe('SeedServer — nodeDown cascade', () => {
         nodeId: 'worker-1',
         load: {
           cpu: 0,
-          memory: 0
-        }
+          memory: 0,
+        },
       });
       now = 9e3;
       transport.sent = [];
       transport.inject('worker-1', {
         t: 'HEARTBEAT',
-        ts: 1e3
+        ts: 1e3,
       });
       seed._checkHeartbeatsForTest();
     } finally {
@@ -853,12 +902,12 @@ describe('SeedServer — nodeDown cascade', () => {
         nodeId: 'worker-1',
         load: {
           cpu: 0,
-          memory: 0
-        }
+          memory: 0,
+        },
       });
       transport.inject('worker-1', {
         t: 'HEARTBEAT',
-        ts: 1e6
+        ts: 1e6,
       });
       transport.sent = [];
       now = 9e3;
@@ -867,6 +916,9 @@ describe('SeedServer — nodeDown cascade', () => {
       Date.now = realNow;
     }
     const peerDowns = transport.sentOfType('PEER_DOWN');
-    t.ok(peerDowns.some((msg) => msg.nodeId === 'worker-1'), 'future worker timestamp does not suppress timeout');
+    t.ok(
+      peerDowns.some((msg) => msg.nodeId === 'worker-1'),
+      'future worker timestamp does not suppress timeout',
+    );
   });
 });

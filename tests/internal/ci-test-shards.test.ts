@@ -9,7 +9,7 @@ async function containsTestFile(path: string): Promise<boolean> {
   const dir = await fs.dir(path);
   for (const entry of await dir.entries()) {
     if (entry.isFile() && entry.name.endsWith('.test.ts')) return true;
-    if (entry.isDirectory() && await containsTestFile(entry.path.toString())) return true;
+    if (entry.isDirectory() && (await containsTestFile(entry.path.toString()))) return true;
   }
   return false;
 }
@@ -19,11 +19,13 @@ describe('CI test shards', () => {
     const testsDir = await fs.dir('tests');
     const testDirectories: string[] = [];
     for (const entry of await testsDir.entries()) {
-      if (entry.isDirectory() && await containsTestFile(entry.path.toString())) {
+      if (entry.isDirectory() && (await containsTestFile(entry.path.toString()))) {
         testDirectories.push(entry.name);
       }
     }
-    const missing = testDirectories.sort().filter((name) => !workflow.includes(`          - ${name}\n`));
+    const missing = testDirectories
+      .sort()
+      .filter((name) => !workflow.includes(`          - ${name}\n`));
     t.deepEqual(missing, [], 'every test directory has a Linux and macOS matrix shard');
   });
 });

@@ -1,16 +1,19 @@
 /**
-* Tests for timer globals: setTimeout, setInterval, setImmediate,
-* clearTimeout, clearInterval, clearImmediate, queueMicrotask, and
-* performance.now().
-*
-* Also tests atob/btoa, structuredClone, console.count, and
-* console.countReset as globals.
-*/
+ * Tests for timer globals: setTimeout, setInterval, setImmediate,
+ * clearTimeout, clearInterval, clearImmediate, queueMicrotask, and
+ * performance.now().
+ *
+ * Also tests atob/btoa, structuredClone, console.count, and
+ * console.countReset as globals.
+ */
 import { describe, it } from 'fino:test/test';
-type CloneMapValue = number | {
-  x: number;
-};
-const { setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, performance } = globalThis;
+type CloneMapValue =
+  | number
+  | {
+      x: number;
+    };
+const { setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, performance } =
+  globalThis;
 const { setImmediate, clearImmediate } = globalThis as typeof globalThis & {
   setImmediate: (fn: (...args: any[]) => void, ...args: any[]) => number;
   clearImmediate: (id: number) => void;
@@ -31,10 +34,15 @@ describe('setTimeout', () => {
   it('passes extra args to fn', async (t) => {
     let received: [string, number] | undefined;
     await new Promise<void>((resolve) => {
-      setTimeout((a: string, b: number) => {
-        received = [a, b];
-        resolve();
-      }, 5, 'x', 42);
+      setTimeout(
+        (a: string, b: number) => {
+          received = [a, b];
+          resolve();
+        },
+        5,
+        'x',
+        42,
+      );
     });
     t.deepEqual(received, ['x', 42], 'args forwarded');
   });
@@ -118,10 +126,14 @@ describe('setImmediate / clearImmediate', () => {
   it('passes extra args to fn', async (t) => {
     let received: [string, number] | undefined;
     await new Promise<void>((resolve) => {
-      setImmediate((a: string, b: number) => {
-        received = [a, b];
-        resolve();
-      }, 'x', 42);
+      setImmediate(
+        (a: string, b: number) => {
+          received = [a, b];
+          resolve();
+        },
+        'x',
+        42,
+      );
     });
     t.deepEqual(received, ['x', 42], 'args forwarded');
   });
@@ -169,15 +181,11 @@ describe('queueMicrotask', () => {
         resolve();
       });
     });
-    t.deepEqual(order, [
-      1,
-      2,
-      3
-    ], 'ran in registration order');
+    t.deepEqual(order, [1, 2, 3], 'ran in registration order');
   });
   it('does not pass arguments to the callback', async (t) => {
     const args = await new Promise<unknown[]>((resolve) => {
-      queueMicrotask(function(this: unknown) {
+      queueMicrotask(function (this: unknown) {
         resolve(Array.from(arguments));
       });
     });
@@ -256,9 +264,21 @@ describe('Performance interface shape', () => {
     t.equal(globalDescriptor?.set?.name, 'set performance', 'global performance setter name');
     t.equal(globalDescriptor?.set?.length, 1, 'global performance setter length');
     t.equal(globalDescriptor?.enumerable, true, 'global performance is enumerable');
-    t.equal(globalDescriptor!.get!.call(undefined), performance, 'global performance getter allows unbound reads');
-    t.throws(() => globalDescriptor!.get!.call({}), TypeError, 'global performance getter brands this');
-    t.throws(() => globalDescriptor!.set!.call({}, performance), TypeError, 'global performance setter brands this');
+    t.equal(
+      globalDescriptor!.get!.call(undefined),
+      performance,
+      'global performance getter allows unbound reads',
+    );
+    t.throws(
+      () => globalDescriptor!.get!.call({}),
+      TypeError,
+      'global performance getter brands this',
+    );
+    t.throws(
+      () => globalDescriptor!.set!.call({}, performance),
+      TypeError,
+      'global performance setter brands this',
+    );
     t.throws(() => PerformanceCtor.prototype.now.call(null), TypeError, 'now brands this');
     t.throws(() => PerformanceCtor.prototype.toJSON.call({}), TypeError, 'toJSON brands this');
   });
@@ -266,9 +286,13 @@ describe('Performance interface shape', () => {
 describe('performance EventTarget behavior', () => {
   it('dispatches events through EventTarget methods', (t) => {
     let called = false;
-    performance.addEventListener('fino-test', () => {
-      called = true;
-    }, { once: true });
+    performance.addEventListener(
+      'fino-test',
+      () => {
+        called = true;
+      },
+      { once: true },
+    );
     performance.dispatchEvent(new Event('fino-test'));
     t.equal(called, true, 'listener ran');
   });
@@ -325,7 +349,7 @@ describe('structuredClone', () => {
   it('clones plain objects', (t) => {
     const obj = {
       a: 1,
-      b: { c: 2 }
+      b: { c: 2 },
     };
     const clone = structuredClone(obj);
     t.deepEqual(clone, obj, 'deep equal');
@@ -333,13 +357,13 @@ describe('structuredClone', () => {
     t.equal(obj.b.c, 2, 'original not mutated');
   });
   it('clones arrays', (t) => {
-    const arr: [number, number[], {
-      x: number;
-    }] = [
-      1,
-      [2, 3],
-      { x: 4 }
-    ];
+    const arr: [
+      number,
+      number[],
+      {
+        x: number;
+      },
+    ] = [1, [2, 3], { x: 4 }];
     const clone = structuredClone(arr);
     t.deepEqual(clone, arr, 'deep equal');
     clone[1][0] = 99;
@@ -361,7 +385,10 @@ describe('structuredClone', () => {
     t.ok(clone !== re, 'different reference');
   });
   it('clones Map', (t) => {
-    const m = new Map<string, CloneMapValue>([['a', 1], ['b', { x: 2 }]]);
+    const m = new Map<string, CloneMapValue>([
+      ['a', 1],
+      ['b', { x: 2 }],
+    ]);
     const clone = structuredClone(m);
     t.ok(clone instanceof Map, 'is Map');
     t.equal(clone.get('a'), 1, 'a value');
@@ -369,11 +396,7 @@ describe('structuredClone', () => {
     t.ok(clone.get('b') !== m.get('b'), 'b value is new object');
   });
   it('clones Set', (t) => {
-    const s = new Set([
-      1,
-      { y: 2 },
-      'three'
-    ]);
+    const s = new Set([1, { y: 2 }, 'three']);
     const clone = structuredClone(s);
     t.ok(clone instanceof Set, 'is Set');
     t.equal(clone.size, s.size, 'same size');
@@ -382,36 +405,18 @@ describe('structuredClone', () => {
   });
   it('clones ArrayBuffer', (t) => {
     const buf = new ArrayBuffer(4);
-    new Uint8Array(buf).set([
-      1,
-      2,
-      3,
-      4
-    ]);
+    new Uint8Array(buf).set([1, 2, 3, 4]);
     const clone = structuredClone(buf);
     t.ok(clone instanceof ArrayBuffer, 'is ArrayBuffer');
     t.ok(clone !== buf, 'different reference');
-    t.deepEqual(Array.from(new Uint8Array(clone)), [
-      1,
-      2,
-      3,
-      4
-    ], 'same content');
+    t.deepEqual(Array.from(new Uint8Array(clone)), [1, 2, 3, 4], 'same content');
   });
   it('clones TypedArray', (t) => {
-    const arr = new Uint8Array([
-      10,
-      20,
-      30
-    ]);
+    const arr = new Uint8Array([10, 20, 30]);
     const clone = structuredClone(arr);
     t.ok(clone instanceof Uint8Array, 'is Uint8Array');
     t.ok(clone.buffer !== arr.buffer, 'different backing buffer');
-    t.deepEqual(Array.from(clone), [
-      10,
-      20,
-      30
-    ], 'same content');
+    t.deepEqual(Array.from(clone), [10, 20, 30], 'same content');
   });
   it('handles cycles', (t) => {
     const obj: {
@@ -475,11 +480,16 @@ describe('setInterval — args forwarding', () => {
   it('passes extra args to interval callback', async (t) => {
     let received: [string, number] | undefined;
     await new Promise<void>((resolve) => {
-      const id = setInterval((a: string, b: number) => {
-        received = [a, b];
-        clearInterval(id);
-        resolve();
-      }, 10, 'hello', 42);
+      const id = setInterval(
+        (a: string, b: number) => {
+          received = [a, b];
+          clearInterval(id);
+          resolve();
+        },
+        10,
+        'hello',
+        42,
+      );
     });
     t.deepEqual(received, ['hello', 42], 'args forwarded to setInterval callback');
   });
@@ -541,7 +551,10 @@ describe('performance.now — sub-millisecond precision', () => {
     const hasDecimal = readings.some((v) => v !== Math.floor(v));
     const first = readings[0];
     t.ok(typeof first === 'number', 'values are numbers');
-    t.ok(hasDecimal || first !== undefined && first >= 0, 'performance.now returns non-negative numbers');
+    t.ok(
+      hasDecimal || (first !== undefined && first >= 0),
+      'performance.now returns non-negative numbers',
+    );
   });
 });
 describe('console.count / countReset', () => {

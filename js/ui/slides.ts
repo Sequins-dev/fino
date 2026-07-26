@@ -1,37 +1,37 @@
 /**
-* fino:ui/slides — shared, server-driven presentations from MDX and Fino VNodes.
-*
-* A `Presentation` owns one default in-memory navigation state shared by its
-* presenter and following viewers, plus isolated viewer sessions requested
-* with `?follow=false`. It exposes mountable `Router` collections instead of
-* choosing application paths: `viewer()` and `presenter()` can be mounted
-* independently, while `router()` provides a convenience composition with the
-* presenter at the relative `/_presenter` route. The presenter is intentionally
-* unauthenticated at this layer so applications can attach their own middleware
-* before mount.
-*
-* Navigation is serialized on the server. By default, each accepted presenter
-* command renders one revision and fans the same `{ id, mode, html }` SSE patch
-* out to every connected viewer. Opening a viewer with `?follow=false` creates
-* an isolated server-side navigation session instead: arrow keys command that
-* session and its own SSE stream without changing presenter state. All session
-* state is process-local and resets with the application.
-*
-* MDX and component modules are trusted executable code. Components must be
-* synchronous server-rendered Fino UI components; browser hydration and
-* arbitrary client action registration are outside this module.
-*
-* ```ts no_run
-* import { App } from 'fino:net/http/app';
-* import { Presentation } from 'fino:ui/slides';
-*
-* const slides = new Presentation('./talk.mdx');
-* const app = new App();
-* app.route('/talk').mount(slides.viewer());
-* app.route('/talk-control').use(requireUser).mount(slides.presenter());
-* // `/talk` follows the presenter; `/talk?follow=false` navigates independently.
-* ```
-*/
+ * fino:ui/slides — shared, server-driven presentations from MDX and Fino VNodes.
+ *
+ * A `Presentation` owns one default in-memory navigation state shared by its
+ * presenter and following viewers, plus isolated viewer sessions requested
+ * with `?follow=false`. It exposes mountable `Router` collections instead of
+ * choosing application paths: `viewer()` and `presenter()` can be mounted
+ * independently, while `router()` provides a convenience composition with the
+ * presenter at the relative `/_presenter` route. The presenter is intentionally
+ * unauthenticated at this layer so applications can attach their own middleware
+ * before mount.
+ *
+ * Navigation is serialized on the server. By default, each accepted presenter
+ * command renders one revision and fans the same `{ id, mode, html }` SSE patch
+ * out to every connected viewer. Opening a viewer with `?follow=false` creates
+ * an isolated server-side navigation session instead: arrow keys command that
+ * session and its own SSE stream without changing presenter state. All session
+ * state is process-local and resets with the application.
+ *
+ * MDX and component modules are trusted executable code. Components must be
+ * synchronous server-rendered Fino UI components; browser hydration and
+ * arbitrary client action registration are outside this module.
+ *
+ * ```ts no_run
+ * import { App } from 'fino:net/http/app';
+ * import { Presentation } from 'fino:ui/slides';
+ *
+ * const slides = new Presentation('./talk.mdx');
+ * const app = new App();
+ * app.route('/talk').mount(slides.viewer());
+ * app.route('/talk-control').use(requireUser).mount(slides.presenter());
+ * // `/talk` follows the presenter; `/talk?follow=false` navigates independently.
+ * ```
+ */
 import { topic, type Topic } from 'fino:context/topic';
 import { Router } from 'fino:net/http/app';
 import { Watcher } from 'fino:file/watch';
@@ -55,9 +55,7 @@ export type PresentationTheme = Record<string, string | number>;
 /** Executable module consumed by `Presentation`. */
 export interface PresentationModule {
   /** Render the complete deck as slide `<section>` VNodes. */
-  default: (props?: {
-    components?: Record<string, string | Component<any>>;
-  }) => VNode;
+  default: (props?: { components?: Record<string, string | Component<any>> }) => VNode;
   /** Optional document metadata. */
   meta?: PresentationMeta;
   /** Optional CSS variables applied to viewer and presenter pages. */
@@ -116,39 +114,37 @@ interface ViewerSession {
 let nextPresentationId = 1;
 const maxIndependentViewerSessions = 128;
 /** Mark presenter-only speaker notes that are removed from audience output. */
-function Notes(props: {
-  children?: NormalizedChild[];
-}): VNode {
-  return h('aside', {
-    'data-fino-notes': true,
-    hidden: true
-  }, props.children ?? []);
+function Notes(props: { children?: NormalizedChild[] }): VNode {
+  return h(
+    'aside',
+    {
+      'data-fino-notes': true,
+      hidden: true,
+    },
+    props.children ?? [],
+  );
 }
 /** Mark document-level head content that is not rendered inside a slide. */
-function Head(props: {
-  children?: NormalizedChild[];
-}): VNode {
-  return h('div', {
-    'data-fino-head': true,
-    hidden: true
-  }, props.children ?? []);
+function Head(props: { children?: NormalizedChild[] }): VNode {
+  return h(
+    'div',
+    {
+      'data-fino-head': true,
+      hidden: true,
+    },
+    props.children ?? [],
+  );
 }
 /** Render repeated slide header content using the theme's header placement. */
-function Header(props: {
-  children?: NormalizedChild[];
-}): VNode {
+function Header(props: { children?: NormalizedChild[] }): VNode {
   return h('header', { class: 'fino-slide-header' }, props.children ?? []);
 }
 /** Render repeated slide footer content using the theme's footer placement. */
-function Footer(props: {
-  children?: NormalizedChild[];
-}): VNode {
+function Footer(props: { children?: NormalizedChild[] }): VNode {
   return h('footer', { class: 'fino-slide-footer' }, props.children ?? []);
 }
 /** Reveal direct children sequentially before navigation advances the slide. */
-function Steps(props: {
-  children?: NormalizedChild[];
-}): VNode {
+function Steps(props: { children?: NormalizedChild[] }): VNode {
   return h('div', { 'data-fino-steps': true }, props.children ?? []);
 }
 const deckComponents: Record<string, Component<any>> = {
@@ -156,7 +152,7 @@ const deckComponents: Record<string, Component<any>> = {
   Head,
   Header,
   Footer,
-  Steps
+  Steps,
 };
 function isVNode(value: NormalizedChild): value is VNode {
   return typeof value !== 'string';
@@ -166,24 +162,28 @@ function walk(node: VNode, fn: (node: VNode) => void): void {
   for (const child of node.children) if (isVNode(child)) walk(child, fn);
 }
 function renderChildren(children: NormalizedChild[]): string {
-  return children.map((child) => typeof child === 'string' ? escapeHtml(child) : renderToHtml(child)).join('');
+  return children
+    .map((child) => (typeof child === 'string' ? escapeHtml(child) : renderToHtml(child)))
+    .join('');
 }
 function slideRecord(vnode: VNode): SlideRecord {
   let notes = '';
   let maxStep = 0;
   walk(vnode, (node) => {
     if (node.props['data-fino-notes'] === true) notes += renderChildren(node.children);
-    if (node.props['data-fino-steps'] === true) maxStep = Math.max(maxStep, node.children.length - 1);
+    if (node.props['data-fino-steps'] === true)
+      maxStep = Math.max(maxStep, node.children.length - 1);
   });
   return {
     vnode,
     notes,
-    maxStep
+    maxStep,
   };
 }
 function audienceNode(node: VNode, step: number): VNode | null {
   if (node.props['data-fino-notes'] === true || node.props['data-fino-head'] === true) return null;
-  const source = node.props['data-fino-steps'] === true ? node.children.slice(0, step + 1) : node.children;
+  const source =
+    node.props['data-fino-steps'] === true ? node.children.slice(0, step + 1) : node.children;
   const children: Child[] = [];
   for (const child of source) {
     if (typeof child === 'string') children.push(child);
@@ -196,13 +196,19 @@ function audienceNode(node: VNode, step: number): VNode | null {
 }
 function slideSections(root: VNode): VNode[] {
   const candidates = root.type === 'fragment' ? root.children.filter(isVNode) : [root];
-  return candidates.filter((node) => node.type === 'section' && node.props['data-fino-slide'] !== undefined);
+  return candidates.filter(
+    (node) => node.type === 'section' && node.props['data-fino-slide'] !== undefined,
+  );
 }
 function themeStyle(theme: PresentationTheme): string {
-  return Object.entries(theme).map(([name, value]) => {
-    const property = name.startsWith('--') ? name : `--slides-${name.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}`;
-    return `${property}:${String(value)}`;
-  }).join(';');
+  return Object.entries(theme)
+    .map(([name, value]) => {
+      const property = name.startsWith('--')
+        ? name
+        : `--slides-${name.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}`;
+      return `${property}:${String(value)}`;
+    })
+    .join(';');
 }
 function slideSurface(frame: string): string {
   return `<div class="fino-slide-surface">${frame}</div>`;
@@ -223,17 +229,37 @@ function retreatState(state: PresentationState): void {
   }
 }
 function originRejection(request: Request): Response | null {
-  const unsafeRequest = (request as unknown) as {
+  const unsafeRequest = request as unknown as {
     _getUnsafeHeader?: (name: string) => string | null;
   };
-  const fetchSite = request.headers.get('sec-fetch-site') ?? unsafeRequest._getUnsafeHeader?.('sec-fetch-site') ?? null;
-  if (fetchSite !== null && fetchSite !== 'same-origin' && fetchSite !== 'same-site' && fetchSite !== 'none') return new Response('Forbidden: origin', { status: 403 });
-  const requestOrigin = request.headers.get('origin') ?? unsafeRequest._getUnsafeHeader?.('origin') ?? null;
-  if (requestOrigin !== null && new URL(requestOrigin).origin !== new URL(request.url).origin) return new Response('Forbidden: origin', { status: 403 });
+  const fetchSite =
+    request.headers.get('sec-fetch-site') ??
+    unsafeRequest._getUnsafeHeader?.('sec-fetch-site') ??
+    null;
+  if (
+    fetchSite !== null &&
+    fetchSite !== 'same-origin' &&
+    fetchSite !== 'same-site' &&
+    fetchSite !== 'none'
+  )
+    return new Response('Forbidden: origin', { status: 403 });
+  const requestOrigin =
+    request.headers.get('origin') ?? unsafeRequest._getUnsafeHeader?.('origin') ?? null;
+  if (requestOrigin !== null && new URL(requestOrigin).origin !== new URL(request.url).origin)
+    return new Response('Forbidden: origin', { status: 403 });
   return null;
 }
-function pageShell(title: string, lang: string, body: string, style: string, script: string): Response {
-  return new Response(`<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${style}</style></head><body>${body}<script>${script}<\/script></body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+function pageShell(
+  title: string,
+  lang: string,
+  body: string,
+  style: string,
+  script: string,
+): Response {
+  return new Response(
+    `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${style}</style></head><body>${body}<script>${script}<\/script></body></html>`,
+    { headers: { 'content-type': 'text/html; charset=utf-8' } },
+  );
 }
 const sharedStyle = `
 :root{--slides-paper:#f1eadc;--slides-ink:#171713;--slides-accent:#e4542f;--slides-muted:#8e877a;--slides-panel:#24231f;color-scheme:light}
@@ -267,12 +293,12 @@ const patchClient = `
 function applyPatch(event){const patch=JSON.parse(event.data);const target=document.getElementById(patch.id);if(!target)return;if(patch.mode==='inner')target.innerHTML=patch.html;}
 `;
 /**
-* Shared server-side presentation and route factory.
-*
-* `source` may be a module object or an importable `.mdx`/`.tsx` path. Loading
-* begins immediately and handlers await it before rendering. Call `close()` to
-* end active event streams and release the presentation.
-*/
+ * Shared server-side presentation and route factory.
+ *
+ * `source` may be a module object or an importable `.mdx`/`.tsx` path. Loading
+ * begins immediately and handlers await it before rendering. Call `close()` to
+ * end active event streams and release the presentation.
+ */
 export class Presentation {
   #source: string | PresentationModule;
   #manifest!: Manifest;
@@ -280,7 +306,7 @@ export class Presentation {
   #state: PresentationState = {
     slide: 0,
     step: 0,
-    revision: 0
+    revision: 0,
   };
   #queue: Promise<void> = Promise.resolve();
   #updates: Topic<Broadcast>;
@@ -313,11 +339,14 @@ export class Presentation {
       return;
     }
     const module = this.#source;
-    const rendered = module.default({ components: {
-      ...deckComponents,
-      ...module.components ?? {}
-    } });
-    if (!rendered || typeof rendered !== 'object' || typeof rendered.type !== 'string') throw new TypeError('Presentation module default export must return a Fino VNode');
+    const rendered = module.default({
+      components: {
+        ...deckComponents,
+        ...(module.components ?? {}),
+      },
+    });
+    if (!rendered || typeof rendered !== 'object' || typeof rendered.type !== 'string')
+      throw new TypeError('Presentation module default export must return a Fino VNode');
     this.#install(rendered, module.meta ?? {}, module.theme ?? {});
     this.#current = this.#renderBroadcast();
   }
@@ -337,14 +366,17 @@ export class Presentation {
         return { vnode: Deck(), meta: deckModule.meta ?? {}, theme: deckModule.theme ?? {} };
       }
     `;
-    const realm = Realm.fromSource<() => {
-      vnode: VNode;
-      meta: PresentationMeta;
-      theme: PresentationTheme;
-    }>(wrapper, { thread: true });
+    const realm = Realm.fromSource<
+      () => {
+        vnode: VNode;
+        meta: PresentationMeta;
+        theme: PresentationTheme;
+      }
+    >(wrapper, { thread: true });
     try {
       const loaded = await realm.call();
-      if (!loaded?.vnode || typeof loaded.vnode.type !== 'string') throw new TypeError('Presentation module default export must return a Fino VNode');
+      if (!loaded?.vnode || typeof loaded.vnode.type !== 'string')
+        throw new TypeError('Presentation module default export must return a Fino VNode');
       return loaded;
     } finally {
       realm.terminate();
@@ -352,11 +384,12 @@ export class Presentation {
   }
   #install(rendered: VNode, meta: PresentationMeta, theme: PresentationTheme): void {
     const slides = slideSections(rendered).map(slideRecord);
-    if (slides.length === 0) throw new Error('Presentation module did not render any <section data-fino-slide> elements');
+    if (slides.length === 0)
+      throw new Error('Presentation module did not render any <section data-fino-slide> elements');
     this.#manifest = {
       slides,
       meta,
-      theme
+      theme,
     };
     this.#clampState(this.#state);
     for (const session of this.#viewerSessions.values()) this.#clampState(session.state);
@@ -401,16 +434,25 @@ export class Presentation {
   #audienceHtml(state: PresentationState): string {
     const record = this.#manifest.slides[state.slide]!;
     const vnode = audienceNode(record.vnode, state.step)!;
-    const progress = (state.slide + 1) / this.#manifest.slides.length * 100;
+    const progress = ((state.slide + 1) / this.#manifest.slides.length) * 100;
     const frame = `<div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${renderToHtml(vnode)}<div class="fino-progress" role="progressbar" aria-valuemin="1" aria-valuemax="${this.#manifest.slides.length}" aria-valuenow="${state.slide + 1}"><i style="width:${progress}%"></i></div></div>`;
     return slideSurface(frame);
   }
   #presenterHtml(audience: string): string {
     const current = this.#manifest.slides[this.#state.slide]!;
     const next = this.#manifest.slides[this.#state.slide + 1];
-    const nextHtml = next ? renderToHtml(audienceNode(next.vnode, 0)!) : '<section><p>End of deck</p></section>';
-    const options = this.#manifest.slides.map((_, index) => `<option value="go:${index}"${index === this.#state.slide ? ' selected' : ''}>${String(index + 1).padStart(2, '0')}</option>`).join('');
-    const failure = this.#diagnostic ? `<div class="fino-compile-error" role="alert"><strong>Deck compile failed — showing last good revision</strong><pre>${escapeHtml(this.#diagnostic)}</pre></div>` : '';
+    const nextHtml = next
+      ? renderToHtml(audienceNode(next.vnode, 0)!)
+      : '<section><p>End of deck</p></section>';
+    const options = this.#manifest.slides
+      .map(
+        (_, index) =>
+          `<option value="go:${index}"${index === this.#state.slide ? ' selected' : ''}>${String(index + 1).padStart(2, '0')}</option>`,
+      )
+      .join('');
+    const failure = this.#diagnostic
+      ? `<div class="fino-compile-error" role="alert"><strong>Deck compile failed — showing last good revision</strong><pre>${escapeHtml(this.#diagnostic)}</pre></div>`
+      : '';
     const nextFrame = `<div class="fino-slide-frame" style="${escapeHtml(themeStyle(this.#manifest.theme))}">${nextHtml}</div>`;
     return `${failure}<div class="fino-presenter-shell" data-presentation-nonce="${escapeHtml(this.#nonce)}" data-started-at="${this.#startedAt}"><section class="fino-presenter-main"><header><p class="fino-presenter-kicker">Presenter · ${this.#state.slide + 1}/${this.#manifest.slides.length} · step ${this.#state.step + 1}</p><h1 class="fino-presenter-title">${escapeHtml(this.#manifest.meta.title ?? 'Untitled presentation')}</h1></header><div class="fino-presenter-preview fino-slide-viewport">${audience}</div><nav class="fino-presenter-controls" aria-label="Presentation controls"><button data-command="previous" aria-label="Previous slide">← Previous</button><button data-command="next" aria-label="Next slide or step">Next →</button><select data-slide-picker aria-label="Choose slide">${options}</select><button data-fullscreen>Fullscreen</button></nav></section><aside class="fino-presenter-side"><div><p class="fino-presenter-kicker">Elapsed</p><div class="fino-clock" data-clock>00:00</div></div><div class="fino-next"><p class="fino-presenter-kicker">Next</p><div class="fino-next-viewport fino-slide-viewport">${slideSurface(nextFrame)}</div></div><div class="fino-notes"><h3>Notes</h3>${current.notes || '<p>No notes for this slide.</p>'}</div></aside></div>`;
   }
@@ -421,13 +463,13 @@ export class Presentation {
       viewer: {
         id: 'fino-slides-stage',
         mode: 'inner',
-        html: audience
+        html: audience,
       },
       presenter: {
         id: 'fino-slides-presenter',
         mode: 'inner',
-        html: this.#presenterHtml(audience)
-      }
+        html: this.#presenterHtml(audience),
+      },
     };
   }
   #renderViewerBroadcast(state: PresentationState): ViewerBroadcast {
@@ -436,8 +478,8 @@ export class Presentation {
       viewer: {
         id: 'fino-slides-stage',
         mode: 'inner',
-        html: this.#audienceHtml(state)
-      }
+        html: this.#audienceHtml(state),
+      },
     };
   }
   #createViewerSession(): ViewerSession {
@@ -445,7 +487,7 @@ export class Presentation {
       const oldest = this.#viewerSessions.values().next().value as ViewerSession;
       oldest.updates.publish({
         ...oldest.current,
-        closed: true
+        closed: true,
       });
       this.#viewerSessions.delete(oldest.id);
     }
@@ -453,7 +495,7 @@ export class Presentation {
     const state: PresentationState = {
       slide: 0,
       step: 0,
-      revision: 0
+      revision: 0,
     };
     const session: ViewerSession = {
       id,
@@ -461,7 +503,7 @@ export class Presentation {
       state,
       queue: Promise.resolve(),
       updates: topic<ViewerBroadcast>(`fino:ui/slides:viewer:${id}`),
-      current: this.#renderViewerBroadcast(state)
+      current: this.#renderViewerBroadcast(state),
     };
     this.#viewerSessions.set(id, session);
     return session;
@@ -469,7 +511,8 @@ export class Presentation {
   #transitionViewerSession(session: ViewerSession, change: () => void): Promise<void> {
     const run = async () => {
       await this.#ready;
-      if (this.#closed || this.#viewerSessions.get(session.id) !== session) throw new Error('Viewer session is closed');
+      if (this.#closed || this.#viewerSessions.get(session.id) !== session)
+        throw new Error('Viewer session is closed');
       change();
       session.state.revision++;
       session.current = this.#renderViewerBroadcast(session.state);
@@ -503,7 +546,10 @@ export class Presentation {
     return this.#transition(() => {
       const slide = Math.max(0, Math.min(this.#manifest.slides.length - 1, Math.trunc(index)));
       this.#state.slide = slide;
-      this.#state.step = Math.max(0, Math.min(this.#manifest.slides[slide]!.maxStep, Math.trunc(step)));
+      this.#state.step = Math.max(
+        0,
+        Math.min(this.#manifest.slides[slide]!.maxStep, Math.trunc(step)),
+      );
     });
   }
   /** Return to the first slide and restart the presenter timer. */
@@ -519,14 +565,14 @@ export class Presentation {
     await events.write({
       event: 'patch',
       data: JSON.stringify(this.#current[kind]),
-      id: String(this.#current.revision)
+      id: String(this.#current.revision),
     });
     for await (const update of this.#updates) {
       if (update.closed) break;
       await events.write({
         event: 'patch',
         data: JSON.stringify(update[kind]),
-        id: String(update.revision)
+        id: String(update.revision),
       });
     }
   }
@@ -535,27 +581,31 @@ export class Presentation {
     await events.write({
       event: 'patch',
       data: JSON.stringify(session.current.viewer),
-      id: String(session.current.revision)
+      id: String(session.current.revision),
     });
     for await (const update of session.updates) {
       if (update.closed) break;
       await events.write({
         event: 'patch',
         data: JSON.stringify(update.viewer),
-        id: String(update.revision)
+        id: String(update.revision),
       });
     }
   }
   #viewerPage(session?: ViewerSession): Response {
     const title = this.#manifest.meta.title ?? 'Presentation';
-    const attributes = session ? ` data-fino-viewer-session="${escapeHtml(session.id)}" data-fino-viewer-nonce="${escapeHtml(session.nonce)}"` : '';
+    const attributes = session
+      ? ` data-fino-viewer-session="${escapeHtml(session.id)}" data-fino-viewer-nonce="${escapeHtml(session.nonce)}"`
+      : '';
     const audience = session?.current.viewer.html ?? this.#current.viewer.html;
     const body = `<main id="fino-slides-stage" class="fino-slide-viewport fino-audience"${attributes}>${audience}</main><button class="fino-fullscreen" data-fullscreen aria-label="Enter fullscreen">Fullscreen</button>`;
-    const script = session ? `${patchClient}
+    const script = session
+      ? `${patchClient}
 const root=document.getElementById('fino-slides-stage');const endpoint=location.pathname.replace(/\\/$/,'');const session=root.dataset.finoViewerSession;const nonce=root.dataset.finoViewerNonce;const stream=new EventSource(endpoint+'/_events?session='+encodeURIComponent(session));stream.addEventListener('patch',applyPatch);
 async function send(command){const body=new URLSearchParams({command,session,nonce});await fetch(endpoint+'/_command',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});}
 document.addEventListener('keydown',event=>{if(event.key==='ArrowRight'||event.key==='ArrowDown'){event.preventDefault();send('next');}else if(event.key==='ArrowLeft'||event.key==='ArrowUp'){event.preventDefault();send('previous');}});
-document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());` : `${patchClient}const stream=new EventSource(location.pathname.replace(/\\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
+document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`
+      : `${patchClient}const stream=new EventSource(location.pathname.replace(/\\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
     return pageShell(title, this.#manifest.meta.lang ?? 'en', body, viewerStyle, script);
   }
   #presenterPage(): Response {
@@ -571,14 +621,14 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
     return pageShell(title, this.#manifest.meta.lang ?? 'en', body, presenterStyle, script);
   }
   /**
-  * Create the audience router and its SSE endpoints.
-  *
-  * The default page follows presenter state. A request with `?follow=false`
-  * allocates an isolated server-side session, starts it at the first slide,
-  * and emits arrow-key commands over `POST /_command`. Independent sessions
-  * still receive rendered patches over SSE and are capped at 128 per
-  * `Presentation`; creating another closes the oldest session.
-  */
+   * Create the audience router and its SSE endpoints.
+   *
+   * The default page follows presenter state. A request with `?follow=false`
+   * allocates an isolated server-side session, starts it at the first slide,
+   * and emits arrow-key commands over `POST /_command`. Independent sessions
+   * still receive rendered patches over SSE and are capped at 128 per
+   * `Presentation`; creating another closes the oldest session.
+   */
   viewer(): Router {
     const router = new Router();
     router.get('/').handle(async (ctx) => {
@@ -592,10 +642,15 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
       const form = await ctx.request.formData();
       const session = this.#viewerSessions.get(String(form.get('session') ?? ''));
       if (!session) return new Response('Viewer session not found', { status: 404 });
-      if (String(form.get('nonce') ?? '') !== session.nonce) return new Response('Forbidden: nonce', { status: 403 });
+      if (String(form.get('nonce') ?? '') !== session.nonce)
+        return new Response('Forbidden: nonce', { status: 403 });
       const command = String(form.get('command') ?? '');
-      if (command === 'next') await this.#transitionViewerSession(session, () => advanceState(session.state, this.#manifest.slides));
-      else if (command === 'previous') await this.#transitionViewerSession(session, () => retreatState(session.state));
+      if (command === 'next')
+        await this.#transitionViewerSession(session, () =>
+          advanceState(session.state, this.#manifest.slides),
+        );
+      else if (command === 'previous')
+        await this.#transitionViewerSession(session, () => retreatState(session.state));
       else return new Response('Bad Request', { status: 400 });
       return Response.json({ ...session.state });
     });
@@ -619,7 +674,8 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
       const rejected = originRejection(ctx.request);
       if (rejected) return rejected;
       const form = await ctx.request.formData();
-      if (String(form.get('nonce') ?? '') !== this.#nonce) return new Response('Forbidden: nonce', { status: 403 });
+      if (String(form.get('nonce') ?? '') !== this.#nonce)
+        return new Response('Forbidden: nonce', { status: 403 });
       const command = String(form.get('command') ?? '');
       if (command === 'next') await this.next();
       else if (command === 'previous') await this.previous();
@@ -632,10 +688,10 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
     return router;
   }
   /**
-  * Create the convenience router: viewer at `/`, presenter at the relative
-  * `/_presenter` branch. Use split routers when authentication or unrelated
-  * public paths are required.
-  */
+   * Create the convenience router: viewer at `/`, presenter at the relative
+   * `/_presenter` branch. Use split routers when authentication or unrelated
+   * public paths are required.
+   */
   router(): Router {
     const router = new Router();
     router.route('/').mount(this.viewer());
@@ -650,12 +706,13 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
     this.#watcher?.close();
     this.#updates.publish({
       ...this.#current,
-      closed: true
+      closed: true,
     });
-    for (const session of this.#viewerSessions.values()) session.updates.publish({
-      ...session.current,
-      closed: true
-    });
+    for (const session of this.#viewerSessions.values())
+      session.updates.publish({
+        ...session.current,
+        closed: true,
+      });
     this.#viewerSessions.clear();
     await this.#watchTask;
   }

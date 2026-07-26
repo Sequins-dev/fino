@@ -39,7 +39,9 @@ describe('benchmark coverage map', () => {
     const coverage = await readText('benchmarks/COVERAGE.md');
     const rows = coverageRows(coverage);
     const missing = publicBuiltins(loader).filter((spec) => !rows.has(spec));
-    const invalid = [...rows].filter(([, value]) => value !== 'not yet benchmarked' && !/^`benchmarks\/[^`]+`$/.test(value));
+    const invalid = [...rows].filter(
+      ([, value]) => value !== 'not yet benchmarked' && !/^`benchmarks\/[^`]+`$/.test(value),
+    );
     t.deepEqual(missing, [], 'all public builtins have a coverage table row');
     t.deepEqual(invalid, [], 'every row names a benchmark file or the explicit not-yet marker');
   });
@@ -58,14 +60,14 @@ describe('benchmark coverage map', () => {
       '`fino:process` | `benchmarks/process.bench.ts`',
       '`fino:realm/pool` | `benchmarks/realm/pool.bench.ts`',
       '`fino:security/jwt` | `benchmarks/security/jwt.bench.ts`',
-      '`fino:test/assert` | `benchmarks/test/assert.bench.ts`'
+      '`fino:test/assert` | `benchmarks/test/assert.bench.ts`',
     ];
     const missing = expected.filter((entry) => !coverage.includes(entry));
     t.deepEqual(missing, [], 'coverage map uses benchmark paths that mirror js source paths');
     for (const file of [
       'benchmarks/log.bench.ts',
       'benchmarks/config.bench.ts',
-      'benchmarks/validate.bench.ts'
+      'benchmarks/validate.bench.ts',
     ]) {
       const stat = await fs.stat(file);
       t.ok(stat.isFile(), `${file} exists as a separate benchmark file`);
@@ -89,11 +91,17 @@ describe('benchmark coverage map', () => {
       ['benchmarks/archive.bench.ts', ['many-entry zip list', 'malformed archive open rejects']],
       ['benchmarks/database/sqlite.bench.ts', ['unique constraint failure']],
       ['benchmarks/file/watch.bench.ts', ['directory event delivery']],
-      ['benchmarks/net/dns.bench.ts', ['malformed truncated response rejects', 'DNSSEC validation corpus']],
+      [
+        'benchmarks/net/dns.bench.ts',
+        ['malformed truncated response rejects', 'DNSSEC validation corpus'],
+      ],
       ['benchmarks/net/tls.bench.ts', ['failed TLS connect rejects']],
       ['benchmarks/net/quic.bench.ts', ['listen without cert rejects']],
       ['benchmarks/net/http/h3.bench.ts', ['requireH3 unavailable failure path']],
-      ['benchmarks/net/quic-loopback-transfer.bench.ts', ['loopback client-to-server stream bulk transfer']]
+      [
+        'benchmarks/net/quic-loopback-transfer.bench.ts',
+        ['loopback client-to-server stream bulk transfer'],
+      ],
     ]);
     const missing: string[] = [];
     for (const [file, markers] of required) {

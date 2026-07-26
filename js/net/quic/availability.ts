@@ -3,5 +3,5 @@ export {
   quicAvailable,
   quicResetStreamAtAvailable,
   quicVersion,
-  requireQuic
+  requireQuic,
 } from '../../internal/net/quic/endpoint.ts';

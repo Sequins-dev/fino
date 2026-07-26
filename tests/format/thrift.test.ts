@@ -1,18 +1,35 @@
 /**
-* Tests for internal:format/thrift — binary, compact, and JSON protocol codecs.
-*/
+ * Tests for internal:format/thrift — binary, compact, and JSON protocol codecs.
+ */
 import { describe, it } from 'fino:test/test';
-import { BinaryProtocol, CompactProtocol, JSONProtocol, TType, TMessageType, ThriftError, skip, readStruct, writeStruct, type Protocol, type ThriftValue } from 'internal:format/thrift';
+import {
+  BinaryProtocol,
+  CompactProtocol,
+  JSONProtocol,
+  TType,
+  TMessageType,
+  ThriftError,
+  skip,
+  readStruct,
+  writeStruct,
+  type Protocol,
+  type ThriftValue,
+} from 'internal:format/thrift';
 type ProtoCtor = {
   new (input?: Uint8Array): Protocol;
 };
 const PROTOCOLS: [string, ProtoCtor][] = [
   ['binary', BinaryProtocol],
   ['compact', CompactProtocol],
-  ['json', JSONProtocol]
+  ['json', JSONProtocol],
 ];
 // Write a single-field struct then read the value back.
-function roundTripField(Ctor: ProtoCtor, type: number, write: (p: Protocol) => void, read: (p: Protocol) => unknown): unknown {
+function roundTripField(
+  Ctor: ProtoCtor,
+  type: number,
+  write: (p: Protocol) => void,
+  read: (p: Protocol) => unknown,
+): unknown {
   const w = new Ctor();
   w.writeStructBegin();
   w.writeFieldBegin('', type, 1);
@@ -23,7 +40,8 @@ function roundTripField(Ctor: ProtoCtor, type: number, write: (p: Protocol) => v
   const r = new Ctor(w.bytes());
   r.readStructBegin();
   const field = r.readFieldBegin();
-  if (field.id !== 1 || field.type !== type) throw new Error(`bad field header ${field.id}/${field.type}`);
+  if (field.id !== 1 || field.type !== type)
+    throw new Error(`bad field header ${field.id}/${field.type}`);
   const value = read(r);
   r.readFieldEnd();
   const stop = r.readFieldBegin();
@@ -34,43 +52,169 @@ function roundTripField(Ctor: ProtoCtor, type: number, write: (p: Protocol) => v
 describe('thrift scalar round-trips', () => {
   for (const [name, Ctor] of PROTOCOLS) {
     it(`${name}: bool`, (t) => {
-      t.equal(roundTripField(Ctor, TType.BOOL, (p) => p.writeBool(true), (p) => p.readBool()), true, 'true');
-      t.equal(roundTripField(Ctor, TType.BOOL, (p) => p.writeBool(false), (p) => p.readBool()), false, 'false');
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.BOOL,
+          (p) => p.writeBool(true),
+          (p) => p.readBool(),
+        ),
+        true,
+        'true',
+      );
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.BOOL,
+          (p) => p.writeBool(false),
+          (p) => p.readBool(),
+        ),
+        false,
+        'false',
+      );
     });
     it(`${name}: byte`, (t) => {
-      t.equal(roundTripField(Ctor, TType.BYTE, (p) => p.writeByte(-12), (p) => p.readByte()), -12, 'i8');
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.BYTE,
+          (p) => p.writeByte(-12),
+          (p) => p.readByte(),
+        ),
+        -12,
+        'i8',
+      );
     });
     it(`${name}: i16`, (t) => {
-      t.equal(roundTripField(Ctor, TType.I16, (p) => p.writeI16(-1234), (p) => p.readI16()), -1234, 'i16');
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.I16,
+          (p) => p.writeI16(-1234),
+          (p) => p.readI16(),
+        ),
+        -1234,
+        'i16',
+      );
     });
     it(`${name}: i32`, (t) => {
-      t.equal(roundTripField(Ctor, TType.I32, (p) => p.writeI32(-123456789), (p) => p.readI32()), -123456789, 'i32');
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.I32,
+          (p) => p.writeI32(-123456789),
+          (p) => p.readI32(),
+        ),
+        -123456789,
+        'i32',
+      );
     });
     it(`${name}: i64 beyond 2^53`, (t) => {
       const v = 9007199254740993n;
-      t.equal(roundTripField(Ctor, TType.I64, (p) => p.writeI64(v), (p) => p.readI64()), v, 'i64 exact');
-      t.equal(roundTripField(Ctor, TType.I64, (p) => p.writeI64(-v), (p) => p.readI64()), -v, 'negative i64');
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.I64,
+          (p) => p.writeI64(v),
+          (p) => p.readI64(),
+        ),
+        v,
+        'i64 exact',
+      );
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.I64,
+          (p) => p.writeI64(-v),
+          (p) => p.readI64(),
+        ),
+        -v,
+        'negative i64',
+      );
     });
     it(`${name}: double`, (t) => {
-      t.equal(roundTripField(Ctor, TType.DOUBLE, (p) => p.writeDouble(3.14159), (p) => p.readDouble()), 3.14159, 'double');
-      t.equal(roundTripField(Ctor, TType.DOUBLE, (p) => p.writeDouble(-.5), (p) => p.readDouble()), -.5, 'negative');
-      t.ok(Number.isNaN(roundTripField(Ctor, TType.DOUBLE, (p) => p.writeDouble(NaN), (p) => p.readDouble()) as number), 'NaN');
-      t.equal(roundTripField(Ctor, TType.DOUBLE, (p) => p.writeDouble(Infinity), (p) => p.readDouble()), Infinity, 'Infinity');
-      t.equal(roundTripField(Ctor, TType.DOUBLE, (p) => p.writeDouble(-Infinity), (p) => p.readDouble()), -Infinity, '-Infinity');
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.DOUBLE,
+          (p) => p.writeDouble(3.14159),
+          (p) => p.readDouble(),
+        ),
+        3.14159,
+        'double',
+      );
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.DOUBLE,
+          (p) => p.writeDouble(-.5),
+          (p) => p.readDouble(),
+        ),
+        -.5,
+        'negative',
+      );
+      t.ok(
+        Number.isNaN(
+          roundTripField(
+            Ctor,
+            TType.DOUBLE,
+            (p) => p.writeDouble(NaN),
+            (p) => p.readDouble(),
+          ) as number,
+        ),
+        'NaN',
+      );
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.DOUBLE,
+          (p) => p.writeDouble(Infinity),
+          (p) => p.readDouble(),
+        ),
+        Infinity,
+        'Infinity',
+      );
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.DOUBLE,
+          (p) => p.writeDouble(-Infinity),
+          (p) => p.readDouble(),
+        ),
+        -Infinity,
+        '-Infinity',
+      );
     });
     it(`${name}: string (utf-8)`, (t) => {
-      t.equal(roundTripField(Ctor, TType.STRING, (p) => p.writeString('grüße 日本'), (p) => p.readString()), 'grüße 日本', 'unicode');
-      t.equal(roundTripField(Ctor, TType.STRING, (p) => p.writeString(''), (p) => p.readString()), '', 'empty');
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.STRING,
+          (p) => p.writeString('grüße 日本'),
+          (p) => p.readString(),
+        ),
+        'grüße 日本',
+        'unicode',
+      );
+      t.equal(
+        roundTripField(
+          Ctor,
+          TType.STRING,
+          (p) => p.writeString(''),
+          (p) => p.readString(),
+        ),
+        '',
+        'empty',
+      );
     });
     it(`${name}: binary`, (t) => {
-      const bytes = new Uint8Array([
-        0,
-        1,
-        2,
-        255,
-        128
-      ]);
-      const out = roundTripField(Ctor, TType.STRING, (p) => p.writeBinary(bytes), (p) => p.readBinary()) as Uint8Array;
+      const bytes = new Uint8Array([0, 1, 2, 255, 128]);
+      const out = roundTripField(
+        Ctor,
+        TType.STRING,
+        (p) => p.writeBinary(bytes),
+        (p) => p.readBinary(),
+      ) as Uint8Array;
       t.deepEqual(Array.from(out), Array.from(bytes), 'binary bytes');
     });
   }
@@ -80,42 +224,26 @@ describe('thrift container round-trips', () => {
     it(`${name}: list<i32>`, (t) => {
       const w = new Ctor();
       w.writeListBegin(TType.I32, 3);
-      for (const v of [
-        10,
-        20,
-        30
-      ]) w.writeI32(v);
+      for (const v of [10, 20, 30]) w.writeI32(v);
       w.writeListEnd();
       const r = new Ctor(w.bytes());
       const h = r.readListBegin();
       const out: number[] = [];
       for (let i = 0; i < h.size; i++) out.push(r.readI32());
       r.readListEnd();
-      t.deepEqual(out, [
-        10,
-        20,
-        30
-      ], 'list values');
+      t.deepEqual(out, [10, 20, 30], 'list values');
     });
     it(`${name}: set<bool>`, (t) => {
       const w = new Ctor();
       w.writeSetBegin(TType.BOOL, 3);
-      for (const v of [
-        true,
-        false,
-        true
-      ]) w.writeBool(v);
+      for (const v of [true, false, true]) w.writeBool(v);
       w.writeSetEnd();
       const r = new Ctor(w.bytes());
       const h = r.readSetBegin();
       const out: boolean[] = [];
       for (let i = 0; i < h.size; i++) out.push(r.readBool());
       r.readSetEnd();
-      t.deepEqual(out, [
-        true,
-        false,
-        true
-      ], 'set bools (compact bool-in-collection)');
+      t.deepEqual(out, [true, false, true], 'set bools (compact bool-in-collection)');
     });
     it(`${name}: map<string,i64>`, (t) => {
       const w = new Ctor();
@@ -152,65 +280,108 @@ describe('thrift struct + field id deltas + generic value model', () => {
     it(`${name}: multi-field struct, monotonic + gapped + non-monotonic ids`, (t) => {
       // ids 1, 2, 20 (delta > 15 forces the compact varint escape), then 5 (backwards)
       const fields = new Map<number, ThriftValue>([
-        [1, {
-          type: TType.I32,
-          value: 100
-        }],
-        [2, {
-          type: TType.BOOL,
-          value: true
-        }],
-        [20, {
-          type: TType.STRING,
-          value: 'hi'
-        }],
-        [5, {
-          type: TType.I64,
-          value: 42n
-        }]
+        [
+          1,
+          {
+            type: TType.I32,
+            value: 100,
+          },
+        ],
+        [
+          2,
+          {
+            type: TType.BOOL,
+            value: true,
+          },
+        ],
+        [
+          20,
+          {
+            type: TType.STRING,
+            value: 'hi',
+          },
+        ],
+        [
+          5,
+          {
+            type: TType.I64,
+            value: 42n,
+          },
+        ],
       ]);
       const w = new Ctor();
       writeStruct(w, fields);
       const back = readStruct(new Ctor(w.bytes()));
-      t.deepEqual(back.get(1), {
-        type: TType.I32,
-        value: 100
-      }, 'field 1');
-      t.deepEqual(back.get(2), {
-        type: TType.BOOL,
-        value: true
-      }, 'field 2 (bool in header for compact)');
-      t.deepEqual(back.get(20), {
-        type: TType.STRING,
-        value: 'hi'
-      }, 'field 20 (delta escape)');
-      t.deepEqual(back.get(5), {
-        type: TType.I64,
-        value: 42n
-      }, 'field 5 (non-monotonic)');
+      t.deepEqual(
+        back.get(1),
+        {
+          type: TType.I32,
+          value: 100,
+        },
+        'field 1',
+      );
+      t.deepEqual(
+        back.get(2),
+        {
+          type: TType.BOOL,
+          value: true,
+        },
+        'field 2 (bool in header for compact)',
+      );
+      t.deepEqual(
+        back.get(20),
+        {
+          type: TType.STRING,
+          value: 'hi',
+        },
+        'field 20 (delta escape)',
+      );
+      t.deepEqual(
+        back.get(5),
+        {
+          type: TType.I64,
+          value: 42n,
+        },
+        'field 5 (non-monotonic)',
+      );
     });
     it(`${name}: nested struct + list of structs`, (t) => {
       const inner: ThriftValue = {
         type: TType.STRUCT,
-        fields: new Map([[1, {
-          type: TType.I32,
-          value: 7
-        }]])
+        fields: new Map([
+          [
+            1,
+            {
+              type: TType.I32,
+              value: 7,
+            },
+          ],
+        ]),
       };
-      const fields = new Map<number, ThriftValue>([[1, inner], [2, {
-        type: TType.LIST,
-        elemType: TType.STRUCT,
-        values: [inner, inner]
-      }]]);
+      const fields = new Map<number, ThriftValue>([
+        [1, inner],
+        [
+          2,
+          {
+            type: TType.LIST,
+            elemType: TType.STRUCT,
+            values: [inner, inner],
+          },
+        ],
+      ]);
       const w = new Ctor();
       writeStruct(w, fields);
       const back = readStruct(new Ctor(w.bytes()));
       t.deepEqual(back.get(1), inner, 'nested struct');
-      t.deepEqual(back.get(2), {
-        type: TType.LIST,
-        elemType: TType.STRUCT,
-        values: [inner, inner]
-      }, 'list of structs');
+      t.deepEqual(
+        back.get(2),
+        {
+          type: TType.LIST,
+          elemType: TType.STRUCT,
+          values: [inner, inner],
+        },
+        'list of structs',
+      );
     });
   }
 });
@@ -299,12 +470,7 @@ describe('thrift compact known byte vectors', () => {
     w.writeFieldEnd();
     w.writeFieldStop();
     w.writeStructEnd();
-    t.deepEqual(Array.from(w.bytes()), [
-      21,
-      2,
-      17,
-      0
-    ], 'exact compact bytes');
+    t.deepEqual(Array.from(w.bytes()), [21, 2, 17, 0], 'exact compact bytes');
   });
   it('empty map is a single zero byte', (t) => {
     const w = new CompactProtocol();
@@ -324,7 +490,7 @@ describe('thrift compact known byte vectors', () => {
     const bytes = Array.from(w.bytes());
     t.equal(bytes[0], 130, 'protocol id');
     t.equal(bytes[1] & 31, 1, 'version 1');
-    t.equal(bytes[1]! >> 5 & 7, TMessageType.CALL, 'message type');
+    t.equal((bytes[1]! >> 5) & 7, TMessageType.CALL, 'message type');
   });
 });
 describe('thrift binary strict + legacy', () => {
@@ -358,40 +524,53 @@ describe('thrift cross-protocol independence + errors', () => {
   it('compact and binary produce different bytes for the same struct', (t) => {
     const build = (Ctor: ProtoCtor) => {
       const w = new Ctor();
-      writeStruct(w, new Map([[1, {
-        type: TType.I32,
-        value: 300
-      }]]));
+      writeStruct(
+        w,
+        new Map([
+          [
+            1,
+            {
+              type: TType.I32,
+              value: 300,
+            },
+          ],
+        ]),
+      );
       return Array.from(w.bytes());
     };
-    t.notEqual(JSON.stringify(build(BinaryProtocol)), JSON.stringify(build(CompactProtocol)), 'distinct encodings');
+    t.notEqual(
+      JSON.stringify(build(BinaryProtocol)),
+      JSON.stringify(build(CompactProtocol)),
+      'distinct encodings',
+    );
   });
   it('truncated compact input throws ThriftError', (t) => {
-    t.throws(() => {
-      const r = new CompactProtocol(new Uint8Array([21]));
-      r.readStructBegin();
-      r.readFieldBegin();
-      r.readI32();
-    }, ThriftError, 'truncation');
+    t.throws(
+      () => {
+        const r = new CompactProtocol(new Uint8Array([21]));
+        r.readStructBegin();
+        r.readFieldBegin();
+        r.readI32();
+      },
+      ThriftError,
+      'truncation',
+    );
   });
   it('bad compact protocol id throws ThriftError', (t) => {
-    t.throws(() => new CompactProtocol(new Uint8Array([
-      0,
-      33,
-      0
-    ])).readMessageBegin(), ThriftError, 'bad protocol id');
+    t.throws(
+      () => new CompactProtocol(new Uint8Array([0, 33, 0])).readMessageBegin(),
+      ThriftError,
+      'bad protocol id',
+    );
   });
   it('truncated binary string length throws ThriftError', (t) => {
-    t.throws(() => {
-      const r = new BinaryProtocol(new Uint8Array([
-        0,
-        0,
-        0,
-        10,
-        1,
-        2
-      ]));
-      r.readString();
-    }, ThriftError, 'binary truncation');
+    t.throws(
+      () => {
+        const r = new BinaryProtocol(new Uint8Array([0, 0, 0, 10, 1, 2]));
+        r.readString();
+      },
+      ThriftError,
+      'binary truncation',
+    );
   });
 });

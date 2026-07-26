@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:security/cookie
-*/
+ * Benchmarks for fino:security/cookie
+ */
 import { parseCookieHeader, serializeCookie, signCookie, verifyCookie } from 'fino:security/cookie';
 import { bench } from 'fino:bench';
 const secret = 'benchmark-secret';

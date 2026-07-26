@@ -1,7 +1,7 @@
 /**
-* Pool worker definition: a Task tree default-exported so the realm
-* bootstrap turns it into a job dispatcher automatically.
-*/
+ * Pool worker definition: a Task tree default-exported so the realm
+ * bootstrap turns it into a job dispatcher automatically.
+ */
 import { task } from 'fino:task';
 import { durableTask } from 'fino:task/durable';
 import { DiskFileSystem } from 'fino:file';
@@ -13,7 +13,7 @@ export default task({
   children: [
     task({
       name: 'pool-double',
-      run: async (input: { v: number }) => input.v * 2
+      run: async (input: { v: number }) => input.v * 2,
     }),
     task({
       name: 'pool-marker-flaky',
@@ -26,7 +26,7 @@ export default task({
           await fs.writeFile(input.marker, textEncoder.encode('seen'));
           throw new Error('first try fails');
         }
-      }
+      },
     }),
     durableTask({
       name: 'pool-durable-nap',
@@ -35,7 +35,7 @@ export default task({
         await ctx.sleep('nap', 150);
         const second = await ctx.step('second', () => 'second');
         return `${first},${second}`;
-      }
-    })
-  ]
+      },
+    }),
+  ],
 });

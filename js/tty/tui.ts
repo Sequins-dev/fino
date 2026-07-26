@@ -1,36 +1,56 @@
 /**
-* fino:tty/tui — terminal host renderer for `fino:ui` components.
-*
-* This module is the first host for the portable `fino:ui` core. It provides
-* terminal component primitives, deterministic frame rendering for tests, and a
-* small fullscreen live renderer. The layout engine is intentionally a Fino
-* subset: row/column direction, fixed sizes, flex spacers, gap, padding,
-* borders, simple alignment, wrapping, and clipping.
-*
-* V1 is terminal-only and POSIX-oriented. It includes raw keyboard input and
-* SGR mouse events for fullscreen apps, but it does not implement DOM/HTML
-* output, React hooks, or inline terminal regions.
-*
-* ```ts no_run
-* /** @jsxImportSource fino:ui *\/
-* import { Box, Text, renderFrame } from 'fino:tty/tui';
-*
-* const frame = renderFrame(
-*   <Box border padding={1}><Text>Hello</Text></Box>,
-*   { width: 20, height: 3 },
-* );
-* ```
-*/
+ * fino:tty/tui — terminal host renderer for `fino:ui` components.
+ *
+ * This module is the first host for the portable `fino:ui` core. It provides
+ * terminal component primitives, deterministic frame rendering for tests, and a
+ * small fullscreen live renderer. The layout engine is intentionally a Fino
+ * subset: row/column direction, fixed sizes, flex spacers, gap, padding,
+ * borders, simple alignment, wrapping, and clipping.
+ *
+ * V1 is terminal-only and POSIX-oriented. It includes raw keyboard input and
+ * SGR mouse events for fullscreen apps, but it does not implement DOM/HTML
+ * output, React hooks, or inline terminal regions.
+ *
+ * ```ts no_run
+ * /** @jsxImportSource fino:ui *\/
+ * import { Box, Text, renderFrame } from 'fino:tty/tui';
+ *
+ * const frame = renderFrame(
+ *   <Box border padding={1}><Text>Hello</Text></Box>,
+ *   { width: 20, height: 3 },
+ * );
+ * ```
+ */
 import { h, Fragment, createSignal, batch, type Child, type Props, type VNode } from 'fino:ui';
 import { writeStdout } from '../tty.ts';
 import { stdin } from '../process.ts';
 import { timeout as loopTimeout } from '../internal/runtime/loop.ts';
-import { disableAutoWrap, enableAutoWrap, enterAlternateScreen, enterMouseMode, enterRawMode, exitAlternateScreen, exitMouseMode, hideCursor, showCursor, queryTerminalSize } from '../internal/tty/bindings.ts';
+import {
+  disableAutoWrap,
+  enableAutoWrap,
+  enterAlternateScreen,
+  enterMouseMode,
+  enterRawMode,
+  exitAlternateScreen,
+  exitMouseMode,
+  hideCursor,
+  showCursor,
+  queryTerminalSize,
+} from '../internal/tty/bindings.ts';
 export { h, Fragment, createSignal, batch };
 type Direction = 'row' | 'column';
 type Align = 'start' | 'center' | 'end';
 type TuiKind = 'box' | 'text' | 'spacer' | 'input' | 'button' | 'list' | 'scrollview';
-type BackgroundColor = 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white' | 'brightBlack';
+type BackgroundColor =
+  | 'black'
+  | 'red'
+  | 'green'
+  | 'yellow'
+  | 'blue'
+  | 'magenta'
+  | 'cyan'
+  | 'white'
+  | 'brightBlack';
 interface InternalNode extends VNode {
   type: TuiKind;
 }
@@ -165,7 +185,7 @@ function keyEvent(key: string, extra: Partial<TuiKeyEvent> = {}): TuiKeyEvent {
   return {
     type: 'key',
     key,
-    ...extra
+    ...extra,
   };
 }
 function decodeCsi(sequence: string): TuiEvent | null {
@@ -188,8 +208,24 @@ function decodeCsi(sequence: string): TuiEvent | null {
     const ctrl = (code & 16) !== 0;
     const drag = (code & 32) !== 0;
     const wheel = (code & 64) !== 0;
-    const button = wheel ? (code & 1) === 0 ? 'wheel-up' : 'wheel-down' : base === 0 ? 'left' : base === 1 ? 'middle' : base === 2 ? 'right' : 'left';
-    const action = wheel ? 'wheel' : releaseMarker || base === 3 ? 'release' : drag ? 'drag' : 'press';
+    const button = wheel
+      ? (code & 1) === 0
+        ? 'wheel-up'
+        : 'wheel-down'
+      : base === 0
+        ? 'left'
+        : base === 1
+          ? 'middle'
+          : base === 2
+            ? 'right'
+            : 'left';
+    const action = wheel
+      ? 'wheel'
+      : releaseMarker || base === 3
+        ? 'release'
+        : drag
+          ? 'drag'
+          : 'press';
     return {
       type: 'mouse',
       action,
@@ -198,33 +234,35 @@ function decodeCsi(sequence: string): TuiEvent | null {
       y,
       ctrl,
       alt,
-      shift
+      shift,
     };
   }
   const tilde = /^\x1b\[(\d+)~$/.exec(sequence);
   if (tilde) {
-    const name = ({
-      '1': 'home',
-      '3': 'delete',
-      '4': 'end',
-      '5': 'pageup',
-      '6': 'pagedown'
-    } as Record<string, string>)[tilde[1]!];
+    const name = (
+      {
+        '1': 'home',
+        '3': 'delete',
+        '4': 'end',
+        '5': 'pageup',
+        '6': 'pagedown',
+      } as Record<string, string>
+    )[tilde[1]!];
     if (name) return keyEvent(name);
   }
   return null;
 }
 /**
-* Decode one terminal input byte chunk into TUI input events.
-*
-* The decoder understands printable UTF-8, common control keys, arrow/function
-* CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
-* coordinates are converted to zero-based `x`/`y` values.
-*/
+ * Decode one terminal input byte chunk into TUI input events.
+ *
+ * The decoder understands printable UTF-8, common control keys, arrow/function
+ * CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
+ * coordinates are converted to zero-based `x`/`y` values.
+ */
 export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
   const text = decoder.decode(bytes);
   const events: TuiEvent[] = [];
-  for (let i = 0; i < text.length;) {
+  for (let i = 0; i < text.length; ) {
     const ch = text[i]!;
     if (ch === '\x1B') {
       const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(text.slice(i));
@@ -250,7 +288,8 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     else if (code === 127 || code === 8) events.push(keyEvent('backspace'));
     else if (code === 13 || code === 10) events.push(keyEvent('enter'));
     else if (code === 9) events.push(keyEvent('tab'));
-    else if (code >= 1 && code <= 26) events.push(keyEvent(String.fromCharCode(code + 96), { ctrl: true }));
+    else if (code >= 1 && code <= 26)
+      events.push(keyEvent(String.fromCharCode(code + 96), { ctrl: true }));
     else events.push(keyEvent(ch, { text: ch }));
     i++;
   }
@@ -290,33 +329,33 @@ export class TuiInput {
   }
 }
 /**
-* Create a raw terminal input reader for TUI applications.
-*
-* The reader enables raw mode immediately. Call `close()` when the application
-* exits so terminal state is restored.
-*/
+ * Create a raw terminal input reader for TUI applications.
+ *
+ * The reader enables raw mode immediately. Call `close()` when the application
+ * exits so terminal state is restored.
+ */
 export function createTuiInput(options: TuiInputOptions = {}): TuiInput {
   return new TuiInput(options);
 }
 /**
-* Return the current terminal viewport size.
-*
-* The TUI host asks the terminal with `ioctl(TIOCGWINSZ)` when possible and
-* falls back to environment dimensions in non-interactive contexts.
-*/
+ * Return the current terminal viewport size.
+ *
+ * The TUI host asks the terminal with `ioctl(TIOCGWINSZ)` when possible and
+ * falls back to environment dimensions in non-interactive contexts.
+ */
 export function getTerminalSize(): TerminalSize {
   return queryTerminalSize();
 }
 /**
-* Measure the visible terminal viewport with an ANSI cursor-position query.
-*
-* This is slower than `getTerminalSize()` but handles terminal panes where
-* `ioctl(TIOCGWINSZ)` or environment dimensions are stale. The function enters
-* raw mode briefly, moves the cursor to a very large coordinate, asks the
-* terminal to report the clamped cursor position, restores the cursor, and
-* returns the reported row/column. If the terminal does not answer quickly, it
-* falls back to `getTerminalSize()`.
-*/
+ * Measure the visible terminal viewport with an ANSI cursor-position query.
+ *
+ * This is slower than `getTerminalSize()` but handles terminal panes where
+ * `ioctl(TIOCGWINSZ)` or environment dimensions are stale. The function enters
+ * raw mode briefly, moves the cursor to a very large coordinate, asks the
+ * terminal to report the clamped cursor position, restores the cursor, and
+ * returns the reported row/column. If the terminal does not answer quickly, it
+ * falls back to `getTerminalSize()`.
+ */
 export async function measureTerminalSize(): Promise<TerminalSize> {
   const fallback = getTerminalSize();
   let restoreRaw: (() => void) | null = null;
@@ -330,7 +369,7 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
     while (!controller.signal.aborted) {
       const chunk = await stdin().read({
         maxBytes: 64,
-        signal: controller.signal
+        signal: controller.signal,
       });
       if (chunk === null) break;
       response += decoder.decode(chunk);
@@ -342,7 +381,7 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
         if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
           return {
             width: Math.floor(width),
-            height: Math.floor(height)
+            height: Math.floor(height),
           };
         }
         break;
@@ -358,7 +397,9 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
 }
 function numberProp(props: Props, name: string, fallback: number): number {
   const value = props[name];
-  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : fallback;
 }
 function stringProp(props: Props, name: string, fallback: string): string {
   const value = props[name];
@@ -388,16 +429,26 @@ function fitAnsi(text: string, width: number): string {
 }
 function backgroundCode(background: unknown): string | null {
   switch (background) {
-    case 'black': return '40';
-    case 'red': return '41';
-    case 'green': return '42';
-    case 'yellow': return '43';
-    case 'blue': return '44';
-    case 'magenta': return '45';
-    case 'cyan': return '46';
-    case 'white': return '47';
-    case 'brightBlack': return '100';
-    default: return null;
+    case 'black':
+      return '40';
+    case 'red':
+      return '41';
+    case 'green':
+      return '42';
+    case 'yellow':
+      return '43';
+    case 'blue':
+      return '44';
+    case 'magenta':
+      return '45';
+    case 'cyan':
+      return '46';
+    case 'white':
+      return '47';
+    case 'brightBlack':
+      return '100';
+    default:
+      return null;
   }
 }
 function styleLine(line: string, props: Props): string {
@@ -416,7 +467,9 @@ function overlay(base: string[], lines: string[], x: number, y: number): void {
     const width = line.length;
     if (x >= width) continue;
     const left = line.slice(0, Math.max(0, x));
-    const middle = hasAnsi(source) ? fitAnsi(source, Math.max(0, width - x)) : source.slice(0, Math.max(0, width - x));
+    const middle = hasAnsi(source)
+      ? fitAnsi(source, Math.max(0, width - x))
+      : source.slice(0, Math.max(0, width - x));
     const middleWidth = hasAnsi(middle) ? visibleLength(middle) : middle.length;
     const right = line.slice(Math.min(width, x + middleWidth));
     base[target] = left + middle + right;
@@ -444,15 +497,24 @@ function intrinsicWidth(child: VNode | string): number {
   const explicit = child.props.width;
   if (typeof explicit === 'number') return Math.max(0, Math.floor(explicit));
   switch (child.type) {
-    case 'text': return Math.max(1, Array.from(textContent(child)).length);
-    case 'spacer': return numberProp(child.props, 'width', 0);
-    case 'input': return Math.max(1, Array.from(stringProp(child.props, 'value', stringProp(child.props, 'placeholder', ''))).length + 2);
-    case 'button': return Array.from(stringProp(child.props, 'label', '')).length + 4;
+    case 'text':
+      return Math.max(1, Array.from(textContent(child)).length);
+    case 'spacer':
+      return numberProp(child.props, 'width', 0);
+    case 'input':
+      return Math.max(
+        1,
+        Array.from(stringProp(child.props, 'value', stringProp(child.props, 'placeholder', '')))
+          .length + 2,
+      );
+    case 'button':
+      return Array.from(stringProp(child.props, 'label', '')).length + 4;
     case 'list': {
-      const items = Array.isArray(child.props.items) ? child.props.items as string[] : [];
+      const items = Array.isArray(child.props.items) ? (child.props.items as string[]) : [];
       return items.reduce((max, item) => Math.max(max, Array.from(item).length + 2), 0);
     }
-    default: return 0;
+    default:
+      return 0;
   }
 }
 function intrinsicHeight(child: VNode | string): number {
@@ -460,9 +522,12 @@ function intrinsicHeight(child: VNode | string): number {
   const explicit = child.props.height;
   if (typeof explicit === 'number') return Math.max(0, Math.floor(explicit));
   switch (child.type) {
-    case 'list': return Array.isArray(child.props.items) ? (child.props.items as string[]).length : 0;
-    case 'scrollview': return numberProp(child.props, 'height', 1);
-    default: return 1;
+    case 'list':
+      return Array.isArray(child.props.items) ? (child.props.items as string[]).length : 0;
+    case 'scrollview':
+      return numberProp(child.props, 'height', 1);
+    default:
+      return 1;
   }
 }
 function renderTextNode(node: VNode, width: number, height: number): string[] {
@@ -470,7 +535,7 @@ function renderTextNode(node: VNode, width: number, height: number): string[] {
   return blank(width, height).map((line, index) => styleLine(lines[index] ?? line, node.props));
 }
 function renderList(node: VNode, width: number, height: number): string[] {
-  const items = Array.isArray(node.props.items) ? node.props.items as string[] : [];
+  const items = Array.isArray(node.props.items) ? (node.props.items as string[]) : [];
   const selectedIndex = numberProp(node.props, 'selectedIndex', 0);
   return blank(width, height).map((line, index) => {
     const item = items[index];
@@ -481,34 +546,60 @@ function renderList(node: VNode, width: number, height: number): string[] {
 }
 function renderLeaf(node: VNode, width: number, height: number): string[] {
   switch (node.type) {
-    case 'text': return renderTextNode(node, width, height);
-    case 'spacer': return blank(width, height);
+    case 'text':
+      return renderTextNode(node, width, height);
+    case 'spacer':
+      return blank(width, height);
     case 'input': {
       const value = stringProp(node.props, 'value', stringProp(node.props, 'placeholder', ''));
-      return [styleLine(fit((boolProp(node.props, 'focused', false) ? '> ' : '  ') + value, width), node.props), ...blank(width, height - 1)];
+      return [
+        styleLine(
+          fit((boolProp(node.props, 'focused', false) ? '> ' : '  ') + value, width),
+          node.props,
+        ),
+        ...blank(width, height - 1),
+      ];
     }
     case 'button': {
       const label = stringProp(node.props, 'label', textContent(node));
       const prefix = boolProp(node.props, 'focused', false) ? '> ' : '';
       return [fit(`${prefix}[ ${label} ]`, width), ...blank(width, height - 1)];
     }
-    case 'list': return renderList(node, width, height);
-    default: return renderBox(node, width, height);
+    case 'list':
+      return renderList(node, width, height);
+    default:
+      return renderBox(node, width, height);
   }
 }
-function renderColumn(children: (VNode | string)[], width: number, height: number, gap: number): string[] {
+function renderColumn(
+  children: (VNode | string)[],
+  width: number,
+  height: number,
+  gap: number,
+): string[] {
   const out = blank(width, height);
   let y = 0;
   for (const child of children) {
     if (y >= height) break;
-    const childHeight = Math.min(height - y, typeof child !== 'string' && child.type === 'text' && boolProp(child.props, 'wrap', false) ? height - y : intrinsicHeight(child));
-    const lines = typeof child === 'string' ? [fit(child, width)] : renderElement(child, width, childHeight);
+    const childHeight = Math.min(
+      height - y,
+      typeof child !== 'string' && child.type === 'text' && boolProp(child.props, 'wrap', false)
+        ? height - y
+        : intrinsicHeight(child),
+    );
+    const lines =
+      typeof child === 'string' ? [fit(child, width)] : renderElement(child, width, childHeight);
     overlay(out, lines, 0, y);
     y += childHeight + gap;
   }
   return out;
 }
-function renderRow(children: (VNode | string)[], width: number, height: number, gap: number): string[] {
+function renderRow(
+  children: (VNode | string)[],
+  width: number,
+  height: number,
+  gap: number,
+): string[] {
   const out = blank(width, height);
   const gaps = Math.max(0, children.length - 1) * gap;
   let fixed = 0;
@@ -528,13 +619,16 @@ function renderRow(children: (VNode | string)[], width: number, height: number, 
     let childWidth = intrinsicWidth(child);
     if (typeof child !== 'string' && child.type === 'spacer') {
       const weight = numberProp(child.props, 'flex', 0);
-      const share = flex > 0 ? Math.floor(remaining * weight / flex) : 0;
+      const share = flex > 0 ? Math.floor((remaining * weight) / flex) : 0;
       childWidth += share;
       remaining -= share;
       flex -= weight;
     }
     childWidth = Math.min(childWidth, width - x);
-    const lines = typeof child === 'string' ? [fit(child, childWidth)] : renderElement(child, childWidth, height);
+    const lines =
+      typeof child === 'string'
+        ? [fit(child, childWidth)]
+        : renderElement(child, childWidth, height);
     overlay(out, lines, x, 0);
     x += childWidth + gap;
   }
@@ -559,7 +653,10 @@ function renderBox(node: VNode, width: number, height: number): string[] {
   const contentWidth = Math.max(0, width - insetX * 2);
   const contentHeight = Math.max(0, height - insetY * 2);
   const children = node.children as (VNode | string)[];
-  const content = direction === 'row' ? renderRow(children, contentWidth, contentHeight, gap) : renderColumn(children, contentWidth, contentHeight, gap);
+  const content =
+    direction === 'row'
+      ? renderRow(children, contentWidth, contentHeight, gap)
+      : renderColumn(children, contentWidth, contentHeight, gap);
   overlay(out, content, insetX, insetY);
   return out.map((line) => styleLine(line, node.props));
 }
@@ -567,21 +664,29 @@ function renderElement(node: VNode, width: number, height: number): string[] {
   if (node.type === 'box') return renderBox(node, width, height);
   if (node.type === 'scrollview') {
     const offset = numberProp(node.props, 'offset', 0);
-    const inner = renderColumn(node.children as (VNode | string)[], width, Math.max(height + offset, height), 0);
+    const inner = renderColumn(
+      node.children as (VNode | string)[],
+      width,
+      Math.max(height + offset, height),
+      0,
+    );
     return blank(width, height).map((line, index) => inner[index + offset] ?? line);
   }
   return renderLeaf(node, width, height);
 }
 /**
-* Render an element tree to a deterministic terminal frame.
-*
-* The returned string contains exactly `height` lines joined with `\n`, and
-* each line is padded or clipped to `width` cells.
-*/
+ * Render an element tree to a deterministic terminal frame.
+ *
+ * The returned string contains exactly `height` lines joined with `\n`, and
+ * each line is padded or clipped to `width` cells.
+ */
 export function renderFrame(element: VNode, options: RenderFrameOptions): string {
   const width = Math.max(0, Math.floor(options.width));
   const height = Math.max(0, Math.floor(options.height));
-  return renderElement(element, width, height).slice(0, height).map((line) => fitAnsi(line, width)).join('\n');
+  return renderElement(element, width, height)
+    .slice(0, height)
+    .map((line) => fitAnsi(line, width))
+    .join('\n');
 }
 function renderScreen(element: VNode, options: RenderFrameOptions): string {
   const lines = renderFrame(element, options).split('\n');
@@ -592,25 +697,28 @@ function renderScreen(element: VNode, options: RenderFrameOptions): string {
   return out;
 }
 /**
-* Render a fullscreen terminal app and return a lifecycle handle.
-*
-* This enters the alternate screen, hides the cursor, writes the current frame,
-* and restores terminal state from `stop()`. Width and height default to the
-* current terminal size when available.
-*/
+ * Render a fullscreen terminal app and return a lifecycle handle.
+ *
+ * This enters the alternate screen, hides the cursor, writes the current frame,
+ * and restores terminal state from `stop()`. Width and height default to the
+ * current terminal size when available.
+ */
 export function render(element: VNode, options: RenderOptions = {}): TuiApp {
   let current = element;
   let stopped = false;
   const size = queryTerminalSize();
   const width = options.width ?? size.width;
   const height = options.height ?? size.height;
-  const input = options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
+  const input =
+    options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
   function paint(): void {
     if (stopped) return;
-    void writeStdout(renderScreen(current, {
-      width,
-      height
-    }));
+    void writeStdout(
+      renderScreen(current, {
+        width,
+        height,
+      }),
+    );
   }
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
   paint();
@@ -625,7 +733,7 @@ export function render(element: VNode, options: RenderOptions = {}): TuiApp {
       stopped = true;
       input?.close();
       void writeStdout(enableAutoWrap() + showCursor() + exitMouseMode() + exitAlternateScreen());
-    }
+    },
   };
   if (input && options.onEvent) {
     void (async () => {

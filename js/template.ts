@@ -1,129 +1,141 @@
 /**
-* fino:template — small Mustache-style template rendering.
-*
-* Supports escaped variables, triple-mustache/unescaped variables, truthy and
-* inverted sections, list iteration, and dotted-name lookup. Full Mustache
-* lambdas are not implemented: function values are called as normal lookup
-* values, not with raw section text and a render callback. Partials, delimiter
-* changes, and standalone-line trimming are intentionally out of scope for this
-* release; unsupported syntax is rejected during compilation where possible.
-*
-* @example
-* ```ts no_run
-* import { compile, render } from 'fino:template';
-*
-* const renderUser = compile('{{#active}}{{name}}{{/active}}{{^active}}disabled{{/active}}');
-* const output = renderUser({ active: true, name: '<Ada>' });
-* const list = render('{{#items}}{{.}} {{/items}}', { items: ['a', 'b'] });
-* ```
-*/
+ * fino:template — small Mustache-style template rendering.
+ *
+ * Supports escaped variables, triple-mustache/unescaped variables, truthy and
+ * inverted sections, list iteration, and dotted-name lookup. Full Mustache
+ * lambdas are not implemented: function values are called as normal lookup
+ * values, not with raw section text and a render callback. Partials, delimiter
+ * changes, and standalone-line trimming are intentionally out of scope for this
+ * release; unsupported syntax is rejected during compilation where possible.
+ *
+ * @example
+ * ```ts no_run
+ * import { compile, render } from 'fino:template';
+ *
+ * const renderUser = compile('{{#active}}{{name}}{{/active}}{{^active}}disabled{{/active}}');
+ * const output = renderUser({ active: true, name: '<Ada>' });
+ * const list = render('{{#items}}{{.}} {{/items}}', { items: ['a', 'b'] });
+ * ```
+ */
 import { Scanner } from 'fino:parsing/scanner';
-type Token = {
-  type: 'text';
-  value: string;
-} | {
-  type: 'variable';
-  name: string;
-  escaped: boolean;
-} | {
-  type: 'section';
-  name: string;
-  inverted: boolean;
-  children: Token[];
-};
+type Token =
+  | {
+      type: 'text';
+      value: string;
+    }
+  | {
+      type: 'variable';
+      name: string;
+      escaped: boolean;
+    }
+  | {
+      type: 'section';
+      name: string;
+      inverted: boolean;
+      children: Token[];
+    };
 /**
-* Options accepted by one-shot template rendering.
-*
-* The current renderer has no runtime flags, so this interface is intentionally
-* empty and exists to keep `render()` forward-compatible with future escaping
-* or partial-loading options.
-*
-* ```ts no_run
-* import { render, type RenderOptions } from 'fino:template';
-*
-* const options: RenderOptions = {};
-* render('Hello {{name}}', { name: 'Ada' }, options);
-* ```
-*/
+ * Options accepted by one-shot template rendering.
+ *
+ * The current renderer has no runtime flags, so this interface is intentionally
+ * empty and exists to keep `render()` forward-compatible with future escaping
+ * or partial-loading options.
+ *
+ * ```ts no_run
+ * import { render, type RenderOptions } from 'fino:template';
+ *
+ * const options: RenderOptions = {};
+ * render('Hello {{name}}', { name: 'Ada' }, options);
+ * ```
+ */
 export interface RenderOptions {}
 /**
-* Options accepted by template compilation.
-*
-* `CompileOptions` currently inherits the empty `RenderOptions` shape. Pass the
-* same options to `compile()` that you would pass to `render()`.
-*
-* ```ts no_run
-* import { compile, type CompileOptions } from 'fino:template';
-*
-* const options: CompileOptions = {};
-* const renderUser = compile('{{name}}', options);
-* renderUser({ name: 'Ada' });
-* ```
-*/
+ * Options accepted by template compilation.
+ *
+ * `CompileOptions` currently inherits the empty `RenderOptions` shape. Pass the
+ * same options to `compile()` that you would pass to `render()`.
+ *
+ * ```ts no_run
+ * import { compile, type CompileOptions } from 'fino:template';
+ *
+ * const options: CompileOptions = {};
+ * const renderUser = compile('{{name}}', options);
+ * renderUser({ name: 'Ada' });
+ * ```
+ */
 export interface CompileOptions extends RenderOptions {}
 interface ContextFrame {
   value: unknown;
   parent: ContextFrame | null;
 }
 /**
-* Escape a value for safe insertion into HTML text or attributes.
-*
-* `null` and `undefined` become the empty string. Other values are stringified
-* and the five HTML-sensitive characters (`&`, `<`, `>`, `"`, and `'`) are
-* replaced with entities. This is the same escaping used for normal
-* `{{name}}` template variables.
-*
-* ```ts no_run
-* import { escapeHtml } from 'fino:template';
-*
-* escapeHtml('<script>alert("x")<\/script>');
-* // '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;'
-* ```
-*/
+ * Escape a value for safe insertion into HTML text or attributes.
+ *
+ * `null` and `undefined` become the empty string. Other values are stringified
+ * and the five HTML-sensitive characters (`&`, `<`, `>`, `"`, and `'`) are
+ * replaced with entities. This is the same escaping used for normal
+ * `{{name}}` template variables.
+ *
+ * ```ts no_run
+ * import { escapeHtml } from 'fino:template';
+ *
+ * escapeHtml('<script>alert("x")<\/script>');
+ * // '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;'
+ * ```
+ */
 export function escapeHtml(value: unknown): string {
-  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 /**
-* Compile a template string into a reusable render function.
-*
-* The returned function accepts any data value. Objects are searched by own
-* properties, maps by key, arrays and other iterables drive sections, and
-* dotted names traverse nested objects. Syntax errors such as unclosed
-* sections throw during compilation.
-*
-* ```ts no_run
-* import { compile } from 'fino:template';
-*
-* const renderUser = compile('Hello, {{name}}');
-* renderUser({ name: '<Ada>' }); // 'Hello, &lt;Ada&gt;'
-* ```
-*/
-export function compile(template: string, _options: CompileOptions = {}): (data?: unknown) => string {
+ * Compile a template string into a reusable render function.
+ *
+ * The returned function accepts any data value. Objects are searched by own
+ * properties, maps by key, arrays and other iterables drive sections, and
+ * dotted names traverse nested objects. Syntax errors such as unclosed
+ * sections throw during compilation.
+ *
+ * ```ts no_run
+ * import { compile } from 'fino:template';
+ *
+ * const renderUser = compile('Hello, {{name}}');
+ * renderUser({ name: '<Ada>' }); // 'Hello, &lt;Ada&gt;'
+ * ```
+ */
+export function compile(
+  template: string,
+  _options: CompileOptions = {},
+): (data?: unknown) => string {
   const tokens = parseTemplate(template);
-  return (data: unknown = {}) => renderTokens(tokens, {
-    value: data,
-    parent: null
-  });
+  return (data: unknown = {}) =>
+    renderTokens(tokens, {
+      value: data,
+      parent: null,
+    });
 }
 /**
-* Render a template once with the provided data.
-*
-* This is equivalent to `compile(template, options)(data)`. Use `compile()`
-* directly when the same template is rendered repeatedly.
-*
-* ```ts no_run
-* import { render } from 'fino:template';
-*
-* render('{{#items}}{{.}} {{/items}}', { items: ['a', 'b'] });
-* ```
-*/
+ * Render a template once with the provided data.
+ *
+ * This is equivalent to `compile(template, options)(data)`. Use `compile()`
+ * directly when the same template is rendered repeatedly.
+ *
+ * ```ts no_run
+ * import { render } from 'fino:template';
+ *
+ * render('{{#items}}{{.}} {{/items}}', { items: ['a', 'b'] });
+ * ```
+ */
 export function render(template: string, data: unknown = {}, options: RenderOptions = {}): string {
   return compile(template, options)(data);
 }
 function parseTemplate(template: string): Token[] {
   const scanner = new Scanner(template, {
     encoding: 'utf-8',
-    format: 'template'
+    format: 'template',
   });
   const root: Token[] = [];
   const stack: Array<{
@@ -138,17 +150,21 @@ function parseTemplate(template: string): Token[] {
     const textStart = scanner.mark();
     while (!scanner.done && scanner.peek(2) !== '{{') scanner.eat();
     const text = scanner.text(textStart);
-    if (text !== '') tokens.push({
-      type: 'text',
-      value: text
-    });
+    if (text !== '')
+      tokens.push({
+        type: 'text',
+        value: text,
+      });
     if (scanner.done) break;
     if (scanner.match('{{{')) {
-      const name = validateTemplateName(readUntilSequence(scanner, '}}}', 'template: unclosed triple mustache'), 'variable');
+      const name = validateTemplateName(
+        readUntilSequence(scanner, '}}}', 'template: unclosed triple mustache'),
+        'variable',
+      );
       tokens.push({
         type: 'variable',
         name,
-        escaped: false
+        escaped: false,
       });
       continue;
     }
@@ -170,14 +186,14 @@ function parseTemplate(template: string): Token[] {
         type: 'section',
         name: tag,
         inverted: false,
-        children: []
+        children: [],
       };
       section.name = name;
       tokens.push(section);
       stack.push({
         name,
         tokens,
-        section
+        section,
       });
       tokens = section.children;
       continue;
@@ -190,13 +206,13 @@ function parseTemplate(template: string): Token[] {
         type: 'section',
         name,
         inverted: true,
-        children: []
+        children: [],
       };
       tokens.push(section);
       stack.push({
         name,
         tokens,
-        section
+        section,
       });
       tokens = section.children;
       continue;
@@ -204,14 +220,15 @@ function parseTemplate(template: string): Token[] {
     if (sigil === '/') {
       const name = validateTemplateName(tag, 'section close');
       const frame = stack.pop();
-      if (frame === undefined || frame.name !== name) throw new Error(`template: unmatched section close "${name}"`);
+      if (frame === undefined || frame.name !== name)
+        throw new Error(`template: unmatched section close "${name}"`);
       tokens = frame.tokens;
       continue;
     }
     tokens.push({
       type: 'variable',
       name: validateTemplateName(sigil === '&' ? tag : tag, 'variable'),
-      escaped: sigil !== '&'
+      escaped: sigil !== '&',
     });
   }
   const unclosed = stack.pop();
@@ -239,7 +256,7 @@ function validateTemplateName(raw: string, kind: string): string {
   if (name === '.') return name;
   const scanner = new Scanner(name, {
     encoding: 'utf-8',
-    format: 'template-name'
+    format: 'template-name',
   });
   while (scanner.match('../')) {
     if (scanner.done) throw new Error(`template: malformed name "${name}"`);
@@ -247,7 +264,13 @@ function validateTemplateName(raw: string, kind: string): string {
   const restStart = scanner.mark();
   scanner.eatWhile(() => true);
   const rest = scanner.text(restStart);
-  if (rest === '' || rest.startsWith('.') || rest.endsWith('.') || rest.includes('..') || rest.includes('/')) {
+  if (
+    rest === '' ||
+    rest.startsWith('.') ||
+    rest.endsWith('.') ||
+    rest.includes('..') ||
+    rest.includes('/')
+  ) {
     throw new Error(`template: malformed name "${name}"`);
   }
   return name;
@@ -266,9 +289,12 @@ function renderTokens(tokens: Token[], context: ContextFrame): string {
   }
   return out;
 }
-function renderSection(token: Token & {
-  type: 'section';
-}, context: ContextFrame): string {
+function renderSection(
+  token: Token & {
+    type: 'section';
+  },
+  context: ContextFrame,
+): string {
   const value = resolveName(context, token.name);
   const list = iterableValues(value);
   const active = isTruthySectionValue(value, list);
@@ -276,16 +302,18 @@ function renderSection(token: Token & {
   if (!active) return '';
   if (list !== null) {
     let out = '';
-    for (const item of list) out += renderTokens(token.children, {
-      value: item,
-      parent: context
-    });
+    for (const item of list)
+      out += renderTokens(token.children, {
+        value: item,
+        parent: context,
+      });
     return out;
   }
-  if (isObjectLike(value)) return renderTokens(token.children, {
-    value,
-    parent: context
-  });
+  if (isObjectLike(value))
+    return renderTokens(token.children, {
+      value,
+      parent: context,
+    });
   return renderTokens(token.children, context);
 }
 function resolveName(context: ContextFrame, name: string): unknown {
@@ -331,7 +359,12 @@ function lookupPart(value: unknown, key: string): unknown {
 function iterableValues(value: unknown): unknown[] | null {
   if (typeof value === 'string') return null;
   if (Array.isArray(value)) return value;
-  if (value !== null && typeof value === 'object' && Symbol.iterator in value && typeof (value as Iterable<unknown>)[Symbol.iterator] === 'function') {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    Symbol.iterator in value &&
+    typeof (value as Iterable<unknown>)[Symbol.iterator] === 'function'
+  ) {
     return Array.from(value as Iterable<unknown>);
   }
   return null;

@@ -1,36 +1,45 @@
 /**
-* Tests for HTTPS — serveHttp() with TLS options.
-*
-* Requires self-signed test fixtures at tests/net/fixtures/test.crt and
-* tests/net/fixtures/test.key. Generate them with:
-*
-*   mkdir -p tests/net/fixtures
-*   openssl req -x509 -newkey rsa:2048 \
-*     -keyout tests/net/fixtures/test.key \
-*     -out tests/net/fixtures/test.crt \
-*     -days 3650 -nodes -subj "/CN=localhost" 2>/dev/null
-*/
+ * Tests for HTTPS — serveHttp() with TLS options.
+ *
+ * Requires self-signed test fixtures at tests/net/fixtures/test.crt and
+ * tests/net/fixtures/test.key. Generate them with:
+ *
+ *   mkdir -p tests/net/fixtures
+ *   openssl req -x509 -newkey rsa:2048 \
+ *     -keyout tests/net/fixtures/test.key \
+ *     -out tests/net/fixtures/test.crt \
+ *     -days 3650 -nodes -subj "/CN=localhost" 2>/dev/null
+ */
 import { describe, it } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
 import { TlsSocket } from 'fino:net/tls';
 import * as loop from 'internal:runtime/loop';
-const tlsAvailable = (globalThis as typeof globalThis & {
-  tlsAvailable?: boolean;
-}).tlsAvailable;
+const tlsAvailable = (
+  globalThis as typeof globalThis & {
+    tlsAvailable?: boolean;
+  }
+).tlsAvailable;
 const skip = !tlsAvailable && 'OpenSSL (libssl) not available';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH = new URL('./fixtures/test.key', import.meta.url).pathname;
-async function tlsRoundtrip(port: number, rawRequest: string, tlsOptions: Parameters<typeof TlsSocket.connect>[1] = {
-  hostname: '127.0.0.1',
-  rejectUnauthorized: false
-}): Promise<string> {
-  const tls = await TlsSocket.connect({
-    family: 'ipv4',
-    ip: '127.0.0.1',
-    port
-  }, tlsOptions);
+async function tlsRoundtrip(
+  port: number,
+  rawRequest: string,
+  tlsOptions: Parameters<typeof TlsSocket.connect>[1] = {
+    hostname: '127.0.0.1',
+    rejectUnauthorized: false,
+  },
+): Promise<string> {
+  const tls = await TlsSocket.connect(
+    {
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port,
+    },
+    tlsOptions,
+  );
   const [reader, writer] = tls.split();
   await writer.write(encodeUtf8(rawRequest));
   await writer.close();
@@ -48,13 +57,16 @@ async function tlsRoundtrip(port: number, rawRequest: string, tlsOptions: Parame
 }
 describe('HTTPS server — basic TLS request/response', () => {
   it('serves a response over TLS', { skip }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('hello https'));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('hello https'),
+    );
     const port = server.port;
     try {
       const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -65,46 +77,55 @@ describe('HTTPS server — basic TLS request/response', () => {
       const body = bodyStart >= 0 ? response.slice(bodyStart + 4) : '';
       t.equal(body, 'hello https', 'response body is exactly correct over TLS');
       // Verify TLS was actually used (connection object is a TlsSocket, not plain Socket).
-      t.ok(response.includes('HTTP/1.1'), 'response is valid HTTP over TLS (not plain-text garble)');
+      t.ok(
+        response.includes('HTTP/1.1'),
+        'response is valid HTTP over TLS (not plain-text garble)',
+      );
     } finally {
       await server.close();
     }
   });
   it('fetch sends client certificate options to an mTLS server', { skip }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH,
-        ca: CERT_PATH,
-        clientAuth: 'require'
-      }
-    }, async (_req, session) => {
-      return new Response(session.tls?.authorized ? 'fetch mtls ok' : 'unauthorized', {
-        status: session.tls?.authorized ? 200 : 401
-      });
-    });
+    const server = serveHttp(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+          ca: CERT_PATH,
+          clientAuth: 'require',
+        },
+      },
+      async (_req, session) => {
+        return new Response(session.tls?.authorized ? 'fetch mtls ok' : 'unauthorized', {
+          status: session.tls?.authorized ? 200 : 401,
+        });
+      },
+    );
     try {
       let unauthenticatedStatus = 0;
       let unauthenticatedRejected = false;
       try {
         const response = await fetch(`https://localhost:${server.port}/`, {
           protocol: 'http/1.1',
-          tls: { ca: CERT_PATH }
+          tls: { ca: CERT_PATH },
         } as any);
         unauthenticatedStatus = response.status;
       } catch (_) {
         unauthenticatedRejected = true;
       }
-      t.ok(unauthenticatedRejected || unauthenticatedStatus !== 200, 'fetch without client certificate cannot complete successfully');
+      t.ok(
+        unauthenticatedRejected || unauthenticatedStatus !== 200,
+        'fetch without client certificate cannot complete successfully',
+      );
       const response = await fetch(`https://localhost:${server.port}/`, {
         protocol: 'http/1.1',
         tls: {
           ca: CERT_PATH,
           cert: CERT_PATH,
-          key: KEY_PATH
-        }
+          key: KEY_PATH,
+        },
       } as any);
       t.equal(response.status, 200, 'fetch with client certificate succeeds');
       t.equal(await response.text(), 'fetch mtls ok', 'fetch receives authenticated response');
@@ -113,38 +134,55 @@ describe('HTTPS server — basic TLS request/response', () => {
     }
   });
   it('requires a trusted client certificate when clientAuth is require', { skip }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH,
-        ca: CERT_PATH,
-        clientAuth: 'require'
-      }
-    }, async (_req, session) => {
-      t.ok(session.tls?.authorized, 'session TLS metadata reports authorized client');
-      t.ok(session.tls?.peerCertificate instanceof Uint8Array, 'session exposes client certificate bytes');
-      return new Response('mtls ok');
-    });
+    const server = serveHttp(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+          ca: CERT_PATH,
+          clientAuth: 'require',
+        },
+      },
+      async (_req, session) => {
+        t.ok(session.tls?.authorized, 'session TLS metadata reports authorized client');
+        t.ok(
+          session.tls?.peerCertificate instanceof Uint8Array,
+          'session exposes client certificate bytes',
+        );
+        return new Response('mtls ok');
+      },
+    );
     try {
       let unauthenticated = '';
       let unauthenticatedRejected = false;
       try {
-        unauthenticated = await tlsRoundtrip(server.port, `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`, {
-          hostname: 'localhost',
-          ca: CERT_PATH
-        });
+        unauthenticated = await tlsRoundtrip(
+          server.port,
+          `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`,
+          {
+            hostname: 'localhost',
+            ca: CERT_PATH,
+          },
+        );
       } catch (_) {
         unauthenticatedRejected = true;
       }
-      t.ok(unauthenticatedRejected || !unauthenticated.startsWith('HTTP/1.1 200'), 'client without certificate cannot complete an HTTP request');
-      const response = await tlsRoundtrip(server.port, `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`, {
-        hostname: 'localhost',
-        ca: CERT_PATH,
-        cert: CERT_PATH,
-        key: KEY_PATH
-      });
+      t.ok(
+        unauthenticatedRejected || !unauthenticated.startsWith('HTTP/1.1 200'),
+        'client without certificate cannot complete an HTTP request',
+      );
+      const response = await tlsRoundtrip(
+        server.port,
+        `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`,
+        {
+          hostname: 'localhost',
+          ca: CERT_PATH,
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      );
       t.ok(response.startsWith('HTTP/1.1 200'), 'cert-authenticated request succeeds');
       t.ok(response.endsWith('mtls ok'), 'mTLS handler response is delivered');
     } finally {
@@ -152,26 +190,34 @@ describe('HTTPS server — basic TLS request/response', () => {
     }
   });
   it('falls back to HTTP/1.1 when the TLS client offers only http/1.1', { skip }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('alpn h1'));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('alpn h1'),
+    );
     try {
-      const tls = await TlsSocket.connect({
-        family: 'ipv4',
-        ip: '127.0.0.1',
-        port: server.port
-      }, {
-        hostname: '127.0.0.1',
-        rejectUnauthorized: false,
-        alpn: ['http/1.1']
-      });
+      const tls = await TlsSocket.connect(
+        {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: server.port,
+        },
+        {
+          hostname: '127.0.0.1',
+          rejectUnauthorized: false,
+          alpn: ['http/1.1'],
+        },
+      );
       t.equal(tls.negotiatedProtocol, 'http/1.1', 'ALPN selected http/1.1');
       const [reader, writer] = tls.split();
-      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.write(
+        encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`),
+      );
       await writer.close();
       const chunks: Uint8Array[] = [];
       for await (const chunk of reader) chunks.push(chunk);
@@ -192,28 +238,36 @@ describe('HTTPS server — basic TLS request/response', () => {
   });
   it('close() waits for an already accepted TLS request to finish', { skip }, async (t) => {
     let handlerStarted = false;
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => {
-      handlerStarted = true;
-      await loop.timeout(25);
-      return new Response('finished before close resolved');
-    });
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => {
+        handlerStarted = true;
+        await loop.timeout(25);
+        return new Response('finished before close resolved');
+      },
+    );
     try {
-      const tls = await TlsSocket.connect({
-        family: 'ipv4',
-        ip: '127.0.0.1',
-        port: server.port
-      }, {
-        hostname: '127.0.0.1',
-        rejectUnauthorized: false
-      });
+      const tls = await TlsSocket.connect(
+        {
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: server.port,
+        },
+        {
+          hostname: '127.0.0.1',
+          rejectUnauthorized: false,
+        },
+      );
       const [reader, writer] = tls.split();
-      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.write(
+        encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`),
+      );
       await writer.flush();
       while (!handlerStarted) await loop.timeout(1);
       const closePromise = server.close();
@@ -231,7 +285,10 @@ describe('HTTPS server — basic TLS request/response', () => {
       }
       const response = decodeUtf8(all);
       t.ok(response.startsWith('HTTP/1.1 200'), 'active request completes');
-      t.ok(response.endsWith('finished before close resolved'), 'response body is complete before close resolves');
+      t.ok(
+        response.endsWith('finished before close resolved'),
+        'response body is complete before close resolves',
+      );
     } finally {
       await server.close();
     }
@@ -242,30 +299,39 @@ describe('HTTPS server — error paths', () => {
     let threw = false;
     let message = '';
     try {
-      serveHttp({
-        port: 0,
-        tls: {
-          cert: '/nonexistent/cert.pem',
-          key: '/nonexistent/key.pem'
-        }
-      }, async () => new Response('unreachable'));
+      serveHttp(
+        {
+          port: 0,
+          tls: {
+            cert: '/nonexistent/cert.pem',
+            key: '/nonexistent/key.pem',
+          },
+        },
+        async () => new Response('unreachable'),
+      );
     } catch (err: unknown) {
       threw = true;
       message = err instanceof Error ? err.message : String(err);
     }
     t.ok(threw, 'serveHttp() throws on missing cert');
-    t.ok(message.includes('/nonexistent/cert.pem'), 'error message contains cert path (got: ' + message + ')');
+    t.ok(
+      message.includes('/nonexistent/cert.pem'),
+      'error message contains cert path (got: ' + message + ')',
+    );
   });
 });
 describe('HTTPS server — close() idempotency', () => {
   it('close() can be called twice without throwing', { skip }, async (t) => {
-    const server = serveHttp({
-      port: 0,
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => new Response('ok'));
+    const server = serveHttp(
+      {
+        port: 0,
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => new Response('ok'),
+    );
     let threw = false;
     try {
       await server.close();

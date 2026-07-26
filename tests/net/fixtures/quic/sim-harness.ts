@@ -1,5 +1,15 @@
-import { SimulatedNetworkProvider, type SimulatedLinkOptions } from 'internal:net/simulated-provider';
-import { QuicEndpoint, type QuicAddress, type QuicConnection, type QuicEndpointOptions, type QuicListener, type QuicStream } from 'fino:net/quic';
+import {
+  SimulatedNetworkProvider,
+  type SimulatedLinkOptions,
+} from 'internal:net/simulated-provider';
+import {
+  QuicEndpoint,
+  type QuicAddress,
+  type QuicConnection,
+  type QuicEndpointOptions,
+  type QuicListener,
+  type QuicStream,
+} from 'fino:net/quic';
 import { parseQuicHeader } from './packet-parse.ts';
 const TEST_CERT = 'tests/net/fixtures/test.crt';
 const TEST_KEY = 'tests/net/fixtures/test.key';
@@ -22,24 +32,31 @@ export class SimulatedQuicRuntime {
   defer(callback: () => void): void {
     Promise.resolve().then(callback);
   }
-  setTimer(delayMs: number, callback: () => void): {
+  setTimer(
+    delayMs: number,
+    callback: () => void,
+  ): {
     cancel(): void;
   } {
     const timer: SimTimer = {
       dueAt: this.#net.now + Math.max(0, delayMs),
       canceled: false,
-      callback
+      callback,
     };
     this.#timers.push(timer);
-    return { cancel() {
-      timer.canceled = true;
-    } };
+    return {
+      cancel() {
+        timer.canceled = true;
+      },
+    };
   }
   runDueTimers(): number {
     let fired = 0;
     for (;;) {
       this.#timers.sort((a, b) => a.dueAt - b.dueAt);
-      const timer = this.#timers.find((candidate) => !candidate.canceled && candidate.dueAt <= this.#net.now);
+      const timer = this.#timers.find(
+        (candidate) => !candidate.canceled && candidate.dueAt <= this.#net.now,
+      );
       if (timer === undefined) {
         this.#timers = this.#timers.filter((candidate) => !candidate.canceled);
         return fired;
@@ -95,24 +112,27 @@ export class SimulatedQuicDatagramTransportFactory {
       sendNow(data: Uint8Array, dest: QuicAddress) {
         return socket.sendNow(data, dest);
       },
-      sendBatch: (packets: Array<{
-        data: Uint8Array;
-        dest: QuicAddress;
-        ecn?: number;
-      }>) => {
+      sendBatch: (
+        packets: Array<{
+          data: Uint8Array;
+          dest: QuicAddress;
+          ecn?: number;
+        }>,
+      ) => {
         let sent = 0;
         this.sendBatchSizes.push(packets.length);
         for (const packet of packets) {
           const rc = socket.sendNow(packet.data, packet.dest, packet.ecn);
-          if (rc < 0) return {
-            sent,
-            errno: rc
-          };
+          if (rc < 0)
+            return {
+              sent,
+              errno: rc,
+            };
           sent++;
         }
         return {
           sent,
-          errno: null
+          errno: null,
         };
       },
       waitWritable() {
@@ -120,7 +140,7 @@ export class SimulatedQuicDatagramTransportFactory {
       },
       close() {
         socket.close();
-      }
+      },
     };
   }
 }
@@ -133,36 +153,46 @@ export class QuicPipe {
   listener: QuicListener | null = null;
   clientConnection: QuicConnection | null = null;
   serverConnection: QuicConnection | null = null;
-  constructor(options: {
-    link?: SimulatedLinkOptions;
-    client?: QuicEndpointOptions;
-    server?: QuicEndpointOptions;
-  } = {}) {
+  constructor(
+    options: {
+      link?: SimulatedLinkOptions;
+      client?: QuicEndpointOptions;
+      server?: QuicEndpointOptions;
+    } = {},
+  ) {
     this.net = new SimulatedNetworkProvider({ defaultLink: options.link });
     this.runtime = new SimulatedQuicRuntime(this.net);
     this.transportFactory = new SimulatedQuicDatagramTransportFactory(this.net);
     const internals = {
       transportFactory: this.transportFactory,
-      runtime: this.runtime
+      runtime: this.runtime,
     };
-    this.server = new QuicEndpoint({
-      alpnProtocols: ['fino-hq'],
-      ...options.server
-    }, internals);
-    this.client = new QuicEndpoint({
-      alpnProtocols: ['fino-hq'],
-      ...options.client
-    }, internals);
+    this.server = new QuicEndpoint(
+      {
+        alpnProtocols: ['fino-hq'],
+        ...options.server,
+      },
+      internals,
+    );
+    this.client = new QuicEndpoint(
+      {
+        alpnProtocols: ['fino-hq'],
+        ...options.client,
+      },
+      internals,
+    );
   }
-  async listen(address: QuicAddress = {
-    family: 'ipv4',
-    ip: '10.0.0.2',
-    port: 4433
-  }): Promise<QuicListener> {
+  async listen(
+    address: QuicAddress = {
+      family: 'ipv4',
+      ip: '10.0.0.2',
+      port: 4433,
+    },
+  ): Promise<QuicListener> {
     this.listener = await this.server.listen({
       address,
       certificateFile: TEST_CERT,
-      privateKeyFile: TEST_KEY
+      privateKeyFile: TEST_KEY,
     });
     return this.listener;
   }
@@ -170,18 +200,18 @@ export class QuicPipe {
     client: QuicConnection;
     server: QuicConnection;
   }> {
-    const listener = this.listener ?? await this.listen();
+    const listener = this.listener ?? (await this.listen());
     const accepted = this.server.accept();
     const connected = this.client.connect({
       address: listener.address,
-      serverName: 'localhost'
+      serverName: 'localhost',
     });
     const [client, server] = await this.pumpUntil(Promise.all([connected, accepted]));
     this.clientConnection = client;
     this.serverConnection = server;
     return {
       client: this.clientConnection,
-      server: this.serverConnection
+      server: this.serverConnection,
     };
   }
   async openBidi(initialData: Uint8Array | string = new Uint8Array()): Promise<{
@@ -197,7 +227,7 @@ export class QuicPipe {
     const serverStream = await this.pumpUntil(serverStreamPromise);
     return {
       clientStream,
-      serverStream
+      serverStream,
     };
   }
   async sendAndRead(message: string): Promise<string> {
@@ -231,14 +261,14 @@ export class QuicPipe {
     if (this.listener === null || this.clientConnection === null) return;
     this.net.setLink(this.clientConnection.localAddress, this.listener.address, {
       reorderRate: 1,
-      reorderDelayMs: delayMs
+      reorderDelayMs: delayMs,
     });
   }
   rebindClient(port: number): void {
     if (this.clientConnection === null) throw new Error('client connection is not established');
     this.net.rewriteSource(this.clientConnection.localAddress, {
       ...this.clientConnection.localAddress,
-      port
+      port,
     });
   }
   advance(ms: number): void {
@@ -262,13 +292,16 @@ export class QuicPipe {
     let settled = false;
     let value: T | undefined;
     let failure: unknown;
-    promise.then((result) => {
-      settled = true;
-      value = result;
-    }, (error) => {
-      settled = true;
-      failure = error;
-    });
+    promise.then(
+      (result) => {
+        settled = true;
+        value = result;
+      },
+      (error) => {
+        settled = true;
+        failure = error;
+      },
+    );
     for (let i = 0; i < maxTurns; i++) {
       await this.runUntilIdle();
       if (settled) {
@@ -288,23 +321,27 @@ export class QuicPipe {
     throw new Error(`simulated QUIC operation did not complete; trace=${this.#traceSummary()}`);
   }
   #traceSummary(): string {
-    const datagrams = this.trace().filter((event) => event.type === 'datagram:queued' || event.type === 'datagram:delivered').slice(-80);
-    return JSON.stringify(datagrams.map((event) => {
-      let version: number | null | string = null;
-      try {
-        version = parseQuicHeader(event.data).version;
-      } catch {
-        version = 'unparsed';
-      }
-      return {
-        type: event.type,
-        at: event.at,
-        from: event.from.port,
-        to: event.to.port,
-        bytes: event.bytes,
-        version
-      };
-    }));
+    const datagrams = this.trace()
+      .filter((event) => event.type === 'datagram:queued' || event.type === 'datagram:delivered')
+      .slice(-80);
+    return JSON.stringify(
+      datagrams.map((event) => {
+        let version: number | null | string = null;
+        try {
+          version = parseQuicHeader(event.data).version;
+        } catch {
+          version = 'unparsed';
+        }
+        return {
+          type: event.type,
+          at: event.at,
+          from: event.from.port,
+          to: event.to.port,
+          bytes: event.bytes,
+          version,
+        };
+      }),
+    );
   }
   async pumpUntilCondition<T>(condition: () => T | null | undefined, maxTurns = 1e3): Promise<T> {
     for (let i = 0; i < maxTurns; i++) {
@@ -316,7 +353,9 @@ export class QuicPipe {
         this.net.advance(dueAt - this.net.now);
       }
     }
-    throw new Error(`simulated QUIC condition did not become true; trace=${JSON.stringify(this.trace())}`);
+    throw new Error(
+      `simulated QUIC condition did not become true; trace=${JSON.stringify(this.trace())}`,
+    );
   }
   #nextDueAt(): number | null {
     const datagramDueAt = this.net.nextDueAt();
@@ -331,16 +370,32 @@ export class QuicPipe {
   rawDatagram(data: Uint8Array, from: QuicAddress, to: QuicAddress): void {
     this.net._injectDatagram(from, data, to);
   }
-  rawDatagramSocket(from: QuicAddress, to: QuicAddress): {
+  rawDatagramSocket(
+    from: QuicAddress,
+    to: QuicAddress,
+  ): {
     send(data: Uint8Array): void;
   } {
     return { send: (data) => this.rawDatagram(data, from, to) };
   }
   tracePacketCount(predicate?: (event: ReturnType<QuicPipe['trace']>[number]) => boolean): number {
-    return this.trace().filter((event) => (event.type === 'datagram:queued' || event.type === 'datagram:delivered') && (predicate === undefined || predicate(event))).length;
+    return this.trace().filter(
+      (event) =>
+        (event.type === 'datagram:queued' || event.type === 'datagram:delivered') &&
+        (predicate === undefined || predicate(event)),
+    ).length;
   }
   queuedDatagrams(from: QuicAddress, to: QuicAddress): Uint8Array[] {
-    return this.trace().filter((event) => event.type === 'datagram:queued' && event.from.port === from.port && event.to.port === to.port && event.from.ip === from.ip && event.to.ip === to.ip).map((event) => event.data.slice());
+    return this.trace()
+      .filter(
+        (event) =>
+          event.type === 'datagram:queued' &&
+          event.from.port === from.port &&
+          event.to.port === to.port &&
+          event.from.ip === from.ip &&
+          event.to.ip === to.ip,
+      )
+      .map((event) => event.data.slice());
   }
   async close(): Promise<void> {
     await this.client.close();

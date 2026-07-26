@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:stream
-*
-* Run with: cargo run -- bench benchmarks/stream.bench.ts
-*/
+ * Benchmarks for fino:stream
+ *
+ * Run with: cargo run -- bench benchmarks/stream.bench.ts
+ */
 import { BufferedBytesReader, BufferedBytesWriter, BytesReader, BytesWriter } from 'fino:stream';
 import { bench } from 'fino:bench';
 class MemoryReader extends BytesReader {

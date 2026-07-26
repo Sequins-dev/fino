@@ -24,23 +24,14 @@ describe('builtin command tasks', () => {
       await import('fino:commands/fmt'),
       await import('fino:commands/lint'),
       await import('fino:commands/task'),
-      await import('fino:commands/repl')
+      await import('fino:commands/repl'),
     ];
     for (const mod of modules) t.deepEqual(Object.keys(mod), ['default']);
     const commands = modules.map((mod) => mod.default);
-    t.deepEqual(commands.map((command) => command.name), [
-      'fino',
-      'run',
-      'test',
-      'bench',
-      'install',
-      'init',
-      'doc',
-      'fmt',
-      'lint',
-      'task',
-      'repl'
-    ]);
+    t.deepEqual(
+      commands.map((command) => command.name),
+      ['fino', 'run', 'test', 'bench', 'install', 'init', 'doc', 'fmt', 'lint', 'task', 'repl'],
+    );
     for (const command of commands) t.ok(command instanceof Task, `${command.name} is a Task`);
   });
   it('exposes every internal compatibility command as a default Task', (t) => {
@@ -55,17 +46,15 @@ describe('builtin command tasks', () => {
       fmtCommand,
       lintCommand,
       taskCommand,
-      replCommand
+      replCommand,
     ];
     for (const command of commands) t.ok(command instanceof Task, `${command.name} is a Task`);
   });
   it('exposes doc subcommands as nested Tasks', (t) => {
-    t.deepEqual(docCommand.list().map((task) => task.name), [
-      'build',
-      'show',
-      'search',
-      'test'
-    ]);
+    t.deepEqual(
+      docCommand.list().map((task) => task.name),
+      ['build', 'show', 'search', 'test'],
+    );
     for (const child of docCommand.list()) t.ok(child instanceof Task, `${child.name} is a Task`);
   });
 });

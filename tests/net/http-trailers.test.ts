@@ -1,6 +1,6 @@
 /**
-* HTTP/1.1 and HTTP/2 trailer tests.
-*/
+ * HTTP/1.1 and HTTP/2 trailer tests.
+ */
 import { describe, it } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
@@ -11,7 +11,7 @@ async function rawRoundtrip(port: number, rawRequest: string): Promise<string> {
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
   await writer.write(encodeUtf8(rawRequest));
@@ -58,10 +58,12 @@ describe('Response trailers — h1 server', () => {
   });
   it('async trailer function is awaited before wire emit', async (t) => {
     const server = serveHttp({ port: 0 }, async (_req) => {
-      return new Response('data', { trailers: async () => {
-        // Simulate async computation (e.g. signing the body)
-        return new Headers({ 'x-sig': 'async-sig' });
-      } });
+      return new Response('data', {
+        trailers: async () => {
+          // Simulate async computation (e.g. signing the body)
+          return new Headers({ 'x-sig': 'async-sig' });
+        },
+      });
     });
     const port = server.port;
     const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -111,7 +113,18 @@ describe('Request trailers — h1', () => {
     });
     const port = server.port;
     // Manually craft a chunked request with trailers.
-    const raw = `POST / HTTP/1.1\r\n` + `Host: localhost:${port}\r\n` + `Transfer-Encoding: chunked\r\n` + `Trailer: x-request-id\r\n` + `Connection: close\r\n` + `\r\n` + `5\r\n` + `hello\r\n` + `0\r\n` + `x-request-id: req-42\r\n` + `\r\n`;
+    const raw =
+      `POST / HTTP/1.1\r\n` +
+      `Host: localhost:${port}\r\n` +
+      `Transfer-Encoding: chunked\r\n` +
+      `Trailer: x-request-id\r\n` +
+      `Connection: close\r\n` +
+      `\r\n` +
+      `5\r\n` +
+      `hello\r\n` +
+      `0\r\n` +
+      `x-request-id: req-42\r\n` +
+      `\r\n`;
     const resp = await rawRoundtrip(port, raw);
     t.ok(resp.includes('200'), 'server responded 200');
     t.ok(resp.includes('body=hello'), 'server received body');
@@ -129,7 +142,7 @@ describe('Request trailers — h1', () => {
     const res = await fetch(`http://127.0.0.1:${port}/`, {
       method: 'POST',
       body: 'upload-data',
-      trailers: new Headers({ 'x-sent-trailer': 'value1' })
+      trailers: new Headers({ 'x-sent-trailer': 'value1' }),
     } as any);
     const text = await res.text();
     t.ok(text.includes('upload-data'), 'body received');
@@ -170,165 +183,36 @@ describe('Trailer wire format', () => {
 // ---------------------------------------------------------------------------
 // H2 preface + empty SETTINGS frame
 const _H2_PREFACE = new Uint8Array([
-  80,
-  82,
-  73,
-  32,
-  42,
-  32,
-  72,
-  84,
-  84,
-  80,
-  47,
-  50,
-  46,
-  48,
-  13,
-  10,
-  13,
-  10,
-  83,
-  77,
-  13,
-  10,
-  13,
-  10
+  80, 82, 73, 32, 42, 32, 72, 84, 84, 80, 47, 50, 46, 48, 13, 10, 13, 10, 83, 77, 13, 10, 13, 10,
 ]);
-const _H2_SETTINGS_EMPTY = new Uint8Array([
-  0,
-  0,
-  0,
-  4,
-  0,
-  0,
-  0,
-  0,
-  0
-]);
+const _H2_SETTINGS_EMPTY = new Uint8Array([0, 0, 0, 4, 0, 0, 0, 0, 0]);
 // HEADERS: POST / (stream 1, END_HEADERS only — body+trailers follow)
 const _H2_POST_HEADERS = new Uint8Array([
-  0,
-  0,
-  14,
-  1,
-  4,
-  0,
-  0,
-  0,
-  1,
-  131,
-  132,
-  134,
-  65,
-  9,
-  108,
-  111,
-  99,
-  97,
-  108,
-  104,
-  111,
-  115,
-  116
+  0, 0, 14, 1, 4, 0, 0, 0, 1, 131, 132, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116,
 ]);
 // DATA: "hello" on stream 1 (no END_STREAM)
-const _H2_DATA_HELLO = new Uint8Array([
-  0,
-  0,
-  5,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  104,
-  101,
-  108,
-  108,
-  111
-]);
+const _H2_DATA_HELLO = new Uint8Array([0, 0, 5, 0, 0, 0, 0, 0, 1, 104, 101, 108, 108, 111]);
 // HEADERS: trailer "x-trailer: test-value" on stream 1 (END_STREAM | END_HEADERS)
 // HPACK: literal no-index new name
 const _H2_TRAILER_HEADERS = new Uint8Array([
-  0,
-  0,
-  22,
-  1,
-  5,
-  0,
-  0,
-  0,
-  1,
-  0,
-  9,
-  120,
-  45,
-  116,
-  114,
-  97,
-  105,
-  108,
-  101,
-  114,
-  10,
-  116,
-  101,
-  115,
-  116,
-  45,
-  118,
-  97,
-  108,
-  117,
-  101
+  0, 0, 22, 1, 5, 0, 0, 0, 1, 0, 9, 120, 45, 116, 114, 97, 105, 108, 101, 114, 10, 116, 101, 115,
+  116, 45, 118, 97, 108, 117, 101,
 ]);
 // HEADERS: GET / (stream 1, END_STREAM | END_HEADERS) — for response-trailer test
 const _H2_GET_HEADERS = new Uint8Array([
-  0,
-  0,
-  14,
-  1,
-  5,
-  0,
-  0,
-  0,
-  1,
-  130,
-  132,
-  134,
-  65,
-  9,
-  108,
-  111,
-  99,
-  97,
-  108,
-  104,
-  111,
-  115,
-  116
+  0, 0, 14, 1, 5, 0, 0, 0, 1, 130, 132, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116,
 ]);
 async function h2RawRoundTrip(port: number, ...frames: Uint8Array[]): Promise<Uint8Array> {
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
-  const total = [
-    _H2_PREFACE,
-    _H2_SETTINGS_EMPTY,
-    ...frames
-  ].reduce((n, f) => n + f.byteLength, 0);
+  const total = [_H2_PREFACE, _H2_SETTINGS_EMPTY, ...frames].reduce((n, f) => n + f.byteLength, 0);
   const all = new Uint8Array(total);
   let pos = 0;
-  for (const f of [
-    _H2_PREFACE,
-    _H2_SETTINGS_EMPTY,
-    ...frames
-  ]) {
+  for (const f of [_H2_PREFACE, _H2_SETTINGS_EMPTY, ...frames]) {
     all.set(f, pos);
     pos += f.byteLength;
   }

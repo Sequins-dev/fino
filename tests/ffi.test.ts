@@ -1,6 +1,6 @@
 /**
-* Tests for fino:ffi — dlopen/dlsym and Pointer operations.
-*/
+ * Tests for fino:ffi — dlopen/dlsym and Pointer operations.
+ */
 import { describe, it } from 'fino:test/test';
 import { dlopen, Pointer, structType } from 'fino:ffi';
 import { os } from 'fino:process';
@@ -45,46 +45,21 @@ describe('Pointer helpers', () => {
     t.equal(addr1 - addr0, 16n, 'offset by 16 bytes');
   });
   it('Pointer.copyFromInto copies native bytes into an ArrayBufferView', (t) => {
-    const source = new Uint8Array([
-      1,
-      2,
-      3,
-      4,
-      5,
-      6
-    ]);
-    const dest = new Uint8Array([
-      9,
-      9,
-      9,
-      9,
-      9,
-      9,
-      9,
-      9
-    ]);
+    const source = new Uint8Array([1, 2, 3, 4, 5, 6]);
+    const dest = new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]);
     Pointer.copyFromInto(dest.subarray(2, 6), Pointer.of(source.subarray(1)), 4);
-    t.deepEqual(Array.from(dest), [
-      9,
-      9,
-      2,
-      3,
-      4,
-      5,
-      9,
-      9
-    ], 'copies into the view byte range');
+    t.deepEqual(Array.from(dest), [9, 9, 2, 3, 4, 5, 9, 9], 'copies into the view byte range');
   });
 });
 const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
   malloc: {
     parameters: ['usize'],
-    result: 'pointer'
+    result: 'pointer',
   },
   free: {
     parameters: ['pointer'],
-    result: 'void'
-  }
+    result: 'void',
+  },
 });
 describe('read/write via malloc', () => {
   it('malloc returns an 8-byte pointer buffer (non-null)', (t) => {
@@ -138,7 +113,7 @@ describe('read/write via malloc', () => {
     const ptr = libc.symbols.malloc(64);
     t.notEqual(ptr, null, 'malloc returns non-null');
     Pointer.writeU8(ptr, 0, 42);
-    t.equal(Pointer.readU8(ptr, 0), 42, 'write-read malloc\'d memory');
+    t.equal(Pointer.readU8(ptr, 0), 42, "write-read malloc'd memory");
     libc.symbols.free(ptr);
     t.ok(true, 'free did not throw');
   });
@@ -147,14 +122,14 @@ describe('read/write via malloc', () => {
       malloc: {
         parameters: ['usize'],
         result: 'pointer',
-        async: true
+        async: true,
       },
       free: {
         parameters: ['pointer'],
-        result: 'void'
-      }
+        result: 'void',
+      },
     });
-    const ptr = await asyncLibc.symbols.malloc(16) as ArrayBuffer;
+    const ptr = (await asyncLibc.symbols.malloc(16)) as ArrayBuffer;
     t.ok(ptr instanceof ArrayBuffer, 'returns ArrayBuffer');
     t.equal(ptr.byteLength, 8, 'pointer buffer is 8 bytes');
     asyncLibc.symbols.free(ptr);
@@ -185,12 +160,19 @@ describe('Pointer.view', () => {
     const ptr = Pointer.of(buf) as ArrayBuffer;
     t.throws(() => Pointer.view(null, 8), /null/, 'null pointer rejected');
     t.throws(() => Pointer.view(ptr, -1), /non-negative/, 'negative length rejected');
-    t.throws(() => Pointer.view(ptr, 8, { onRelease: 42 as never }), /function/, 'non-function onRelease rejected');
+    t.throws(
+      () => Pointer.view(ptr, 8, { onRelease: 42 as never }),
+      /function/,
+      'non-function onRelease rejected',
+    );
   });
   it('works with Pointer and struct helpers', (t) => {
     const ptr = libc.symbols.malloc(8);
     const view = Pointer.view(ptr, 8);
-    const Point = structType([['x', 'i32'], ['y', 'i32']]);
+    const Point = structType([
+      ['x', 'i32'],
+      ['y', 'i32'],
+    ]);
     Point.set(view, 'x', 12);
     Point.set(view, 'y', -3);
     t.equal(Pointer.readI32(ptr, 0), 12, 'struct write lands in native memory');
@@ -201,10 +183,12 @@ describe('Pointer.view', () => {
     const { detachArrayBuffer } = await import('internal:serializer');
     const ptr = libc.symbols.malloc(8);
     let releases = 0;
-    const view = Pointer.view(ptr, 8, { onRelease: () => {
-      releases += 1;
-      libc.symbols.free(ptr);
-    } });
+    const view = Pointer.view(ptr, 8, {
+      onRelease: () => {
+        releases += 1;
+        libc.symbols.free(ptr);
+      },
+    });
     t.equal(releases, 0, 'not released while the buffer is alive');
     detachArrayBuffer(view);
     for (let i = 0; i < 100 && releases === 0; i++) {
@@ -215,19 +199,22 @@ describe('Pointer.view', () => {
 });
 describe('StructType', () => {
   it('computes C layout and reads/writes scalar fields', (t) => {
-    const Inner = structType([['flag', 'u8'], ['value', 'i32']]);
+    const Inner = structType([
+      ['flag', 'u8'],
+      ['value', 'i32'],
+    ]);
     const Outer = structType([
       ['id', 'u16'],
       {
         name: '_pad0',
         type: 'bytes',
-        size: 2
+        size: 2,
       },
       {
         name: 'inner',
-        type: Inner
+        type: Inner,
       },
-      ['tail', 'f64']
+      ['tail', 'f64'],
     ]);
     t.equal(Inner.offsetOf('flag'), 0);
     t.equal(Inner.offsetOf('value'), 4);
@@ -248,54 +235,63 @@ describe('StructType', () => {
     t.equal(Outer.get(outer, 'tail'), 1.5);
   });
   it('passes libc div_t returns by value', (t) => {
-    const Div = structType([['quot', 'i32'], ['rem', 'i32']]);
-    const lib = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', { div: {
-      parameters: ['i32', 'i32'],
-      result: Div
-    } });
+    const Div = structType([
+      ['quot', 'i32'],
+      ['rem', 'i32'],
+    ]);
+    const lib = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+      div: {
+        parameters: ['i32', 'i32'],
+        result: Div,
+      },
+    });
     const result = lib.symbols.div(17, 5) as ArrayBuffer;
     t.equal(result.byteLength, Div.size);
     t.equal(Div.get(result, 'quot'), 3);
     t.equal(Div.get(result, 'rem'), 2);
   });
   it('passes async struct returns as copied ArrayBuffers', async (t) => {
-    const Div = structType([['quot', 'i32'], ['rem', 'i32']]);
-    const lib = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', { div: {
-      parameters: ['i32', 'i32'],
-      result: Div,
-      async: true
-    } });
-    const result = await lib.symbols.div(22, 7) as ArrayBuffer;
+    const Div = structType([
+      ['quot', 'i32'],
+      ['rem', 'i32'],
+    ]);
+    const lib = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+      div: {
+        parameters: ['i32', 'i32'],
+        result: Div,
+        async: true,
+      },
+    });
+    const result = (await lib.symbols.div(22, 7)) as ArrayBuffer;
     t.equal(Div.get(result, 'quot'), 3);
     t.equal(Div.get(result, 'rem'), 1);
   });
   it('rejects too-small struct buffers and invalid descriptors', (t) => {
-    const Point = structType([['x', 'i32'], ['y', 'i32']]);
+    const Point = structType([
+      ['x', 'i32'],
+      ['y', 'i32'],
+    ]);
     t.throws(() => Point.set(new ArrayBuffer(4), 'y', 1), /too small/i);
-    t.throws(() => structType([{
-      name: 'pad',
-      type: 'bytes'
-    }]), /requires size/i);
+    t.throws(
+      () =>
+        structType([
+          {
+            name: 'pad',
+            type: 'bytes',
+          },
+        ]),
+      /requires size/i,
+    );
   });
   it('keeps buffer parameters as pointers, not by-value structs', (t) => {
-    const lib = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', { memcmp: {
-      parameters: [
-        'buffer',
-        'buffer',
-        'usize'
-      ],
-      result: 'i32'
-    } });
-    const a = new Uint8Array([
-      1,
-      2,
-      3
-    ]);
-    const b = new Uint8Array([
-      1,
-      2,
-      4
-    ]);
+    const lib = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+      memcmp: {
+        parameters: ['buffer', 'buffer', 'usize'],
+        result: 'i32',
+      },
+    });
+    const a = new Uint8Array([1, 2, 3]);
+    const b = new Uint8Array([1, 2, 4]);
     t.ok(Number(lib.symbols.memcmp(a, b, 3)) < 0);
   });
 });

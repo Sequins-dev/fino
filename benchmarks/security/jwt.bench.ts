@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:security/jwt
-*/
+ * Benchmarks for fino:security/jwt
+ */
 import { jwtDecrypt, jwtEncrypt, jwtSign, jwtVerify } from 'fino:security/jwt';
 import { bench } from 'fino:bench';
 bench('security/jwt', (b) => {

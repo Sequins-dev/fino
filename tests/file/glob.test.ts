@@ -1,6 +1,6 @@
 /**
-* Tests for fino:file Glob pattern matching and DiskFileSystem.glob() walk.
-*/
+ * Tests for fino:file Glob pattern matching and DiskFileSystem.glob() walk.
+ */
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem, Glob } from 'fino:file';
 const TEST_DIR = '/tmp/fino-glob-test-' + Math.floor(Math.random() * 1e6);
@@ -8,7 +8,11 @@ const textEncoder = new TextEncoder();
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-async function createTree(fs: DiskFileSystem, root: string, tree: Record<string, string | null>): Promise<void> {
+async function createTree(
+  fs: DiskFileSystem,
+  root: string,
+  tree: Record<string, string | null>,
+): Promise<void> {
   for (const [rel, content] of Object.entries(tree)) {
     const abs = root + '/' + rel;
     const dir = abs.slice(0, abs.lastIndexOf('/'));
@@ -127,18 +131,18 @@ describe('DiskFileSystem.glob() — directory walker', () => {
     //       data.json
     //   README.md
     await createTree(fs, TEST_DIR, {
-      'src': null,
+      src: null,
       'src/index.ts': 'export {};',
       'src/lib': null,
       'src/lib/util.ts': 'export {};',
       'src/lib/helper.js': 'module.exports = {};',
       'src/.hidden': null,
       'src/.hidden/secret.ts': '// secret',
-      'test': null,
+      test: null,
       'test/spec.ts': 'test();',
       'test/fixtures': null,
       'test/fixtures/data.json': '{}',
-      'README.md': '# Test'
+      'README.md': '# Test',
     });
   });
   after(async () => {
@@ -160,56 +164,95 @@ describe('DiskFileSystem.glob() — directory walker', () => {
   it('matches **/*.ts in test dir', async (t) => {
     const results = await collectGlob(fs, '**/*.ts', { cwd: TEST_DIR });
     // Should find all .ts files (excluding dotfile dir by default)
-    t.ok(results.some((r) => r.endsWith('src/index.ts')), 'finds src/index.ts');
-    t.ok(results.some((r) => r.endsWith('src/lib/util.ts')), 'finds src/lib/util.ts');
-    t.ok(results.some((r) => r.endsWith('test/spec.ts')), 'finds test/spec.ts');
+    t.ok(
+      results.some((r) => r.endsWith('src/index.ts')),
+      'finds src/index.ts',
+    );
+    t.ok(
+      results.some((r) => r.endsWith('src/lib/util.ts')),
+      'finds src/lib/util.ts',
+    );
+    t.ok(
+      results.some((r) => r.endsWith('test/spec.ts')),
+      'finds test/spec.ts',
+    );
     t.ok(!results.some((r) => r.includes('.hidden')), 'excludes dotfile dirs');
   });
   it('matches **/*.ts with dot:true', async (t) => {
     const results = await collectGlob(fs, '**/*.ts', {
       cwd: TEST_DIR,
-      dot: true
+      dot: true,
     });
-    t.ok(results.some((r) => r.includes('.hidden')), 'includes dotfile dir with dot:true');
+    t.ok(
+      results.some((r) => r.includes('.hidden')),
+      'includes dotfile dir with dot:true',
+    );
   });
   it('matches pattern with fixed prefix src/*.ts', async (t) => {
     const results = await collectGlob(fs, 'src/*.ts', { cwd: TEST_DIR });
-    t.ok(results.some((r) => r.endsWith('src/index.ts')), 'finds src/index.ts');
+    t.ok(
+      results.some((r) => r.endsWith('src/index.ts')),
+      'finds src/index.ts',
+    );
     t.ok(!results.some((r) => r.endsWith('lib/util.ts')), 'excludes nested util.ts');
     t.ok(!results.some((r) => r.endsWith('test/spec.ts')), 'excludes test/spec.ts');
   });
   it('matches src/**/*.ts recursively', async (t) => {
     const results = await collectGlob(fs, 'src/**/*.ts', { cwd: TEST_DIR });
-    t.ok(results.some((r) => r.endsWith('src/index.ts')), 'finds src/index.ts');
-    t.ok(results.some((r) => r.endsWith('src/lib/util.ts')), 'finds src/lib/util.ts');
+    t.ok(
+      results.some((r) => r.endsWith('src/index.ts')),
+      'finds src/index.ts',
+    );
+    t.ok(
+      results.some((r) => r.endsWith('src/lib/util.ts')),
+      'finds src/lib/util.ts',
+    );
     t.ok(!results.some((r) => r.endsWith('test/spec.ts')), 'excludes test/spec.ts');
   });
   it('matches *.md at root', async (t) => {
     const results = await collectGlob(fs, '*.md', { cwd: TEST_DIR });
-    t.ok(results.some((r) => r.endsWith('README.md')), 'finds README.md');
+    t.ok(
+      results.some((r) => r.endsWith('README.md')),
+      'finds README.md',
+    );
     t.ok(results.length === 1, 'only one .md file');
   });
   it('brace expansion {ts,js}', async (t) => {
     const results = await collectGlob(fs, 'src/lib/*.{ts,js}', { cwd: TEST_DIR });
-    t.ok(results.some((r) => r.endsWith('util.ts')), 'finds util.ts');
-    t.ok(results.some((r) => r.endsWith('helper.js')), 'finds helper.js');
+    t.ok(
+      results.some((r) => r.endsWith('util.ts')),
+      'finds util.ts',
+    );
+    t.ok(
+      results.some((r) => r.endsWith('helper.js')),
+      'finds helper.js',
+    );
     t.equal(results.length, 2, '2 results');
   });
   it('onlyFiles: true skips directories', async (t) => {
     const results = await collectGlob(fs, '**/*', {
       cwd: TEST_DIR,
-      onlyFiles: true
+      onlyFiles: true,
     });
-    t.ok(results.every((r) => !r.endsWith('src') && !r.endsWith('lib')), 'no bare directories');
+    t.ok(
+      results.every((r) => !r.endsWith('src') && !r.endsWith('lib')),
+      'no bare directories',
+    );
   });
   it('onlyDirectories: true yields only directories', async (t) => {
     const results = await collectGlob(fs, '**/*', {
       cwd: TEST_DIR,
-      onlyDirectories: true
+      onlyDirectories: true,
     });
     t.ok(results.length > 0, 'found some dirs');
-    t.ok(results.some((r) => r.endsWith('src')), 'found src');
-    t.ok(results.some((r) => r.endsWith('test')), 'found test');
+    t.ok(
+      results.some((r) => r.endsWith('src')),
+      'found src',
+    );
+    t.ok(
+      results.some((r) => r.endsWith('test')),
+      'found test',
+    );
     t.ok(!results.some((r) => r.endsWith('.ts')), 'no .ts files');
   });
   it('AbortSignal cancels the walk', async (t) => {
@@ -217,7 +260,7 @@ describe('DiskFileSystem.glob() — directory walker', () => {
     ac.abort();
     const results = await collectGlob(fs, '**/*.ts', {
       cwd: TEST_DIR,
-      signal: ac.signal
+      signal: ac.signal,
     });
     t.equal(results.length, 0, 'aborted walk yields no results');
   });

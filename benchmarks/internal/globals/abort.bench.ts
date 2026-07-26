@@ -1,14 +1,14 @@
 /**
-* Benchmarks for AbortController and AbortSignal globals
-*
-* Run with: cargo run -- --bench benchmarks/abort.bench.mjs
-*/
+ * Benchmarks for AbortController and AbortSignal globals
+ *
+ * Run with: cargo run -- --bench benchmarks/abort.bench.mjs
+ */
 import { bench } from 'fino:bench';
 bench('AbortController / AbortSignal creation', (b) => {
   b.measure('new AbortController', () => new AbortController());
   b.measure('controller.signal', {
     setup: () => new AbortController(),
-    fn: (ac) => ac.signal
+    fn: (ac) => ac.signal,
   });
   b.measure('AbortSignal.abort()', () => AbortSignal.abort());
   b.measure('AbortSignal.abort(reason)', () => AbortSignal.abort(new Error('cancelled')));
@@ -56,11 +56,7 @@ bench('AbortSignal.any()', (b) => {
   const pre = AbortSignal.abort();
   b.measure('any([1 live])', () => AbortSignal.any([live1]));
   b.measure('any([2 live])', () => AbortSignal.any([live1, live2]));
-  b.measure('any([3 live])', () => AbortSignal.any([
-    live1,
-    live2,
-    live3
-  ]));
+  b.measure('any([3 live])', () => AbortSignal.any([live1, live2, live3]));
   b.measure('any([5 live])', () => AbortSignal.any(live5));
   b.measure('any([pre-aborted])', () => AbortSignal.any([pre]));
   b.measure('any([mixed 1+1])', () => AbortSignal.any([live1, pre]));

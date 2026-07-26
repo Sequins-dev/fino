@@ -35,12 +35,12 @@ describe('fino:format/yaml — scalars', () => {
     t.deepEqual(parse('a: yes\nb: on\nc: Off'), {
       a: 'yes',
       b: 'on',
-      c: 'Off'
+      c: 'Off',
     });
   });
   it('parses single-quoted strings', (t) => {
-    t.equal(parse('\'hello\''), 'hello');
-    t.equal(parse('\'it\'\'s a quote\''), 'it\'s a quote');
+    t.equal(parse("'hello'"), 'hello');
+    t.equal(parse("'it''s a quote'"), "it's a quote");
   });
   it('parses double-quoted strings', (t) => {
     t.equal(parse('"hello\\nworld"'), 'hello\nworld');
@@ -51,14 +51,16 @@ describe('fino:format/yaml — block mappings', () => {
   it('parses simple mapping', (t) => {
     t.deepEqual(parse('a: 1\nb: 2'), {
       a: 1,
-      b: 2
+      b: 2,
     });
   });
   it('parses nested mappings', (t) => {
-    t.deepEqual(parse('server:\n  port: 8080\n  host: localhost'), { server: {
-      port: 8080,
-      host: 'localhost'
-    } });
+    t.deepEqual(parse('server:\n  port: 8080\n  host: localhost'), {
+      server: {
+        port: 8080,
+        host: 'localhost',
+      },
+    });
   });
   it('parses mapping with null value', (t) => {
     const v = parse('a:\nb: 2') as {
@@ -80,37 +82,35 @@ describe('fino:format/yaml — block mappings', () => {
 });
 describe('fino:format/yaml — block sequences', () => {
   it('parses simple sequence', (t) => {
-    t.deepEqual(parse('- 1\n- 2\n- 3'), [
-      1,
-      2,
-      3
-    ]);
+    t.deepEqual(parse('- 1\n- 2\n- 3'), [1, 2, 3]);
   });
   it('parses sequence of mappings', (t) => {
-    t.deepEqual(parse('- name: Alice\n  age: 30\n- name: Bob\n  age: 25'), [{
-      name: 'Alice',
-      age: 30
-    }, {
-      name: 'Bob',
-      age: 25
-    }]);
+    t.deepEqual(parse('- name: Alice\n  age: 30\n- name: Bob\n  age: 25'), [
+      {
+        name: 'Alice',
+        age: 30,
+      },
+      {
+        name: 'Bob',
+        age: 25,
+      },
+    ]);
   });
   it('parses nested sequences', (t) => {
-    t.deepEqual(parse('- - 1\n  - 2\n- - 3\n  - 4'), [[1, 2], [3, 4]]);
+    t.deepEqual(parse('- - 1\n  - 2\n- - 3\n  - 4'), [
+      [1, 2],
+      [3, 4],
+    ]);
   });
 });
 describe('fino:format/yaml — flow styles', () => {
   it('parses flow sequence', (t) => {
-    t.deepEqual(parse('[1, 2, 3]'), [
-      1,
-      2,
-      3
-    ]);
+    t.deepEqual(parse('[1, 2, 3]'), [1, 2, 3]);
   });
   it('parses flow mapping', (t) => {
     t.deepEqual(parse('{a: 1, b: 2}'), {
       a: 1,
-      b: 2
+      b: 2,
     });
   });
   it('parses nested flow', (t) => {
@@ -151,16 +151,9 @@ describe('fino:format/yaml — comments and markers', () => {
     t.deepEqual(docs[1], { b: 2 });
   });
   it('parseAll handles explicit starts, document ends, comments, and following documents', (t) => {
-    const docs = parseAll([
-      '---',
-      'a: 1',
-      '...',
-      '# separator comment',
-      '---',
-      '- b',
-      '- c',
-      '...'
-    ].join('\n'));
+    const docs = parseAll(
+      ['---', 'a: 1', '...', '# separator comment', '---', '- b', '- c', '...'].join('\n'),
+    );
     t.equal(docs.length, 2, 'two documents returned');
     t.deepEqual(docs[0], { a: 1 }, 'first document parsed');
     t.deepEqual(docs[1], ['b', 'c'], 'final sequence document parsed');
@@ -169,7 +162,10 @@ describe('fino:format/yaml — comments and markers', () => {
     t.throws(() => parse('%YAML 1.2\n---\na: 1'), /directive|unexpected|expected/i);
   });
   it('rejects TAG directives outside the core-schema baseline', (t) => {
-    t.throws(() => parse('%TAG !e! tag:example.com,2026:\n---\nx: !e!thing value'), /directive|unexpected|expected/i);
+    t.throws(
+      () => parse('%TAG !e! tag:example.com,2026:\n---\nx: !e!thing value'),
+      /directive|unexpected|expected/i,
+    );
   });
 });
 describe('fino:format/yaml — anchors & aliases', () => {
@@ -209,7 +205,10 @@ describe('fino:format/yaml — anchors & aliases', () => {
   it('alias expansion limit exceeded', (t) => {
     const entity = 'a'.repeat(500);
     const refs = Array.from({ length: 10 }, () => '  - *big').join('\n');
-    t.throws(() => parse(`big: &big ${entity}\nlist:\n${refs}`, { maxAliasExpansion: 100 }), /alias expansion limit exceeded/i);
+    t.throws(
+      () => parse(`big: &big ${entity}\nlist:\n${refs}`, { maxAliasExpansion: 100 }),
+      /alias expansion limit exceeded/i,
+    );
   });
   it('anchors are document-scoped across parseAll', (t) => {
     t.throws(() => parseAll('x: &a 1\n---\ny: *a'), /undefined alias/i);
@@ -335,7 +334,7 @@ describe('fino:format/yaml — stringify Phase 2 types', () => {
     const shared = { x: 1 };
     const out = stringify({
       a: shared,
-      b: shared
+      b: shared,
     } as any);
     t.ok(out.includes('&a'));
     t.ok(out.includes('*a'));
@@ -344,14 +343,9 @@ describe('fino:format/yaml — stringify Phase 2 types', () => {
     t.equal(back.b.x, 1);
   });
   it('round-trips parsed merge keys while omitting merge syntax', (t) => {
-    const source = [
-      'base: &base',
-      '  x: 1',
-      '  y: 2',
-      'child:',
-      '  <<: *base',
-      '  y: 3'
-    ].join('\n');
+    const source = ['base: &base', '  x: 1', '  y: 2', 'child:', '  <<: *base', '  y: 3'].join(
+      '\n',
+    );
     const parsed = parse(source);
     const out = stringify(parsed as any);
     const reparsed = parse(out);
@@ -360,14 +354,9 @@ describe('fino:format/yaml — stringify Phase 2 types', () => {
     t.notOk(out.includes('&base'), 'source anchor name is not preserved');
   });
   it('does not preserve comments, document markers, or source anchor names', (t) => {
-    const parsed = parse([
-      '---',
-      '# source comment',
-      'shared: &source',
-      '  x: 1',
-      'again: *source',
-      '...'
-    ].join('\n'));
+    const parsed = parse(
+      ['---', '# source comment', 'shared: &source', '  x: 1', 'again: *source', '...'].join('\n'),
+    );
     const out = stringify(parsed as any);
     t.notOk(out.includes('# source comment'), 'comments are not emitted');
     t.notOk(out.includes('---'), 'document start marker is not emitted');
@@ -398,31 +387,27 @@ describe('fino:format/yaml — stringify', () => {
   });
   it('serializes strings', (t) => {
     t.ok(stringify('hello').trim() === 'hello');
-    t.ok(stringify('true').includes('\'true\'') || stringify('true').includes('"true"'));
+    t.ok(stringify('true').includes("'true'") || stringify('true').includes('"true"'));
   });
   it('serializes mappings', (t) => {
     const out = stringify({
       a: 1,
-      b: 'hello'
+      b: 'hello',
     });
     t.ok(out.includes('a: 1'));
     t.ok(out.includes('b:'));
   });
   it('serializes sequences', (t) => {
-    const out = stringify([
-      1,
-      2,
-      3
-    ]);
+    const out = stringify([1, 2, 3]);
     t.ok(out.includes('1'));
   });
   it('roundtrips a config-like document', (t) => {
     const original = {
       server: {
         port: 8080,
-        host: 'localhost'
+        host: 'localhost',
       },
-      tags: ['a', 'b']
+      tags: ['a', 'b'],
     };
     const yaml = stringify(original as any);
     const parsed = parse(yaml) as typeof original;

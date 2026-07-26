@@ -1,9 +1,9 @@
 /**
-* Smoke-test for fino:bench — exercises sync, object-form, and
-* sub-group measurements. Run with:
-*
-*   cargo run -- --bench benchmarks/bench.bench.mjs
-*/
+ * Smoke-test for fino:bench — exercises sync, object-form, and
+ * sub-group measurements. Run with:
+ *
+ *   cargo run -- --bench benchmarks/bench.bench.mjs
+ */
 import { bench } from 'fino:bench';
 bench('sync measurements', (b) => {
   b.measure('parseInt', () => {
@@ -20,7 +20,7 @@ bench('object form', (b) => {
     },
     fn({ base }) {
       return base + ' world';
-    }
+    },
   });
   b.measure('with teardown', {
     setup() {
@@ -31,7 +31,7 @@ bench('object form', (b) => {
     },
     teardown(ctx) {
       if (ctx.count === 0) throw new Error('teardown: fn was never called');
-    }
+    },
   });
 });
 bench('sub-groups', (b) => {

@@ -30,12 +30,18 @@ function discoverMeta(source: string): {
     const value = match[2]!.trim();
     if (key === 'variant') variants.push(value);
     if (key === 'script') scripts.push(value);
-    if (key === 'global') globals.push(...value.split(',').map((part) => part.trim()).filter((part) => part.length > 0));
+    if (key === 'global')
+      globals.push(
+        ...value
+          .split(',')
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0),
+      );
   }
   return {
     variants,
     scripts,
-    globals
+    globals,
   };
 }
 function discoverSubtests(source: string): WptManifestSubtest[] {
@@ -48,14 +54,18 @@ function discoverSubtests(source: string): WptManifestSubtest[] {
     if (call === null) continue;
     pattern.lastIndex = call.end;
     const name = readStringExpression(call.args[1] ?? '');
-    if (name !== null) subtests.push({
-      kind,
-      name
-    });
+    if (name !== null)
+      subtests.push({
+        kind,
+        name,
+      });
   }
   return subtests;
 }
-function readCallArguments(source: string, start: number): {
+function readCallArguments(
+  source: string,
+  start: number,
+): {
   args: string[];
   end: number;
 } | null {
@@ -78,7 +88,7 @@ function readCallArguments(source: string, start: number): {
       }
       continue;
     }
-    if (ch === '"' || ch === '\'' || ch === '`') {
+    if (ch === '"' || ch === "'" || ch === '`') {
       quote = ch;
       continue;
     }
@@ -92,7 +102,7 @@ function readCallArguments(source: string, start: number): {
       args.push(source.slice(argStart, i).trim());
       return {
         args,
-        end: i + 1
+        end: i + 1,
       };
     }
     if (ch === ',' && parenDepth === 1 && braceDepth === 0 && bracketDepth === 0) {
@@ -118,10 +128,19 @@ function readStringExpression(expression: string): string | null {
   return parts.length === 0 ? null : parts.join('');
 }
 function decodeStringLiteral(raw: string): string {
-  return raw.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '	').replace(/\\(['"`\\])/g, '$1');
+  return raw
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '	')
+    .replace(/\\(['"`\\])/g, '$1');
 }
 function usesOnlyLocalFetchFixtures(path: string): boolean {
-  return path.startsWith('urlpattern/') || path === 'url/url-constructor.any.js' || path === 'url/url-origin.any.js' || path === 'url/url-setters.any.js';
+  return (
+    path.startsWith('urlpattern/') ||
+    path === 'url/url-constructor.any.js' ||
+    path === 'url/url-origin.any.js' ||
+    path === 'url/url-setters.any.js'
+  );
 }
 const WEBCRYPTO_RUNNABLE_PATHS = new Set([
   'WebCryptoAPI/crypto_key_cached_slots.https.any.js',
@@ -148,184 +167,240 @@ const WEBCRYPTO_RUNNABLE_PATHS = new Set([
   'WebCryptoAPI/serialization/hmac.https.any.js',
   'WebCryptoAPI/serialization/rsa-oaep.https.any.js',
   'WebCryptoAPI/serialization/rsa-pss.https.any.js',
-  'WebCryptoAPI/serialization/rsassa-pkcs1-v1_5.https.any.js'
+  'WebCryptoAPI/serialization/rsassa-pkcs1-v1_5.https.any.js',
 ]);
 function unsupportedWebCryptoWpt(path: string, type: string): boolean {
-  return path.startsWith('WebCryptoAPI/') && type === '.any.js' && !WEBCRYPTO_RUNNABLE_PATHS.has(path);
+  return (
+    path.startsWith('WebCryptoAPI/') && type === '.any.js' && !WEBCRYPTO_RUNNABLE_PATHS.has(path)
+  );
 }
 function needsWptServer(path: string, source: string): boolean {
   if (usesOnlyLocalFetchFixtures(path)) return false;
-  return /\bfetch\s*\(\s*['"`]\/(?!media\/)/.test(source) || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source) || /\bfetch\s*\(\s*['"`](?![A-Za-z][A-Za-z0-9+.-]*:)/.test(source) || /\bfetch\s*\(\s*RESOURCES_DIR\b/.test(source) || /\bnew\s+EventSource\s*\(\s*['"`](?:resources\/|\.{1,2}\/|\/)/.test(source) || /\bRESOURCES_DIR\b/.test(source) || /\bget_host_info\s*\(/.test(source) || /\{\{host\}\}/.test(source) || /\bweb-platform\.test\b/.test(source) || /['"`]\.\.\/resources\//.test(source) || /\bfetch\s*\(\s*location\.href\b/.test(source) || /\bnew\s+XMLHttpRequest\b/.test(source) || /\/fetch\/api\/resources\//.test(source);
+  return (
+    /\bfetch\s*\(\s*['"`]\/(?!media\/)/.test(source) ||
+    /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source) ||
+    /\bfetch\s*\(\s*['"`](?![A-Za-z][A-Za-z0-9+.-]*:)/.test(source) ||
+    /\bfetch\s*\(\s*RESOURCES_DIR\b/.test(source) ||
+    /\bnew\s+EventSource\s*\(\s*['"`](?:resources\/|\.{1,2}\/|\/)/.test(source) ||
+    /\bRESOURCES_DIR\b/.test(source) ||
+    /\bget_host_info\s*\(/.test(source) ||
+    /\{\{host\}\}/.test(source) ||
+    /\bweb-platform\.test\b/.test(source) ||
+    /['"`]\.\.\/resources\//.test(source) ||
+    /\bfetch\s*\(\s*location\.href\b/.test(source) ||
+    /\bnew\s+XMLHttpRequest\b/.test(source) ||
+    /\/fetch\/api\/resources\//.test(source)
+  );
 }
 function resolveMetaScriptPath(basePath: string, specifier: string): string {
   if (specifier === '/resources/WebIDLParser.js') {
     return join(root, 'resources/webidl2/lib/webidl2.js').toString();
   }
-  return specifier.startsWith('/') ? join(root, specifier.slice(1)).toString() : join(dirname(basePath).toString(), specifier).toString();
+  return specifier.startsWith('/')
+    ? join(root, specifier.slice(1)).toString()
+    : join(dirname(basePath).toString(), specifier).toString();
 }
-function runnableStatus(path: string, type: string, source: string, missingScripts: string[], metaGlobals: string[]): {
+function runnableStatus(
+  path: string,
+  type: string,
+  source: string,
+  missingScripts: string[],
+  metaGlobals: string[],
+): {
   runnable: boolean;
   reason: string | null;
 } {
-  if (path.includes('.sub.')) return {
-    runnable: false,
-    reason: 'requires WPT server .sub preprocessing'
-  };
-  if (missingScripts.length > 0) return {
-    runnable: false,
-    reason: `requires missing WPT META script ${missingScripts[0]}`
-  };
-  if (metaGlobals.length > 0 && metaGlobals.every((global) => global !== 'window') && metaGlobals.some((global) => /worker/i.test(global))) {
+  if (path.includes('.sub.'))
     return {
       runnable: false,
-      reason: 'requires Worker test environment'
+      reason: 'requires WPT server .sub preprocessing',
+    };
+  if (missingScripts.length > 0)
+    return {
+      runnable: false,
+      reason: `requires missing WPT META script ${missingScripts[0]}`,
+    };
+  if (
+    metaGlobals.length > 0 &&
+    metaGlobals.every((global) => global !== 'window') &&
+    metaGlobals.some((global) => /worker/i.test(global))
+  ) {
+    return {
+      runnable: false,
+      reason: 'requires Worker test environment',
     };
   }
   if (metaGlobals.length > 0 && metaGlobals.every((global) => global === 'window')) {
     return {
       runnable: false,
-      reason: 'requires document/window navigation'
+      reason: 'requires document/window navigation',
     };
   }
   if (/\/owning-type(?:-[^/]+)?\.tentative\.any\.js$/.test(path)) {
     return {
       runnable: false,
-      reason: 'requires tentative ReadableStream type: "owning" transfer semantics'
+      reason: 'requires tentative ReadableStream type: "owning" transfer semantics',
     };
   }
   if (path === 'streams/idlharness.any.js') {
     return {
       runnable: false,
-      reason: 'requires Web Streams WebIDL descriptor and brand-check conformance'
+      reason: 'requires Web Streams WebIDL descriptor and brand-check conformance',
     };
   }
   if (path === 'fetch/fetch-later/basic.https.window.js') {
     return {
       runnable: true,
-      reason: null
+      reason: null,
     };
   }
-  if (path === 'fetch/fetch-later/basic.https.worker.js' || path === 'FileAPI/blob/Blob-in-worker.worker.js' || path === 'FileAPI/file/Worker-read-file-constructor.worker.js' || path === 'FileAPI/FileReaderSync.worker.js' || path === 'FileAPI/blob/Blob-constructor-endings.html' || path === 'FileAPI/file/File-constructor-endings.html' || path === 'FileAPI/FileReader/progress_event_bubbles_cancelable.html' || path === 'fetch/api/abort/request.any.js' || path === 'fetch/api/basic/scheme-about.any.js' || path === 'fetch/api/basic/scheme-data.any.js' || path === 'fetch/api/request/request-consume.any.js' || path === 'fetch/api/request/request-disturbed.any.js' || path === 'fetch/api/request/request-keepalive.any.js' || path === 'fetch/api/response/response-cancel-stream.any.js' || path === 'fetch/api/response/response-consume.html' || path === 'fetch/api/response/response-init-002.any.js' || path === 'fetch/api/response/response-stream-with-broken-then.any.js') {
+  if (
+    path === 'fetch/fetch-later/basic.https.worker.js' ||
+    path === 'FileAPI/blob/Blob-in-worker.worker.js' ||
+    path === 'FileAPI/file/Worker-read-file-constructor.worker.js' ||
+    path === 'FileAPI/FileReaderSync.worker.js' ||
+    path === 'FileAPI/blob/Blob-constructor-endings.html' ||
+    path === 'FileAPI/file/File-constructor-endings.html' ||
+    path === 'FileAPI/FileReader/progress_event_bubbles_cancelable.html' ||
+    path === 'fetch/api/abort/request.any.js' ||
+    path === 'fetch/api/basic/scheme-about.any.js' ||
+    path === 'fetch/api/basic/scheme-data.any.js' ||
+    path === 'fetch/api/request/request-consume.any.js' ||
+    path === 'fetch/api/request/request-disturbed.any.js' ||
+    path === 'fetch/api/request/request-keepalive.any.js' ||
+    path === 'fetch/api/response/response-cancel-stream.any.js' ||
+    path === 'fetch/api/response/response-consume.html' ||
+    path === 'fetch/api/response/response-init-002.any.js' ||
+    path === 'fetch/api/response/response-stream-with-broken-then.any.js'
+  ) {
     return {
       runnable: true,
-      reason: null
+      reason: null,
     };
   }
   if (path === 'WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.js') {
     return {
       runnable: false,
-      reason: 'requires X25519 WebCrypto algorithm support for mixed deriveBits length subtests'
+      reason: 'requires X25519 WebCrypto algorithm support for mixed deriveBits length subtests',
     };
   }
   if (path === 'WebCryptoAPI/historical.any.js') {
     return {
       runnable: false,
-      reason: 'requires non-secure context WebCrypto global filtering'
+      reason: 'requires non-secure context WebCrypto global filtering',
     };
   }
   if (unsupportedWebCryptoWpt(path, type)) {
     return {
       runnable: false,
-      reason: 'requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset'
+      reason:
+        'requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset',
     };
   }
   if (path === 'urlpattern/urlpattern.any.js' || path === 'urlpattern/urlpattern.https.any.js') {
     return {
       runnable: false,
-      reason: 'requires URLPattern tokenizer, canonicalization, and full data-driven conformance'
+      reason: 'requires URLPattern tokenizer, canonicalization, and full data-driven conformance',
     };
   }
   if (path === 'url/historical.any.js') {
     return {
       runnable: false,
-      reason: 'requires document/window navigation'
+      reason: 'requires document/window navigation',
     };
   }
   if (path === 'url/idlharness.any.js') {
     return {
       runnable: false,
-      reason: 'requires URL and URLSearchParams WebIDL shape conformance'
+      reason: 'requires URL and URLSearchParams WebIDL shape conformance',
     };
   }
   if (path === 'url/url-constructor.any.js') {
     return {
       runnable: false,
-      reason: 'requires WHATWG URL parser conformance for data-driven constructor cases'
+      reason: 'requires WHATWG URL parser conformance for data-driven constructor cases',
     };
   }
   if (path === 'url/url-origin.any.js') {
     return {
       runnable: false,
-      reason: 'requires WHATWG URL origin serialization conformance'
+      reason: 'requires WHATWG URL origin serialization conformance',
     };
   }
   if (path === 'url/url-setters.any.js') {
     return {
       runnable: false,
-      reason: 'requires WHATWG URL setter conformance for data-driven setter cases'
+      reason: 'requires WHATWG URL setter conformance for data-driven setter cases',
     };
   }
   if (/\bcaches\b|\bCacheStorage\b|\bCache\b/.test(source)) {
     return {
       runnable: false,
-      reason: 'requires Cache API globals, which Fino does not install'
+      reason: 'requires Cache API globals, which Fino does not install',
     };
   }
   if (path === 'FileAPI/idlharness.worker.js') {
     return {
       runnable: false,
-      reason: 'requires DedicatedWorker/SharedWorker exposure modeling for FileReaderSync IDL'
+      reason: 'requires DedicatedWorker/SharedWorker exposure modeling for FileReaderSync IDL',
     };
   }
   if (path === 'FileAPI/support/historical-serviceworker.js') {
     return {
       runnable: false,
-      reason: 'requires ServiceWorker exposure modeling for FileReaderSync historical coverage'
+      reason: 'requires ServiceWorker exposure modeling for FileReaderSync historical coverage',
     };
   }
-  if (/\bFileReaderSync\b/.test(source)) return {
-    runnable: false,
-    reason: 'requires worker importScripts dependency loading for FileReaderSync coverage'
-  };
+  if (/\bFileReaderSync\b/.test(source))
+    return {
+      runnable: false,
+      reason: 'requires worker importScripts dependency loading for FileReaderSync coverage',
+    };
   if (/\bFileReader\b/.test(source) && type !== '.any.js') {
     return {
       runnable: false,
-      reason: 'requires FileReader in document or worker environment'
+      reason: 'requires FileReader in document or worker environment',
     };
   }
-  if (/\bnew\s+Worker\s*\(|\bWorker\s*\(/.test(source)) return {
-    runnable: false,
-    reason: 'requires Worker global, which Fino does not install'
-  };
-  if (type === '.js') return {
-    runnable: false,
-    reason: 'standalone helper script, not a WPT test entry'
-  };
-  if (type === '.worker.js') return {
-    runnable: false,
-    reason: 'requires Worker test environment'
-  };
+  if (/\bnew\s+Worker\s*\(|\bWorker\s*\(/.test(source))
+    return {
+      runnable: false,
+      reason: 'requires Worker global, which Fino does not install',
+    };
+  if (type === '.js')
+    return {
+      runnable: false,
+      reason: 'standalone helper script, not a WPT test entry',
+    };
+  if (type === '.worker.js')
+    return {
+      runnable: false,
+      reason: 'requires Worker test environment',
+    };
   if (type === '.window.js' || type === '.html' || type === '.https.html') {
     return {
       runnable: false,
-      reason: 'requires document/window navigation'
+      reason: 'requires document/window navigation',
     };
   }
-  if (needsWptServer(path, source)) return {
-    runnable: false,
-    reason: 'requires upstream WPT server and host setup'
-  };
-  if (type === '.any.js') return {
-    runnable: true,
-    reason: null
-  };
-  if (/\bdocument\b|\bwindow\b/.test(source)) return {
-    runnable: false,
-    reason: 'requires document/window navigation'
-  };
+  if (needsWptServer(path, source))
+    return {
+      runnable: false,
+      reason: 'requires upstream WPT server and host setup',
+    };
+  if (type === '.any.js')
+    return {
+      runnable: true,
+      reason: null,
+    };
+  if (/\bdocument\b|\bwindow\b/.test(source))
+    return {
+      runnable: false,
+      reason: 'requires document/window navigation',
+    };
   return {
     runnable: false,
-    reason: `unsupported WPT file type ${type}`
+    reason: `unsupported WPT file type ${type}`,
   };
 }
 async function exists(path: string): Promise<boolean> {
@@ -337,16 +412,18 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 async function main(): Promise<void> {
-  if (!await exists(join(root, 'resources/testharness.js').toString())) {
-    throw new Error('Missing third_party/wpt/resources/testharness.js. Run: git submodule update --init third_party/wpt');
+  if (!(await exists(join(root, 'resources/testharness.js').toString()))) {
+    throw new Error(
+      'Missing third_party/wpt/resources/testharness.js. Run: git submodule update --init third_party/wpt',
+    );
   }
   const entries: WptManifestEntry[] = [];
   for (const category of WPT_CATEGORIES) {
     const categoryRoot = join(root, category.path).toString();
-    if (!await exists(categoryRoot)) continue;
+    if (!(await exists(categoryRoot))) continue;
     for await (const file of fs.glob('**/*.{js,html}', {
       cwd: categoryRoot,
-      onlyFiles: true
+      onlyFiles: true,
     })) {
       const absolutePath = file.path.toString();
       const relPath = relative(root, absolutePath).toString();
@@ -357,7 +434,7 @@ async function main(): Promise<void> {
       const missingScripts: string[] = [];
       for (const script of meta.scripts) {
         const scriptPath = resolveMetaScriptPath(absolutePath, script);
-        if (await exists(scriptPath)) runnableSource += '\n' + await fs.readFile(scriptPath);
+        if (await exists(scriptPath)) runnableSource += '\n' + (await fs.readFile(scriptPath));
         else missingScripts.push(script);
       }
       const status = runnableStatus(relPath, type, runnableSource, missingScripts, meta.globals);
@@ -370,22 +447,25 @@ async function main(): Promise<void> {
         scripts: meta.scripts,
         runnable: status.runnable,
         reason: status.reason,
-        subtests: status.runnable ? discoverSubtests(source) : []
+        subtests: status.runnable ? discoverSubtests(source) : [],
       });
     }
   }
-  entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const manifest: WptManifest = {
     generatedFrom: 'third_party/wpt',
     categories: WPT_CATEGORIES.map((category) => category.path),
-    entries
+    entries,
   };
-  await fs.writeFile(outPath, [
-    'import type { WptManifest } from \'./manifest.ts\';',
-    '',
-    'export const WPT_MANIFEST: WptManifest = ' + JSON.stringify(manifest, null, 2) + ';',
-    ''
-  ].join('\n'));
+  await fs.writeFile(
+    outPath,
+    [
+      "import type { WptManifest } from './manifest.ts';",
+      '',
+      'export const WPT_MANIFEST: WptManifest = ' + JSON.stringify(manifest, null, 2) + ';',
+      '',
+    ].join('\n'),
+  );
   console.log(`wrote ${outPath} with ${entries.length} WPT entries`);
 }
 main().catch((err) => {

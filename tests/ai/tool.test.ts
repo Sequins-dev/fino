@@ -8,11 +8,11 @@ const schema = {
   properties: {
     x: {
       type: 'number',
-      description: 'The input number'
+      description: 'The input number',
     },
-    label: { type: 'string' }
+    label: { type: 'string' },
   },
-  required: ['x']
+  required: ['x'],
 };
 function makeCtx(overrides: Partial<ToolRunContext> = {}): ToolRunContext {
   return {
@@ -21,7 +21,7 @@ function makeCtx(overrides: Partial<ToolRunContext> = {}): ToolRunContext {
     step: 1,
     runId: 'run_1',
     messages: [],
-    ...overrides
+    ...overrides,
   };
 }
 describe('tool factory', () => {
@@ -30,9 +30,7 @@ describe('tool factory', () => {
       name: 'lookup',
       description: 'Looks up a value',
       parameters: v.object({ key: v.string().min(1) }),
-      execute: (args: {
-        key: string;
-      }) => args.key
+      execute: (args: { key: string }) => args.key,
     });
     const def = toToolDefinition(t1);
     t.equal(def.parameters.type, 'object', 'tool definition emits JSON Schema');
@@ -45,7 +43,7 @@ describe('tool factory', () => {
       name: 'add',
       description: 'Adds things',
       parameters: schema,
-      execute: async () => 'ok'
+      execute: async () => 'ok',
     });
     t.ok(t1 instanceof Task, 'tools are tasks');
     t.equal(t1.name, 'add');
@@ -58,13 +56,13 @@ describe('tool factory', () => {
       description: 'Dangerous operation',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       requiresApproval: true,
       risk: 'destructive',
       sideEffects: true,
       timeoutMs: 5e3,
-      execute: async () => 'ok'
+      execute: async () => 'ok',
     });
     t.equal(t1.requiresApproval, true);
     t.equal(t1.risk, 'destructive');
@@ -82,7 +80,7 @@ describe('tool factory', () => {
       execute: (args) => {
         receivedArgs = args;
         return 'done';
-      }
+      },
     });
     const result = await t1.invoke({ x: 42 }, makeCtx());
     t.deepEqual(receivedArgs, { x: 42 });
@@ -96,8 +94,8 @@ describe('tool factory', () => {
       parameters: schema,
       execute: async () => ({
         content: 'object result',
-        isError: false
-      })
+        isError: false,
+      }),
     });
     const result = await t1.invoke({ x: 1 }, makeCtx());
     t.equal(result.content, 'object result');
@@ -109,8 +107,8 @@ describe('tool factory', () => {
       parameters: schema,
       execute: async () => ({
         content: 'something broke',
-        isError: true
-      })
+        isError: true,
+      }),
     });
     const result = await t1.invoke({ x: 1 }, makeCtx());
     t.equal(result.isError, true);
@@ -125,11 +123,11 @@ describe('tool factory', () => {
       execute: (_args, ctx) => {
         receivedCtx = ctx;
         return 'ok';
-      }
+      },
     });
     const ctx = makeCtx({
       toolCallId: 'call_test',
-      step: 7
+      step: 7,
     });
     await t1.invoke({ x: 1 }, ctx);
     t.equal(receivedCtx?.toolCallId, 'call_test');
@@ -140,11 +138,14 @@ describe('tool factory', () => {
       name: 'fn',
       description: 'd',
       parameters: schema,
-      execute: async () => 'ok'
+      execute: async () => 'ok',
     });
     const result = await t1.invoke({ x: 'not-a-number' }, makeCtx());
     t.equal(result.isError, true);
-    t.ok(typeof result.content === 'string' && (result.content as string).length > 0, 'summary is non-empty');
+    t.ok(
+      typeof result.content === 'string' && (result.content as string).length > 0,
+      'summary is non-empty',
+    );
     t.ok((result.content as string).includes('x'), 'mentions the failing field');
   });
   it('invoke() returns isError summary when required field missing', async (t) => {
@@ -152,7 +153,7 @@ describe('tool factory', () => {
       name: 'fn',
       description: 'd',
       parameters: schema,
-      execute: async () => 'ok'
+      execute: async () => 'ok',
     });
     const result = await t1.invoke({}, makeCtx());
     t.equal(result.isError, true);
@@ -164,7 +165,7 @@ describe('tool factory', () => {
       parameters: schema,
       execute: () => {
         throw new Error('execution failed');
-      }
+      },
     });
     const result = await t1.invoke({ x: 1 }, makeCtx());
     t.equal(result.isError, true);
@@ -178,7 +179,7 @@ describe('tool factory', () => {
       execute: () => {
         throw new Error('hard failure');
       },
-      throwOnError: true
+      throwOnError: true,
     });
     await t.rejects(() => t1.invoke({ x: 1 }, makeCtx()), /hard failure/);
   });
@@ -191,7 +192,7 @@ describe('tool factory', () => {
         const e = new Error('aborted');
         e.name = 'AbortError';
         throw e;
-      }
+      },
     });
     await t.rejects(() => t1.invoke({ x: 1 }, makeCtx()), /aborted/);
   });
@@ -204,13 +205,13 @@ describe('tool factory', () => {
         const e = new Error('suspended');
         e.name = 'SuspendSignal';
         throw e;
-      }
+      },
     });
     await t.rejects(() => t1.invoke({ x: 1 }, makeCtx()), /suspended/);
   });
   it('validator is memoized (compiled once)', async (t) => {
     let invokeCount = 0;
-    const originalCompile = ((globalThis as unknown) as Record<string, unknown>)['_compileCount'];
+    const originalCompile = (globalThis as unknown as Record<string, unknown>)['_compileCount'];
     void originalCompile;
     const t1 = tool({
       name: 'fn',
@@ -219,7 +220,7 @@ describe('tool factory', () => {
       execute: async () => {
         invokeCount++;
         return 'ok';
-      }
+      },
     });
     await t1.invoke({ x: 1 }, makeCtx());
     await t1.invoke({ x: 2 }, makeCtx());
@@ -233,7 +234,7 @@ describe('toToolDefinition', () => {
       name: 'search',
       description: 'Search the web',
       parameters: schema,
-      execute: async () => 'result'
+      execute: async () => 'result',
     });
     const def = toToolDefinition(t1);
     t.equal(def.name, 'search');
@@ -243,17 +244,19 @@ describe('toToolDefinition', () => {
   it('passes through describe() text in parameter schema', (t) => {
     const schemaWithDescription = {
       type: 'object',
-      properties: { query: {
-        type: 'string',
-        description: 'The search query text'
-      } },
-      required: ['query']
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query text',
+        },
+      },
+      required: ['query'],
     };
     const t1 = tool({
       name: 'search',
       description: 'Search',
       parameters: schemaWithDescription,
-      execute: async () => 'ok'
+      execute: async () => 'ok',
     });
     const def = toToolDefinition(t1);
     const qProp = (def.parameters.properties as Record<string, Record<string, string>>).query;

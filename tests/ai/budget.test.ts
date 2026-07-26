@@ -5,9 +5,7 @@ import { InMemorySessionStore, session } from 'fino:ai/session';
 import { tool } from 'fino:ai/tool';
 import type { GenerateRequest, Model, ModelStream, StreamEvent } from 'fino:ai/model';
 import { ModelStreamImpl } from 'internal:ai/shared';
-function usageModel(calls: {
-  count: number;
-}): Model {
+function usageModel(calls: { count: number }): Model {
   return {
     name: 'budget-test',
     dimensions: 0,
@@ -17,18 +15,18 @@ function usageModel(calls: {
         yield {
           type: 'text_delta',
           index: 0,
-          text: 'ok'
+          text: 'ok',
         };
         yield {
           type: 'usage',
           usage: {
             inputTokens: 3,
-            outputTokens: 2
-          }
+            outputTokens: 2,
+          },
         };
         yield {
           type: 'stop',
-          reason: 'end_turn'
+          reason: 'end_turn',
         };
       }
       return new ModelStreamImpl(events());
@@ -38,7 +36,7 @@ function usageModel(calls: {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 describe('AI budgets', () => {
@@ -48,7 +46,7 @@ describe('AI budgets', () => {
     const bot = agent({
       model: usageModel(calls),
       budget: control,
-      defaults: { maxTokens: 2 }
+      defaults: { maxTokens: 2 },
     });
     const first = await bot.generate('hi');
     t.equal(first.text, 'ok');
@@ -62,17 +60,20 @@ describe('AI budgets', () => {
     t.throws(() => control.reserve({ tokens: 4 }), BudgetExceededError);
     first.release();
     const second = control.reserve({ tokens: 4 });
-    second.commit({
-      inputTokens: 2,
-      outputTokens: 1
-    }, .25);
+    second.commit(
+      {
+        inputTokens: 2,
+        outputTokens: 1,
+      },
+      .25,
+    );
     t.equal(control.snapshot().usedTokens, 3);
     t.equal(control.snapshot().usedUsd, .25);
   });
   it('suspends for approval and resumes from a durable snapshot after a grant', async (t) => {
     const control = new Budget({
       tokens: 4,
-      onExhausted: 'suspend'
+      onExhausted: 'suspend',
     });
     let suspended: unknown;
     try {
@@ -82,15 +83,21 @@ describe('AI budgets', () => {
     }
     t.equal((suspended as Error).name, 'SuspendSignal');
     const restored = Budget.fromSnapshot(control.snapshot());
-    restored.grant({ tokens: 6 }, {
-      approvedBy: 'operator@example.com',
-      reason: 'finish run'
-    });
+    restored.grant(
+      { tokens: 6 },
+      {
+        approvedBy: 'operator@example.com',
+        reason: 'finish run',
+      },
+    );
     const lease = restored.reserve({ tokens: 5 });
-    lease.commit({
-      inputTokens: 2,
-      outputTokens: 3
-    }, 0);
+    lease.commit(
+      {
+        inputTokens: 2,
+        outputTokens: 3,
+      },
+      0,
+    );
     const snapshot = restored.snapshot();
     t.equal(snapshot.usedTokens, 5);
     t.equal(snapshot.grants.length, 1);
@@ -100,7 +107,7 @@ describe('AI budgets', () => {
     let now = 100;
     const control = new Budget({
       wallClockMs: 50,
-      clock: () => now
+      clock: () => now,
     });
     control.check();
     now = 151;
@@ -120,44 +127,44 @@ describe('AI budgets', () => {
               type: 'tool_call_start',
               index: 0,
               id: 'call-1',
-              name: 'lookup'
+              name: 'lookup',
             };
             yield {
               type: 'tool_call_delta',
               index: 0,
-              json: '{}'
+              json: '{}',
             };
             yield {
               type: 'tool_call_end',
-              index: 0
+              index: 0,
             };
             yield {
               type: 'usage',
               usage: {
                 inputTokens: 3,
-                outputTokens: 2
-              }
+                outputTokens: 2,
+              },
             };
             yield {
               type: 'stop',
-              reason: 'tool_use'
+              reason: 'tool_use',
             };
           } else {
             yield {
               type: 'text_delta',
               index: 0,
-              text: 'finished'
+              text: 'finished',
             };
             yield {
               type: 'usage',
               usage: {
                 inputTokens: 2,
-                outputTokens: 1
-              }
+                outputTokens: 1,
+              },
             };
             yield {
               type: 'stop',
-              reason: 'end_turn'
+              reason: 'end_turn',
             };
           }
         }
@@ -168,11 +175,11 @@ describe('AI budgets', () => {
       },
       async embed() {
         return [];
-      }
+      },
     };
     const control = new Budget({
       tokens: 5,
-      onExhausted: 'suspend'
+      onExhausted: 'suspend',
     });
     const store = new InMemorySessionStore();
     const durable = session({
@@ -181,19 +188,21 @@ describe('AI budgets', () => {
         model,
         budget: control,
         defaults: { maxTokens: 2 },
-        tools: [tool({
-          name: 'lookup',
-          description: 'Lookup once',
-          parameters: {
-            type: 'object',
-            properties: {}
-          },
-          execute: () => {
-            toolCalls++;
-            return 'found';
-          }
-        })]
-      })
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Lookup once',
+            parameters: {
+              type: 'object',
+              properties: {},
+            },
+            execute: () => {
+              toolCalls++;
+              return 'found';
+            },
+          }),
+        ],
+      }),
     });
     const waiting = await durable.start('go');
     t.equal(waiting.status, 'suspended');

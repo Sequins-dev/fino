@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:format/toml
-*
-* Run with: cargo run -- --bench benchmarks/toml.bench.mjs
-*/
+ * Benchmarks for fino:format/toml
+ *
+ * Run with: cargo run -- --bench benchmarks/toml.bench.mjs
+ */
 import { parse, stringify } from 'fino:format/toml';
 import { bench } from 'fino:bench';
 const SMALL_TOML = `
@@ -19,7 +19,7 @@ const TABLE_TOML = (() => {
     'port = 8080',
     '[database]',
     'name = "mydb"',
-    'pool = 10'
+    'pool = 10',
   ];
   return lines.join('\n');
 })();
@@ -45,7 +45,7 @@ const UNICODE_TOML = (() => {
   const pairs = [
     ['ja', '日本語テキスト'],
     ['zh', '中文内容'],
-    ['el', 'Ελληνικά']
+    ['el', 'Ελληνικά'],
   ];
   return pairs.map(([k, v]) => `${k} = "${v}"`).join('\n');
 })();

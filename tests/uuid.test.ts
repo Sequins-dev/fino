@@ -13,7 +13,8 @@ describe('fino:uuid — v4', () => {
     t.equal(id.variant, 1);
   });
   it('v4 generates distinct UUIDs', (t) => {
-    const a = v4(), b = v4();
+    const a = v4(),
+      b = v4();
     t.ok(a.toString() !== b.toString());
   });
   it('v4 timestamp is null', (t) => {

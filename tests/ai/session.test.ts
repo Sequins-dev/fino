@@ -30,7 +30,7 @@ function scriptModel(turns: StreamEvent[][]): Model {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 function captureModel(): {
@@ -49,18 +49,18 @@ function captureModel(): {
         yield {
           type: 'text_delta' as const,
           index: 0,
-          text: 'captured response'
+          text: 'captured response',
         };
         yield {
           type: 'usage' as const,
           usage: {
             inputTokens: 3,
-            outputTokens: 2
-          }
+            outputTokens: 2,
+          },
         };
         yield {
           type: 'stop' as const,
-          reason: 'end_turn' as const
+          reason: 'end_turn' as const,
         };
       }
       return new ModelStreamImpl(gen());
@@ -70,11 +70,11 @@ function captureModel(): {
     },
     async embed() {
       return [];
-    }
+    },
   };
   return {
     model,
-    getLastMessages: () => last
+    getLastMessages: () => last,
   };
 }
 function endTurn(text: string): StreamEvent[] {
@@ -82,19 +82,19 @@ function endTurn(text: string): StreamEvent[] {
     {
       type: 'text_delta',
       index: 0,
-      text
+      text,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 5,
-        outputTokens: 3
-      }
+        outputTokens: 3,
+      },
     },
     {
       type: 'stop',
-      reason: 'end_turn'
-    }
+      reason: 'end_turn',
+    },
   ];
 }
 function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[] {
@@ -103,37 +103,41 @@ function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[]
       type: 'tool_call_start',
       index: 0,
       id,
-      name
+      name,
     },
     {
       type: 'tool_call_delta',
       index: 0,
-      json: argsJson
+      json: argsJson,
     },
     {
       type: 'tool_call_end',
-      index: 0
+      index: 0,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 8,
-        outputTokens: 4
-      }
+        outputTokens: 4,
+      },
     },
     {
       type: 'stop',
-      reason: 'tool_use'
-    }
+      reason: 'tool_use',
+    },
   ];
 }
 function tmpPath(): string {
   return `/tmp/fino-session-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
-async function assertRevisionOnlyCheckpoint(t: {
-  ok(value: unknown, message?: string): void;
-  equal(actual: unknown, expected: unknown, message?: string): void;
-}, store: SqliteSessionStore, state: RunState): Promise<void> {
+async function assertRevisionOnlyCheckpoint(
+  t: {
+    ok(value: unknown, message?: string): void;
+    equal(actual: unknown, expected: unknown, message?: string): void;
+  },
+  store: SqliteSessionStore,
+  state: RunState,
+): Promise<void> {
   t.ok(state.historyRevisionId, 'checkpoint stores a history revision id');
   t.equal('messages' in state, false, 'checkpoint does not duplicate messages');
   t.equal('historyJSON' in state, false, 'checkpoint does not store legacy history JSON');
@@ -161,14 +165,14 @@ describe('Session', () => {
         async append(msg) {
           appended.push({
             role: msg.role,
-            content: msg.content
+            content: msg.content,
           });
           return {
             id: `m${appended.length}`,
             threadId: 'memory-thread',
             role: msg.role,
             content: msg.content,
-            createdAt: Date.now()
+            createdAt: Date.now(),
           };
         },
         async history(): Promise<MemoryMessage[]> {
@@ -177,19 +181,23 @@ describe('Session', () => {
         async recall(query: MemoryQuery = {}): Promise<RecalledContext> {
           recalledQuery = query;
           return {
-            messages: [{
-              id: 'old',
-              threadId: 'memory-thread',
-              role: 'user',
-              content: 'prior fact',
-              createdAt: 1
-            }],
-            recalled: [{
-              text: 'semantic hit',
-              score: .9,
-              metadata: { source: 'fixture' }
-            }],
-            workingMemory: { account: 'active' }
+            messages: [
+              {
+                id: 'old',
+                threadId: 'memory-thread',
+                role: 'user',
+                content: 'prior fact',
+                createdAt: 1,
+              },
+            ],
+            recalled: [
+              {
+                text: 'semantic hit',
+                score: .9,
+                metadata: { source: 'fixture' },
+              },
+            ],
+            workingMemory: { account: 'active' },
           };
         },
         async ingest() {},
@@ -201,18 +209,21 @@ describe('Session', () => {
           return this;
         },
         async close() {},
-        async [Symbol.asyncDispose]() {}
+        async [Symbol.asyncDispose]() {},
       };
       const cap = captureModel();
       const sess = session({
         store,
         agent: agent({ model: cap.model }),
-        memory: mem
+        memory: mem,
       });
       const result = await sess.start('new question about account');
       t.equal(result.status, 'done', 'session completed');
       t.equal(recalledQuery?.text, 'new question about account', 'recall query uses input text');
-      const joined = cap.getLastMessages().map((m) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n');
+      const joined = cap
+        .getLastMessages()
+        .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+        .join('\n');
       t.ok(joined.includes('prior fact'), 'durable history is included');
       t.ok(joined.includes('semantic hit'), 'semantic recall is included');
       t.ok(joined.includes('account'), 'working memory is included');
@@ -238,24 +249,22 @@ describe('Session', () => {
         parameters: {
           type: 'object',
           properties: { name: { type: 'string' } },
-          required: ['name']
+          required: ['name'],
         },
-        execute: (args: {
-          name: string;
-        }) => {
+        execute: (args: { name: string }) => {
           callLog.push(args.name);
           return `Hello ${args.name}!`;
-        }
+        },
       });
       const a = agent({
         model: scriptModel([toolCallTurn('c1', 'greet', '{"name":"Alice"}'), endTurn('done')]),
-        tools: [greet]
+        tools: [greet],
       });
       const checkpoints: RunState[] = [];
       const sess = session({
         store,
         agent: a,
-        onCheckpoint: (s) => checkpoints.push(s)
+        onCheckpoint: (s) => checkpoints.push(s),
       });
       const result = await sess.start('go');
       t.equal(result.status, 'done', 'run completed');
@@ -278,7 +287,7 @@ describe('Session', () => {
   it('watch() exposes the current run state and terminal updates', async (t) => {
     const store = new InMemorySessionStore();
     const a = agent({
-      model: scriptModel([endTurn('watched')])
+      model: scriptModel([endTurn('watched')]),
     });
     const sess = session({ store, agent: a });
     const states: string[] = [];
@@ -307,14 +316,12 @@ describe('Session', () => {
         description: 'Echo',
         parameters: {
           type: 'object',
-          properties: { msg: { type: 'string' } }
+          properties: { msg: { type: 'string' } },
         },
-        execute: (args: {
-          msg: string;
-        }) => {
+        execute: (args: { msg: string }) => {
           toolCallsDuringResume.push(args.msg);
           return args.msg;
-        }
+        },
       });
       const crashedState: RunState = {
         runId: 'crash-test',
@@ -323,31 +330,35 @@ describe('Session', () => {
         stepIndex: 1,
         usage: {
           inputTokens: 10,
-          outputTokens: 5
+          outputTokens: 5,
         },
-        scratch: {}
+        scratch: {},
       };
       let crashedHistory = new MessageHistory();
       crashedHistory = await crashedHistory.append({
         role: 'user',
-        content: 'start'
+        content: 'start',
       });
       crashedHistory = await crashedHistory.append({
         role: 'assistant',
-        content: [{
-          type: 'tool_use',
-          id: 'c1',
-          name: 'echo',
-          args: { msg: 'hi' }
-        }]
+        content: [
+          {
+            type: 'tool_use',
+            id: 'c1',
+            name: 'echo',
+            args: { msg: 'hi' },
+          },
+        ],
       });
       crashedHistory = await crashedHistory.append({
         role: 'user',
-        content: [{
-          type: 'tool_result',
-          toolCallId: 'c1',
-          content: 'hi'
-        }]
+        content: [
+          {
+            type: 'tool_result',
+            toolCallId: 'c1',
+            content: 'hi',
+          },
+        ],
       });
       crashedState.historyRevisionId = crashedHistory.revisionId;
       await store.commitSession({
@@ -356,18 +367,18 @@ describe('Session', () => {
           threadId: crashedState.threadId,
           historyRevisionId: crashedHistory.revisionId,
           createdAt: Date.now(),
-          updatedAt: Date.now()
+          updatedAt: Date.now(),
         },
-        history: crashedHistory
+        history: crashedHistory,
       });
       const resumeAgent = agent({
         model: scriptModel([endTurn('resumed!')]),
-        tools: [echoTool]
+        tools: [echoTool],
       });
       const result = await Session.resume({
         store,
         agent: resumeAgent,
-        runId: 'crash-test'
+        runId: 'crash-test',
       });
       t.equal(result.status, 'done', 'resumed to done');
       t.equal(result.text, 'resumed!', 'correct final text');
@@ -393,7 +404,7 @@ describe('Session', () => {
       const sess1 = session({
         store,
         agent: agent({ model: scriptModel([endTurn('first reply')]) }),
-        threadId
+        threadId,
       });
       const r1 = await sess1.start('first message');
       t.equal(r1.status, 'done');
@@ -402,7 +413,7 @@ describe('Session', () => {
       const sess2 = session({
         store,
         agent: agent({ model: spy }),
-        threadId
+        threadId,
       });
       const r1Final = await store.loadRun(r1.runId);
       t.ok(r1Final, 'first run is persisted');
@@ -416,7 +427,10 @@ describe('Session', () => {
       const contents = seen.map((m: ModelMessage) => {
         return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
       });
-      t.ok(contents.some((c: string) => c.includes('first message') || c.includes('first reply')), 'prior conversation appears in context');
+      t.ok(
+        contents.some((c: string) => c.includes('first message') || c.includes('first reply')),
+        'prior conversation appears in context',
+      );
     } finally {
       await store.close();
       try {
@@ -437,19 +451,22 @@ describe('Session', () => {
         description: 'Awaits human approval',
         parameters: {
           type: 'object',
-          properties: {}
+          properties: {},
         },
         execute: () => {
           throw new SuspendSignal('awaiting human approval');
-        }
+        },
       });
       const a = agent({
-        model: scriptModel([toolCallTurn('s1', 'await_approval', '{}'), endTurn('approved and done')]),
-        tools: [waitForHuman]
+        model: scriptModel([
+          toolCallTurn('s1', 'await_approval', '{}'),
+          endTurn('approved and done'),
+        ]),
+        tools: [waitForHuman],
       });
       const sess = session({
         store,
-        agent: a
+        agent: a,
       });
       const r1 = await sess.start('please approve');
       t.equal(r1.status, 'suspended', 'session suspended');
@@ -460,7 +477,11 @@ describe('Session', () => {
       t.equal(r2.status, 'done', 'resumed and completed');
       t.equal(r2.text, 'approved and done');
       await assertRevisionOnlyCheckpoint(t, store, r2.state);
-      await t.rejects(() => sess.resume(token, 'try again'), /suspended|token/i, 'second resume with same token rejects');
+      await t.rejects(
+        () => sess.resume(token, 'try again'),
+        /suspended|token/i,
+        'second resume with same token rejects',
+      );
     } finally {
       await store.close();
       try {
@@ -482,22 +503,22 @@ describe('Session', () => {
         description: 'Inspects ctx.history',
         parameters: {
           type: 'object',
-          properties: {}
+          properties: {},
         },
         execute: (_args, ctx) => {
           if (ctx.history) {
             capturedHistoryRender = ctx.history.render();
           }
           return 'checked';
-        }
+        },
       });
       const a = agent({
         model: scriptModel([toolCallTurn('h1', 'check_history', '{}'), endTurn('done')]),
-        tools: [checkHistory]
+        tools: [checkHistory],
       });
       const sess = session({
         store,
-        agent: a
+        agent: a,
       });
       await sess.start('hello');
       t.ok(capturedHistoryRender !== undefined, 'ctx.history was provided');
@@ -521,22 +542,22 @@ describe('Session', () => {
         description: 'Pauses via ctx.suspend()',
         parameters: {
           type: 'object',
-          properties: {}
+          properties: {},
         },
         execute: (_args, ctx) => {
           ctx.suspend({
             reason: 'waiting',
-            payload: { key: 'val' }
+            payload: { key: 'val' },
           });
-        }
+        },
       });
       const a = agent({
         model: scriptModel([toolCallTurn('p1', 'pause', '{}'), endTurn('done')]),
-        tools: [pauseTool]
+        tools: [pauseTool],
       });
       const sess = session({
         store,
-        agent: a
+        agent: a,
       });
       const r1 = await sess.start('please pause');
       t.equal(r1.status, 'suspended', 'session suspended via ctx.suspend()');
@@ -557,18 +578,22 @@ describe('Session', () => {
     const store = await SqliteSessionStore.open(path);
     try {
       const threadId = 'list-test-thread';
-      const make = () => session({
-        store,
-        agent: agent({ model: scriptModel([endTurn('ok')]) }),
-        threadId
-      });
+      const make = () =>
+        session({
+          store,
+          agent: agent({ model: scriptModel([endTurn('ok')]) }),
+          threadId,
+        });
       const r1 = await make().start('run 1');
       const r2 = await make().start('run 2');
       t.equal(r1.status, 'done');
       t.equal(r2.status, 'done');
       const all = await store.listRuns({ threadId });
       t.equal(all.length, 2, 'two runs found');
-      t.ok(all.every((s) => s.threadId === threadId), 'all runs belong to the thread');
+      t.ok(
+        all.every((s) => s.threadId === threadId),
+        'all runs belong to the thread',
+      );
       const other = await store.listRuns({ threadId: 'other-thread' });
       t.equal(other.length, 0, 'other thread has no runs');
     } finally {
@@ -593,7 +618,7 @@ describe('Session', () => {
         parameters: {
           type: 'object',
           properties: { id: { type: 'string' } },
-          required: ['id']
+          required: ['id'],
         },
         requiresApproval: true,
         risk: 'destructive',
@@ -601,20 +626,23 @@ describe('Session', () => {
         execute: () => {
           executed = true;
           return 'deleted';
-        }
+        },
       });
       const a = agent({
         model: scriptModel([toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}')]),
-        tools: [risky]
+        tools: [risky],
       });
       const sess = session({
         store,
-        agent: a
+        agent: a,
       });
       const result = await sess.start('delete acct_1');
       t.equal(result.status, 'suspended', 'session suspended for approval');
       t.equal(executed, false, 'tool did not execute before approval');
-      t.equal((result.state.suspendedOn?.payload as Record<string, unknown>)?.toolName, 'delete_account');
+      t.equal(
+        (result.state.suspendedOn?.payload as Record<string, unknown>)?.toolName,
+        'delete_account',
+      );
       t.equal((result.state.suspendedOn?.payload as Record<string, unknown>)?.risk, 'destructive');
     } finally {
       await store.close();
@@ -638,17 +666,15 @@ describe('Session', () => {
         parameters: {
           type: 'object',
           properties: { id: { type: 'string' } },
-          required: ['id']
+          required: ['id'],
         },
         requiresApproval: true,
         risk: 'destructive',
         sideEffects: true,
-        execute: ({ id }: {
-          id: string;
-        }) => {
+        execute: ({ id }: { id: string }) => {
           executed++;
           return `deleted:${id}`;
-        }
+        },
       });
       const { model: spy, getLastMessages } = captureModel();
       let first = true;
@@ -660,9 +686,11 @@ describe('Session', () => {
         stream(req: GenerateRequest): ModelStream {
           if (first) {
             first = false;
-            return new ModelStreamImpl((async function* () {
-              yield* toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}');
-            })());
+            return new ModelStreamImpl(
+              (async function* () {
+                yield* toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}');
+              })(),
+            );
           }
           return spy.stream(req);
         },
@@ -671,24 +699,40 @@ describe('Session', () => {
         },
         async embed() {
           return [];
-        }
+        },
       };
       const sess = session({
         store,
         agent: agent({
           model,
-          tools: [risky]
-        })
+          tools: [risky],
+        }),
       });
       const pending = await sess.start('delete acct_1');
       t.equal(pending.status, 'suspended');
-      await t.rejects(() => sess.resume(pending.state.suspendedOn!.token, { approved: true }), /approveTool|rejectTool|tool approval/i, 'resume rejects tool approval suspensions');
+      await t.rejects(
+        () => sess.resume(pending.state.suspendedOn!.token, { approved: true }),
+        /approveTool|rejectTool|tool approval/i,
+        'resume rejects tool approval suspensions',
+      );
       const done = await sess.approveTool(pending.state.suspendedOn!.token);
       t.equal(done.status, 'done');
       t.equal(executed, 1, 'approved tool executed once');
-      const toolResultMsg = getLastMessages().find((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((p) => p.type === 'tool_result' && p.toolCallId === 'd1' && p.content === 'deleted:acct_1'));
+      const toolResultMsg = getLastMessages().find(
+        (m) =>
+          m.role === 'user' &&
+          Array.isArray(m.content) &&
+          m.content.some(
+            (p) =>
+              p.type === 'tool_result' && p.toolCallId === 'd1' && p.content === 'deleted:acct_1',
+          ),
+      );
       t.ok(toolResultMsg, 'resumed model call sees the approved tool result');
-      await t.rejects(() => sess.approveTool(pending.state.suspendedOn!.token), /suspended|token/i, 'approval token remains single-use');
+      await t.rejects(
+        () => sess.approveTool(pending.state.suspendedOn!.token),
+        /suspended|token/i,
+        'approval token remains single-use',
+      );
     } finally {
       await store.close();
       try {
@@ -711,14 +755,14 @@ describe('Session', () => {
         parameters: {
           type: 'object',
           properties: { id: { type: 'string' } },
-          required: ['id']
+          required: ['id'],
         },
         requiresApproval: true,
         sideEffects: true,
         execute: () => {
           executed = true;
           return 'deleted';
-        }
+        },
       });
       const { model: spy, getLastMessages } = captureModel();
       let first = true;
@@ -730,9 +774,11 @@ describe('Session', () => {
         stream(req: GenerateRequest): ModelStream {
           if (first) {
             first = false;
-            return new ModelStreamImpl((async function* () {
-              yield* toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}');
-            })());
+            return new ModelStreamImpl(
+              (async function* () {
+                yield* toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}');
+              })(),
+            );
           }
           return spy.stream(req);
         },
@@ -741,22 +787,27 @@ describe('Session', () => {
         },
         async embed() {
           return [];
-        }
+        },
       };
       const sess = session({
         store,
         agent: agent({
           model,
-          tools: [risky]
-        })
+          tools: [risky],
+        }),
       });
       const pending = await sess.start('delete acct_1');
       const done = await sess.rejectTool(pending.state.suspendedOn!.token, 'not allowed');
       t.equal(done.status, 'done');
       t.equal(executed, false, 'rejected tool did not execute');
-      const toolResult = getLastMessages().flatMap((m) => Array.isArray(m.content) ? m.content : []).find((p) => p.type === 'tool_result' && p.toolCallId === 'd1');
+      const toolResult = getLastMessages()
+        .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+        .find((p) => p.type === 'tool_result' && p.toolCallId === 'd1');
       t.equal(toolResult?.isError, true, 'rejection is returned as a tool error');
-      t.ok(String(toolResult?.content).includes('not allowed'), 'rejection reason is model-visible');
+      t.ok(
+        String(toolResult?.content).includes('not allowed'),
+        'rejection reason is model-visible',
+      );
     } finally {
       await store.close();
       try {
@@ -779,15 +830,13 @@ describe('Session', () => {
         parameters: {
           type: 'object',
           properties: { amount: { type: 'number' } },
-          required: ['amount']
+          required: ['amount'],
         },
         requiresApproval: true,
-        execute: ({ amount }: {
-          amount: number;
-        }) => {
+        execute: ({ amount }: { amount: number }) => {
           executed++;
           return `charged:${amount}`;
-        }
+        },
       });
       const doneModel = captureModel();
       let first = true;
@@ -798,45 +847,52 @@ describe('Session', () => {
         stream(req: GenerateRequest): ModelStream {
           if (first) {
             first = false;
-            return new ModelStreamImpl((async function* () {
-              yield* toolCallTurn('c1', 'charge_card', '{"amount":42}');
-            })());
+            return new ModelStreamImpl(
+              (async function* () {
+                yield* toolCallTurn('c1', 'charge_card', '{"amount":42}');
+              })(),
+            );
           }
           return doneModel.model.stream(req);
         },
         async generate() {
           throw new Error('use stream');
-        }
+        },
       };
       const pending = await session({
         store,
         agent: agent({
           model,
-          tools: [risky]
-        })
+          tools: [risky],
+        }),
       }).start('charge');
       t.equal(pending.status, 'suspended');
       const resumed = await Session.approveSuspended({
         store,
         agent: agent({
           model,
-          tools: [risky]
-        }),
-        runId: pending.runId,
-        resumeToken: pending.state.suspendedOn!.token
-      });
-      t.equal(resumed.status, 'done');
-      t.equal(executed, 1, 'static approval executes once');
-      await t.rejects(() => Session.rejectSuspended({
-        store,
-        agent: agent({
-          model,
-          tools: [risky]
+          tools: [risky],
         }),
         runId: pending.runId,
         resumeToken: pending.state.suspendedOn!.token,
-        reason: 'late'
-      }), /suspended|token/i, 'consumed token cannot be rejected later');
+      });
+      t.equal(resumed.status, 'done');
+      t.equal(executed, 1, 'static approval executes once');
+      await t.rejects(
+        () =>
+          Session.rejectSuspended({
+            store,
+            agent: agent({
+              model,
+              tools: [risky],
+            }),
+            runId: pending.runId,
+            resumeToken: pending.state.suspendedOn!.token,
+            reason: 'late',
+          }),
+        /suspended|token/i,
+        'consumed token cannot be rejected later',
+      );
     } finally {
       await store.close();
       try {
@@ -866,18 +922,18 @@ describe('Session.fork', () => {
             yield {
               type: 'text_delta' as const,
               index: 0,
-              text: 'response'
+              text: 'response',
             };
             yield {
               type: 'usage' as const,
               usage: {
                 inputTokens: 5,
-                outputTokens: 3
-              }
+                outputTokens: 3,
+              },
             };
             yield {
               type: 'stop' as const,
-              reason: 'end_turn' as const
+              reason: 'end_turn' as const,
             };
           }
           return new ModelStreamImpl(gen());
@@ -887,11 +943,11 @@ describe('Session.fork', () => {
         },
         async embed() {
           return [];
-        }
+        },
       };
       const parentSess = session({
         store,
-        agent: agent({ model: trackingModel })
+        agent: agent({ model: trackingModel }),
       });
       const r1 = await parentSess.start('parent context');
       t.equal(r1.status, 'done');
@@ -903,7 +959,9 @@ describe('Session.fork', () => {
       t.ok(forkState!.threadId !== r1.state.threadId, 'fork has its own threadId');
       await assertRevisionOnlyCheckpoint(t, store, forkState!);
       const forkCallMsgs = seenMessages[seenMessages.length - 1]!;
-      const forkContent = forkCallMsgs.map((m) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ');
+      const forkContent = forkCallMsgs
+        .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+        .join(' ');
       t.ok(forkContent.includes('parent context'), 'fork sees parent history');
       t.ok(forkContent.includes('fork question'), 'fork sees the fork input');
     } finally {
@@ -932,20 +990,22 @@ describe('Session.fork', () => {
             this.history = await this.history.edit({
               op: 'summary',
               sourceIds: refs.map((m) => m.id),
-              entry: { message: {
-                role: 'user' as const,
-                content: '[SUMMARY]'
-              } },
-              replace: true
+              entry: {
+                message: {
+                  role: 'user' as const,
+                  content: '[SUMMARY]',
+                },
+              },
+              replace: true,
             });
           }
         },
         async onRead() {
           return {
             history: this.history,
-            messages: this.history.render()
+            messages: this.history.render(),
           };
-        }
+        },
       };
       const forkMsgs: ModelMessage[][] = [];
       const forkModel: Model = {
@@ -957,18 +1017,18 @@ describe('Session.fork', () => {
             yield {
               type: 'text_delta' as const,
               index: 0,
-              text: 'compact-fork response'
+              text: 'compact-fork response',
             };
             yield {
               type: 'usage' as const,
               usage: {
                 inputTokens: 5,
-                outputTokens: 3
-              }
+                outputTokens: 3,
+              },
             };
             yield {
               type: 'stop' as const,
-              reason: 'end_turn' as const
+              reason: 'end_turn' as const,
             };
           }
           return new ModelStreamImpl(gen());
@@ -978,14 +1038,14 @@ describe('Session.fork', () => {
         },
         async embed() {
           return [];
-        }
+        },
       };
       const parentSess = session({
         store,
         agent: agent({
           model: forkModel,
-          history: compactStrategy
-        })
+          history: compactStrategy,
+        }),
       });
       const r1 = await parentSess.start('compactable context');
       t.equal(r1.status, 'done');
@@ -995,7 +1055,9 @@ describe('Session.fork', () => {
       const forkResult = await parentSess.fork('fork after compaction');
       t.equal(forkResult.status, 'done', 'fork completed');
       const lastCall = forkMsgs[forkMsgs.length - 1]!;
-      const allContent = lastCall.map((m) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ');
+      const allContent = lastCall
+        .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+        .join(' ');
       t.ok(allContent.includes('[SUMMARY]'), 'fork sees the compacted summary, not raw originals');
       t.ok(allContent.includes('fork after compaction'), 'fork sees its new input');
     } finally {
@@ -1019,11 +1081,11 @@ describe('SessionStore', () => {
       let history = new MessageHistory();
       history = await history.append({
         role: 'user',
-        content: 'stored input'
+        content: 'stored input',
       });
       history = await history.append({
         role: 'assistant',
-        content: 'stored reply'
+        content: 'stored reply',
       });
       const run: RunState = {
         runId: 'store-run',
@@ -1032,34 +1094,45 @@ describe('SessionStore', () => {
         stepIndex: 1,
         usage: {
           inputTokens: 1,
-          outputTokens: 1
+          outputTokens: 1,
         },
         scratch: {},
-        historyRevisionId: history.revisionId
+        historyRevisionId: history.revisionId,
       };
       const thread = {
         threadId: run.threadId,
         historyRevisionId: history.revisionId,
         createdAt: 1,
-        updatedAt: 2
+        updatedAt: 2,
       };
       await memory.commitSession({
         run,
         thread,
-        history
+        history,
       });
       await sqlite.commitSession({
         run,
         thread,
-        history
+        history,
       });
       for (const store of [memory, sqlite]) {
         const loadedRun = await store.loadRun(run.runId);
         const loadedThread = await store.loadThread(run.threadId);
         const loadedHistory = await store.loadHistory(history.revisionId);
-        t.equal(loadedRun?.historyRevisionId, history.revisionId, 'run points at committed history');
-        t.equal(loadedThread?.historyRevisionId, history.revisionId, 'thread points at committed history');
-        t.deepEqual(loadedHistory?.render().map((m) => m.content), ['stored input', 'stored reply']);
+        t.equal(
+          loadedRun?.historyRevisionId,
+          history.revisionId,
+          'run points at committed history',
+        );
+        t.equal(
+          loadedThread?.historyRevisionId,
+          history.revisionId,
+          'thread points at committed history',
+        );
+        t.deepEqual(
+          loadedHistory?.render().map((m) => m.content),
+          ['stored input', 'stored reply'],
+        );
       }
     } finally {
       await sqlite.close();
@@ -1079,7 +1152,7 @@ describe('SessionStore', () => {
       let history = new MessageHistory();
       history = await history.append({
         role: 'user',
-        content: 'valid history'
+        content: 'valid history',
       });
       const run: RunState = {
         runId: 'bad-run',
@@ -1088,21 +1161,26 @@ describe('SessionStore', () => {
         stepIndex: 1,
         usage: {
           inputTokens: 1,
-          outputTokens: 1
+          outputTokens: 1,
         },
         scratch: {},
-        historyRevisionId: history.revisionId
+        historyRevisionId: history.revisionId,
       };
-      await t.rejects(() => store.commitSession({
-        run,
-        thread: {
-          threadId: run.threadId,
-          historyRevisionId: 'missing-revision',
-          createdAt: 1,
-          updatedAt: 1
-        },
-        history
-      }), /points at history revision/, 'mismatched thread revision rejects before commit');
+      await t.rejects(
+        () =>
+          store.commitSession({
+            run,
+            thread: {
+              threadId: run.threadId,
+              historyRevisionId: 'missing-revision',
+              createdAt: 1,
+              updatedAt: 1,
+            },
+            history,
+          }),
+        /points at history revision/,
+        'mismatched thread revision rejects before commit',
+      );
       t.equal(await store.loadRun(run.runId), null, 'run was not persisted');
       t.equal(await store.loadThread(run.threadId), null, 'thread was not persisted');
       t.equal(await store.loadHistory(history.revisionId), null, 'history graph was not persisted');

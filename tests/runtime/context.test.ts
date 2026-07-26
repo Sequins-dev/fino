@@ -1,6 +1,6 @@
 /**
-* Tests for fino:context and fino:topic.
-*/
+ * Tests for fino:context and fino:topic.
+ */
 import { describe, it } from 'fino:test/test';
 import { Context, Snapshot, snapshotAll } from 'fino:context';
 import { topic, Topic, SubscriptionHandle, BindingHandle } from 'fino:context/topic';
@@ -141,9 +141,11 @@ describe('async propagation', () => {
   it('Context — value propagates through .then()', async (t) => {
     const ctx = new Context('then-prop');
     let captured;
-    await ctx.runWithValue('via-then', () => Promise.resolve().then(() => {
-      captured = ctx.get();
-    }));
+    await ctx.runWithValue('via-then', () =>
+      Promise.resolve().then(() => {
+        captured = ctx.get();
+      }),
+    );
     t.equal(captured, 'via-then', 'value propagated through .then()');
   });
   it('Context — nested awaits all see the right value', async (t) => {
@@ -165,14 +167,14 @@ describe('async propagation', () => {
       await Promise.resolve();
       results.push({
         who: 'A',
-        val: ctx.get()
+        val: ctx.get(),
       });
     });
     const runB = ctx.runWithValue('B', async () => {
       await Promise.resolve();
       results.push({
         who: 'B',
-        val: ctx.get()
+        val: ctx.get(),
       });
     });
     await Promise.all([runA, runB]);
@@ -367,9 +369,15 @@ describe('Topic', () => {
   it('Topic.runWithValue — enters bound context scope', (t) => {
     const ctx = new Context('topic-ctx');
     const t1 = new Topic('binding-test');
-    t1.bindContext(ctx, (msg: unknown) => (msg as {
-      id: string;
-    }).id);
+    t1.bindContext(
+      ctx,
+      (msg: unknown) =>
+        (
+          msg as {
+            id: string;
+          }
+        ).id,
+    );
     let seen;
     t1.subscribe(() => {
       seen = ctx.get();
@@ -409,20 +417,35 @@ describe('Topic', () => {
     const ctxA = new Context('multi-bind-a');
     const ctxB = new Context('multi-bind-b');
     const t1 = new Topic('multi-bind-test');
-    t1.bindContext(ctxA, (msg: unknown) => (msg as {
-      a: number;
-    }).a);
-    t1.bindContext(ctxB, (msg: unknown) => (msg as {
-      b: number;
-    }).b);
+    t1.bindContext(
+      ctxA,
+      (msg: unknown) =>
+        (
+          msg as {
+            a: number;
+          }
+        ).a,
+    );
+    t1.bindContext(
+      ctxB,
+      (msg: unknown) =>
+        (
+          msg as {
+            b: number;
+          }
+        ).b,
+    );
     let seenA, seenB;
-    t1.runWithValue({
-      a: 1,
-      b: 2
-    }, () => {
-      seenA = ctxA.get();
-      seenB = ctxB.get();
-    });
+    t1.runWithValue(
+      {
+        a: 1,
+        b: 2,
+      },
+      () => {
+        seenA = ctxA.get();
+        seenB = ctxB.get();
+      },
+    );
     t.equal(seenA, 1, 'ctxA set');
     t.equal(seenB, 2, 'ctxB set');
   });

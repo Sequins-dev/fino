@@ -2,7 +2,8 @@ import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import { Process, env, execPath } from 'fino:process';
 const encodeUtf8 = (value: string): Uint8Array => new TextEncoder().encode(value);
-const decodeUtf8 = (value: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(value);
+const decodeUtf8 = (value: ArrayBuffer | ArrayBufferView): string =>
+  new TextDecoder().decode(value);
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);
@@ -30,33 +31,37 @@ async function runRepl(input: string): Promise<{
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait()
+    proc.wait(),
   ]);
   return {
     stdout,
     stderr,
-    result
+    result,
   };
 }
 function sendEval(port: MessagePort, id: number, code: string): void {
   port.postMessage({
     __eval: true,
     id,
-    code
+    code,
   });
 }
 function awaitResponse(port: MessagePort, id: number): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     port.addEventListener('message', function handler(ev: Event) {
       const msg = (ev as MessageEvent<Record<string, unknown>>).data;
-      if (msg && msg['id'] as number === id) {
+      if (msg && (msg['id'] as number) === id) {
         port.removeEventListener('message', handler);
         resolve(msg);
       }
     });
   });
 }
-async function evalIn(port: MessagePort, id: number, code: string): Promise<Record<string, unknown>> {
+async function evalIn(
+  port: MessagePort,
+  id: number,
+  code: string,
+): Promise<Record<string, unknown>> {
   sendEval(port, id, code);
   return awaitResponse(port, id);
 }
@@ -121,16 +126,16 @@ describe('REPL realm', () => {
     });
   });
   it('rejects repl with thread option', async (t) => {
-    for (const option of [
-      'thread',
-      'process',
-      'remote',
-      'watch'
-    ] as const) {
-      t.throws(() => new Realm({
-        repl: true,
-        [option]: true
-      }), /repl: true is only supported for embedded realms/, `throws for ${option} + repl`);
+    for (const option of ['thread', 'process', 'remote', 'watch'] as const) {
+      t.throws(
+        () =>
+          new Realm({
+            repl: true,
+            [option]: true,
+          }),
+        /repl: true is only supported for embedded realms/,
+        `throws for ${option} + repl`,
+      );
     }
   });
 });
@@ -154,7 +159,10 @@ describe('REPL CLI', () => {
     t.equal(result.code, 0, 'object repl exits successfully');
     t.equal(stderr, '', 'object repl does not write stderr');
     t.ok(stdout.includes('"name": "fino"'), 'object result includes string properties');
-    t.ok(stdout.includes('"values": [\n    1,\n    2\n  ]'), 'object result includes nested JSON values');
+    t.ok(
+      stdout.includes('"values": [\n    1,\n    2\n  ]'),
+      'object result includes nested JSON values',
+    );
   });
   it('prints thrown errors and keeps the session alive', async (t) => {
     const { stdout, stderr, result } = await runRepl('throw new Error("boom")\n21 * 2\n.exit\n');
@@ -167,24 +175,30 @@ describe('REPL CLI', () => {
     const { stdout, stderr, result } = await runRepl('12\x1B[D+\x1B[C*10\n.exit\n');
     t.equal(result.code, 0, 'cursor-edit repl exits successfully');
     t.equal(stderr, '', 'cursor-edit repl does not write stderr');
-    t.ok(stdout.includes('> 21\n'), 'left and right arrows edit the submitted expression at the cursor');
+    t.ok(
+      stdout.includes('> 21\n'),
+      'left and right arrows edit the submitted expression at the cursor',
+    );
   });
   it('navigates submitted input history with up and down arrows', async (t) => {
     const { stdout, stderr, result } = await runRepl('1 + 2\n4 + 5\n\x1B[A\x1B[A\x1B[B\n.exit\n');
     t.equal(result.code, 0, 'history repl exits successfully');
     t.equal(stderr, '', 'history repl does not write stderr');
     const results = [...stdout.matchAll(/^> (\d+)$/gm)].map((match) => match[1]);
-    t.deepEqual(results, [
-      '3',
-      '9',
-      '9'
-    ], 'up and down arrows recall previous submitted expressions');
+    t.deepEqual(
+      results,
+      ['3', '9', '9'],
+      'up and down arrows recall previous submitted expressions',
+    );
   });
   it('falls back when a result cannot be JSON stringified', async (t) => {
     const { stdout, stderr, result } = await runRepl('const a = {}; a.self = a; a\n.exit\n');
     t.equal(result.code, 0, 'circular object repl exits successfully');
     t.equal(stderr, '', 'circular object repl does not write stderr');
-    t.ok(stdout.includes('> Object\n'), 'circular object falls back to inspector description formatting');
+    t.ok(
+      stdout.includes('> Object\n'),
+      'circular object falls back to inspector description formatting',
+    );
   });
   it('exits on stdin EOF, Ctrl-D, and Ctrl-C', async (t) => {
     const eof = await runRepl('1 + 1\n');

@@ -1,4 +1,9 @@
-import { getLoggerProvider, getMeterProvider, getTracerProvider, runWithActiveSpan } from 'fino:opentelemetry';
+import {
+  getLoggerProvider,
+  getMeterProvider,
+  getTracerProvider,
+  runWithActiveSpan,
+} from 'fino:opentelemetry';
 if (getTracerProvider() && getLoggerProvider() && getMeterProvider()) {
   console.log('dependency providers ready');
 }

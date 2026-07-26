@@ -2,7 +2,14 @@ import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { dlopen } from 'fino:ffi';
 import { os } from 'internal:process';
-import { BufferedBytesReader, BufferedBytesWriter, BytesReader, BytesWriter, FdReader, FdWriter } from 'fino:stream';
+import {
+  BufferedBytesReader,
+  BufferedBytesWriter,
+  BytesReader,
+  BytesWriter,
+  FdReader,
+  FdWriter,
+} from 'fino:stream';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const F_GETFL = 3;
 const F_SETFL = 4;
@@ -10,37 +17,25 @@ const O_NONBLOCK = os === 'darwin' ? 4 : 2048;
 const lib = dlopen(LIBC, {
   pipe: {
     parameters: ['buffer'],
-    result: 'i32'
+    result: 'i32',
   },
   fcntl: {
-    parameters: [
-      'i32',
-      'i32',
-      'i32'
-    ],
+    parameters: ['i32', 'i32', 'i32'],
     result: 'i32',
-    variadic: 2
+    variadic: 2,
   },
   read: {
-    parameters: [
-      'i32',
-      'buffer',
-      'i32'
-    ],
-    result: 'i32'
+    parameters: ['i32', 'buffer', 'i32'],
+    result: 'i32',
   },
   write: {
-    parameters: [
-      'i32',
-      'buffer',
-      'i32'
-    ],
-    result: 'i32'
+    parameters: ['i32', 'buffer', 'i32'],
+    result: 'i32',
   },
   close: {
     parameters: ['i32'],
-    result: 'i32'
-  }
+    result: 'i32',
+  },
 });
 interface TestPipe {
   readFd: number;
@@ -58,7 +53,7 @@ function makePipe(): TestPipe {
   for (const fd of [readFd, writeFd]) {
     const flags = lib.symbols.fcntl(fd, F_GETFL, 0) as number;
     if (flags < 0) throw new Error('fcntl get failed');
-    if (lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK) as number < 0) {
+    if ((lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK) as number) < 0) {
       throw new Error('fcntl set failed');
     }
   }
@@ -76,7 +71,7 @@ function makePipe(): TestPipe {
       if (!writeOpen) return;
       writeOpen = false;
       lib.symbols.close(writeFd);
-    }
+    },
   };
 }
 function rawWrite(fd: number, bytes: Uint8Array): number {
@@ -100,7 +95,11 @@ function fillPipe(writeFd: number, maxBytes = 1024 * 1024): number {
   }
   return total;
 }
-async function drainUntilDone(readFd: number, done: () => boolean, chunks: Uint8Array[]): Promise<void> {
+async function drainUntilDone(
+  readFd: number,
+  done: () => boolean,
+  chunks: Uint8Array[],
+): Promise<void> {
   for (let i = 0; i < 200 && !done(); i++) {
     let drained = false;
     while (true) {
@@ -147,9 +146,12 @@ function delay(ms: number): Promise<void> {
 async function withTimeout<T>(promise: Promise<T>, label: string, ms = 2e3): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([promise, new Promise<T>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
-    })]);
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+      }),
+    ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -178,21 +180,28 @@ class PendingBytesReader extends BytesReader {
     resolve(value: Uint8Array | null): void;
     reject(error: unknown): void;
   } | null = null;
-  protected doRead(maxBytes: number, options?: {
-    signal?: AbortSignal | null;
-  }): Promise<Uint8Array | null> {
+  protected doRead(
+    maxBytes: number,
+    options?: {
+      signal?: AbortSignal | null;
+    },
+  ): Promise<Uint8Array | null> {
     if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     return new Promise((resolve, reject) => {
       this.pending = {
         maxBytes,
         resolve,
-        reject
+        reject,
       };
-      options?.signal?.addEventListener('abort', () => {
-        if (this.pending === null) return;
-        this.pending = null;
-        reject(options.signal!.reason);
-      }, { once: true });
+      options?.signal?.addEventListener(
+        'abort',
+        () => {
+          if (this.pending === null) return;
+          this.pending = null;
+          reject(options.signal!.reason);
+        },
+        { once: true },
+      );
     });
   }
 }
@@ -229,12 +238,7 @@ class CountingWriteBufferedWriter extends RecordingBufferedWriter {
 }
 describe('BytesReader', () => {
   it('readAtMost limits returned bytes and preserves the remainder', async (t) => {
-    const reader = new MemoryBytesReader([new Uint8Array([
-      1,
-      2,
-      3,
-      4
-    ])]);
+    const reader = new MemoryBytesReader([new Uint8Array([1, 2, 3, 4])]);
     const first = await reader.readAtMost(2);
     const second = await reader.read();
     t.deepEqual([...first!], [1, 2], 'readAtMost returns at most the requested bytes');
@@ -249,11 +253,7 @@ describe('BytesReader', () => {
     t.deepEqual(reader.consumed, [2], 'replayed bytes report consumption when delivered');
   });
   it('readInto fills caller storage without over-consuming', async (t) => {
-    const reader = new MemoryBytesReader([new Uint8Array([
-      10,
-      11,
-      12
-    ])]);
+    const reader = new MemoryBytesReader([new Uint8Array([10, 11, 12])]);
     const out = new Uint8Array(2);
     const n = await reader.readInto(out);
     t.equal(n, 2, 'readInto returns the byte count copied');
@@ -266,7 +266,7 @@ describe('BytesReader', () => {
     const controller = new AbortController();
     const pending = reader.read({
       maxBytes: 1,
-      signal: controller.signal
+      signal: controller.signal,
     });
     controller.abort(new Error('stop-read'));
     await t.rejects(() => pending, /stop-read/, 'aborted read rejects with the abort reason');
@@ -275,47 +275,71 @@ describe('BytesReader', () => {
 });
 describe('BufferedBytesReader', () => {
   it('peek, scanBuffered, and takeBuffered inspect without over-consuming', async (t) => {
-    const reader = BufferedBytesReader.over(new MemoryBytesReader([new Uint8Array([1, 2]), new Uint8Array([3, 4])]));
-    t.deepEqual([...await reader.peek(3)], [
-      1,
-      2,
-      3
-    ], 'peek pulls enough bytes without consuming');
+    const reader = BufferedBytesReader.over(
+      new MemoryBytesReader([new Uint8Array([1, 2]), new Uint8Array([3, 4])]),
+    );
+    t.deepEqual(
+      [...(await reader.peek(3))],
+      [1, 2, 3],
+      'peek pulls enough bytes without consuming',
+    );
     t.equal(reader.buffered, 4, 'peek leaves pulled bytes buffered');
     t.equal(reader.scanBuffered(new Uint8Array([2, 3])), 3, 'scanBuffered matches across chunks');
     t.deepEqual([...reader.takeBuffered(2)], [1, 2], 'takeBuffered consumes only requested bytes');
-    t.deepEqual([...(await reader.readExactly(2))!], [3, 4], 'remaining buffered bytes stay readable');
+    t.deepEqual(
+      [...(await reader.readExactly(2))!],
+      [3, 4],
+      'remaining buffered bytes stay readable',
+    );
   });
   it('readUntil preserves bytes on short EOF', async (t) => {
-    const reader = BufferedBytesReader.over(new MemoryBytesReader([new TextEncoder().encode('partial')]));
+    const reader = BufferedBytesReader.over(
+      new MemoryBytesReader([new TextEncoder().encode('partial')]),
+    );
     t.equal(await reader.readUntil(new Uint8Array([10])), null, 'missing delimiter returns null');
     t.equal(reader.buffered, 7, 'short read keeps bytes buffered');
-    t.equal(new TextDecoder().decode(reader.takeBuffered(7)), 'partial', 'caller can recover buffered bytes');
+    t.equal(
+      new TextDecoder().decode(reader.takeBuffered(7)),
+      'partial',
+      'caller can recover buffered bytes',
+    );
   });
   it('readUntil consumes through a delimiter', async (t) => {
-    const reader = BufferedBytesReader.over(new MemoryBytesReader([new TextEncoder().encode('hello'), new TextEncoder().encode('\nworld')]));
+    const reader = BufferedBytesReader.over(
+      new MemoryBytesReader([
+        new TextEncoder().encode('hello'),
+        new TextEncoder().encode('\nworld'),
+      ]),
+    );
     const line = await reader.readUntil(new Uint8Array([10]));
     t.equal(new TextDecoder().decode(line!), 'hello\n', 'readUntil includes the delimiter');
-    t.equal(new TextDecoder().decode(await reader.readExactly(5)!), 'world', 'tail bytes remain readable');
+    t.equal(
+      new TextDecoder().decode(await reader.readExactly(5)!),
+      'world',
+      'tail bytes remain readable',
+    );
   });
   it('readUntil throws when max is exceeded and preserves buffered bytes', async (t) => {
-    const reader = BufferedBytesReader.over(new MemoryBytesReader([new TextEncoder().encode('abcdef')]));
-    await t.rejects(() => reader.readUntil(new Uint8Array([10]), 3), /max 3 bytes exceeded/, 'readUntil rejects on max overflow');
+    const reader = BufferedBytesReader.over(
+      new MemoryBytesReader([new TextEncoder().encode('abcdef')]),
+    );
+    await t.rejects(
+      () => reader.readUntil(new Uint8Array([10]), 3),
+      /max 3 bytes exceeded/,
+      'readUntil rejects on max overflow',
+    );
     t.equal(reader.buffered, 6, 'overflow does not consume buffered bytes');
-    t.equal(new TextDecoder().decode(reader.takeBuffered(6)), 'abcdef', 'overflow bytes are replayable from the buffer');
+    t.equal(
+      new TextDecoder().decode(reader.takeBuffered(6)),
+      'abcdef',
+      'overflow bytes are replayable from the buffer',
+    );
   });
 });
 describe('BytesWriter', () => {
   it('accepts ArrayBufferView sources with their byte offsets', async (t) => {
     const writer = new MemoryBytesWriter();
-    const backing = new Uint8Array([
-      0,
-      1,
-      2,
-      3,
-      4,
-      0
-    ]);
+    const backing = new Uint8Array([0, 1, 2, 3, 4, 0]);
     const view = new DataView(backing.buffer, 2, 3);
     const shared = new SharedArrayBuffer(4);
     const sharedView = new Uint8Array(shared, 1, 2);
@@ -324,30 +348,28 @@ describe('BytesWriter', () => {
     await writer.write(view);
     await writer.write(sharedView);
     await writer.write(backing.buffer.slice(1, 3));
-    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [
+    t.deepEqual(
+      writer.chunks.map((chunk) => [...chunk]),
       [
-        1,
-        2,
-        3
+        [1, 2, 3],
+        [2, 3, 4],
+        [8, 9],
+        [1, 2],
       ],
-      [
-        2,
-        3,
-        4
-      ],
-      [8, 9],
-      [1, 2]
-    ], 'writer normalizes ArrayBuffer, DataView, typed-array, and shared-buffer views');
+      'writer normalizes ArrayBuffer, DataView, typed-array, and shared-buffer views',
+    );
   });
   it('writev writes selected vectors in order', async (t) => {
     const writer = new MemoryBytesWriter();
-    await writer.writev([
-      new Uint8Array([1]),
-      new Uint8Array([]),
-      new Uint8Array([2, 3]),
-      new Uint8Array([4])
-    ], 3);
-    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[1], [2, 3]], 'writev skips empty vectors and honors count');
+    await writer.writev(
+      [new Uint8Array([1]), new Uint8Array([]), new Uint8Array([2, 3]), new Uint8Array([4])],
+      3,
+    );
+    t.deepEqual(
+      writer.chunks.map((chunk) => [...chunk]),
+      [[1], [2, 3]],
+      'writev skips empty vectors and honors count',
+    );
   });
   it('close() is idempotent and rejects writes after close', async (t) => {
     const writer = new MemoryBytesWriter();
@@ -364,18 +386,21 @@ describe('BufferedBytesWriter', () => {
     await writer.write(new Uint8Array([1]));
     await writer.write(new Uint8Array([2]));
     t.deepEqual(sink.chunks, [], 'small writes stay buffered before flush');
-    await writer.write(new Uint8Array([
-      3,
-      4,
-      5
-    ]));
-    t.deepEqual(sink.chunks.map((chunk) => [...chunk]), [[1, 2]], 'overflow flushes pending bytes');
+    await writer.write(new Uint8Array([3, 4, 5]));
+    t.deepEqual(
+      sink.chunks.map((chunk) => [...chunk]),
+      [[1, 2]],
+      'overflow flushes pending bytes',
+    );
     await writer.close();
-    t.deepEqual(sink.chunks.map((chunk) => [...chunk]), [[1, 2], [
-      3,
-      4,
-      5
-    ]], 'close flushes the remaining bytes');
+    t.deepEqual(
+      sink.chunks.map((chunk) => [...chunk]),
+      [
+        [1, 2],
+        [3, 4, 5],
+      ],
+      'close flushes the remaining bytes',
+    );
     t.ok(sink.closed, 'closing the buffered wrapper closes the target writer');
   });
   it('flush() and close() are idempotent with no pending bytes', async (t) => {
@@ -386,25 +411,26 @@ describe('BufferedBytesWriter', () => {
     await writer.flush();
     await writer.close();
     await writer.close();
-    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[1, 2]], 'pending bytes flush once');
+    t.deepEqual(
+      writer.chunks.map((chunk) => [...chunk]),
+      [[1, 2]],
+      'pending bytes flush once',
+    );
     t.equal(writer.closeCount, 1, 'close callback runs once');
   });
   it('large writes flush pending bytes first and then bypass the coalesce buffer', async (t) => {
     const writer = new RecordingBufferedWriter(4);
     await writer.write(new Uint8Array([1, 2]));
-    await writer.write(new Uint8Array([
-      3,
-      4,
-      5,
-      6
-    ]));
+    await writer.write(new Uint8Array([3, 4, 5, 6]));
     await writer.close();
-    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[1, 2], [
-      3,
-      4,
-      5,
-      6
-    ]], 'large write preserves ordering around short pending write');
+    t.deepEqual(
+      writer.chunks.map((chunk) => [...chunk]),
+      [
+        [1, 2],
+        [3, 4, 5, 6],
+      ],
+      'large write preserves ordering around short pending write',
+    );
   });
   it('writev coalesces small vectors without per-vector public writes', async (t) => {
     const writer = new CountingWriteBufferedWriter(8);
@@ -412,12 +438,16 @@ describe('BufferedBytesWriter', () => {
       new Uint8Array([1]),
       new Uint8Array([]),
       new Uint8Array([2, 3]),
-      new Uint8Array([4])
+      new Uint8Array([4]),
     ]);
     t.equal(writer.writeCalls, 0, 'writev uses the buffered vector path directly');
     t.deepEqual(writer.chunks, [], 'small vectors remain buffered before flush');
     await writer.flush();
-    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[1, 2, 3, 4]], 'small vectors flush as one coalesced chunk');
+    t.deepEqual(
+      writer.chunks.map((chunk) => [...chunk]),
+      [[1, 2, 3, 4]],
+      'small vectors flush as one coalesced chunk',
+    );
   });
 });
 describe('FdReader / FdWriter', () => {
@@ -440,7 +470,11 @@ describe('FdReader / FdWriter', () => {
       await file.close();
     }
     try {
-      t.equal(new TextDecoder().decode(await fs.readFile(path)), 'abcd', 'FdWriter.writev writes all vectors in order');
+      t.equal(
+        new TextDecoder().decode(await fs.readFile(path)),
+        'abcd',
+        'FdWriter.writev writes all vectors in order',
+      );
     } finally {
       await fs.unlink(path).catch(() => {});
     }
@@ -449,14 +483,22 @@ describe('FdReader / FdWriter', () => {
     const reader = new FdReader(-1, () => {});
     const writer = new FdWriter(-1, () => {});
     await t.rejects(() => reader.readAtMost(1), null, 'invalid fd read rejects');
-    await t.rejects(() => writer.write(new Uint8Array(65536)), /write failed/, 'invalid fd write rejects');
+    await t.rejects(
+      () => writer.write(new Uint8Array(65536)),
+      /write failed/,
+      'invalid fd write rejects',
+    );
     await reader.close();
     await writer.close().catch(() => {});
   });
   it('FdWriter.writev rejects vector counts over the internal iovec limit', async (t) => {
     const writer = new FdWriter(1, () => {});
     const vecs = Array.from({ length: 17 }, () => new Uint8Array([1]));
-    await t.rejects(() => writer.writev(vecs), /too many vectors/, 'too many vectors reject before writing');
+    await t.rejects(
+      () => writer.writev(vecs),
+      /too many vectors/,
+      'too many vectors reject before writing',
+    );
     await writer.close();
   });
   it('FdReader returns partial reads and EOF from a nonblocking pipe', async (t) => {
@@ -470,7 +512,11 @@ describe('FdReader / FdWriter', () => {
       const second = await reader.readAtMost(16);
       const eof = await reader.readAtMost(1);
       t.equal(new TextDecoder().decode(first!), 'ab', 'readAtMost returns only requested bytes');
-      t.equal(new TextDecoder().decode(second!), 'cdef', 'remaining pipe bytes are delivered later');
+      t.equal(
+        new TextDecoder().decode(second!),
+        'cdef',
+        'remaining pipe bytes are delivered later',
+      );
       t.equal(eof, null, 'closed write end produces EOF');
     } finally {
       await reader.close();
@@ -489,7 +535,11 @@ describe('FdReader / FdWriter', () => {
       await writer.write(new TextEncoder().encode('ping'));
       await writer.close();
       const chunk = await pending;
-      t.equal(new TextDecoder().decode(chunk!), 'ping', 'pending read resolves after data is written');
+      t.equal(
+        new TextDecoder().decode(chunk!),
+        'ping',
+        'pending read resolves after data is written',
+      );
       t.equal(await reader.readAtMost(1), null, 'reader observes EOF after writer closes');
     } finally {
       await reader.close();
@@ -506,15 +556,27 @@ describe('FdReader / FdWriter', () => {
       for (let offset = 0; offset < payload.byteLength; offset += 8192) {
         const part = payload.subarray(offset, offset + 8192);
         const pending = reader.readAtMost(part.byteLength);
-        t.equal(rawWrite(pipe.writeFd, part), part.byteLength, 'raw pipe write accepts one reader chunk');
+        t.equal(
+          rawWrite(pipe.writeFd, part),
+          part.byteLength,
+          'raw pipe write accepts one reader chunk',
+        );
         const receivedPart = await pending;
         t.deepEqual([...receivedPart!], [...part], 'FdReader delivers each large-transfer chunk');
       }
       pipe.closeWrite();
       const received = payload;
       t.equal(received.byteLength, payload.byteLength, 'large pipe transfer length matches');
-      t.deepEqual([...received.subarray(0, 16)], [...payload.subarray(0, 16)], 'large transfer preserves prefix bytes');
-      t.deepEqual([...received.subarray(received.byteLength - 16)], [...payload.subarray(payload.byteLength - 16)], 'large transfer preserves suffix bytes');
+      t.deepEqual(
+        [...received.subarray(0, 16)],
+        [...payload.subarray(0, 16)],
+        'large transfer preserves prefix bytes',
+      );
+      t.deepEqual(
+        [...received.subarray(received.byteLength - 16)],
+        [...payload.subarray(payload.byteLength - 16)],
+        'large transfer preserves suffix bytes',
+      );
       t.equal(await reader.readAtMost(1), null, 'reader reaches EOF after large transfer');
     } finally {
       await reader.close();
@@ -537,11 +599,19 @@ describe('FdReader / FdWriter', () => {
       await drainUntilDone(pipe.readFd, () => done, drained);
       await withTimeout(writePromise, 'large fd writer retry');
       await writer.close();
-      drained.push(...await drainToEof(pipe.readFd));
+      drained.push(...(await drainToEof(pipe.readFd)));
       const received = concat(drained).subarray(fillerBytes);
       t.equal(received.byteLength, payload.byteLength, 'all large write bytes are readable');
-      t.deepEqual([...received.subarray(0, 32)], [...payload.subarray(0, 32)], 'large write prefix matches');
-      t.deepEqual([...received.subarray(received.byteLength - 32)], [...payload.subarray(payload.byteLength - 32)], 'large write suffix matches');
+      t.deepEqual(
+        [...received.subarray(0, 32)],
+        [...payload.subarray(0, 32)],
+        'large write prefix matches',
+      );
+      t.deepEqual(
+        [...received.subarray(received.byteLength - 32)],
+        [...payload.subarray(payload.byteLength - 32)],
+        'large write suffix matches',
+      );
     } finally {
       await writer.close().catch(() => {});
       pipe.closeRead();
@@ -554,7 +624,7 @@ describe('FdReader / FdWriter', () => {
     const vecs = [
       patternedBytes(80 * 1024),
       patternedBytes(96 * 1024).map((byte) => byte ^ 170),
-      patternedBytes(112 * 1024).map((byte) => byte ^ 85)
+      patternedBytes(112 * 1024).map((byte) => byte ^ 85),
     ];
     const total = vecs.reduce((sum, vec) => sum + vec.byteLength, 0);
     const expected = new Uint8Array(total);
@@ -574,12 +644,24 @@ describe('FdReader / FdWriter', () => {
       await drainUntilDone(pipe.readFd, () => done, drained);
       await withTimeout(writePromise, 'large fd writev');
       await writer.close();
-      drained.push(...await drainToEof(pipe.readFd));
+      drained.push(...(await drainToEof(pipe.readFd)));
       const received = concat(drained).subarray(fillerBytes);
       t.equal(received.byteLength, expected.byteLength, 'writev large transfer length matches');
-      t.deepEqual([...received.subarray(0, 32)], [...expected.subarray(0, 32)], 'writev preserves first vector prefix');
-      t.deepEqual([...received.subarray(vecs[0]!.byteLength - 16, vecs[0]!.byteLength + 16)], [...expected.subarray(vecs[0]!.byteLength - 16, vecs[0]!.byteLength + 16)], 'writev cursor crosses vector boundary correctly');
-      t.deepEqual([...received.subarray(received.byteLength - 32)], [...expected.subarray(expected.byteLength - 32)], 'writev preserves final vector suffix');
+      t.deepEqual(
+        [...received.subarray(0, 32)],
+        [...expected.subarray(0, 32)],
+        'writev preserves first vector prefix',
+      );
+      t.deepEqual(
+        [...received.subarray(vecs[0]!.byteLength - 16, vecs[0]!.byteLength + 16)],
+        [...expected.subarray(vecs[0]!.byteLength - 16, vecs[0]!.byteLength + 16)],
+        'writev cursor crosses vector boundary correctly',
+      );
+      t.deepEqual(
+        [...received.subarray(received.byteLength - 32)],
+        [...expected.subarray(expected.byteLength - 32)],
+        'writev preserves final vector suffix',
+      );
     } finally {
       await writer.close().catch(() => {});
       pipe.closeRead();

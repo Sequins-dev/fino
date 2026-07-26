@@ -1,37 +1,44 @@
 /**
-* fino:security/oauth - OAuth/OIDC client helpers for application middleware.
-*
-* Useful references:
-* - OAuth 2.1 draft: https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1
-* - PKCE: https://www.rfc-editor.org/rfc/rfc7636
-* - Authorization server metadata: https://www.rfc-editor.org/rfc/rfc8414
-* - OpenID Connect Core: https://openid.net/specs/openid-connect-core-1_0.html
-*
-* This module implements the application-client side of OAuth: PKCE material,
-* authorization URLs, code exchange, refresh, sealed-cookie login state, and
-* JWT bearer validation. It is not an identity provider and intentionally does
-* not implement opaque-token introspection, DPoP, mTLS, device code, or dynamic
-* client registration.
-*
-* ```ts no_run
-* import { oauthLogin, oauthCallback } from 'fino:security/oauth';
-*
-* const provider = {
-*   authorizationEndpoint: 'https://issuer.example/authorize',
-*   tokenEndpoint: 'https://issuer.example/token',
-*   clientId: 'client',
-*   redirectUri: 'https://app.example/callback',
-* };
-* ```
-*/
-import { sealCookie, unsealCookie, serializeCookie, parseCookieHeader, type BufferLike, type CookieOptions } from './cookie.ts';
+ * fino:security/oauth - OAuth/OIDC client helpers for application middleware.
+ *
+ * Useful references:
+ * - OAuth 2.1 draft: https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1
+ * - PKCE: https://www.rfc-editor.org/rfc/rfc7636
+ * - Authorization server metadata: https://www.rfc-editor.org/rfc/rfc8414
+ * - OpenID Connect Core: https://openid.net/specs/openid-connect-core-1_0.html
+ *
+ * This module implements the application-client side of OAuth: PKCE material,
+ * authorization URLs, code exchange, refresh, sealed-cookie login state, and
+ * JWT bearer validation. It is not an identity provider and intentionally does
+ * not implement opaque-token introspection, DPoP, mTLS, device code, or dynamic
+ * client registration.
+ *
+ * ```ts no_run
+ * import { oauthLogin, oauthCallback } from 'fino:security/oauth';
+ *
+ * const provider = {
+ *   authorizationEndpoint: 'https://issuer.example/authorize',
+ *   tokenEndpoint: 'https://issuer.example/token',
+ *   clientId: 'client',
+ *   redirectUri: 'https://app.example/callback',
+ * };
+ * ```
+ */
+import {
+  sealCookie,
+  unsealCookie,
+  serializeCookie,
+  parseCookieHeader,
+  type BufferLike,
+  type CookieOptions,
+} from './cookie.ts';
 import { randomBase64Url } from './random.ts';
 import { jwtVerify, type JwtKeyInput, type JwtVerifyOptions } from './jwt.ts';
 import { sha256Base64url } from '../internal/security/encoding.ts';
 
 /**
-* Static client configuration for one OAuth or OpenID Connect provider.
-*/
+ * Static client configuration for one OAuth or OpenID Connect provider.
+ */
 export interface OAuthProvider {
   /** Authorization endpoint used to start the browser redirect flow. */
   authorizationEndpoint: string;
@@ -58,44 +65,50 @@ export type OAuthMetadata = Record<string, unknown> & {
 };
 
 /**
-* Options for OAuth/OIDC discovery requests.
-*/
+ * Options for OAuth/OIDC discovery requests.
+ */
 export interface OAuthDiscoveryOptions {
   /** Fetch implementation used to load provider metadata. */
   fetch?: typeof fetch;
 }
 
 /**
-* Fetch RFC 8414 OAuth authorization-server metadata for an issuer URL.
-*
-* The issuer is resolved against `/.well-known/oauth-authorization-server`.
-* Non-success HTTP responses reject with an error that includes the response
-* status code.
-*/
-export async function discoverOAuthMetadata(issuer: string | URL, options: OAuthDiscoveryOptions = {}): Promise<OAuthMetadata> {
+ * Fetch RFC 8414 OAuth authorization-server metadata for an issuer URL.
+ *
+ * The issuer is resolved against `/.well-known/oauth-authorization-server`.
+ * Non-success HTTP responses reject with an error that includes the response
+ * status code.
+ */
+export async function discoverOAuthMetadata(
+  issuer: string | URL,
+  options: OAuthDiscoveryOptions = {},
+): Promise<OAuthMetadata> {
   const url = new URL('/.well-known/oauth-authorization-server', issuer);
   const res = await (options.fetch ?? fetch)(url);
   if (!res.ok) throw new Error(`OAuth metadata discovery failed with HTTP ${res.status}`);
-  return await res.json() as OAuthMetadata;
+  return (await res.json()) as OAuthMetadata;
 }
 
 /**
-* Fetch OpenID Provider metadata for an issuer URL.
-*
-* The issuer is resolved against `/.well-known/openid-configuration`. The
-* returned object is intentionally loose because providers commonly include
-* extension metadata alongside the standard OIDC fields.
-*/
-export async function discoverOpenIdProvider(issuer: string | URL, options: OAuthDiscoveryOptions = {}): Promise<OAuthMetadata> {
+ * Fetch OpenID Provider metadata for an issuer URL.
+ *
+ * The issuer is resolved against `/.well-known/openid-configuration`. The
+ * returned object is intentionally loose because providers commonly include
+ * extension metadata alongside the standard OIDC fields.
+ */
+export async function discoverOpenIdProvider(
+  issuer: string | URL,
+  options: OAuthDiscoveryOptions = {},
+): Promise<OAuthMetadata> {
   const url = new URL('/.well-known/openid-configuration', issuer);
   const res = await (options.fetch ?? fetch)(url);
   if (!res.ok) throw new Error(`OIDC discovery failed with HTTP ${res.status}`);
-  return await res.json() as OAuthMetadata;
+  return (await res.json()) as OAuthMetadata;
 }
 
 /**
-* PKCE verifier and challenge pair for an authorization-code flow.
-*/
+ * PKCE verifier and challenge pair for an authorization-code flow.
+ */
 export interface PkceMaterial {
   /** High-entropy verifier retained server-side until the callback. */
   verifier: string;
@@ -106,20 +119,20 @@ export interface PkceMaterial {
 }
 
 /**
-* Options for `createPkce()`.
-*/
+ * Options for `createPkce()`.
+ */
 export interface PkceOptions {
   /** Optional verifier to validate and derive instead of generating one. */
   verifier?: string;
 }
 
 /**
-* Create RFC 7636 S256 PKCE verifier and challenge material.
-*
-* Generated verifiers use 32 random bytes encoded as base64url. Supplied
-* verifiers must satisfy the RFC 7636 character set and 43-128 character
-* length constraints.
-*/
+ * Create RFC 7636 S256 PKCE verifier and challenge material.
+ *
+ * Generated verifiers use 32 random bytes encoded as base64url. Supplied
+ * verifiers must satisfy the RFC 7636 character set and 43-128 character
+ * length constraints.
+ */
 export async function createPkce(options: PkceOptions = {}): Promise<PkceMaterial> {
   const verifier = options.verifier ?? randomBase64Url(32);
   if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) throw new Error('Invalid PKCE verifier');
@@ -127,8 +140,8 @@ export async function createPkce(options: PkceOptions = {}): Promise<PkceMateria
 }
 
 /**
-* Inputs used to build an authorization-code redirect URL.
-*/
+ * Inputs used to build an authorization-code redirect URL.
+ */
 export interface AuthorizationUrlOptions {
   /** Provider authorization endpoint. */
   authorizationEndpoint: string;
@@ -147,18 +160,22 @@ export interface AuthorizationUrlOptions {
 }
 
 /**
-* Build an OAuth authorization-code redirect URL with PKCE parameters.
-*
-* The returned URL includes `response_type=code`, the provided `state`, and an
-* `S256` PKCE challenge. The function only constructs the URL; callers remain
-* responsible for storing the verifier until callback handling.
-*/
+ * Build an OAuth authorization-code redirect URL with PKCE parameters.
+ *
+ * The returned URL includes `response_type=code`, the provided `state`, and an
+ * `S256` PKCE challenge. The function only constructs the URL; callers remain
+ * responsible for storing the verifier until callback handling.
+ */
 export function authorizationUrl(options: AuthorizationUrlOptions): URL {
   const url = new URL(options.authorizationEndpoint);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', options.clientId);
   url.searchParams.set('redirect_uri', options.redirectUri);
-  if (options.scope !== undefined) url.searchParams.set('scope', Array.isArray(options.scope) ? options.scope.join(' ') : options.scope);
+  if (options.scope !== undefined)
+    url.searchParams.set(
+      'scope',
+      Array.isArray(options.scope) ? options.scope.join(' ') : options.scope,
+    );
   url.searchParams.set('state', options.state);
   if (options.nonce !== undefined) url.searchParams.set('nonce', options.nonce);
   url.searchParams.set('code_challenge', options.codeChallenge);
@@ -167,8 +184,8 @@ export function authorizationUrl(options: AuthorizationUrlOptions): URL {
 }
 
 /**
-* Options for exchanging an authorization code.
-*/
+ * Options for exchanging an authorization code.
+ */
 export interface ExchangeAuthorizationCodeOptions {
   /** Provider configuration that supplies the token endpoint and client id. */
   provider: OAuthProvider;
@@ -181,32 +198,35 @@ export interface ExchangeAuthorizationCodeOptions {
 }
 
 /**
-* Exchange an authorization code for provider tokens.
-*
-* The request uses the `authorization_code` grant and
-* `application/x-www-form-urlencoded` body encoding. Confidential clients send
-* `client_secret` when `provider.clientSecret` is present.
-*/
-export async function exchangeAuthorizationCode(options: ExchangeAuthorizationCodeOptions): Promise<Record<string, unknown>> {
+ * Exchange an authorization code for provider tokens.
+ *
+ * The request uses the `authorization_code` grant and
+ * `application/x-www-form-urlencoded` body encoding. Confidential clients send
+ * `client_secret` when `provider.clientSecret` is present.
+ */
+export async function exchangeAuthorizationCode(
+  options: ExchangeAuthorizationCodeOptions,
+): Promise<Record<string, unknown>> {
   const body = new URLSearchParams();
   body.set('grant_type', 'authorization_code');
   body.set('code', options.code);
   body.set('redirect_uri', options.provider.redirectUri);
   body.set('client_id', options.provider.clientId);
   body.set('code_verifier', options.codeVerifier);
-  if (options.provider.clientSecret !== undefined) body.set('client_secret', options.provider.clientSecret);
+  if (options.provider.clientSecret !== undefined)
+    body.set('client_secret', options.provider.clientSecret);
   const res = await (options.fetch ?? fetch)(options.provider.tokenEndpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: body.toString()
+    body: body.toString(),
   });
   if (!res.ok) throw new Error(`OAuth token exchange failed with HTTP ${res.status}`);
-  return await res.json() as Record<string, unknown>;
+  return (await res.json()) as Record<string, unknown>;
 }
 
 /**
-* Options for refreshing a provider access token.
-*/
+ * Options for refreshing a provider access token.
+ */
 export interface RefreshAccessTokenOptions {
   /** Provider configuration that supplies the token endpoint and client id. */
   provider: OAuthProvider;
@@ -217,33 +237,38 @@ export interface RefreshAccessTokenOptions {
 }
 
 /**
-* Refresh an access token with a refresh token.
-*
-* The request uses the `refresh_token` grant and returns the provider's token
-* response as a plain record so provider-specific fields are preserved.
-*/
-export async function refreshAccessToken(options: RefreshAccessTokenOptions): Promise<Record<string, unknown>> {
+ * Refresh an access token with a refresh token.
+ *
+ * The request uses the `refresh_token` grant and returns the provider's token
+ * response as a plain record so provider-specific fields are preserved.
+ */
+export async function refreshAccessToken(
+  options: RefreshAccessTokenOptions,
+): Promise<Record<string, unknown>> {
   const body = new URLSearchParams();
   body.set('grant_type', 'refresh_token');
   body.set('refresh_token', options.refreshToken);
   body.set('client_id', options.provider.clientId);
-  if (options.provider.clientSecret !== undefined) body.set('client_secret', options.provider.clientSecret);
+  if (options.provider.clientSecret !== undefined)
+    body.set('client_secret', options.provider.clientSecret);
   const res = await (options.fetch ?? fetch)(options.provider.tokenEndpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: body.toString()
+    body: body.toString(),
   });
   if (!res.ok) throw new Error(`OAuth token refresh failed with HTTP ${res.status}`);
-  return await res.json() as Record<string, unknown>;
+  return (await res.json()) as Record<string, unknown>;
 }
 
 function setCookie(headers: Headers, value: string): void {
-  (headers as Headers & { _appendTrusted?: (name: string, value: string) => void })._appendTrusted?.('set-cookie', value) ?? headers.append('set-cookie', value);
+  (
+    headers as Headers & { _appendTrusted?: (name: string, value: string) => void }
+  )._appendTrusted?.('set-cookie', value) ?? headers.append('set-cookie', value);
 }
 
 /**
-* Options for `oauthLogin()`.
-*/
+ * Options for `oauthLogin()`.
+ */
 export interface OAuthLoginOptions {
   /** Provider configuration for redirect URL construction. */
   provider: OAuthProvider;
@@ -266,11 +291,11 @@ export interface OAuthLoginOptions {
 }
 
 /**
-* Create a login handler that redirects to the provider authorization URL.
-*
-* The handler stores OAuth transaction state in a sealed HTTP-only cookie and
-* returns a `302` response with a `Location` header pointing at the provider.
-*/
+ * Create a login handler that redirects to the provider authorization URL.
+ *
+ * The handler stores OAuth transaction state in a sealed HTTP-only cookie and
+ * returns a `302` response with a `Location` header pointing at the provider.
+ */
 export function oauthLogin(options: OAuthLoginOptions) {
   const cookie = options.cookie ?? 'fino_oauth';
   return async function handleOAuthLogin(_req: Request): Promise<Response> {
@@ -285,18 +310,35 @@ export function oauthLogin(options: OAuthLoginOptions) {
       scope: options.scope,
       state,
       nonce,
-      codeChallenge: pkce.challenge
+      codeChallenge: pkce.challenge,
     });
-    const sealed = sealCookie(JSON.stringify({ state, nonce, codeVerifier: pkce.verifier, exp: Math.floor(Date.now() / 1000) + maxAge }), options.secret);
+    const sealed = sealCookie(
+      JSON.stringify({
+        state,
+        nonce,
+        codeVerifier: pkce.verifier,
+        exp: Math.floor(Date.now() / 1000) + maxAge,
+      }),
+      options.secret,
+    );
     const res = new Response(null, { status: 302, headers: { location: url.toString() } });
-    setCookie(res.headers, serializeCookie(cookie, sealed, { path: '/', httpOnly: true, sameSite: 'Lax', maxAge, ...options.cookieOptions }));
+    setCookie(
+      res.headers,
+      serializeCookie(cookie, sealed, {
+        path: '/',
+        httpOnly: true,
+        sameSite: 'Lax',
+        maxAge,
+        ...options.cookieOptions,
+      }),
+    );
     return res;
   };
 }
 
 /**
-* Result passed to an OAuth callback success hook.
-*/
+ * Result passed to an OAuth callback success hook.
+ */
 export interface OAuthCallbackResult {
   /** Token response returned by the provider. */
   tokens: Record<string, unknown>;
@@ -305,8 +347,8 @@ export interface OAuthCallbackResult {
 }
 
 /**
-* Options for `oauthCallback()`.
-*/
+ * Options for `oauthCallback()`.
+ */
 export interface OAuthCallbackOptions {
   /** Provider configuration for token exchange. */
   provider: OAuthProvider;
@@ -323,65 +365,96 @@ export interface OAuthCallbackOptions {
 }
 
 /**
-* Create a callback handler that validates sealed state and exchanges code.
-*
-* The returned handler rejects missing parameters, state mismatches, expired
-* transactions, and malformed transaction cookies with `400` responses. On
-* success it clears the transaction cookie and returns either `onSuccess()`
-* or a JSON response containing the provider tokens.
-*/
+ * Create a callback handler that validates sealed state and exchanges code.
+ *
+ * The returned handler rejects missing parameters, state mismatches, expired
+ * transactions, and malformed transaction cookies with `400` responses. On
+ * success it clears the transaction cookie and returns either `onSuccess()`
+ * or a JSON response containing the provider tokens.
+ */
 export function oauthCallback(options: OAuthCallbackOptions) {
   const cookie = options.cookie ?? 'fino_oauth';
   return async function handleOAuthCallback(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
-    if (code === null || state === null) return new Response('Missing OAuth callback parameters', { status: 400 });
-    const unsafeCookie = (req as Request & { _getUnsafeHeader?: (name: string) => string | null })._getUnsafeHeader?.('cookie') ?? null;
+    if (code === null || state === null)
+      return new Response('Missing OAuth callback parameters', { status: 400 });
+    const unsafeCookie =
+      (req as Request & { _getUnsafeHeader?: (name: string) => string | null })._getUnsafeHeader?.(
+        'cookie',
+      ) ?? null;
     const cookies = parseCookieHeader(req.headers.get('cookie') ?? unsafeCookie ?? '');
     const raw = cookies[cookie];
     const unsealed = raw === undefined ? null : unsealCookie(raw, options.secret);
     if (unsealed === null) return new Response('Missing OAuth transaction', { status: 400 });
     const transaction = JSON.parse(unsealed) as Record<string, unknown>;
     if (transaction.state !== state) return new Response('Invalid OAuth state', { status: 400 });
-    if (typeof transaction.exp === 'number' && Math.floor(Date.now() / 1000) > transaction.exp) return new Response('Expired OAuth transaction', { status: 400 });
-    if (typeof transaction.codeVerifier !== 'string') return new Response('Invalid OAuth transaction', { status: 400 });
-    const tokens = await exchangeAuthorizationCode({ provider: options.provider, code, codeVerifier: transaction.codeVerifier, fetch: options.fetch });
+    if (typeof transaction.exp === 'number' && Math.floor(Date.now() / 1000) > transaction.exp)
+      return new Response('Expired OAuth transaction', { status: 400 });
+    if (typeof transaction.codeVerifier !== 'string')
+      return new Response('Invalid OAuth transaction', { status: 400 });
+    const tokens = await exchangeAuthorizationCode({
+      provider: options.provider,
+      code,
+      codeVerifier: transaction.codeVerifier,
+      fetch: options.fetch,
+    });
     const res = await (options.onSuccess?.({ tokens, transaction }) ?? Response.json({ tokens }));
-    setCookie(res.headers, serializeCookie(cookie, '', { path: '/', ...options.cookieOptions, maxAge: 0, expires: new Date(0) }));
+    setCookie(
+      res.headers,
+      serializeCookie(cookie, '', {
+        path: '/',
+        ...options.cookieOptions,
+        maxAge: 0,
+        expires: new Date(0),
+      }),
+    );
     return res;
   };
 }
 
 /**
-* Verify an OIDC ID token using the existing JWT/JWKS verifier.
-*
-* The helper defaults `typ` to `JWT`/`jwt` and otherwise forwards options to
-* `jwtVerify()`, including issuer, audience, algorithm, and clock settings.
-*/
-export async function verifyIdToken(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}) {
+ * Verify an OIDC ID token using the existing JWT/JWKS verifier.
+ *
+ * The helper defaults `typ` to `JWT`/`jwt` and otherwise forwards options to
+ * `jwtVerify()`, including issuer, audience, algorithm, and clock settings.
+ */
+export async function verifyIdToken(
+  token: string,
+  keys: JwtKeyInput,
+  options: JwtVerifyOptions = {},
+) {
   return await jwtVerify(token, keys, { typ: ['JWT', 'jwt'], ...options });
 }
 
 /**
-* Verify an HTTP `Authorization: Bearer <jwt>` header.
-*
-* Missing or non-bearer headers reject before JWT verification. The returned
-* value is the decoded verification result from `jwtVerify()`.
-*/
-export async function verifyBearerJwt(header: string | null, keys: JwtKeyInput, options: JwtVerifyOptions = {}) {
-  if (header === null || !/^Bearer /i.test(header)) throw new Error('Expected Bearer authorization header');
+ * Verify an HTTP `Authorization: Bearer <jwt>` header.
+ *
+ * Missing or non-bearer headers reject before JWT verification. The returned
+ * value is the decoded verification result from `jwtVerify()`.
+ */
+export async function verifyBearerJwt(
+  header: string | null,
+  keys: JwtKeyInput,
+  options: JwtVerifyOptions = {},
+) {
+  if (header === null || !/^Bearer /i.test(header))
+    throw new Error('Expected Bearer authorization header');
   return await jwtVerify(header.slice(7).trim(), keys, options);
 }
 
 /**
-* App middleware that validates a JWT bearer token and stores it on `ctx.user`.
-*
-* The middleware returns `401 Unauthorized` when verification fails. On
-* success it writes the verified JWT result to `ctx.user` and calls `next()`.
-*/
+ * App middleware that validates a JWT bearer token and stores it on `ctx.user`.
+ *
+ * The middleware returns `401 Unauthorized` when verification fails. On
+ * success it writes the verified JWT result to `ctx.user` and calls `next()`.
+ */
 export function bearerAuth(keys: JwtKeyInput, options: JwtVerifyOptions = {}) {
-  return async function bearerAuthMiddleware(ctx: { request: Request; user?: unknown }, next: () => Promise<Response>): Promise<Response> {
+  return async function bearerAuthMiddleware(
+    ctx: { request: Request; user?: unknown },
+    next: () => Promise<Response>,
+  ): Promise<Response> {
     try {
       ctx.user = await verifyBearerJwt(ctx.request.headers.get('authorization'), keys, options);
     } catch {

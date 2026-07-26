@@ -1,7 +1,7 @@
 /**
-* Tests for Socket, Reader, and Writer classes in fino:socket,
-* and serializeRequest / serializeResponse in fino:net/http.
-*/
+ * Tests for Socket, Reader, and Writer classes in fino:socket,
+ * and serializeRequest / serializeResponse in fino:net/http.
+ */
 import { describe, it } from 'fino:test/test';
 import { Socket } from 'fino:net/socket';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
@@ -31,7 +31,7 @@ describe('Connect / Listen', () => {
       using scoped = Socket.listen({
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: 0
+        port: 0,
       });
       server = scoped;
       t.ok(!scoped.closed, 'socket is open inside using scope');
@@ -42,16 +42,24 @@ describe('Connect / Listen', () => {
     const server = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
     try {
-      t.ok(server.address.family === 'ipv4' && server.address.port > 0, 'server address includes assigned ephemeral port');
+      t.ok(
+        server.address.family === 'ipv4' && server.address.port > 0,
+        'server address includes assigned ephemeral port',
+      );
       const clientSock = await Socket.connect({
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: (server.address as Extract<typeof server.address, {
-          family: 'ipv4';
-        }>).port
+        port: (
+          server.address as Extract<
+            typeof server.address,
+            {
+              family: 'ipv4';
+            }
+          >
+        ).port,
       });
       const serverConn = await server.accept();
       t.ok(clientSock !== null, 'client connected using assigned port');
@@ -66,15 +74,20 @@ describe('Connect / Listen', () => {
     const server = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
-    const PORT = (server.address as Extract<typeof server.address, {
-      family: 'ipv4';
-    }>).port;
+    const PORT = (
+      server.address as Extract<
+        typeof server.address,
+        {
+          family: 'ipv4';
+        }
+      >
+    ).port;
     const clientSock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: PORT
+      port: PORT,
     });
     const serverConn = await server.accept();
     if (serverConn === null) throw new Error('expected server connection');
@@ -98,15 +111,20 @@ describe('Connect / Listen', () => {
     const server = Socket.listen({
       family: 'ipv6',
       ip: '::1',
-      port: 0
+      port: 0,
     });
-    const PORT = (server.address as Extract<typeof server.address, {
-      family: 'ipv6';
-    }>).port;
+    const PORT = (
+      server.address as Extract<
+        typeof server.address,
+        {
+          family: 'ipv6';
+        }
+      >
+    ).port;
     const clientSock = await Socket.connect({
       family: 'ipv6',
       ip: '::1',
-      port: PORT
+      port: PORT,
     });
     const serverConn = await server.accept();
     if (serverConn === null) throw new Error('expected server connection');
@@ -125,11 +143,11 @@ describe('Connect / Listen', () => {
     const PATH = '/tmp/fino_socket_class_test.sock';
     const server = Socket.listen({
       family: 'unix',
-      path: PATH
+      path: PATH,
     });
     const clientSock = await Socket.connect({
       family: 'unix',
-      path: PATH
+      path: PATH,
     });
     const serverConn = await server.accept();
     if (serverConn === null) throw new Error('expected server connection');
@@ -150,25 +168,26 @@ describe('Writer', () => {
     const server = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
-    const PORT = (server.address as Extract<typeof server.address, {
-      family: 'ipv4';
-    }>).port;
+    const PORT = (
+      server.address as Extract<
+        typeof server.address,
+        {
+          family: 'ipv4';
+        }
+      >
+    ).port;
     const clientSock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: PORT
+      port: PORT,
     });
     const serverConn = await server.accept();
     if (serverConn === null) throw new Error('expected server connection');
     const [serverReader, serverWriter] = serverConn.split();
     const [clientReader, clientWriter] = clientSock.split();
-    const chunks = [
-      'chunk-a',
-      'chunk-b',
-      'chunk-c'
-    ];
+    const chunks = ['chunk-a', 'chunk-b', 'chunk-c'];
     async function* makeIterable() {
       for (const c of chunks) yield encodeUtf8(c);
     }
@@ -187,19 +206,26 @@ describe('Server', () => {
     const server = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
-    const PORT = (server.address as Extract<typeof server.address, {
-      family: 'ipv4';
-    }>).port;
+    const PORT = (
+      server.address as Extract<
+        typeof server.address,
+        {
+          family: 'ipv4';
+        }
+      >
+    ).port;
     const NUM = 3;
     const clientSocks = [];
     for (let i = 0; i < NUM; i++) {
-      clientSocks.push(await Socket.connect({
-        family: 'ipv4',
-        ip: '127.0.0.1',
-        port: PORT
-      }));
+      clientSocks.push(
+        await Socket.connect({
+          family: 'ipv4',
+          ip: '127.0.0.1',
+          port: PORT,
+        }),
+      );
     }
     let accepted = 0;
     const iter = server[Symbol.asyncIterator]();
@@ -219,15 +245,20 @@ describe('HTTP integration', () => {
     const server = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
-    const PORT = (server.address as Extract<typeof server.address, {
-      family: 'ipv4';
-    }>).port;
+    const PORT = (
+      server.address as Extract<
+        typeof server.address,
+        {
+          family: 'ipv4';
+        }
+      >
+    ).port;
     const clientSock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: PORT
+      port: PORT,
     });
     const serverConn = await server.accept();
     if (serverConn === null) throw new Error('expected server connection');
@@ -237,8 +268,8 @@ describe('HTTP integration', () => {
       status: 200,
       headers: {
         'content-type': 'text/plain',
-        'content-length': '12'
-      }
+        'content-length': '12',
+      },
     });
     await serverWriter.pipe(serializeResponse(res));
     serverWriter.close();
@@ -254,15 +285,20 @@ describe('HTTP integration', () => {
     const server = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
-    const PORT = (server.address as Extract<typeof server.address, {
-      family: 'ipv4';
-    }>).port;
+    const PORT = (
+      server.address as Extract<
+        typeof server.address,
+        {
+          family: 'ipv4';
+        }
+      >
+    ).port;
     const clientSock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: PORT
+      port: PORT,
     });
     const serverConn = await server.accept();
     if (serverConn === null) throw new Error('expected server connection');
@@ -273,8 +309,8 @@ describe('HTTP integration', () => {
       body: 'request-body',
       headers: {
         'content-type': 'text/plain',
-        'content-length': '12'
-      }
+        'content-length': '12',
+      },
     });
     await clientWriter.pipe(serializeRequest(req));
     clientWriter.close();
@@ -294,15 +330,20 @@ describe('Socket lifecycle', () => {
     const server = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
-    const PORT = (server.address as Extract<typeof server.address, {
-      family: 'ipv4';
-    }>).port;
+    const PORT = (
+      server.address as Extract<
+        typeof server.address,
+        {
+          family: 'ipv4';
+        }
+      >
+    ).port;
     const clientSock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: PORT
+      port: PORT,
     });
     const serverConn = await server.accept();
     if (serverConn === null) throw new Error('expected server connection');

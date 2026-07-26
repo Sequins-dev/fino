@@ -1,6 +1,6 @@
 /**
-* Tests for fino:loop — promise-based event loop API.
-*/
+ * Tests for fino:loop — promise-based event loop API.
+ */
 import { describe, it } from 'fino:test/test';
 import * as loop from 'internal:runtime/loop';
 import * as backend from 'internal:runtime/loop-backend';
@@ -26,7 +26,7 @@ function listenOnEphemeralPort(): {
   sock.bind(fd, {
     family: 'ipv4',
     ip: '127.0.0.1',
-    port: 0
+    port: 0,
   });
   sock.listen(fd, 5);
   sock.setNonblocking(fd);
@@ -34,7 +34,7 @@ function listenOnEphemeralPort(): {
   if (address.family !== 'ipv4') throw new Error('expected IPv4 socket address');
   return {
     fd,
-    port: address.port
+    port: address.port,
   };
 }
 function connectedPair(): {
@@ -48,7 +48,7 @@ function connectedPair(): {
   sock.connect(client, {
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   wait(loop.readable(server));
   const accepted = sock.accept(server);
@@ -58,7 +58,7 @@ function connectedPair(): {
   return {
     server,
     client,
-    peer: accepted.fd
+    peer: accepted.fd,
   };
 }
 function closeAll(...fds: number[]): void {
@@ -79,7 +79,7 @@ describe('Backend contract', () => {
       'addTimer',
       'removeTimer',
       'wait',
-      'destroy'
+      'destroy',
     ]) {
       t.equal(typeof (backend as Record<string, unknown>)[name], 'function', `${name} is exported`);
     }
@@ -89,11 +89,19 @@ describe('Backend contract', () => {
     if (fileBindings.isDarwin) {
       t.equal(typeof backend.EVFILT_PROC, 'number', 'macOS backend exports proc events');
       t.equal(typeof backend.EVFILT_VNODE, 'number', 'macOS backend exports vnode events');
-      t.equal(backend.EVFILT_COMPLETION, undefined, 'macOS backend does not expose completion events');
+      t.equal(
+        backend.EVFILT_COMPLETION,
+        undefined,
+        'macOS backend does not expose completion events',
+      );
     } else {
       t.equal(backend.EVFILT_PROC, undefined, 'Linux backend does not expose proc events');
       t.equal(backend.EVFILT_VNODE, undefined, 'Linux backend does not expose vnode events');
-      t.equal(typeof backend.EVFILT_COMPLETION, 'number', 'Linux backend exposes completion events');
+      t.equal(
+        typeof backend.EVFILT_COMPLETION,
+        'number',
+        'Linux backend exposes completion events',
+      );
     }
   });
   it('creates a platform backend handle with explicit Linux fallback kind', (t) => {
@@ -104,7 +112,10 @@ describe('Backend contract', () => {
       if (fileBindings.isDarwin) {
         t.equal(typeof raw.fd, 'number', 'macOS backend handle owns a kqueue fd');
       } else {
-        t.ok(raw.kind === 'io_uring' || raw.kind === 'poll', 'Linux backend selects io_uring or poll');
+        t.ok(
+          raw.kind === 'io_uring' || raw.kind === 'poll',
+          'Linux backend selects io_uring or poll',
+        );
       }
     } finally {
       backend.destroy(raw as never);
@@ -155,7 +166,7 @@ describe('I/O watchers', () => {
     sock.connect(client, {
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     wait(loop.readable(server));
     const accepted = sock.accept(server);
@@ -178,7 +189,7 @@ describe('I/O watchers', () => {
     sock.connect(client, {
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     wait(loop.writable(client));
     const errBuf = sock.getsockopt(client, sock.SOL_SOCKET, sock.SO_ERROR);
@@ -194,7 +205,7 @@ describe('I/O watchers', () => {
     sock.connect(client, {
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     wait(loop.readable(server));
     const accepted = sock.accept(server);
@@ -244,7 +255,7 @@ describe('I/O watchers', () => {
         sock.connect(client, {
           family: 'ipv4',
           ip: '127.0.0.1',
-          port
+          port,
         });
         wait(current);
         t.equal(currentResolved, true, 'new readiness still wakes the recycled fd');
@@ -274,7 +285,11 @@ describe('I/O watchers', () => {
       t.equal(secondResolved, true, 'newest readable watch resolved');
       t.equal(firstResolved, false, 'replaced readable watch stayed unsettled');
       t.ok(first instanceof Promise, 'replaced readable watch is still a promise');
-      t.equal(decodeUtf8(requireRecv(sock.recv(peer, 64, 0))), 'replace-read', 'payload remains readable');
+      t.equal(
+        decodeUtf8(requireRecv(sock.recv(peer, 64, 0))),
+        'replace-read',
+        'payload remains readable',
+      );
     } finally {
       closeAll(peer, client, server);
     }
@@ -287,7 +302,7 @@ describe('I/O watchers', () => {
       sock.connect(client, {
         family: 'ipv4',
         ip: '127.0.0.1',
-        port
+        port,
       });
       let firstResolved = false;
       let secondResolved = false;
@@ -314,7 +329,7 @@ describe('I/O watchers', () => {
       sock.connect(client, {
         family: 'ipv4',
         ip: '127.0.0.1',
-        port
+        port,
       });
       const pending = loop.writable(client);
       loop.removeWrite(client);
@@ -334,18 +349,30 @@ describe('Backend-specific loop hooks', () => {
       sock.send(client, encodeUtf8('wake'), 0);
       const dispatched = loop.tick(100);
       t.ok(dispatched >= 1, 'wake source produced a backend event');
-      t.equal(decodeUtf8(requireRecv(sock.recv(peer, 64, 0))), 'wake', 'wake bytes remain consumable');
+      t.equal(
+        decodeUtf8(requireRecv(sock.recv(peer, 64, 0))),
+        'wake',
+        'wake bytes remain consumable',
+      );
     } finally {
       closeAll(peer, client, server);
     }
   });
   it('vnode reports file writes on macOS and throws explicitly elsewhere', (t) => {
     const path = `/tmp/fino-loop-vnode-${Math.floor(Math.random() * 1e6)}.txt`;
-    const fd = fileBindings.lib.symbols.open(fileBindings.cstr(path), fileBindings.O_CREAT | fileBindings.O_RDWR | fileBindings.O_TRUNC, 384);
+    const fd = fileBindings.lib.symbols.open(
+      fileBindings.cstr(path),
+      fileBindings.O_CREAT | fileBindings.O_RDWR | fileBindings.O_TRUNC,
+      384,
+    );
     if (fd < 0) throw new Error('open vnode fixture failed');
     try {
       if (!fileBindings.isDarwin) {
-        t.throws(() => loop.vnode(fd, NOTE_WRITE, () => {}), /not supported/, 'vnode throws when unsupported');
+        t.throws(
+          () => loop.vnode(fd, NOTE_WRITE, () => {}),
+          /not supported/,
+          'vnode throws when unsupported',
+        );
         return;
       }
       let fflags = 0;
@@ -366,10 +393,17 @@ describe('Backend-specific loop hooks', () => {
   });
   it('submit() has explicit platform behavior', async (t) => {
     if (backend.EVFILT_COMPLETION === undefined) {
-      t.throws(() => loop.submit(() => {}), /not supported/, 'submit throws when completion backend is unavailable');
+      t.throws(
+        () => loop.submit(() => {}),
+        /not supported/,
+        'submit throws when completion backend is unavailable',
+      );
       return;
     }
-    t.ok(typeof loop.submit === 'function', 'submit is exposed when completion backend is available');
+    t.ok(
+      typeof loop.submit === 'function',
+      'submit is exposed when completion backend is available',
+    );
   });
 });
 describe('spin / run', () => {
@@ -424,11 +458,14 @@ describe('AbortSignal', () => {
     const ac = new AbortController();
     let threw = false;
     try {
-      loop.run(() => {
-        const p = new Promise(() => {});
-        loop.timeout(30).then(() => ac.abort(new Error('run aborted')));
-        return p;
-      }, { signal: ac.signal });
+      loop.run(
+        () => {
+          const p = new Promise(() => {});
+          loop.timeout(30).then(() => ac.abort(new Error('run aborted')));
+          return p;
+        },
+        { signal: ac.signal },
+      );
     } catch (e: unknown) {
       threw = true;
       t.equal(e instanceof Error ? e.message : String(e), 'run aborted', 'threw abort reason');

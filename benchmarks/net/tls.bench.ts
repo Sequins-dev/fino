@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:net/tls
-*
-* Run with: cargo run -- bench benchmarks/net/tls.bench.ts
-*/
+ * Benchmarks for fino:net/tls
+ *
+ * Run with: cargo run -- bench benchmarks/net/tls.bench.ts
+ */
 import { TlsSocket } from 'fino:net/tls';
 import { Socket } from 'fino:net/socket';
 import { bench } from 'fino:bench';
@@ -18,7 +18,7 @@ bench('net/tls', (b) => {
       server = Socket.listen({
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: 0
+        port: 0,
       });
     } catch (_) {
       return;
@@ -27,7 +27,7 @@ bench('net/tls', (b) => {
     try {
       await TlsSocket.connect(server.address, {
         hostname: 'localhost',
-        rejectUnauthorized: false
+        rejectUnauthorized: false,
       });
       throw new Error('failed TLS connect unexpectedly succeeded');
     } catch (err) {

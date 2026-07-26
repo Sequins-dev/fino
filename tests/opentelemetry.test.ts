@@ -2,12 +2,82 @@ import { after, describe, it } from 'fino:test/test';
 import { mockFetch } from 'fino:test/mock';
 import type { MockFetchCall } from 'fino:test/mock';
 import { topic } from 'fino:context/topic';
-import { Baggage, BatchLogRecordProcessor, BatchSpanProcessor, Counter, DnsInstrumentation, FetchInstrumentation, HttpServerInstrumentation, Histogram, HistogramInstrument, InMemoryExporter, LogRecordBuilder, LoggerProvider, ManualMetricReader, PeriodicMetricReader, PeriodicExportingMetricReader, MeterProvider, OTEL_SCHEMA_VERSION, OTEL_TOPIC_SUFFIXES, OTLPHttpJsonExporter, OtelSDK, Propagation, Resource, Sampler, SocketInstrumentation, Span, TlsInstrumentation, TraceTopicInstrumentation, TracerProvider, SeverityNumber, W3CTraceContextPropagator, gaugeFromSignal, getActiveSpan, getActiveBaggage, getLoggerProvider, getMeterProvider, getActiveSpanContext, getTracerProvider, metricsSignal, otelTopic, otelRuntimeEvent, otelRuntimeTopic, runWithActiveSpan, runWithActiveContext, runWithBaggage, runWithLoggerProvider, runWithMeterProvider, runWithTracerProvider, setLoggerProvider, setMeterProvider, setTracerProvider } from 'fino:opentelemetry';
-import type { CarrierApi, Instrumentation, LogRecord, LogRecordProcessor, MetricRecord, SpanRecord } from 'fino:opentelemetry';
-import { getTracerProvider as getTraceProviderFromTraces, Span as SplitSpan } from 'fino:opentelemetry/traces';
-import { getMeterProvider as getMeterProviderFromMetrics, Counter as SplitCounter } from 'fino:opentelemetry/metrics';
-import { getLoggerProvider as getLoggerProviderFromLogs, SeverityNumber as SplitSeverityNumber } from 'fino:opentelemetry/logs';
-import { OtelSDK as SplitOtelSDK, InMemoryExporter as SplitInMemoryExporter } from 'fino:opentelemetry/sdk';
+import {
+  Baggage,
+  BatchLogRecordProcessor,
+  BatchSpanProcessor,
+  Counter,
+  DnsInstrumentation,
+  FetchInstrumentation,
+  HttpServerInstrumentation,
+  Histogram,
+  HistogramInstrument,
+  InMemoryExporter,
+  LogRecordBuilder,
+  LoggerProvider,
+  ManualMetricReader,
+  PeriodicMetricReader,
+  PeriodicExportingMetricReader,
+  MeterProvider,
+  OTEL_SCHEMA_VERSION,
+  OTEL_TOPIC_SUFFIXES,
+  OTLPHttpJsonExporter,
+  OtelSDK,
+  Propagation,
+  Resource,
+  Sampler,
+  SocketInstrumentation,
+  Span,
+  TlsInstrumentation,
+  TraceTopicInstrumentation,
+  TracerProvider,
+  SeverityNumber,
+  W3CTraceContextPropagator,
+  gaugeFromSignal,
+  getActiveSpan,
+  getActiveBaggage,
+  getLoggerProvider,
+  getMeterProvider,
+  getActiveSpanContext,
+  getTracerProvider,
+  metricsSignal,
+  otelTopic,
+  otelRuntimeEvent,
+  otelRuntimeTopic,
+  runWithActiveSpan,
+  runWithActiveContext,
+  runWithBaggage,
+  runWithLoggerProvider,
+  runWithMeterProvider,
+  runWithTracerProvider,
+  setLoggerProvider,
+  setMeterProvider,
+  setTracerProvider,
+} from 'fino:opentelemetry';
+import type {
+  CarrierApi,
+  Instrumentation,
+  LogRecord,
+  LogRecordProcessor,
+  MetricRecord,
+  SpanRecord,
+} from 'fino:opentelemetry';
+import {
+  getTracerProvider as getTraceProviderFromTraces,
+  Span as SplitSpan,
+} from 'fino:opentelemetry/traces';
+import {
+  getMeterProvider as getMeterProviderFromMetrics,
+  Counter as SplitCounter,
+} from 'fino:opentelemetry/metrics';
+import {
+  getLoggerProvider as getLoggerProviderFromLogs,
+  SeverityNumber as SplitSeverityNumber,
+} from 'fino:opentelemetry/logs';
+import {
+  OtelSDK as SplitOtelSDK,
+  InMemoryExporter as SplitInMemoryExporter,
+} from 'fino:opentelemetry/sdk';
 import { createSignal } from 'fino:signals';
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,15 +130,23 @@ async function readBytes(body: AsyncIterable<Uint8Array | ArrayBuffer>) {
   }
   return out;
 }
-function assertPresent<T>(value: T, message = 'expected value to be present'): asserts value is NonNullable<T> {
+function assertPresent<T>(
+  value: T,
+  message = 'expected value to be present',
+): asserts value is NonNullable<T> {
   if (value == null) throw new Error(message);
 }
-function captureFetchCall(received: CapturedFetchRecord[], fetchCalls: CapturedFetchCall[], responseFactory: (call: MockFetchCall, callCount: number) => Response | Promise<Response> = () => new Response('ok')): (call: MockFetchCall) => Promise<Response> {
+function captureFetchCall(
+  received: CapturedFetchRecord[],
+  fetchCalls: CapturedFetchCall[],
+  responseFactory: (call: MockFetchCall, callCount: number) => Response | Promise<Response> = () =>
+    new Response('ok'),
+): (call: MockFetchCall) => Promise<Response> {
   return async (call: MockFetchCall): Promise<Response> => {
     fetchCalls.push({
       url: call.url.href,
       init: call.init,
-      request: call.request
+      request: call.request,
     });
     received.push({
       method: call.method,
@@ -76,15 +154,17 @@ function captureFetchCall(received: CapturedFetchRecord[], fetchCalls: CapturedF
       headers: {
         contentType: call.headers.get('content-type'),
         custom: call.headers.get('x-test-header'),
-        encoding: call.headers.get('content-encoding')
+        encoding: call.headers.get('content-encoding'),
       },
       body: call.body,
-      text: call.text
+      text: call.text,
     });
     return await responseFactory(call, fetchCalls.length);
   };
 }
-async function readBody(body: string | Uint8Array | AsyncIterable<ArrayBuffer | Uint8Array>): Promise<string | Uint8Array> {
+async function readBody(
+  body: string | Uint8Array | AsyncIterable<ArrayBuffer | Uint8Array>,
+): Promise<string | Uint8Array> {
   if (typeof body === 'string') return body;
   if (body instanceof Uint8Array) return body;
   return readBytes(body);
@@ -99,14 +179,34 @@ describe('fino:opentelemetry', () => {
     setMeterProvider(originalMeterProvider);
   });
   it('exposes signal-specific public modules and keeps the root facade compatible', (t) => {
-    t.equal(getTraceProviderFromTraces(), getTracerProvider(), 'traces module shares root tracer provider');
+    t.equal(
+      getTraceProviderFromTraces(),
+      getTracerProvider(),
+      'traces module shares root tracer provider',
+    );
     t.equal(SplitSpan, Span, 'traces module exports the public Span class');
-    t.equal(getMeterProviderFromMetrics(), getMeterProvider(), 'metrics module shares root meter provider');
+    t.equal(
+      getMeterProviderFromMetrics(),
+      getMeterProvider(),
+      'metrics module shares root meter provider',
+    );
     t.equal(SplitCounter, Counter, 'metrics module exports the public Counter class');
-    t.equal(getLoggerProviderFromLogs(), getLoggerProvider(), 'logs module shares root logger provider');
-    t.equal(SplitSeverityNumber.INFO, SeverityNumber.INFO, 'logs module exports the public severity numbers');
+    t.equal(
+      getLoggerProviderFromLogs(),
+      getLoggerProvider(),
+      'logs module shares root logger provider',
+    );
+    t.equal(
+      SplitSeverityNumber.INFO,
+      SeverityNumber.INFO,
+      'logs module exports the public severity numbers',
+    );
     t.equal(SplitOtelSDK, OtelSDK, 'sdk module exports the public SDK class');
-    t.equal(SplitInMemoryExporter, InMemoryExporter, 'sdk module exports the public in-memory exporter');
+    t.equal(
+      SplitInMemoryExporter,
+      InMemoryExporter,
+      'sdk module exports the public in-memory exporter',
+    );
   });
   it('stores provider defaults globally and supports async-scoped overrides', async (t) => {
     const tracerProvider = new TracerProvider();
@@ -125,9 +225,21 @@ describe('fino:opentelemetry', () => {
       await runWithLoggerProvider(scopedLoggerProvider, async () => {
         await runWithMeterProvider(scopedMeterProvider, async () => {
           await delay(0);
-          t.equal(getTracerProvider(), scopedTracerProvider, 'scoped tracer provider visible through async boundary');
-          t.equal(getLoggerProvider(), scopedLoggerProvider, 'scoped logger provider visible through async boundary');
-          t.equal(getMeterProvider(), scopedMeterProvider, 'scoped meter provider visible through async boundary');
+          t.equal(
+            getTracerProvider(),
+            scopedTracerProvider,
+            'scoped tracer provider visible through async boundary',
+          );
+          t.equal(
+            getLoggerProvider(),
+            scopedLoggerProvider,
+            'scoped logger provider visible through async boundary',
+          );
+          t.equal(
+            getMeterProvider(),
+            scopedMeterProvider,
+            'scoped meter provider visible through async boundary',
+          );
         });
       });
     });
@@ -136,28 +248,40 @@ describe('fino:opentelemetry', () => {
     t.equal(getMeterProvider(), meterProvider, 'scoped meter provider restored');
   });
   it('builds scope-based topic names with stable lifecycle suffixes', (t) => {
-    t.equal(otelTopic('trace', { name: 'mysql' }, 'start'), 'otel:trace:mysql:start', 'trace topic includes scope and lifecycle suffix only');
-    t.equal(otelTopic('metric', {
-      name: 'http.server',
-      version: '1.2.3'
-    }, 'request', 'observe'), 'otel:metric:http.server@1.2.3:request:observe', 'metric topic includes scope version and suffix');
+    t.equal(
+      otelTopic('trace', { name: 'mysql' }, 'start'),
+      'otel:trace:mysql:start',
+      'trace topic includes scope and lifecycle suffix only',
+    );
+    t.equal(
+      otelTopic(
+        'metric',
+        {
+          name: 'http.server',
+          version: '1.2.3',
+        },
+        'request',
+        'observe',
+      ),
+      'otel:metric:http.server@1.2.3:request:observe',
+      'metric topic includes scope version and suffix',
+    );
   });
   it('publishes canonical topic taxonomy helpers and schema envelopes', (t) => {
-    t.deepEqual(OTEL_TOPIC_SUFFIXES.trace, [
-      'start',
-      'end',
-      'error',
-      'event',
-      'attribute',
-      'link',
-      'status',
-      'rename'
-    ], 'trace suffixes are canonical');
+    t.deepEqual(
+      OTEL_TOPIC_SUFFIXES.trace,
+      ['start', 'end', 'error', 'event', 'attribute', 'link', 'status', 'rename'],
+      'trace suffixes are canonical',
+    );
     t.deepEqual(OTEL_TOPIC_SUFFIXES.metric, ['record', 'observe'], 'metric suffixes are canonical');
-    t.equal(otelRuntimeTopic('http.server', 'request', 'start'), 'otel:runtime:http.server:request:start', 'runtime topic helper is stable');
+    t.equal(
+      otelRuntimeTopic('http.server', 'request', 'start'),
+      'otel:runtime:http.server:request:start',
+      'runtime topic helper is stable',
+    );
     const event = otelRuntimeEvent('fetch', 'request', 'end', {
       requestId: 'fetch-1',
-      statusCode: 200
+      statusCode: 200,
     });
     t.equal(event.schemaVersion, OTEL_SCHEMA_VERSION, 'runtime events carry schema version');
     t.equal(event.topic, 'otel:runtime:fetch:request:end', 'runtime events carry topic name');
@@ -166,36 +290,91 @@ describe('fino:opentelemetry', () => {
   });
   it('stabilizes public aliases and rejects malformed public inputs', (t) => {
     t.equal(Histogram, HistogramInstrument, 'stable histogram alias exported');
-    t.ok(new PeriodicExportingMetricReader(new InMemoryExporter()) instanceof PeriodicMetricReader, 'stable metric reader alias exported');
-    t.throws(() => new TracerProvider().getTracer(''), /non-empty string/, 'empty tracer scope rejected');
-    t.throws(() => new LoggerProvider().getLogger('   '), /non-empty string/, 'empty logger scope rejected');
-    t.throws(() => new MeterProvider().getMeter(''), /non-empty string/, 'empty meter scope rejected');
-    t.throws(() => new TracerProvider().getTracer('valid').startSpan(''), /non-empty string/, 'empty span name rejected');
-    t.throws(() => new OTLPHttpJsonExporter({ compression: 'zip' as 'gzip' }), /compression must be one of/, 'invalid compression rejected');
-    t.throws(() => new OTLPHttpJsonExporter({ endpoints: { traces: (123 as unknown) as string } }), /endpoint for traces must be a non-empty string/, 'invalid endpoint override rejected');
-    t.throws(() => new OTLPHttpJsonExporter({ headers: ([] as unknown) as Record<string, string> }), /headers must be an object/, 'invalid headers rejected');
+    t.ok(
+      new PeriodicExportingMetricReader(new InMemoryExporter()) instanceof PeriodicMetricReader,
+      'stable metric reader alias exported',
+    );
+    t.throws(
+      () => new TracerProvider().getTracer(''),
+      /non-empty string/,
+      'empty tracer scope rejected',
+    );
+    t.throws(
+      () => new LoggerProvider().getLogger('   '),
+      /non-empty string/,
+      'empty logger scope rejected',
+    );
+    t.throws(
+      () => new MeterProvider().getMeter(''),
+      /non-empty string/,
+      'empty meter scope rejected',
+    );
+    t.throws(
+      () => new TracerProvider().getTracer('valid').startSpan(''),
+      /non-empty string/,
+      'empty span name rejected',
+    );
+    t.throws(
+      () => new OTLPHttpJsonExporter({ compression: 'zip' as 'gzip' }),
+      /compression must be one of/,
+      'invalid compression rejected',
+    );
+    t.throws(
+      () => new OTLPHttpJsonExporter({ endpoints: { traces: 123 as unknown as string } }),
+      /endpoint for traces must be a non-empty string/,
+      'invalid endpoint override rejected',
+    );
+    t.throws(
+      () => new OTLPHttpJsonExporter({ headers: [] as unknown as Record<string, string> }),
+      /headers must be an object/,
+      'invalid headers rejected',
+    );
   });
   it('applies default resource identity to providers', (t) => {
     const resource = new TracerProvider().resource;
-    t.equal(resource.attributes['service.name'], 'unknown_service', 'default service.name is present');
-    t.equal(resource.attributes['telemetry.sdk.name'], 'fino', 'default telemetry.sdk.name is present');
-    t.equal(resource.attributes['telemetry.sdk.language'], 'javascript', 'default telemetry.sdk.language is present');
-    const custom = new LoggerProvider({ resource: new Resource({
-      'service.name': 'custom-service',
-      region: 'test'
-    }) }).resource;
-    t.equal(custom.attributes['service.name'], 'custom-service', 'custom service.name overrides the default');
+    t.equal(
+      resource.attributes['service.name'],
+      'unknown_service',
+      'default service.name is present',
+    );
+    t.equal(
+      resource.attributes['telemetry.sdk.name'],
+      'fino',
+      'default telemetry.sdk.name is present',
+    );
+    t.equal(
+      resource.attributes['telemetry.sdk.language'],
+      'javascript',
+      'default telemetry.sdk.language is present',
+    );
+    const custom = new LoggerProvider({
+      resource: new Resource({
+        'service.name': 'custom-service',
+        region: 'test',
+      }),
+    }).resource;
+    t.equal(
+      custom.attributes['service.name'],
+      'custom-service',
+      'custom service.name overrides the default',
+    );
     t.equal(custom.attributes.region, 'test', 'custom resource attributes are preserved');
-    t.equal(custom.attributes['telemetry.sdk.name'], 'fino', 'default telemetry SDK metadata remains attached');
+    t.equal(
+      custom.attributes['telemetry.sdk.name'],
+      'fino',
+      'default telemetry SDK metadata remains attached',
+    );
   });
   it('routes topic events through SDK processors and exporters', async (t) => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     });
     sdk.start();
-    const provider = new TracerProvider({ resource: new Resource({ 'service.name': 'otel-test' }) });
+    const provider = new TracerProvider({
+      resource: new Resource({ 'service.name': 'otel-test' }),
+    });
     const tracer = provider.getTracer('mysql', '1.0.0');
     const span = tracer.startSpan('query', { attributes: { 'db.statement': 'select 1' } });
     span.end({ attributes: { 'db.rows_affected': 1 } });
@@ -218,41 +397,63 @@ describe('fino:opentelemetry', () => {
   });
   it('enables configured instrumentations once and disposes them on shutdown', async (t) => {
     const events: string[] = [];
-    const instrumentation: Instrumentation = { enable() {
-      events.push('enable');
-      return { dispose() {
-        events.push('dispose');
-      } };
-    } };
+    const instrumentation: Instrumentation = {
+      enable() {
+        events.push('enable');
+        return {
+          dispose() {
+            events.push('dispose');
+          },
+        };
+      },
+    };
     const sdk = new OtelSDK({
       spanProcessors: [],
-      instrumentations: [instrumentation]
+      instrumentations: [instrumentation],
     });
     sdk.start();
     sdk.start();
     await sdk.shutdown();
-    t.deepEqual(events, ['enable', 'dispose'], 'instrumentation lifecycle is one enable and one dispose');
+    t.deepEqual(
+      events,
+      ['enable', 'dispose'],
+      'instrumentation lifecycle is one enable and one dispose',
+    );
   });
   it('applies SDK resource identity independently from provider resources', async (t) => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       resource: new Resource({
         'service.name': 'sdk-service',
-        'service.version': '2.0.0'
+        'service.version': '2.0.0',
       }),
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
-    const provider = new TracerProvider({ resource: new Resource({ 'service.name': 'provider-service' }) });
+    const provider = new TracerProvider({
+      resource: new Resource({ 'service.name': 'provider-service' }),
+    });
     const span = provider.getTracer('sdk.resource', '1.0.0').startSpan('work');
     span.end();
     await sdk.flush();
     const [exported] = exporter.getFinishedSpans();
     assertPresent(exported, 'exported span present');
     assertPresent(exported.resource, 'exported resource present');
-    t.equal(exported.resource.attributes['service.name'], 'sdk-service', 'sdk resource overrides provider service.name');
-    t.equal(exported.resource.attributes['service.version'], '2.0.0', 'sdk resource adds service.version');
-    t.equal(exported.resource.attributes['telemetry.sdk.name'], 'fino', 'default sdk metadata remains present');
+    t.equal(
+      exported.resource.attributes['service.name'],
+      'sdk-service',
+      'sdk resource overrides provider service.name',
+    );
+    t.equal(
+      exported.resource.attributes['service.version'],
+      '2.0.0',
+      'sdk resource adds service.version',
+    );
+    t.equal(
+      exported.resource.attributes['telemetry.sdk.name'],
+      'fino',
+      'default sdk metadata remains present',
+    );
     await sdk.shutdown();
   });
   it('flushes spans, logs, and metrics during shutdown before tearing down subscriptions', async (t) => {
@@ -261,7 +462,7 @@ describe('fino:opentelemetry', () => {
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
       metricReaders: [new PeriodicMetricReader(exporter)],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const tracer = new TracerProvider().getTracer('shutdown.scope', '1.0.0');
     const logger = new LoggerProvider().getLogger('shutdown.scope', '1.0.0');
@@ -282,7 +483,7 @@ describe('fino:opentelemetry', () => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     });
     let genericStarts = 0;
     const genericHandle = topic('otel:trace:start').subscribe(() => {
@@ -319,30 +520,36 @@ describe('fino:opentelemetry', () => {
     });
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
-      sampler: new class extends Sampler {
+      sampler: new (class extends Sampler {
         shouldSample() {
           return false;
         }
-      }(),
+      })(),
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [{ enable(targetSdk) {
-        const handle = events.subscribe((evt: SpanRecord) => {
-          targetSdk.recordSpan({
-            name: evt.operation || evt.name || '',
-            kind: 'client',
-            traceId: evt.traceId,
-            spanId: evt.spanId,
-            startTimeUnixNano: (evt.timeUnixNano ?? 0) - 1e3,
-            endTimeUnixNano: evt.timeUnixNano ?? 0,
-            ...evt.attributes ? { attributes: evt.attributes } : {},
-            ...evt.scope ? { scope: evt.scope } : {},
-            ...evt.resource ? { resource: evt.resource } : {}
-          });
-        });
-        return { dispose() {
-          handle.dispose();
-        } };
-      } }]
+      instrumentations: [
+        {
+          enable(targetSdk) {
+            const handle = events.subscribe((evt: SpanRecord) => {
+              targetSdk.recordSpan({
+                name: evt.operation || evt.name || '',
+                kind: 'client',
+                traceId: evt.traceId,
+                spanId: evt.spanId,
+                startTimeUnixNano: (evt.timeUnixNano ?? 0) - 1e3,
+                endTimeUnixNano: evt.timeUnixNano ?? 0,
+                ...(evt.attributes ? { attributes: evt.attributes } : {}),
+                ...(evt.scope ? { scope: evt.scope } : {}),
+                ...(evt.resource ? { resource: evt.resource } : {}),
+              });
+            });
+            return {
+              dispose() {
+                handle.dispose();
+              },
+            };
+          },
+        },
+      ],
     });
     sdk.start();
     const tracer = new TracerProvider().getTracer('redis');
@@ -362,35 +569,41 @@ describe('fino:opentelemetry', () => {
         attributeCountLimit: 1,
         attributeValueLengthLimit: 5,
         eventCountLimit: 2,
-        linkCountLimit: 1
+        linkCountLimit: 1,
       },
-      spanProcessors: [{
-        onStart(span) {
-          started.push(span);
+      spanProcessors: [
+        {
+          onStart(span) {
+            started.push(span);
+          },
+          onEnd() {},
+          async forceFlush() {},
+          async shutdown() {},
         },
-        onEnd() {},
-        async forceFlush() {},
-        async shutdown() {}
-      }, new BatchSpanProcessor(exporter, {
-        maxQueueSize: 1,
-        maxExportBatchSize: 1,
-        scheduledDelayMillis: 0
-      })],
-      instrumentations: [new TraceTopicInstrumentation()]
+        new BatchSpanProcessor(exporter, {
+          maxQueueSize: 1,
+          maxExportBatchSize: 1,
+          scheduledDelayMillis: 0,
+        }),
+      ],
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const tracer = new TracerProvider().getTracer('limits');
     const first = tracer.startSpan('query', {
       attributes: {
         alpha: 'abcdef',
-        beta: 'discard'
+        beta: 'discard',
       },
-      links: [{
-        traceId: '0123456789abcdef0123456789abcdef',
-        spanId: '0123456789abcdef'
-      }, {
-        traceId: 'fedcba9876543210fedcba9876543210',
-        spanId: 'fedcba9876543210'
-      }]
+      links: [
+        {
+          traceId: '0123456789abcdef0123456789abcdef',
+          spanId: '0123456789abcdef',
+        },
+        {
+          traceId: 'fedcba9876543210fedcba9876543210',
+          spanId: 'fedcba9876543210',
+        },
+      ],
     });
     first.addEvent('db.start', { sql: 'select 123456' });
     first.addEvent('db.mid', { rows: 1 });
@@ -420,33 +633,41 @@ describe('fino:opentelemetry', () => {
     const secondExporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       exporters: [firstExporter, secondExporter],
-      instrumentations: [{ enable(targetSdk) {
-        const startTopic = topic<SpanRecord>(otelTopic('trace', { name: 'fanout' }, 'start'));
-        const endTopic = topic<SpanRecord>(otelTopic('trace', { name: 'fanout' }, 'end'));
-        const starts = new Map<string, SpanRecord>();
-        const a = startTopic.subscribe((evt: SpanRecord) => starts.set(evt.spanId, evt));
-        const b = endTopic.subscribe((evt: SpanRecord) => {
-          const start = starts.get(evt.spanId);
-          if (!start) return;
-          starts.delete(evt.spanId);
-          targetSdk.recordSpan({
-            name: evt.operation || evt.name || '',
-            ...evt.kind !== undefined ? { kind: evt.kind } : {},
-            traceId: evt.traceId,
-            spanId: evt.spanId,
-            ...evt.parentSpanId !== undefined ? { parentSpanId: evt.parentSpanId } : {},
-            ...start.timeUnixNano !== undefined ? { startTimeUnixNano: start.timeUnixNano } : {},
-            ...evt.timeUnixNano !== undefined ? { endTimeUnixNano: evt.timeUnixNano } : {},
-            ...evt.attributes ? { attributes: evt.attributes } : {},
-            ...evt.scope ? { scope: evt.scope } : {},
-            ...evt.resource ? { resource: evt.resource } : {}
-          });
-        });
-        return { dispose() {
-          a.dispose();
-          b.dispose();
-        } };
-      } }]
+      instrumentations: [
+        {
+          enable(targetSdk) {
+            const startTopic = topic<SpanRecord>(otelTopic('trace', { name: 'fanout' }, 'start'));
+            const endTopic = topic<SpanRecord>(otelTopic('trace', { name: 'fanout' }, 'end'));
+            const starts = new Map<string, SpanRecord>();
+            const a = startTopic.subscribe((evt: SpanRecord) => starts.set(evt.spanId, evt));
+            const b = endTopic.subscribe((evt: SpanRecord) => {
+              const start = starts.get(evt.spanId);
+              if (!start) return;
+              starts.delete(evt.spanId);
+              targetSdk.recordSpan({
+                name: evt.operation || evt.name || '',
+                ...(evt.kind !== undefined ? { kind: evt.kind } : {}),
+                traceId: evt.traceId,
+                spanId: evt.spanId,
+                ...(evt.parentSpanId !== undefined ? { parentSpanId: evt.parentSpanId } : {}),
+                ...(start.timeUnixNano !== undefined
+                  ? { startTimeUnixNano: start.timeUnixNano }
+                  : {}),
+                ...(evt.timeUnixNano !== undefined ? { endTimeUnixNano: evt.timeUnixNano } : {}),
+                ...(evt.attributes ? { attributes: evt.attributes } : {}),
+                ...(evt.scope ? { scope: evt.scope } : {}),
+                ...(evt.resource ? { resource: evt.resource } : {}),
+              });
+            });
+            return {
+              dispose() {
+                a.dispose();
+                b.dispose();
+              },
+            };
+          },
+        },
+      ],
     }).start();
     const tracer = new TracerProvider().getTracer('fanout');
     tracer.startSpan('op').end();
@@ -459,11 +680,13 @@ describe('fino:opentelemetry', () => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
-    const tracer = new TracerProvider({ resource: new Resource({ 'service.name': 'trace-api-test' }) }).getTracer('trace.api', '1.0.0', {
+    const tracer = new TracerProvider({
+      resource: new Resource({ 'service.name': 'trace-api-test' }),
+    }).getTracer('trace.api', '1.0.0', {
       attributes: { library: 'test' },
-      droppedAttributesCount: 1
+      droppedAttributesCount: 1,
     });
     const parent = tracer.startSpan('parent');
     await runWithActiveSpan(parent, async () => {
@@ -472,14 +695,17 @@ describe('fino:opentelemetry', () => {
       child.setAttribute('http.method', 'GET');
       child.setAttributes({ 'http.route': '/users/:id' });
       child.addEvent('db.query', { statement: 'select 1' }, 123);
-      child.addLink({
-        traceId: 'fedcba9876543210fedcba9876543210',
-        spanId: 'fedcba9876543210'
-      }, { peer: 'remote' });
+      child.addLink(
+        {
+          traceId: 'fedcba9876543210fedcba9876543210',
+          spanId: 'fedcba9876543210',
+        },
+        { peer: 'remote' },
+      );
       child.recordException(new Error('boom'), { handled: true });
       child.setStatus({
         code: 'ERROR',
-        message: 'failed'
+        message: 'failed',
       });
       child.end();
     });
@@ -515,36 +741,44 @@ describe('fino:opentelemetry', () => {
     const activeParent = parentTracer.startSpan('parent');
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new HttpServerInstrumentation(), new FetchInstrumentation()]
+      instrumentations: [new HttpServerInstrumentation(), new FetchInstrumentation()],
     }).start();
-    topic(otelRuntimeTopic('http.server', 'request', 'start')).publish(otelRuntimeEvent('http.server', 'request', 'start', {
-      requestId: 'req-1',
-      method: 'GET',
-      route: '/items/:id',
-      url: 'http://example.test/items/1',
-      headers: { traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' },
-      timeUnixNano: 100
-    }));
-    topic(otelRuntimeTopic('http.server', 'request', 'end')).publish(otelRuntimeEvent('http.server', 'request', 'end', {
-      requestId: 'req-1',
-      statusCode: 200,
-      timeUnixNano: 200
-    }));
+    topic(otelRuntimeTopic('http.server', 'request', 'start')).publish(
+      otelRuntimeEvent('http.server', 'request', 'start', {
+        requestId: 'req-1',
+        method: 'GET',
+        route: '/items/:id',
+        url: 'http://example.test/items/1',
+        headers: { traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' },
+        timeUnixNano: 100,
+      }),
+    );
+    topic(otelRuntimeTopic('http.server', 'request', 'end')).publish(
+      otelRuntimeEvent('http.server', 'request', 'end', {
+        requestId: 'req-1',
+        statusCode: 200,
+        timeUnixNano: 200,
+      }),
+    );
     const outgoingHeaders: Record<string, unknown> = {};
     await runWithActiveSpan(activeParent, async () => {
-      topic(otelRuntimeTopic('fetch', 'request', 'start')).publish(otelRuntimeEvent('fetch', 'request', 'start', {
-        requestId: 'fetch-1',
-        method: 'POST',
-        url: 'https://api.example.test/orders',
-        headers: outgoingHeaders,
-        timeUnixNano: 300
-      }));
+      topic(otelRuntimeTopic('fetch', 'request', 'start')).publish(
+        otelRuntimeEvent('fetch', 'request', 'start', {
+          requestId: 'fetch-1',
+          method: 'POST',
+          url: 'https://api.example.test/orders',
+          headers: outgoingHeaders,
+          timeUnixNano: 300,
+        }),
+      );
     });
-    topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(otelRuntimeEvent('fetch', 'request', 'error', {
-      requestId: 'fetch-1',
-      error: new Error('socket closed'),
-      timeUnixNano: 350
-    }));
+    topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(
+      otelRuntimeEvent('fetch', 'request', 'error', {
+        requestId: 'fetch-1',
+        error: new Error('socket closed'),
+        timeUnixNano: 350,
+      }),
+    );
     await sdk.flush();
     const spans = exporter.getFinishedSpans();
     const serverSpan = spans.find((span) => span.name === 'GET /items/:id');
@@ -554,7 +788,11 @@ describe('fino:opentelemetry', () => {
     assertPresent(serverSpan.attributes, 'server attributes present');
     t.equal(serverSpan.kind, 'server', 'server span kind');
     t.equal(serverSpan.attributes['http.route'], '/items/:id', 'server attributes recorded');
-    t.equal(serverSpan.traceId, '0123456789abcdef0123456789abcdef', 'incoming trace context extracted');
+    t.equal(
+      serverSpan.traceId,
+      '0123456789abcdef0123456789abcdef',
+      'incoming trace context extracted',
+    );
     t.equal(serverSpan.parentSpanId, '0123456789abcdef', 'incoming parent span extracted');
     t.ok(fetchSpan, 'fetch instrumentation created a span');
     assertPresent(fetchSpan, 'fetch span present');
@@ -562,9 +800,16 @@ describe('fino:opentelemetry', () => {
     assertPresent(fetchSpan.injectedHeaders, 'fetch injected headers present');
     t.equal(fetchSpan.kind, 'client', 'fetch span kind');
     t.equal(fetchSpan.status.code, 'ERROR', 'fetch failure sets error status');
-    t.ok(typeof fetchSpan.injectedHeaders.traceparent === 'string', 'fetch instrumentation injected trace context');
+    t.ok(
+      typeof fetchSpan.injectedHeaders.traceparent === 'string',
+      'fetch instrumentation injected trace context',
+    );
     t.equal(fetchSpan.parentSpanId, activeParent.spanId, 'fetch span linked to active parent');
-    t.equal(outgoingHeaders.traceparent, fetchSpan.injectedHeaders.traceparent, 'instrumentation mutates live outgoing headers');
+    t.equal(
+      outgoingHeaders.traceparent,
+      fetchSpan.injectedHeaders.traceparent,
+      'instrumentation mutates live outgoing headers',
+    );
     activeParent.end();
     await sdk.shutdown();
   });
@@ -575,59 +820,71 @@ describe('fino:opentelemetry', () => {
       instrumentations: [
         new DnsInstrumentation(),
         new SocketInstrumentation(),
-        new TlsInstrumentation()
-      ]
+        new TlsInstrumentation(),
+      ],
     }).start();
-    topic(otelRuntimeTopic('dns', 'lookup', 'start')).publish(otelRuntimeEvent('dns', 'lookup', 'start', {
-      lookupId: 'dns-1',
-      requestId: 'fetch-42',
-      hop: 0,
-      hostname: 'api.example.test',
-      timeUnixNano: 100
-    }));
-    topic(otelRuntimeTopic('dns', 'lookup', 'end')).publish(otelRuntimeEvent('dns', 'lookup', 'end', {
-      lookupId: 'dns-1',
-      requestId: 'fetch-42',
-      hop: 0,
-      hostname: 'api.example.test',
-      address: '127.0.0.1',
-      family: 4,
-      timeUnixNano: 120
-    }));
-    topic(otelRuntimeTopic('socket', 'connect', 'start')).publish(otelRuntimeEvent('socket', 'connect', 'start', {
-      connectId: 'socket-1',
-      requestId: 'fetch-42',
-      hop: 0,
-      host: '127.0.0.1',
-      port: 443,
-      transport: 'tcp',
-      timeUnixNano: 130
-    }));
-    topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(otelRuntimeEvent('socket', 'connect', 'end', {
-      connectId: 'socket-1',
-      requestId: 'fetch-42',
-      hop: 0,
-      host: '127.0.0.1',
-      port: 443,
-      transport: 'tcp',
-      timeUnixNano: 150
-    }));
-    topic(otelRuntimeTopic('tls', 'handshake', 'start')).publish(otelRuntimeEvent('tls', 'handshake', 'start', {
-      handshakeId: 'tls-1',
-      requestId: 'fetch-42',
-      hop: 0,
-      hostname: 'api.example.test',
-      port: 443,
-      timeUnixNano: 160
-    }));
-    topic(otelRuntimeTopic('tls', 'handshake', 'end')).publish(otelRuntimeEvent('tls', 'handshake', 'end', {
-      handshakeId: 'tls-1',
-      requestId: 'fetch-42',
-      hop: 0,
-      hostname: 'api.example.test',
-      protocol: 'tls1.3',
-      timeUnixNano: 180
-    }));
+    topic(otelRuntimeTopic('dns', 'lookup', 'start')).publish(
+      otelRuntimeEvent('dns', 'lookup', 'start', {
+        lookupId: 'dns-1',
+        requestId: 'fetch-42',
+        hop: 0,
+        hostname: 'api.example.test',
+        timeUnixNano: 100,
+      }),
+    );
+    topic(otelRuntimeTopic('dns', 'lookup', 'end')).publish(
+      otelRuntimeEvent('dns', 'lookup', 'end', {
+        lookupId: 'dns-1',
+        requestId: 'fetch-42',
+        hop: 0,
+        hostname: 'api.example.test',
+        address: '127.0.0.1',
+        family: 4,
+        timeUnixNano: 120,
+      }),
+    );
+    topic(otelRuntimeTopic('socket', 'connect', 'start')).publish(
+      otelRuntimeEvent('socket', 'connect', 'start', {
+        connectId: 'socket-1',
+        requestId: 'fetch-42',
+        hop: 0,
+        host: '127.0.0.1',
+        port: 443,
+        transport: 'tcp',
+        timeUnixNano: 130,
+      }),
+    );
+    topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(
+      otelRuntimeEvent('socket', 'connect', 'end', {
+        connectId: 'socket-1',
+        requestId: 'fetch-42',
+        hop: 0,
+        host: '127.0.0.1',
+        port: 443,
+        transport: 'tcp',
+        timeUnixNano: 150,
+      }),
+    );
+    topic(otelRuntimeTopic('tls', 'handshake', 'start')).publish(
+      otelRuntimeEvent('tls', 'handshake', 'start', {
+        handshakeId: 'tls-1',
+        requestId: 'fetch-42',
+        hop: 0,
+        hostname: 'api.example.test',
+        port: 443,
+        timeUnixNano: 160,
+      }),
+    );
+    topic(otelRuntimeTopic('tls', 'handshake', 'end')).publish(
+      otelRuntimeEvent('tls', 'handshake', 'end', {
+        handshakeId: 'tls-1',
+        requestId: 'fetch-42',
+        hop: 0,
+        hostname: 'api.example.test',
+        protocol: 'tls1.3',
+        timeUnixNano: 180,
+      }),
+    );
     await sdk.flush();
     const spans = exporter.getFinishedSpans();
     const dnsSpan = spans.find((span) => span.name === 'DNS api.example.test');
@@ -654,7 +911,9 @@ describe('fino:opentelemetry', () => {
   it('supports instrument-based metrics with SDK-side aggregation', async (t) => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({ metricReaders: [new PeriodicMetricReader(exporter)] }).start();
-    const meter = new MeterProvider({ resource: new Resource({ 'service.name': 'metrics-test' }) }).getMeter('metrics.api', '1.0.0', { attributes: { library: 'test' } });
+    const meter = new MeterProvider({
+      resource: new Resource({ 'service.name': 'metrics-test' }),
+    }).getMeter('metrics.api', '1.0.0', { attributes: { library: 'test' } });
     const counter = meter.createCounter('http.server.requests', { unit: '1' });
     counter.add(2, { method: 'GET' });
     counter.add(3, { method: 'GET' });
@@ -666,19 +925,37 @@ describe('fino:opentelemetry', () => {
     histogram.record(20, { route: '/items/:id' });
     const gauge = meter.createGauge('queue.depth', { unit: '1' });
     gauge.record(7, { queue: 'jobs' });
-    const observableCounter = meter.createObservableCounter('jobs.processed', () => [{
-      value: 9,
-      attributes: { queue: 'jobs' }
-    }], { unit: '1' });
-    const observableUpDownCounter = meter.createObservableUpDownCounter('workers.available', () => [{
-      value: -1,
-      attributes: { pool: 'default' }
-    }], { unit: '1' });
+    const observableCounter = meter.createObservableCounter(
+      'jobs.processed',
+      () => [
+        {
+          value: 9,
+          attributes: { queue: 'jobs' },
+        },
+      ],
+      { unit: '1' },
+    );
+    const observableUpDownCounter = meter.createObservableUpDownCounter(
+      'workers.available',
+      () => [
+        {
+          value: -1,
+          attributes: { pool: 'default' },
+        },
+      ],
+      { unit: '1' },
+    );
     let cpu = .7;
-    const observableGauge = meter.createObservableGauge('system.cpu.utilization', () => [{
-      value: cpu,
-      attributes: { core: 'all' }
-    }], { unit: '1' });
+    const observableGauge = meter.createObservableGauge(
+      'system.cpu.utilization',
+      () => [
+        {
+          value: cpu,
+          attributes: { core: 'all' },
+        },
+      ],
+      { unit: '1' },
+    );
     await sdk.flush();
     const metrics = exporter.getFinishedMetrics();
     const counterMetric = metrics.find((metric) => metric.name === 'http.server.requests');
@@ -686,7 +963,9 @@ describe('fino:opentelemetry', () => {
     const histogramMetric = metrics.find((metric) => metric.name === 'http.server.duration');
     const gaugeMetric2 = metrics.find((metric) => metric.name === 'queue.depth');
     const observableCounterMetric = metrics.find((metric) => metric.name === 'jobs.processed');
-    const observableUpDownCounterMetric = metrics.find((metric) => metric.name === 'workers.available');
+    const observableUpDownCounterMetric = metrics.find(
+      (metric) => metric.name === 'workers.available',
+    );
     const gaugeMetric = metrics.find((metric) => metric.name === 'system.cpu.utilization');
     t.ok(counterMetric, 'counter metric exported');
     assertPresent(counterMetric, 'counter metric present');
@@ -706,7 +985,11 @@ describe('fino:opentelemetry', () => {
     t.equal(gaugeMetric2.value, 7, 'gauge recorded');
     t.equal(observableCounterMetric.kind, 'observablecounter', 'observable counter kind preserved');
     t.equal(observableCounterMetric.value, 9, 'observable counter collected');
-    t.equal(observableUpDownCounterMetric.kind, 'observableupdowncounter', 'observable up-down counter kind preserved');
+    t.equal(
+      observableUpDownCounterMetric.kind,
+      'observableupdowncounter',
+      'observable up-down counter kind preserved',
+    );
     t.equal(observableUpDownCounterMetric.value, -1, 'observable up-down counter collected');
     t.equal(gaugeMetric.value, .7, 'observable gauge collected');
     observableCounter.dispose();
@@ -720,7 +1003,9 @@ describe('fino:opentelemetry', () => {
     const sdk = new OtelSDK({ meterProvider: provider, metricReaders: [reader] }).start();
     const meter = provider.getMeter('signal.metrics');
     const value = createSignal(3);
-    const handle = gaugeFromSignal(meter, 'signal.depth', value, { attributes: { queue: 'default' } });
+    const handle = gaugeFromSignal(meter, 'signal.depth', value, {
+      attributes: { queue: 'default' },
+    });
     const collected = metricsSignal(reader, { intervalMs: 5 });
     const seen: number[] = [];
     const dispose = collected.subscribe((metrics) => {
@@ -742,16 +1027,18 @@ describe('fino:opentelemetry', () => {
     const reader = new ManualMetricReader({ temporality: 'delta' });
     const sdk = new OtelSDK({
       metricReaders: [reader],
-      views: [{
-        instrumentName: 'db.client.duration',
-        name: 'db.client.duration.ms',
-        description: 'renamed by view',
-        aggregation: {
-          type: 'histogram',
-          boundaries: [5, 10]
-        }
-      }],
-      metricCardinalityLimit: 1
+      views: [
+        {
+          instrumentName: 'db.client.duration',
+          name: 'db.client.duration.ms',
+          description: 'renamed by view',
+          aggregation: {
+            type: 'histogram',
+            boundaries: [5, 10],
+          },
+        },
+      ],
+      metricCardinalityLimit: 1,
     }).start();
     const meter = new MeterProvider().getMeter('metrics.views', '1.0.0');
     const histogram = meter.createHistogram('db.client.duration', { unit: 'ms' });
@@ -783,10 +1070,12 @@ describe('fino:opentelemetry', () => {
     const deltaReader = new ManualMetricReader({ temporality: 'delta' });
     const sdk = new OtelSDK({
       metricReaders: [cumulativeReader, deltaReader],
-      views: [{
-        instrumentName: 'db.calls',
-        attributeKeys: ['db.system']
-      }]
+      views: [
+        {
+          instrumentName: 'db.calls',
+          attributeKeys: ['db.system'],
+        },
+      ],
     }).start();
     const tracer = new TracerProvider().getTracer('metrics.windows', '1.0.0');
     const meter = new MeterProvider().getMeter('metrics.windows', '1.0.0');
@@ -795,7 +1084,7 @@ describe('fino:opentelemetry', () => {
     await runWithActiveSpan(firstSpan, async () => {
       counter.add(2, {
         'db.system': 'mysql',
-        'db.statement': 'select 1'
+        'db.statement': 'select 1',
       });
     });
     firstSpan.end();
@@ -808,21 +1097,35 @@ describe('fino:opentelemetry', () => {
     assertPresent(firstDelta.exemplars[0], 'first delta exemplar present');
     t.equal(firstCumulative.value, 2, 'cumulative reader exports first total');
     t.equal(firstDelta.value, 2, 'delta reader exports first window');
-    t.deepEqual(firstCumulative.attributes, { 'db.system': 'mysql' }, 'view filtered cumulative attributes');
+    t.deepEqual(
+      firstCumulative.attributes,
+      { 'db.system': 'mysql' },
+      'view filtered cumulative attributes',
+    );
     t.deepEqual(firstDelta.attributes, { 'db.system': 'mysql' }, 'view filtered delta attributes');
     t.equal(firstDelta.exemplars.length, 1, 'delta reader includes exemplar');
-    t.equal(firstDelta.exemplars[0].traceId, firstSpan.traceId, 'exemplar trace id comes from active span');
-    t.equal(firstDelta.exemplars[0].spanId, firstSpan.spanId, 'exemplar span id comes from active span');
+    t.equal(
+      firstDelta.exemplars[0].traceId,
+      firstSpan.traceId,
+      'exemplar trace id comes from active span',
+    );
+    t.equal(
+      firstDelta.exemplars[0].spanId,
+      firstSpan.spanId,
+      'exemplar span id comes from active span',
+    );
     const secondSpan = tracer.startSpan('db-window-2');
     await runWithActiveSpan(secondSpan, async () => {
       counter.add(3, {
         'db.system': 'mysql',
-        'db.statement': 'select 2'
+        'db.statement': 'select 2',
       });
     });
     secondSpan.end();
     await sdk.flush();
-    const secondCumulative = cumulativeReader.collect().find((metric) => metric.name === 'db.calls');
+    const secondCumulative = cumulativeReader
+      .collect()
+      .find((metric) => metric.name === 'db.calls');
     const secondDelta = deltaReader.collect().find((metric) => metric.name === 'db.calls');
     assertPresent(secondCumulative, 'second cumulative metric present');
     assertPresent(secondDelta, 'second delta metric present');
@@ -830,26 +1133,44 @@ describe('fino:opentelemetry', () => {
     assertPresent(secondDelta.exemplars[0], 'second delta exemplar present');
     t.equal(secondCumulative.value, 5, 'cumulative reader keeps total across flushes');
     t.equal(secondDelta.value, 3, 'delta reader only exports new window');
-    t.deepEqual(secondCumulative.attributes, { 'db.system': 'mysql' }, 'view filtering stays applied');
+    t.deepEqual(
+      secondCumulative.attributes,
+      { 'db.system': 'mysql' },
+      'view filtering stays applied',
+    );
     t.equal(secondDelta.exemplars.length, 1, 'delta window keeps latest exemplar');
-    t.equal(secondDelta.exemplars[0].traceId, secondSpan.traceId, 'second window exemplar updates to latest span');
+    t.equal(
+      secondDelta.exemplars[0].traceId,
+      secondSpan.traceId,
+      'second window exemplar updates to latest span',
+    );
     await sdk.shutdown();
   });
   it('supports richer logger APIs and propagation facade helpers', async (t) => {
     const exporter = new InMemoryExporter();
-    const sdk = new OtelSDK({ logRecordProcessors: [{
-      onEmit(log) {
-        exporter.exportLogs([log]);
-      },
-      async forceFlush() {},
-      async shutdown() {}
-    }] }).start();
-    const logger = new LoggerProvider({ resource: new Resource({ 'service.name': 'logger-test' }) }).getLogger('app.logger', '1.0.0', { attributes: { library: 'test' } });
-    const built = new LogRecordBuilder().setBody({ message: 'login failed' }).setSeverity('ERROR', 17).setAttribute('user.id', '42').setContext({
-      traceId: '0123456789abcdef0123456789abcdef',
-      spanId: '0123456789abcdef',
-      traceFlags: 1
-    });
+    const sdk = new OtelSDK({
+      logRecordProcessors: [
+        {
+          onEmit(log) {
+            exporter.exportLogs([log]);
+          },
+          async forceFlush() {},
+          async shutdown() {},
+        },
+      ],
+    }).start();
+    const logger = new LoggerProvider({
+      resource: new Resource({ 'service.name': 'logger-test' }),
+    }).getLogger('app.logger', '1.0.0', { attributes: { library: 'test' } });
+    const built = new LogRecordBuilder()
+      .setBody({ message: 'login failed' })
+      .setSeverity('ERROR', 17)
+      .setAttribute('user.id', '42')
+      .setContext({
+        traceId: '0123456789abcdef0123456789abcdef',
+        spanId: '0123456789abcdef',
+        traceFlags: 1,
+      });
     logger.emitRecord(built);
     logger.error('login denied', { 'auth.method': 'password' });
     await sdk.flush();
@@ -874,32 +1195,54 @@ describe('fino:opentelemetry', () => {
       traceId: '0123456789abcdef0123456789abcdef',
       spanId: '0123456789abcdef',
       traceFlags: 1,
-      baggage: new Baggage({ tenant: 'beta' })
+      baggage: new Baggage({ tenant: 'beta' }),
     });
     const extracted = Propagation.extract(carrier);
     assertPresent(extracted, 'propagation context extracted');
-    t.equal(extracted.traceId, '0123456789abcdef0123456789abcdef', 'propagation facade inject/extract works');
+    t.equal(
+      extracted.traceId,
+      '0123456789abcdef0123456789abcdef',
+      'propagation facade inject/extract works',
+    );
     assertPresent(extracted.baggage, 'propagation facade extracts baggage');
-    t.equal(extracted.baggage.get('tenant'), 'beta', 'propagation facade injects and extracts baggage');
+    t.equal(
+      extracted.baggage.get('tenant'),
+      'beta',
+      'propagation facade injects and extracts baggage',
+    );
     await sdk.shutdown();
   });
   it('supports active-span log correlation, richer log records, and bounded log batching', async (t) => {
     const exporter = new InMemoryExporter();
-    const sdk = new OtelSDK({ logRecordProcessors: [new BatchLogRecordProcessor(exporter, {
-      maxQueueSize: 1,
-      maxExportBatchSize: 1,
-      scheduledDelayMillis: 0,
-      attributeCountLimit: 1,
-      attributeValueLengthLimit: 5
-    })] }).start();
+    const sdk = new OtelSDK({
+      logRecordProcessors: [
+        new BatchLogRecordProcessor(exporter, {
+          maxQueueSize: 1,
+          maxExportBatchSize: 1,
+          scheduledDelayMillis: 0,
+          attributeCountLimit: 1,
+          attributeValueLengthLimit: 5,
+        }),
+      ],
+    }).start();
     const tracer = new TracerProvider().getTracer('logs.trace', '1.0.0');
-    const logger = new LoggerProvider({ resource: new Resource({ 'service.name': 'logs-test' }) }).getLogger('app.events', '1.0.0');
+    const logger = new LoggerProvider({
+      resource: new Resource({ 'service.name': 'logs-test' }),
+    }).getLogger('app.events', '1.0.0');
     const span = tracer.startSpan('active-log-parent');
     await runWithActiveSpan(span, async () => {
-      logger.emitRecord(new LogRecordBuilder().setTextBody('user-login-success').setSeverity('INFO', 9).setEventName('user.login').setCategory('auth').setAttributes({
-        tenant: 'alpha',
-        ignored: 'discarded'
-      }).setDroppedAttributesCount(3));
+      logger.emitRecord(
+        new LogRecordBuilder()
+          .setTextBody('user-login-success')
+          .setSeverity('INFO', 9)
+          .setEventName('user.login')
+          .setCategory('auth')
+          .setAttributes({
+            tenant: 'alpha',
+            ignored: 'discarded',
+          })
+          .setDroppedAttributesCount(3),
+      );
     });
     span.end();
     logger.error('dropped by queue', { queue: 'overflow' });
@@ -914,7 +1257,11 @@ describe('fino:opentelemetry', () => {
     t.equal(activeLog.eventName, 'user.login', 'event name preserved');
     t.equal(activeLog.categoryName, 'auth', 'category preserved');
     t.equal(activeLog.body, 'user-login-success', 'text body helper applied');
-    t.equal(activeLog.droppedAttributesCount, 4, 'dropped attributes count accumulated (3 pre-dropped + 1 dropped by limit)');
+    t.equal(
+      activeLog.droppedAttributesCount,
+      4,
+      'dropped attributes count accumulated (3 pre-dropped + 1 dropped by limit)',
+    );
     t.equal(Object.keys(activeLog.attributes).length, 1, 'log attribute count limit applied');
     t.equal(activeLog.attributes.tenant, 'alpha', 'first attribute preserved');
     await sdk.shutdown();
@@ -930,18 +1277,26 @@ describe('fino:opentelemetry', () => {
       },
       keys(carrier: Headers) {
         return [...carrier.keys()];
-      }
+      },
     };
-    Propagation.inject(headers, {
-      traceId: '0123456789abcdef0123456789abcdef',
-      spanId: '0123456789abcdef',
-      traceFlags: 1,
-      traceState: 'vendor=value',
-      baggage: new Baggage({ tenant: 'gamma' })
-    }, carrierApi);
+    Propagation.inject(
+      headers,
+      {
+        traceId: '0123456789abcdef0123456789abcdef',
+        spanId: '0123456789abcdef',
+        traceFlags: 1,
+        traceState: 'vendor=value',
+        baggage: new Baggage({ tenant: 'gamma' }),
+      },
+      carrierApi,
+    );
     const extracted = Propagation.extract(headers, carrierApi);
     assertPresent(extracted, 'adapter context extracted');
-    t.equal(headers.get('traceparent'), '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01', 'traceparent injected through adapter');
+    t.equal(
+      headers.get('traceparent'),
+      '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      'traceparent injected through adapter',
+    );
     t.equal(headers.get('tracestate'), 'vendor=value', 'tracestate injected through adapter');
     t.equal(headers.get('baggage'), 'tenant=gamma', 'baggage injected through adapter');
     t.equal(extracted.traceState, 'vendor=value', 'tracestate extracted through adapter');
@@ -950,9 +1305,11 @@ describe('fino:opentelemetry', () => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new HttpServerInstrumentation(), new FetchInstrumentation()]
+      instrumentations: [new HttpServerInstrumentation(), new FetchInstrumentation()],
     }).start();
-    const parent = new TracerProvider().getTracer('propagation.parent').startSpan('parent', { traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    const parent = new TracerProvider()
+      .getTracer('propagation.parent')
+      .startSpan('parent', { traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
     const propagationHeaders = new Headers();
     const outgoing = new Headers();
     await runWithActiveSpan(parent, async () => {
@@ -961,12 +1318,12 @@ describe('fino:opentelemetry', () => {
         method: 'GET',
         url: 'https://api.example.test/items',
         headers: outgoing,
-        timeUnixNano: 10
+        timeUnixNano: 10,
       });
       topic('otel:runtime:fetch:request:end').publish({
         requestId: 'fetch-propagation-1',
         statusCode: 200,
-        timeUnixNano: 20
+        timeUnixNano: 20,
       });
       topic('otel:runtime:http.server:request:start').publish({
         requestId: 'server-propagation-1',
@@ -974,12 +1331,12 @@ describe('fino:opentelemetry', () => {
         route: '/checkout',
         url: 'https://service.example.test/checkout',
         headers: outgoing,
-        timeUnixNano: 30
+        timeUnixNano: 30,
       });
       topic('otel:runtime:http.server:request:end').publish({
         requestId: 'server-propagation-1',
         statusCode: 201,
-        timeUnixNano: 40
+        timeUnixNano: 40,
       });
     });
     parent.end();
@@ -992,8 +1349,16 @@ describe('fino:opentelemetry', () => {
     assertPresent(fetchSpan, 'propagated fetch span present');
     assertPresent(fetchSpan.injectedHeaders, 'propagated fetch headers present');
     assertPresent(serverSpan, 'propagated server span present');
-    t.equal(outgoing.get('traceparent'), fetchSpan.injectedHeaders.traceparent, 'fetch instrumentation propagates through Headers carrier');
-    t.equal(serverSpan.parentSpanId, fetchSpan.spanId, 'server instrumentation extracts parent from propagated headers');
+    t.equal(
+      outgoing.get('traceparent'),
+      fetchSpan.injectedHeaders.traceparent,
+      'fetch instrumentation propagates through Headers carrier',
+    );
+    t.equal(
+      serverSpan.parentSpanId,
+      fetchSpan.spanId,
+      'server instrumentation extracts parent from propagated headers',
+    );
     await sdk.shutdown();
   });
   it('supports baggage-aware active context helpers and remote parent defaults', async (t) => {
@@ -1006,45 +1371,66 @@ describe('fino:opentelemetry', () => {
         this.logs.push(log);
       },
       async forceFlush() {},
-      async shutdown() {}
+      async shutdown() {},
     };
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [logProcessor],
-      instrumentations: [new FetchInstrumentation(), { enable(targetSdk) {
-        const startTopic = topic<SpanRecord>(otelTopic('trace', {
-          name: 'context.remote',
-          version: '1.0.0'
-        }, 'start'));
-        const endTopic = topic<SpanRecord>(otelTopic('trace', {
-          name: 'context.remote',
-          version: '1.0.0'
-        }, 'end'));
-        const starts = new Map<string, SpanRecord>();
-        const a = startTopic.subscribe((evt: SpanRecord) => starts.set(evt.spanId, evt));
-        const b = endTopic.subscribe((evt: SpanRecord) => {
-          const start = starts.get(evt.spanId);
-          if (!start) return;
-          starts.delete(evt.spanId);
-          targetSdk.recordSpan({
-            name: evt.operation || evt.name || '',
-            ...evt.kind !== undefined ? { kind: evt.kind } : {},
-            traceId: evt.traceId,
-            spanId: evt.spanId,
-            ...evt.parentSpanId !== undefined ? { parentSpanId: evt.parentSpanId } : {},
-            ...(start.timeUnixNano ?? evt.startTimeUnixNano) !== undefined ? { startTimeUnixNano: start.timeUnixNano ?? evt.startTimeUnixNano } : {},
-            ...evt.timeUnixNano !== undefined ? { endTimeUnixNano: evt.timeUnixNano } : {},
-            ...evt.attributes ? { attributes: evt.attributes } : {},
-            ...evt.scope ? { scope: evt.scope } : {},
-            ...evt.resource ? { resource: evt.resource } : {},
-            ...evt.status !== undefined ? { status: evt.status } : {}
-          });
-        });
-        return { dispose() {
-          a.dispose();
-          b.dispose();
-        } };
-      } }]
+      instrumentations: [
+        new FetchInstrumentation(),
+        {
+          enable(targetSdk) {
+            const startTopic = topic<SpanRecord>(
+              otelTopic(
+                'trace',
+                {
+                  name: 'context.remote',
+                  version: '1.0.0',
+                },
+                'start',
+              ),
+            );
+            const endTopic = topic<SpanRecord>(
+              otelTopic(
+                'trace',
+                {
+                  name: 'context.remote',
+                  version: '1.0.0',
+                },
+                'end',
+              ),
+            );
+            const starts = new Map<string, SpanRecord>();
+            const a = startTopic.subscribe((evt: SpanRecord) => starts.set(evt.spanId, evt));
+            const b = endTopic.subscribe((evt: SpanRecord) => {
+              const start = starts.get(evt.spanId);
+              if (!start) return;
+              starts.delete(evt.spanId);
+              targetSdk.recordSpan({
+                name: evt.operation || evt.name || '',
+                ...(evt.kind !== undefined ? { kind: evt.kind } : {}),
+                traceId: evt.traceId,
+                spanId: evt.spanId,
+                ...(evt.parentSpanId !== undefined ? { parentSpanId: evt.parentSpanId } : {}),
+                ...((start.timeUnixNano ?? evt.startTimeUnixNano) !== undefined
+                  ? { startTimeUnixNano: start.timeUnixNano ?? evt.startTimeUnixNano }
+                  : {}),
+                ...(evt.timeUnixNano !== undefined ? { endTimeUnixNano: evt.timeUnixNano } : {}),
+                ...(evt.attributes ? { attributes: evt.attributes } : {}),
+                ...(evt.scope ? { scope: evt.scope } : {}),
+                ...(evt.resource ? { resource: evt.resource } : {}),
+                ...(evt.status !== undefined ? { status: evt.status } : {}),
+              });
+            });
+            return {
+              dispose() {
+                a.dispose();
+                b.dispose();
+              },
+            };
+          },
+        },
+      ],
     }).start();
     const tracer = new TracerProvider().getTracer('context.remote', '1.0.0');
     const logger = new LoggerProvider().getLogger('context.remote', '1.0.0');
@@ -1053,7 +1439,7 @@ describe('fino:opentelemetry', () => {
       spanId: '2222222222222222',
       traceFlags: 1,
       traceState: 'vendor=remote',
-      baggage: new Baggage({ tenant: 'delta' })
+      baggage: new Baggage({ tenant: 'delta' }),
     };
     const propagationHeaders = new Headers();
     const outgoing = new Headers();
@@ -1064,32 +1450,43 @@ describe('fino:opentelemetry', () => {
       t.equal(activeContext.spanId, remoteContext.spanId, 'remote active span context visible');
       t.equal(activeContext.traceState, 'vendor=remote', 'remote tracestate visible');
       t.equal(getActiveBaggage().get('tenant'), 'delta', 'remote baggage visible');
-      await runWithBaggage(new Baggage({
-        tenant: 'nested',
-        region: 'us'
-      }), async () => {
-        t.equal(getActiveBaggage().get('tenant'), 'nested', 'nested baggage overrides active baggage');
-        const nestedContext = getActiveSpanContext();
-        assertPresent(nestedContext, 'nested active context present');
-        assertPresent(nestedContext.baggage, 'nested baggage present');
-        t.equal(nestedContext.baggage.get('region'), 'us', 'active span context reflects nested baggage');
-        const child = tracer.startSpan('child-from-remote');
-        child.end();
-        logger.info('remote-linked-log');
-        Propagation.inject(propagationHeaders);
-        topic('otel:runtime:fetch:request:start').publish({
-          requestId: 'fetch-active-context-1',
-          method: 'GET',
-          url: 'https://context.example.test/items',
-          headers: outgoing,
-          timeUnixNano: 100
-        });
-        topic('otel:runtime:fetch:request:end').publish({
-          requestId: 'fetch-active-context-1',
-          statusCode: 200,
-          timeUnixNano: 200
-        });
-      });
+      await runWithBaggage(
+        new Baggage({
+          tenant: 'nested',
+          region: 'us',
+        }),
+        async () => {
+          t.equal(
+            getActiveBaggage().get('tenant'),
+            'nested',
+            'nested baggage overrides active baggage',
+          );
+          const nestedContext = getActiveSpanContext();
+          assertPresent(nestedContext, 'nested active context present');
+          assertPresent(nestedContext.baggage, 'nested baggage present');
+          t.equal(
+            nestedContext.baggage.get('region'),
+            'us',
+            'active span context reflects nested baggage',
+          );
+          const child = tracer.startSpan('child-from-remote');
+          child.end();
+          logger.info('remote-linked-log');
+          Propagation.inject(propagationHeaders);
+          topic('otel:runtime:fetch:request:start').publish({
+            requestId: 'fetch-active-context-1',
+            method: 'GET',
+            url: 'https://context.example.test/items',
+            headers: outgoing,
+            timeUnixNano: 100,
+          });
+          topic('otel:runtime:fetch:request:end').publish({
+            requestId: 'fetch-active-context-1',
+            statusCode: 200,
+            timeUnixNano: 200,
+          });
+        },
+      );
     });
     await sdk.flush();
     const spans = exporter.getFinishedSpans();
@@ -1097,12 +1494,28 @@ describe('fino:opentelemetry', () => {
     const fetchSpan = spans.find((span) => span.kind === 'client');
     t.ok(childSpan, 'child span exported');
     assertPresent(childSpan, 'remote child span present');
-    t.equal(childSpan.parentSpanId, remoteContext.spanId, 'tracer defaults parent from active remote context');
+    t.equal(
+      childSpan.parentSpanId,
+      remoteContext.spanId,
+      'tracer defaults parent from active remote context',
+    );
     t.ok(fetchSpan, 'fetch span exported');
     assertPresent(fetchSpan, 'remote fetch span present');
-    t.equal(fetchSpan.parentSpanId, remoteContext.spanId, 'fetch instrumentation uses active remote context');
-    t.equal(propagationHeaders.get('traceparent'), `00-${remoteContext.traceId}-${remoteContext.spanId}-01`, 'propagation inject uses active context automatically');
-    t.equal(propagationHeaders.get('baggage'), 'tenant=nested,region=us', 'propagation inject uses active baggage automatically');
+    t.equal(
+      fetchSpan.parentSpanId,
+      remoteContext.spanId,
+      'fetch instrumentation uses active remote context',
+    );
+    t.equal(
+      propagationHeaders.get('traceparent'),
+      `00-${remoteContext.traceId}-${remoteContext.spanId}-01`,
+      'propagation inject uses active context automatically',
+    );
+    t.equal(
+      propagationHeaders.get('baggage'),
+      'tenant=nested,region=us',
+      'propagation inject uses active baggage automatically',
+    );
     await sdk.shutdown();
   });
   describe('OTLP exporter', () => {
@@ -1110,12 +1523,16 @@ describe('fino:opentelemetry', () => {
       const received: CapturedFetchRecord[] = [];
       const fetchCalls: CapturedFetchCall[] = [];
       await mockFetch(async (mock) => {
-        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/traces')
+          .replyWith(captureFetchCall(received, fetchCalls));
         const exporter = new OTLPHttpJsonExporter({
           endpoint: 'http://127.0.0.1:4318',
-          headers: { 'x-test-header': 'present' }
+          headers: { 'x-test-header': 'present' },
         });
-        const sdk = new OtelSDK({ spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })] });
+        const sdk = new OtelSDK({
+          spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
+        });
         sdk.start();
         sdk.recordSpan({
           name: 'request',
@@ -1125,28 +1542,35 @@ describe('fino:opentelemetry', () => {
           startTimeUnixNano: 100,
           endTimeUnixNano: 200,
           attributes: { 'http.request.method': 'GET' },
-          events: [{
-            timeUnixNano: 150,
-            name: 'send',
-            attributes: { bytes: 42 }
-          }],
-          links: [{
-            traceId: 'fedcba9876543210fedcba9876543210',
-            spanId: 'fedcba9876543210',
-            attributes: { remote: true },
-            flags: 1
-          }],
+          events: [
+            {
+              timeUnixNano: 150,
+              name: 'send',
+              attributes: { bytes: 42 },
+            },
+          ],
+          links: [
+            {
+              traceId: 'fedcba9876543210fedcba9876543210',
+              spanId: 'fedcba9876543210',
+              attributes: { remote: true },
+              flags: 1,
+            },
+          ],
           scope: {
             name: 'http.server',
             version: '1.0.0',
             schemaUrl: 'https://schemas.example/scope',
             attributes: { library: 'builtin' },
-            droppedAttributesCount: 2
+            droppedAttributesCount: 2,
           },
-          resource: new Resource({ 'service.name': 'otlp-test' }, {
-            droppedAttributesCount: 1,
-            schemaUrl: 'https://schemas.example/resource'
-          })
+          resource: new Resource(
+            { 'service.name': 'otlp-test' },
+            {
+              droppedAttributesCount: 1,
+              schemaUrl: 'https://schemas.example/resource',
+            },
+          ),
         });
         await sdk.flush();
         t.equal(received.length, 1, 'one export request sent');
@@ -1161,9 +1585,10 @@ describe('fino:opentelemetry', () => {
         const span = payload.resourceSpans[0].scopeSpans[0].spans[0];
         t.equal(span.name, 'request', 'span name encoded');
         t.equal(span.kind, 2, 'server kind encoded as 2');
-        t.ok(span.attributes.some((a: {
-          key: string;
-        }) => a.key === 'http.request.method'), 'span attribute encoded');
+        t.ok(
+          span.attributes.some((a: { key: string }) => a.key === 'http.request.method'),
+          'span attribute encoded',
+        );
         t.ok(span.events?.length > 0, 'span events encoded');
         t.ok(span.links?.length > 0, 'span links encoded');
         await sdk.shutdown();
@@ -1173,61 +1598,70 @@ describe('fino:opentelemetry', () => {
       const received: CapturedFetchRecord[] = [];
       const fetchCalls: CapturedFetchCall[] = [];
       await mockFetch(async (mock) => {
-        mock.post('http://127.0.0.1:4318/v1/logs').replyWith(captureFetchCall(received, fetchCalls));
-        mock.post('http://127.0.0.1:4318/v1/metrics').replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/logs')
+          .replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/metrics')
+          .replyWith(captureFetchCall(received, fetchCalls));
         const exporter = new OTLPHttpJsonExporter({ endpoint: 'http://127.0.0.1:4318' });
-        await exporter.exportLogs([{
-          timeUnixNano: 100,
-          observedTimeUnixNano: 100,
-          severityNumber: 17,
-          severityText: 'ERROR',
-          body: 'db failed',
-          attributes: { retryable: true },
-          flags: 1,
-          traceId: '0123456789abcdef0123456789abcdef',
-          spanId: '0123456789abcdef',
-          scope: {
-            name: 'app.logs',
-            version: '1.0.0',
-            attributes: { source: 'app' },
-            droppedAttributesCount: 1
+        await exporter.exportLogs([
+          {
+            timeUnixNano: 100,
+            observedTimeUnixNano: 100,
+            severityNumber: 17,
+            severityText: 'ERROR',
+            body: 'db failed',
+            attributes: { retryable: true },
+            flags: 1,
+            traceId: '0123456789abcdef0123456789abcdef',
+            spanId: '0123456789abcdef',
+            scope: {
+              name: 'app.logs',
+              version: '1.0.0',
+              attributes: { source: 'app' },
+              droppedAttributesCount: 1,
+            },
+            resource: new Resource({ 'service.name': 'otlp-test' }, { droppedAttributesCount: 2 }),
           },
-          resource: new Resource({ 'service.name': 'otlp-test' }, { droppedAttributesCount: 2 })
-        }]);
-        await exporter.exportMetrics([{
-          name: 'db.query.count',
-          kind: 'counter',
-          value: 3,
-          unit: '1',
-          aggregationTemporality: 2,
-          isMonotonic: true,
-          attributes: { db: 'mysql' },
-          timeUnixNano: 200,
-          startTimeUnixNano: 100,
-          scope: {
-            name: 'app.metrics',
-            version: '1.0.0',
-            attributes: { source: 'app' }
+        ]);
+        await exporter.exportMetrics([
+          {
+            name: 'db.query.count',
+            kind: 'counter',
+            value: 3,
+            unit: '1',
+            aggregationTemporality: 2,
+            isMonotonic: true,
+            attributes: { db: 'mysql' },
+            timeUnixNano: 200,
+            startTimeUnixNano: 100,
+            scope: {
+              name: 'app.metrics',
+              version: '1.0.0',
+              attributes: { source: 'app' },
+            },
+            resource: new Resource({ 'service.name': 'otlp-test' }),
           },
-          resource: new Resource({ 'service.name': 'otlp-test' })
-        }, {
-          name: 'db.query.duration',
-          kind: 'histogram',
-          timeUnixNano: 200,
-          startTimeUnixNano: 100,
-          count: 2,
-          sum: 12.5,
-          bucketCounts: [1, 1],
-          explicitBounds: [10],
-          min: 5,
-          max: 7.5,
-          attributes: { db: 'mysql' },
-          scope: {
-            name: 'app.metrics',
-            version: '1.0.0'
+          {
+            name: 'db.query.duration',
+            kind: 'histogram',
+            timeUnixNano: 200,
+            startTimeUnixNano: 100,
+            count: 2,
+            sum: 12.5,
+            bucketCounts: [1, 1],
+            explicitBounds: [10],
+            min: 5,
+            max: 7.5,
+            attributes: { db: 'mysql' },
+            scope: {
+              name: 'app.metrics',
+              version: '1.0.0',
+            },
+            resource: new Resource({ 'service.name': 'otlp-test' }),
           },
-          resource: new Resource({ 'service.name': 'otlp-test' })
-        }]);
+        ]);
         t.equal(received.length, 2, 'log and metric exports were sent');
         const logsPayload = JSON.parse(received[0]!.text);
         const metricsPayload = JSON.parse(received[1]!.text);
@@ -1236,13 +1670,13 @@ describe('fino:opentelemetry', () => {
         const logRecord = logsPayload.resourceLogs[0].scopeLogs[0].logRecords[0];
         t.equal(logRecord.severityText, 'ERROR', 'log severity text encoded');
         t.equal(logRecord.traceId, '0123456789abcdef0123456789abcdef', 'log traceId encoded');
-        const sumMetric = metricsPayload.resourceMetrics[0].scopeMetrics[0].metrics.find((m: {
-          name: string;
-        }) => m.name === 'db.query.count');
+        const sumMetric = metricsPayload.resourceMetrics[0].scopeMetrics[0].metrics.find(
+          (m: { name: string }) => m.name === 'db.query.count',
+        );
         t.ok(sumMetric?.sum, 'counter encoded as sum');
-        const histMetric = metricsPayload.resourceMetrics[0].scopeMetrics[0].metrics.find((m: {
-          name: string;
-        }) => m.name === 'db.query.duration');
+        const histMetric = metricsPayload.resourceMetrics[0].scopeMetrics[0].metrics.find(
+          (m: { name: string }) => m.name === 'db.query.duration',
+        );
         t.ok(histMetric?.histogram, 'histogram encoded');
       });
     });
@@ -1250,56 +1684,68 @@ describe('fino:opentelemetry', () => {
       const received: CapturedFetchRecord[] = [];
       const fetchCalls: CapturedFetchCall[] = [];
       await mockFetch(async (mock) => {
-        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls));
-        mock.post('http://127.0.0.1:4318/v1/logs').replyWith(captureFetchCall(received, fetchCalls));
-        mock.post('http://127.0.0.1:4318/v1/metrics').replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/traces')
+          .replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/logs')
+          .replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/metrics')
+          .replyWith(captureFetchCall(received, fetchCalls));
         const exporter = new OTLPHttpJsonExporter({
           endpoint: 'http://127.0.0.1:4318',
-          headers: { 'x-test-header': 'present' }
+          headers: { 'x-test-header': 'present' },
         });
-        await exporter.exportSpans([{
-          name: 'json-span',
-          kind: 'server',
-          traceId: '0123456789abcdef0123456789abcdef',
-          spanId: '0123456789abcdef',
-          startTimeUnixNano: 100,
-          endTimeUnixNano: 200,
-          attributes: { 'http.method': 'GET' },
-          scope: {
-            name: 'json.scope',
-            version: '1.0.0'
+        await exporter.exportSpans([
+          {
+            name: 'json-span',
+            kind: 'server',
+            traceId: '0123456789abcdef0123456789abcdef',
+            spanId: '0123456789abcdef',
+            startTimeUnixNano: 100,
+            endTimeUnixNano: 200,
+            attributes: { 'http.method': 'GET' },
+            scope: {
+              name: 'json.scope',
+              version: '1.0.0',
+            },
+            resource: new Resource({ 'service.name': 'json-test' }),
           },
-          resource: new Resource({ 'service.name': 'json-test' })
-        }]);
-        await exporter.exportLogs([{
-          timeUnixNano: 100,
-          observedTimeUnixNano: 100,
-          severityNumber: 9,
-          severityText: 'INFO',
-          body: 'json log',
-          attributes: { env: 'test' },
-          scope: {
-            name: 'json.scope',
-            version: '1.0.0'
+        ]);
+        await exporter.exportLogs([
+          {
+            timeUnixNano: 100,
+            observedTimeUnixNano: 100,
+            severityNumber: 9,
+            severityText: 'INFO',
+            body: 'json log',
+            attributes: { env: 'test' },
+            scope: {
+              name: 'json.scope',
+              version: '1.0.0',
+            },
+            resource: new Resource({ 'service.name': 'json-test' }),
           },
-          resource: new Resource({ 'service.name': 'json-test' })
-        }]);
-        await exporter.exportMetrics([{
-          name: 'json.counter',
-          kind: 'counter',
-          value: 3,
-          unit: '1',
-          aggregationTemporality: 2,
-          isMonotonic: true,
-          attributes: { env: 'test' },
-          timeUnixNano: 200,
-          startTimeUnixNano: 100,
-          scope: {
-            name: 'json.scope',
-            version: '1.0.0'
+        ]);
+        await exporter.exportMetrics([
+          {
+            name: 'json.counter',
+            kind: 'counter',
+            value: 3,
+            unit: '1',
+            aggregationTemporality: 2,
+            isMonotonic: true,
+            attributes: { env: 'test' },
+            timeUnixNano: 200,
+            startTimeUnixNano: 100,
+            scope: {
+              name: 'json.scope',
+              version: '1.0.0',
+            },
+            resource: new Resource({ 'service.name': 'json-test' }),
           },
-          resource: new Resource({ 'service.name': 'json-test' })
-        }]);
+        ]);
         t.equal(received.length, 3, 'json exports were sent');
         const traceRequest = received[0];
         const logRequest = received[1];
@@ -1307,60 +1753,96 @@ describe('fino:opentelemetry', () => {
         assertPresent(traceRequest, 'json trace request captured');
         assertPresent(logRequest, 'json log request captured');
         assertPresent(metricRequest, 'json metric request captured');
-        t.equal(traceRequest.headers.contentType, 'application/json', 'json exporter uses json content type');
-        t.equal(logRequest.headers.contentType, 'application/json', 'json log exporter uses json content type');
-        t.equal(metricRequest.headers.contentType, 'application/json', 'json metric exporter uses json content type');
+        t.equal(
+          traceRequest.headers.contentType,
+          'application/json',
+          'json exporter uses json content type',
+        );
+        t.equal(
+          logRequest.headers.contentType,
+          'application/json',
+          'json log exporter uses json content type',
+        );
+        t.equal(
+          metricRequest.headers.contentType,
+          'application/json',
+          'json metric exporter uses json content type',
+        );
         const tracePayload = JSON.parse(traceRequest.text);
         const logPayload = JSON.parse(logRequest.text);
         const metricPayload = JSON.parse(metricRequest.text);
         t.ok(Array.isArray(tracePayload.resourceSpans), 'trace payload uses resourceSpans');
-        t.equal(tracePayload.resourceSpans[0].scopeSpans[0].spans[0].name, 'json-span', 'trace span name encoded');
+        t.equal(
+          tracePayload.resourceSpans[0].scopeSpans[0].spans[0].name,
+          'json-span',
+          'trace span name encoded',
+        );
         t.ok(Array.isArray(logPayload.resourceLogs), 'log payload uses resourceLogs');
-        t.equal(logPayload.resourceLogs[0].scopeLogs[0].logRecords[0].body.stringValue, 'json log', 'log body encoded as json any value');
+        t.equal(
+          logPayload.resourceLogs[0].scopeLogs[0].logRecords[0].body.stringValue,
+          'json log',
+          'log body encoded as json any value',
+        );
         t.ok(Array.isArray(metricPayload.resourceMetrics), 'metric payload uses resourceMetrics');
-        t.equal(metricPayload.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asInt, '3', 'metric datapoint encoded in json');
+        t.equal(
+          metricPayload.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asInt,
+          '3',
+          'metric datapoint encoded in json',
+        );
       });
     });
     it('maps each export signal to the matching HTTP route', async (t) => {
       const received: CapturedFetchRecord[] = [];
       const fetchCalls: CapturedFetchCall[] = [];
       await mockFetch(async (mock) => {
-        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls));
-        mock.post('http://127.0.0.1:4318/v1/logs').replyWith(captureFetchCall(received, fetchCalls));
-        mock.post('http://127.0.0.1:4318/v1/metrics').replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/traces')
+          .replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/logs')
+          .replyWith(captureFetchCall(received, fetchCalls));
+        mock
+          .post('http://127.0.0.1:4318/v1/metrics')
+          .replyWith(captureFetchCall(received, fetchCalls));
         const jsonExporter = new OTLPHttpJsonExporter({ endpoint: 'http://127.0.0.1:4318' });
-        await jsonExporter.exportSpans([{
-          name: 'route-json-span',
-          kind: 'server',
-          traceId: 'fedcba9876543210fedcba9876543210',
-          spanId: 'fedcba9876543210',
-          startTimeUnixNano: 1,
-          endTimeUnixNano: 2,
-          attributes: {},
-          scope: { name: 'route.scope' },
-          resource: new Resource({ 'service.name': 'route-test' })
-        }]);
-        await jsonExporter.exportLogs([{
-          timeUnixNano: 1,
-          observedTimeUnixNano: 1,
-          severityNumber: 9,
-          severityText: 'INFO',
-          body: 'route-json-log',
-          attributes: {},
-          scope: { name: 'route.scope' },
-          resource: new Resource({ 'service.name': 'route-test' })
-        }]);
-        await jsonExporter.exportMetrics([{
-          name: 'route-json-metric',
-          kind: 'counter',
-          value: 1,
-          unit: '1',
-          attributes: {},
-          timeUnixNano: 1,
-          startTimeUnixNano: 1,
-          scope: { name: 'route.scope' },
-          resource: new Resource({ 'service.name': 'route-test' })
-        }]);
+        await jsonExporter.exportSpans([
+          {
+            name: 'route-json-span',
+            kind: 'server',
+            traceId: 'fedcba9876543210fedcba9876543210',
+            spanId: 'fedcba9876543210',
+            startTimeUnixNano: 1,
+            endTimeUnixNano: 2,
+            attributes: {},
+            scope: { name: 'route.scope' },
+            resource: new Resource({ 'service.name': 'route-test' }),
+          },
+        ]);
+        await jsonExporter.exportLogs([
+          {
+            timeUnixNano: 1,
+            observedTimeUnixNano: 1,
+            severityNumber: 9,
+            severityText: 'INFO',
+            body: 'route-json-log',
+            attributes: {},
+            scope: { name: 'route.scope' },
+            resource: new Resource({ 'service.name': 'route-test' }),
+          },
+        ]);
+        await jsonExporter.exportMetrics([
+          {
+            name: 'route-json-metric',
+            kind: 'counter',
+            value: 1,
+            unit: '1',
+            attributes: {},
+            timeUnixNano: 1,
+            startTimeUnixNano: 1,
+            scope: { name: 'route.scope' },
+            resource: new Resource({ 'service.name': 'route-test' }),
+          },
+        ]);
         await jsonExporter.shutdown();
         assertPresent(received[0], 'json traces request present');
         assertPresent(received[1], 'json logs request present');
@@ -1379,9 +1861,13 @@ describe('fino:opentelemetry', () => {
         spanId: '0123456789abcdef',
         traceFlags: 1,
         traceState: 'rojo=00f067aa0ba902b7',
-        baggage
+        baggage,
       });
-      t.equal(carrier.traceparent, '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01', 'traceparent injected');
+      t.equal(
+        carrier.traceparent,
+        '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+        'traceparent injected',
+      );
       t.equal(carrier.tracestate, 'rojo=00f067aa0ba902b7', 'tracestate injected');
       t.equal(carrier.baggage, 'tenant=alpha', 'baggage injected');
       const extracted = propagator.extract(carrier);
@@ -1403,7 +1889,7 @@ describe('fino:opentelemetry', () => {
         `00-${validTraceId.toUpperCase()}-${validSpanId}-01`,
         `00-${validTraceId}-${validSpanId.toUpperCase()}-01`,
         `00-${validTraceId}-${validSpanId}-01-extra`,
-        `00-${validTraceId.slice(1)}-${validSpanId}-01`
+        `00-${validTraceId.slice(1)}-${validSpanId}-01`,
       ]) {
         t.equal(propagator.extract({ traceparent }), null, `${traceparent} is rejected`);
       }
@@ -1413,68 +1899,98 @@ describe('fino:opentelemetry', () => {
       const received: CapturedFetchRecord[] = [];
       const fetchCalls: CapturedFetchCall[] = [];
       await mockFetch(async (mock) => {
-        mock.post('http://127.0.0.1:4318/custom-traces').replyWith(captureFetchCall(received, fetchCalls, () => new Response(JSON.stringify({ partialSuccess: {
-          rejectedSpans: 1,
-          errorMessage: 'slow down'
-        } }), { status: 200 })));
-        mock.post('http://127.0.0.1:4318/custom-logs').replyWith(captureFetchCall(received, fetchCalls, () => new Response('retry me', { status: 503 })));
-        mock.post('http://127.0.0.1:4318/custom-logs').replyWith(captureFetchCall(received, fetchCalls, () => new Response('ok', { status: 200 })));
-        mock.post('http://127.0.0.1:4318/custom-metrics').replyWith(captureFetchCall(received, fetchCalls, () => new Response('ok', { status: 200 })));
+        mock.post('http://127.0.0.1:4318/custom-traces').replyWith(
+          captureFetchCall(
+            received,
+            fetchCalls,
+            () =>
+              new Response(
+                JSON.stringify({
+                  partialSuccess: {
+                    rejectedSpans: 1,
+                    errorMessage: 'slow down',
+                  },
+                }),
+                { status: 200 },
+              ),
+          ),
+        );
+        mock
+          .post('http://127.0.0.1:4318/custom-logs')
+          .replyWith(
+            captureFetchCall(received, fetchCalls, () => new Response('retry me', { status: 503 })),
+          );
+        mock
+          .post('http://127.0.0.1:4318/custom-logs')
+          .replyWith(
+            captureFetchCall(received, fetchCalls, () => new Response('ok', { status: 200 })),
+          );
+        mock
+          .post('http://127.0.0.1:4318/custom-metrics')
+          .replyWith(
+            captureFetchCall(received, fetchCalls, () => new Response('ok', { status: 200 })),
+          );
         const exporter = new OTLPHttpJsonExporter({
           endpoint: 'http://127.0.0.1:4318',
           endpoints: {
             traces: 'http://127.0.0.1:4318/custom-traces',
             logs: 'http://127.0.0.1:4318/custom-logs',
-            metrics: 'http://127.0.0.1:4318/custom-metrics'
+            metrics: 'http://127.0.0.1:4318/custom-metrics',
           },
           headers: { 'x-test-header': 'present' },
           timeoutMillis: 1234,
           compression: 'gzip',
           retry: {
             maxAttempts: 2,
-            initialBackoffMillis: 1
+            initialBackoffMillis: 1,
           },
           onError(error) {
             events.push({
               type: 'error',
-              message: String(error.message || error)
+              message: String(error.message || error),
             });
           },
           onPartialSuccess(result) {
             events.push({
               type: 'partial',
-              result
+              result,
             });
-          }
+          },
         });
-        const first = await exporter.exportSpans([{
-          name: 'retry-span',
-          kind: 'client',
-          traceId: '0123456789abcdef0123456789abcdef',
-          spanId: '0123456789abcdef',
-          startTimeUnixNano: 1,
-          endTimeUnixNano: 2,
-          attributes: {},
-          scope: { name: 'retry.scope' },
-          resource: new Resource({ 'service.name': 'retry-test' })
-        }]);
-        const second = await exporter.exportLogs([{
-          severityText: 'INFO',
-          severityNumber: 9,
-          body: 'retry-log',
-          attributes: {},
-          scope: { name: 'retry.scope' },
-          resource: new Resource({ 'service.name': 'retry-test' })
-        }]);
-        const third = await exporter.exportMetrics([{
-          name: 'retry.metric',
-          kind: 'counter',
-          value: 1,
-          unit: '1',
-          attributes: {},
-          scope: { name: 'retry.scope' },
-          resource: new Resource({ 'service.name': 'retry-test' })
-        }]);
+        const first = await exporter.exportSpans([
+          {
+            name: 'retry-span',
+            kind: 'client',
+            traceId: '0123456789abcdef0123456789abcdef',
+            spanId: '0123456789abcdef',
+            startTimeUnixNano: 1,
+            endTimeUnixNano: 2,
+            attributes: {},
+            scope: { name: 'retry.scope' },
+            resource: new Resource({ 'service.name': 'retry-test' }),
+          },
+        ]);
+        const second = await exporter.exportLogs([
+          {
+            severityText: 'INFO',
+            severityNumber: 9,
+            body: 'retry-log',
+            attributes: {},
+            scope: { name: 'retry.scope' },
+            resource: new Resource({ 'service.name': 'retry-test' }),
+          },
+        ]);
+        const third = await exporter.exportMetrics([
+          {
+            name: 'retry.metric',
+            kind: 'counter',
+            value: 1,
+            unit: '1',
+            attributes: {},
+            scope: { name: 'retry.scope' },
+            resource: new Resource({ 'service.name': 'retry-test' }),
+          },
+        ]);
         t.equal(first.code, 'success', 'partial success still returns success');
         t.equal(second.code, 'success', 'retry recovers failed export');
         t.equal(third.code, 'success', 'metrics export succeeds');
@@ -1490,22 +2006,29 @@ describe('fino:opentelemetry', () => {
         t.equal(received[2].path, '/custom-logs', 'failed log attempt kept custom endpoint');
         t.equal(received[3].path, '/custom-metrics', 'metric endpoint override applied');
         t.equal(received[0].headers.encoding, 'gzip', 'compression header applied');
-        t.ok(fetchCalls.every((call) => 'signal' in (call.init as Record<string, unknown> | null | undefined || {})), 'timeout signal configured');
+        t.ok(
+          fetchCalls.every(
+            (call) => 'signal' in ((call.init as Record<string, unknown> | null | undefined) || {}),
+          ),
+          'timeout signal configured',
+        );
         t.equal(events[0].type, 'partial', 'partial success hook fired');
         t.equal(events[0].result.rejectedSpans, 1, 'partial success payload parsed');
         t.equal(events[1].type, 'error', 'error hook fired for retryable failure');
         await exporter.shutdown();
-        const afterShutdown = await exporter.exportSpans([{
-          name: 'after-shutdown',
-          kind: 'client',
-          traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          spanId: 'aaaaaaaaaaaaaaaa',
-          startTimeUnixNano: 1,
-          endTimeUnixNano: 2,
-          attributes: {},
-          scope: { name: 'retry.scope' },
-          resource: new Resource({ 'service.name': 'retry-test' })
-        }]);
+        const afterShutdown = await exporter.exportSpans([
+          {
+            name: 'after-shutdown',
+            kind: 'client',
+            traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            spanId: 'aaaaaaaaaaaaaaaa',
+            startTimeUnixNano: 1,
+            endTimeUnixNano: 2,
+            attributes: {},
+            scope: { name: 'retry.scope' },
+            resource: new Resource({ 'service.name': 'retry-test' }),
+          },
+        ]);
         t.equal(afterShutdown.code, 'failure', 'shutdown exporter rejects further export');
       });
     });
@@ -1513,25 +2036,35 @@ describe('fino:opentelemetry', () => {
       const received: CapturedFetchRecord[] = [];
       const fetchCalls: CapturedFetchCall[] = [];
       await mockFetch(async (mock) => {
-        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls, () => new Response('bad request', { status: 400 })));
+        mock
+          .post('http://127.0.0.1:4318/v1/traces')
+          .replyWith(
+            captureFetchCall(
+              received,
+              fetchCalls,
+              () => new Response('bad request', { status: 400 }),
+            ),
+          );
         const exporter = new OTLPHttpJsonExporter({
           endpoint: 'http://127.0.0.1:4318',
           retry: {
             maxAttempts: 3,
-            initialBackoffMillis: 1
-          }
+            initialBackoffMillis: 1,
+          },
         });
-        const result = await exporter.exportSpans([{
-          name: 'client-error',
-          kind: 'client',
-          traceId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-          spanId: 'bbbbbbbbbbbbbbbb',
-          startTimeUnixNano: 1,
-          endTimeUnixNano: 2,
-          attributes: {},
-          scope: { name: 'retry.scope' },
-          resource: new Resource({ 'service.name': 'retry-test' })
-        }]);
+        const result = await exporter.exportSpans([
+          {
+            name: 'client-error',
+            kind: 'client',
+            traceId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            spanId: 'bbbbbbbbbbbbbbbb',
+            startTimeUnixNano: 1,
+            endTimeUnixNano: 2,
+            attributes: {},
+            scope: { name: 'retry.scope' },
+            resource: new Resource({ 'service.name': 'retry-test' }),
+          },
+        ]);
         t.equal(result.code, 'failure', '400 export fails');
         t.equal(received.length, 1, 'non-429 4xx is not retried');
         t.equal(fetchCalls.length, 1, 'only one HTTP call was made');
@@ -1541,29 +2074,42 @@ describe('fino:opentelemetry', () => {
       const received: CapturedFetchRecord[] = [];
       const fetchCalls: CapturedFetchCall[] = [];
       await mockFetch(async (mock) => {
-        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls, () => new Response('rate limited', {
-          status: 429,
-          headers: { 'retry-after': '0' }
-        })));
-        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls, () => new Response('ok', { status: 200 })));
+        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(
+          captureFetchCall(
+            received,
+            fetchCalls,
+            () =>
+              new Response('rate limited', {
+                status: 429,
+                headers: { 'retry-after': '0' },
+              }),
+          ),
+        );
+        mock
+          .post('http://127.0.0.1:4318/v1/traces')
+          .replyWith(
+            captureFetchCall(received, fetchCalls, () => new Response('ok', { status: 200 })),
+          );
         const exporter = new OTLPHttpJsonExporter({
           endpoint: 'http://127.0.0.1:4318',
           retry: {
             maxAttempts: 2,
-            initialBackoffMillis: 1e3
-          }
+            initialBackoffMillis: 1e3,
+          },
         });
-        const result = await exporter.exportSpans([{
-          name: 'rate-limited',
-          kind: 'client',
-          traceId: 'cccccccccccccccccccccccccccccccc',
-          spanId: 'cccccccccccccccc',
-          startTimeUnixNano: 1,
-          endTimeUnixNano: 2,
-          attributes: {},
-          scope: { name: 'retry.scope' },
-          resource: new Resource({ 'service.name': 'retry-test' })
-        }]);
+        const result = await exporter.exportSpans([
+          {
+            name: 'rate-limited',
+            kind: 'client',
+            traceId: 'cccccccccccccccccccccccccccccccc',
+            spanId: 'cccccccccccccccc',
+            startTimeUnixNano: 1,
+            endTimeUnixNano: 2,
+            attributes: {},
+            scope: { name: 'retry.scope' },
+            resource: new Resource({ 'service.name': 'retry-test' }),
+          },
+        ]);
         t.equal(result.code, 'success', '429 retry can recover');
         t.equal(received.length, 2, '429 response was retried');
         t.equal(fetchCalls.length, 2, 'two HTTP calls were made');

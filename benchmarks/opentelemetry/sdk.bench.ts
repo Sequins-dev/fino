@@ -1,9 +1,17 @@
 /**
-* Benchmarks for fino:opentelemetry/sdk
-*
-* Run with: cargo run -- bench benchmarks/opentelemetry/sdk.bench.ts
-*/
-import { BatchLogRecordProcessor, BatchSpanProcessor, InMemoryExporter, ManualMetricReader, OtelSDK, PeriodicMetricReader, Resource } from 'fino:opentelemetry/sdk';
+ * Benchmarks for fino:opentelemetry/sdk
+ *
+ * Run with: cargo run -- bench benchmarks/opentelemetry/sdk.bench.ts
+ */
+import {
+  BatchLogRecordProcessor,
+  BatchSpanProcessor,
+  InMemoryExporter,
+  ManualMetricReader,
+  OtelSDK,
+  PeriodicMetricReader,
+  Resource,
+} from 'fino:opentelemetry/sdk';
 import { bench } from 'fino:bench';
 import type { ExportResult, LogRecord, MetricRecord, SpanRecord } from 'fino:opentelemetry/sdk';
 const spanRecord: SpanRecord = {
@@ -15,9 +23,9 @@ const spanRecord: SpanRecord = {
   endTimeUnixNano: 200,
   attributes: {
     route: '/bench',
-    tenant: 'acme'
+    tenant: 'acme',
   },
-  scope: { name: 'bench.sdk' }
+  scope: { name: 'bench.sdk' },
 };
 const logRecord: LogRecord = {
   body: 'bench log',
@@ -26,9 +34,9 @@ const logRecord: LogRecord = {
   timeUnixNano: 100,
   attributes: {
     route: '/bench',
-    tenant: 'acme'
+    tenant: 'acme',
   },
-  scope: { name: 'bench.sdk' }
+  scope: { name: 'bench.sdk' },
 };
 const metricRecord: MetricRecord = {
   name: 'bench.requests',
@@ -36,7 +44,7 @@ const metricRecord: MetricRecord = {
   value: 1,
   unit: '1',
   attributes: { route: '/bench' },
-  scope: { name: 'bench.sdk' }
+  scope: { name: 'bench.sdk' },
 };
 class FailingExporter {
   async exportSpans(_spans: SpanRecord[]): Promise<ExportResult> {
@@ -53,12 +61,19 @@ bench('opentelemetry/sdk', (b) => {
   b.measure('InMemoryExporter construct', () => new InMemoryExporter());
   b.measure('Resource construct', () => new Resource({ 'service.name': 'bench' }));
   b.measure('BatchSpanProcessor construct', () => new BatchSpanProcessor(new InMemoryExporter()));
-  b.measure('BatchLogRecordProcessor construct', () => new BatchLogRecordProcessor(new InMemoryExporter()));
+  b.measure(
+    'BatchLogRecordProcessor construct',
+    () => new BatchLogRecordProcessor(new InMemoryExporter()),
+  );
   b.measure('ManualMetricReader construct', () => new ManualMetricReader(new InMemoryExporter()));
-  b.measure('OtelSDK construct', () => new OtelSDK({
-    resource: new Resource({ 'service.name': 'bench' }),
-    exporters: [new InMemoryExporter()]
-  }));
+  b.measure(
+    'OtelSDK construct',
+    () =>
+      new OtelSDK({
+        resource: new Resource({ 'service.name': 'bench' }),
+        exporters: [new InMemoryExporter()],
+      }),
+  );
 });
 bench('opentelemetry/sdk batching and backpressure', (b) => {
   b.measure('span processor queue pressure', async () => {
@@ -66,12 +81,12 @@ bench('opentelemetry/sdk batching and backpressure', (b) => {
     const processor = new BatchSpanProcessor(exporter, {
       maxQueueSize: 16,
       maxExportBatchSize: 4,
-      scheduledDelayMillis: 0
+      scheduledDelayMillis: 0,
     });
     for (let i = 0; i < 64; i++) {
       processor.onEnd({
         ...spanRecord,
-        spanId: String(i).padStart(16, '0')
+        spanId: String(i).padStart(16, '0'),
       });
     }
     await processor.forceFlush();
@@ -84,12 +99,12 @@ bench('opentelemetry/sdk batching and backpressure', (b) => {
       maxExportBatchSize: 4,
       scheduledDelayMillis: 0,
       attributeCountLimit: 4,
-      attributeValueLengthLimit: 32
+      attributeValueLengthLimit: 32,
     });
     for (let i = 0; i < 64; i++) {
       processor.onEmit({
         ...logRecord,
-        body: `bench log ${i}`
+        body: `bench log ${i}`,
       });
     }
     await processor.forceFlush();
@@ -98,10 +113,12 @@ bench('opentelemetry/sdk batching and backpressure', (b) => {
   b.measure('manual metric reader collect/reset', async () => {
     const reader = new ManualMetricReader({ temporality: 'delta' });
     for (let i = 0; i < 64; i++) {
-      reader.receive([{
-        ...metricRecord,
-        value: i
-      }]);
+      reader.receive([
+        {
+          ...metricRecord,
+          value: i,
+        },
+      ]);
       reader.collect();
     }
     await reader.shutdown();
@@ -112,12 +129,13 @@ bench('opentelemetry/sdk exporter failure paths', (b) => {
     const processor = new BatchSpanProcessor(new FailingExporter(), {
       maxQueueSize: 16,
       maxExportBatchSize: 4,
-      scheduledDelayMillis: 0
+      scheduledDelayMillis: 0,
     });
-    for (let i = 0; i < 16; i++) processor.onEnd({
-      ...spanRecord,
-      spanId: String(i).padStart(16, '0')
-    });
+    for (let i = 0; i < 16; i++)
+      processor.onEnd({
+        ...spanRecord,
+        spanId: String(i).padStart(16, '0'),
+      });
     await processor.forceFlush();
     await processor.shutdown();
   });
@@ -125,12 +143,13 @@ bench('opentelemetry/sdk exporter failure paths', (b) => {
     const processor = new BatchLogRecordProcessor(new FailingExporter(), {
       maxQueueSize: 16,
       maxExportBatchSize: 4,
-      scheduledDelayMillis: 0
+      scheduledDelayMillis: 0,
     });
-    for (let i = 0; i < 16; i++) processor.onEmit({
-      ...logRecord,
-      body: `failed ${i}`
-    });
+    for (let i = 0; i < 16; i++)
+      processor.onEmit({
+        ...logRecord,
+        body: `failed ${i}`,
+      });
     await processor.forceFlush();
     await processor.shutdown();
   });
@@ -139,7 +158,7 @@ bench('opentelemetry/sdk exporter failure paths', (b) => {
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
-      metricReaders: [new PeriodicMetricReader(exporter, { intervalMs: 0 })]
+      metricReaders: [new PeriodicMetricReader(exporter, { intervalMs: 0 })],
     }).start();
     sdk.recordSpan(spanRecord);
     sdk.recordLog(logRecord);

@@ -1,6 +1,6 @@
 /**
-* Tests for the FormData global.
-*/
+ * Tests for the FormData global.
+ */
 import { describe, it } from 'fino:test/test';
 import { _serializeFormData } from 'internal:globals/formdata';
 type SymbolRecord = Record<symbol, unknown>;
@@ -8,7 +8,7 @@ type FormDataConstructor = {
   new (): FormData;
   new (formData: FormData): FormData;
 };
-const FormDataWithCopy = (FormData as unknown) as FormDataConstructor;
+const FormDataWithCopy = FormData as unknown as FormDataConstructor;
 const decodeUtf8 = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 describe('append / get', () => {
   it('FormData -- append and get string value', (t) => {
@@ -135,7 +135,10 @@ describe('iteration', () => {
     fd.append('b', '2');
     const pairs: Array<[string, FormDataEntryValue]> = [];
     for (const pair of fd.entries()) pairs.push(pair);
-    t.deepEqual(pairs, [['a', '1'], ['b', '2']]);
+    t.deepEqual(pairs, [
+      ['a', '1'],
+      ['b', '2'],
+    ]);
   });
   it('FormData -- keys() iterates names', (t) => {
     const fd = new FormData();
@@ -166,21 +169,12 @@ describe('iteration', () => {
     fd.append('b', '2');
     const results: Array<[string, FormDataEntryValue, boolean]> = [];
     fd.forEach((value, key, ref) => {
-      results.push([
-        key,
-        value,
-        ref === fd
-      ]);
+      results.push([key, value, ref === fd]);
     });
-    t.deepEqual(results, [[
-      'a',
-      '1',
-      true
-    ], [
-      'b',
-      '2',
-      true
-    ]]);
+    t.deepEqual(results, [
+      ['a', '1', true],
+      ['b', '2', true],
+    ]);
   });
   it('FormData -- entries() observes entries appended during iteration', (t) => {
     const fd = new FormData();
@@ -231,7 +225,14 @@ describe('iteration', () => {
         fd.append('c', '3');
       }
     });
-    t.deepEqual(seen, [['a', '1'], ['c', '3']], 'forEach follows the current entry list');
+    t.deepEqual(
+      seen,
+      [
+        ['a', '1'],
+        ['c', '3'],
+      ],
+      'forEach follows the current entry list',
+    );
   });
 });
 describe('set() with Blob/File values', () => {
@@ -267,7 +268,7 @@ describe('forEach with thisArg', () => {
     const fd = new FormData();
     fd.append('k', 'v');
     const ctx = { count: 0 };
-    fd.forEach(function(this: typeof ctx) {
+    fd.forEach(function (this: typeof ctx) {
       this.count++;
     }, ctx);
     t.equal(ctx.count, 1, 'thisArg used as `this` in callback');
@@ -298,11 +299,7 @@ describe('set() position preservation', () => {
     // Expected: a is replaced at position 0, duplicate a=3 removed, b and c preserved
     const keys: string[] = [];
     for (const [k] of fd) keys.push(k);
-    t.deepEqual(keys, [
-      'a',
-      'b',
-      'c'
-    ], 'a replaced at first position, order preserved');
+    t.deepEqual(keys, ['a', 'b', 'c'], 'a replaced at first position, order preserved');
     t.equal(fd.get('a'), 'new', 'a has new value');
     t.equal(fd.get('b'), '2', 'b preserved');
     t.equal(fd.get('c'), '4', 'c preserved');
@@ -316,17 +313,25 @@ describe('FormData iteration completeness', () => {
     fd.append('x', '3');
     const all: [string, string][] = [];
     for (const [k, v] of fd) all.push([k, v as string]);
-    t.deepEqual(all, [
-      ['x', '1'],
-      ['y', '2'],
-      ['x', '3']
-    ], 'all entries in insertion order');
+    t.deepEqual(
+      all,
+      [
+        ['x', '1'],
+        ['y', '2'],
+        ['x', '3'],
+      ],
+      'all entries in insertion order',
+    );
   });
 });
 describe('[Symbol.toStringTag]', () => {
   it('FormData has correct toStringTag', (t) => {
     const fd = new FormData();
-    t.equal(((fd as unknown) as SymbolRecord)[Symbol.toStringTag], 'FormData', 'FormData toStringTag');
+    t.equal(
+      (fd as unknown as SymbolRecord)[Symbol.toStringTag],
+      'FormData',
+      'FormData toStringTag',
+    );
   });
 });
 describe('CRLF normalization', () => {
@@ -377,7 +382,11 @@ describe('FormData — forEach validation', () => {
 describe('FormData [Symbol.toStringTag]', () => {
   it('[Symbol.toStringTag] is "FormData"', (t) => {
     const fd = new FormData();
-    t.equal(((fd as unknown) as SymbolRecord)[Symbol.toStringTag], 'FormData', '[Symbol.toStringTag] correct');
+    t.equal(
+      (fd as unknown as SymbolRecord)[Symbol.toStringTag],
+      'FormData',
+      '[Symbol.toStringTag] correct',
+    );
   });
 });
 describe('FormData copy constructor Fino extension', () => {
@@ -414,15 +423,35 @@ describe('multipart serialization', () => {
   it('escapes field names and filenames without injecting headers', async (t) => {
     const fd = new FormData();
     fd.append('field"\r\nX-Injected: yes', 'value');
-    fd.append('upload', new File(['file'], 'avatar"\nContent-Type: text/html\r\nx.txt', { type: 'text/plain' }));
+    fd.append(
+      'upload',
+      new File(['file'], 'avatar"\nContent-Type: text/html\r\nx.txt', { type: 'text/plain' }),
+    );
     const { contentType, body } = await _serializeFormData(fd, 'fixed-boundary');
     const wire = decodeUtf8(body);
-    t.equal(contentType, 'multipart/form-data; boundary=fixed-boundary', 'content type uses supplied boundary');
-    t.ok(wire.includes('name="field%22%0D%0AX-Injected%3A%20yes"'), 'field name is parameter-escaped');
-    t.ok(wire.includes('filename="avatar%22%0D%0AContent-Type%3A%20text%2Fhtml%0D%0Ax.txt"'), 'filename is parameter-escaped');
+    t.equal(
+      contentType,
+      'multipart/form-data; boundary=fixed-boundary',
+      'content type uses supplied boundary',
+    );
+    t.ok(
+      wire.includes('name="field%22%0D%0AX-Injected%3A%20yes"'),
+      'field name is parameter-escaped',
+    );
+    t.ok(
+      wire.includes('filename="avatar%22%0D%0AContent-Type%3A%20text%2Fhtml%0D%0Ax.txt"'),
+      'filename is parameter-escaped',
+    );
     t.equal(wire.includes('X-Injected: yes'), false, 'field name cannot inject a header line');
-    t.equal(wire.includes('Content-Type: text/html'), false, 'filename cannot inject a header line');
-    t.ok(wire.includes('Content-Type: text/plain\r\n\r\nfile'), 'actual file content type remains intact');
+    t.equal(
+      wire.includes('Content-Type: text/html'),
+      false,
+      'filename cannot inject a header line',
+    );
+    t.ok(
+      wire.includes('Content-Type: text/plain\r\n\r\nfile'),
+      'actual file content type remains intact',
+    );
   });
   it('generates strong unique multipart boundaries when omitted', async (t) => {
     const first = await _serializeFormData(new FormData());
@@ -431,7 +460,11 @@ describe('multipart serialization', () => {
     t.ok(first.contentType.startsWith(prefix), 'first boundary uses fino multipart prefix');
     t.ok(second.contentType.startsWith(prefix), 'second boundary uses fino multipart prefix');
     t.notEqual(first.contentType, second.contentType, 'generated boundaries are unique');
-    t.equal(/Math|random|undefined/.test(first.contentType), false, 'boundary does not expose weak generator details');
+    t.equal(
+      /Math|random|undefined/.test(first.contentType),
+      false,
+      'boundary does not expose weak generator details',
+    );
   });
   it('serializes empty FormData to an empty body', async (t) => {
     const { body } = await _serializeFormData(new FormData(), 'fixed-boundary');

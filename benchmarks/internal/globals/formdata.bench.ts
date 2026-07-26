@@ -1,8 +1,8 @@
 /**
-* Benchmarks for the FormData global
-*
-* Run with: cargo run -- --bench benchmarks/formdata.bench.ts
-*/
+ * Benchmarks for the FormData global
+ *
+ * Run with: cargo run -- --bench benchmarks/formdata.bench.ts
+ */
 import { bench } from 'fino:bench';
 function fdWith(n: number): FormData {
   const fd = new FormData();
@@ -17,11 +17,11 @@ bench('FormData construction', (b) => {
 bench('FormData append', (b) => {
   b.measure('append to empty', {
     setup: () => new FormData(),
-    fn: (fd) => fd.append('key', 'value')
+    fn: (fd) => fd.append('key', 'value'),
   });
   b.measure('append to 10', {
     setup: () => fdWith(10),
-    fn: (fd) => fd.append('newkey', 'val')
+    fn: (fd) => fd.append('newkey', 'val'),
   });
   b.measure('duplicate key', {
     setup: () => {
@@ -29,7 +29,7 @@ bench('FormData append', (b) => {
       fd.append('k', 'v');
       return fd;
     },
-    fn: (fd) => fd.append('k', 'v2')
+    fn: (fd) => fd.append('k', 'v2'),
   });
 });
 bench('FormData lookup', (b) => {
@@ -56,11 +56,11 @@ bench('FormData mutation', (b) => {
   b.group('set', (g) => {
     g.measure('set unique', {
       setup: () => fdWith(5),
-      fn: (fd) => fd.set('newkey', 'newval')
+      fn: (fd) => fd.set('newkey', 'newval'),
     });
     g.measure('set replaces one', {
       setup: () => fdWith(5),
-      fn: (fd) => fd.set('key2', 'replaced')
+      fn: (fd) => fd.set('key2', 'replaced'),
     });
   });
   b.group('delete', (g) => {
@@ -69,11 +69,11 @@ bench('FormData mutation', (b) => {
       fn: (fd) => {
         fd.append('target', 'val');
         fd.delete('target');
-      }
+      },
     });
     g.measure('delete missing', {
       setup: () => fdWith(5),
-      fn: (fd) => fd.delete('nonexistent')
+      fn: (fd) => fd.delete('nonexistent'),
     });
   });
 });

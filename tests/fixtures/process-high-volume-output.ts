@@ -1,7 +1,7 @@
 /**
-* Fixture: write enough stdout and stderr data to exercise concurrent pipe
-* draining from Process.
-*/
+ * Fixture: write enough stdout and stderr data to exercise concurrent pipe
+ * draining from Process.
+ */
 import { stderr, stdout } from 'fino:process';
 const enc = new TextEncoder();
 const out = stdout();

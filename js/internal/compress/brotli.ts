@@ -1,75 +1,78 @@
 /**
-* Brotli compression backend for `fino:compress`.
-*
-* Loads the platform Brotli encoder and decoder libraries (`libbrotlienc` and
-* `libbrotlidec`) through `fino:ffi`, probing the Homebrew and `/usr/local`
-* dylibs on macOS and `libbrotlienc.so.1`/`libbrotlidec.so.1` (then the
-* unversioned `.so` names) elsewhere. Loading happens once at module import,
-* and a missing library is not an import-time error: `brotliAvailable` is
-* `true` only when both libraries opened, and every codec entry point throws a
-* plain `Error` when either did not. `fino:compress` branches on that flag to
-* report the `brotli` format as unavailable instead of failing.
-*
-* Two API shapes are provided. The one-shot `brotliCompress` drives the native
-* `BrotliEncoderCompress` into a worst-case-sized buffer in a single call,
-* while `brotliDecompress` wraps the streaming decoder so malformed,
-* truncated, and trailing-garbage inputs fail identically in the one-shot and
-* streaming paths. The streaming `BrotliCompressor` / `BrotliDecompressor`
-* classes implement the shared `CompressionTransform` contract from
-* `internal:compress/common`: synchronous `write`/`finish` calls that return
-* zero or more output chunks, an async `transform` adapter, and explicit
-* `close` to free the native encoder/decoder state.
-*
-* The encoder always runs in generic mode with the default 22-bit window;
-* `level` selects Brotli quality (default 11, densest). This module is hidden
-* from generated application docs; public availability and option details are
-* documented on `fino:compress`.
-*
-* ## Example
-*
-* ```typescript no_run
-* import * as brotli from 'internal:compress/brotli';
-*
-* if (brotli.brotliAvailable) {
-*   const input = new TextEncoder().encode('payload');
-*   const compressed = brotli.brotliCompress(input, { level: 5 });
-*   const restored = brotli.brotliDecompress(compressed);
-*   console.assert(new TextDecoder().decode(restored) === 'payload');
-* }
-* ```
-*
-* @internal
-*/
+ * Brotli compression backend for `fino:compress`.
+ *
+ * Loads the platform Brotli encoder and decoder libraries (`libbrotlienc` and
+ * `libbrotlidec`) through `fino:ffi`, probing the Homebrew and `/usr/local`
+ * dylibs on macOS and `libbrotlienc.so.1`/`libbrotlidec.so.1` (then the
+ * unversioned `.so` names) elsewhere. Loading happens once at module import,
+ * and a missing library is not an import-time error: `brotliAvailable` is
+ * `true` only when both libraries opened, and every codec entry point throws a
+ * plain `Error` when either did not. `fino:compress` branches on that flag to
+ * report the `brotli` format as unavailable instead of failing.
+ *
+ * Two API shapes are provided. The one-shot `brotliCompress` drives the native
+ * `BrotliEncoderCompress` into a worst-case-sized buffer in a single call,
+ * while `brotliDecompress` wraps the streaming decoder so malformed,
+ * truncated, and trailing-garbage inputs fail identically in the one-shot and
+ * streaming paths. The streaming `BrotliCompressor` / `BrotliDecompressor`
+ * classes implement the shared `CompressionTransform` contract from
+ * `internal:compress/common`: synchronous `write`/`finish` calls that return
+ * zero or more output chunks, an async `transform` adapter, and explicit
+ * `close` to free the native encoder/decoder state.
+ *
+ * The encoder always runs in generic mode with the default 22-bit window;
+ * `level` selects Brotli quality (default 11, densest). This module is hidden
+ * from generated application docs; public availability and option details are
+ * documented on `fino:compress`.
+ *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import * as brotli from 'internal:compress/brotli';
+ *
+ * if (brotli.brotliAvailable) {
+ *   const input = new TextEncoder().encode('payload');
+ *   const compressed = brotli.brotliCompress(input, { level: 5 });
+ *   const restored = brotli.brotliDecompress(compressed);
+ *   console.assert(new TextDecoder().decode(restored) === 'payload');
+ * }
+ * ```
+ *
+ * @internal
+ */
 import { dlopen, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
 import { concat, toU8, type ByteInput, type CompressionTransform } from './common.ts';
 /**
-* Options used by the Brotli backend.
-*
-* `level` maps to Brotli quality and defaults to 11. The native encoder
-* validates accepted values.
-*
-* ```typescript no_run
-* import type { BrotliCompressionOptions } from 'internal:compress/brotli';
-* const opts: BrotliCompressionOptions = { level: 5 };
-* ```
-*
-* @internal
-*/
+ * Options used by the Brotli backend.
+ *
+ * `level` maps to Brotli quality and defaults to 11. The native encoder
+ * validates accepted values.
+ *
+ * ```typescript no_run
+ * import type { BrotliCompressionOptions } from 'internal:compress/brotli';
+ * const opts: BrotliCompressionOptions = { level: 5 };
+ * ```
+ *
+ * @internal
+ */
 export interface BrotliCompressionOptions {
   /**
-  * Optional Brotli quality level.
-  *
-  * ```typescript no_run
-  * import type { BrotliCompressionOptions } from 'internal:compress/brotli';
-  * const opts: BrotliCompressionOptions = { level: 4 };
-  * opts.level;
-  * ```
-  */
+   * Optional Brotli quality level.
+   *
+   * ```typescript no_run
+   * import type { BrotliCompressionOptions } from 'internal:compress/brotli';
+   * const opts: BrotliCompressionOptions = { level: 4 };
+   * opts.level;
+   * ```
+   */
   level?: number;
 }
 const isDarwin = os === 'darwin';
-function tryOpen<TSymbols extends NativeSymbolMap>(paths: string[], symbols: TSymbols): DynamicLibrary<TSymbols> | null {
+function tryOpen<TSymbols extends NativeSymbolMap>(
+  paths: string[],
+  symbols: TSymbols,
+): DynamicLibrary<TSymbols> | null {
   for (const p of paths) {
     try {
       return dlopen(p, symbols);
@@ -77,135 +80,99 @@ function tryOpen<TSymbols extends NativeSymbolMap>(paths: string[], symbols: TSy
   }
   return null;
 }
-const brotliEncPaths = isDarwin ? [
-  '/opt/homebrew/lib/libbrotlienc.dylib',
-  '/usr/local/lib/libbrotlienc.dylib',
-  'libbrotlienc.dylib'
-] : ['libbrotlienc.so.1', 'libbrotlienc.so'];
-const brotliDecPaths = isDarwin ? [
-  '/opt/homebrew/lib/libbrotlidec.dylib',
-  '/usr/local/lib/libbrotlidec.dylib',
-  'libbrotlidec.dylib'
-] : ['libbrotlidec.so.1', 'libbrotlidec.so'];
+const brotliEncPaths = isDarwin
+  ? [
+      '/opt/homebrew/lib/libbrotlienc.dylib',
+      '/usr/local/lib/libbrotlienc.dylib',
+      'libbrotlienc.dylib',
+    ]
+  : ['libbrotlienc.so.1', 'libbrotlienc.so'];
+const brotliDecPaths = isDarwin
+  ? [
+      '/opt/homebrew/lib/libbrotlidec.dylib',
+      '/usr/local/lib/libbrotlidec.dylib',
+      'libbrotlidec.dylib',
+    ]
+  : ['libbrotlidec.so.1', 'libbrotlidec.so'];
 const brotliEncSymbols = {
   BrotliEncoderCreateInstance: {
-    parameters: [
-      'pointer',
-      'pointer',
-      'pointer'
-    ],
-    result: 'pointer'
+    parameters: ['pointer', 'pointer', 'pointer'],
+    result: 'pointer',
   },
   BrotliEncoderDestroyInstance: {
     parameters: ['pointer'],
-    result: 'void'
+    result: 'void',
   },
   BrotliEncoderSetParameter: {
-    parameters: [
-      'pointer',
-      'i32',
-      'u32'
-    ],
-    result: 'i32'
+    parameters: ['pointer', 'i32', 'u32'],
+    result: 'i32',
   },
   BrotliEncoderCompress: {
-    parameters: [
-      'i32',
-      'i32',
-      'i32',
-      'usize',
-      'buffer',
-      'buffer',
-      'buffer'
-    ],
-    result: 'i32'
+    parameters: ['i32', 'i32', 'i32', 'usize', 'buffer', 'buffer', 'buffer'],
+    result: 'i32',
   },
   BrotliEncoderCompressStream: {
-    parameters: [
-      'pointer',
-      'i32',
-      'buffer',
-      'buffer',
-      'buffer',
-      'buffer',
-      'buffer'
-    ],
-    result: 'i32'
+    parameters: ['pointer', 'i32', 'buffer', 'buffer', 'buffer', 'buffer', 'buffer'],
+    result: 'i32',
   },
   BrotliEncoderHasMoreOutput: {
     parameters: ['pointer'],
-    result: 'i32'
+    result: 'i32',
   },
   BrotliEncoderIsFinished: {
     parameters: ['pointer'],
-    result: 'i32'
+    result: 'i32',
   },
   BrotliEncoderMaxCompressedSize: {
     parameters: ['usize'],
-    result: 'usize'
-  }
+    result: 'usize',
+  },
 } satisfies NativeSymbolMap;
 const brotliDecSymbols = {
   BrotliDecoderCreateInstance: {
-    parameters: [
-      'pointer',
-      'pointer',
-      'pointer'
-    ],
-    result: 'pointer'
+    parameters: ['pointer', 'pointer', 'pointer'],
+    result: 'pointer',
   },
   BrotliDecoderDestroyInstance: {
     parameters: ['pointer'],
-    result: 'void'
+    result: 'void',
   },
   BrotliDecoderDecompress: {
-    parameters: [
-      'usize',
-      'buffer',
-      'buffer',
-      'buffer'
-    ],
-    result: 'i32'
+    parameters: ['usize', 'buffer', 'buffer', 'buffer'],
+    result: 'i32',
   },
   BrotliDecoderDecompressStream: {
-    parameters: [
-      'pointer',
-      'buffer',
-      'buffer',
-      'buffer',
-      'buffer',
-      'buffer'
-    ],
-    result: 'i32'
+    parameters: ['pointer', 'buffer', 'buffer', 'buffer', 'buffer', 'buffer'],
+    result: 'i32',
   },
   BrotliDecoderHasMoreOutput: {
     parameters: ['pointer'],
-    result: 'i32'
+    result: 'i32',
   },
   BrotliDecoderIsFinished: {
     parameters: ['pointer'],
-    result: 'i32'
-  }
+    result: 'i32',
+  },
 } satisfies NativeSymbolMap;
 type BrotliEncoderLibrary = DynamicLibrary<typeof brotliEncSymbols>;
 type BrotliDecoderLibrary = DynamicLibrary<typeof brotliDecSymbols>;
 const brotliEncoder = tryOpen(brotliEncPaths, brotliEncSymbols);
 const brotliDecoder = tryOpen(brotliDecPaths, brotliDecSymbols);
 /**
-* Whether both Brotli encoder and decoder libraries were loaded.
-*
-* One-shot and streaming Brotli helpers throw when this is false. zlib formats
-* are unaffected.
-*
-* ```typescript no_run
-* import { brotliAvailable } from 'internal:compress/brotli';
-* if (!brotliAvailable) {
-*   // Fall back to gzip.
-* }
-* ```
-*
-* @internal
-*/
+ * Whether both Brotli encoder and decoder libraries were loaded.
+ *
+ * One-shot and streaming Brotli helpers throw when this is false. zlib formats
+ * are unaffected.
+ *
+ * ```typescript no_run
+ * import { brotliAvailable } from 'internal:compress/brotli';
+ * if (!brotliAvailable) {
+ *   // Fall back to gzip.
+ * }
+ * ```
+ *
+ * @internal
+ */
 export const brotliAvailable = brotliEncoder !== null && brotliDecoder !== null;
 function requireBrotliEncoder(): BrotliEncoderLibrary {
   if (brotliEncoder === null) throw new Error('brotli library not available');
@@ -227,18 +194,18 @@ const BROTLI_DECODER_RESULT_SUCCESS = 1;
 const BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT = 2;
 const BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT = 3;
 /**
-* Compress a complete buffer with Brotli.
-*
-* Returns a new `Uint8Array`. Throws when Brotli libraries are unavailable or
-* when native compression fails.
-*
-* ```typescript no_run
-* import { brotliCompress } from 'internal:compress/brotli';
-* const out = brotliCompress(new TextEncoder().encode('hello'), { level: 5 });
-* ```
-*
-* @internal
-*/
+ * Compress a complete buffer with Brotli.
+ *
+ * Returns a new `Uint8Array`. Throws when Brotli libraries are unavailable or
+ * when native compression fails.
+ *
+ * ```typescript no_run
+ * import { brotliCompress } from 'internal:compress/brotli';
+ * const out = brotliCompress(new TextEncoder().encode('hello'), { level: 5 });
+ * ```
+ *
+ * @internal
+ */
 export function brotliCompress(data: ByteInput, opts?: BrotliCompressionOptions): Uint8Array {
   const brotli = requireBrotliEncoder();
   const u8 = toU8(data);
@@ -247,25 +214,33 @@ export function brotliCompress(data: ByteInput, opts?: BrotliCompressionOptions)
   const outBuf = new ArrayBuffer(maxSize);
   const sizeBuf = new ArrayBuffer(8);
   new DataView(sizeBuf).setBigUint64(0, BigInt(maxSize), true);
-  const ok = brotli.symbols.BrotliEncoderCompress(quality, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC, u8.byteLength, u8, sizeBuf, outBuf);
+  const ok = brotli.symbols.BrotliEncoderCompress(
+    quality,
+    BROTLI_DEFAULT_WINDOW,
+    BROTLI_MODE_GENERIC,
+    u8.byteLength,
+    u8,
+    sizeBuf,
+    outBuf,
+  );
   if (!ok) throw new Error('brotliCompress failed');
   const actual = Number(new DataView(sizeBuf).getBigUint64(0, true));
   return new Uint8Array(outBuf, 0, actual).slice();
 }
 /**
-* Decompress a complete Brotli buffer.
-*
-* The output buffer grows up to an internal 256 MiB limit. Throws when input is
-* malformed, output would exceed that limit, or Brotli is unavailable.
-*
-* ```typescript no_run
-* import { brotliCompress, brotliDecompress } from 'internal:compress/brotli';
-* const packed = brotliCompress(new Uint8Array([1, 2, 3]));
-* const plain = brotliDecompress(packed);
-* ```
-*
-* @internal
-*/
+ * Decompress a complete Brotli buffer.
+ *
+ * The output buffer grows up to an internal 256 MiB limit. Throws when input is
+ * malformed, output would exceed that limit, or Brotli is unavailable.
+ *
+ * ```typescript no_run
+ * import { brotliCompress, brotliDecompress } from 'internal:compress/brotli';
+ * const packed = brotliCompress(new Uint8Array([1, 2, 3]));
+ * const plain = brotliDecompress(packed);
+ * ```
+ *
+ * @internal
+ */
 export function brotliDecompress(data: ByteInput): Uint8Array {
   const decoder = new BrotliDecompressor();
   return collectBrotliTransform(decoder, [data]);
@@ -336,7 +311,7 @@ class BrotliCodec implements CompressionTransform {
       dvNI: this.#dvNI,
       dvAO: this.#dvAO,
       dvNO: this.#dvNO,
-      outBufAddr: this.#outBufAddr
+      outBufAddr: this.#outBufAddr,
     };
   }
   protected assertOpen(): void {
@@ -347,66 +322,85 @@ class BrotliCodec implements CompressionTransform {
   }
 }
 /**
-* Streaming Brotli compressor.
-*
-* Feed chunks with `write` and call `finish` to emit final data and destroy the
-* native encoder. Calling `write` after `finish` throws.
-*
-* ```typescript no_run
-* import { BrotliCompressor } from 'internal:compress/brotli';
-* const codec = new BrotliCompressor({ level: 5 });
-* const parts = [...codec.write(new Uint8Array([1])), ...codec.finish()];
-* ```
-*
-* @internal
-*/
+ * Streaming Brotli compressor.
+ *
+ * Feed chunks with `write` and call `finish` to emit final data and destroy the
+ * native encoder. Calling `write` after `finish` throws.
+ *
+ * ```typescript no_run
+ * import { BrotliCompressor } from 'internal:compress/brotli';
+ * const codec = new BrotliCompressor({ level: 5 });
+ * const parts = [...codec.write(new Uint8Array([1])), ...codec.finish()];
+ * ```
+ *
+ * @internal
+ */
 export class BrotliCompressor extends BrotliCodec {
   /**
-  * Handle to the loaded `libbrotlienc` encoder library.
-  *
-  * Resolved eagerly through `requireBrotliEncoder`, so constructing a
-  * `BrotliCompressor` throws immediately when the encoder library is
-  * unavailable. Every streaming call reaches the native encoder through this
-  * handle's `symbols`.
-  *
-  * @internal
-  */
+   * Handle to the loaded `libbrotlienc` encoder library.
+   *
+   * Resolved eagerly through `requireBrotliEncoder`, so constructing a
+   * `BrotliCompressor` throws immediately when the encoder library is
+   * unavailable. Every streaming call reaches the native encoder through this
+   * handle's `symbols`.
+   *
+   * @internal
+   */
   #brotli = requireBrotliEncoder();
   /**
-  * Create a streaming Brotli compressor.
-  *
-  * The native encoder state is allocated immediately. Throws when Brotli is
-  * unavailable or state allocation fails.
-  *
-  * ```typescript no_run
-  * import { BrotliCompressor } from 'internal:compress/brotli';
-  * const compressor = new BrotliCompressor();
-  * ```
-  */
+   * Create a streaming Brotli compressor.
+   *
+   * The native encoder state is allocated immediately. Throws when Brotli is
+   * unavailable or state allocation fails.
+   *
+   * ```typescript no_run
+   * import { BrotliCompressor } from 'internal:compress/brotli';
+   * const compressor = new BrotliCompressor();
+   * ```
+   */
   constructor(opts?: BrotliCompressionOptions) {
     const state = requireBrotliEncoder().symbols.BrotliEncoderCreateInstance(null, null, null);
     if (!state) throw new Error('BrotliEncoderCreateInstance failed');
     super(state);
-    this.#brotli.symbols.BrotliEncoderSetParameter(this.state, BROTLI_PARAM_QUALITY, opts?.level ?? BROTLI_DEFAULT_QUALITY);
-    this.#brotli.symbols.BrotliEncoderSetParameter(this.state, BROTLI_PARAM_LGWIN, BROTLI_DEFAULT_WINDOW);
+    this.#brotli.symbols.BrotliEncoderSetParameter(
+      this.state,
+      BROTLI_PARAM_QUALITY,
+      opts?.level ?? BROTLI_DEFAULT_QUALITY,
+    );
+    this.#brotli.symbols.BrotliEncoderSetParameter(
+      this.state,
+      BROTLI_PARAM_LGWIN,
+      BROTLI_DEFAULT_WINDOW,
+    );
   }
   /**
-  * Feed one uncompressed chunk to the encoder.
-  *
-  * Returns zero or more compressed output chunks. The returned chunks are
-  * copies and remain valid after the next write.
-  *
-  * ```typescript no_run
-  * import { BrotliCompressor } from 'internal:compress/brotli';
-  * const codec = new BrotliCompressor();
-  * const chunks = codec.write(new Uint8Array([1, 2, 3]));
-  * codec.close();
-  * ```
-  */
+   * Feed one uncompressed chunk to the encoder.
+   *
+   * Returns zero or more compressed output chunks. The returned chunks are
+   * copies and remain valid after the next write.
+   *
+   * ```typescript no_run
+   * import { BrotliCompressor } from 'internal:compress/brotli';
+   * const codec = new BrotliCompressor();
+   * const chunks = codec.write(new Uint8Array([1, 2, 3]));
+   * codec.close();
+   * ```
+   */
   write(chunk: ByteInput): Uint8Array[] {
     this.assertOpen();
     if (this.finished) throw new Error('compression stream already finished');
-    const { outBuf, availInBuf, nextInBuf, availOutBuf, nextOutBuf, dvAI, dvNI, dvAO, dvNO, outBufAddr } = this.buffers;
+    const {
+      outBuf,
+      availInBuf,
+      nextInBuf,
+      availOutBuf,
+      nextOutBuf,
+      dvAI,
+      dvNI,
+      dvAO,
+      dvNO,
+      outBufAddr,
+    } = this.buffers;
     const u8 = toU8(chunk);
     const inputAddr = u8.byteLength > 0 ? Pointer.addr(u8) : 0n;
     const parts: Uint8Array[] = [];
@@ -416,7 +410,15 @@ export class BrotliCompressor extends BrotliCodec {
     do {
       dvAO.setBigUint64(0, BigInt(CHUNK), true);
       dvNO.setBigUint64(0, outBufAddr, true);
-      const ok = this.#brotli.symbols.BrotliEncoderCompressStream(this.state, BROTLI_OPERATION_PROCESS, availInBuf, nextInBuf, availOutBuf, nextOutBuf, null);
+      const ok = this.#brotli.symbols.BrotliEncoderCompressStream(
+        this.state,
+        BROTLI_OPERATION_PROCESS,
+        availInBuf,
+        nextInBuf,
+        availOutBuf,
+        nextOutBuf,
+        null,
+      );
       if (!ok) throw new Error('BrotliEncoderCompressStream failed');
       const produced = CHUNK - Number(dvAO.getBigUint64(0, true));
       if (produced > 0) parts.push(new Uint8Array(outBuf, 0, produced).slice());
@@ -425,20 +427,31 @@ export class BrotliCompressor extends BrotliCodec {
     return parts;
   }
   /**
-  * Finish the Brotli stream and close native encoder state.
-  *
-  * Returns final output chunks, including any trailer bytes. The compressor is
-  * closed even if native finishing throws.
-  *
-  * ```typescript no_run
-  * import { BrotliCompressor } from 'internal:compress/brotli';
-  * const codec = new BrotliCompressor();
-  * const final = codec.finish();
-  * ```
-  */
+   * Finish the Brotli stream and close native encoder state.
+   *
+   * Returns final output chunks, including any trailer bytes. The compressor is
+   * closed even if native finishing throws.
+   *
+   * ```typescript no_run
+   * import { BrotliCompressor } from 'internal:compress/brotli';
+   * const codec = new BrotliCompressor();
+   * const final = codec.finish();
+   * ```
+   */
   finish(): Uint8Array[] {
     this.assertOpen();
-    const { outBuf, availInBuf, nextInBuf, availOutBuf, nextOutBuf, dvAI, dvNI, dvAO, dvNO, outBufAddr } = this.buffers;
+    const {
+      outBuf,
+      availInBuf,
+      nextInBuf,
+      availOutBuf,
+      nextOutBuf,
+      dvAI,
+      dvNI,
+      dvAO,
+      dvNO,
+      outBufAddr,
+    } = this.buffers;
     const parts: Uint8Array[] = [];
     try {
       dvAI.setBigUint64(0, 0n, true);
@@ -446,7 +459,15 @@ export class BrotliCompressor extends BrotliCodec {
       while (!this.#brotli.symbols.BrotliEncoderIsFinished(this.state)) {
         dvAO.setBigUint64(0, BigInt(CHUNK), true);
         dvNO.setBigUint64(0, outBufAddr, true);
-        const ok = this.#brotli.symbols.BrotliEncoderCompressStream(this.state, BROTLI_OPERATION_FINISH, availInBuf, nextInBuf, availOutBuf, nextOutBuf, null);
+        const ok = this.#brotli.symbols.BrotliEncoderCompressStream(
+          this.state,
+          BROTLI_OPERATION_FINISH,
+          availInBuf,
+          nextInBuf,
+          availOutBuf,
+          nextOutBuf,
+          null,
+        );
         if (!ok) throw new Error('BrotliEncoderCompressStream (finish) failed');
         const produced = CHUNK - Number(dvAO.getBigUint64(0, true));
         if (produced > 0) parts.push(new Uint8Array(outBuf, 0, produced).slice());
@@ -458,17 +479,17 @@ export class BrotliCompressor extends BrotliCodec {
     }
   }
   /**
-  * Destroy native Brotli encoder state.
-  *
-  * Safe to call after `finish`; failures from already-closed native state are
-  * ignored.
-  *
-  * ```typescript no_run
-  * import { BrotliCompressor } from 'internal:compress/brotli';
-  * const codec = new BrotliCompressor();
-  * codec.close();
-  * ```
-  */
+   * Destroy native Brotli encoder state.
+   *
+   * Safe to call after `finish`; failures from already-closed native state are
+   * ignored.
+   *
+   * ```typescript no_run
+   * import { BrotliCompressor } from 'internal:compress/brotli';
+   * const codec = new BrotliCompressor();
+   * codec.close();
+   * ```
+   */
   close(): void {
     try {
       this.#brotli.symbols.BrotliEncoderDestroyInstance(this.state);
@@ -477,66 +498,77 @@ export class BrotliCompressor extends BrotliCodec {
   }
 }
 /**
-* Streaming Brotli decompressor.
-*
-* `write` returns decompressed chunks as input arrives. `finish` validates that
-* the stream reached EOF and throws when callers feed truncated Brotli input.
-*
-* ```typescript no_run
-* import { BrotliDecompressor } from 'internal:compress/brotli';
-* const codec = new BrotliDecompressor();
-* codec.close();
-* ```
-*
-* @internal
-*/
+ * Streaming Brotli decompressor.
+ *
+ * `write` returns decompressed chunks as input arrives. `finish` validates that
+ * the stream reached EOF and throws when callers feed truncated Brotli input.
+ *
+ * ```typescript no_run
+ * import { BrotliDecompressor } from 'internal:compress/brotli';
+ * const codec = new BrotliDecompressor();
+ * codec.close();
+ * ```
+ *
+ * @internal
+ */
 export class BrotliDecompressor extends BrotliCodec {
   /**
-  * Handle to the loaded `libbrotlidec` decoder library.
-  *
-  * Resolved eagerly through `requireBrotliDecoder`, so constructing a
-  * `BrotliDecompressor` throws immediately when the decoder library is
-  * unavailable. Every streaming call reaches the native decoder through this
-  * handle's `symbols`.
-  *
-  * @internal
-  */
+   * Handle to the loaded `libbrotlidec` decoder library.
+   *
+   * Resolved eagerly through `requireBrotliDecoder`, so constructing a
+   * `BrotliDecompressor` throws immediately when the decoder library is
+   * unavailable. Every streaming call reaches the native decoder through this
+   * handle's `symbols`.
+   *
+   * @internal
+   */
   #brotli = requireBrotliDecoder();
   /**
-  * Create a streaming Brotli decompressor.
-  *
-  * Throws when Brotli decoder libraries are unavailable or native state
-  * allocation fails.
-  *
-  * ```typescript no_run
-  * import { BrotliDecompressor } from 'internal:compress/brotli';
-  * const decompressor = new BrotliDecompressor();
-  * ```
-  */
+   * Create a streaming Brotli decompressor.
+   *
+   * Throws when Brotli decoder libraries are unavailable or native state
+   * allocation fails.
+   *
+   * ```typescript no_run
+   * import { BrotliDecompressor } from 'internal:compress/brotli';
+   * const decompressor = new BrotliDecompressor();
+   * ```
+   */
   constructor() {
     const state = requireBrotliDecoder().symbols.BrotliDecoderCreateInstance(null, null, null);
     if (!state) throw new Error('BrotliDecoderCreateInstance failed');
     super(state);
   }
   /**
-  * Feed one compressed chunk to the decoder.
-  *
-  * Returns zero or more decompressed chunks. Malformed input throws with the
-  * native decoder result code.
-  *
-  * ```typescript no_run
-  * import { BrotliDecompressor } from 'internal:compress/brotli';
-  * const codec = new BrotliDecompressor();
-  * const chunks = codec.write(new Uint8Array());
-  * codec.close();
-  * ```
-  */
+   * Feed one compressed chunk to the decoder.
+   *
+   * Returns zero or more decompressed chunks. Malformed input throws with the
+   * native decoder result code.
+   *
+   * ```typescript no_run
+   * import { BrotliDecompressor } from 'internal:compress/brotli';
+   * const codec = new BrotliDecompressor();
+   * const chunks = codec.write(new Uint8Array());
+   * codec.close();
+   * ```
+   */
   write(chunk: ByteInput): Uint8Array[] {
     this.assertOpen();
     const pendingError = this.takePendingError();
     if (pendingError !== null) throw pendingError;
     if (this.finished) return [];
-    const { outBuf, availInBuf, nextInBuf, availOutBuf, nextOutBuf, dvAI, dvNI, dvAO, dvNO, outBufAddr } = this.buffers;
+    const {
+      outBuf,
+      availInBuf,
+      nextInBuf,
+      availOutBuf,
+      nextOutBuf,
+      dvAI,
+      dvNI,
+      dvAO,
+      dvNO,
+      outBufAddr,
+    } = this.buffers;
     const u8 = toU8(chunk);
     const inputAddr = u8.byteLength > 0 ? Pointer.addr(u8) : 0n;
     const parts: Uint8Array[] = [];
@@ -546,18 +578,32 @@ export class BrotliDecompressor extends BrotliCodec {
     do {
       dvAO.setBigUint64(0, BigInt(CHUNK), true);
       dvNO.setBigUint64(0, outBufAddr, true);
-      const result = this.#brotli.symbols.BrotliDecoderDecompressStream(this.state, availInBuf, nextInBuf, availOutBuf, nextOutBuf, null);
+      const result = this.#brotli.symbols.BrotliDecoderDecompressStream(
+        this.state,
+        availInBuf,
+        nextInBuf,
+        availOutBuf,
+        nextOutBuf,
+        null,
+      );
       const produced = CHUNK - Number(dvAO.getBigUint64(0, true));
       if (produced > 0) parts.push(new Uint8Array(outBuf, 0, produced).slice());
       if (result === BROTLI_DECODER_RESULT_SUCCESS) {
         remaining = Number(dvAI.getBigUint64(0, true));
         if (remaining > 0) {
-          this.setPendingError(new TypeError('BrotliDecoderDecompressStream failed: trailing data after compressed stream'));
+          this.setPendingError(
+            new TypeError(
+              'BrotliDecoderDecompressStream failed: trailing data after compressed stream',
+            ),
+          );
         }
         this.finished = true;
         break;
       }
-      if (result !== BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT && result !== BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) {
+      if (
+        result !== BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT &&
+        result !== BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT
+      ) {
         throw new TypeError(`BrotliDecoderDecompressStream failed (result=${result})`);
       }
       remaining = Number(dvAI.getBigUint64(0, true));
@@ -565,24 +611,26 @@ export class BrotliDecompressor extends BrotliCodec {
     return parts;
   }
   /**
-  * Finish and close the Brotli decoder.
-  *
-  * Returns an empty array after a complete stream. Throws if the compressed
-  * data ended before the Brotli EOF marker.
-  *
-  * ```typescript no_run
-  * import { BrotliDecompressor } from 'internal:compress/brotli';
-  * const codec = new BrotliDecompressor();
-  * const final = codec.finish();
-  * ```
-  */
+   * Finish and close the Brotli decoder.
+   *
+   * Returns an empty array after a complete stream. Throws if the compressed
+   * data ended before the Brotli EOF marker.
+   *
+   * ```typescript no_run
+   * import { BrotliDecompressor } from 'internal:compress/brotli';
+   * const codec = new BrotliDecompressor();
+   * const final = codec.finish();
+   * ```
+   */
   finish(): Uint8Array[] {
     this.assertOpen();
     try {
       const pendingError = this.takePendingError();
       if (pendingError !== null) throw pendingError;
       if (!this.finished) {
-        throw new TypeError('BrotliDecoderDecompressStream failed: unexpected end of compressed data');
+        throw new TypeError(
+          'BrotliDecoderDecompressStream failed: unexpected end of compressed data',
+        );
       }
       this.finished = true;
       return [];
@@ -591,17 +639,17 @@ export class BrotliDecompressor extends BrotliCodec {
     }
   }
   /**
-  * Destroy native Brotli decoder state.
-  *
-  * Safe to call after `finish`; failures from already-closed native state are
-  * ignored.
-  *
-  * ```typescript no_run
-  * import { BrotliDecompressor } from 'internal:compress/brotli';
-  * const codec = new BrotliDecompressor();
-  * codec.close();
-  * ```
-  */
+   * Destroy native Brotli decoder state.
+   *
+   * Safe to call after `finish`; failures from already-closed native state are
+   * ignored.
+   *
+   * ```typescript no_run
+   * import { BrotliDecompressor } from 'internal:compress/brotli';
+   * const codec = new BrotliDecompressor();
+   * codec.close();
+   * ```
+   */
   close(): void {
     try {
       this.#brotli.symbols.BrotliDecoderDestroyInstance(this.state);
@@ -610,19 +658,22 @@ export class BrotliDecompressor extends BrotliCodec {
   }
 }
 /**
-* Run a Brotli transform over a fixed list of chunks and concatenate output.
-*
-* Calls `finish` after all writes, so the codec is consumed and should not be
-* reused. Throws through any codec error.
-*
-* ```typescript no_run
-* import { BrotliCompressor, collectBrotliTransform } from 'internal:compress/brotli';
-* const out = collectBrotliTransform(new BrotliCompressor(), [new Uint8Array([1])]);
-* ```
-*
-* @internal
-*/
-export function collectBrotliTransform(codec: CompressionTransform, chunks: ByteInput[]): Uint8Array {
+ * Run a Brotli transform over a fixed list of chunks and concatenate output.
+ *
+ * Calls `finish` after all writes, so the codec is consumed and should not be
+ * reused. Throws through any codec error.
+ *
+ * ```typescript no_run
+ * import { BrotliCompressor, collectBrotliTransform } from 'internal:compress/brotli';
+ * const out = collectBrotliTransform(new BrotliCompressor(), [new Uint8Array([1])]);
+ * ```
+ *
+ * @internal
+ */
+export function collectBrotliTransform(
+  codec: CompressionTransform,
+  chunks: ByteInput[],
+): Uint8Array {
   const parts: Uint8Array[] = [];
   for (const chunk of chunks) parts.push(...codec.write(chunk));
   parts.push(...codec.finish());

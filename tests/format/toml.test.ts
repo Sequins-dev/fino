@@ -1,5 +1,11 @@
 import { describe, it } from 'fino:test/test';
-import { parse, stringify, TomlLocalDate, TomlLocalTime, TomlLocalDateTime } from 'fino:format/toml';
+import {
+  parse,
+  stringify,
+  TomlLocalDate,
+  TomlLocalTime,
+  TomlLocalDateTime,
+} from 'fino:format/toml';
 import { loadCorpus, runCorpus, type CorpusCase } from './_corpus.ts';
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
@@ -15,7 +21,7 @@ function stable(value: unknown): unknown {
 describe('fino:format/toml — scalars', () => {
   it('parses strings', (t) => {
     t.deepEqual(parse('x = "hello"'), { x: 'hello' });
-    t.deepEqual(parse('x = \'world\''), { x: 'world' });
+    t.deepEqual(parse("x = 'world'"), { x: 'world' });
   });
   it('parses integers', (t) => {
     t.deepEqual(parse('x = 42'), { x: 42 });
@@ -29,21 +35,32 @@ describe('fino:format/toml — scalars', () => {
     t.deepEqual(parse('x = 3.14'), { x: 3.14 });
     t.deepEqual(parse('x = inf'), { x: Infinity });
     t.deepEqual(parse('x = -inf'), { x: -Infinity });
-    t.ok(Number.isNaN((parse('x = nan') as {
-      x: number;
-    }).x));
+    t.ok(
+      Number.isNaN(
+        (
+          parse('x = nan') as {
+            x: number;
+          }
+        ).x,
+      ),
+    );
   });
   it('parses booleans', (t) => {
     t.deepEqual(parse('x = true\ny = false'), {
       x: true,
-      y: false
+      y: false,
     });
   });
   it('parses multiline basic strings', (t) => {
     const doc = parse('x = """\nline1\nline2\n"""');
-    t.equal((doc as {
-      x: string;
-    }).x, 'line1\nline2\n');
+    t.equal(
+      (
+        doc as {
+          x: string;
+        }
+      ).x,
+      'line1\nline2\n',
+    );
   });
   it('parses escape sequences in basic strings', (t) => {
     t.deepEqual(parse('x = "tab\\there"'), { x: 'tab	here' });
@@ -52,24 +69,21 @@ describe('fino:format/toml — scalars', () => {
 });
 describe('fino:format/toml — arrays', () => {
   it('parses arrays', (t) => {
-    t.deepEqual(parse('x = [1, 2, 3]'), { x: [
-      1,
-      2,
-      3
-    ] });
+    t.deepEqual(parse('x = [1, 2, 3]'), { x: [1, 2, 3] });
   });
   it('parses mixed-type arrays', (t) => {
     t.deepEqual(parse('x = ["a", "b"]'), { x: ['a', 'b'] });
   });
   it('parses nested arrays', (t) => {
-    t.deepEqual(parse('x = [[1, 2], [3, 4]]'), { x: [[1, 2], [3, 4]] });
+    t.deepEqual(parse('x = [[1, 2], [3, 4]]'), {
+      x: [
+        [1, 2],
+        [3, 4],
+      ],
+    });
   });
   it('parses array with trailing comma', (t) => {
-    t.deepEqual(parse('x = [1, 2, 3,]'), { x: [
-      1,
-      2,
-      3
-    ] });
+    t.deepEqual(parse('x = [1, 2, 3,]'), { x: [1, 2, 3] });
   });
 });
 describe('fino:format/toml — tables', () => {
@@ -85,10 +99,12 @@ describe('fino:format/toml — tables', () => {
     t.deepEqual(doc, { products: [{ name: 'Hammer' }, { name: 'Nail' }] });
   });
   it('parses inline tables', (t) => {
-    t.deepEqual(parse('point = { x = 1, y = 2 }'), { point: {
-      x: 1,
-      y: 2
-    } });
+    t.deepEqual(parse('point = { x = 1, y = 2 }'), {
+      point: {
+        x: 1,
+        y: 2,
+      },
+    });
   });
   it('throws on duplicate key', (t) => {
     t.throws(() => parse('x = 1\nx = 2'), /duplicate/i);
@@ -135,7 +151,7 @@ describe('fino:format/toml — datetimes', () => {
       't = 24:00:00',
       't = 07:60:00',
       'dt = 2024-01-15T07:32:60',
-      'dt = 2024-01-15T07:32:00+25:00'
+      'dt = 2024-01-15T07:32:00+25:00',
     ]) {
       t.throws(() => parse(input), /invalid/i);
     }
@@ -155,7 +171,7 @@ describe('fino:format/toml — invalid values', () => {
       'x = 0b102',
       'x = 0o78',
       'x = 0xfg',
-      'x = 1.2.3'
+      'x = 1.2.3',
     ]) {
       t.throws(() => parse(input), /invalid|expected newline/i);
     }
@@ -173,7 +189,7 @@ describe('fino:format/toml — stringify', () => {
     const doc = {
       name: 'test',
       count: 42,
-      enabled: true
+      enabled: true,
     };
     const toml = stringify(doc);
     t.ok(toml.includes('count = 42'));
@@ -186,13 +202,9 @@ describe('fino:format/toml — stringify', () => {
     t.ok(toml.includes('port = 8080'));
   });
   it('roundtrips arrays', (t) => {
-    const doc = { tags: [
-      'a',
-      'b',
-      'c'
-    ] };
+    const doc = { tags: ['a', 'b', 'c'] };
     const toml = stringify(doc);
-    t.ok(toml.includes('tags = [\'a\', \'b\', \'c\']') || toml.includes('tags = ['));
+    t.ok(toml.includes("tags = ['a', 'b', 'c']") || toml.includes('tags = ['));
   });
   it('roundtrips array of tables', (t) => {
     const doc = { products: [{ name: 'Hammer' }, { name: 'Nail' }] };
@@ -202,7 +214,7 @@ describe('fino:format/toml — stringify', () => {
   it('does not preserve comments or source quoting style', (t) => {
     const toml = stringify(parse('# comment\nname = "fino"\n'));
     t.notOk(toml.includes('# comment'), 'comments are not preserved');
-    t.ok(toml.includes('name = \'fino\''), 'stringifier chooses its own quote style');
+    t.ok(toml.includes("name = 'fino'"), 'stringifier chooses its own quote style');
   });
 });
 const TOML_FIXTURES_DIR = new URL('../fixtures/toml', import.meta.url).pathname;

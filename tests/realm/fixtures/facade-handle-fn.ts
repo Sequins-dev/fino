@@ -1,15 +1,15 @@
 /**
-* Fixture: exercises a Facade that returns a FacadeHandle.
-*
-* The parent registers an `openHandle(key)` method that returns a handle with:
-*   - getValue()    — scalar: returns the stored value string
-*   - readChunks(n) — stream: yields n chunk strings
-*   - close()       — scalar: closes the handle (returns void)
-*
-* This fixture calls all three and returns a summary object.
-*/
+ * Fixture: exercises a Facade that returns a FacadeHandle.
+ *
+ * The parent registers an `openHandle(key)` method that returns a handle with:
+ *   - getValue()    — scalar: returns the stored value string
+ *   - readChunks(n) — stream: yields n chunk strings
+ *   - close()       — scalar: closes the handle (returns void)
+ *
+ * This fixture calls all three and returns a summary object.
+ */
 import { openHandle } from 'fino:test-facade';
-export default async function(): Promise<{
+export default async function (): Promise<{
   value: unknown;
   chunks: unknown[];
 }> {
@@ -22,6 +22,6 @@ export default async function(): Promise<{
   await handle.close();
   return {
     value,
-    chunks
+    chunks,
   };
 }

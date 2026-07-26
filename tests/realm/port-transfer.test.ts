@@ -1,13 +1,13 @@
 /**
-* Tests for MessagePort transfer across same-Isolate and cross-Isolate
-* (thread realm) boundaries.
-*
-* Same-Isolate: port passed via realm.port.postMessage to an embedded child;
-* child uses it to communicate directly with a third party.
-*
-* Cross-Isolate: port transferred via thread realm's ThreadPort; the
-* thread realm receives the port and posts a message back through it.
-*/
+ * Tests for MessagePort transfer across same-Isolate and cross-Isolate
+ * (thread realm) boundaries.
+ *
+ * Same-Isolate: port passed via realm.port.postMessage to an embedded child;
+ * child uses it to communicate directly with a third party.
+ *
+ * Cross-Isolate: port transferred via thread realm's ThreadPort; the
+ * thread realm receives the port and posts a message back through it.
+ */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 function isDataCloneError(err: unknown): boolean {
@@ -26,7 +26,11 @@ describe('MessagePort transfer', () => {
   it('structuredClone rejects direct MessagePort transfer with DataCloneError', (t) => {
     const { port1, port2 } = new MessageChannel();
     try {
-      t.throws(() => structuredClone({ port: port1 }, { transfer: [port1 as any] }), isDataCloneError, 'direct structuredClone MessagePort transfer throws');
+      t.throws(
+        () => structuredClone({ port: port1 }, { transfer: [port1 as any] }),
+        isDataCloneError,
+        'direct structuredClone MessagePort transfer throws',
+      );
     } finally {
       port1.close();
       port2.close();
@@ -101,11 +105,22 @@ describe('MessagePort transfer', () => {
     const carrier = new MessageChannel();
     carrier.port1.postMessage({ port: carried.port1 }, [carried.port1]);
     const event = await nextMessage(carrier.port2);
-    t.ok(event.data.port instanceof MessagePort, 'message data contains a reconstructed MessagePort');
-    t.equal(event.data.port, event.ports[0], 'event.data.port is the same object as event.ports[0]');
+    t.ok(
+      event.data.port instanceof MessagePort,
+      'message data contains a reconstructed MessagePort',
+    );
+    t.equal(
+      event.data.port,
+      event.ports[0],
+      'event.data.port is the same object as event.ports[0]',
+    );
     event.data.port.postMessage('from data port');
     const reply = await nextMessage(carried.port2);
-    t.equal(reply.data, 'from data port', 'reconstructed data port communicates with original partner');
+    t.equal(
+      reply.data,
+      'from data port',
+      'reconstructed data port communicates with original partner',
+    );
     carrier.port1.close();
     carrier.port2.close();
     carried.port2.close();
@@ -114,15 +129,26 @@ describe('MessagePort transfer', () => {
   it('same-Isolate: duplicate transferred port references in message data preserve identity', async (t) => {
     const carried = new MessageChannel();
     const carrier = new MessageChannel();
-    carrier.port1.postMessage({
-      first: carried.port1,
-      nested: { second: carried.port1 },
-      list: [carried.port1]
-    }, [carried.port1]);
+    carrier.port1.postMessage(
+      {
+        first: carried.port1,
+        nested: { second: carried.port1 },
+        list: [carried.port1],
+      },
+      [carried.port1],
+    );
     const event = await nextMessage(carrier.port2);
     t.equal(event.data.first, event.ports[0], 'first reference uses transferred port object');
-    t.equal(event.data.nested.second, event.ports[0], 'nested reference preserves transferred port identity');
-    t.equal(event.data.list[0], event.ports[0], 'array reference preserves transferred port identity');
+    t.equal(
+      event.data.nested.second,
+      event.ports[0],
+      'nested reference preserves transferred port identity',
+    );
+    t.equal(
+      event.data.list[0],
+      event.ports[0],
+      'array reference preserves transferred port identity',
+    );
     carrier.port1.close();
     carrier.port2.close();
     carried.port2.close();
@@ -132,7 +158,11 @@ describe('MessagePort transfer', () => {
     const carried = new MessageChannel();
     const carrier = new MessageChannel();
     try {
-      t.throws(() => carrier.port1.postMessage({ port: carried.port1 }), isDataCloneError, 'MessagePort data without transfer list throws');
+      t.throws(
+        () => carrier.port1.postMessage({ port: carried.port1 }),
+        isDataCloneError,
+        'MessagePort data without transfer list throws',
+      );
     } finally {
       carried.port1.close();
       carried.port2.close();
@@ -143,7 +173,11 @@ describe('MessagePort transfer', () => {
   it('same-Isolate: transferring the source port throws DataCloneError', (t) => {
     const channel = new MessageChannel();
     try {
-      t.throws(() => channel.port1.postMessage('ports', [channel.port1]), isDataCloneError, 'source port transfer throws DataCloneError');
+      t.throws(
+        () => channel.port1.postMessage('ports', [channel.port1]),
+        isDataCloneError,
+        'source port transfer throws DataCloneError',
+      );
     } finally {
       channel.port1.close();
       channel.port2.close();
@@ -163,9 +197,11 @@ describe('MessagePort transfer', () => {
   it('cross-Isolate: port transferred to thread realm receives message', async (t) => {
     const realm = new Realm({
       thread: true,
-      entry: new URL('./fixtures/port-echo-transfer.ts', import.meta.url).pathname
+      entry: new URL('./fixtures/port-echo-transfer.ts', import.meta.url).pathname,
     });
-    realm.run().catch(() => {    /* terminated after test */});
+    realm.run().catch(() => {
+      /* terminated after test */
+    });
     // Create a channel; transfer port1 to the thread realm via realm.port
     const { port1, port2 } = new MessageChannel();
     realm.port.start();

@@ -1,6 +1,11 @@
 import { WPT_CATEGORIES } from './categories.ts';
 import { WPT_MANIFEST } from './manifest.generated.ts';
-type SkipBucket = 'server-runtime not applicable' | 'harness infrastructure gap' | 'missing runtime global' | 'known conformance debt' | 'not a test';
+type SkipBucket =
+  | 'server-runtime not applicable'
+  | 'harness infrastructure gap'
+  | 'missing runtime global'
+  | 'known conformance debt'
+  | 'not a test';
 interface CategorySummary {
   category: string;
   globals: string[];
@@ -13,7 +18,7 @@ const skipBuckets: SkipBucket[] = [
   'harness infrastructure gap',
   'missing runtime global',
   'known conformance debt',
-  'not a test'
+  'not a test',
 ];
 function emptySkipped(): Record<SkipBucket, number> {
   return {
@@ -21,7 +26,7 @@ function emptySkipped(): Record<SkipBucket, number> {
     'harness infrastructure gap': 0,
     'missing runtime global': 0,
     'known conformance debt': 0,
-    'not a test': 0
+    'not a test': 0,
   };
 }
 function skipBucket(reason: string): SkipBucket {
@@ -31,10 +36,21 @@ function skipBucket(reason: string): SkipBucket {
   if (reason.includes('document/window')) {
     return 'server-runtime not applicable';
   }
-  if (reason.includes('WPT server') || reason.includes('.sub') || reason.includes('missing WPT META script')) {
+  if (
+    reason.includes('WPT server') ||
+    reason.includes('.sub') ||
+    reason.includes('missing WPT META script')
+  ) {
     return 'harness infrastructure gap';
   }
-  if (reason.includes('Worker') || reason.includes('Cache API') || reason.includes('ServiceWorker') || reason.includes('DedicatedWorker') || reason.includes('FileReader in document or worker') || reason.includes('importScripts')) {
+  if (
+    reason.includes('Worker') ||
+    reason.includes('Cache API') ||
+    reason.includes('ServiceWorker') ||
+    reason.includes('DedicatedWorker') ||
+    reason.includes('FileReader in document or worker') ||
+    reason.includes('importScripts')
+  ) {
     return 'missing runtime global';
   }
   return 'known conformance debt';
@@ -56,17 +72,23 @@ function summarize(): CategorySummary[] {
       globals: category.globals,
       runnable,
       total: entries.length,
-      skipped
+      skipped,
     };
   });
 }
-console.log([
-  '| Category | Globals | Runnable / total | Server-runtime not applicable | Harness infrastructure gap | Missing runtime global | Known conformance debt | Not a test |',
-  '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
-  ...summarize().map((summary) => [
-    `\`${summary.category}\``,
-    summary.globals.map((global) => `\`${global}\``).join(', '),
-    `${summary.runnable} / ${summary.total}`,
-    ...skipBuckets.map((bucket) => String(summary.skipped[bucket]))
-  ].join(' | ')).map((row) => `| ${row} |`)
-].join('\n'));
+console.log(
+  [
+    '| Category | Globals | Runnable / total | Server-runtime not applicable | Harness infrastructure gap | Missing runtime global | Known conformance debt | Not a test |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...summarize()
+      .map((summary) =>
+        [
+          `\`${summary.category}\``,
+          summary.globals.map((global) => `\`${global}\``).join(', '),
+          `${summary.runnable} / ${summary.total}`,
+          ...skipBuckets.map((bucket) => String(summary.skipped[bucket])),
+        ].join(' | '),
+      )
+      .map((row) => `| ${row} |`),
+  ].join('\n'),
+);

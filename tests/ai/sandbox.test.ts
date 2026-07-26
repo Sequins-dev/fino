@@ -15,7 +15,9 @@ async function rejection(run: () => Promise<unknown>): Promise<unknown> {
 describe('AI sandbox', () => {
   it('denies ambient modules and network globals by default', async (t) => {
     const events: SandboxAuditEvent[] = [];
-    const handle = topic<SandboxAuditEvent>('fino:ai/sandbox').subscribe((event) => events.push(event));
+    const handle = topic<SandboxAuditEvent>('fino:ai/sandbox').subscribe((event) =>
+      events.push(event),
+    );
     const sandbox = new AISandbox(`
       export default async () => {
         let processModule = 'accessible';
@@ -30,7 +32,7 @@ describe('AI sandbox', () => {
     try {
       t.deepEqual(await sandbox.call(), {
         processModule: 'blocked',
-        fetchType: 'undefined'
+        fetchType: 'undefined',
       });
       t.ok(events.some((event) => event.capability === 'execute' && event.outcome === 'used'));
     } finally {
@@ -40,27 +42,43 @@ describe('AI sandbox', () => {
   });
   it('exposes only explicitly granted environment variables and secrets', async (t) => {
     const events: SandboxAuditEvent[] = [];
-    const handle = topic<SandboxAuditEvent>('fino:ai/sandbox').subscribe((event) => events.push(event));
-    const sandbox = new AISandbox(`
+    const handle = topic<SandboxAuditEvent>('fino:ai/sandbox').subscribe((event) =>
+      events.push(event),
+    );
+    const sandbox = new AISandbox(
+      `
       import { environment, secret } from 'fino:ai/sandbox/capabilities';
       export default async () => ({
         mode: await environment('MODE'),
         token: await secret('API_TOKEN'),
       });
-    `, {
-      environment: { MODE: 'test' },
-      secrets: { API_TOKEN: 'super-secret' }
-    });
+    `,
+      {
+        environment: { MODE: 'test' },
+        secrets: { API_TOKEN: 'super-secret' },
+      },
+    );
     try {
       t.deepEqual(await sandbox.call(), {
         mode: 'test',
-        token: 'super-secret'
+        token: 'super-secret',
       });
-      t.equal(JSON.stringify(events).includes('super-secret'), false, 'audit events never include secret values');
-      await t.rejects(() => new AISandbox(`
+      t.equal(
+        JSON.stringify(events).includes('super-secret'),
+        false,
+        'audit events never include secret values',
+      );
+      await t.rejects(
+        () =>
+          new AISandbox(
+            `
         import { environment } from 'fino:ai/sandbox/capabilities';
         export default () => environment('HOME');
-      `, { environment: { MODE: 'test' } }).call(), /not granted/i);
+      `,
+            { environment: { MODE: 'test' } },
+          ).call(),
+        /not granted/i,
+      );
     } finally {
       sandbox.terminate();
       handle.dispose();
@@ -72,21 +90,35 @@ describe('AI sandbox', () => {
     await fs.mkdir(root);
     await fs.writeFile(`${root}/allowed.txt`, new TextEncoder().encode('allowed'));
     const events: SandboxAuditEvent[] = [];
-    const handle = topic<SandboxAuditEvent>('fino:ai/sandbox').subscribe((event) => events.push(event));
-    const sandbox = new AISandbox(`
+    const handle = topic<SandboxAuditEvent>('fino:ai/sandbox').subscribe((event) =>
+      events.push(event),
+    );
+    const sandbox = new AISandbox(
+      `
       import { readText } from 'fino:ai/sandbox/capabilities';
       export default (path: string) => readText(path);
-    `, { filesystem: { read: [root] } });
-    const deniedSandbox = new AISandbox(`
+    `,
+      { filesystem: { read: [root] } },
+    );
+    const deniedSandbox = new AISandbox(
+      `
       import { readText } from 'fino:ai/sandbox/capabilities';
       export default (path: string) => readText(path);
-    `, { filesystem: { read: [root] } });
+    `,
+      { filesystem: { read: [root] } },
+    );
     try {
       t.equal(await sandbox.call(`${root}/allowed.txt`), 'allowed');
       const denied = await rejection(() => deniedSandbox.call('/etc/hosts'));
       t.ok(/not granted/i.test(String(denied)), `actionable denial: ${String(denied)}`);
-      t.ok(events.some((event) => event.capability === 'filesystem.read' && event.outcome === 'used'));
-      t.ok(events.some((event) => event.capability === 'filesystem.read' && event.outcome === 'denied'));
+      t.ok(
+        events.some((event) => event.capability === 'filesystem.read' && event.outcome === 'used'),
+      );
+      t.ok(
+        events.some(
+          (event) => event.capability === 'filesystem.read' && event.outcome === 'denied',
+        ),
+      );
     } finally {
       sandbox.terminate();
       deniedSandbox.terminate();
@@ -99,10 +131,13 @@ describe('AI sandbox', () => {
     const fs = new DiskFileSystem();
     const root = `/tmp/fino-ai-sandbox-write-${Date.now()}`;
     await fs.mkdir(root);
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       import { writeText } from 'fino:ai/sandbox/capabilities';
       export default (path: string) => writeText(path, 'written');
-    `, { filesystem: { write: [root] } });
+    `,
+      { filesystem: { write: [root] } },
+    );
     try {
       await sandbox.call(`${root}/output.txt`);
       t.equal(new TextDecoder().decode(await fs.readFile(`${root}/output.txt`)), 'written');
@@ -113,17 +148,25 @@ describe('AI sandbox', () => {
     }
   });
   it('permits HTTP requests only to granted origins and methods', async (t) => {
-    const server = serveHttp({ port: 0 }, (request) => new Response(`${request.method}:${new URL(request.url).pathname}`));
+    const server = serveHttp(
+      { port: 0 },
+      (request) => new Response(`${request.method}:${new URL(request.url).pathname}`),
+    );
     const origin = `http://127.0.0.1:${server.port}`;
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       import { fetchText } from 'fino:ai/sandbox/capabilities';
       export default (url: string) => fetchText(url);
-    `, { network: {
-      origins: [origin],
-      methods: ['GET']
-    } });
+    `,
+      {
+        network: {
+          origins: [origin],
+          methods: ['GET'],
+        },
+      },
+    );
     try {
-      const result = await sandbox.call(`${origin}/allowed`) as {
+      const result = (await sandbox.call(`${origin}/allowed`)) as {
         status: number;
         body: string;
       };
@@ -145,19 +188,28 @@ describe('AI sandbox', () => {
     `);
     try {
       const networkDenied = await rejection(() => networkSandbox.call());
-      t.ok(/network.*not granted/i.test(String(networkDenied)), `network denial: ${String(networkDenied)}`);
+      t.ok(
+        /network.*not granted/i.test(String(networkDenied)),
+        `network denial: ${String(networkDenied)}`,
+      );
       const processDenied = await rejection(() => processSandbox.call());
-      t.ok(/subprocess.*not granted/i.test(String(processDenied)), `process denial: ${String(processDenied)}`);
+      t.ok(
+        /subprocess.*not granted/i.test(String(processDenied)),
+        `process denial: ${String(processDenied)}`,
+      );
     } finally {
       networkSandbox.terminate();
       processSandbox.terminate();
     }
   });
   it('rejects non-HTTP URL schemes even when their opaque origin is granted', async (t) => {
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       import { fetchText } from 'fino:ai/sandbox/capabilities';
       export default () => fetchText('data:text/plain,secret');
-    `, { network: { origins: ['data:text/plain,allowed'] } });
+    `,
+      { network: { origins: ['data:text/plain,allowed'] } },
+    );
     try {
       const denied = await rejection(() => sandbox.call());
       t.ok(/http|scheme|protocol/i.test(String(denied)), `scheme denial: ${String(denied)}`);
@@ -166,13 +218,16 @@ describe('AI sandbox', () => {
     }
   });
   it('enforces the operation budget across concurrent capability calls', async (t) => {
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       import { environment } from 'fino:ai/sandbox/capabilities';
       export default () => Promise.all([environment('MODE'), environment('MODE')]);
-    `, {
-      environment: { MODE: 'test' },
-      resources: { maxOperations: 1 }
-    });
+    `,
+      {
+        environment: { MODE: 'test' },
+        resources: { maxOperations: 1 },
+      },
+    );
     try {
       await t.rejects(() => sandbox.call(), /operation budget/i);
     } finally {
@@ -180,9 +235,12 @@ describe('AI sandbox', () => {
     }
   });
   it('enforces the wall-clock budget for pending sandbox work', async (t) => {
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       export default () => new Promise(() => {});
-    `, { resources: { wallClockMs: 20 } });
+    `,
+      { resources: { wallClockMs: 20 } },
+    );
     try {
       const denied = await rejection(() => sandbox.call());
       t.ok(/exceeded 20ms/i.test(String(denied)), `wall-clock denial: ${String(denied)}`);
@@ -191,11 +249,14 @@ describe('AI sandbox', () => {
     }
   });
   it('force-kills synchronous sandbox work after the wall-clock budget', async (t) => {
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       export default () => {
         while (true) {}
       };
-    `, { resources: { wallClockMs: 20 } });
+    `,
+      { resources: { wallClockMs: 20 } },
+    );
     const startedAt = Date.now();
     try {
       const denied = await rejection(() => sandbox.call());
@@ -206,13 +267,16 @@ describe('AI sandbox', () => {
     }
   });
   it('runs allowlisted subprocesses only through strict sandbox enforcement', async (t) => {
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       import { spawn } from 'fino:ai/sandbox/capabilities';
       export default () => spawn('/bin/echo', ['hello']);
-    `, { subprocess: { commands: ['/bin/echo'] } });
+    `,
+      { subprocess: { commands: ['/bin/echo'] } },
+    );
     try {
       if (processSandboxCapabilities().strictAvailable) {
-        const result = await sandbox.call() as {
+        const result = (await sandbox.call()) as {
           code: number | null;
           stdout: string;
         };
@@ -220,7 +284,10 @@ describe('AI sandbox', () => {
         t.equal(result.stdout.trim(), 'hello');
       } else {
         const failedClosed = await rejection(() => sandbox.call());
-        t.ok(/strict sandbox/i.test(String(failedClosed)), `strict sandbox failure: ${String(failedClosed)}`);
+        t.ok(
+          /strict sandbox/i.test(String(failedClosed)),
+          `strict sandbox failure: ${String(failedClosed)}`,
+        );
       }
     } finally {
       sandbox.terminate();
@@ -231,13 +298,16 @@ describe('AI sandbox', () => {
       t.ok(true, 'strict subprocess sandbox is unavailable on this host');
       return;
     }
-    const sandbox = new AISandbox(`
+    const sandbox = new AISandbox(
+      `
       import { spawn } from 'fino:ai/sandbox/capabilities';
       export default () => spawn('/bin/sh', ['-c', 'printf 1234; printf 5678 >&2']);
-    `, {
-      subprocess: { commands: ['/bin/sh'] },
-      resources: { maxProcessOutputBytes: 6 }
-    });
+    `,
+      {
+        subprocess: { commands: ['/bin/sh'] },
+        resources: { maxProcessOutputBytes: 6 },
+      },
+    );
     try {
       await t.rejects(() => sandbox.call(), /process output exceeds 6 bytes/i);
     } finally {

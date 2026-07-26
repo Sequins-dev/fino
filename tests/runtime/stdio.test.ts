@@ -1,6 +1,6 @@
 /**
-* Tests for process.stdin / process.stdout / process.stderr.
-*/
+ * Tests for process.stdin / process.stdout / process.stderr.
+ */
 import { describe, it } from 'fino:test/test';
 import { stdin, stdout, stderr, Process } from 'fino:process';
 const enc = new TextEncoder();

@@ -1,44 +1,44 @@
 /**
-* internal:jobs/control — orchestrator-side jobs control facade.
-*
-* The orchestrator runs the real jobs service (poller, worker pools, and the
-* one SQLite connection) in its own realm and exposes a thin, capability-scoped
-* control surface to each app workload realm under the specifier
-* `fino:jobs/control`. The app-side `fino:jobs` module probes for this facade
-* on startup: when present it enters client mode and forwards every operation
-* here over RPC instead of opening a database of its own. This keeps a single
-* durable store per process while letting many app realms enqueue, schedule,
-* and process jobs against it.
-*
-* The facade groups three kinds of traffic. Ordinary control calls
-* (`push`, `schedule`, `get`, `cancel`, `waitFor`, ...) proxy straight onto the
-* live `JobsService`. Durable workflow checkpoints ride the `wf*` handlers,
-* which read and write the service's workflow store so run state survives a
-* crash. Inline processors — task handlers whose code lives inside a client
-* realm rather than a spawned worker — are bridged by an `InlineRelay`: the
-* service hands each due call to the relay, the client drains them through the
-* `inlineCalls` async stream, runs the handler locally, and reports the outcome
-* back with `completeInline`.
-*
-* The jobs service is created lazily on the first `open()` call and torn down by
-* a shutdown hook when the command settles, so scripts that never touch
-* `fino:jobs` pay nothing and never keep the orchestrator loop alive.
-*
-* ```ts no_run
-*   import { createJobsControlFacade } from 'internal:jobs/control';
-*
-*   // The orchestrator layers the facade over every app realm's import map.
-*   const realm = new Realm({
-*     entry: opts.entry,
-*     overrides: [
-*       { pattern: 'fino:jobs/control', directive: createJobsControlFacade() },
-*     ],
-*   });
-*   await realm.run();
-* ```
-*
-* @internal
-*/
+ * internal:jobs/control — orchestrator-side jobs control facade.
+ *
+ * The orchestrator runs the real jobs service (poller, worker pools, and the
+ * one SQLite connection) in its own realm and exposes a thin, capability-scoped
+ * control surface to each app workload realm under the specifier
+ * `fino:jobs/control`. The app-side `fino:jobs` module probes for this facade
+ * on startup: when present it enters client mode and forwards every operation
+ * here over RPC instead of opening a database of its own. This keeps a single
+ * durable store per process while letting many app realms enqueue, schedule,
+ * and process jobs against it.
+ *
+ * The facade groups three kinds of traffic. Ordinary control calls
+ * (`push`, `schedule`, `get`, `cancel`, `waitFor`, ...) proxy straight onto the
+ * live `JobsService`. Durable workflow checkpoints ride the `wf*` handlers,
+ * which read and write the service's workflow store so run state survives a
+ * crash. Inline processors — task handlers whose code lives inside a client
+ * realm rather than a spawned worker — are bridged by an `InlineRelay`: the
+ * service hands each due call to the relay, the client drains them through the
+ * `inlineCalls` async stream, runs the handler locally, and reports the outcome
+ * back with `completeInline`.
+ *
+ * The jobs service is created lazily on the first `open()` call and torn down by
+ * a shutdown hook when the command settles, so scripts that never touch
+ * `fino:jobs` pay nothing and never keep the orchestrator loop alive.
+ *
+ * ```ts no_run
+ *   import { createJobsControlFacade } from 'internal:jobs/control';
+ *
+ *   // The orchestrator layers the facade over every app realm's import map.
+ *   const realm = new Realm({
+ *     entry: opts.entry,
+ *     overrides: [
+ *       { pattern: 'fino:jobs/control', directive: createJobsControlFacade() },
+ *     ],
+ *   });
+ *   await realm.run();
+ * ```
+ *
+ * @internal
+ */
 import { Facade } from '../../realm/index.ts';
 import { registerShutdownHook } from '../shutdown.ts';
 import type { JobsService, JobProcessor } from './service.ts';
@@ -57,18 +57,22 @@ async function ensureService(opts: {
 }): Promise<JobsService> {
   if (_service !== undefined) {
     if (opts.path !== _servicePath) {
-      throw new Error(`jobs service is already open at "${_servicePath}"; one database per process (got "${opts.path}")`);
+      throw new Error(
+        `jobs service is already open at "${_servicePath}"; one database per process (got "${opts.path}")`,
+      );
     }
     return _service;
   }
   if (_opening === undefined) {
     _servicePath = opts.path;
     _opening = import('internal:jobs/service').then(async (mod) => {
-      const service = await (mod as {
-        JobsService: {
-          open(o: typeof opts): Promise<JobsService>;
-        };
-      }).JobsService.open(opts);
+      const service = await (
+        mod as {
+          JobsService: {
+            open(o: typeof opts): Promise<JobsService>;
+          };
+        }
+      ).JobsService.open(opts);
       service.start();
       _service = service;
       // The service's poller and worker pools keep the orchestrator loop
@@ -90,19 +94,19 @@ function requireService(): JobsService {
 }
 
 /**
-* A `JobProcessor` bridge for handlers whose execution lives in a client realm.
-*
-* The service treats a relay like any other processor: it calls `run` when a
-* job for one of `taskNames` is due, up to `capacity` in flight. But the relay
-* has no handler of its own — it parks each call and its resolver, then hands
-* the call to whichever consumer is waiting on `next` (backing the facade's
-* `inlineCalls` stream). The client runs the real handler and reports the
-* outcome with `complete`, which resolves the parked `run` promise. Buffered
-* calls and blocked takers are matched in FIFO order so no due job is lost when
-* the consumer briefly falls behind.
-*
-* @internal
-*/
+ * A `JobProcessor` bridge for handlers whose execution lives in a client realm.
+ *
+ * The service treats a relay like any other processor: it calls `run` when a
+ * job for one of `taskNames` is due, up to `capacity` in flight. But the relay
+ * has no handler of its own — it parks each call and its resolver, then hands
+ * the call to whichever consumer is waiting on `next` (backing the facade's
+ * `inlineCalls` stream). The client runs the real handler and reports the
+ * outcome with `complete`, which resolves the parked `run` promise. Buffered
+ * calls and blocked takers are matched in FIFO order so no due job is lost when
+ * the consumer briefly falls behind.
+ *
+ * @internal
+ */
 class InlineRelay implements JobProcessor {
   /** Marks this processor as inline so the service routes calls through the relay rather than a worker pool. */
   readonly kind = 'inline' as const;
@@ -164,8 +168,8 @@ class InlineRelay implements JobProcessor {
         ok: false,
         error: {
           message: 'inline processor closed',
-          retryable: true
-        }
+          retryable: true,
+        },
       });
     }
     this.#pending.clear();
@@ -175,39 +179,39 @@ class InlineRelay implements JobProcessor {
 const _relays: InlineRelay[] = [];
 
 /**
-* Build the jobs control facade the orchestrator attaches to app workload realms.
-*
-* The returned `Facade` is registered under `fino:jobs/control` and its handlers
-* close over this module's lazily-opened `JobsService`, so a fresh facade should
-* be created per orchestrator process and layered onto each realm's import map
-* as a directive. Control handlers (`push`, `schedule`, `get`, `cancel`,
-* `waitFor`, and the rest) proxy directly to the service; `wf*` handlers proxy
-* durable workflow checkpoints to its workflow store; and the inline trio
-* (`registerInline`, `inlineCalls`, `completeInline`) bridges client-realm task
-* handlers through an `InlineRelay`.
-*
-* Every handler except `open` calls `requireService`, so an app that invokes any
-* operation before a successful `open()` gets a "jobs control used before open()"
-* error. A second `open()` against a different database path throws, because the
-* process keeps exactly one jobs database.
-*
-* ```ts no_run
-*   import { createJobsControlFacade } from 'internal:jobs/control';
-*   import { Realm } from 'fino:realm';
-*
-*   const realm = new Realm({
-*     entry: '/srv/app/main.ts',
-*     overrides: [
-*       { pattern: 'fino:jobs/control', directive: createJobsControlFacade() },
-*     ],
-*   });
-*   // Inside the realm, `import ... from 'fino:jobs'` now runs in client mode
-*   // and routes push/schedule/process calls back through this facade.
-*   await realm.run();
-* ```
-*
-* @internal
-*/
+ * Build the jobs control facade the orchestrator attaches to app workload realms.
+ *
+ * The returned `Facade` is registered under `fino:jobs/control` and its handlers
+ * close over this module's lazily-opened `JobsService`, so a fresh facade should
+ * be created per orchestrator process and layered onto each realm's import map
+ * as a directive. Control handlers (`push`, `schedule`, `get`, `cancel`,
+ * `waitFor`, and the rest) proxy directly to the service; `wf*` handlers proxy
+ * durable workflow checkpoints to its workflow store; and the inline trio
+ * (`registerInline`, `inlineCalls`, `completeInline`) bridges client-realm task
+ * handlers through an `InlineRelay`.
+ *
+ * Every handler except `open` calls `requireService`, so an app that invokes any
+ * operation before a successful `open()` gets a "jobs control used before open()"
+ * error. A second `open()` against a different database path throws, because the
+ * process keeps exactly one jobs database.
+ *
+ * ```ts no_run
+ *   import { createJobsControlFacade } from 'internal:jobs/control';
+ *   import { Realm } from 'fino:realm';
+ *
+ *   const realm = new Realm({
+ *     entry: '/srv/app/main.ts',
+ *     overrides: [
+ *       { pattern: 'fino:jobs/control', directive: createJobsControlFacade() },
+ *     ],
+ *   });
+ *   // Inside the realm, `import ... from 'fino:jobs'` now runs in client mode
+ *   // and routes push/schedule/process calls back through this facade.
+ *   await realm.run();
+ * ```
+ *
+ * @internal
+ */
 export function createJobsControlFacade(): Facade {
   return new Facade('fino:jobs/control', [
     'open',
@@ -228,16 +232,22 @@ export function createJobsControlFacade(): Facade {
     'wfSave',
     'wfLoad',
     'wfList',
-    'wfRemove'
+    'wfRemove',
   ])
     .handle('open', async (opts) => {
-      await ensureService(opts as {
-        path: string;
-      });
+      await ensureService(
+        opts as {
+          path: string;
+        },
+      );
       return true;
     })
-    .handle('push', (task, input, opts) => requireService().push(task as string, input, opts as never))
-    .handle('schedule', (name, task, input, opts) => requireService().schedule(name as string, task as string, input, opts as never))
+    .handle('push', (task, input, opts) =>
+      requireService().push(task as string, input, opts as never),
+    )
+    .handle('schedule', (name, task, input, opts) =>
+      requireService().schedule(name as string, task as string, input, opts as never),
+    )
     .handle('unschedule', (name) => requireService().unschedule(name as string))
     .handle('get', (id) => requireService().get(id as string))
     .handle('list', (filter) => requireService().list(filter as never))
@@ -245,17 +255,21 @@ export function createJobsControlFacade(): Facade {
     .handle('schedules', () => requireService().schedules())
     .handle('cancel', (id) => requireService().cancel(id as string))
     .handle('retry', (id) => requireService().retry(id as string))
-    .handle('signal', (id, name, payload) => requireService().signal(id as string, name as string, payload))
+    .handle('signal', (id, name, payload) =>
+      requireService().signal(id as string, name as string, payload),
+    )
     .handle('waitFor', (id, opts) => requireService().waitFor(id as string, opts as never))
     .handle('registerWorkers', async (opts) => {
-      await requireService().workers(opts as {
-        entry: string;
-        size?: number;
-      });
+      await requireService().workers(
+        opts as {
+          entry: string;
+          size?: number;
+        },
+      );
       return true;
     })
     .handle('registerInline', (taskNames, concurrency) => {
-      const relay = new InlineRelay(taskNames as string[], concurrency as number ?? 1);
+      const relay = new InlineRelay(taskNames as string[], (concurrency as number) ?? 1);
       _relays.push(relay);
       requireService()._addExternalProcessor(relay);
       return _relays.length - 1;

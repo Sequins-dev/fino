@@ -24,7 +24,7 @@ function scriptModel(turns: StreamEvent[][]): Model {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 function endTurn(text: string): StreamEvent[] {
@@ -32,19 +32,19 @@ function endTurn(text: string): StreamEvent[] {
     {
       type: 'text_delta',
       index: 0,
-      text
+      text,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 5,
-        outputTokens: 3
-      }
+        outputTokens: 3,
+      },
     },
     {
       type: 'stop',
-      reason: 'end_turn'
-    }
+      reason: 'end_turn',
+    },
   ];
 }
 function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[] {
@@ -53,28 +53,28 @@ function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[]
       type: 'tool_call_start',
       index: 0,
       id,
-      name
+      name,
     },
     {
       type: 'tool_call_delta',
       index: 0,
-      json: argsJson
+      json: argsJson,
     },
     {
       type: 'tool_call_end',
-      index: 0
+      index: 0,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 8,
-        outputTokens: 4
-      }
+        outputTokens: 4,
+      },
     },
     {
       type: 'stop',
-      reason: 'tool_use'
-    }
+      reason: 'tool_use',
+    },
   ];
 }
 describe('Agent', () => {
@@ -90,18 +90,18 @@ describe('Agent', () => {
           yield {
             type: 'text_delta' as const,
             index: 0,
-            text: 'viewed'
+            text: 'viewed',
           };
           yield {
             type: 'usage' as const,
             usage: {
               inputTokens: 1,
-              outputTokens: 1
-            }
+              outputTokens: 1,
+            },
           };
           yield {
             type: 'stop' as const,
-            reason: 'end_turn' as const
+            reason: 'end_turn' as const,
           };
         }
         return new ModelStreamImpl(gen());
@@ -111,49 +111,61 @@ describe('Agent', () => {
       },
       async embed() {
         return [];
-      }
+      },
     };
     const strategy: HistoryStrategy = {
       history: new MessageHistory(),
       async onAppend(message) {
-        appended.push(typeof message.content === 'string' ? message.content : JSON.stringify(message.content));
+        appended.push(
+          typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+        );
         this.history = await this.history.append(message);
       },
       async onRead() {
         return {
           history: this.history,
-          messages: [{
-            role: 'user',
-            content: 'temporary view only'
-          }]
+          messages: [
+            {
+              role: 'user',
+              content: 'temporary view only',
+            },
+          ],
         };
-      }
+      },
     };
     const a = agent({
       model,
-      history: strategy
+      history: strategy,
     });
     const result = await a.generate('real input');
-    t.deepEqual(requestMessages.map((m) => m.content), ['temporary view only']);
+    t.deepEqual(
+      requestMessages.map((m) => m.content),
+      ['temporary view only'],
+    );
     t.ok(appended.includes('real input'), 'inbound user message appended through strategy');
     t.ok(appended.includes('viewed'), 'assistant message appended through strategy');
-    t.deepEqual(result.messages.map((m) => m.content), ['real input', 'viewed']);
+    t.deepEqual(
+      result.messages.map((m) => m.content),
+      ['real input', 'viewed'],
+    );
   });
   it('generate(string) runs the loop and returns text', async (t) => {
     const a = agent({
       model: scriptModel([toolCallTurn('c1', 'greet', '{"name":"Alice"}'), endTurn('Hi Alice!')]),
-      tools: [tool<{
-        name: string;
-      }>({
-        name: 'greet',
-        description: 'Greets',
-        parameters: {
-          type: 'object',
-          properties: { name: { type: 'string' } },
-          required: ['name']
-        },
-        execute: (args) => `hello ${args.name}`
-      })]
+      tools: [
+        tool<{
+          name: string;
+        }>({
+          name: 'greet',
+          description: 'Greets',
+          parameters: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+            required: ['name'],
+          },
+          execute: (args) => `hello ${args.name}`,
+        }),
+      ],
     });
     const result = await a.generate('say hi');
     t.equal(result.text, 'Hi Alice!');
@@ -201,32 +213,32 @@ describe('Agent', () => {
         type: 'tool_call_start',
         index: 0,
         id: 'r1',
-        name: 'respond'
+        name: 'respond',
       },
       {
         type: 'tool_call_delta',
         index: 0,
-        json: '{"value":42}'
+        json: '{"value":42}',
       },
       {
         type: 'tool_call_end',
-        index: 0
+        index: 0,
       },
       {
         type: 'usage',
         usage: {
           inputTokens: 6,
-          outputTokens: 3
-        }
+          outputTokens: 3,
+        },
       },
       {
         type: 'stop',
-        reason: 'tool_use'
-      }
+        reason: 'tool_use',
+      },
     ];
     const a = agent({
       model: scriptModel([respondTurn]),
-      output: schema.schema
+      output: schema.schema,
     });
     const result = await a.generate('give me a number');
     t.deepEqual(result.object, { value: 42 }, 'structured output captured');
@@ -238,60 +250,60 @@ describe('Agent', () => {
         type: 'tool_call_start',
         index: 0,
         id: 'r1',
-        name: 'respond'
+        name: 'respond',
       },
       {
         type: 'tool_call_delta',
         index: 0,
-        json: '{"value":"not-a-number"}'
+        json: '{"value":"not-a-number"}',
       },
       {
         type: 'tool_call_end',
-        index: 0
+        index: 0,
       },
       {
         type: 'usage',
         usage: {
           inputTokens: 6,
-          outputTokens: 3
-        }
+          outputTokens: 3,
+        },
       },
       {
         type: 'stop',
-        reason: 'tool_use'
-      }
+        reason: 'tool_use',
+      },
     ];
     const goodRespondTurn: StreamEvent[] = [
       {
         type: 'tool_call_start',
         index: 0,
         id: 'r2',
-        name: 'respond'
+        name: 'respond',
       },
       {
         type: 'tool_call_delta',
         index: 0,
-        json: '{"value":7}'
+        json: '{"value":7}',
       },
       {
         type: 'tool_call_end',
-        index: 0
+        index: 0,
       },
       {
         type: 'usage',
         usage: {
           inputTokens: 8,
-          outputTokens: 3
-        }
+          outputTokens: 3,
+        },
       },
       {
         type: 'stop',
-        reason: 'tool_use'
-      }
+        reason: 'tool_use',
+      },
     ];
     const a = agent({
       model: scriptModel([badRespondTurn, goodRespondTurn]),
-      output: schema.schema
+      output: schema.schema,
     });
     const result = await a.generate('give me a number');
     t.deepEqual(result.object, { value: 7 }, 'repair step produced valid output');
@@ -304,50 +316,49 @@ describe('Agent', () => {
         type: 'tool_call_start',
         index: 0,
         id: 'r1',
-        name: 'respond'
+        name: 'respond',
       },
       {
         type: 'tool_call_delta',
         index: 0,
-        json: '{"value":"bad"}'
+        json: '{"value":"bad"}',
       },
       {
         type: 'tool_call_end',
-        index: 0
+        index: 0,
       },
       {
         type: 'usage',
         usage: {
           inputTokens: 6,
-          outputTokens: 3
-        }
+          outputTokens: 3,
+        },
       },
       {
         type: 'stop',
-        reason: 'tool_use'
-      }
+        reason: 'tool_use',
+      },
     ];
     const a = agent({
-      model: scriptModel([
-        badTurn,
-        badTurn,
-        badTurn
-      ]),
-      output: schema.schema
+      model: scriptModel([badTurn, badTurn, badTurn]),
+      output: schema.schema,
     });
     await t.rejects(() => a.generate('give me a number'), /Structured output validation failed/);
   });
   it('asTool() wraps agent as a tool for composition', async (t) => {
     const inner = agent({
       name: 'inner',
-      model: scriptModel([endTurn('inner result')])
+      model: scriptModel([endTurn('inner result')]),
     });
     const innerTool = inner.asTool({ description: 'Runs the inner agent' });
     t.equal(innerTool.name, 'inner', 'tool name defaults to agent name');
     t.equal(innerTool.description, 'Runs the inner agent');
     const outer = agent({
-      model: scriptModel([toolCallTurn('t1', 'inner', '{"task":"do something"}'), endTurn('outer done')]),
-      tools: [innerTool]
+      model: scriptModel([
+        toolCallTurn('t1', 'inner', '{"task":"do something"}'),
+        endTurn('outer done'),
+      ]),
+      tools: [innerTool],
     });
     const result = await outer.generate('start');
     t.equal(result.text, 'outer done');

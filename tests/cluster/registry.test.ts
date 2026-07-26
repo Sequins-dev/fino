@@ -1,6 +1,6 @@
 /**
-* Tests for internal:cluster/registry — realm ownership tree.
-*/
+ * Tests for internal:cluster/registry — realm ownership tree.
+ */
 import { describe, it } from 'fino:test/test';
 import { RealmRegistry } from 'internal:cluster/registry';
 describe('RealmRegistry', () => {

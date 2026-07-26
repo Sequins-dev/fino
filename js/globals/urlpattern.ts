@@ -1,150 +1,150 @@
 /**
-* URLPattern global (WHATWG URL Pattern API)
-*
-* URLPattern lets you declare a pattern for URL matching and then test or
-* match URLs against it. The release baseline is routing-oriented: matching
-* request URLs by protocol, hostname, path, search, and hash, and extracting
-* named groups from path and host patterns such as `/users/:id`.
-*
-* The implementation follows the broad WHATWG URL Pattern Standard shape
-* (https://urlpattern.spec.whatwg.org/) but is not strict tokenizer parity. It
-* processes patterns per URL component (protocol, username, password, hostname,
-* port, pathname, search, hash) so you can match any combination of URL parts.
-* Coverage locks object and string constructors, baseURL resolution, named
-* parameters, wildcard and regexp groups, repeat modifiers, escaped literals,
-* `hasRegExpGroups`, `ignoreCase`, and percent-encoding boundaries used by
-* routing code.
-*
-*
-* ## Architecture: tokenize → compile → match
-*
-* Pattern processing is a two-stage pipeline:
-*
-* **Stage 1 — Tokenize** (`_tokenize`):
-* The pattern string is scanned character by character into a flat token
-* array. Token types:
-*   - `T_TEXT` — literal text to match verbatim
-*   - `T_ESCAPED` — a `\x`-escaped literal character
-*   - `T_NAME` — a `:name` named parameter
-*   - `T_PATTERN` — a `(regex)` custom regex group
-*   - `T_ASTERISK` — a bare `*` wildcard
-*   - `T_OPEN` / `T_CLOSE` — `{` / `}` non-capturing group delimiters
-*   - `T_MODIFIER` — `?`, `+` (follows a group or name)
-*   - `T_END` — sentinel
-*
-* **Stage 2 — Compile** (`_compileTokens`):
-* Tokens are converted to a `RegExp` and a parallel `keys` array:
-*   - `T_TEXT` → `_escapeRe(value)` (escaped literal)
-*   - `T_NAME` → `(pattern)modifier` where pattern defaults to
-*     `[^delimiter]+?` (matches everything except the delimiter, e.g. `/`
-*     for pathname) unless a `T_PATTERN` immediately follows the name
-*   - `T_PATTERN` → `(regex)modifier` with an auto-generated numeric key
-*   - `T_ASTERISK` → `(.*)` with an auto-generated numeric key
-*   - `T_OPEN` group → `(?:inner)modifier` (non-capturing group in regex)
-*
-* The `keys` array parallels the regex capturing groups: `keys[i].name` is
-* the name (or auto-generated index string) of capture group `i+1`.
-*
-*
-* ## Per-component options
-*
-* Each URL component is compiled with different `options.delimiter`:
-*   - `pathname` uses `'/'` as the delimiter, so `:name` matches a single
-*     path segment by default (stops at the next `/`)
-*   - `hostname` uses `'.'` as the delimiter, so `:sub` matches a single
-*     subdomain label
-*   - other components (search, hash, protocol, etc.) have no delimiter,
-*     so `:name` matches any non-empty run of characters
-*
-*
-* ## String constructor input
-*
-* When `URLPattern` is constructed with a string (e.g.
-* `new URLPattern('https://example.com/users/:id')`), the string is parsed
-* into its URL components first using `_parsePatternInitString()`. This function
-* finds the scheme, authority, path, search, and hash sections by scanning
-* for the structural characters (`:`, `//`, `/`, `?`, `#`) while respecting
-* `(...)` and `{...}` groups that may contain those characters. A `baseURL`
-* option can provide defaults for any missing components.
-*
-*
-* ## exec() and test()
-*
-* `exec(input)` tries to match `input` (a URL string or URL object) against
-* all compiled components. If all match, it returns a result object with
-* per-component `{ input, groups }` values. `test(input)` is just
-* `exec(input) !== null`.
-*
-*
-* ## Canonicalization
-*
-* Literal pattern text is canonicalized on construction, mirroring the spec's
-* per-component encoding callbacks: text in username, password, pathname,
-* search, and hash patterns is percent-encoded with that component's encode
-* set, and literal hostname patterns are canonicalized through the URL parser
-* (Unicode labels become punycode). The component getters return the
-* canonical pattern string, so `new URLPattern({ pathname: '/café' }).pathname`
-* reads back as `'/caf%C3%A9'`, and `(.*)` groups read back as `*` wildcards.
-* Bodies of custom `(regexp)` groups are used verbatim — no encoding is
-* applied inside them.
-*
-*
-* ## Beyond matching
-*
-* `generate(component, groups)` runs a pattern in reverse, substituting
-* `:name` groups to produce a concrete component string. The static
-* `URLPattern.compareComponent(component, left, right)` orders two patterns
-* by routing precedence so routers can sort more-specific routes first.
-*
-*
-* ## What is NOT implemented
-*
-* - Strict WHATWG tokenizer state machine parity. This uses a hand-rolled
-*   scanner that covers the routing syntax but may differ in edge cases.
-*
-*
-* ```ts no_run
-* // URLPattern is available via globalThis
-*
-* // Object form (most precise):
-* const p = new URLPattern({ pathname: '/users/:id' });
-* p.test('https://example.com/users/42');  // true
-* p.exec('https://example.com/users/42');
-* // → { pathname: { input: '/users/42', groups: { id: '42' } }, ... }
-*
-* // String form:
-* const q = new URLPattern('https://example.com/users/:id');
-* q.test('https://example.com/users/42');  // true
-*
-* // Supported pattern syntax (per component):
-* //   :name         — named param, matches non-delimiter chars by default
-* //   :name(regex)  — named param with custom regex
-* //   (regex)       — unnamed group with custom regex
-* //   *             — wildcard, matches anything
-* //   {group}       — non-capturing group
-* //   ?  +  *       — modifiers after :name, (regex), {group}, or *
-* //   \x            — literal escape
-* ```
-*
-*/
+ * URLPattern global (WHATWG URL Pattern API)
+ *
+ * URLPattern lets you declare a pattern for URL matching and then test or
+ * match URLs against it. The release baseline is routing-oriented: matching
+ * request URLs by protocol, hostname, path, search, and hash, and extracting
+ * named groups from path and host patterns such as `/users/:id`.
+ *
+ * The implementation follows the broad WHATWG URL Pattern Standard shape
+ * (https://urlpattern.spec.whatwg.org/) but is not strict tokenizer parity. It
+ * processes patterns per URL component (protocol, username, password, hostname,
+ * port, pathname, search, hash) so you can match any combination of URL parts.
+ * Coverage locks object and string constructors, baseURL resolution, named
+ * parameters, wildcard and regexp groups, repeat modifiers, escaped literals,
+ * `hasRegExpGroups`, `ignoreCase`, and percent-encoding boundaries used by
+ * routing code.
+ *
+ *
+ * ## Architecture: tokenize → compile → match
+ *
+ * Pattern processing is a two-stage pipeline:
+ *
+ * **Stage 1 — Tokenize** (`_tokenize`):
+ * The pattern string is scanned character by character into a flat token
+ * array. Token types:
+ *   - `T_TEXT` — literal text to match verbatim
+ *   - `T_ESCAPED` — a `\x`-escaped literal character
+ *   - `T_NAME` — a `:name` named parameter
+ *   - `T_PATTERN` — a `(regex)` custom regex group
+ *   - `T_ASTERISK` — a bare `*` wildcard
+ *   - `T_OPEN` / `T_CLOSE` — `{` / `}` non-capturing group delimiters
+ *   - `T_MODIFIER` — `?`, `+` (follows a group or name)
+ *   - `T_END` — sentinel
+ *
+ * **Stage 2 — Compile** (`_compileTokens`):
+ * Tokens are converted to a `RegExp` and a parallel `keys` array:
+ *   - `T_TEXT` → `_escapeRe(value)` (escaped literal)
+ *   - `T_NAME` → `(pattern)modifier` where pattern defaults to
+ *     `[^delimiter]+?` (matches everything except the delimiter, e.g. `/`
+ *     for pathname) unless a `T_PATTERN` immediately follows the name
+ *   - `T_PATTERN` → `(regex)modifier` with an auto-generated numeric key
+ *   - `T_ASTERISK` → `(.*)` with an auto-generated numeric key
+ *   - `T_OPEN` group → `(?:inner)modifier` (non-capturing group in regex)
+ *
+ * The `keys` array parallels the regex capturing groups: `keys[i].name` is
+ * the name (or auto-generated index string) of capture group `i+1`.
+ *
+ *
+ * ## Per-component options
+ *
+ * Each URL component is compiled with different `options.delimiter`:
+ *   - `pathname` uses `'/'` as the delimiter, so `:name` matches a single
+ *     path segment by default (stops at the next `/`)
+ *   - `hostname` uses `'.'` as the delimiter, so `:sub` matches a single
+ *     subdomain label
+ *   - other components (search, hash, protocol, etc.) have no delimiter,
+ *     so `:name` matches any non-empty run of characters
+ *
+ *
+ * ## String constructor input
+ *
+ * When `URLPattern` is constructed with a string (e.g.
+ * `new URLPattern('https://example.com/users/:id')`), the string is parsed
+ * into its URL components first using `_parsePatternInitString()`. This function
+ * finds the scheme, authority, path, search, and hash sections by scanning
+ * for the structural characters (`:`, `//`, `/`, `?`, `#`) while respecting
+ * `(...)` and `{...}` groups that may contain those characters. A `baseURL`
+ * option can provide defaults for any missing components.
+ *
+ *
+ * ## exec() and test()
+ *
+ * `exec(input)` tries to match `input` (a URL string or URL object) against
+ * all compiled components. If all match, it returns a result object with
+ * per-component `{ input, groups }` values. `test(input)` is just
+ * `exec(input) !== null`.
+ *
+ *
+ * ## Canonicalization
+ *
+ * Literal pattern text is canonicalized on construction, mirroring the spec's
+ * per-component encoding callbacks: text in username, password, pathname,
+ * search, and hash patterns is percent-encoded with that component's encode
+ * set, and literal hostname patterns are canonicalized through the URL parser
+ * (Unicode labels become punycode). The component getters return the
+ * canonical pattern string, so `new URLPattern({ pathname: '/café' }).pathname`
+ * reads back as `'/caf%C3%A9'`, and `(.*)` groups read back as `*` wildcards.
+ * Bodies of custom `(regexp)` groups are used verbatim — no encoding is
+ * applied inside them.
+ *
+ *
+ * ## Beyond matching
+ *
+ * `generate(component, groups)` runs a pattern in reverse, substituting
+ * `:name` groups to produce a concrete component string. The static
+ * `URLPattern.compareComponent(component, left, right)` orders two patterns
+ * by routing precedence so routers can sort more-specific routes first.
+ *
+ *
+ * ## What is NOT implemented
+ *
+ * - Strict WHATWG tokenizer state machine parity. This uses a hand-rolled
+ *   scanner that covers the routing syntax but may differ in edge cases.
+ *
+ *
+ * ```ts no_run
+ * // URLPattern is available via globalThis
+ *
+ * // Object form (most precise):
+ * const p = new URLPattern({ pathname: '/users/:id' });
+ * p.test('https://example.com/users/42');  // true
+ * p.exec('https://example.com/users/42');
+ * // → { pathname: { input: '/users/42', groups: { id: '42' } }, ... }
+ *
+ * // String form:
+ * const q = new URLPattern('https://example.com/users/:id');
+ * q.test('https://example.com/users/42');  // true
+ *
+ * // Supported pattern syntax (per component):
+ * //   :name         — named param, matches non-delimiter chars by default
+ * //   :name(regex)  — named param with custom regex
+ * //   (regex)       — unnamed group with custom regex
+ * //   *             — wildcard, matches anything
+ * //   {group}       — non-capturing group
+ * //   ?  +  *       — modifiers after :name, (regex), {group}, or *
+ * //   \x            — literal escape
+ * ```
+ *
+ */
 import { URL } from './url.ts';
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
 /**
-* A single lexical token produced by the pattern tokenizer (`_tokenize`).
-* `type` is one of the `T_*` constants; `value` carries the literal text,
-* parameter name, regexp body, or modifier character where applicable.
-*/
+ * A single lexical token produced by the pattern tokenizer (`_tokenize`).
+ * `type` is one of the `T_*` constants; `value` carries the literal text,
+ * parameter name, regexp body, or modifier character where applicable.
+ */
 interface Token {
   type: number;
   value?: string;
 }
 /**
-* One compiled URL component: the canonical pattern string, the anchored
-* matching regexp, and `keys` naming each capture group (`keys[i]` describes
-* regexp group `i + 1`).
-*/
+ * One compiled URL component: the canonical pattern string, the anchored
+ * matching regexp, and `keys` naming each capture group (`keys[i]` describes
+ * regexp group `i + 1`).
+ */
 interface CompiledPattern {
   pattern: string;
   regexp: RegExp;
@@ -154,11 +154,11 @@ interface CompiledPattern {
   hasRegExpGroups: boolean;
 }
 /**
-* Per-component dictionary accepted by the `URLPattern` constructor and by
-* `test()`/`exec()` as pre-split input. When constructing, missing components
-* default to the `*` wildcard; when matching, they default to the empty
-* string. `baseURL` fills in components the dictionary leaves unset.
-*/
+ * Per-component dictionary accepted by the `URLPattern` constructor and by
+ * `test()`/`exec()` as pre-split input. When constructing, missing components
+ * default to the `*` wildcard; when matching, they default to the empty
+ * string. `baseURL` fills in components the dictionary leaves unset.
+ */
 interface URLPatternInit {
   protocol?: string;
   username?: string;
@@ -171,17 +171,17 @@ interface URLPatternInit {
   baseURL?: string;
 }
 /**
-* Constructor options. `ignoreCase: true` compiles every component regexp
-* with the `i` flag so matching is case-insensitive.
-*/
+ * Constructor options. `ignoreCase: true` compiles every component regexp
+ * with the `i` flag so matching is case-insensitive.
+ */
 interface URLPatternOptions {
   ignoreCase?: boolean;
 }
 /**
-* Result of parsing a constructor pattern string; components absent from the
-* string remain `undefined` so they can later default to `*` or be filled
-* from a `baseURL`.
-*/
+ * Result of parsing a constructor pattern string; components absent from the
+ * string remain `undefined` so they can later default to `*` or be filled
+ * from a `baseURL`.
+ */
 interface ParsedURLPatternInit {
   protocol: string | undefined;
   username: string | undefined;
@@ -193,18 +193,18 @@ interface ParsedURLPatternInit {
   hash: string | undefined;
 }
 /**
-* Per-component match result from `exec()`: the component string that was
-* matched and the captured groups keyed by parameter name (or numeric index
-* for unnamed groups). Groups skipped by an optional modifier are `undefined`.
-*/
+ * Per-component match result from `exec()`: the component string that was
+ * matched and the captured groups keyed by parameter name (or numeric index
+ * for unnamed groups). Groups skipped by an optional modifier are `undefined`.
+ */
 interface URLPatternComponentResult {
   input: string;
   groups: Record<string, string | undefined>;
 }
 /**
-* Structural pattern piece used by `URLPattern.compareComponent()` to rank
-* routing precedence: text sorts after regexp, name, and wildcard parts.
-*/
+ * Structural pattern piece used by `URLPattern.compareComponent()` to rank
+ * routing precedence: text sorts after regexp, name, and wildcard parts.
+ */
 interface URLPatternComparePart {
   kind: 'text' | 'name' | 'regexp' | 'wildcard' | 'group';
   value?: string;
@@ -212,9 +212,9 @@ interface URLPatternComparePart {
   parts?: URLPatternComparePart[];
 }
 /**
-* Fully-resolved URL components extracted from a `test()`/`exec()` input,
-* with protocol/search/hash stripped of their `:`/`?`/`#` prefixes.
-*/
+ * Fully-resolved URL components extracted from a `test()`/`exec()` input,
+ * with protocol/search/hash stripped of their `:`/`?`/`#` prefixes.
+ */
 interface URLComponentDict {
   protocol: string;
   username: string;
@@ -226,9 +226,17 @@ interface URLComponentDict {
   hash: string;
 }
 /**
-* Names of the eight URL components a URLPattern matches independently.
-*/
-type URLPatternComponentName = 'protocol' | 'username' | 'password' | 'hostname' | 'port' | 'pathname' | 'search' | 'hash';
+ * Names of the eight URL components a URLPattern matches independently.
+ */
+type URLPatternComponentName =
+  | 'protocol'
+  | 'username'
+  | 'password'
+  | 'hostname'
+  | 'port'
+  | 'pathname'
+  | 'search'
+  | 'hash';
 // ---------------------------------------------------------------------------
 // Pattern tokenizer
 // ---------------------------------------------------------------------------
@@ -243,7 +251,10 @@ const T_CLOSE = 7;
 const T_MODIFIER = 8;
 const NAME_START_RE = /[\w$\p{ID_Start}]/u;
 const NAME_CONTINUE_RE = /[\w$\u200C\u200D\p{ID_Continue}]/u;
-function _readCodePoint(str: string, index: number): {
+function _readCodePoint(
+  str: string,
+  index: number,
+): {
   value: string;
   next: number;
 } | null {
@@ -253,10 +264,13 @@ function _readCodePoint(str: string, index: number): {
   const value = String.fromCodePoint(cp);
   return {
     value,
-    next: index + value.length
+    next: index + value.length,
   };
 }
-function _consumeName(str: string, index: number): {
+function _consumeName(
+  str: string,
+  index: number,
+): {
   name: string;
   next: number;
 } | null {
@@ -272,7 +286,7 @@ function _consumeName(str: string, index: number): {
   }
   return {
     name,
-    next
+    next,
   };
 }
 function _tokenize(pattern: string): Token[] {
@@ -283,7 +297,7 @@ function _tokenize(pattern: string): Token[] {
     if (textBuf) {
       tokens.push({
         type: T_TEXT,
-        value: textBuf
+        value: textBuf,
       });
       textBuf = '';
     }
@@ -294,7 +308,7 @@ function _tokenize(pattern: string): Token[] {
       flushText();
       tokens.push({
         type: T_ESCAPED,
-        value: pattern[i + 1]!
+        value: pattern[i + 1]!,
       });
       i += 2;
       continue;
@@ -306,7 +320,7 @@ function _tokenize(pattern: string): Token[] {
         flushText();
         tokens.push({
           type: T_NAME,
-          value: name
+          value: name,
         });
         i = consumed!.next;
       } else {
@@ -346,7 +360,7 @@ function _tokenize(pattern: string): Token[] {
       if (regex === '') throw new TypeError('Empty regexp group in URLPattern');
       tokens.push({
         type: T_PATTERN,
-        value: regex
+        value: regex,
       });
       continue;
     }
@@ -372,7 +386,7 @@ function _tokenize(pattern: string): Token[] {
       flushText();
       tokens.push({
         type: T_MODIFIER,
-        value: ch
+        value: ch,
       });
       i++;
       continue;
@@ -396,12 +410,28 @@ function _toHex2(byte: number): string {
 function _pctEncodeCP(cp: number): string {
   if (cp < 128) return '%' + _toHex2(cp);
   if (cp < 2048) {
-    return '%' + _toHex2(192 | cp >> 6) + '%' + _toHex2(128 | cp & 63);
+    return '%' + _toHex2(192 | (cp >> 6)) + '%' + _toHex2(128 | (cp & 63));
   }
   if (cp < 65536) {
-    return '%' + _toHex2(224 | cp >> 12) + '%' + _toHex2(128 | cp >> 6 & 63) + '%' + _toHex2(128 | cp & 63);
+    return (
+      '%' +
+      _toHex2(224 | (cp >> 12)) +
+      '%' +
+      _toHex2(128 | ((cp >> 6) & 63)) +
+      '%' +
+      _toHex2(128 | (cp & 63))
+    );
   }
-  return '%' + _toHex2(240 | cp >> 18) + '%' + _toHex2(128 | cp >> 12 & 63) + '%' + _toHex2(128 | cp >> 6 & 63) + '%' + _toHex2(128 | cp & 63);
+  return (
+    '%' +
+    _toHex2(240 | (cp >> 18)) +
+    '%' +
+    _toHex2(128 | ((cp >> 12) & 63)) +
+    '%' +
+    _toHex2(128 | ((cp >> 6) & 63)) +
+    '%' +
+    _toHex2(128 | (cp & 63))
+  );
 }
 function _percentEncode(str: string, encodeSet: string): string {
   let result = '';
@@ -418,7 +448,7 @@ function _percentEncode(str: string, encodeSet: string): string {
       if (code >= 55296 && code <= 56319 && i + 1 < str.length) {
         const lo = str.charCodeAt(i + 1);
         if (lo >= 56320 && lo <= 57343) {
-          cp = 65536 + (code - 55296 << 10) + (lo - 56320);
+          cp = 65536 + ((code - 55296) << 10) + (lo - 56320);
           i++;
         } else {
           cp = 65533;
@@ -486,10 +516,10 @@ function _peekModifier(tokens: Token[], i: number): string {
   return '';
 }
 /**
-* Apply a modifier (+, *, ?) to a regex pattern string, generating a single
-* capture group. For + and * with a delimiter, generates a segment-aware
-* pattern so that `:name+` on pathname matches multiple /-separated segments.
-*/
+ * Apply a modifier (+, *, ?) to a regex pattern string, generating a single
+ * capture group. For + and * with a delimiter, generates a segment-aware
+ * pattern so that `:name+` on pathname matches multiple /-separated segments.
+ */
 function _applyModifier(pat: string, mod: string, escapedDelim: string): string {
   if (mod === '+') {
     if (escapedDelim) {
@@ -508,14 +538,17 @@ function _applyModifier(pat: string, mod: string, escapedDelim: string): string 
   }
   return '(' + pat + ')';
 }
-function _consumeModifier(tokens: Token[], i: number): {
+function _consumeModifier(
+  tokens: Token[],
+  i: number,
+): {
   modifier: string;
   next: number;
 } {
   const modifier = _peekModifier(tokens, i);
   return {
     modifier,
-    next: modifier ? i + 1 : i
+    next: modifier ? i + 1 : i,
   };
 }
 function _appendWildcardPattern(src: string, mod: string, escapedDelim: string): string {
@@ -524,7 +557,11 @@ function _appendWildcardPattern(src: string, mod: string, escapedDelim: string):
   }
   return src + '(.*)';
 }
-function _canonicalPatternString(tokens: Token[], component: URLPatternComponentName, start = 0): {
+function _canonicalPatternString(
+  tokens: Token[],
+  component: URLPatternComponentName,
+  start = 0,
+): {
   value: string;
   index: number;
 } {
@@ -592,12 +629,16 @@ function _canonicalPatternString(tokens: Token[], component: URLPatternComponent
   }
   return {
     value: out,
-    index: i
+    index: i,
   };
 }
-function _compileTokens(tokens: Token[], options: {
-  delimiter?: string;
-} | null, ignoreCase = false): {
+function _compileTokens(
+  tokens: Token[],
+  options: {
+    delimiter?: string;
+  } | null,
+  ignoreCase = false,
+): {
   regexp: RegExp;
   keys: Array<{
     name: string;
@@ -723,12 +764,17 @@ function _compileTokens(tokens: Token[], options: {
   return {
     regexp: new RegExp('^' + src + '$', ignoreCase ? 'i' : ''),
     keys,
-    hasRegExpGroups
+    hasRegExpGroups,
   };
 }
-function _compilePattern(pattern: string, options: {
-  delimiter?: string;
-} | null, component: URLPatternComponentName, ignoreCase = false): CompiledPattern {
+function _compilePattern(
+  pattern: string,
+  options: {
+    delimiter?: string;
+  } | null,
+  component: URLPatternComponentName,
+  ignoreCase = false,
+): CompiledPattern {
   const tokens = _tokenize(pattern);
   if (component === 'hostname' && _isLiteralPattern(tokens)) {
     const canonicalHostname = _canonicalizeLiteralHostname(pattern);
@@ -737,17 +783,18 @@ function _compilePattern(pattern: string, options: {
       pattern: canonicalHostname,
       regexp: compiled.regexp,
       keys: compiled.keys,
-      hasRegExpGroups: compiled.hasRegExpGroups
+      hasRegExpGroups: compiled.hasRegExpGroups,
     };
   }
   const compiled = _compileTokens(tokens, options, ignoreCase);
   const canonical = _canonicalPatternString(tokens, component).value;
-  const canonicalCompiled = canonical === pattern ? compiled : _compileTokens(_tokenize(canonical), options, ignoreCase);
+  const canonicalCompiled =
+    canonical === pattern ? compiled : _compileTokens(_tokenize(canonical), options, ignoreCase);
   return {
     pattern: canonical,
     regexp: canonicalCompiled.regexp,
     keys: canonicalCompiled.keys,
-    hasRegExpGroups: canonicalCompiled.hasRegExpGroups
+    hasRegExpGroups: canonicalCompiled.hasRegExpGroups,
   };
 }
 // ---------------------------------------------------------------------------
@@ -776,12 +823,12 @@ function _splitHostPort(str: string): {
     if (end !== -1 && end + 1 < str.length && str[end + 1] === ':') {
       return {
         hostname: str.slice(0, end + 1),
-        port: str.slice(end + 2)
+        port: str.slice(end + 2),
       };
     }
     return {
       hostname: str,
-      port: ''
+      port: '',
     };
   }
   let depth = 0;
@@ -792,24 +839,25 @@ function _splitHostPort(str: string): {
     else if (c === ')' || c === '}') depth--;
     else if (c === ':' && depth === 0) lastColon = i;
   }
-  if (lastColon === -1) return {
-    hostname: str,
-    port: ''
-  };
+  if (lastColon === -1)
+    return {
+      hostname: str,
+      port: '',
+    };
   return {
     hostname: str.slice(0, lastColon),
-    port: str.slice(lastColon + 1)
+    port: str.slice(lastColon + 1),
   };
 }
 /**
-* Scan a string (post-authority) for pathname, search, and hash components,
-* respecting pattern syntax so that a '?' modifier (:name?) is not confused
-* with a URL search delimiter.
-*
-* Rule: '?' is a search delimiter unless the immediately preceding token is
-* a named param (:name), a pattern group ((...)), a brace group ({...}),
-* or an asterisk (*). In those cases '?' is a modifier.
-*/
+ * Scan a string (post-authority) for pathname, search, and hash components,
+ * respecting pattern syntax so that a '?' modifier (:name?) is not confused
+ * with a URL search delimiter.
+ *
+ * Rule: '?' is a search delimiter unless the immediately preceding token is
+ * a named param (:name), a pattern group ((...)), a brace group ({...}),
+ * or an asterisk (*). In those cases '?' is a modifier.
+ */
 function _splitPathnameSearchHash(str: string): {
   pathname: string;
   search: string | undefined;
@@ -842,7 +890,8 @@ function _splitPathnameSearchHash(str: string): {
       continue;
     }
     if (ch === '(') {
-      let depth = 1, group = ch;
+      let depth = 1,
+        group = ch;
       i++;
       while (i < str.length && depth > 0) {
         const c = str[i]!;
@@ -861,7 +910,8 @@ function _splitPathnameSearchHash(str: string): {
       continue;
     }
     if (ch === '{') {
-      let depth = 1, group = ch;
+      let depth = 1,
+        group = ch;
       i++;
       while (i < str.length && depth > 0) {
         if (str[i] === '{') depth++;
@@ -897,7 +947,7 @@ function _splitPathnameSearchHash(str: string): {
       return {
         pathname,
         search,
-        hash
+        hash,
       };
     }
     if (ch === '+' && lastWasParam) {
@@ -911,7 +961,7 @@ function _splitPathnameSearchHash(str: string): {
       return {
         pathname,
         search,
-        hash
+        hash,
       };
     }
     pathname += ch;
@@ -921,14 +971,14 @@ function _splitPathnameSearchHash(str: string): {
   return {
     pathname,
     search,
-    hash
+    hash,
   };
 }
 /**
-* Parse a URLPattern constructor string into a component init object.
-* Returns an object with the same shape as a URLPatternInit, but any
-* component not present in the string is left as undefined.
-*/
+ * Parse a URLPattern constructor string into a component init object.
+ * Returns an object with the same shape as a URLPatternInit, but any
+ * component not present in the string is left as undefined.
+ */
 function _parsePatternInitString(input: string): ParsedURLPatternInit {
   const result: ParsedURLPatternInit = {
     protocol: undefined,
@@ -938,7 +988,7 @@ function _parsePatternInitString(input: string): ParsedURLPatternInit {
     port: undefined,
     pathname: undefined,
     search: undefined,
-    hash: undefined
+    hash: undefined,
   };
   let str = input;
   let hasAuthority = false;
@@ -1000,9 +1050,12 @@ function _parsePatternInitString(input: string): ParsedURLPatternInit {
 // ---------------------------------------------------------------------------
 // Component compilation helpers
 // ---------------------------------------------------------------------------
-const COMPONENT_OPTIONS: Record<string, {
-  delimiter: string;
-}> = {
+const COMPONENT_OPTIONS: Record<
+  string,
+  {
+    delimiter: string;
+  }
+> = {
   protocol: { delimiter: '' },
   username: { delimiter: '' },
   password: { delimiter: '' },
@@ -1010,7 +1063,7 @@ const COMPONENT_OPTIONS: Record<string, {
   port: { delimiter: '' },
   pathname: { delimiter: '/' },
   search: { delimiter: '' },
-  hash: { delimiter: '' }
+  hash: { delimiter: '' },
 };
 const URL_PATTERN_COMPONENT_NAMES = new Set<string>([
   'protocol',
@@ -1020,19 +1073,17 @@ const URL_PATTERN_COMPONENT_NAMES = new Set<string>([
   'port',
   'pathname',
   'search',
-  'hash'
+  'hash',
 ]);
-const SPECIAL_PROTOCOLS = new Set([
-  'ftp',
-  'file',
-  'http',
-  'https',
-  'ws',
-  'wss'
-]);
-function _compileComponent(patternStr: string | undefined, options: {
-  delimiter: string;
-}, component: URLPatternComponentName, ignoreCase = false): CompiledPattern {
+const SPECIAL_PROTOCOLS = new Set(['ftp', 'file', 'http', 'https', 'ws', 'wss']);
+function _compileComponent(
+  patternStr: string | undefined,
+  options: {
+    delimiter: string;
+  },
+  component: URLPatternComponentName,
+  ignoreCase = false,
+): CompiledPattern {
   const p = patternStr != null ? String(patternStr) : '*';
   return _compilePattern(p, options, component, ignoreCase);
 }
@@ -1042,24 +1093,9 @@ const BASE_URL_EARLIER_COMPONENTS: Record<URLPatternComponentName, URLPatternCom
   password: [],
   hostname: ['protocol'],
   port: ['protocol', 'hostname'],
-  pathname: [
-    'protocol',
-    'hostname',
-    'port'
-  ],
-  search: [
-    'protocol',
-    'hostname',
-    'port',
-    'pathname'
-  ],
-  hash: [
-    'protocol',
-    'hostname',
-    'port',
-    'pathname',
-    'search'
-  ]
+  pathname: ['protocol', 'hostname', 'port'],
+  search: ['protocol', 'hostname', 'port', 'pathname'],
+  hash: ['protocol', 'hostname', 'port', 'pathname', 'search'],
 };
 function _urlComponentValue(url: URL, component: URLPatternComponentName): string {
   if (component === 'protocol') return url.protocol.replace(/:$/, '');
@@ -1104,7 +1140,7 @@ function _extractInitComponents(init: URLPatternInit): URLComponentDict | null {
         pathname: base.pathname,
         search: base.search.replace(/^\?/, ''),
         hash: base.hash.replace(/^#/, ''),
-        ...init
+        ...init,
       };
     } catch (_) {
       return null;
@@ -1112,13 +1148,28 @@ function _extractInitComponents(init: URLPatternInit): URLComponentDict | null {
   }
   return {
     protocol: resolved.protocol != null ? String(resolved.protocol).replace(/:$/, '') : '',
-    username: resolved.username != null ? _canonicalizeComponentText('username', String(resolved.username)) : '',
-    password: resolved.password != null ? _canonicalizeComponentText('password', String(resolved.password)) : '',
+    username:
+      resolved.username != null
+        ? _canonicalizeComponentText('username', String(resolved.username))
+        : '',
+    password:
+      resolved.password != null
+        ? _canonicalizeComponentText('password', String(resolved.password))
+        : '',
     hostname: resolved.hostname != null ? _canonicalizeHostnameText(String(resolved.hostname)) : '',
     port: resolved.port != null ? String(resolved.port) : '',
-    pathname: resolved.pathname != null ? _canonicalizeComponentText('pathname', String(resolved.pathname)) : '',
-    search: resolved.search != null ? _canonicalizeComponentText('search', String(resolved.search).replace(/^\?/, '')) : '',
-    hash: resolved.hash != null ? _canonicalizeComponentText('hash', String(resolved.hash).replace(/^#/, '')) : ''
+    pathname:
+      resolved.pathname != null
+        ? _canonicalizeComponentText('pathname', String(resolved.pathname))
+        : '',
+    search:
+      resolved.search != null
+        ? _canonicalizeComponentText('search', String(resolved.search).replace(/^\?/, ''))
+        : '',
+    hash:
+      resolved.hash != null
+        ? _canonicalizeComponentText('hash', String(resolved.hash).replace(/^#/, ''))
+        : '',
   };
 }
 function _ignoreCaseFromOptions(options: URLPatternOptions | undefined): boolean {
@@ -1127,7 +1178,11 @@ function _ignoreCaseFromOptions(options: URLPatternOptions | undefined): boolean
 function _hasOwn(obj: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
-function _encodeGeneratedGroup(component: URLPatternComponentName, value: string, protocolPattern: string): string {
+function _encodeGeneratedGroup(
+  component: URLPatternComponentName,
+  value: string,
+  protocolPattern: string,
+): string {
   if (component === 'pathname') {
     if (value.includes('/')) {
       throw new TypeError('URLPattern.generate: pathname groups cannot contain "/"');
@@ -1139,7 +1194,10 @@ function _encodeGeneratedGroup(component: URLPatternComponentName, value: string
   }
   return value;
 }
-function _canonicalizeGeneratedComponent(component: URLPatternComponentName, value: string): string {
+function _canonicalizeGeneratedComponent(
+  component: URLPatternComponentName,
+  value: string,
+): string {
   if (component !== 'hostname' || value === '*') return value;
   try {
     return new URL(`http://${value}/`).hostname;
@@ -1152,7 +1210,7 @@ function _compareModifier(modifierA = '', modifierB = ''): number {
     '*': 0,
     '?': 1,
     '+': 2,
-    '': 3
+    '': 3,
   };
   return Math.sign((ranks[modifierA] ?? 3) - (ranks[modifierB] ?? 3));
 }
@@ -1179,11 +1237,14 @@ function _comparePartLists(left: URLPatternComparePart[], right: URLPatternCompa
 }
 function _compareParts(left: URLPatternComparePart, right: URLPatternComparePart): number {
   if (left.kind === 'group' || right.kind === 'group') {
-    const leftParts = left.kind === 'group' ? left.parts ?? [] : [left];
-    const rightParts = right.kind === 'group' ? right.parts ?? [] : [right];
+    const leftParts = left.kind === 'group' ? (left.parts ?? []) : [left];
+    const rightParts = right.kind === 'group' ? (right.parts ?? []) : [right];
     const compared = _comparePartLists(leftParts, rightParts);
     if (compared !== 0) return compared;
-    return _compareModifier(left.kind === 'group' ? left.modifier : '', right.kind === 'group' ? right.modifier : '');
+    return _compareModifier(
+      left.kind === 'group' ? left.modifier : '',
+      right.kind === 'group' ? right.modifier : '',
+    );
   }
   const rankCompared = Math.sign(_comparePartRank(left) - _comparePartRank(right));
   if (rankCompared !== 0) return rankCompared;
@@ -1196,7 +1257,10 @@ function _compareParts(left: URLPatternComparePart, right: URLPatternComparePart
   }
   return _compareModifier(left.modifier, right.modifier);
 }
-function _parseCompareParts(tokens: Token[], start = 0): {
+function _parseCompareParts(
+  tokens: Token[],
+  start = 0,
+): {
   parts: URLPatternComparePart[];
   index: number;
 } {
@@ -1207,7 +1271,7 @@ function _parseCompareParts(tokens: Token[], start = 0): {
     if (token.type === T_TEXT || token.type === T_ESCAPED) {
       parts.push({
         kind: 'text',
-        value: token.value ?? ''
+        value: token.value ?? '',
       });
       i++;
       continue;
@@ -1217,31 +1281,40 @@ function _parseCompareParts(tokens: Token[], start = 0): {
       if (tokens[i]!.type === T_PATTERN) {
         const value = tokens[i]!.value ?? '';
         i++;
-        const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+        const modifier =
+          tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK
+            ? (tokens[i]!.value ?? '*')
+            : '';
         if (modifier) i++;
         parts.push({
           kind: 'regexp',
           value,
-          modifier
+          modifier,
         });
         continue;
       }
-      const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+      const modifier =
+        tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK
+          ? (tokens[i]!.value ?? '*')
+          : '';
       if (modifier) i++;
       parts.push({
         kind: 'name',
-        modifier
+        modifier,
       });
       continue;
     }
     if (token.type === T_PATTERN) {
       i++;
-      const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+      const modifier =
+        tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK
+          ? (tokens[i]!.value ?? '*')
+          : '';
       if (modifier) i++;
       parts.push({
         kind: 'regexp',
         value: token.value ?? '',
-        modifier
+        modifier,
       });
       continue;
     }
@@ -1254,13 +1327,16 @@ function _parseCompareParts(tokens: Token[], start = 0): {
       const group = _parseCompareParts(tokens, i + 1);
       i = group.index;
       if (tokens[i]!.type === T_CLOSE) i++;
-      const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+      const modifier =
+        tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK
+          ? (tokens[i]!.value ?? '*')
+          : '';
       if (modifier) {
         i++;
         parts.push({
           kind: 'group',
           modifier,
-          parts: group.parts
+          parts: group.parts,
         });
       } else {
         parts.push(...group.parts);
@@ -1271,7 +1347,7 @@ function _parseCompareParts(tokens: Token[], start = 0): {
   }
   return {
     parts: _normalizeCompareParts(parts),
-    index: i
+    index: i,
   };
 }
 function _normalizeCompareParts(parts: URLPatternComparePart[]): URLPatternComparePart[] {
@@ -1286,10 +1362,13 @@ function _normalizeCompareParts(parts: URLPatternComparePart[]): URLPatternCompa
         normalized.push({
           kind: 'group',
           modifier: '?',
-          parts: [{
-            kind: 'text',
-            value: delimiter
-          }, { kind: 'name' }]
+          parts: [
+            {
+              kind: 'text',
+              value: delimiter,
+            },
+            { kind: 'name' },
+          ],
         });
         continue;
       }
@@ -1303,7 +1382,12 @@ function _normalizeCompareParts(parts: URLPatternComparePart[]): URLPatternCompa
   }
   return normalized;
 }
-function _generateComponent(compiled: CompiledPattern, component: URLPatternComponentName, groups: Record<string, unknown>, protocolPattern: string): string {
+function _generateComponent(
+  compiled: CompiledPattern,
+  component: URLPatternComponentName,
+  groups: Record<string, unknown>,
+  protocolPattern: string,
+): string {
   const tokens = _tokenize(compiled.pattern);
   let output = '';
   let i = 0;
@@ -1354,7 +1438,10 @@ function _compareComponentPattern(left: CompiledPattern, right: CompiledPattern)
 // ---------------------------------------------------------------------------
 // Match a component: returns { input, groups } or null
 // ---------------------------------------------------------------------------
-function _matchComponent(compiled: CompiledPattern, value: string): URLPatternComponentResult | null {
+function _matchComponent(
+  compiled: CompiledPattern,
+  value: string,
+): URLPatternComponentResult | null {
   const m = compiled.regexp.exec(value);
   if (!m) return null;
   const groups: Record<string, string | undefined> = {};
@@ -1365,7 +1452,7 @@ function _matchComponent(compiled: CompiledPattern, value: string): URLPatternCo
   }
   return {
     input: value,
-    groups
+    groups,
   };
 }
 // ---------------------------------------------------------------------------
@@ -1374,13 +1461,25 @@ function _matchComponent(compiled: CompiledPattern, value: string): URLPatternCo
 function _hasHref(input: unknown): input is {
   href: string;
 } {
-  return input != null && typeof input === 'object' && typeof (input as {
-    href?: string;
-  }).href === 'string';
+  return (
+    input != null &&
+    typeof input === 'object' &&
+    typeof (
+      input as {
+        href?: string;
+      }
+    ).href === 'string'
+  );
 }
-function _extractComponents(input: string | {
-  href: string;
-} | URLPatternInit, baseURL?: string): URLComponentDict | null {
+function _extractComponents(
+  input:
+    | string
+    | {
+        href: string;
+      }
+    | URLPatternInit,
+  baseURL?: string,
+): URLComponentDict | null {
   if (typeof input === 'string' || _hasHref(input)) {
     try {
       const href = typeof input === 'string' ? input : input.href;
@@ -1393,7 +1492,7 @@ function _extractComponents(input: string | {
         port: url.port,
         pathname: url.pathname,
         search: url.search.replace(/^\?/, ''),
-        hash: url.hash.replace(/^#/, '')
+        hash: url.hash.replace(/^#/, ''),
       };
     } catch (_) {
       return null;
@@ -1406,77 +1505,77 @@ function _extractComponents(input: string | {
 // URLPattern
 // ---------------------------------------------------------------------------
 /**
-* WHATWG URLPattern implementation for matching URLs by component.
-*
-* Patterns may be supplied as a URL-like string or as an object with per-part
-* patterns. Missing components default to the `*` wildcard, so
-* `new URLPattern({ pathname: '/users/:id' })` matches that path on any
-* protocol, host, and port. Installed on `globalThis` — no import is needed.
-*
-* Use `test()` for a boolean check, `exec()` to extract named groups,
-* `generate()` to build a component string back from a pattern, and the
-* static `compareComponent()` to sort patterns by routing precedence.
-*
-* ```ts no_run
-* const pattern = new URLPattern({ pathname: '/users/:id' });
-* pattern.test('https://example.com/users/42'); // true
-*
-* const match = pattern.exec('https://example.com/users/42');
-* match?.pathname.groups.id; // "42"
-* ```
-*/
+ * WHATWG URLPattern implementation for matching URLs by component.
+ *
+ * Patterns may be supplied as a URL-like string or as an object with per-part
+ * patterns. Missing components default to the `*` wildcard, so
+ * `new URLPattern({ pathname: '/users/:id' })` matches that path on any
+ * protocol, host, and port. Installed on `globalThis` — no import is needed.
+ *
+ * Use `test()` for a boolean check, `exec()` to extract named groups,
+ * `generate()` to build a component string back from a pattern, and the
+ * static `compareComponent()` to sort patterns by routing precedence.
+ *
+ * ```ts no_run
+ * const pattern = new URLPattern({ pathname: '/users/:id' });
+ * pattern.test('https://example.com/users/42'); // true
+ *
+ * const match = pattern.exec('https://example.com/users/42');
+ * match?.pathname.groups.id; // "42"
+ * ```
+ */
 export class URLPattern {
   /**
-  * Compiled protocol component pattern.
-  *
-  * @internal
-  */
+   * Compiled protocol component pattern.
+   *
+   * @internal
+   */
   #protocol: CompiledPattern;
   /**
-  * Compiled username component pattern.
-  *
-  * @internal
-  */
+   * Compiled username component pattern.
+   *
+   * @internal
+   */
   #username: CompiledPattern;
   /**
-  * Compiled password component pattern.
-  *
-  * @internal
-  */
+   * Compiled password component pattern.
+   *
+   * @internal
+   */
   #password: CompiledPattern;
   /**
-  * Compiled hostname component pattern (`.`-delimited named params).
-  *
-  * @internal
-  */
+   * Compiled hostname component pattern (`.`-delimited named params).
+   *
+   * @internal
+   */
   #hostname: CompiledPattern;
   /**
-  * Compiled port component pattern.
-  *
-  * @internal
-  */
+   * Compiled port component pattern.
+   *
+   * @internal
+   */
   #port: CompiledPattern;
   /**
-  * Compiled pathname component pattern (`/`-delimited named params).
-  *
-  * @internal
-  */
+   * Compiled pathname component pattern (`/`-delimited named params).
+   *
+   * @internal
+   */
   #pathname: CompiledPattern;
   /**
-  * Compiled search component pattern.
-  *
-  * @internal
-  */
+   * Compiled search component pattern.
+   *
+   * @internal
+   */
   #search: CompiledPattern;
   /**
-  * Compiled hash component pattern.
-  *
-  * @internal
-  */
+   * Compiled hash component pattern.
+   *
+   * @internal
+   */
   #hash: CompiledPattern;
   /**
-  * Look up the compiled pattern for a URL component by name.
-  */
+   * Look up the compiled pattern for a URL component by name.
+   */
   #componentPattern(component: URLPatternComponentName): CompiledPattern {
     if (component === 'protocol') return this.#protocol;
     if (component === 'username') return this.#username;
@@ -1488,38 +1587,42 @@ export class URLPattern {
     return this.#hash;
   }
   /**
-  * String tag used by Object.prototype.toString.
-  *
-  * ```typescript no_run
-  * Object.prototype.toString.call(new URLPattern({ pathname: '/' })); // "[object URLPattern]"
-  * ```
-  */
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new URLPattern({ pathname: '/' })); // "[object URLPattern]"
+   * ```
+   */
   get [Symbol.toStringTag]() {
     return 'URLPattern';
   }
   /**
-  * Create a URLPattern from string, component-object, or omitted input.
-  *
-  * String input is split into URL components while respecting pattern groups.
-  * `baseURL` supplies defaults for relative string patterns and component
-  * dictionaries. Object input uses the provided component patterns directly.
-  * Missing or `undefined` input creates an all-wildcard pattern. Pass
-  * `{ ignoreCase: true }` as the options object to match ASCII and Unicode
-  * letters without case sensitivity.
-  *
-  * Throws a `TypeError` if the input is neither a string nor an object, or
-  * if a component pattern fails to parse — unmatched `(`, an empty `()`
-  * group, a `:` with no valid parameter name, or an invalid literal
-  * hostname.
-  *
-  * ```ts no_run
-  * const pattern = new URLPattern('/files/:name', 'https://example.com', {
-  *   ignoreCase: true,
-  * });
-  * pattern.hostname; // "example.com"
-  * ```
-  */
-  constructor(input?: string | URLPatternInit, baseURLOrOptions?: string | URLPatternOptions, options?: URLPatternOptions) {
+   * Create a URLPattern from string, component-object, or omitted input.
+   *
+   * String input is split into URL components while respecting pattern groups.
+   * `baseURL` supplies defaults for relative string patterns and component
+   * dictionaries. Object input uses the provided component patterns directly.
+   * Missing or `undefined` input creates an all-wildcard pattern. Pass
+   * `{ ignoreCase: true }` as the options object to match ASCII and Unicode
+   * letters without case sensitivity.
+   *
+   * Throws a `TypeError` if the input is neither a string nor an object, or
+   * if a component pattern fails to parse — unmatched `(`, an empty `()`
+   * group, a `:` with no valid parameter name, or an invalid literal
+   * hostname.
+   *
+   * ```ts no_run
+   * const pattern = new URLPattern('/files/:name', 'https://example.com', {
+   *   ignoreCase: true,
+   * });
+   * pattern.hostname; // "example.com"
+   * ```
+   */
+  constructor(
+    input?: string | URLPatternInit,
+    baseURLOrOptions?: string | URLPatternOptions,
+    options?: URLPatternOptions,
+  ) {
     let init: ParsedURLPatternInit | URLPatternInit;
     let baseURL: string | undefined;
     let constructorOptions: URLPatternOptions | undefined;
@@ -1550,162 +1653,211 @@ export class URLPattern {
     } else {
       throw new TypeError('URLPattern: first argument must be a string or object');
     }
-    this.#protocol = _compileComponent(init.protocol, COMPONENT_OPTIONS.protocol!, 'protocol', ignoreCase);
-    this.#username = _compileComponent(init.username, COMPONENT_OPTIONS.username!, 'username', ignoreCase);
-    this.#password = _compileComponent(init.password, COMPONENT_OPTIONS.password!, 'password', ignoreCase);
-    this.#hostname = _compileComponent(init.hostname, COMPONENT_OPTIONS.hostname!, 'hostname', ignoreCase);
+    this.#protocol = _compileComponent(
+      init.protocol,
+      COMPONENT_OPTIONS.protocol!,
+      'protocol',
+      ignoreCase,
+    );
+    this.#username = _compileComponent(
+      init.username,
+      COMPONENT_OPTIONS.username!,
+      'username',
+      ignoreCase,
+    );
+    this.#password = _compileComponent(
+      init.password,
+      COMPONENT_OPTIONS.password!,
+      'password',
+      ignoreCase,
+    );
+    this.#hostname = _compileComponent(
+      init.hostname,
+      COMPONENT_OPTIONS.hostname!,
+      'hostname',
+      ignoreCase,
+    );
     this.#port = _compileComponent(init.port, COMPONENT_OPTIONS.port!, 'port', ignoreCase);
-    this.#pathname = _compileComponent(init.pathname, COMPONENT_OPTIONS.pathname!, 'pathname', ignoreCase);
+    this.#pathname = _compileComponent(
+      init.pathname,
+      COMPONENT_OPTIONS.pathname!,
+      'pathname',
+      ignoreCase,
+    );
     this.#search = _compileComponent(init.search, COMPONENT_OPTIONS.search!, 'search', ignoreCase);
     this.#hash = _compileComponent(init.hash, COMPONENT_OPTIONS.hash!, 'hash', ignoreCase);
   }
   // Pattern string accessors
   /**
-  * Protocol pattern without the trailing colon.
-  *
-  * ```typescript no_run
-  * new URLPattern({ protocol: 'https' }).protocol; // "https"
-  * ```
-  */
+   * Protocol pattern without the trailing colon.
+   *
+   * ```typescript no_run
+   * new URLPattern({ protocol: 'https' }).protocol; // "https"
+   * ```
+   */
   get protocol() {
     return this.#protocol.pattern;
   }
   /**
-  * Username pattern.
-  *
-  * ```typescript no_run
-  * new URLPattern({ username: '*' }).username; // "*"
-  * ```
-  */
+   * Username pattern.
+   *
+   * ```typescript no_run
+   * new URLPattern({ username: '*' }).username; // "*"
+   * ```
+   */
   get username() {
     return this.#username.pattern;
   }
   /**
-  * Password pattern.
-  *
-  * ```typescript no_run
-  * new URLPattern({ password: '*' }).password; // "*"
-  * ```
-  */
+   * Password pattern.
+   *
+   * ```typescript no_run
+   * new URLPattern({ password: '*' }).password; // "*"
+   * ```
+   */
   get password() {
     return this.#password.pattern;
   }
   /**
-  * Hostname pattern in canonical form.
-  *
-  * Hostname named parameters stop at "." by default. Literal hostnames are
-  * canonicalized through the URL parser, so Unicode labels read back as
-  * punycode.
-  *
-  * ```ts no_run
-  * new URLPattern({ hostname: ':sub.example.com' }).hostname; // ":sub.example.com"
-  * new URLPattern({ hostname: 'café.example' }).hostname;     // "xn--caf-dma.example"
-  * ```
-  */
+   * Hostname pattern in canonical form.
+   *
+   * Hostname named parameters stop at "." by default. Literal hostnames are
+   * canonicalized through the URL parser, so Unicode labels read back as
+   * punycode.
+   *
+   * ```ts no_run
+   * new URLPattern({ hostname: ':sub.example.com' }).hostname; // ":sub.example.com"
+   * new URLPattern({ hostname: 'café.example' }).hostname;     // "xn--caf-dma.example"
+   * ```
+   */
   get hostname() {
     return this.#hostname.pattern;
   }
   /**
-  * Port pattern.
-  *
-  * ```typescript no_run
-  * new URLPattern({ port: '8080' }).port; // "8080"
-  * ```
-  */
+   * Port pattern.
+   *
+   * ```typescript no_run
+   * new URLPattern({ port: '8080' }).port; // "8080"
+   * ```
+   */
   get port() {
     return this.#port.pattern;
   }
   /**
-  * Pathname pattern in canonical form.
-  *
-  * Pathname named parameters stop at "/" by default. Literal text is
-  * percent-encoded, so `/café` reads back as `/caf%C3%A9`.
-  *
-  * ```ts no_run
-  * new URLPattern({ pathname: '/users/:id' }).pathname; // "/users/:id"
-  * ```
-  */
+   * Pathname pattern in canonical form.
+   *
+   * Pathname named parameters stop at "/" by default. Literal text is
+   * percent-encoded, so `/café` reads back as `/caf%C3%A9`.
+   *
+   * ```ts no_run
+   * new URLPattern({ pathname: '/users/:id' }).pathname; // "/users/:id"
+   * ```
+   */
   get pathname() {
     return this.#pathname.pattern;
   }
   /**
-  * Search pattern without leading question mark.
-  *
-  * ```typescript no_run
-  * new URLPattern({ search: 'q=:term' }).search; // "q=:term"
-  * ```
-  */
+   * Search pattern without leading question mark.
+   *
+   * ```typescript no_run
+   * new URLPattern({ search: 'q=:term' }).search; // "q=:term"
+   * ```
+   */
   get search() {
     return this.#search.pattern;
   }
   /**
-  * Hash pattern without leading hash.
-  *
-  * ```typescript no_run
-  * new URLPattern({ hash: 'top' }).hash; // "top"
-  * ```
-  */
+   * Hash pattern without leading hash.
+   *
+   * ```typescript no_run
+   * new URLPattern({ hash: 'top' }).hash; // "top"
+   * ```
+   */
   get hash() {
     return this.#hash.pattern;
   }
   /**
-  * True when any component contains an explicit regexp group.
-  *
-  * Both unnamed `(pattern)` groups and named params with a custom regexp
-  * (`:name(pattern)`) count. Plain `:name` params and `*` wildcards do not,
-  * even though they also compile to capturing groups internally.
-  *
-  * ```ts no_run
-  * new URLPattern({ pathname: '/:id(\\d+)' }).hasRegExpGroups; // true
-  * new URLPattern({ pathname: '/:id' }).hasRegExpGroups;      // false
-  * ```
-  */
+   * True when any component contains an explicit regexp group.
+   *
+   * Both unnamed `(pattern)` groups and named params with a custom regexp
+   * (`:name(pattern)`) count. Plain `:name` params and `*` wildcards do not,
+   * even though they also compile to capturing groups internally.
+   *
+   * ```ts no_run
+   * new URLPattern({ pathname: '/:id(\\d+)' }).hasRegExpGroups; // true
+   * new URLPattern({ pathname: '/:id' }).hasRegExpGroups;      // false
+   * ```
+   */
   get hasRegExpGroups(): boolean {
     // True when any component contains an explicit regexp group — either an
     // inline `(pattern)` or a named param with a custom regexp `:name(pattern)`.
     // Plain wildcards `*` and plain named params `:name` do not count.
-    return this.#protocol.hasRegExpGroups || this.#username.hasRegExpGroups || this.#password.hasRegExpGroups || this.#hostname.hasRegExpGroups || this.#port.hasRegExpGroups || this.#pathname.hasRegExpGroups || this.#search.hasRegExpGroups || this.#hash.hasRegExpGroups;
+    return (
+      this.#protocol.hasRegExpGroups ||
+      this.#username.hasRegExpGroups ||
+      this.#password.hasRegExpGroups ||
+      this.#hostname.hasRegExpGroups ||
+      this.#port.hasRegExpGroups ||
+      this.#pathname.hasRegExpGroups ||
+      this.#search.hasRegExpGroups ||
+      this.#hash.hasRegExpGroups
+    );
   }
   /**
-  * Return true when input matches every URL component pattern.
-  *
-  * Invalid string or href inputs return false. Object inputs are interpreted as
-  * already-split URLPatternInit component values. When `input` is a relative
-  * URL string, the optional `baseURL` argument resolves it to an absolute URL
-  * before matching; an input that cannot be parsed against `baseURL` returns
-  * false rather than throwing.
-  *
-  * ```typescript no_run
-  * const pattern = new URLPattern({ pathname: '/users/:id' });
-  * pattern.test('https://example.com/users/42'); // true
-  * ```
-  */
-  test(input: string | {
-    href: string;
-  } | URLPatternInit, baseURL?: string): boolean {
+   * Return true when input matches every URL component pattern.
+   *
+   * Invalid string or href inputs return false. Object inputs are interpreted as
+   * already-split URLPatternInit component values. When `input` is a relative
+   * URL string, the optional `baseURL` argument resolves it to an absolute URL
+   * before matching; an input that cannot be parsed against `baseURL` returns
+   * false rather than throwing.
+   *
+   * ```typescript no_run
+   * const pattern = new URLPattern({ pathname: '/users/:id' });
+   * pattern.test('https://example.com/users/42'); // true
+   * ```
+   */
+  test(
+    input:
+      | string
+      | {
+          href: string;
+        }
+      | URLPatternInit,
+    baseURL?: string,
+  ): boolean {
     const components = _extractComponents(input, baseURL);
     if (!components) return false;
-    return this.#protocol.regexp.test(components.protocol) && this.#username.regexp.test(components.username) && this.#password.regexp.test(components.password) && this.#hostname.regexp.test(components.hostname) && this.#port.regexp.test(components.port) && this.#pathname.regexp.test(components.pathname) && this.#search.regexp.test(components.search) && this.#hash.regexp.test(components.hash);
+    return (
+      this.#protocol.regexp.test(components.protocol) &&
+      this.#username.regexp.test(components.username) &&
+      this.#password.regexp.test(components.password) &&
+      this.#hostname.regexp.test(components.hostname) &&
+      this.#port.regexp.test(components.port) &&
+      this.#pathname.regexp.test(components.pathname) &&
+      this.#search.regexp.test(components.search) &&
+      this.#hash.regexp.test(components.hash)
+    );
   }
   /**
-  * Generate one URL component from literal text and simple named groups.
-  *
-  * The current support covers the common routing subset used by the WPT
-  * generation fixture: text tokens, escaped literals, and `:name` groups.
-  * Pathname group values are percent-encoded when the pattern's protocol is
-  * a special scheme (http, https, ws, wss, ftp, file) or a wildcard, and
-  * generated hostnames are canonicalized through the URL parser.
-  *
-  * Throws a `TypeError` for an invalid component name, a non-object `groups`
-  * argument, a `:name` group with no entry in `groups`, a pathname group
-  * value containing `/`, or a pattern using unsupported syntax — wildcards,
-  * regexp groups, and optional or repeated groups.
-  *
-  * ```ts no_run
-  * new URLPattern({ pathname: '/users/:id' }).generate('pathname', { id: '42' });
-  * // "/users/42"
-  * ```
-  */
+   * Generate one URL component from literal text and simple named groups.
+   *
+   * The current support covers the common routing subset used by the WPT
+   * generation fixture: text tokens, escaped literals, and `:name` groups.
+   * Pathname group values are percent-encoded when the pattern's protocol is
+   * a special scheme (http, https, ws, wss, ftp, file) or a wildcard, and
+   * generated hostnames are canonicalized through the URL parser.
+   *
+   * Throws a `TypeError` for an invalid component name, a non-object `groups`
+   * argument, a `:name` group with no entry in `groups`, a pathname group
+   * value containing `/`, or a pattern using unsupported syntax — wildcards,
+   * regexp groups, and optional or repeated groups.
+   *
+   * ```ts no_run
+   * new URLPattern({ pathname: '/users/:id' }).generate('pathname', { id: '42' });
+   * // "/users/42"
+   * ```
+   */
   generate(component: string, groups: Record<string, unknown> = {}): string {
     if (!URL_PATTERN_COMPONENT_NAMES.has(component)) {
       throw new TypeError('URLPattern.generate: invalid component');
@@ -1717,25 +1869,25 @@ export class URLPattern {
     return _generateComponent(this.#componentPattern(name), name, groups, this.#protocol.pattern);
   }
   /**
-  * Compare two URLPattern component patterns for routing precedence.
-  *
-  * Returns a negative number when `left` sorts before `right`, positive when
-  * it sorts after, and `0` when the patterns are equivalent. Parameter names
-  * do not affect ordering. Literal text sorts above regexp groups, named
-  * groups, and wildcards; group modifiers sort as `*`, `?`, `+`, then no
-  * modifier.
-  *
-  * Throws a `TypeError` if `component` is not a URL component name or either
-  * argument is not a `URLPattern` instance.
-  *
-  * ```ts no_run
-  * URLPattern.compareComponent(
-  *   'pathname',
-  *   new URLPattern({ pathname: '/users/:id' }),
-  *   new URLPattern({ pathname: '/users/*' }),
-  * ); // 1
-  * ```
-  */
+   * Compare two URLPattern component patterns for routing precedence.
+   *
+   * Returns a negative number when `left` sorts before `right`, positive when
+   * it sorts after, and `0` when the patterns are equivalent. Parameter names
+   * do not affect ordering. Literal text sorts above regexp groups, named
+   * groups, and wildcards; group modifiers sort as `*`, `?`, `+`, then no
+   * modifier.
+   *
+   * Throws a `TypeError` if `component` is not a URL component name or either
+   * argument is not a `URLPattern` instance.
+   *
+   * ```ts no_run
+   * URLPattern.compareComponent(
+   *   'pathname',
+   *   new URLPattern({ pathname: '/users/:id' }),
+   *   new URLPattern({ pathname: '/users/*' }),
+   * ); // 1
+   * ```
+   */
   static compareComponent(component: string, left: URLPattern, right: URLPattern): number {
     if (!URL_PATTERN_COMPONENT_NAMES.has(component)) {
       throw new TypeError('URLPattern.compareComponent: invalid component');
@@ -1747,23 +1899,29 @@ export class URLPattern {
     return _compareComponentPattern(left.#componentPattern(name), right.#componentPattern(name));
   }
   /**
-  * Match input and return per-component inputs and capture groups.
-  *
-  * Returns null if parsing fails or any component does not match. A relative
-  * `input` string is resolved against the optional `baseURL` argument first.
-  * On a successful match the returned `inputs` array echoes the call shape —
-  * `[input]`, or `[input, baseURL]` when a base URL was supplied — and each
-  * component field carries the matched substring plus its named capture groups.
-  *
-  * ```typescript no_run
-  * const pattern = new URLPattern({ pathname: '/users/:id' });
-  * const match = pattern.exec('https://example.com/users/42');
-  * match?.pathname.groups.id; // "42"
-  * ```
-  */
-  exec(input: string | {
-    href: string;
-  } | URLPatternInit, baseURL?: string): {
+   * Match input and return per-component inputs and capture groups.
+   *
+   * Returns null if parsing fails or any component does not match. A relative
+   * `input` string is resolved against the optional `baseURL` argument first.
+   * On a successful match the returned `inputs` array echoes the call shape —
+   * `[input]`, or `[input, baseURL]` when a base URL was supplied — and each
+   * component field carries the matched substring plus its named capture groups.
+   *
+   * ```typescript no_run
+   * const pattern = new URLPattern({ pathname: '/users/:id' });
+   * const match = pattern.exec('https://example.com/users/42');
+   * match?.pathname.groups.id; // "42"
+   * ```
+   */
+  exec(
+    input:
+      | string
+      | {
+          href: string;
+        }
+      | URLPatternInit,
+    baseURL?: string,
+  ): {
     inputs: any[];
     protocol: URLPatternComponentResult;
     username: URLPatternComponentResult;
@@ -1784,7 +1942,16 @@ export class URLPattern {
     const pathname = _matchComponent(this.#pathname, components.pathname);
     const search = _matchComponent(this.#search, components.search);
     const hash = _matchComponent(this.#hash, components.hash);
-    if (!protocol || !username || !password || !hostname || !port || !pathname || !search || !hash) {
+    if (
+      !protocol ||
+      !username ||
+      !password ||
+      !hostname ||
+      !port ||
+      !pathname ||
+      !search ||
+      !hash
+    ) {
       return null;
     }
     const inputs = baseURL != null ? [input, baseURL] : [input];
@@ -1797,7 +1964,7 @@ export class URLPattern {
       port,
       pathname,
       search,
-      hash
+      hash,
     };
   }
 }

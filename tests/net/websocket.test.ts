@@ -1,19 +1,25 @@
 /**
-* Tests for fino:net/http/websocket — WebSocketConnection (engine) and WebSocket (facade).
-*
-* Tests cover:
-*   - Handshake key/accept computation (RFC 6455 §1.3 golden vector)
-*   - Frame encoding/decoding round-trips (text, binary, masked, all length tiers)
-*   - Close handshake (initiator + peer echo)
-*   - PING auto-PONG
-*   - Protocol violation handling (unmasked client frame → 1002, oversized → 1009, bad UTF-8 → 1007)
-*   - End-to-end over a real TCP socket via WebSocketConnection
-*   - End-to-end via serve() + WebSocketConnection.accept() integration
-*   - WHATWG WebSocket facade basics
-*/
+ * Tests for fino:net/http/websocket — WebSocketConnection (engine) and WebSocket (facade).
+ *
+ * Tests cover:
+ *   - Handshake key/accept computation (RFC 6455 §1.3 golden vector)
+ *   - Frame encoding/decoding round-trips (text, binary, masked, all length tiers)
+ *   - Close handshake (initiator + peer echo)
+ *   - PING auto-PONG
+ *   - Protocol violation handling (unmasked client frame → 1002, oversized → 1009, bad UTF-8 → 1007)
+ *   - End-to-end over a real TCP socket via WebSocketConnection
+ *   - End-to-end via serve() + WebSocketConnection.accept() integration
+ *   - WHATWG WebSocket facade basics
+ */
 import { describe, it } from 'fino:test/test';
 import { ok, equal, deepEqual } from 'fino:test/assert';
-import { WebSocket, WebSocketConnection, MessageEvent, CloseEvent, WebSocketError } from 'fino:net/http/websocket';
+import {
+  WebSocket,
+  WebSocketConnection,
+  MessageEvent,
+  CloseEvent,
+  WebSocketError,
+} from 'fino:net/http/websocket';
 import { serve } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
@@ -29,24 +35,37 @@ const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array | ArrayBuffer) => new TextDecoder().decode(b);
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 /** Wait for a named event on an EventTarget, resolving with the event. */
-function waitForEvent<T extends Event>(target: EventTarget, name: string, timeoutMs = 5e3): Promise<T> {
+function waitForEvent<T extends Event>(
+  target: EventTarget,
+  name: string,
+  timeoutMs = 5e3,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = loop.timeout(timeoutMs);
     t.then(() => {
       reject(new Error('waitForEvent timed out waiting for: ' + name));
     }).catch(() => {});
-    target.addEventListener(name, function handler(e) {
-      t.cancel();
-      target.removeEventListener(name, handler);
-      resolve(e as T);
-    }, { once: true });
+    target.addEventListener(
+      name,
+      function handler(e) {
+        t.cancel();
+        target.removeEventListener(name, handler);
+        resolve(e as T);
+      },
+      { once: true },
+    );
   });
 }
 /** Collect N messages from a WebSocketConnection via async iteration. */
-async function collectMessages(ws: WebSocketConnection, n: number): Promise<Array<{
-  type: string;
-  data: unknown;
-}>> {
+async function collectMessages(
+  ws: WebSocketConnection,
+  n: number,
+): Promise<
+  Array<{
+    type: string;
+    data: unknown;
+  }>
+> {
   const msgs: Array<{
     type: string;
     data: unknown;
@@ -63,11 +82,15 @@ function acceptHash(key: string): string {
   for (const byte of hash) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
-function rawFrame(opcode: number, payload: Uint8Array, opts: {
-  fin?: boolean;
-  mask?: boolean;
-  rsv?: number;
-} = {}): Uint8Array {
+function rawFrame(
+  opcode: number,
+  payload: Uint8Array,
+  opts: {
+    fin?: boolean;
+    mask?: boolean;
+    rsv?: number;
+  } = {},
+): Uint8Array {
   const fin = opts.fin !== false;
   const mask = opts.mask === true;
   const rsv = opts.rsv ?? 0;
@@ -77,36 +100,31 @@ function rawFrame(opcode: number, payload: Uint8Array, opts: {
   else if (len > 125) headerLen += 2;
   if (mask) headerLen += 4;
   const frame = new Uint8Array(headerLen + len);
-  frame[0] = (fin ? 128 : 0) | rsv & 112 | opcode & 15;
+  frame[0] = (fin ? 128 : 0) | (rsv & 112) | (opcode & 15);
   let pos = 2;
   if (len <= 125) {
     frame[1] = (mask ? 128 : 0) | len;
   } else if (len <= 65535) {
     frame[1] = (mask ? 128 : 0) | 126;
-    frame[2] = len >>> 8 & 255;
+    frame[2] = (len >>> 8) & 255;
     frame[3] = len & 255;
     pos = 4;
   } else {
     frame[1] = (mask ? 128 : 0) | 127;
     const hi = Math.floor(len / 4294967296);
     const lo = len >>> 0;
-    frame[2] = hi >>> 24 & 255;
-    frame[3] = hi >>> 16 & 255;
-    frame[4] = hi >>> 8 & 255;
+    frame[2] = (hi >>> 24) & 255;
+    frame[3] = (hi >>> 16) & 255;
+    frame[4] = (hi >>> 8) & 255;
     frame[5] = hi & 255;
-    frame[6] = lo >>> 24 & 255;
-    frame[7] = lo >>> 16 & 255;
-    frame[8] = lo >>> 8 & 255;
+    frame[6] = (lo >>> 24) & 255;
+    frame[7] = (lo >>> 16) & 255;
+    frame[8] = (lo >>> 8) & 255;
     frame[9] = lo & 255;
     pos = 10;
   }
   if (mask) {
-    const key = new Uint8Array([
-      17,
-      34,
-      51,
-      68
-    ]);
+    const key = new Uint8Array([17, 34, 51, 68]);
     frame.set(key, pos);
     pos += 4;
     for (let i = 0; i < len; i++) frame[pos + i] = payload[i]! ^ key[i & 3]!;
@@ -167,10 +185,18 @@ class RawByteReader {
     let len = header[1]! & 127;
     if (len === 126) {
       const ext = await this.readExactly(2);
-      len = ext[0]! << 8 | ext[1]!;
+      len = (ext[0]! << 8) | ext[1]!;
     } else if (len === 127) {
       const ext = await this.readExactly(8);
-      len = ext[0]! * 72057594037927940 + ext[1]! * 281474976710656 + ext[2]! * 1099511627776 + ext[3]! * 4294967296 + ext[4]! * 16777216 + ext[5]! * 65536 + ext[6]! * 256 + ext[7]!;
+      len =
+        ext[0]! * 72057594037927940 +
+        ext[1]! * 281474976710656 +
+        ext[2]! * 1099511627776 +
+        ext[3]! * 4294967296 +
+        ext[4]! * 16777216 +
+        ext[5]! * 65536 +
+        ext[6]! * 256 +
+        ext[7]!;
     }
     const key = masked ? await this.readExactly(4) : null;
     const payload = len > 0 ? await this.readExactly(len) : new Uint8Array(0);
@@ -181,11 +207,14 @@ class RawByteReader {
       opcode,
       masked,
       rsv,
-      payload
+      payload,
     };
   }
 }
-async function openRawWebSocket(port: number, path = '/ws'): Promise<{
+async function openRawWebSocket(
+  port: number,
+  path = '/ws',
+): Promise<{
   sock: Socket;
   raw: RawByteReader;
   writer: any;
@@ -193,19 +222,23 @@ async function openRawWebSocket(port: number, path = '/ws'): Promise<{
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
   const key = 'dGhlIHNhbXBsZSBub25jZQ==';
-  await writer.write(enc([
-    `GET ${path} HTTP/1.1`,
-    `Host: 127.0.0.1:${port}`,
-    'Upgrade: websocket',
-    'Connection: Upgrade',
-    `Sec-WebSocket-Key: ${key}`,
-    'Sec-WebSocket-Version: 13',
-    '\r\n'
-  ].join('\r\n')));
+  await writer.write(
+    enc(
+      [
+        `GET ${path} HTTP/1.1`,
+        `Host: 127.0.0.1:${port}`,
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${key}`,
+        'Sec-WebSocket-Version: 13',
+        '\r\n',
+      ].join('\r\n'),
+    ),
+  );
   await writer.flush();
   const raw = new RawByteReader(reader);
   const response = await raw.readUntilHeaders();
@@ -213,10 +246,14 @@ async function openRawWebSocket(port: number, path = '/ws'): Promise<{
   return {
     sock,
     raw,
-    writer
+    writer,
   };
 }
-async function expectServerCloseForRawClientFrame(frame: Uint8Array, expectedCode: number, acceptOptions: Parameters<typeof WebSocketConnection.accept>[1] = {}): Promise<void> {
+async function expectServerCloseForRawClientFrame(
+  frame: Uint8Array,
+  expectedCode: number,
+  acceptOptions: Parameters<typeof WebSocketConnection.accept>[1] = {},
+): Promise<void> {
   const server = serveWebSocket(() => {}, acceptOptions);
   try {
     const { sock, raw, writer } = await openRawWebSocket(server.port);
@@ -224,13 +261,21 @@ async function expectServerCloseForRawClientFrame(frame: Uint8Array, expectedCod
     await writer.flush();
     const close = await raw.readFrame();
     equal(close.opcode, 8, 'server sent a close frame');
-    equal(close.payload[0]! << 8 | close.payload[1]!, expectedCode, 'server close code matches violation');
+    equal(
+      (close.payload[0]! << 8) | close.payload[1]!,
+      expectedCode,
+      'server close code matches violation',
+    );
     sock.close();
   } finally {
     await server.close();
   }
 }
-function serveWebSocket(handler: (ws: WebSocketConnection) => void | Promise<void>, acceptOptions: WebSocketAcceptOptions = {}, fallback: Response = new Response('', { status: 400 })): ReturnType<typeof serve> {
+function serveWebSocket(
+  handler: (ws: WebSocketConnection) => void | Promise<void>,
+  acceptOptions: WebSocketAcceptOptions = {},
+  fallback: Response = new Response('', { status: 400 }),
+): ReturnType<typeof serve> {
   return serve({ port: 0 }, async (incoming) => {
     if (incoming.kind !== 'websocket') {
       await incoming.reject(fallback);
@@ -256,11 +301,11 @@ describe('WebSocket accept hash', () => {
       method: 'GET',
       url: 'http://localhost/ws',
       headers: new Headers({
-        'upgrade': 'websocket',
-        'connection': 'Upgrade',
+        upgrade: 'websocket',
+        connection: 'Upgrade',
         'sec-websocket-version': '13',
-        'sec-websocket-key': CLIENT_KEY
-      })
+        'sec-websocket-key': CLIENT_KEY,
+      }),
     };
     // accept() must not throw
     const conn = WebSocketConnection.accept(fakeReq);
@@ -280,22 +325,22 @@ describe('WebSocket accept hash', () => {
 describe('WebSocketConnection.accept() validation', () => {
   function makeReq(overrides: Record<string, string> = {}) {
     const headers = new Headers({
-      'upgrade': 'websocket',
-      'connection': 'Upgrade',
+      upgrade: 'websocket',
+      connection: 'Upgrade',
       'sec-websocket-version': '13',
       'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
-      ...overrides
+      ...overrides,
     });
     return {
       method: 'GET',
       url: 'http://localhost/ws',
-      headers
+      headers,
     };
   }
   it('throws SyntaxError for non-GET method', async () => {
     const req = {
       ...makeReq(),
-      method: 'POST'
+      method: 'POST',
     };
     let threw = false;
     try {
@@ -307,7 +352,7 @@ describe('WebSocketConnection.accept() validation', () => {
     ok(threw);
   });
   it('throws SyntaxError for missing Upgrade header', async () => {
-    const req = makeReq({ 'upgrade': 'h2c' });
+    const req = makeReq({ upgrade: 'h2c' });
     let threw = false;
     try {
       WebSocketConnection.accept(req);
@@ -330,14 +375,14 @@ describe('WebSocketConnection.accept() validation', () => {
   });
   it('throws SyntaxError for missing Sec-WebSocket-Key', async () => {
     const headers = new Headers({
-      'upgrade': 'websocket',
-      'connection': 'Upgrade',
-      'sec-websocket-version': '13'
+      upgrade: 'websocket',
+      connection: 'Upgrade',
+      'sec-websocket-version': '13',
     });
     const req = {
       method: 'GET',
       url: 'http://localhost/ws',
-      headers
+      headers,
     };
     let threw = false;
     try {
@@ -372,29 +417,38 @@ describe('WebSocketConnection.accept() validation', () => {
       const sock = await Socket.connect({
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: server.port
+        port: server.port,
       });
       const [reader, writer] = sock.split();
       const key = 'dGhlIHNhbXBsZSBub25jZQ==';
-      await writer.write(enc([
-        'GET /ws HTTP/1.1',
-        `Host: 127.0.0.1:${server.port}`,
-        'Upgrade: websocket',
-        'Connection: Upgrade',
-        `Sec-WebSocket-Key: ${key}`,
-        'Sec-WebSocket-Version: 13',
-        'Sec-WebSocket-Extensions: permessage-deflate',
-        '\r\n'
-      ].join('\r\n')));
+      await writer.write(
+        enc(
+          [
+            'GET /ws HTTP/1.1',
+            `Host: 127.0.0.1:${server.port}`,
+            'Upgrade: websocket',
+            'Connection: Upgrade',
+            `Sec-WebSocket-Key: ${key}`,
+            'Sec-WebSocket-Version: 13',
+            'Sec-WebSocket-Extensions: permessage-deflate',
+            '\r\n',
+          ].join('\r\n'),
+        ),
+      );
       await writer.flush();
       const raw = new RawByteReader(reader);
       const response = await raw.readUntilHeaders();
       ok(response.includes('101 Switching Protocols'), 'server accepted the WebSocket upgrade');
-      ok(/sec-websocket-extensions:\s*permessage-deflate/i.test(response), 'server negotiated permessage-deflate');
-      await writer.write(rawFrame(1, zlibDeflateRawMessage(enc('compressed hello')), {
-        mask: true,
-        rsv: 64
-      }));
+      ok(
+        /sec-websocket-extensions:\s*permessage-deflate/i.test(response),
+        'server negotiated permessage-deflate',
+      );
+      await writer.write(
+        rawFrame(1, zlibDeflateRawMessage(enc('compressed hello')), {
+          mask: true,
+          rsv: 64,
+        }),
+      );
       await writer.flush();
       const echoed = await raw.readFrame();
       equal(echoed.opcode, 1, 'server echoed a text frame');
@@ -481,12 +535,7 @@ describe('WebSocket end-to-end via serve()', () => {
       await client.send('dispatch-state');
       await messageDone;
       await client.close();
-      deepEqual(order, [
-        'open-listener',
-        'open-handler',
-        'message-listener',
-        'message-handler'
-      ]);
+      deepEqual(order, ['open-listener', 'open-handler', 'message-listener', 'message-handler']);
       equal(openCurrentTarget, client, 'open currentTarget is the connection');
       equal(openPhase, Event.AT_TARGET, 'open handler runs at AT_TARGET');
       equal(messageCurrentTarget, client, 'message currentTarget is the connection');
@@ -523,13 +572,17 @@ describe('WebSocket end-to-end via serve()', () => {
     }
   });
   it('echoes text messages', async () => {
-    const server = serveWebSocket((ws) => {
-      ws.addEventListener('message', (e) => {
-        const me = e as MessageEvent;
-        void ws.send('echo: ' + me.data);
-      });
-      ws.addEventListener('close', () => {});
-    }, {}, new Response('not a ws upgrade', { status: 400 }));
+    const server = serveWebSocket(
+      (ws) => {
+        ws.addEventListener('message', (e) => {
+          const me = e as MessageEvent;
+          void ws.send('echo: ' + me.data);
+        });
+        ws.addEventListener('close', () => {});
+      },
+      {},
+      new Response('not a ws upgrade', { status: 400 }),
+    );
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
       await waitForEvent(client, 'open');
@@ -552,23 +605,11 @@ describe('WebSocket end-to-end via serve()', () => {
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
       await waitForEvent(client, 'open');
-      const payload = new Uint8Array([
-        1,
-        2,
-        3,
-        4,
-        5
-      ]);
+      const payload = new Uint8Array([1, 2, 3, 4, 5]);
       await client.send(payload);
       const [msg] = await collectMessages(client, 1);
       equal(msg!.type, 'binary');
-      deepEqual(Array.from(msg!.data as Uint8Array), [
-        1,
-        2,
-        3,
-        4,
-        5
-      ]);
+      deepEqual(Array.from(msg!.data as Uint8Array), [1, 2, 3, 4, 5]);
       await client.close();
     } finally {
       await server.close();
@@ -588,11 +629,10 @@ describe('WebSocket end-to-end via serve()', () => {
       await client.send('b');
       await client.send('c');
       const msgs = await collectMessages(client, 3);
-      deepEqual(msgs.map((m) => m.data), [
-        'a',
-        'b',
-        'c'
-      ]);
+      deepEqual(
+        msgs.map((m) => m.data),
+        ['a', 'b', 'c'],
+      );
       await client.close();
     } finally {
       await server.close();
@@ -619,23 +659,24 @@ describe('WebSocket end-to-end via serve()', () => {
       await client.send('done');
       // Wait for server close to propagate
       await waitForEvent(client, 'close');
-      deepEqual(received, [
-        'foo',
-        'bar',
-        'done'
-      ]);
+      deepEqual(received, ['foo', 'bar', 'done']);
     } finally {
       await server.close();
     }
   });
   it('respects subprotocol negotiation', async () => {
-    const server = serveWebSocket((ws) => {
-      ws.addEventListener('message', async (e) => {
-        await ws.close();
-      });
-    }, { protocol: 'chat.v1' });
+    const server = serveWebSocket(
+      (ws) => {
+        ws.addEventListener('message', async (e) => {
+          await ws.close();
+        });
+      },
+      { protocol: 'chat.v1' },
+    );
     try {
-      const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`, { protocols: ['chat.v1', 'chat.v2'] });
+      const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`, {
+        protocols: ['chat.v1', 'chat.v2'],
+      });
       await waitForEvent(client, 'open');
       equal(client.protocol, 'chat.v1');
       await client.send('ping');
@@ -715,7 +756,7 @@ describe('WebSocket end-to-end via serve()', () => {
       const sock = await Socket.connect({
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: server.port
+        port: server.port,
       });
       const [reader, writer] = sock.split();
       // Send a valid WebSocket upgrade using the RFC 6455 golden-vector key.
@@ -726,7 +767,7 @@ describe('WebSocket end-to-end via serve()', () => {
         'Connection: Upgrade',
         `Sec-WebSocket-Key: ${WS_KEY}`,
         'Sec-WebSocket-Version: 13',
-        '\r\n'
+        '\r\n',
       ].join('\r\n');
       await writer.write(enc(upgradeReq));
       await writer.flush();
@@ -752,12 +793,16 @@ describe('WebSocket end-to-end via serve()', () => {
     }
   });
   it('handles mixed HTTP and WebSocket on same serve()', async () => {
-    const server = serveWebSocket((ws) => {
-      ws.addEventListener('message', (e) => {
-        const me = e as MessageEvent;
-        void ws.send('ws:' + me.data);
-      });
-    }, {}, new Response('http-ok'));
+    const server = serveWebSocket(
+      (ws) => {
+        ws.addEventListener('message', (e) => {
+          const me = e as MessageEvent;
+          void ws.send('ws:' + me.data);
+        });
+      },
+      {},
+      new Response('http-ok'),
+    );
     try {
       // Normal HTTP still works
       const httpResp = await fetch(`http://127.0.0.1:${server.port}/`);
@@ -776,35 +821,48 @@ describe('WebSocket end-to-end via serve()', () => {
 });
 describe('WebSocket raw frame protocol violations', () => {
   it('closes fragmented control frames with 1002', async () => {
-    await expectServerCloseForRawClientFrame(rawFrame(9, enc('x'), {
-      mask: true,
-      fin: false
-    }), 1002);
+    await expectServerCloseForRawClientFrame(
+      rawFrame(9, enc('x'), {
+        mask: true,
+        fin: false,
+      }),
+      1002,
+    );
   });
   it('closes RSV-bit frames with 1002 when no extensions are negotiated', async () => {
-    await expectServerCloseForRawClientFrame(rawFrame(1, enc('x'), {
-      mask: true,
-      rsv: 64
-    }), 1002);
+    await expectServerCloseForRawClientFrame(
+      rawFrame(1, enc('x'), {
+        mask: true,
+        rsv: 64,
+      }),
+      1002,
+    );
   });
   it('closes reserved opcodes with 1002', async () => {
     await expectServerCloseForRawClientFrame(rawFrame(3, enc('x'), { mask: true }), 1002);
   });
   it('closes invalid UTF-8 text messages with 1007', async () => {
-    await expectServerCloseForRawClientFrame(rawFrame(1, new Uint8Array([255]), { mask: true }), 1007);
+    await expectServerCloseForRawClientFrame(
+      rawFrame(1, new Uint8Array([255]), { mask: true }),
+      1007,
+    );
   });
   it('closes invalid UTF-8 close reasons with 1007', async () => {
-    await expectServerCloseForRawClientFrame(rawFrame(8, new Uint8Array([
-      3,
-      232,
-      255
-    ]), { mask: true }), 1007);
+    await expectServerCloseForRawClientFrame(
+      rawFrame(8, new Uint8Array([3, 232, 255]), { mask: true }),
+      1007,
+    );
   });
   it('closes invalid received close codes with 1002', async () => {
-    await expectServerCloseForRawClientFrame(rawFrame(8, new Uint8Array([0, 0]), { mask: true }), 1002);
+    await expectServerCloseForRawClientFrame(
+      rawFrame(8, new Uint8Array([0, 0]), { mask: true }),
+      1002,
+    );
   });
   it('closes payloads above maxPayloadSize with 1009', async () => {
-    await expectServerCloseForRawClientFrame(rawFrame(1, enc('12345'), { mask: true }), 1009, { maxPayloadSize: 4 });
+    await expectServerCloseForRawClientFrame(rawFrame(1, enc('12345'), { mask: true }), 1009, {
+      maxPayloadSize: 4,
+    });
   });
   it('closes unmasked client frames with 1002', async () => {
     await expectServerCloseForRawClientFrame(rawFrame(1, enc('x'), { mask: false }), 1002);
@@ -813,7 +871,7 @@ describe('WebSocket raw frame protocol violations', () => {
     const listener = Socket.listen({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port: 0
+      port: 0,
     });
     const acceptDone = (async () => {
       const serverSock = await listener.accept();
@@ -821,16 +879,22 @@ describe('WebSocket raw frame protocol violations', () => {
       const [reader, writer] = serverSock.split();
       const raw = new RawByteReader(reader);
       const request = await raw.readUntilHeaders();
-      const keyLine = request.split('\r\n').find((line) => line.toLowerCase().startsWith('sec-websocket-key:'));
+      const keyLine = request
+        .split('\r\n')
+        .find((line) => line.toLowerCase().startsWith('sec-websocket-key:'));
       if (keyLine === undefined) throw new Error('missing Sec-WebSocket-Key');
       const key = keyLine.slice(keyLine.indexOf(':') + 1).trim();
-      await writer.write(enc([
-        'HTTP/1.1 101 Switching Protocols',
-        'Upgrade: websocket',
-        'Connection: Upgrade',
-        `Sec-WebSocket-Accept: ${acceptHash(key)}`,
-        '\r\n'
-      ].join('\r\n')));
+      await writer.write(
+        enc(
+          [
+            'HTTP/1.1 101 Switching Protocols',
+            'Upgrade: websocket',
+            'Connection: Upgrade',
+            `Sec-WebSocket-Accept: ${acceptHash(key)}`,
+            '\r\n',
+          ].join('\r\n'),
+        ),
+      );
       await writer.flush();
       await writer.write(rawFrame(1, enc('bad-mask'), { mask: true }));
       await writer.flush();
@@ -838,7 +902,11 @@ describe('WebSocket raw frame protocol violations', () => {
       const close = await raw.readFrame();
       equal(close.opcode, 8, 'client sent a close frame');
       equal(close.masked, true, 'client close frame is masked');
-      equal(close.payload[0]! << 8 | close.payload[1]!, 1002, 'client close code rejects masked server frame');
+      equal(
+        (close.payload[0]! << 8) | close.payload[1]!,
+        1002,
+        'client close code rejects masked server frame',
+      );
       serverSock.close();
     })();
     try {
@@ -890,12 +958,7 @@ describe('WHATWG WebSocket facade', () => {
         };
       });
       await messageDone;
-      deepEqual(order, [
-        'open-listener',
-        'open-handler',
-        'message-listener',
-        'message-handler'
-      ]);
+      deepEqual(order, ['open-listener', 'open-handler', 'message-listener', 'message-handler']);
       equal(openCurrentTarget, client, 'open currentTarget is the facade');
       equal(openPhase, Event.AT_TARGET, 'open handler runs at AT_TARGET');
       equal(messageCurrentTarget, client, 'message currentTarget is the facade');
@@ -918,7 +981,7 @@ describe('WHATWG WebSocket facade', () => {
       href: 'http://example.invalid/base/page.html?old=1',
       toString() {
         return this.href;
-      }
+      },
     };
     const ws = new WebSocket('?next=1');
     try {
@@ -1011,11 +1074,7 @@ describe('WHATWG WebSocket facade', () => {
   it('binaryType arraybuffer delivers ArrayBuffer data', async () => {
     const server = serveWebSocket((ws) => {
       ws.addEventListener('open', async () => {
-        await ws.send(new Uint8Array([
-          10,
-          20,
-          30
-        ]));
+        await ws.send(new Uint8Array([10, 20, 30]));
       });
     });
     try {
@@ -1024,11 +1083,7 @@ describe('WHATWG WebSocket facade', () => {
       await waitForEvent(ws, 'open');
       const msgEvt = await waitForEvent<MessageEvent>(ws, 'message');
       ok(msgEvt.data instanceof ArrayBuffer);
-      deepEqual(Array.from(new Uint8Array((msgEvt.data as unknown) as ArrayBuffer)), [
-        10,
-        20,
-        30
-      ]);
+      deepEqual(Array.from(new Uint8Array(msgEvt.data as unknown as ArrayBuffer)), [10, 20, 30]);
       ws.close();
       await waitForEvent(ws, 'close');
     } finally {
@@ -1047,7 +1102,7 @@ describe('WHATWG WebSocket facade', () => {
       await waitForEvent(ws, 'open');
       const msgEvt = await waitForEvent<MessageEvent>(ws, 'message');
       ok(msgEvt.data instanceof Blob);
-      const bytes = new Uint8Array(await ((msgEvt.data as unknown) as Blob).arrayBuffer());
+      const bytes = new Uint8Array(await (msgEvt.data as unknown as Blob).arrayBuffer());
       deepEqual(Array.from(bytes), [1, 2]);
       ws.close();
       await waitForEvent(ws, 'close');
@@ -1159,7 +1214,7 @@ describe('WebSocketError', () => {
   it('stores close code and reason', (t) => {
     const err = new WebSocketError('closed', {
       closeCode: 3456,
-      reason: 'done'
+      reason: 'done',
     });
     t.equal(err.message, 'closed');
     t.equal(err.closeCode, 3456);
@@ -1171,20 +1226,23 @@ describe('WebSocketError', () => {
     t.equal(err.reason, 'done');
   });
   it('throws DOMException InvalidAccessError for invalid close codes', (t) => {
-    for (const code of [
-      999,
-      1001,
-      2999,
-      5e3
-    ]) {
-      t.throws(() => new WebSocketError('', { closeCode: code }), (err) => err instanceof DOMException && err.name === 'InvalidAccessError', `invalid close code ${code} throws`);
+    for (const code of [999, 1001, 2999, 5e3]) {
+      t.throws(
+        () => new WebSocketError('', { closeCode: code }),
+        (err) => err instanceof DOMException && err.name === 'InvalidAccessError',
+        `invalid close code ${code} throws`,
+      );
     }
   });
   it('throws DOMException SyntaxError for overlong reasons', (t) => {
-    t.throws(() => new WebSocketError('', {
-      closeCode: 1e3,
-      reason: 'x'.repeat(124)
-    }), (err) => err instanceof DOMException && err.name === 'SyntaxError');
+    t.throws(
+      () =>
+        new WebSocketError('', {
+          closeCode: 1e3,
+          reason: 'x'.repeat(124),
+        }),
+      (err) => err instanceof DOMException && err.name === 'SyntaxError',
+    );
   });
 });
 // ---------------------------------------------------------------------------
@@ -1254,7 +1312,7 @@ describe('Large payload', () => {
       // Spot-check a few bytes
       equal(recvd[0], 0);
       equal(recvd[255], 255);
-      equal(recvd[BIG - 1], BIG - 1 & 255);
+      equal(recvd[BIG - 1], (BIG - 1) & 255);
     } finally {
       await server.close();
     }

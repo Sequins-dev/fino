@@ -1,9 +1,9 @@
 /**
-* Tests for serve() — the HTTP/1.1 server convenience function.
-*
-* Each test binds to a distinct port to avoid conflicts when tests run
-* concurrently. Ports are in the 19900–19920 range.
-*/
+ * Tests for serve() — the HTTP/1.1 server convenience function.
+ *
+ * Each test binds to a distinct port to avoid conflicts when tests run
+ * concurrently. Ports are in the 19900–19920 range.
+ */
 import { describe, it } from 'fino:test/test';
 import { serve, serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
@@ -14,7 +14,7 @@ async function roundtrip(port: number, rawRequest: string): Promise<string> {
   const sock = await Socket.connect({
     family: 'ipv4',
     ip: '127.0.0.1',
-    port
+    port,
   });
   const [reader, writer] = sock.split();
   await writer.write(encodeUtf8(rawRequest));
@@ -31,7 +31,11 @@ async function roundtrip(port: number, rawRequest: string): Promise<string> {
   }
   return decodeUtf8(all);
 }
-async function readUntil(reader: AsyncIterable<Uint8Array>, marker: string, timeoutMs = 500): Promise<{
+async function readUntil(
+  reader: AsyncIterable<Uint8Array>,
+  marker: string,
+  timeoutMs = 500,
+): Promise<{
   text: string;
   iter: AsyncIterator<Uint8Array>;
 }> {
@@ -39,31 +43,43 @@ async function readUntil(reader: AsyncIterable<Uint8Array>, marker: string, time
   let text = '';
   while (!text.includes(marker)) {
     const timer = loop.timeout(timeoutMs);
-    const result = await Promise.race([iter.next(), timer.then(() => ({
-      done: false,
-      value: encodeUtf8('__timeout__')
-    }))]);
+    const result = await Promise.race([
+      iter.next(),
+      timer.then(() => ({
+        done: false,
+        value: encodeUtf8('__timeout__'),
+      })),
+    ]);
     timer.cancel();
     const { done, value } = result;
-    if (!done && decodeUtf8(value) === '__timeout__') throw new Error(`timed out waiting for ${marker}`);
+    if (!done && decodeUtf8(value) === '__timeout__')
+      throw new Error(`timed out waiting for ${marker}`);
     if (done) break;
     text += decodeUtf8(value);
   }
   return {
     text,
-    iter
+    iter,
   };
 }
 describe('Request / Response basics', () => {
   it('binds and serves on IPv6 loopback when available', async (t) => {
     let server: ReturnType<typeof serve> | null = null;
     try {
-      server = serveHttp({
-        hostname: '::1',
-        port: 0
-      }, async () => new Response('ipv6-ok'));
+      server = serveHttp(
+        {
+          hostname: '::1',
+          port: 0,
+        },
+        async () => new Response('ipv6-ok'),
+      );
     } catch (err: unknown) {
-      t.ok(String(err).includes('EADDRNOTAVAIL') || String(err).includes('unsupported') || String(err).includes('address'), 'IPv6 loopback unavailable on this host: ' + String(err));
+      t.ok(
+        String(err).includes('EADDRNOTAVAIL') ||
+          String(err).includes('unsupported') ||
+          String(err).includes('address'),
+        'IPv6 loopback unavailable on this host: ' + String(err),
+      );
       return;
     }
     try {
@@ -71,10 +87,12 @@ describe('Request / Response basics', () => {
       const sock = await Socket.connect({
         family: 'ipv6',
         ip: '::1',
-        port: server.port
+        port: server.port,
       });
       const [reader, writer] = sock.split();
-      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: [::1]:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.write(
+        encodeUtf8(`GET / HTTP/1.1\r\nHost: [::1]:${server.port}\r\nConnection: close\r\n\r\n`),
+      );
       await writer.close();
       const chunks: Uint8Array[] = [];
       for await (const chunk of reader) chunks.push(chunk);
@@ -96,12 +114,20 @@ describe('Request / Response basics', () => {
   it('binds IPv6 wildcard when family is explicitly ipv6', async (t) => {
     let server: ReturnType<typeof serve> | null = null;
     try {
-      server = serveHttp({
-        family: 'ipv6',
-        port: 0
-      }, async () => new Response('ipv6-family-ok'));
+      server = serveHttp(
+        {
+          family: 'ipv6',
+          port: 0,
+        },
+        async () => new Response('ipv6-family-ok'),
+      );
     } catch (err: unknown) {
-      t.ok(String(err).includes('EADDRNOTAVAIL') || String(err).includes('unsupported') || String(err).includes('address'), 'IPv6 wildcard unavailable on this host: ' + String(err));
+      t.ok(
+        String(err).includes('EADDRNOTAVAIL') ||
+          String(err).includes('unsupported') ||
+          String(err).includes('address'),
+        'IPv6 wildcard unavailable on this host: ' + String(err),
+      );
       return;
     }
     try {
@@ -109,10 +135,12 @@ describe('Request / Response basics', () => {
       const sock = await Socket.connect({
         family: 'ipv6',
         ip: '::1',
-        port: server.port
+        port: server.port,
       });
       const [reader, writer] = sock.split();
-      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: [::1]:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.write(
+        encodeUtf8(`GET / HTTP/1.1\r\nHost: [::1]:${server.port}\r\nConnection: close\r\n\r\n`),
+      );
       await writer.close();
       const { text } = await readUntil(reader, 'ipv6-family-ok');
       t.ok(text.startsWith('HTTP/1.1 200'), 'IPv6 wildcard request receives 200');
@@ -123,15 +151,21 @@ describe('Request / Response basics', () => {
     }
   });
   it('accepts listen backlog and reuse options', async (t) => {
-    const server = serveHttp({
-      hostname: '127.0.0.1',
-      port: 0,
-      backlog: 1,
-      reuseAddr: true
-    }, async () => new Response('listen-options-ok'));
+    const server = serveHttp(
+      {
+        hostname: '127.0.0.1',
+        port: 0,
+        backlog: 1,
+        reuseAddr: true,
+      },
+      async () => new Response('listen-options-ok'),
+    );
     try {
       t.equal(server.address.family, 'ipv4', 'server reports IPv4 bind');
-      const response = await roundtrip(server.port, `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`);
+      const response = await roundtrip(
+        server.port,
+        `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`,
+      );
       t.ok(response.startsWith('HTTP/1.1 200'), 'server responds with listen options');
       t.ok(response.endsWith('listen-options-ok'), 'response body is delivered');
     } finally {
@@ -151,7 +185,7 @@ describe('Request / Response basics', () => {
       const sock = await Socket.connect({
         family: 'ipv4',
         ip: '127.0.0.1',
-        port: closedServer.port
+        port: closedServer.port,
       });
       sock.close();
     } catch {
@@ -205,9 +239,15 @@ describe('Request / Response basics', () => {
       await incoming.reject(new Response('nope', { status: 403 }));
     });
     const port = server.port;
-    const defaultResponse = await roundtrip(port, `GET /default HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`);
+    const defaultResponse = await roundtrip(
+      port,
+      `GET /default HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`,
+    );
     t.ok(defaultResponse.startsWith('HTTP/1.1 404'), 'default request reject yields 404');
-    const explicitResponse = await roundtrip(port, `GET /explicit HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`);
+    const explicitResponse = await roundtrip(
+      port,
+      `GET /explicit HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`,
+    );
     t.ok(explicitResponse.startsWith('HTTP/1.1 403'), 'explicit reject response is sent');
     t.ok(explicitResponse.endsWith('nope'), 'explicit reject body is sent');
     await server.close();
@@ -255,11 +295,11 @@ describe('Request / Response basics', () => {
     const raw = `GET /double HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
     const response = await roundtrip(port, raw);
     t.ok(response.startsWith('HTTP/1.1 200'), 'first response is sent');
-    t.deepEqual(errors, [
-      'TypeError',
-      'TypeError',
-      'TypeError'
-    ], 'double decisions throw TypeError');
+    t.deepEqual(
+      errors,
+      ['TypeError', 'TypeError', 'TypeError'],
+      'double decisions throw TypeError',
+    );
     await server.close();
   });
   it('POST request with body', async (t) => {
@@ -292,7 +332,10 @@ describe('Request / Response basics', () => {
     const raw = `DELETE / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
     const response = await roundtrip(port, raw);
     t.ok(response.startsWith('HTTP/1.1 204'), '204 status');
-    t.ok(!response.toLowerCase().includes('content-length'), '204 response MUST NOT have content-length');
+    t.ok(
+      !response.toLowerCase().includes('content-length'),
+      '204 response MUST NOT have content-length',
+    );
     await server.close();
   });
   it('HTTP TE+CL: content-length removed when transfer-encoding: chunked is present', async (t) => {
@@ -301,10 +344,12 @@ describe('Request / Response basics', () => {
     const server = serveHttp({ port: 0 }, async () => {
       // Handler returns a chunked response; serve() should strip any Content-Length
       // that would otherwise coexist.
-      return new Response('hello', { headers: {
-        'transfer-encoding': 'chunked',
-        'content-length': '100'
-      } });
+      return new Response('hello', {
+        headers: {
+          'transfer-encoding': 'chunked',
+          'content-length': '100',
+        },
+      });
     });
     const port = server.port;
     const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -324,7 +369,9 @@ describe('Request / Response basics', () => {
     const server = serveHttp({ port: 0 }, async (req) => {
       callCount++;
       const url = new URL(req.url);
-      return new Response(`response-${url.pathname.slice(1)}`, { headers: { 'content-type': 'text/plain' } });
+      return new Response(`response-${url.pathname.slice(1)}`, {
+        headers: { 'content-type': 'text/plain' },
+      });
     });
     try {
       // Two sequential fetches — if chunked body draining is broken, the second hangs.
@@ -420,11 +467,19 @@ describe('HTTP protocol conformance', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     try {
-      await writer.write(encodeUtf8(`POST /upload HTTP/1.1\r\n` + `Host: localhost:${port}\r\n` + `Expect: 100-continue\r\n` + `Content-Length: 7\r\n` + `Connection: close\r\n\r\n`));
+      await writer.write(
+        encodeUtf8(
+          `POST /upload HTTP/1.1\r\n` +
+            `Host: localhost:${port}\r\n` +
+            `Expect: 100-continue\r\n` +
+            `Content-Length: 7\r\n` +
+            `Connection: close\r\n\r\n`,
+        ),
+      );
       await writer.flush();
       let interim = '';
       let iter = reader[Symbol.asyncIterator]();
@@ -463,7 +518,12 @@ describe('HTTP protocol conformance', () => {
     });
     const port = server.port;
     try {
-      const raw = `POST /upload HTTP/1.1\r\n` + `Host: localhost:${port}\r\n` + `Expect: custom-expectation\r\n` + `Content-Length: 7\r\n` + `Connection: close\r\n\r\npayload`;
+      const raw =
+        `POST /upload HTTP/1.1\r\n` +
+        `Host: localhost:${port}\r\n` +
+        `Expect: custom-expectation\r\n` +
+        `Content-Length: 7\r\n` +
+        `Connection: close\r\n\r\npayload`;
       const response = await roundtrip(port, raw);
       t.ok(response.startsWith('HTTP/1.1 417'), 'unsupported Expect returns 417');
       t.equal(handlerCalled, false, 'handler is not called');
@@ -473,18 +533,21 @@ describe('HTTP protocol conformance', () => {
   });
   it('returns 408 when request headers exceed headersTimeoutMs', async (t) => {
     let handlerCalled = false;
-    const server = serveHttp({
-      port: 0,
-      headersTimeoutMs: 10
-    }, async () => {
-      handlerCalled = true;
-      return new Response('unexpected');
-    });
+    const server = serveHttp(
+      {
+        port: 0,
+        headersTimeoutMs: 10,
+      },
+      async () => {
+        handlerCalled = true;
+        return new Response('unexpected');
+      },
+    );
     const port = server.port;
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     try {
@@ -500,15 +563,18 @@ describe('HTTP protocol conformance', () => {
     }
   });
   it('closes idle keep-alive connections after idleTimeoutMs', async (t) => {
-    const server = serveHttp({
-      port: 0,
-      idleTimeoutMs: 10
-    }, async () => new Response('first'));
+    const server = serveHttp(
+      {
+        port: 0,
+        idleTimeoutMs: 10,
+      },
+      async () => new Response('first'),
+    );
     const port = server.port;
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     try {
@@ -516,10 +582,13 @@ describe('HTTP protocol conformance', () => {
       await writer.flush();
       const { text, iter } = await readUntil(reader, 'first');
       t.ok(text.startsWith('HTTP/1.1 200'), 'first response succeeds');
-      const eof = await Promise.race([iter.next(), loop.timeout(200).then(() => ({
-        done: false,
-        value: encodeUtf8('timeout')
-      }))]);
+      const eof = await Promise.race([
+        iter.next(),
+        loop.timeout(200).then(() => ({
+          done: false,
+          value: encodeUtf8('timeout'),
+        })),
+      ]);
       t.equal(eof.done, true, 'idle connection closes without another request');
     } finally {
       await writer.close();
@@ -542,7 +611,10 @@ describe('HTTP protocol conformance', () => {
     // Server should respond with 400 Bad Request (or close with no response).
     // The handler must NOT have been called with a malformed request.
     const isBadRequest = response.startsWith('HTTP/1.1 400') || response.length === 0;
-    t.ok(isBadRequest || !handlerCalled, 'conflicting Content-Length rejected: handler not called or 400 returned');
+    t.ok(
+      isBadRequest || !handlerCalled,
+      'conflicting Content-Length rejected: handler not called or 400 returned',
+    );
     await server.close();
   });
   it('duplicate identical Content-Length headers are accepted', async (t) => {
@@ -590,7 +662,7 @@ describe('Connection management', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n`));
@@ -606,7 +678,9 @@ describe('Connection management', () => {
     t.ok(received.includes('HTTP/1.1 200'), 'first response 200');
     t.ok(received.includes('connection: keep-alive'), 'keep-alive header set');
     t.ok(received.includes('req1'), 'first response body');
-    await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`));
+    await writer.write(
+      encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`),
+    );
     await writer.flush();
     let second = '';
     while (true) {
@@ -637,12 +711,16 @@ describe('Connection management', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
     // First request: has a body that the handler never reads, then throws.
     const body1 = 'request-body-content';
-    await writer.write(encodeUtf8(`POST / HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Length: ${body1.length}\r\n\r\n${body1}`));
+    await writer.write(
+      encodeUtf8(
+        `POST / HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Length: ${body1.length}\r\n\r\n${body1}`,
+      ),
+    );
     await writer.flush();
     let buf = '';
     const iter = reader[Symbol.asyncIterator]();
@@ -654,7 +732,9 @@ describe('Connection management', () => {
     }
     t.ok(buf.includes('HTTP/1.1 500'), 'first request returned 500');
     // Second request on same connection — parser must be in a clean state.
-    await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`));
+    await writer.write(
+      encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`),
+    );
     await writer.flush();
     let buf2 = '';
     while (true) {
@@ -681,11 +761,7 @@ describe('Connection management', () => {
     });
     const port = server.port;
     const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
-    await Promise.all([
-      roundtrip(port, raw),
-      roundtrip(port, raw),
-      roundtrip(port, raw)
-    ]);
+    await Promise.all([roundtrip(port, raw), roundtrip(port, raw), roundtrip(port, raw)]);
     t.ok(maxConcurrent > 1, 'connections handled concurrently (max=' + maxConcurrent + ')');
     await server.close();
   });
@@ -699,10 +775,15 @@ describe('Connection management', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
-    await writer.write(encodeUtf8(`GET /slow HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n` + `GET /fast HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`));
+    await writer.write(
+      encodeUtf8(
+        `GET /slow HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n` +
+          `GET /fast HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`,
+      ),
+    );
     await writer.flush();
     const bytes = await (async () => {
       const chunks = [];
@@ -740,10 +821,16 @@ describe('Connection management', () => {
     const sock = await Socket.connect({
       family: 'ipv4',
       ip: '127.0.0.1',
-      port
+      port,
     });
     const [reader, writer] = sock.split();
-    await writer.write(encodeUtf8(`GET /one HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n` + `GET /two HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n` + `GET /three HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`));
+    await writer.write(
+      encodeUtf8(
+        `GET /one HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n` +
+          `GET /two HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n` +
+          `GET /three HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`,
+      ),
+    );
     await writer.flush();
     const bytes = await (async () => {
       const chunks = [];

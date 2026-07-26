@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:security/token
-*/
+ * Benchmarks for fino:security/token
+ */
 import { issueToken, verifyToken } from 'fino:security/token';
 import { bench } from 'fino:bench';
 const secret = 'benchmark-secret';

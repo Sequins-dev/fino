@@ -3,7 +3,15 @@ import { agent } from 'fino:ai/agent';
 import { tool } from 'fino:ai/tool';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
-import { OtelSDK, InMemoryExporter, BatchSpanProcessor, BatchLogRecordProcessor, TraceTopicInstrumentation, PeriodicExportingMetricReader, Resource } from 'fino:opentelemetry/sdk';
+import {
+  OtelSDK,
+  InMemoryExporter,
+  BatchSpanProcessor,
+  BatchLogRecordProcessor,
+  TraceTopicInstrumentation,
+  PeriodicExportingMetricReader,
+  Resource,
+} from 'fino:opentelemetry/sdk';
 function scriptModel(turns: StreamEvent[][]): Model {
   let idx = 0;
   return {
@@ -24,7 +32,7 @@ function scriptModel(turns: StreamEvent[][]): Model {
     },
     async embed() {
       return [];
-    }
+    },
   };
 }
 function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[] {
@@ -33,28 +41,28 @@ function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[]
       type: 'tool_call_start',
       index: 0,
       id,
-      name
+      name,
     },
     {
       type: 'tool_call_delta',
       index: 0,
-      json: argsJson
+      json: argsJson,
     },
     {
       type: 'tool_call_end',
-      index: 0
+      index: 0,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 10,
-        outputTokens: 5
-      }
+        outputTokens: 5,
+      },
     },
     {
       type: 'stop',
-      reason: 'tool_use'
-    }
+      reason: 'tool_use',
+    },
   ];
 }
 function endTurn(text: string): StreamEvent[] {
@@ -62,19 +70,19 @@ function endTurn(text: string): StreamEvent[] {
     {
       type: 'text_delta',
       index: 0,
-      text
+      text,
     },
     {
       type: 'usage',
       usage: {
         inputTokens: 8,
-        outputTokens: 4
-      }
+        outputTokens: 4,
+      },
     },
     {
       type: 'stop',
-      reason: 'end_turn'
-    }
+      reason: 'end_turn',
+    },
   ];
 }
 describe('agent telemetry', () => {
@@ -85,7 +93,7 @@ describe('agent telemetry', () => {
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
       metricReaders: [new PeriodicExportingMetricReader(exporter)],
       instrumentations: [new TraceTopicInstrumentation()],
-      resource: new Resource({ 'service.name': 'test' })
+      resource: new Resource({ 'service.name': 'test' }),
     }).start();
     const echo = tool({
       name: 'echo',
@@ -93,20 +101,22 @@ describe('agent telemetry', () => {
       parameters: {
         type: 'object',
         properties: { msg: { type: 'string' } },
-        required: ['msg']
+        required: ['msg'],
       },
-      execute: (args: {
-        msg: string;
-      }) => args.msg
+      execute: (args: { msg: string }) => args.msg,
     });
     const h = agent({
       model: scriptModel([toolCallTurn('c1', 'echo', '{"msg":"hi"}'), endTurn('done')]),
-      tools: [echo]
+      tools: [echo],
     });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'go'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'go',
+        },
+      ],
+    });
     await sdk.flush();
     const spans = exporter.getFinishedSpans();
     const runSpan = spans.find((s) => s.name === 'invoke_agent');
@@ -115,9 +125,17 @@ describe('agent telemetry', () => {
     t.ok(runSpan, 'invoke_agent span exists');
     t.ok(stepSpans.length >= 2, 'at least two chat spans');
     t.ok(toolSpan, 'execute_tool span exists');
-    t.equal(runSpan!.attributes['gen_ai.operation.name'], 'invoke_agent', 'gen_ai.operation.name=invoke_agent');
+    t.equal(
+      runSpan!.attributes['gen_ai.operation.name'],
+      'invoke_agent',
+      'gen_ai.operation.name=invoke_agent',
+    );
     t.equal(runSpan!.attributes['gen_ai.request.model'], 'claude-test', 'gen_ai.request.model');
-    t.equal(runSpan!.attributes['gen_ai.provider.name'], 'anthropic', 'gen_ai.provider.name derived from model name');
+    t.equal(
+      runSpan!.attributes['gen_ai.provider.name'],
+      'anthropic',
+      'gen_ai.provider.name derived from model name',
+    );
     for (const step of stepSpans) {
       t.equal(step.parentSpanId, runSpan!.spanId, 'chat parent is invoke_agent');
       t.equal(step.traceId, runSpan!.traceId, 'same trace');
@@ -127,7 +145,11 @@ describe('agent telemetry', () => {
     t.equal(toolSpan!.attributes['gen_ai.tool.name'], 'echo', 'gen_ai.tool.name');
     t.equal(toolSpan!.attributes['gen_ai.tool.call.id'], 'c1', 'gen_ai.tool.call.id');
     t.equal(toolSpan!.attributes['gen_ai.tool.type'], 'function', 'gen_ai.tool.type=function');
-    t.equal(toolSpan!.attributes['gen_ai.operation.name'], 'execute_tool', 'gen_ai.operation.name=execute_tool');
+    t.equal(
+      toolSpan!.attributes['gen_ai.operation.name'],
+      'execute_tool',
+      'gen_ai.operation.name=execute_tool',
+    );
     const firstStep = stepSpans[0]!;
     t.equal(firstStep.attributes['gen_ai.usage.input_tokens'], 10, 'gen_ai.usage.input_tokens');
     t.equal(firstStep.attributes['gen_ai.usage.output_tokens'], 5, 'gen_ai.usage.output_tokens');
@@ -137,63 +159,75 @@ describe('agent telemetry', () => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const throwTool = tool({
       name: 'fail',
       description: 'Throws',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       execute: () => {
         throw new RangeError('out of bounds');
       },
-      throwOnError: true
+      throwOnError: true,
     });
     const h = agent({
       model: scriptModel([toolCallTurn('c2', 'fail', '{}'), endTurn('recovered')]),
-      tools: [throwTool]
+      tools: [throwTool],
     });
     try {
-      await h.generate({ messages: [{
-        role: 'user',
-        content: 'go'
-      }] });
+      await h.generate({
+        messages: [
+          {
+            role: 'user',
+            content: 'go',
+          },
+        ],
+      });
     } catch {}
     await sdk.flush();
     const toolSpan = exporter.getFinishedSpans().find((s) => s.name === 'execute_tool fail');
     t.ok(toolSpan, 'execute_tool span exists even on throw');
     t.equal(toolSpan!.status?.code, 'ERROR', 'span status is ERROR on throw');
-    t.equal(toolSpan!.attributes['error.type'], 'RangeError', 'error.type is the exception class name');
+    t.equal(
+      toolSpan!.attributes['error.type'],
+      'RangeError',
+      'error.type is the exception class name',
+    );
     await sdk.shutdown();
   });
   it('isError tool result yields ERROR status on the execute_tool span', async (t) => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const badTool = tool({
       name: 'bad',
       description: 'Returns isError',
       parameters: {
         type: 'object',
-        properties: {}
+        properties: {},
       },
       execute: () => ({
         content: 'something broke',
-        isError: true
-      })
+        isError: true,
+      }),
     });
     const h = agent({
       model: scriptModel([toolCallTurn('c3', 'bad', '{}'), endTurn('recovered')]),
-      tools: [badTool]
+      tools: [badTool],
     });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'go'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'go',
+        },
+      ],
+    });
     await sdk.flush();
     const toolSpan = exporter.getFinishedSpans().find((s) => s.name === 'execute_tool bad');
     t.ok(toolSpan, 'execute_tool span exists');
@@ -205,13 +239,17 @@ describe('agent telemetry', () => {
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       metricReaders: [new PeriodicExportingMetricReader(exporter)],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const h = agent({ model: scriptModel([endTurn('hello')]) });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'hi'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'hi',
+        },
+      ],
+    });
     await sdk.flush();
     const metrics = exporter.getFinishedMetrics();
     const tokenUsage = metrics.filter((m) => m.name === 'gen_ai.client.token.usage');
@@ -240,16 +278,22 @@ describe('agent telemetry', () => {
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const h = agent({ model: scriptModel([endTurn('hi')]) });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'hello'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'hello',
+        },
+      ],
+    });
     await sdk.flush();
     const logs = exporter.getFinishedLogs();
-    const detailsLog = logs.find((l) => l.eventName === 'gen_ai.client.inference.operation.details');
+    const detailsLog = logs.find(
+      (l) => l.eventName === 'gen_ai.client.inference.operation.details',
+    );
     t.ok(detailsLog, 'gen_ai.client.inference.operation.details log event emitted');
     if (detailsLog) {
       const attrs = detailsLog.attributes as Record<string, unknown>;
@@ -264,23 +308,33 @@ describe('agent telemetry', () => {
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
       logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const h = agent({
       model: scriptModel([endTurn('hi')]),
-      captureContent: false
+      captureContent: false,
     });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'secret'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'secret',
+        },
+      ],
+    });
     await sdk.flush();
     const logs = exporter.getFinishedLogs();
-    const detailsLog = logs.find((l) => l.eventName === 'gen_ai.client.inference.operation.details');
+    const detailsLog = logs.find(
+      (l) => l.eventName === 'gen_ai.client.inference.operation.details',
+    );
     t.ok(detailsLog, 'log event still emitted');
     if (detailsLog) {
       const attrs = detailsLog.attributes as Record<string, unknown>;
-      t.equal(attrs['gen_ai.input.messages'], undefined, 'gen_ai.input.messages omitted when captureContent=false');
+      t.equal(
+        attrs['gen_ai.input.messages'],
+        undefined,
+        'gen_ai.input.messages omitted when captureContent=false',
+      );
     }
     await sdk.shutdown();
   });
@@ -288,20 +342,28 @@ describe('agent telemetry', () => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new TraceTopicInstrumentation()]
+      instrumentations: [new TraceTopicInstrumentation()],
     }).start();
     const h = agent({
       model: scriptModel([endTurn('done')]),
-      name: 'my-agent'
+      name: 'my-agent',
     });
-    await h.generate({ messages: [{
-      role: 'user',
-      content: 'go'
-    }] });
+    await h.generate({
+      messages: [
+        {
+          role: 'user',
+          content: 'go',
+        },
+      ],
+    });
     await sdk.flush();
     const runSpan = exporter.getFinishedSpans().find((s) => s.name === 'invoke_agent');
     t.ok(runSpan, 'invoke_agent span exists');
-    t.equal(runSpan!.attributes['gen_ai.agent.name'], 'my-agent', 'gen_ai.agent.name set from agent name');
+    t.equal(
+      runSpan!.attributes['gen_ai.agent.name'],
+      'my-agent',
+      'gen_ai.agent.name set from agent name',
+    );
     await sdk.shutdown();
   });
 });

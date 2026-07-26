@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:data/arrow (build, IPC, C Data Interface).
-*/
+ * Benchmarks for fino:data/arrow (build, IPC, C Data Interface).
+ */
 import * as arrow from 'fino:data/arrow';
 import { exportVector, importVector } from 'fino:data/arrow/cdata';
 import { Field } from 'fino:data/arrow';
@@ -10,14 +10,17 @@ const ints = Array.from({ length: N }, (_, i) => i);
 const strings = Array.from({ length: N }, (_, i) => `item-${i % 1e3}`);
 const intVec = arrow.vectorFromArray(ints, arrow.int32());
 const strVec = arrow.vectorFromArray(strings, arrow.utf8());
-const batch = new arrow.RecordBatch(arrow.Schema.from({
-  id: arrow.int32(),
-  name: arrow.utf8()
-}), [intVec, strVec]);
+const batch = new arrow.RecordBatch(
+  arrow.Schema.from({
+    id: arrow.int32(),
+    name: arrow.utf8(),
+  }),
+  [intVec, strVec],
+);
 const rawBuffers: arrow.VectorData = {
   type: arrow.int32(),
   length: N,
-  values: new Uint8Array(new Int32Array(ints).buffer)
+  values: new Uint8Array(new Int32Array(ints).buffer),
 };
 const streamBytes = arrow.tableToIPC(batch);
 bench('build', (b) => {

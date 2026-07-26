@@ -1,15 +1,15 @@
 /**
-* Internal UTF-8 byte helpers shared by runtime modules.
-*
-* These helpers are deliberately outside `js/globals/encoding.ts` because
-* `encodeUtf8()` and `decodeUtf8()` are implementation primitives, not web
-* standard globals. Public code should use `TextEncoder` and `TextDecoder`.
-*
-* @internal
-*/
+ * Internal UTF-8 byte helpers shared by runtime modules.
+ *
+ * These helpers are deliberately outside `js/globals/encoding.ts` because
+ * `encodeUtf8()` and `decodeUtf8()` are implementation primitives, not web
+ * standard globals. Public code should use `TextEncoder` and `TextDecoder`.
+ *
+ * @internal
+ */
 /**
-* Encode a JS string to a Uint8Array of UTF-8 bytes.
-*/
+ * Encode a JS string to a Uint8Array of UTF-8 bytes.
+ */
 export function encodeUtf8(str: string): Uint8Array {
   let ascii = true;
   for (let i = 0; i < str.length; i++) {
@@ -30,7 +30,7 @@ export function encodeUtf8(str: string): Uint8Array {
     if (cp >= 55296 && cp <= 56319) {
       const lo = str.charCodeAt(i + 1);
       if (lo >= 56320 && lo <= 57343) {
-        cp = 65536 + (cp - 55296 << 10) + (lo - 56320);
+        cp = 65536 + ((cp - 55296) << 10) + (lo - 56320);
         i++;
       } else {
         cp = 65533;
@@ -41,29 +41,33 @@ export function encodeUtf8(str: string): Uint8Array {
     if (cp < 128) {
       buf[pos++] = cp;
     } else if (cp < 2048) {
-      buf[pos++] = 192 | cp >> 6;
-      buf[pos++] = 128 | cp & 63;
+      buf[pos++] = 192 | (cp >> 6);
+      buf[pos++] = 128 | (cp & 63);
     } else if (cp < 65536) {
-      buf[pos++] = 224 | cp >> 12;
-      buf[pos++] = 128 | cp >> 6 & 63;
-      buf[pos++] = 128 | cp & 63;
+      buf[pos++] = 224 | (cp >> 12);
+      buf[pos++] = 128 | ((cp >> 6) & 63);
+      buf[pos++] = 128 | (cp & 63);
     } else {
-      buf[pos++] = 240 | cp >> 18;
-      buf[pos++] = 128 | cp >> 12 & 63;
-      buf[pos++] = 128 | cp >> 6 & 63;
-      buf[pos++] = 128 | cp & 63;
+      buf[pos++] = 240 | (cp >> 18);
+      buf[pos++] = 128 | ((cp >> 12) & 63);
+      buf[pos++] = 128 | ((cp >> 6) & 63);
+      buf[pos++] = 128 | (cp & 63);
     }
   }
   return buf.subarray(0, pos);
 }
 /**
-* Decode UTF-8 bytes to a JS string.
-*
-* In fatal mode malformed sequences throw `TypeError`; otherwise malformed
-* bytes are replaced with U+FFFD. When `skipBom` is true, an initial UTF-8 BOM
-* is omitted.
-*/
-export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: boolean = true): string {
+ * Decode UTF-8 bytes to a JS string.
+ *
+ * In fatal mode malformed sequences throw `TypeError`; otherwise malformed
+ * bytes are replaced with U+FFFD. When `skipBom` is true, an initial UTF-8 BOM
+ * is omitted.
+ */
+export function decodeUtf8(
+  bytes: Uint8Array,
+  fatal: boolean = false,
+  skipBom: boolean = true,
+): string {
   if (!fatal && skipBom) {
     let ascii = true;
     for (let k = 0; k < bytes.length; k++) {
@@ -73,10 +77,11 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
       }
     }
     if (ascii) {
-      if (bytes.length <= 65536) return String.fromCharCode.apply(null, (bytes as unknown) as number[]);
+      if (bytes.length <= 65536)
+        return String.fromCharCode.apply(null, bytes as unknown as number[]);
       let out = '';
       for (let k = 0; k < bytes.length; k += 65536) {
-        out += String.fromCharCode.apply(null, (bytes.subarray(k, k + 65536) as unknown) as number[]);
+        out += String.fromCharCode.apply(null, bytes.subarray(k, k + 65536) as unknown as number[]);
       }
       return out;
     }
@@ -101,16 +106,23 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
       cp = b0 & 7;
       seqLen = 4;
     } else {
-      if (fatal) throw new TypeError(`TextDecoder: invalid byte 0x${b0.toString(16)} at index ${i}`);
+      if (fatal)
+        throw new TypeError(`TextDecoder: invalid byte 0x${b0.toString(16)} at index ${i}`);
       str += '\uFFFD';
       i++;
       continue;
     }
     if (seqLen >= 3 && i + 1 < bytes.length) {
       const b1 = bytes[i + 1]!;
-      const invalidSecond = (b1 & 192) === 128 && (b0 === 224 && b1 < 160 || b0 === 237 && b1 > 159 || b0 === 240 && b1 < 144 || b0 === 244 && b1 > 143);
+      const invalidSecond =
+        (b1 & 192) === 128 &&
+        ((b0 === 224 && b1 < 160) ||
+          (b0 === 237 && b1 > 159) ||
+          (b0 === 240 && b1 < 144) ||
+          (b0 === 244 && b1 > 143));
       if (invalidSecond) {
-        if (fatal) throw new TypeError(`TextDecoder: invalid byte 0x${b1.toString(16)} at index ${i + 1}`);
+        if (fatal)
+          throw new TypeError(`TextDecoder: invalid byte 0x${b1.toString(16)} at index ${i + 1}`);
         str += '\uFFFD';
         i++;
         continue;
@@ -130,7 +142,7 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
         valid = false;
         break;
       }
-      cp = cp << 6 | bytes[i + j]! & 63;
+      cp = (cp << 6) | (bytes[i + j]! & 63);
     }
     if (!valid) {
       if (fatal) throw new TypeError(`TextDecoder: incomplete sequence at index ${i}`);
@@ -138,8 +150,15 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
       i += missingContinuation ? bytes.length - i : invalidContinuationOffset;
       continue;
     }
-    if (seqLen === 2 && cp < 128 || seqLen === 3 && cp < 2048 || seqLen === 4 && cp < 65536 || cp > 1114111 || cp >= 55296 && cp <= 57343) {
-      if (fatal) throw new TypeError(`TextDecoder: invalid code point U+${cp.toString(16)} at index ${i}`);
+    if (
+      (seqLen === 2 && cp < 128) ||
+      (seqLen === 3 && cp < 2048) ||
+      (seqLen === 4 && cp < 65536) ||
+      cp > 1114111 ||
+      (cp >= 55296 && cp <= 57343)
+    ) {
+      if (fatal)
+        throw new TypeError(`TextDecoder: invalid code point U+${cp.toString(16)} at index ${i}`);
       str += '\uFFFD';
       i += seqLen;
       continue;

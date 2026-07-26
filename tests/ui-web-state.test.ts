@@ -13,7 +13,7 @@ function snapshot(overrides: Partial<ViewSnapshot> = {}): ViewSnapshot {
     createdAt: now,
     updatedAt: now,
     expiresAt: now + 60_000,
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -26,8 +26,14 @@ describe('fino:ui/web/state', () => {
     loaded!.data.items = ['mutated'];
     t.deepEqual((await store.load('view-1'))!.data, { items: [] }, 'load returns a clone');
 
-    await store.save({ ...snapshot(), version: 1, data: { items: ['next'] } }, { expectVersion: 0 });
-    await t.rejects(() => store.save({ ...snapshot(), version: 2 }, { expectVersion: 0 }), /version conflict/);
+    await store.save(
+      { ...snapshot(), version: 1, data: { items: ['next'] } },
+      { expectVersion: 0 },
+    );
+    await t.rejects(
+      () => store.save({ ...snapshot(), version: 2 }, { expectVersion: 0 }),
+      /version conflict/,
+    );
   });
 
   it('persists head, history, and TTL sweep in DatabaseViewStore', async (t) => {
@@ -38,7 +44,11 @@ describe('fino:ui/web/state', () => {
     await store.save(expired);
 
     t.equal((await store.load('view-1'))!.version, 1, 'head loads latest version');
-    t.deepEqual((await store.history('view-1')).map((entry) => entry.version), [1, 0], 'history keeps versions newest first');
+    t.deepEqual(
+      (await store.history('view-1')).map((entry) => entry.version),
+      [1, 0],
+      'history keeps versions newest first',
+    );
     t.equal(await store.sweep(Date.now()), 1, 'sweep deletes expired heads');
     t.equal(await store.load('expired'), null, 'expired snapshot is gone');
     await store.close();

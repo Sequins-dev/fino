@@ -1,87 +1,137 @@
 /**
-* internal:net/http/h3/session — nghttp3 connection wrapper for HTTP/3.
-*
-* Wraps a single `nghttp3_conn` (via `fino:ffi` bindings) and exposes it to the
-* HTTP/3 client and server drivers as an ordinary JS object. The class owns all
-* of the native plumbing that HTTP/3 requires: the callbacks struct, the shared
-* data-reader struct, a small arena of reusable pointer slots, and the GC pins
-* that keep body buffers alive across FFI boundaries. Callers deal only in
-* `bigint` stream ids, header tuples, and byte chunks — never raw pointers.
-*
-* The session sits between two layers. Above it, a driver submits requests or
-* responses and receives decoded HTTP events through an `H3SessionCallbacks`
-* object. Below it, the same driver feeds inbound QUIC stream bytes in through
-* `readStream()` and lets `drainWrites()` push nghttp3's framed output back out
-* to the QUIC stream writers registered with `addQuicStream()`. nghttp3 does the
-* QPACK, framing, and HTTP semantics; this module is the adapter that turns its
-* C callback/vector API into event callbacks and owned `Uint8Array`s.
-*
-* Ordering matters during connection startup. A freshly created session must
-* have its control stream bound with `bindControlStream()` and its QPACK
-* encoder/decoder streams bound with `bindQpackStreams()` before any request or
-* response is submitted; `submitRequest`/`submitResponse` throw until the QPACK
-* streams exist. Each QUIC stream the driver opens must be registered with
-* `addQuicStream()` so the write drain can find its writer.
-*
-* Bodies may be a single `Uint8Array` or an async iterable of chunks. Async
-* bodies are pulled lazily: the native data reader returns "would block" and the
-* session resumes the stream once the next chunk resolves, so backpressure flows
-* from nghttp3 through to the producing iterator. Trailers submitted alongside a
-* body are deferred and flushed from the write drain rather than from inside the
-* data-reader callback, because re-entering nghttp3 there corrupts its state.
-*
-* `readStream()` and `drainWrites()` are guarded by a re-entrancy lock: calling
-* either while the other is on the stack throws rather than corrupting nghttp3.
-* All operations are synchronous and safe to run on the JS thread — the only
-* asynchrony is async body iteration, which schedules its continuation as a
-* microtask.
-*
-* WebTransport support is opt-in via `H3SessionOptions.webTransport`. When
-* enabled the session advertises the extended-CONNECT and H3-datagram SETTINGS,
-* buffers the peer's control-stream SETTINGS prefix until it can be decoded, and
-* injects the WebTransport SETTINGS into its own outgoing control stream.
-*
-* This is an internal building block; application code should use the HTTP/3
-* client and server drivers rather than driving a session directly.
-*
-* HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
-*
-* ```ts no_run
-* import { Nghttp3Session } from 'internal:net/http/h3/session';
-*
-* const session = Nghttp3Session.createServer({
-*   onBeginHeaders(streamId) {},
-*   onRecvHeader(streamId, token, name, value) {},
-*   onEndHeaders(streamId, fin) {
-*     session.submitResponse(streamId, [[':status', '200']],
-*       new TextEncoder().encode('hello'));
-*     session.drainWrites();
-*   },
-*   onBeginTrailers(streamId) {},
-*   onRecvTrailer(streamId, token, name, value) {},
-*   onEndTrailers(streamId, fin) {},
-*   onRecvData(streamId, data) {},
-*   onEndStream(streamId) {},
-*   onStreamClose(streamId, appErrorCode) {},
-*   onResetStream(streamId, appErrorCode) {},
-* });
-*
-* // Bind the HTTP/3 control and QPACK streams opened on the QUIC connection.
-* session.bindControlStream(controlStreamId);
-* session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
-* session.addQuicStream(controlStreamId, controlWriter);
-* session.drainWrites();
-*
-* // For each inbound QUIC request stream: register its writer, then feed bytes.
-* session.addQuicStream(requestStreamId, requestWriter);
-* session.readStream(requestStreamId, inboundBytes, true); // last arg: fin
-* ```
-*
-* @internal
-*/
+ * internal:net/http/h3/session — nghttp3 connection wrapper for HTTP/3.
+ *
+ * Wraps a single `nghttp3_conn` (via `fino:ffi` bindings) and exposes it to the
+ * HTTP/3 client and server drivers as an ordinary JS object. The class owns all
+ * of the native plumbing that HTTP/3 requires: the callbacks struct, the shared
+ * data-reader struct, a small arena of reusable pointer slots, and the GC pins
+ * that keep body buffers alive across FFI boundaries. Callers deal only in
+ * `bigint` stream ids, header tuples, and byte chunks — never raw pointers.
+ *
+ * The session sits between two layers. Above it, a driver submits requests or
+ * responses and receives decoded HTTP events through an `H3SessionCallbacks`
+ * object. Below it, the same driver feeds inbound QUIC stream bytes in through
+ * `readStream()` and lets `drainWrites()` push nghttp3's framed output back out
+ * to the QUIC stream writers registered with `addQuicStream()`. nghttp3 does the
+ * QPACK, framing, and HTTP semantics; this module is the adapter that turns its
+ * C callback/vector API into event callbacks and owned `Uint8Array`s.
+ *
+ * Ordering matters during connection startup. A freshly created session must
+ * have its control stream bound with `bindControlStream()` and its QPACK
+ * encoder/decoder streams bound with `bindQpackStreams()` before any request or
+ * response is submitted; `submitRequest`/`submitResponse` throw until the QPACK
+ * streams exist. Each QUIC stream the driver opens must be registered with
+ * `addQuicStream()` so the write drain can find its writer.
+ *
+ * Bodies may be a single `Uint8Array` or an async iterable of chunks. Async
+ * bodies are pulled lazily: the native data reader returns "would block" and the
+ * session resumes the stream once the next chunk resolves, so backpressure flows
+ * from nghttp3 through to the producing iterator. Trailers submitted alongside a
+ * body are deferred and flushed from the write drain rather than from inside the
+ * data-reader callback, because re-entering nghttp3 there corrupts its state.
+ *
+ * `readStream()` and `drainWrites()` are guarded by a re-entrancy lock: calling
+ * either while the other is on the stack throws rather than corrupting nghttp3.
+ * All operations are synchronous and safe to run on the JS thread — the only
+ * asynchrony is async body iteration, which schedules its continuation as a
+ * microtask.
+ *
+ * WebTransport support is opt-in via `H3SessionOptions.webTransport`. When
+ * enabled the session advertises the extended-CONNECT and H3-datagram SETTINGS,
+ * buffers the peer's control-stream SETTINGS prefix until it can be decoded, and
+ * injects the WebTransport SETTINGS into its own outgoing control stream.
+ *
+ * This is an internal building block; application code should use the HTTP/3
+ * client and server drivers rather than driving a session directly.
+ *
+ * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ *
+ * ```ts no_run
+ * import { Nghttp3Session } from 'internal:net/http/h3/session';
+ *
+ * const session = Nghttp3Session.createServer({
+ *   onBeginHeaders(streamId) {},
+ *   onRecvHeader(streamId, token, name, value) {},
+ *   onEndHeaders(streamId, fin) {
+ *     session.submitResponse(streamId, [[':status', '200']],
+ *       new TextEncoder().encode('hello'));
+ *     session.drainWrites();
+ *   },
+ *   onBeginTrailers(streamId) {},
+ *   onRecvTrailer(streamId, token, name, value) {},
+ *   onEndTrailers(streamId, fin) {},
+ *   onRecvData(streamId, data) {},
+ *   onEndStream(streamId) {},
+ *   onStreamClose(streamId, appErrorCode) {},
+ *   onResetStream(streamId, appErrorCode) {},
+ * });
+ *
+ * // Bind the HTTP/3 control and QPACK streams opened on the QUIC connection.
+ * session.bindControlStream(controlStreamId);
+ * session.bindQpackStreams(qpackEncoderStreamId, qpackDecoderStreamId);
+ * session.addQuicStream(controlStreamId, controlWriter);
+ * session.drainWrites();
+ *
+ * // For each inbound QUIC request stream: register its writer, then feed bytes.
+ * session.addQuicStream(requestStreamId, requestWriter);
+ * session.readStream(requestStreamId, inboundBytes, true); // last arg: fin
+ * ```
+ *
+ * @internal
+ */
 import { TextDecoder as _TextDecoder } from '../../../../globals/encoding.ts';
-import { sym, FfiCallback, Pointer, h3Available, NGHTTP3_CALLBACKS_VERSION, NGHTTP3_SETTINGS_VERSION, CB_SIZE, SETTINGS_SIZE, CB_ACKED_STREAM_DATA, CB_STREAM_CLOSE, CB_RECV_DATA, CB_DEFERRED_CONSUME, CB_BEGIN_HEADERS, CB_RECV_HEADER, CB_END_HEADERS, CB_BEGIN_TRAILERS, CB_RECV_TRAILER, CB_END_TRAILERS, CB_END_STREAM, CB_RESET_STREAM, CB_SHUTDOWN, CB_RECV_SETTINGS2, SETTINGS_ENABLE_CONNECT_PROTOCOL as NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL, SETTINGS_H3_DATAGRAM as NGHTTP3_SETTINGS_H3_DATAGRAM, PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL, PROTO_SETTINGS_H3_DATAGRAM, NV_ENTRY_SIZE, VEC_ENTRY_SIZE, DR_READ_DATA, DR_SIZE, NGHTTP3_DATA_FLAG_EOF, NGHTTP3_DATA_FLAG_NO_END_STREAM, NGHTTP3_ERR_WOULDBLOCK, NGHTTP3_ERR_FATAL, NGHTTP3_ERR_MALFORMED_HTTP_HEADER, NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING, NGHTTP3_H3_MESSAGE_ERROR, NGHTTP3_H3_REQUEST_CANCELLED, buildNvArray, readRcbuf, writeCbPtr } from './bindings.ts';
-import { injectWebTransportSettings, readWebTransportSettings, SETTINGS_WT_ENABLED, SETTINGS_ENABLE_CONNECT_PROTOCOL, SETTINGS_H3_DATAGRAM, webTransportSettings, webTransportSettingsEnabled } from './webtransport.ts';
+import {
+  sym,
+  FfiCallback,
+  Pointer,
+  h3Available,
+  NGHTTP3_CALLBACKS_VERSION,
+  NGHTTP3_SETTINGS_VERSION,
+  CB_SIZE,
+  SETTINGS_SIZE,
+  CB_ACKED_STREAM_DATA,
+  CB_STREAM_CLOSE,
+  CB_RECV_DATA,
+  CB_DEFERRED_CONSUME,
+  CB_BEGIN_HEADERS,
+  CB_RECV_HEADER,
+  CB_END_HEADERS,
+  CB_BEGIN_TRAILERS,
+  CB_RECV_TRAILER,
+  CB_END_TRAILERS,
+  CB_END_STREAM,
+  CB_RESET_STREAM,
+  CB_SHUTDOWN,
+  CB_RECV_SETTINGS2,
+  SETTINGS_ENABLE_CONNECT_PROTOCOL as NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  SETTINGS_H3_DATAGRAM as NGHTTP3_SETTINGS_H3_DATAGRAM,
+  PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  PROTO_SETTINGS_H3_DATAGRAM,
+  NV_ENTRY_SIZE,
+  VEC_ENTRY_SIZE,
+  DR_READ_DATA,
+  DR_SIZE,
+  NGHTTP3_DATA_FLAG_EOF,
+  NGHTTP3_DATA_FLAG_NO_END_STREAM,
+  NGHTTP3_ERR_WOULDBLOCK,
+  NGHTTP3_ERR_FATAL,
+  NGHTTP3_ERR_MALFORMED_HTTP_HEADER,
+  NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING,
+  NGHTTP3_H3_MESSAGE_ERROR,
+  NGHTTP3_H3_REQUEST_CANCELLED,
+  buildNvArray,
+  readRcbuf,
+  writeCbPtr,
+} from './bindings.ts';
+import {
+  injectWebTransportSettings,
+  readWebTransportSettings,
+  SETTINGS_WT_ENABLED,
+  SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  SETTINGS_H3_DATAGRAM,
+  webTransportSettings,
+  webTransportSettingsEnabled,
+} from './webtransport.ts';
 /**
  * Re-exported from the h3 bindings module so drivers can build the native
  * name/value header array without importing `bindings.ts` separately.
@@ -216,35 +266,63 @@ const _PTR_DR = 5;
 const _PTR_TRAILERS = 6;
 function nameForQpackToken(token: number): string | null {
   switch (token) {
-    case 0: return ':authority';
-    case 1: return ':method';
-    case 8: return ':path';
-    case 9: return ':scheme';
-    case 11: return ':status';
-    case 25: return 'accept';
-    case 27: return 'accept-encoding';
-    case 28: return 'accept-language';
-    case 45: return 'authorization';
-    case 55: return 'content-length';
-    case 57: return 'content-type';
-    case 68: return 'cookie';
-    case 91: return 'user-agent';
-    case 1e3: return 'host';
-    case 1001: return 'connection';
-    case 1002: return 'keep-alive';
-    case 1003: return 'proxy-connection';
-    case 1004: return 'transfer-encoding';
-    case 1005: return 'upgrade';
-    case 1006: return 'te';
-    case 1007: return ':protocol';
-    default: return null;
+    case 0:
+      return ':authority';
+    case 1:
+      return ':method';
+    case 8:
+      return ':path';
+    case 9:
+      return ':scheme';
+    case 11:
+      return ':status';
+    case 25:
+      return 'accept';
+    case 27:
+      return 'accept-encoding';
+    case 28:
+      return 'accept-language';
+    case 45:
+      return 'authorization';
+    case 55:
+      return 'content-length';
+    case 57:
+      return 'content-type';
+    case 68:
+      return 'cookie';
+    case 91:
+      return 'user-agent';
+    case 1e3:
+      return 'host';
+    case 1001:
+      return 'connection';
+    case 1002:
+      return 'keep-alive';
+    case 1003:
+      return 'proxy-connection';
+    case 1004:
+      return 'transfer-encoding';
+    case 1005:
+      return 'upgrade';
+    case 1006:
+      return 'te';
+    case 1007:
+      return ':protocol';
+    default:
+      return null;
   }
 }
 function protoSettingsToMap(settingsPtr: ArrayBuffer | null): Map<number, number> {
   const settings = new Map<number, number>();
   if (settingsPtr === null) return settings;
-  settings.set(SETTINGS_ENABLE_CONNECT_PROTOCOL, Pointer.readU8(settingsPtr, PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL) === 0 ? 0 : 1);
-  settings.set(SETTINGS_H3_DATAGRAM, Pointer.readU8(settingsPtr, PROTO_SETTINGS_H3_DATAGRAM) === 0 ? 0 : 1);
+  settings.set(
+    SETTINGS_ENABLE_CONNECT_PROTOCOL,
+    Pointer.readU8(settingsPtr, PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL) === 0 ? 0 : 1,
+  );
+  settings.set(
+    SETTINGS_H3_DATAGRAM,
+    Pointer.readU8(settingsPtr, PROTO_SETTINGS_H3_DATAGRAM) === 0 ? 0 : 1,
+  );
   return settings;
 }
 function concatBytes(parts: Uint8Array[]): Uint8Array {
@@ -296,7 +374,10 @@ export class Nghttp3Session {
   #cbsBuf: Uint8Array;
   #drBuf: Uint8Array;
   #ptrArena = new ArrayBuffer(_PTR_SIZE * 8);
-  #ptrSlots = Array.from({ length: 8 }, (_, i) => new Uint8Array(this.#ptrArena, i * _PTR_SIZE, _PTR_SIZE));
+  #ptrSlots = Array.from(
+    { length: 8 },
+    (_, i) => new Uint8Array(this.#ptrArena, i * _PTR_SIZE, _PTR_SIZE),
+  );
   #writeStreamIdBuf = new ArrayBuffer(8);
   #writeStreamIdView = new DataView(this.#writeStreamIdBuf);
   #writeFinBuf = new ArrayBuffer(4);
@@ -309,14 +390,17 @@ export class Nghttp3Session {
   #pendingTrailers = new Map<bigint, Array<[string, string]>>();
   #yieldedBytes = new Map<bigint, Uint8Array>();
   #webTransportSettingsPrefixes = new Map<bigint, Uint8Array>();
-  #quicStreams = new Map<bigint, {
-    writer: {
-      write(b: Uint8Array): Promise<void>;
-      writeSync?(b: Uint8Array, owned?: boolean): void;
-      close(): Promise<void>;
-      closeSync?(): void;
-    };
-  }>();
+  #quicStreams = new Map<
+    bigint,
+    {
+      writer: {
+        write(b: Uint8Array): Promise<void>;
+        writeSync?(b: Uint8Array, owned?: boolean): void;
+        close(): Promise<void>;
+        closeSync?(): void;
+      };
+    }
+  >();
   #closed = false;
   #ready = false;
   #qpackStreamsBound = false;
@@ -327,7 +411,12 @@ export class Nghttp3Session {
   #webTransport = false;
   #controlStreamId: bigint | null = null;
   readonly #cb: H3SessionCallbacks;
-  private constructor(conn: ArrayBuffer, cbsBuf: Uint8Array, drBuf: Uint8Array, cb: H3SessionCallbacks) {
+  private constructor(
+    conn: ArrayBuffer,
+    cbsBuf: Uint8Array,
+    drBuf: Uint8Array,
+    cb: H3SessionCallbacks,
+  ) {
     this.#conn = conn;
     this.#cbsBuf = cbsBuf;
     this.#drBuf = drBuf;
@@ -387,7 +476,11 @@ export class Nghttp3Session {
     if (!h3Available || sym === null) throw new Error('libnghttp3 is not available');
     return Nghttp3Session.#create(cb, false, options);
   }
-  static #create(cb: H3SessionCallbacks, isServer: boolean, options: H3SessionOptions): Nghttp3Session {
+  static #create(
+    cb: H3SessionCallbacks,
+    isServer: boolean,
+    options: H3SessionOptions,
+  ): Nghttp3Session {
     // Allocate the 152-byte callbacks struct (zeroed = null callbacks for unused fields).
     const cbsBuf = new Uint8Array(CB_SIZE);
     // Allocate 8-byte out-param buffer for the conn pointer.
@@ -406,7 +499,25 @@ export class Nghttp3Session {
       settingsBuf[NGHTTP3_SETTINGS_H3_DATAGRAM] = 1;
       for (const [id, value] of webTransportSettings()) localSettings.set(id, value);
     }
-    const rc = isServer ? sym!.nghttp3_conn_server_new_versioned(Pointer.of(connHandle), NGHTTP3_CALLBACKS_VERSION, Pointer.of(cbsBuf), NGHTTP3_SETTINGS_VERSION, Pointer.of(settingsBuf), null, null) as number : sym!.nghttp3_conn_client_new_versioned(Pointer.of(connHandle), NGHTTP3_CALLBACKS_VERSION, Pointer.of(cbsBuf), NGHTTP3_SETTINGS_VERSION, Pointer.of(settingsBuf), null, null) as number;
+    const rc = isServer
+      ? (sym!.nghttp3_conn_server_new_versioned(
+          Pointer.of(connHandle),
+          NGHTTP3_CALLBACKS_VERSION,
+          Pointer.of(cbsBuf),
+          NGHTTP3_SETTINGS_VERSION,
+          Pointer.of(settingsBuf),
+          null,
+          null,
+        ) as number)
+      : (sym!.nghttp3_conn_client_new_versioned(
+          Pointer.of(connHandle),
+          NGHTTP3_CALLBACKS_VERSION,
+          Pointer.of(cbsBuf),
+          NGHTTP3_SETTINGS_VERSION,
+          Pointer.of(settingsBuf),
+          null,
+          null,
+        ) as number);
     if (rc !== 0) {
       session.#closed = true;
       throw new Error(`nghttp3_conn_${isServer ? 'server' : 'client'}_new_versioned failed: ${rc}`);
@@ -422,280 +533,295 @@ export class Nghttp3Session {
     const cb = this.#cb;
     if (cb.onAckedStreamData !== undefined) {
       // acked_stream_data: nghttp3 no longer needs the body bytes.
-      const ackedStreamData = new FfiCallback({
-        parameters: [
-          'ignoredPointer',
-          'i64',
-          'usize',
-          'ignoredPointer',
-          'ignoredPointer'
-        ],
-        result: 'i32'
-      }, (_conn: ArrayBuffer, streamId: bigint, datalen: bigint) => {
-        cb.onAckedStreamData!(streamId, datalen);
-        return 0;
-      });
+      const ackedStreamData = new FfiCallback(
+        {
+          parameters: ['ignoredPointer', 'i64', 'usize', 'ignoredPointer', 'ignoredPointer'],
+          result: 'i32',
+        },
+        (_conn: ArrayBuffer, streamId: bigint, datalen: bigint) => {
+          cb.onAckedStreamData!(streamId, datalen);
+          return 0;
+        },
+      );
       writeCbPtr(cbsBuf, CB_ACKED_STREAM_DATA, ackedStreamData);
       this.#callbacks.push(ackedStreamData);
     }
     // stream_close: stream finished (cleanly or with error).
-    const streamClose = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'u64',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
-      this.#bodySlots.delete(streamId);
-      this.#pendingTrailers.delete(streamId);
-      this.#yieldedBytes.delete(streamId);
-      this.#webTransportSettingsPrefixes.delete(streamId);
-      cb.onStreamClose(streamId, appErrorCode);
-      return 0;
-    });
+    const streamClose = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'i64', 'u64', 'ignoredPointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
+        this.#bodySlots.delete(streamId);
+        this.#pendingTrailers.delete(streamId);
+        this.#yieldedBytes.delete(streamId);
+        this.#webTransportSettingsPrefixes.delete(streamId);
+        cb.onStreamClose(streamId, appErrorCode);
+        return 0;
+      },
+    );
     writeCbPtr(cbsBuf, CB_STREAM_CLOSE, streamClose);
     this.#callbacks.push(streamClose);
     // recv_data: body chunk arrived on a stream.
-    const recvData = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'pointer',
-        'usize',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, dataPtr: ArrayBuffer, datalen: bigint) => {
-      const bytes = Pointer.copyFrom(dataPtr, Number(datalen)) as Uint8Array;
-      cb.onRecvData(streamId, bytes);
-      return 0;
-    });
+    const recvData = new FfiCallback(
+      {
+        parameters: [
+          'ignoredPointer',
+          'i64',
+          'pointer',
+          'usize',
+          'ignoredPointer',
+          'ignoredPointer',
+        ],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint, dataPtr: ArrayBuffer, datalen: bigint) => {
+        const bytes = Pointer.copyFrom(dataPtr, Number(datalen)) as Uint8Array;
+        cb.onRecvData(streamId, bytes);
+        return 0;
+      },
+    );
     writeCbPtr(cbsBuf, CB_RECV_DATA, recvData);
     this.#callbacks.push(recvData);
     // begin_headers: start of a request or response header block.
-    const beginHeaders = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint) => {
-      cb.onBeginHeaders(streamId);
-      return 0;
-    });
+    const beginHeaders = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'i64', 'ignoredPointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint) => {
+        cb.onBeginHeaders(streamId);
+        return 0;
+      },
+    );
     writeCbPtr(cbsBuf, CB_BEGIN_HEADERS, beginHeaders);
     this.#callbacks.push(beginHeaders);
     // recv_header: one decoded header field.
     // name and value are nghttp3_rcbuf* — read struct at offset 8 (base) and 16 (len).
-    const recvHeader = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'i32',
-        'pointer',
-        'pointer',
-        'u8',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, token: number, nameRcbuf: ArrayBuffer, valueRcbuf: ArrayBuffer, flags: number) => {
-      const name = nameForQpackToken(token) ?? readRcbuf(nameRcbuf);
-      const value = readRcbuf(valueRcbuf);
-      cb.onRecvHeader(streamId, token, name, value, flags);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_RECV_HEADER, recvHeader);
-    this.#callbacks.push(recvHeader);
-    // end_headers: header block complete.
-    const endHeaders = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'i32',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, fin: number) => {
-      cb.onEndHeaders(streamId, fin !== 0);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_END_HEADERS, endHeaders);
-    this.#callbacks.push(endHeaders);
-    // begin_trailers / recv_trailer / end_trailers — same shapes as headers.
-    const beginTrailers = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint) => {
-      cb.onBeginTrailers(streamId);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_BEGIN_TRAILERS, beginTrailers);
-    this.#callbacks.push(beginTrailers);
-    const recvTrailer = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'i32',
-        'pointer',
-        'pointer',
-        'u8',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, token: number, nameRcbuf: ArrayBuffer, valueRcbuf: ArrayBuffer, flags: number) => {
-      cb.onRecvTrailer(streamId, token, nameForQpackToken(token) ?? readRcbuf(nameRcbuf), readRcbuf(valueRcbuf), flags);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_RECV_TRAILER, recvTrailer);
-    this.#callbacks.push(recvTrailer);
-    const endTrailers = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'i32',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, fin: number) => {
-      cb.onEndTrailers(streamId, fin !== 0);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_END_TRAILERS, endTrailers);
-    this.#callbacks.push(endTrailers);
-    // end_stream: FIN received on the stream.
-    const endStream = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint) => {
-      cb.onEndStream(streamId);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_END_STREAM, endStream);
-    this.#callbacks.push(endStream);
-    // reset_stream: remote sent RESET_STREAM.
-    const resetStream = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'u64',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
-      this.#bodySlots.delete(streamId);
-      this.#pendingTrailers.delete(streamId);
-      this.#yieldedBytes.delete(streamId);
-      this.#webTransportSettingsPrefixes.delete(streamId);
-      cb.onResetStream(streamId, appErrorCode);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_RESET_STREAM, resetStream);
-    this.#callbacks.push(resetStream);
-    if (cb.onShutdown) {
-      const shutdown = new FfiCallback({
+    const recvHeader = new FfiCallback(
+      {
         parameters: [
           'ignoredPointer',
           'i64',
-          'ignoredPointer'
+          'i32',
+          'pointer',
+          'pointer',
+          'u8',
+          'ignoredPointer',
+          'ignoredPointer',
         ],
-        result: 'i32'
-      }, (_conn: ArrayBuffer, id: bigint) => {
-        cb.onShutdown!(id);
+        result: 'i32',
+      },
+      (
+        _conn: ArrayBuffer,
+        streamId: bigint,
+        token: number,
+        nameRcbuf: ArrayBuffer,
+        valueRcbuf: ArrayBuffer,
+        flags: number,
+      ) => {
+        const name = nameForQpackToken(token) ?? readRcbuf(nameRcbuf);
+        const value = readRcbuf(valueRcbuf);
+        cb.onRecvHeader(streamId, token, name, value, flags);
         return 0;
-      });
+      },
+    );
+    writeCbPtr(cbsBuf, CB_RECV_HEADER, recvHeader);
+    this.#callbacks.push(recvHeader);
+    // end_headers: header block complete.
+    const endHeaders = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'i64', 'i32', 'ignoredPointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint, fin: number) => {
+        cb.onEndHeaders(streamId, fin !== 0);
+        return 0;
+      },
+    );
+    writeCbPtr(cbsBuf, CB_END_HEADERS, endHeaders);
+    this.#callbacks.push(endHeaders);
+    // begin_trailers / recv_trailer / end_trailers — same shapes as headers.
+    const beginTrailers = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'i64', 'ignoredPointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint) => {
+        cb.onBeginTrailers(streamId);
+        return 0;
+      },
+    );
+    writeCbPtr(cbsBuf, CB_BEGIN_TRAILERS, beginTrailers);
+    this.#callbacks.push(beginTrailers);
+    const recvTrailer = new FfiCallback(
+      {
+        parameters: [
+          'ignoredPointer',
+          'i64',
+          'i32',
+          'pointer',
+          'pointer',
+          'u8',
+          'ignoredPointer',
+          'ignoredPointer',
+        ],
+        result: 'i32',
+      },
+      (
+        _conn: ArrayBuffer,
+        streamId: bigint,
+        token: number,
+        nameRcbuf: ArrayBuffer,
+        valueRcbuf: ArrayBuffer,
+        flags: number,
+      ) => {
+        cb.onRecvTrailer(
+          streamId,
+          token,
+          nameForQpackToken(token) ?? readRcbuf(nameRcbuf),
+          readRcbuf(valueRcbuf),
+          flags,
+        );
+        return 0;
+      },
+    );
+    writeCbPtr(cbsBuf, CB_RECV_TRAILER, recvTrailer);
+    this.#callbacks.push(recvTrailer);
+    const endTrailers = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'i64', 'i32', 'ignoredPointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint, fin: number) => {
+        cb.onEndTrailers(streamId, fin !== 0);
+        return 0;
+      },
+    );
+    writeCbPtr(cbsBuf, CB_END_TRAILERS, endTrailers);
+    this.#callbacks.push(endTrailers);
+    // end_stream: FIN received on the stream.
+    const endStream = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'i64', 'ignoredPointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint) => {
+        cb.onEndStream(streamId);
+        return 0;
+      },
+    );
+    writeCbPtr(cbsBuf, CB_END_STREAM, endStream);
+    this.#callbacks.push(endStream);
+    // reset_stream: remote sent RESET_STREAM.
+    const resetStream = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'i64', 'u64', 'ignoredPointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
+        this.#bodySlots.delete(streamId);
+        this.#pendingTrailers.delete(streamId);
+        this.#yieldedBytes.delete(streamId);
+        this.#webTransportSettingsPrefixes.delete(streamId);
+        cb.onResetStream(streamId, appErrorCode);
+        return 0;
+      },
+    );
+    writeCbPtr(cbsBuf, CB_RESET_STREAM, resetStream);
+    this.#callbacks.push(resetStream);
+    if (cb.onShutdown) {
+      const shutdown = new FfiCallback(
+        {
+          parameters: ['ignoredPointer', 'i64', 'ignoredPointer'],
+          result: 'i32',
+        },
+        (_conn: ArrayBuffer, id: bigint) => {
+          cb.onShutdown!(id);
+          return 0;
+        },
+      );
       writeCbPtr(cbsBuf, CB_SHUTDOWN, shutdown);
       this.#callbacks.push(shutdown);
     }
-    const recvSettings2 = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'pointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, settingsPtr: ArrayBuffer | null) => {
-      this.#recordPeerSettings(protoSettingsToMap(settingsPtr));
-      return 0;
-    });
+    const recvSettings2 = new FfiCallback(
+      {
+        parameters: ['ignoredPointer', 'pointer', 'ignoredPointer'],
+        result: 'i32',
+      },
+      (_conn: ArrayBuffer, settingsPtr: ArrayBuffer | null) => {
+        this.#recordPeerSettings(protoSettingsToMap(settingsPtr));
+        return 0;
+      },
+    );
     writeCbPtr(cbsBuf, CB_RECV_SETTINGS2, recvSettings2);
     this.#callbacks.push(recvSettings2);
   }
   // Shared read_data callback for all response body submissions.
   #installDataReader(drBuf: Uint8Array): void {
-    const readData = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'pointer',
-        'usize',
-        'pointer',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'isize'
-    }, (_conn: ArrayBuffer, streamId: bigint, vecBuf: ArrayBuffer, _veccnt: bigint, pflagsPtr: ArrayBuffer): number => {
-      const slot = this.#bodySlots.get(streamId);
-      if (!slot) {
-        Pointer.writeU32(pflagsPtr, 0, NGHTTP3_DATA_FLAG_EOF);
-        return 0;
-      }
-      if (slot.error !== null) {
-        this.#bodySlots.delete(streamId);
-        return NGHTTP3_ERR_FATAL;
-      }
-      if (slot.bytes === null || slot.bytes.length === 0) {
-        if (!slot.done) {
-          this.#pullBodyChunk(streamId, slot);
-          return NGHTTP3_ERR_WOULDBLOCK;
-        }
-        if (slot.trailers !== undefined) {
-          // Body done, trailers follow. Signal EOF+NO_END_STREAM so nghttp3 keeps the
-          // stream open, then queue trailers for submission after writev_stream returns.
-          // Calling submit_trailers from here would be a reentrant nghttp3 call (we're
-          // inside writev_stream → data reader) and corrupts internal state.
-          Pointer.writeU32(pflagsPtr, 0, NGHTTP3_DATA_FLAG_EOF | NGHTTP3_DATA_FLAG_NO_END_STREAM);
-          this.#pendingTrailers.set(streamId, slot.trailers);
-          this.#bodySlots.delete(streamId);
-        } else {
+    const readData = new FfiCallback(
+      {
+        parameters: [
+          'ignoredPointer',
+          'i64',
+          'pointer',
+          'usize',
+          'pointer',
+          'ignoredPointer',
+          'ignoredPointer',
+        ],
+        result: 'isize',
+      },
+      (
+        _conn: ArrayBuffer,
+        streamId: bigint,
+        vecBuf: ArrayBuffer,
+        _veccnt: bigint,
+        pflagsPtr: ArrayBuffer,
+      ): number => {
+        const slot = this.#bodySlots.get(streamId);
+        if (!slot) {
           Pointer.writeU32(pflagsPtr, 0, NGHTTP3_DATA_FLAG_EOF);
-          this.#bodySlots.delete(streamId);
+          return 0;
         }
-        return 0;
-      }
-      const chunk = slot.bytes;
-      const chunkAddr = Pointer.addr(chunk) as bigint;
-      const entry = new Uint8Array(VEC_ENTRY_SIZE);
-      const dv = new DataView(entry.buffer);
-      dv.setBigUint64(0, chunkAddr, true);
-      dv.setBigUint64(8, BigInt(chunk.length), true);
-      Pointer.copyTo(vecBuf, entry);
-      // Pin chunk in #yieldedBytes so V8 GC cannot free its backing store before
-      // #drainWritesInner calls Pointer.copyFrom on the raw address we just stored.
-      this.#yieldedBytes.set(streamId, chunk);
-      slot.bytes = null;
-      return 1;
-    });
+        if (slot.error !== null) {
+          this.#bodySlots.delete(streamId);
+          return NGHTTP3_ERR_FATAL;
+        }
+        if (slot.bytes === null || slot.bytes.length === 0) {
+          if (!slot.done) {
+            this.#pullBodyChunk(streamId, slot);
+            return NGHTTP3_ERR_WOULDBLOCK;
+          }
+          if (slot.trailers !== undefined) {
+            // Body done, trailers follow. Signal EOF+NO_END_STREAM so nghttp3 keeps the
+            // stream open, then queue trailers for submission after writev_stream returns.
+            // Calling submit_trailers from here would be a reentrant nghttp3 call (we're
+            // inside writev_stream → data reader) and corrupts internal state.
+            Pointer.writeU32(pflagsPtr, 0, NGHTTP3_DATA_FLAG_EOF | NGHTTP3_DATA_FLAG_NO_END_STREAM);
+            this.#pendingTrailers.set(streamId, slot.trailers);
+            this.#bodySlots.delete(streamId);
+          } else {
+            Pointer.writeU32(pflagsPtr, 0, NGHTTP3_DATA_FLAG_EOF);
+            this.#bodySlots.delete(streamId);
+          }
+          return 0;
+        }
+        const chunk = slot.bytes;
+        const chunkAddr = Pointer.addr(chunk) as bigint;
+        const entry = new Uint8Array(VEC_ENTRY_SIZE);
+        const dv = new DataView(entry.buffer);
+        dv.setBigUint64(0, chunkAddr, true);
+        dv.setBigUint64(8, BigInt(chunk.length), true);
+        Pointer.copyTo(vecBuf, entry);
+        // Pin chunk in #yieldedBytes so V8 GC cannot free its backing store before
+        // #drainWritesInner calls Pointer.copyFrom on the raw address we just stored.
+        this.#yieldedBytes.set(streamId, chunk);
+        slot.bytes = null;
+        return 1;
+      },
+    );
     this.#callbacks.push(readData);
     // Write the callback pointer into the data reader struct at offset DR_READ_DATA.
     writeCbPtr(drBuf, DR_READ_DATA, readData);
@@ -753,12 +879,15 @@ export class Nghttp3Session {
    * ```
    */
   // Register a QUIC stream writer so drainWrites can write to it.
-  addQuicStream(streamId: bigint, writer: {
-    write(b: Uint8Array): Promise<void>;
-    writeSync?(b: Uint8Array, owned?: boolean): void;
-    close(): Promise<void>;
-    closeSync?(): void;
-  }): void {
+  addQuicStream(
+    streamId: bigint,
+    writer: {
+      write(b: Uint8Array): Promise<void>;
+      writeSync?(b: Uint8Array, owned?: boolean): void;
+      close(): Promise<void>;
+      closeSync?(): void;
+    },
+  ): void {
     this.#quicStreams.set(streamId, { writer });
   }
   // -------------------------------------------------------------------------
@@ -783,7 +912,12 @@ export class Nghttp3Session {
    * session.drainWrites();
    * ```
    */
-  submitResponse(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
+  submitResponse(
+    streamId: bigint,
+    headers: Array<[string, string]>,
+    body?: H3BodySource,
+    trailers?: Array<[string, string]>,
+  ): void {
     if (this.#closed) throw new Error('session closed');
     if (!this.#qpackStreamsBound) throw new Error('H3 session QPACK streams are not bound');
     const { buf: nvBuf, nv } = buildNvArray(headers);
@@ -792,7 +926,13 @@ export class Nghttp3Session {
     if (effectiveBody !== undefined) {
       this.#bodySlots.set(streamId, this.#makeBodySlot(effectiveBody, trailers));
     }
-    const rc = sym!.nghttp3_conn_submit_response(this.#conn, streamId, this.#ptrOf(nvBuf, _PTR_NV), nv, drPtr) as number;
+    const rc = sym!.nghttp3_conn_submit_response(
+      this.#conn,
+      streamId,
+      this.#ptrOf(nvBuf, _PTR_NV),
+      nv,
+      drPtr,
+    ) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_response failed: ${rc}`);
   }
   /**
@@ -813,7 +953,12 @@ export class Nghttp3Session {
    * session.drainWrites();
    * ```
    */
-  submitRequest(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
+  submitRequest(
+    streamId: bigint,
+    headers: Array<[string, string]>,
+    body?: H3BodySource,
+    trailers?: Array<[string, string]>,
+  ): void {
     if (this.#closed) throw new Error('session closed');
     if (!this.#qpackStreamsBound) throw new Error('H3 session QPACK streams are not bound');
     const { buf: nvBuf, nv } = buildNvArray(headers);
@@ -822,7 +967,14 @@ export class Nghttp3Session {
     if (effectiveBody !== undefined) {
       this.#bodySlots.set(streamId, this.#makeBodySlot(effectiveBody, trailers));
     }
-    const rc = sym!.nghttp3_conn_submit_request(this.#conn, streamId, this.#ptrOf(nvBuf, _PTR_NV), nv, drPtr, null) as number;
+    const rc = sym!.nghttp3_conn_submit_request(
+      this.#conn,
+      streamId,
+      this.#ptrOf(nvBuf, _PTR_NV),
+      nv,
+      drPtr,
+      null,
+    ) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_request failed: ${rc}`);
   }
   /**
@@ -843,7 +995,12 @@ export class Nghttp3Session {
   submitTrailers(streamId: bigint, trailers: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
     const { buf: nvBuf, nv } = buildNvArray(trailers);
-    const rc = sym!.nghttp3_conn_submit_trailers(this.#conn, streamId, this.#ptrOf(nvBuf, _PTR_NV), nv) as number;
+    const rc = sym!.nghttp3_conn_submit_trailers(
+      this.#conn,
+      streamId,
+      this.#ptrOf(nvBuf, _PTR_NV),
+      nv,
+    ) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_trailers failed: ${rc}`);
   }
   #makeBodySlot(body: H3BodySource, trailers?: Array<[string, string]>): BodySlot {
@@ -854,7 +1011,7 @@ export class Nghttp3Session {
         pulling: false,
         done: true,
         error: null,
-        trailers
+        trailers,
       };
     }
     return {
@@ -863,49 +1020,52 @@ export class Nghttp3Session {
       pulling: false,
       done: false,
       error: null,
-      trailers
+      trailers,
     };
   }
   #pullBodyChunk(streamId: bigint, slot: BodySlot): void {
     if (slot.iterator === null || slot.pulling || slot.done || this.#closed) return;
     slot.pulling = true;
-    Promise.resolve(slot.iterator.next()).then((result) => {
-      slot.pulling = false;
-      if (this.#closed || this.#bodySlots.get(streamId) !== slot) return;
-      if (result.done) {
-        slot.done = true;
-      } else {
-        const value = result.value;
-        slot.bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-        if (slot.bytes.byteLength === 0) {
-          this.#pullBodyChunk(streamId, slot);
-          return;
+    Promise.resolve(slot.iterator.next()).then(
+      (result) => {
+        slot.pulling = false;
+        if (this.#closed || this.#bodySlots.get(streamId) !== slot) return;
+        if (result.done) {
+          slot.done = true;
+        } else {
+          const value = result.value;
+          slot.bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+          if (slot.bytes.byteLength === 0) {
+            this.#pullBodyChunk(streamId, slot);
+            return;
+          }
         }
-      }
-      if (!this.#closed) {
-        const rc = sym!.nghttp3_conn_resume_stream(this.#conn, streamId) as number;
-        if (rc !== 0) {
-          slot.error = new Error(`nghttp3_conn_resume_stream failed: ${rc}`);
+        if (!this.#closed) {
+          const rc = sym!.nghttp3_conn_resume_stream(this.#conn, streamId) as number;
+          if (rc !== 0) {
+            slot.error = new Error(`nghttp3_conn_resume_stream failed: ${rc}`);
+          }
+          try {
+            this.drainWrites();
+          } catch {
+            this.close();
+          }
         }
-        try {
-          this.drainWrites();
-        } catch {
-          this.close();
+      },
+      (error) => {
+        slot.pulling = false;
+        slot.error = error;
+        if (!this.#closed && this.#bodySlots.get(streamId) === slot) {
+          const rc = sym!.nghttp3_conn_resume_stream(this.#conn, streamId) as number;
+          if (rc !== 0) this.close();
+          try {
+            this.drainWrites();
+          } catch {
+            this.close();
+          }
         }
-      }
-    }, (error) => {
-      slot.pulling = false;
-      slot.error = error;
-      if (!this.#closed && this.#bodySlots.get(streamId) === slot) {
-        const rc = sym!.nghttp3_conn_resume_stream(this.#conn, streamId) as number;
-        if (rc !== 0) this.close();
-        try {
-          this.drainWrites();
-        } catch {
-          this.close();
-        }
-      }
-    });
+      },
+    );
   }
   // -------------------------------------------------------------------------
   // Read: feed QUIC stream bytes into nghttp3.
@@ -944,9 +1104,18 @@ export class Nghttp3Session {
         }
       }
       const ts = BigInt(Math.floor(performance.now() * 1e6));
-      const consumed = sym!.nghttp3_conn_read_stream2(this.#conn, streamId, this.#ptrOf(data, _PTR_DATA), data.byteLength, fin ? 1 : 0, ts) as number;
+      const consumed = sym!.nghttp3_conn_read_stream2(
+        this.#conn,
+        streamId,
+        this.#ptrOf(data, _PTR_DATA),
+        data.byteLength,
+        fin ? 1 : 0,
+        ts,
+      ) as number;
       if (consumed < 0) {
-        const isStreamError = consumed === NGHTTP3_ERR_MALFORMED_HTTP_HEADER || consumed === NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING;
+        const isStreamError =
+          consumed === NGHTTP3_ERR_MALFORMED_HTTP_HEADER ||
+          consumed === NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING;
         if (isStreamError) {
           sym!.nghttp3_conn_close_stream(this.#conn, streamId, NGHTTP3_H3_MESSAGE_ERROR);
         } else {
@@ -1003,7 +1172,13 @@ export class Nghttp3Session {
     const dvVec = this.#writeVecView;
     while (true) {
       this.#writeStreamIdView.setBigInt64(0, -1n, true);
-      const n = sym!.nghttp3_conn_writev_stream(this.#conn, this.#ptrOf(pStreamId, _PTR_STREAM_ID), this.#ptrOf(pfin, _PTR_FIN), this.#ptrOf(vecBuf, _PTR_VEC), _MAX_VECS) as number;
+      const n = sym!.nghttp3_conn_writev_stream(
+        this.#conn,
+        this.#ptrOf(pStreamId, _PTR_STREAM_ID),
+        this.#ptrOf(pfin, _PTR_FIN),
+        this.#ptrOf(vecBuf, _PTR_VEC),
+        _MAX_VECS,
+      ) as number;
       const sid = this.#writeStreamIdView.getBigInt64(0, true);
       const isFin = this.#writeFinView.getInt32(0, true) !== 0;
       if (n < 0) {
@@ -1019,7 +1194,12 @@ export class Nghttp3Session {
         this.#pendingTrailers.clear();
         for (const [tsid, trailers] of pending) {
           const { buf, nv } = buildNvArray(trailers);
-          const trc = sym!.nghttp3_conn_submit_trailers(this.#conn, tsid, this.#ptrOf(buf, _PTR_TRAILERS), nv) as number;
+          const trc = sym!.nghttp3_conn_submit_trailers(
+            this.#conn,
+            tsid,
+            this.#ptrOf(buf, _PTR_TRAILERS),
+            nv,
+          ) as number;
           if (trc === 0) {
             submittedTrailers = true;
           } else if (trc <= NGHTTP3_ERR_FATAL) {
@@ -1176,7 +1356,11 @@ export class Nghttp3Session {
     return buffered;
   }
   #patchOutgoingStreamBytes(streamId: bigint, bytes: Uint8Array): Uint8Array {
-    if (!this.#webTransport || streamId !== this.#controlStreamId || !this.#localSettings.has(SETTINGS_WT_ENABLED)) {
+    if (
+      !this.#webTransport ||
+      streamId !== this.#controlStreamId ||
+      !this.#localSettings.has(SETTINGS_WT_ENABLED)
+    ) {
       return bytes;
     }
     return injectWebTransportSettings(bytes);

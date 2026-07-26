@@ -1,62 +1,69 @@
 /**
-* internal:bootstrap — shared realm bootstrap.
-*
-* Evaluated in every Realm context — root and child alike — before any user
-* code runs. Uniform bootstrap is deliberate: a child realm sees exactly the
-* same environment as the root, and only its configuration (entry path, port,
-* watch/REPL flags read from `internal:realm-bridge`) differs.
-*
-* Evaluating this module has several side effects:
-*
-* - Installs the WHATWG globals on `globalThis`: events, streams, `URL`,
-*   `fetch`, `Blob`/`File`, encoders, timers, `console`, `crypto`,
-*   `WebSocket`, `WebTransport`, message ports, and friends. All are
-*   writable and configurable but non-enumerable (except `fetch`, which the
-*   spec requires to be enumerable). `performance` is installed as a
-*   replaceable accessor, and `self`, `navigator`, and `reportError` are
-*   defined.
-* - Wraps `Atomics.waitAsync` so pending async futex waits keep the event
-*   loop alive — V8's `has_pending_background_tasks()` does not cover futex
-*   waiters, so without the shim the loop could exit before a notify fires.
-* - Installs `Error.prepareStackTrace` so stack traces map through source
-*   maps (via `internal:loader-hooks`) back to original TypeScript positions.
-* - Imports `internal:loader` to register module-resolution and
-*   `import.meta` hooks, and registers the async-runtime wake pipe with the
-*   event loop backend so background FFI threads can interrupt a sleeping
-*   poll.
-*
-* The module's one export is `driveLoop`, which registers a step/onDone
-* callback pair with the Rust host loop. The root realm's entry
-* (`internal/main.ts`) imports this module and then runs the CLI; child
-* realms evaluate it as their first step and the bootstrap takes over from
-* there: when `getEntryPath()` reports an entry module, it is dynamically
-* imported, port-based call/pool invocation modes are wired up for
-* default-exported functions, watch-mode reloads and shutdown hooks are
-* handled, and `driveLoop` is called with the child's own isDone/onDone
-* callbacks — so user entry modules never call `driveLoop` themselves.
-* Realms created with `repl: true` instead load `internal:repl-handler` and
-* answer `__eval` messages until terminated.
-*
-* ## Example
-*
-* ```ts no_run
-* import { driveLoop } from 'internal:bootstrap';
-*
-* let finished = false;
-* queueMicrotask(() => { finished = true; });
-*
-* driveLoop(
-*   () => finished,
-*   () => {
-*     // Host loop has drained pending runtime work.
-*   },
-*   { nonBlocking: true },
-* );
-* ```
-*
-* @internal
-*/
-import { tick, alive, loopFd, registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.ts';
+ * internal:bootstrap — shared realm bootstrap.
+ *
+ * Evaluated in every Realm context — root and child alike — before any user
+ * code runs. Uniform bootstrap is deliberate: a child realm sees exactly the
+ * same environment as the root, and only its configuration (entry path, port,
+ * watch/REPL flags read from `internal:realm-bridge`) differs.
+ *
+ * Evaluating this module has several side effects:
+ *
+ * - Installs the WHATWG globals on `globalThis`: events, streams, `URL`,
+ *   `fetch`, `Blob`/`File`, encoders, timers, `console`, `crypto`,
+ *   `WebSocket`, `WebTransport`, message ports, and friends. All are
+ *   writable and configurable but non-enumerable (except `fetch`, which the
+ *   spec requires to be enumerable). `performance` is installed as a
+ *   replaceable accessor, and `self`, `navigator`, and `reportError` are
+ *   defined.
+ * - Wraps `Atomics.waitAsync` so pending async futex waits keep the event
+ *   loop alive — V8's `has_pending_background_tasks()` does not cover futex
+ *   waiters, so without the shim the loop could exit before a notify fires.
+ * - Installs `Error.prepareStackTrace` so stack traces map through source
+ *   maps (via `internal:loader-hooks`) back to original TypeScript positions.
+ * - Imports `internal:loader` to register module-resolution and
+ *   `import.meta` hooks, and registers the async-runtime wake pipe with the
+ *   event loop backend so background FFI threads can interrupt a sleeping
+ *   poll.
+ *
+ * The module's one export is `driveLoop`, which registers a step/onDone
+ * callback pair with the Rust host loop. The root realm's entry
+ * (`internal/main.ts`) imports this module and then runs the CLI; child
+ * realms evaluate it as their first step and the bootstrap takes over from
+ * there: when `getEntryPath()` reports an entry module, it is dynamically
+ * imported, port-based call/pool invocation modes are wired up for
+ * default-exported functions, watch-mode reloads and shutdown hooks are
+ * handled, and `driveLoop` is called with the child's own isDone/onDone
+ * callbacks — so user entry modules never call `driveLoop` themselves.
+ * Realms created with `repl: true` instead load `internal:repl-handler` and
+ * answer `__eval` messages until terminated.
+ *
+ * ## Example
+ *
+ * ```ts no_run
+ * import { driveLoop } from 'internal:bootstrap';
+ *
+ * let finished = false;
+ * queueMicrotask(() => { finished = true; });
+ *
+ * driveLoop(
+ *   () => finished,
+ *   () => {
+ *     // Host loop has drained pending runtime work.
+ *   },
+ *   { nonBlocking: true },
+ * );
+ * ```
+ *
+ * @internal
+ */
+import {
+  tick,
+  alive,
+  loopFd,
+  registerWakeSource,
+  _trackAtomicsWaiter,
+  _untrackAtomicsWaiter,
+} from './runtime/loop.ts';
 import { drainMicrotasks, runLoop } from 'internal:async-context';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
@@ -66,12 +73,90 @@ import { env } from '../process.ts';
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, setLoopFd } from 'internal:realm-bridge';
+import {
+  getEntryPath,
+  isTerminated,
+  getPort,
+  setEntryError,
+  getLoadedFsPaths,
+  requestReload,
+  getWatchMode,
+  getReplMode,
+  getRealmData,
+  getRealmBootstrapData,
+  setLoopFd,
+} from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
-import { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask, Performance, performance } from '../globals/time.ts';
-import { Event, CustomEvent, EventTarget, CountQueuingStrategy, ByteLengthQueuingStrategy, ReadableStreamDefaultController, ReadableByteStreamController, ReadableStreamBYOBRequest, ReadableStream, ReadableStreamDefaultReader, ReadableStreamBYOBReader, WritableStreamDefaultController, WritableStream, WritableStreamDefaultWriter, TransformStreamDefaultController, TransformStream, AbortController, AbortSignal, Blob, File, FileList, FileReader, DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone, FormData, URL, URLSearchParams, URLPattern, console, CryptoKey, crypto, cryptoAvailable, tlsAvailable, fetch, Headers, Request, Response, CompressionStream, DecompressionStream, EventSource, WebSocket, WebTransport, WebTransportDatagramDuplexStream, CloseEvent, ErrorEvent, MessageEvent, MessagePort, MessageChannel, _flushPorts, BroadcastChannel } from '../globals/global.ts';
+import {
+  setTimeout,
+  clearTimeout,
+  setInterval,
+  clearInterval,
+  setImmediate,
+  clearImmediate,
+  queueMicrotask,
+  Performance,
+  performance,
+} from '../globals/time.ts';
+import {
+  Event,
+  CustomEvent,
+  EventTarget,
+  CountQueuingStrategy,
+  ByteLengthQueuingStrategy,
+  ReadableStreamDefaultController,
+  ReadableByteStreamController,
+  ReadableStreamBYOBRequest,
+  ReadableStream,
+  ReadableStreamDefaultReader,
+  ReadableStreamBYOBReader,
+  WritableStreamDefaultController,
+  WritableStream,
+  WritableStreamDefaultWriter,
+  TransformStreamDefaultController,
+  TransformStream,
+  AbortController,
+  AbortSignal,
+  Blob,
+  File,
+  FileList,
+  FileReader,
+  DOMException,
+  QuotaExceededError,
+  TextEncoder,
+  TextDecoder,
+  atob,
+  btoa,
+  structuredClone,
+  FormData,
+  URL,
+  URLSearchParams,
+  URLPattern,
+  console,
+  CryptoKey,
+  crypto,
+  cryptoAvailable,
+  tlsAvailable,
+  fetch,
+  Headers,
+  Request,
+  Response,
+  CompressionStream,
+  DecompressionStream,
+  EventSource,
+  WebSocket,
+  WebTransport,
+  WebTransportDatagramDuplexStream,
+  CloseEvent,
+  ErrorEvent,
+  MessageEvent,
+  MessagePort,
+  MessageChannel,
+  _flushPorts,
+  BroadcastChannel,
+} from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
 import { ThreadPort } from 'internal:realm/transport-port';
 import { getWakeReadFd } from 'internal:thread-port';
@@ -99,20 +184,28 @@ const runtimeError = Error as RuntimeErrorConstructor;
 if (typeof Atomics !== 'undefined' && typeof Atomics.waitAsync === 'function') {
   const _origWaitAsync = Atomics.waitAsync.bind(Atomics);
   Object.defineProperty(Atomics, 'waitAsync', {
-    value: function waitAsync(typedArray: Parameters<typeof Atomics.waitAsync>[0], index: number, value: Parameters<typeof Atomics.waitAsync>[2], timeout?: number): ReturnType<typeof Atomics.waitAsync> {
+    value: function waitAsync(
+      typedArray: Parameters<typeof Atomics.waitAsync>[0],
+      index: number,
+      value: Parameters<typeof Atomics.waitAsync>[2],
+      timeout?: number,
+    ): ReturnType<typeof Atomics.waitAsync> {
       const result = _origWaitAsync(typedArray, index, value, timeout);
       if (result.async) {
         _trackAtomicsWaiter();
-        result.value.then(() => {
-          _untrackAtomicsWaiter();
-        }, () => {
-          _untrackAtomicsWaiter();
-        });
+        result.value.then(
+          () => {
+            _untrackAtomicsWaiter();
+          },
+          () => {
+            _untrackAtomicsWaiter();
+          },
+        );
       }
       return result;
     },
     writable: true,
-    configurable: true
+    configurable: true,
   });
 }
 const globalEventTarget = new EventTarget();
@@ -121,7 +214,7 @@ function defineGlobal(name: string, value: unknown, enumerable = false): void {
     value,
     writable: true,
     enumerable,
-    configurable: true
+    configurable: true,
   });
 }
 for (const [name, value] of Object.entries({
@@ -189,45 +282,48 @@ for (const [name, value] of Object.entries({
   setImmediate,
   clearImmediate,
   queueMicrotask,
-  Performance
+  Performance,
 })) {
   defineGlobal(name, value, name === 'fetch');
 }
-const performanceGlobalDescriptor = Object.getOwnPropertyDescriptor({
-  get performance() {
-    if (this !== globalThis && this !== undefined) throw new TypeError('Illegal invocation');
-    return performance;
+const performanceGlobalDescriptor = Object.getOwnPropertyDescriptor(
+  {
+    get performance() {
+      if (this !== globalThis && this !== undefined) throw new TypeError('Illegal invocation');
+      return performance;
+    },
+    set performance(value: unknown) {
+      if (this !== globalThis && this !== undefined) throw new TypeError('Illegal invocation');
+      Object.defineProperty(globalThis, 'performance', {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    },
   },
-  set performance(value: unknown) {
-    if (this !== globalThis && this !== undefined) throw new TypeError('Illegal invocation');
-    Object.defineProperty(globalThis, 'performance', {
-      value,
-      writable: true,
-      enumerable: true,
-      configurable: true
-    });
-  }
-}, 'performance')!;
+  'performance',
+)!;
 Object.defineProperty(globalThis, 'performance', {
   ...performanceGlobalDescriptor,
   enumerable: true,
-  configurable: true
+  configurable: true,
 });
 Object.defineProperty(globalThis, Symbol.for('fino.internal.FileReaderSync'), {
   value: FileReaderSync,
   writable: false,
   enumerable: false,
-  configurable: false
+  configurable: false,
 });
 Object.defineProperty(globalThis, 'self', {
   value: globalThis,
   writable: true,
-  configurable: true
+  configurable: true,
 });
 Object.defineProperty(globalThis, 'navigator', {
   value: { userAgent: 'Fino/0.1' },
   writable: true,
-  configurable: true
+  configurable: true,
 });
 defineGlobal('reportError', function reportError(err: unknown) {
   runtimeGlobalThis.console?.error('Unhandled error:', err);
@@ -248,65 +344,72 @@ function formatCallSite(callSite: StackFrame): string {
   const location = source && line && column ? `${source}:${line}:${column}` : '<anonymous>';
   return functionName ? `    at ${functionName} (${location})` : `    at ${location}`;
 }
-runtimeError.prepareStackTrace = function prepareStackTrace(err: Error, callSites: StackFrame[]): string {
+runtimeError.prepareStackTrace = function prepareStackTrace(
+  err: Error,
+  callSites: StackFrame[],
+): string {
   const header = `${err.name}: ${err.message}`;
   if (!Array.isArray(callSites) || callSites.length === 0) return header;
   return header + '\n' + callSites.map(formatCallSite).join('\n');
 };
 /**
-* Optional hooks controlling how `driveLoop` polls and how it coordinates
-* with child Realms embedded in the caller's isolate.
-*
-* @internal
-*/
+ * Optional hooks controlling how `driveLoop` polls and how it coordinates
+ * with child Realms embedded in the caller's isolate.
+ *
+ * @internal
+ */
 interface DriveLoopOptions {
   /** Called once per tick, after microtasks drain, to advance any embedded
-  *  child Realms sharing this isolate. */
+   *  child Realms sharing this isolate. */
   stepChildren?: () => void;
   /** Reports whether any child Realm still has pending work. While it
-  *  returns true the loop keeps running even after `isDone()` is true. */
+   *  returns true the loop keeps running even after `isDone()` is true. */
   childrenAlive?: () => boolean;
   /** If true, always poll with timeout=0 (non-blocking). Used for child realms
-  *  that are driven by a parent loop — the parent controls sleeping. */
+   *  that are driven by a parent loop — the parent controls sleeping. */
   nonBlocking?: boolean;
 }
 /**
-* Registers a step/onDone callback pair with the Rust host loop.
-*
-* The host loop calls the registered step function once per iteration until
-* it returns false, then calls `onDone` (e.g. to surface errors or clean up).
-* Each step polls the event loop backend (kqueue/io_uring) for I/O, timer,
-* and wake-pipe events, flushes inter-realm message ports, drains the
-* microtask queue, and — when `opts.stepChildren` is provided — advances any
-* embedded child Realms.
-*
-* `isDone` reports whether the caller's own work is complete, but a true
-* result alone does not stop the loop: the loop also keeps running while the
-* event loop still has live handles (pending timers, sockets, watchers,
-* Atomics waiters) or while `opts.childrenAlive?.()` reports live children.
-*
-* Polling is adaptive: after three consecutive empty ticks the poll blocks
-* for up to 25ms to avoid spinning, and any completed event resets the
-* backoff. `opts.nonBlocking` forces a zero timeout on every tick, for realms
-* whose sleeping is controlled by a parent loop.
-*
-* ```ts no_run
-* import { driveLoop } from 'internal:bootstrap';
-*
-* let complete = false;
-* Promise.resolve().then(() => { complete = true; });
-* driveLoop(
-*   () => complete,
-*   () => {
-*     // loop finished
-*   },
-*   { nonBlocking: true },
-* );
-* ```
-*
-* @internal
-*/
-export function driveLoop(isDone: () => boolean, onDone: () => void, opts?: DriveLoopOptions): void {
+ * Registers a step/onDone callback pair with the Rust host loop.
+ *
+ * The host loop calls the registered step function once per iteration until
+ * it returns false, then calls `onDone` (e.g. to surface errors or clean up).
+ * Each step polls the event loop backend (kqueue/io_uring) for I/O, timer,
+ * and wake-pipe events, flushes inter-realm message ports, drains the
+ * microtask queue, and — when `opts.stepChildren` is provided — advances any
+ * embedded child Realms.
+ *
+ * `isDone` reports whether the caller's own work is complete, but a true
+ * result alone does not stop the loop: the loop also keeps running while the
+ * event loop still has live handles (pending timers, sockets, watchers,
+ * Atomics waiters) or while `opts.childrenAlive?.()` reports live children.
+ *
+ * Polling is adaptive: after three consecutive empty ticks the poll blocks
+ * for up to 25ms to avoid spinning, and any completed event resets the
+ * backoff. `opts.nonBlocking` forces a zero timeout on every tick, for realms
+ * whose sleeping is controlled by a parent loop.
+ *
+ * ```ts no_run
+ * import { driveLoop } from 'internal:bootstrap';
+ *
+ * let complete = false;
+ * Promise.resolve().then(() => { complete = true; });
+ * driveLoop(
+ *   () => complete,
+ *   () => {
+ *     // loop finished
+ *   },
+ *   { nonBlocking: true },
+ * );
+ * ```
+ *
+ * @internal
+ */
+export function driveLoop(
+  isDone: () => boolean,
+  onDone: () => void,
+  opts?: DriveLoopOptions,
+): void {
   let emptyTicks = 0;
   function step() {
     const loopAlive = alive();
@@ -344,7 +447,10 @@ const _childEntry = getEntryPath() as string | undefined;
 // - Thread realms: wake_read_fd >= 0 → construct a ThreadPort backed by native channels
 // - Embedded realms: use the IntraPort passed by the parent via realm-bridge
 const _threadWakeReadFd = getWakeReadFd() as number;
-const _childPort: MessagePort | ThreadPort | undefined = _threadWakeReadFd >= 0 ? new ThreadPort(_threadWakeReadFd) : getPort() as MessagePort | undefined;
+const _childPort: MessagePort | ThreadPort | undefined =
+  _threadWakeReadFd >= 0
+    ? new ThreadPort(_threadWakeReadFd)
+    : (getPort() as MessagePort | undefined);
 // Expose the child port as `realmPort` on globalThis so entry modules can
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
@@ -373,25 +479,43 @@ if (_threadWakeReadFd < 0 && _childPort !== undefined) {
       }
     } else if (obj['__rpc_chunk'] === true) {
       (ev as MessageEvent).stopImmediatePropagation?.();
-      pushChunk((obj as {
-        reqId: number;
-      }).reqId, (obj as {
-        chunk: unknown;
-      }).chunk);
+      pushChunk(
+        (
+          obj as {
+            reqId: number;
+          }
+        ).reqId,
+        (
+          obj as {
+            chunk: unknown;
+          }
+        ).chunk,
+      );
     } else if (obj['__rpc_end'] === true) {
       (ev as MessageEvent).stopImmediatePropagation?.();
-      endStream((obj as {
-        reqId: number;
-      }).reqId);
+      endStream(
+        (
+          obj as {
+            reqId: number;
+          }
+        ).reqId,
+      );
     } else if (obj['__rpc_err'] === true) {
       (ev as MessageEvent).stopImmediatePropagation?.();
-      errStream((obj as {
-        reqId: number;
-        error: string;
-      }).reqId, (obj as {
-        reqId: number;
-        error: string;
-      }).error);
+      errStream(
+        (
+          obj as {
+            reqId: number;
+            error: string;
+          }
+        ).reqId,
+        (
+          obj as {
+            reqId: number;
+            error: string;
+          }
+        ).error,
+      );
     }
   });
 }
@@ -421,19 +545,33 @@ if (_childEntry) {
     _childPort.addEventListener('message', function _terminateHandler(ev) {
       const msg = (ev as MessageEvent).data;
       if (!msg || typeof msg !== 'object') return;
-      if ((msg as {
-        __terminate?: boolean;
-      }).__terminate === true) {
+      if (
+        (
+          msg as {
+            __terminate?: boolean;
+          }
+        ).__terminate === true
+      ) {
         _childDone = true;
         _externalTerminate = true;
-      } else if (!_callHandlerInstalled && (msg as {
-        __call?: boolean;
-      }).__call) {
+      } else if (
+        !_callHandlerInstalled &&
+        (
+          msg as {
+            __call?: boolean;
+          }
+        ).__call
+      ) {
         // Queue early __call until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyCall = msg;
-      } else if (!_callHandlerInstalled && (msg as {
-        __pool_call?: boolean;
-      }).__pool_call) {
+      } else if (
+        !_callHandlerInstalled &&
+        (
+          msg as {
+            __pool_call?: boolean;
+          }
+        ).__pool_call
+      ) {
         // Queue early pool calls until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyPoolCalls.push(msg);
       }
@@ -445,161 +583,203 @@ if (_childEntry) {
   async function _loadChildEntry(): Promise<{
     default?: unknown;
   }> {
-    let cliOtel: {
-      endpoint?: string;
-      script?: string;
-      debug?: boolean;
-    } | undefined;
+    let cliOtel:
+      | {
+          endpoint?: string;
+          script?: string;
+          debug?: boolean;
+        }
+      | undefined;
     const bootstrapRaw = (getRealmBootstrapData as () => string | undefined)();
     if (bootstrapRaw !== undefined) {
       try {
-        cliOtel = (JSON.parse(bootstrapRaw) as {
-          cliOtel?: typeof cliOtel;
-        }).cliOtel;
+        cliOtel = (
+          JSON.parse(bootstrapRaw) as {
+            cliOtel?: typeof cliOtel;
+          }
+        ).cliOtel;
       } catch {}
     }
     const raw = (getRealmData as () => string | undefined)();
     if (cliOtel === undefined && raw !== undefined) {
       try {
-        cliOtel = (JSON.parse(raw) as {
-          cliOtel?: typeof cliOtel;
-        }).cliOtel;
+        cliOtel = (
+          JSON.parse(raw) as {
+            cliOtel?: typeof cliOtel;
+          }
+        ).cliOtel;
       } catch {}
     }
     if (cliOtel && typeof cliOtel.endpoint === 'string' && cliOtel.endpoint) {
       const { createCliOtelRuntime } = await import('internal:opentelemetry/bootstrap');
-      const { runWithTracerProvider, runWithLoggerProvider, runWithMeterProvider } = await import('fino:opentelemetry');
-      const debug = cliOtel.debug === true || typeof env.FINO_OTEL_DEBUG === 'string' && env.FINO_OTEL_DEBUG.trim() === '1';
-      const rt = await createCliOtelRuntime(cliOtel.endpoint, cliOtel.script ?? _childEntry!, debug);
-      return runWithTracerProvider(rt.tracerProvider, () => runWithLoggerProvider(rt.loggerProvider, () => runWithMeterProvider(rt.meterProvider, () => import(_childEntry!))));
+      const { runWithTracerProvider, runWithLoggerProvider, runWithMeterProvider } =
+        await import('fino:opentelemetry');
+      const debug =
+        cliOtel.debug === true ||
+        (typeof env.FINO_OTEL_DEBUG === 'string' && env.FINO_OTEL_DEBUG.trim() === '1');
+      const rt = await createCliOtelRuntime(
+        cliOtel.endpoint,
+        cliOtel.script ?? _childEntry!,
+        debug,
+      );
+      return runWithTracerProvider(rt.tracerProvider, () =>
+        runWithLoggerProvider(rt.loggerProvider, () =>
+          runWithMeterProvider(rt.meterProvider, () => import(_childEntry!)),
+        ),
+      );
     }
     return import(_childEntry!);
   }
-  _loadChildEntry().then(function _onChildEntryDone(mod: {
-    default?: unknown;
-  }) {
-    // A default-exported Task (branded via Symbol.for('fino.task')) is a
-    // worker definition: its .worker() dispatcher becomes the callable, so
-    // pools and jobs can run plain task files.
-    let _entryCallable: ((...args: unknown[]) => unknown) | undefined;
-    if (typeof mod.default === 'function') {
-      _entryCallable = mod.default as (...args: unknown[]) => unknown;
-    } else if (mod.default !== null && typeof mod.default === 'object' && (mod.default as Record<PropertyKey, unknown>)[Symbol.for('fino.task')] === true) {
-      _entryCallable = (mod.default as {
-        worker(): (...args: unknown[]) => unknown;
-      }).worker();
-    }
-    if (_childPort !== undefined && _entryCallable !== undefined) {
-      // Call mode: wait for { __call, args }, invoke default export, post result.
-      // _childDone is set after the function returns; do NOT set it here.
-      const _fn = _entryCallable;
-      // Track which invocation mode this worker is in so the two modes cannot
-      // interfere with each other.
-      let _isPoolMode = false;
-      _childPort.addEventListener('message', function _callHandler(ev) {
-        const msg = (ev as MessageEvent).data;
-        if (!msg || typeof msg !== 'object') return;
-        if ((msg as {
-          __call?: boolean;
-        }).__call && !_isPoolMode) {
-          // Single-invocation call() mode: invoke once, post result, terminate.
-          // Stop propagation so user code never sees internal __call envelopes.
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          const _args = (msg as {
-            args?: unknown[];
-          }).args ?? [];
-          new Promise<unknown>((res) => res(_fn(..._args))).then(function _callOk(result: unknown) {
-            _childPort!.postMessage(result);
-            _childDone = true;
-          }, function _callErr(err: unknown) {
-            _childPort!.postMessage({
-              __call_error: true,
-              message: String(err),
-              name: err instanceof Error ? err.name : undefined,
-              stack: err instanceof Error ? err.stack : undefined
-            });
-            _childDone = true;
-          });
-        } else if ((msg as {
-          __pool_call?: boolean;
-        }).__pool_call) {
-          // Pool mode: multi-invocation with correlation ID. Worker stays alive.
-          // Stop propagation so user code never sees internal __pool_call envelopes.
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          _isPoolMode = true;
-          const _pmsg = msg as {
-            __pool_call: boolean;
-            correlationId: number;
-            args?: unknown[];
-          };
-          const _corrId = _pmsg.correlationId;
-          const _args = _pmsg.args ?? [];
-          // Lazily import fino:realm/pool so non-pool realms avoid the evaluation cost.
-          import('fino:realm/pool').then(
-            function _poolImport({ correlationIdContext }) {
-              correlationIdContext.runWithValue(String(_corrId), function _poolInvoke() {
-                new Promise<unknown>((res) => res(_fn(..._args))).then(function _poolCallOk(result: unknown) {
-                  _childPort!.postMessage({
-                    __pool_result: true,
-                    correlationId: _corrId,
-                    result
-                  });
-                }, function _poolCallErr(err: unknown) {
-                  _childPort!.postMessage({
-                    __pool_error: true,
-                    correlationId: _corrId,
-                    message: String(err),
-                    stack: err instanceof Error ? err.stack : undefined
-                  });
-                });
-              });
-            },
-            // If the pool module itself fails to load, surface the error as __pool_error
-            // so the parent dispatcher rejects rather than hanging indefinitely.
-            function _poolImportFailed(err: unknown) {
-              _childPort!.postMessage({
-                __pool_error: true,
-                correlationId: _corrId,
-                message: 'fino:realm/pool module failed to load: ' + String(err)
-              });
-            }
-          );
-        }
-        // Other messages (not __call / __pool_call / __terminate) pass through
-        // to user-registered listeners unchanged.
-      });
-      // Mark the handler as installed so _terminateHandler stops queuing early messages.
-      // Replay any messages that arrived before installation via a microtask.
-      _callHandlerInstalled = true;
-      const _toReplay: unknown[] = [];
-      if (_earlyCall !== null) {
-        _toReplay.push(_earlyCall);
-        _earlyCall = null;
-      }
-      _toReplay.push(..._earlyPoolCalls.splice(0));
-      if (_toReplay.length > 0) {
-        Promise.resolve().then(() => {
-          for (const m of _toReplay) {
-            _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+  _loadChildEntry().then(
+    function _onChildEntryDone(mod: { default?: unknown }) {
+      // A default-exported Task (branded via Symbol.for('fino.task')) is a
+      // worker definition: its .worker() dispatcher becomes the callable, so
+      // pools and jobs can run plain task files.
+      let _entryCallable: ((...args: unknown[]) => unknown) | undefined;
+      if (typeof mod.default === 'function') {
+        _entryCallable = mod.default as (...args: unknown[]) => unknown;
+      } else if (
+        mod.default !== null &&
+        typeof mod.default === 'object' &&
+        (mod.default as Record<PropertyKey, unknown>)[Symbol.for('fino.task')] === true
+      ) {
+        _entryCallable = (
+          mod.default as {
+            worker(): (...args: unknown[]) => unknown;
           }
-        });
+        ).worker();
       }
-    } else {
-      // Normal completion: entry module's top-level code (and any TLA) finished.
-      // If an entry module wants to stay alive for multi-event messaging, it
-      // must use a top-level `await` that doesn't resolve until done.
+      if (_childPort !== undefined && _entryCallable !== undefined) {
+        // Call mode: wait for { __call, args }, invoke default export, post result.
+        // _childDone is set after the function returns; do NOT set it here.
+        const _fn = _entryCallable;
+        // Track which invocation mode this worker is in so the two modes cannot
+        // interfere with each other.
+        let _isPoolMode = false;
+        _childPort.addEventListener('message', function _callHandler(ev) {
+          const msg = (ev as MessageEvent).data;
+          if (!msg || typeof msg !== 'object') return;
+          if (
+            (
+              msg as {
+                __call?: boolean;
+              }
+            ).__call &&
+            !_isPoolMode
+          ) {
+            // Single-invocation call() mode: invoke once, post result, terminate.
+            // Stop propagation so user code never sees internal __call envelopes.
+            (ev as MessageEvent).stopImmediatePropagation?.();
+            const _args =
+              (
+                msg as {
+                  args?: unknown[];
+                }
+              ).args ?? [];
+            new Promise<unknown>((res) => res(_fn(..._args))).then(
+              function _callOk(result: unknown) {
+                _childPort!.postMessage(result);
+                _childDone = true;
+              },
+              function _callErr(err: unknown) {
+                _childPort!.postMessage({
+                  __call_error: true,
+                  message: String(err),
+                  name: err instanceof Error ? err.name : undefined,
+                  stack: err instanceof Error ? err.stack : undefined,
+                });
+                _childDone = true;
+              },
+            );
+          } else if (
+            (
+              msg as {
+                __pool_call?: boolean;
+              }
+            ).__pool_call
+          ) {
+            // Pool mode: multi-invocation with correlation ID. Worker stays alive.
+            // Stop propagation so user code never sees internal __pool_call envelopes.
+            (ev as MessageEvent).stopImmediatePropagation?.();
+            _isPoolMode = true;
+            const _pmsg = msg as {
+              __pool_call: boolean;
+              correlationId: number;
+              args?: unknown[];
+            };
+            const _corrId = _pmsg.correlationId;
+            const _args = _pmsg.args ?? [];
+            // Lazily import fino:realm/pool so non-pool realms avoid the evaluation cost.
+            import('fino:realm/pool').then(
+              function _poolImport({ correlationIdContext }) {
+                correlationIdContext.runWithValue(String(_corrId), function _poolInvoke() {
+                  new Promise<unknown>((res) => res(_fn(..._args))).then(
+                    function _poolCallOk(result: unknown) {
+                      _childPort!.postMessage({
+                        __pool_result: true,
+                        correlationId: _corrId,
+                        result,
+                      });
+                    },
+                    function _poolCallErr(err: unknown) {
+                      _childPort!.postMessage({
+                        __pool_error: true,
+                        correlationId: _corrId,
+                        message: String(err),
+                        stack: err instanceof Error ? err.stack : undefined,
+                      });
+                    },
+                  );
+                });
+              },
+              // If the pool module itself fails to load, surface the error as __pool_error
+              // so the parent dispatcher rejects rather than hanging indefinitely.
+              function _poolImportFailed(err: unknown) {
+                _childPort!.postMessage({
+                  __pool_error: true,
+                  correlationId: _corrId,
+                  message: 'fino:realm/pool module failed to load: ' + String(err),
+                });
+              },
+            );
+          }
+          // Other messages (not __call / __pool_call / __terminate) pass through
+          // to user-registered listeners unchanged.
+        });
+        // Mark the handler as installed so _terminateHandler stops queuing early messages.
+        // Replay any messages that arrived before installation via a microtask.
+        _callHandlerInstalled = true;
+        const _toReplay: unknown[] = [];
+        if (_earlyCall !== null) {
+          _toReplay.push(_earlyCall);
+          _earlyCall = null;
+        }
+        _toReplay.push(..._earlyPoolCalls.splice(0));
+        if (_toReplay.length > 0) {
+          Promise.resolve().then(() => {
+            for (const m of _toReplay) {
+              _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+            }
+          });
+        }
+      } else {
+        // Normal completion: entry module's top-level code (and any TLA) finished.
+        // If an entry module wants to stay alive for multi-event messaging, it
+        // must use a top-level `await` that doesn't resolve until done.
+        _childDone = true;
+      }
+    },
+    function _onChildEntryError(err: unknown) {
+      _entryFailed = true;
+      try {
+        const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        (setEntryError as (m: string) => void)(msg);
+      } catch (e) {
+        runtimeGlobalThis.console?.error('[_onChildEntryError] setEntryError threw:', e);
+      }
       _childDone = true;
-    }
-  }, function _onChildEntryError(err: unknown) {
-    _entryFailed = true;
-    try {
-      const msg = err instanceof Error ? err.stack ?? err.message : String(err);
-      (setEntryError as (m: string) => void)(msg);
-    } catch (e) {
-      runtimeGlobalThis.console?.error('[_onChildEntryError] setEntryError threw:', e);
-    }
-    _childDone = true;
-  });
+    },
+  );
   const _watchMode = (getWatchMode as () => boolean)();
   // References held so _childIsDone() can tear them down on external terminate().
   let _watcherRef: {
@@ -615,51 +795,60 @@ if (_childEntry) {
   function _startChildShutdown() {
     if (_shutdownStarted) return;
     _shutdownStarted = true;
-    Promise.resolve(runShutdownHooks()).then(function _childShutdownOk() {
-      _shutdownDone = true;
-    }, function _childShutdownErr(err: unknown) {
-      // Root-CLI parity: a shutdown-hook failure fails the run, but never
-      // displaces an earlier entry error.
-      if (!_entryFailed) {
-        try {
-          const msg = err instanceof Error ? err.stack ?? err.message : String(err);
-          (setEntryError as (m: string) => void)(msg);
-        } catch {}
-      }
-      _shutdownDone = true;
-    });
+    Promise.resolve(runShutdownHooks()).then(
+      function _childShutdownOk() {
+        _shutdownDone = true;
+      },
+      function _childShutdownErr(err: unknown) {
+        // Root-CLI parity: a shutdown-hook failure fails the run, but never
+        // displaces an earlier entry error.
+        if (!_entryFailed) {
+          try {
+            const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+            (setEntryError as (m: string) => void)(msg);
+          } catch {}
+        }
+        _shutdownDone = true;
+      },
+    );
   }
-  driveLoop(function _childIsDone() {
-    // In watch mode the realm stays alive after the entry completes so the
-    // file-watcher loop can keep driving kqueue/inotify events.  Exit is
-    // triggered by: requestReload() (sets state.terminated), terminateChild()
-    // for embedded realms (same), or { __terminate: true } over the port for
-    // thread/process realms (sets _externalTerminate).
-    const entryDone = _watchMode ? _externalTerminate || isTerminated() as boolean : _childDone || isTerminated() as boolean;
-    if (entryDone && !_shutdownStarted) _startChildShutdown();
-    const done = entryDone && _shutdownDone;
-    if (done) {
-      // Tear down the watcher and poll interval so alive() drains to false
-      // and the child's step loop can exit cleanly.  This handles both the
-      // external-terminate path (parent called terminate()) and the
-      // watcher-initiated reload path (watcher already cleared these itself).
-      if (_watchPollRef !== null) {
-        clearInterval(_watchPollRef);
-        _watchPollRef = null;
+  driveLoop(
+    function _childIsDone() {
+      // In watch mode the realm stays alive after the entry completes so the
+      // file-watcher loop can keep driving kqueue/inotify events.  Exit is
+      // triggered by: requestReload() (sets state.terminated), terminateChild()
+      // for embedded realms (same), or { __terminate: true } over the port for
+      // thread/process realms (sets _externalTerminate).
+      const entryDone = _watchMode
+        ? _externalTerminate || (isTerminated() as boolean)
+        : _childDone || (isTerminated() as boolean);
+      if (entryDone && !_shutdownStarted) _startChildShutdown();
+      const done = entryDone && _shutdownDone;
+      if (done) {
+        // Tear down the watcher and poll interval so alive() drains to false
+        // and the child's step loop can exit cleanly.  This handles both the
+        // external-terminate path (parent called terminate()) and the
+        // watcher-initiated reload path (watcher already cleared these itself).
+        if (_watchPollRef !== null) {
+          clearInterval(_watchPollRef);
+          _watchPollRef = null;
+        }
+        if (_watcherRef !== null) {
+          _watcherRef.close();
+          _watcherRef = null;
+        }
+        if (!_portClosed && _childPort !== undefined) {
+          // Close the port to cancel any pending loop.readable() so that
+          // alive() can return false and the loop can exit cleanly.
+          _portClosed = true;
+          (_childPort as MessagePort | ThreadPort).close();
+        }
       }
-      if (_watcherRef !== null) {
-        _watcherRef.close();
-        _watcherRef = null;
-      }
-      if (!_portClosed && _childPort !== undefined) {
-        // Close the port to cancel any pending loop.readable() so that
-        // alive() can return false and the loop can exit cleanly.
-        _portClosed = true;
-        (_childPort as MessagePort | ThreadPort).close();
-      }
-    }
-    return done;
-  }, function _childOnDone() {}, { nonBlocking: true });
+      return done;
+    },
+    function _childOnDone() {},
+    { nonBlocking: true },
+  );
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop
   // ---------------------------------------------------------------------------
@@ -669,7 +858,7 @@ if (_childEntry) {
   // _watcherRef / _watchPollRef that _childIsDone() uses for teardown.
   if (_watchMode) {
     void (async function _watchLoop() {
-      const { Watcher } = await import('fino:file/watch') as {
+      const { Watcher } = (await import('fino:file/watch')) as {
         Watcher: new () => {
           watch(p: string): void;
           close(): void;
@@ -725,59 +914,83 @@ if ((getReplMode as () => boolean)()) {
     _childPort.addEventListener('message', function _replEarlyHandler(ev) {
       const msg = (ev as MessageEvent).data;
       if (!msg || typeof msg !== 'object') return;
-      if ((msg as {
-        __terminate?: boolean;
-      }).__terminate === true) {
+      if (
+        (
+          msg as {
+            __terminate?: boolean;
+          }
+        ).__terminate === true
+      ) {
         _replDone = true;
-      } else if (!_replHandlerInstalled && (msg as {
-        __eval?: boolean;
-      }).__eval === true) {
+      } else if (
+        !_replHandlerInstalled &&
+        (
+          msg as {
+            __eval?: boolean;
+          }
+        ).__eval === true
+      ) {
         // Queue early __eval messages until the handler is ready; replay after install.
         _earlyEvals.push(msg);
       }
     });
   }
   // Lazily import the REPL handler so the inspector is only wired up in REPL realms.
-  import('internal:repl-handler').then(function _replHandlerLoaded(mod: Record<string, unknown>) {
-    const handleEval = mod['handleEval'] as (msg: {
-      id: number;
-      code: string;
-      port: MessagePort;
-    }) => void;
-    if (_childPort !== undefined) {
-      _childPort.addEventListener('message', function _replMessageHandler(ev) {
-        const msg = (ev as MessageEvent).data;
-        if (!msg || typeof msg !== 'object') return;
-        if ((msg as {
-          __eval?: boolean;
-        }).__eval === true) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          handleEval({
-            id: (msg as {
-              id: number;
-            }).id,
-            code: (msg as {
-              code: string;
-            }).code,
-            port: _childPort as MessagePort
-          });
-        }
-      });
-      _replHandlerInstalled = true;
-      const _toReplay = _earlyEvals.splice(0);
-      if (_toReplay.length > 0) {
-        Promise.resolve().then(function _replReplay() {
-          for (const m of _toReplay) {
-            _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+  import('internal:repl-handler').then(
+    function _replHandlerLoaded(mod: Record<string, unknown>) {
+      const handleEval = mod['handleEval'] as (msg: {
+        id: number;
+        code: string;
+        port: MessagePort;
+      }) => void;
+      if (_childPort !== undefined) {
+        _childPort.addEventListener('message', function _replMessageHandler(ev) {
+          const msg = (ev as MessageEvent).data;
+          if (!msg || typeof msg !== 'object') return;
+          if (
+            (
+              msg as {
+                __eval?: boolean;
+              }
+            ).__eval === true
+          ) {
+            (ev as MessageEvent).stopImmediatePropagation?.();
+            handleEval({
+              id: (
+                msg as {
+                  id: number;
+                }
+              ).id,
+              code: (
+                msg as {
+                  code: string;
+                }
+              ).code,
+              port: _childPort as MessagePort,
+            });
           }
         });
+        _replHandlerInstalled = true;
+        const _toReplay = _earlyEvals.splice(0);
+        if (_toReplay.length > 0) {
+          Promise.resolve().then(function _replReplay() {
+            for (const m of _toReplay) {
+              _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+            }
+          });
+        }
       }
-    }
-  }, function _replHandlerError(err: unknown) {
-    runtimeGlobalThis.console?.error('[repl] failed to load handler:', err);
-    _replDone = true;
-  });
-  driveLoop(function _replIsDone() {
-    return _replDone || isTerminated() as boolean;
-  }, function _replOnDone() {}, { nonBlocking: true });
+    },
+    function _replHandlerError(err: unknown) {
+      runtimeGlobalThis.console?.error('[repl] failed to load handler:', err);
+      _replDone = true;
+    },
+  );
+  driveLoop(
+    function _replIsDone() {
+      return _replDone || (isTerminated() as boolean);
+    },
+    function _replOnDone() {},
+    { nonBlocking: true },
+  );
 }

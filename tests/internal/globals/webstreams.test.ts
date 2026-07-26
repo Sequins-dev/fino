@@ -11,10 +11,12 @@ const ReadableStreamCtor = ReadableStream as ReadableStreamWithFrom;
 // Helpers
 // ---------------------------------------------------------------------------
 function makeReadable<T>(chunks: Iterable<T>) {
-  return new ReadableStream({ start(controller) {
-    for (const chunk of chunks) controller.enqueue(chunk);
-    controller.close();
-  } });
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
 }
 async function collect<T>(readable: AsyncIterable<T>) {
   const results: T[] = [];
@@ -33,49 +35,43 @@ function makeSinkWritable<T = unknown>() {
     },
     close() {
       closedResolve?.();
-    }
+    },
   });
   return {
     stream,
     chunks,
-    closed
+    closed,
   };
 }
 // ---------------------------------------------------------------------------
 describe('ReadableStream basics', () => {
   it('source-backed — getReader + read chunks', async (t) => {
-    const rs = new ReadableStream({ start(controller) {
-      controller.enqueue('a');
-      controller.enqueue('b');
-      controller.close();
-    } });
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue('a');
+        controller.enqueue('b');
+        controller.close();
+      },
+    });
     const reader = rs.getReader();
     t.deepEqual(await reader.read(), {
       done: false,
-      value: 'a'
+      value: 'a',
     });
     t.deepEqual(await reader.read(), {
       done: false,
-      value: 'b'
+      value: 'b',
     });
     t.deepEqual(await reader.read(), {
       done: true,
-      value: undefined
+      value: undefined,
     });
     reader.releaseLock();
     t.ok(true, 'no throw');
   });
   it('source-backed — async iteration', async (t) => {
-    const rs = makeReadable([
-      1,
-      2,
-      3
-    ]);
-    t.deepEqual(await collect(rs), [
-      1,
-      2,
-      3
-    ]);
+    const rs = makeReadable([1, 2, 3]);
+    t.deepEqual(await collect(rs), [1, 2, 3]);
   });
   it('ReadableStream.from() — async iterable fast path', async (t) => {
     async function* gen() {
@@ -87,18 +83,10 @@ describe('ReadableStream basics', () => {
   });
   it('ReadableStream.from() — array iteration', async (t) => {
     async function* gen() {
-      for (const x of [
-        10,
-        20,
-        30
-      ]) yield x;
+      for (const x of [10, 20, 30]) yield x;
     }
     const rs = ReadableStreamCtor.from(gen());
-    t.deepEqual(await collect(rs), [
-      10,
-      20,
-      30
-    ]);
+    t.deepEqual(await collect(rs), [10, 20, 30]);
   });
   it('locked after getReader()', (t) => {
     const rs = makeReadable([1]);
@@ -125,12 +113,12 @@ describe('ReadableStream basics', () => {
       },
       cancel(reason) {
         cancelReason = reason;
-      }
+      },
     });
     const iter = rs[Symbol.asyncIterator]();
     t.deepEqual(await iter.next(), {
       done: false,
-      value: 'first'
+      value: 'first',
     });
     await iter.return?.('stop');
     t.equal(cancelReason, 'stop', 'early iterator return forwards cancel reason');
@@ -144,12 +132,12 @@ describe('ReadableStream basics', () => {
       },
       cancel() {
         cancelCount++;
-      }
+      },
     });
     const iter = rs.values({ preventCancel: true });
     t.deepEqual(await iter.next(), {
       done: false,
-      value: 'first'
+      value: 'first',
     });
     await iter.return?.('stop');
     t.equal(cancelCount, 0, 'preventCancel suppresses source cancel');
@@ -157,32 +145,28 @@ describe('ReadableStream basics', () => {
   });
   it('pull is called when queue is empty', async (t) => {
     let pullCount = 0;
-    const values = [
-      1,
-      2,
-      3
-    ];
-    const rs = new ReadableStream({ pull(controller) {
-      if (values.length > 0) {
-        controller.enqueue(values.shift());
-      } else {
-        controller.close();
-      }
-      pullCount++;
-    } });
+    const values = [1, 2, 3];
+    const rs = new ReadableStream({
+      pull(controller) {
+        if (values.length > 0) {
+          controller.enqueue(values.shift());
+        } else {
+          controller.close();
+        }
+        pullCount++;
+      },
+    });
     const result = await collect(rs);
-    t.deepEqual(result, [
-      1,
-      2,
-      3
-    ]);
+    t.deepEqual(result, [1, 2, 3]);
     t.ok(pullCount >= 3, 'pull called at least 3 times');
   });
   it('cancel() resolves and calls underlyingSource.cancel', async (t) => {
     let cancelReason = null;
-    const rs = new ReadableStream({ cancel(reason) {
-      cancelReason = reason;
-    } });
+    const rs = new ReadableStream({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
     await rs.cancel('stop');
     t.equal(cancelReason, 'stop', 'cancel reason forwarded');
   });
@@ -203,23 +187,11 @@ describe('ReadableStream basics', () => {
 });
 describe('ReadableStream tee', () => {
   it('tee() splits into two branches', async (t) => {
-    const rs = makeReadable([
-      'a',
-      'b',
-      'c'
-    ]);
+    const rs = makeReadable(['a', 'b', 'c']);
     const [b1, b2] = rs.tee();
     const [r1, r2] = await Promise.all([collect(b1), collect(b2)]);
-    t.deepEqual(r1, [
-      'a',
-      'b',
-      'c'
-    ], 'branch 1');
-    t.deepEqual(r2, [
-      'a',
-      'b',
-      'c'
-    ], 'branch 2');
+    t.deepEqual(r1, ['a', 'b', 'c'], 'branch 1');
+    t.deepEqual(r2, ['a', 'b', 'c'], 'branch 2');
   });
   it('tee() throws if locked', (t) => {
     const rs = makeReadable([]);
@@ -232,7 +204,7 @@ describe('ReadableStream tee', () => {
       type: 'bytes',
       pull() {
         pullCount++;
-      }
+      },
     });
     rs.tee();
     await Promise.resolve();
@@ -247,7 +219,7 @@ describe('ReadableStream tee', () => {
       pull(controller) {
         pullCount++;
         if (pullCount === 1) controller.enqueue(enqueuedChunk);
-      }
+      },
     });
     const [branch1, branch2] = rs.tee();
     const reader1 = branch1.getReader({ mode: 'byob' });
@@ -288,22 +260,19 @@ describe('WritableStream', () => {
   });
   it('writes are serialized (not concurrent)', async (t) => {
     const order: string[] = [];
-    const stream = new WritableStream({ write(chunk) {
-      order.push(`start:${chunk}`);
-      return new Promise((r) => setTimeout(r, 0)).then(() => {
-        order.push(`end:${chunk}`);
-      });
-    } });
+    const stream = new WritableStream({
+      write(chunk) {
+        order.push(`start:${chunk}`);
+        return new Promise((r) => setTimeout(r, 0)).then(() => {
+          order.push(`end:${chunk}`);
+        });
+      },
+    });
     const writer = stream.getWriter();
     const p1 = writer.write(1);
     const p2 = writer.write(2);
     await Promise.all([p1, p2]);
-    t.deepEqual(order, [
-      'start:1',
-      'end:1',
-      'start:2',
-      'end:2'
-    ], 'serialized');
+    t.deepEqual(order, ['start:1', 'end:1', 'start:2', 'end:2'], 'serialized');
   });
   it('abort() puts stream into errored state', async (t) => {
     const { stream } = makeSinkWritable();
@@ -322,17 +291,9 @@ describe('WritableStream', () => {
 describe('pipeTo', () => {
   it('source to sink', async (t) => {
     const { stream, chunks, closed } = makeSinkWritable();
-    await makeReadable([
-      1,
-      2,
-      3
-    ]).pipeTo(stream);
+    await makeReadable([1, 2, 3]).pipeTo(stream);
     await closed;
-    t.deepEqual(chunks, [
-      1,
-      2,
-      3
-    ], 'all chunks piped');
+    t.deepEqual(chunks, [1, 2, 3], 'all chunks piped');
   });
   it('prevents duplicate consumption', async (t) => {
     const rs = makeReadable([1]);
@@ -364,7 +325,7 @@ describe('pipeTo', () => {
       },
       close() {
         closeCalled = true;
-      }
+      },
     });
     await makeReadable(['x']).pipeTo(ws, { preventClose: true });
     t.ok(!closeCalled, 'close not called');
@@ -379,18 +340,10 @@ describe('pipeTo', () => {
       },
       close() {
         closedCount++;
-      }
+      },
     });
-    await makeReadable([
-      10,
-      20,
-      30
-    ]).pipeTo(ws);
-    t.deepEqual(received, [
-      10,
-      20,
-      30
-    ]);
+    await makeReadable([10, 20, 30]).pipeTo(ws);
+    t.deepEqual(received, [10, 20, 30]);
     t.equal(closedCount, 1, 'close called once');
   });
   it('does not observe Object.prototype.then on read result records', async (t) => {
@@ -398,12 +351,20 @@ describe('pipeTo', () => {
     const originalThen = Object.prototype.then;
     try {
       Object.prototype.then = function interceptedThen(resolve: (value: unknown) => void) {
-        if (!(this as {
-          done?: boolean;
-        }).done) {
-          intercepted.push((this as {
-            value?: unknown;
-          }).value);
+        if (
+          !(
+            this as {
+              done?: boolean;
+            }
+          ).done
+        ) {
+          intercepted.push(
+            (
+              this as {
+                value?: unknown;
+              }
+            ).value,
+          );
         }
         const result = Object.create(null);
         result.done = true;
@@ -411,9 +372,11 @@ describe('pipeTo', () => {
         resolve(result);
       };
       const received: string[] = [];
-      const ws = new WritableStream<string>({ write(chunk) {
-        received.push(chunk);
-      } });
+      const ws = new WritableStream<string>({
+        write(chunk) {
+          received.push(chunk);
+        },
+      });
       await makeReadable(['a']).pipeTo(ws);
       t.deepEqual(intercepted, [], 'then was not intercepted');
       t.deepEqual(received, ['a'], 'chunk was written');
@@ -440,32 +403,31 @@ describe('pipeTo', () => {
       get signal() {
         touched.push('signal');
         return undefined;
-      }
+      },
     };
     const ws = new WritableStream();
     await makeReadable([]).pipeTo(ws, options);
-    t.deepEqual(touched, [
-      'preventAbort',
-      'preventCancel',
-      'preventClose',
-      'signal'
-    ]);
+    t.deepEqual(touched, ['preventAbort', 'preventCancel', 'preventClose', 'signal']);
   });
   it('AbortSignal cancels mid-stream', async (t) => {
     const { AbortController } = globalThis;
     const controller = new AbortController();
     const received = [];
     let errorReason = null;
-    const ws = new WritableStream({ write(c) {
-      received.push(c);
-      if (received.length === 1) controller.abort(new Error('stop'));
-    } });
-    const rs = new ReadableStream({ start(ctrl) {
-      ctrl.enqueue(1);
-      ctrl.enqueue(2);
-      ctrl.enqueue(3);
-      ctrl.close();
-    } });
+    const ws = new WritableStream({
+      write(c) {
+        received.push(c);
+        if (received.length === 1) controller.abort(new Error('stop'));
+      },
+    });
+    const rs = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(1);
+        ctrl.enqueue(2);
+        ctrl.enqueue(3);
+        ctrl.close();
+      },
+    });
     try {
       await rs.pipeTo(ws, { signal: controller.signal });
     } catch (e) {
@@ -478,31 +440,17 @@ describe('pipeTo', () => {
 describe('TransformStream / pipeThrough', () => {
   it('identity (no transformer) passes chunks through', async (t) => {
     const ts = new TransformStream();
-    const readable = makeReadable([
-      1,
-      2,
-      3
-    ]).pipeThrough(ts);
-    t.deepEqual(await collect(readable), [
-      1,
-      2,
-      3
-    ]);
+    const readable = makeReadable([1, 2, 3]).pipeThrough(ts);
+    t.deepEqual(await collect(readable), [1, 2, 3]);
   });
   it('transform function applied to each chunk', async (t) => {
-    const ts = new TransformStream({ transform(chunk, controller) {
-      controller.enqueue(chunk * 2);
-    } });
-    const readable = makeReadable([
-      1,
-      2,
-      3
-    ]).pipeThrough(ts);
-    t.deepEqual(await collect(readable), [
-      2,
-      4,
-      6
-    ]);
+    const ts = new TransformStream({
+      transform(chunk, controller) {
+        controller.enqueue(chunk * 2);
+      },
+    });
+    const readable = makeReadable([1, 2, 3]).pipeThrough(ts);
+    t.deepEqual(await collect(readable), [2, 4, 6]);
   });
   it('transformer methods are called with the transformer as this', async (t) => {
     class PrefixTransformer {
@@ -528,7 +476,7 @@ describe('TransformStream / pipeThrough', () => {
       size() {
         sizeCalls++;
         return 1;
-      }
+      },
     });
     const writer = ts.writable.getWriter();
     const write = writer.write('a');
@@ -540,16 +488,22 @@ describe('TransformStream / pipeThrough', () => {
   it('readable strategy size can enqueue reentrantly', async (t) => {
     let controller: TransformStreamDefaultController | undefined;
     let calls = 0;
-    const ts = new TransformStream({ start(c) {
-      controller = c;
-    } }, undefined, {
-      highWaterMark: Infinity,
-      size() {
-        calls++;
-        if (calls === 1) controller!.enqueue('b');
-        return 1;
-      }
-    });
+    const ts = new TransformStream(
+      {
+        start(c) {
+          controller = c;
+        },
+      },
+      undefined,
+      {
+        highWaterMark: Infinity,
+        size() {
+          calls++;
+          if (calls === 1) controller!.enqueue('b');
+          return 1;
+        },
+      },
+    );
     const writer = ts.writable.getWriter();
     await writer.write('a');
     await writer.close();
@@ -557,29 +511,41 @@ describe('TransformStream / pipeThrough', () => {
   });
   it('readable strategy size can terminate or error reentrantly', async (t) => {
     let terminateController: TransformStreamDefaultController | undefined;
-    const terminated = new TransformStream({ start(c) {
-      terminateController = c;
-    } }, undefined, {
-      highWaterMark: Infinity,
-      size() {
-        terminateController!.terminate();
-        return 1;
-      }
-    });
+    const terminated = new TransformStream(
+      {
+        start(c) {
+          terminateController = c;
+        },
+      },
+      undefined,
+      {
+        highWaterMark: Infinity,
+        size() {
+          terminateController!.terminate();
+          return 1;
+        },
+      },
+    );
     const terminatedWriter = terminated.writable.getWriter();
     await terminatedWriter.write('a');
     t.deepEqual(await collect(terminated.readable), [], 'terminated readable has no chunks');
     const error = new Error('boom');
     let errorController: TransformStreamDefaultController | undefined;
-    const errored = new TransformStream({ start(c) {
-      errorController = c;
-    } }, undefined, {
-      highWaterMark: Infinity,
-      size() {
-        errorController!.error(error);
-        return 1;
-      }
-    });
+    const errored = new TransformStream(
+      {
+        start(c) {
+          errorController = c;
+        },
+      },
+      undefined,
+      {
+        highWaterMark: Infinity,
+        size() {
+          errorController!.error(error);
+          return 1;
+        },
+      },
+    );
     const erroredWriter = errored.writable.getWriter();
     await erroredWriter.write('a');
     const reader = errored.readable.getReader();
@@ -590,16 +556,22 @@ describe('TransformStream / pipeThrough', () => {
     let reader: ReadableStreamDefaultReader;
     let readPromise: Promise<ReadableStreamReadResult<string>> | undefined;
     let sizeCalls = 0;
-    const ts = new TransformStream({ start(c) {
-      controller = c;
-    } }, undefined, {
-      highWaterMark: 0,
-      size() {
-        readPromise = reader.read() as Promise<ReadableStreamReadResult<string>>;
-        sizeCalls++;
-        return 1;
-      }
-    });
+    const ts = new TransformStream(
+      {
+        start(c) {
+          controller = c;
+        },
+      },
+      undefined,
+      {
+        highWaterMark: 0,
+        size() {
+          readPromise = reader.read() as Promise<ReadableStreamReadResult<string>>;
+          sizeCalls++;
+          return 1;
+        },
+      },
+    );
     reader = ts.readable.getReader();
     const writer = ts.writable.getWriter();
     let writeResolved = false;
@@ -626,14 +598,10 @@ describe('TransformStream / pipeThrough', () => {
       flush(controller) {
         flushed = true;
         controller.enqueue('END');
-      }
+      },
     });
     const readable = makeReadable(['a', 'b']).pipeThrough(ts);
-    t.deepEqual(await collect(readable), [
-      'a',
-      'b',
-      'END'
-    ]);
+    t.deepEqual(await collect(readable), ['a', 'b', 'END']);
     t.ok(flushed, 'flush was called');
   });
   it('start called with controller', async (t) => {
@@ -645,7 +613,7 @@ describe('TransformStream / pipeThrough', () => {
       },
       transform(chunk, controller) {
         controller.enqueue(chunk);
-      }
+      },
     });
     const readable = makeReadable(['a']).pipeThrough(ts);
     t.deepEqual(await collect(readable), ['FIRST', 'a']);
@@ -665,19 +633,32 @@ describe('TransformStream / pipeThrough', () => {
   it('pipeThrough validates readable before accessing writable', (t) => {
     const rs = new ReadableStream();
     let writableAccessed = false;
-    t.throws(() => rs.pipeThrough({
-      readable: (null as unknown) as ReadableStream,
-      get writable() {
-        writableAccessed = true;
-        return new WritableStream();
-      }
-    }), /ReadableStream/, 'invalid readable throws');
+    t.throws(
+      () =>
+        rs.pipeThrough({
+          readable: null as unknown as ReadableStream,
+          get writable() {
+            writableAccessed = true;
+            return new WritableStream();
+          },
+        }),
+      /ReadableStream/,
+      'invalid readable throws',
+    );
     t.equal(writableAccessed, false, 'writable getter is not accessed');
   });
   it('pipeThrough rejects invalid signal values synchronously', (t) => {
     const rs = new ReadableStream();
-    t.throws(() => rs.pipeThrough(new TransformStream(), { signal: (null as unknown) as AbortSignal }), /AbortSignal/, 'null signal throws');
-    t.throws(() => rs.pipeThrough(new TransformStream(), { signal: Object.create(AbortSignal.prototype) }), /AbortSignal/, 'unbranded AbortSignal prototype object throws');
+    t.throws(
+      () => rs.pipeThrough(new TransformStream(), { signal: null as unknown as AbortSignal }),
+      /AbortSignal/,
+      'null signal throws',
+    );
+    t.throws(
+      () => rs.pipeThrough(new TransformStream(), { signal: Object.create(AbortSignal.prototype) }),
+      /AbortSignal/,
+      'unbranded AbortSignal prototype object throws',
+    );
   });
   it('pipeThrough uses the internal pipe algorithm, not patched pipeTo methods', (t) => {
     let called = false;
@@ -685,13 +666,13 @@ describe('TransformStream / pipeThrough', () => {
     try {
       ReadableStream.prototype.pipeTo = function patchedPipeTo() {
         called = true;
-        return (undefined as unknown) as Promise<void>;
+        return undefined as unknown as Promise<void>;
       };
       const readable = new ReadableStream();
       const writable = new WritableStream();
       const result = new ReadableStream().pipeThrough({
         readable,
-        writable
+        writable,
       });
       t.equal(result, readable, 'returns transform readable');
       t.equal(called, false, 'patched pipeTo was not called');
@@ -709,10 +690,18 @@ describe('Queuing strategies', () => {
   });
   it('queuing strategy constructors require an object with highWaterMark', (t) => {
     for (const Strategy of [CountQueuingStrategy, ByteLengthQueuingStrategy]) {
-      t.throws(() => new Strategy(undefined as any), TypeError, `${Strategy.name} rejects undefined`);
+      t.throws(
+        () => new Strategy(undefined as any),
+        TypeError,
+        `${Strategy.name} rejects undefined`,
+      );
       t.throws(() => new Strategy(null as any), TypeError, `${Strategy.name} rejects null`);
       t.throws(() => new Strategy(true as any), TypeError, `${Strategy.name} rejects primitive`);
-      t.throws(() => new Strategy({} as any), TypeError, `${Strategy.name} rejects missing highWaterMark`);
+      t.throws(
+        () => new Strategy({} as any),
+        TypeError,
+        `${Strategy.name} rejects missing highWaterMark`,
+      );
     }
   });
   it('ByteLengthQueuingStrategy: highWaterMark and size', (t) => {
@@ -725,9 +714,14 @@ describe('Queuing strategies', () => {
 describe('ReadableStream desiredSize', () => {
   it('CountQueuingStrategy: desiredSize tracks queue', async (t) => {
     let ctrl: ReadableStreamDefaultController<string> | undefined;
-    const rs = new ReadableStream({ start(c) {
-      ctrl = c;
-    } }, new CountQueuingStrategy({ highWaterMark: 3 }));
+    const rs = new ReadableStream(
+      {
+        start(c) {
+          ctrl = c;
+        },
+      },
+      new CountQueuingStrategy({ highWaterMark: 3 }),
+    );
     if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.desiredSize, 3, 'starts at hwm');
     ctrl.enqueue('a');
@@ -737,37 +731,39 @@ describe('ReadableStream desiredSize', () => {
     ctrl.enqueue('c');
     t.equal(ctrl.desiredSize, 0, 'full');
     ctrl.close();
-    t.deepEqual(await collect(rs), [
-      'a',
-      'b',
-      'c'
-    ]);
+    t.deepEqual(await collect(rs), ['a', 'b', 'c']);
   });
   it('ReadableStreamDefaultController.desiredSize is null when errored', (t) => {
     let ctrl: ReadableStreamDefaultController<unknown> | undefined;
-    const rs = new ReadableStream({ start(c) {
-      ctrl = c;
-    } });
+    const rs = new ReadableStream({
+      start(c) {
+        ctrl = c;
+      },
+    });
     if (!ctrl) throw new Error('controller not set');
     ctrl.error(new Error('oops'));
     t.equal(ctrl.desiredSize, null, 'null when errored');
   });
   it('ReadableStreamDefaultController.desiredSize is 0 when closed', async (t) => {
     let ctrl: ReadableStreamDefaultController<unknown> | undefined;
-    const rs = new ReadableStream({ start(c) {
-      ctrl = c;
-      ctrl.close();
-    } });
+    const rs = new ReadableStream({
+      start(c) {
+        ctrl = c;
+        ctrl.close();
+      },
+    });
     await collect(rs);
     if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.desiredSize, 0, 'zero when closed');
   });
   it('ReadableStreamDefaultController: enqueue after close throws', (t) => {
     let ctrl: ReadableStreamDefaultController<unknown> | undefined;
-    new ReadableStream({ start(c) {
-      ctrl = c;
-      ctrl.close();
-    } });
+    new ReadableStream({
+      start(c) {
+        ctrl = c;
+        ctrl.close();
+      },
+    });
     if (!ctrl) throw new Error('controller not set');
     const controller = ctrl;
     t.throws(() => controller.enqueue('x'), /close/, 'throws after close');
@@ -775,32 +771,36 @@ describe('ReadableStream desiredSize', () => {
   it('pull called proactively when desiredSize > 0', async (t) => {
     let pullCount = 0;
     let ctrl: ReadableStreamDefaultController<number> | undefined;
-    const rs = new ReadableStream({
-      start(c) {
-        ctrl = c;
+    const rs = new ReadableStream(
+      {
+        start(c) {
+          ctrl = c;
+        },
+        pull() {
+          if (!ctrl) throw new Error('controller not set');
+          pullCount++;
+          ctrl.enqueue(pullCount);
+          if (pullCount >= 3) ctrl.close();
+        },
       },
-      pull() {
-        if (!ctrl) throw new Error('controller not set');
-        pullCount++;
-        ctrl.enqueue(pullCount);
-        if (pullCount >= 3) ctrl.close();
-      }
-    }, new CountQueuingStrategy({ highWaterMark: 3 }));
+      new CountQueuingStrategy({ highWaterMark: 3 }),
+    );
     const result = await collect(rs);
-    t.deepEqual(result, [
-      1,
-      2,
-      3
-    ], 'all pulled chunks received');
+    t.deepEqual(result, [1, 2, 3], 'all pulled chunks received');
     t.ok(pullCount >= 3, 'pull called enough times');
   });
 });
 describe('WritableStream desiredSize / ready', () => {
   it('ByteLengthQueuingStrategy: desiredSize', async (t) => {
     const writes: ArrayBufferView[] = [];
-    const ws = new WritableStream({ write(c) {
-      writes.push(c);
-    } }, new ByteLengthQueuingStrategy({ highWaterMark: 10 }));
+    const ws = new WritableStream(
+      {
+        write(c) {
+          writes.push(c);
+        },
+      },
+      new ByteLengthQueuingStrategy({ highWaterMark: 10 }),
+    );
     const writer = ws.getWriter();
     t.equal(writer.desiredSize, 10, 'starts at hwm');
     const p = writer.write(new Uint8Array(6));
@@ -811,12 +811,17 @@ describe('WritableStream desiredSize / ready', () => {
   it('WritableStreamDefaultWriter.desiredSize tracks queue', async (t) => {
     const writes: string[] = [];
     let resolveWrite: (() => void) | undefined;
-    const ws = new WritableStream({ write(c) {
-      writes.push(c);
-      return new Promise((r) => {
-        resolveWrite = r;
-      });
-    } }, new CountQueuingStrategy({ highWaterMark: 2 }));
+    const ws = new WritableStream(
+      {
+        write(c) {
+          writes.push(c);
+          return new Promise((r) => {
+            resolveWrite = r;
+          });
+        },
+      },
+      new CountQueuingStrategy({ highWaterMark: 2 }),
+    );
     const writer = ws.getWriter();
     t.equal(writer.desiredSize, 2, 'starts at hwm');
     writer.write('a');
@@ -855,11 +860,16 @@ describe('WritableStream desiredSize / ready', () => {
   });
   it('WritableStreamDefaultWriter.ready: pending when backpressure, resolves after write', async (t) => {
     let resolveWrite: (() => void) | undefined;
-    const ws = new WritableStream({ write() {
-      return new Promise((r) => {
-        resolveWrite = r;
-      });
-    } }, new CountQueuingStrategy({ highWaterMark: 1 }));
+    const ws = new WritableStream(
+      {
+        write() {
+          return new Promise((r) => {
+            resolveWrite = r;
+          });
+        },
+      },
+      new CountQueuingStrategy({ highWaterMark: 1 }),
+    );
     const writer = ws.getWriter();
     const wp = writer.write('a');
     let readyResolved = false;
@@ -878,35 +888,30 @@ describe('Byte streams (BYOB)', () => {
     const rs = new ReadableStream({
       type: 'bytes',
       start(ctrl) {
-        ctrl.enqueue(new Uint8Array([
-          1,
-          2,
-          3
-        ]));
+        ctrl.enqueue(new Uint8Array([1, 2, 3]));
         ctrl.close();
-      }
+      },
     });
     const reader = rs.getReader();
     const { done, value } = await reader.read();
     t.ok(!done, 'not done');
     if (value === undefined) throw new Error('expected value');
-    t.deepEqual(Array.from(value), [
-      1,
-      2,
-      3
-    ], 'chunk received');
+    t.deepEqual(Array.from(value), [1, 2, 3], 'chunk received');
     const { done: done2 } = await reader.read();
     t.ok(done2, 'stream closed');
     reader.releaseLock();
   });
   it('ReadableByteStreamController: desiredSize tracks byte queue', (t) => {
     let ctrl: ReadableByteStreamController | undefined;
-    const rs = new ReadableStream({
-      type: 'bytes',
-      start(c) {
-        ctrl = c;
-      }
-    }, { highWaterMark: 10 });
+    const rs = new ReadableStream(
+      {
+        type: 'bytes',
+        start(c) {
+          ctrl = c;
+        },
+      },
+      { highWaterMark: 10 },
+    );
     if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.desiredSize, 10, 'starts at hwm');
     ctrl.enqueue(new Uint8Array(4));
@@ -921,7 +926,7 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       start(c) {
         ctrl = c;
-      }
+      },
     });
     if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.byobRequest, null, 'null when no BYOB reader');
@@ -931,42 +936,34 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       start(c) {
         c.close();
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     t.ok(reader instanceof ReadableStreamBYOBReader, 'is BYOB reader');
     reader.releaseLock();
   });
   it('getReader({mode:"byob"}) throws on non-byte stream', (t) => {
-    const rs = new ReadableStream({ start(c) {
-      c.close();
-    } });
+    const rs = new ReadableStream({
+      start(c) {
+        c.close();
+      },
+    });
     t.throws(() => rs.getReader({ mode: 'byob' }), /byte stream/, 'throws');
   });
   it('ReadableStreamBYOBReader.read(view): fills from enqueued bytes', async (t) => {
     const rs = new ReadableStream({
       type: 'bytes',
       start(ctrl) {
-        ctrl.enqueue(new Uint8Array([
-          10,
-          20,
-          30,
-          40
-        ]));
+        ctrl.enqueue(new Uint8Array([10, 20, 30, 40]));
         ctrl.close();
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const view = new Uint8Array(4);
     const { done, value } = await reader.read(view);
     t.ok(!done, 'not done');
     if (value === undefined) throw new Error('expected value');
-    t.deepEqual(Array.from(value), [
-      10,
-      20,
-      30,
-      40
-    ], 'bytes filled');
+    t.deepEqual(Array.from(value), [10, 20, 30, 40], 'bytes filled');
     reader.releaseLock();
   });
   it('ReadableStreamBYOBReader.read(view): partial fill', async (t) => {
@@ -975,7 +972,7 @@ describe('Byte streams (BYOB)', () => {
       start(ctrl) {
         ctrl.enqueue(new Uint8Array([1, 2]));
         ctrl.close();
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const view = new Uint8Array(8);
@@ -993,36 +990,28 @@ describe('Byte streams (BYOB)', () => {
       pull(ctrl) {
         byobReq = ctrl.byobRequest;
         if (byobReq && byobReq.view !== null) {
-          new Uint8Array(byobReq.view.buffer, byobReq.view.byteOffset, 3).set([
-            7,
-            8,
-            9
-          ]);
+          new Uint8Array(byobReq.view.buffer, byobReq.view.byteOffset, 3).set([7, 8, 9]);
           byobReq.respond(3);
         } else {
-          ctrl.enqueue(new Uint8Array([
-            7,
-            8,
-            9
-          ]));
+          ctrl.enqueue(new Uint8Array([7, 8, 9]));
           ctrl.close();
         }
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const view = new Uint8Array(3);
     const { done, value } = await reader.read(view);
     t.ok(!done, 'not done');
     if (value === undefined) throw new Error('expected value');
-    t.deepEqual(Array.from(value), [
-      7,
-      8,
-      9
-    ], 'bytes filled via byobRequest.respond');
+    t.deepEqual(Array.from(value), [7, 8, 9], 'bytes filled via byobRequest.respond');
     reader.releaseLock();
   });
   it('ReadableStreamBYOBRequest direct construction throws', (t) => {
-    t.throws(() => new ReadableStreamBYOBRequest(undefined as any, undefined as any), TypeError, 'direct construction is illegal');
+    t.throws(
+      () => new ReadableStreamBYOBRequest(undefined as any, undefined as any),
+      TypeError,
+      'direct construction is illegal',
+    );
   });
   it('byte streams reject non-transferable WebAssembly memory buffers', async (t) => {
     let pullCalled = false;
@@ -1030,11 +1019,15 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       pull() {
         pullCalled = true;
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const memory = new WebAssembly.Memory({ initial: 1 });
-    await t.rejects(() => reader.read(new Uint8Array(memory.buffer, 0, 1)), TypeError, 'read rejects non-transferable BYOB views');
+    await t.rejects(
+      () => reader.read(new Uint8Array(memory.buffer, 0, 1)),
+      TypeError,
+      'read rejects non-transferable BYOB views',
+    );
     t.equal(pullCalled, false, 'pull is not called');
     reader.releaseLock();
     let controller: ReadableByteStreamController | undefined;
@@ -1042,9 +1035,13 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       start(c) {
         controller = c;
-      }
+      },
     });
-    t.throws(() => controller!.enqueue(new Uint8Array(memory.buffer, 0, 1)), TypeError, 'enqueue rejects non-transferable byte chunks');
+    t.throws(
+      () => controller!.enqueue(new Uint8Array(memory.buffer, 0, 1)),
+      TypeError,
+      'enqueue rejects non-transferable byte chunks',
+    );
   });
   it('byte stream enqueue clears all pending BYOB descriptors before resolving reads', async (t) => {
     let controller: ReadableByteStreamController | undefined;
@@ -1052,7 +1049,7 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       start(c) {
         controller = c;
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const firstRead = reader.read(new Uint8Array(new ArrayBuffer(4)));
@@ -1069,26 +1066,22 @@ describe('Byte streams (BYOB)', () => {
           }
           return undefined;
         },
-        configurable: true
+        configurable: true,
       });
       controller!.enqueue(new Uint8Array(12).fill(66));
       t.equal(sawThen, true, 'patched then getter was observed');
     } finally {
       if (originalThen === undefined) delete Object.prototype.then;
-      else Object.defineProperty(Object.prototype, 'then', {
-        value: originalThen,
-        configurable: true,
-        writable: true
-      });
+      else
+        Object.defineProperty(Object.prototype, 'then', {
+          value: originalThen,
+          configurable: true,
+          writable: true,
+        });
     }
     const first = await firstRead;
     const second = await secondRead;
-    t.deepEqual(Array.from(first.value!), [
-      66,
-      66,
-      66,
-      66
-    ], 'first BYOB read filled');
+    t.deepEqual(Array.from(first.value!), [66, 66, 66, 66], 'first BYOB read filled');
     t.ok(second.value instanceof BigUint64Array, 'second BYOB read preserves view constructor');
     reader.releaseLock();
   });
@@ -1097,21 +1090,13 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       autoAllocateChunkSize: 10,
       pull(controller) {
-        controller.enqueue(new Uint8Array([
-          1,
-          2,
-          3
-        ]));
+        controller.enqueue(new Uint8Array([1, 2, 3]));
         controller.byobRequest!.respond(2);
-      }
+      },
     });
     const reader = rs.getReader();
     const [first, second] = await Promise.all([reader.read(), reader.read()]);
-    t.deepEqual(Array.from(first.value!), [
-      1,
-      2,
-      3
-    ], 'first read receives enqueued bytes');
+    t.deepEqual(Array.from(first.value!), [1, 2, 3], 'first read receives enqueued bytes');
     t.deepEqual(Array.from(second.value!), [0, 0], 'second read receives BYOB response bytes');
     reader.releaseLock();
   });
@@ -1121,7 +1106,7 @@ describe('Byte streams (BYOB)', () => {
       start(ctrl) {
         ctrl.enqueue(new Uint8Array([1]));
         ctrl.close();
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     let closedResolved = false;
@@ -1141,7 +1126,7 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       start(c) {
         c.close();
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     await t.rejects(() => reader.read(new Uint8Array(0)), TypeError, 'throws');
@@ -1152,7 +1137,7 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       start(c) {
         c.close();
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     await t.rejects(() => reader.read(new Uint8Array(4), { min: 10 }), /min/, 'throws');
@@ -1164,10 +1149,14 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       start(c) {
         controller = c;
-      }
+      },
     });
     t.throws(() => controller!.enqueue(new Uint8Array()), TypeError, 'zero-length buffer rejects');
-    t.throws(() => controller!.enqueue(new Uint8Array(new ArrayBuffer(8), 0, 0)), TypeError, 'zero-length view rejects');
+    t.throws(
+      () => controller!.enqueue(new Uint8Array(new ArrayBuffer(8), 0, 0)),
+      TypeError,
+      'zero-length view rejects',
+    );
   });
   it('BYOB respond validates detached and replacement views', async (t) => {
     let controller: ReadableByteStreamController | undefined;
@@ -1175,29 +1164,45 @@ describe('Byte streams (BYOB)', () => {
       type: 'bytes',
       pull(c) {
         controller = c;
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const pending = reader.read(new Uint8Array(4));
     await Promise.resolve();
     await Promise.resolve();
-    t.throws(() => controller!.byobRequest!.respondWithNewView(new Uint8Array()), TypeError, 'zero-length replacement rejects while readable');
-    t.throws(() => controller!.byobRequest!.respondWithNewView(new Uint8Array(new ArrayBuffer(8), 1, 1)), RangeError, 'replacement offset must match');
-    (controller!.byobRequest!.view!.buffer as ArrayBuffer & {
-      transfer(): ArrayBuffer;
-    }).transfer();
+    t.throws(
+      () => controller!.byobRequest!.respondWithNewView(new Uint8Array()),
+      TypeError,
+      'zero-length replacement rejects while readable',
+    );
+    t.throws(
+      () => controller!.byobRequest!.respondWithNewView(new Uint8Array(new ArrayBuffer(8), 1, 1)),
+      RangeError,
+      'replacement offset must match',
+    );
+    (
+      controller!.byobRequest!.view!.buffer as ArrayBuffer & {
+        transfer(): ArrayBuffer;
+      }
+    ).transfer();
     t.throws(() => controller!.byobRequest!.respond(1), TypeError, 'detached BYOB view rejects');
     reader.releaseLock();
-    await t.rejects(() => pending, /released|detached|lock/i, 'pending read is rejected after release');
+    await t.rejects(
+      () => pending,
+      /released|detached|lock/i,
+      'pending read is rejected after release',
+    );
   });
 });
 describe('Edge cases', () => {
   it('enqueue before closeRequested flushes to readers', async (t) => {
-    const rs = new ReadableStream({ start(ctrl) {
-      ctrl.enqueue('x');
-      ctrl.enqueue('y');
-      ctrl.close();
-    } });
+    const rs = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue('x');
+        ctrl.enqueue('y');
+        ctrl.close();
+      },
+    });
     t.deepEqual(await collect(rs), ['x', 'y'], 'all chunks received before close');
   });
 });
@@ -1224,24 +1229,18 @@ describe('ReadableStream cancel on iterable-backed stream', () => {
     t.ok(finallyCalled, 'generator finally block ran on cancel');
   });
   it('ReadableStream.from() with a sync iterable (array)', async (t) => {
-    const rs = ReadableStreamCtor.from([
-      1,
-      2,
-      3
-    ]);
-    t.deepEqual(await collect(rs), [
-      1,
-      2,
-      3
-    ], 'all array values yielded');
+    const rs = ReadableStreamCtor.from([1, 2, 3]);
+    t.deepEqual(await collect(rs), [1, 2, 3], 'all array values yielded');
   });
 });
 describe('WritableStream abort callback', () => {
   it('WritableStream.abort() calls underlyingSink.abort callback', async (t) => {
     let abortReason = null;
-    const stream = new WritableStream({ abort(reason) {
-      abortReason = reason;
-    } });
+    const stream = new WritableStream({
+      abort(reason) {
+        abortReason = reason;
+      },
+    });
     const err = new Error('abort!');
     await stream.abort(err);
     t.equal(abortReason, err, 'abort callback called with reason');
@@ -1270,23 +1269,23 @@ describe('WritableStream abort callback', () => {
 });
 describe('TransformStreamDefaultController extras', () => {
   it('terminate() closes the readable side', async (t) => {
-    const ts = new TransformStream({ transform(chunk, controller) {
-      controller.enqueue(chunk);
-      controller.terminate();
-    } });
-    const readable = makeReadable([
-      1,
-      2,
-      3
-    ]).pipeThrough(ts);
+    const ts = new TransformStream({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+        controller.terminate();
+      },
+    });
+    const readable = makeReadable([1, 2, 3]).pipeThrough(ts);
     const result = await collect(readable);
     t.equal(result.length, 1, 'only first chunk before terminate');
     t.equal(result[0], 1, 'first chunk value correct');
   });
   it('error() errors both sides', async (t) => {
-    const ts = new TransformStream({ transform(chunk, controller) {
-      controller.error(new Error('transform error'));
-    } });
+    const ts = new TransformStream({
+      transform(chunk, controller) {
+        controller.error(new Error('transform error'));
+      },
+    });
     const readable = makeReadable([1]).pipeThrough(ts);
     let threw = false;
     try {
@@ -1304,12 +1303,14 @@ describe('pipeTo options: preventAbort / preventCancel', () => {
       write() {},
       abort() {
         abortCalled = true;
-      }
+      },
     });
-    const rs = new ReadableStream({ start(ctrl) {
-      ctrl.enqueue(1);
-      ctrl.error(new Error('source error'));
-    } });
+    const rs = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(1);
+        ctrl.error(new Error('source error'));
+      },
+    });
     let threw = false;
     try {
       await rs.pipeTo(ws, { preventAbort: true });
@@ -1329,11 +1330,13 @@ describe('pipeTo options: preventAbort / preventCancel', () => {
       },
       cancel() {
         cancelCalled = true;
-      }
+      },
     });
-    const ws = new WritableStream({ write() {
-      throw new Error('sink error');
-    } });
+    const ws = new WritableStream({
+      write() {
+        throw new Error('sink error');
+      },
+    });
     let threw = false;
     try {
       await rs.pipeTo(ws, { preventCancel: true });
@@ -1347,68 +1350,92 @@ describe('pipeTo options: preventAbort / preventCancel', () => {
     const events: unknown[] = [];
     let controller: ReadableStreamDefaultController<string> | undefined;
     const error = new Error('source failed');
-    const rs = new ReadableStream<string>({ start(c) {
-      controller = c;
-    } });
-    const ws = new WritableStream<string>({
-      write(chunk) {
-        events.push('write', chunk);
+    const rs = new ReadableStream<string>({
+      start(c) {
+        controller = c;
       },
-      abort(reason) {
-        events.push('abort', reason);
-      }
-    }, new CountQueuingStrategy({ highWaterMark: 0 }));
+    });
+    const ws = new WritableStream<string>(
+      {
+        write(chunk) {
+          events.push('write', chunk);
+        },
+        abort(reason) {
+          events.push('abort', reason);
+        },
+      },
+      new CountQueuingStrategy({ highWaterMark: 0 }),
+    );
     const pipePromise = rs.pipeTo(ws);
     controller!.enqueue('queued');
     controller!.error(error);
-    await t.rejects(() => pipePromise, (reason) => reason === error, 'pipe rejects with source error');
+    await t.rejects(
+      () => pipePromise,
+      (reason) => reason === error,
+      'pipe rejects with source error',
+    );
     t.deepEqual(events, ['abort', error], 'destination is aborted without writing queued chunk');
   });
   it('does not abort or read from a zero-capacity destination that errors while pipe waits', async (t) => {
     const events: unknown[] = [];
     let writableController: WritableStreamDefaultController | undefined;
     const error = new Error('destination failed');
-    const rs = new ReadableStream<string>({ start(controller) {
-      controller.enqueue('a');
-      controller.enqueue('b');
-      controller.close();
-    } });
-    const ws = new WritableStream<string>({
+    const rs = new ReadableStream<string>({
       start(controller) {
-        writableController = controller;
+        controller.enqueue('a');
+        controller.enqueue('b');
+        controller.close();
       },
-      write(chunk) {
-        events.push('write', chunk);
+    });
+    const ws = new WritableStream<string>(
+      {
+        start(controller) {
+          writableController = controller;
+        },
+        write(chunk) {
+          events.push('write', chunk);
+        },
+        abort(reason) {
+          events.push('abort', reason);
+        },
       },
-      abort(reason) {
-        events.push('abort', reason);
-      }
-    }, new CountQueuingStrategy({ highWaterMark: 0 }));
+      new CountQueuingStrategy({ highWaterMark: 0 }),
+    );
     const pipePromise = rs.pipeTo(ws, { preventCancel: true });
     await Promise.resolve();
     await Promise.resolve();
     writableController!.error(error);
-    await t.rejects(() => pipePromise, (reason) => reason === error, 'pipe rejects with destination error');
+    await t.rejects(
+      () => pipePromise,
+      (reason) => reason === error,
+      'pipe rejects with destination error',
+    );
     t.deepEqual(events, [], 'destination error does not call abort or write');
   });
   it('reads up to writable capacity before previous writes finish', async (t) => {
-    const unreadChunks = [
-      'b',
-      'c',
-      'd'
-    ];
+    const unreadChunks = ['b', 'c', 'd'];
     let resolveFirstWrite: (() => void) | undefined;
-    const rs = new ReadableStream<string>({ pull(controller) {
-      controller.enqueue(unreadChunks.shift()!);
-      if (unreadChunks.length === 0) controller.close();
-    } }, new CountQueuingStrategy({ highWaterMark: 0 }));
-    const ws = new WritableStream<string>({ write() {
-      if (!resolveFirstWrite) {
-        return new Promise<void>((resolve) => {
-          resolveFirstWrite = resolve;
-        });
-      }
-    } }, new CountQueuingStrategy({ highWaterMark: 3 }));
+    const rs = new ReadableStream<string>(
+      {
+        pull(controller) {
+          controller.enqueue(unreadChunks.shift()!);
+          if (unreadChunks.length === 0) controller.close();
+        },
+      },
+      new CountQueuingStrategy({ highWaterMark: 0 }),
+    );
+    const ws = new WritableStream<string>(
+      {
+        write() {
+          if (!resolveFirstWrite) {
+            return new Promise<void>((resolve) => {
+              resolveFirstWrite = resolve;
+            });
+          }
+        },
+      },
+      new CountQueuingStrategy({ highWaterMark: 3 }),
+    );
     const writer = ws.getWriter();
     const firstWritePromise = writer.write('a');
     writer.releaseLock();
@@ -1432,7 +1459,7 @@ describe('tee() cancellation', () => {
       },
       cancel() {
         sourceCancelled = true;
-      }
+      },
     });
     const [b1, b2] = rs.tee();
     const r1 = b1.getReader();
@@ -1467,21 +1494,28 @@ describe('ReadableStream — no-argument constructor', () => {
 describe('TransformStreamDefaultController.desiredSize', () => {
   it('desiredSize is accessible from transform callback', async (t) => {
     let capturedDesiredSize: number | null = null;
-    const ts = new TransformStream({ transform(chunk, controller) {
-      capturedDesiredSize = controller.desiredSize;
-      controller.enqueue(chunk);
-    } });
+    const ts = new TransformStream({
+      transform(chunk, controller) {
+        capturedDesiredSize = controller.desiredSize;
+        controller.enqueue(chunk);
+      },
+    });
     const readable = makeReadable([1]).pipeThrough(ts);
     await collect(readable);
     t.ok(capturedDesiredSize !== undefined, 'desiredSize accessible in transform');
-    t.ok(typeof capturedDesiredSize === 'number' || capturedDesiredSize === null, 'desiredSize is number or null');
+    t.ok(
+      typeof capturedDesiredSize === 'number' || capturedDesiredSize === null,
+      'desiredSize is number or null',
+    );
   });
 });
 describe('ReadableStream start() error', () => {
   it('start() that throws errors the stream', async (t) => {
-    const rs = new ReadableStream({ start(ctrl) {
-      ctrl.error(new Error('start failed'));
-    } });
+    const rs = new ReadableStream({
+      start(ctrl) {
+        ctrl.error(new Error('start failed'));
+      },
+    });
     let threw = false;
     try {
       await collect(rs);
@@ -1493,13 +1527,25 @@ describe('ReadableStream start() error', () => {
 });
 describe('ReadableStream.from() — validation', () => {
   it('throws TypeError for null', (t) => {
-    t.throws(() => ReadableStreamCtor.from(null as never), /must be an async iterable/, 'null throws');
+    t.throws(
+      () => ReadableStreamCtor.from(null as never),
+      /must be an async iterable/,
+      'null throws',
+    );
   });
   it('throws TypeError for a plain number', (t) => {
-    t.throws(() => ReadableStreamCtor.from(42 as any), /must be an async iterable/, 'number throws');
+    t.throws(
+      () => ReadableStreamCtor.from(42 as any),
+      /must be an async iterable/,
+      'number throws',
+    );
   });
   it('throws TypeError for a plain object without iterator', (t) => {
-    t.throws(() => ReadableStreamCtor.from({} as any), /must be an async iterable/, 'plain object throws');
+    t.throws(
+      () => ReadableStreamCtor.from({} as any),
+      /must be an async iterable/,
+      'plain object throws',
+    );
   });
 });
 describe('ReadableStreamDefaultReader — releaseLock invalidates reader', () => {
@@ -1507,7 +1553,11 @@ describe('ReadableStreamDefaultReader — releaseLock invalidates reader', () =>
     const rs = makeReadable([1, 2]);
     const reader = rs.getReader();
     reader.releaseLock();
-    await t.rejects(() => reader.read(), /Reader is released/, 'read() after releaseLock() rejects');
+    await t.rejects(
+      () => reader.read(),
+      /Reader is released/,
+      'read() after releaseLock() rejects',
+    );
   });
 });
 describe('WritableStreamDefaultWriter — releaseLock invalidates writer', () => {
@@ -1515,7 +1565,11 @@ describe('WritableStreamDefaultWriter — releaseLock invalidates writer', () =>
     const ws = new WritableStream({ write() {} });
     const writer = ws.getWriter();
     writer.releaseLock();
-    await t.rejects(() => writer.write('x'), /Writer is released/, 'write() after releaseLock() rejects');
+    await t.rejects(
+      () => writer.write('x'),
+      /Writer is released/,
+      'write() after releaseLock() rejects',
+    );
   });
 });
 describe('pipeTo() — returns rejected promise for locked streams', () => {
@@ -1535,9 +1589,11 @@ describe('pipeTo() — returns rejected promise for locked streams', () => {
 describe('WritableStreamDefaultController.abortReason', () => {
   it('abortReason is undefined before abort', async (t) => {
     let ctrl: WritableControllerWithAbortReason | undefined;
-    const ws = new WritableStream({ start(c) {
-      ctrl = c;
-    } });
+    const ws = new WritableStream({
+      start(c) {
+        ctrl = c;
+      },
+    });
     if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.abortReason, undefined, 'abortReason is undefined before abort');
     ws.abort();
@@ -1549,7 +1605,7 @@ describe('WritableStreamDefaultController.abortReason', () => {
       start(c) {
         ctrl = c;
       },
-      abort(r) {}
+      abort(r) {},
     });
     ws.abort(reason);
     // Give the abort a chance to propagate
@@ -1561,53 +1617,79 @@ describe('WritableStreamDefaultController.abortReason', () => {
 });
 describe('[Symbol.toStringTag]', () => {
   it('ReadableStream has correct toStringTag', (t) => {
-    const rs = new ReadableStream({ start(c) {
-      c.close();
-    } });
-    t.equal(((rs as unknown) as SymbolRecord)[Symbol.toStringTag], 'ReadableStream', 'ReadableStream toStringTag');
+    const rs = new ReadableStream({
+      start(c) {
+        c.close();
+      },
+    });
+    t.equal(
+      (rs as unknown as SymbolRecord)[Symbol.toStringTag],
+      'ReadableStream',
+      'ReadableStream toStringTag',
+    );
   });
   it('WritableStream has correct toStringTag', (t) => {
     const ws = new WritableStream();
-    t.equal(((ws as unknown) as SymbolRecord)[Symbol.toStringTag], 'WritableStream', 'WritableStream toStringTag');
+    t.equal(
+      (ws as unknown as SymbolRecord)[Symbol.toStringTag],
+      'WritableStream',
+      'WritableStream toStringTag',
+    );
   });
   it('TransformStream has correct toStringTag', (t) => {
     const ts = new TransformStream();
-    t.equal(((ts as unknown) as SymbolRecord)[Symbol.toStringTag], 'TransformStream', 'TransformStream toStringTag');
+    t.equal(
+      (ts as unknown as SymbolRecord)[Symbol.toStringTag],
+      'TransformStream',
+      'TransformStream toStringTag',
+    );
   });
 });
 describe('ReadableStreamDefaultReader.releaseLock() rejects pending reads', () => {
   it('pending read() rejected when releaseLock() is called', async (t) => {
     let resolveChunk!: (v: Uint8Array) => void;
-    const rs = new ReadableStream({ start(controller) {
-      // Don't enqueue anything yet — reads will be pending
-      (globalThis as any).__resolveChunk = (v: Uint8Array) => controller.enqueue(v);
-    } });
+    const rs = new ReadableStream({
+      start(controller) {
+        // Don't enqueue anything yet — reads will be pending
+        (globalThis as any).__resolveChunk = (v: Uint8Array) => controller.enqueue(v);
+      },
+    });
     const reader = rs.getReader();
     // Start a read that won't resolve until a chunk is enqueued
     const readPromise = reader.read();
     // Release the lock before the read resolves
     reader.releaseLock();
     // The pending read should be rejected
-    await t.rejects(async () => {
-      await readPromise;
-    }, undefined, 'pending read rejected on releaseLock');
+    await t.rejects(
+      async () => {
+        await readPromise;
+      },
+      undefined,
+      'pending read rejected on releaseLock',
+    );
     delete (globalThis as any).__resolveChunk;
   });
 });
 describe('WritableStream.close() when already closing', () => {
   it('close() rejects when called while already closing', async (t) => {
     let resolveSinkClose!: () => void;
-    const ws = new WritableStream({ close() {
-      return new Promise<void>((r) => {
-        resolveSinkClose = r;
-      });
-    } });
+    const ws = new WritableStream({
+      close() {
+        return new Promise<void>((r) => {
+          resolveSinkClose = r;
+        });
+      },
+    });
     const writer = ws.getWriter();
     const close1 = writer.close();
     // Second close should reject
-    await t.rejects(async () => {
-      await writer.close();
-    }, undefined, 'second close() rejects');
+    await t.rejects(
+      async () => {
+        await writer.close();
+      },
+      undefined,
+      'second close() rejects',
+    );
     resolveSinkClose();
     await close1;
   });
@@ -1615,18 +1697,22 @@ describe('WritableStream.close() when already closing', () => {
 describe('pipeTo with all prevent options', () => {
   it('pipeTo with preventClose + preventAbort + preventCancel', async (t) => {
     const chunks: string[] = [];
-    const rs = new ReadableStream({ start(c) {
-      c.enqueue('a');
-      c.enqueue('b');
-      c.close();
-    } });
-    const ws = new WritableStream({ write(chunk) {
-      chunks.push(chunk);
-    } });
+    const rs = new ReadableStream({
+      start(c) {
+        c.enqueue('a');
+        c.enqueue('b');
+        c.close();
+      },
+    });
+    const ws = new WritableStream({
+      write(chunk) {
+        chunks.push(chunk);
+      },
+    });
     await rs.pipeTo(ws, {
       preventClose: true,
       preventAbort: true,
-      preventCancel: true
+      preventCancel: true,
     });
     t.deepEqual(chunks, ['a', 'b'], 'chunks piped correctly');
     t.equal(ws.locked, false, 'writer unlocked after pipeTo');
@@ -1636,23 +1722,31 @@ describe('ReadableStreamBYOBReader.releaseLock() rejects pending reads', () => {
   it('releaseLock() causes pending read() to reject', async (t) => {
     const rs = new ReadableStream({
       type: 'bytes',
-      start(_ctrl) {      /* never enqueue */}
+      start(_ctrl) {
+        /* never enqueue */
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const view = new Uint8Array(4);
     const pendingRead = reader.read(view);
     reader.releaseLock();
-    await t.rejects(async () => {
-      await pendingRead;
-    }, /released|lock/i, 'pending BYOB read rejects on releaseLock()');
+    await t.rejects(
+      async () => {
+        await pendingRead;
+      },
+      /released|lock/i,
+      'pending BYOB read rejects on releaseLock()',
+    );
   });
 });
 describe('ReadableStream.tee() — composite cancel reason', () => {
   it('cancelling both branches cancels source with [reason1, reason2]', async (t) => {
     let cancelReason: unknown;
-    const rs = new ReadableStream({ cancel(reason) {
-      cancelReason = reason;
-    } });
+    const rs = new ReadableStream({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
     const [b1, b2] = rs.tee();
     await b1.cancel('reason1');
     await b2.cancel('reason2');
@@ -1662,23 +1756,64 @@ describe('ReadableStream.tee() — composite cancel reason', () => {
 });
 describe('Web Streams release/cancel conformance edges', () => {
   it('methods and getters reject invalid receivers through brand checks', async (t) => {
-    const readableLocked = Object.getOwnPropertyDescriptor(ReadableStream.prototype, 'locked')!.get!;
-    const writableLocked = Object.getOwnPropertyDescriptor(WritableStream.prototype, 'locked')!.get!;
-    const readerClosed = Object.getOwnPropertyDescriptor(ReadableStreamDefaultReader.prototype, 'closed')!.get!;
-    const byobClosed = Object.getOwnPropertyDescriptor(ReadableStreamBYOBReader.prototype, 'closed')!.get!;
-    const writerClosed = Object.getOwnPropertyDescriptor(WritableStreamDefaultWriter.prototype, 'closed')!.get!;
-    t.throws(() => readableLocked.call({}), /receiver expected/, 'ReadableStream.locked brand-checks receiver');
-    t.throws(() => writableLocked.call({}), /receiver expected/, 'WritableStream.locked brand-checks receiver');
-    t.throws(() => readerClosed.call({}), /receiver expected/, 'ReadableStreamDefaultReader.closed brand-checks receiver');
-    t.throws(() => byobClosed.call({}), /receiver expected/, 'ReadableStreamBYOBReader.closed brand-checks receiver');
-    t.throws(() => writerClosed.call({}), /receiver expected/, 'WritableStreamDefaultWriter.closed brand-checks receiver');
-    await t.rejects(() => (ReadableStream.prototype.pipeTo as any).call(new ReadableStream(), {}), /WritableStream expected/, 'pipeTo validates destination brand');
+    const readableLocked = Object.getOwnPropertyDescriptor(
+      ReadableStream.prototype,
+      'locked',
+    )!.get!;
+    const writableLocked = Object.getOwnPropertyDescriptor(
+      WritableStream.prototype,
+      'locked',
+    )!.get!;
+    const readerClosed = Object.getOwnPropertyDescriptor(
+      ReadableStreamDefaultReader.prototype,
+      'closed',
+    )!.get!;
+    const byobClosed = Object.getOwnPropertyDescriptor(
+      ReadableStreamBYOBReader.prototype,
+      'closed',
+    )!.get!;
+    const writerClosed = Object.getOwnPropertyDescriptor(
+      WritableStreamDefaultWriter.prototype,
+      'closed',
+    )!.get!;
+    t.throws(
+      () => readableLocked.call({}),
+      /receiver expected/,
+      'ReadableStream.locked brand-checks receiver',
+    );
+    t.throws(
+      () => writableLocked.call({}),
+      /receiver expected/,
+      'WritableStream.locked brand-checks receiver',
+    );
+    t.throws(
+      () => readerClosed.call({}),
+      /receiver expected/,
+      'ReadableStreamDefaultReader.closed brand-checks receiver',
+    );
+    t.throws(
+      () => byobClosed.call({}),
+      /receiver expected/,
+      'ReadableStreamBYOBReader.closed brand-checks receiver',
+    );
+    t.throws(
+      () => writerClosed.call({}),
+      /receiver expected/,
+      'WritableStreamDefaultWriter.closed brand-checks receiver',
+    );
+    await t.rejects(
+      () => (ReadableStream.prototype.pipeTo as any).call(new ReadableStream(), {}),
+      /WritableStream expected/,
+      'pipeTo validates destination brand',
+    );
   });
   it('tee() waits for both branches before canceling the source', async (t) => {
     let cancelCount = 0;
-    const rs = new ReadableStream({ cancel() {
-      cancelCount++;
-    } });
+    const rs = new ReadableStream({
+      cancel() {
+        cancelCount++;
+      },
+    });
     const [b1, b2] = rs.tee();
     const firstCancel = b1.cancel('first');
     await Promise.resolve();
@@ -1694,7 +1829,7 @@ describe('Web Streams release/cancel conformance edges', () => {
       start() {},
       cancel(reason) {
         t.equal(reason, 'stop', 'cancel reason forwarded to byte source');
-      }
+      },
     });
     const reader = rs.getReader({ mode: 'byob' });
     const pendingRead = reader.read(new Uint8Array(8));
@@ -1707,14 +1842,18 @@ describe('Web Streams release/cancel conformance edges', () => {
   it('ReadableStreamBYOBReader.closed rejects when a pending BYOB read lock is released', async (t) => {
     const rs = new ReadableStream({
       type: 'bytes',
-      start() {}
+      start() {},
     });
     const reader = rs.getReader({ mode: 'byob' });
     const pendingRead = reader.read(new Uint8Array(4));
     const closed = reader.closed;
     reader.releaseLock();
     await t.rejects(() => pendingRead, /released|lock/i, 'pending BYOB read rejects');
-    await t.rejects(() => closed, /released|lock/i, 'closed rejects for released reader with pending read');
+    await t.rejects(
+      () => closed,
+      /released|lock/i,
+      'closed rejects for released reader with pending read',
+    );
   });
   it('ReadableStreamDefaultReader.closed rejects asynchronously after releaseLock()', async (t) => {
     const reader = new ReadableStream({ start() {} }).getReader();
@@ -1736,11 +1875,16 @@ describe('Web Streams release/cancel conformance edges', () => {
   });
   it('WritableStreamDefaultWriter.ready rejects when a pending ready promise is released', async (t) => {
     let finishWrite!: () => void;
-    const ws = new WritableStream({ write() {
-      return new Promise<void>((resolve) => {
-        finishWrite = resolve;
-      });
-    } }, new CountQueuingStrategy({ highWaterMark: 0 }));
+    const ws = new WritableStream(
+      {
+        write() {
+          return new Promise<void>((resolve) => {
+            finishWrite = resolve;
+          });
+        },
+      },
+      new CountQueuingStrategy({ highWaterMark: 0 }),
+    );
     const writer = ws.getWriter();
     const write = writer.write('x');
     const ready = writer.ready;
@@ -1752,7 +1896,7 @@ describe('Web Streams release/cancel conformance edges', () => {
   it('BYOB read rejects detached resizable transfer views', async (t) => {
     const rs = new ReadableStream({
       type: 'bytes',
-      start() {}
+      start() {},
     });
     const reader = rs.getReader({ mode: 'byob' });
     const buffer = new ArrayBuffer(4, { maxByteLength: 4 });
@@ -1769,16 +1913,25 @@ describe('Web Streams release/cancel conformance edges', () => {
       controller.abort(reason);
       let cancelReason: unknown;
       let abortCalled = false;
-      const rs = new ReadableStream({ cancel(r) {
-        cancelReason = r;
-      } });
-      const ws = new WritableStream({ abort() {
-        abortCalled = true;
-      } });
-      await t.rejects(() => rs.pipeTo(ws, {
-        signal: controller.signal,
-        preventAbort: true
-      }), /already aborted/, 'pipe rejects with abort reason');
+      const rs = new ReadableStream({
+        cancel(r) {
+          cancelReason = r;
+        },
+      });
+      const ws = new WritableStream({
+        abort() {
+          abortCalled = true;
+        },
+      });
+      await t.rejects(
+        () =>
+          rs.pipeTo(ws, {
+            signal: controller.signal,
+            preventAbort: true,
+          }),
+        /already aborted/,
+        'pipe rejects with abort reason',
+      );
       t.equal(cancelReason, reason, 'source cancel still runs without preventCancel');
       t.equal(abortCalled, false, 'destination abort is suppressed by preventAbort');
     }
@@ -1787,28 +1940,42 @@ describe('Web Streams release/cancel conformance edges', () => {
       controller.abort(reason);
       let cancelCalled = false;
       let abortReason: unknown;
-      const rs = new ReadableStream({ cancel() {
-        cancelCalled = true;
-      } });
-      const ws = new WritableStream({ abort(r) {
-        abortReason = r;
-      } });
-      await t.rejects(() => rs.pipeTo(ws, {
-        signal: controller.signal,
-        preventCancel: true
-      }), /already aborted/, 'pipe rejects with abort reason');
+      const rs = new ReadableStream({
+        cancel() {
+          cancelCalled = true;
+        },
+      });
+      const ws = new WritableStream({
+        abort(r) {
+          abortReason = r;
+        },
+      });
+      await t.rejects(
+        () =>
+          rs.pipeTo(ws, {
+            signal: controller.signal,
+            preventCancel: true,
+          }),
+        /already aborted/,
+        'pipe rejects with abort reason',
+      );
       t.equal(cancelCalled, false, 'source cancel is suppressed by preventCancel');
       t.equal(abortReason, reason, 'destination abort still runs without preventAbort');
     }
   });
   it('TransformStream transform throw rejects write and errors readable', async (t) => {
     const reason = new Error('transform failed');
-    const ts = new TransformStream({ transform() {
-      throw reason;
-    } });
+    const ts = new TransformStream({
+      transform() {
+        throw reason;
+      },
+    });
     const writer = ts.writable.getWriter();
     const reader = ts.readable.getReader();
-    await Promise.all([t.rejects(() => writer.write('x'), /transform failed/, 'write rejects with transform error'), t.rejects(() => reader.read(), /transform failed/, 'readable errors with transform error')]);
+    await Promise.all([
+      t.rejects(() => writer.write('x'), /transform failed/, 'write rejects with transform error'),
+      t.rejects(() => reader.read(), /transform failed/, 'readable errors with transform error'),
+    ]);
   });
   it('TransformStream flush throw rejects close and errors readable', async (t) => {
     const ts = new TransformStream({
@@ -1817,16 +1984,20 @@ describe('Web Streams release/cancel conformance edges', () => {
       },
       flush() {
         throw new Error('flush failed');
-      }
+      },
     });
     const writer = ts.writable.getWriter();
     const reader = ts.readable.getReader();
     const [writeResult, readResult] = await Promise.all([writer.write('x'), reader.read()]);
     t.equal(writeResult, undefined, 'write resolves');
-    t.deepEqual(readResult, {
-      done: false,
-      value: 'x'
-    }, 'transformed chunk is readable');
+    t.deepEqual(
+      readResult,
+      {
+        done: false,
+        value: 'x',
+      },
+      'transformed chunk is readable',
+    );
     await t.rejects(() => writer.close(), /flush failed/, 'close rejects with flush error');
     await t.rejects(() => reader.read(), /flush failed/, 'readable errors with flush error');
   });

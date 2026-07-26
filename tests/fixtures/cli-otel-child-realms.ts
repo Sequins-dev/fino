@@ -20,29 +20,33 @@ async function runChild(realm: Realm): Promise<void> {
     done,
     running.then(() => {
       throw new Error('child exited before posting done');
-    })
+    }),
   ]);
   console.log('child:message');
   realm.terminate();
   await Promise.race([
     running.catch(() => {}),
-    new Promise<void>((resolve) => setTimeout(resolve, 20))
+    new Promise<void>((resolve) => setTimeout(resolve, 20)),
   ]);
 }
 
 await runChild(new Realm({ entry, thread: true }));
 console.log('child:inherited:done');
 
-await runChild(new Realm({
-  entry,
-  thread: true,
-  otlpEndpoint: 'http://override-collector.example:4318/override'
-}));
+await runChild(
+  new Realm({
+    entry,
+    thread: true,
+    otlpEndpoint: 'http://override-collector.example:4318/override',
+  }),
+);
 console.log('child:override:done');
 
-await runChild(new Realm({
-  entry,
-  thread: true,
-  otlpEndpoint: false
-}));
+await runChild(
+  new Realm({
+    entry,
+    thread: true,
+    otlpEndpoint: false,
+  }),
+);
 console.log('child:disabled:done');

@@ -12,17 +12,27 @@ describe('fino:format/xml — parse basics', () => {
     const doc = parse('<root>hello</root>');
     t.equal(doc.root.children.length, 1);
     t.equal(doc.root.children[0]!.type, 'text');
-    t.equal((doc.root.children[0] as {
-      type: 'text';
-      data: string;
-    }).data, 'hello');
+    t.equal(
+      (
+        doc.root.children[0] as {
+          type: 'text';
+          data: string;
+        }
+      ).data,
+      'hello',
+    );
   });
   it('parses nested elements', (t) => {
     const doc = parse('<root><child/></root>');
     t.equal(doc.root.children.length, 1);
-    t.equal((doc.root.children[0] as {
-      name: string;
-    }).name, 'child');
+    t.equal(
+      (
+        doc.root.children[0] as {
+          name: string;
+        }
+      ).name,
+      'child',
+    );
   });
   it('parses attributes', (t) => {
     const doc = parse('<root id="1" class="x"/>');
@@ -30,17 +40,22 @@ describe('fino:format/xml — parse basics', () => {
     t.equal(doc.root.attributes['class'], 'x');
   });
   it('parses double and single-quoted attributes', (t) => {
-    const doc = parse('<root id=\'42\'/>');
+    const doc = parse("<root id='42'/>");
     t.equal(doc.root.attributes['id'], '42');
   });
   it('parses CDATA section', (t) => {
     const doc = parse('<root><![CDATA[<not>xml</not>]]></root>');
     const child = doc.root.children[0]!;
     t.equal(child.type, 'cdata');
-    t.equal((child as {
-      type: 'cdata';
-      data: string;
-    }).data, '<not>xml</not>');
+    t.equal(
+      (
+        child as {
+          type: 'cdata';
+          data: string;
+        }
+      ).data,
+      '<not>xml</not>',
+    );
   });
   it('parses comment', (t) => {
     const doc = parse('<root><!-- my comment --></root>');
@@ -51,23 +66,32 @@ describe('fino:format/xml — parse basics', () => {
     const doc = parse('<root><?php echo 1; ?></root>');
     const child = doc.root.children[0]!;
     t.equal(child.type, 'pi');
-    t.equal((child as {
-      type: 'pi';
-      target: string;
-    }).target, 'php');
+    t.equal(
+      (
+        child as {
+          type: 'pi';
+          target: string;
+        }
+      ).target,
+      'php',
+    );
   });
   it('parses entity references', (t) => {
     const doc = parse('<root>&lt;&gt;&amp;&apos;&quot;</root>');
-    const text = (doc.root.children[0] as {
-      data: string;
-    }).data;
+    const text = (
+      doc.root.children[0] as {
+        data: string;
+      }
+    ).data;
     t.equal(text, '<>&\'"');
   });
   it('parses numeric character references', (t) => {
     const doc = parse('<root>&#65;&#x42;</root>');
-    const text = (doc.root.children[0] as {
-      data: string;
-    }).data;
+    const text = (
+      doc.root.children[0] as {
+        data: string;
+      }
+    ).data;
     t.equal(text, 'AB');
   });
   it('throws on mismatched tags', (t) => {
@@ -120,21 +144,36 @@ describe('fino:format/xml — namespaces', () => {
   });
   it('rejects reserved namespace misuse', (t) => {
     t.throws(() => parse('<root xmlns:xml="urn:wrong"/>'), /reserved namespace/i);
-    t.throws(() => parse('<root xmlns:p="http://www.w3.org/XML/1998/namespace"/>'), /reserved namespace/i);
+    t.throws(
+      () => parse('<root xmlns:p="http://www.w3.org/XML/1998/namespace"/>'),
+      /reserved namespace/i,
+    );
     t.throws(() => parse('<root xmlns:xmlns="urn:x"/>'), /reserved namespace/i);
     t.throws(() => parse('<xmlns:root/>'), /reserved namespace/i);
     t.throws(() => parse('<root xmlns:p=""/>'), /prefix undeclaring/i);
   });
   it('rejects duplicate expanded attribute names', (t) => {
-    t.throws(() => parse('<root xmlns:a="urn:x" xmlns:b="urn:x" a:id="1" b:id="2"/>'), /duplicate attribute/i);
+    t.throws(
+      () => parse('<root xmlns:a="urn:x" xmlns:b="urn:x" a:id="1" b:id="2"/>'),
+      /duplicate attribute/i,
+    );
   });
   it('keeps namespace duplicate and reserved-prefix behavior covered as matrix evidence', (t) => {
     t.throws(() => parse('<root xmlns:xml="urn:wrong"/>'), /reserved namespace/i);
-    t.throws(() => parse('<root xmlns:p="http://www.w3.org/XML/1998/namespace"/>'), /reserved namespace/i);
-    t.throws(() => parse('<root xmlns:a="urn:x" xmlns:b="urn:x" a:id="1" b:id="2"/>'), /duplicate attribute/i);
+    t.throws(
+      () => parse('<root xmlns:p="http://www.w3.org/XML/1998/namespace"/>'),
+      /reserved namespace/i,
+    );
+    t.throws(
+      () => parse('<root xmlns:a="urn:x" xmlns:b="urn:x" a:id="1" b:id="2"/>'),
+      /duplicate attribute/i,
+    );
   });
   it('accepts supported XML declaration attributes only at the document start', (t) => {
-    t.equal(parse('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><root/>').root.name, 'root');
+    t.equal(
+      parse('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><root/>').root.name,
+      'root',
+    );
     t.throws(() => parse('<!--lead--><?xml version="1.0"?><root/>'), /xml declaration/i);
     t.throws(() => parse('<root><?xml version="1.0"?></root>'), /xml declaration/i);
     t.throws(() => parse('<root/><?xml version="1.0"?>'), /xml declaration/i);
@@ -143,7 +182,10 @@ describe('fino:format/xml — namespaces', () => {
     t.throws(() => parse('<a:x xmlns:a="urn:x" xmlns:b="urn:x"></b:x>'), /mismatched close tag/i);
   });
   it('limits self-closing namespace declarations to the empty element itself', (t) => {
-    t.throws(() => parse('<root><x:empty xmlns:x="urn:x"/><x:next/></root>'), /unbound namespace prefix/i);
+    t.throws(
+      () => parse('<root><x:empty xmlns:x="urn:x"/><x:next/></root>'),
+      /unbound namespace prefix/i,
+    );
   });
 });
 describe('fino:format/xml — character validity', () => {
@@ -168,35 +210,62 @@ describe('fino:format/xml — character validity', () => {
 });
 describe('fino:format/xml — security', () => {
   it('rejects external entities by default', (t) => {
-    t.throws(() => parse('<!DOCTYPE foo [<!ENTITY ext SYSTEM "file:///etc/passwd">]><foo>&ext;</foo>'), /external entity rejected/i);
+    t.throws(
+      () => parse('<!DOCTYPE foo [<!ENTITY ext SYSTEM "file:///etc/passwd">]><foo>&ext;</foo>'),
+      /external entity rejected/i,
+    );
   });
   it('resolveExternalEntities opt-in calls resolver with systemId', (t) => {
-    const doc = parse('<!DOCTYPE foo [<!ENTITY ext SYSTEM "file:///data.txt">]><foo>&ext;</foo>', { resolveExternalEntities: () => 'resolved-value' });
-    t.equal((doc.root.children[0] as {
-      data: string;
-    }).data, 'resolved-value');
+    const doc = parse('<!DOCTYPE foo [<!ENTITY ext SYSTEM "file:///data.txt">]><foo>&ext;</foo>', {
+      resolveExternalEntities: () => 'resolved-value',
+    });
+    t.equal(
+      (
+        doc.root.children[0] as {
+          data: string;
+        }
+      ).data,
+      'resolved-value',
+    );
   });
   it('rejects PUBLIC external entities by default', (t) => {
-    t.throws(() => parse('<!DOCTYPE foo [<!ENTITY ext PUBLIC "-//FOO//" "http://attacker.example/">]><foo>&ext;</foo>'), /external entity rejected/i);
+    t.throws(
+      () =>
+        parse(
+          '<!DOCTYPE foo [<!ENTITY ext PUBLIC "-//FOO//" "http://attacker.example/">]><foo>&ext;</foo>',
+        ),
+      /external entity rejected/i,
+    );
   });
   it('entity expansion limit prevents excessive expansion', (t) => {
     // Each &a; expands to 50 chars; 3 refs × 50 = 150 > maxEntityExpansion:100
     const entity = 'a'.repeat(50);
     const doctype = `<!DOCTYPE lol [<!ENTITY a "${entity}">]>`;
-    t.throws(() => parse(`${doctype}<root>&a;&a;&a;</root>`, { maxEntityExpansion: 100 }), /limit/i);
+    t.throws(
+      () => parse(`${doctype}<root>&a;&a;&a;</root>`, { maxEntityExpansion: 100 }),
+      /limit/i,
+    );
   });
   it('expands nested internal entities in text', (t) => {
     const doc = parse('<!DOCTYPE r [<!ENTITY a "A"><!ENTITY b "&a;B">]><r>&b;</r>');
-    t.equal((doc.root.children[0] as {
-      data: string;
-    }).data, 'AB');
+    t.equal(
+      (
+        doc.root.children[0] as {
+          data: string;
+        }
+      ).data,
+      'AB',
+    );
   });
   it('expands entity references inside attributes', (t) => {
     const doc = parse('<!DOCTYPE r [<!ENTITY a "A"><!ENTITY b "&a;B">]><r value="&b;"/>');
     t.equal(doc.root.attributes['value'], 'AB');
   });
   it('rejects recursive entity cycles', (t) => {
-    t.throws(() => parse('<!DOCTYPE r [<!ENTITY a "&b;"><!ENTITY b "&a;">]><r>&a;</r>'), /recursive entity/i);
+    t.throws(
+      () => parse('<!DOCTYPE r [<!ENTITY a "&b;"><!ENTITY b "&a;">]><r>&a;</r>'),
+      /recursive entity/i,
+    );
   });
   it('rejects invalid numeric character references', (t) => {
     t.throws(() => parse('<r>&#;</r>'), /invalid character reference/i);
@@ -288,7 +357,10 @@ describe('fino:format/xml — parseStream', () => {
       for (const p of parts) yield p;
     })();
   }
-  async function collect(src: AsyncIterable<Uint8Array>, options: Parameters<typeof parseStream>[1] = {}): Promise<XmlEvent[]> {
+  async function collect(
+    src: AsyncIterable<Uint8Array>,
+    options: Parameters<typeof parseStream>[1] = {},
+  ): Promise<XmlEvent[]> {
     const events: XmlEvent[] = [];
     for await (const ev of parseStream(src, options)) events.push(ev);
     return events;
@@ -299,46 +371,55 @@ describe('fino:format/xml — parseStream', () => {
     t.equal(events.filter((e) => e.type === 'startElement').length, 2);
     t.equal(events.filter((e) => e.type === 'endElement').length, 2);
     t.equal(events.filter((e) => e.type === 'text').length, 1);
-    t.equal((events[0] as {
-      name: string;
-    }).name, 'root');
-    t.equal((events[0] as {
-      attributes: Record<string, string>;
-    }).attributes['id'], '1');
+    t.equal(
+      (
+        events[0] as {
+          name: string;
+        }
+      ).name,
+      'root',
+    );
+    t.equal(
+      (
+        events[0] as {
+          attributes: Record<string, string>;
+        }
+      ).attributes['id'],
+      '1',
+    );
   });
   it('produces same event sequence when split mid-tag-name', async (t) => {
     const xml = '<root><child>hello</child></root>';
-    for (const splitAt of [
-      4,
-      7,
-      13,
-      20
-    ]) {
+    for (const splitAt of [4, 7, 13, 20]) {
       const events = await collect(await xmlChunks(xml, [splitAt]));
       t.equal(events[0]!.type, 'startElement', `split@${splitAt}`);
-      t.equal((events[0] as {
-        name: string;
-      }).name, 'root', `split@${splitAt}`);
+      t.equal(
+        (
+          events[0] as {
+            name: string;
+          }
+        ).name,
+        'root',
+        `split@${splitAt}`,
+      );
       t.equal(events.filter((e) => e.type === 'startElement').length, 2, `split@${splitAt}`);
     }
   });
   it('handles CDATA split across chunk boundary', async (t) => {
     const xml = '<root><![CDATA[hello world]]></root>';
     const events = await collect(await xmlChunks(xml, [10, xml.length - 10]));
-    const cdata = events.find((e) => e.type === 'cdata') as {
-      type: 'cdata';
-      data: string;
-    } | undefined;
+    const cdata = events.find((e) => e.type === 'cdata') as
+      | {
+          type: 'cdata';
+          data: string;
+        }
+      | undefined;
     t.ok(cdata, 'cdata event present');
     t.equal(cdata!.data, 'hello world');
   });
   it('produces correct events for multi-element document across chunks', async (t) => {
     const xml = '<items><item id="1">a</item><item id="2">b</item></items>';
-    const events = await collect(await xmlChunks(xml, [
-      8,
-      20,
-      xml.length - 28
-    ]));
+    const events = await collect(await xmlChunks(xml, [8, 20, xml.length - 28]));
     const starts = events.filter((e) => e.type === 'startElement') as Array<{
       name: string;
     }>;
@@ -352,9 +433,14 @@ describe('fino:format/xml — parseStream', () => {
     const xml = '<root attr="long-value-here"/>';
     const events = await collect(await xmlChunks(xml, [15, xml.length - 15]));
     t.equal(events[0]!.type, 'startElement');
-    t.equal((events[0] as {
-      attributes: Record<string, string>;
-    }).attributes['attr'], 'long-value-here');
+    t.equal(
+      (
+        events[0] as {
+          attributes: Record<string, string>;
+        }
+      ).attributes['attr'],
+      'long-value-here',
+    );
   });
   it('throws on malformed XML (mismatched tags) after all chunks', async (t) => {
     const xml = '<root><a></b></root>';
@@ -367,11 +453,7 @@ describe('fino:format/xml — parseStream', () => {
     t.ok(threw, 'malformed XML should throw');
   });
   it('does not emit partial events until a complete document can be reparsed', async (t) => {
-    const src = await xmlChunks('<root><child/></root>', [
-      6,
-      8,
-      7
-    ]);
+    const src = await xmlChunks('<root><child/></root>', [6, 8, 7]);
     const events = await collect(src);
     t.equal(events.map((e) => e.type).join(','), 'startElement,startElement,endElement,endElement');
   });

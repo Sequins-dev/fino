@@ -3,25 +3,23 @@ import { parse, stringify, parseStream } from 'fino:format/csv';
 import { loadCorpus, runCorpus, type CorpusCase } from './_corpus.ts';
 describe('fino:format/csv — parse basics', () => {
   it('parses simple rows', (t) => {
-    t.deepEqual(parse('a,b,c\n1,2,3'), [[
-      'a',
-      'b',
-      'c'
-    ], [
-      '1',
-      '2',
-      '3'
-    ]]);
+    t.deepEqual(parse('a,b,c\n1,2,3'), [
+      ['a', 'b', 'c'],
+      ['1', '2', '3'],
+    ]);
   });
   it('parses with header option', (t) => {
     const rows = parse('name,age\nAlice,30\nBob,25', { header: true });
-    t.deepEqual(rows, [{
-      name: 'Alice',
-      age: '30'
-    }, {
-      name: 'Bob',
-      age: '25'
-    }]);
+    t.deepEqual(rows, [
+      {
+        name: 'Alice',
+        age: '30',
+      },
+      {
+        name: 'Bob',
+        age: '25',
+      },
+    ]);
   });
   it('handles quoted fields', (t) => {
     t.deepEqual(parse('"hello, world",b'), [['"hello, world"'.slice(1, -1), 'b']]);
@@ -31,7 +29,10 @@ describe('fino:format/csv — parse basics', () => {
     t.deepEqual(parse('"say ""hi""",b'), [['say "hi"', 'b']]);
   });
   it('handles CRLF line endings', (t) => {
-    t.deepEqual(parse('a,b\r\n1,2\r\n'), [['a', 'b'], ['1', '2']]);
+    t.deepEqual(parse('a,b\r\n1,2\r\n'), [
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
   });
   it('handles quoted field with newline', (t) => {
     const result = parse('"line1\nline2",b');
@@ -42,41 +43,44 @@ describe('fino:format/csv — parse basics', () => {
     t.throws(() => parse('"a"x,b\n'), /closing quote|quoted field/i);
   });
   it('handles empty fields', (t) => {
-    t.deepEqual(parse('a,,c'), [[
-      'a',
-      '',
-      'c'
-    ]]);
+    t.deepEqual(parse('a,,c'), [['a', '', 'c']]);
   });
   it('handles skipEmptyLines', (t) => {
-    t.deepEqual(parse('a,b\n\n1,2\n', { skipEmptyLines: true }), [['a', 'b'], ['1', '2']]);
+    t.deepEqual(parse('a,b\n\n1,2\n', { skipEmptyLines: true }), [
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
   });
   it('handles trim option', (t) => {
-    t.deepEqual(parse(' a , b \n 1 , 2 ', { trim: true }), [['a', 'b'], ['1', '2']]);
+    t.deepEqual(parse(' a , b \n 1 , 2 ', { trim: true }), [
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
   });
   it('handles comment option', (t) => {
-    t.deepEqual(parse('# comment\na,b\n1,2', { comment: '#' }), [['a', 'b'], ['1', '2']]);
+    t.deepEqual(parse('# comment\na,b\n1,2', { comment: '#' }), [
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
   });
   it('handles custom delimiter', (t) => {
-    t.deepEqual(parse('a;b;c\n1;2;3', { delimiter: ';' }), [[
-      'a',
-      'b',
-      'c'
-    ], [
-      '1',
-      '2',
-      '3'
-    ]]);
+    t.deepEqual(parse('a;b;c\n1;2;3', { delimiter: ';' }), [
+      ['a', 'b', 'c'],
+      ['1', '2', '3'],
+    ]);
   });
   it('handles explicit columns option', (t) => {
     const rows = parse('1,2\n3,4', { columns: ['x', 'y'] });
-    t.deepEqual(rows, [{
-      x: '1',
-      y: '2'
-    }, {
-      x: '3',
-      y: '4'
-    }]);
+    t.deepEqual(rows, [
+      {
+        x: '1',
+        y: '2',
+      },
+      {
+        x: '3',
+        y: '4',
+      },
+    ]);
   });
   it('throws on mismatched column count', (t) => {
     t.throws(() => parse('a,b\n1,2,3', { header: true }), /fields/i);
@@ -84,7 +88,7 @@ describe('fino:format/csv — parse basics', () => {
   it('relaxColumnCount suppresses mismatch error', (t) => {
     const rows = parse('a,b\n1,2,3', {
       header: true,
-      relaxColumnCount: true
+      relaxColumnCount: true,
     });
     t.equal(rows.length, 1);
   });
@@ -93,7 +97,7 @@ describe('fino:format/csv — parse cast', () => {
   it('casts numbers and booleans', (t) => {
     const rows = parse('x\n1\ntrue\nnull', {
       header: true,
-      cast: true
+      cast: true,
     });
     t.equal(rows[0]!['x'], 1);
     t.equal(rows[1]!['x'] as unknown, true);
@@ -102,21 +106,26 @@ describe('fino:format/csv — parse cast', () => {
   it('supports custom cast function', (t) => {
     const rows = parse('x\n1', {
       header: true,
-      cast: (v) => v + '!'
+      cast: (v) => v + '!',
     });
     t.equal(rows[0]!['x'], '1!');
   });
 });
 describe('fino:format/csv — stringify', () => {
   it('serializes string[][] to CSV', (t) => {
-    const csv = stringify([['a', 'b'], ['1', '2']]);
+    const csv = stringify([
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
     t.equal(csv, 'a,b\r\n1,2\r\n');
   });
   it('serializes records with auto header', (t) => {
-    const csv = stringify([{
-      name: 'Alice',
-      age: '30'
-    }]);
+    const csv = stringify([
+      {
+        name: 'Alice',
+        age: '30',
+      },
+    ]);
     t.ok(csv.startsWith('name,age\r\n'));
     t.ok(csv.includes('Alice,30'));
   });
@@ -163,34 +172,26 @@ describe('fino:format/csv — parseStream', () => {
     const rows: string[][] = [];
     for await (const row of parseStream(src)) rows.push(row as string[]);
     t.deepEqual(rows, [
-      [
-        'a',
-        'b',
-        'c'
-      ],
-      [
-        '1',
-        '2',
-        '3'
-      ],
-      [
-        '4',
-        '5',
-        '6'
-      ]
+      ['a', 'b', 'c'],
+      ['1', '2', '3'],
+      ['4', '5', '6'],
     ]);
   });
   it('streams with header option', async (t) => {
     const src = await chunks('name,age\nAlice,30\nBob,25\n', [9, 16]);
     const rows: Record<string, string>[] = [];
-    for await (const row of parseStream(src, { header: true })) rows.push(row as Record<string, string>);
-    t.deepEqual(rows, [{
-      name: 'Alice',
-      age: '30'
-    }, {
-      name: 'Bob',
-      age: '25'
-    }]);
+    for await (const row of parseStream(src, { header: true }))
+      rows.push(row as Record<string, string>);
+    t.deepEqual(rows, [
+      {
+        name: 'Alice',
+        age: '30',
+      },
+      {
+        name: 'Bob',
+        age: '25',
+      },
+    ]);
   });
   it('handles quoted field with embedded newline across chunk boundary', async (t) => {
     const csv = '"line1\nline2",b\nc,d\n';
@@ -205,25 +206,35 @@ describe('fino:format/csv — parseStream', () => {
     const src = await chunks('a,b\n1,2', [4, 3]);
     const rows: string[][] = [];
     for await (const row of parseStream(src)) rows.push(row as string[]);
-    t.deepEqual(rows, [['a', 'b'], ['1', '2']]);
+    t.deepEqual(rows, [
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
   });
   it('handles CRLF line endings', async (t) => {
     const src = await chunks('a,b\r\n1,2\r\n', [5, 5]);
     const rows: string[][] = [];
     for await (const row of parseStream(src)) rows.push(row as string[]);
-    t.deepEqual(rows, [['a', 'b'], ['1', '2']]);
+    t.deepEqual(rows, [
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
   });
   it('skipEmptyLines works in stream', async (t) => {
     const src = await chunks('a,b\n\n1,2\n', [4, 6]);
     const rows: string[][] = [];
     for await (const row of parseStream(src, { skipEmptyLines: true })) rows.push(row as string[]);
-    t.deepEqual(rows, [['a', 'b'], ['1', '2']]);
+    t.deepEqual(rows, [
+      ['a', 'b'],
+      ['1', '2'],
+    ]);
   });
   it('throws on mismatched column count in stream', async (t) => {
     const src = await chunks('a,b\n1,2,3\n', [5, 6]);
     let threw = false;
     try {
-      for await (const _ of parseStream(src, { header: true })) {}
+      for await (const _ of parseStream(src, { header: true })) {
+      }
     } catch (e) {
       threw = true;
       t.ok((e as Error).message.includes('fields'), 'expected fields error');
@@ -231,13 +242,10 @@ describe('fino:format/csv — parseStream', () => {
     t.ok(threw, 'expected error to be thrown');
   });
   it('rejects trailing text after a closing quote across chunks', async (t) => {
-    const src = await chunks('"a"x,b\n', [
-      2,
-      1,
-      4
-    ]);
+    const src = await chunks('"a"x,b\n', [2, 1, 4]);
     await t.rejects(async () => {
-      for await (const _ of parseStream(src)) {}
+      for await (const _ of parseStream(src)) {
+      }
     }, /closing quote|quoted field/i);
   });
 });

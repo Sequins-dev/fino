@@ -1,6 +1,9 @@
 import { describe, it } from 'fino:test/test';
 import { WebTransport } from 'fino:net/http/webtransport';
-import { WebTransport as HttpWebTransport, _fromHttp3WebTransport } from '../../js/net/http/webtransport.ts';
+import {
+  WebTransport as HttpWebTransport,
+  _fromHttp3WebTransport,
+} from '../../js/net/http/webtransport.ts';
 import { encodeHttpDatagram } from 'internal:net/http/h3/webtransport';
 class FakeH3Connection extends EventTarget {
   sent: Uint8Array[] = [];
@@ -16,7 +19,7 @@ class FakeH3Connection extends EventTarget {
     datagramsSent: 0,
     datagramsReceived: 0,
     bytesSent: 0,
-    bytesReceived: 0
+    bytesReceived: 0,
   };
   async sendDatagram(data: Uint8Array): Promise<number> {
     this.sent.push(data);
@@ -28,7 +31,7 @@ class FakeH3Connection extends EventTarget {
     this.exporterCalls.push({
       label,
       context,
-      length
+      length,
     });
     const out = new Uint8Array(length);
     for (let i = 0; i < out.byteLength; i++) out[i] = i + 1;
@@ -61,15 +64,19 @@ class FakeH3Connection extends EventTarget {
     event.stream = stream;
     this.dispatchEvent(event);
   }
-  emitClose(closeInfo = {
-    errorCode: 42,
-    reason: 'transport closed',
-    type: 'application',
-    remote: true
-  }): void {
-    ((this as unknown) as {
-      closeInfo: unknown;
-    }).closeInfo = closeInfo;
+  emitClose(
+    closeInfo = {
+      errorCode: 42,
+      reason: 'transport closed',
+      type: 'application',
+      remote: true,
+    },
+  ): void {
+    (
+      this as unknown as {
+        closeInfo: unknown;
+      }
+    ).closeInfo = closeInfo;
     this.dispatchEvent(new Event('close'));
   }
   emitError(error: Error): void {
@@ -87,7 +94,7 @@ class FakeQuicStream {
     write: async (chunk: Uint8Array) => {
       this.written.push(chunk);
     },
-    close: async () => {}
+    close: async () => {},
   };
   constructor(readonly direction: 'bidirectional' | 'unidirectional') {}
 }
@@ -105,8 +112,16 @@ describe('WebTransport over HTTP/3 public API', () => {
     t.equal(typeof WebTransport, 'function');
     t.equal((globalThis as any).WebTransport, WebTransport);
     t.equal('WebTransportSession' in mod, false);
-    t.equal('_fromHttp3' in WebTransport, false, 'internal HTTP/3 factory is not a public constructor member');
-    t.equal('_acceptIncomingQuicStream' in WebTransport.prototype, false, 'internal stream router is not a public prototype member');
+    t.equal(
+      '_fromHttp3' in WebTransport,
+      false,
+      'internal HTTP/3 factory is not a public constructor member',
+    );
+    t.equal(
+      '_acceptIncomingQuicStream' in WebTransport.prototype,
+      false,
+      'internal stream router is not a public prototype member',
+    );
     const wt = WebTransport.unavailable('https://example.test/wt', 'test unavailable');
     t.equal(wt.url, 'https://example.test/wt');
     t.equal('readyState' in wt, false);
@@ -126,7 +141,7 @@ describe('WebTransport over HTTP/3 public API', () => {
       connection,
       sessionStreamId: 8n,
       responseHeaders: new Headers({ 'sec-webtransport-http3-draft': 'draft-15' }),
-      protocol: 'chat'
+      protocol: 'chat',
     });
     t.ok(wt instanceof HttpWebTransport);
     t.equal(await wt.ready, undefined);
@@ -143,44 +158,40 @@ describe('WebTransport over HTTP/3 public API', () => {
     connection.emitDatagram(encodeHttpDatagram(8n, new Uint8Array([204])));
     const next = await received;
     t.equal(next.done, false);
-    t.deepEqual([...next.value ?? new Uint8Array()], [204], 'receives only datagrams for this session');
+    t.deepEqual(
+      [...(next.value ?? new Uint8Array())],
+      [204],
+      'receives only datagrams for this session',
+    );
   });
   it('uses ReadableStream incoming stream queues and standard stream wrappers', async (t) => {
     const connection = new FakeH3Connection();
     const wt = _fromHttp3WebTransport('https://example.test/wt', {
       connection,
-      sessionStreamId: 8n
+      sessionStreamId: 8n,
     });
     await wt.ready;
     const bidi = await wt.createBidirectionalStream();
     t.ok(bidi.readable instanceof ReadableStream);
     t.ok(bidi.writable instanceof WritableStream);
-    t.deepEqual([...connection.bidi[0]!.written[0]!], [
-      64,
-      65,
-      2
-    ], 'outgoing bidi stream starts with WT prefix');
+    t.deepEqual(
+      [...connection.bidi[0]!.written[0]!],
+      [64, 65, 2],
+      'outgoing bidi stream starts with WT prefix',
+    );
     const uni = await wt.createUnidirectionalStream();
     t.ok(uni instanceof WritableStream);
-    t.deepEqual([...connection.uni[0]!.written[0]!], [
-      64,
-      84,
-      2
-    ], 'outgoing uni stream starts with WT prefix');
+    t.deepEqual(
+      [...connection.uni[0]!.written[0]!],
+      [64, 84, 2],
+      'outgoing uni stream starts with WT prefix',
+    );
     const incoming = readOne(wt.incomingBidirectionalStreams);
     const wrong = new FakeQuicStream('bidirectional');
-    wrong.reader.read = async () => new Uint8Array([
-      64,
-      65,
-      3
-    ]);
+    wrong.reader.read = async () => new Uint8Array([64, 65, 3]);
     connection.emitStream(wrong);
     const right = new FakeQuicStream('bidirectional');
-    right.reader.read = async () => new Uint8Array([
-      64,
-      65,
-      2
-    ]);
+    right.reader.read = async () => new Uint8Array([64, 65, 2]);
     connection.emitStream(right);
     const next = await incoming;
     t.equal(next.done, false);
@@ -191,7 +202,7 @@ describe('WebTransport over HTTP/3 public API', () => {
     const connection = new FakeH3Connection();
     const wt = _fromHttp3WebTransport('https://example.test/wt', {
       connection,
-      sessionStreamId: 8n
+      sessionStreamId: 8n,
     });
     const datagramNext = readOne(wt.datagrams.readable);
     const bidiNext = readOne(wt.incomingBidirectionalStreams);
@@ -199,25 +210,33 @@ describe('WebTransport over HTTP/3 public API', () => {
       errorCode: 99,
       reason: 'peer went away',
       type: 'application',
-      remote: true
+      remote: true,
     });
     const closed = await wt.closed;
     t.deepEqual(closed, {
       closeCode: 99,
-      reason: 'peer went away'
+      reason: 'peer went away',
     });
-    t.deepEqual(await datagramNext, {
-      value: undefined,
-      done: true
-    }, 'datagram readable closes');
-    t.deepEqual(await bidiNext, {
-      value: undefined,
-      done: true
-    }, 'incoming stream readable closes');
+    t.deepEqual(
+      await datagramNext,
+      {
+        value: undefined,
+        done: true,
+      },
+      'datagram readable closes',
+    );
+    t.deepEqual(
+      await bidiNext,
+      {
+        value: undefined,
+        done: true,
+      },
+      'incoming stream readable closes',
+    );
     const erroredConnection = new FakeH3Connection();
     const errored = _fromHttp3WebTransport('https://example.test/wt2', {
       connection: erroredConnection,
-      sessionStreamId: 12n
+      sessionStreamId: 12n,
     });
     const error = new Error('transport failure');
     erroredConnection.emitError(error);
@@ -225,56 +244,58 @@ describe('WebTransport over HTTP/3 public API', () => {
   });
   it('validates server certificate hashes and exports keying material through QUIC TLS', async (t) => {
     const matchingConnection = new FakeH3Connection();
-    matchingConnection.peerCertificate = new Uint8Array([
-      1,
-      2,
-      3
-    ]);
+    matchingConnection.peerCertificate = new Uint8Array([1, 2, 3]);
     const hash = await crypto.subtle.digest('SHA-256', matchingConnection.peerCertificate);
     const wt = _fromHttp3WebTransport('https://example.test/wt', {
       connection: matchingConnection,
       sessionStreamId: 8n,
-      options: { serverCertificateHashes: [{
-        algorithm: 'sha-256',
-        value: hash
-      }] }
+      options: {
+        serverCertificateHashes: [
+          {
+            algorithm: 'sha-256',
+            value: hash,
+          },
+        ],
+      },
     });
     await wt.ready;
-    const exported = new Uint8Array(await wt.exportKeyingMaterial('fino-test', new Uint8Array([9]), 4));
-    t.deepEqual([...exported], [
-      1,
-      2,
-      3,
-      4
-    ]);
-    t.deepEqual(matchingConnection.exporterCalls.map((call) => ({
-      label: call.label,
-      context: [...call.context],
-      length: call.length
-    })), [{
-      label: 'fino-test',
-      context: [9],
-      length: 4
-    }]);
+    const exported = new Uint8Array(
+      await wt.exportKeyingMaterial('fino-test', new Uint8Array([9]), 4),
+    );
+    t.deepEqual([...exported], [1, 2, 3, 4]);
+    t.deepEqual(
+      matchingConnection.exporterCalls.map((call) => ({
+        label: call.label,
+        context: [...call.context],
+        length: call.length,
+      })),
+      [
+        {
+          label: 'fino-test',
+          context: [9],
+          length: 4,
+        },
+      ],
+    );
     t.deepEqual(await wt.getStats(), {
       datagramsSent: 0,
       datagramsReceived: 0,
       bytesSent: 0,
-      bytesReceived: 0
+      bytesReceived: 0,
     });
     const mismatchedConnection = new FakeH3Connection();
-    mismatchedConnection.peerCertificate = new Uint8Array([
-      4,
-      5,
-      6
-    ]);
+    mismatchedConnection.peerCertificate = new Uint8Array([4, 5, 6]);
     const failed = _fromHttp3WebTransport('https://example.test/wt', {
       connection: mismatchedConnection,
       sessionStreamId: 12n,
-      options: { serverCertificateHashes: [{
-        algorithm: 'sha-256',
-        value: hash
-      }] }
+      options: {
+        serverCertificateHashes: [
+          {
+            algorithm: 'sha-256',
+            value: hash,
+          },
+        ],
+      },
     });
     await t.rejects(() => failed.ready, /serverCertificateHashes/i);
     await t.rejects(() => failed.closed, /serverCertificateHashes/i);

@@ -1,6 +1,6 @@
 /**
-* Tests for MessagePort / MessageChannel — IntraPort basics.
-*/
+ * Tests for MessagePort / MessageChannel — IntraPort basics.
+ */
 import { describe, it } from 'fino:test/test';
 import { MessageChannel, MessagePort, MessageEvent } from 'fino:realm/messaging';
 function isDataCloneError(err: unknown): boolean {
@@ -8,7 +8,11 @@ function isDataCloneError(err: unknown): boolean {
 }
 describe('MessageChannel', () => {
   it('is available on globalThis with MessagePort and MessageEvent', (t) => {
-    t.equal(globalThis.MessageChannel, MessageChannel, 'global MessageChannel matches module export');
+    t.equal(
+      globalThis.MessageChannel,
+      MessageChannel,
+      'global MessageChannel matches module export',
+    );
     t.equal(globalThis.MessagePort, MessagePort, 'global MessagePort matches module export');
     t.equal(globalThis.MessageEvent, MessageEvent, 'global MessageEvent matches module export');
   });
@@ -41,9 +45,11 @@ describe('MessageChannel', () => {
   it('clones sent values (structuredClone semantics)', async (t) => {
     const { port1, port2 } = new MessageChannel();
     const original = { x: 1 };
-    let received: {
-      x: number;
-    } | undefined;
+    let received:
+      | {
+          x: number;
+        }
+      | undefined;
     port2.onmessage = (ev) => {
       received = ev.data as {
         x: number;
@@ -110,7 +116,11 @@ describe('MessageChannel', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     t.equal(receivedPorts.length, 1, 'one transferred port is exposed on MessageEvent.ports');
     t.equal(delivered.length, 1, 'only the transferred endpoint remains connected');
-    t.equal(delivered[0], 'from transferred endpoint', 'transferred endpoint communicates with original partner');
+    t.equal(
+      delivered[0],
+      'from transferred endpoint',
+      'transferred endpoint communicates with original partner',
+    );
     carried.port2.close();
     carrier.port1.close();
     carrier.port2.close();
@@ -120,7 +130,11 @@ describe('MessageChannel', () => {
     const carried = new MessageChannel();
     const carrier = new MessageChannel();
     let delivered: unknown = undefined;
-    t.throws(() => carrier.port1.postMessage('duplicate-port', [carried.port1, carried.port1]), isDataCloneError, 'duplicate transfer entry throws DataCloneError');
+    t.throws(
+      () => carrier.port1.postMessage('duplicate-port', [carried.port1, carried.port1]),
+      isDataCloneError,
+      'duplicate transfer entry throws DataCloneError',
+    );
     carried.port2.onmessage = (ev) => {
       delivered = ev.data;
     };
@@ -136,7 +150,11 @@ describe('MessageChannel', () => {
     const carried = new MessageChannel();
     const carrier = new MessageChannel();
     carried.port1.close();
-    t.throws(() => carrier.port1.postMessage('closed-port', [carried.port1]), isDataCloneError, 'closed port transfer throws DataCloneError');
+    t.throws(
+      () => carrier.port1.postMessage('closed-port', [carried.port1]),
+      isDataCloneError,
+      'closed port transfer throws DataCloneError',
+    );
     carried.port2.close();
     carrier.port1.close();
     carrier.port2.close();
@@ -147,7 +165,11 @@ describe('MessageChannel', () => {
     const secondCarrier = new MessageChannel();
     firstCarrier.port1.postMessage('first-transfer', [carried.port1]);
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    t.throws(() => secondCarrier.port1.postMessage('second-transfer', [carried.port1]), isDataCloneError, 'already transferred port throws DataCloneError');
+    t.throws(
+      () => secondCarrier.port1.postMessage('second-transfer', [carried.port1]),
+      isDataCloneError,
+      'already transferred port throws DataCloneError',
+    );
     carried.port2.close();
     firstCarrier.port1.close();
     firstCarrier.port2.close();
@@ -156,7 +178,11 @@ describe('MessageChannel', () => {
   });
   it('rejects invalid transfer entries', (t) => {
     const carrier = new MessageChannel();
-    t.throws(() => carrier.port1.postMessage('bad-transfer', [{} as Transferable]), isDataCloneError, 'unsupported transfer entry throws DataCloneError');
+    t.throws(
+      () => carrier.port1.postMessage('bad-transfer', [{} as Transferable]),
+      isDataCloneError,
+      'unsupported transfer entry throws DataCloneError',
+    );
     carrier.port1.close();
     carrier.port2.close();
   });
@@ -168,13 +194,21 @@ describe('MessageChannel', () => {
     carrier.port2.onmessage = () => {
       carrierDelivered = true;
     };
-    t.throws(() => carrier.port1.postMessage('mixed-transfer', [carried.port1, {} as Transferable]), isDataCloneError, 'mixed valid and invalid transfers throw DataCloneError');
+    t.throws(
+      () => carrier.port1.postMessage('mixed-transfer', [carried.port1, {} as Transferable]),
+      isDataCloneError,
+      'mixed valid and invalid transfers throw DataCloneError',
+    );
     carried.port2.onmessage = (ev) => {
       carriedDelivered = ev.data;
     };
     carried.port1.postMessage('still-entangled');
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    t.equal(carriedDelivered, 'still-entangled', 'valid port remains usable after failed mixed transfer');
+    t.equal(
+      carriedDelivered,
+      'still-entangled',
+      'valid port remains usable after failed mixed transfer',
+    );
     t.equal(carrierDelivered, false, 'failed mixed transfer does not queue a message');
     carried.port1.close();
     carried.port2.close();
@@ -201,9 +235,15 @@ describe('MessageChannel', () => {
     port1.postMessage({ key: 'value' });
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     t.ok(ev instanceof MessageEvent, 'event is MessageEvent');
-    t.ok(ev!.data && (ev!.data as {
-      key: string;
-    }).key === 'value', 'data correct');
+    t.ok(
+      ev!.data &&
+        (
+          ev!.data as {
+            key: string;
+          }
+        ).key === 'value',
+      'data correct',
+    );
     t.equal(ev!.origin, '', 'origin defaults to empty string');
     t.equal(ev!.lastEventId, '', 'lastEventId defaults to empty string');
     t.equal(ev!.source, null, 'source defaults to null');
@@ -217,7 +257,11 @@ describe('MessageChannel', () => {
     t.equal(ev.ports.length, 1, 'ports is copied from init');
     t.ok(Object.isFrozen(ev.ports), 'ports array is frozen');
     t.ok(ev.ports[0] instanceof MessagePort, 'ports entries are MessagePorts');
-    t.throws(() => (ev.ports as MessagePort[]).push(port1), null, 'frozen ports array rejects mutation');
+    t.throws(
+      () => (ev.ports as MessagePort[]).push(port1),
+      null,
+      'frozen ports array rejects mutation',
+    );
     port1.close();
   });
   it('dispatches messageerror events to listeners and handler properties', (t) => {
@@ -230,7 +274,11 @@ describe('MessageChannel', () => {
       seen.push(ev.type);
     };
     port1.dispatchEvent(new MessageEvent('messageerror', { data: new Error('bad message') }));
-    t.deepEqual(seen, ['messageerror', 'messageerror'], 'messageerror dispatch reaches both listeners');
+    t.deepEqual(
+      seen,
+      ['messageerror', 'messageerror'],
+      'messageerror dispatch reaches both listeners',
+    );
     port1.close();
   });
   it('bidirectional echo works', async (t) => {

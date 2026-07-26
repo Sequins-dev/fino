@@ -1,8 +1,8 @@
 /**
-* End-to-end tests for pool processors: Task files as worker definitions,
-* exclusive-pool execution, facade-proxied durable checkpoints, and generic
-* Task-as-worker pools outside fino:jobs.
-*/
+ * End-to-end tests for pool processors: Task files as worker definitions,
+ * exclusive-pool execution, facade-proxied durable checkpoints, and generic
+ * Task-as-worker pools outside fino:jobs.
+ */
 import { describe, it } from 'fino:test/test';
 import { Jobs } from 'fino:jobs';
 import { RealmPool } from 'fino:realm/pool';
@@ -25,11 +25,11 @@ describe('fino:jobs pool processors', () => {
   it('runs jobs in an exclusive pool from a Task-file entry', async (t) => {
     await using jobs = await Jobs.open({
       path: tempPath(),
-      pollIntervalMs: 50
+      pollIntervalMs: 50,
     });
     await jobs.workers({
       entry: workerEntry,
-      size: 1
+      size: 1,
     });
     const job = await jobs.push('pool-double', { v: 8 });
     const done = await jobs.wait(job.id, { timeoutMs: 30_000 });
@@ -42,11 +42,11 @@ describe('fino:jobs pool processors', () => {
   it('durable job in a pool worker checkpoints through the facade', async (t) => {
     await using jobs = await Jobs.open({
       path: tempPath(),
-      pollIntervalMs: 40
+      pollIntervalMs: 40,
     });
     await jobs.workers({
       entry: workerEntry,
-      size: 1
+      size: 1,
     });
     const job = await jobs.push('pool-durable-nap', null);
     const done = await jobs.wait(job.id, { timeoutMs: 30_000 });
@@ -57,20 +57,24 @@ describe('fino:jobs pool processors', () => {
   it('retries across fresh worker realms', async (t) => {
     await using jobs = await Jobs.open({
       path: tempPath(),
-      pollIntervalMs: 40
+      pollIntervalMs: 40,
     });
     await jobs.workers({
       entry: workerEntry,
-      size: 1
+      size: 1,
     });
     const marker = tempPath('marker');
-    const job = await jobs.push('pool-marker-flaky', { marker }, {
-      retry: {
-        maxAttempts: 3,
-        baseMs: 20,
-        jitter: false
-      }
-    });
+    const job = await jobs.push(
+      'pool-marker-flaky',
+      { marker },
+      {
+        retry: {
+          maxAttempts: 3,
+          baseMs: 20,
+          jitter: false,
+        },
+      },
+    );
     const done = await jobs.wait(job.id, { timeoutMs: 30_000 });
     t.equal(done.status, 'done', 'second attempt succeeded');
     t.equal(done.result, 'second-try', 'retry ran in a fresh realm and saw the marker');
@@ -80,18 +84,18 @@ describe('fino:jobs pool processors', () => {
     const pool = new RealmPool({
       entry: workerEntry,
       size: 1,
-      exclusive: true
+      exclusive: true,
     });
     try {
-      const names = await pool.call({ kind: 'tasks' }) as string[];
+      const names = (await pool.call({ kind: 'tasks' })) as string[];
       t.ok(names.includes('pool-double'), 'worker reports its task registry');
-      const result = await pool.call({
+      const result = (await pool.call({
         kind: 'run',
         jobId: 'adhoc-1',
         task: 'pool-double',
         input: { v: 5 },
-        attempt: 1
-      }) as JobsWireResult;
+        attempt: 1,
+      })) as JobsWireResult;
       t.ok('ok' in result && result.ok, 'dispatcher executed the task');
       t.equal((result as { output: unknown }).output, 10, 'result came back over the pool wire');
     } finally {

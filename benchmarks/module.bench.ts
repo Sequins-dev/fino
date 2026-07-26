@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:module
-*
-* Run with: cargo run -- bench benchmarks/module.bench.ts
-*/
+ * Benchmarks for fino:module
+ *
+ * Run with: cargo run -- bench benchmarks/module.bench.ts
+ */
 import { SyntheticModule } from 'fino:module';
 import { bench } from 'fino:bench';
 bench('SyntheticModule', (b) => {

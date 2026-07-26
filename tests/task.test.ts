@@ -3,7 +3,7 @@ import { Task, task } from 'fino:task';
 const inputSchema = {
   type: 'object',
   properties: { name: { type: 'string' } },
-  required: ['name']
+  required: ['name'],
 };
 describe('fino:task', () => {
   it('runs validated task input and exposes task metadata', async (t) => {
@@ -12,24 +12,30 @@ describe('fino:task', () => {
       description: 'Greet a person',
       inputSchema,
       outputMode: 'both',
-      run: (input: {
-        name: string;
-      }, ctx) => {
+      run: (
+        input: {
+          name: string;
+        },
+        ctx,
+      ) => {
         if (ctx.writer.mode === 'json') ctx.writer.writeJson({ greeting: `hello ${input.name}` });
         else ctx.writer.writeText(`hello ${input.name}\n`);
         return { greeting: `hello ${input.name}` };
-      }
+      },
     });
     const chunks: unknown[] = [];
-    const result = await greet.run({ name: 'Ada' }, {
-      outputMode: 'json',
-      writer: {
-        mode: 'json',
-        writeJson: (value) => {
-          chunks.push(value);
-        }
-      }
-    });
+    const result = await greet.run(
+      { name: 'Ada' },
+      {
+        outputMode: 'json',
+        writer: {
+          mode: 'json',
+          writeJson: (value) => {
+            chunks.push(value);
+          },
+        },
+      },
+    );
     t.ok(greet instanceof Task, 'factory returns a Task');
     t.equal(greet.name, 'greet');
     t.equal(greet.description, 'Greet a person');
@@ -44,88 +50,106 @@ describe('fino:task', () => {
       run: () => {
         ran = true;
         return 'ok';
-      }
+      },
     });
-    await t.rejects(() => textOnly.run({}, {
-      outputMode: 'json',
-      writer: {
-        mode: 'json',
-        writeJson: () => undefined
-      }
-    }), /does not support json output/);
+    await t.rejects(
+      () =>
+        textOnly.run(
+          {},
+          {
+            outputMode: 'json',
+            writer: {
+              mode: 'json',
+              writeJson: () => undefined,
+            },
+          },
+        ),
+      /does not support json output/,
+    );
     t.equal(ran, false, 'handler was not called');
   });
   it('rejects mismatched requested and writer output modes', async (t) => {
     const both = task({
       name: 'both',
       outputMode: 'both',
-      run: () => 'ok'
+      run: () => 'ok',
     });
-    await t.rejects(() => both.run({}, {
-      outputMode: 'json',
-      writer: {
-        mode: 'text',
-        writeText: () => undefined
-      }
-    }), /writer mode text does not match requested json output/);
+    await t.rejects(
+      () =>
+        both.run(
+          {},
+          {
+            outputMode: 'json',
+            writer: {
+              mode: 'text',
+              writeText: () => undefined,
+            },
+          },
+        ),
+      /writer mode text does not match requested json output/,
+    );
   });
   it('parses nested CLI tasks and honors global --json', async (t) => {
     const build = task({
       name: 'build',
       outputMode: 'both',
       cli: {
-        options: [{
-          name: 'outDir',
-          flags: '--out-dir',
-          type: 'string'
-        }],
-        positionals: [{
-          name: 'entry',
-          required: true
-        }]
+        options: [
+          {
+            name: 'outDir',
+            flags: '--out-dir',
+            type: 'string',
+          },
+        ],
+        positionals: [
+          {
+            name: 'entry',
+            required: true,
+          },
+        ],
       },
       run: (input: Record<string, unknown>, ctx) => {
         if (ctx.writer.mode === 'json') ctx.writer.writeJson({ input });
         else ctx.writer.writeText(`${input.entry}:${input.outDir}\n`);
         return input;
-      }
+      },
     });
     const doc = task({
       name: 'doc',
       children: [build],
-      run: () => undefined
+      run: () => undefined,
     });
     const seen: unknown[] = [];
-    const result = await doc.parse([
-      '--json',
-      'build',
-      '--out-dir',
-      'api',
-      'index.ts'
-    ], { writer: {
-      mode: 'json',
-      writeJson: (value) => {
-        seen.push(value);
-      }
-    } });
+    const result = await doc.parse(['--json', 'build', '--out-dir', 'api', 'index.ts'], {
+      writer: {
+        mode: 'json',
+        writeJson: (value) => {
+          seen.push(value);
+        },
+      },
+    });
     t.deepEqual(result, {
       entry: 'index.ts',
-      outDir: 'api'
+      outDir: 'api',
     });
-    t.deepEqual(seen, [{ input: {
-      entry: 'index.ts',
-      outDir: 'api'
-    } }]);
+    t.deepEqual(seen, [
+      {
+        input: {
+          entry: 'index.ts',
+          outDir: 'api',
+        },
+      },
+    ]);
   });
   it('lists and looks up child tasks', (t) => {
     const child = task({
       name: 'child',
-      run: () => 'ok'
+      run: () => 'ok',
     });
     const parent = task({
       name: 'parent',
       children: [child],
-      run: () => 'parent'
+      run: () => 'parent',
     });
     t.equal(parent.child('child'), child);
     t.deepEqual(parent.list(), [child]);

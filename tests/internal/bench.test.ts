@@ -17,7 +17,7 @@ async function withBenchMinNs<T>(value: string, fn: () => Promise<T>): Promise<T
   }
 }
 async function captureBenchLogs(fn: () => Promise<void>): Promise<string[]> {
-  const target = (benchConsole as unknown) as {
+  const target = benchConsole as unknown as {
     log(...args: unknown[]): void;
   };
   const original = target.log;
@@ -48,12 +48,15 @@ describe('bench Group', () => {
       },
       teardown(ctx) {
         events.push('teardown:' + ctx.calls);
-      }
+      },
     });
     const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => group.finalize()));
     t.deepEqual(events.slice(0, 2), ['setup', 'fn'], 'setup runs before the measured body');
     t.ok(events[2]?.startsWith('teardown:'), 'teardown runs after measurement');
-    t.ok(logs.some((line) => line.includes('async measure - ')), 'measurement result is printed after async body settles');
+    t.ok(
+      logs.some((line) => line.includes('async measure - ')),
+      'measurement result is printed after async body settles',
+    );
   });
   it('filters nested groups without running unmatched parent measurements', async (t) => {
     const events: string[] = [];
@@ -67,8 +70,14 @@ describe('bench Group', () => {
     });
     const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => group.finalize()));
     t.deepEqual(events, ['needle'], 'only the matching nested measurement runs');
-    t.ok(logs.some((line) => line.includes('# needle child')), 'matching nested group heading is printed');
-    t.ok(!logs.some((line) => line.includes('top measure - ')), 'unmatched parent measurement is omitted');
+    t.ok(
+      logs.some((line) => line.includes('# needle child')),
+      'matching nested group heading is printed',
+    );
+    t.ok(
+      !logs.some((line) => line.includes('top measure - ')),
+      'unmatched parent measurement is omitted',
+    );
   });
   it('runs teardown when a measurement throws', async (t) => {
     const events: string[] = [];
@@ -84,14 +93,18 @@ describe('bench Group', () => {
       },
       teardown(ctx) {
         events.push('teardown:' + ctx);
-      }
+      },
     });
-    await t.rejects(() => withBenchMinNs('1000', () => captureBenchLogs(() => group.finalize())), /measured failure/, 'measurement failure rejects finalize');
-    t.deepEqual(events, [
-      'setup',
-      'fn',
-      'teardown:ctx'
-    ], 'teardown runs after a thrown measurement');
+    await t.rejects(
+      () => withBenchMinNs('1000', () => captureBenchLogs(() => group.finalize())),
+      /measured failure/,
+      'measurement failure rejects finalize',
+    );
+    t.deepEqual(
+      events,
+      ['setup', 'fn', 'teardown:ctx'],
+      'teardown runs after a thrown measurement',
+    );
   });
 });
 describe('bench run()', () => {
@@ -107,13 +120,24 @@ describe('bench run()', () => {
         g.measure('needle measure', () => events.push('needle'));
       });
     });
-    const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => run({ filter: 'needle' })));
+    const logs = await withBenchMinNs('1000', () =>
+      captureBenchLogs(() => run({ filter: 'needle' })),
+    );
     _resetBenchmarksForTest();
     t.deepEqual(events, ['needle'], 'only the nested matching benchmark runs');
     t.equal(logs[0], 'benc.h v1.0.0', 'run prints the benchmark header');
-    t.ok(!logs.some((line) => line.includes('# alpha suite')), 'unmatched top-level suite is omitted');
-    t.ok(logs.some((line) => line.includes('# beta suite')), 'ancestor of matching nested group is printed');
-    t.ok(logs.some((line) => line.includes('# needle group')), 'matching nested group is printed');
+    t.ok(
+      !logs.some((line) => line.includes('# alpha suite')),
+      'unmatched top-level suite is omitted',
+    );
+    t.ok(
+      logs.some((line) => line.includes('# beta suite')),
+      'ancestor of matching nested group is printed',
+    );
+    t.ok(
+      logs.some((line) => line.includes('# needle group')),
+      'matching nested group is printed',
+    );
   });
   it('resets the registry through the internal test helper', async (t) => {
     _resetBenchmarksForTest();
@@ -129,16 +153,27 @@ describe('bench run()', () => {
       b.measure('second measure', () => {});
     });
     let result: unknown;
-    const logs = await withBenchMinNs('1000', () => captureBenchLogs(async () => {
-      result = await run();
-    }));
+    const logs = await withBenchMinNs('1000', () =>
+      captureBenchLogs(async () => {
+        result = await run();
+      }),
+    );
     _resetBenchmarksForTest();
     t.equal(result, undefined, 'run() does not return structured benchmark data');
     t.equal(logs[0], 'benc.h v1.0.0', 'output starts with benc.h-compatible header');
     t.ok(logs.includes('# release suite'), 'suite heading is printed as human text');
-    t.ok(logs.some((line) => /^first measure - .+ i\/s /.test(line)), 'measurement line is human-formatted');
-    t.ok(logs.some((line) => line === 'Comparing...'), 'multi-measure groups print comparison text');
-    t.ok(!logs.some((line) => line.trim().startsWith('{') || line.trim().startsWith('[')), 'runner does not emit JSON lines');
+    t.ok(
+      logs.some((line) => /^first measure - .+ i\/s /.test(line)),
+      'measurement line is human-formatted',
+    );
+    t.ok(
+      logs.some((line) => line === 'Comparing...'),
+      'multi-measure groups print comparison text',
+    );
+    t.ok(
+      !logs.some((line) => line.trim().startsWith('{') || line.trim().startsWith('[')),
+      'runner does not emit JSON lines',
+    );
   });
   it('does not expose public benchmark tuning or reporter APIs', (t) => {
     const exported = benchModule as Record<string, unknown>;
@@ -150,7 +185,7 @@ describe('bench run()', () => {
       'varianceThreshold',
       'json',
       'reporter',
-      'setReporter'
+      'setReporter',
     ]) {
       t.equal(exported[name], undefined, `${name} is not a public bench API`);
     }

@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:format/csv
-*
-* Run with: cargo run -- --bench benchmarks/csv.bench.mjs
-*/
+ * Benchmarks for fino:format/csv
+ *
+ * Run with: cargo run -- --bench benchmarks/csv.bench.mjs
+ */
 import { parse, stringify, parseStream } from 'fino:format/csv';
 import { bench } from 'fino:bench';
 function makeRows(n: number, cols: number): string[][] {
@@ -23,7 +23,7 @@ const UNICODE_CSV = (() => {
     ['日本語', 'こんにちは'],
     ['Ελληνικά', 'Γεια σας'],
     ['中文', '你好'],
-    ['한국어', '안녕하세요']
+    ['한국어', '안녕하세요'],
   ];
   for (let i = 0; i < 250; i++) rows.push(pairs[i % pairs.length]!);
   return stringify(rows);
@@ -62,10 +62,12 @@ async function asStream(csv: string): Promise<AsyncIterable<Uint8Array>> {
 bench('parseStream', (b) => {
   b.measure('1K rows × 4KB chunks', async () => {
     const src = await asStream(MEDIUM_CSV);
-    for await (const _ of parseStream(src)) {}
+    for await (const _ of parseStream(src)) {
+    }
   });
   b.measure('10K rows × 4KB chunks', async () => {
     const src = await asStream(LARGE_CSV);
-    for await (const _ of parseStream(src)) {}
+    for await (const _ of parseStream(src)) {
+    }
   });
 });

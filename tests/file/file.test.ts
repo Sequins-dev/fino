@@ -1,13 +1,15 @@
 /**
-* Tests for fino:file — DiskFileSystem, File, DirEntry, Stat, etc.
-*/
+ * Tests for fino:file — DiskFileSystem, File, DirEntry, Stat, etc.
+ */
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem, F_OK, R_OK } from 'fino:file';
 import * as fileModule from 'fino:file';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
-const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> => fs.writeFile(path, encodeUtf8(text));
-const readText = async (fs: DiskFileSystem, path: string): Promise<string> => decodeUtf8(await fs.readFile(path));
+const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> =>
+  fs.writeFile(path, encodeUtf8(text));
+const readText = async (fs: DiskFileSystem, path: string): Promise<string> =>
+  decodeUtf8(await fs.readFile(path));
 const TEST_DIR = '/tmp/fino-file-test-' + Math.floor(Math.random() * 1e6);
 describe('DiskFileSystem', () => {
   let fs: DiskFileSystem;
@@ -179,7 +181,11 @@ describe('DiskFileSystem', () => {
       const bytes = await fs.readFile(path);
       t.ok(bytes instanceof Uint8Array, 'readFile returns Uint8Array bytes');
       t.equal(decodeUtf8(bytes), 'roundtrip data', 'caller decodes readFile bytes explicitly');
-      await t.rejects(() => fs.writeFile(path, 'text data' as never), TypeError, 'writeFile rejects string data');
+      await t.rejects(
+        () => fs.writeFile(path, 'text data' as never),
+        TypeError,
+        'writeFile rejects string data',
+      );
       await fs.unlink(path);
     });
     it('writeFile overwrites existing file', async (t) => {
@@ -192,12 +198,7 @@ describe('DiskFileSystem', () => {
     it('writeFile accepts Uint8Array and ArrayBuffer data without encoding options', async (t) => {
       const typedPath = TEST_DIR + '/typed-array.bin';
       const bufferPath = TEST_DIR + '/array-buffer.bin';
-      await fs.writeFile(typedPath, new Uint8Array([
-        102,
-        105,
-        110,
-        111
-      ]));
+      await fs.writeFile(typedPath, new Uint8Array([102, 105, 110, 111]));
       await fs.writeFile(bufferPath, new Uint8Array([106, 115]).buffer);
       t.equal(await readText(fs, typedPath), 'fino', 'Uint8Array data is written as bytes');
       t.equal(await readText(fs, bufferPath), 'js', 'ArrayBuffer data is written as bytes');
@@ -222,7 +223,11 @@ describe('DiskFileSystem', () => {
     });
     it('mkdir is a single-directory POSIX operation, not recursive Node mkdir', async (t) => {
       const path = TEST_DIR + '/missing-parent/child';
-      await t.rejects(() => fs.mkdir(path, { recursive: true } as any), (err) => (err as any)?.code === 'ENOENT', 'recursive option object does not create missing parents');
+      await t.rejects(
+        () => fs.mkdir(path, { recursive: true } as any),
+        (err) => (err as any)?.code === 'ENOENT',
+        'recursive option object does not create missing parents',
+      );
     });
   });
   describe('unlink / rename / symlink', () => {
@@ -345,7 +350,8 @@ describe('DiskFileSystem', () => {
       const child = await d.child('child.txt');
       t.ok(child.isFile(), 'child is a file');
       t.equal(child.name, 'child.txt', 'child name');
-      if (!('open' in child) || typeof child.open !== 'function') throw new Error('child entry should be openable');
+      if (!('open' in child) || typeof child.open !== 'function')
+        throw new Error('child entry should be openable');
       const file = await child.open('r');
       const text = await file.text();
       t.equal(text, 'child content', 'child content via FileEntry.open');
@@ -521,9 +527,25 @@ describe('DiskFileSystem error codes', () => {
 });
 describe('fino:file release contract', () => {
   it('does not expose Node fs convenience globals or rm APIs', (t) => {
-    t.equal((globalThis as Record<string, unknown>).fs, undefined, 'fs is not installed on globalThis');
-    t.equal((globalThis as Record<string, unknown>).Buffer, undefined, 'Buffer is not installed on globalThis');
-    t.equal((fileModule as Record<string, unknown>).rm, undefined, 'fino:file does not expose rm()');
-    t.equal((fileModule as Record<string, unknown>).promises, undefined, 'fino:file does not expose fs.promises');
+    t.equal(
+      (globalThis as Record<string, unknown>).fs,
+      undefined,
+      'fs is not installed on globalThis',
+    );
+    t.equal(
+      (globalThis as Record<string, unknown>).Buffer,
+      undefined,
+      'Buffer is not installed on globalThis',
+    );
+    t.equal(
+      (fileModule as Record<string, unknown>).rm,
+      undefined,
+      'fino:file does not expose rm()',
+    );
+    t.equal(
+      (fileModule as Record<string, unknown>).promises,
+      undefined,
+      'fino:file does not expose fs.promises',
+    );
   });
 });

@@ -1,11 +1,12 @@
 /**
-* Tests for fino:file/watch — cross-platform filesystem watcher.
-*/
+ * Tests for fino:file/watch — cross-platform filesystem watcher.
+ */
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Watcher } from 'fino:file/watch';
 const TEST_DIR = '/tmp/fino-watch-test-' + Math.floor(Math.random() * 1e6);
-const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> => fs.writeFile(path, new TextEncoder().encode(text));
+const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> =>
+  fs.writeFile(path, new TextEncoder().encode(text));
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -20,16 +21,23 @@ async function collectEvents(watcher: Watcher, n: number, timeoutMs = 2e3): Prom
       done: false;
       timedOut: true;
     }>((resolve) => {
-      timeoutId = setTimeout(() => resolve({
-        value: null,
-        done: false,
-        timedOut: true
-      }), timeoutMs);
+      timeoutId = setTimeout(
+        () =>
+          resolve({
+            value: null,
+            done: false,
+            timedOut: true,
+          }),
+        timeoutMs,
+      );
     });
-    const result = await Promise.race([iter.next().then((r) => {
-      clearTimeout(timeoutId);
-      return r;
-    }), timeout]);
+    const result = await Promise.race([
+      iter.next().then((r) => {
+        clearTimeout(timeoutId);
+        return r;
+      }),
+      timeout,
+    ]);
     if ((result as any).timedOut) break;
     if (result.done) break;
     events.push(result.value);
@@ -87,7 +95,10 @@ describe('Watcher', () => {
     const events = await collectEvents(watcher, 1);
     watcher.close();
     t.ok(events.length >= 1, 'got at least one event');
-    t.ok(events.some((e) => e.type === 'delete'), 'got a delete event');
+    t.ok(
+      events.some((e) => e.type === 'delete'),
+      'got a delete event',
+    );
   });
   it('detects new files in a watched directory', async (t) => {
     const dir = TEST_DIR + '/dir-watch';
@@ -104,7 +115,10 @@ describe('Watcher', () => {
     await fs.rmdir(dir);
     t.ok(events.length >= 1, 'got at least one event for new file');
     // On macOS, dir watches fire NOTE_WRITE on the dir path. On Linux, IN_CREATE on the file.
-    t.ok(events.some((e) => e.type === 'modify' || e.type === 'create'), 'got modify or create event');
+    t.ok(
+      events.some((e) => e.type === 'modify' || e.type === 'create'),
+      'got modify or create event',
+    );
   });
   it('close() stops the iterator', async (t) => {
     const path = TEST_DIR + '/close-test.txt';
@@ -146,7 +160,11 @@ describe('Watcher', () => {
   it('watch() on a non-existent path either throws or emits no events', async (t) => {
     const watcher = new Watcher();
     const nonExistent = TEST_DIR + '/does-not-exist-' + Date.now() + '.txt';
-    t.throws(() => watcher.watch(nonExistent), /watch|open|inotify/i, 'watch() throws for non-existent path');
+    t.throws(
+      () => watcher.watch(nonExistent),
+      /watch|open|inotify/i,
+      'watch() throws for non-existent path',
+    );
     watcher.close();
   });
   it('close() suppresses events for modifications made after close', async (t) => {
@@ -193,8 +211,14 @@ describe('Watcher', () => {
     const events = await collectEvents(watcher, 2);
     watcher.close();
     t.ok(events.length >= 1, 'got at least one rename/delete transition event');
-    t.ok(events.some((e) => e.type === 'rename' || e.type === 'delete'), 'transition is normalized as rename or delete');
-    t.ok(events.some((e) => e.path === path || e.path === renamed), 'event path identifies the watched file or renamed file');
+    t.ok(
+      events.some((e) => e.type === 'rename' || e.type === 'delete'),
+      'transition is normalized as rename or delete',
+    );
+    t.ok(
+      events.some((e) => e.path === path || e.path === renamed),
+      'event path identifies the watched file or renamed file',
+    );
   });
   it('recursive: true watches subdirectories created after watch()', async (t) => {
     const dir = TEST_DIR + '/recursive-created-dir';
@@ -212,7 +236,10 @@ describe('Watcher', () => {
     await fs.rmdir(sub).catch(() => {});
     await fs.rmdir(dir).catch(() => {});
     t.ok(events.length >= 1, 'got at least one event after recursive subdirectory creation');
-    t.ok(events.some((e) => e.path === dir || e.path === sub || e.path === file), 'event path is directory or created child depending on backend');
+    t.ok(
+      events.some((e) => e.path === dir || e.path === sub || e.path === file),
+      'event path is directory or created child depending on backend',
+    );
   });
   it('close() completes an already pending iterator next()', async (t) => {
     const path = TEST_DIR + '/pending-close.txt';
@@ -238,7 +265,10 @@ describe('Watcher', () => {
     await fs.unlink(path);
     t.ok(events.length >= 1, 'duplicate watch still delivers a notification');
     t.ok(events.length <= 2, 'duplicate watch does not multiply backend notifications');
-    t.ok(events.every((e) => e.path === path), 'event path matches watched file');
+    t.ok(
+      events.every((e) => e.path === path),
+      'event path matches watched file',
+    );
   });
   it('rapid event bursts produce at least one coherent notification', async (t) => {
     const path = TEST_DIR + '/burst.txt';
@@ -252,8 +282,14 @@ describe('Watcher', () => {
     watcher.close();
     await fs.unlink(path);
     t.ok(events.length >= 1, 'burst produced at least one event');
-    t.ok(events.every((e) => e.path === path), 'burst notifications identify the watched file');
-    t.ok(events.some((e) => e.type === 'modify' || e.type === 'delete'), 'burst event has a coherent normalized type');
+    t.ok(
+      events.every((e) => e.path === path),
+      'burst notifications identify the watched file',
+    );
+    t.ok(
+      events.some((e) => e.type === 'modify' || e.type === 'delete'),
+      'burst event has a coherent normalized type',
+    );
   });
   it('uses explicit close and string paths instead of Node fs.watch options', async (t) => {
     const path = TEST_DIR + '/release-contract.txt';
@@ -262,7 +298,7 @@ describe('Watcher', () => {
       recursive: false,
       persistent: false,
       encoding: 'buffer',
-      signal: AbortSignal.abort()
+      signal: AbortSignal.abort(),
     } as any);
     watcher.watch(path);
     const pending = watcher[Symbol.asyncIterator]().next();
@@ -270,7 +306,11 @@ describe('Watcher', () => {
     const result = await pending;
     t.equal(result.done, true, 'unsupported Node-style options do not replace explicit close');
     const pathWatcher = new Watcher();
-    t.throws(() => pathWatcher.watch(new URL(`file://${path}`) as any), /path must be a string/i, 'watch() only accepts string paths');
+    t.throws(
+      () => pathWatcher.watch(new URL(`file://${path}`) as any),
+      /path must be a string/i,
+      'watch() only accepts string paths',
+    );
     pathWatcher.close();
     await fs.unlink(path);
   });

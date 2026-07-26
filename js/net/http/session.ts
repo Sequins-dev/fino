@@ -1,31 +1,37 @@
 /**
-* internal:net/http/session — revision-safe HTTP app session implementation.
-*
-* The public API is exported only by `fino:net/http/app`. Callers supply a
-* revision-capable `fino:cache` backend directly; session lifecycle code owns
-* record validation, TTL translation, sealed identifiers, and conditional
-* writes.
-*
-* Session data is JSON-serialized by the supplied cache. It is suitable for
-* authentication identity and small request-scoped metadata, not as a
-* transactional application database. A distributed adapter must provide
-* atomic per-key conditional writes and read-after-write behavior to preserve
-* the security guarantees of invalidation and regeneration; eventual
-* replication alone is insufficient for immediate global logout.
-*
-* ```ts no_run
-* import { memoryCache } from 'fino:cache';
-* import { sessions } from 'fino:net/http/app';
-*
-* const middleware = sessions({
-*   store: memoryCache({ namespace: 'sessions' }),
-*   keys: [{ id: 'primary', secret: process.env.SESSION_SECRET! }],
-*   ttlMs: 3_600_000,
-* });
-* ```
-*/
+ * internal:net/http/session — revision-safe HTTP app session implementation.
+ *
+ * The public API is exported only by `fino:net/http/app`. Callers supply a
+ * revision-capable `fino:cache` backend directly; session lifecycle code owns
+ * record validation, TTL translation, sealed identifiers, and conditional
+ * writes.
+ *
+ * Session data is JSON-serialized by the supplied cache. It is suitable for
+ * authentication identity and small request-scoped metadata, not as a
+ * transactional application database. A distributed adapter must provide
+ * atomic per-key conditional writes and read-after-write behavior to preserve
+ * the security guarantees of invalidation and regeneration; eventual
+ * replication alone is insufficient for immediate global logout.
+ *
+ * ```ts no_run
+ * import { memoryCache } from 'fino:cache';
+ * import { sessions } from 'fino:net/http/app';
+ *
+ * const middleware = sessions({
+ *   store: memoryCache({ namespace: 'sessions' }),
+ *   keys: [{ id: 'primary', secret: process.env.SESSION_SECRET! }],
+ *   ttlMs: 3_600_000,
+ * });
+ * ```
+ */
 import type { CacheEntry, RevisionedCache } from 'fino:cache';
-import { CookieJar, sealCookie, unsealCookie, type BufferLike, type CookieOptions } from 'fino:security/cookie';
+import {
+  CookieJar,
+  sealCookie,
+  unsealCookie,
+  type BufferLike,
+  type CookieOptions,
+} from 'fino:security/cookie';
 import { v4 as uuidv4 } from 'fino:uuid';
 import type { HttpContext, Producer } from 'fino:net/http/app';
 /** Clock used for session timestamps and expiry checks. */
@@ -52,7 +58,7 @@ function assertRecord(record: SessionRecord<unknown>): void {
   for (const [name, value] of [
     ['createdAt', record.createdAt],
     ['updatedAt', record.updatedAt],
-    ['expiresAt', record.expiresAt]
+    ['expiresAt', record.expiresAt],
   ] as const) {
     if (!Number.isFinite(value)) throw new TypeError(`session ${name} must be finite`);
   }
@@ -69,11 +75,11 @@ export interface Session<T = Record<string, unknown>> extends SessionRecord<T> {
   /** Whether this request created or regenerated the session. */
   isNew: boolean;
   /**
-  * Replace the session ID while retaining its data.
-  *
-  * Call this after authentication succeeds to prevent session fixation. The
-  * old ID is deleted before the replacement is committed.
-  */
+   * Replace the session ID while retaining its data.
+   *
+   * Call this after authentication succeeds to prevent session fixation. The
+   * old ID is deleted before the replacement is committed.
+   */
   regenerate(): void;
   /** Delete the stored session and expire its browser cookie after the response. */
   invalidate(): void;
@@ -96,12 +102,12 @@ export interface SessionOptions<T = Record<string, unknown>> {
   clock?: SessionClock;
 }
 /**
-* Error raised when a request tries to commit data based on a stale revision.
-*
-* The middleware never guesses how to merge arbitrary session data or reruns a
-* handler whose side effects may already have happened. Applications may turn
-* this error into a conflict response or ask the client to retry safely.
-*/
+ * Error raised when a request tries to commit data based on a stale revision.
+ *
+ * The middleware never guesses how to merge arbitrary session data or reruns a
+ * handler whose side effects may already have happened. Applications may turn
+ * this error into a conflict response or ask the client to retry safely.
+ */
 export class SessionConflictError extends Error {
   /** Conflicting session identifier. */
   readonly sessionId: string;
@@ -113,11 +119,15 @@ export class SessionConflictError extends Error {
   }
 }
 function validateSessionOptions<T>(options: SessionOptions<T>): void {
-  if (!Number.isFinite(options.ttlMs) || options.ttlMs <= 0) throw new TypeError('session ttlMs must be finite and greater than zero');
+  if (!Number.isFinite(options.ttlMs) || options.ttlMs <= 0)
+    throw new TypeError('session ttlMs must be finite and greater than zero');
   if (options.keys.length === 0) throw new TypeError('session keys must not be empty');
   const ids = new Set<string>();
   for (const key of options.keys) {
-    if (!/^[A-Za-z0-9_-]+$/.test(key.id)) throw new TypeError('session key id must contain only letters, numbers, underscores, or hyphens');
+    if (!/^[A-Za-z0-9_-]+$/.test(key.id))
+      throw new TypeError(
+        'session key id must contain only letters, numbers, underscores, or hyphens',
+      );
     if (ids.has(key.id)) throw new TypeError(`duplicate session key id '${key.id}'`);
     ids.add(key.id);
   }
@@ -125,7 +135,10 @@ function validateSessionOptions<T>(options: SessionOptions<T>): void {
 function sealSessionId(id: string, key: SessionKey): string {
   return `${key.id}.${sealCookie(id, key.secret)}`;
 }
-function unsealSessionId(value: string, keys: readonly SessionKey[]): {
+function unsealSessionId(
+  value: string,
+  keys: readonly SessionKey[],
+): {
   id: string;
   keyIndex: number;
 } | null {
@@ -135,12 +148,18 @@ function unsealSessionId(value: string, keys: readonly SessionKey[]): {
   const keyIndex = keys.findIndex((key) => key.id === keyId);
   if (keyIndex < 0) return null;
   const id = unsealCookie(value.slice(separator + 1), keys[keyIndex]!.secret);
-  return id === null || id.length === 0 ? null : {
-    id,
-    keyIndex
-  };
+  return id === null || id.length === 0
+    ? null
+    : {
+        id,
+        keyIndex,
+      };
 }
-function sessionCookieOptions(options: SessionOptions<unknown>, now: number, expiresAt: number): CookieOptions {
+function sessionCookieOptions(
+  options: SessionOptions<unknown>,
+  now: number,
+  expiresAt: number,
+): CookieOptions {
   return {
     path: '/',
     httpOnly: true,
@@ -148,7 +167,7 @@ function sessionCookieOptions(options: SessionOptions<unknown>, now: number, exp
     sameSite: 'Lax',
     ...options.cookieOptions,
     expires: new Date(expiresAt),
-    maxAge: Math.max(0, Math.ceil((expiresAt - now) / 1e3))
+    maxAge: Math.max(0, Math.ceil((expiresAt - now) / 1e3)),
   };
 }
 function deleteCookieOptions(options: SessionOptions<unknown>): CookieOptions {
@@ -157,52 +176,56 @@ function deleteCookieOptions(options: SessionOptions<unknown>): CookieOptions {
     httpOnly: true,
     secure: true,
     sameSite: 'Lax',
-    ...options.cookieOptions
+    ...options.cookieOptions,
   };
 }
 /**
-* Create an HTTP app producer that loads and commits a secure server session.
-*
-* Install it with `.value('session', sessions(options))`, normally after the
-* app's `cookies()` producer. The cookie contains only an AES-GCM-sealed
-* session ID. New cookies use the first key; cookies opened with a later key
-* are automatically resealed with the primary key after a successful request.
-*
-* Unchanged fixed-expiry sessions perform no store write. Rolling sessions
-* conditionally extend expiry. Concurrent expiry-only updates may retry against
-* the latest record, while conflicting application-data mutations raise
-* `SessionConflictError` rather than lose an update.
-*
-* For OAuth/OIDC callbacks, capture the request session in
-* `oauthCallback({ onSuccess })`, call `session.regenerate()` after the token
-* exchange succeeds, and copy only the verified identity claims the
-* application needs into `session.data`. Provider access and refresh tokens
-* are not stored automatically.
-*
-* ```ts no_run
-* import { memoryCache } from 'fino:cache';
-* import { App, cookies, sessions } from 'fino:net/http/app';
-*
-* const app = new App();
-* const authenticated = app.value('cookies', cookies()).value('session', sessions({
-*   store: memoryCache({ namespace: 'sessions' }),
-*   keys: [{ id: '2026-07', secret: process.env.SESSION_SECRET! }],
-*   ttlMs: 24 * 60 * 60_000,
-* }));
-* authenticated.get('/me').handle((ctx) => Response.json(ctx.session.data));
-* ```
-*/
+ * Create an HTTP app producer that loads and commits a secure server session.
+ *
+ * Install it with `.value('session', sessions(options))`, normally after the
+ * app's `cookies()` producer. The cookie contains only an AES-GCM-sealed
+ * session ID. New cookies use the first key; cookies opened with a later key
+ * are automatically resealed with the primary key after a successful request.
+ *
+ * Unchanged fixed-expiry sessions perform no store write. Rolling sessions
+ * conditionally extend expiry. Concurrent expiry-only updates may retry against
+ * the latest record, while conflicting application-data mutations raise
+ * `SessionConflictError` rather than lose an update.
+ *
+ * For OAuth/OIDC callbacks, capture the request session in
+ * `oauthCallback({ onSuccess })`, call `session.regenerate()` after the token
+ * exchange succeeds, and copy only the verified identity claims the
+ * application needs into `session.data`. Provider access and refresh tokens
+ * are not stored automatically.
+ *
+ * ```ts no_run
+ * import { memoryCache } from 'fino:cache';
+ * import { App, cookies, sessions } from 'fino:net/http/app';
+ *
+ * const app = new App();
+ * const authenticated = app.value('cookies', cookies()).value('session', sessions({
+ *   store: memoryCache({ namespace: 'sessions' }),
+ *   keys: [{ id: '2026-07', secret: process.env.SESSION_SECRET! }],
+ *   ttlMs: 24 * 60 * 60_000,
+ * }));
+ * authenticated.get('/me').handle((ctx) => Response.json(ctx.session.data));
+ * ```
+ */
 export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>): Producer {
   validateSessionOptions(options);
   const clock = options.clock ?? defaultClock;
   const cookie = options.cookie ?? 'fino.sid';
   const primary = options.keys[0]!;
   return async (ctx: HttpContext) => {
-    const jar = ctx.cookies instanceof CookieJar ? ctx.cookies : new CookieJar(ctx.request.headers.get('cookie'));
+    const jar =
+      ctx.cookies instanceof CookieJar
+        ? ctx.cookies
+        : new CookieJar(ctx.request.headers.get('cookie'));
     if (!(ctx.cookies instanceof CookieJar)) ctx.cookies = jar;
     const opened = jar.get(cookie);
     const decoded = opened === undefined ? null : unsealSessionId(opened, options.keys);
-    let snapshot = decoded === null ? null : await options.store.getEntry<SessionRecord<T>>(decoded.id);
+    let snapshot =
+      decoded === null ? null : await options.store.getEntry<SessionRecord<T>>(decoded.id);
     const now = clock.now();
     if (snapshot !== null && snapshot.value.expiresAt <= now) {
       await options.store.delete(snapshot.value.id);
@@ -213,9 +236,10 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
       data: {} as T,
       createdAt: now,
       updatedAt: now,
-      expiresAt: now + options.ttlMs
+      expiresAt: now + options.ttlMs,
     };
-    if (snapshot !== null && options.rolling === true) initialRecord.expiresAt = now + options.ttlMs;
+    if (snapshot !== null && options.rolling === true)
+      initialRecord.expiresAt = now + options.ttlMs;
     const originalId = initialRecord.id;
     const originalData = JSON.stringify(initialRecord.data);
     let invalidated = false;
@@ -234,7 +258,7 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
       },
       invalidate() {
         invalidated = true;
-      }
+      },
     };
     const previousApply = ctx.__sessionApply as undefined | ((response: Response) => Promise<void>);
     ctx.__sessionApply = async (response: Response) => {
@@ -260,14 +284,17 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
           data: session.data,
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
-          expiresAt: session.expiresAt
+          expiresAt: session.expiresAt,
         };
         assertRecord(record);
         const ttlMs = record.expiresAt - finishNow;
-        saved = ttlMs <= 0 ? null : await options.store.compareAndSet(record.id, record, {
-          ifRevision: expected,
-          ttlMs
-        });
+        saved =
+          ttlMs <= 0
+            ? null
+            : await options.store.compareAndSet(record.id, record, {
+                ifRevision: expected,
+                ttlMs,
+              });
         if (saved === null && !dirty && !session.isNew && options.rolling === true) {
           const latest = await options.store.getEntry<SessionRecord<T>>(session.id);
           if (latest !== null) {
@@ -275,7 +302,7 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
             assertRecord(latest.value);
             saved = await options.store.compareAndSet(session.id, latest.value, {
               ifRevision: latest.revision,
-              ttlMs: options.ttlMs
+              ttlMs: options.ttlMs,
             });
           }
         }
@@ -289,7 +316,11 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
       }
       const rotateKey = decoded !== null && decoded.keyIndex !== 0;
       if (session.isNew || options.rolling === true || rotateKey) {
-        jar.set(cookie, sealSessionId(session.id, primary), sessionCookieOptions(options as SessionOptions<unknown>, finishNow, session.expiresAt));
+        jar.set(
+          cookie,
+          sealSessionId(session.id, primary),
+          sessionCookieOptions(options as SessionOptions<unknown>, finishNow, session.expiresAt),
+        );
       }
     };
     return session;

@@ -1,6 +1,6 @@
 /**
-* Tests for fino:format/flatbuffers — schema-less reader/writer round-trips.
-*/
+ * Tests for fino:format/flatbuffers — schema-less reader/writer round-trips.
+ */
 import { describe, it } from 'fino:test/test';
 import { Builder, FlatBuffer, FlatbufferError } from 'fino:format/flatbuffers';
 describe('flatbuffers scalars', () => {
@@ -80,37 +80,17 @@ describe('flatbuffers strings and vectors', () => {
     const table = FlatBuffer.from(b.bytes()).rootTable();
     const v = table.vector(0)!;
     t.equal(v.length, 3, 'length');
-    t.deepEqual([
-      v.i32(0),
-      v.i32(1),
-      v.i32(2)
-    ], [
-      10,
-      20,
-      30
-    ], 'elements in order');
+    t.deepEqual([v.i32(0), v.i32(1), v.i32(2)], [10, 20, 30], 'elements in order');
   });
   it('round-trips a byte vector as a zero-copy view', (t) => {
     const b = new Builder();
-    const data = new Uint8Array([
-      1,
-      2,
-      3,
-      4,
-      5
-    ]);
+    const data = new Uint8Array([1, 2, 3, 4, 5]);
     const vec = b.createByteVector(data);
     b.startTable(1);
     b.addFieldOffset(0, vec);
     b.finish(b.endTable());
     const table = FlatBuffer.from(b.bytes()).rootTable();
-    t.deepEqual(Array.from(table.vector(0)!.bytes()), [
-      1,
-      2,
-      3,
-      4,
-      5
-    ], 'byte contents');
+    t.deepEqual(Array.from(table.vector(0)!.bytes()), [1, 2, 3, 4, 5], 'byte contents');
   });
   it('round-trips a vector of strings', (t) => {
     const b = new Builder();
@@ -127,15 +107,11 @@ describe('flatbuffers strings and vectors', () => {
     b.finish(b.endTable());
     const table = FlatBuffer.from(b.bytes()).rootTable();
     const v = table.vector(0)!;
-    t.deepEqual([
-      v.string(0),
-      v.string(1),
-      v.string(2)
-    ], [
-      'alpha',
-      'beta',
-      'gamma'
-    ], 'string elements');
+    t.deepEqual(
+      [v.string(0), v.string(1), v.string(2)],
+      ['alpha', 'beta', 'gamma'],
+      'string elements',
+    );
   });
 });
 describe('flatbuffers nested tables and vtable dedup', () => {
@@ -226,21 +202,27 @@ describe('flatbuffers file identifier and size prefix', () => {
     const b = new Builder();
     b.startTable(1);
     b.addFieldInt32(0, 1, 0);
-    t.throws(() => b.finish(b.endTable(), { fileIdentifier: 'TOOLONG' }), /exactly 4/, 'identifier length validated');
+    t.throws(
+      () => b.finish(b.endTable(), { fileIdentifier: 'TOOLONG' }),
+      /exactly 4/,
+      'identifier length validated',
+    );
   });
 });
 describe('flatbuffers error handling', () => {
   it('throws FlatbufferError on an out-of-bounds root', (t) => {
-    t.throws(() => FlatBuffer.from(new Uint8Array([2, 3])).rootTable(), FlatbufferError, 'short buffer');
+    t.throws(
+      () => FlatBuffer.from(new Uint8Array([2, 3])).rootTable(),
+      FlatbufferError,
+      'short buffer',
+    );
   });
   it('throws FlatbufferError on a truncated size prefix', (t) => {
-    t.throws(() => FlatBuffer.from(new Uint8Array([
-      255,
-      255,
-      255,
-      255,
-      0
-    ]), { sizePrefixed: true }), FlatbufferError, 'size prefix exceeds buffer');
+    t.throws(
+      () => FlatBuffer.from(new Uint8Array([255, 255, 255, 255, 0]), { sizePrefixed: true }),
+      FlatbufferError,
+      'size prefix exceeds buffer',
+    );
   });
   it('throws on vector index out of range', (t) => {
     const b = new Builder();

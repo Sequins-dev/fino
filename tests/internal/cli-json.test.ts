@@ -16,7 +16,10 @@ async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   }
   return new TextDecoder().decode(out);
 }
-async function runCli(args: string[], cwd: string): Promise<{
+async function runCli(
+  args: string[],
+  cwd: string,
+): Promise<{
   stdout: string;
   stderr: string;
   code: number;
@@ -27,18 +30,18 @@ async function runCli(args: string[], cwd: string): Promise<{
   }
   const proc = new Process(execPath, args, {
     cwd,
-    env: childEnv
+    env: childEnv,
   });
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait()
+    proc.wait(),
   ]);
   return {
     stdout,
     stderr,
-    code: result.code
+    code: result.code,
   };
 }
 describe('CLI JSON output', () => {
@@ -46,12 +49,7 @@ describe('CLI JSON output', () => {
     const fs = new DiskFileSystem();
     const root = `/tmp/fino-cli-json-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await fs.mkdir(root);
-    const result = await runCli([
-      '--json',
-      'fmt',
-      '--check',
-      '.'
-    ], root);
+    const result = await runCli(['--json', 'fmt', '--check', '.'], root);
     const payload = JSON.parse(result.stdout.trim()) as {
       command: string;
       ok: boolean;
@@ -70,11 +68,7 @@ describe('CLI JSON output', () => {
     const fs = new DiskFileSystem();
     const root = `/tmp/fino-cli-json-lint-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await fs.mkdir(root);
-    const result = await runCli([
-      '--json',
-      'lint',
-      '.'
-    ], root);
+    const result = await runCli(['--json', 'lint', '.'], root);
     const payload = JSON.parse(result.stdout.trim()) as {
       command: string;
       ok: boolean;

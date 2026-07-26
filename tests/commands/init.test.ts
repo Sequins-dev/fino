@@ -1,6 +1,6 @@
 /**
-* Command integration tests for `fino init`.
-*/
+ * Command integration tests for `fino init`.
+ */
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Process, chdir, cwd, execPath } from 'fino:process';
@@ -22,12 +22,14 @@ function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);
-  return decodeUtf8(chunks.reduce((acc: Uint8Array, c: Uint8Array) => {
-    const merged = new Uint8Array(acc.byteLength + c.byteLength);
-    merged.set(acc);
-    merged.set(c, acc.byteLength);
-    return merged;
-  }, new Uint8Array(0)));
+  return decodeUtf8(
+    chunks.reduce((acc: Uint8Array, c: Uint8Array) => {
+      const merged = new Uint8Array(acc.byteLength + c.byteLength);
+      merged.set(acc);
+      merged.set(c, acc.byteLength);
+      return merged;
+    }, new Uint8Array(0)),
+  );
 }
 async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
   try {
@@ -38,7 +40,7 @@ async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
   }
 }
 async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
-  if (!await exists(fs, path)) return;
+  if (!(await exists(fs, path))) return;
   const entry = await fs.entry(path);
   if (entry.isDirectory()) {
     const dir = await fs.dir(path);
@@ -48,7 +50,10 @@ async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
   }
   await fs.unlink(path);
 }
-async function runCli(args: string[], cwd: string): Promise<{
+async function runCli(
+  args: string[],
+  cwd: string,
+): Promise<{
   stdout: string;
   stderr: string;
   result: Awaited<ReturnType<Process['wait']>>;
@@ -58,54 +63,69 @@ async function runCli(args: string[], cwd: string): Promise<{
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait()
+    proc.wait(),
   ]);
   return {
     stdout,
     stderr,
-    result
+    result,
   };
 }
-async function runCliWithEnv(args: string[], cwd: string, env: Record<string, string>): Promise<{
+async function runCliWithEnv(
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+): Promise<{
   stdout: string;
   stderr: string;
   result: Awaited<ReturnType<Process['wait']>>;
 }> {
   const proc = new Process(execPath, args, {
     cwd,
-    env
+    env,
   });
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait()
+    proc.wait(),
   ]);
   return {
     stdout,
     stderr,
-    result
+    result,
   };
 }
-async function runCommand(command: string, args: string[], cwd: string, env: Record<string, string> | undefined = undefined): Promise<{
+async function runCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  env: Record<string, string> | undefined = undefined,
+): Promise<{
   stdout: string;
   stderr: string;
   result: Awaited<ReturnType<Process['wait']>>;
 }> {
-  const proc = new Process(command, args, env ? {
-    cwd,
+  const proc = new Process(
+    command,
+    args,
     env
-  } : { cwd });
+      ? {
+          cwd,
+          env,
+        }
+      : { cwd },
+  );
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait()
+    proc.wait(),
   ]);
   return {
     stdout,
     stderr,
-    result
+    result,
   };
 }
 describe('fino init', () => {
@@ -116,7 +136,10 @@ describe('fino init', () => {
     const rawReadFile = fs.readFile.bind(fs);
     const rawWriteFile = fs.writeFile.bind(fs);
     fs.readFile = (async (path: string) => decodeUtf8(await rawReadFile(path))) as never;
-    fs.writeFile = (async (path: string, data: string | Uint8Array | ArrayBuffer | ArrayBufferView) => {
+    fs.writeFile = (async (
+      path: string,
+      data: string | Uint8Array | ArrayBuffer | ArrayBufferView,
+    ) => {
       await rawWriteFile(path, typeof data === 'string' ? new TextEncoder().encode(data) : data);
     }) as never;
     await fs.mkdir(TEST_DIR);
@@ -127,19 +150,22 @@ describe('fino init', () => {
     await removeTree(fs, TEST_DIR);
   });
   it('creates package.json from flags in non-interactive mode', async (t) => {
-    const run = await runCli([
-      'init',
-      '--name',
-      'demo-app',
-      '--description',
-      'Demo package',
-      '--license',
-      'MIT',
-      '--author',
-      'Fino Team',
-      '--repository',
-      'https://example.com/repo.git'
-    ], appDir);
+    const run = await runCli(
+      [
+        'init',
+        '--name',
+        'demo-app',
+        '--description',
+        'Demo package',
+        '--license',
+        'MIT',
+        '--author',
+        'Fino Team',
+        '--repository',
+        'https://example.com/repo.git',
+      ],
+      appDir,
+    );
     t.equal(run.result.code, 0, 'init exits successfully');
     t.equal(run.stderr, '', 'init writes no stderr');
     const pkg = JSON.parse(await fs.readFile(appDir + '/package.json')) as PackageJsonShape;
@@ -158,7 +184,7 @@ describe('fino init', () => {
     await fs.mkdir(emptyHomeDir);
     const run = await runCliWithEnv(['init'], secondDir, {
       HOME: emptyHomeDir,
-      PATH: '/usr/bin:/bin:/usr/local/bin'
+      PATH: '/usr/bin:/bin:/usr/local/bin',
     });
     t.equal(run.result.code, 0, 'init succeeds with defaults');
     t.equal(run.stderr, '', 'no stderr for default init');
@@ -175,30 +201,30 @@ describe('fino init', () => {
     const homeDir = TEST_DIR + '/home';
     await fs.mkdir(thirdDir);
     await fs.mkdir(homeDir);
-    await fs.writeFile(homeDir + '/.gitconfig', [
-      '[user]',
-      '  name = Jane Doe',
-      '  email = jane@example.com',
-      ''
-    ].join('\n'));
+    await fs.writeFile(
+      homeDir + '/.gitconfig',
+      ['[user]', '  name = Jane Doe', '  email = jane@example.com', ''].join('\n'),
+    );
     let git = await runCommand('/usr/bin/env', ['git', 'init'], thirdDir);
     t.equal(git.result.code, 0, 'git init succeeds');
-    git = await runCommand('/usr/bin/env', [
-      'git',
-      'remote',
-      'add',
-      'origin',
-      'https://example.com/fino/demo.git'
-    ], thirdDir);
+    git = await runCommand(
+      '/usr/bin/env',
+      ['git', 'remote', 'add', 'origin', 'https://example.com/fino/demo.git'],
+      thirdDir,
+    );
     t.equal(git.result.code, 0, 'git remote add succeeds');
     const run = await runCliWithEnv(['init'], thirdDir, {
       HOME: homeDir,
-      PATH: '/usr/bin:/bin:/usr/local/bin'
+      PATH: '/usr/bin:/bin:/usr/local/bin',
     });
     t.equal(run.result.code, 0, 'init succeeds with git defaults');
     const pkg = JSON.parse(await fs.readFile(thirdDir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.author, 'Jane Doe <jane@example.com>', 'author pulled from git config');
-    t.equal(pkg.repository, 'https://example.com/fino/demo.git', 'repository pulled from git remote');
+    t.equal(
+      pkg.repository,
+      'https://example.com/fino/demo.git',
+      'repository pulled from git remote',
+    );
   });
   it('rejects existing package.json unless --force is provided', async (t) => {
     const dir = TEST_DIR + '/force';
@@ -206,14 +232,11 @@ describe('fino init', () => {
     await fs.writeFile(dir + '/package.json', JSON.stringify({ name: 'old' }) + '\n');
     const rejected = await runCli(['init', '--yes'], dir);
     t.notEqual(rejected.result.code, 0, 'existing package causes non-zero exit');
-    t.ok(rejected.stderr.includes('package.json already exists'), 'existing package error is reported');
-    const forced = await runCli([
-      'init',
-      '--yes',
-      '--force',
-      '--name',
-      'forced-app'
-    ], dir);
+    t.ok(
+      rejected.stderr.includes('package.json already exists'),
+      'existing package error is reported',
+    );
+    const forced = await runCli(['init', '--yes', '--force', '--name', 'forced-app'], dir);
     t.equal(forced.result.code, 0, 'force exits successfully');
     const pkg = JSON.parse(await fs.readFile(dir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.name, 'forced-app', 'force overwrites existing package');
@@ -221,13 +244,12 @@ describe('fino init', () => {
   it('rejects invalid package names before writing', async (t) => {
     const dir = TEST_DIR + '/invalid-name';
     await fs.mkdir(dir);
-    const run = await runCli([
-      'init',
-      '--name',
-      'Invalid Name'
-    ], dir);
+    const run = await runCli(['init', '--name', 'Invalid Name'], dir);
     t.notEqual(run.result.code, 0, 'invalid name causes non-zero exit');
-    t.ok(run.stderr.includes('Package name must contain only lowercase'), 'invalid name error is reported');
+    t.ok(
+      run.stderr.includes('Package name must contain only lowercase'),
+      'invalid name error is reported',
+    );
     t.equal(await exists(fs, dir + '/package.json'), false, 'package.json is not written');
   });
   it('uses an injected interactive prompt for missing fields', async (t) => {
@@ -240,7 +262,7 @@ describe('fino init', () => {
       'Prompted package',
       'Apache-2.0',
       'Ada',
-      'https://example.com/prompted.git'
+      'https://example.com/prompted.git',
     ];
     const prompts: string[] = [];
     const prompt = new PromptSession({
@@ -250,7 +272,7 @@ describe('fino init', () => {
         return answers.shift() ?? '';
       },
       write: async () => {},
-      writeError: async () => {}
+      writeError: async () => {},
     });
     try {
       chdir(dir);

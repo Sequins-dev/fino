@@ -1,8 +1,14 @@
 /**
-* Tests for HTTP wire helpers, globals, and the HTTP/1.1 parser.
-*/
+ * Tests for HTTP wire helpers, globals, and the HTTP/1.1 parser.
+ */
 import { describe, it } from 'fino:test/test';
-import { Arena, parseRequest, parseResponse, serializeRequest, serializeResponse } from 'fino:net/http';
+import {
+  Arena,
+  parseRequest,
+  parseResponse,
+  serializeRequest,
+  serializeResponse,
+} from 'fino:net/http';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 async function* source(str: string): AsyncIterable<Uint8Array> {
@@ -20,7 +26,8 @@ async function* chunkedSource(str: string, chunkSize: number): AsyncIterable<Uin
 async function collectBody(iter: AsyncIterable<Uint8Array> | AsyncIterable<ArrayBuffer> | null) {
   if (iter === null) return new Uint8Array(0);
   const parts: Uint8Array[] = [];
-  for await (const chunk of iter) parts.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+  for await (const chunk of iter)
+    parts.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
   if (parts.length === 0) return new Uint8Array(0);
   let total = 0;
   for (const p of parts) total += p.byteLength;
@@ -41,13 +48,16 @@ describe('Headers', () => {
   it('construct from object', (t) => {
     const h = new Headers({
       'Content-Type': 'text/html',
-      'X-Foo': 'bar'
+      'X-Foo': 'bar',
     });
     t.equal(h.get('content-type'), 'text/html', 'lowercased');
     t.equal(h.get('x-foo'), 'bar');
   });
   it('construct from entries array', (t) => {
-    const h = new Headers([['Accept', 'text/html'], ['Accept', 'application/json']]);
+    const h = new Headers([
+      ['Accept', 'text/html'],
+      ['Accept', 'application/json'],
+    ]);
     t.equal(h.get('accept'), 'text/html, application/json', 'multi-value joined');
   });
   it('append accumulates values', (t) => {
@@ -61,7 +71,10 @@ describe('Headers', () => {
     t.equal(cookies[1], 'b=2');
   });
   it('set replaces all values', (t) => {
-    const h = new Headers([['x', '1'], ['x', '2']]);
+    const h = new Headers([
+      ['x', '1'],
+      ['x', '2'],
+    ]);
     h.set('x', 'new');
     t.equal(h.get('x'), 'new', 'only one value remains');
   });
@@ -84,27 +97,32 @@ describe('Headers', () => {
     const h = new Headers({
       banana: '2',
       apple: '1',
-      cherry: '3'
+      cherry: '3',
     });
     const names: string[] = [];
     for (const [name] of h) names.push(name);
-    t.deepEqual(names, [
-      'apple',
-      'banana',
-      'cherry'
-    ], 'sorted order');
+    t.deepEqual(names, ['apple', 'banana', 'cherry'], 'sorted order');
   });
   it('keys, values, entries, forEach', (t) => {
     const h = new Headers({
       b: '2',
-      a: '1'
+      a: '1',
     });
     t.deepEqual([...h.keys()], ['a', 'b']);
     t.deepEqual([...h.values()], ['1', '2']);
-    t.deepEqual([...h.entries()], [['a', '1'], ['b', '2']]);
+    t.deepEqual(
+      [...h.entries()],
+      [
+        ['a', '1'],
+        ['b', '2'],
+      ],
+    );
     const seen: Array<[string, string]> = [];
     h.forEach((value, name) => seen.push([name, value]));
-    t.deepEqual(seen, [['a', '1'], ['b', '2']]);
+    t.deepEqual(seen, [
+      ['a', '1'],
+      ['b', '2'],
+    ]);
   });
   it('getSetCookie returns empty array when absent', (t) => {
     const h = new Headers({ 'content-type': 'text/html' });
@@ -131,14 +149,23 @@ describe('Request parsing basics', () => {
     t.equal(body.byteLength, 0, 'no body');
   });
   it('GET with multiple headers', async (t) => {
-    const req = await parseRequest(source('GET / HTTP/1.1\r\nHost: example.com\r\nAccept: text/html\r\nConnection: keep-alive\r\n\r\n'));
+    const req = await parseRequest(
+      source(
+        'GET / HTTP/1.1\r\nHost: example.com\r\nAccept: text/html\r\nConnection: keep-alive\r\n\r\n',
+      ),
+    );
     t.equal(req.headers.get('host'), 'example.com');
     t.equal(req.headers.get('accept'), 'text/html');
     t.equal(req.headers.get('connection'), 'keep-alive');
   });
   it('POST request with Content-Length body', async (t) => {
     const bodyStr = 'hello=world';
-    const req = await parseRequest(source('POST /submit HTTP/1.1\r\nContent-Length: 11\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n' + bodyStr));
+    const req = await parseRequest(
+      source(
+        'POST /submit HTTP/1.1\r\nContent-Length: 11\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n' +
+          bodyStr,
+      ),
+    );
     t.equal(req.method, 'POST');
     t.equal(req.url, '/submit', 'url is path when no host header');
     t.equal(req.headers.get('content-length'), '11');
@@ -146,7 +173,9 @@ describe('Request parsing basics', () => {
     t.equal(decodeUtf8(data), bodyStr);
   });
   it('header names are lowercased', async (t) => {
-    const req = await parseRequest(source('GET / HTTP/1.1\r\nContent-Type: text/plain\r\nX-Custom-Header: value\r\n\r\n'));
+    const req = await parseRequest(
+      source('GET / HTTP/1.1\r\nContent-Type: text/plain\r\nX-Custom-Header: value\r\n\r\n'),
+    );
     t.equal(req.headers.get('content-type'), 'text/plain');
     t.equal(req.headers.get('x-custom-header'), 'value');
   });
@@ -157,14 +186,21 @@ describe('Request parsing basics', () => {
 });
 describe('Chunked body', () => {
   it('POST request with chunked body', async (t) => {
-    const raw = 'POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' + '5\r\nhello\r\n' + '6\r\n world\r\n' + '0\r\n\r\n';
+    const raw =
+      'POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      '5\r\nhello\r\n' +
+      '6\r\n world\r\n' +
+      '0\r\n\r\n';
     const req = await parseRequest(source(raw));
     t.equal(req.method, 'POST');
     const data = await collectBody(req.body);
     t.equal(decodeUtf8(data), 'hello world');
   });
   it('chunked body with hex chunk sizes', async (t) => {
-    const raw = 'PUT /data HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' + 'a\r\n0123456789\r\n' + '0\r\n\r\n';
+    const raw =
+      'PUT /data HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      'a\r\n0123456789\r\n' +
+      '0\r\n\r\n';
     const req = await parseRequest(source(raw));
     const data = await collectBody(req.body);
     t.equal(decodeUtf8(data), '0123456789');
@@ -176,14 +212,19 @@ describe('Chunked body', () => {
     t.equal(decodeUtf8(data), 'hello');
   });
   it('chunked body accepts extensions and parses trailers', async (t) => {
-    const raw = 'POST /upload HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n' + '5;sig=abc\r\nhello\r\n' + '0\r\nX-Checksum: ok\r\n\r\n';
+    const raw =
+      'POST /upload HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n' +
+      '5;sig=abc\r\nhello\r\n' +
+      '0\r\nX-Checksum: ok\r\n\r\n';
     const req = await parseRequest(source(raw));
     t.equal(await req.text(), 'hello');
     const trailers = await req.trailers;
     t.equal(trailers.get('x-checksum'), 'ok');
   });
   it('invalid chunk sizes are rejected strictly', async (t) => {
-    const req = await parseRequest(source('POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' + '5x\r\nhello\r\n0\r\n\r\n'));
+    const req = await parseRequest(
+      source('POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' + '5x\r\nhello\r\n0\r\n\r\n'),
+    );
     await t.rejects(() => req.text(), /Invalid chunk size/);
   });
 });
@@ -210,7 +251,11 @@ describe('Small chunks', () => {
 });
 describe('Response parsing', () => {
   it('200 OK with Content-Length body', async (t) => {
-    const res = await parseResponse(source('HTTP/1.1 200 OK\r\nContent-Length: 13\r\nContent-Type: text/plain\r\n\r\nHello, World!'));
+    const res = await parseResponse(
+      source(
+        'HTTP/1.1 200 OK\r\nContent-Length: 13\r\nContent-Type: text/plain\r\n\r\nHello, World!',
+      ),
+    );
     t.equal(res.version, 'HTTP/1.1');
     t.equal(res.status, 200);
     t.equal(res.statusText, 'OK');
@@ -220,7 +265,9 @@ describe('Response parsing', () => {
     t.equal(decodeUtf8(data), 'Hello, World!');
   });
   it('404 response', async (t) => {
-    const res = await parseResponse(source('HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found'));
+    const res = await parseResponse(
+      source('HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found'),
+    );
     t.equal(res.status, 404);
     t.equal(res.statusText, 'Not Found');
     t.equal(res.ok, false, '404 is not ok');
@@ -240,14 +287,20 @@ describe('Response parsing', () => {
     t.equal(data.byteLength, 0, 'no body for 304');
   });
   it('response with chunked Transfer-Encoding', async (t) => {
-    const raw = 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n' + '4\r\nWiki\r\n' + '5\r\npedia\r\n' + '0\r\n\r\n';
+    const raw =
+      'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      '4\r\nWiki\r\n' +
+      '5\r\npedia\r\n' +
+      '0\r\n\r\n';
     const res = await parseResponse(source(raw));
     t.equal(res.status, 200);
     const data = await collectBody(res.body);
     t.equal(decodeUtf8(data), 'Wikipedia');
   });
   it('response with EOF-delimited body', async (t) => {
-    const res = await parseResponse(source('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nstream of data'));
+    const res = await parseResponse(
+      source('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nstream of data'),
+    );
     const data = await collectBody(res.body);
     t.equal(decodeUtf8(data), 'stream of data');
   });
@@ -280,27 +333,44 @@ describe('Response parsing — edge cases', () => {
     t.ok(url.pathname.includes('*'), 'asterisk preserved in URL');
   });
   it('duplicate identical Content-Length values produce correct body length', async (t) => {
-    const res = await parseResponse(source('HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello'));
+    const res = await parseResponse(
+      source('HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello'),
+    );
     const data = await collectBody(res.body);
     t.equal(new TextDecoder().decode(data), 'hello', 'body correct with duplicate identical CL');
   });
   it('malformed header lines are rejected', async (t) => {
-    await t.rejects(() => parseRequest(source('GET / HTTP/1.1\r\nBad-Header\r\n\r\n')), /malformed header/i);
+    await t.rejects(
+      () => parseRequest(source('GET / HTTP/1.1\r\nBad-Header\r\n\r\n')),
+      /malformed header/i,
+    );
   });
   it('invalid Content-Length values are rejected strictly', async (t) => {
-    await t.rejects(() => parseRequest(source('POST / HTTP/1.1\r\nContent-Length: 5x\r\n\r\nhello')), /invalid Content-Length/i);
+    await t.rejects(
+      () => parseRequest(source('POST / HTTP/1.1\r\nContent-Length: 5x\r\n\r\nhello')),
+      /invalid Content-Length/i,
+    );
   });
 });
 describe('HTTP/1 release hardening corpus', () => {
   it('parses valid requests fragmented at every byte', async (t) => {
-    const raw = 'POST /fragmented HTTP/1.1\r\n' + 'Host: example.test\r\n' + 'Content-Length: 11\r\n' + '\r\n' + 'hello world';
+    const raw =
+      'POST /fragmented HTTP/1.1\r\n' +
+      'Host: example.test\r\n' +
+      'Content-Length: 11\r\n' +
+      '\r\n' +
+      'hello world';
     const req = await parseRequest(chunkedSource(raw, 1));
     t.equal(req.method, 'POST');
     t.equal(req.url, 'http://example.test/fragmented');
     t.equal(await req.text(), 'hello world');
   });
   it('accepts chunk extensions and exposes trailers after body consumption', async (t) => {
-    const raw = 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n' + '5;name=value;flag\r\nhello\r\n' + '6;ignored=true\r\n world\r\n' + '0\r\nDigest: sha-256=test\r\nX-Trailer: ok\r\n\r\n';
+    const raw =
+      'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      '5;name=value;flag\r\nhello\r\n' +
+      '6;ignored=true\r\n world\r\n' +
+      '0\r\nDigest: sha-256=test\r\nX-Trailer: ok\r\n\r\n';
     const res = await parseResponse(chunkedSource(raw, 2));
     t.equal(await res.text(), 'hello world');
     const trailers = await res.trailers;
@@ -308,27 +378,60 @@ describe('HTTP/1 release hardening corpus', () => {
     t.equal(trailers.get('x-trailer'), 'ok');
   });
   it('accepts duplicate identical Content-Length values for requests', async (t) => {
-    const req = await parseRequest(source('POST /dupe HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello'));
+    const req = await parseRequest(
+      source('POST /dupe HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello'),
+    );
     t.equal(req.headers.get('content-length'), '5, 5');
     t.equal(await req.text(), 'hello');
   });
   it('uses chunked Transfer-Encoding precedence over Content-Length', async (t) => {
-    const req = await parseRequest(source('POST /te-cl HTTP/1.1\r\n' + 'Content-Length: 999\r\n' + 'Transfer-Encoding: gzip, chunked\r\n' + '\r\n' + '5\r\nhello\r\n0\r\n\r\nGET /smuggled HTTP/1.1\r\n\r\n'));
+    const req = await parseRequest(
+      source(
+        'POST /te-cl HTTP/1.1\r\n' +
+          'Content-Length: 999\r\n' +
+          'Transfer-Encoding: gzip, chunked\r\n' +
+          '\r\n' +
+          '5\r\nhello\r\n0\r\n\r\nGET /smuggled HTTP/1.1\r\n\r\n',
+      ),
+    );
     t.equal(req.headers.get('content-length'), null, 'Content-Length removed after TE precedence');
     t.equal(await req.text(), 'hello');
   });
   it('treats HEAD, 204, and 304 responses as bodyless despite framing', async (t) => {
-    const head = await parseResponse(source('HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello'), 'HEAD');
-    const noContent = await parseResponse(source('HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nhello'));
-    const notModified = await parseResponse(source('HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n'));
+    const head = await parseResponse(
+      source('HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello'),
+      'HEAD',
+    );
+    const noContent = await parseResponse(
+      source('HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nhello'),
+    );
+    const notModified = await parseResponse(
+      source(
+        'HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n',
+      ),
+    );
     t.equal((await collectBody(head.body)).byteLength, 0, 'HEAD response has no body');
     t.equal((await collectBody(noContent.body)).byteLength, 0, '204 response has no body');
     t.equal((await collectBody(notModified.body)).byteLength, 0, '304 response has no body');
   });
   it('rejects malformed smuggling-style framing inputs', async (t) => {
-    await t.rejects(() => parseRequest(source('POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!')), /Conflicting Content-Length/i);
-    await t.rejects(() => parseRequest(source('POST / HTTP/1.1\r\nTransfer-Encoding: chunked, gzip\r\n\r\n0\r\n\r\n')), /Invalid Transfer-Encoding/i);
-    const req = await parseRequest(source('POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' + '5\r\nhello\n0\r\n\r\n'));
+    await t.rejects(
+      () =>
+        parseRequest(
+          source('POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!'),
+        ),
+      /Conflicting Content-Length/i,
+    );
+    await t.rejects(
+      () =>
+        parseRequest(
+          source('POST / HTTP/1.1\r\nTransfer-Encoding: chunked, gzip\r\n\r\n0\r\n\r\n'),
+        ),
+      /Invalid Transfer-Encoding/i,
+    );
+    const req = await parseRequest(
+      source('POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' + '5\r\nhello\n0\r\n\r\n'),
+    );
     await t.rejects(() => req.text(), /Expected CRLF after chunk data/);
   });
 });
@@ -348,7 +451,9 @@ describe('Edge cases', () => {
     t.equal(req.version, 'HTTP/1.0');
   });
   it('headers with duplicate names are joined', async (t) => {
-    const req = await parseRequest(source('GET / HTTP/1.1\r\nAccept: text/html\r\nAccept: application/json\r\n\r\n'));
+    const req = await parseRequest(
+      source('GET / HTTP/1.1\r\nAccept: text/html\r\nAccept: application/json\r\n\r\n'),
+    );
     t.equal(req.headers.get('accept'), 'text/html, application/json');
   });
   it('Content-Length: 0 produces empty body', async (t) => {
@@ -378,7 +483,9 @@ describe('Body consumption', () => {
   });
   it('req.json() parses JSON body', async (t) => {
     const payload = '{"ok":true,"n":42}';
-    const req = await parseRequest(source('POST / HTTP/1.1\r\nContent-Length: ' + payload.length + '\r\n\r\n' + payload));
+    const req = await parseRequest(
+      source('POST / HTTP/1.1\r\nContent-Length: ' + payload.length + '\r\n\r\n' + payload),
+    );
     const obj = await req.json();
     t.equal(obj.ok, true);
     t.equal(obj.n, 42);
@@ -415,7 +522,9 @@ describe('Body consumption', () => {
     t.equal(req.bodyUsed, false);
   });
   it('res.text() consumes response body', async (t) => {
-    const res = await parseResponse(source('HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!'));
+    const res = await parseResponse(
+      source('HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!'),
+    );
     t.equal(await res.text(), 'Hello, World!');
   });
   it('Request.clone() tees streaming bodies and copies headers independently', async (t) => {
@@ -426,7 +535,7 @@ describe('Body consumption', () => {
     const req = new Request('https://example.test/upload', {
       method: 'POST',
       headers: { 'x-source': 'original' },
-      body: streamBody() as any
+      body: streamBody() as any,
     });
     const clone = req.clone();
     clone.headers.set('x-source', 'clone');
@@ -439,7 +548,7 @@ describe('Body consumption', () => {
     const res = new Response('payload', {
       status: 202,
       statusText: 'Accepted',
-      headers: { 'x-source': 'original' }
+      headers: { 'x-source': 'original' },
     });
     const clone = res.clone();
     clone.headers.set('x-source', 'clone');
@@ -455,7 +564,7 @@ describe('Body consumption', () => {
   it('clone() rejects after request or response body consumption', async (t) => {
     const req = new Request('/submit', {
       method: 'POST',
-      body: 'done'
+      body: 'done',
     });
     await req.text();
     t.throws(() => req.clone(), /disturbed Request/i);
@@ -467,7 +576,7 @@ describe('Body consumption', () => {
     const req = new Request('/submit', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-      body: 'name=Alice+Smith&tag=one&tag=two&encoded=%E2%9C%93'
+      body: 'name=Alice+Smith&tag=one&tag=two&encoded=%E2%9C%93',
     });
     const form = await req.formData();
     t.equal(form.get('name'), 'Alice Smith', 'plus signs decode to spaces');
@@ -485,11 +594,14 @@ describe('Body consumption', () => {
     form.append('tag', 'two');
     const req = new Request('http://example.test/form', {
       method: 'POST',
-      body: form
+      body: form,
     });
     const contentType = req.headers.get('content-type') ?? '';
     const serialized = decodeUtf8(await collectBody(req.body));
-    t.ok(contentType.startsWith('multipart/form-data; boundary='), 'content-type includes generated boundary');
+    t.ok(
+      contentType.startsWith('multipart/form-data; boundary='),
+      'content-type includes generated boundary',
+    );
     t.ok(serialized.includes('name="name"\r\n\r\nAlice'), 'string field is serialized');
     t.ok(serialized.includes('name="tag"\r\n\r\none'), 'first duplicate field is serialized');
     t.ok(serialized.includes('name="tag"\r\n\r\ntwo'), 'second duplicate field is serialized');
@@ -508,7 +620,7 @@ describe('Request constructor', () => {
     const req = new Request('https://api.example.com/data', {
       method: 'POST',
       body: 'hello',
-      headers: { 'content-type': 'text/plain' }
+      headers: { 'content-type': 'text/plain' },
     });
     t.equal(req.method, 'POST');
     t.equal(req.url, 'https://api.example.com/data');
@@ -518,7 +630,7 @@ describe('Request constructor', () => {
   it('new Request(url, { body: Uint8Array })', async (t) => {
     const req = new Request('/', {
       method: 'PUT',
-      body: encodeUtf8('abc')
+      body: encodeUtf8('abc'),
     });
     t.equal(await req.text(), 'abc');
   });
@@ -542,7 +654,7 @@ describe('Response constructor', () => {
   it('new Response(body, init) — string body', async (t) => {
     const res = new Response('world', {
       status: 201,
-      statusText: 'Created'
+      statusText: 'Created',
     });
     t.equal(res.status, 201);
     t.equal(res.statusText, 'Created');
@@ -552,7 +664,7 @@ describe('Response constructor', () => {
   it('new Response(body, { headers }) — headers copied', (t) => {
     const res = new Response(null, {
       status: 204,
-      headers: { 'x-powered-by': 'fino' }
+      headers: { 'x-powered-by': 'fino' },
     });
     t.equal(res.headers.get('x-powered-by'), 'fino');
     t.equal(res.ok, true);
@@ -608,7 +720,7 @@ describe('Serialization', () => {
     const res = new Response('hello', {
       status: 200,
       statusText: 'OK',
-      headers: { 'content-type': 'text/plain' }
+      headers: { 'content-type': 'text/plain' },
     });
     (res as any)._version = 'HTTP/1.1';
     const bytes = await collectBody(serializeResponse(res));
@@ -629,7 +741,7 @@ describe('Serialization', () => {
     const req = new Request('http://example.com/path', {
       method: 'POST',
       body: 'data',
-      headers: { 'content-type': 'application/json' }
+      headers: { 'content-type': 'application/json' },
     });
     const bytes = await collectBody(serializeRequest(req));
     const text = decodeUtf8(bytes);
@@ -643,7 +755,7 @@ describe('Serialization', () => {
   it('serializeRequest — accepts an arena for generated framing bytes', async (t) => {
     const req = new Request('http://example.com/path', {
       method: 'POST',
-      body: 'data'
+      body: 'data',
     });
     const bytes = await collectBody(serializeRequest(req, new Arena(1024)));
     const text = decodeUtf8(bytes);
@@ -661,7 +773,7 @@ describe('Serialization', () => {
     const original = new Request('http://example.com/submit', {
       method: 'POST',
       body: 'hello=world',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' }
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
     });
     const parsed = await Request.from(serializeRequest(original));
     t.equal(parsed.method, 'POST');

@@ -30,5 +30,5 @@ export type {
   QuicTlsCipherSuite,
   QuicTransportOptions,
   QuicTransportParameterSnapshot,
-  QuicVersion
+  QuicVersion,
 } from '../../internal/net/quic/endpoint.ts';

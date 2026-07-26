@@ -1,17 +1,12 @@
 /**
-* Benchmarks for fino:database/sqlite
-*
-* Run with: cargo run -- bench benchmarks/database/sqlite.bench.ts
-*/
+ * Benchmarks for fino:database/sqlite
+ *
+ * Run with: cargo run -- bench benchmarks/database/sqlite.bench.ts
+ */
 import { Database, sqliteAvailable, vec, vecDecode } from 'fino:database/sqlite';
 import { bench } from 'fino:bench';
 import { DiskFileSystem } from 'fino:file';
-const vecBlob = new Uint8Array(new Float32Array([
-  1,
-  2,
-  3,
-  4
-]).buffer);
+const vecBlob = new Uint8Array(new Float32Array([1, 2, 3, 4]).buffer);
 const fs = new DiskFileSystem();
 const diskPath = '/tmp/fino-sqlite-bench-' + Math.floor(Math.random() * 1e9) + '.db';
 function formatOpsPerSecond(iterations: number, elapsedMs: number): string {
@@ -21,7 +16,7 @@ function formatOpsPerSecond(iterations: number, elapsedMs: number): string {
   return ops.toFixed(2) + ' i/s';
 }
 function formatTimePerIteration(elapsedMs: number, iterations: number): string {
-  const ns = elapsedMs * 1e6 / iterations;
+  const ns = (elapsedMs * 1e6) / iterations;
   if (ns >= 1e6) return (ns / 1e6).toFixed(2) + 'ms/i';
   if (ns >= 1e3) return (ns / 1e3).toFixed(2) + 'us/i';
   return ns.toFixed(2) + 'ns/i';
@@ -35,17 +30,14 @@ async function measureAsync(name: string, fn: () => Promise<void>, minMs = 250):
     iterations++;
     elapsed = Date.now() - start;
   } while (elapsed < minMs);
-  console.log(`${name} - ${formatOpsPerSecond(iterations, elapsed)} (${formatTimePerIteration(elapsed, iterations)})`);
+  console.log(
+    `${name} - ${formatOpsPerSecond(iterations, elapsed)} (${formatTimePerIteration(elapsed, iterations)})`,
+  );
 }
 bench('database/sqlite helpers', (b) => {
   b.measure('sqliteAvailable flag', () => sqliteAvailable);
   b.measure('Database class reference', () => Database);
-  b.measure('vec encode', () => vec([
-    1,
-    2,
-    3,
-    4
-  ]));
+  b.measure('vec encode', () => vec([1, 2, 3, 4]));
   b.measure('vecDecode', () => vecDecode(vecBlob));
 });
 if (!sqliteAvailable) {
@@ -69,7 +61,7 @@ if (!sqliteAvailable) {
   {
     const diskDb = await Database.open(diskPath, { fs });
     await diskDb.exec('CREATE TABLE disk_lookup (id INTEGER PRIMARY KEY, label TEXT)');
-    await diskDb.exec('INSERT INTO disk_lookup VALUES (1, \'disk\')');
+    await diskDb.exec("INSERT INTO disk_lookup VALUES (1, 'disk')");
     await diskDb.close();
   }
   await measureAsync('open + close :memory:', async () => {
@@ -106,7 +98,7 @@ if (!sqliteAvailable) {
   await measureAsync('disk/VFS open + select + close', async () => {
     const db = await Database.open(diskPath, {
       fs,
-      readonly: true
+      readonly: true,
     });
     const row = await db.prepare('SELECT label FROM disk_lookup WHERE id = 1').get();
     if (row!['label'] !== 'disk') throw new Error('unexpected disk row');

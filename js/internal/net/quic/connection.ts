@@ -1,20 +1,478 @@
 /**
-* internal:net/quic/connection — QUIC connection class and internal symbols.
-*
-* @internal
-*/
+ * internal:net/quic/connection — QUIC connection class and internal symbols.
+ *
+ * @internal
+ */
 
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { BytesReader, BytesWriter } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
-import { lib as fileLib, cstr as fileCstr, O_CREAT, O_TRUNC, O_WRONLY } from '../../file/bindings.ts';
+import {
+  lib as fileLib,
+  cstr as fileCstr,
+  O_CREAT,
+  O_TRUNC,
+  O_WRONLY,
+} from '../../file/bindings.ts';
 import { EAGAIN, decodeAddr } from '../../../net/socket.ts';
 import { randBytes } from '../../openssl.ts';
-import { CB_ACKED_STREAM_DATA_OFFSET, CB_ACK_DATAGRAM, CB_CLIENT_INITIAL, CB_DELETE_CRYPTO_AEAD_CTX, CB_DELETE_CRYPTO_CIPHER_CTX, CB_DECRYPT, CB_ENCRYPT, CB_EXTEND_MAX_LOCAL_STREAMS_BIDI, CB_EXTEND_MAX_LOCAL_STREAMS_UNI, CB_EXTEND_MAX_STREAM_DATA, CB_GET_NEW_CONNECTION_ID, CB_GET_NEW_CONNECTION_ID2, CB_GET_PATH_CHALLENGE_DATA, CB_GET_PATH_CHALLENGE_DATA2, CB_HANDSHAKE_COMPLETED, CB_HANDSHAKE_CONFIRMED, CB_HP_MASK, CB_BEGIN_PATH_VALIDATION, CB_DCID_STATUS, CB_DCID_STATUS2, CB_EARLY_DATA_REJECTED, CB_LOST_DATAGRAM, CB_PATH_VALIDATION, CB_RAND, CB_REMOVE_CONNECTION_ID, CB_RECV_DATAGRAM, CB_RECV_CLIENT_INITIAL, CB_RECV_CRYPTO_DATA, CB_RECV_NEW_TOKEN, CB_RECV_RETRY, CB_RECV_RX_KEY, CB_RECV_STATELESS_RESET, CB_RECV_STATELESS_RESET2, CB_RECV_STREAM_DATA, CB_RECV_TX_KEY, CB_RECV_VERSION_NEGOTIATION, CB_STREAM_CLOSE, CB_STREAM_OPEN, CB_STREAM_RESET, CB_STREAM_STOP_SENDING, CB_SELECT_PREFERRED_ADDR, CB_UPDATE_KEY, CB_VERSION_NEGOTIATION, CONN_INFO_BYTES_IN_FLIGHT, CONN_INFO_BYTES_LOST, CONN_INFO_BYTES_RECV, CONN_INFO_BYTES_SENT, CONN_INFO_CWND, CONN_INFO_LATEST_RTT, CONN_INFO_MIN_RTT, CONN_INFO_PING_RECV, CONN_INFO_PKT_DISCARDED, CONN_INFO_PKT_LOST, CONN_INFO_PKT_RECV, CONN_INFO_PKT_SENT, CONN_INFO_RTTVAR, CONN_INFO_SMOOTHED_RTT, CONN_INFO_SSTHRESH, ADDR_ADDR, ADDR_ADDRLEN, CCERR_TYPE, CCERR_ERROR_CODE, CCERR_REASON, CCERR_REASONLEN, CID_DATA, CID_DATALEN, NGTCP2_CALLBACKS_SIZE, NGTCP2_CALLBACKS_VERSION, NGTCP2_CCERR_SIZE, NGTCP2_CONN_INFO_SIZE, NGTCP2_CONN_INFO_VERSION, NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE, NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE, NGTCP2_CID_SIZE, NGTCP2_CRYPTO_ERROR, NGTCP2_ERR_CLOSING, NGTCP2_ERR_CALLBACK_FAILURE, NGTCP2_ERR_CRYPTO, NGTCP2_ERR_DRAINING, NGTCP2_ERR_DROP_CONN, NGTCP2_ERR_IDLE_CLOSE, NGTCP2_ERR_NOBUF, NGTCP2_ERR_PKT_NUM_EXHAUSTED, NGTCP2_ERR_RECV_VERSION_NEGOTIATION, NGTCP2_ERR_RETRY, NGTCP2_ERR_STREAM_ID_BLOCKED, NGTCP2_ERR_STREAM_DATA_BLOCKED, NGTCP2_ERR_STREAM_SHUT_WR, NGTCP2_ERR_STREAM_NOT_FOUND, NGTCP2_ERR_VERSION_NEGOTIATION, NGTCP2_ERR_WRITE_MORE, NGTCP2_DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE, NGTCP2_MAX_CIDLEN, NGTCP2_MAX_UDP_PAYLOAD_SIZE, NGTCP2_ERR_INVALID_STATE, NGTCP2_WRITE_STREAM_FLAG_MORE, NGTCP2_PATH_SIZE, PATH_LOCAL, PATH_REMOTE, PATH_USER_DATA, SETTINGS_AVAILABLE_VERSIONS, SETTINGS_AVAILABLE_VERSIONSLEN, SETTINGS_ACK_THRESH, SETTINGS_CC_ALGO, SETTINGS_HANDSHAKE_TIMEOUT, SETTINGS_INITIAL_TS, SETTINGS_INITIAL_RTT, SETTINGS_MAX_TX_UDP_PAYLOAD_SIZE, SETTINGS_MAX_STREAM_WINDOW, SETTINGS_MAX_WINDOW, SETTINGS_NO_TX_UDP_PAYLOAD_SIZE_SHAPING, SETTINGS_NO_PMTUD, SETTINGS_ORIGINAL_VERSION, SETTINGS_PREFERRED_VERSIONS, SETTINGS_PREFERRED_VERSIONSLEN, SETTINGS_QLOG_WRITE, SETTINGS_TOKEN, SETTINGS_TOKENLEN, SETTINGS_TOKEN_TYPE } from './ngtcp2/bindings.ts';
-import { NGTCP2_PKT_HD_SIZE, NGTCP2_PKT_INFO_VERSION, NGTCP2_PKT_INFO_SIZE, NGTCP2_ECN_NOT_ECT, NGTCP2_ECN_ECT_0, NGTCP2_ECN_MASK, PKT_INFO_ECN, NGTCP2_PROTO_VER_V2, NGTCP2_PROTO_VER_V1, NGTCP2_SETTINGS_SIZE, NGTCP2_SETTINGS_VERSION, NGTCP2_TRANSPORT_PARAMS_SIZE, NGTCP2_TRANSPORT_PARAMS_VERSION, NGTCP2_VERSION_CID_SIZE, NGTCP2_VEC_SIZE, NGTCP2_DATAGRAM_FLAG_0RTT, NGTCP2_WRITE_DATAGRAM_FLAG_NONE, NGTCP2_WRITE_STREAM_FLAG_FIN, TP_ACTIVE_CONNECTION_ID_LIMIT, TP_ACK_DELAY_EXPONENT, TP_DISABLE_ACTIVE_MIGRATION, TP_INITIAL_MAX_DATA, TP_INITIAL_MAX_STREAMS_BIDI, TP_INITIAL_MAX_STREAMS_UNI, TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL, TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE, TP_INITIAL_MAX_STREAM_DATA_UNI, TP_INITIAL_SCID, TP_INITIAL_SCID_PRESENT, TP_MAX_IDLE_TIMEOUT, TP_MAX_ACK_DELAY, TP_MAX_DATAGRAM_FRAME_SIZE, TP_MAX_UDP_PAYLOAD_SIZE, TP_ORIGINAL_DCID, TP_ORIGINAL_DCID_PRESENT, TP_RETRY_SCID, TP_RETRY_SCID_PRESENT, TP_PREFERRED_ADDR, TP_PREFERRED_ADDR_CID, TP_PREFERRED_ADDR_IPV4, TP_PREFERRED_ADDR_IPV4_PRESENT, TP_PREFERRED_ADDR_IPV6, TP_PREFERRED_ADDR_IPV6_PRESENT, TP_PREFERRED_ADDR_PRESENT, TP_PREFERRED_ADDR_STATELESS_RESET_TOKEN, TP_STATELESS_RESET_TOKEN, TP_STATELESS_RESET_TOKEN_PRESENT, VEC_BASE, VEC_LEN, PKT_HD_DCID, PKT_HD_SCID, PKT_HD_TOKEN, PKT_HD_TOKENLEN, PKT_HD_VERSION, VERSION_CID_DCID, VERSION_CID_DCIDLEN, VERSION_CID_SCID, VERSION_CID_SCIDLEN, VERSION_CID_VERSION, NGTCP2_TOKEN_TYPE_RETRY, NGTCP2_TOKEN_TYPE_NEW_TOKEN, NGTCP2_TOKEN_TYPE_UNKNOWN, NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN, NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR, NGTCP2_PATH_VALIDATION_RESULT_ABORTED, NGTCP2_PATH_VALIDATION_RESULT_FAILURE, NGTCP2_PATH_VALIDATION_RESULT_SUCCESS, FfiCallback, Pointer, ngtcp2Available, ngtcp2ConnResetStreamAt, ngtcp2ResetStreamAtAvailable, ngtcp2PktWriteStatelessReset, ptr as ngtcp2Ptr, readCStr, requireNgtcp2, sym as ngtcp2Sym } from './ngtcp2/bindings.ts';
-import { clearConnectionRef, configureSessionForConnection, cryptoAvailable, cryptoBackend as _cryptoBackend, freeContext, freeNativeHandle, freeSession, getAlpnSelected, getHandshakeInfo, getPeerCertificate, exportKeyingMaterial as exportTlsKeyingMaterial, exportSession, importSession, initCrypto, newClientContext, newClientSession, newNativeHandle, newServerContext, newServerSession, ptr as cryptoPtr, requireCrypto, sendSessionTicket, setConnectionRef, setSNIContexts, setSessionTicketCallback, sym as cryptoSym, type QuicCaOptions, type QuicCryptoBackend, type QuicTlsContext, type QuicTlsSession } from './ngtcp2/crypto.ts';
+import {
+  CB_ACKED_STREAM_DATA_OFFSET,
+  CB_ACK_DATAGRAM,
+  CB_CLIENT_INITIAL,
+  CB_DELETE_CRYPTO_AEAD_CTX,
+  CB_DELETE_CRYPTO_CIPHER_CTX,
+  CB_DECRYPT,
+  CB_ENCRYPT,
+  CB_EXTEND_MAX_LOCAL_STREAMS_BIDI,
+  CB_EXTEND_MAX_LOCAL_STREAMS_UNI,
+  CB_EXTEND_MAX_STREAM_DATA,
+  CB_GET_NEW_CONNECTION_ID,
+  CB_GET_NEW_CONNECTION_ID2,
+  CB_GET_PATH_CHALLENGE_DATA,
+  CB_GET_PATH_CHALLENGE_DATA2,
+  CB_HANDSHAKE_COMPLETED,
+  CB_HANDSHAKE_CONFIRMED,
+  CB_HP_MASK,
+  CB_BEGIN_PATH_VALIDATION,
+  CB_DCID_STATUS,
+  CB_DCID_STATUS2,
+  CB_EARLY_DATA_REJECTED,
+  CB_LOST_DATAGRAM,
+  CB_PATH_VALIDATION,
+  CB_RAND,
+  CB_REMOVE_CONNECTION_ID,
+  CB_RECV_DATAGRAM,
+  CB_RECV_CLIENT_INITIAL,
+  CB_RECV_CRYPTO_DATA,
+  CB_RECV_NEW_TOKEN,
+  CB_RECV_RETRY,
+  CB_RECV_RX_KEY,
+  CB_RECV_STATELESS_RESET,
+  CB_RECV_STATELESS_RESET2,
+  CB_RECV_STREAM_DATA,
+  CB_RECV_TX_KEY,
+  CB_RECV_VERSION_NEGOTIATION,
+  CB_STREAM_CLOSE,
+  CB_STREAM_OPEN,
+  CB_STREAM_RESET,
+  CB_STREAM_STOP_SENDING,
+  CB_SELECT_PREFERRED_ADDR,
+  CB_UPDATE_KEY,
+  CB_VERSION_NEGOTIATION,
+  CONN_INFO_BYTES_IN_FLIGHT,
+  CONN_INFO_BYTES_LOST,
+  CONN_INFO_BYTES_RECV,
+  CONN_INFO_BYTES_SENT,
+  CONN_INFO_CWND,
+  CONN_INFO_LATEST_RTT,
+  CONN_INFO_MIN_RTT,
+  CONN_INFO_PING_RECV,
+  CONN_INFO_PKT_DISCARDED,
+  CONN_INFO_PKT_LOST,
+  CONN_INFO_PKT_RECV,
+  CONN_INFO_PKT_SENT,
+  CONN_INFO_RTTVAR,
+  CONN_INFO_SMOOTHED_RTT,
+  CONN_INFO_SSTHRESH,
+  ADDR_ADDR,
+  ADDR_ADDRLEN,
+  CCERR_TYPE,
+  CCERR_ERROR_CODE,
+  CCERR_REASON,
+  CCERR_REASONLEN,
+  CID_DATA,
+  CID_DATALEN,
+  NGTCP2_CALLBACKS_SIZE,
+  NGTCP2_CALLBACKS_VERSION,
+  NGTCP2_CCERR_SIZE,
+  NGTCP2_CONN_INFO_SIZE,
+  NGTCP2_CONN_INFO_VERSION,
+  NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE,
+  NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE,
+  NGTCP2_CID_SIZE,
+  NGTCP2_CRYPTO_ERROR,
+  NGTCP2_ERR_CLOSING,
+  NGTCP2_ERR_CALLBACK_FAILURE,
+  NGTCP2_ERR_CRYPTO,
+  NGTCP2_ERR_DRAINING,
+  NGTCP2_ERR_DROP_CONN,
+  NGTCP2_ERR_IDLE_CLOSE,
+  NGTCP2_ERR_NOBUF,
+  NGTCP2_ERR_PKT_NUM_EXHAUSTED,
+  NGTCP2_ERR_RECV_VERSION_NEGOTIATION,
+  NGTCP2_ERR_RETRY,
+  NGTCP2_ERR_STREAM_ID_BLOCKED,
+  NGTCP2_ERR_STREAM_DATA_BLOCKED,
+  NGTCP2_ERR_STREAM_SHUT_WR,
+  NGTCP2_ERR_STREAM_NOT_FOUND,
+  NGTCP2_ERR_VERSION_NEGOTIATION,
+  NGTCP2_ERR_WRITE_MORE,
+  NGTCP2_DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE,
+  NGTCP2_MAX_CIDLEN,
+  NGTCP2_MAX_UDP_PAYLOAD_SIZE,
+  NGTCP2_ERR_INVALID_STATE,
+  NGTCP2_WRITE_STREAM_FLAG_MORE,
+  NGTCP2_PATH_SIZE,
+  PATH_LOCAL,
+  PATH_REMOTE,
+  PATH_USER_DATA,
+  SETTINGS_AVAILABLE_VERSIONS,
+  SETTINGS_AVAILABLE_VERSIONSLEN,
+  SETTINGS_ACK_THRESH,
+  SETTINGS_CC_ALGO,
+  SETTINGS_HANDSHAKE_TIMEOUT,
+  SETTINGS_INITIAL_TS,
+  SETTINGS_INITIAL_RTT,
+  SETTINGS_MAX_TX_UDP_PAYLOAD_SIZE,
+  SETTINGS_MAX_STREAM_WINDOW,
+  SETTINGS_MAX_WINDOW,
+  SETTINGS_NO_TX_UDP_PAYLOAD_SIZE_SHAPING,
+  SETTINGS_NO_PMTUD,
+  SETTINGS_ORIGINAL_VERSION,
+  SETTINGS_PREFERRED_VERSIONS,
+  SETTINGS_PREFERRED_VERSIONSLEN,
+  SETTINGS_QLOG_WRITE,
+  SETTINGS_TOKEN,
+  SETTINGS_TOKENLEN,
+  SETTINGS_TOKEN_TYPE,
+} from './ngtcp2/bindings.ts';
+import {
+  NGTCP2_PKT_HD_SIZE,
+  NGTCP2_PKT_INFO_VERSION,
+  NGTCP2_PKT_INFO_SIZE,
+  NGTCP2_ECN_NOT_ECT,
+  NGTCP2_ECN_ECT_0,
+  NGTCP2_ECN_MASK,
+  PKT_INFO_ECN,
+  NGTCP2_PROTO_VER_V2,
+  NGTCP2_PROTO_VER_V1,
+  NGTCP2_SETTINGS_SIZE,
+  NGTCP2_SETTINGS_VERSION,
+  NGTCP2_TRANSPORT_PARAMS_SIZE,
+  NGTCP2_TRANSPORT_PARAMS_VERSION,
+  NGTCP2_VERSION_CID_SIZE,
+  NGTCP2_VEC_SIZE,
+  NGTCP2_DATAGRAM_FLAG_0RTT,
+  NGTCP2_WRITE_DATAGRAM_FLAG_NONE,
+  NGTCP2_WRITE_STREAM_FLAG_FIN,
+  TP_ACTIVE_CONNECTION_ID_LIMIT,
+  TP_ACK_DELAY_EXPONENT,
+  TP_DISABLE_ACTIVE_MIGRATION,
+  TP_INITIAL_MAX_DATA,
+  TP_INITIAL_MAX_STREAMS_BIDI,
+  TP_INITIAL_MAX_STREAMS_UNI,
+  TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL,
+  TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE,
+  TP_INITIAL_MAX_STREAM_DATA_UNI,
+  TP_INITIAL_SCID,
+  TP_INITIAL_SCID_PRESENT,
+  TP_MAX_IDLE_TIMEOUT,
+  TP_MAX_ACK_DELAY,
+  TP_MAX_DATAGRAM_FRAME_SIZE,
+  TP_MAX_UDP_PAYLOAD_SIZE,
+  TP_ORIGINAL_DCID,
+  TP_ORIGINAL_DCID_PRESENT,
+  TP_RETRY_SCID,
+  TP_RETRY_SCID_PRESENT,
+  TP_PREFERRED_ADDR,
+  TP_PREFERRED_ADDR_CID,
+  TP_PREFERRED_ADDR_IPV4,
+  TP_PREFERRED_ADDR_IPV4_PRESENT,
+  TP_PREFERRED_ADDR_IPV6,
+  TP_PREFERRED_ADDR_IPV6_PRESENT,
+  TP_PREFERRED_ADDR_PRESENT,
+  TP_PREFERRED_ADDR_STATELESS_RESET_TOKEN,
+  TP_STATELESS_RESET_TOKEN,
+  TP_STATELESS_RESET_TOKEN_PRESENT,
+  VEC_BASE,
+  VEC_LEN,
+  PKT_HD_DCID,
+  PKT_HD_SCID,
+  PKT_HD_TOKEN,
+  PKT_HD_TOKENLEN,
+  PKT_HD_VERSION,
+  VERSION_CID_DCID,
+  VERSION_CID_DCIDLEN,
+  VERSION_CID_SCID,
+  VERSION_CID_SCIDLEN,
+  VERSION_CID_VERSION,
+  NGTCP2_TOKEN_TYPE_RETRY,
+  NGTCP2_TOKEN_TYPE_NEW_TOKEN,
+  NGTCP2_TOKEN_TYPE_UNKNOWN,
+  NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN,
+  NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR,
+  NGTCP2_PATH_VALIDATION_RESULT_ABORTED,
+  NGTCP2_PATH_VALIDATION_RESULT_FAILURE,
+  NGTCP2_PATH_VALIDATION_RESULT_SUCCESS,
+  FfiCallback,
+  Pointer,
+  ngtcp2Available,
+  ngtcp2ConnResetStreamAt,
+  ngtcp2ResetStreamAtAvailable,
+  ngtcp2PktWriteStatelessReset,
+  ptr as ngtcp2Ptr,
+  readCStr,
+  requireNgtcp2,
+  sym as ngtcp2Sym,
+} from './ngtcp2/bindings.ts';
+import {
+  clearConnectionRef,
+  configureSessionForConnection,
+  cryptoAvailable,
+  cryptoBackend as _cryptoBackend,
+  freeContext,
+  freeNativeHandle,
+  freeSession,
+  getAlpnSelected,
+  getHandshakeInfo,
+  getPeerCertificate,
+  exportKeyingMaterial as exportTlsKeyingMaterial,
+  exportSession,
+  importSession,
+  initCrypto,
+  newClientContext,
+  newClientSession,
+  newNativeHandle,
+  newServerContext,
+  newServerSession,
+  ptr as cryptoPtr,
+  requireCrypto,
+  sendSessionTicket,
+  setConnectionRef,
+  setSNIContexts,
+  setSessionTicketCallback,
+  sym as cryptoSym,
+  type QuicCaOptions,
+  type QuicCryptoBackend,
+  type QuicTlsContext,
+  type QuicTlsSession,
+} from './ngtcp2/crypto.ts';
 import * as core from './core.ts';
-const { _PTR_SIZE, _QUIC_PTR_PATH, _QUIC_PTR_PKT_INFO, _QUIC_PTR_DATA_LEN, _QUIC_PTR_VEC, normalizeCloseOptions, quicIncomingStreamHook, quicBytesWriterInternals, quicEndpointInternals, quicListenerInternals, quicConnectionInternals, quicStreamInternals, getConnPointerSlot, STREAM_DATA_FLAG_FIN, TLS_ALERT_NO_APPLICATION_PROTOCOL, NGTCP2_CRYPTO_TOKEN_MAGIC_RETRY2, NGTCP2_CRYPTO_MAX_RETRY_TOKENLEN2, NGTCP2_CRYPTO_MAX_REGULAR_TOKENLEN, NGTCP2_STATELESS_RESET_TOKENLEN, NGTCP2_MIN_STATELESS_RESET_RANDLEN, NGTCP2_MIN_STATELESS_RESET_PACKETLEN, STATELESS_RESET_RANDLEN, DEFAULT_ADDRESS_LRU_SIZE, DEFAULT_RETRY_RATE, DEFAULT_RETRY_BURST, DEFAULT_VERSION_NEGOTIATION_RATE, DEFAULT_VERSION_NEGOTIATION_BURST, DEFAULT_STATELESS_RESET_RATE, DEFAULT_STATELESS_RESET_BURST, DEFAULT_IMMEDIATE_CLOSE_RATE, DEFAULT_IMMEDIATE_CLOSE_BURST, DEFAULT_SESSION_CREATION_RATE, DEFAULT_SESSION_CREATION_BURST, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_CONNECTIONS_PER_REMOTE_ADDRESS, DEFAULT_MAX_PENDING_DATAGRAMS, DEFAULT_MAX_DATAGRAM_SEND_ATTEMPTS, DEFAULT_DRAINING_PERIOD_MULTIPLIER, DEFAULT_CONNECTION_MAX_PAYLOAD_SIZE, NGTCP2_QLOG_WRITE_FLAG_FIN, NGTCP2_ENCRYPTION_LEVEL_1RTT, NGTCP2_MILLISECONDS, NGTCP2_SECONDS, DEFAULT_STREAM_IDLE_TIMEOUT, ADDRESS_VALIDATION_TIMEOUT, NGTCP2_NO_EXPIRY, MIGRATION_KEEP_ALIVE_TIMEOUT, MAX_RECEIVE_WINDOW, INITIAL_MAX_STREAM_DATA, INITIAL_MAX_DATA, INITIAL_MAX_STREAMS_BIDI, INITIAL_MAX_STREAMS_UNI, ACTIVE_CONNECTION_ID_LIMIT, MAX_IDLE_TIMEOUT, HANDSHAKE_TIMEOUT, RETRY_TOKEN_TIMEOUT, REGULAR_TOKEN_TIMEOUT, MIN_TOKEN_TIMEOUT, MAX_RETRY_TOKEN_TIMEOUT, MAX_REGULAR_TOKEN_TIMEOUT, CONNECTION_DRAINING_TIMEOUT_MS, MAX_REJECTED_INITIAL_CIDS, MAX_WRITE_PACKETS_PER_DRAIN, MAX_READ_PACKETS_PER_TURN, MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_CONNECTION_REFUSED, VERSION_NEGOTIATION_GREASE, SOCKADDR_UNION_SIZE, DEFAULT_ALPN_PROTOCOLS, QUIC_TLS_CIPHER_SUITES, _nativeConnections, allocateQuicConnectionId, allocateNativeUserDataId, _nativeCallbackDepth, _deferredNativeTasks, _deferredNativeFlushScheduled, inNativeCallback, scheduleDeferredNativeTasks, flushDeferredNativeTasks, deferAfterNativeCallback, publishQuicTopic, runtimeDelay, withNativeCallback, quicAvailable, quicResetStreamAtAvailable, cryptoBackend, transportEngine, quicVersion, realQuicRuntime, RealQuicDatagramTransport, normalizeSocketOptionInteger, normalizeSocketOptions, RealQuicDatagramTransportFactory, realQuicDatagramTransportFactory, requireQuic, AsyncQueue, ByteQueue, QuicBytesReader, QuicBytesWriter, normalizeAddress, addressKey, sameAddress, decodeHexDatagram, decodeBase64Datagram, normalizeDatagramSource, normalizeVersions, normalizeTlsCipherSuites, normalizeTlsGroups, normalizeRetry, normalizeDatagrams, quicVarintLength, maxDatagramPayload, normalizePreferredAddress, normalizeMigration, normalizeQlog, normalizeKeylog, normalizeRateLimit, normalizeLimit, normalizeTimeoutMs, normalizeDurationMs, normalizeInteger, normalizeClampedInteger, normalizeTransportVarint, normalizeConnection, clampBigint, nsToMs, normalizeAddressSet, normalizeTransport, resolveQuicOptions, freezeRateLimitSnapshot, freezeTransportSnapshot, freezeConnectionSnapshot, versionToWire, wireVersionToName, selectWireVersion, selectClientInitialWireVersion, longHeaderVersion, sessionStoreKey, now, QuicTokenBucket, QuicAddressValidationCache, writeU64, writeI64, writeU32, writeU8, readU64, readI64, readU32, ptrAddress, writePtr, writePtrIfPresent, writeAddress, _compatibleVersionLists, compatibleVersionList, ptrField, copyFromPtr, _HEX_BYTE, cidKey, makeCid, randomBytes, randomCid, generateStatelessResetToken, generateRegularToken, verifyRegularToken, isRetryToken, cidBytes, cidFromPacketHeader, readPacketVarint, parseInitialTokenHeader, packetHeaderFromParsedInitial, makePath, makePathFromSockaddrs, makeOutputPath, remoteAddressFromPath, localAddressFromPath, fdFromPath, fdFromNativePath, pathSnapshotFromNative, pathFromSnapshot, pathSnapshotsDiffer, pathValidationResultName, preferredAddressFromNative, cidFromTransportParams, transportParameterSnapshot, writeNativePathAddress, writeNativePathUserData, makePacketInfo, packetInfoEcn, qlogOutputPath, writeAllFd, appendKeylogLine, createServerTlsContext, _qlogWriteCallback, qlogWriteCallbackPointer, congestionControlValue, makeSettings, makeTransportParams, readUserDataId, connectionFromUserData, _callbackTable, _callbackRefs, ensureCallbackTable, getConnRefPointer, __inspectQuicCallbackTable, __inspectQuicRuntimeTuning, ngtcp2Error, QuicConnectionEvent, QuicStreamEvent, QuicStreamBlockedEvent, QuicStreamResetEvent, QuicDatagramEvent, QuicDatagramStatusEvent, QuicNewTokenEvent, QuicEarlyDataEvent, QuicStopSendingEvent, QuicPathValidationEvent, QuicErrorEvent, QuicVersionNegotiationError, CidRoutingTable, QuicEndpoint, registerQuicListenerClass, registerQuicConnectionClass } = core;
+const {
+  _PTR_SIZE,
+  _QUIC_PTR_PATH,
+  _QUIC_PTR_PKT_INFO,
+  _QUIC_PTR_DATA_LEN,
+  _QUIC_PTR_VEC,
+  normalizeCloseOptions,
+  quicIncomingStreamHook,
+  quicBytesWriterInternals,
+  quicEndpointInternals,
+  quicListenerInternals,
+  quicConnectionInternals,
+  quicStreamInternals,
+  getConnPointerSlot,
+  STREAM_DATA_FLAG_FIN,
+  TLS_ALERT_NO_APPLICATION_PROTOCOL,
+  NGTCP2_CRYPTO_TOKEN_MAGIC_RETRY2,
+  NGTCP2_CRYPTO_MAX_RETRY_TOKENLEN2,
+  NGTCP2_CRYPTO_MAX_REGULAR_TOKENLEN,
+  NGTCP2_STATELESS_RESET_TOKENLEN,
+  NGTCP2_MIN_STATELESS_RESET_RANDLEN,
+  NGTCP2_MIN_STATELESS_RESET_PACKETLEN,
+  STATELESS_RESET_RANDLEN,
+  DEFAULT_ADDRESS_LRU_SIZE,
+  DEFAULT_RETRY_RATE,
+  DEFAULT_RETRY_BURST,
+  DEFAULT_VERSION_NEGOTIATION_RATE,
+  DEFAULT_VERSION_NEGOTIATION_BURST,
+  DEFAULT_STATELESS_RESET_RATE,
+  DEFAULT_STATELESS_RESET_BURST,
+  DEFAULT_IMMEDIATE_CLOSE_RATE,
+  DEFAULT_IMMEDIATE_CLOSE_BURST,
+  DEFAULT_SESSION_CREATION_RATE,
+  DEFAULT_SESSION_CREATION_BURST,
+  DEFAULT_MAX_CONNECTIONS,
+  DEFAULT_MAX_CONNECTIONS_PER_REMOTE_ADDRESS,
+  DEFAULT_MAX_PENDING_DATAGRAMS,
+  DEFAULT_MAX_DATAGRAM_SEND_ATTEMPTS,
+  DEFAULT_DRAINING_PERIOD_MULTIPLIER,
+  DEFAULT_CONNECTION_MAX_PAYLOAD_SIZE,
+  NGTCP2_QLOG_WRITE_FLAG_FIN,
+  NGTCP2_ENCRYPTION_LEVEL_1RTT,
+  NGTCP2_MILLISECONDS,
+  NGTCP2_SECONDS,
+  DEFAULT_STREAM_IDLE_TIMEOUT,
+  ADDRESS_VALIDATION_TIMEOUT,
+  NGTCP2_NO_EXPIRY,
+  MIGRATION_KEEP_ALIVE_TIMEOUT,
+  MAX_RECEIVE_WINDOW,
+  INITIAL_MAX_STREAM_DATA,
+  INITIAL_MAX_DATA,
+  INITIAL_MAX_STREAMS_BIDI,
+  INITIAL_MAX_STREAMS_UNI,
+  ACTIVE_CONNECTION_ID_LIMIT,
+  MAX_IDLE_TIMEOUT,
+  HANDSHAKE_TIMEOUT,
+  RETRY_TOKEN_TIMEOUT,
+  REGULAR_TOKEN_TIMEOUT,
+  MIN_TOKEN_TIMEOUT,
+  MAX_RETRY_TOKEN_TIMEOUT,
+  MAX_REGULAR_TOKEN_TIMEOUT,
+  CONNECTION_DRAINING_TIMEOUT_MS,
+  MAX_REJECTED_INITIAL_CIDS,
+  MAX_WRITE_PACKETS_PER_DRAIN,
+  MAX_READ_PACKETS_PER_TURN,
+  MAX_BATCH_READ_PACKETS_PER_TURN,
+  NGTCP2_CONNECTION_REFUSED,
+  VERSION_NEGOTIATION_GREASE,
+  SOCKADDR_UNION_SIZE,
+  DEFAULT_ALPN_PROTOCOLS,
+  QUIC_TLS_CIPHER_SUITES,
+  _nativeConnections,
+  allocateQuicConnectionId,
+  allocateNativeUserDataId,
+  _nativeCallbackDepth,
+  _deferredNativeTasks,
+  _deferredNativeFlushScheduled,
+  inNativeCallback,
+  scheduleDeferredNativeTasks,
+  flushDeferredNativeTasks,
+  deferAfterNativeCallback,
+  publishQuicTopic,
+  runtimeDelay,
+  withNativeCallback,
+  quicAvailable,
+  quicResetStreamAtAvailable,
+  cryptoBackend,
+  transportEngine,
+  quicVersion,
+  realQuicRuntime,
+  RealQuicDatagramTransport,
+  normalizeSocketOptionInteger,
+  normalizeSocketOptions,
+  RealQuicDatagramTransportFactory,
+  realQuicDatagramTransportFactory,
+  requireQuic,
+  AsyncQueue,
+  ByteQueue,
+  QuicBytesReader,
+  QuicBytesWriter,
+  normalizeAddress,
+  addressKey,
+  sameAddress,
+  decodeHexDatagram,
+  decodeBase64Datagram,
+  normalizeDatagramSource,
+  normalizeVersions,
+  normalizeTlsCipherSuites,
+  normalizeTlsGroups,
+  normalizeRetry,
+  normalizeDatagrams,
+  quicVarintLength,
+  maxDatagramPayload,
+  normalizePreferredAddress,
+  normalizeMigration,
+  normalizeQlog,
+  normalizeKeylog,
+  normalizeRateLimit,
+  normalizeLimit,
+  normalizeTimeoutMs,
+  normalizeDurationMs,
+  normalizeInteger,
+  normalizeClampedInteger,
+  normalizeTransportVarint,
+  normalizeConnection,
+  clampBigint,
+  nsToMs,
+  normalizeAddressSet,
+  normalizeTransport,
+  resolveQuicOptions,
+  freezeRateLimitSnapshot,
+  freezeTransportSnapshot,
+  freezeConnectionSnapshot,
+  versionToWire,
+  wireVersionToName,
+  selectWireVersion,
+  selectClientInitialWireVersion,
+  longHeaderVersion,
+  sessionStoreKey,
+  now,
+  QuicTokenBucket,
+  QuicAddressValidationCache,
+  writeU64,
+  writeI64,
+  writeU32,
+  writeU8,
+  readU64,
+  readI64,
+  readU32,
+  ptrAddress,
+  writePtr,
+  writePtrIfPresent,
+  writeAddress,
+  _compatibleVersionLists,
+  compatibleVersionList,
+  ptrField,
+  copyFromPtr,
+  _HEX_BYTE,
+  cidKey,
+  makeCid,
+  randomBytes,
+  randomCid,
+  generateStatelessResetToken,
+  generateRegularToken,
+  verifyRegularToken,
+  isRetryToken,
+  cidBytes,
+  cidFromPacketHeader,
+  readPacketVarint,
+  parseInitialTokenHeader,
+  packetHeaderFromParsedInitial,
+  makePath,
+  makePathFromSockaddrs,
+  makeOutputPath,
+  remoteAddressFromPath,
+  localAddressFromPath,
+  fdFromPath,
+  fdFromNativePath,
+  pathSnapshotFromNative,
+  pathFromSnapshot,
+  pathSnapshotsDiffer,
+  pathValidationResultName,
+  preferredAddressFromNative,
+  cidFromTransportParams,
+  transportParameterSnapshot,
+  writeNativePathAddress,
+  writeNativePathUserData,
+  makePacketInfo,
+  packetInfoEcn,
+  qlogOutputPath,
+  writeAllFd,
+  appendKeylogLine,
+  createServerTlsContext,
+  _qlogWriteCallback,
+  qlogWriteCallbackPointer,
+  congestionControlValue,
+  makeSettings,
+  makeTransportParams,
+  readUserDataId,
+  connectionFromUserData,
+  _callbackTable,
+  _callbackRefs,
+  ensureCallbackTable,
+  getConnRefPointer,
+  __inspectQuicCallbackTable,
+  __inspectQuicRuntimeTuning,
+  ngtcp2Error,
+  QuicConnectionEvent,
+  QuicStreamEvent,
+  QuicStreamBlockedEvent,
+  QuicStreamResetEvent,
+  QuicDatagramEvent,
+  QuicDatagramStatusEvent,
+  QuicNewTokenEvent,
+  QuicEarlyDataEvent,
+  QuicStopSendingEvent,
+  QuicPathValidationEvent,
+  QuicErrorEvent,
+  QuicVersionNegotiationError,
+  CidRoutingTable,
+  QuicEndpoint,
+  registerQuicListenerClass,
+  registerQuicConnectionClass,
+} = core;
 import { QuicStream } from './stream.ts';
 import type { QuicListener } from './listener.ts';
 export type PendingWrite = {
@@ -47,31 +505,31 @@ export type OutstandingStreamData = {
   data: Uint8Array;
 };
 /**
-* A single QUIC connection and the streams multiplexed inside it.
-*
-* Created by `QuicEndpoint.connect()` (client) or accepted on the server side;
-* never constructed directly. It wraps one ngtcp2 connection and exposes its
-* handshake state, negotiated parameters, streams, unreliable DATAGRAMs,
-* migration, key updates, and close. It extends `EventTarget` and emits
-* `'stream'`, `'datagram'`, `'datagramack'`/`'datagramlost'`/
-* `'datagramabandoned'`, `'newtoken'`, `'earlydata'`, `'keyupdate'`,
-* `'pathvalidation'`, `'error'`, and `'close'`.
-*
-* Open application streams with `openBidirectionalStream()` /
-* `openUnidirectionalStream()` and accept peer streams with `acceptStream()`
-* (or the `'stream'` event). Both open methods await stream-limit credit when
-* the peer's stream budget is exhausted. `close()` starts a graceful close that
-* flushes pending stream data; `destroy()` tears the connection down at once.
-*
-* ```ts no_run
-* const conn = await endpoint.connect({ address });
-* const stream = await conn.openBidirectionalStream();
-* await stream.writer.write(new TextEncoder().encode('GET /'));
-* await stream.writer.close();
-* for await (const chunk of stream.readable) process(chunk);
-* await conn.close();
-* ```
-*/
+ * A single QUIC connection and the streams multiplexed inside it.
+ *
+ * Created by `QuicEndpoint.connect()` (client) or accepted on the server side;
+ * never constructed directly. It wraps one ngtcp2 connection and exposes its
+ * handshake state, negotiated parameters, streams, unreliable DATAGRAMs,
+ * migration, key updates, and close. It extends `EventTarget` and emits
+ * `'stream'`, `'datagram'`, `'datagramack'`/`'datagramlost'`/
+ * `'datagramabandoned'`, `'newtoken'`, `'earlydata'`, `'keyupdate'`,
+ * `'pathvalidation'`, `'error'`, and `'close'`.
+ *
+ * Open application streams with `openBidirectionalStream()` /
+ * `openUnidirectionalStream()` and accept peer streams with `acceptStream()`
+ * (or the `'stream'` event). Both open methods await stream-limit credit when
+ * the peer's stream budget is exhausted. `close()` starts a graceful close that
+ * flushes pending stream data; `destroy()` tears the connection down at once.
+ *
+ * ```ts no_run
+ * const conn = await endpoint.connect({ address });
+ * const stream = await conn.openBidirectionalStream();
+ * await stream.writer.write(new TextEncoder().encode('GET /'));
+ * await stream.writer.close();
+ * for await (const chunk of stream.readable) process(chunk);
+ * await conn.close();
+ * ```
+ */
 export class QuicConnection extends EventTarget {
   /** Stable per-process identifier for this connection (for logging/routing). */
   readonly connectionId: string;
@@ -110,7 +568,10 @@ export class QuicConnection extends EventTarget {
   #localSockaddr: ArrayBuffer;
   #remoteSockaddr: ArrayBuffer;
   #ptrArena = new ArrayBuffer(_PTR_SIZE * 8);
-  #ptrSlots = Array.from({ length: 8 }, (_, i) => new Uint8Array(this.#ptrArena, i * _PTR_SIZE, _PTR_SIZE));
+  #ptrSlots = Array.from(
+    { length: 8 },
+    (_, i) => new Uint8Array(this.#ptrArena, i * _PTR_SIZE, _PTR_SIZE),
+  );
   #pathCache = new Map<string, NativePath>();
   #streamQueue = new AsyncQueue<QuicStream>('QUIC connection is closed');
   #incomingStreamHook: ((stream: QuicStream) => void) | null = null;
@@ -125,7 +586,7 @@ export class QuicConnection extends EventTarget {
   #writePacketScratchSize = 0;
   #localStreamCreditWaiters = {
     bidirectional: [] as QueueResolver<void>[],
-    unidirectional: [] as QueueResolver<void>[]
+    unidirectional: [] as QueueResolver<void>[],
   };
   #nextStreamOffsets = new Map<number, number>();
   #outstandingStreamData: OutstandingStreamData[] = [];
@@ -208,7 +669,7 @@ export class QuicConnection extends EventTarget {
   #deferredConnectionReceiveCredit = 0;
   #deferredMaxStreamsCredit = {
     bidirectional: 0,
-    unidirectional: 0
+    unidirectional: 0,
   };
   #maxStreamsCreditFlushScheduled = false;
   #stats = {
@@ -248,9 +709,22 @@ export class QuicConnection extends EventTarget {
     packetsDiscarded: 0,
     streamsIdleTimedOut: 0,
     qlogOpenFailed: 0,
-    qlogWriteFailed: 0
+    qlogWriteFailed: 0,
   };
-  constructor(role: 'client' | 'server', endpoint: QuicEndpoint, listener: QuicListener | null, localAddress: QuicAddress, remoteAddress: QuicAddress, alpnProtocols: string[], transport: QuicDatagramTransport, ctx: QuicTlsContext | null, tls: QuicTlsSession, originalDcid: ArrayBuffer | null, options: ResolvedQuicOptions, serverName: string | null = null) {
+  constructor(
+    role: 'client' | 'server',
+    endpoint: QuicEndpoint,
+    listener: QuicListener | null,
+    localAddress: QuicAddress,
+    remoteAddress: QuicAddress,
+    alpnProtocols: string[],
+    transport: QuicDatagramTransport,
+    ctx: QuicTlsContext | null,
+    tls: QuicTlsSession,
+    originalDcid: ArrayBuffer | null,
+    options: ResolvedQuicOptions,
+    serverName: string | null = null,
+  ) {
     super();
     this.#role = role;
     this.#endpoint = endpoint;
@@ -263,7 +737,8 @@ export class QuicConnection extends EventTarget {
     this.#fd = transport.id;
     this.#ctx = ctx;
     this.#tls = tls;
-    this.#requireClientCertificate = role === 'server' && listener?.[quicListenerInternals.ctx].clientAuth === 'require';
+    this.#requireClientCertificate =
+      role === 'server' && listener?.[quicListenerInternals.ctx].clientAuth === 'require';
     this.#serverName = serverName;
     this.#originalDcid = originalDcid;
     this.#options = options;
@@ -278,7 +753,11 @@ export class QuicConnection extends EventTarget {
     _nativeConnections.set(id, this);
     this.#materializeInitialQlog();
   }
-  #retainPath(localAddress: QuicAddress, remoteAddress: QuicAddress, fd: number = this.#fd): NativePath {
+  #retainPath(
+    localAddress: QuicAddress,
+    remoteAddress: QuicAddress,
+    fd: number = this.#fd,
+  ): NativePath {
     const key = `${addressKey(localAddress)}>${addressKey(remoteAddress)}@${fd}`;
     let path = this.#pathCache.get(key);
     if (path === undefined) {
@@ -287,12 +766,24 @@ export class QuicConnection extends EventTarget {
     }
     return path;
   }
-  #retainPathFromMetadata(localAddress: QuicAddress, remoteAddress: QuicAddress, fd: number, metadata: QuicDatagramPathMetadata | undefined): NativePath {
+  #retainPathFromMetadata(
+    localAddress: QuicAddress,
+    remoteAddress: QuicAddress,
+    fd: number,
+    metadata: QuicDatagramPathMetadata | undefined,
+  ): NativePath {
     if (metadata === undefined) return this.#retainPath(localAddress, remoteAddress, fd);
     const key = `${addressKey(localAddress)}>${addressKey(remoteAddress)}@${fd}`;
     let path = this.#pathCache.get(key);
     if (path === undefined) {
-      path = makePathFromSockaddrs(metadata.localSockaddr, metadata.localSockaddrLen, metadata.remoteSockaddr, metadata.remoteSockaddrLen, fd) ?? makePath(localAddress, remoteAddress, fd);
+      path =
+        makePathFromSockaddrs(
+          metadata.localSockaddr,
+          metadata.localSockaddrLen,
+          metadata.remoteSockaddr,
+          metadata.remoteSockaddrLen,
+          fd,
+        ) ?? makePath(localAddress, remoteAddress, fd);
       this.#pathCache.set(key, path);
     }
     return path;
@@ -317,10 +808,10 @@ export class QuicConnection extends EventTarget {
     deferAfterNativeCallback(() => this.dispatchEvent(event));
   }
   /**
-  * Raw ngtcp2 connection pointer, for native callers that drive ngtcp2 directly.
-  *
-  * @internal
-  */
+   * Raw ngtcp2 connection pointer, for native callers that drive ngtcp2 directly.
+   *
+   * @internal
+   */
   get nativeHandle(): ArrayBuffer {
     return this.#conn;
   }
@@ -333,11 +824,11 @@ export class QuicConnection extends EventTarget {
     return this.#state === 'connected';
   }
   /**
-  * Negotiated QUIC version for this connection.
-  *
-  * Returns `v1` or `v2`. Before ngtcp2 reports a negotiated value, this falls
-  * back to the local version used to construct the native connection.
-  */
+   * Negotiated QUIC version for this connection.
+   *
+   * Returns `v1` or `v2`. Before ngtcp2 reports a negotiated value, this falls
+   * back to the local version used to construct the native connection.
+   */
   get version(): QuicVersion {
     if (ptrAddress(this.#conn) !== 0n) {
       const negotiated = ngtcp2Sym!.ngtcp2_conn_get_negotiated_version(this.#conn) as number;
@@ -370,16 +861,16 @@ export class QuicConnection extends EventTarget {
     return this.#peerVerification === null ? null : { ...this.#peerVerification };
   }
   /**
-  * Export TLS keying material (RFC 5705 exporter) from the connection.
-  *
-  * Derives `length` bytes bound to this connection's TLS secrets under the
-  * given `label` and context — useful for channel binding or deriving
-  * application keys. Throws if the connection is not yet connected.
-  *
-  * ```ts no_run
-  * const key = conn.exportKeyingMaterial('EXPORTER-my-app', new Uint8Array(), 32);
-  * ```
-  */
+   * Export TLS keying material (RFC 5705 exporter) from the connection.
+   *
+   * Derives `length` bytes bound to this connection's TLS secrets under the
+   * given `label` and context — useful for channel binding or deriving
+   * application keys. Throws if the connection is not yet connected.
+   *
+   * ```ts no_run
+   * const key = conn.exportKeyingMaterial('EXPORTER-my-app', new Uint8Array(), 32);
+   * ```
+   */
   exportKeyingMaterial(label: string, context: Uint8Array, length: number): ArrayBuffer {
     if (this.#state !== 'connected') throw new Error('QUIC connection is not connected');
     return exportTlsKeyingMaterial(this.#tls, label, context, length);
@@ -390,18 +881,32 @@ export class QuicConnection extends EventTarget {
   /** Decoded transport parameters this side advertised, or `null` before setup. */
   get localTransportParameters(): QuicTransportParameterSnapshot | null {
     if (ptrAddress(this.#conn) === 0n) return null;
-    return this.#withInitialSourceConnectionId(transportParameterSnapshot(ngtcp2Sym!.ngtcp2_conn_get_local_transport_params(this.#conn) as ArrayBuffer | null), this.#localInitialScid);
+    return this.#withInitialSourceConnectionId(
+      transportParameterSnapshot(
+        ngtcp2Sym!.ngtcp2_conn_get_local_transport_params(this.#conn) as ArrayBuffer | null,
+      ),
+      this.#localInitialScid,
+    );
   }
   /** Decoded transport parameters the peer advertised, or `null` before they arrive. */
   get remoteTransportParameters(): QuicTransportParameterSnapshot | null {
     if (ptrAddress(this.#conn) === 0n) return null;
-    return this.#withInitialSourceConnectionId(transportParameterSnapshot(ngtcp2Sym!.ngtcp2_conn_get_remote_transport_params(this.#conn) as ArrayBuffer | null), this.#remoteInitialScid);
+    return this.#withInitialSourceConnectionId(
+      transportParameterSnapshot(
+        ngtcp2Sym!.ngtcp2_conn_get_remote_transport_params(this.#conn) as ArrayBuffer | null,
+      ),
+      this.#remoteInitialScid,
+    );
   }
-  #withInitialSourceConnectionId(snapshot: QuicTransportParameterSnapshot | null, cid: ArrayBuffer | null): QuicTransportParameterSnapshot | null {
-    if (snapshot === null || snapshot.initialSourceConnectionId !== null || cid === null) return snapshot;
+  #withInitialSourceConnectionId(
+    snapshot: QuicTransportParameterSnapshot | null,
+    cid: ArrayBuffer | null,
+  ): QuicTransportParameterSnapshot | null {
+    if (snapshot === null || snapshot.initialSourceConnectionId !== null || cid === null)
+      return snapshot;
     return Object.freeze({
       ...snapshot,
-      initialSourceConnectionId: cidBytes(cid)
+      initialSourceConnectionId: cidBytes(cid),
     });
   }
   /** Frozen snapshot of this connection's counters and live recovery metrics. */
@@ -411,13 +916,17 @@ export class QuicConnection extends EventTarget {
     return Object.freeze({
       ...this.#stats,
       pendingWriteBytes: send.pendingWriteBytes,
-      outstandingStreamBytes: send.outstandingStreamBytes
+      outstandingStreamBytes: send.outstandingStreamBytes,
     });
   }
   #refreshNativeDataStats(): void {
     if (this.#closed || ptrAddress(this.#conn) === 0n) return;
     const info = new ArrayBuffer(NGTCP2_CONN_INFO_SIZE);
-    ngtcp2Sym!.ngtcp2_conn_get_conn_info_versioned(this.#conn, NGTCP2_CONN_INFO_VERSION, Pointer.of(info));
+    ngtcp2Sym!.ngtcp2_conn_get_conn_info_versioned(
+      this.#conn,
+      NGTCP2_CONN_INFO_VERSION,
+      Pointer.of(info),
+    );
     const bytesInFlight = Number(readU64(info, CONN_INFO_BYTES_IN_FLIGHT));
     this.#stats.bytesInFlight = bytesInFlight;
     this.#stats.maxBytesInFlight = Math.max(this.#stats.maxBytesInFlight, bytesInFlight);
@@ -427,10 +936,22 @@ export class QuicConnection extends EventTarget {
     this.#stats.rttVarianceMs = nsToMs(readU64(info, CONN_INFO_RTTVAR));
     this.#stats.smoothedRttMs = nsToMs(readU64(info, CONN_INFO_SMOOTHED_RTT));
     this.#stats.slowStartThreshold = Number(readU64(info, CONN_INFO_SSTHRESH));
-    this.#stats.packetsSent = Math.max(this.#stats.packetsSent, Number(readU64(info, CONN_INFO_PKT_SENT)));
-    this.#stats.bytesSent = Math.max(this.#stats.bytesSent, Number(readU64(info, CONN_INFO_BYTES_SENT)));
-    this.#stats.packetsReceived = Math.max(this.#stats.packetsReceived, Number(readU64(info, CONN_INFO_PKT_RECV)));
-    this.#stats.bytesReceived = Math.max(this.#stats.bytesReceived, Number(readU64(info, CONN_INFO_BYTES_RECV)));
+    this.#stats.packetsSent = Math.max(
+      this.#stats.packetsSent,
+      Number(readU64(info, CONN_INFO_PKT_SENT)),
+    );
+    this.#stats.bytesSent = Math.max(
+      this.#stats.bytesSent,
+      Number(readU64(info, CONN_INFO_BYTES_SENT)),
+    );
+    this.#stats.packetsReceived = Math.max(
+      this.#stats.packetsReceived,
+      Number(readU64(info, CONN_INFO_PKT_RECV)),
+    );
+    this.#stats.bytesReceived = Math.max(
+      this.#stats.bytesReceived,
+      Number(readU64(info, CONN_INFO_BYTES_RECV)),
+    );
     this.#stats.packetsLost = Number(readU64(info, CONN_INFO_PKT_LOST));
     this.#stats.bytesLost = Number(readU64(info, CONN_INFO_BYTES_LOST));
     this.#stats.pingReceived = Number(readU64(info, CONN_INFO_PING_RECV));
@@ -449,20 +970,28 @@ export class QuicConnection extends EventTarget {
     return this.#drainingRetentionMs;
   }
   [quicConnectionInternals.canReceiveWithoutDecodedAddress](): boolean {
-    return this.#state !== 'connecting' && !this.#options.migration.enabled && this.#options.migration.preferredAddress === undefined && this.#activePathValidations.length === 0;
+    return (
+      this.#state !== 'connecting' &&
+      !this.#options.migration.enabled &&
+      this.#options.migration.preferredAddress === undefined &&
+      this.#activePathValidations.length === 0
+    );
   }
-  [quicConnectionInternals.matchesServerConnection](listener?: QuicListener, remoteAddress?: QuicAddress): boolean {
+  [quicConnectionInternals.matchesServerConnection](
+    listener?: QuicListener,
+    remoteAddress?: QuicAddress,
+  ): boolean {
     if (this.#closed || this.#role !== 'server') return false;
     if (listener !== undefined && this.#listener !== listener) return false;
     if (remoteAddress !== undefined && this.remoteAddress.ip !== remoteAddress.ip) return false;
     return true;
   }
   /**
-  * Readable stream of received QUIC DATAGRAM payloads.
-  *
-  * The stream is available only when DATAGRAM support was enabled and
-  * negotiated. Payloads are unreliable and unordered by protocol design.
-  */
+   * Readable stream of received QUIC DATAGRAM payloads.
+   *
+   * The stream is available only when DATAGRAM support was enabled and
+   * negotiated. Payloads are unreliable and unordered by protocol design.
+   */
   get datagrams(): ReadableStream<Uint8Array> {
     if (this.#datagramReadable !== null) return this.#datagramReadable;
     this.#datagramReadable = new ReadableStream<Uint8Array>({
@@ -471,7 +1000,7 @@ export class QuicConnection extends EventTarget {
         if (chunk === null) controller.close();
         else controller.enqueue(chunk);
       },
-      cancel: () => this.#datagramQueue.close()
+      cancel: () => this.#datagramQueue.close(),
     });
     return this.#datagramReadable;
   }
@@ -480,10 +1009,10 @@ export class QuicConnection extends EventTarget {
     return this.datagrams;
   }
   /**
-  * Return the most recent received DATAGRAM event payload for tests.
-  *
-  * @internal
-  */
+   * Return the most recent received DATAGRAM event payload for tests.
+   *
+   * @internal
+   */
   [quicConnectionInternals.inspectLastDatagramEvent](): {
     data: Uint8Array;
     earlyData: boolean;
@@ -491,14 +1020,14 @@ export class QuicConnection extends EventTarget {
     if (this.#lastDatagramEvent === null) return null;
     return {
       data: this.#lastDatagramEvent.data.slice(),
-      earlyData: this.#lastDatagramEvent.earlyData
+      earlyData: this.#lastDatagramEvent.earlyData,
     };
   }
   /**
-  * Return native send-queue state for flow-control conformance tests.
-  *
-  * @internal
-  */
+   * Return native send-queue state for flow-control conformance tests.
+   *
+   * @internal
+   */
   [quicConnectionInternals.inspectSendState](): {
     pendingWriteCount: number;
     pendingWriteBytes: number;
@@ -515,32 +1044,35 @@ export class QuicConnection extends EventTarget {
     return {
       pendingWriteCount: this.#pendingWrites.length,
       pendingWriteBytes,
-      outstandingStreamBytes
+      outstandingStreamBytes,
     };
   }
   /**
-  * Send a transport CONNECTION_CLOSE frame to the peer.
-  *
-  * @internal
-  */
-  [quicConnectionInternals.injectTransportCloseForTest](liberr = NGTCP2_ERR_STREAM_DATA_BLOCKED): void {
-    if (this.#closed || this.#state !== 'connected') throw new Error('QUIC connection is not connected');
+   * Send a transport CONNECTION_CLOSE frame to the peer.
+   *
+   * @internal
+   */
+  [quicConnectionInternals.injectTransportCloseForTest](
+    liberr = NGTCP2_ERR_STREAM_DATA_BLOCKED,
+  ): void {
+    if (this.#closed || this.#state !== 'connected')
+      throw new Error('QUIC connection is not connected');
     this.#writeConnectionClose(liberr, this.remoteAddress);
   }
   /**
-  * Wait for and return the next stream the peer opens on this connection.
-  *
-  * Resolves in FIFO order as peer-initiated streams arrive; an alternative to
-  * the `'stream'` event. The promise rejects if the connection closes while
-  * waiting.
-  *
-  * ```ts no_run
-  * for (;;) {
-  *   const stream = await conn.acceptStream();
-  *   serve(stream);
-  * }
-  * ```
-  */
+   * Wait for and return the next stream the peer opens on this connection.
+   *
+   * Resolves in FIFO order as peer-initiated streams arrive; an alternative to
+   * the `'stream'` event. The promise rejects if the connection closes while
+   * waiting.
+   *
+   * ```ts no_run
+   * for (;;) {
+   *   const stream = await conn.acceptStream();
+   *   serve(stream);
+   * }
+   * ```
+   */
   acceptStream(): Promise<QuicStream> {
     return this.#streamQueue.shift();
   }
@@ -570,65 +1102,73 @@ export class QuicConnection extends EventTarget {
     return stream;
   }
   /**
-  * Open a locally initiated bidirectional stream, awaiting credit if needed.
-  *
-  * If the peer's bidirectional stream limit is currently exhausted, the promise
-  * waits until the peer extends stream credit and then opens the stream, rather
-  * than failing. Rejects if the connection is closing or not connected, or if
-  * ngtcp2 reports a non-recoverable open error.
-  *
-  * ```ts no_run
-  * const stream = await conn.openBidirectionalStream();
-  * await stream.writer.write(payload);
-  * ```
-  */
+   * Open a locally initiated bidirectional stream, awaiting credit if needed.
+   *
+   * If the peer's bidirectional stream limit is currently exhausted, the promise
+   * waits until the peer extends stream credit and then opens the stream, rather
+   * than failing. Rejects if the connection is closing or not connected, or if
+   * ngtcp2 reports a non-recoverable open error.
+   *
+   * ```ts no_run
+   * const stream = await conn.openBidirectionalStream();
+   * await stream.writer.write(payload);
+   * ```
+   */
   async openBidirectionalStream(): Promise<QuicStream> {
-    if (this.#gracefulClosing || this.#gracefullyClosed) throw new Error('QUIC connection is closing');
+    if (this.#gracefulClosing || this.#gracefullyClosed)
+      throw new Error('QUIC connection is closing');
     if (!this.#canOpenApplicationStream()) throw new Error('QUIC connection is not connected');
     for (;;) {
       const stream = this.#tryOpenLocalStream('bidirectional');
       if (typeof stream !== 'number') {
         return stream;
       }
-      if (stream !== NGTCP2_ERR_STREAM_ID_BLOCKED) throw ngtcp2Error(stream, 'ngtcp2_conn_open_bidi_stream');
+      if (stream !== NGTCP2_ERR_STREAM_ID_BLOCKED)
+        throw ngtcp2Error(stream, 'ngtcp2_conn_open_bidi_stream');
       await this.#waitForLocalStreamCredit('bidirectional');
     }
   }
   [quicConnectionInternals.openUnidirectionalStreamSync](): QuicStream {
-    if (this.#gracefulClosing || this.#gracefullyClosed) throw new Error('QUIC connection is closing');
+    if (this.#gracefulClosing || this.#gracefullyClosed)
+      throw new Error('QUIC connection is closing');
     if (!this.#canOpenApplicationStream()) throw new Error('QUIC connection is not connected');
     const stream = this.#tryOpenLocalStream('unidirectional');
     if (typeof stream === 'number') throw ngtcp2Error(stream, 'ngtcp2_conn_open_uni_stream');
     return stream;
   }
   /**
-  * Open a locally initiated send-only (unidirectional) stream.
-  *
-  * Behaves like `openBidirectionalStream()` but produces a stream whose
-  * readable side is closed — only `writer` is usable. Awaits unidirectional
-  * stream credit when the peer's limit is exhausted.
-  *
-  * ```ts no_run
-  * const stream = await conn.openUnidirectionalStream();
-  * await stream.writer.write(payload);
-  * await stream.writer.close();
-  * ```
-  */
+   * Open a locally initiated send-only (unidirectional) stream.
+   *
+   * Behaves like `openBidirectionalStream()` but produces a stream whose
+   * readable side is closed — only `writer` is usable. Awaits unidirectional
+   * stream credit when the peer's limit is exhausted.
+   *
+   * ```ts no_run
+   * const stream = await conn.openUnidirectionalStream();
+   * await stream.writer.write(payload);
+   * await stream.writer.close();
+   * ```
+   */
   async openUnidirectionalStream(): Promise<QuicStream> {
-    if (this.#gracefulClosing || this.#gracefullyClosed) throw new Error('QUIC connection is closing');
+    if (this.#gracefulClosing || this.#gracefullyClosed)
+      throw new Error('QUIC connection is closing');
     if (!this.#canOpenApplicationStream()) throw new Error('QUIC connection is not connected');
     for (;;) {
       const stream = this.#tryOpenLocalStream('unidirectional');
       if (typeof stream !== 'number') {
         return stream;
       }
-      if (stream !== NGTCP2_ERR_STREAM_ID_BLOCKED) throw ngtcp2Error(stream, 'ngtcp2_conn_open_uni_stream');
+      if (stream !== NGTCP2_ERR_STREAM_ID_BLOCKED)
+        throw ngtcp2Error(stream, 'ngtcp2_conn_open_uni_stream');
       await this.#waitForLocalStreamCredit('unidirectional');
     }
   }
   #tryOpenLocalStream(direction: 'bidirectional' | 'unidirectional'): QuicStream | number {
     const out = new ArrayBuffer(8);
-    const rc = direction === 'bidirectional' ? ngtcp2Sym!.ngtcp2_conn_open_bidi_stream(this.#conn, Pointer.of(out), null) as number : ngtcp2Sym!.ngtcp2_conn_open_uni_stream(this.#conn, Pointer.of(out), null) as number;
+    const rc =
+      direction === 'bidirectional'
+        ? (ngtcp2Sym!.ngtcp2_conn_open_bidi_stream(this.#conn, Pointer.of(out), null) as number)
+        : (ngtcp2Sym!.ngtcp2_conn_open_uni_stream(this.#conn, Pointer.of(out), null) as number);
     if (rc !== 0) return rc;
     const id = Number(readU64(out, 0));
     return this.#ensureStream(id, direction, false);
@@ -638,7 +1178,7 @@ export class QuicConnection extends EventTarget {
     return new Promise((resolve, reject) => {
       this.#localStreamCreditWaiters[direction].push({
         resolve,
-        reject
+        reject,
       });
     });
   }
@@ -650,11 +1190,11 @@ export class QuicConnection extends EventTarget {
     return (streamId & 2) !== 0;
   }
   /**
-  * Initiate a local QUIC key update.
-  *
-  * Throws if the connection is not connected or ngtcp2 reports that the update
-  * is not currently legal, for example before enough 1-RTT traffic has flowed.
-  */
+   * Initiate a local QUIC key update.
+   *
+   * Throws if the connection is not connected or ngtcp2 reports that the update
+   * is not currently legal, for example before enough 1-RTT traffic has flowed.
+   */
   initiateKeyUpdate(): void {
     if (this.#state !== 'connected') throw new Error('QUIC connection is not connected');
     const rc = ngtcp2Sym!.ngtcp2_conn_initiate_key_update(this.#conn, now(this.#runtime)) as number;
@@ -664,26 +1204,36 @@ export class QuicConnection extends EventTarget {
     this.#scheduleWriteDrain();
   }
   /**
-  * Actively migrate a client connection to a new local UDP address.
-  *
-  * This binds a new UDP socket, asks ngtcp2 to validate migration to the new
-  * path, and then keeps both sockets readable while validation completes.
-  */
+   * Actively migrate a client connection to a new local UDP address.
+   *
+   * This binds a new UDP socket, asks ngtcp2 to validate migration to the new
+   * path, and then keeps both sockets readable while validation completes.
+   */
   async migrate(address: QuicAddress): Promise<void> {
-    if (this.#role !== 'client') throw new Error('QUIC active migration is only available on client connections');
+    if (this.#role !== 'client')
+      throw new Error('QUIC active migration is only available on client connections');
     if (this.#state !== 'connected') throw new Error('QUIC connection is not connected');
-    if (!this.#options.migration.enabled) throw new Error('QUIC migration is not enabled for this connection');
+    if (!this.#options.migration.enabled)
+      throw new Error('QUIC migration is not enabled for this connection');
     await this.#waitHandshakeConfirmed();
     const requested = normalizeAddress(address);
     if (requested.family !== this.remoteAddress.family) {
-      throw new TypeError('QUIC migration local address family must match the remote address family');
+      throw new TypeError(
+        'QUIC migration local address family must match the remote address family',
+      );
     }
-    const transport = await this.#endpoint[quicEndpointInternals.bindTransport](requested, { ecn: this.#options.transport.ecn });
+    const transport = await this.#endpoint[quicEndpointInternals.bindTransport](requested, {
+      ecn: this.#options.transport.ecn,
+    });
     let adopted = false;
     try {
       const local = transport.address;
       const path = this.#retainPath(local, this.remoteAddress, transport.id);
-      const rc = ngtcp2Sym!.ngtcp2_conn_initiate_migration(this.#conn, Pointer.of(path.path), now(this.#runtime)) as number;
+      const rc = ngtcp2Sym!.ngtcp2_conn_initiate_migration(
+        this.#conn,
+        Pointer.of(path.path),
+        now(this.#runtime),
+      ) as number;
       if (rc !== 0) throw ngtcp2Error(rc, 'ngtcp2_conn_initiate_migration');
       this[quicConnectionInternals.startSocketLoop](transport, local);
       adopted = true;
@@ -697,17 +1247,21 @@ export class QuicConnection extends EventTarget {
     }
   }
   /**
-  * Send one unreliable QUIC DATAGRAM payload.
-  *
-  * Rejects for local validation failures such as disabled DATAGRAM support,
-  * disconnected state, oversized payloads, or missing peer DATAGRAM
-  * negotiation. Zero-length payloads are valid RFC 9221 DATAGRAM frames.
-  * Transient send pressure is handled by the local
-  * queue; queued DATAGRAMs later surface `datagramack`, `datagramlost`, or
-  * `datagramabandoned` events.
-  */
-  async sendDatagram(data: QuicDatagramSource, encoding: QuicDatagramEncoding = 'utf8'): Promise<number> {
-    if (this.#gracefulClosing || this.#gracefullyClosed) throw new Error('QUIC connection is closing');
+   * Send one unreliable QUIC DATAGRAM payload.
+   *
+   * Rejects for local validation failures such as disabled DATAGRAM support,
+   * disconnected state, oversized payloads, or missing peer DATAGRAM
+   * negotiation. Zero-length payloads are valid RFC 9221 DATAGRAM frames.
+   * Transient send pressure is handled by the local
+   * queue; queued DATAGRAMs later surface `datagramack`, `datagramlost`, or
+   * `datagramabandoned` events.
+   */
+  async sendDatagram(
+    data: QuicDatagramSource,
+    encoding: QuicDatagramEncoding = 'utf8',
+  ): Promise<number> {
+    if (this.#gracefulClosing || this.#gracefullyClosed)
+      throw new Error('QUIC connection is closing');
     const payload = normalizeDatagramSource(await data, encoding);
     const earlyData = this.#state !== 'connected';
     if (earlyData) {
@@ -715,9 +1269,12 @@ export class QuicConnection extends EventTarget {
         throw new Error('QUIC connection is not connected');
       }
     }
-    if (!this.#options.datagrams.enabled) throw new Error('QUIC DATAGRAM is not enabled for this connection');
+    if (!this.#options.datagrams.enabled)
+      throw new Error('QUIC DATAGRAM is not enabled for this connection');
     if (payload.byteLength > this.#options.datagrams.maxFrameSize) {
-      throw new RangeError(`QUIC DATAGRAM size ${payload.byteLength} exceeds maxFrameSize ${this.#options.datagrams.maxFrameSize}`);
+      throw new RangeError(
+        `QUIC DATAGRAM size ${payload.byteLength} exceeds maxFrameSize ${this.#options.datagrams.maxFrameSize}`,
+      );
     }
     if (earlyData) this.#reserveEarlyDataBytes(payload.byteLength);
     if (earlyData) this.#startDeferredHandshake();
@@ -726,13 +1283,19 @@ export class QuicConnection extends EventTarget {
       throw new Error('peer did not negotiate QUIC DATAGRAM support');
     }
     if (payload.byteLength > peerMaxPayload) {
-      throw new RangeError(`QUIC DATAGRAM size ${payload.byteLength} exceeds peer maxDatagramPayload ${peerMaxPayload}`);
+      throw new RangeError(
+        `QUIC DATAGRAM size ${payload.byteLength} exceeds peer maxDatagramPayload ${peerMaxPayload}`,
+      );
     }
     const id = this.#nextDatagramId++;
-    if (this.#options.datagrams.maxPending > 0 && this.#pendingDatagrams.length >= this.#options.datagrams.maxPending) {
+    if (
+      this.#options.datagrams.maxPending > 0 &&
+      this.#pendingDatagrams.length >= this.#options.datagrams.maxPending
+    ) {
       if (this.#options.datagrams.dropPolicy === 'drop-oldest') {
         const dropped = this.#pendingDatagrams.shift();
-        if (dropped !== undefined) this[quicConnectionInternals.onDatagramStatus](Number(dropped.id), 'abandoned');
+        if (dropped !== undefined)
+          this[quicConnectionInternals.onDatagramStatus](Number(dropped.id), 'abandoned');
       } else {
         this[quicConnectionInternals.onDatagramStatus](Number(id), 'abandoned');
         return Number(id);
@@ -745,13 +1308,18 @@ export class QuicConnection extends EventTarget {
       id,
       data: copy,
       attempts: 0,
-      earlyData
+      earlyData,
     });
     this.#startDeferredHandshake();
     this.#scheduleWriteDrain();
     return Number(id);
   }
-  #writePendingDatagram(outPath: NativePath, out: Uint8Array, ts: bigint, pktInfo: ArrayBuffer | null): number {
+  #writePendingDatagram(
+    outPath: NativePath,
+    out: Uint8Array,
+    ts: bigint,
+    pktInfo: ArrayBuffer | null,
+  ): number {
     for (;;) {
       const pending = this.#pendingDatagrams[0];
       if (pending === undefined) return 0;
@@ -761,7 +1329,22 @@ export class QuicConnection extends EventTarget {
         continue;
       }
       const accepted = new ArrayBuffer(4);
-      const n = Number(ngtcp2Sym!.ngtcp2_conn_write_datagram_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, pktInfo === null ? null : Pointer.of(pktInfo), out, out.byteLength, Pointer.of(accepted), NGTCP2_WRITE_DATAGRAM_FLAG_NONE, pending.id, pending.data, pending.data.byteLength, ts));
+      const n = Number(
+        ngtcp2Sym!.ngtcp2_conn_write_datagram_versioned(
+          this.#conn,
+          Pointer.of(outPath.path),
+          NGTCP2_PKT_INFO_VERSION,
+          pktInfo === null ? null : Pointer.of(pktInfo),
+          out,
+          out.byteLength,
+          Pointer.of(accepted),
+          NGTCP2_WRITE_DATAGRAM_FLAG_NONE,
+          pending.id,
+          pending.data,
+          pending.data.byteLength,
+          ts,
+        ),
+      );
       const acceptedDatagram = new DataView(accepted).getInt32(0, true) !== 0;
       if (acceptedDatagram) {
         this.#pendingDatagrams.shift();
@@ -770,7 +1353,7 @@ export class QuicConnection extends EventTarget {
           connection: this,
           id: Number(pending.id),
           length: pending.data.byteLength,
-          earlyData: pending.earlyData
+          earlyData: pending.earlyData,
         });
       }
       if (n === 0) {
@@ -794,19 +1377,42 @@ export class QuicConnection extends EventTarget {
   #hasPendingDatagrams(): boolean {
     return this.#pendingDatagrams.length > 0;
   }
-  #nextDatagramOnlyPacket(outPath: NativePath, out: Uint8Array, ts: bigint, pktInfo: ArrayBuffer | null): number {
+  #nextDatagramOnlyPacket(
+    outPath: NativePath,
+    out: Uint8Array,
+    ts: bigint,
+    pktInfo: ArrayBuffer | null,
+  ): number {
     const n = this.#writePendingDatagram(outPath, out, ts, pktInfo);
     if (n !== 0 || !this.#hasPendingDatagrams()) return n;
-    return Number(ngtcp2Sym!.ngtcp2_conn_write_pkt_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, pktInfo === null ? null : Pointer.of(pktInfo), out, out.byteLength, ts));
+    return Number(
+      ngtcp2Sym!.ngtcp2_conn_write_pkt_versioned(
+        this.#conn,
+        Pointer.of(outPath.path),
+        NGTCP2_PKT_INFO_VERSION,
+        pktInfo === null ? null : Pointer.of(pktInfo),
+        out,
+        out.byteLength,
+        ts,
+      ),
+    );
   }
-  #queueWrittenPacket(batch: PendingSendPacket[], n: number, outPath: NativePath, fallbackRemoteAddress: QuicAddress, out: Uint8Array, ts: bigint, pktInfo: ArrayBuffer | null): void {
+  #queueWrittenPacket(
+    batch: PendingSendPacket[],
+    n: number,
+    outPath: NativePath,
+    fallbackRemoteAddress: QuicAddress,
+    out: Uint8Array,
+    ts: bigint,
+    pktInfo: ArrayBuffer | null,
+  ): void {
     if (n <= 0) return;
     const output = this.#outputFromPathForPacket(outPath, fallbackRemoteAddress);
     batch.push({
       fd: output.fd,
       data: out.subarray(0, n),
       remoteAddress: output.remoteAddress,
-      ecn: packetInfoEcn(pktInfo)
+      ecn: packetInfoEcn(pktInfo),
     });
     ngtcp2Sym!.ngtcp2_conn_update_pkt_tx_time(this.#conn, ts);
   }
@@ -817,24 +1423,26 @@ export class QuicConnection extends EventTarget {
     }
   }
   #peerMaxDatagramPayload(): number {
-    const params = ngtcp2Sym!.ngtcp2_conn_get_remote_transport_params(this.#conn) as ArrayBuffer | null;
+    const params = ngtcp2Sym!.ngtcp2_conn_get_remote_transport_params(
+      this.#conn,
+    ) as ArrayBuffer | null;
     if (params === null || ptrAddress(params) === 0n) return 0;
     const maxFrameSize = Number(Pointer.readU64(params, TP_MAX_DATAGRAM_FRAME_SIZE));
     return maxDatagramPayload(maxFrameSize);
   }
   /**
-  * Gracefully close the connection, flushing pending stream data first.
-  *
-  * Marks the connection closing, closes the writable side of local streams, and
-  * once outstanding data is acknowledged sends a CONNECTION_CLOSE with the given
-  * `QuicCloseOptions`. The returned promise resolves when the connection has
-  * fully closed. Idempotent — repeat calls return the in-flight close promise.
-  * Use `destroy()` to close immediately without draining.
-  *
-  * ```ts no_run
-  * await conn.close({ errorCode: 0, reason: 'done' });
-  * ```
-  */
+   * Gracefully close the connection, flushing pending stream data first.
+   *
+   * Marks the connection closing, closes the writable side of local streams, and
+   * once outstanding data is acknowledged sends a CONNECTION_CLOSE with the given
+   * `QuicCloseOptions`. The returned promise resolves when the connection has
+   * fully closed. Idempotent — repeat calls return the in-flight close promise.
+   * Use `destroy()` to close immediately without draining.
+   *
+   * ```ts no_run
+   * await conn.close({ errorCode: 0, reason: 'done' });
+   * ```
+   */
   async close(options: QuicCloseOptions = {}): Promise<void> {
     const closeOptions = normalizeCloseOptions(options);
     if (this.#closed || this.#state === 'closed') return this.#closedPromise;
@@ -848,7 +1456,7 @@ export class QuicConnection extends EventTarget {
       connection: this,
       errorCode: closeOptions.errorCode,
       reason: closeOptions.reason,
-      graceful: true
+      graceful: true,
     });
     this.#state = 'closing';
     if (this.#stats.closingAt === null) this.#stats.closingAt = Date.now();
@@ -857,42 +1465,49 @@ export class QuicConnection extends EventTarget {
     return this.#gracefulClosePromise;
   }
   /**
-  * Immediately tear down the connection.
-  *
-  * Sends a CONNECTION_CLOSE where possible and transitions straight to closed
-  * without waiting for streams to drain. When `error` is given it is attached
-  * as the connection's close cause and surfaces on the `'error'` event. This is
-  * the abrupt counterpart to `close()`.
-  *
-  * ```ts no_run
-  * conn.destroy(new Error('protocol violation'), { errorCode: 1, type: 'application' });
-  * ```
-  */
+   * Immediately tear down the connection.
+   *
+   * Sends a CONNECTION_CLOSE where possible and transitions straight to closed
+   * without waiting for streams to drain. When `error` is given it is attached
+   * as the connection's close cause and surfaces on the `'error'` event. This is
+   * the abrupt counterpart to `close()`.
+   *
+   * ```ts no_run
+   * conn.destroy(new Error('protocol violation'), { errorCode: 1, type: 'application' });
+   * ```
+   */
   destroy(error?: Error, options: QuicCloseOptions = {}): void {
     const closeOptions = normalizeCloseOptions(options);
     this.#closeInfo = {
       errorCode: closeOptions.errorCode,
       reason: closeOptions.reason,
       type: closeOptions.type,
-      remote: false
+      remote: false,
     };
     void this.#close(closeOptions.errorCode, closeOptions.reason, true, error, closeOptions.type);
   }
-  async #close(errorCode: number, reason: string, sendConnectionClose: boolean, closeError?: Error, type: 'transport' | 'application' = 'application'): Promise<void> {
+  async #close(
+    errorCode: number,
+    reason: string,
+    sendConnectionClose: boolean,
+    closeError?: Error,
+    type: 'transport' | 'application' = 'application',
+  ): Promise<void> {
     if (this.#closed || this.#state === 'closed') return;
     if (this.#closeInfo === null) {
       this.#closeInfo = {
         errorCode,
         reason,
         type,
-        remote: closeError !== undefined
+        remote: closeError !== undefined,
       };
     }
-    const canSendConnectionClose = sendConnectionClose && ptrAddress(this.#conn) !== 0n && !this.#connectionCloseSent;
+    const canSendConnectionClose =
+      sendConnectionClose && ptrAddress(this.#conn) !== 0n && !this.#connectionCloseSent;
     publishQuicTopic('quic.session.closing', {
       connection: this,
       errorCode,
-      reason
+      reason,
     });
     this.#state = 'closing';
     if (this.#stats.closingAt === null) this.#stats.closingAt = Date.now();
@@ -907,7 +1522,13 @@ export class QuicConnection extends EventTarget {
     this.#armedExpiry = -1n;
     if (this.#handshakeTimer !== null) this.#handshakeTimer.cancel?.();
     this.#handshakeTimer = null;
-    if (this.#role === 'client' && this.#tls !== null && this.#tls.backend === 'ossl' && this.#sessionKey !== null && this.#options.sessionStore !== undefined) {
+    if (
+      this.#role === 'client' &&
+      this.#tls !== null &&
+      this.#tls.backend === 'ossl' &&
+      this.#sessionKey !== null &&
+      this.#options.sessionStore !== undefined
+    ) {
       const ticket = exportSession(this.#tls);
       if (ticket !== null && ticket.byteLength > 0) {
         await this.#saveSessionTicket(ticket, false);
@@ -925,7 +1546,8 @@ export class QuicConnection extends EventTarget {
     }
     const handshakeConfirmedWaiters = this.#handshakeConfirmedWaiters.splice(0);
     for (const waiter of handshakeConfirmedWaiters) waiter.reject(connectionCloseError);
-    for (const stream of Array.from(this.#streams.values())) stream[quicStreamInternals.closeFromConnection](connectionCloseError);
+    for (const stream of Array.from(this.#streams.values()))
+      stream[quicStreamInternals.closeFromConnection](connectionCloseError);
     this.#pendingWrites.length = 0;
     this.#discardPendingDatagrams();
     this.#nextStreamOffsets.clear();
@@ -980,20 +1602,27 @@ export class QuicConnection extends EventTarget {
       connection: this,
       error: closeError,
       stats: this.stats,
-      closeInfo: this.closeInfo
+      closeInfo: this.closeInfo,
     });
     this.#dispatch(new Event('close'));
   }
   #closeWritableStreamsForGracefulClose(): void {
     for (const stream of Array.from(this.#streams.values())) {
-      if (!stream[quicStreamInternals.writerClosed]() && stream[quicStreamInternals.hasWritableSide]()) {
+      if (
+        !stream[quicStreamInternals.writerClosed]() &&
+        stream[quicStreamInternals.hasWritableSide]()
+      ) {
         void stream.writer.close().catch(() => {});
       }
     }
   }
   #maybeFinishGracefulClose(): void {
     if (!this.#gracefulClosing || this.#closed || this.#gracefulCloseOptions === null) return;
-    if (this.#pendingWrites.length > 0 || this.#pendingDatagrams.length > 0 || this.#blockedSend.length > 0) {
+    if (
+      this.#pendingWrites.length > 0 ||
+      this.#pendingDatagrams.length > 0 ||
+      this.#blockedSend.length > 0
+    ) {
       this.#scheduleWriteDrain();
       return;
     }
@@ -1007,16 +1636,27 @@ export class QuicConnection extends EventTarget {
   #computeDrainingRetentionMs(): number {
     if (ptrAddress(this.#conn) === 0n) return CONNECTION_DRAINING_TIMEOUT_MS;
     let pto = ngtcp2Sym!.ngtcp2_conn_get_pto(this.#conn) as bigint;
-    if (pto <= 0n && this.#options.connection.initialRtt > 0n) pto = this.#options.connection.initialRtt;
+    if (pto <= 0n && this.#options.connection.initialRtt > 0n)
+      pto = this.#options.connection.initialRtt;
     if (pto <= 0n) return CONNECTION_DRAINING_TIMEOUT_MS;
     const retentionNs = BigInt(this.#options.connection.drainingPeriodMultiplier) * pto;
     if (retentionNs <= 0n) return 1;
     return Math.max(1, Math.ceil(Number(retentionNs) / 1e6));
   }
-  #closeFromTransport(errorCode = 0, reason = '', closeError?: Error, type: 'transport' | 'application' = 'transport', remote = closeError !== undefined): void {
+  #closeFromTransport(
+    errorCode = 0,
+    reason = '',
+    closeError?: Error,
+    type: 'transport' | 'application' = 'transport',
+    remote = closeError !== undefined,
+  ): void {
     const handleError = (error: unknown) => {
       if (!this.#closed) {
-        this.#dispatch(new QuicErrorEvent('error', { error: error instanceof Error ? error : new Error(String(error)) }));
+        this.#dispatch(
+          new QuicErrorEvent('error', {
+            error: error instanceof Error ? error : new Error(String(error)),
+          }),
+        );
       }
     };
     try {
@@ -1025,7 +1665,7 @@ export class QuicConnection extends EventTarget {
           errorCode,
           reason,
           type,
-          remote: true
+          remote: true,
         };
       }
       Promise.resolve(this.#close(errorCode, reason, false, closeError, type)).catch(handleError);
@@ -1039,7 +1679,10 @@ export class QuicConnection extends EventTarget {
   [quicConnectionInternals.setSessionStoreKey](key: string): void {
     this.#sessionKey = key;
   }
-  [quicConnectionInternals.setClientSessionOptions](verifyPeer: boolean, earlyDataMax: number): void {
+  [quicConnectionInternals.setClientSessionOptions](
+    verifyPeer: boolean,
+    earlyDataMax: number,
+  ): void {
     this.#clientVerifyPeer = verifyPeer;
     this.#clientEarlyDataMax = Math.max(0, Math.floor(earlyDataMax));
   }
@@ -1087,7 +1730,7 @@ export class QuicConnection extends EventTarget {
       const event = new QuicEarlyDataEvent('earlydata', {
         accepted: decision.accepted,
         rejected: !decision.accepted,
-        reason: decision.reason
+        reason: decision.reason,
       });
       try {
         if (typeof callback === 'function') {
@@ -1102,18 +1745,20 @@ export class QuicConnection extends EventTarget {
   [quicConnectionInternals.scheduleEarlyDataEvent](accepted: boolean, reason: string): void {
     this.#earlyDataDecision = {
       accepted,
-      reason
+      reason,
     };
     this.#earlyDataDecisionDispatched = false;
     this.#runtime.defer(() => {
       this.#runtime.setTimer(0, () => {
         if (this.#closed) return;
         this.#earlyDataDecisionDispatched = true;
-        this.dispatchEvent(new QuicEarlyDataEvent('earlydata', {
-          accepted,
-          rejected: !accepted,
-          reason
-        }));
+        this.dispatchEvent(
+          new QuicEarlyDataEvent('earlydata', {
+            accepted,
+            rejected: !accepted,
+            reason,
+          }),
+        );
       });
     });
   }
@@ -1124,49 +1769,75 @@ export class QuicConnection extends EventTarget {
       this.#dispatch(new Event('sessionticket'));
       publishQuicTopic('quic.session.ticket', {
         connection: this,
-        ticket: ticketCopy
+        ticket: ticketCopy,
       });
     }
     if (this.#sessionKey === null || this.#options.sessionStore === undefined) return;
     const store = this.#options.sessionStore;
     const key = this.#sessionKey;
     const transportParameters = this.#encodeEarlyTransportParameters();
-    const earlyDataMax = this.#options.earlyData === false ? 0 : this.#options.earlyData.maxBytes ?? 4294967295;
+    const earlyDataMax =
+      this.#options.earlyData === false ? 0 : (this.#options.earlyData.maxBytes ?? 4294967295);
     const version = this.version;
-    const existing = await store.load(key) ?? {};
-    await store.save(key, transportParameters === null ? {
-      ...existing,
-      ticket: ticketCopy,
-      earlyDataMax,
-      version
-    } : {
-      ...existing,
-      ticket: ticketCopy,
-      transportParameters,
-      earlyDataMax,
-      version
-    });
+    const existing = (await store.load(key)) ?? {};
+    await store.save(
+      key,
+      transportParameters === null
+        ? {
+            ...existing,
+            ticket: ticketCopy,
+            earlyDataMax,
+            version,
+          }
+        : {
+            ...existing,
+            ticket: ticketCopy,
+            transportParameters,
+            earlyDataMax,
+            version,
+          },
+    );
   }
   [quicConnectionInternals.onSessionTicket](ticket: Uint8Array): void {
     void this.#saveSessionTicket(ticket).catch((error) => {
       if (!this.#closed) {
-        this.#dispatch(new QuicErrorEvent('error', { error: error instanceof Error ? error : new Error(String(error)) }));
+        this.#dispatch(
+          new QuicErrorEvent('error', {
+            error: error instanceof Error ? error : new Error(String(error)),
+          }),
+        );
       }
     });
   }
   [quicConnectionInternals.setEarlyTransportParameters](data: Uint8Array): boolean {
-    const rc = ngtcp2Sym!.ngtcp2_conn_decode_and_set_0rtt_transport_params(this.#conn, data, data.byteLength) as number;
+    const rc = ngtcp2Sym!.ngtcp2_conn_decode_and_set_0rtt_transport_params(
+      this.#conn,
+      data,
+      data.byteLength,
+    ) as number;
     return rc === 0;
   }
   [quicConnectionInternals.initClient](rememberedVersion = 0): void {
     const dcid = randomCid(this.#options.connection.cidLength);
     const scid = randomCid(this.#options.connection.cidLength);
     this.#clientInitialDcid = dcid.slice(0);
-    const initialVersion = rememberedVersion !== 0 && this.#options.versions.map(versionToWire).includes(rememberedVersion) && ngtcp2Sym!.ngtcp2_is_supported_version(rememberedVersion) !== 0 ? rememberedVersion : selectClientInitialWireVersion(this.#options.versions);
+    const initialVersion =
+      rememberedVersion !== 0 &&
+      this.#options.versions.map(versionToWire).includes(rememberedVersion) &&
+      ngtcp2Sym!.ngtcp2_is_supported_version(rememberedVersion) !== 0
+        ? rememberedVersion
+        : selectClientInitialWireVersion(this.#options.versions);
     this.#createNative(dcid, scid, null, initialVersion, true, initialVersion);
     this.#registerRoute(scid);
   }
-  [quicConnectionInternals.initServer](clientScid: ArrayBuffer, serverScid: ArrayBuffer, version: number, retryScid: ArrayBuffer | null = null, token: Uint8Array | null = null, tokenType = NGTCP2_TOKEN_TYPE_UNKNOWN): void {
+  [quicConnectionInternals.initServer](
+    clientScid: ArrayBuffer,
+    serverScid: ArrayBuffer,
+    version: number,
+    retryScid: ArrayBuffer | null = null,
+    token: Uint8Array | null = null,
+    tokenType = NGTCP2_TOKEN_TYPE_UNKNOWN,
+  ): void {
     this.#retryScid = retryScid;
     this.#validatedToken = token;
     this.#validatedTokenType = tokenType;
@@ -1178,14 +1849,39 @@ export class QuicConnection extends EventTarget {
   #originalDcidForServer(): ArrayBuffer | null {
     return this.#originalDcid;
   }
-  #createNative(dcid: ArrayBuffer, scid: ArrayBuffer, originalDcid: ArrayBuffer | null, version: number, client: boolean, originalVersion = 0): void {
+  #createNative(
+    dcid: ArrayBuffer,
+    scid: ArrayBuffer,
+    originalDcid: ArrayBuffer | null,
+    version: number,
+    client: boolean,
+    originalVersion = 0,
+  ): void {
     this.#localInitialScid = scid.slice(0);
     this.#remoteInitialScid = client ? null : dcid.slice(0);
     const callbacks = ensureCallbackTable();
-    const settings = makeSettings(this.#options, this.#runtime, this.#validatedToken, this.#validatedTokenType, originalVersion);
-    const preferredAddress = !client && this.#options.migration.preferredAddress !== undefined ? this.#makePreferredAddressParams() : null;
-    const statelessResetToken = !client && this.#listener !== null ? generateStatelessResetToken(this.#listener.resetTokenSecret, scid) : null;
-    const params = makeTransportParams(originalDcid, this.#options, this.#retryScid, preferredAddress, statelessResetToken);
+    const settings = makeSettings(
+      this.#options,
+      this.#runtime,
+      this.#validatedToken,
+      this.#validatedTokenType,
+      originalVersion,
+    );
+    const preferredAddress =
+      !client && this.#options.migration.preferredAddress !== undefined
+        ? this.#makePreferredAddressParams()
+        : null;
+    const statelessResetToken =
+      !client && this.#listener !== null
+        ? generateStatelessResetToken(this.#listener.resetTokenSecret, scid)
+        : null;
+    const params = makeTransportParams(
+      originalDcid,
+      this.#options,
+      this.#retryScid,
+      preferredAddress,
+      statelessResetToken,
+    );
     this.#tlsNativeHandle = newNativeHandle(this.#tls!);
     this.#tlsNativeBackend = this.#tls!.backend;
     this.#wireVersion = version;
@@ -1199,12 +1895,34 @@ export class QuicConnection extends EventTarget {
       });
     }
     configureSessionForConnection(client ? 'client' : 'server', this.#tls!);
-    const fn = client ? ngtcp2Sym!.ngtcp2_conn_client_new_versioned : ngtcp2Sym!.ngtcp2_conn_server_new_versioned;
-    const rc = fn(Pointer.of(this.#conn), Pointer.of(dcid), Pointer.of(scid), Pointer.of(this.#path), version, NGTCP2_CALLBACKS_VERSION, Pointer.of(callbacks), NGTCP2_SETTINGS_VERSION, Pointer.of(settings), NGTCP2_TRANSPORT_PARAMS_VERSION, Pointer.of(params), null, Pointer.of(this.#userData)) as number;
-    if (rc !== 0) throw ngtcp2Error(rc, client ? 'ngtcp2_conn_client_new' : 'ngtcp2_conn_server_new');
+    const fn = client
+      ? ngtcp2Sym!.ngtcp2_conn_client_new_versioned
+      : ngtcp2Sym!.ngtcp2_conn_server_new_versioned;
+    const rc = fn(
+      Pointer.of(this.#conn),
+      Pointer.of(dcid),
+      Pointer.of(scid),
+      Pointer.of(this.#path),
+      version,
+      NGTCP2_CALLBACKS_VERSION,
+      Pointer.of(callbacks),
+      NGTCP2_SETTINGS_VERSION,
+      Pointer.of(settings),
+      NGTCP2_TRANSPORT_PARAMS_VERSION,
+      Pointer.of(params),
+      null,
+      Pointer.of(this.#userData),
+    ) as number;
+    if (rc !== 0)
+      throw ngtcp2Error(rc, client ? 'ngtcp2_conn_client_new' : 'ngtcp2_conn_server_new');
     ngtcp2Sym!.ngtcp2_conn_set_tls_native_handle(this.#conn, this.#tlsNativeHandle);
     ngtcp2Sym!.ngtcp2_conn_set_path_user_data(this.#conn, ptrField(this.#path, PATH_USER_DATA));
-    const keepAliveTimeout = this.#options.connection.keepAliveTimeout > 0n ? this.#options.connection.keepAliveTimeout : client && this.#options.migration.enabled ? MIGRATION_KEEP_ALIVE_TIMEOUT : 0n;
+    const keepAliveTimeout =
+      this.#options.connection.keepAliveTimeout > 0n
+        ? this.#options.connection.keepAliveTimeout
+        : client && this.#options.migration.enabled
+          ? MIGRATION_KEEP_ALIVE_TIMEOUT
+          : 0n;
     if (keepAliveTimeout > 0n) {
       ngtcp2Sym!.ngtcp2_conn_set_keep_alive_timeout(this.#conn, keepAliveTimeout);
     }
@@ -1234,7 +1952,7 @@ export class QuicConnection extends EventTarget {
       preferred.ipv4 = {
         address: addresses.ipv4,
         cid,
-        statelessResetToken: generateStatelessResetToken(this.#listener.resetTokenSecret, cid)
+        statelessResetToken: generateStatelessResetToken(this.#listener.resetTokenSecret, cid),
       };
     }
     if (addresses.ipv6 !== undefined) {
@@ -1242,7 +1960,7 @@ export class QuicConnection extends EventTarget {
       preferred.ipv6 = {
         address: addresses.ipv6,
         cid,
-        statelessResetToken: generateStatelessResetToken(this.#listener.resetTokenSecret, cid)
+        statelessResetToken: generateStatelessResetToken(this.#listener.resetTokenSecret, cid),
       };
     }
     return preferred.ipv4 === undefined && preferred.ipv6 === undefined ? null : preferred;
@@ -1262,7 +1980,11 @@ export class QuicConnection extends EventTarget {
     const index = this.routeCids.indexOf(key);
     if (index !== -1) this.routeCids.splice(index, 1);
   }
-  [quicConnectionInternals.onDestinationCidStatus](type: number, cid: ArrayBuffer | null, token: ArrayBuffer | null): void {
+  [quicConnectionInternals.onDestinationCidStatus](
+    type: number,
+    cid: ArrayBuffer | null,
+    token: ArrayBuffer | null,
+  ): void {
     if (cid === null || token === null) return;
     const key = cidKey(cidBytes(cid));
     if (type === NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE) {
@@ -1275,7 +1997,8 @@ export class QuicConnection extends EventTarget {
       this.#endpoint[quicEndpointInternals.registerStatelessResetToken](tokenKey, this);
     } else if (type === NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE) {
       const tokenKey = this.#statelessResetTokens.get(key);
-      if (tokenKey !== undefined) this.#endpoint[quicEndpointInternals.unregisterStatelessResetToken](tokenKey, this);
+      if (tokenKey !== undefined)
+        this.#endpoint[quicEndpointInternals.unregisterStatelessResetToken](tokenKey, this);
       this.#statelessResetTokens.delete(key);
     }
   }
@@ -1285,10 +2008,12 @@ export class QuicConnection extends EventTarget {
   [quicConnectionInternals.waitHandshake](): Promise<void> {
     if (this.#state === 'connected') return Promise.resolve();
     if (this.#handshakeError !== null) return Promise.reject(this.#handshakeError);
-    return new Promise((resolve, reject) => this.#handshakeWaiters.push({
-      resolve,
-      reject
-    }));
+    return new Promise((resolve, reject) =>
+      this.#handshakeWaiters.push({
+        resolve,
+        reject,
+      }),
+    );
   }
   #waitHandshakeConfirmed(): Promise<void> {
     if (this.#handshakeConfirmed) return Promise.resolve();
@@ -1296,10 +2021,12 @@ export class QuicConnection extends EventTarget {
     if (this.#closed) return Promise.reject(new Error('QUIC connection is closed'));
     this.#startDeferredHandshake();
     this[quicConnectionInternals.driveWrites]();
-    return new Promise((resolve, reject) => this.#handshakeConfirmedWaiters.push({
-      resolve,
-      reject
-    }));
+    return new Promise((resolve, reject) =>
+      this.#handshakeConfirmedWaiters.push({
+        resolve,
+        reject,
+      }),
+    );
   }
   [quicConnectionInternals.onHandshakeCompleted](): void {
     if (this.#state === 'closed') return;
@@ -1308,9 +2035,14 @@ export class QuicConnection extends EventTarget {
     this.#state = 'connected';
     if (this.#stats.connectedAt === null) this.#stats.connectedAt = Date.now();
     if (this.#role === 'server') this.#markHandshakeConfirmed();
-    if (this.#role === 'client' && this.#remoteInitialScid === null && ptrAddress(this.#conn) !== 0n) {
+    if (
+      this.#role === 'client' &&
+      this.#remoteInitialScid === null &&
+      ptrAddress(this.#conn) !== 0n
+    ) {
       const dcid = ngtcp2Sym!.ngtcp2_conn_get_dcid(this.#conn) as ArrayBuffer | null;
-      if (dcid !== null && ptrAddress(dcid) !== 0n) this.#remoteInitialScid = makeCid(cidBytes(dcid));
+      if (dcid !== null && ptrAddress(dcid) !== 0n)
+        this.#remoteInitialScid = makeCid(cidBytes(dcid));
     }
     this.#earlyDataReady = false;
     this.#earlyDataQueuedBytes = 0;
@@ -1320,9 +2052,13 @@ export class QuicConnection extends EventTarget {
     this.#peerVerification = {
       verified: handshakeInfo.validationErrorCode === 0,
       errorCode: handshakeInfo.validationErrorCode,
-      reason: handshakeInfo.validationErrorReason
+      reason: handshakeInfo.validationErrorReason,
     };
-    if (this.#role === 'server' && this.#requireClientCertificate && this.#peerCertificate === null) {
+    if (
+      this.#role === 'server' &&
+      this.#requireClientCertificate &&
+      this.#peerCertificate === null
+    ) {
       this.#fail(new Error('QUIC client certificate required'));
       return;
     }
@@ -1337,7 +2073,7 @@ export class QuicConnection extends EventTarget {
       protocol: alpnProtocol,
       version: this.version,
       earlyDataAttempted: this.#earlyDataAttempted,
-      earlyDataAccepted: this.#earlyDataAccepted
+      earlyDataAccepted: this.#earlyDataAccepted,
     });
     const waiters = this.#handshakeWaiters.splice(0);
     for (const waiter of waiters) waiter.resolve(undefined);
@@ -1367,7 +2103,12 @@ export class QuicConnection extends EventTarget {
       if (this.#closed || this.#tls === null) return;
       this.#submitNewToken();
       sendSessionTicket(this.#tls);
-      const rc = cryptoSym!.ngtcp2_crypto_read_write_crypto_data(this.#conn, NGTCP2_ENCRYPTION_LEVEL_1RTT, null, 0n) as number;
+      const rc = cryptoSym!.ngtcp2_crypto_read_write_crypto_data(
+        this.#conn,
+        NGTCP2_ENCRYPTION_LEVEL_1RTT,
+        null,
+        0n,
+      ) as number;
       if (rc !== 0) {
         this.#fail(ngtcp2Error(rc, 'ngtcp2_crypto_read_write_crypto_data'));
         return;
@@ -1377,9 +2118,17 @@ export class QuicConnection extends EventTarget {
   }
   #submitNewToken(): void {
     if (this.#role !== 'server' || this.#listener === null) return;
-    const token = generateRegularToken(this.#listener.retryTokenSecret, this.remoteAddress, this.#runtime);
+    const token = generateRegularToken(
+      this.#listener.retryTokenSecret,
+      this.remoteAddress,
+      this.#runtime,
+    );
     if (token === null || token.byteLength === 0) return;
-    const rc = ngtcp2Sym!.ngtcp2_conn_submit_new_token(this.#conn, token, token.byteLength) as number;
+    const rc = ngtcp2Sym!.ngtcp2_conn_submit_new_token(
+      this.#conn,
+      token,
+      token.byteLength,
+    ) as number;
     if (rc !== 0) this.#fail(ngtcp2Error(rc, 'ngtcp2_conn_submit_new_token'));
   }
   #fail(error: Error): void {
@@ -1391,22 +2140,32 @@ export class QuicConnection extends EventTarget {
     for (const waiter of confirmedWaiters) waiter.reject(error);
     publishQuicTopic('quic.session.error', {
       connection: this,
-      error
+      error,
     });
     this.#dispatch(new QuicErrorEvent('error', { error }));
     this.#closeFromTransport(0, '', error);
   }
   #writeBufferSize(maxPayload?: number): number {
-    const mp = maxPayload ?? Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
-    return mp > 0 ? Math.min(65536, Math.max(NGTCP2_MAX_UDP_PAYLOAD_SIZE, mp)) : NGTCP2_MAX_UDP_PAYLOAD_SIZE;
+    const mp =
+      maxPayload ??
+      Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
+    return mp > 0
+      ? Math.min(65536, Math.max(NGTCP2_MAX_UDP_PAYLOAD_SIZE, mp))
+      : NGTCP2_MAX_UDP_PAYLOAD_SIZE;
   }
   #writePacketBudget(maxPayload?: number): number {
     const quantum = Number(ngtcp2Sym!.ngtcp2_conn_get_send_quantum(this.#conn) as bigint | number);
-    const mp = maxPayload ?? Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
+    const mp =
+      maxPayload ??
+      Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
     if (quantum <= 0 || mp <= 0) return MAX_WRITE_PACKETS_PER_DRAIN;
     return Math.max(1, Math.min(MAX_WRITE_PACKETS_PER_DRAIN, Math.floor(quantum / mp) || 1));
   }
-  #outputFromPath(path: ArrayBuffer, fallbackRemoteAddress: QuicAddress, fallbackFd: number = this.#fd): {
+  #outputFromPath(
+    path: ArrayBuffer,
+    fallbackRemoteAddress: QuicAddress,
+    fallbackFd: number = this.#fd,
+  ): {
     fd: number;
     localAddress: QuicAddress;
     remoteAddress: QuicAddress;
@@ -1417,24 +2176,32 @@ export class QuicConnection extends EventTarget {
     return {
       fd,
       localAddress,
-      remoteAddress
+      remoteAddress,
     };
   }
-  #outputFromPathForPacket(outPath: NativePath, fallbackRemoteAddress: QuicAddress): {
+  #outputFromPathForPacket(
+    outPath: NativePath,
+    fallbackRemoteAddress: QuicAddress,
+  ): {
     fd: number;
     remoteAddress: QuicAddress;
   } {
     const fd = fdFromPath(outPath.path, this.#fd);
-    if (fd === this.#fd && this.#activePathValidations.length === 0 && !this.#options.migration.enabled && this.#options.migration.preferredAddress === undefined) {
+    if (
+      fd === this.#fd &&
+      this.#activePathValidations.length === 0 &&
+      !this.#options.migration.enabled &&
+      this.#options.migration.preferredAddress === undefined
+    ) {
       return {
         fd,
-        remoteAddress: fallbackRemoteAddress
+        remoteAddress: fallbackRemoteAddress,
       };
     }
     const output = this.#outputFromPath(outPath.path, fallbackRemoteAddress);
     return {
       fd: output.fd,
-      remoteAddress: output.remoteAddress
+      remoteAddress: output.remoteAddress,
     };
   }
   #activeOutputPath(remoteAddress: QuicAddress): NativePath {
@@ -1447,14 +2214,18 @@ export class QuicConnection extends EventTarget {
     return this.#endpoint[quicEndpointInternals.transportById](id) ?? null;
   }
   #syncActivePathFromNative(preferredPath: ArrayBuffer | null = null): boolean {
-    const nativePath = preferredPath ?? ngtcp2Sym!.ngtcp2_conn_get_path(this.#conn) as ArrayBuffer | null;
+    const nativePath =
+      preferredPath ?? (ngtcp2Sym!.ngtcp2_conn_get_path(this.#conn) as ArrayBuffer | null);
     const snapshot = pathSnapshotFromNative(nativePath, this.#fd);
     return this.#syncActivePathSnapshot(snapshot);
   }
   #syncActivePathSnapshot(snapshot: PathSnapshot | null): boolean {
     if (snapshot === null) return false;
     const { localAddress, remoteAddress, fd } = snapshot;
-    const changed = fd !== this.#fd || !sameAddress(localAddress, this.#activeLocalAddress) || !sameAddress(remoteAddress, this.remoteAddress);
+    const changed =
+      fd !== this.#fd ||
+      !sameAddress(localAddress, this.#activeLocalAddress) ||
+      !sameAddress(remoteAddress, this.remoteAddress);
     const path = this.#retainPath(localAddress, remoteAddress, fd);
     this.remoteAddress = remoteAddress;
     this.#activeLocalAddress = localAddress;
@@ -1466,18 +2237,23 @@ export class QuicConnection extends EventTarget {
     return changed;
   }
   #sendPacket(fd: number, data: Uint8Array, remoteAddress: QuicAddress): boolean {
-    return this.#blockedSend.length === 0 && this.#flushPacketBatch([{
-      fd,
-      data,
-      remoteAddress
-    }]);
+    return (
+      this.#blockedSend.length === 0 &&
+      this.#flushPacketBatch([
+        {
+          fd,
+          data,
+          remoteAddress,
+        },
+      ])
+    );
   }
   #copyPendingSendPacket(packet: PendingSendPacket): PendingSendPacket {
     return {
       fd: packet.fd,
       data: packet.data.slice(),
       remoteAddress: { ...packet.remoteAddress },
-      ecn: packet.ecn
+      ecn: packet.ecn,
     };
   }
   #recordPacketSent(packet: PendingSendPacket): void {
@@ -1486,7 +2262,7 @@ export class QuicConnection extends EventTarget {
     this.#stats.bytesSent += packet.data.byteLength;
   }
   #flushPacketBatch(packets: PendingSendPacket[]): boolean {
-    for (let index = 0; index < packets.length;) {
+    for (let index = 0; index < packets.length; ) {
       const first = packets[index]!;
       const transport = this.#transportById(first.fd);
       if (transport === null) {
@@ -1496,15 +2272,22 @@ export class QuicConnection extends EventTarget {
       let end = index + 1;
       while (end < packets.length && packets[end]!.fd === first.fd) end++;
       const chunk = packets.slice(index, end);
-      const result = transport.sendBatch === undefined ? this.#sendPacketChunkFallback(transport, chunk) : transport.sendBatch(chunk.map((packet) => ({
-        data: packet.data,
-        dest: packet.remoteAddress,
-        ecn: packet.ecn
-      })));
+      const result =
+        transport.sendBatch === undefined
+          ? this.#sendPacketChunkFallback(transport, chunk)
+          : transport.sendBatch(
+              chunk.map((packet) => ({
+                data: packet.data,
+                dest: packet.remoteAddress,
+                ecn: packet.ecn,
+              })),
+            );
       for (let sent = 0; sent < result.sent; sent++) this.#recordPacketSent(chunk[sent]!);
       if (result.errno !== null) {
         if (result.errno === EAGAIN) {
-          this.#blockedSend = packets.slice(index + result.sent).map((packet) => this.#copyPendingSendPacket(packet));
+          this.#blockedSend = packets
+            .slice(index + result.sent)
+            .map((packet) => this.#copyPendingSendPacket(packet));
           this.#scheduleBlockedSendRetry();
         } else {
           this.#fail(new Error(`QUIC UDP sendto failed: ${result.errno}`));
@@ -1515,22 +2298,26 @@ export class QuicConnection extends EventTarget {
     }
     return true;
   }
-  #sendPacketChunkFallback(transport: QuicDatagramTransport, packets: PendingSendPacket[]): {
+  #sendPacketChunkFallback(
+    transport: QuicDatagramTransport,
+    packets: PendingSendPacket[],
+  ): {
     sent: number;
     errno: number | null;
   } {
     let sent = 0;
     for (const packet of packets) {
       const rc = transport.sendNow(packet.data, packet.remoteAddress);
-      if (rc < 0) return {
-        sent,
-        errno: rc
-      };
+      if (rc < 0)
+        return {
+          sent,
+          errno: rc,
+        };
       sent++;
     }
     return {
       sent,
-      errno: null
+      errno: null,
     };
   }
   #sendClosePacket(fd: number, data: Uint8Array, remoteAddress: QuicAddress): boolean {
@@ -1539,7 +2326,9 @@ export class QuicConnection extends EventTarget {
     const sent = transport.sendNow(data, remoteAddress);
     if (sent < 0) {
       if (sent !== EAGAIN) {
-        this.#dispatch(new QuicErrorEvent('error', { error: new Error(`QUIC UDP sendto failed: ${sent}`) }));
+        this.#dispatch(
+          new QuicErrorEvent('error', { error: new Error(`QUIC UDP sendto failed: ${sent}`) }),
+        );
       }
       return false;
     }
@@ -1552,7 +2341,7 @@ export class QuicConnection extends EventTarget {
     this.#closePacket = {
       fd,
       data: data.slice(),
-      remoteAddress: { ...remoteAddress }
+      remoteAddress: { ...remoteAddress },
     };
     this.#closingPacketsReceived = 0;
     this.#nextCloseRetransmitThreshold = 1;
@@ -1576,19 +2365,22 @@ export class QuicConnection extends EventTarget {
       return;
     }
     this.#blockedSendRetryScheduled = true;
-    transport.waitWritable().then(() => {
-      this.#blockedSendRetryScheduled = false;
-      const pending = this.#blockedSend;
-      if (this.#closed || pending.length === 0) return;
-      this.#blockedSend = [];
-      if (this.#flushPacketBatch(pending)) {
-        this.#scheduleTimer();
-        this.#scheduleWriteDrain(pending[pending.length - 1]!.remoteAddress);
-      }
-    }, (error) => {
-      this.#blockedSendRetryScheduled = false;
-      if (!this.#closed) this.#fail(error instanceof Error ? error : new Error(String(error)));
-    });
+    transport.waitWritable().then(
+      () => {
+        this.#blockedSendRetryScheduled = false;
+        const pending = this.#blockedSend;
+        if (this.#closed || pending.length === 0) return;
+        this.#blockedSend = [];
+        if (this.#flushPacketBatch(pending)) {
+          this.#scheduleTimer();
+          this.#scheduleWriteDrain(pending[pending.length - 1]!.remoteAddress);
+        }
+      },
+      (error) => {
+        this.#blockedSendRetryScheduled = false;
+        if (!this.#closed) this.#fail(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
   }
   #writeConnectionClose(liberr: number, remoteAddress: QuicAddress): void {
     const out = new Uint8Array(this.#writeBufferSize());
@@ -1599,16 +2391,42 @@ export class QuicConnection extends EventTarget {
     if (liberr === NGTCP2_ERR_CRYPTO) {
       const alert = ngtcp2Sym!.ngtcp2_conn_get_tls_alert(this.#conn) as number;
       if (alert !== 0) {
-        ngtcp2Sym!.ngtcp2_ccerr_set_tls_alert(Pointer.of(ccerr), alert, reasonBytes, reasonBytes.byteLength);
+        ngtcp2Sym!.ngtcp2_ccerr_set_tls_alert(
+          Pointer.of(ccerr),
+          alert,
+          reasonBytes,
+          reasonBytes.byteLength,
+        );
       } else {
-        ngtcp2Sym!.ngtcp2_ccerr_set_liberr(Pointer.of(ccerr), liberr, reasonBytes, reasonBytes.byteLength);
+        ngtcp2Sym!.ngtcp2_ccerr_set_liberr(
+          Pointer.of(ccerr),
+          liberr,
+          reasonBytes,
+          reasonBytes.byteLength,
+        );
       }
     } else {
-      ngtcp2Sym!.ngtcp2_ccerr_set_liberr(Pointer.of(ccerr), liberr, reasonBytes, reasonBytes.byteLength);
+      ngtcp2Sym!.ngtcp2_ccerr_set_liberr(
+        Pointer.of(ccerr),
+        liberr,
+        reasonBytes,
+        reasonBytes.byteLength,
+      );
     }
     const outPath = makeOutputPath(this.#activeLocalAddress, remoteAddress, this.#fd);
     const ts = now(this.#runtime);
-    const n = Number(ngtcp2Sym!.ngtcp2_conn_write_connection_close_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, null, out, out.byteLength, Pointer.of(ccerr), ts));
+    const n = Number(
+      ngtcp2Sym!.ngtcp2_conn_write_connection_close_versioned(
+        this.#conn,
+        Pointer.of(outPath.path),
+        NGTCP2_PKT_INFO_VERSION,
+        null,
+        out,
+        out.byteLength,
+        Pointer.of(ccerr),
+        ts,
+      ),
+    );
     if (n <= 0) return;
     const output = this.#outputFromPath(outPath.path, remoteAddress);
     const packet = out.slice(0, n);
@@ -1623,10 +2441,26 @@ export class QuicConnection extends EventTarget {
     const ccerr = new ArrayBuffer(NGTCP2_CCERR_SIZE);
     const reasonBytes = new TextEncoder().encode(reason);
     ngtcp2Sym!.ngtcp2_ccerr_default(Pointer.of(ccerr));
-    ngtcp2Sym!.ngtcp2_ccerr_set_application_error(Pointer.of(ccerr), BigInt(Math.max(0, Math.floor(errorCode))), reasonBytes, reasonBytes.byteLength);
+    ngtcp2Sym!.ngtcp2_ccerr_set_application_error(
+      Pointer.of(ccerr),
+      BigInt(Math.max(0, Math.floor(errorCode))),
+      reasonBytes,
+      reasonBytes.byteLength,
+    );
     const outPath = makeOutputPath(this.#activeLocalAddress, this.remoteAddress, this.#fd);
     const ts = now(this.#runtime);
-    const n = Number(ngtcp2Sym!.ngtcp2_conn_write_connection_close_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, null, out, out.byteLength, Pointer.of(ccerr), ts));
+    const n = Number(
+      ngtcp2Sym!.ngtcp2_conn_write_connection_close_versioned(
+        this.#conn,
+        Pointer.of(outPath.path),
+        NGTCP2_PKT_INFO_VERSION,
+        null,
+        out,
+        out.byteLength,
+        Pointer.of(ccerr),
+        ts,
+      ),
+    );
     if (n <= 0) return;
     const output = this.#outputFromPath(outPath.path, this.remoteAddress);
     const packet = out.slice(0, n);
@@ -1641,10 +2475,26 @@ export class QuicConnection extends EventTarget {
     const ccerr = new ArrayBuffer(NGTCP2_CCERR_SIZE);
     const reasonBytes = new TextEncoder().encode(reason);
     ngtcp2Sym!.ngtcp2_ccerr_default(Pointer.of(ccerr));
-    ngtcp2Sym!.ngtcp2_ccerr_set_transport_error(Pointer.of(ccerr), BigInt(Math.max(0, Math.floor(errorCode))), reasonBytes, reasonBytes.byteLength);
+    ngtcp2Sym!.ngtcp2_ccerr_set_transport_error(
+      Pointer.of(ccerr),
+      BigInt(Math.max(0, Math.floor(errorCode))),
+      reasonBytes,
+      reasonBytes.byteLength,
+    );
     const outPath = makeOutputPath(this.#activeLocalAddress, this.remoteAddress, this.#fd);
     const ts = now(this.#runtime);
-    const n = Number(ngtcp2Sym!.ngtcp2_conn_write_connection_close_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, null, out, out.byteLength, Pointer.of(ccerr), ts));
+    const n = Number(
+      ngtcp2Sym!.ngtcp2_conn_write_connection_close_versioned(
+        this.#conn,
+        Pointer.of(outPath.path),
+        NGTCP2_PKT_INFO_VERSION,
+        null,
+        out,
+        out.byteLength,
+        Pointer.of(ccerr),
+        ts,
+      ),
+    );
     if (n <= 0) return;
     const output = this.#outputFromPath(outPath.path, this.remoteAddress);
     const packet = out.slice(0, n);
@@ -1672,12 +2522,14 @@ export class QuicConnection extends EventTarget {
         errorCode,
         reason,
         type,
-        remote: true
+        remote: true,
       };
       if (type === 'transport' && (errorCode & NGTCP2_CRYPTO_ERROR) === NGTCP2_CRYPTO_ERROR) {
         const alert = errorCode & 255;
         if (alert === TLS_ALERT_NO_APPLICATION_PROTOCOL) {
-          return new Error(`QUIC ALPN mismatch: client offered ${this.alpnProtocols.join(', ') || '(none)'}`);
+          return new Error(
+            `QUIC ALPN mismatch: client offered ${this.alpnProtocols.join(', ') || '(none)'}`,
+          );
         }
       }
     }
@@ -1686,7 +2538,11 @@ export class QuicConnection extends EventTarget {
   #selectVersionNegotiationRetryVersion(): number {
     const allowed = new Set(this.#options.versions.map(versionToWire));
     for (const version of this.#versionNegotiationVersions) {
-      if (allowed.has(version) && ngtcp2Sym!.ngtcp2_is_supported_version(version) !== 0 && version !== this.#wireVersion) {
+      if (
+        allowed.has(version) &&
+        ngtcp2Sym!.ngtcp2_is_supported_version(version) !== 0 &&
+        version !== this.#wireVersion
+      ) {
         return version;
       }
     }
@@ -1697,7 +2553,8 @@ export class QuicConnection extends EventTarget {
     if (version === 0) return false;
     const dcid = this.#clientInitialDcid;
     const scid = this.#localInitialScid;
-    if (dcid === null || scid === null || this.#ctx === null || this.#serverName === null) return false;
+    if (dcid === null || scid === null || this.#ctx === null || this.#serverName === null)
+      return false;
     const originalVersion = this.#wireVersion;
     this.#versionNegotiationRetried = true;
     this.#versionNegotiationPendingRetry = false;
@@ -1715,7 +2572,13 @@ export class QuicConnection extends EventTarget {
       clearConnectionRef(this.#tls);
       freeSession(this.#tls);
     }
-    this.#tls = newClientSession(this.#ctx, this.alpnProtocols.slice(), this.#serverName, this.#clientVerifyPeer, this.#clientEarlyDataMax);
+    this.#tls = newClientSession(
+      this.#ctx,
+      this.alpnProtocols.slice(),
+      this.#serverName,
+      this.#clientVerifyPeer,
+      this.#clientEarlyDataMax,
+    );
     this.#earlyDataReady = false;
     this.#earlyDataQueuedBytes = 0;
     this.#handshakeDeferred = false;
@@ -1723,7 +2586,10 @@ export class QuicConnection extends EventTarget {
     this.#scheduleWriteDrain();
     return true;
   }
-  [quicConnectionInternals.startSocketLoop](transport: QuicDatagramTransport | null = this.#transportById(this.#fd), localAddress: QuicAddress = this.#activeLocalAddress): void {
+  [quicConnectionInternals.startSocketLoop](
+    transport: QuicDatagramTransport | null = this.#transportById(this.#fd),
+    localAddress: QuicAddress = this.#activeLocalAddress,
+  ): void {
     if (this.#role !== 'client') return;
     if (transport === null) return;
     if (this.#clientTransports.has(transport.id)) return;
@@ -1733,19 +2599,42 @@ export class QuicConnection extends EventTarget {
   async #runSocketLoop(transport: QuicDatagramTransport, localAddress: QuicAddress): Promise<void> {
     while (!this.#closed && this.#clientTransports.has(transport.id)) {
       try {
-        const batchCount = transport.recvBatchEach?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE, (data, addr, ecn, path) => {
-          this.#endpoint[quicEndpointInternals.handleDatagram](null, transport, localAddress, data, addr, ecn, path);
-        });
+        const batchCount = transport.recvBatchEach?.(
+          MAX_BATCH_READ_PACKETS_PER_TURN,
+          NGTCP2_MAX_UDP_PAYLOAD_SIZE,
+          (data, addr, ecn, path) => {
+            this.#endpoint[quicEndpointInternals.handleDatagram](
+              null,
+              transport,
+              localAddress,
+              data,
+              addr,
+              ecn,
+              path,
+            );
+          },
+        );
         if (batchCount !== undefined) {
           if (batchCount >= MAX_BATCH_READ_PACKETS_PER_TURN) {
             await runtimeDelay(this.#runtime, 0);
             continue;
           }
         } else {
-          const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
+          const batch = transport.recvBatch?.(
+            MAX_BATCH_READ_PACKETS_PER_TURN,
+            NGTCP2_MAX_UDP_PAYLOAD_SIZE,
+          );
           if (batch !== undefined) {
             for (const received of batch) {
-              this.#endpoint[quicEndpointInternals.handleDatagram](null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
+              this.#endpoint[quicEndpointInternals.handleDatagram](
+                null,
+                transport,
+                localAddress,
+                received.data,
+                received.addr,
+                received.ecn,
+                received.path,
+              );
             }
             if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
               await runtimeDelay(this.#runtime, 0);
@@ -1756,7 +2645,15 @@ export class QuicConnection extends EventTarget {
             for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
               const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
               if (received === null) break;
-              this.#endpoint[quicEndpointInternals.handleDatagram](null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
+              this.#endpoint[quicEndpointInternals.handleDatagram](
+                null,
+                transport,
+                localAddress,
+                received.data,
+                received.addr,
+                received.ecn,
+                received.path,
+              );
             }
             if (packets >= MAX_READ_PACKETS_PER_TURN) {
               await runtimeDelay(this.#runtime, 0);
@@ -1770,22 +2667,47 @@ export class QuicConnection extends EventTarget {
       }
     }
   }
-  [quicConnectionInternals.receivePacket](packet: Uint8Array, remoteAddress: QuicAddress, localAddress: QuicAddress = this.localAddress, transport: QuicDatagramTransport | null = this.#transportById(this.#fd), packetEcn?: number, pathMetadata?: QuicDatagramPathMetadata): number {
+  [quicConnectionInternals.receivePacket](
+    packet: Uint8Array,
+    remoteAddress: QuicAddress,
+    localAddress: QuicAddress = this.localAddress,
+    transport: QuicDatagramTransport | null = this.#transportById(this.#fd),
+    packetEcn?: number,
+    pathMetadata?: QuicDatagramPathMetadata,
+  ): number {
     if (this.#closed) return this.#receiveClosingPacket(transport?.id ?? this.#fd, remoteAddress);
     this.#stats.packetsReceived++;
     this.#stats.bytesReceived += packet.byteLength;
     const fd = transport?.id ?? this.#fd;
     const packetPath = this.#retainPathFromMetadata(localAddress, remoteAddress, fd, pathMetadata);
     const packetVersion = longHeaderVersion(packet);
-    if (this.#role === 'client' && this.#state === 'connecting' && packetVersion !== null && packetVersion !== 0 && packetVersion !== this.#wireVersion && this.#options.versions.map(versionToWire).includes(packetVersion) && ngtcp2Sym!.ngtcp2_is_supported_version(packetVersion) !== 0) {
+    if (
+      this.#role === 'client' &&
+      this.#state === 'connecting' &&
+      packetVersion !== null &&
+      packetVersion !== 0 &&
+      packetVersion !== this.#wireVersion &&
+      this.#options.versions.map(versionToWire).includes(packetVersion) &&
+      ngtcp2Sym!.ngtcp2_is_supported_version(packetVersion) !== 0
+    ) {
       this.#retryVersionNegotiation(packetVersion);
     }
     const previousReadingPacketStartedConnecting = this.#readingPacketStartedConnecting;
     this.#readingPacketStartedConnecting = this.#state === 'connecting';
     let rc = 0;
     try {
-      const pktInfo = this.#options.transport.ecn ? makePacketInfo(packetEcn ?? NGTCP2_ECN_NOT_ECT) : null;
-      rc = ngtcp2Sym!.ngtcp2_conn_read_pkt_versioned(this.#conn, this.#ptrOf(packetPath.path, _QUIC_PTR_PATH), NGTCP2_PKT_INFO_VERSION, pktInfo === null ? null : this.#ptrOf(pktInfo, _QUIC_PTR_PKT_INFO), packet, packet.byteLength, now(this.#runtime)) as number;
+      const pktInfo = this.#options.transport.ecn
+        ? makePacketInfo(packetEcn ?? NGTCP2_ECN_NOT_ECT)
+        : null;
+      rc = ngtcp2Sym!.ngtcp2_conn_read_pkt_versioned(
+        this.#conn,
+        this.#ptrOf(packetPath.path, _QUIC_PTR_PATH),
+        NGTCP2_PKT_INFO_VERSION,
+        pktInfo === null ? null : this.#ptrOf(pktInfo, _QUIC_PTR_PKT_INFO),
+        packet,
+        packet.byteLength,
+        now(this.#runtime),
+      ) as number;
     } finally {
       this.#readingPacketStartedConnecting = previousReadingPacketStartedConnecting;
     }
@@ -1801,12 +2723,22 @@ export class QuicConnection extends EventTarget {
     }
     if (this.#versionNegotiationPendingRetry) {
       if (this.#retryVersionNegotiation()) return rc;
-      this.#fail(new QuicVersionNegotiationError(this.#versionNegotiationVersions, this.#options.versions.map(versionToWire)));
+      this.#fail(
+        new QuicVersionNegotiationError(
+          this.#versionNegotiationVersions,
+          this.#options.versions.map(versionToWire),
+        ),
+      );
       return rc;
     }
     if (rc === NGTCP2_ERR_RECV_VERSION_NEGOTIATION || rc === NGTCP2_ERR_VERSION_NEGOTIATION) {
       if (this.#retryVersionNegotiation()) return rc;
-      this.#fail(new QuicVersionNegotiationError(this.#versionNegotiationVersions, this.#options.versions.map(versionToWire)));
+      this.#fail(
+        new QuicVersionNegotiationError(
+          this.#versionNegotiationVersions,
+          this.#options.versions.map(versionToWire),
+        ),
+      );
       return rc;
     }
     if (rc !== 0) {
@@ -1817,7 +2749,14 @@ export class QuicConnection extends EventTarget {
       return rc;
     }
     this.#endpoint[quicEndpointInternals.recordDatagramReceived](packet.byteLength);
-    if (this.#options.migration.enabled || this.#options.migration.preferredAddress !== undefined || fd !== this.#fd || !sameAddress(localAddress, this.#activeLocalAddress) || !sameAddress(remoteAddress, this.remoteAddress) || this.#activePathValidations.length > 0) {
+    if (
+      this.#options.migration.enabled ||
+      this.#options.migration.preferredAddress !== undefined ||
+      fd !== this.#fd ||
+      !sameAddress(localAddress, this.#activeLocalAddress) ||
+      !sameAddress(remoteAddress, this.remoteAddress) ||
+      this.#activePathValidations.length > 0
+    ) {
       this.#syncActivePathFromNative();
     }
     this.#scheduleTimer();
@@ -1840,13 +2779,23 @@ export class QuicConnection extends EventTarget {
     }
     this.#earlyDataQueuedBytes = nextEarlyBytes;
   }
-  [quicConnectionInternals.queueStreamData](stream: QuicStream, data: Uint8Array, fin: boolean, earlyDataReserved = false): void {
+  [quicConnectionInternals.queueStreamData](
+    stream: QuicStream,
+    data: Uint8Array,
+    fin: boolean,
+    earlyDataReserved = false,
+  ): void {
     if (!earlyDataReserved) {
       this.#validateEarlyStreamData(data);
     }
     if (fin && data.byteLength === 0) {
       const pending = this.#pendingWrites[this.#pendingWrites.length - 1];
-      if (pending !== undefined && pending.streamId === stream.id && pending.offset === 0 && !pending.fin) {
+      if (
+        pending !== undefined &&
+        pending.streamId === stream.id &&
+        pending.offset === 0 &&
+        !pending.fin
+      ) {
         pending.fin = true;
         this.#scheduleWriteDrain();
         return;
@@ -1857,20 +2806,25 @@ export class QuicConnection extends EventTarget {
       streamId: stream.id,
       data,
       offset: 0,
-      fin
+      fin,
     });
     this.#startDeferredHandshake();
     this.#scheduleWriteDrain();
   }
   #canOpenApplicationStream(): boolean {
     if (this.#gracefulClosing) return false;
-    return this.#state === 'connected' || this.#role === 'client' && this.#state === 'connecting' && this.#earlyDataReady;
+    return (
+      this.#state === 'connected' ||
+      (this.#role === 'client' && this.#state === 'connecting' && this.#earlyDataReady)
+    );
   }
   #encodeEarlyTransportParameters(): Uint8Array | null {
     if (ptrAddress(this.#conn) === 0n) return null;
     if (ngtcp2Sym!.ngtcp2_conn_get_handshake_completed(this.#conn) === 0) return null;
     const out = new Uint8Array(65536);
-    const n = Number(ngtcp2Sym!.ngtcp2_conn_encode_0rtt_transport_params(this.#conn, out, out.byteLength));
+    const n = Number(
+      ngtcp2Sym!.ngtcp2_conn_encode_0rtt_transport_params(this.#conn, out, out.byteLength),
+    );
     if (n <= 0) return null;
     return out.slice(0, n);
   }
@@ -1891,7 +2845,9 @@ export class QuicConnection extends EventTarget {
       }
       // Read the max UDP payload size once and share it with both helpers below
       // (each would otherwise make its own get_max_tx_udp_payload_size FFI call).
-      const maxPayload = Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
+      const maxPayload = Number(
+        ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number,
+      );
       const writeBufferSize = this.#writeBufferSize(maxPayload);
       const ts = now(this.#runtime);
       let packets = 0;
@@ -1904,8 +2860,28 @@ export class QuicConnection extends EventTarget {
         const pktInfo = this.#options.transport.ecn ? makePacketInfo() : null;
         const pktInfoPtr = pktInfo === null ? null : this.#ptrOf(pktInfo, _QUIC_PTR_PKT_INFO);
         const outPathPtr = this.#ptrOf(outPath.path, _QUIC_PTR_PATH);
-        const writeNoStreamData = (): number => Number(ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(this.#conn, outPathPtr, NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, null, 0, -1n, null, 0n, ts));
-        const isCoalescingRetry = (code: number): boolean => code === NGTCP2_ERR_WRITE_MORE || code === NGTCP2_ERR_STREAM_DATA_BLOCKED || code === NGTCP2_ERR_STREAM_NOT_FOUND || code === NGTCP2_ERR_STREAM_SHUT_WR;
+        const writeNoStreamData = (): number =>
+          Number(
+            ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(
+              this.#conn,
+              outPathPtr,
+              NGTCP2_PKT_INFO_VERSION,
+              pktInfoPtr,
+              out,
+              out.byteLength,
+              null,
+              0,
+              -1n,
+              null,
+              0n,
+              ts,
+            ),
+          );
+        const isCoalescingRetry = (code: number): boolean =>
+          code === NGTCP2_ERR_WRITE_MORE ||
+          code === NGTCP2_ERR_STREAM_DATA_BLOCKED ||
+          code === NGTCP2_ERR_STREAM_NOT_FOUND ||
+          code === NGTCP2_ERR_STREAM_SHUT_WR;
         if (this.#pendingWrites.length > 0) {
           let coalescing = false;
           let blockedStreamIds: Set<number> | null = null;
@@ -1933,9 +2909,25 @@ export class QuicConnection extends EventTarget {
             writeU64(vec, VEC_LEN, BigInt(remaining.byteLength));
             const dataLen = this.#writeDataLenBuf;
             writeI64(dataLen, 0, -1n);
-            const flags = (pending.fin ? NGTCP2_WRITE_STREAM_FLAG_FIN : 0) | NGTCP2_WRITE_STREAM_FLAG_MORE;
+            const flags =
+              (pending.fin ? NGTCP2_WRITE_STREAM_FLAG_FIN : 0) | NGTCP2_WRITE_STREAM_FLAG_MORE;
             coalescing = true;
-            n = Number(ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(this.#conn, outPathPtr, NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, this.#ptrOf(dataLen, _QUIC_PTR_DATA_LEN), flags, BigInt(pending.streamId), this.#ptrOf(vec, _QUIC_PTR_VEC), 1n, ts));
+            n = Number(
+              ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(
+                this.#conn,
+                outPathPtr,
+                NGTCP2_PKT_INFO_VERSION,
+                pktInfoPtr,
+                out,
+                out.byteLength,
+                this.#ptrOf(dataLen, _QUIC_PTR_DATA_LEN),
+                flags,
+                BigInt(pending.streamId),
+                this.#ptrOf(vec, _QUIC_PTR_VEC),
+                1n,
+                ts,
+              ),
+            );
             const consumed = Number(readI64(dataLen, 0));
             const packetAccepted = n > 0 || n === NGTCP2_ERR_WRITE_MORE;
             const acceptedStreamData = consumed > 0 && packetAccepted;
@@ -1947,13 +2939,13 @@ export class QuicConnection extends EventTarget {
                 streamId: pending.streamId,
                 start,
                 end,
-                data: remaining.subarray(0, consumed)
+                data: remaining.subarray(0, consumed),
               });
               pending.offset += consumed;
             }
             const consumedAllData = pending.offset >= pending.data.byteLength;
             const streamFrameWritten = consumed >= 0 && packetAccepted;
-            const finWritten = !pending.fin || streamFrameWritten && consumedAllData;
+            const finWritten = !pending.fin || (streamFrameWritten && consumedAllData);
             if (consumedAllData && finWritten) this.#pendingWrites.splice(pendingIndex, 1);
             if (n === NGTCP2_ERR_WRITE_MORE) {
               coalescing = true;
@@ -1961,7 +2953,9 @@ export class QuicConnection extends EventTarget {
             }
             if (n === NGTCP2_ERR_STREAM_NOT_FOUND || n === NGTCP2_ERR_STREAM_SHUT_WR) {
               this.#dropPendingWrites(pending.streamId);
-              this.#streams.get(pending.streamId)?.[quicStreamInternals.stopSendingFromConnection](0);
+              this.#streams
+                .get(pending.streamId)
+                ?.[quicStreamInternals.stopSendingFromConnection](0);
               if (coalescing || this.#pendingWrites.length > 0) continue;
               break;
             }
@@ -1971,7 +2965,7 @@ export class QuicConnection extends EventTarget {
               publishQuicTopic('quic.stream.blocked', {
                 connection: this,
                 stream,
-                streamId: pending.streamId
+                streamId: pending.streamId,
               });
               stream?.[quicStreamInternals.blockedFromConnection]();
               blockedStreamIds ??= new Set<number>();
@@ -1985,14 +2979,31 @@ export class QuicConnection extends EventTarget {
         } else if (this.#hasPendingDatagrams()) {
           n = this.#nextDatagramOnlyPacket(outPath, out, ts, pktInfo);
         } else {
-          n = Number(ngtcp2Sym!.ngtcp2_conn_write_pkt_versioned(this.#conn, outPathPtr, NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, ts));
+          n = Number(
+            ngtcp2Sym!.ngtcp2_conn_write_pkt_versioned(
+              this.#conn,
+              outPathPtr,
+              NGTCP2_PKT_INFO_VERSION,
+              pktInfoPtr,
+              out,
+              out.byteLength,
+              ts,
+            ),
+          );
         }
         if (n > 0) {
           this.#queueWrittenPacket(packetBatch, n, outPath, remoteAddress, out, ts, pktInfo);
           if (this.#closed) break;
           continue;
         }
-        if (n === 0 || n === NGTCP2_ERR_NOBUF || n === NGTCP2_ERR_PKT_NUM_EXHAUSTED || n === NGTCP2_ERR_STREAM_DATA_BLOCKED || n === NGTCP2_ERR_STREAM_NOT_FOUND || n === NGTCP2_ERR_STREAM_SHUT_WR) {
+        if (
+          n === 0 ||
+          n === NGTCP2_ERR_NOBUF ||
+          n === NGTCP2_ERR_PKT_NUM_EXHAUSTED ||
+          n === NGTCP2_ERR_STREAM_DATA_BLOCKED ||
+          n === NGTCP2_ERR_STREAM_NOT_FOUND ||
+          n === NGTCP2_ERR_STREAM_SHUT_WR
+        ) {
           ngtcp2Sym!.ngtcp2_conn_update_pkt_tx_time(this.#conn, ts);
           break;
         }
@@ -2052,7 +3063,11 @@ export class QuicConnection extends EventTarget {
     // move between calls, so re-arming would only churn a Promise, a closure, a
     // Map entry, two kqueue changelist entries, and a get_expiry FFI for no
     // change in when the timer fires. Skip when an armed timer already matches.
-    if (this.#timer !== null && expiry === this.#armedExpiry && idleDeadline === this.#armedIdleDeadline) {
+    if (
+      this.#timer !== null &&
+      expiry === this.#armedExpiry &&
+      idleDeadline === this.#armedIdleDeadline
+    ) {
       return;
     }
     if (this.#timer !== null) this.#timer.cancel?.();
@@ -2062,7 +3077,8 @@ export class QuicConnection extends EventTarget {
     const current = now(this.#runtime);
     if (expiry === NGTCP2_NO_EXPIRY) {
       if (idleDeadline !== null) {
-        const delayMs = idleDeadline <= current ? 1 : Math.max(1, Number((idleDeadline - current) / 1000000n));
+        const delayMs =
+          idleDeadline <= current ? 1 : Math.max(1, Number((idleDeadline - current) / 1000000n));
         this.#timer = this.#runtime.setTimer(delayMs, () => this.#handleTimerExpiry());
       }
       return;
@@ -2075,7 +3091,8 @@ export class QuicConnection extends EventTarget {
     }
     let delayMs = Math.max(1, Number((expiry - current) / 1000000n));
     if (idleDeadline !== null) {
-      const idleMs = idleDeadline <= current ? 1 : Math.max(1, Number((idleDeadline - current) / 1000000n));
+      const idleMs =
+        idleDeadline <= current ? 1 : Math.max(1, Number((idleDeadline - current) / 1000000n));
       delayMs = Math.min(delayMs, idleMs);
     }
     this.#timer = this.#runtime.setTimer(delayMs, () => this.#handleTimerExpiry());
@@ -2105,7 +3122,8 @@ export class QuicConnection extends EventTarget {
     }
     const rc = ngtcp2Sym!.ngtcp2_conn_handle_expiry(this.#conn, current) as number;
     if (rc === NGTCP2_ERR_IDLE_CLOSE) this.#closeFromTransport();
-    else if (rc !== 0 && rc !== NGTCP2_ERR_DRAINING && rc !== NGTCP2_ERR_CLOSING) this.#fail(ngtcp2Error(rc, 'ngtcp2_conn_handle_expiry'));
+    else if (rc !== 0 && rc !== NGTCP2_ERR_DRAINING && rc !== NGTCP2_ERR_CLOSING)
+      this.#fail(ngtcp2Error(rc, 'ngtcp2_conn_handle_expiry'));
     else {
       this[quicConnectionInternals.driveWrites]();
       this.#checkStreamIdleTimeout(current);
@@ -2133,7 +3151,12 @@ export class QuicConnection extends EventTarget {
       const stream = this.#streams.get(streamId);
       this.#peerStreamActivity.delete(streamId);
       if (stream === undefined || this.#streamInitiatedByLocal(streamId)) continue;
-      const rc = ngtcp2Sym!.ngtcp2_conn_shutdown_stream(this.#conn, 0, BigInt(streamId), 0n) as number;
+      const rc = ngtcp2Sym!.ngtcp2_conn_shutdown_stream(
+        this.#conn,
+        0,
+        BigInt(streamId),
+        0n,
+      ) as number;
       if (rc !== 0 && rc !== NGTCP2_ERR_STREAM_NOT_FOUND && rc !== NGTCP2_ERR_STREAM_SHUT_WR) {
         this.#fail(ngtcp2Error(rc, 'ngtcp2_conn_shutdown_stream'));
         return;
@@ -2147,15 +3170,30 @@ export class QuicConnection extends EventTarget {
   }
   [quicConnectionInternals.onRemoteStreamOpen](streamId: number): void {
     this.#recordPeerStreamActivity(streamId);
-    this.#ensureStream(streamId, ngtcp2Sym!.ngtcp2_is_bidi_stream(BigInt(streamId)) ? 'bidirectional' : 'unidirectional', true);
+    this.#ensureStream(
+      streamId,
+      ngtcp2Sym!.ngtcp2_is_bidi_stream(BigInt(streamId)) ? 'bidirectional' : 'unidirectional',
+      true,
+    );
   }
-  [quicConnectionInternals.onLocalStreamCredit](direction: 'bidirectional' | 'unidirectional'): void {
+  [quicConnectionInternals.onLocalStreamCredit](
+    direction: 'bidirectional' | 'unidirectional',
+  ): void {
     const waiter = this.#localStreamCreditWaiters[direction].shift();
     if (waiter !== undefined) waiter.resolve(undefined);
   }
-  [quicConnectionInternals.onStreamData](streamId: number, offset: number, data: Uint8Array, fin: boolean): void {
+  [quicConnectionInternals.onStreamData](
+    streamId: number,
+    offset: number,
+    data: Uint8Array,
+    fin: boolean,
+  ): void {
     this.#recordPeerStreamActivity(streamId);
-    const stream = this.#ensureStream(streamId, ngtcp2Sym!.ngtcp2_is_bidi_stream(BigInt(streamId)) ? 'bidirectional' : 'unidirectional', true);
+    const stream = this.#ensureStream(
+      streamId,
+      ngtcp2Sym!.ngtcp2_is_bidi_stream(BigInt(streamId)) ? 'bidirectional' : 'unidirectional',
+      true,
+    );
     stream[quicStreamInternals.pushIncoming](offset, data, fin);
   }
   [quicConnectionInternals.onStreamDataCredit](_streamId: number, _maxData: number): void {
@@ -2163,7 +3201,11 @@ export class QuicConnection extends EventTarget {
   }
   [quicConnectionInternals.extendStreamReceiveCredit](streamId: number, bytes: number): void {
     if (bytes <= 0 || this.#closed) return;
-    const rc = ngtcp2Sym!.ngtcp2_conn_extend_max_stream_offset(this.#conn, BigInt(streamId), BigInt(bytes)) as number;
+    const rc = ngtcp2Sym!.ngtcp2_conn_extend_max_stream_offset(
+      this.#conn,
+      BigInt(streamId),
+      BigInt(bytes),
+    ) as number;
     if (rc !== 0) {
       this.#fail(ngtcp2Error(rc, 'ngtcp2_conn_extend_max_stream_offset'));
       return;
@@ -2212,7 +3254,9 @@ export class QuicConnection extends EventTarget {
     const remoteInitiated = this.#role === 'client' ? initiator === 1 : initiator === 0;
     if (!remoteInitiated) return;
     this.#creditedRemoteStreamCloses.add(streamId);
-    const direction = ngtcp2Sym!.ngtcp2_is_bidi_stream(BigInt(streamId)) ? 'bidirectional' : 'unidirectional';
+    const direction = ngtcp2Sym!.ngtcp2_is_bidi_stream(BigInt(streamId))
+      ? 'bidirectional'
+      : 'unidirectional';
     this.#deferredMaxStreamsCredit[direction]++;
     this.#scheduleMaxStreamsCreditFlush();
   }
@@ -2244,21 +3288,24 @@ export class QuicConnection extends EventTarget {
   [quicConnectionInternals.onDatagram](data: Uint8Array, earlyData: boolean): void {
     if (!this.#options.datagrams.enabled) return;
     this.#stats.datagramsReceived++;
-    const receivedEarlyData = earlyData || this.#role === 'server' && this.#readingPacketStartedConnecting;
+    const receivedEarlyData =
+      earlyData || (this.#role === 'server' && this.#readingPacketStartedConnecting);
     this.#lastDatagramEvent = {
       data: data.slice(),
-      earlyData: receivedEarlyData
+      earlyData: receivedEarlyData,
     };
     this.#datagramQueue.push(data);
     publishQuicTopic('quic.session.receive.datagram', {
       connection: this,
       length: data.byteLength,
-      earlyData: receivedEarlyData
+      earlyData: receivedEarlyData,
     });
-    this.#dispatch(new QuicDatagramEvent('datagram', {
-      data,
-      earlyData: receivedEarlyData
-    }));
+    this.#dispatch(
+      new QuicDatagramEvent('datagram', {
+        data,
+        earlyData: receivedEarlyData,
+      }),
+    );
   }
   [quicConnectionInternals.onDatagramStatus](id: number, status: QuicDatagramStatus): void {
     if (status === 'ack') this.#stats.datagramsAcked++;
@@ -2267,21 +3314,33 @@ export class QuicConnection extends EventTarget {
     publishQuicTopic('quic.session.receive.datagram.status', {
       connection: this,
       id,
-      status
+      status,
     });
-    this.#dispatch(new QuicDatagramStatusEvent('datagramstatus', {
-      id,
-      status
-    }));
-    const eventType = status === 'ack' ? 'datagramack' : status === 'lost' ? 'datagramlost' : 'datagramabandoned';
-    this.#dispatch(new QuicDatagramStatusEvent(eventType, {
-      id,
-      status
-    }));
+    this.#dispatch(
+      new QuicDatagramStatusEvent('datagramstatus', {
+        id,
+        status,
+      }),
+    );
+    const eventType =
+      status === 'ack' ? 'datagramack' : status === 'lost' ? 'datagramlost' : 'datagramabandoned';
+    this.#dispatch(
+      new QuicDatagramStatusEvent(eventType, {
+        id,
+        status,
+      }),
+    );
   }
   [quicConnectionInternals.onKeyInstalled](_level: number): void {}
-  [quicConnectionInternals.onVersionNegotiation](hd: ArrayBuffer | null, sv: ArrayBuffer | null, nsv: number): void {
-    const wireVersion = hd === null || hd.byteLength < PKT_HD_VERSION + 4 ? this.#wireVersion : readU32(hd, PKT_HD_VERSION);
+  [quicConnectionInternals.onVersionNegotiation](
+    hd: ArrayBuffer | null,
+    sv: ArrayBuffer | null,
+    nsv: number,
+  ): void {
+    const wireVersion =
+      hd === null || hd.byteLength < PKT_HD_VERSION + 4
+        ? this.#wireVersion
+        : readU32(hd, PKT_HD_VERSION);
     const requestedWireVersions: number[] = [];
     const versions = copyFromPtr(sv, Math.max(0, nsv) * 4);
     const view = new DataView(versions.buffer, versions.byteOffset, versions.byteLength);
@@ -2289,21 +3348,36 @@ export class QuicConnection extends EventTarget {
       requestedWireVersions.push(view.getUint32(offset, true));
     }
     this.#versionNegotiationVersions = requestedWireVersions.slice();
-    if (this.#role === 'client' && this.#state === 'connecting' && !this.#versionNegotiationRetried) {
+    if (
+      this.#role === 'client' &&
+      this.#state === 'connecting' &&
+      !this.#versionNegotiationRetried
+    ) {
       this.#versionNegotiationPendingRetry = true;
     }
     this.#publishVersionNegotiation(wireVersion, requestedWireVersions);
   }
-  [quicConnectionInternals.onVersionNegotiationForTest](wireVersion: number, requestedWireVersions: number[], supportedWireVersions?: number[]): void {
+  [quicConnectionInternals.onVersionNegotiationForTest](
+    wireVersion: number,
+    requestedWireVersions: number[],
+    supportedWireVersions?: number[],
+  ): void {
     this.#publishVersionNegotiation(wireVersion, requestedWireVersions, supportedWireVersions);
   }
-  #publishVersionNegotiation(wireVersion: number, requestedWireVersions: number[], supportedWireVersions = this.#options.versions.map(versionToWire)): void {
+  #publishVersionNegotiation(
+    wireVersion: number,
+    requestedWireVersions: number[],
+    supportedWireVersions = this.#options.versions.map(versionToWire),
+  ): void {
     publishQuicTopic('quic.session.version.negotiation', {
       connection: this,
-      version: wireVersion === NGTCP2_PROTO_VER_V1 || wireVersion === NGTCP2_PROTO_VER_V2 ? wireVersionToName(wireVersion) : null,
+      version:
+        wireVersion === NGTCP2_PROTO_VER_V1 || wireVersion === NGTCP2_PROTO_VER_V2
+          ? wireVersionToName(wireVersion)
+          : null,
       wireVersion,
       requestedWireVersions: Object.freeze(requestedWireVersions.slice()),
-      supportedWireVersions: Object.freeze(supportedWireVersions.slice())
+      supportedWireVersions: Object.freeze(supportedWireVersions.slice()),
     });
   }
   [quicConnectionInternals.onNewToken](token: Uint8Array): void {
@@ -2313,24 +3387,33 @@ export class QuicConnection extends EventTarget {
     if (this.#options.sessionStore !== undefined) {
       const store = this.#options.sessionStore;
       const key = this.#sessionKey;
-      void Promise.resolve(store.load(key)).then((existing) => {
-        return store.save(key, {
-          ...existing ?? {},
-          addressToken
+      void Promise.resolve(store.load(key))
+        .then((existing) => {
+          return store.save(key, {
+            ...(existing ?? {}),
+            addressToken,
+          });
+        })
+        .catch((error) => {
+          if (!this.#closed)
+            this.#dispatch(
+              new QuicErrorEvent('error', {
+                error: error instanceof Error ? error : new Error(String(error)),
+              }),
+            );
         });
-      }).catch((error) => {
-        if (!this.#closed) this.#dispatch(new QuicErrorEvent('error', { error: error instanceof Error ? error : new Error(String(error)) }));
-      });
     }
     const eventToken = addressToken.slice();
-    this.#dispatch(new QuicNewTokenEvent('newtoken', {
-      token: eventToken,
-      address: this.remoteAddress
-    }));
+    this.#dispatch(
+      new QuicNewTokenEvent('newtoken', {
+        token: eventToken,
+        address: this.remoteAddress,
+      }),
+    );
     publishQuicTopic('quic.session.new.token', {
       connection: this,
       token: eventToken,
-      address: this.remoteAddress
+      address: this.remoteAddress,
     });
   }
   [quicConnectionInternals.onQlogWrite](flags: number, data: Uint8Array): void {
@@ -2343,7 +3426,12 @@ export class QuicConnection extends EventTarget {
       const message = error instanceof Error ? error.message : String(error);
       if (/open failed/.test(message)) this.#stats.qlogOpenFailed++;
       else this.#stats.qlogWriteFailed++;
-      if (!this.#closed) this.#dispatch(new QuicErrorEvent('error', { error: error instanceof Error ? error : new Error(String(error)) }));
+      if (!this.#closed)
+        this.#dispatch(
+          new QuicErrorEvent('error', {
+            error: error instanceof Error ? error : new Error(String(error)),
+          }),
+        );
     }
   }
   #openQlogFd(): number {
@@ -2354,7 +3442,9 @@ export class QuicConnection extends EventTarget {
     if (output.directory !== undefined && output.directory.length > 0) {
       fileLib.symbols.mkdir(fileCstr(output.directory), 493);
     }
-    const fd = Number(fileLib.symbols.open(fileCstr(output.path), O_WRONLY | O_CREAT | O_TRUNC, 420));
+    const fd = Number(
+      fileLib.symbols.open(fileCstr(output.path), O_WRONLY | O_CREAT | O_TRUNC, 420),
+    );
     if (fd < 0) throw new Error(`qlog open failed: ${fd}`);
     fileLib.symbols.fchmod(fd, 420);
     this.#qlogOpened = true;
@@ -2398,48 +3488,73 @@ export class QuicConnection extends EventTarget {
     this.#earlyDataReady = false;
     this.#earlyDataQueuedBytes = 0;
     publishQuicTopic('quic.session.early.rejected', { connection: this });
-    this.#dispatch(new QuicEarlyDataEvent('earlydata', {
-      accepted: false,
-      rejected: true,
-      reason: 'rejected-by-peer'
-    }));
+    this.#dispatch(
+      new QuicEarlyDataEvent('earlydata', {
+        accepted: false,
+        rejected: true,
+        reason: 'rejected-by-peer',
+      }),
+    );
   }
-  [quicConnectionInternals.onPathValidationStarted](path: ArrayBuffer | null, fallbackPath?: ArrayBuffer | null, flags = 0): void {
+  [quicConnectionInternals.onPathValidationStarted](
+    path: ArrayBuffer | null,
+    fallbackPath?: ArrayBuffer | null,
+    flags = 0,
+  ): void {
     this.#activePathValidations.push({
       path: pathSnapshotFromNative(path, this.#fd),
       previousPath: pathSnapshotFromNative(fallbackPath ?? null, this.#fd),
       preferredAddress: (flags & NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR) !== 0,
-      newToken: (flags & NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN) !== 0
+      newToken: (flags & NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN) !== 0,
     });
   }
-  [quicConnectionInternals.onPathValidationFinished](path: ArrayBuffer | null, fallbackPath: ArrayBuffer | null, result: number, flags: number): void {
+  [quicConnectionInternals.onPathValidationFinished](
+    path: ArrayBuffer | null,
+    fallbackPath: ArrayBuffer | null,
+    result: number,
+    flags: number,
+  ): void {
     const validatedSnapshot = pathSnapshotFromNative(path, this.#fd);
     const fallbackSnapshot = pathSnapshotFromNative(fallbackPath, this.#fd);
     this.#forgetActivePathValidation(validatedSnapshot, fallbackSnapshot, flags);
-    const snapshot = result === NGTCP2_PATH_VALIDATION_RESULT_SUCCESS ? validatedSnapshot : fallbackSnapshot;
+    const snapshot =
+      result === NGTCP2_PATH_VALIDATION_RESULT_SUCCESS ? validatedSnapshot : fallbackSnapshot;
     const init = {
       result: pathValidationResultName(result),
       path: pathFromSnapshot(validatedSnapshot),
       previousPath: pathFromSnapshot(fallbackSnapshot),
       preferredAddress: (flags & NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR) !== 0,
-      newToken: (flags & NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN) !== 0
+      newToken: (flags & NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN) !== 0,
     };
     deferAfterNativeCallback(() => {
       const activePathChanged = this.#syncActivePathSnapshot(snapshot);
       publishQuicTopic('quic.session.path.validation', {
         connection: this,
-        ...init
+        ...init,
       });
       this.#dispatch(new QuicPathValidationEvent('pathvalidation', init));
-      if (result === NGTCP2_PATH_VALIDATION_RESULT_SUCCESS && (activePathChanged || pathSnapshotsDiffer(validatedSnapshot, fallbackSnapshot))) {
+      if (
+        result === NGTCP2_PATH_VALIDATION_RESULT_SUCCESS &&
+        (activePathChanged || pathSnapshotsDiffer(validatedSnapshot, fallbackSnapshot))
+      ) {
         this.#dispatch(new QuicPathValidationEvent('migration', init));
       }
     });
   }
-  #forgetActivePathValidation(path: PathSnapshot | null, previousPath: PathSnapshot | null, flags: number): void {
+  #forgetActivePathValidation(
+    path: PathSnapshot | null,
+    previousPath: PathSnapshot | null,
+    flags: number,
+  ): void {
     const preferredAddress = (flags & NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR) !== 0;
     const newToken = (flags & NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN) !== 0;
-    const index = this.#activePathValidations.findIndex((validation) => !pathSnapshotsDiffer(validation.path, path) && !pathSnapshotsDiffer(validation.previousPath, previousPath) && validation.preferredAddress === preferredAddress && validation.newToken === newToken);
+    const index = this.#activePathValidations.findIndex(
+      (validation) =>
+        !pathSnapshotsDiffer(validation.path, path) &&
+        !pathSnapshotsDiffer(validation.previousPath, previousPath) &&
+        validation.preferredAddress === preferredAddress &&
+        validation.newToken === newToken,
+    );
     if (index >= 0) this.#activePathValidations.splice(index, 1);
   }
   #abortActivePathValidations(): void {
@@ -2451,27 +3566,41 @@ export class QuicConnection extends EventTarget {
         path: pathFromSnapshot(validation.path),
         previousPath: pathFromSnapshot(validation.previousPath),
         preferredAddress: validation.preferredAddress,
-        newToken: validation.newToken
+        newToken: validation.newToken,
       };
       publishQuicTopic('quic.session.path.validation', {
         connection: this,
-        ...init
+        ...init,
       });
       this.#dispatch(new QuicPathValidationEvent('pathvalidation', init));
     }
   }
-  [quicConnectionInternals.selectPreferredAddress](dest: ArrayBuffer | null, paddr: ArrayBuffer | null): number {
-    if (dest === null || paddr === null || !this.#options.migration.enabled || !this.#options.migration.usePreferredAddress) return 0;
+  [quicConnectionInternals.selectPreferredAddress](
+    dest: ArrayBuffer | null,
+    paddr: ArrayBuffer | null,
+  ): number {
+    if (
+      dest === null ||
+      paddr === null ||
+      !this.#options.migration.enabled ||
+      !this.#options.migration.usePreferredAddress
+    )
+      return 0;
     const localAddress = this.#activeLocalAddress;
     const remoteAddress = preferredAddressFromNative(paddr, localAddress.family);
     if (remoteAddress === null) return 0;
     const path = this.#retainPath(localAddress, remoteAddress, this.#fd);
     if (!writeNativePathAddress(dest, PATH_LOCAL, localAddress)) return NGTCP2_ERR_CALLBACK_FAILURE;
-    if (!writeNativePathAddress(dest, PATH_REMOTE, remoteAddress)) return NGTCP2_ERR_CALLBACK_FAILURE;
+    if (!writeNativePathAddress(dest, PATH_REMOTE, remoteAddress))
+      return NGTCP2_ERR_CALLBACK_FAILURE;
     writeNativePathUserData(dest, path.userData);
     return 0;
   }
-  #ensureStream(streamId: number, direction: 'bidirectional' | 'unidirectional', incoming: boolean): QuicStream {
+  #ensureStream(
+    streamId: number,
+    direction: 'bidirectional' | 'unidirectional',
+    incoming: boolean,
+  ): QuicStream {
     let stream = this.#streams.get(streamId);
     if (!stream) {
       stream = new QuicStream(streamId, direction, this, incoming);
@@ -2488,7 +3617,7 @@ export class QuicConnection extends EventTarget {
       publishQuicTopic(incoming ? 'quic.session.received.stream' : 'quic.session.open.stream', {
         connection: this,
         stream,
-        direction
+        direction,
       });
       if (incoming) {
         if (this.#gracefulClosing) {
@@ -2524,8 +3653,14 @@ export class QuicConnection extends EventTarget {
     this.#stats.streamsClosed++;
     this.#maybeFinishGracefulClose();
   }
-  [quicConnectionInternals.onAckedStreamDataOffset](streamId: number, offset: number, datalen: number): void {
-    (this.#streams.get(streamId) ?? this.#closedStreams.get(streamId))?.[quicStreamInternals.recordAck](offset, datalen);
+  [quicConnectionInternals.onAckedStreamDataOffset](
+    streamId: number,
+    offset: number,
+    datalen: number,
+  ): void {
+    (this.#streams.get(streamId) ?? this.#closedStreams.get(streamId))?.[
+      quicStreamInternals.recordAck
+    ](offset, datalen);
     const end = offset + datalen;
     const outstanding: OutstandingStreamData[] = [];
     for (const entry of this.#outstandingStreamData) {
@@ -2538,7 +3673,7 @@ export class QuicConnection extends EventTarget {
           streamId,
           start: entry.start,
           end: offset,
-          data: entry.data.subarray(0, offset - entry.start)
+          data: entry.data.subarray(0, offset - entry.start),
         });
       }
       if (end < entry.end) {
@@ -2546,7 +3681,7 @@ export class QuicConnection extends EventTarget {
           streamId,
           start: end,
           end: entry.end,
-          data: entry.data.subarray(end - entry.start)
+          data: entry.data.subarray(end - entry.start),
         });
       }
     }
@@ -2565,7 +3700,9 @@ export class QuicConnection extends EventTarget {
   }
   #releaseStreamData(streamId: number): void {
     this.#nextStreamOffsets.delete(streamId);
-    this.#outstandingStreamData = this.#outstandingStreamData.filter((entry) => entry.streamId !== streamId);
+    this.#outstandingStreamData = this.#outstandingStreamData.filter(
+      (entry) => entry.streamId !== streamId,
+    );
     this.#closedStreams.delete(streamId);
     this.#dropPendingWrites(streamId);
   }
@@ -2576,4 +3713,10 @@ export class QuicConnection extends EventTarget {
 
 core.registerQuicConnectionClass(QuicConnection);
 export { quicConnectionInternals, quicIncomingStreamHook } from './core.ts';
-export type { QuicConnectionOptions, QuicConnectionState, QuicConnectionStats, QuicPeerVerification, QuicTransportParameterSnapshot } from './core.ts';
+export type {
+  QuicConnectionOptions,
+  QuicConnectionState,
+  QuicConnectionStats,
+  QuicPeerVerification,
+  QuicTransportParameterSnapshot,
+} from './core.ts';

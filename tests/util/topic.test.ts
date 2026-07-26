@@ -1,6 +1,6 @@
 /**
-* Tests for fino:context/topic — Topic pub/sub and async iterator.
-*/
+ * Tests for fino:context/topic — Topic pub/sub and async iterator.
+ */
 import { describe, it } from 'fino:test/test';
 import { subscribeMatching, topic } from 'fino:context/topic';
 describe('Topic async iterator', () => {
@@ -33,11 +33,7 @@ describe('Topic async iterator', () => {
     ch.publish(20);
     ch.publish(30);
     await done;
-    t.deepEqual(received, [
-      10,
-      20,
-      30
-    ], 'all messages received in order');
+    t.deepEqual(received, [10, 20, 30], 'all messages received in order');
   });
   it('return() disposes subscription and resolves pending next()', async (t) => {
     const ch = topic('test:iter-return-' + Math.random());
@@ -106,9 +102,12 @@ describe('Topic async iterator', () => {
     const seen: string[] = [];
     const existing = topic('test:match:existing:' + Math.random());
     const futureName = 'test:match:future:' + Math.random();
-    const handle = subscribeMatching((name) => name.startsWith('test:match:'), (message, topicName) => {
-      seen.push(`${topicName}=${message}`);
-    });
+    const handle = subscribeMatching(
+      (name) => name.startsWith('test:match:'),
+      (message, topicName) => {
+        seen.push(`${topicName}=${message}`);
+      },
+    );
     existing.publish('alpha');
     topic(futureName).publish('beta');
     topic('test:other:' + Math.random()).publish('ignored');
@@ -131,7 +130,7 @@ describe('Topic async iterator', () => {
     const handle = errors.subscribe((event) => {
       seen.push({
         message: event.error.message,
-        topicName: event.topicName
+        topicName: event.topicName,
       });
     });
     try {
@@ -142,9 +141,15 @@ describe('Topic async iterator', () => {
     } finally {
       handle.dispose();
     }
-    t.deepEqual(seen, [{
-      message: 'subscriber failed',
-      topicName: source.name
-    }], 'subscriber failures are published to execution-flow:error');
+    t.deepEqual(
+      seen,
+      [
+        {
+          message: 'subscriber failed',
+          topicName: source.name,
+        },
+      ],
+      'subscriber failures are published to execution-flow:error',
+    );
   });
 });

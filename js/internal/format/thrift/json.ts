@@ -1,60 +1,66 @@
 /**
-* Thrift JSON protocol (`TJSONProtocol`).
-*
-* The interoperable text protocol: the only Thrift codec that produces
-* human-readable, valid JSON. It trades the density and speed of the binary and
-* compact protocols for a wire form you can inspect, diff, and paste into a JSON
-* tool. Reach for it when a peer speaks `TJSONProtocol`, or when you want the
-* encoded bytes to be legible; prefer the compact protocol (used by Parquet
-* metadata) when size matters.
-*
-* The grammar is fixed and terse. A message is a
-* `[version, name, type, seqid, …]` array. A struct is an object keyed by the
-* field id (as a decimal string) whose value is a single-entry object
-* `{ "<typecode>": value }` tagging the field's type — `"i32"`, `"str"`,
-* `"lst"`, and so on. A map is `["<kcode>", "<vcode>", size, { … }]` and a
-* list or set is `["<elemcode>", size, …]`. Booleans are the integers `1`/`0`,
-* i64 is written as a bare number and read back as a lossless `bigint`, binary
-* is unpadded base64, and the non-finite doubles are the quoted strings
-* `"NaN"`, `"Infinity"`, and `"-Infinity"`. Because JSON requires object keys to
-* be strings, every number that lands in a key position (struct field ids, map
-* keys) is quoted.
-*
-* Unlike the binary and compact codecs, this protocol does not build on the
-* shared `ByteWriter`/`ByteReader`: it accumulates output as string fragments
-* and reads by advancing a character cursor over the decoded input, tracking
-* nested array/object separators (`,` and `:`) with a small context stack. A
-* single instance is either a writer or a reader, fixed at construction:
-* `new JSONProtocol()` builds a writer whose bytes you collect with `bytes()`,
-* while `new JSONProtocol(input)` builds a reader over `input`.
-*
-* ```ts no_run
-* import { JSONProtocol, TType } from 'internal:format/thrift';
-*
-* // Encode a one-field struct { 1: i32 = 42 }.
-* const w = new JSONProtocol();
-* w.writeStructBegin();
-* w.writeFieldBegin('', TType.I32, 1);
-* w.writeI32(42);
-* w.writeFieldEnd();
-* w.writeFieldStop();
-* w.writeStructEnd();
-* const text = new TextDecoder().decode(w.bytes()); // {"1":{"i32":42}}
-*
-* // Decode it back.
-* const r = new JSONProtocol(w.bytes());
-* r.readStructBegin();
-* const field = r.readFieldBegin(); // { type: TType.I32, id: 1, name: '' }
-* const value = r.readI32();        // 42
-* r.readFieldEnd();
-* r.readStructEnd();
-* ```
-*
-* Reference: https://github.com/apache/thrift/blob/master/lib/rb/lib/thrift/protocol/json_protocol.rb
-*
-* @internal
-*/
-import { type Protocol, type MessageHeader, type FieldHeader, type MapHeader, type ListHeader } from './protocol.ts';
+ * Thrift JSON protocol (`TJSONProtocol`).
+ *
+ * The interoperable text protocol: the only Thrift codec that produces
+ * human-readable, valid JSON. It trades the density and speed of the binary and
+ * compact protocols for a wire form you can inspect, diff, and paste into a JSON
+ * tool. Reach for it when a peer speaks `TJSONProtocol`, or when you want the
+ * encoded bytes to be legible; prefer the compact protocol (used by Parquet
+ * metadata) when size matters.
+ *
+ * The grammar is fixed and terse. A message is a
+ * `[version, name, type, seqid, …]` array. A struct is an object keyed by the
+ * field id (as a decimal string) whose value is a single-entry object
+ * `{ "<typecode>": value }` tagging the field's type — `"i32"`, `"str"`,
+ * `"lst"`, and so on. A map is `["<kcode>", "<vcode>", size, { … }]` and a
+ * list or set is `["<elemcode>", size, …]`. Booleans are the integers `1`/`0`,
+ * i64 is written as a bare number and read back as a lossless `bigint`, binary
+ * is unpadded base64, and the non-finite doubles are the quoted strings
+ * `"NaN"`, `"Infinity"`, and `"-Infinity"`. Because JSON requires object keys to
+ * be strings, every number that lands in a key position (struct field ids, map
+ * keys) is quoted.
+ *
+ * Unlike the binary and compact codecs, this protocol does not build on the
+ * shared `ByteWriter`/`ByteReader`: it accumulates output as string fragments
+ * and reads by advancing a character cursor over the decoded input, tracking
+ * nested array/object separators (`,` and `:`) with a small context stack. A
+ * single instance is either a writer or a reader, fixed at construction:
+ * `new JSONProtocol()` builds a writer whose bytes you collect with `bytes()`,
+ * while `new JSONProtocol(input)` builds a reader over `input`.
+ *
+ * ```ts no_run
+ * import { JSONProtocol, TType } from 'internal:format/thrift';
+ *
+ * // Encode a one-field struct { 1: i32 = 42 }.
+ * const w = new JSONProtocol();
+ * w.writeStructBegin();
+ * w.writeFieldBegin('', TType.I32, 1);
+ * w.writeI32(42);
+ * w.writeFieldEnd();
+ * w.writeFieldStop();
+ * w.writeStructEnd();
+ * const text = new TextDecoder().decode(w.bytes()); // {"1":{"i32":42}}
+ *
+ * // Decode it back.
+ * const r = new JSONProtocol(w.bytes());
+ * r.readStructBegin();
+ * const field = r.readFieldBegin(); // { type: TType.I32, id: 1, name: '' }
+ * const value = r.readI32();        // 42
+ * r.readFieldEnd();
+ * r.readStructEnd();
+ * ```
+ *
+ * Reference: https://github.com/apache/thrift/blob/master/lib/rb/lib/thrift/protocol/json_protocol.rb
+ *
+ * @internal
+ */
+import {
+  type Protocol,
+  type MessageHeader,
+  type FieldHeader,
+  type MapHeader,
+  type ListHeader,
+} from './protocol.ts';
 import { TType, ThriftError } from './types.ts';
 const VERSION = 1;
 const _encoder = new TextEncoder();
@@ -70,7 +76,7 @@ const TYPE_NAME: Record<number, string> = {
   [TType.STRUCT]: 'rec',
   [TType.MAP]: 'map',
   [TType.SET]: 'set',
-  [TType.LIST]: 'lst'
+  [TType.LIST]: 'lst',
 };
 const NAME_TYPE: Record<string, number> = {
   tf: TType.BOOL,
@@ -83,7 +89,7 @@ const NAME_TYPE: Record<string, number> = {
   rec: TType.STRUCT,
   map: TType.MAP,
   set: TType.SET,
-  lst: TType.LIST
+  lst: TType.LIST,
 };
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64_INV = (() => {
@@ -95,16 +101,16 @@ function base64Encode(bytes: Uint8Array): string {
   let out = '';
   let i = 0;
   for (; i + 3 <= bytes.byteLength; i += 3) {
-    const n = bytes[i]! << 16 | bytes[i + 1]! << 8 | bytes[i + 2]!;
-    out += B64[n >> 18 & 63]! + B64[n >> 12 & 63]! + B64[n >> 6 & 63]! + B64[n & 63]!;
+    const n = (bytes[i]! << 16) | (bytes[i + 1]! << 8) | bytes[i + 2]!;
+    out += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]! + B64[(n >> 6) & 63]! + B64[n & 63]!;
   }
   const rem = bytes.byteLength - i;
   if (rem === 1) {
     const n = bytes[i]! << 16;
-    out += B64[n >> 18 & 63]! + B64[n >> 12 & 63]!;
+    out += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]!;
   } else if (rem === 2) {
-    const n = bytes[i]! << 16 | bytes[i + 1]! << 8;
-    out += B64[n >> 18 & 63]! + B64[n >> 12 & 63]! + B64[n >> 6 & 63]!;
+    const n = (bytes[i]! << 16) | (bytes[i + 1]! << 8);
+    out += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]! + B64[(n >> 6) & 63]!;
   }
   return out;
 }
@@ -113,16 +119,23 @@ function base64Decode(str: string): Uint8Array {
   const out: number[] = [];
   let i = 0;
   for (; i + 4 <= clean.length; i += 4) {
-    const n = B64_INV[clean.charCodeAt(i)]! << 18 | B64_INV[clean.charCodeAt(i + 1)]! << 12 | B64_INV[clean.charCodeAt(i + 2)]! << 6 | B64_INV[clean.charCodeAt(i + 3)]!;
-    out.push(n >> 16 & 255, n >> 8 & 255, n & 255);
+    const n =
+      (B64_INV[clean.charCodeAt(i)]! << 18) |
+      (B64_INV[clean.charCodeAt(i + 1)]! << 12) |
+      (B64_INV[clean.charCodeAt(i + 2)]! << 6) |
+      B64_INV[clean.charCodeAt(i + 3)]!;
+    out.push((n >> 16) & 255, (n >> 8) & 255, n & 255);
   }
   const rem = clean.length - i;
   if (rem === 2) {
-    const n = B64_INV[clean.charCodeAt(i)]! << 18 | B64_INV[clean.charCodeAt(i + 1)]! << 12;
-    out.push(n >> 16 & 255);
+    const n = (B64_INV[clean.charCodeAt(i)]! << 18) | (B64_INV[clean.charCodeAt(i + 1)]! << 12);
+    out.push((n >> 16) & 255);
   } else if (rem === 3) {
-    const n = B64_INV[clean.charCodeAt(i)]! << 18 | B64_INV[clean.charCodeAt(i + 1)]! << 12 | B64_INV[clean.charCodeAt(i + 2)]! << 6;
-    out.push(n >> 16 & 255, n >> 8 & 255);
+    const n =
+      (B64_INV[clean.charCodeAt(i)]! << 18) |
+      (B64_INV[clean.charCodeAt(i + 1)]! << 12) |
+      (B64_INV[clean.charCodeAt(i + 2)]! << 6);
+    out.push((n >> 16) & 255, (n >> 8) & 255);
   }
   return new Uint8Array(out);
 }
@@ -157,45 +170,45 @@ class PairWriteContext extends WriteContext {
   }
 }
 /**
-* Text Thrift JSON protocol codec implementing the shared `Protocol` contract.
-*
-* Manages its own state rather than the shared `ByteWriter`/`ByteReader`: a
-* writer appends string fragments to an internal buffer, and a reader tokenizes
-* the decoded input by advancing a character cursor. Both modes maintain a stack
-* of separator contexts so nested arrays and objects emit or consume the right
-* `,` and `:` punctuation without the caller thinking about it.
-*
-* Construct with no argument for a writer and drive the `write*` calls in the
-* structure order the Thrift schema implies (`writeStructBegin`, then a
-* `writeFieldBegin`/value/`writeFieldEnd` per field, then `writeFieldStop`,
-* then `writeStructEnd`), finally collecting the encoded UTF-8 bytes with
-* `bytes()`. Construct with a `Uint8Array` for a reader and mirror those calls
-* with the `read*` counterparts. The two modes are not enforced to be exclusive
-* — a fresh instance simply starts with an empty write buffer and an empty read
-* cursor — but mixing them on one instance is not meaningful. A reader whose
-* input violates the grammar throws a `ThriftError` carrying the byte offset.
-*
-* ```ts no_run
-* import { JSONProtocol, TType, TMessageType } from 'internal:format/thrift';
-*
-* const w = new JSONProtocol();
-* w.writeMessageBegin('ping', TMessageType.CALL, 7);
-* w.writeStructBegin();
-* w.writeFieldStop();
-* w.writeStructEnd();
-* w.writeMessageEnd();
-* // [1,"ping",1,7,{}]
-*
-* const r = new JSONProtocol(w.bytes());
-* const header = r.readMessageBegin(); // { name: 'ping', type: CALL, seqid: 7 }
-* r.readStructBegin();
-* r.readFieldBegin();                  // { type: TType.STOP, ... }
-* r.readStructEnd();
-* r.readMessageEnd();
-* ```
-*
-* @internal
-*/
+ * Text Thrift JSON protocol codec implementing the shared `Protocol` contract.
+ *
+ * Manages its own state rather than the shared `ByteWriter`/`ByteReader`: a
+ * writer appends string fragments to an internal buffer, and a reader tokenizes
+ * the decoded input by advancing a character cursor. Both modes maintain a stack
+ * of separator contexts so nested arrays and objects emit or consume the right
+ * `,` and `:` punctuation without the caller thinking about it.
+ *
+ * Construct with no argument for a writer and drive the `write*` calls in the
+ * structure order the Thrift schema implies (`writeStructBegin`, then a
+ * `writeFieldBegin`/value/`writeFieldEnd` per field, then `writeFieldStop`,
+ * then `writeStructEnd`), finally collecting the encoded UTF-8 bytes with
+ * `bytes()`. Construct with a `Uint8Array` for a reader and mirror those calls
+ * with the `read*` counterparts. The two modes are not enforced to be exclusive
+ * — a fresh instance simply starts with an empty write buffer and an empty read
+ * cursor — but mixing them on one instance is not meaningful. A reader whose
+ * input violates the grammar throws a `ThriftError` carrying the byte offset.
+ *
+ * ```ts no_run
+ * import { JSONProtocol, TType, TMessageType } from 'internal:format/thrift';
+ *
+ * const w = new JSONProtocol();
+ * w.writeMessageBegin('ping', TMessageType.CALL, 7);
+ * w.writeStructBegin();
+ * w.writeFieldStop();
+ * w.writeStructEnd();
+ * w.writeMessageEnd();
+ * // [1,"ping",1,7,{}]
+ *
+ * const r = new JSONProtocol(w.bytes());
+ * const header = r.readMessageBegin(); // { name: 'ping', type: CALL, seqid: 7 }
+ * r.readStructBegin();
+ * r.readFieldBegin();                  // { type: TType.STOP, ... }
+ * r.readStructEnd();
+ * r.readMessageEnd();
+ * ```
+ *
+ * @internal
+ */
 export class JSONProtocol implements Protocol {
   #parts: string[] = [];
   #in = '';
@@ -204,30 +217,30 @@ export class JSONProtocol implements Protocol {
   #wctx: WriteContext[] = [new WriteContext()];
   #rctx: WriteContext[] = [new WriteContext()];
   /**
-  * Builds a writer when `input` is omitted, or a reader over `input` when it is
-  * supplied. Reader input is decoded from UTF-8 up front so the tokenizer can
-  * work on characters; the original bytes are retained so error offsets refer
-  * to the caller's buffer.
-  */
+   * Builds a writer when `input` is omitted, or a reader over `input` when it is
+   * supplied. Reader input is decoded from UTF-8 up front so the tokenizer can
+   * work on characters; the original bytes are retained so error offsets refer
+   * to the caller's buffer.
+   */
   constructor(input?: Uint8Array) {
     this.#source = input ?? new Uint8Array(0);
     if (input !== undefined) this.#in = _decoder.decode(input);
   }
   /**
-  * Returns the encoded document as UTF-8 bytes (writer mode).
-  *
-  * Joins the accumulated string fragments and encodes them. Called once the
-  * full structure has been written. On a reader (or a writer that has emitted
-  * nothing) this returns the encoding of the empty string.
-  */
+   * Returns the encoded document as UTF-8 bytes (writer mode).
+   *
+   * Joins the accumulated string fragments and encodes them. Called once the
+   * full structure has been written. On a reader (or a writer that has emitted
+   * nothing) this returns the encoding of the empty string.
+   */
   bytes(): Uint8Array {
     return _encoder.encode(this.#parts.join(''));
   }
 
   /**
-  * Returns the reader's current cursor, as a character offset into the decoded
-  * input, reporting how much of the document has been consumed.
-  */
+   * Returns the reader's current cursor, as a character offset into the decoded
+   * input, reporting how much of the document has been consumed.
+   */
   position(): number {
     return this.#ip;
   }
@@ -288,13 +301,13 @@ export class JSONProtocol implements Protocol {
   }
   // --- write API -----------------------------------------------------------
   /**
-  * Opens the message envelope array `[version, "name", type, seqid, …`.
-  *
-  * Writes the protocol version (always `1`), the quoted `name`, the
-  * `TMessageType` `type` (CALL, REPLY, EXCEPTION, ONEWAY), and the `seqid`
-  * request/response correlation number. The message body (typically a single
-  * struct) follows, closed by `writeMessageEnd`.
-  */
+   * Opens the message envelope array `[version, "name", type, seqid, …`.
+   *
+   * Writes the protocol version (always `1`), the quoted `name`, the
+   * `TMessageType` `type` (CALL, REPLY, EXCEPTION, ONEWAY), and the `seqid`
+   * request/response correlation number. The message body (typically a single
+   * struct) follows, closed by `writeMessageEnd`.
+   */
   writeMessageBegin(name: string, type: number, seqid: number): void {
     this.#writeArrayStart();
     this.#writeJSONInteger(String(VERSION));
@@ -315,11 +328,11 @@ export class JSONProtocol implements Protocol {
     this.#writeObjectEnd();
   }
   /**
-  * Opens a field: writes the field `id` as a quoted key, then opens the
-  * single-entry type-tag object and writes the type name (`"i32"`, `"str"`,
-  * etc.) derived from the `TType` `type`. The declared `_name` is not on the
-  * wire. The field value is written next, then `writeFieldEnd` closes the tag.
-  */
+   * Opens a field: writes the field `id` as a quoted key, then opens the
+   * single-entry type-tag object and writes the type name (`"i32"`, `"str"`,
+   * etc.) derived from the `TType` `type`. The declared `_name` is not on the
+   * wire. The field value is written next, then `writeFieldEnd` closes the tag.
+   */
   writeFieldBegin(_name: string, type: number, id: number): void {
     this.#writeJSONInteger(String(id));
     this.#writeObjectStart();
@@ -330,18 +343,18 @@ export class JSONProtocol implements Protocol {
     this.#writeObjectEnd();
   }
   /**
-  * No-op; the JSON protocol has no field-stop marker. The end of a struct's
-  * fields is delimited by the closing `}`, so this exists only to satisfy the
-  * shared `Protocol` contract.
-  */
+   * No-op; the JSON protocol has no field-stop marker. The end of a struct's
+   * fields is delimited by the closing `}`, so this exists only to satisfy the
+   * shared `Protocol` contract.
+   */
   writeFieldStop(): void {}
   /**
-  * Opens a map `["<kcode>", "<vcode>", size, {`.
-  *
-  * Writes the key and value type names (from the `keyType`/`valueType` `TType`
-  * codes), the entry `size`, and opens the entry object. The caller then writes
-  * the `size` key/value pairs before `writeMapEnd`.
-  */
+   * Opens a map `["<kcode>", "<vcode>", size, {`.
+   *
+   * Writes the key and value type names (from the `keyType`/`valueType` `TType`
+   * codes), the entry `size`, and opens the entry object. The caller then writes
+   * the `size` key/value pairs before `writeMapEnd`.
+   */
   writeMapBegin(keyType: number, valueType: number, size: number): void {
     this.#writeArrayStart();
     this.#writeJSONString(TYPE_NAME[keyType]!);
@@ -355,10 +368,10 @@ export class JSONProtocol implements Protocol {
     this.#writeArrayEnd();
   }
   /**
-  * Opens a list `["<elemcode>", size, …`, writing the element type name (from
-  * the `elemType` `TType` code) and the element `size`. The caller writes the
-  * `size` elements before `writeListEnd`.
-  */
+   * Opens a list `["<elemcode>", size, …`, writing the element type name (from
+   * the `elemType` `TType` code) and the element `size`. The caller writes the
+   * `size` elements before `writeListEnd`.
+   */
   writeListBegin(elemType: number, size: number): void {
     this.#writeArrayStart();
     this.#writeJSONString(TYPE_NAME[elemType]!);
@@ -393,17 +406,17 @@ export class JSONProtocol implements Protocol {
     this.#writeJSONInteger(String(value));
   }
   /**
-  * Writes a 64-bit integer as a bare integer, using the `bigint` decimal so no
-  * precision is lost above 2^53.
-  */
+   * Writes a 64-bit integer as a bare integer, using the `bigint` decimal so no
+   * precision is lost above 2^53.
+   */
   writeI64(value: bigint): void {
     this.#writeJSONInteger(value.toString());
   }
   /**
-  * Writes a double. Finite values are bare JSON numbers; the non-finite values
-  * are written as the quoted strings `"NaN"`, `"Infinity"`, and `"-Infinity"`,
-  * which plain JSON cannot otherwise represent.
-  */
+   * Writes a double. Finite values are bare JSON numbers; the non-finite values
+   * are written as the quoted strings `"NaN"`, `"Infinity"`, and `"-Infinity"`,
+   * which plain JSON cannot otherwise represent.
+   */
   writeDouble(value: number): void {
     this.#writeJSONDouble(value);
   }
@@ -421,7 +434,7 @@ export class JSONProtocol implements Protocol {
       detail,
       format: 'thrift',
       offset: Math.min(this.#ip, Math.max(0, this.#source.byteLength - 1)),
-      source: this.#source
+      source: this.#source,
     });
   }
   #skipWs(): void {
@@ -528,7 +541,8 @@ export class JSONProtocol implements Protocol {
             out += String.fromCharCode(parseInt(hex, 16));
             break;
           }
-          default: this.#fail(`bad escape \\${e}`);
+          default:
+            this.#fail(`bad escape \\${e}`);
         }
       } else {
         out += c;
@@ -538,12 +552,12 @@ export class JSONProtocol implements Protocol {
   }
   // --- read API ------------------------------------------------------------
   /**
-  * Reads the message envelope array and returns its header.
-  *
-  * Consumes the opening `[`, the version, `name`, `type`, and `seqid`. Throws a
-  * `ThriftError` if the version is not `1` or if the array does not begin as
-  * expected.
-  */
+   * Reads the message envelope array and returns its header.
+   *
+   * Consumes the opening `[`, the version, `name`, `type`, and `seqid`. Throws a
+   * `ThriftError` if the version is not `1` or if the array does not begin as
+   * expected.
+   */
   readMessageBegin(): MessageHeader {
     this.#readArrayStart();
     const version = Number(this.#readNumericToken());
@@ -554,7 +568,7 @@ export class JSONProtocol implements Protocol {
     return {
       name,
       type,
-      seqid
+      seqid,
     };
   }
   /** Consumes the closing `]` of the message envelope array. */
@@ -562,9 +576,9 @@ export class JSONProtocol implements Protocol {
     this.#readArrayEnd();
   }
   /**
-  * Consumes the opening `{` of a struct object. Returns `null` because the JSON
-  * protocol carries no struct name on the wire.
-  */
+   * Consumes the opening `{` of a struct object. Returns `null` because the JSON
+   * protocol carries no struct name on the wire.
+   */
   readStructBegin(): string | null {
     this.#readObjectStart();
     return null;
@@ -574,21 +588,22 @@ export class JSONProtocol implements Protocol {
     this.#readObjectEnd();
   }
   /**
-  * Reads the next field header, or a `STOP` sentinel at the end of the struct.
-  *
-  * If the next character is the struct's closing `}`, returns a header with
-  * `type` `TType.STOP` (without consuming the brace, which `readStructEnd`
-  * handles). Otherwise consumes the field id key and the type-tag object's type
-  * name and returns the field's `id` and `type`. The header `name` is always
-  * empty, since names are not on the wire. Throws a `ThriftError` on an
-  * unrecognized type name.
-  */
+   * Reads the next field header, or a `STOP` sentinel at the end of the struct.
+   *
+   * If the next character is the struct's closing `}`, returns a header with
+   * `type` `TType.STOP` (without consuming the brace, which `readStructEnd`
+   * handles). Otherwise consumes the field id key and the type-tag object's type
+   * name and returns the field's `id` and `type`. The header `name` is always
+   * empty, since names are not on the wire. Throws a `ThriftError` on an
+   * unrecognized type name.
+   */
   readFieldBegin(): FieldHeader {
-    if (this.#peek() === '}') return {
-      name: '',
-      type: TType.STOP,
-      id: 0
-    };
+    if (this.#peek() === '}')
+      return {
+        name: '',
+        type: TType.STOP,
+        id: 0,
+      };
     const id = Number(this.#readNumericToken());
     this.#readObjectStart();
     const type = NAME_TYPE[this.#readJSONString()];
@@ -596,7 +611,7 @@ export class JSONProtocol implements Protocol {
     return {
       name: '',
       type,
-      id
+      id,
     };
   }
   /** Consumes the closing `}` of the field's type-tag object. */
@@ -604,12 +619,12 @@ export class JSONProtocol implements Protocol {
     this.#readObjectEnd();
   }
   /**
-  * Reads a map header and opens its entry object.
-  *
-  * Consumes the opening `[`, the key and value type names, the entry `size`,
-  * and the entry object's opening `{`. The caller then reads `size` key/value
-  * pairs before `readMapEnd`.
-  */
+   * Reads a map header and opens its entry object.
+   *
+   * Consumes the opening `[`, the key and value type names, the entry `size`,
+   * and the entry object's opening `{`. The caller then reads `size` key/value
+   * pairs before `readMapEnd`.
+   */
   readMapBegin(): MapHeader {
     this.#readArrayStart();
     const keyType = NAME_TYPE[this.#readJSONString()]!;
@@ -619,7 +634,7 @@ export class JSONProtocol implements Protocol {
     return {
       keyType,
       valueType,
-      size
+      size,
     };
   }
   /** Consumes the closing `}` of the entry object and the map's closing `]`. */
@@ -628,17 +643,17 @@ export class JSONProtocol implements Protocol {
     this.#readArrayEnd();
   }
   /**
-  * Reads a list header: consumes the opening `[`, the element type name, and
-  * the element `size`. The caller then reads `size` elements before
-  * `readListEnd`.
-  */
+   * Reads a list header: consumes the opening `[`, the element type name, and
+   * the element `size`. The caller then reads `size` elements before
+   * `readListEnd`.
+   */
   readListBegin(): ListHeader {
     this.#readArrayStart();
     const elemType = NAME_TYPE[this.#readJSONString()]!;
     const size = Number(this.#readNumericToken());
     return {
       elemType,
-      size
+      size,
     };
   }
   /** Consumes the closing `]` of the list array. */
@@ -670,17 +685,17 @@ export class JSONProtocol implements Protocol {
     return Number(this.#readNumericToken());
   }
   /**
-  * Reads a 64-bit integer as a `bigint`, so values beyond 2^53 survive the
-  * round trip without precision loss.
-  */
+   * Reads a 64-bit integer as a `bigint`, so values beyond 2^53 survive the
+   * round trip without precision loss.
+   */
   readI64(): bigint {
     return BigInt(this.#readNumericToken());
   }
   /**
-  * Reads a double. Recognizes the quoted sentinels `"NaN"`, `"Infinity"`, and
-  * `"-Infinity"` and maps them to the corresponding JS values; any other token
-  * is parsed as a finite number.
-  */
+   * Reads a double. Recognizes the quoted sentinels `"NaN"`, `"Infinity"`, and
+   * `"-Infinity"` and maps them to the corresponding JS values; any other token
+   * is parsed as a finite number.
+   */
   readDouble(): number {
     const token = this.#readNumericToken();
     if (token === 'NaN') return NaN;

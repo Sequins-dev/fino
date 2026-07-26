@@ -50,16 +50,31 @@ describe('builtin module layout', () => {
     t.ok(true, 'new public builtin grouping resolves');
   });
   it('exposes sessions only through the HTTP app surface', async (t) => {
-    await t.rejects(() => import('fino:security/session'), /dynamic import failed|Cannot find module|not found|unknown/i);
+    await t.rejects(
+      () => import('fino:security/session'),
+      /dynamic import failed|Cannot find module|not found|unknown/i,
+    );
     const app = await import('fino:net/http/app');
     t.equal(typeof app.sessions, 'function');
     t.equal(typeof app.SessionConflictError, 'function');
   });
   it('keeps HTTP protocol drivers out of the public builtin API', async (t) => {
-    await t.rejects(() => import('fino:net/http/h1'), /dynamic import failed|Cannot find module|not found|unknown/i);
-    await t.rejects(() => import('fino:net/http/h2'), /dynamic import failed|Cannot find module|not found|unknown/i);
-    await t.rejects(() => import('fino:net/http/h3'), /dynamic import failed|Cannot find module|not found|unknown/i);
-    await t.rejects(() => import('fino:net/http/driver'), /dynamic import failed|Cannot find module|not found|unknown/i);
+    await t.rejects(
+      () => import('fino:net/http/h1'),
+      /dynamic import failed|Cannot find module|not found|unknown/i,
+    );
+    await t.rejects(
+      () => import('fino:net/http/h2'),
+      /dynamic import failed|Cannot find module|not found|unknown/i,
+    );
+    await t.rejects(
+      () => import('fino:net/http/h3'),
+      /dynamic import failed|Cannot find module|not found|unknown/i,
+    );
+    await t.rejects(
+      () => import('fino:net/http/driver'),
+      /dynamic import failed|Cannot find module|not found|unknown/i,
+    );
   });
   it('keeps HTTP globals and private protocol internals out of the public HTTP barrel', async (t) => {
     const http = await import('fino:net/http');
@@ -99,7 +114,7 @@ describe('builtin module layout', () => {
       'serve',
       'serveHttp',
       'sessions',
-      'staticFiles'
+      'staticFiles',
     ]);
   });
   it('splits QUIC class modules out of the public endpoint facade', async (t) => {
@@ -124,9 +139,11 @@ describe('builtin module layout', () => {
       'js/net/http/h1.ts',
       'js/net/http/driver.ts',
       'js/net/http/h2.ts',
-      'js/net/http/h3.ts'
+      'js/net/http/h3.ts',
     ]) {
-      const text = decodeUtf8(await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname));
+      const text = decodeUtf8(
+        await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname),
+      );
       t.ok(text.slice(0, text.indexOf('*/') + 2).includes('@internal'), `${path} is @internal`);
     }
   });
@@ -141,9 +158,11 @@ describe('builtin module layout', () => {
       'js/internal/net/http/h3/resolve.ts',
       'js/internal/net/http/h3/server.ts',
       'js/internal/net/http/h3/session.ts',
-      'js/internal/net/http/h3/webtransport.ts'
+      'js/internal/net/http/h3/webtransport.ts',
     ]) {
-      const text = decodeUtf8(await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname));
+      const text = decodeUtf8(
+        await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname),
+      );
       t.ok(text.slice(0, text.indexOf('*/') + 2).includes('@internal'), `${path} is @internal`);
     }
   });

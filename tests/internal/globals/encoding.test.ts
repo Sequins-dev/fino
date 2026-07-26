@@ -1,7 +1,7 @@
 /**
-* Tests for encoding globals:
-* TextEncoder, TextDecoder, btoa, atob, structuredClone.
-*/
+ * Tests for encoding globals:
+ * TextEncoder, TextDecoder, btoa, atob, structuredClone.
+ */
 import { describe, it } from 'fino:test/test';
 const { TextEncoder, TextDecoder, atob, btoa, structuredClone } = globalThis;
 function isDataCloneError(err: unknown): boolean {
@@ -16,7 +16,10 @@ describe('TextEncoder', () => {
     t.equal(enc.encoding, 'utf-8');
   });
   it('[Symbol.toStringTag] is "TextEncoder"', (t) => {
-    t.equal(((new TextEncoder() as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'TextEncoder');
+    t.equal(
+      (new TextEncoder() as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'TextEncoder',
+    );
   });
   it('encode() with no argument returns empty Uint8Array', (t) => {
     const buf = new TextEncoder().encode();
@@ -66,10 +69,26 @@ describe('TextEncoder', () => {
   });
   it('encodeInto() requires a Uint8Array destination', (t) => {
     const enc = new TextEncoder();
-    t.throws(() => enc.encodeInto('', (new Int8Array(1) as unknown) as Uint8Array), undefined, 'Int8Array rejected');
-    t.throws(() => enc.encodeInto('', (new Uint8ClampedArray(1) as unknown) as Uint8Array), undefined, 'Uint8ClampedArray rejected');
-    t.throws(() => enc.encodeInto('', (new DataView(new ArrayBuffer(1)) as unknown) as Uint8Array), undefined, 'DataView rejected');
-    t.throws(() => enc.encodeInto('', (new ArrayBuffer(1) as unknown) as Uint8Array), undefined, 'ArrayBuffer rejected');
+    t.throws(
+      () => enc.encodeInto('', new Int8Array(1) as unknown as Uint8Array),
+      undefined,
+      'Int8Array rejected',
+    );
+    t.throws(
+      () => enc.encodeInto('', new Uint8ClampedArray(1) as unknown as Uint8Array),
+      undefined,
+      'Uint8ClampedArray rejected',
+    );
+    t.throws(
+      () => enc.encodeInto('', new DataView(new ArrayBuffer(1)) as unknown as Uint8Array),
+      undefined,
+      'DataView rejected',
+    );
+    t.throws(
+      () => enc.encodeInto('', new ArrayBuffer(1) as unknown as Uint8Array),
+      undefined,
+      'ArrayBuffer rejected',
+    );
   });
 });
 // ---------------------------------------------------------------------------
@@ -77,7 +96,10 @@ describe('TextEncoder', () => {
 // ---------------------------------------------------------------------------
 describe('TextDecoder', () => {
   it('[Symbol.toStringTag] is "TextDecoder"', (t) => {
-    t.equal(((new TextDecoder() as unknown) as Record<symbol, unknown>)[Symbol.toStringTag], 'TextDecoder');
+    t.equal(
+      (new TextDecoder() as unknown as Record<symbol, unknown>)[Symbol.toStringTag],
+      'TextDecoder',
+    );
   });
   it('encoding property exposes the normalized decoder label', (t) => {
     t.equal(new TextDecoder().encoding, 'utf-8');
@@ -100,13 +122,7 @@ describe('TextDecoder', () => {
     t.equal(new TextDecoder().decode(undefined), '');
   });
   it('decode() ASCII bytes', (t) => {
-    const bytes = new Uint8Array([
-      72,
-      101,
-      108,
-      108,
-      111
-    ]);
+    const bytes = new Uint8Array([72, 101, 108, 108, 111]);
     t.equal(new TextDecoder().decode(bytes), 'Hello');
   });
   it('decode() multi-byte UTF-8', (t) => {
@@ -117,77 +133,25 @@ describe('TextDecoder', () => {
   it('decode() UTF-16 little and big endian samples', (t) => {
     const sample = 'z¢水𝄞􏿽￾';
     const le = new Uint8Array([
-      122,
-      0,
-      162,
-      0,
-      52,
-      108,
-      52,
-      216,
-      30,
-      221,
-      255,
-      248,
-      255,
-      219,
-      253,
-      223,
-      254,
-      255
+      122, 0, 162, 0, 52, 108, 52, 216, 30, 221, 255, 248, 255, 219, 253, 223, 254, 255,
     ]);
     const be = new Uint8Array([
-      0,
-      122,
-      0,
-      162,
-      108,
-      52,
-      216,
-      52,
-      221,
-      30,
-      248,
-      255,
-      219,
-      255,
-      223,
-      253,
-      255,
-      254
+      0, 122, 0, 162, 108, 52, 216, 52, 221, 30, 248, 255, 219, 255, 223, 253, 255, 254,
     ]);
     t.equal(new TextDecoder('utf-16le').decode(le), sample);
     t.equal(new TextDecoder('utf-16be').decode(be), sample);
     t.equal(new TextDecoder('utf-16').decode(le), sample);
   });
   it('decode() from ArrayBuffer', (t) => {
-    const buf = new Uint8Array([
-      65,
-      66,
-      67
-    ]).buffer;
+    const buf = new Uint8Array([65, 66, 67]).buffer;
     t.equal(new TextDecoder().decode(buf), 'ABC');
   });
   it('decode() strips UTF-8 BOM by default', (t) => {
-    const bom = new Uint8Array([
-      239,
-      187,
-      191,
-      72,
-      101,
-      108,
-      108,
-      111
-    ]);
+    const bom = new Uint8Array([239, 187, 191, 72, 101, 108, 108, 111]);
     t.equal(new TextDecoder().decode(bom), 'Hello', 'BOM stripped');
   });
   it('decode() preserves BOM with ignoreBOM: true', (t) => {
-    const bom = new Uint8Array([
-      239,
-      187,
-      191,
-      65
-    ]);
+    const bom = new Uint8Array([239, 187, 191, 65]);
     const dec = new TextDecoder('utf-8', { ignoreBOM: true });
     t.equal(dec.decode(bom), '﻿А'.replace('А', 'A'), 'BOM preserved');
     // Use explicit check:
@@ -220,17 +184,9 @@ describe('TextDecoder', () => {
     t.equal(dec.decode(), '');
     t.equal(dec.decode(new Uint8Array([224, 128]), { stream: true }), '��');
     t.equal(dec.decode(new Uint8Array([128])), '�');
-    t.equal(dec.decode(new Uint8Array([
-      240,
-      144,
-      65
-    ]), { stream: true }), '�A');
+    t.equal(dec.decode(new Uint8Array([240, 144, 65]), { stream: true }), '�A');
     t.equal(dec.decode(new Uint8Array([66])), 'B');
-    t.equal(dec.decode(new Uint8Array([
-      240,
-      159,
-      146
-    ]), { stream: true }), '');
+    t.equal(dec.decode(new Uint8Array([240, 159, 146]), { stream: true }), '');
     t.equal(dec.decode(new Uint8Array([169])), '💩');
   });
   it('streaming UTF-16 preserves split bytes and surrogate pairs', (t) => {
@@ -246,16 +202,8 @@ describe('TextDecoder', () => {
     t.equal(be.decode(new Uint8Array([220, 0])), '𐀀');
   });
   it('UTF-16 truncation and fatal UTF-8 stream state follow replacement rules', (t) => {
-    t.equal(new TextDecoder('utf-16le').decode(new Uint8Array([
-      0,
-      216,
-      0
-    ])), '�');
-    t.equal(new TextDecoder('utf-16be').decode(new Uint8Array([
-      216,
-      0,
-      216
-    ])), '�');
+    t.equal(new TextDecoder('utf-16le').decode(new Uint8Array([0, 216, 0])), '�');
+    t.equal(new TextDecoder('utf-16be').decode(new Uint8Array([216, 0, 216])), '�');
     const fatal = new TextDecoder('utf-8', { fatal: true });
     t.throws(() => fatal.decode(new Uint8Array([253, 239]), { stream: true }));
     t.equal(fatal.decode(), '');
@@ -263,35 +211,27 @@ describe('TextDecoder', () => {
   it('streaming BOM: only stripped from first non-empty chunk', (t) => {
     // Non-streaming: BOM stripped on each independent call
     const dec = new TextDecoder();
-    t.equal(dec.decode(new Uint8Array([
-      239,
-      187,
-      191,
-      65
-    ])), 'A', 'BOM stripped in non-streaming call');
-    t.equal(dec.decode(new Uint8Array([
-      239,
-      187,
-      191,
-      66
-    ])), 'B', 'BOM stripped again on next non-streaming call');
+    t.equal(
+      dec.decode(new Uint8Array([239, 187, 191, 65])),
+      'A',
+      'BOM stripped in non-streaming call',
+    );
+    t.equal(
+      dec.decode(new Uint8Array([239, 187, 191, 66])),
+      'B',
+      'BOM stripped again on next non-streaming call',
+    );
     // Streaming: BOM only stripped from first non-empty chunk
     const dec2 = new TextDecoder();
-    const r1 = dec2.decode(new Uint8Array([
-      239,
-      187,
-      191,
-      65
-    ]), { stream: true });
+    const r1 = dec2.decode(new Uint8Array([239, 187, 191, 65]), { stream: true });
     t.equal(r1, 'A', 'BOM stripped from first streaming chunk');
     // Second chunk contains BOM — should NOT be stripped
-    const r2 = dec2.decode(new Uint8Array([
-      239,
-      187,
-      191,
-      66
-    ]));
-    t.equal(r2.charCodeAt(0), 65279, 'BOM preserved in second streaming chunk (not stripped again)');
+    const r2 = dec2.decode(new Uint8Array([239, 187, 191, 66]));
+    t.equal(
+      r2.charCodeAt(0),
+      65279,
+      'BOM preserved in second streaming chunk (not stripped again)',
+    );
     t.equal(r2[1], 'B', 'following char decoded correctly');
   });
 });
@@ -384,7 +324,11 @@ describe('TextDecoder — invalid label', () => {
     t.throws(() => new TextDecoder('\vutf-8'), undefined, 'vertical tab is not trimmed');
     t.throws(() => new TextDecoder('\xA0utf-8'), undefined, 'non-breaking space is not trimmed');
     t.throws(() => new TextDecoder('\u2028utf-8'), undefined, 'line separator is not trimmed');
-    t.throws(() => new TextDecoder('utf-16le\u2029'), undefined, 'paragraph separator is not trimmed');
+    t.throws(
+      () => new TextDecoder('utf-16le\u2029'),
+      undefined,
+      'paragraph separator is not trimmed',
+    );
   });
 });
 describe('TextEncoder — lone surrogates', () => {
@@ -426,7 +370,7 @@ describe('structuredClone', () => {
   it('clones plain objects', (t) => {
     const src = {
       a: 1,
-      b: { c: 2 }
+      b: { c: 2 },
     };
     const clone = structuredClone(src);
     t.deepEqual(clone, src, 'deep equal');
@@ -434,11 +378,7 @@ describe('structuredClone', () => {
     t.ok(clone.b !== src.b, 'nested object is new reference');
   });
   it('clones arrays', (t) => {
-    const src = [
-      1,
-      'two',
-      { three: 3 }
-    ];
+    const src = [1, 'two', { three: 3 }];
     const clone = structuredClone(src);
     t.deepEqual(clone, src);
     t.ok(clone !== src, 'different reference');
@@ -472,7 +412,10 @@ describe('structuredClone', () => {
     t.equal(c.lastIndex, 0, 'RegExp lastIndex resets during clone');
   });
   it('clones Map', (t) => {
-    const m = new Map([['a', 1], ['b', 2]]);
+    const m = new Map([
+      ['a', 1],
+      ['b', 2],
+    ]);
     const c = structuredClone(m);
     t.ok(c instanceof Map, 'is Map');
     t.equal(c.get('a'), 1);
@@ -487,11 +430,7 @@ describe('structuredClone', () => {
     t.equal(clone.get('self'), clone, 'map cycle points at clone');
   });
   it('clones Set', (t) => {
-    const s = new Set([
-      1,
-      2,
-      3
-    ]);
+    const s = new Set([1, 2, 3]);
     const c = structuredClone(s);
     t.ok(c instanceof Set, 'is Set');
     t.equal(c.has(1), true);
@@ -506,22 +445,14 @@ describe('structuredClone', () => {
     t.ok(clone.has(clone), 'set cycle points at clone');
   });
   it('clones ArrayBuffer', (t) => {
-    const buf = new Uint8Array([
-      1,
-      2,
-      3
-    ]).buffer;
+    const buf = new Uint8Array([1, 2, 3]).buffer;
     const c = structuredClone(buf);
     t.ok(c instanceof ArrayBuffer, 'is ArrayBuffer');
     t.equal(c.byteLength, 3);
     t.ok(c !== buf, 'different reference');
   });
   it('clones TypedArrays', (t) => {
-    const src = new Uint8Array([
-      10,
-      20,
-      30
-    ]);
+    const src = new Uint8Array([10, 20, 30]);
     const c = structuredClone(src);
     t.ok(c instanceof Uint8Array, 'is Uint8Array');
     t.equal(c[0], 10);
@@ -532,16 +463,7 @@ describe('structuredClone', () => {
   it('clones typed array views with byte offsets', (t) => {
     const buf = new ArrayBuffer(8);
     const full = new Uint8Array(buf);
-    full.set([
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      7,
-      8
-    ]);
+    full.set([1, 2, 3, 4, 5, 6, 7, 8]);
     const src = new Uint16Array(buf, 2, 2);
     const clone = structuredClone(src);
     t.ok(clone instanceof Uint16Array, 'is Uint16Array');
@@ -609,8 +531,16 @@ describe('structuredClone', () => {
     t.deepEqual(clone.errors[1], { detail: 'bad input' }, 'nested object cloned');
   });
   it('throws DataCloneError for URL and URLSearchParams', (t) => {
-    t.throws(() => structuredClone(new URL('https://example.test/path?q=1#frag')), isDataCloneError, 'URL is not serializable');
-    t.throws(() => structuredClone(new URLSearchParams('a=1&a=2&b=space+value')), isDataCloneError, 'URLSearchParams is not serializable');
+    t.throws(
+      () => structuredClone(new URL('https://example.test/path?q=1#frag')),
+      isDataCloneError,
+      'URL is not serializable',
+    );
+    t.throws(
+      () => structuredClone(new URLSearchParams('a=1&a=2&b=space+value')),
+      isDataCloneError,
+      'URLSearchParams is not serializable',
+    );
   });
   it('clones DOMException name, message, and code', (t) => {
     const err = new DOMException('clone failed', 'DataCloneError');
@@ -637,7 +567,7 @@ describe('structuredClone', () => {
   it('clones File preserves name and lastModified', (t) => {
     const f = new File(['data'], 'test.txt', {
       type: 'text/plain',
-      lastModified: 1234567890
+      lastModified: 1234567890,
     });
     const clone = structuredClone(f);
     t.ok(clone instanceof File, 'is File');
@@ -707,51 +637,43 @@ describe('structuredClone', () => {
   });
   it('transfer option copies ArrayBuffer and detaches fixed source', (t) => {
     const buf = new ArrayBuffer(4);
-    new Uint8Array(buf).set([
-      1,
-      2,
-      3,
-      4
-    ]);
+    new Uint8Array(buf).set([1, 2, 3, 4]);
     const clone = structuredClone({ buf }, { transfer: [buf] });
-    t.deepEqual(Array.from(new Uint8Array(clone.buf)), [
-      1,
-      2,
-      3,
-      4
-    ], 'clone has original data');
+    t.deepEqual(Array.from(new Uint8Array(clone.buf)), [1, 2, 3, 4], 'clone has original data');
     t.equal(buf.byteLength, 0, 'source buffer is detached');
     t.throws(() => new Uint8Array(buf), undefined, 'detached source cannot be viewed');
   });
   it('transfer option rejects duplicate ArrayBuffer entries', (t) => {
     const buf = new ArrayBuffer(4);
-    t.throws(() => structuredClone({ buf }, { transfer: [buf, buf] }), /DataCloneError|duplicate/i, 'duplicate transfer entry throws');
+    t.throws(
+      () => structuredClone({ buf }, { transfer: [buf, buf] }),
+      /DataCloneError|duplicate/i,
+      'duplicate transfer entry throws',
+    );
   });
   it('transfer option throws for non-ArrayBuffer', (t) => {
-    t.throws(() => structuredClone({}, { transfer: ['not a buffer' as any] }), isDataCloneError, 'non-ArrayBuffer in transfer list throws');
+    t.throws(
+      () => structuredClone({}, { transfer: ['not a buffer' as any] }),
+      isDataCloneError,
+      'non-ArrayBuffer in transfer list throws',
+    );
   });
   it('transfer detaches source buffer (byteLength → 0 for resizable)', (t) => {
     const buf = new ArrayBuffer(4, { maxByteLength: 4 });
-    new Uint8Array(buf).set([
-      1,
-      2,
-      3,
-      4
-    ]);
+    new Uint8Array(buf).set([1, 2, 3, 4]);
     const clone = structuredClone(buf, { transfer: [buf] });
-    t.deepEqual(Array.from(new Uint8Array(clone)), [
-      1,
-      2,
-      3,
-      4
-    ], 'clone has the data');
+    t.deepEqual(Array.from(new Uint8Array(clone)), [1, 2, 3, 4], 'clone has the data');
     t.equal(buf.byteLength, 0, 'resizable source buffer is detached (byteLength = 0)');
   });
   it('cloning an instance of a custom class throws DataCloneError', (t) => {
     class Foo {
       x = 1;
     }
-    t.throws(() => structuredClone(new Foo()), /DataCloneError|cannot be cloned/, 'class instance throws DataCloneError');
+    t.throws(
+      () => structuredClone(new Foo()),
+      /DataCloneError|cannot be cloned/,
+      'class instance throws DataCloneError',
+    );
   });
   it('cloning a plain object with null prototype works', (t) => {
     const obj = Object.create(null) as any;
@@ -761,11 +683,7 @@ describe('structuredClone', () => {
     t.equal(Object.getPrototypeOf(clone), null, 'clone has null prototype');
   });
   it('BigInt64Array cloning', (t) => {
-    const orig = new BigInt64Array([
-      1n,
-      -2n,
-      9007199254740993n
-    ]);
+    const orig = new BigInt64Array([1n, -2n, 9007199254740993n]);
     const clone = structuredClone(orig);
     t.equal(clone[0], 1n, 'first element');
     t.equal(clone[1], -2n, 'second element');
@@ -782,16 +700,32 @@ describe('structuredClone', () => {
     t.throws(() => structuredClone(() => {}), /cannot be cloned/, 'function throws');
   });
   it('ReadableStream is not cloneable', (t) => {
-    t.throws(() => structuredClone(new ReadableStream()), /DataCloneError|cannot be cloned/, 'ReadableStream throws');
+    t.throws(
+      () => structuredClone(new ReadableStream()),
+      /DataCloneError|cannot be cloned/,
+      'ReadableStream throws',
+    );
   });
   it('ReadableStream transfer is explicitly unsupported', (t) => {
-    t.throws(() => structuredClone({}, { transfer: [new ReadableStream() as any] }), isDataCloneError, 'stream transfer throws DataCloneError');
+    t.throws(
+      () => structuredClone({}, { transfer: [new ReadableStream() as any] }),
+      isDataCloneError,
+      'stream transfer throws DataCloneError',
+    );
   });
   it('MessagePort clone and transfer are explicitly unsupported globally', (t) => {
     const { port1, port2 } = new MessageChannel();
     try {
-      t.throws(() => structuredClone(port1), isDataCloneError, 'direct MessagePort value throws DataCloneError');
-      t.throws(() => structuredClone({ port: port1 }, { transfer: [port1 as any] }), isDataCloneError, 'MessagePort transfer entry throws DataCloneError');
+      t.throws(
+        () => structuredClone(port1),
+        isDataCloneError,
+        'direct MessagePort value throws DataCloneError',
+      );
+      t.throws(
+        () => structuredClone({ port: port1 }, { transfer: [port1 as any] }),
+        isDataCloneError,
+        'MessagePort transfer entry throws DataCloneError',
+      );
     } finally {
       port1.close();
       port2.close();

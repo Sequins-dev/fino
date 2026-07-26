@@ -1,5 +1,14 @@
 import { describe, it } from 'fino:test/test';
-import { InMemoryWorkflowStore, NonRetryableWorkflowError, SqliteWorkflowStore, WorkflowRun, activity, observableWorkflowStore, watchRun, workflow } from 'fino:workflow';
+import {
+  InMemoryWorkflowStore,
+  NonRetryableWorkflowError,
+  SqliteWorkflowStore,
+  WorkflowRun,
+  activity,
+  observableWorkflowStore,
+  watchRun,
+  workflow,
+} from 'fino:workflow';
 import { v } from 'fino:validate';
 import { DiskFileSystem } from 'fino:file';
 function tmpPath(): string {
@@ -21,7 +30,7 @@ describe('fino:workflow', () => {
       state: {},
       signals: [],
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     t.equal(run.get()?.status, 'running', 'watch retains saved state');
@@ -41,7 +50,7 @@ describe('fino:workflow', () => {
           calls.push('add');
           return a + 10;
         });
-      }
+      },
     });
     const first = await wf.start(5, { store });
     t.equal(first.status, 'done');
@@ -53,12 +62,12 @@ describe('fino:workflow', () => {
       status: 'running',
       result: undefined,
       cursor: 1,
-      steps: loaded!.steps.slice(0, 1)
+      steps: loaded!.steps.slice(0, 1),
     });
     calls.length = 0;
     const resumed = await wf.resume({
       store,
-      runId: first.runId
+      runId: first.runId,
     });
     t.equal(resumed.status, 'done');
     t.equal(resumed.result, 20);
@@ -68,37 +77,37 @@ describe('fino:workflow', () => {
     const store = new InMemoryWorkflowStore();
     const wf = workflow({
       id: 'js-control-flow',
-      async run(ctx, input: {
-        items: number[];
-        positive: boolean;
-      }) {
+      async run(
+        ctx,
+        input: {
+          items: number[];
+          positive: boolean;
+        },
+      ) {
         const sign = input.positive ? 1 : -1;
         let total = 0;
         for (const item of input.items) {
           total += await ctx.step('sum-item', async () => item * sign);
         }
-        const doubled = await Promise.all(input.items.map((item) => ctx.step('double-item', async () => item * 2)));
+        const doubled = await Promise.all(
+          input.items.map((item) => ctx.step('double-item', async () => item * 2)),
+        );
         return {
           total,
-          doubled
+          doubled,
         };
-      }
+      },
     });
-    const result = await wf.start({
-      items: [
-        1,
-        2,
-        3
-      ],
-      positive: false
-    }, { store });
+    const result = await wf.start(
+      {
+        items: [1, 2, 3],
+        positive: false,
+      },
+      { store },
+    );
     t.deepEqual(result.result, {
       total: -6,
-      doubled: [
-        2,
-        4,
-        6
-      ]
+      doubled: [2, 4, 6],
     });
   });
   it('keeps Promise.all checkpoints when steps finish out of order', async (t) => {
@@ -117,22 +126,25 @@ describe('fino:workflow', () => {
           return 'fast';
         });
         return Promise.all([slow, fast]);
-      }
+      },
     });
     const result = await wf.start(null, { store });
     t.deepEqual(result.result, ['slow', 'fast']);
     const loaded = await store.load(result.runId);
     t.equal(loaded?.cursor, 2, 'cursor advances only through contiguous completed steps');
-    t.deepEqual(loaded?.steps.map((step) => step.id), ['slow', 'fast']);
+    t.deepEqual(
+      loaded?.steps.map((step) => step.id),
+      ['slow', 'fast'],
+    );
     calls.length = 0;
     await store.save({
       ...loaded!,
       status: 'running',
-      result: undefined
+      result: undefined,
     });
     const resumed = await wf.resume({
       store,
-      runId: result.runId
+      runId: result.runId,
     });
     t.deepEqual(resumed.result, ['slow', 'fast']);
     t.deepEqual(calls, [], 'resume reuses both completed parallel step results');
@@ -145,7 +157,7 @@ describe('fino:workflow', () => {
       outputSchema: v.string(),
       async run(input: number) {
         return String(input);
-      }
+      },
     });
     const wf = workflow({
       id: 'validated',
@@ -153,10 +165,10 @@ describe('fino:workflow', () => {
       outputSchema: v.string(),
       async run(ctx, input: number) {
         return ctx.call(stringify, input);
-      }
+      },
     });
     t.equal((await wf.start(42, { store })).result, '42');
-    await t.rejects(() => wf.start(('nope' as unknown) as number, { store }), /validation/i);
+    await t.rejects(() => wf.start('nope' as unknown as number, { store }), /validation/i);
   });
   it('retries activities and stops on non-retryable errors', async (t) => {
     const store = new InMemoryWorkflowStore();
@@ -168,13 +180,13 @@ describe('fino:workflow', () => {
         attempts++;
         if (attempts < 3) throw new Error('try again');
         return 'ok';
-      }
+      },
     });
     const wf = workflow({
       id: 'retry',
       async run(ctx) {
         return ctx.call(flaky, null);
-      }
+      },
     });
     t.equal((await wf.start(null, { store })).result, 'ok');
     t.equal(attempts, 3);
@@ -183,13 +195,13 @@ describe('fino:workflow', () => {
       retry: { maxAttempts: 3 },
       async run() {
         throw new NonRetryableWorkflowError('do not retry');
-      }
+      },
     });
     const bad = workflow({
       id: 'non-retryable',
       async run(ctx) {
         return ctx.call(blocked, null);
-      }
+      },
     });
     await t.rejects(() => bad.start(null, { store }), /do not retry/);
     const failed = (await store.list()).find((s) => s.workflowId === 'non-retryable');
@@ -202,7 +214,7 @@ describe('fino:workflow', () => {
       async run(ctx, input: string) {
         const approved = await ctx.waitForSignal<boolean>('approval');
         return `${input}:${approved}`;
-      }
+      },
     });
     const first = await wf.start('deploy', { store });
     t.equal(first.status, 'waiting');
@@ -211,20 +223,24 @@ describe('fino:workflow', () => {
       store,
       runId: first.runId,
       name: 'approval',
-      payload: true
+      payload: true,
     });
     const resumed = await wf.resume({
       store,
-      runId: first.runId
+      runId: first.runId,
     });
     t.equal(resumed.status, 'done');
     t.equal(resumed.result, 'deploy:true');
-    await t.rejects(() => wf.signal({
-      store,
-      runId: first.runId,
-      name: 'approval',
-      payload: false
-    }), /not waiting|already/i);
+    await t.rejects(
+      () =>
+        wf.signal({
+          store,
+          runId: first.runId,
+          name: 'approval',
+          payload: false,
+        }),
+      /not waiting|already/i,
+    );
   });
   it('waits for a timer until it is due', async (t) => {
     const store = new InMemoryWorkflowStore();
@@ -233,14 +249,14 @@ describe('fino:workflow', () => {
       async run(ctx) {
         await ctx.sleep('delay', 50);
         return 'done';
-      }
+      },
     });
     const first = await wf.start(null, { store });
     t.equal(first.status, 'waiting');
     t.equal(first.waitingOn?.type, 'timer');
     const early = await wf.resume({
       store,
-      runId: first.runId
+      runId: first.runId,
     });
     t.equal(early.status, 'waiting');
     const state = await store.load(first.runId);
@@ -248,12 +264,12 @@ describe('fino:workflow', () => {
       ...state!,
       waitingOn: {
         ...state!.waitingOn!,
-        dueAt: Date.now() - 1
-      }
+        dueAt: Date.now() - 1,
+      },
     });
     const done = await wf.resume({
       store,
-      runId: first.runId
+      runId: first.runId,
     });
     t.equal(done.status, 'done');
     t.equal(done.result, 'done');
@@ -265,20 +281,24 @@ describe('fino:workflow', () => {
       async run(ctx) {
         await ctx.waitForSignal('continue');
         return 'done';
-      }
+      },
     });
     const first = await wf.start(null, { store });
     const run = new WorkflowRun(wf, {
       store,
-      runId: first.runId
+      runId: first.runId,
     });
     await run.cancel();
     const loaded = await store.load(first.runId);
     t.equal(loaded?.status, 'cancelled');
-    await t.rejects(() => wf.resume({
-      store,
-      runId: first.runId
-    }), /cancelled/i);
+    await t.rejects(
+      () =>
+        wf.resume({
+          store,
+          runId: first.runId,
+        }),
+      /cancelled/i,
+    );
   });
   it('persists runs in sqlite workflow storage', async (t) => {
     const path = tmpPath();
@@ -292,7 +312,7 @@ describe('fino:workflow', () => {
         id: 'sqlite',
         async run(ctx, input: number) {
           return ctx.step('double', async () => input * 2);
-        }
+        },
       });
       const result = await wf.start(7, { store });
       const loaded = await store.load(result.runId);
@@ -307,6 +327,9 @@ describe('fino:workflow', () => {
   it('exposes only the runtime-level workflow specifier', async (t) => {
     const mod = await import('fino:workflow');
     t.equal('workflow' in mod, true);
-    await t.rejects(() => import('fino:ai/workflow'), /dynamic import failed|Cannot find module|Unable to resolve|not found|unknown/i);
+    await t.rejects(
+      () => import('fino:ai/workflow'),
+      /dynamic import failed|Cannot find module|Unable to resolve|not found|unknown/i,
+    );
   });
 });

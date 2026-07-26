@@ -1,6 +1,6 @@
 /**
-* Tests for EventSourceReader/Writer (fino:net/http/eventstream) and EventSource (fino:net/http/eventsource).
-*/
+ * Tests for EventSourceReader/Writer (fino:net/http/eventstream) and EventSource (fino:net/http/eventsource).
+ */
 import { describe, it } from 'fino:test/test';
 import { EventSource } from 'fino:net/http/eventsource';
 import { EventSourceReader, EventSourceWriter } from 'fino:net/http/eventstream';
@@ -14,9 +14,11 @@ type EventSourceMessage = {
 };
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
-const tlsAvailable = (globalThis as typeof globalThis & {
-  tlsAvailable?: boolean;
-}).tlsAvailable;
+const tlsAvailable = (
+  globalThis as typeof globalThis & {
+    tlsAvailable?: boolean;
+  }
+).tlsAvailable;
 const skipTls = !tlsAvailable && 'OpenSSL (libssl) not available';
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH = new URL('./fixtures/test.key', import.meta.url).pathname;
@@ -40,7 +42,7 @@ async function collect<T>(reader: AsyncIterable<T>) {
 }
 function mockWriter() {
   const parts: Uint8Array[] = [];
-  return new class extends BytesWriter {
+  return new (class extends BytesWriter {
     protected async doWrite(buf: Uint8Array): Promise<void> {
       parts.push(buf.slice());
     }
@@ -55,14 +57,19 @@ function mockWriter() {
       }
       return decodeUtf8(out);
     }
-  }();
+  })();
 }
-function sseBody(...items: Array<string | {
-  retry?: number;
-  event?: string;
-  id?: string;
-  data: string;
-}>) {
+function sseBody(
+  ...items: Array<
+    | string
+    | {
+        retry?: number;
+        event?: string;
+        id?: string;
+        data: string;
+      }
+  >
+) {
   let body = '';
   for (const item of items) {
     if (typeof item === 'string') {
@@ -82,8 +89,8 @@ function sseResponse(body: string, status = 200) {
     status,
     headers: {
       'content-type': 'text/event-stream',
-      'cache-control': 'no-store'
-    }
+      'cache-control': 'no-store',
+    },
   });
 }
 describe('EventSourceReader', () => {
@@ -96,7 +103,9 @@ describe('EventSourceReader', () => {
     t.equal(events[0]!.retry, null);
   });
   it('multi-line data joined with newline', async (t) => {
-    const events = await collect(new EventSourceReader(source('data: line1\ndata: line2\ndata: line3\n\n')));
+    const events = await collect(
+      new EventSourceReader(source('data: line1\ndata: line2\ndata: line3\n\n')),
+    );
     t.equal(events.length, 1);
     t.equal(events[0]!.data, 'line1\nline2\nline3');
   });
@@ -237,7 +246,7 @@ describe('EventSourceWriter', () => {
       event: 'update',
       data: 'payload',
       id: '42',
-      retry: 5e3
+      retry: 5e3,
     });
     const out = w.output();
     t.ok(out.includes('event: update\n'), 'event field present');
@@ -286,7 +295,7 @@ describe('EventSourceWriter', () => {
       event: 'ping',
       data: 'hello\nworld',
       id: '5',
-      retry: 1e3
+      retry: 1e3,
     });
     await esw.event({ data: 'second' });
     const events = await collect(new EventSourceReader(source(w.output())));
@@ -325,11 +334,14 @@ describe('EventSource integration', () => {
       href: 'https://web-platform.test/eventsource/eventsource-constructor-empty-url.any.js',
       toString() {
         return this.href;
-      }
+      },
     };
     const source = new EventSource('');
     try {
-      t.equal(source.url, 'https://web-platform.test/eventsource/eventsource-constructor-empty-url.any.js');
+      t.equal(
+        source.url,
+        'https://web-platform.test/eventsource/eventsource-constructor-empty-url.any.js',
+      );
     } finally {
       source.close();
       if (oldLocation === undefined) delete (globalThis as any).location;
@@ -337,11 +349,17 @@ describe('EventSource integration', () => {
     }
   });
   it('throws SyntaxError DOMException for invalid URLs', (t) => {
-    t.throws(() => new EventSource('http://this is invalid/'), (err) => err instanceof DOMException && err.name === 'SyntaxError', 'invalid URL throws SyntaxError DOMException');
+    t.throws(
+      () => new EventSource('http://this is invalid/'),
+      (err) => err instanceof DOMException && err.name === 'SyntaxError',
+      'invalid URL throws SyntaxError DOMException',
+    );
   });
   it('receives message events via onmessage', async (t) => {
     const received: string[] = [];
-    const server = serveHttp({ port: 19960 }, async (_req) => sseResponse(sseBody({ data: 'hello' }, { data: 'world' })));
+    const server = serveHttp({ port: 19960 }, async (_req) =>
+      sseResponse(sseBody({ data: 'hello' }, { data: 'world' })),
+    );
     await new Promise<void>((resolve) => {
       const es = new EventSource('http://127.0.0.1:19960/events');
       es.onmessage = (e) => {
@@ -359,7 +377,9 @@ describe('EventSource integration', () => {
   });
   it('onopen fires when connection established', async (t) => {
     let opened = false;
-    const server = serveHttp({ port: 19961 }, async (_req) => sseResponse(sseBody({ data: 'trigger' })));
+    const server = serveHttp({ port: 19961 }, async (_req) =>
+      sseResponse(sseBody({ data: 'trigger' })),
+    );
     await new Promise<void>((resolve) => {
       const es = new EventSource('http://127.0.0.1:19961/events');
       es.onopen = () => {
@@ -379,9 +399,14 @@ describe('EventSource integration', () => {
     let openPhase = Event.NONE;
     let messageCurrentTarget: EventTarget | null = null;
     let messagePhase = Event.NONE;
-    const server = serveHttp({ port: 0 }, async (_req) => sseResponse(sseBody({ data: 'dispatch-state' })));
+    const server = serveHttp({ port: 0 }, async (_req) =>
+      sseResponse(sseBody({ data: 'dispatch-state' })),
+    );
     await new Promise<void>((resolve, reject) => {
-      const tid = setTimeout(() => reject(new Error('timeout waiting for EventSource message')), 2e3);
+      const tid = setTimeout(
+        () => reject(new Error('timeout waiting for EventSource message')),
+        2e3,
+      );
       const es = new EventSource(`http://127.0.0.1:${server.port}/events`);
       es.addEventListener('open', () => {
         order.push('open-listener');
@@ -403,21 +428,26 @@ describe('EventSource integration', () => {
         resolve();
       };
     });
-    t.deepEqual(order, [
-      'open-listener',
-      'open-handler',
-      'message-listener',
-      'message-handler'
-    ]);
-    t.equal(openCurrentTarget instanceof EventSource, true, 'open currentTarget is set during handler');
+    t.deepEqual(order, ['open-listener', 'open-handler', 'message-listener', 'message-handler']);
+    t.equal(
+      openCurrentTarget instanceof EventSource,
+      true,
+      'open currentTarget is set during handler',
+    );
     t.equal(openPhase, Event.AT_TARGET, 'open handler runs at AT_TARGET');
-    t.equal(messageCurrentTarget instanceof EventSource, true, 'message currentTarget is set during handler');
+    t.equal(
+      messageCurrentTarget instanceof EventSource,
+      true,
+      'message currentTarget is set during handler',
+    );
     t.equal(messagePhase, Event.AT_TARGET, 'message handler runs at AT_TARGET');
     await server.close();
   });
   it('readyState is OPEN while receiving events', async (t) => {
     let stateWhenOpen = -1;
-    const server = serveHttp({ port: 19962 }, async (_req) => sseResponse(sseBody({ data: 'check' })));
+    const server = serveHttp({ port: 19962 }, async (_req) =>
+      sseResponse(sseBody({ data: 'check' })),
+    );
     await new Promise<void>((resolve) => {
       const es = new EventSource('http://127.0.0.1:19962/events');
       es.onmessage = () => {
@@ -435,7 +465,11 @@ describe('EventSource integration', () => {
       const es = new EventSource('http://127.0.0.1:19963/events');
       es.onmessage = () => {
         es.close();
-        t.equal(es.readyState, EventSource.CLOSED, 'readyState is CLOSED immediately after close()');
+        t.equal(
+          es.readyState,
+          EventSource.CLOSED,
+          'readyState is CLOSED immediately after close()',
+        );
         resolve();
       };
     });
@@ -444,14 +478,21 @@ describe('EventSource integration', () => {
   it('addEventListener for named event type', async (t) => {
     const updateEvents: string[] = [];
     let messageCount = 0;
-    const server = serveHttp({ port: 19964 }, async (_req) => sseResponse(sseBody({
-      event: 'update',
-      data: 'payload'
-    }, { data: 'default-message' })));
+    const server = serveHttp({ port: 19964 }, async (_req) =>
+      sseResponse(
+        sseBody(
+          {
+            event: 'update',
+            data: 'payload',
+          },
+          { data: 'default-message' },
+        ),
+      ),
+    );
     await new Promise<void>((resolve) => {
       const es = new EventSource('http://127.0.0.1:19964/events');
       es.addEventListener('update', (e) => {
-        updateEvents.push(((e as unknown) as EventSourceMessage).data);
+        updateEvents.push((e as unknown as EventSourceMessage).data);
       });
       es.onmessage = () => {
         messageCount++;
@@ -482,7 +523,10 @@ describe('EventSource integration', () => {
   });
   it('wrong content-type causes fatal error (no reconnect)', async (t) => {
     let errorCount = 0;
-    const server = serveHttp({ port: 19966 }, async (_req) => new Response('not sse', { headers: { 'content-type': 'text/html' } }));
+    const server = serveHttp(
+      { port: 19966 },
+      async (_req) => new Response('not sse', { headers: { 'content-type': 'text/html' } }),
+    );
     await new Promise<void>((resolve) => {
       const es = new EventSource('http://127.0.0.1:19966/events');
       es.onerror = () => {
@@ -505,11 +549,13 @@ describe('EventSource integration', () => {
       const lastId = req.headers.get('last-event-id');
       seenIds.push(lastId);
       if (connectionCount === 1) {
-        return sseResponse(sseBody({
-          retry: 50,
-          id: '99',
-          data: 'first'
-        }));
+        return sseResponse(
+          sseBody({
+            retry: 50,
+            id: '99',
+            data: 'first',
+          }),
+        );
       }
       resolveReconnect?.();
       return new Response(null, { status: 204 });
@@ -524,7 +570,9 @@ describe('EventSource integration', () => {
   });
   it('retry field from server updates reconnect interval', async (t) => {
     let received = null;
-    const server = serveHttp({ port: 19968 }, async (_req) => sseResponse(sseBody('retry: 100\n', { data: 'after-retry' })));
+    const server = serveHttp({ port: 19968 }, async (_req) =>
+      sseResponse(sseBody('retry: 100\n', { data: 'after-retry' })),
+    );
     await new Promise<void>((resolve) => {
       const es = new EventSource('http://127.0.0.1:19968/events');
       es.onmessage = (e) => {
@@ -538,21 +586,25 @@ describe('EventSource integration', () => {
   });
   it('MessageEvent has correct properties', async (t) => {
     let receivedEvent: EventSourceMessage | null = null;
-    const server = serveHttp({ port: 19969 }, async (_req) => sseResponse(sseBody({
-      event: 'update',
-      data: 'payload',
-      id: '7'
-    })));
+    const server = serveHttp({ port: 19969 }, async (_req) =>
+      sseResponse(
+        sseBody({
+          event: 'update',
+          data: 'payload',
+          id: '7',
+        }),
+      ),
+    );
     await new Promise<void>((resolve) => {
       const es = new EventSource('http://127.0.0.1:19969/events');
       es.addEventListener('update', (e) => {
-        receivedEvent = (e as unknown) as EventSourceMessage;
+        receivedEvent = e as unknown as EventSourceMessage;
         es.close();
         resolve();
       });
     });
     t.ok(receivedEvent !== null, 'event received');
-    const event = (receivedEvent as unknown) as EventSourceMessage;
+    const event = receivedEvent as unknown as EventSourceMessage;
     t.equal(event.type, 'update');
     t.equal(event.data, 'payload');
     t.equal(event.lastEventId, '7', 'lastEventId on MessageEvent');
@@ -573,11 +625,13 @@ describe('EventSource integration', () => {
       seenIds.push(req.headers.get('last-event-id'));
       if (connectionCount === 1) {
         // Send an event with an empty id: field, then close.
-        return sseResponse(sseBody({
-          retry: 50,
-          id: '',
-          data: 'empty-id-event'
-        }));
+        return sseResponse(
+          sseBody({
+            retry: 50,
+            id: '',
+            data: 'empty-id-event',
+          }),
+        );
       }
       resolveReconnect();
       return new Response(null, { status: 204 });
@@ -598,7 +652,7 @@ describe('EventSource integration', () => {
       if (path === '/events') {
         return new Response(null, {
           status: 302,
-          headers: { location: '/events-final' }
+          headers: { location: '/events-final' },
         });
       }
       return sseResponse(sseBody({ data: 'redirected' }));
@@ -612,7 +666,11 @@ describe('EventSource integration', () => {
         resolve();
       };
     });
-    t.deepEqual(seenPaths, ['/events', '/events-final'], 'redirect is followed with a relative Location');
+    t.deepEqual(
+      seenPaths,
+      ['/events', '/events-final'],
+      'redirect is followed with a relative Location',
+    );
     t.equal(received, 'redirected', 'message received from redirected SSE endpoint');
     await server.close();
   });
@@ -622,7 +680,7 @@ describe('EventSource integration', () => {
       requests++;
       return new Response(null, {
         status: 307,
-        headers: { location: '/events' }
+        headers: { location: '/events' },
       });
     });
     await new Promise<void>((resolve) => {
@@ -644,10 +702,12 @@ describe('EventSource integration', () => {
       return sseResponse(sseBody({ data: 'headers' }));
     });
     await new Promise<void>((resolve) => {
-      const es = new EventSource('http://127.0.0.1:19974/events', { headers: {
-        authorization: 'Bearer token',
-        'x-fino-test': 'yes'
-      } });
+      const es = new EventSource('http://127.0.0.1:19974/events', {
+        headers: {
+          authorization: 'Bearer token',
+          'x-fino-test': 'yes',
+        },
+      });
       es.onmessage = () => {
         es.close();
         resolve();
@@ -673,8 +733,8 @@ describe('EventSource integration', () => {
           headers: {
             'content-type': 'text/event-stream',
             'cache-control': 'no-store',
-            'set-cookie': 'session=from-server'
-          }
+            'set-cookie': 'session=from-server',
+          },
         });
       }
       resolveReconnect();
@@ -691,7 +751,9 @@ describe('EventSource integration', () => {
       return sseResponse(sseBody({ data: 'explicit-cookie' }));
     });
     await new Promise<void>((resolve) => {
-      const es = new EventSource('http://127.0.0.1:19977/events', { headers: { cookie: 'session=caller-provided' } });
+      const es = new EventSource('http://127.0.0.1:19977/events', {
+        headers: { cookie: 'session=caller-provided' },
+      });
       es.onmessage = () => {
         es.close();
         resolve();
@@ -701,14 +763,17 @@ describe('EventSource integration', () => {
     await explicitServer.close();
   });
   it('connects to HTTPS SSE with a fixture CA', { skip: skipTls }, async (t) => {
-    const server = serveHttp({
-      port: 19975,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: CERT_PATH,
-        key: KEY_PATH
-      }
-    }, async () => sseResponse(sseBody({ data: 'secure' })));
+    const server = serveHttp(
+      {
+        port: 19975,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: CERT_PATH,
+          key: KEY_PATH,
+        },
+      },
+      async () => sseResponse(sseBody({ data: 'secure' })),
+    );
     let received = '';
     await new Promise<void>((resolve) => {
       const es = new EventSource('https://localhost:19975/events', { tls: { ca: CERT_PATH } });

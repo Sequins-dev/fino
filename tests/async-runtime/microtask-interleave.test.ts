@@ -1,15 +1,17 @@
 /**
-* Tests that V8 microtasks and Rust async executor interleave correctly.
-*/
+ * Tests that V8 microtasks and Rust async executor interleave correctly.
+ */
 import { describe, it } from 'fino:test/test';
 import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
-const lib = dlopen(LIBC, { usleep: {
-  parameters: ['u32'],
-  result: 'i32',
-  async: true
-} });
+const lib = dlopen(LIBC, {
+  usleep: {
+    parameters: ['u32'],
+    result: 'i32',
+    async: true,
+  },
+});
 const { usleep } = lib.symbols;
 describe('microtask + async-executor interleaving', () => {
   it('JS setTimeout resolves while async FFI is pending', async (t) => {
@@ -52,10 +54,6 @@ describe('microtask + async-executor interleaving', () => {
     const ffiPromise = usleep(3e4);
     const [chainResult] = await Promise.all([chainPromise, ffiPromise]);
     t.equal(chainResult, 'done', 'async chain completed');
-    t.deepEqual(results, [
-      1,
-      2,
-      3
-    ], 'chain ran in order');
+    t.deepEqual(results, [1, 2, 3], 'chain ran in order');
   });
 });

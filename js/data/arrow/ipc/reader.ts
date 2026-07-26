@@ -1,37 +1,37 @@
 /**
-* Arrow IPC stream and file readers, plus the `tableFromIPC`/`tableToIPC`
-* conveniences. Re-exports the writer surface so the whole IPC API is one
-* import; everything here reaches user code through `fino:data/arrow`.
-*
-* Decoding is eager: the buffer is scanned once, dictionary batches are
-* resolved as they appear, and every record batch is materialized up front.
-* Uncompressed body buffers are aliased as subarrays of the input (zero-copy),
-* so the source bytes must not be mutated while decoded vectors are in use.
-* LZ4- and ZSTD-compressed bodies are inflated into fresh buffers via
-* `fino:compress`.
-*
-* Both wire layouts are handled transparently: the streaming format (a bare
-* message sequence) and the file format (`ARROW1` magic plus a footer).
-* `RecordBatchReader` accepts either; `RecordBatchFileReader` additionally
-* requires the file magic and adds indexed batch access. Legacy pre-0.15
-* streams (missing the `0xFFFFFFFF` continuation marker) and delta dictionary
-* batches are rejected with descriptive errors.
-*
-* ```ts no_run
-* import { tableFromIPC, RecordBatchReader } from 'fino:data/arrow';
-* import { DiskFileSystem } from 'fino:file';
-*
-* const fs = new DiskFileSystem();
-* const file = await fs.open('/data/metrics.arrow');
-* const table = tableFromIPC(await file.bytes());
-* await file.close();
-* ```
-*
-* Arrow IPC format:
-* https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
-*
-* @internal
-*/
+ * Arrow IPC stream and file readers, plus the `tableFromIPC`/`tableToIPC`
+ * conveniences. Re-exports the writer surface so the whole IPC API is one
+ * import; everything here reaches user code through `fino:data/arrow`.
+ *
+ * Decoding is eager: the buffer is scanned once, dictionary batches are
+ * resolved as they appear, and every record batch is materialized up front.
+ * Uncompressed body buffers are aliased as subarrays of the input (zero-copy),
+ * so the source bytes must not be mutated while decoded vectors are in use.
+ * LZ4- and ZSTD-compressed bodies are inflated into fresh buffers via
+ * `fino:compress`.
+ *
+ * Both wire layouts are handled transparently: the streaming format (a bare
+ * message sequence) and the file format (`ARROW1` magic plus a footer).
+ * `RecordBatchReader` accepts either; `RecordBatchFileReader` additionally
+ * requires the file magic and adds indexed batch access. Legacy pre-0.15
+ * streams (missing the `0xFFFFFFFF` continuation marker) and delta dictionary
+ * batches are rejected with descriptive errors.
+ *
+ * ```ts no_run
+ * import { tableFromIPC, RecordBatchReader } from 'fino:data/arrow';
+ * import { DiskFileSystem } from 'fino:file';
+ *
+ * const fs = new DiskFileSystem();
+ * const file = await fs.open('/data/metrics.arrow');
+ * const table = tableFromIPC(await file.bytes());
+ * await file.close();
+ * ```
+ *
+ * Arrow IPC format:
+ * https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
+ *
+ * @internal
+ */
 import { decompress as decompressBytes } from 'fino:compress';
 import { ArrowError, ArrowParseError, parseError } from '../errors.ts';
 import { Field, Schema } from '../schema.ts';
@@ -39,16 +39,21 @@ import { Vector, makeVector, type VectorData } from '../vector.ts';
 import { RecordBatch } from '../batch.ts';
 import { Table } from '../table.ts';
 import { bufferLayout, hasVariadicBuffers, type DataType } from '../type.ts';
-import { decodeMessage, MessageHeader, CompressionType, type RecordBatchHeader, type MessageInfo } from './metadata.ts';
-export { RecordBatchStreamWriter, RecordBatchFileWriter, IPCWriter, tableToIPC, type IPCWriteOptions } from './writer.ts';
-const MAGIC = [
-  65,
-  82,
-  82,
-  79,
-  87,
-  49
-];
+import {
+  decodeMessage,
+  MessageHeader,
+  CompressionType,
+  type RecordBatchHeader,
+  type MessageInfo,
+} from './metadata.ts';
+export {
+  RecordBatchStreamWriter,
+  RecordBatchFileWriter,
+  IPCWriter,
+  tableToIPC,
+  type IPCWriteOptions,
+} from './writer.ts';
+const MAGIC = [65, 82, 82, 79, 87, 49];
 function isFileFormat(bytes: Uint8Array): boolean {
   if (bytes.byteLength < MAGIC.length + 8) return false;
   for (let i = 0; i < MAGIC.length; i++) if (bytes[i] !== MAGIC[i]) return false;
@@ -64,10 +69,14 @@ interface RebuildContext {
   variadicIndex: number;
   dictionaries: Map<number, Vector>;
 }
-function decompressBuffer(region: {
-  offset: number;
-  length: number;
-}, body: Uint8Array, compression: number | null): Uint8Array {
+function decompressBuffer(
+  region: {
+    offset: number;
+    length: number;
+  },
+  body: Uint8Array,
+  compression: number | null,
+): Uint8Array {
   const raw = body.subarray(region.offset, region.offset + region.length);
   if (compression === null || region.length === 0) return raw;
   const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -86,7 +95,7 @@ function rebuildVector(field: Field, ctx: RebuildContext): Vector {
   const data: VectorData = {
     type,
     length: node.length,
-    nullCount: node.nullCount
+    nullCount: node.nullCount,
   };
   for (const kind of bufferLayout(type)) {
     const buf = ctx.bodyBuffers[ctx.bufferIndex++]!;
@@ -121,7 +130,8 @@ function rebuildVector(field: Field, ctx: RebuildContext): Vector {
   }
   if (type.kind === 'dictionary') {
     const dict = ctx.dictionaries.get(type.id);
-    if (dict === undefined) throw new ArrowError(`dictionary ${type.id} referenced before its dictionary batch`);
+    if (dict === undefined)
+      throw new ArrowError(`dictionary ${type.id} referenced before its dictionary batch`);
     data.dictionary = dict;
   }
   const children = childFieldList(type);
@@ -137,14 +147,23 @@ function childFieldList(type: DataType): Field[] {
     case 'listview':
     case 'largelistview':
     case 'fixedsizelist':
-    case 'map': return [type.child];
+    case 'map':
+      return [type.child];
     case 'struct':
-    case 'union': return type.children;
-    case 'runendencoded': return [type.runEnds, type.values];
-    default: return [];
+    case 'union':
+      return type.children;
+    case 'runendencoded':
+      return [type.runEnds, type.values];
+    default:
+      return [];
   }
 }
-function rebuildBatch(schema: Schema, header: RecordBatchHeader, body: Uint8Array, dictionaries: Map<number, Vector>): RecordBatch {
+function rebuildBatch(
+  schema: Schema,
+  header: RecordBatchHeader,
+  body: Uint8Array,
+  dictionaries: Map<number, Vector>,
+): RecordBatch {
   const ctx: RebuildContext = {
     nodes: header.nodes,
     nodeIndex: 0,
@@ -152,7 +171,7 @@ function rebuildBatch(schema: Schema, header: RecordBatchHeader, body: Uint8Arra
     bufferIndex: 0,
     variadicCounts: header.variadicBufferCounts,
     variadicIndex: 0,
-    dictionaries
+    dictionaries,
   };
   const columns = schema.fields.map((f) => rebuildVector(f, ctx));
   return new RecordBatch(schema, columns);
@@ -184,7 +203,11 @@ function* iterateMessages(bytes: Uint8Array): Generator<ParsedMessage> {
   while (pos + 8 <= end) {
     const continuation = dv.getUint32(pos, true);
     if (continuation !== 4294967295) {
-      parseError(bytes, pos, 'expected 0xFFFFFFFF continuation marker (legacy pre-0.15 streams are unsupported; re-export with Arrow >= 0.15)');
+      parseError(
+        bytes,
+        pos,
+        'expected 0xFFFFFFFF continuation marker (legacy pre-0.15 streams are unsupported; re-export with Arrow >= 0.15)',
+      );
     }
     const metaLen = dv.getInt32(pos + 4, true);
     if (metaLen === 0) break;
@@ -195,10 +218,10 @@ function* iterateMessages(bytes: Uint8Array): Generator<ParsedMessage> {
     const body = bytes.subarray(bodyStart, bodyStart + info.bodyLength);
     yield {
       info,
-      body
+      body,
     };
     // The body is padded to an 8-byte boundary on the wire.
-    const paddedBody = info.bodyLength + (8 - info.bodyLength % 8) % 8;
+    const paddedBody = info.bodyLength + ((8 - (info.bodyLength % 8)) % 8);
     pos = bodyStart + paddedBody;
   }
 }
@@ -227,7 +250,7 @@ function parseAll(bytes: Uint8Array): {
         bufferIndex: 0,
         variadicCounts: batch.variadicBufferCounts,
         variadicIndex: 0,
-        dictionaries
+        dictionaries,
       };
       dictionaries.set(id, rebuildVector(valueField, dictCtx));
     } else if (info.headerType === MessageHeader.RecordBatch && info.recordBatch) {
@@ -235,20 +258,25 @@ function parseAll(bytes: Uint8Array): {
       batches.push(rebuildBatch(schema, info.recordBatch, body, dictionaries));
     }
   }
-  if (schema === null) throw new ArrowParseError('Arrow IPC stream contained no schema message', {
-    detail: 'no schema',
-    format: 'arrow',
-    offset: 0,
-    source: bytes
-  });
+  if (schema === null)
+    throw new ArrowParseError('Arrow IPC stream contained no schema message', {
+      detail: 'no schema',
+      format: 'arrow',
+      offset: 0,
+      source: bytes,
+    });
   return {
     schema,
-    batches
+    batches,
   };
 }
-async function collectBytes(source: AsyncIterable<Uint8Array> | {
-  read(): Promise<Uint8Array | null>;
-}): Promise<Uint8Array> {
+async function collectBytes(
+  source:
+    | AsyncIterable<Uint8Array>
+    | {
+        read(): Promise<Uint8Array | null>;
+      },
+): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];
   let total = 0;
   if (Symbol.asyncIterator in source) {
@@ -276,30 +304,30 @@ async function collectBytes(source: AsyncIterable<Uint8Array> | {
   return out;
 }
 /**
-* Reads record batches from an Arrow IPC stream or file.
-*
-* Construct via the static factories: `from` for in-memory bytes, `fromAsync`
-* for an async byte source. Both formats are detected automatically — a
-* buffer starting with the `ARROW1` magic is treated as a file, anything else
-* as a stream. All batches are decoded eagerly at construction; the instance
-* is a plain container afterwards, iterable batch by batch or collapsible
-* into a `Table`.
-*
-* Construction throws `ArrowParseError` when the input holds no schema
-* message or uses the legacy pre-0.15 framing, and `ArrowError` when a
-* dictionary-encoded column references a dictionary that never arrived or a
-* delta dictionary batch is encountered.
-*
-* ```ts no_run
-* import { RecordBatchReader } from 'fino:data/arrow';
-*
-* const reader = RecordBatchReader.from(bytes);
-* console.log(reader.schema.fields.map((f) => f.name));
-* for (const batch of reader) {
-*   console.log(batch.numRows);
-* }
-* ```
-*/
+ * Reads record batches from an Arrow IPC stream or file.
+ *
+ * Construct via the static factories: `from` for in-memory bytes, `fromAsync`
+ * for an async byte source. Both formats are detected automatically — a
+ * buffer starting with the `ARROW1` magic is treated as a file, anything else
+ * as a stream. All batches are decoded eagerly at construction; the instance
+ * is a plain container afterwards, iterable batch by batch or collapsible
+ * into a `Table`.
+ *
+ * Construction throws `ArrowParseError` when the input holds no schema
+ * message or uses the legacy pre-0.15 framing, and `ArrowError` when a
+ * dictionary-encoded column references a dictionary that never arrived or a
+ * delta dictionary batch is encountered.
+ *
+ * ```ts no_run
+ * import { RecordBatchReader } from 'fino:data/arrow';
+ *
+ * const reader = RecordBatchReader.from(bytes);
+ * console.log(reader.schema.fields.map((f) => f.name));
+ * for (const batch of reader) {
+ *   console.log(batch.numRows);
+ * }
+ * ```
+ */
 export class RecordBatchReader {
   /** The schema shared by every batch, from the stream's schema message. */
   readonly schema: Schema;
@@ -310,41 +338,45 @@ export class RecordBatchReader {
     this.batches = batches;
   }
   /**
-  * Read all batches from an in-memory Arrow IPC buffer, in either stream or
-  * file format.
-  *
-  * Decoded vectors alias the input where the body is uncompressed, so keep
-  * the buffer intact for as long as the batches are used. Throws
-  * `ArrowParseError` if the bytes contain no schema message or cannot be
-  * parsed.
-  */
+   * Read all batches from an in-memory Arrow IPC buffer, in either stream or
+   * file format.
+   *
+   * Decoded vectors alias the input where the body is uncompressed, so keep
+   * the buffer intact for as long as the batches are used. Throws
+   * `ArrowParseError` if the bytes contain no schema message or cannot be
+   * parsed.
+   */
   static from(bytes: Uint8Array | ArrayBuffer): RecordBatchReader {
     const u8 = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
     const { schema, batches } = parseAll(u8);
     return new RecordBatchReader(schema, batches);
   }
   /**
-  * Read all batches from an async byte source.
-  *
-  * Accepts anything async-iterable over `Uint8Array` chunks, or an object
-  * with a `read()` method that resolves chunks until `null`. The entire
-  * source is buffered into memory first, then parsed exactly like `from` —
-  * this is a convenience for sockets and file readers, not a bounded-memory
-  * streaming decoder.
-  *
-  * ```ts no_run
-  * import { RecordBatchReader } from 'fino:data/arrow';
-  * import { DiskFileSystem } from 'fino:file';
-  *
-  * const fs = new DiskFileSystem();
-  * const file = await fs.open('/data/events.arrows');
-  * const reader = await RecordBatchReader.fromAsync(file.reader());
-  * await file.close();
-  * ```
-  */
-  static async fromAsync(source: AsyncIterable<Uint8Array> | {
-    read(): Promise<Uint8Array | null>;
-  }): Promise<RecordBatchReader> {
+   * Read all batches from an async byte source.
+   *
+   * Accepts anything async-iterable over `Uint8Array` chunks, or an object
+   * with a `read()` method that resolves chunks until `null`. The entire
+   * source is buffered into memory first, then parsed exactly like `from` —
+   * this is a convenience for sockets and file readers, not a bounded-memory
+   * streaming decoder.
+   *
+   * ```ts no_run
+   * import { RecordBatchReader } from 'fino:data/arrow';
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * const file = await fs.open('/data/events.arrows');
+   * const reader = await RecordBatchReader.fromAsync(file.reader());
+   * await file.close();
+   * ```
+   */
+  static async fromAsync(
+    source:
+      | AsyncIterable<Uint8Array>
+      | {
+          read(): Promise<Uint8Array | null>;
+        },
+  ): Promise<RecordBatchReader> {
     return RecordBatchReader.from(await collectBytes(source));
   }
   /** Iterate the decoded batches in stream order. */
@@ -357,22 +389,22 @@ export class RecordBatchReader {
   }
 }
 /**
-* Reader for the Arrow IPC *file* format with indexed batch access.
-*
-* Unlike `RecordBatchReader`, construction insists on the `ARROW1` magic and
-* throws `ArrowParseError` if it is absent — use this class when the input
-* must be a well-formed Arrow file rather than a bare stream. All batches are
-* decoded eagerly (the footer only bounds the message scan), after which
-* `batch(i)` and `numBatches` give positional access.
-*
-* ```ts no_run
-* import { RecordBatchFileReader } from 'fino:data/arrow';
-*
-* const reader = RecordBatchFileReader.from(bytes);
-* const last = reader.batch(reader.numBatches - 1);
-* console.log(last.numRows);
-* ```
-*/
+ * Reader for the Arrow IPC *file* format with indexed batch access.
+ *
+ * Unlike `RecordBatchReader`, construction insists on the `ARROW1` magic and
+ * throws `ArrowParseError` if it is absent — use this class when the input
+ * must be a well-formed Arrow file rather than a bare stream. All batches are
+ * decoded eagerly (the footer only bounds the message scan), after which
+ * `batch(i)` and `numBatches` give positional access.
+ *
+ * ```ts no_run
+ * import { RecordBatchFileReader } from 'fino:data/arrow';
+ *
+ * const reader = RecordBatchFileReader.from(bytes);
+ * const last = reader.batch(reader.numBatches - 1);
+ * console.log(last.numRows);
+ * ```
+ */
 export class RecordBatchFileReader {
   /** The schema shared by every batch, from the file's schema message. */
   readonly schema: Schema;
@@ -383,21 +415,22 @@ export class RecordBatchFileReader {
     this.batches = batches;
   }
   /**
-  * Read an Arrow IPC file buffer.
-  *
-  * Throws `ArrowParseError` if the buffer does not start with the `ARROW1`
-  * magic, contains no schema message, or cannot be parsed. Uncompressed
-  * vector buffers alias the input bytes, so do not mutate them while the
-  * decoded batches are in use.
-  */
+   * Read an Arrow IPC file buffer.
+   *
+   * Throws `ArrowParseError` if the buffer does not start with the `ARROW1`
+   * magic, contains no schema message, or cannot be parsed. Uncompressed
+   * vector buffers alias the input bytes, so do not mutate them while the
+   * decoded batches are in use.
+   */
   static from(bytes: Uint8Array | ArrayBuffer): RecordBatchFileReader {
     const u8 = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
-    if (!isFileFormat(u8)) throw new ArrowParseError('not an Arrow IPC file (missing ARROW1 magic)', {
-      detail: 'bad magic',
-      format: 'arrow',
-      offset: 0,
-      source: u8
-    });
+    if (!isFileFormat(u8))
+      throw new ArrowParseError('not an Arrow IPC file (missing ARROW1 magic)', {
+        detail: 'bad magic',
+        format: 'arrow',
+        offset: 0,
+        source: u8,
+      });
     const { schema, batches } = parseAll(u8);
     return new RecordBatchFileReader(schema, batches);
   }
@@ -406,13 +439,14 @@ export class RecordBatchFileReader {
     return this.batches.length;
   }
   /**
-  * The batch at index `i`, in file order.
-  *
-  * Throws `ArrowError` when `i` is outside `0..numBatches - 1`.
-  */
+   * The batch at index `i`, in file order.
+   *
+   * Throws `ArrowError` when `i` is outside `0..numBatches - 1`.
+   */
   batch(i: number): RecordBatch {
     const b = this.batches[i];
-    if (b === undefined) throw new ArrowError(`batch index ${i} out of range 0..${this.batches.length - 1}`);
+    if (b === undefined)
+      throw new ArrowError(`batch index ${i} out of range 0..${this.batches.length - 1}`);
     return b;
   }
   /** Collect all batches into a `Table` sharing this reader's schema. */
@@ -421,22 +455,22 @@ export class RecordBatchFileReader {
   }
 }
 /**
-* Decode an Arrow IPC buffer (stream or file format) into a `Table`.
-*
-* The one-call counterpart to `tableToIPC`: format detection, dictionary
-* resolution, and decompression all happen internally. Equivalent to
-* `RecordBatchReader.from(bytes).toTable()`; use the reader classes directly
-* when per-batch access matters. Throws `ArrowParseError` on malformed input
-* or when no schema message is present.
-*
-* ```ts no_run
-* import { tableFromIPC, tableToIPC, RecordBatch } from 'fino:data/arrow';
-*
-* const bytes = tableToIPC(RecordBatch.from({ id: [1, 2, 3] }));
-* const table = tableFromIPC(bytes);
-* console.log(table.numRows); // 3
-* ```
-*/
+ * Decode an Arrow IPC buffer (stream or file format) into a `Table`.
+ *
+ * The one-call counterpart to `tableToIPC`: format detection, dictionary
+ * resolution, and decompression all happen internally. Equivalent to
+ * `RecordBatchReader.from(bytes).toTable()`; use the reader classes directly
+ * when per-batch access matters. Throws `ArrowParseError` on malformed input
+ * or when no schema message is present.
+ *
+ * ```ts no_run
+ * import { tableFromIPC, tableToIPC, RecordBatch } from 'fino:data/arrow';
+ *
+ * const bytes = tableToIPC(RecordBatch.from({ id: [1, 2, 3] }));
+ * const table = tableFromIPC(bytes);
+ * console.log(table.numRows); // 3
+ * ```
+ */
 export function tableFromIPC(bytes: Uint8Array | ArrayBuffer): Table {
   return RecordBatchReader.from(bytes).toTable();
 }

@@ -1,9 +1,19 @@
 /**
-* Benchmarks for fino:file/path
-*
-* Run with: cargo run -- --bench benchmarks/path.bench.mjs
-*/
-import { Path, join, resolve, normalize, relative, dirname, basename, extname, isAbsolute } from 'fino:file/path';
+ * Benchmarks for fino:file/path
+ *
+ * Run with: cargo run -- --bench benchmarks/path.bench.mjs
+ */
+import {
+  Path,
+  join,
+  resolve,
+  normalize,
+  relative,
+  dirname,
+  basename,
+  extname,
+  isAbsolute,
+} from 'fino:file/path';
 import { bench } from 'fino:bench';
 bench('module-level functions', (b) => {
   b.group('join', (g) => {
@@ -41,7 +51,7 @@ bench('Path class', (b) => {
     g.measure('Path.from str', () => Path.from('/usr/local/bin'));
     g.measure('Path.from Path', {
       setup: () => new Path('/usr/local'),
-      fn: (p) => Path.from(p)
+      fn: (p) => Path.from(p),
     });
   });
   b.group('methods', (g) => {

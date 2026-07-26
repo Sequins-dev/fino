@@ -1,7 +1,7 @@
 /**
-* Fixture: exports the wakeFd so the parent can compare it with its own.
-*/
+ * Fixture: exports the wakeFd so the parent can compare it with its own.
+ */
 import { wakeFd } from 'internal:async-runtime';
-export default function() {
+export default function () {
   return wakeFd;
 }

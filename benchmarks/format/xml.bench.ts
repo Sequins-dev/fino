@@ -1,12 +1,16 @@
 /**
-* Benchmarks for fino:format/xml
-*
-* Run with: cargo run -- --bench benchmarks/xml.bench.mjs
-*/
+ * Benchmarks for fino:format/xml
+ *
+ * Run with: cargo run -- --bench benchmarks/xml.bench.mjs
+ */
 import { parse, stringify, parseStream } from 'fino:format/xml';
 import { bench } from 'fino:bench';
 function makeItemList(n: number): string {
-  const items = Array.from({ length: n }, (_, i) => `  <item id="${i}" category="cat${i % 5}"><name>Item ${i}</name><value>${(i * 1.5).toFixed(2)}</value></item>`);
+  const items = Array.from(
+    { length: n },
+    (_, i) =>
+      `  <item id="${i}" category="cat${i % 5}"><name>Item ${i}</name><value>${(i * 1.5).toFixed(2)}</value></item>`,
+  );
   return `<items>${items.join('')}</items>`;
 }
 const SMALL_XML = makeItemList(10);
@@ -21,8 +25,10 @@ const UNICODE_XML = `<root>${[
   '<item lang="ja">日本語テキスト</item>',
   '<item lang="zh">中文内容</item>',
   '<item lang="el">Ελληνικά κείμενα</item>',
-  '<item lang="ar">نص عربي</item>'
-].repeat(50).join('')}</root>`;
+  '<item lang="ar">نص عربي</item>',
+]
+  .repeat(50)
+  .join('')}</root>`;
 const enc = new TextEncoder();
 const LARGE_BYTES = enc.encode(LARGE_XML);
 bench('parse by size', (b) => {
@@ -57,10 +63,12 @@ async function xmlStream(xml: string, chunkSize = 4096): Promise<AsyncIterable<U
 bench('parseStream', (b) => {
   b.measure('500 items × 4KB chunks', async () => {
     const src = await xmlStream(MEDIUM_XML);
-    for await (const _ of parseStream(src)) {}
+    for await (const _ of parseStream(src)) {
+    }
   });
   b.measure('5K items × 4KB chunks', async () => {
     const src = await xmlStream(LARGE_XML);
-    for await (const _ of parseStream(src)) {}
+    for await (const _ of parseStream(src)) {
+    }
   });
 });

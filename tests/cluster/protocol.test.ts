@@ -1,6 +1,6 @@
 /**
-* Tests for internal:cluster/protocol — encode/decode + helpers.
-*/
+ * Tests for internal:cluster/protocol — encode/decode + helpers.
+ */
 import { describe, it } from 'fino:test/test';
 import { encode, decode, nodeIdFromId, type ClusterMessage } from 'internal:cluster/protocol';
 describe('ClusterMessage encode/decode', () => {
@@ -11,8 +11,8 @@ describe('ClusterMessage encode/decode', () => {
       nodeId: 'node1',
       load: {
         cpu: .5,
-        memory: 1024
-      }
+        memory: 1024,
+      },
     };
     const got = roundTrip(msg);
     t.equal(got.t, 'HELLO');
@@ -25,13 +25,15 @@ describe('ClusterMessage encode/decode', () => {
     const msg: ClusterMessage = {
       t: 'WELCOME',
       nodeId: 'seed',
-      peers: [{
-        nodeId: 'worker1',
-        load: {
-          cpu: 0,
-          memory: 512
-        }
-      }]
+      peers: [
+        {
+          nodeId: 'worker1',
+          load: {
+            cpu: 0,
+            memory: 512,
+          },
+        },
+      ],
     };
     const got = roundTrip(msg);
     t.equal(got.t, 'WELCOME');
@@ -49,8 +51,8 @@ describe('ClusterMessage encode/decode', () => {
         entry: './fn.ts',
         root: '/app',
         rules: [],
-        bootstrapData: { cliOtel: { endpoint: 'http://collector.example:4318/remote' } }
-      }
+        bootstrapData: { cliOtel: { endpoint: 'http://collector.example:4318/remote' } },
+      },
     };
     const got = roundTrip(msg);
     t.equal(got.t, 'SPAWN');
@@ -58,7 +60,9 @@ describe('ClusterMessage encode/decode', () => {
       t.equal(got.spawnReqId, 'req-1');
       t.equal(got.parentPortId, 'nodeA/p-0');
       t.equal(got.config.entry, './fn.ts');
-      t.deepEqual(got.config.bootstrapData, { cliOtel: { endpoint: 'http://collector.example:4318/remote' } });
+      t.deepEqual(got.config.bootstrapData, {
+        cliOtel: { endpoint: 'http://collector.example:4318/remote' },
+      });
     }
   });
   it('SPAWN_ACK round-trips', (t) => {
@@ -66,14 +70,14 @@ describe('ClusterMessage encode/decode', () => {
       t: 'SPAWN_ACK',
       spawnReqId: 'req-1',
       childPortId: 'nodeB/0',
-      ok: true
+      ok: true,
     };
     const fail: ClusterMessage = {
       t: 'SPAWN_ACK',
       spawnReqId: 'req-2',
       childPortId: '',
       ok: false,
-      error: 'no worker'
+      error: 'no worker',
     };
     const gotOk = roundTrip(ok);
     const gotFail = roundTrip(fail);
@@ -89,7 +93,7 @@ describe('ClusterMessage encode/decode', () => {
       t: 'PORT_MSG',
       fromPort: 'nodeA/p-0',
       toPort: 'nodeB/0',
-      payload: btoa('hello')
+      payload: btoa('hello'),
     };
     const got = roundTrip(msg);
     t.equal(got.t, 'PORT_MSG');
@@ -102,7 +106,7 @@ describe('ClusterMessage encode/decode', () => {
   it('TERMINATE round-trips', (t) => {
     const msg: ClusterMessage = {
       t: 'TERMINATE',
-      realmId: 'nodeB/5'
+      realmId: 'nodeB/5',
     };
     const got = roundTrip(msg);
     t.equal(got.t, 'TERMINATE');
@@ -110,14 +114,37 @@ describe('ClusterMessage encode/decode', () => {
   });
   it('rejects malformed envelopes', (t) => {
     t.throws(() => decode('null'), /protocol/, 'non-object JSON rejected');
-    t.throws(() => decode('{"t":"NOPE"}'), /unknown message type/, 'unknown discriminator rejected');
-    t.throws(() => decode('{"t":"HELLO","nodeId":"node/1","load":{"cpu":0,"memory":1}}'), /nodeId/, 'node id with slash rejected');
-    t.throws(() => decode('{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/2","payload":5}'), /payload/, 'non-string payload rejected');
-    t.throws(() => decode('{"t":"WELCOME","nodeId":"seed","peers":[{"nodeId":"bad/node","load":{"cpu":0,"memory":1}}]}'), /peer/, 'malformed peer rejected');
+    t.throws(
+      () => decode('{"t":"NOPE"}'),
+      /unknown message type/,
+      'unknown discriminator rejected',
+    );
+    t.throws(
+      () => decode('{"t":"HELLO","nodeId":"node/1","load":{"cpu":0,"memory":1}}'),
+      /nodeId/,
+      'node id with slash rejected',
+    );
+    t.throws(
+      () => decode('{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/2","payload":5}'),
+      /payload/,
+      'non-string payload rejected',
+    );
+    t.throws(
+      () =>
+        decode(
+          '{"t":"WELCOME","nodeId":"seed","peers":[{"nodeId":"bad/node","load":{"cpu":0,"memory":1}}]}',
+        ),
+      /peer/,
+      'malformed peer rejected',
+    );
   });
   it('does not preserve authentication or transport negotiation fields', (t) => {
-    const hello = decode('{"t":"HELLO","nodeId":"node1","load":{"cpu":0,"memory":1},"token":"secret"}');
-    const portMsg = decode('{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/p-2","payload":"","direct":true,"transport":"quic"}');
+    const hello = decode(
+      '{"t":"HELLO","nodeId":"node1","load":{"cpu":0,"memory":1},"token":"secret"}',
+    );
+    const portMsg = decode(
+      '{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/p-2","payload":"","direct":true,"transport":"quic"}',
+    );
     t.equal((hello as any).token, undefined, 'auth token is not part of HELLO');
     t.equal((portMsg as any).direct, undefined, 'direct peer routing flag is not part of PORT_MSG');
     t.equal((portMsg as any).transport, undefined, 'transport negotiation is not part of PORT_MSG');

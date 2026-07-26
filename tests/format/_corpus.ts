@@ -40,7 +40,7 @@ export async function loadCorpus(dir: string): Promise<CorpusCase[]> {
       cases.push({
         id: subdir.split('/').pop()! + '/' + name,
         input,
-        expected: caseExpected
+        expected: caseExpected,
       });
     }
   }
@@ -54,13 +54,20 @@ export async function loadCorpus(dir: string): Promise<CorpusCase[]> {
   await readDir(dir + '/valid', 'parse-ok');
   await readDir(dir + '/invalid', 'parse-err');
   for (const c of cases) {
-    const stem = c.id.split('/').pop()!.replace(/\.[^.]+$/, '');
+    const stem = c.id
+      .split('/')
+      .pop()!
+      .replace(/\.[^.]+$/, '');
     if (skipMap[stem]) c.skip = skipMap[stem];
   }
   return cases;
 }
 type TestFn = Parameters<typeof ItFn>[1];
-export function runCorpus(cases: CorpusCase[], itFn: typeof ItFn, runner: (c: CorpusCase, t: Parameters<TestFn>[0]) => void | Promise<void>): void {
+export function runCorpus(
+  cases: CorpusCase[],
+  itFn: typeof ItFn,
+  runner: (c: CorpusCase, t: Parameters<TestFn>[0]) => void | Promise<void>,
+): void {
   for (const c of cases) {
     if (c.skip !== undefined) {
       itFn(c.id, { skip: c.skip }, () => {});

@@ -1,8 +1,8 @@
 /**
-* Benchmarks for fino:process
-*
-* Run with: cargo run -- bench benchmarks/process.bench.ts
-*/
+ * Benchmarks for fino:process
+ *
+ * Run with: cargo run -- bench benchmarks/process.bench.ts
+ */
 import { pid, ppid, argv, env, execPath, cwd, os, arch } from 'fino:process';
 import { bench } from 'fino:bench';
 bench('static properties', (b) => {

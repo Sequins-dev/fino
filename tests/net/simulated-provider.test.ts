@@ -1,5 +1,8 @@
 import { describe, it } from 'fino:test/test';
-import { SimulatedNetworkProvider, type SimulatedNetworkTraceEvent } from '../../js/internal/net/simulated-provider.ts';
+import {
+  SimulatedNetworkProvider,
+  type SimulatedNetworkTraceEvent,
+} from '../../js/internal/net/simulated-provider.ts';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 async function readAll(reader: AsyncIterable<Uint8Array>) {
@@ -23,12 +26,12 @@ describe('SimulatedNetworkProvider datagrams', () => {
     const client = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.1',
-      port: 0
+      port: 0,
     });
     const server = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.2',
-      port: 4433
+      port: 4433,
     });
     const received = server.recv();
     await client.send(encodeUtf8('initial'), server.address);
@@ -44,57 +47,47 @@ describe('SimulatedNetworkProvider datagrams', () => {
     server.close();
   });
   it('applies queue overflow, MTU drops, duplication, corruption, and tracing deterministically', async (t) => {
-    const net = new SimulatedNetworkProvider({ defaultLink: {
-      latencyMs: 10,
-      mtu: 8,
-      queueLimit: 1,
-      duplicateRate: 1,
-      corruptionRate: 1,
-      corruptByte: 255
-    } });
+    const net = new SimulatedNetworkProvider({
+      defaultLink: {
+        latencyMs: 10,
+        mtu: 8,
+        queueLimit: 1,
+        duplicateRate: 1,
+        corruptionRate: 1,
+        corruptByte: 255,
+      },
+    });
     const a = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.1',
-      port: 1e3
+      port: 1e3,
     });
     const b = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.2',
-      port: 2e3
+      port: 2e3,
     });
-    await a.send(new Uint8Array([
-      1,
-      2,
-      3
-    ]), b.address);
-    await a.send(new Uint8Array([
-      4,
-      5,
-      6
-    ]), b.address);
+    await a.send(new Uint8Array([1, 2, 3]), b.address);
+    await a.send(new Uint8Array([4, 5, 6]), b.address);
     await a.send(new Uint8Array(9), b.address);
     net.advance(10);
     t.equal(net.runUntilIdle(), 2, 'one accepted datagram is duplicated');
     const first = await b.recv();
     const second = await b.recv();
-    t.deepEqual(Array.from(first.data), [
-      255,
-      2,
-      3
-    ], 'first copy is corrupted predictably');
-    t.deepEqual(Array.from(second.data), [
-      255,
-      2,
-      3
-    ], 'duplicate copy carries the same payload');
-    t.deepEqual(net.trace.map((event: SimulatedNetworkTraceEvent) => event.type), [
-      'datagram:queued',
-      'datagram:duplicated',
-      'datagram:dropped',
-      'datagram:dropped',
-      'datagram:delivered',
-      'datagram:delivered'
-    ], 'trace records scheduling, duplication, queue overflow, MTU drop, and delivery');
+    t.deepEqual(Array.from(first.data), [255, 2, 3], 'first copy is corrupted predictably');
+    t.deepEqual(Array.from(second.data), [255, 2, 3], 'duplicate copy carries the same payload');
+    t.deepEqual(
+      net.trace.map((event: SimulatedNetworkTraceEvent) => event.type),
+      [
+        'datagram:queued',
+        'datagram:duplicated',
+        'datagram:dropped',
+        'datagram:dropped',
+        'datagram:delivered',
+        'datagram:delivered',
+      ],
+      'trace records scheduling, duplication, queue overflow, MTU drop, and delivery',
+    );
     a.close();
     b.close();
   });
@@ -103,36 +96,36 @@ describe('SimulatedNetworkProvider datagrams', () => {
     const client = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.10',
-      port: 5e3
+      port: 5e3,
     });
     const server = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.20',
-      port: 4433
+      port: 4433,
     });
     net.rewriteSource(client.address, {
       family: 'ipv4',
       ip: '203.0.113.4',
-      port: 62e3
+      port: 62e3,
     });
     await client.send(encodeUtf8('path-a'), server.address);
     t.equal(net.runUntilIdle(), 1, 'first rewritten packet is delivered');
     t.deepEqual((await server.recv()).addr, {
       family: 'ipv4',
       ip: '203.0.113.4',
-      port: 62e3
+      port: 62e3,
     });
     net.rewriteSource(client.address, {
       family: 'ipv4',
       ip: '203.0.113.4',
-      port: 62001
+      port: 62001,
     });
     await client.send(encodeUtf8('path-b'), server.address);
     t.equal(net.runUntilIdle(), 1, 'second rewritten packet is delivered');
     t.deepEqual((await server.recv()).addr, {
       family: 'ipv4',
       ip: '203.0.113.4',
-      port: 62001
+      port: 62001,
     });
     client.close();
     server.close();
@@ -142,21 +135,25 @@ describe('SimulatedNetworkProvider datagrams', () => {
     const client = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.10',
-      port: 5e3
+      port: 5e3,
     });
     const server = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.20',
-      port: 4433
+      port: 4433,
     });
     const rewritten = {
       family: 'ipv4',
       ip: '203.0.113.4',
-      port: 62e3
+      port: 62e3,
     } as const;
     net.rewriteSource(client.address, rewritten);
     await server.send(encodeUtf8('reply'), rewritten);
-    t.equal(net.runUntilIdle(), 1, 'reply to rewritten address is delivered to the original client socket');
+    t.equal(
+      net.runUntilIdle(),
+      1,
+      'reply to rewritten address is delivered to the original client socket',
+    );
     const response = await client.recv();
     t.equal(decodeUtf8(response.data), 'reply', 'client receives reverse-routed NAT reply');
     t.deepEqual(response.addr, server.address, 'reply source remains the server address');
@@ -168,23 +165,35 @@ describe('SimulatedNetworkProvider datagrams', () => {
     const client = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.10',
-      port: 5e3
+      port: 5e3,
     });
     const server = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.20',
-      port: 4433
+      port: 4433,
     });
     net.dropNextDatagrams(1, {
       from: client.address,
-      to: server.address
+      to: server.address,
     });
     await client.send(encodeUtf8('drop-me'), server.address);
     await client.send(encodeUtf8('deliver-me'), server.address);
     t.equal(net.runUntilIdle(), 1, 'only the non-dropped datagram is delivered');
     const packet = await server.recv();
-    t.equal(decodeUtf8(packet.data), 'deliver-me', 'scripted loss consumes exactly one matching datagram');
-    t.ok(net.trace.some((event) => event.type === 'datagram:dropped' && event.reason === 'loss' && event.bytes === 'drop-me'.length), 'scripted loss is visible in the trace');
+    t.equal(
+      decodeUtf8(packet.data),
+      'deliver-me',
+      'scripted loss consumes exactly one matching datagram',
+    );
+    t.ok(
+      net.trace.some(
+        (event) =>
+          event.type === 'datagram:dropped' &&
+          event.reason === 'loss' &&
+          event.bytes === 'drop-me'.length,
+      ),
+      'scripted loss is visible in the trace',
+    );
     client.close();
     server.close();
   });
@@ -193,41 +202,29 @@ describe('SimulatedNetworkProvider datagrams', () => {
     const client = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.10',
-      port: 5e3
+      port: 5e3,
     });
     const server = await net.datagram({
       family: 'ipv4',
       ip: '10.0.0.20',
-      port: 4433
+      port: 4433,
     });
     net.corruptNextDatagrams(1, {
       from: client.address,
       to: server.address,
-      corruptByte: 127
+      corruptByte: 127,
     });
-    await client.send(new Uint8Array([
-      1,
-      2,
-      3
-    ]), server.address);
-    await client.send(new Uint8Array([
-      4,
-      5,
-      6
-    ]), server.address);
+    await client.send(new Uint8Array([1, 2, 3]), server.address);
+    await client.send(new Uint8Array([4, 5, 6]), server.address);
     t.equal(net.runUntilIdle(), 2, 'both scripted-corruption and normal datagrams are delivered');
     const corrupted = await server.recv();
     const intact = await server.recv();
-    t.deepEqual(Array.from(corrupted.data), [
-      127,
-      2,
-      3
-    ], 'first matching datagram is corrupted predictably');
-    t.deepEqual(Array.from(intact.data), [
-      4,
-      5,
-      6
-    ], 'second matching datagram is delivered intact');
+    t.deepEqual(
+      Array.from(corrupted.data),
+      [127, 2, 3],
+      'first matching datagram is corrupted predictably',
+    );
+    t.deepEqual(Array.from(intact.data), [4, 5, 6], 'second matching datagram is delivered intact');
     client.close();
     server.close();
   });
@@ -238,13 +235,17 @@ describe('SimulatedNetworkProvider streams', () => {
     const listener = net.listen({
       family: 'ipv4',
       ip: '10.0.0.2',
-      port: 8080
+      port: 8080,
     });
     const client = await net.connect(listener.address);
     const server = await listener.accept();
     if (server === null) throw new Error('expected accepted connection');
     t.deepEqual(client.remoteAddress, listener.address, 'client sees listener as remote');
-    t.deepEqual(server.remoteAddress, client.localAddress, 'server sees client local address as remote');
+    t.deepEqual(
+      server.remoteAddress,
+      client.localAddress,
+      'server sees client local address as remote',
+    );
     const [serverReader, serverWriter] = server.split();
     const [clientReader, clientWriter] = client.split();
     await clientWriter.write(encodeUtf8('ping'));

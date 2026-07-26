@@ -1,11 +1,11 @@
 /**
-* Tests for internal:cluster/client — ClusterClient message handling and
-* ClusterPort._deliver, without spawning real thread realms.
-*
-* Uses an in-memory TestClientTransport (similar to TestSeedTransport in
-* seed.test.ts) so we can inject messages as if they arrived from the seed
-* and inspect what the client sent back.
-*/
+ * Tests for internal:cluster/client — ClusterClient message handling and
+ * ClusterPort._deliver, without spawning real thread realms.
+ *
+ * Uses an in-memory TestClientTransport (similar to TestSeedTransport in
+ * seed.test.ts) so we can inject messages as if they arrived from the seed
+ * and inspect what the client sent back.
+ */
 import { describe, it } from 'fino:test/test';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import { serialize } from 'internal:serializer';
@@ -25,40 +25,53 @@ class TestClientTransport {
     this.nodeId = nodeId;
   }
   /**
-  * Inject a message as if it arrived from `from` (typically '__seed__').
-  * Delivers asynchronously via a microtask, matching the real transport
-  * behaviour.
-  */
+   * Inject a message as if it arrived from `from` (typically '__seed__').
+   * Delivers asynchronously via a microtask, matching the real transport
+   * behaviour.
+   */
   inject(from: string, msg: ClusterMessage): void {
     const handlers = this.#handlers.slice();
     Promise.resolve().then(() => {
       for (const h of handlers) h(from, msg);
     });
   }
-  sentOfType<T extends ClusterMessage['t']>(t: T): Extract<ClusterMessage, {
-    t: T;
-  }>[] {
-    return this.sent.filter((s) => s.msg.t === t).map((s) => s.msg as Extract<ClusterMessage, {
+  sentOfType<T extends ClusterMessage['t']>(
+    t: T,
+  ): Extract<
+    ClusterMessage,
+    {
       t: T;
-    }>);
+    }
+  >[] {
+    return this.sent
+      .filter((s) => s.msg.t === t)
+      .map(
+        (s) =>
+          s.msg as Extract<
+            ClusterMessage,
+            {
+              t: T;
+            }
+          >,
+      );
   }
   // ClusterTransport interface
   send(to: string, msg: ClusterMessage): void {
     this.sent.push({
       to,
-      msg
+      msg,
     });
   }
   broadcast(msg: ClusterMessage): void {
     this.sent.push({
       to: '__broadcast__',
-      msg
+      msg,
     });
   }
   broadcastExcept(_except: string, msg: ClusterMessage): void {
     this.sent.push({
       to: '__broadcast__',
-      msg
+      msg,
     });
   }
   on(handler: (from: string, msg: ClusterMessage) => void): void {
@@ -119,12 +132,7 @@ describe('ClusterPort._deliver routes to registered port', () => {
     client.start();
     const sender = new ClusterPort('nodeA/p-send', client);
     sender._setChildPortId('nodeB/p-recv');
-    const input = new Uint8Array([
-      1,
-      3,
-      5,
-      7
-    ]).buffer;
+    const input = new Uint8Array([1, 3, 5, 7]).buffer;
     sender.postMessage({ input }, [input]);
     const sent = transport.sentOfType('PORT_MSG')[0]!;
     t.equal(sent.fromPort, 'nodeA/p-send', 'source port preserved');
@@ -138,15 +146,14 @@ describe('ClusterPort._deliver routes to registered port', () => {
     };
     receiver._deliver(parts);
     await flush(1);
-    const output = new Uint8Array((received as {
-      input: ArrayBuffer;
-    }).input);
-    t.deepEqual([...output], [
-      1,
-      3,
-      5,
-      7
-    ], 'transferred buffer contents restored');
+    const output = new Uint8Array(
+      (
+        received as {
+          input: ArrayBuffer;
+        }
+      ).input,
+    );
+    t.deepEqual([...output], [1, 3, 5, 7], 'transferred buffer contents restored');
     client.stop();
   });
   it('rejects MessagePort transfer entries explicitly', (t) => {
@@ -156,7 +163,11 @@ describe('ClusterPort._deliver routes to registered port', () => {
     const sender = new ClusterPort('nodeA/p-send', client);
     sender._setChildPortId('nodeB/p-recv');
     const channel = new MessageChannel();
-    t.throws(() => sender.postMessage({ ok: true }, [channel.port1 as any]), /ArrayBuffer/, 'cluster relay rejects non-ArrayBuffer transfer entries');
+    t.throws(
+      () => sender.postMessage({ ok: true }, [channel.port1 as any]),
+      /ArrayBuffer/,
+      'cluster relay rejects non-ArrayBuffer transfer entries',
+    );
     t.equal(transport.sentOfType('PORT_MSG').length, 0, 'unsupported transfer was not sent');
     channel.port1.close();
     channel.port2.close();
@@ -176,7 +187,7 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
     });
     transport.inject('__seed__', {
       t: 'REALM_EXIT',
-      realmId: 'nodeB/0'
+      realmId: 'nodeB/0',
     });
     // Delivery is via microtask — flush to let it settle
     await flush(3);
@@ -195,7 +206,7 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
     transport.inject('__seed__', {
       t: 'REALM_EXIT',
       realmId: 'nodeB/1',
-      error: 'crash'
+      error: 'crash',
     });
     await flush(3);
     t.equal(exitError, 'crash', 'error string propagated from REALM_EXIT');
@@ -211,19 +222,23 @@ describe('ClusterClient.spawnRemote — SPAWN_ACK resolves the pending Promise',
       entry: './fn.ts',
       root: '/app',
       rules: [],
-      bootstrapData: { cliOtel: { endpoint: 'http://collector.example:4318/remote' } }
+      bootstrapData: { cliOtel: { endpoint: 'http://collector.example:4318/remote' } },
     });
     // The SPAWN message should have been sent immediately (synchronous in spawnRemote)
     const spawns = transport.sentOfType('SPAWN');
     t.equal(spawns.length, 1, 'one SPAWN sent to seed');
-    t.deepEqual(spawns[0]?.config.bootstrapData, { cliOtel: { endpoint: 'http://collector.example:4318/remote' } }, 'bootstrap metadata is sent with SPAWN');
+    t.deepEqual(
+      spawns[0]?.config.bootstrapData,
+      { cliOtel: { endpoint: 'http://collector.example:4318/remote' } },
+      'bootstrap metadata is sent with SPAWN',
+    );
     const { spawnReqId } = spawns[0]!;
     // Simulate SPAWN_ACK from seed
     transport.inject('__seed__', {
       t: 'SPAWN_ACK',
       spawnReqId,
       childPortId: 'nodeB/0',
-      ok: true
+      ok: true,
     });
     await flush(3);
     const childPortId = await spawnPromise;
@@ -237,7 +252,7 @@ describe('ClusterClient.spawnRemote — SPAWN_ACK resolves the pending Promise',
     const spawnPromise = client.spawnRemote('nodeA/p-1', {
       entry: './fn.ts',
       root: '/app',
-      rules: []
+      rules: [],
     });
     const spawns = transport.sentOfType('SPAWN');
     const { spawnReqId } = spawns[0]!;
@@ -246,7 +261,7 @@ describe('ClusterClient.spawnRemote — SPAWN_ACK resolves the pending Promise',
       spawnReqId,
       childPortId: '',
       ok: false,
-      error: 'no eligible peer'
+      error: 'no eligible peer',
     });
     await flush(3);
     let threw = false;
@@ -271,7 +286,7 @@ describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
     const spawnPromise = client.spawnRemote('nodeA/p-2', {
       entry: './fn.ts',
       root: '/app',
-      rules: []
+      rules: [],
     });
     // Stop immediately, before any ACK arrives
     client.stop();
@@ -291,14 +306,17 @@ describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
     const spawnPromise = client.spawnRemote('nodeA/p-3', {
       entry: './fn.ts',
       root: '/app',
-      rules: []
+      rules: [],
     });
     let settled = false;
-    spawnPromise.then(() => {
-      settled = true;
-    }, () => {
-      settled = true;
-    });
+    spawnPromise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     await flush(5);
     t.equal(settled, false, 'spawn remains pending until ack or explicit client stop');
     client.stop();
@@ -306,7 +324,10 @@ describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
       await spawnPromise;
       t.fail('spawnRemote should reject when stop() closes the pending request');
     } catch (err: any) {
-      t.ok(String(err?.message ?? err).includes('cluster connection closed'), 'stop rejects pending spawn');
+      t.ok(
+        String(err?.message ?? err).includes('cluster connection closed'),
+        'stop rejects pending spawn',
+      );
     }
   });
 });

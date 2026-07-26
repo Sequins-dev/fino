@@ -1,67 +1,67 @@
 /**
-* Parquet metadata structures, encoded with Thrift's compact protocol.
-*
-* Mirrors the `parquet.thrift` definitions (FileMetaData, SchemaElement,
-* RowGroup, ColumnChunk, ColumnMetaData, PageHeader and its page variants,
-* Statistics, LogicalType) as plain TypeScript interfaces, with hand-rolled
-* decoders and encoders on top of `internal:format/thrift` — no generated
-* code. Backs `fino:data/parquet`: the reader decodes the file footer and
-* per-page headers from here, the writer encodes them back.
-*
-* Decoding is forward-compatible: fields with unrecognized ids are skipped
-* wholesale, so files written by newer Parquet implementations still read.
-* It is also lenient — a field the spec marks `required` that is absent from
-* the stream decodes to a zero value (`0`, `0n`, `''`, `[]`) rather than
-* throwing; validation is left to callers. Encoding writes optional fields
-* only when they are present (`!== undefined`) and always uses field-id
-* numbering from `parquet.thrift`, so output round-trips through other
-* Parquet readers.
-*
-* A truncated or malformed buffer surfaces as a `ThriftError` from the
-* underlying protocol layer.
-*
-* ```ts no_run
-* import { readFileMetaData, readPageHeader } from 'internal:data/parquet/metadata';
-*
-* // The footer sits before the trailing `footerLen (u32 LE) + 'PAR1'`.
-* const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
-* const footerLen = dv.getUint32(file.byteLength - 8, true);
-* const meta = readFileMetaData(file.subarray(file.byteLength - 8 - footerLen, file.byteLength - 8));
-*
-* const chunk = meta.rowGroups[0].columns[0].metaData!;
-* const { header, end } = readPageHeader(file, Number(chunk.dataPageOffset));
-* const pageBody = file.subarray(end, end + header.compressedPageSize);
-* ```
-*
-* Thrift schema: https://github.com/apache/parquet-format/blob/master/src/main/thrift/parquet.thrift
-*
-* @internal
-*/
+ * Parquet metadata structures, encoded with Thrift's compact protocol.
+ *
+ * Mirrors the `parquet.thrift` definitions (FileMetaData, SchemaElement,
+ * RowGroup, ColumnChunk, ColumnMetaData, PageHeader and its page variants,
+ * Statistics, LogicalType) as plain TypeScript interfaces, with hand-rolled
+ * decoders and encoders on top of `internal:format/thrift` — no generated
+ * code. Backs `fino:data/parquet`: the reader decodes the file footer and
+ * per-page headers from here, the writer encodes them back.
+ *
+ * Decoding is forward-compatible: fields with unrecognized ids are skipped
+ * wholesale, so files written by newer Parquet implementations still read.
+ * It is also lenient — a field the spec marks `required` that is absent from
+ * the stream decodes to a zero value (`0`, `0n`, `''`, `[]`) rather than
+ * throwing; validation is left to callers. Encoding writes optional fields
+ * only when they are present (`!== undefined`) and always uses field-id
+ * numbering from `parquet.thrift`, so output round-trips through other
+ * Parquet readers.
+ *
+ * A truncated or malformed buffer surfaces as a `ThriftError` from the
+ * underlying protocol layer.
+ *
+ * ```ts no_run
+ * import { readFileMetaData, readPageHeader } from 'internal:data/parquet/metadata';
+ *
+ * // The footer sits before the trailing `footerLen (u32 LE) + 'PAR1'`.
+ * const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
+ * const footerLen = dv.getUint32(file.byteLength - 8, true);
+ * const meta = readFileMetaData(file.subarray(file.byteLength - 8 - footerLen, file.byteLength - 8));
+ *
+ * const chunk = meta.rowGroups[0].columns[0].metaData!;
+ * const { header, end } = readPageHeader(file, Number(chunk.dataPageOffset));
+ * const pageBody = file.subarray(end, end + header.compressedPageSize);
+ * ```
+ *
+ * Thrift schema: https://github.com/apache/parquet-format/blob/master/src/main/thrift/parquet.thrift
+ *
+ * @internal
+ */
 import { CompactProtocol, TType, skip, type Protocol } from 'internal:format/thrift';
 import { LogicalTypeId, TimeUnitId } from './types.ts';
 // --- interfaces ------------------------------------------------------------
 /**
-* Min/max/null-count statistics for a column chunk or page (`Statistics`).
-*
-* Bounds are plain-encoded bytes of the column's physical type — decode them
-* with knowledge of the column before comparing. Prefer `minValue`/`maxValue`,
-* which are ordered by the column's logical type; the unsuffixed `min`/`max`
-* are the deprecated originals whose ordering was ambiguous for signed
-* comparisons, kept only for files written by older tools.
-*
-* ```ts no_run
-* import { readFileMetaData } from 'internal:data/parquet/metadata';
-*
-* const meta = readFileMetaData(footerBytes);
-* const stats = meta.rowGroups[0].columns[0].metaData?.statistics;
-* if (stats?.minValue && stats.maxValue) {
-*   // e.g. INT32 column: bounds are 4-byte little-endian values
-*   const min = new DataView(stats.minValue.buffer, stats.minValue.byteOffset).getInt32(0, true);
-* }
-* ```
-*
-* @internal
-*/
+ * Min/max/null-count statistics for a column chunk or page (`Statistics`).
+ *
+ * Bounds are plain-encoded bytes of the column's physical type — decode them
+ * with knowledge of the column before comparing. Prefer `minValue`/`maxValue`,
+ * which are ordered by the column's logical type; the unsuffixed `min`/`max`
+ * are the deprecated originals whose ordering was ambiguous for signed
+ * comparisons, kept only for files written by older tools.
+ *
+ * ```ts no_run
+ * import { readFileMetaData } from 'internal:data/parquet/metadata';
+ *
+ * const meta = readFileMetaData(footerBytes);
+ * const stats = meta.rowGroups[0].columns[0].metaData?.statistics;
+ * if (stats?.minValue && stats.maxValue) {
+ *   // e.g. INT32 column: bounds are 4-byte little-endian values
+ *   const min = new DataView(stats.minValue.buffer, stats.minValue.byteOffset).getInt32(0, true);
+ * }
+ * ```
+ *
+ * @internal
+ */
 export interface Statistics {
   /** Deprecated upper bound (plain-encoded physical value, signed-comparison ordering). */
   max?: Uint8Array;
@@ -77,19 +77,19 @@ export interface Statistics {
   minValue?: Uint8Array;
 }
 /**
-* Payload of a `decimal` logical type: unscaled integer × 10^-scale.
-*
-* A stored value `v` represents `v * 10 ** -scale`, with at most `precision`
-* significant digits.
-*
-* ```ts no_run
-* import type { DecimalType } from 'internal:data/parquet/metadata';
-*
-* const money: DecimalType = { precision: 12, scale: 2 }; // e.g. 1234 -> 12.34
-* ```
-*
-* @internal
-*/
+ * Payload of a `decimal` logical type: unscaled integer × 10^-scale.
+ *
+ * A stored value `v` represents `v * 10 ** -scale`, with at most `precision`
+ * significant digits.
+ *
+ * ```ts no_run
+ * import type { DecimalType } from 'internal:data/parquet/metadata';
+ *
+ * const money: DecimalType = { precision: 12, scale: 2 }; // e.g. 1234 -> 12.34
+ * ```
+ *
+ * @internal
+ */
 export interface DecimalType {
   /** Number of digits after the decimal point. */
   scale: number;
@@ -97,36 +97,36 @@ export interface DecimalType {
   precision: number;
 }
 /**
-* Time resolution for `time`/`timestamp` logical types.
-*
-* Thrift models this as a union of empty structs; here it is flattened to the
-* variant's field id — a `TimeUnitId` value (`MILLIS`, `MICROS`, or `NANOS`).
-*
-* ```ts no_run
-* import type { TimeUnit } from 'internal:data/parquet/metadata';
-* import { TimeUnitId } from 'internal:data/parquet/types';
-*
-* const micros: TimeUnit = { unit: TimeUnitId.MICROS };
-* ```
-*
-* @internal
-*/
+ * Time resolution for `time`/`timestamp` logical types.
+ *
+ * Thrift models this as a union of empty structs; here it is flattened to the
+ * variant's field id — a `TimeUnitId` value (`MILLIS`, `MICROS`, or `NANOS`).
+ *
+ * ```ts no_run
+ * import type { TimeUnit } from 'internal:data/parquet/metadata';
+ * import { TimeUnitId } from 'internal:data/parquet/types';
+ *
+ * const micros: TimeUnit = { unit: TimeUnitId.MICROS };
+ * ```
+ *
+ * @internal
+ */
 export interface TimeUnit {
   /** A `TimeUnitId` value naming the resolution. */
   unit: number;
 }
 /**
-* Payload of a `time` logical type: time of day at a given resolution.
-*
-* ```ts no_run
-* import type { TimeType } from 'internal:data/parquet/metadata';
-* import { TimeUnitId } from 'internal:data/parquet/types';
-*
-* const t: TimeType = { isAdjustedToUTC: true, unit: { unit: TimeUnitId.MILLIS } };
-* ```
-*
-* @internal
-*/
+ * Payload of a `time` logical type: time of day at a given resolution.
+ *
+ * ```ts no_run
+ * import type { TimeType } from 'internal:data/parquet/metadata';
+ * import { TimeUnitId } from 'internal:data/parquet/types';
+ *
+ * const t: TimeType = { isAdjustedToUTC: true, unit: { unit: TimeUnitId.MILLIS } };
+ * ```
+ *
+ * @internal
+ */
 export interface TimeType {
   /** True when values are UTC-normalized instants rather than local (wall-clock) times. */
   isAdjustedToUTC: boolean;
@@ -134,20 +134,20 @@ export interface TimeType {
   unit: TimeUnit;
 }
 /**
-* Payload of a `timestamp` logical type: instant or local datetime.
-*
-* Values are integers counting `unit`s since the Unix epoch when
-* `isAdjustedToUTC` is true, or since an unspecified local epoch otherwise.
-*
-* ```ts no_run
-* import type { TimestampType } from 'internal:data/parquet/metadata';
-* import { TimeUnitId } from 'internal:data/parquet/types';
-*
-* const ts: TimestampType = { isAdjustedToUTC: true, unit: { unit: TimeUnitId.MICROS } };
-* ```
-*
-* @internal
-*/
+ * Payload of a `timestamp` logical type: instant or local datetime.
+ *
+ * Values are integers counting `unit`s since the Unix epoch when
+ * `isAdjustedToUTC` is true, or since an unspecified local epoch otherwise.
+ *
+ * ```ts no_run
+ * import type { TimestampType } from 'internal:data/parquet/metadata';
+ * import { TimeUnitId } from 'internal:data/parquet/types';
+ *
+ * const ts: TimestampType = { isAdjustedToUTC: true, unit: { unit: TimeUnitId.MICROS } };
+ * ```
+ *
+ * @internal
+ */
 export interface TimestampType {
   /** True when values are UTC-normalized instants rather than local (wall-clock) datetimes. */
   isAdjustedToUTC: boolean;
@@ -155,19 +155,19 @@ export interface TimestampType {
   unit: TimeUnit;
 }
 /**
-* Payload of an `integer` logical type: exact width and signedness.
-*
-* Narrows a physical INT32/INT64 to the intended integer kind (e.g. `uint8`
-* is `{ bitWidth: 8, isSigned: false }` stored in an INT32 column).
-*
-* ```ts no_run
-* import type { IntType } from 'internal:data/parquet/metadata';
-*
-* const u16: IntType = { bitWidth: 16, isSigned: false };
-* ```
-*
-* @internal
-*/
+ * Payload of an `integer` logical type: exact width and signedness.
+ *
+ * Narrows a physical INT32/INT64 to the intended integer kind (e.g. `uint8`
+ * is `{ bitWidth: 8, isSigned: false }` stored in an INT32 column).
+ *
+ * ```ts no_run
+ * import type { IntType } from 'internal:data/parquet/metadata';
+ *
+ * const u16: IntType = { bitWidth: 16, isSigned: false };
+ * ```
+ *
+ * @internal
+ */
 export interface IntType {
   /** Logical width in bits: 8, 16, 32, or 64. */
   bitWidth: number;
@@ -175,25 +175,25 @@ export interface IntType {
   isSigned: boolean;
 }
 /**
-* A column's logical type — the `LogicalType` Thrift union, flattened.
-*
-* Instead of one optional field per variant, the active variant's name is in
-* `kind` (`'string'`, `'map'`, `'list'`, `'enum'`, `'decimal'`, `'date'`,
-* `'time'`, `'timestamp'`, `'integer'`, `'json'`, `'bson'`, `'uuid'`,
-* `'float16'`, or `'unknown'`). Variants that carry parameters put them in
-* the matching payload field; the empty-struct variants carry only `kind`.
-* Decoding an unrecognized variant yields `kind: 'unknown'`, which also
-* round-trips on encode (as the spec's `UNKNOWN` variant).
-*
-* ```ts no_run
-* import type { LogicalType } from 'internal:data/parquet/metadata';
-*
-* const utf8: LogicalType = { kind: 'string' };
-* const price: LogicalType = { kind: 'decimal', decimal: { precision: 10, scale: 2 } };
-* ```
-*
-* @internal
-*/
+ * A column's logical type — the `LogicalType` Thrift union, flattened.
+ *
+ * Instead of one optional field per variant, the active variant's name is in
+ * `kind` (`'string'`, `'map'`, `'list'`, `'enum'`, `'decimal'`, `'date'`,
+ * `'time'`, `'timestamp'`, `'integer'`, `'json'`, `'bson'`, `'uuid'`,
+ * `'float16'`, or `'unknown'`). Variants that carry parameters put them in
+ * the matching payload field; the empty-struct variants carry only `kind`.
+ * Decoding an unrecognized variant yields `kind: 'unknown'`, which also
+ * round-trips on encode (as the spec's `UNKNOWN` variant).
+ *
+ * ```ts no_run
+ * import type { LogicalType } from 'internal:data/parquet/metadata';
+ *
+ * const utf8: LogicalType = { kind: 'string' };
+ * const price: LogicalType = { kind: 'decimal', decimal: { precision: 10, scale: 2 } };
+ * ```
+ *
+ * @internal
+ */
 export interface LogicalType {
   /** Name of the active union variant. */
   kind: string;
@@ -207,27 +207,27 @@ export interface LogicalType {
   integer?: IntType;
 }
 /**
-* One node of the schema tree (`SchemaElement`).
-*
-* `FileMetaData.schema` stores the tree as a flat depth-first list: element 0
-* is the root, group nodes announce how many direct children follow via
-* `numChildren`, and leaves carry a physical `type`. Reassembling the tree
-* from this list is `internal:data/parquet/schema`'s job.
-*
-* ```ts no_run
-* import type { SchemaElement } from 'internal:data/parquet/metadata';
-* import { PType, Repetition } from 'internal:data/parquet/types';
-*
-* const leaf: SchemaElement = {
-*   name: 'title',
-*   type: PType.BYTE_ARRAY,
-*   repetitionType: Repetition.OPTIONAL,
-*   logicalType: { kind: 'string' },
-* };
-* ```
-*
-* @internal
-*/
+ * One node of the schema tree (`SchemaElement`).
+ *
+ * `FileMetaData.schema` stores the tree as a flat depth-first list: element 0
+ * is the root, group nodes announce how many direct children follow via
+ * `numChildren`, and leaves carry a physical `type`. Reassembling the tree
+ * from this list is `internal:data/parquet/schema`'s job.
+ *
+ * ```ts no_run
+ * import type { SchemaElement } from 'internal:data/parquet/metadata';
+ * import { PType, Repetition } from 'internal:data/parquet/types';
+ *
+ * const leaf: SchemaElement = {
+ *   name: 'title',
+ *   type: PType.BYTE_ARRAY,
+ *   repetitionType: Repetition.OPTIONAL,
+ *   logicalType: { kind: 'string' },
+ * };
+ * ```
+ *
+ * @internal
+ */
 export interface SchemaElement {
   /** Physical type (`PType`); present on leaves, absent on group nodes. */
   type?: number;
@@ -251,44 +251,44 @@ export interface SchemaElement {
   logicalType?: LogicalType;
 }
 /**
-* Application-defined metadata pair (`KeyValue`).
-*
-* Appears on `FileMetaData.keyValueMetadata` and
-* `ColumnMetaData.keyValueMetadata`; this is where conventions like the
-* Arrow schema (`ARROW:schema`) live.
-*
-* ```ts no_run
-* import type { KeyValue } from 'internal:data/parquet/metadata';
-*
-* const kv: KeyValue = { key: 'writer.model.version', value: '1.2' };
-* ```
-*
-* @internal
-*/
+ * Application-defined metadata pair (`KeyValue`).
+ *
+ * Appears on `FileMetaData.keyValueMetadata` and
+ * `ColumnMetaData.keyValueMetadata`; this is where conventions like the
+ * Arrow schema (`ARROW:schema`) live.
+ *
+ * ```ts no_run
+ * import type { KeyValue } from 'internal:data/parquet/metadata';
+ *
+ * const kv: KeyValue = { key: 'writer.model.version', value: '1.2' };
+ * ```
+ *
+ * @internal
+ */
 export interface KeyValue {
   key: string;
   value?: string;
 }
 /**
-* Everything needed to read one column chunk (`ColumnMetaData`).
-*
-* Locates the chunk's pages in the file (dictionary page first when present,
-* then data pages starting at `dataPageOffset`) and describes how to decode
-* them: physical type, encodings in play, and compression codec. `numValues`
-* counts leaf values including nulls — page reading stops once that many
-* values have been consumed.
-*
-* ```ts no_run
-* import { readFileMetaData, readPageHeader } from 'internal:data/parquet/metadata';
-*
-* const meta = readFileMetaData(footerBytes);
-* const cm = meta.rowGroups[0].columns[0].metaData!;
-* const start = cm.dictionaryPageOffset ?? cm.dataPageOffset;
-* const { header } = readPageHeader(fileBytes, Number(start));
-* ```
-*
-* @internal
-*/
+ * Everything needed to read one column chunk (`ColumnMetaData`).
+ *
+ * Locates the chunk's pages in the file (dictionary page first when present,
+ * then data pages starting at `dataPageOffset`) and describes how to decode
+ * them: physical type, encodings in play, and compression codec. `numValues`
+ * counts leaf values including nulls — page reading stops once that many
+ * values have been consumed.
+ *
+ * ```ts no_run
+ * import { readFileMetaData, readPageHeader } from 'internal:data/parquet/metadata';
+ *
+ * const meta = readFileMetaData(footerBytes);
+ * const cm = meta.rowGroups[0].columns[0].metaData!;
+ * const start = cm.dictionaryPageOffset ?? cm.dataPageOffset;
+ * const { header } = readPageHeader(fileBytes, Number(start));
+ * ```
+ *
+ * @internal
+ */
 export interface ColumnMetaData {
   /** Physical type of the column's values (`PType`). */
   type: number;
@@ -316,20 +316,20 @@ export interface ColumnMetaData {
   statistics?: Statistics;
 }
 /**
-* A column's slice of one row group (`ColumnChunk`).
-*
-* In practice `metaData` is written inline and `filePath` is absent — the
-* chunk lives in the same file. `filePath` exists for the rarely-used
-* external-reference layout, which `fino:data/parquet` does not follow.
-*
-* ```ts no_run
-* import type { ColumnChunk } from 'internal:data/parquet/metadata';
-*
-* const chunk: ColumnChunk = { fileOffset: 4n, metaData: columnMeta };
-* ```
-*
-* @internal
-*/
+ * A column's slice of one row group (`ColumnChunk`).
+ *
+ * In practice `metaData` is written inline and `filePath` is absent — the
+ * chunk lives in the same file. `filePath` exists for the rarely-used
+ * external-reference layout, which `fino:data/parquet` does not follow.
+ *
+ * ```ts no_run
+ * import type { ColumnChunk } from 'internal:data/parquet/metadata';
+ *
+ * const chunk: ColumnChunk = { fileOffset: 4n, metaData: columnMeta };
+ * ```
+ *
+ * @internal
+ */
 export interface ColumnChunk {
   /** File containing the chunk when stored externally; absent for same-file chunks. */
   filePath?: string;
@@ -339,23 +339,23 @@ export interface ColumnChunk {
   metaData?: ColumnMetaData;
 }
 /**
-* A horizontal slice of the table (`RowGroup`): one chunk per leaf column.
-*
-* `columns` is ordered to match the depth-first leaf order of the schema, so
-* the i-th chunk belongs to the i-th leaf. All chunks in a group cover the
-* same `numRows` rows.
-*
-* ```ts no_run
-* import { readFileMetaData } from 'internal:data/parquet/metadata';
-*
-* const meta = readFileMetaData(footerBytes);
-* for (const rg of meta.rowGroups) {
-*   console.log(`${rg.numRows} rows, ${rg.columns.length} leaf columns`);
-* }
-* ```
-*
-* @internal
-*/
+ * A horizontal slice of the table (`RowGroup`): one chunk per leaf column.
+ *
+ * `columns` is ordered to match the depth-first leaf order of the schema, so
+ * the i-th chunk belongs to the i-th leaf. All chunks in a group cover the
+ * same `numRows` rows.
+ *
+ * ```ts no_run
+ * import { readFileMetaData } from 'internal:data/parquet/metadata';
+ *
+ * const meta = readFileMetaData(footerBytes);
+ * for (const rg of meta.rowGroups) {
+ *   console.log(`${rg.numRows} rows, ${rg.columns.length} leaf columns`);
+ * }
+ * ```
+ *
+ * @internal
+ */
 export interface RowGroup {
   /** One chunk per leaf column, in schema depth-first leaf order. */
   columns: ColumnChunk[];
@@ -371,22 +371,22 @@ export interface RowGroup {
   ordinal?: number;
 }
 /**
-* The file footer (`FileMetaData`) — the root of all Parquet metadata.
-*
-* Holds the flattened schema tree, the row-group index into the file's
-* column chunks, and file-level key/value metadata. Everything a reader
-* needs starts here; see `readFileMetaData` for how to locate and decode it.
-*
-* ```ts no_run
-* import { readFileMetaData } from 'internal:data/parquet/metadata';
-*
-* const meta = readFileMetaData(footerBytes);
-* console.log(meta.createdBy, meta.numRows);
-* const names = meta.schema.slice(1).map((el) => el.name);
-* ```
-*
-* @internal
-*/
+ * The file footer (`FileMetaData`) — the root of all Parquet metadata.
+ *
+ * Holds the flattened schema tree, the row-group index into the file's
+ * column chunks, and file-level key/value metadata. Everything a reader
+ * needs starts here; see `readFileMetaData` for how to locate and decode it.
+ *
+ * ```ts no_run
+ * import { readFileMetaData } from 'internal:data/parquet/metadata';
+ *
+ * const meta = readFileMetaData(footerBytes);
+ * console.log(meta.createdBy, meta.numRows);
+ * const names = meta.schema.slice(1).map((el) => el.name);
+ * ```
+ *
+ * @internal
+ */
 export interface FileMetaData {
   /** Format version written by the producer (this writer emits 2). */
   version: number;
@@ -402,24 +402,24 @@ export interface FileMetaData {
   createdBy?: string;
 }
 /**
-* Header payload for a v1 data page (`DataPageHeader`).
-*
-* A v1 page body is compressed as a single unit: repetition levels,
-* definition levels, then values. The level runs inside are length-prefixed
-* RLE/bit-packed hybrids.
-*
-* ```ts no_run
-* import { readPageHeader } from 'internal:data/parquet/metadata';
-* import { PageType } from 'internal:data/parquet/types';
-*
-* const { header } = readPageHeader(fileBytes, pageOffset);
-* if (header.type === PageType.DATA_PAGE) {
-*   const { numValues, encoding } = header.dataPageHeader!;
-* }
-* ```
-*
-* @internal
-*/
+ * Header payload for a v1 data page (`DataPageHeader`).
+ *
+ * A v1 page body is compressed as a single unit: repetition levels,
+ * definition levels, then values. The level runs inside are length-prefixed
+ * RLE/bit-packed hybrids.
+ *
+ * ```ts no_run
+ * import { readPageHeader } from 'internal:data/parquet/metadata';
+ * import { PageType } from 'internal:data/parquet/types';
+ *
+ * const { header } = readPageHeader(fileBytes, pageOffset);
+ * if (header.type === PageType.DATA_PAGE) {
+ *   const { numValues, encoding } = header.dataPageHeader!;
+ * }
+ * ```
+ *
+ * @internal
+ */
 export interface DataPageHeader {
   /** Leaf values in this page, nulls included. */
   numValues: number;
@@ -433,24 +433,24 @@ export interface DataPageHeader {
   statistics?: Statistics;
 }
 /**
-* Header payload for a dictionary page (`DictionaryPageHeader`).
-*
-* At most one per column chunk, stored before the data pages; its body is
-* the PLAIN-encoded dictionary that later `RLE_DICTIONARY`/
-* `PLAIN_DICTIONARY` data pages index into.
-*
-* ```ts no_run
-* import { readPageHeader } from 'internal:data/parquet/metadata';
-* import { PageType } from 'internal:data/parquet/types';
-*
-* const { header } = readPageHeader(fileBytes, Number(cm.dictionaryPageOffset!));
-* if (header.type === PageType.DICTIONARY_PAGE) {
-*   const entries = header.dictionaryPageHeader!.numValues;
-* }
-* ```
-*
-* @internal
-*/
+ * Header payload for a dictionary page (`DictionaryPageHeader`).
+ *
+ * At most one per column chunk, stored before the data pages; its body is
+ * the PLAIN-encoded dictionary that later `RLE_DICTIONARY`/
+ * `PLAIN_DICTIONARY` data pages index into.
+ *
+ * ```ts no_run
+ * import { readPageHeader } from 'internal:data/parquet/metadata';
+ * import { PageType } from 'internal:data/parquet/types';
+ *
+ * const { header } = readPageHeader(fileBytes, Number(cm.dictionaryPageOffset!));
+ * if (header.type === PageType.DICTIONARY_PAGE) {
+ *   const entries = header.dictionaryPageHeader!.numValues;
+ * }
+ * ```
+ *
+ * @internal
+ */
 export interface DictionaryPageHeader {
   /** Number of dictionary entries. */
   numValues: number;
@@ -460,26 +460,26 @@ export interface DictionaryPageHeader {
   isSorted?: boolean;
 }
 /**
-* Header payload for a v2 data page (`DataPageHeaderV2`).
-*
-* Unlike v1, the level runs are stored uncompressed (and without length
-* prefixes — their byte lengths live here in the header), so readers can
-* reach the levels without decompressing; only the value section is subject
-* to the chunk codec, and only when `isCompressed` is true.
-*
-* ```ts no_run
-* import { readPageHeader } from 'internal:data/parquet/metadata';
-* import { PageType } from 'internal:data/parquet/types';
-*
-* const { header, end } = readPageHeader(fileBytes, pageOffset);
-* if (header.type === PageType.DATA_PAGE_V2) {
-*   const h = header.dataPageHeaderV2!;
-*   const valuesStart = end + h.repetitionLevelsByteLength + h.definitionLevelsByteLength;
-* }
-* ```
-*
-* @internal
-*/
+ * Header payload for a v2 data page (`DataPageHeaderV2`).
+ *
+ * Unlike v1, the level runs are stored uncompressed (and without length
+ * prefixes — their byte lengths live here in the header), so readers can
+ * reach the levels without decompressing; only the value section is subject
+ * to the chunk codec, and only when `isCompressed` is true.
+ *
+ * ```ts no_run
+ * import { readPageHeader } from 'internal:data/parquet/metadata';
+ * import { PageType } from 'internal:data/parquet/types';
+ *
+ * const { header, end } = readPageHeader(fileBytes, pageOffset);
+ * if (header.type === PageType.DATA_PAGE_V2) {
+ *   const h = header.dataPageHeaderV2!;
+ *   const valuesStart = end + h.repetitionLevelsByteLength + h.definitionLevelsByteLength;
+ * }
+ * ```
+ *
+ * @internal
+ */
 export interface DataPageHeaderV2 {
   /** Leaf values in this page, nulls included. */
   numValues: number;
@@ -499,25 +499,25 @@ export interface DataPageHeaderV2 {
   statistics?: Statistics;
 }
 /**
-* The common page header (`PageHeader`) preceding every page body.
-*
-* `type` (a `PageType`) selects which of the per-kind payloads is present:
-* `dataPageHeader`, `dictionaryPageHeader`, or `dataPageHeaderV2` (index
-* pages carry none of these). The page body — `compressedPageSize` bytes —
-* immediately follows the header in the file, which is what makes
-* `readPageHeader`'s `end` offset useful for walking a chunk.
-*
-* ```ts no_run
-* import { readPageHeader, type PageHeader } from 'internal:data/parquet/metadata';
-*
-* let offset = Number(cm.dataPageOffset);
-* const { header, end }: { header: PageHeader; end: number } = readPageHeader(fileBytes, offset);
-* const body = fileBytes.subarray(end, end + header.compressedPageSize);
-* offset = end + header.compressedPageSize; // next page
-* ```
-*
-* @internal
-*/
+ * The common page header (`PageHeader`) preceding every page body.
+ *
+ * `type` (a `PageType`) selects which of the per-kind payloads is present:
+ * `dataPageHeader`, `dictionaryPageHeader`, or `dataPageHeaderV2` (index
+ * pages carry none of these). The page body — `compressedPageSize` bytes —
+ * immediately follows the header in the file, which is what makes
+ * `readPageHeader`'s `end` offset useful for walking a chunk.
+ *
+ * ```ts no_run
+ * import { readPageHeader, type PageHeader } from 'internal:data/parquet/metadata';
+ *
+ * let offset = Number(cm.dataPageOffset);
+ * const { header, end }: { header: PageHeader; end: number } = readPageHeader(fileBytes, offset);
+ * const body = fileBytes.subarray(end, end + header.compressedPageSize);
+ * offset = end + header.compressedPageSize; // next page
+ * ```
+ *
+ * @internal
+ */
 export interface PageHeader {
   /** Page kind (`PageType`); selects which payload field is set. */
   type: number;
@@ -536,11 +536,11 @@ export interface PageHeader {
 }
 // --- read helpers ----------------------------------------------------------
 /**
-* Iterate a struct's fields, dispatching to `handler`; unhandled fields are
-* skipped so unknown/forward-compatible fields don't break decoding.
-*
-* @internal
-*/
+ * Iterate a struct's fields, dispatching to `handler`; unhandled fields are
+ * skipped so unknown/forward-compatible fields don't break decoding.
+ *
+ * @internal
+ */
 function readFields(p: Protocol, handler: (id: number, type: number) => boolean): void {
   p.readStructBegin();
   for (;;) {
@@ -595,7 +595,8 @@ function readStatistics(p: Protocol): Statistics {
       case 6:
         s.minValue = p.readBinary();
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return s;
@@ -696,7 +697,7 @@ function readLogicalType(p: Protocol): LogicalType {
         });
         lt.decimal = {
           scale,
-          precision
+          precision,
         };
         return true;
       }
@@ -721,7 +722,7 @@ function readLogicalType(p: Protocol): LogicalType {
         });
         lt.time = {
           isAdjustedToUTC,
-          unit
+          unit,
         };
         return true;
       }
@@ -742,7 +743,7 @@ function readLogicalType(p: Protocol): LogicalType {
         });
         lt.timestamp = {
           isAdjustedToUTC,
-          unit
+          unit,
         };
         return true;
       }
@@ -763,7 +764,7 @@ function readLogicalType(p: Protocol): LogicalType {
         });
         lt.integer = {
           bitWidth,
-          isSigned
+          isSigned,
         };
         return true;
       }
@@ -783,7 +784,8 @@ function readLogicalType(p: Protocol): LogicalType {
         lt.kind = 'float16';
         skip(p, TType.STRUCT);
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return lt;
@@ -919,7 +921,8 @@ function readSchemaElement(p: Protocol): SchemaElement {
       case 10:
         el.logicalType = readLogicalType(p);
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return el;
@@ -1016,7 +1019,7 @@ function readColumnMetaData(p: Protocol): ColumnMetaData {
     numValues: 0n,
     totalUncompressedSize: 0n,
     totalCompressedSize: 0n,
-    dataPageOffset: 0n
+    dataPageOffset: 0n,
   };
   readFields(p, (id) => {
     switch (id) {
@@ -1056,7 +1059,8 @@ function readColumnMetaData(p: Protocol): ColumnMetaData {
       case 12:
         cm.statistics = readStatistics(p);
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return cm;
@@ -1130,7 +1134,8 @@ function readColumnChunk(p: Protocol): ColumnChunk {
       case 3:
         cc.metaData = readColumnMetaData(p);
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return cc;
@@ -1158,7 +1163,7 @@ function readRowGroup(p: Protocol): RowGroup {
   const rg: RowGroup = {
     columns: [],
     totalByteSize: 0n,
-    numRows: 0n
+    numRows: 0n,
   };
   readFields(p, (id) => {
     switch (id) {
@@ -1180,7 +1185,8 @@ function readRowGroup(p: Protocol): RowGroup {
       case 7:
         rg.ordinal = p.readI16();
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return rg;
@@ -1222,7 +1228,7 @@ function readFileMetaDataStruct(p: Protocol): FileMetaData {
     version: 0,
     schema: [],
     numRows: 0n,
-    rowGroups: []
+    rowGroups: [],
   };
   readFields(p, (id) => {
     switch (id) {
@@ -1244,7 +1250,8 @@ function readFileMetaDataStruct(p: Protocol): FileMetaData {
       case 6:
         fm.createdBy = p.readString();
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return fm;
@@ -1288,7 +1295,7 @@ function readDataPageHeader(p: Protocol): DataPageHeader {
     numValues: 0,
     encoding: 0,
     definitionLevelEncoding: 0,
-    repetitionLevelEncoding: 0
+    repetitionLevelEncoding: 0,
   };
   readFields(p, (id) => {
     switch (id) {
@@ -1307,7 +1314,8 @@ function readDataPageHeader(p: Protocol): DataPageHeader {
       case 5:
         h.statistics = readStatistics(p);
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return h;
@@ -1337,7 +1345,7 @@ function writeDataPageHeader(p: Protocol, h: DataPageHeader): void {
 function readDictionaryPageHeader(p: Protocol): DictionaryPageHeader {
   const h: DictionaryPageHeader = {
     numValues: 0,
-    encoding: 0
+    encoding: 0,
   };
   readFields(p, (id) => {
     switch (id) {
@@ -1350,7 +1358,8 @@ function readDictionaryPageHeader(p: Protocol): DictionaryPageHeader {
       case 3:
         h.isSorted = p.readBool();
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return h;
@@ -1379,7 +1388,7 @@ function readDataPageHeaderV2(p: Protocol): DataPageHeaderV2 {
     encoding: 0,
     definitionLevelsByteLength: 0,
     repetitionLevelsByteLength: 0,
-    isCompressed: true
+    isCompressed: true,
   };
   readFields(p, (id) => {
     switch (id) {
@@ -1407,7 +1416,8 @@ function readDataPageHeaderV2(p: Protocol): DataPageHeaderV2 {
       case 8:
         h.statistics = readStatistics(p);
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return h;
@@ -1444,32 +1454,35 @@ function writeDataPageHeaderV2(p: Protocol, h: DataPageHeaderV2): void {
   p.writeStructEnd();
 }
 /**
-* Decode the `PageHeader` starting at `offset` in `bytes`.
-*
-* Page headers are variable-length, so `end` — the index of the first byte
-* after the header, relative to the start of `bytes` — is returned alongside
-* the decoded header. The page body occupies the next
-* `header.compressedPageSize` bytes, which makes
-* `end + header.compressedPageSize` the offset of the following page.
-*
-* Throws `ThriftError` if the buffer ends inside the header.
-*
-* ```ts no_run
-* import { readPageHeader } from 'internal:data/parquet/metadata';
-*
-* let offset = Number(cm.dictionaryPageOffset ?? cm.dataPageOffset);
-* let seen = 0;
-* while (seen < Number(cm.numValues)) {
-*   const { header, end } = readPageHeader(fileBytes, offset);
-*   const body = fileBytes.subarray(end, end + header.compressedPageSize);
-*   offset = end + header.compressedPageSize;
-*   seen += header.dataPageHeader?.numValues ?? header.dataPageHeaderV2?.numValues ?? 0;
-* }
-* ```
-*
-* @internal
-*/
-export function readPageHeader(bytes: Uint8Array, offset: number): {
+ * Decode the `PageHeader` starting at `offset` in `bytes`.
+ *
+ * Page headers are variable-length, so `end` — the index of the first byte
+ * after the header, relative to the start of `bytes` — is returned alongside
+ * the decoded header. The page body occupies the next
+ * `header.compressedPageSize` bytes, which makes
+ * `end + header.compressedPageSize` the offset of the following page.
+ *
+ * Throws `ThriftError` if the buffer ends inside the header.
+ *
+ * ```ts no_run
+ * import { readPageHeader } from 'internal:data/parquet/metadata';
+ *
+ * let offset = Number(cm.dictionaryPageOffset ?? cm.dataPageOffset);
+ * let seen = 0;
+ * while (seen < Number(cm.numValues)) {
+ *   const { header, end } = readPageHeader(fileBytes, offset);
+ *   const body = fileBytes.subarray(end, end + header.compressedPageSize);
+ *   offset = end + header.compressedPageSize;
+ *   seen += header.dataPageHeader?.numValues ?? header.dataPageHeaderV2?.numValues ?? 0;
+ * }
+ * ```
+ *
+ * @internal
+ */
+export function readPageHeader(
+  bytes: Uint8Array,
+  offset: number,
+): {
   header: PageHeader;
   end: number;
 } {
@@ -1477,7 +1490,7 @@ export function readPageHeader(bytes: Uint8Array, offset: number): {
   const h: PageHeader = {
     type: 0,
     uncompressedPageSize: 0,
-    compressedPageSize: 0
+    compressedPageSize: 0,
   };
   readFields(p, (id) => {
     switch (id) {
@@ -1502,43 +1515,44 @@ export function readPageHeader(bytes: Uint8Array, offset: number): {
       case 8:
         h.dataPageHeaderV2 = readDataPageHeaderV2(p);
         return true;
-      default: return false;
+      default:
+        return false;
     }
   });
   return {
     header: h,
-    end: offset + p.position()
+    end: offset + p.position(),
   };
 }
 /**
-* Encode a `PageHeader` to compact-protocol bytes.
-*
-* The result goes into the file immediately before the page body it
-* describes. Optional fields (`crc` and the per-kind payloads) are written
-* only when present; the caller is responsible for setting the payload that
-* matches `type`.
-*
-* ```ts no_run
-* import { writePageHeader } from 'internal:data/parquet/metadata';
-* import { PageType, Encoding } from 'internal:data/parquet/types';
-*
-* const header = writePageHeader({
-*   type: PageType.DATA_PAGE_V2,
-*   uncompressedPageSize: body.byteLength,
-*   compressedPageSize: compressedBody.byteLength,
-*   dataPageHeaderV2: {
-*     numValues, numNulls, numRows,
-*     encoding: Encoding.PLAIN,
-*     definitionLevelsByteLength: defLevels.byteLength,
-*     repetitionLevelsByteLength: 0,
-*     isCompressed: true,
-*   },
-* });
-* // file layout: ...header bytes, then compressedBody...
-* ```
-*
-* @internal
-*/
+ * Encode a `PageHeader` to compact-protocol bytes.
+ *
+ * The result goes into the file immediately before the page body it
+ * describes. Optional fields (`crc` and the per-kind payloads) are written
+ * only when present; the caller is responsible for setting the payload that
+ * matches `type`.
+ *
+ * ```ts no_run
+ * import { writePageHeader } from 'internal:data/parquet/metadata';
+ * import { PageType, Encoding } from 'internal:data/parquet/types';
+ *
+ * const header = writePageHeader({
+ *   type: PageType.DATA_PAGE_V2,
+ *   uncompressedPageSize: body.byteLength,
+ *   compressedPageSize: compressedBody.byteLength,
+ *   dataPageHeaderV2: {
+ *     numValues, numNulls, numRows,
+ *     encoding: Encoding.PLAIN,
+ *     definitionLevelsByteLength: defLevels.byteLength,
+ *     repetitionLevelsByteLength: 0,
+ *     isCompressed: true,
+ *   },
+ * });
+ * // file layout: ...header bytes, then compressedBody...
+ * ```
+ *
+ * @internal
+ */
 export function writePageHeader(h: PageHeader): Uint8Array {
   const p = new CompactProtocol();
   p.writeStructBegin();
@@ -1576,48 +1590,48 @@ export function writePageHeader(h: PageHeader): Uint8Array {
   return p.bytes();
 }
 /**
-* Decode a `FileMetaData` footer from compact-protocol bytes.
-*
-* `bytes` should be the footer slice of a Parquet file: the file ends with
-* `footer, footerLen (u32 little-endian), 'PAR1'`, so the footer occupies
-* `footerLen` bytes ending 8 bytes before EOF. Decoding starts at byte 0 and
-* stops at the struct's STOP marker; unknown fields are skipped and absent
-* required fields decode to zero values.
-*
-* Throws `ThriftError` if the slice is truncated mid-structure.
-*
-* ```ts no_run
-* import { readFileMetaData } from 'internal:data/parquet/metadata';
-*
-* const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
-* const footerLen = dv.getUint32(file.byteLength - 8, true);
-* const meta = readFileMetaData(file.subarray(file.byteLength - 8 - footerLen, file.byteLength - 8));
-* console.log(meta.numRows, meta.rowGroups.length);
-* ```
-*
-* @internal
-*/
+ * Decode a `FileMetaData` footer from compact-protocol bytes.
+ *
+ * `bytes` should be the footer slice of a Parquet file: the file ends with
+ * `footer, footerLen (u32 little-endian), 'PAR1'`, so the footer occupies
+ * `footerLen` bytes ending 8 bytes before EOF. Decoding starts at byte 0 and
+ * stops at the struct's STOP marker; unknown fields are skipped and absent
+ * required fields decode to zero values.
+ *
+ * Throws `ThriftError` if the slice is truncated mid-structure.
+ *
+ * ```ts no_run
+ * import { readFileMetaData } from 'internal:data/parquet/metadata';
+ *
+ * const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
+ * const footerLen = dv.getUint32(file.byteLength - 8, true);
+ * const meta = readFileMetaData(file.subarray(file.byteLength - 8 - footerLen, file.byteLength - 8));
+ * console.log(meta.numRows, meta.rowGroups.length);
+ * ```
+ *
+ * @internal
+ */
 export function readFileMetaData(bytes: Uint8Array): FileMetaData {
   return readFileMetaDataStruct(new CompactProtocol(bytes));
 }
 /**
-* Encode a `FileMetaData` footer to compact-protocol bytes.
-*
-* Produces only the Thrift struct; to finish a Parquet file the caller
-* appends the footer's byte length as a little-endian u32 followed by the
-* `'PAR1'` magic.
-*
-* ```ts no_run
-* import { writeFileMetaData } from 'internal:data/parquet/metadata';
-*
-* const footer = writeFileMetaData(meta);
-* const len = new Uint8Array(4);
-* new DataView(len.buffer).setUint32(0, footer.byteLength, true);
-* // file layout: 'PAR1', ...pages..., footer, len, 'PAR1'
-* ```
-*
-* @internal
-*/
+ * Encode a `FileMetaData` footer to compact-protocol bytes.
+ *
+ * Produces only the Thrift struct; to finish a Parquet file the caller
+ * appends the footer's byte length as a little-endian u32 followed by the
+ * `'PAR1'` magic.
+ *
+ * ```ts no_run
+ * import { writeFileMetaData } from 'internal:data/parquet/metadata';
+ *
+ * const footer = writeFileMetaData(meta);
+ * const len = new Uint8Array(4);
+ * new DataView(len.buffer).setUint32(0, footer.byteLength, true);
+ * // file layout: 'PAR1', ...pages..., footer, len, 'PAR1'
+ * ```
+ *
+ * @internal
+ */
 export function writeFileMetaData(fm: FileMetaData): Uint8Array {
   const p = new CompactProtocol();
   writeFileMetaDataStruct(p, fm);

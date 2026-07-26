@@ -1,6 +1,6 @@
 /**
-* Benchmarks for fino:security
-*/
+ * Benchmarks for fino:security
+ */
 import { createSecurityHeaders, randomToken } from 'fino:security';
 import { bench } from 'fino:bench';
 bench('security', (b) => {

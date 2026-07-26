@@ -17,17 +17,21 @@ describe('QUIC simulator recovery conformance', () => {
       await warmup.writer.write(encodeUtf8('ready-for-key-update'));
       await warmup.writer.close();
       const warmupServerStream = await pipe.pumpUntil(warmupAccepted);
-      t.equal(decodeUtf8((await pipe.pumpUntil(warmupServerStream.reader.read()))!), 'ready-for-key-update', '1-RTT traffic is established before key updates');
+      t.equal(
+        decodeUtf8((await pipe.pumpUntil(warmupServerStream.reader.read()))!),
+        'ready-for-key-update',
+        '1-RTT traffic is established before key updates',
+      );
       const keyUpdate = once(client, 'keyupdate');
       client.initiateKeyUpdate();
       await pipe.pumpUntil(keyUpdate);
       pipe.setLink(client.localAddress, server.localAddress, {
         latencyMs: 2,
-        lossRate: .02
+        lossRate: .02,
       });
       pipe.setLink(server.localAddress, client.localAddress, {
         latencyMs: 2,
-        lossRate: .02
+        lossRate: .02,
       });
       for (let i = 0; i < 2; i++) {
         const stream = await client.openBidirectionalStream();
@@ -43,7 +47,11 @@ describe('QUIC simulator recovery conformance', () => {
           if (chunk === null) break;
           received += chunk.byteLength;
         }
-        t.equal(received, payload.byteLength, `bulk stream data survives key-update epoch ${i + 1} under loss`);
+        t.equal(
+          received,
+          payload.byteLength,
+          `bulk stream data survives key-update epoch ${i + 1} under loss`,
+        );
         await pipe.runUntilSettled();
         if (i === 0) {
           const nextKeyUpdate = once(client, 'keyupdate');
@@ -60,14 +68,18 @@ describe('QUIC simulator recovery conformance', () => {
     if (!quicAvailable) return;
     const pipe = new QuicPipe({
       link: { latencyMs: 12 },
-      client: { connection: {
-        initialMaxData: 1024 * 1024,
-        initialMaxStreamDataBidiRemote: 1024 * 1024
-      } },
-      server: { connection: {
-        initialMaxData: 1024 * 1024,
-        initialMaxStreamDataBidiLocal: 1024 * 1024
-      } }
+      client: {
+        connection: {
+          initialMaxData: 1024 * 1024,
+          initialMaxStreamDataBidiRemote: 1024 * 1024,
+        },
+      },
+      server: {
+        connection: {
+          initialMaxData: 1024 * 1024,
+          initialMaxStreamDataBidiLocal: 1024 * 1024,
+        },
+      },
     });
     try {
       const { client, server } = await pipe.handshake();
@@ -91,9 +103,19 @@ describe('QUIC simulator recovery conformance', () => {
       await pipe.runUntilSettled();
       t.equal(received, 256 * 1024, 'stream recovers after a temporary blackhole');
       const rtt = Math.max(client.stats.smoothedRttMs, server.stats.smoothedRttMs);
-      t.ok(rtt >= 8 && rtt <= 80, 'RTT stats stay within a practical tolerance of the simulated 12ms one-way latency');
-      t.ok(client.stats.congestionWindow > 0, 'congestion window remains observable after recovery');
-      t.ok(client.stats.slowStartThreshold === 0 || client.stats.congestionWindow <= client.stats.slowStartThreshold, 'persistent congestion recovery leaves cwnd collapsed at or below ssthresh');
+      t.ok(
+        rtt >= 8 && rtt <= 80,
+        'RTT stats stay within a practical tolerance of the simulated 12ms one-way latency',
+      );
+      t.ok(
+        client.stats.congestionWindow > 0,
+        'congestion window remains observable after recovery',
+      );
+      t.ok(
+        client.stats.slowStartThreshold === 0 ||
+          client.stats.congestionWindow <= client.stats.slowStartThreshold,
+        'persistent congestion recovery leaves cwnd collapsed at or below ssthresh',
+      );
       t.ok(before >= 0, 'baseline congestion window was observable before blackhole');
     } finally {
       await pipe.close();
@@ -106,16 +128,16 @@ describe('QUIC simulator recovery conformance', () => {
         migration: { enabled: true },
         datagrams: {
           enabled: true,
-          maxFrameSize: 1200
-        }
+          maxFrameSize: 1200,
+        },
       },
       server: {
         migration: { enabled: true },
         datagrams: {
           enabled: true,
-          maxFrameSize: 1200
-        }
-      }
+          maxFrameSize: 1200,
+        },
+      },
     });
     try {
       const { client, server } = await pipe.handshake();
@@ -129,18 +151,41 @@ describe('QUIC simulator recovery conformance', () => {
       await client.migrate({
         family: 'ipv4',
         ip: '10.0.0.1',
-        port: 56020
+        port: 56020,
       });
       const pathEvent = await pipe.pumpUntil(pathValidation);
-      t.equal(pathEvent.result, 'success', 'client validates the migrated path before DATAGRAM send');
+      t.equal(
+        pathEvent.result,
+        'success',
+        'client validates the migrated path before DATAGRAM send',
+      );
       const status = once(client, 'datagramstatus');
       await client.sendDatagram(encodeUtf8('after-migration'));
       await pipe.runUntilSettled();
       const statusEvent = await pipe.pumpUntil(status);
-      t.ok(pipe.trace().some((event) => event.type === 'datagram:queued' && event.localAddress.port === 56020), 'post-migration DATAGRAM queues from the migrated local path');
-      t.ok(pipe.trace().some((event) => event.type === 'datagram:delivered' && event.from.port === 56020 && event.to.port === server.localAddress.port), 'post-migration DATAGRAM packet reaches the server socket');
+      t.ok(
+        pipe
+          .trace()
+          .some((event) => event.type === 'datagram:queued' && event.localAddress.port === 56020),
+        'post-migration DATAGRAM queues from the migrated local path',
+      );
+      t.ok(
+        pipe
+          .trace()
+          .some(
+            (event) =>
+              event.type === 'datagram:delivered' &&
+              event.from.port === 56020 &&
+              event.to.port === server.localAddress.port,
+          ),
+        'post-migration DATAGRAM packet reaches the server socket',
+      );
       t.equal(statusEvent.status, 'ack', 'post-migration DATAGRAM is acknowledged');
-      t.deepEqual(received, ['before-migration', 'after-migration'], 'DATAGRAM delivery survives active migration');
+      t.deepEqual(
+        received,
+        ['before-migration', 'after-migration'],
+        'DATAGRAM delivery survives active migration',
+      );
     } finally {
       await pipe.close();
     }
@@ -149,14 +194,14 @@ describe('QUIC simulator recovery conformance', () => {
     if (!quicAvailable) return;
     const pipe = new QuicPipe({
       client: { migration: { enabled: true } },
-      server: { migration: { enabled: true } }
+      server: { migration: { enabled: true } },
     });
     try {
       const { client, server } = await pipe.handshake();
       const migratedAddress = {
         family: 'ipv4' as const,
         ip: '10.0.0.1',
-        port: 56021
+        port: 56021,
       };
       pipe.setLink(migratedAddress, server.localAddress, { lossRate: 1 });
       pipe.setLink(server.localAddress, migratedAddress, { lossRate: 1 });
@@ -164,11 +209,19 @@ describe('QUIC simulator recovery conformance', () => {
       await client.migrate(migratedAddress);
       await client.close({
         errorCode: 77,
-        reason: 'abort-path-validation'
+        reason: 'abort-path-validation',
       });
       const event = await pipe.pumpUntil(pathValidation);
-      t.equal(event.result, 'aborted', 'closing mid-validation emits a terminal aborted path-validation event');
-      t.equal(event.path.localAddress.port, migratedAddress.port, 'failure event names the abandoned migrated local path');
+      t.equal(
+        event.result,
+        'aborted',
+        'closing mid-validation emits a terminal aborted path-validation event',
+      );
+      t.equal(
+        event.path.localAddress.port,
+        migratedAddress.port,
+        'failure event names the abandoned migrated local path',
+      );
     } finally {
       await pipe.close();
     }

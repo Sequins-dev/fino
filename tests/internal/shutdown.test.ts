@@ -1,6 +1,6 @@
 /**
-* Tests for internal:shutdown — registerShutdownHook and runShutdownHooks.
-*/
+ * Tests for internal:shutdown — registerShutdownHook and runShutdownHooks.
+ */
 import { describe, it } from 'fino:test/test';
 import { registerShutdownHook, runShutdownHooks } from 'internal:shutdown';
 describe('runShutdownHooks — no-op on empty', () => {

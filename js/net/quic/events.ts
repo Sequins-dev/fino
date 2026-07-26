@@ -10,5 +10,5 @@ export {
   QuicStreamBlockedEvent,
   QuicStreamEvent,
   QuicStreamResetEvent,
-  QuicVersionNegotiationError
+  QuicVersionNegotiationError,
 } from '../../internal/net/quic/endpoint.ts';

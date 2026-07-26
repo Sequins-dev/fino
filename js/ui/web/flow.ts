@@ -1,20 +1,20 @@
 /**
-* fino:ui/web/flow — workflow-backed server-rendered pages.
-*
-* `flowPage()` connects bounded multi-step workflows to ordinary HTTP pages.
-* A GET without `?run=` starts the workflow and redirects to a URL containing
-* the run id. Later GETs render the persisted `WorkflowState`; POSTs deliver
-* the signal the workflow is currently waiting on, resume the run, and redirect
-* back to the same run URL.
-*
-* ```ts no_run
-* import { flowPage } from 'fino:ui/web/flow';
-* import { SqliteWorkflowStore } from 'fino:workflow';
-*
-* app.get('/checkout').handle(flowPage(checkout, { store, start, render }));
-* app.post('/checkout').handle(flowPage(checkout, { store, start, render }));
-* ```
-*/
+ * fino:ui/web/flow — workflow-backed server-rendered pages.
+ *
+ * `flowPage()` connects bounded multi-step workflows to ordinary HTTP pages.
+ * A GET without `?run=` starts the workflow and redirects to a URL containing
+ * the run id. Later GETs render the persisted `WorkflowState`; POSTs deliver
+ * the signal the workflow is currently waiting on, resume the run, and redirect
+ * back to the same run URL.
+ *
+ * ```ts no_run
+ * import { flowPage } from 'fino:ui/web/flow';
+ * import { SqliteWorkflowStore } from 'fino:workflow';
+ *
+ * app.get('/checkout').handle(flowPage(checkout, { store, start, render }));
+ * app.post('/checkout').handle(flowPage(checkout, { store, start, render }));
+ * ```
+ */
 import type { Handler, HttpContext } from 'fino:net/http/app';
 import { renderToHtml } from 'fino:ui/html';
 import type { VNode } from 'fino:ui';
@@ -50,17 +50,21 @@ function parsePayload(value: FormDataEntryValue | null): unknown {
   return text;
 }
 
-async function renderState(ctx: HttpContext, opts: FlowPageOptions, runId: string): Promise<Response> {
+async function renderState(
+  ctx: HttpContext,
+  opts: FlowPageOptions,
+  runId: string,
+): Promise<Response> {
   const state = await opts.store.load(runId);
   if (state === null) return new Response('Workflow run not found', { status: 404 });
   return new Response('<!doctype html>' + renderToHtml(opts.render(ctx, state)), {
-    headers: { 'content-type': 'text/html; charset=utf-8' }
+    headers: { 'content-type': 'text/html; charset=utf-8' },
   });
 }
 
 /**
-* Create a route handler for a bounded workflow-backed page.
-*/
+ * Create a route handler for a bounded workflow-backed page.
+ */
 export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOptions<In>): Handler {
   return async (ctx) => {
     const url = new URL(ctx.request.url);
@@ -82,7 +86,7 @@ export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOpt
         store: opts.store,
         runId,
         name: state.waitingOn.name,
-        payload: parsePayload(form.get(state.waitingOn.name))
+        payload: parsePayload(form.get(state.waitingOn.name)),
       });
       await workflow.resume({ store: opts.store, runId });
       return redirect(runUrl(ctx, runId));

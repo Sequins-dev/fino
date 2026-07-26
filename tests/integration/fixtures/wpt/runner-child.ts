@@ -20,10 +20,13 @@ const testPath = argv[2] ?? '';
 const subtest = argv[3] === undefined || argv[3] === '' ? null : argv[3];
 const variant = argv[4] ?? '';
 const isWorkerTest = testPath.endsWith('.worker.js');
-const workerImportScriptSources = new Map<string, {
-  path: string;
-  source: string;
-}>();
+const workerImportScriptSources = new Map<
+  string,
+  {
+    path: string;
+    source: string;
+  }
+>();
 function print(result: ChildResult): never {
   console.log(JSON.stringify(result));
   exit(result.status === 'ok' ? 0 : 1);
@@ -36,20 +39,36 @@ function scriptPath(basePath: string, specifier: string): string {
   return join(dirname(join(wptRoot, basePath).toString()).toString(), specifier).toString();
 }
 function interfacePathFromFetchInput(input: unknown): string | null {
-  const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input instanceof Request ? input.url : null;
+  const href =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input instanceof Request
+          ? input.url
+          : null;
   if (href === null) return null;
-  const pathname = href.startsWith('/') ? href : (() => {
-    try {
-      return new URL(href).pathname;
-    } catch (_) {
-      return null;
-    }
-  })();
+  const pathname = href.startsWith('/')
+    ? href
+    : (() => {
+        try {
+          return new URL(href).pathname;
+        } catch (_) {
+          return null;
+        }
+      })();
   if (pathname === null || !/^\/interfaces\/[^/]+\.idl$/.test(pathname)) return null;
   return join(wptRoot, pathname.slice(1)).toString();
 }
 function localWptResourcePathFromFetchInput(input: unknown): string | null {
-  const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input instanceof Request ? input.url : null;
+  const href =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input instanceof Request
+          ? input.url
+          : null;
   if (href === null || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(href)) return null;
   try {
     const base = new URL(`http://web-platform.test/${testPath}${variant}`);
@@ -64,7 +83,8 @@ function installWorkerImportScripts(g: any): void {
     for (const specifier of specifiers) {
       if (specifier === '/resources/testharness.js') continue;
       const loaded = workerImportScriptSources.get(specifier);
-      if (loaded === undefined) throw new Error(`unsupported worker importScripts specifier: ${specifier}`);
+      if (loaded === undefined)
+        throw new Error(`unsupported worker importScripts specifier: ${specifier}`);
       (0, eval)(loaded.source + `\n//# sourceURL=${loaded.path}`);
     }
   };
@@ -78,12 +98,13 @@ function installBaseGlobals(): void {
     g.GLOBAL = {
       isWindow: () => !isWorkerTest,
       isWorker: () => isWorkerTest,
-      isShadowRealm: () => false
+      isShadowRealm: () => false,
     };
   }
   if (isWorkerTest) {
     installWorkerImportScripts(g);
-    if (g.FileReaderSync === undefined) g.FileReaderSync = g[Symbol.for('fino.internal.FileReaderSync')];
+    if (g.FileReaderSync === undefined)
+      g.FileReaderSync = g[Symbol.for('fino.internal.FileReaderSync')];
     delete g.fetchLater;
     delete g.FetchLaterResult;
   }
@@ -105,7 +126,7 @@ function installBaseGlobals(): void {
       },
       valueOf() {
         return this.href;
-      }
+      },
     };
   }
   if (g.navigator === undefined) g.navigator = {};
@@ -116,21 +137,21 @@ function installBaseGlobals(): void {
     if (localInterfacePath !== null) {
       return new Response(await fs.readFile(localInterfacePath), {
         status: 200,
-        headers: { 'content-type': 'text/plain' }
+        headers: { 'content-type': 'text/plain' },
       });
     }
     const localResourcePath = localWptResourcePathFromFetchInput(input);
     if (localResourcePath !== null) {
       return new Response(await fs.readFile(localResourcePath), {
         status: 200,
-        headers: { 'content-type': 'text/plain' }
+        headers: { 'content-type': 'text/plain' },
       });
     }
     return nativeFetch(input as any, init);
   };
   Object.defineProperty(g.fetch, 'length', {
     value: 1,
-    configurable: true
+    configurable: true,
   });
 }
 function discoverMetaScripts(source: string): string[] {
@@ -158,11 +179,12 @@ function discoverWorkerImportScripts(source: string): string[] {
 async function preloadWorkerImportScripts(basePath: string, source: string): Promise<void> {
   if (!isWorkerTest) return;
   for (const specifier of discoverWorkerImportScripts(source)) {
-    if (specifier === '/resources/testharness.js' || workerImportScriptSources.has(specifier)) continue;
+    if (specifier === '/resources/testharness.js' || workerImportScriptSources.has(specifier))
+      continue;
     const path = scriptPath(basePath, specifier);
     workerImportScriptSources.set(specifier, {
       path,
-      source: await fs.readFile(path)
+      source: await fs.readFile(path),
     });
   }
 }
@@ -191,7 +213,11 @@ async function sourceForEval(basePath: string, source: string): Promise<string> 
     const srcMatch = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/.exec(attrs);
     if (srcMatch !== null) {
       const specifier = srcMatch[1] ?? srcMatch[2] ?? srcMatch[3]!;
-      if (specifier === '/resources/testharness.js' || specifier === '/resources/testharnessreport.js') continue;
+      if (
+        specifier === '/resources/testharness.js' ||
+        specifier === '/resources/testharnessreport.js'
+      )
+        continue;
       const path = scriptPath(basePath, specifier);
       scripts.push(await fs.readFile(path));
       continue;
@@ -204,11 +230,28 @@ async function sourceForEval(basePath: string, source: string): Promise<string> 
 function requiresWptServer(basePath: string, source: string): boolean {
   if (basePath === 'fetch/api/response/response-consume.html') return false;
   if (basePath.startsWith('urlpattern/')) return false;
-  if (basePath === 'url/url-constructor.any.js' || basePath === 'url/url-origin.any.js' || basePath === 'url/url-setters.any.js') return false;
-  return /\bfetch\s*\(\s*['"`]\//.test(source) || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source) || /\bnew\s+XMLHttpRequest\b/.test(source) || /\/fetch\/api\/resources\//.test(source);
+  if (
+    basePath === 'url/url-constructor.any.js' ||
+    basePath === 'url/url-origin.any.js' ||
+    basePath === 'url/url-setters.any.js'
+  )
+    return false;
+  return (
+    /\bfetch\s*\(\s*['"`]\//.test(source) ||
+    /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source) ||
+    /\bnew\s+XMLHttpRequest\b/.test(source) ||
+    /\/fetch\/api\/resources\//.test(source)
+  );
 }
 function decodeManifestName(name: string): string {
-  return name.replace(/\\u\{([0-9a-fA-F]+)\}/g, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16))).replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))).replace(/\\0/g, '\0');
+  return name
+    .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    )
+    .replace(/\\0/g, '\0');
 }
 function nameTokens(name: string): string[] {
   return [...name.matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]!.toLowerCase());
@@ -239,13 +282,15 @@ async function assertWptServerReady(): Promise<void> {
     await response.arrayBuffer();
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    throw new Error([
-      'This WPT file requires the upstream WPT server.',
-      'Run `./third_party/wpt/wpt serve --no-h2` and complete WPT host setup first.',
-      'WPT host setup must map web-platform.test and its subdomains to loopback in /etc/hosts.',
-      'See https://web-platform-tests.org/running-tests/from-local-system.html#system-setup',
-      `Preflight failure: ${detail}`
-    ].join('\n'));
+    throw new Error(
+      [
+        'This WPT file requires the upstream WPT server.',
+        'Run `./third_party/wpt/wpt serve --no-h2` and complete WPT host setup first.',
+        'WPT host setup must map web-platform.test and its subdomains to loopback in /etc/hosts.',
+        'See https://web-platform-tests.org/running-tests/from-local-system.html#system-setup',
+        `Preflight failure: ${detail}`,
+      ].join('\n'),
+    );
   }
 }
 async function main(): Promise<void> {
@@ -257,7 +302,7 @@ async function main(): Promise<void> {
   await preloadWorkerImportScripts(testPath, source);
   let runnableSource = source;
   for (const script of discoverMetaScripts(source)) {
-    runnableSource += '\n' + await fs.readFile(scriptPath(testPath, script));
+    runnableSource += '\n' + (await fs.readFile(scriptPath(testPath, script)));
   }
   const results: HarnessResult[] = [];
   if (requiresWptServer(testPath, runnableSource)) {
@@ -266,7 +311,10 @@ async function main(): Promise<void> {
   await evalFile(harnessPath);
   const g = globalThis as any;
   if (typeof g.setup === 'function') g.setup({ explicit_done: true });
-  if (typeof g.add_result_callback !== 'function' || typeof g.add_completion_callback !== 'function') {
+  if (
+    typeof g.add_result_callback !== 'function' ||
+    typeof g.add_completion_callback !== 'function'
+  ) {
     throw new Error('upstream testharness.js did not install result callbacks');
   }
   g.add_result_callback((test: any) => {
@@ -274,7 +322,7 @@ async function main(): Promise<void> {
       name: String(test.name),
       status: Number(test.status),
       message: String(test.message ?? ''),
-      stack: String(test.stack ?? '')
+      stack: String(test.stack ?? ''),
     });
   });
   const completed = new Promise<void>((resolve) => {
@@ -290,7 +338,7 @@ async function main(): Promise<void> {
       subtest,
       status: 'fail',
       results,
-      message: 'WPT file completed without reporting any subtests'
+      message: 'WPT file completed without reporting any subtests',
     });
   }
   if (subtest !== null && selected.length === 0) {
@@ -299,7 +347,7 @@ async function main(): Promise<void> {
       subtest,
       status: 'fail',
       results,
-      message: `WPT subtest not reported: ${subtest}`
+      message: `WPT subtest not reported: ${subtest}`,
     });
   }
   const failures = selected.filter((result) => result.status !== 0);
@@ -308,7 +356,7 @@ async function main(): Promise<void> {
     subtest,
     status: failures.length === 0 ? 'ok' : 'fail',
     results: selected,
-    message: failures.map((result) => `${result.name}: ${result.message}`).join('\n') || undefined
+    message: failures.map((result) => `${result.name}: ${result.message}`).join('\n') || undefined,
   });
 }
 main().catch((err) => {
@@ -317,6 +365,6 @@ main().catch((err) => {
     subtest,
     status: 'fail',
     results: [],
-    message: err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err)
+    message: err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err),
   });
 });

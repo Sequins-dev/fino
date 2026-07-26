@@ -1,9 +1,18 @@
 /**
-* Tests for fino:dns — Resolver, lookup, wire protocol helpers.
-*/
+ * Tests for fino:dns — Resolver, lookup, wire protocol helpers.
+ */
 import { describe, it, before, after } from 'fino:test/test';
 import { Resolver, lookup } from 'fino:net/dns';
-import { RECORD_TYPES, _encodeName, _buildQuery, _decodeName, _parseResponse, _parseResolvConf, _randomQueryId, _reverseIP } from 'internal:net/dns-wire';
+import {
+  RECORD_TYPES,
+  _encodeName,
+  _buildQuery,
+  _decodeName,
+  _parseResponse,
+  _parseResolvConf,
+  _randomQueryId,
+  _reverseIP,
+} from 'internal:net/dns-wire';
 import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';
 import * as sock from 'fino:net/socket';
@@ -14,14 +23,12 @@ type DnsErrorLike = {
   code?: string;
 };
 const libc = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
-const nativeSocket = dlopen(libc, { bind: {
-  parameters: [
-    'i32',
-    'buffer',
-    'u32'
-  ],
-  result: 'i32'
-} });
+const nativeSocket = dlopen(libc, {
+  bind: {
+    parameters: ['i32', 'buffer', 'u32'],
+    result: 'i32',
+  },
+});
 function bindIpv4Native(fd: number, ip: string, port: number): void {
   if (ip !== '127.0.0.1') throw new Error(`unsupported fixture bind IP: ${ip}`);
   const sockaddr = new Uint8Array(16);
@@ -40,10 +47,14 @@ function bindIpv4Native(fd: number, ip: string, port: number): void {
 type LocalDnsRecord = {
   type: number;
   ttl?: number;
-  data: string | string[] | Uint8Array | {
-    exchange: string;
-    priority: number;
-  };
+  data:
+    | string
+    | string[]
+    | Uint8Array
+    | {
+        exchange: string;
+        priority: number;
+      };
 };
 function concatBytes(parts: Uint8Array[]): Uint8Array {
   let total = 0;
@@ -71,36 +82,25 @@ function ipv4Bytes(ip: string): Uint8Array {
 }
 function ipv6Bytes(ip: string): Uint8Array {
   if (ip !== '2001:db8::42') throw new Error(`unsupported fixture IPv6: ${ip}`);
-  return new Uint8Array([
-    32,
-    1,
-    13,
-    184,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    66
-  ]);
+  return new Uint8Array([32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 66]);
 }
 function txtBytes(parts: string[]): Uint8Array {
   const encoder = new TextEncoder();
-  return concatBytes(parts.map((part) => {
-    const encoded = encoder.encode(part);
-    return concatBytes([new Uint8Array([encoded.byteLength]), encoded]);
-  }));
+  return concatBytes(
+    parts.map((part) => {
+      const encoded = encoder.encode(part);
+      return concatBytes([new Uint8Array([encoded.byteLength]), encoded]);
+    }),
+  );
 }
 function recordRdata(record: LocalDnsRecord): Uint8Array {
   if (record.type === RECORD_TYPES.A) return ipv4Bytes(record.data as string);
   if (record.type === RECORD_TYPES.AAAA) return ipv6Bytes(record.data as string);
-  if (record.type === RECORD_TYPES.NS || record.type === RECORD_TYPES.PTR || record.type === RECORD_TYPES.CNAME) {
+  if (
+    record.type === RECORD_TYPES.NS ||
+    record.type === RECORD_TYPES.PTR ||
+    record.type === RECORD_TYPES.CNAME
+  ) {
     return _encodeName(record.data as string);
   }
   if (record.type === RECORD_TYPES.TXT) return txtBytes(record.data as string[]);
@@ -120,23 +120,27 @@ function bitmapWindow(types: number[]): Uint8Array {
   const bitmap = new Uint8Array((max >> 3) + 1);
   for (const type of types) {
     const offset = type & 255;
-    bitmap[offset >> 3] |= 1 << 7 - (offset & 7);
+    bitmap[offset >> 3] |= 1 << (7 - (offset & 7));
   }
   return concatBytes([new Uint8Array([0, bitmap.byteLength]), bitmap]);
 }
-function buildDnsResponse(query: Uint8Array, records: LocalDnsRecord[], opts: {
-  rcode?: number;
-  truncated?: boolean;
-} = {}): Uint8Array {
+function buildDnsResponse(
+  query: Uint8Array,
+  records: LocalDnsRecord[],
+  opts: {
+    rcode?: number;
+    truncated?: boolean;
+  } = {},
+): Uint8Array {
   const { nextOffset } = _decodeName(query, 12);
   const questionEnd = nextOffset + 4;
   const question = query.slice(12, questionEnd);
   const out: number[] = [];
   const push16 = (value: number) => {
-    out.push(value >> 8 & 255, value & 255);
+    out.push((value >> 8) & 255, value & 255);
   };
   const push32 = (value: number) => {
-    out.push(value >>> 24 & 255, value >>> 16 & 255, value >>> 8 & 255, value & 255);
+    out.push((value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255);
   };
   const queryView = new DataView(query.buffer, query.byteOffset, query.byteLength);
   push16(queryView.getUint16(0, false));
@@ -167,7 +171,7 @@ function parseQuestion(query: Uint8Array): {
   const view = new DataView(query.buffer, query.byteOffset, query.byteLength);
   return {
     name: decoded.name,
-    type: view.getUint16(decoded.nextOffset, false)
+    type: view.getUint16(decoded.nextOffset, false),
   };
 }
 class LocalDnsServer {
@@ -181,10 +185,14 @@ class LocalDnsServer {
   readonly family: 'ipv4' | 'ipv6';
   readonly ip: string;
   readonly port: number;
-  constructor(records: Record<string, LocalDnsRecord[]>, truncateOnceFor: string[] = [], options: {
-    family?: 'ipv4' | 'ipv6';
-    malformedTcpFor?: string[];
-  } = {}) {
+  constructor(
+    records: Record<string, LocalDnsRecord[]>,
+    truncateOnceFor: string[] = [],
+    options: {
+      family?: 'ipv4' | 'ipv6';
+      malformedTcpFor?: string[];
+    } = {},
+  ) {
     this.family = options.family ?? 'ipv4';
     this.ip = this.family === 'ipv6' ? '::1' : '127.0.0.1';
     for (const [key, value] of Object.entries(records)) this.#records.set(key, value);
@@ -194,18 +202,23 @@ class LocalDnsServer {
     let lastError: unknown = null;
     for (let i = 0; i < 20; i++) {
       const port = 2e4 + Math.floor(Math.random() * 2e4);
-      const udpFd = sock.socket(this.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, 0);
+      const udpFd = sock.socket(
+        this.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET,
+        sock.SOCK_DGRAM,
+        0,
+      );
       try {
         if (this.family === 'ipv4') bindIpv4Native(udpFd, '127.0.0.1', port);
-        else sock.bind(udpFd, {
-          family: 'ipv6',
-          ip: '::1',
-          port
-        });
+        else
+          sock.bind(udpFd, {
+            family: 'ipv6',
+            ip: '::1',
+            port,
+          });
         const tcpServer = Socket.listen({
           family: this.family,
           ip: this.ip,
-          port
+          port,
         });
         this.#udpFd = udpFd;
         this.#tcpServer = tcpServer;
@@ -216,7 +229,8 @@ class LocalDnsServer {
         sock.close(udpFd);
       }
     }
-    if (boundPort === 0) throw lastError instanceof Error ? lastError : new Error('failed to bind local DNS fixture');
+    if (boundPort === 0)
+      throw lastError instanceof Error ? lastError : new Error('failed to bind local DNS fixture');
     sock.setNonblocking(this.#udpFd);
     this.port = boundPort;
     this.#serveUdp();
@@ -266,17 +280,15 @@ class LocalDnsServer {
     try {
       const lenBytes = await reader.readExactly(2);
       if (!lenBytes) return;
-      const len = new DataView(lenBytes.buffer, lenBytes.byteOffset, lenBytes.byteLength).getUint16(0, false);
+      const len = new DataView(lenBytes.buffer, lenBytes.byteOffset, lenBytes.byteLength).getUint16(
+        0,
+        false,
+      );
       const query = await reader.readExactly(len);
       if (!query) return;
       const question = parseQuestion(query);
       if (this.#malformedTcpFor.has(`${question.name}:${question.type}`)) {
-        await writer.write(new Uint8Array([
-          0,
-          4,
-          1,
-          2
-        ]));
+        await writer.write(new Uint8Array([0, 4, 1, 2]));
         return;
       }
       const response = this.#responseFor(query, false);
@@ -295,7 +307,8 @@ class LocalDnsServer {
     this.#queryCounts.set(key, (this.#queryCounts.get(key) ?? 0) + 1);
     const records = this.#records.get(key);
     if (!records) return buildDnsResponse(query, [], { rcode: 3 });
-    if (udp && this.#truncateOnceFor.delete(key)) return buildDnsResponse(query, [], { truncated: true });
+    if (udp && this.#truncateOnceFor.delete(key))
+      return buildDnsResponse(query, [], { truncated: true });
     return buildDnsResponse(query, records);
   }
   queryCount(name: string, type: number): number {
@@ -327,7 +340,11 @@ describe('Wire protocol', () => {
   it('_encodeName — IDNA labels are encoded as ASCII A-labels', (t) => {
     const out = _encodeName('café.example');
     const expected = _encodeName('xn--caf-dma.example');
-    t.deepEqual(Array.from(out), Array.from(expected), 'unicode label is punycoded before wire encoding');
+    t.deepEqual(
+      Array.from(out),
+      Array.from(expected),
+      'unicode label is punycoded before wire encoding',
+    );
   });
   it('_buildQuery — header fields', (t) => {
     const pkt = _buildQuery(4660, 'example.com', RECORD_TYPES.A);
@@ -424,20 +441,17 @@ describe('Wire protocol', () => {
     t.equal(parsed.answers.length, 1, 'one answer');
     t.equal(parsed.answers[0]!.data, '93.184.216.34', 'A record data');
     t.equal(parsed.answers[0]!.ttl, 300, 'TTL');
-    t.deepEqual(Array.from(parsed.answers[0]!.rawData), [
-      93,
-      184,
-      216,
-      34
-    ], 'raw RDATA preserved');
+    t.deepEqual(Array.from(parsed.answers[0]!.rawData), [93, 184, 216, 34], 'raw RDATA preserved');
   });
   it('_parseResponse — preserves class code and mDNS cache-flush bit', (t) => {
     const query = _buildQuery(0x1234, 'printer.local', RECORD_TYPES.A);
-    const msg = buildDnsResponse(query, [{
-      type: RECORD_TYPES.A,
-      data: '192.168.1.44',
-      ttl: 120
-    }]);
+    const msg = buildDnsResponse(query, [
+      {
+        type: RECORD_TYPES.A,
+        data: '192.168.1.44',
+        ttl: 120,
+      },
+    ]);
     const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength);
     const questionEnd = _decodeName(query, 12).nextOffset + 4;
     const answerClassOffset = questionEnd + 2 + 2;
@@ -451,25 +465,11 @@ describe('Wire protocol', () => {
     const records: LocalDnsRecord[] = [
       {
         type: RECORD_TYPES.DS,
-        data: concatBytes([
-          writeU16(20326),
-          new Uint8Array([8, 2]),
-          new Uint8Array(32).fill(170)
-        ])
+        data: concatBytes([writeU16(20326), new Uint8Array([8, 2]), new Uint8Array(32).fill(170)]),
       },
       {
         type: RECORD_TYPES.DNSKEY,
-        data: concatBytes([writeU16(257), new Uint8Array([
-          3,
-          8,
-          1,
-          0,
-          1,
-          3,
-          1,
-          0,
-          1
-        ])])
+        data: concatBytes([writeU16(257), new Uint8Array([3, 8, 1, 0, 1, 3, 1, 0, 1])]),
       },
       {
         type: RECORD_TYPES.RRSIG,
@@ -481,48 +481,29 @@ describe('Wire protocol', () => {
           writeU32(4099852800),
           writeU16(20326),
           _encodeName('example.com'),
-          new Uint8Array([
-            1,
-            2,
-            3,
-            4
-          ])
-        ])
+          new Uint8Array([1, 2, 3, 4]),
+        ]),
       },
       {
         type: RECORD_TYPES.NSEC,
-        data: concatBytes([_encodeName('next.example.com'), bitmapWindow([
-          RECORD_TYPES.A,
-          RECORD_TYPES.RRSIG,
-          RECORD_TYPES.NSEC
-        ])])
+        data: concatBytes([
+          _encodeName('next.example.com'),
+          bitmapWindow([RECORD_TYPES.A, RECORD_TYPES.RRSIG, RECORD_TYPES.NSEC]),
+        ]),
       },
       {
         type: RECORD_TYPES.NSEC3,
         data: concatBytes([
           new Uint8Array([1, 0]),
           writeU16(2),
-          new Uint8Array([
-            1,
-            170,
-            2,
-            187,
-            204
-          ]),
-          bitmapWindow([RECORD_TYPES.AAAA, RECORD_TYPES.RRSIG])
-        ])
+          new Uint8Array([1, 170, 2, 187, 204]),
+          bitmapWindow([RECORD_TYPES.AAAA, RECORD_TYPES.RRSIG]),
+        ]),
       },
       {
         type: RECORD_TYPES.NSEC3PARAM,
-        data: new Uint8Array([
-          1,
-          0,
-          0,
-          2,
-          1,
-          170
-        ])
-      }
+        data: new Uint8Array([1, 0, 0, 2, 1, 170]),
+      },
     ];
     const questionLen = qname.length + 4;
     let rrBytes = 0;
@@ -572,35 +553,63 @@ describe('Wire protocol', () => {
     const parsed = _parseResponse(msg);
     t.equal(parsed.edns?.dnssecOk, true, 'EDNS DO parsed');
     t.equal(parsed.edns?.udpPayloadSize, 1232, 'EDNS UDP payload size parsed');
-    t.equal((parsed.answers[0]!.data as {
-      keyTag?: number;
-    }).keyTag, 20326, 'DS key tag parsed');
-    t.equal((parsed.answers[1]!.data as {
-      algorithm?: number;
-    }).algorithm, 8, 'DNSKEY algorithm parsed');
-    t.equal((parsed.answers[2]!.data as {
-      signerName?: string;
-    }).signerName, 'example.com', 'RRSIG signer parsed');
-    t.deepEqual((parsed.answers[3]!.data as {
-      types?: number[];
-    }).types, [
-      RECORD_TYPES.A,
-      RECORD_TYPES.RRSIG,
-      RECORD_TYPES.NSEC
-    ], 'NSEC bitmap parsed');
-    t.deepEqual((parsed.answers[4]!.data as {
-      types?: number[];
-    }).types, [RECORD_TYPES.AAAA, RECORD_TYPES.RRSIG], 'NSEC3 bitmap parsed');
-    t.equal((parsed.answers[5]!.data as {
-      iterations?: number;
-    }).iterations, 2, 'NSEC3PARAM parsed');
+    t.equal(
+      (
+        parsed.answers[0]!.data as {
+          keyTag?: number;
+        }
+      ).keyTag,
+      20326,
+      'DS key tag parsed',
+    );
+    t.equal(
+      (
+        parsed.answers[1]!.data as {
+          algorithm?: number;
+        }
+      ).algorithm,
+      8,
+      'DNSKEY algorithm parsed',
+    );
+    t.equal(
+      (
+        parsed.answers[2]!.data as {
+          signerName?: string;
+        }
+      ).signerName,
+      'example.com',
+      'RRSIG signer parsed',
+    );
+    t.deepEqual(
+      (
+        parsed.answers[3]!.data as {
+          types?: number[];
+        }
+      ).types,
+      [RECORD_TYPES.A, RECORD_TYPES.RRSIG, RECORD_TYPES.NSEC],
+      'NSEC bitmap parsed',
+    );
+    t.deepEqual(
+      (
+        parsed.answers[4]!.data as {
+          types?: number[];
+        }
+      ).types,
+      [RECORD_TYPES.AAAA, RECORD_TYPES.RRSIG],
+      'NSEC3 bitmap parsed',
+    );
+    t.equal(
+      (
+        parsed.answers[5]!.data as {
+          iterations?: number;
+        }
+      ).iterations,
+      2,
+      'NSEC3PARAM parsed',
+    );
   });
   it('_parseResponse — rejects truncated packets', (t) => {
-    t.throws(() => _parseResponse(new Uint8Array([
-      0,
-      1,
-      2
-    ])), /response too short/i);
+    t.throws(() => _parseResponse(new Uint8Array([0, 1, 2])), /response too short/i);
   });
   it('_parseResponse — rejects truncated resource records', (t) => {
     const qname = _encodeName('example.com');
@@ -639,114 +648,171 @@ describe('Wire protocol', () => {
 
       nameserver    198.51.100.7
     `);
-    t.deepEqual(servers.map((server) => `${server.family}:${server.ip}:${server.port}`), [
-      'ipv4:192.0.2.53:53',
-      'ipv6:2001:db8::53:53',
-      'ipv4:198.51.100.7:53'
-    ], 'valid nameserver lines are parsed in order');
+    t.deepEqual(
+      servers.map((server) => `${server.family}:${server.ip}:${server.port}`),
+      ['ipv4:192.0.2.53:53', 'ipv6:2001:db8::53:53', 'ipv4:198.51.100.7:53'],
+      'valid nameserver lines are parsed in order',
+    );
   });
   it('_parseResolvConf falls back for empty or malformed config', (t) => {
-    t.deepEqual(_parseResolvConf('').map((server) => server.ip), ['8.8.8.8', '8.8.4.4'], 'empty config uses fallback servers');
-    t.deepEqual(_parseResolvConf('nameserver\nnameserver not-an-ip\nnameserver 192.0.2.1:53').map((server) => server.ip), ['8.8.8.8', '8.8.4.4'], 'malformed config uses fallback servers');
+    t.deepEqual(
+      _parseResolvConf('').map((server) => server.ip),
+      ['8.8.8.8', '8.8.4.4'],
+      'empty config uses fallback servers',
+    );
+    t.deepEqual(
+      _parseResolvConf('nameserver\nnameserver not-an-ip\nnameserver 192.0.2.1:53').map(
+        (server) => server.ip,
+      ),
+      ['8.8.8.8', '8.8.4.4'],
+      'malformed config uses fallback servers',
+    );
   });
 });
 describe('Integration', () => {
   let dns: LocalDnsServer;
   before(() => {
-    dns = new LocalDnsServer({
-      [`example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.A,
-        data: '127.0.0.42'
-      }],
-      [`xn--caf-dma.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.A,
-        data: '127.0.0.43'
-      }],
-      [`cache.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.A,
-        ttl: 1,
-        data: '127.0.0.44'
-      }],
-      [`ipv6.example.test:${RECORD_TYPES.AAAA}`]: [{
-        type: RECORD_TYPES.AAAA,
-        data: '2001:db8::42'
-      }],
-      [`example.test:${RECORD_TYPES.MX}`]: [{
-        type: RECORD_TYPES.MX,
-        data: {
-          exchange: 'mail.example.test',
-          priority: 10
-        }
-      }],
-      [`example.test:${RECORD_TYPES.NS}`]: [{
-        type: RECORD_TYPES.NS,
-        data: 'ns1.example.test'
-      }],
-      [`example.test:${RECORD_TYPES.TXT}`]: [{
-        type: RECORD_TYPES.TXT,
-        data: ['v=spf1', 'include:example.test']
-      }],
-      [`42.0.0.127.in-addr.arpa:${RECORD_TYPES.PTR}`]: [{
-        type: RECORD_TYPES.PTR,
-        data: 'ptr.example.test'
-      }],
-      [`large.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.A,
-        data: '127.0.0.99'
-      }],
-      [`alias.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'target.example.test'
-      }],
-      [`target.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.A,
-        data: '127.0.0.77'
-      }],
-      [`cname0.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname1.example.test'
-      }],
-      [`cname1.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname2.example.test'
-      }],
-      [`cname2.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname3.example.test'
-      }],
-      [`cname3.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname4.example.test'
-      }],
-      [`cname4.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname5.example.test'
-      }],
-      [`cname5.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname6.example.test'
-      }],
-      [`cname6.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname7.example.test'
-      }],
-      [`cname7.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname8.example.test'
-      }],
-      [`cname8.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname9.example.test'
-      }],
-      [`cname9.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname10.example.test'
-      }],
-      [`cname10.example.test:${RECORD_TYPES.A}`]: [{
-        type: RECORD_TYPES.CNAME,
-        data: 'cname11.example.test'
-      }]
-    }, [`large.example.test:${RECORD_TYPES.A}`]);
+    dns = new LocalDnsServer(
+      {
+        [`example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.A,
+            data: '127.0.0.42',
+          },
+        ],
+        [`xn--caf-dma.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.A,
+            data: '127.0.0.43',
+          },
+        ],
+        [`cache.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.A,
+            ttl: 1,
+            data: '127.0.0.44',
+          },
+        ],
+        [`ipv6.example.test:${RECORD_TYPES.AAAA}`]: [
+          {
+            type: RECORD_TYPES.AAAA,
+            data: '2001:db8::42',
+          },
+        ],
+        [`example.test:${RECORD_TYPES.MX}`]: [
+          {
+            type: RECORD_TYPES.MX,
+            data: {
+              exchange: 'mail.example.test',
+              priority: 10,
+            },
+          },
+        ],
+        [`example.test:${RECORD_TYPES.NS}`]: [
+          {
+            type: RECORD_TYPES.NS,
+            data: 'ns1.example.test',
+          },
+        ],
+        [`example.test:${RECORD_TYPES.TXT}`]: [
+          {
+            type: RECORD_TYPES.TXT,
+            data: ['v=spf1', 'include:example.test'],
+          },
+        ],
+        [`42.0.0.127.in-addr.arpa:${RECORD_TYPES.PTR}`]: [
+          {
+            type: RECORD_TYPES.PTR,
+            data: 'ptr.example.test',
+          },
+        ],
+        [`large.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.A,
+            data: '127.0.0.99',
+          },
+        ],
+        [`alias.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'target.example.test',
+          },
+        ],
+        [`target.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.A,
+            data: '127.0.0.77',
+          },
+        ],
+        [`cname0.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname1.example.test',
+          },
+        ],
+        [`cname1.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname2.example.test',
+          },
+        ],
+        [`cname2.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname3.example.test',
+          },
+        ],
+        [`cname3.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname4.example.test',
+          },
+        ],
+        [`cname4.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname5.example.test',
+          },
+        ],
+        [`cname5.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname6.example.test',
+          },
+        ],
+        [`cname6.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname7.example.test',
+          },
+        ],
+        [`cname7.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname8.example.test',
+          },
+        ],
+        [`cname8.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname9.example.test',
+          },
+        ],
+        [`cname9.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname10.example.test',
+          },
+        ],
+        [`cname10.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.CNAME,
+            data: 'cname11.example.test',
+          },
+        ],
+      },
+      [`large.example.test:${RECORD_TYPES.A}`],
+    );
   });
   after(() => {
     dns.close();
@@ -754,7 +820,7 @@ describe('Integration', () => {
   function localResolver(): Resolver {
     const resolver = new Resolver({
       timeout: 500,
-      retries: 0
+      retries: 0,
     });
     resolver.setServers([dns.address()]);
     return resolver;
@@ -762,7 +828,10 @@ describe('Integration', () => {
   it('resolver.resolve4 — local fixture', async (t) => {
     const addrs = await localResolver().resolve4('example.test');
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'got at least one A record');
-    t.ok(addrs.every((a) => typeof a === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(a)), 'all are IPv4 strings');
+    t.ok(
+      addrs.every((a) => typeof a === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(a)),
+      'all are IPv4 strings',
+    );
     t.equal(addrs[0], '127.0.0.42', 'resolved fixture address');
   });
   it('resolver.resolve4 — IDNA hostname queries use A-label wire names', async (t) => {
@@ -771,33 +840,57 @@ describe('Integration', () => {
   });
   it('resolver.resolve4 — sends a fresh query instead of caching by answer TTL', async (t) => {
     const resolver = localResolver();
-    t.deepEqual(await resolver.resolve4('cache.example.test'), ['127.0.0.44'], 'first query resolves');
-    t.deepEqual(await resolver.resolve4('cache.example.test'), ['127.0.0.44'], 'second query resolves');
-    t.equal(dns.queryCount('cache.example.test', RECORD_TYPES.A), 2, 'each resolve sends a network query');
+    t.deepEqual(
+      await resolver.resolve4('cache.example.test'),
+      ['127.0.0.44'],
+      'first query resolves',
+    );
+    t.deepEqual(
+      await resolver.resolve4('cache.example.test'),
+      ['127.0.0.44'],
+      'second query resolves',
+    );
+    t.equal(
+      dns.queryCount('cache.example.test', RECORD_TYPES.A),
+      2,
+      'each resolve sends a network query',
+    );
   });
   it('resolver.resolve4 — dnssec rejects unsigned local fixture', async (t) => {
     const resolver = new Resolver({
       timeout: 500,
       retries: 0,
-      dnssec: true
+      dnssec: true,
     });
     resolver.setServers([dns.address()]);
-    await t.rejects(() => resolver.resolve4('example.test'), (err) => (err as {
-      code?: string;
-    }).code === 'EDNSSEC', 'unsigned fixture is rejected with EDNSSEC when DNSSEC is enabled');
+    await t.rejects(
+      () => resolver.resolve4('example.test'),
+      (err) =>
+        (
+          err as {
+            code?: string;
+          }
+        ).code === 'EDNSSEC',
+      'unsigned fixture is rejected with EDNSSEC when DNSSEC is enabled',
+    );
   });
   it('resolver.resolve6 — local fixture', async (t) => {
     const addrs = await localResolver().resolve6('ipv6.example.test');
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'got at least one AAAA record');
-    t.ok(addrs.every((a) => typeof a === 'string' && a.includes(':')), 'all contain colons (IPv6)');
+    t.ok(
+      addrs.every((a) => typeof a === 'string' && a.includes(':')),
+      'all contain colons (IPv6)',
+    );
     t.equal(addrs[0], '2001:db8::42', 'resolved fixture IPv6 address');
   });
   it('resolver.resolveMx — local fixture', async (t) => {
     const records = await localResolver().resolveMx('example.test');
-    const first = records[0] as {
-      exchange?: string;
-      priority?: number;
-    } | undefined;
+    const first = records[0] as
+      | {
+          exchange?: string;
+          priority?: number;
+        }
+      | undefined;
     t.ok(Array.isArray(records) && records.length > 0, 'got MX records');
     t.equal(first?.exchange, 'mail.example.test', 'has exchange field');
     t.equal(first?.priority, 10, 'has priority field');
@@ -832,12 +925,19 @@ describe('Integration', () => {
     const resolver = new Resolver({
       timeout: 500,
       retries: 0,
-      dnssec: true
+      dnssec: true,
     });
     resolver.setServers([dns.address()]);
-    await t.rejects(() => resolver.resolve4('missing.example.test'), (err) => (err as {
-      code?: string;
-    }).code === 'EDNSSEC', 'DNSSEC NXDOMAIN without NSEC/NSEC3 proof rejects as bogus');
+    await t.rejects(
+      () => resolver.resolve4('missing.example.test'),
+      (err) =>
+        (
+          err as {
+            code?: string;
+          }
+        ).code === 'EDNSSEC',
+      'DNSSEC NXDOMAIN without NSEC/NSEC3 proof rejects as bogus',
+    );
   });
   it('resolver.setServers — overrides servers and resolves', async (t) => {
     const resolver = new Resolver();
@@ -849,16 +949,27 @@ describe('Integration', () => {
   it('resolver.getServers brackets IPv6 nameservers with non-default ports', (t) => {
     const resolver = new Resolver();
     resolver.setServers(['[2001:db8::53]:5353']);
-    t.deepEqual(resolver.getServers(), ['[2001:db8::53]:5353'], 'IPv6 server with custom port is bracketed');
+    t.deepEqual(
+      resolver.getServers(),
+      ['[2001:db8::53]:5353'],
+      'IPv6 server with custom port is bracketed',
+    );
   });
   it('resolver.resolve4 — follows CNAME chains to an address', async (t) => {
     const addrs = await localResolver().resolve4('alias.example.test');
     t.deepEqual(addrs, ['127.0.0.77'], 'CNAME target address is returned');
   });
   it('resolver.resolve4 — rejects excessive CNAME hops', async (t) => {
-    await t.rejects(() => localResolver().resolve4('cname0.example.test'), (err) => (err as {
-      code?: string;
-    }).code === 'ENODATA', 'CNAME hop limit rejects loops or excessive chains');
+    await t.rejects(
+      () => localResolver().resolve4('cname0.example.test'),
+      (err) =>
+        (
+          err as {
+            code?: string;
+          }
+        ).code === 'ENODATA',
+      'CNAME hop limit rejects loops or excessive chains',
+    );
   });
   it('resolver.reverse — local fixture', async (t) => {
     const names = await localResolver().reverse('127.0.0.42');
@@ -871,38 +982,66 @@ describe('Integration', () => {
   });
   it('resolver retries the next server after malformed TCP fallback', async (t) => {
     const key = `fallback.example.test:${RECORD_TYPES.A}`;
-    const broken = new LocalDnsServer({ [key]: [{
-      type: RECORD_TYPES.A,
-      data: '127.0.0.1'
-    }] }, [key], { malformedTcpFor: [key] });
-    const healthy = new LocalDnsServer({ [key]: [{
-      type: RECORD_TYPES.A,
-      data: '127.0.0.88'
-    }] });
+    const broken = new LocalDnsServer(
+      {
+        [key]: [
+          {
+            type: RECORD_TYPES.A,
+            data: '127.0.0.1',
+          },
+        ],
+      },
+      [key],
+      { malformedTcpFor: [key] },
+    );
+    const healthy = new LocalDnsServer({
+      [key]: [
+        {
+          type: RECORD_TYPES.A,
+          data: '127.0.0.88',
+        },
+      ],
+    });
     try {
       const resolver = new Resolver({
         timeout: 500,
-        retries: 0
+        retries: 0,
       });
       resolver.setServers([broken.address(), healthy.address()]);
-      t.deepEqual(await resolver.resolve4('fallback.example.test'), ['127.0.0.88'], 'next server resolves after malformed TCP response');
+      t.deepEqual(
+        await resolver.resolve4('fallback.example.test'),
+        ['127.0.0.88'],
+        'next server resolves after malformed TCP response',
+      );
     } finally {
       broken.close();
       healthy.close();
     }
   });
   it('resolver.resolve4 — resolves through an IPv6 loopback nameserver', async (t) => {
-    const ipv6Dns = new LocalDnsServer({ [`v6ns.example.test:${RECORD_TYPES.A}`]: [{
-      type: RECORD_TYPES.A,
-      data: '127.0.0.66'
-    }] }, [], { family: 'ipv6' });
+    const ipv6Dns = new LocalDnsServer(
+      {
+        [`v6ns.example.test:${RECORD_TYPES.A}`]: [
+          {
+            type: RECORD_TYPES.A,
+            data: '127.0.0.66',
+          },
+        ],
+      },
+      [],
+      { family: 'ipv6' },
+    );
     try {
       const resolver = new Resolver({
         timeout: 500,
-        retries: 0
+        retries: 0,
       });
       resolver.setServers([ipv6Dns.address()]);
-      t.deepEqual(await resolver.resolve4('v6ns.example.test'), ['127.0.0.66'], 'IPv6 nameserver returns local fixture answer');
+      t.deepEqual(
+        await resolver.resolve4('v6ns.example.test'),
+        ['127.0.0.66'],
+        'IPv6 nameserver returns local fixture answer',
+      );
     } finally {
       ipv6Dns.close();
     }
@@ -934,35 +1073,24 @@ describe('Integration', () => {
     const libc = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
     const ffi = dlopen(libc, {
       socket: {
-        parameters: [
-          'i32',
-          'i32',
-          'i32'
-        ],
-        result: 'i32'
+        parameters: ['i32', 'i32', 'i32'],
+        result: 'i32',
       },
       bind: {
-        parameters: [
-          'i32',
-          'buffer',
-          'u32'
-        ],
-        result: 'i32'
+        parameters: ['i32', 'buffer', 'u32'],
+        result: 'i32',
       },
       close: {
         parameters: ['i32'],
-        result: 'i32'
+        result: 'i32',
       },
       getsockname: {
-        parameters: [
-          'i32',
-          'buffer',
-          'buffer'
-        ],
-        result: 'i32'
-      }
+        parameters: ['i32', 'buffer', 'buffer'],
+        result: 'i32',
+      },
     });
-    const AF_INET = 2, SOCK_DGRAM = 2;
+    const AF_INET = 2,
+      SOCK_DGRAM = 2;
     const sinkFd = ffi.symbols.socket(AF_INET, SOCK_DGRAM, 0) as number;
     t.ok(sinkFd >= 0, 'sink socket created');
     const sockaddr = new Uint8Array(16);
@@ -979,14 +1107,18 @@ describe('Integration', () => {
     const port = new DataView(addrOut.buffer).getUint16(2, false);
     const resolver = new Resolver({
       timeout: 300,
-      retries: 0
+      retries: 0,
     });
     resolver.setServers([`127.0.0.1:${port}`]);
     try {
-      await t.rejects(() => resolver.resolve4('example.com'), (err) => {
-        const e = err as DnsErrorLike;
-        return /timeout|ETIMEOUT/i.test((e.message ?? '') + ' ' + (e.code ?? ''));
-      }, 'throws timeout error for unreachable server');
+      await t.rejects(
+        () => resolver.resolve4('example.com'),
+        (err) => {
+          const e = err as DnsErrorLike;
+          return /timeout|ETIMEOUT/i.test((e.message ?? '') + ' ' + (e.code ?? ''));
+        },
+        'throws timeout error for unreachable server',
+      );
     } finally {
       ffi.symbols.close(sinkFd);
     }
