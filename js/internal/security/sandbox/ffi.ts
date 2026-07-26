@@ -45,6 +45,7 @@ const COMMON_SYMBOLS = {
   poll: { parameters: ['buffer', 'u64', 'i32'], result: 'i32' },
   socketpair: { parameters: ['i32', 'i32', 'i32', 'buffer'], result: 'i32' },
   chdir: { parameters: ['buffer'], result: 'i32' },
+  access: { parameters: ['buffer', 'i32'], result: 'i32' },
   open: { parameters: ['buffer', 'i32', 'i32'], result: 'i32', variadic: 2 },
   mkdir: { parameters: ['buffer', 'u32'], result: 'i32' },
   rmdir: { parameters: ['buffer'], result: 'i32' },

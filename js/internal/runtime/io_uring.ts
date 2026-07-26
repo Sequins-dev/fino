@@ -222,6 +222,10 @@ const lib = dlopen('libc.so.6', {
     parameters: ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'],
     result: 'i64',
   },
+  __errno_location: {
+    parameters: [],
+    result: 'pointer',
+  },
   mmap: {
     parameters: ['pointer', 'usize', 'i32', 'i32', 'i32', 'i64'],
     result: 'pointer',
@@ -362,6 +366,7 @@ const SIGNALFD_SIGINFO_SIZE = 128;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+const EINTR = 4;
 function syscall(
   nr: bigint,
   a1: bigint | number = 0n,
@@ -380,6 +385,29 @@ function syscall(
     BigInt(a5),
     BigInt(a6),
   );
+}
+function errno(): number {
+  return Pointer.readI32(lib.symbols.__errno_location(), 0);
+}
+function enter(
+  ringFd: number,
+  toSubmit: number,
+  minComplete: number,
+  flags: number,
+): number {
+  let result: number;
+  do {
+    result = Number(
+      syscall(
+        SYS_IO_URING_ENTER,
+        BigInt(ringFd),
+        BigInt(toSubmit),
+        BigInt(minComplete),
+        BigInt(flags),
+      ),
+    );
+  } while (result < 0 && errno() === EINTR);
+  return result;
 }
 function bufPtr(ab: ArrayBuffer): bigint {
   return Pointer.addr(ab);
@@ -619,9 +647,7 @@ function submitSqe(
     tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
     head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
     if ((tail - head) >>> 0 >= loop.sqEntries) {
-      const ret = Number(
-        syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), 0n, 1n, IORING_ENTER_GETEVENTS),
-      );
+      const ret = enter(loop.ringFd, 0, 1, IORING_ENTER_GETEVENTS);
       if (ret < 0) throw new Error(`io_uring_enter (capacity wait) failed: ${ret}`);
       tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
     }
@@ -650,7 +676,7 @@ function submitSqe(
 function submitPending(loop: IoUringLoop): void {
   let toSubmit = loop.pendingSubmissions;
   while (toSubmit > 0) {
-    const ret = Number(syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), BigInt(toSubmit), 0n, 0n));
+    const ret = enter(loop.ringFd, toSubmit, 0, 0);
     if (ret < 0) throw new Error(`io_uring_enter (submit) failed: ${ret}`);
     if (ret === 0) throw new Error('io_uring_enter (submit) made no progress');
     loop.pendingSubmissions -= ret;
@@ -1072,9 +1098,7 @@ export function wait(loop: IoUringLoop, timeoutMs: number | null = null): CqeEve
     );
   }
   submitPending(loop);
-  const ret = Number(
-    syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), 0n, 1n, IORING_ENTER_GETEVENTS),
-  );
+  const ret = enter(loop.ringFd, 0, 1, IORING_ENTER_GETEVENTS);
   if (ret < 0) throw new Error(`io_uring_enter (wait) failed: ${ret}`);
   return drainCqes(loop);
 }

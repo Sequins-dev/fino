@@ -327,7 +327,6 @@ const _pendingPtr = Pointer.addr(_pendingBuf);
 const _eventPtr = Pointer.addr(_eventBuf);
 const _zeroTsPtr = Pointer.addr(_zeroTs);
 const _tsPtr = Pointer.addr(_tsBuf);
-const _errnoPtr = lib.symbols.__error();
 const U32_FACTOR = 4294967296;
 // ---------------------------------------------------------------------------
 // Struct helpers
@@ -416,7 +415,7 @@ function makeTimespec(ms: number | null): ArrayBuffer | null {
   return _tsBuf;
 }
 function errno(): number {
-  return Pointer.readI32(_errnoPtr, 0);
+  return Pointer.readI32(lib.symbols.__error(), 0);
 }
 // ---------------------------------------------------------------------------
 // kevent wrapper — registers changes and/or waits for events

@@ -454,6 +454,7 @@ fn service_scheduled_sync_call(
 }
 
 enum Slice {
+    Runnable,
     Quiescent(bool),
     Settled,
 }
@@ -476,6 +477,7 @@ fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
     let tc = &mut v8::TryCatch::new(scope);
     let mut loop_turns = 0;
     let mut should_continue = true;
+    let mut serviced_sync_call = false;
     // Run a bounded batch before reconsidering pool priority. This is large
     // enough to drain deeply chained Promise continuations while still giving
     // another ready realm a frequent opportunity to preempt at quiescence.
@@ -488,12 +490,24 @@ fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
             })?
             .boolean_value(tc);
         crate::realm::child::pump_and_checkpoint(tc);
-        if service_scheduled_sync_call(tc, &workload.state) {
+        serviced_sync_call = service_scheduled_sync_call(tc, &workload.state);
+        if serviced_sync_call {
             crate::realm::child::pump_and_checkpoint(tc);
+            // The TypeScript step cannot see a sync call until the host
+            // services it here. Its pre-service liveness result is therefore
+            // stale: always give the resolved Promise one more loop turn to
+            // install handles, finish the workload, or queue more host work.
+            should_continue = true;
         }
         loop_turns += 1;
     }
     if should_continue {
+        // A synchronous call completed on the final turn, so its Promise
+        // continuation still needs at least one more host-loop step. Revisit
+        // pool priority without parking this runnable workload.
+        if serviced_sync_call {
+            return Ok((Slice::Runnable, loop_turns));
+        }
         let polling = workload
             .polling_fn
             .as_ref()
@@ -662,7 +676,7 @@ impl PoolShared {
         self.changed.notify_all();
     }
 
-    fn claim(&self, current: Option<u32>, stop: &AtomicBool, poll_current: bool) -> Claim {
+    fn claim(&self, current: Option<u32>, stop: &AtomicBool, current_state: CurrentState) -> Claim {
         let mut inner = self.inner.lock().unwrap();
         loop {
             if inner.shutdown || stop.load(Ordering::Acquire) {
@@ -714,14 +728,22 @@ impl PoolShared {
                 inner.active.insert(owner);
                 return Claim::Work(item);
             }
-            if poll_current && current.is_some() {
-                let (next, timeout) = self
-                    .changed
-                    .wait_timeout(inner, std::time::Duration::from_millis(1))
-                    .unwrap();
-                inner = next;
-                if timeout.timed_out() {
-                    return Claim::Current;
+            if current.is_some() {
+                match current_state {
+                    CurrentState::Runnable => return Claim::Current,
+                    CurrentState::Polling => {
+                        let (next, timeout) = self
+                            .changed
+                            .wait_timeout(inner, std::time::Duration::from_millis(1))
+                            .unwrap();
+                        inner = next;
+                        if timeout.timed_out() {
+                            return Claim::Current;
+                        }
+                    }
+                    CurrentState::Parked => {
+                        inner = self.changed.wait(inner).unwrap();
+                    }
                 }
             } else {
                 inner = self.changed.wait(inner).unwrap();
@@ -800,14 +822,21 @@ enum Claim {
     Shutdown,
 }
 
+#[derive(Clone, Copy)]
+enum CurrentState {
+    Parked,
+    Polling,
+    Runnable,
+}
+
 fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
     let mut current: Option<Resident> = None;
-    let mut poll_current = false;
+    let mut current_state = CurrentState::Parked;
     loop {
         let current_owner = current
             .as_ref()
             .map(|resident| resident.item.workload.0.owner);
-        match shared.claim(current_owner, &stop, poll_current) {
+        match shared.claim(current_owner, &stop, current_state) {
             Claim::Shutdown => break,
             Claim::Current => {}
             Claim::Work(mut item) => {
@@ -838,8 +867,16 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
             .owner;
         let mut resident = current.take().unwrap();
         match drive_slice(&mut resident.item.workload.0) {
+            Ok((Slice::Runnable, _)) => {
+                current_state = CurrentState::Runnable;
+                current = Some(resident);
+            }
             Ok((Slice::Quiescent(polling), _)) => {
-                poll_current = polling;
+                current_state = if polling {
+                    CurrentState::Polling
+                } else {
+                    CurrentState::Parked
+                };
                 current = Some(resident);
             }
             Ok((Slice::Settled, loop_turns)) => {
@@ -854,7 +891,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                 deactivate(&mut resident.item.workload.0, resident.active);
                 drop_workload(resident.item.workload.0);
                 shared.finish(owner);
-                poll_current = false;
+                current_state = CurrentState::Parked;
                 shared.notify(PoolEvent {
                     kind: PoolEventKind::Settled,
                     worker,
@@ -871,7 +908,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                 deactivate(&mut resident.item.workload.0, resident.active);
                 drop_workload(resident.item.workload.0);
                 shared.finish(owner);
-                poll_current = false;
+                current_state = CurrentState::Parked;
                 shared.notify(PoolEvent {
                     kind: PoolEventKind::Error,
                     worker,

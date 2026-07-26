@@ -156,6 +156,7 @@ describe('Basic operations', () => {
     t.ok(elapsed < 500, 'short timeout was not delayed by cancelled timers (' + elapsed + 'ms)');
   });
   it('cancelled timers stop keeping the loop alive without settling', (t) => {
+    const baselineAlive = loop.alive();
     let resolved = false;
     const timer = loop.timeout(1e4);
     timer.then(() => {
@@ -165,7 +166,11 @@ describe('Basic operations', () => {
     timer.cancel();
     wait(Promise.resolve());
     t.equal(resolved, false, 'cancelled timer promise stays unsettled');
-    t.equal(loop.alive(), false, 'cancelled timer no longer keeps the loop alive');
+    t.equal(
+      loop.alive(),
+      baselineAlive,
+      'cancelled timer restores the previous loop liveness state',
+    );
   });
 });
 describe('I/O watchers', () => {
@@ -353,12 +358,17 @@ describe('I/O watchers', () => {
 describe('Backend-specific loop hooks', () => {
   it('registerWakeSource is omitted from reactor-pooled workload loops', async (t) => {
     const { server, client, peer } = connectedPair();
+    const baselineAlive = loop.alive();
     let wakes = 0;
     try {
       loop.registerWakeSource(peer, () => {
         wakes++;
       });
-      t.equal(loop.alive(), false, 'wake source alone does not keep loop alive');
+      t.equal(
+        loop.alive(),
+        baselineAlive,
+        'wake source does not change the workload loop liveness state',
+      );
       sock.send(client, encodeUtf8('wake'), 0);
       const dispatched = loop.tick(0);
       t.equal(dispatched, 0, 'workload does not create a private readiness backend');

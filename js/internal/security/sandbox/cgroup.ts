@@ -49,6 +49,13 @@ import type { ResourcePolicy } from './plan.ts';
 const CGROUP_MOUNT = '/sys/fs/cgroup';
 const CPU_PERIOD = 100000;
 const WANTED = ['cpu', 'memory', 'pids'];
+const W_OK = 2;
+function writableCgroupRoot(path: string): boolean {
+  return (
+    readFileSync(`${path}/cgroup.controllers`) !== null &&
+    Number(libc.symbols.access(cstr(path), W_OK)) === 0
+  );
+}
 /**
  * Resolve a cgroup v2 subtree fino may create leaf cgroups under, or `null` when
  * none is usable.
@@ -61,8 +68,9 @@ const WANTED = ['cpu', 'memory', 'pids'];
  * every other layout must be delegated explicitly via the environment variable.
  *
  * Returns `null` when neither source resolves — including when
- * `FINO_SANDBOX_CGROUP_ROOT` points at a path that has no `cgroup.controllers`
- * file (not a cgroup v2 mount) and when running unprivileged in a leaf cgroup.
+ * `FINO_SANDBOX_CGROUP_ROOT` points at an unwritable path or one with no
+ * `cgroup.controllers` file (not a cgroup v2 mount), and when running
+ * unprivileged in a leaf cgroup.
  * A non-null result is a directory path under which leaf cgroups can be created,
  * not a guarantee that any particular controller is delegated — check
  * `usableControllers()` for that.
@@ -81,7 +89,7 @@ const WANTED = ['cpu', 'memory', 'pids'];
 export function resolveDelegatedRoot(): string | null {
   const explicit = env.FINO_SANDBOX_CGROUP_ROOT;
   if (explicit !== undefined && explicit.length > 0) {
-    return readFileSync(`${explicit}/cgroup.controllers`) !== null ? explicit : null;
+    return writableCgroupRoot(explicit) ? explicit : null;
   }
   const self = readFileSync('/proc/self/cgroup');
   if (self === null) return null;
@@ -90,7 +98,7 @@ export function resolveDelegatedRoot(): string | null {
   if (line === undefined) return null;
   const path = line.slice('0::'.length).trim();
   if (path !== '/') return null;
-  return readFileSync(`${CGROUP_MOUNT}/cgroup.controllers`) !== null ? CGROUP_MOUNT : null;
+  return writableCgroupRoot(CGROUP_MOUNT) ? CGROUP_MOUNT : null;
 }
 function parseControllers(text: string | null): Set<string> {
   return new Set(

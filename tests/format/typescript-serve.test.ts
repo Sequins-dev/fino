@@ -19,7 +19,8 @@ async function tempDir(): Promise<string> {
 describe('fino:format/typescript transpileFiles', () => {
   it('serves TypeScript modules as JavaScript and refreshes after mtime changes', async (t) => {
     const root = await tempDir();
-    await writeText(`${root}/mod.ts`, 'export const value: number = 1;');
+    const modulePath = `${root}/mod.ts`;
+    await writeText(modulePath, 'export const value: number = 1;');
     const app = new App();
     const source = app.layer(transpileFiles(root, { prefix: '/src/' }));
     source.get('/src/:file').handle(() => new Response('fallback'));
@@ -28,7 +29,14 @@ describe('fino:format/typescript transpileFiles', () => {
     t.equal(first.headers.get('content-type'), 'text/javascript; charset=utf-8');
     t.ok((await first.text()).includes('value = 1'), 'type annotations are stripped');
 
-    await writeText(`${root}/mod.ts`, 'export const value: number = 2;');
+    const initialMtime = (await fs.lstat(modulePath)).mtimeMs;
+    await writeText(modulePath, 'export const value: number = 2;');
+    const changedTime = new Date(initialMtime + 2e3);
+    await fs.utimes(modulePath, changedTime, changedTime);
+    t.ok(
+      (await fs.lstat(modulePath)).mtimeMs !== initialMtime,
+      'fixture has a distinct modification time',
+    );
     const second = (await app.handle(new Request('http://local/src/mod.ts'))) as Response;
     t.ok((await second.text()).includes('value = 2'), 'mtime invalidates cache');
   });

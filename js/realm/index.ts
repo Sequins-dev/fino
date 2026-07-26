@@ -57,6 +57,7 @@ import { serialize as _ser } from 'internal:serializer';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
+import { registerShutdownHook } from '../internal/shutdown.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
@@ -2529,6 +2530,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   #scheduledOpts: RealmOptions | null = null;
   /** Import rules rebound to a replacement scheduled watch port. @internal */
   #scheduledRules: ImportRule[] = [];
+  /** Removes this realm from its owning workload's shutdown stack. @internal */
+  #scheduledShutdownRegistration: { dispose(): void } | null = null;
   /** Pending spawn for remote realms; resolves to childPortId after SPAWN_ACK. */
   /**
    * Private property `#spawnPromise` used by `Realm`.
@@ -2779,6 +2782,11 @@ export class Realm<F extends RealmFn = RealmFn> {
       }
     })();
   }
+  /** Stop retaining this realm in its owning workload's shutdown stack. @internal */
+  #disposeScheduledShutdownRegistration(): void {
+    this.#scheduledShutdownRegistration?.dispose();
+    this.#scheduledShutdownRegistration = null;
+  }
 
   /**
    * Create a child realm and its parent-side communication port.
@@ -2897,6 +2905,11 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
       this.#scheduledCompletion = this.#startScheduledRealm(opts, serializedRules, rules);
+      this.#scheduledShutdownRegistration = registerShutdownHook(() => this.terminate());
+      void this.#scheduledCompletion.then(
+        () => this.#disposeScheduledShutdownRegistration(),
+        () => this.#disposeScheduledShutdownRegistration(),
+      );
     } else {
       this.#kind = 'embedded';
       let parentPort: MessagePort;
@@ -3233,6 +3246,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   ): void {
     this.#watchTerminated = true;
     if (this.#kind === 'scheduled') {
+      this.#disposeScheduledShutdownRegistration();
       this.port.postMessage({ __terminate: true });
     } else if (this.#kind === 'remote') {
       this.port.postMessage({ __terminate: true });
