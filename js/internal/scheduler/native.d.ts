@@ -42,11 +42,11 @@ export function takeScheduledRealmStatus(handle: number): {
 };
 export function closeScheduledRealm(handle: number): void;
 
-export function createReactorQueue(handles: number[]): {
+export function createReactorQueue(): {
   handle: number;
-  owners: number[];
   controlFd: number;
 };
+export function submitReactorWorkload(queue: number, workload: number): number;
 export function createReactorThread(queue: number): {
   handle: number;
   worker: number;

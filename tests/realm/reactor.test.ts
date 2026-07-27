@@ -28,6 +28,13 @@ describe('Reactor scheduler native surface', () => {
       t.equal(name in schedulerNative, false, `${name} is not exported`);
     }
   });
+  it('exposes explicit workload submission for an initially empty pool', (t) => {
+    t.equal(
+      'submitReactorWorkload' in schedulerNative,
+      true,
+      'workloads are submitted separately from queue construction',
+    );
+  });
 });
 
 describe('Reactor-pooled Realm basics', () => {

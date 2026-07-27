@@ -16,6 +16,7 @@ import {
   createReactorQueue,
   createReactorThread,
   signalReactorOwner,
+  submitReactorWorkload,
   takeReactorEvents,
 } from 'internal:scheduler-native';
 import { Isolate } from './isolate.ts';
@@ -67,24 +68,28 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
     throw new Error('the process scheduler must run in the main TypeScript realm');
   }
 
-  const isolates = inputs.map(() => new Isolate(entryPath));
-  const isolateInfo = isolates.map((isolate) => ({
-    handle: isolate.nativeHandle,
-    wakeFd: isolate.wakeFd,
-  }));
-  const queue = createReactorQueue(isolateInfo.map((isolate) => isolate.handle));
+  const queue = createReactorQueue();
   const requestedThreads = Math.floor(
     options.threads ?? Math.max(1, navigator.hardwareConcurrency || 1),
   );
   const threadCount = Math.max(1, requestedThreads);
   const threads: Array<ReturnType<typeof createReactorThread>> = [];
+  for (let index = 0; index < threadCount; index++) {
+    threads.push(createReactorThread(queue.handle));
+  }
+  const isolates = inputs.map(() => new Isolate(entryPath));
+  const isolateInfo = isolates.map((isolate) => ({
+    handle: isolate.nativeHandle,
+    wakeFd: isolate.wakeFd,
+  }));
+  const owners = isolateInfo.map(({ handle }) => submitReactorWorkload(queue.handle, handle));
   const values = new Array<T>(inputs.length);
-  const positions = new Map(queue.owners.map((owner, position) => [owner, position]));
-  const initialOwners = new Set(queue.owners);
+  const positions = new Map(owners.map((owner, position) => [owner, position]));
+  const initialOwners = new Set(owners);
   const lastWorkers = new Map<number, number>();
   const wakeArmed = new Set<number>();
   let stopped = false;
-  let remaining = queue.owners.length;
+  let remaining = owners.length;
   let workloadSwitches = 0;
   let workloadMigrations = 0;
   let schedulerReadinessTurns = 0;
@@ -95,7 +100,7 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
   const signal = (owner: number): void => {
     if (!stopped) signalReactorOwner(owner);
   };
-  const stopReadiness = queue.owners.map((owner) => readiness.listen(owner, () => signal(owner)));
+  const stopReadiness = owners.map((owner) => readiness.listen(owner, () => signal(owner)));
   const armWorkloadWake = (owner: number): void => {
     if (stopped || wakeArmed.has(owner)) return;
     const position = positions.get(owner);
@@ -108,10 +113,7 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
       armWorkloadWake(owner);
     });
   };
-  for (const owner of queue.owners) armWorkloadWake(owner);
-  for (let index = 0; index < threadCount; index++) {
-    threads.push(createReactorThread(queue.handle));
-  }
+  for (const owner of owners) armWorkloadWake(owner);
 
   try {
     while (remaining > 0) {

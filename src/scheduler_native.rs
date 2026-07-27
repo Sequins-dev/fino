@@ -593,7 +593,7 @@ struct PoolShared {
 }
 
 impl PoolShared {
-    fn new(parked: HashMap<u32, PoolItem>) -> Self {
+    fn new() -> Self {
         let mut fds = [-1; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         for fd in fds {
@@ -601,8 +601,8 @@ impl PoolShared {
                 libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
             }
         }
-        let mut inner = PoolSharedInner {
-            parked,
+        let inner = PoolSharedInner {
+            parked: HashMap::new(),
             events: VecDeque::new(),
             ready: BinaryHeap::new(),
             priorities: HashMap::new(),
@@ -611,15 +611,36 @@ impl PoolShared {
             shutdown: false,
             next_worker: 0,
         };
-        for owner in inner.parked.keys().copied().collect::<Vec<_>>() {
-            Self::signal_inner(&mut inner, owner);
-        }
         Self {
             inner: Mutex::new(inner),
             changed: Condvar::new(),
             wake_read: fds[0],
             wake_write: fds[1],
         }
+    }
+
+    fn submit(self: &Arc<Self>, workload: Workload) -> u32 {
+        let owner = workload.owner;
+        owner_pools()
+            .lock()
+            .unwrap()
+            .insert(owner, Arc::downgrade(self));
+        let mut inner = self.inner.lock().unwrap();
+        debug_assert!(!inner.shutdown, "cannot submit work to a stopped reactor");
+        debug_assert!(
+            !inner.parked.contains_key(&owner) && !inner.active.contains(&owner),
+            "workload {owner} is already in the reactor"
+        );
+        inner.parked.insert(
+            owner,
+            PoolItem {
+                workload: TransferWorkload(workload),
+            },
+        );
+        Self::signal_inner(&mut inner, owner);
+        drop(inner);
+        self.changed.notify_all();
+        owner
     }
 
     fn signal_inner(inner: &mut PoolSharedInner, owner: u32) {
@@ -1111,19 +1132,7 @@ fn create_scheduled_realm(
             realms.len() - 1
         }
     };
-    {
-        pool.inner.lock().unwrap().parked.insert(
-            owner,
-            PoolItem {
-                workload: TransferWorkload(workload),
-            },
-        );
-        owner_pools()
-            .lock()
-            .unwrap()
-            .insert(owner, Arc::downgrade(&pool));
-        pool.signal(owner);
-    }
+    pool.submit(workload);
     let result = v8::Object::new(scope);
     for (name, value) in [
         (
@@ -1313,51 +1322,11 @@ fn close_scheduled_realm(
 
 fn create_reactor_queue(
     scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
+    _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let Ok(handles) = v8::Local::<v8::Array>::try_from(args.get(0)) else {
-        throw_error(scope, "createReactorQueue: handles must be an array");
-        return;
-    };
-    if handles.length() == 0 {
-        throw_error(
-            scope,
-            "createReactorQueue: at least one workload is required",
-        );
-        return;
-    }
-    let mut parked = HashMap::new();
-    let mut owners = Vec::new();
-    for index in 0..handles.length() {
-        let handle = handles
-            .get_index(scope, index)
-            .and_then(|value| value.uint32_value(scope))
-            .unwrap_or(u32::MAX) as usize;
-        let workload = match take_workload(handle) {
-            Ok(workload) => workload,
-            Err(error) => {
-                throw_error(scope, &format!("createReactorQueue: {error}"));
-                return;
-            }
-        };
-        owners.push(workload.owner);
-        parked.insert(
-            workload.owner,
-            PoolItem {
-                workload: TransferWorkload(workload),
-            },
-        );
-    }
-
-    let shared = Arc::new(PoolShared::new(parked));
-    {
-        *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
-        let mut pools = owner_pools().lock().unwrap();
-        for owner in &owners {
-            pools.insert(*owner, Arc::downgrade(&shared));
-        }
-    }
+    let shared = Arc::new(PoolShared::new());
+    *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
     let control_fd = shared.wake_read;
     let handle = REACTOR_QUEUES.with(|queues| {
         let mut queues = queues.borrow_mut();
@@ -1374,23 +1343,49 @@ fn create_reactor_queue(
         }
     });
     let result = v8::Object::new(scope);
-    let owners_array = v8::Array::new(scope, owners.len() as i32);
-    for (index, owner) in owners.into_iter().enumerate() {
-        let owner = v8::Integer::new_from_unsigned(scope, owner);
-        owners_array.set_index(scope, index as u32, owner.into());
-    }
     for (name, value) in [
         (
             "handle",
             v8::Integer::new_from_unsigned(scope, handle as u32).into(),
         ),
-        ("owners", owners_array.into()),
         ("controlFd", v8::Integer::new(scope, control_fd).into()),
     ] {
         let key = v8::String::new(scope, name).unwrap();
         result.set(scope, key.into(), value);
     }
     rv.set(result.into());
+}
+
+fn submit_reactor_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let shared = REACTOR_QUEUES.with(|queues| {
+        queues
+            .borrow()
+            .get(queue_handle)
+            .and_then(Option::as_ref)
+            .cloned()
+    });
+    let Some(shared) = shared else {
+        throw_error(
+            scope,
+            &format!("submitReactorWorkload: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    let workload_handle = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let workload = match take_workload(workload_handle) {
+        Ok(workload) => workload,
+        Err(error) => {
+            throw_error(scope, &format!("submitReactorWorkload: {error}"));
+            return;
+        }
+    };
+    let owner = shared.submit(workload);
+    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
 }
 
 fn create_reactor_thread(
@@ -1876,6 +1871,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "takeScheduledRealmStatus",
         "closeScheduledRealm",
         "createReactorQueue",
+        "submitReactorWorkload",
         "createReactorThread",
         "closeReactorThread",
         "signalReactorOwner",
@@ -1926,6 +1922,7 @@ fn eval_steps<'a>(
     set_fn!("takeScheduledRealmStatus", take_scheduled_realm_status);
     set_fn!("closeScheduledRealm", close_scheduled_realm);
     set_fn!("createReactorQueue", create_reactor_queue);
+    set_fn!("submitReactorWorkload", submit_reactor_workload);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("closeReactorThread", close_reactor_thread);
     set_fn!("signalReactorOwner", signal_reactor_owner);
@@ -1946,4 +1943,37 @@ fn eval_steps<'a>(
     set_fn!("routeProcessReadiness", route_process_readiness);
     set_fn!("takeSharedLoopEvents", take_shared_loop_events);
     Some(v8::undefined(scope).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn empty_pool_waits_for_work() {
+        let pool = Arc::new(PoolShared::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_pool = Arc::clone(&pool);
+        let worker_stop = Arc::clone(&stop);
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            result_tx
+                .send(worker_pool.claim(None, &worker_stop, CurrentState::Parked))
+                .unwrap();
+        });
+
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(10)).is_err(),
+            "an empty pool must not claim an initial workload"
+        );
+        stop.store(true, Ordering::Release);
+        pool.changed.notify_all();
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Claim::Shutdown
+        ));
+        worker.join().unwrap();
+    }
 }
