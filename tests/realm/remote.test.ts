@@ -4,10 +4,11 @@
 import { after, describe, it } from 'fino:test/test';
 import { Process, cwd, execPath } from 'fino:process';
 import { Facade, ImportMap, Realm, SystemDnsConfig, SystemNetConfig } from 'fino:realm';
-import { startCluster, leaveCluster } from 'fino:cluster';
+import { leaveCluster } from 'fino:cluster';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
+import { startClusterOnAvailablePort } from '../cluster/test-helpers.ts';
 import type echoFn from './fixtures/echo-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
 import type facadeCallFn from './fixtures/facade-call.ts';
@@ -24,9 +25,6 @@ function fixture(name: string): string {
 }
 function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
   return new TextDecoder().decode(b);
-}
-function randomPort(): number {
-  return 34e3 + Math.floor(Math.random() * 5e3);
 }
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -76,14 +74,12 @@ let sharedClusterStarted = false;
 async function ensureRemoteWorker(): Promise<boolean> {
   if (!quicAvailable || !h3Available) return false;
   if (sharedWorker !== null) return true;
-  const port = randomPort();
-  await withTimeout(
-    startCluster({
+  const port = await startClusterOnAvailablePort(
+    (port) => ({
       port,
       nodeId: `realm-remote-seed-${port}`,
       tls: clusterTls,
     }),
-    2e3,
     'startCluster',
   );
   sharedClusterStarted = true;

@@ -3,7 +3,7 @@
  */
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Watcher } from 'fino:file/watch';
+import { Watcher, type WatchEvent } from 'fino:file/watch';
 const TEST_DIR = '/tmp/fino-watch-test-' + Math.floor(Math.random() * 1e6);
 const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> =>
   fs.writeFile(path, new TextEncoder().encode(text));
@@ -43,6 +43,31 @@ async function collectEvents(watcher: Watcher, n: number, timeoutMs = 2e3): Prom
     events.push(result.value);
   }
   return events;
+}
+/** Wait for the first event matching `check`, ignoring unrelated native notes. */
+async function waitForEvent(
+  watcher: Watcher,
+  check: (event: WatchEvent) => boolean,
+  timeoutMs = 2e3,
+): Promise<WatchEvent | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  const iter = watcher[Symbol.asyncIterator]();
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    let timeoutId = 0;
+    const result = await Promise.race([
+      iter.next().then((event) => {
+        clearTimeout(timeoutId);
+        return event;
+      }),
+      new Promise<undefined>((resolve) => {
+        timeoutId = setTimeout(() => resolve(undefined), remaining);
+      }),
+    ]);
+    if (result === undefined || result.done) return undefined;
+    if (check(result.value)) return result.value;
+  }
+  return undefined;
 }
 // ---------------------------------------------------------------------------
 // Test suite
@@ -92,13 +117,9 @@ describe('Watcher', () => {
     const watcher = new Watcher();
     watcher.watch(path);
     await fs.unlink(path);
-    const events = await collectEvents(watcher, 1);
+    const event = await waitForEvent(watcher, (event) => event.type === 'delete');
     watcher.close();
-    t.ok(events.length >= 1, 'got at least one event');
-    t.ok(
-      events.some((e) => e.type === 'delete'),
-      'got a delete event',
-    );
+    t.ok(event !== undefined, 'got a delete event');
   });
   it('detects new files in a watched directory', async (t) => {
     const dir = TEST_DIR + '/dir-watch';
