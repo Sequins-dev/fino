@@ -1477,68 +1477,6 @@ fn close_reactor_thread(
     thread.shutdown();
 }
 
-fn add_queue_workload(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let workload_handle = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let workload = match take_workload(workload_handle) {
-        Ok(workload) => workload,
-        Err(error) => {
-            throw_error(scope, &format!("addReactorWorkload: {error}"));
-            return;
-        }
-    };
-    let owner = workload.owner;
-    let result = REACTOR_QUEUES.with(|queues| {
-        let queues = queues.borrow();
-        let queue = queues
-            .get(queue_handle)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| format!("invalid reactor queue {queue_handle}"))?;
-        queue.inner.lock().unwrap().parked.insert(
-            owner,
-            PoolItem {
-                workload: TransferWorkload(workload),
-            },
-        );
-        owner_pools()
-            .lock()
-            .unwrap()
-            .insert(owner, Arc::downgrade(queue));
-        queue.signal(owner);
-        Ok::<_, String>(())
-    });
-    if let Err(error) = result {
-        throw_error(scope, &format!("addReactorWorkload: {error}"));
-        return;
-    }
-    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
-}
-
-fn signal_reactor_workload(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
-    let result = REACTOR_QUEUES.with(|queues| {
-        let queues = queues.borrow();
-        let queue = queues
-            .get(queue_handle)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| format!("invalid reactor queue {queue_handle}"))?;
-        queue.signal(owner);
-        Ok::<_, String>(())
-    });
-    if let Err(error) = result {
-        throw_error(scope, &format!("signalReactorWorkload: {error}"));
-    }
-}
-
 fn signal_reactor_owner(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1887,14 +1825,6 @@ fn route_process_readiness(
     }
 }
 
-fn route_shared_loop_event(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    rv: v8::ReturnValue,
-) {
-    route_process_readiness(scope, args, rv);
-}
-
 fn take_shared_loop_events(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1948,8 +1878,6 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "createReactorQueue",
         "createReactorThread",
         "closeReactorThread",
-        "addReactorWorkload",
-        "signalReactorWorkload",
         "signalReactorOwner",
         "takeReactorEvents",
         "closeReactorQueue",
@@ -1963,7 +1891,6 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "registerReactorWake",
         "takeSharedReadinessChanges",
         "routeProcessReadiness",
-        "routeSharedLoopEvent",
         "takeSharedLoopEvents",
     ];
     let export_names: Vec<v8::Local<v8::String>> = names
@@ -2001,8 +1928,6 @@ fn eval_steps<'a>(
     set_fn!("createReactorQueue", create_reactor_queue);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("closeReactorThread", close_reactor_thread);
-    set_fn!("addReactorWorkload", add_queue_workload);
-    set_fn!("signalReactorWorkload", signal_reactor_workload);
     set_fn!("signalReactorOwner", signal_reactor_owner);
     set_fn!("takeReactorEvents", take_reactor_events);
     set_fn!("closeReactorQueue", close_reactor_queue);
@@ -2019,7 +1944,6 @@ fn eval_steps<'a>(
     set_fn!("registerReactorWake", register_reactor_wake);
     set_fn!("takeSharedReadinessChanges", take_readiness_changes);
     set_fn!("routeProcessReadiness", route_process_readiness);
-    set_fn!("routeSharedLoopEvent", route_shared_loop_event);
     set_fn!("takeSharedLoopEvents", take_shared_loop_events);
     Some(v8::undefined(scope).into())
 }

@@ -6,11 +6,30 @@
  */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
+import * as schedulerNative from 'internal:scheduler-native';
 // Import fixture types so the Realm<F> generic can connect call() args/return.
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
 import type asyncFn from './fixtures/async-fn.ts';
+
+describe('Reactor scheduler native surface', () => {
+  it('does not expose retired compatibility operations', (t) => {
+    for (const name of [
+      'sharedLoopDescriptor',
+      'pollSharedReactor',
+      'registerSharedPoll',
+      'takeSharedPoll',
+      'cancelSharedPoll',
+      'addReactorWorkload',
+      'signalReactorWorkload',
+      'routeSharedLoopEvent',
+    ]) {
+      t.equal(name in schedulerNative, false, `${name} is not exported`);
+    }
+  });
+});
+
 describe('Reactor-pooled Realm basics', () => {
   it('runs a pooled realm to completion', async (t) => {
     const realm = new Realm({

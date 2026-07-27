@@ -74,7 +74,7 @@ import {
   currentWorkloadOwner,
   registerProcessReadiness,
   registerProcessPersistentReadiness,
-  routeSharedLoopEvent,
+  routeProcessReadiness,
   takeSharedLoopEvents,
   usesProcessReadiness,
 } from 'internal:scheduler-native';
@@ -209,7 +209,7 @@ function _dispatch(ev: LoopEvent): void {
   const owner = taskOwner(token);
   const localId = owner === 0 ? ev.ident : taskLocalId(token);
   if (owner !== _workloadOwner) {
-    routeSharedLoopEvent(
+    routeProcessReadiness(
       owner,
       serialize({
         ...ev,

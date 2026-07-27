@@ -52,8 +52,6 @@ export function createReactorThread(queue: number): {
   worker: number;
 };
 export function closeReactorThread(thread: number): void;
-export function addReactorWorkload(queue: number, workload: number): number;
-export function signalReactorWorkload(queue: number, owner: number): void;
 export function signalReactorOwner(owner: number): void;
 export function takeReactorEvents(queue: number): Array<{
   kind: 'activated' | 'settled' | 'error';
@@ -90,5 +88,4 @@ export type ReadinessChangeTuple = [
 ];
 export function takeSharedReadinessChanges(): ReadinessChangeTuple[];
 export function routeProcessReadiness(owner: number, event: Uint8Array, notifyPool?: boolean): void;
-export function routeSharedLoopEvent(owner: number, event: Uint8Array): void;
 export function takeSharedLoopEvents(owner: number): Uint8Array[];

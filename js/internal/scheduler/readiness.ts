@@ -15,7 +15,7 @@ import {
   closeReactorThread,
   createReactorQueue,
   createReactorThread,
-  signalReactorWorkload,
+  signalReactorOwner,
   takeReactorEvents,
 } from 'internal:scheduler-native';
 import { Isolate } from './isolate.ts';
@@ -93,7 +93,7 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
   let loopTurns = 0;
 
   const signal = (owner: number): void => {
-    if (!stopped) signalReactorWorkload(queue.handle, owner);
+    if (!stopped) signalReactorOwner(owner);
   };
   const stopReadiness = queue.owners.map((owner) => readiness.listen(owner, () => signal(owner)));
   const armWorkloadWake = (owner: number): void => {
