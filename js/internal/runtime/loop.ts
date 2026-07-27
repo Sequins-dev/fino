@@ -1,9 +1,12 @@
 /**
  * internal:runtime/loop — global event loop singleton.
  *
- * A single kqueue/io_uring backend handle is created when this module is
- * loaded and lives for the process lifetime. All I/O and timer operations
- * register on that single handle.
+ * Ordinary realms on one OS thread attach to a thread backend. Process-pool
+ * workloads instead send scalar registrations to the main TypeScript
+ * orchestration realm, which owns the process backend. Each task captures its
+ * realm owner in scalar user data. Native routing returns readiness to that
+ * owner, then this module resolves the realm-local promise and leaves actual
+ * reads, writes, and buffer ownership in the workload's TypeScript.
  *
  *
  * ## API
@@ -65,7 +68,16 @@
  * @internal
  */
 import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
+import { deserialize, serialize } from 'internal:serializer';
 import * as backend from 'internal:runtime/loop-backend';
+import {
+  currentWorkloadOwner,
+  registerProcessReadiness,
+  registerProcessPersistentReadiness,
+  routeProcessReadiness,
+  takeSharedLoopEvents,
+  usesProcessReadiness,
+} from 'internal:scheduler-native';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -77,6 +89,8 @@ interface LoopEvent {
   fflags?: number;
   data?: number;
   res?: number;
+  udata?: number;
+  routed?: boolean;
 }
 /** Options accepted by spin() and run(). */
 interface SpinOptions {
@@ -136,6 +150,7 @@ const _removeTimer = backend.removeTimer as ((raw: object, id: number) => void) 
 const _addProc = backend.addProc as
   | ((raw: object, pid: number, ident?: number) => boolean)
   | undefined;
+const _removeProc = backend.removeProc as ((raw: object, pid: number) => void) | undefined;
 const _addVnode = backend.addVnode as
   | ((raw: object, fd: number, fflags: number, ident?: number) => void)
   | undefined;
@@ -145,12 +160,17 @@ const _addSignal = backend.addSignal as
 const _addPersistentRead = backend.addPersistentRead as
   | ((raw: object, fd: number, ident?: number) => void)
   | undefined;
-const _wait = backend.wait as (raw: object, timeoutMs: number) => LoopEvent[];
+const _wait = backend.wait as (raw: object, timeoutMs: number | null) => LoopEvent[];
 const _pollFd = backend.pollFd as ((raw: object) => number) | undefined;
+const _flush = backend.flush as ((raw: object) => number) | undefined;
 // ---------------------------------------------------------------------------
-// Singleton state — created at module load, lives for the process lifetime
+// Singleton state — one local backend, omitted for delegated readiness
 // ---------------------------------------------------------------------------
-const _raw = backend.create() as object;
+const _processReadiness = usesProcessReadiness();
+let _raw: object | undefined = _processReadiness ? undefined : (backend.create() as object);
+function rawBackend(): object {
+  return (_raw ??= backend.create() as object);
+}
 const _reads: Map<number, (avail: number) => void> = new Map();
 const _writes: Map<number, () => void> = new Map();
 const _timers: Map<number, () => void> = new Map();
@@ -161,13 +181,52 @@ const _signals: Map<number, () => void> = new Map();
 // Wake sources: persistent-read fds that fire when written to, used to
 // interrupt the kqueue sleep without counting as live I/O for alive().
 const _wakeSources: Set<number> = new Set();
+const _wakeSourceCallbacks: Map<number, () => void> = new Map();
 let _nextTimerId = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters = 0;
+const TASK_TOKEN_BASE = 4294967296;
+const _workloadOwner = currentWorkloadOwner();
+const EV_ADD_ENABLE_ONESHOT = 1 | 4 | 16;
+const EV_ADD_ENABLE_CLEAR = 1 | 4 | 32;
+const EV_DELETE = 2;
+const _foreignReadyOwners: number[] = [];
+function taskToken(fd: number): number {
+  return _workloadOwner === 0 ? fd : _workloadOwner * TASK_TOKEN_BASE + (fd >>> 0);
+}
+function taskOwner(token: number): number {
+  return Math.floor(token / TASK_TOKEN_BASE);
+}
+function taskLocalId(token: number): number {
+  const unsigned = token % TASK_TOKEN_BASE;
+  return unsigned > 2147483647 ? unsigned - TASK_TOKEN_BASE : unsigned;
+}
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 function _dispatch(ev: LoopEvent): void {
+  const token = ev.udata ?? ev.ident;
+  const owner = taskOwner(token);
+  const localId = owner === 0 ? ev.ident : taskLocalId(token);
+  if (owner !== _workloadOwner) {
+    routeProcessReadiness(
+      owner,
+      serialize({
+        ...ev,
+        ident: localId,
+        udata: token,
+        routed: true,
+      })[0]!,
+    );
+    if (!_foreignReadyOwners.includes(owner)) _foreignReadyOwners.push(owner);
+    return;
+  }
+  if (owner !== 0) {
+    ev = {
+      ...ev,
+      ident: localId,
+    };
+  }
   if (ev.filter === EVFILT_READ) {
     // Check _reads first: a specific resolver takes priority over a generic
     // wake source even if the fd numbers happen to collide (e.g. due to OS
@@ -181,6 +240,10 @@ function _dispatch(ev: LoopEvent): void {
     } else if (_wakeSources.has(ev.ident)) {
       // Pure wake source — fires to interrupt the kqueue sleep so the Rust
       // layer can drain async completions on the next pump_and_checkpoint.
+      _wakeSourceCallbacks.get(ev.ident)?.();
+      if (ev.routed && _addPersistentRead) {
+        _addPersistentRead(rawBackend(), ev.ident, taskToken(ev.ident));
+      }
       return;
     }
   } else if (ev.filter === EVFILT_WRITE) {
@@ -222,6 +285,34 @@ function _dispatch(ev: LoopEvent): void {
     }
   }
 }
+/**
+ * Dispatch one scalar readiness completion harvested by the native reactor.
+ *
+ * Promise resolvers and all subsequent I/O remain in this realm; native code
+ * supplies only the owner-tagged readiness fields returned by the kernel.
+ *
+ * @internal
+ */
+export function _dispatchNativeEvent(
+  ident: number,
+  filter: number,
+  flags: number,
+  fflags: number,
+  data: number,
+  res: number,
+  udata: number,
+): void {
+  _dispatch({
+    ident,
+    filter,
+    flags,
+    fflags,
+    data,
+    res,
+    udata,
+    routed: true,
+  });
+}
 // ---------------------------------------------------------------------------
 // Runtime hooks — exported for internal/main.ts to drive the event loop
 // ---------------------------------------------------------------------------
@@ -243,10 +334,37 @@ function _dispatch(ev: LoopEvent): void {
  * const dispatched = loop.tick(0);
  * ```
  */
-export function tick(timeoutMs: number): number {
-  const events = _wait(_raw, timeoutMs);
+export function tick(timeoutMs: number | null): number {
+  const routed = takeSharedLoopEvents(_workloadOwner).map(
+    (event) => deserialize(event) as LoopEvent,
+  );
+  for (const ev of routed) _dispatch(ev);
+  const events = _processReadiness ? [] : _wait(rawBackend(), routed.length > 0 ? 0 : timeoutMs);
   for (const ev of events) _dispatch(ev);
-  return events.length;
+  return routed.length + events.length;
+}
+/**
+ * Return and remove the next isolate owner made runnable by a foreign event.
+ *
+ * A shared backend may be drained while a different workload is entered. The
+ * event is retained as scalar metadata by the native thread-local bridge; this
+ * queue tells the TypeScript scheduler which workload to enter next.
+ *
+ * @internal
+ */
+export function _takeForeignReadyOwner(): number {
+  return _foreignReadyOwners.shift() ?? -1;
+}
+/**
+ * Publish registrations queued by this isolate without consuming events.
+ *
+ * A shared-backend scheduler uses this at the quiescence boundary before it
+ * leaves an isolate, ensuring a sibling can wait on every parked workload.
+ *
+ * @internal
+ */
+export function _flushBackend(): number {
+  return _flush?.(rawBackend()) ?? 0;
 }
 /**
  * The pollable fd of this loop's backend, or `-1` when the backend has none.
@@ -265,7 +383,7 @@ export function tick(timeoutMs: number): number {
  * @internal
  */
 export function loopFd(): number {
-  return _pollFd?.(_raw) ?? -1;
+  return _raw === undefined ? -1 : (_pollFd?.(_raw) ?? -1);
 }
 /**
  * Reports whether the loop still has work that could settle, so the outer run
@@ -295,6 +413,19 @@ export function alive(): boolean {
     hasPendingV8Tasks() ||
     _atomicsWaiters > 0
   );
+}
+/**
+ * Report whether a scheduled realm needs occasional foreground-task polling.
+ *
+ * Readiness-backed handles wake their owner through the process reactor.
+ * V8 background tasks and `Atomics.waitAsync` have no pollable descriptor, so
+ * a reactor thread uses this bit to timed-wait and re-pump the same entered
+ * isolate without making unrelated I/O realms spin.
+ *
+ * @internal
+ */
+export function _schedulerPollingRequired(): boolean {
+  return hasPendingV8Tasks() || _atomicsWaiters > 0;
 }
 /**
  * Return a snapshot of the loop's live handle counts for diagnostics and tests.
@@ -389,12 +520,11 @@ export function _untrackAtomicsWaiter(): void {
  * Resolve the next time `fd` becomes readable, with the number of bytes
  * estimated to be available.
  *
- * The watch is one-shot: the resolver is removed as soon as the fd fires, so
- * call `readable()` again for each read. Registering a second `readable()` for
- * an fd that already has a pending read replaces the earlier resolver, which
- * is then never settled. The resolved count comes from kqueue's `ev.data` on
- * macOS; on io_uring/Linux the kernel does not report it and the promise
- * resolves with `0`. Use `removeRead()` to abandon a pending watch.
+ * The watch is one-shot: call `readable()` again for each read. Registering a
+ * second watch for the same descriptor replaces the earlier resolver. The
+ * thread reactor receives only the descriptor, interest, owner, and promise
+ * token. The subsequent read and all buffer ownership remain in this realm.
+ * Use `removeRead()` to abandon a pending watch.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';
@@ -406,16 +536,22 @@ export function _untrackAtomicsWaiter(): void {
 export function readable(fd: number): Promise<number> {
   return new Promise(function onReadable(resolve) {
     _reads.set(fd, resolve);
-    _addRead(_raw, fd, fd);
+    const token = taskToken(fd);
+    if (_processReadiness) {
+      registerProcessReadiness(fd, EVFILT_READ, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
+    } else {
+      _addRead(rawBackend(), fd, token);
+    }
   });
 }
 /**
  * Resolve the next time `fd` becomes writable.
  *
- * Like `readable()`, the watch is one-shot and re-registering for the same fd
- * replaces the previous resolver, which is then never settled. Typically used
- * to wait out `EAGAIN`/`EWOULDBLOCK` on a non-blocking socket before retrying
- * the write. Use `removeWrite()` to abandon a pending watch.
+ * Like `readable()`, the watch is one-shot and a second watch for the same
+ * descriptor replaces the first. Scheduler-hosted isolates delegate only this
+ * readiness wait; they still retry and perform the write themselves. It is
+ * typically used to wait out `EAGAIN`/`EWOULDBLOCK` on a non-blocking socket.
+ * Use `removeWrite()` to abandon a pending watch.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';
@@ -426,7 +562,12 @@ export function readable(fd: number): Promise<number> {
 export function writable(fd: number): Promise<void> {
   return new Promise(function onWritable(resolve) {
     _writes.set(fd, resolve);
-    _addWrite(_raw, fd, fd);
+    const token = taskToken(fd);
+    if (_processReadiness) {
+      registerProcessReadiness(fd, EVFILT_WRITE, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
+    } else {
+      _addWrite(rawBackend(), fd, token);
+    }
   });
 }
 /**
@@ -454,12 +595,20 @@ export function timeout(ms: number): CancelablePromise {
   const id = _nextTimerId++;
   const p = new Promise<void>(function onTimeout(resolve) {
     _timers.set(id, resolve);
-    _addTimer(_raw, id, ms);
+    if (_processReadiness) {
+      registerProcessReadiness(id, EVFILT_TIMER, EV_ADD_ENABLE_ONESHOT, 0, ms, taskToken(id));
+    } else {
+      _addTimer(rawBackend(), taskToken(id), ms);
+    }
   }) as CancelablePromise;
   p.cancel = function cancelTimeout() {
     if (!_timers.has(id)) return;
     _timers.delete(id);
-    if (_removeTimer) _removeTimer(_raw, id);
+    if (_processReadiness) {
+      registerProcessReadiness(id, EVFILT_TIMER, EV_DELETE, 0, 0, taskToken(id));
+    } else if (_removeTimer) {
+      _removeTimer(rawBackend(), taskToken(id));
+    }
   };
   return p;
 }
@@ -489,7 +638,11 @@ export function proc(pid: number): Promise<void> {
   return new Promise(function onProc(resolve) {
     // Register before calling addProc so the event can never be missed.
     _procs.set(pid, resolve);
-    const registered = _addProc(_raw, pid, pid);
+    if (_processReadiness) {
+      registerProcessReadiness(pid, EVFILT_PROC!, EV_ADD_ENABLE_ONESHOT, 0, 0, taskToken(pid));
+      return;
+    }
+    const registered = _addProc(rawBackend(), pid, taskToken(pid));
     if (registered === false) {
       // Process already exited — kevent rejected the filter.
       // Resolve immediately so the caller can reap the zombie with waitpid.
@@ -497,6 +650,16 @@ export function proc(pid: number): Promise<void> {
       resolve();
     }
   });
+}
+/** Cancel a pending process-exit watch without settling its promise. */
+export function removeProc(pid: number): void {
+  if (!_procs.has(pid)) return;
+  _procs.delete(pid);
+  if (_processReadiness) {
+    registerProcessReadiness(pid, EVFILT_PROC!, EV_DELETE, 0, 0, taskToken(pid));
+  } else if (_removeProc) {
+    _removeProc(rawBackend(), pid);
+  }
 }
 /**
  * Submit a generic io_uring async operation and resolve when it completes
@@ -524,11 +687,14 @@ export function proc(pid: number): Promise<void> {
 export function submit(submitter: (raw: object, id: number) => void): Promise<{
   res: number;
 }> {
+  if (_processReadiness) {
+    throw new Error('submit() is unavailable when the process reactor owns readiness');
+  }
   if (EVFILT_COMPLETION === null) throw new Error('submit() is not supported on this platform');
   const id = _nextCompletionId++;
   return new Promise(function onSubmit(resolve) {
     _completions.set(id, resolve);
-    submitter(_raw, id);
+    submitter(rawBackend(), taskToken(id));
   });
 }
 /**
@@ -547,14 +713,35 @@ export function submit(submitter: (raw: object, id: number) => void): Promise<{
  * import * as loop from 'internal:runtime/loop';
  *
  * // `fd` is the read end of a self-pipe written by a background thread.
- * loop.registerWakeSource(fd);
+ * loop.registerWakeSource(fd, drainCompletions);
  * ```
  */
-export function registerWakeSource(fd: number): void {
+export function registerWakeSource(fd: number, onWake?: () => void): void {
+  // The scheduler already watches this isolate's async-runtime wake fd and
+  // re-pumps the isolate when it fires. Registering it locally would create an
+  // unused second backend inside the parked isolate.
+  if (_processReadiness) return;
   _wakeSources.add(fd);
+  if (onWake) _wakeSourceCallbacks.set(fd, onWake);
+  else _wakeSourceCallbacks.delete(fd);
   if (_addPersistentRead) {
-    _addPersistentRead(_raw, fd, fd);
+    _addPersistentRead(rawBackend(), fd, taskToken(fd));
   }
+}
+/**
+ * Stop treating `fd` as a non-live persistent wake source.
+ *
+ * Removes both its optional callback and its backend read watch. Calls are
+ * idempotent, including when the realm delegates readiness and registration
+ * was therefore a no-op.
+ *
+ * @internal
+ */
+export function unregisterWakeSource(fd: number): void {
+  _wakeSources.delete(fd);
+  _wakeSourceCallbacks.delete(fd);
+  if (_processReadiness || _raw === undefined) return;
+  backend.removeRead(rawBackend(), fd);
 }
 /**
  * Abandon a pending `readable()` watch for `fd`.
@@ -572,7 +759,11 @@ export function registerWakeSource(fd: number): void {
  */
 export function removeRead(fd: number): void {
   _reads.delete(fd);
-  backend.removeRead(_raw, fd);
+  if (_processReadiness) {
+    registerProcessReadiness(fd, EVFILT_READ, EV_DELETE, 0, 0, taskToken(fd));
+  } else {
+    backend.removeRead(rawBackend(), fd);
+  }
 }
 /**
  * Abandon a pending `writable()` watch for `fd`.
@@ -589,7 +780,11 @@ export function removeRead(fd: number): void {
  */
 export function removeWrite(fd: number): void {
   _writes.delete(fd);
-  backend.removeWrite(_raw, fd);
+  if (_processReadiness) {
+    registerProcessReadiness(fd, EVFILT_WRITE, EV_DELETE, 0, 0, taskToken(fd));
+  } else {
+    backend.removeWrite(rawBackend(), fd);
+  }
 }
 /**
  * Register a persistent file/directory watch on `fd` (macOS only, via
@@ -621,7 +816,18 @@ export function vnode(
 ): void {
   if (_addVnode === undefined) throw new Error('vnode() is not supported on this platform');
   _vnodes.set(fd, callback);
-  _addVnode(_raw, fd, fflags, fd);
+  if (_processReadiness && EVFILT_VNODE !== null) {
+    registerProcessPersistentReadiness(
+      fd,
+      EVFILT_VNODE,
+      EV_ADD_ENABLE_CLEAR,
+      fflags,
+      0,
+      taskToken(fd),
+    );
+  } else {
+    _addVnode(rawBackend(), fd, fflags, taskToken(fd));
+  }
 }
 /**
  * Remove a persistent vnode watch previously registered with `vnode()`.
@@ -639,7 +845,11 @@ export function vnode(
 export function removeVnode(fd: number): void {
   if (!_vnodes.has(fd)) return;
   _vnodes.delete(fd);
-  if (backend.removeVnode) backend.removeVnode(_raw, fd);
+  if (_processReadiness && EVFILT_VNODE !== null) {
+    registerProcessPersistentReadiness(fd, EVFILT_VNODE, EV_DELETE, 0, 0, taskToken(fd));
+  } else if (backend.removeVnode) {
+    backend.removeVnode(rawBackend(), fd);
+  }
 }
 /**
  * Register a persistent watch for OS signal `signo` (kqueue native on macOS,
@@ -668,7 +878,18 @@ export function removeVnode(fd: number): void {
 export function signal(signo: number, callback: () => void): void {
   if (_addSignal === undefined) throw new Error('signal() is not supported on this platform');
   _signals.set(signo, callback);
-  _addSignal(_raw, signo);
+  if (_processReadiness && EVFILT_SIGNAL !== null) {
+    registerProcessPersistentReadiness(
+      signo,
+      EVFILT_SIGNAL,
+      EV_ADD_ENABLE_CLEAR,
+      0,
+      0,
+      taskToken(signo),
+    );
+  } else {
+    _addSignal(rawBackend(), signo, taskToken(signo));
+  }
 }
 /**
  * Remove a signal watch previously registered with `signal()` and restore the
@@ -688,7 +909,11 @@ export function signal(signo: number, callback: () => void): void {
 export function removeSignal(signo: number): void {
   if (!_signals.has(signo)) return;
   _signals.delete(signo);
-  if (backend.removeSignal) backend.removeSignal(_raw, signo);
+  if (_processReadiness && EVFILT_SIGNAL !== null) {
+    registerProcessPersistentReadiness(signo, EVFILT_SIGNAL, EV_DELETE, 0, 0, taskToken(signo));
+  } else if (backend.removeSignal) {
+    backend.removeSignal(rawBackend(), signo);
+  }
 }
 // ---------------------------------------------------------------------------
 // Synchronous spinning
@@ -758,15 +983,11 @@ export function spin<T>(promise: Promise<T>, options?: SpinOptions): T {
       // 2. Poll I/O. Block up to 50 ms when idle to avoid busy-spinning;
       //    10 ms when an abort signal could fire.
       const timeout = emptyTicks >= 3 ? (signal ? 10 : 50) : 0;
-      const events = _wait(_raw, timeout);
-      for (let i = 0; i < events.length; i++) {
-        const event = events[i];
-        if (event !== undefined) _dispatch(event);
-      }
+      const count = tick(timeout);
       // 3. Drain microtasks produced by I/O dispatch.
       drainMicrotasks();
       if (settled) break;
-      emptyTicks = events.length === 0 ? emptyTicks + 1 : 0;
+      emptyTicks = count === 0 ? emptyTicks + 1 : 0;
     }
   } finally {
     if (signal && onAbort) signal.removeEventListener('abort', onAbort);

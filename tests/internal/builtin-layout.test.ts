@@ -29,7 +29,6 @@ import 'fino:commands/repl';
 import 'fino:tty';
 import 'fino:tty/prompt';
 import 'fino:realm';
-import 'fino:realm/pool';
 import 'fino:realm/self';
 import 'fino:realm/messaging';
 import 'fino:module';

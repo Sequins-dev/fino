@@ -120,11 +120,14 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:loader-hooks",
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
+    (
+        "internal:scheduler-native",
+        BuiltinKind::Synthetic(crate::scheduler_native::create_module),
+    ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
     source_builtin!("fino:realm", "realm/index"),
     source_builtin!("fino:module", "module"),
-    source_builtin!("fino:realm/pool", "realm/pool"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
     source_builtin!(
@@ -549,6 +552,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:data/parquet/writer", "data/parquet/writer"),
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
+    source_builtin!("fino:format/protobuf", "format/protobuf"),
     source_builtin!("internal:format/thrift", "internal/format/thrift/index"),
     source_builtin!(
         "internal:format/thrift/types",
@@ -593,6 +597,16 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:task/durable", "task/durable"),
     // orchestrator + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
+    source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
+    source_builtin!(
+        "internal:scheduler/bootstrap",
+        "internal/scheduler/bootstrap"
+    ),
+    source_builtin!("internal:scheduler/reactor", "internal/scheduler/reactor"),
+    source_builtin!(
+        "internal:scheduler/readiness",
+        "internal/scheduler/readiness"
+    ),
     source_builtin!("internal:jobs/cron", "internal/jobs/cron"),
     source_builtin!("internal:jobs/store", "internal/jobs/store"),
     source_builtin!("internal:jobs/runner", "internal/jobs/runner"),

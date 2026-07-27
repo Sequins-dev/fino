@@ -316,7 +316,6 @@ const _pendingPtr = Pointer.addr(_pendingBuf);
 const _eventPtr = Pointer.addr(_eventBuf);
 const _zeroTsPtr = Pointer.addr(_zeroTs);
 const _tsPtr = Pointer.addr(_tsBuf);
-const _errnoPtr = lib.symbols.__error();
 const U32_FACTOR = 4294967296;
 // ---------------------------------------------------------------------------
 // Struct helpers
@@ -405,7 +404,7 @@ function makeTimespec(ms: number | null): ArrayBuffer | null {
   return _tsBuf;
 }
 function errno(): number {
-  return Pointer.readI32(_errnoPtr, 0);
+  return Pointer.readI32(lib.symbols.__error(), 0);
 }
 // ---------------------------------------------------------------------------
 // kevent wrapper — registers changes and/or waits for events
@@ -448,7 +447,9 @@ function kevent(
       // ENOENT: filter already removed (fd closed, kernel auto-removed it).
       // EBADF: fd closed before EV_DELETE was processed. Both are benign.
       if (ev.data === ENOENT || ev.data === EBADF) continue;
-      throw new Error(`kevent change error: errno=${ev.data} for ident=${ev.ident}`);
+      throw new Error(
+        `kevent change error: errno=${ev.data} ident=${ev.ident} filter=${ev.filter} flags=${ev.flags} udata=${ev.udata}`,
+      );
     }
     events.push(ev);
   }
@@ -473,10 +474,10 @@ function registerChanges(kqFd: number, changeBuf: ArrayBuffer, nChanges: number)
 // Public API
 // ---------------------------------------------------------------------------
 /**
- * Create a new kqueue event loop handle.
+ * Get or create the current thread's kqueue event loop handle.
  *
- * The returned handle owns a kqueue fd and must be passed to `destroy` when the
- * backend is torn down.
+ * Reactor workloads attach to one native-retained descriptor. Standalone
+ * callers retain the original private-handle behavior.
  *
  * ```typescript no_run
  * import * as kqueue from 'internal:runtime/kqueue';
@@ -490,9 +491,8 @@ export function create(): KqueueLoop {
   return { fd };
 }
 /**
- * The kqueue fd itself. A kqueue fd polls readable when it has pending
- * events, so a parent loop can watch it to wake on this loop's I/O and
- * timer activity.
+ * The thread reactor's kqueue fd. It becomes readable when registered work is
+ * ready; realms never watch one another's loop descriptor.
  *
  * ```typescript no_run
  * import * as kqueue from 'internal:runtime/kqueue';
@@ -663,6 +663,21 @@ export function poll(loop: KqueueLoop): Kevent[] {
   return kevent(loop.fd, null, 0, makeTimespec(0));
 }
 /**
+ * Submit this isolate's queued changelist without harvesting events.
+ *
+ * Shared-backend schedulers call this before parking an isolate so registrations
+ * created by its promises are visible while a sibling isolate is entered.
+ *
+ * @internal
+ */
+export function flush(loop: KqueueLoop): number {
+  const changes = _pendingCount;
+  if (changes === 0) return 0;
+  _pendingCount = 0;
+  registerChanges(loop.fd, _pendingBuf, changes);
+  return changes;
+}
+/**
  * Blocking wait — blocks until events arrive or `timeoutMs` elapses.
  * Flushes any pending add/remove changes in the same syscall.
  * Pass `null` to block indefinitely.
@@ -735,10 +750,10 @@ const SIG_DFL = 0;
  * kqueue.addSignal(loop, 15);
  * ```
  */
-export function addSignal(loop: KqueueLoop, signo: number): void {
+export function addSignal(loop: KqueueLoop, signo: number, userData: number = signo): void {
   // Suppress default disposition so the process is not killed.
   lib.symbols.signal(signo, SIG_IGN);
-  writeKevent(_changeView, 0, signo, EVFILT_SIGNAL, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, signo);
+  writeKevent(_changeView, 0, signo, EVFILT_SIGNAL, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, userData);
   registerChanges(loop.fd, _changeBuf, 1);
 }
 /**

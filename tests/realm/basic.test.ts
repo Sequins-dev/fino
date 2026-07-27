@@ -3,12 +3,20 @@
  */
 import { describe, it } from 'fino:test/test';
 import { Realm, ImportMap } from 'fino:realm';
+import { loopFd } from 'internal:runtime/loop';
 import type realmDataFn from './fixtures/realm-data-fn.ts';
+import type loopFdFn from './fixtures/loop-fd-fn.ts';
 describe('Realm lifecycle', () => {
   it('creates and runs a child realm that exits naturally', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
     await realm.run();
     t.ok(true, 'child realm exited');
+  });
+  it('uses the thread reactor directly for parent and child realms', async (t) => {
+    const realm = new Realm<typeof loopFdFn>({
+      entry: new URL('./fixtures/loop-fd-fn.ts', import.meta.url).pathname,
+    });
+    t.equal(await realm.call(), loopFd(), 'parent and child are peers on one backend');
   });
   it('realm.terminate() stops a long-running realm', async (t) => {
     const realm = new Realm({
@@ -35,7 +43,6 @@ describe('Realm lifecycle', () => {
   });
   it('keeps RealmOptions.data separate from OTLP endpoint metadata', async (t) => {
     const realm = new Realm<typeof realmDataFn>({
-      thread: true,
       entry: new URL('./fixtures/realm-data-fn.ts', import.meta.url).pathname,
       data: { role: 'worker' },
       otlpEndpoint: 'http://collector.example:4318/base',

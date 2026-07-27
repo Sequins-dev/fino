@@ -72,7 +72,7 @@ router, and streaming response — is built into the runtime.
 Fino builds from source with a Rust toolchain:
 
 ```sh
-git clone https://github.com/Qard/fino.git
+git clone https://github.com/Sequins-dev/fino.git
 cd fino
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
@@ -165,4 +165,4 @@ application surface, and expect low-level internals to change as the runtime
 evolves.
 
 For build instructions, repository layout, and development workflow, see
-[CONTRIBUTING](https://github.com/Qard/fino/blob/main/CONTRIBUTING.md).
+[CONTRIBUTING](https://github.com/Sequins-dev/fino/blob/main/CONTRIBUTING.md).

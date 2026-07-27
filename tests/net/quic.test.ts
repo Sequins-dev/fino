@@ -4628,7 +4628,10 @@ describe('QUIC loopback object model', () => {
   });
   it('waits for bidirectional stream credit until a remote stream fully closes', async (t) => {
     if (!quicAvailable) return;
-    const server = new QuicEndpoint({ alpnProtocols: ['fino-hq'] });
+    const server = new QuicEndpoint({
+      alpnProtocols: ['fino-hq'],
+      connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0 },
+    });
     const listener = await server.listen(
       testListenOptions({
         address: {
@@ -4638,7 +4641,10 @@ describe('QUIC loopback object model', () => {
         },
       }),
     );
-    const client = new QuicEndpoint({ alpnProtocols: ['fino-hq'] });
+    const client = new QuicEndpoint({
+      alpnProtocols: ['fino-hq'],
+      connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0 },
+    });
     const clientConnection = await client.connect({ address: listener.address });
     const serverConnection = await server.accept();
     try {

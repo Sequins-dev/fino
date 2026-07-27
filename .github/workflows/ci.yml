@@ -14,7 +14,7 @@ concurrency:
 jobs:
   fmt:
     name: Rust Format Check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,7 +29,7 @@ jobs:
 
   lint:
     name: Lint Checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: linux-build
     steps:
       - name: Check out repository
@@ -38,7 +38,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install native dependencies
+      - name: Cache Cargo dependencies
+        uses: ./.github/actions/cache-cargo-deps
+
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -47,11 +50,7 @@ jobs:
             cmake \
             g++ \
             git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
             libsqlite3-dev \
-            libssl-dev \
             make \
             perl \
             pkg-config \
@@ -61,7 +60,7 @@ jobs:
         run: cargo clippy
 
       - name: Download Linux build
-        uses: actions/download-artifact@v4
+        uses: ./.github/actions/download-artifact
         with:
           name: fino-linux-debug
           path: target/debug
@@ -74,13 +73,16 @@ jobs:
 
   linux-build:
     name: Linux Build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
         run: |
@@ -89,17 +91,20 @@ jobs:
             ca-certificates \
             clang \
             cmake \
+            curl \
             g++ \
             git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
             libsqlite3-dev \
-            libssl-dev \
             make \
             perl \
             pkg-config \
-            python3
+            python3 \
+            xz-utils
+
+      - name: Install current protocol dependencies
+        uses: ./.github/actions/install-linux-protocol-deps
+        with:
+          prefix: ${{ runner.temp }}/fino-protocol-deps
 
       - name: Build
         run: cargo build
@@ -116,7 +121,7 @@ jobs:
 
   macos-build:
     name: macOS Build
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -124,8 +129,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo dependencies
+        uses: ./.github/actions/cache-cargo-deps
+
       - name: Install native dependencies
-        run: brew install gnutls libngtcp2 openssl@3 sqlite
+        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 sqlite
 
       - name: Build
         run: cargo build
@@ -141,62 +149,24 @@ jobs:
           if-no-files-found: error
 
   linux-tests:
-    name: Linux Tests (tests/${{ matrix.path }})
-    runs-on: ubuntu-latest
+    name: Linux Tests
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: linux-build
-    strategy:
-      fail-fast: false
-      matrix:
-        path: &test-paths
-          - "*.test.ts"
-          - ai
-          - archive
-          - async-runtime
-          - cluster
-          - commands
-          - data
-          - docs
-          - file
-          - format
-          - integration
-          - internal
-          - jobs
-          - messaging
-          - net
-          - process
-          - realm
-          - runtime
-          - security
-          - task
-          - test
-          - tty
-          - util
-          - workflow
+    env:
+      FINO_REQUIRE_H2: "1"
+      FINO_REQUIRE_H3: "1"
+      FINO_REQUIRE_TLS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install SQLite
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates \
-            clang \
-            cmake \
-            g++ \
-            git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            make \
-            perl \
-            pkg-config \
-            python3
+          sudo apt-get install -y --no-install-recommends libsqlite3-0
 
       - name: Download Linux build
-        uses: actions/download-artifact@v4
+        uses: ./.github/actions/download-artifact
         with:
           name: fino-linux-debug
           path: target/debug
@@ -204,19 +174,19 @@ jobs:
       - name: Prepare binary
         run: chmod +x target/debug/fino
 
-      - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests/${{ matrix.path }}
+      - name: Run full test suite
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
 
   release-readiness:
     name: Release Readiness
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: linux-build
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Download Linux build
-        uses: actions/download-artifact@v4
+        uses: ./.github/actions/download-artifact
         with:
           name: fino-linux-debug
           path: target/debug
@@ -228,22 +198,18 @@ jobs:
         run: ./target/debug/fino test tests/internal/benchmark-coverage.test.ts
 
   macos-tests:
-    name: macOS Tests (tests/${{ matrix.path }})
-    runs-on: macos-latest
+    name: macOS Tests
+    runs-on: blacksmith-6vcpu-macos-15
     needs: macos-build
-    strategy:
-      fail-fast: false
-      matrix:
-        path: *test-paths
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Install native dependencies
-        run: brew install gnutls libngtcp2 openssl@3 sqlite
+        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 sqlite
 
       - name: Download macOS build
-        uses: actions/download-artifact@v4
+        uses: ./.github/actions/download-artifact
         with:
           name: fino-macos-debug
           path: target/debug
@@ -251,5 +217,5 @@ jobs:
       - name: Prepare binary
         run: chmod +x target/debug/fino
 
-      - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests/${{ matrix.path }}
+      - name: Run full test suite
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests

@@ -67,15 +67,23 @@ fn dlopen_callback(
     let path_val: v8::Local<v8::Value> = args.get(0);
     let defs_val: v8::Local<v8::Value> = args.get(1);
 
-    let path_str = match path_val.to_string(scope) {
-        Some(s) => s.to_rust_string_lossy(scope),
-        None => {
-            throw_error(scope, "dlopen: expected path string as first argument");
-            return;
-        }
+    let lib = if path_val.is_null() {
+        DynLib::open_self()
+    } else if path_val.is_string() {
+        let path_str = path_val
+            .to_string(scope)
+            .expect("string value should convert to string")
+            .to_rust_string_lossy(scope);
+        DynLib::open(&path_str)
+    } else {
+        throw_error(
+            scope,
+            "dlopen: expected path string or null as first argument",
+        );
+        return;
     };
 
-    let lib = match DynLib::open(&path_str) {
+    let lib = match lib {
         Ok(l) => l,
         Err(e) => {
             throw_error(scope, &format!("dlopen: {e}"));

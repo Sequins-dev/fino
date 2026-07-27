@@ -103,7 +103,6 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         );
 
         context.set_slot(Rc::new(RefCell::new(state)));
-
         // Initialize the CPED with an empty JS Array — this becomes the live
         // async context frame. Must happen before any JS code runs.
         let initial_frame = v8::Array::new(scope, 0);

@@ -89,19 +89,31 @@ describe('ClusterMessage encode/decode', () => {
     }
   });
   it('PORT_MSG round-trips', (t) => {
-    const msg: ClusterMessage = {
+    const msg = {
       t: 'PORT_MSG',
       fromPort: 'nodeA/p-0',
       toPort: 'nodeB/0',
-      payload: btoa('hello'),
-    };
+      payload: [new TextEncoder().encode('hello')],
+      seq: 3,
+    } as ClusterMessage;
     const got = roundTrip(msg);
     t.equal(got.t, 'PORT_MSG');
     if (got.t === 'PORT_MSG') {
       t.equal(got.fromPort, 'nodeA/p-0');
       t.equal(got.toPort, 'nodeB/0');
-      t.equal(got.payload, btoa('hello'));
+      t.deepEqual(got.payload, [new TextEncoder().encode('hello')]);
+      t.equal((got as any).seq, 3);
     }
+  });
+  it('REALM_EXIT round-trips its final port-message sequence', (t) => {
+    const msg = {
+      t: 'REALM_EXIT',
+      realmId: 'nodeB/5',
+      lastPortSeq: 7,
+    } as ClusterMessage;
+    const got = roundTrip(msg);
+    t.equal(got.t, 'REALM_EXIT');
+    if (got.t === 'REALM_EXIT') t.equal((got as any).lastPortSeq, 7);
   });
   it('TERMINATE round-trips', (t) => {
     const msg: ClusterMessage = {
@@ -113,37 +125,84 @@ describe('ClusterMessage encode/decode', () => {
     if (got.t === 'TERMINATE') t.equal(got.realmId, 'nodeB/5');
   });
   it('rejects malformed envelopes', (t) => {
-    t.throws(() => decode('null'), /protocol/, 'non-object JSON rejected');
+    t.throws(() => decode(new Uint8Array()), /protocol/, 'empty envelope rejected');
     t.throws(
-      () => decode('{"t":"NOPE"}'),
+      () => decode(new Uint8Array([0x08, 0x7f])),
       /unknown message type/,
       'unknown discriminator rejected',
     );
     t.throws(
-      () => decode('{"t":"HELLO","nodeId":"node/1","load":{"cpu":0,"memory":1}}'),
+      () =>
+        encode({
+          t: 'HELLO',
+          nodeId: 'node/1',
+          load: { cpu: 0, memory: 1 },
+        }),
       /nodeId/,
       'node id with slash rejected',
     );
     t.throws(
-      () => decode('{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/2","payload":5}'),
+      () =>
+        encode({
+          t: 'PORT_MSG',
+          fromPort: 'nodeA/p-1',
+          toPort: 'nodeB/2',
+          payload: 5,
+          seq: 1,
+        } as unknown as ClusterMessage),
       /payload/,
-      'non-string payload rejected',
+      'non-binary payload rejected',
     );
     t.throws(
       () =>
-        decode(
-          '{"t":"WELCOME","nodeId":"seed","peers":[{"nodeId":"bad/node","load":{"cpu":0,"memory":1}}]}',
-        ),
+        encode({
+          t: 'PORT_MSG',
+          fromPort: 'nodeA/p-1',
+          toPort: 'nodeB/2',
+          payload: [],
+          seq: -1,
+        }),
+      /seq/,
+      'negative sequence rejected',
+    );
+    t.throws(
+      () =>
+        encode({
+          t: 'REALM_EXIT',
+          realmId: 'nodeB/2',
+        } as unknown as ClusterMessage),
+      /lastPortSeq/,
+      'realm exits require a final sequence fence',
+    );
+    t.throws(
+      () =>
+        encode({
+          t: 'WELCOME',
+          nodeId: 'seed',
+          peers: [{ nodeId: 'bad/node', load: { cpu: 0, memory: 1 } }],
+        }),
       /peer/,
       'malformed peer rejected',
     );
   });
   it('does not preserve authentication or transport negotiation fields', (t) => {
-    const hello = decode(
-      '{"t":"HELLO","nodeId":"node1","load":{"cpu":0,"memory":1},"token":"secret"}',
-    );
+    const helloBytes = encode({
+      t: 'HELLO',
+      nodeId: 'node1',
+      load: { cpu: 0, memory: 1 },
+    });
+    const withUnknownField = new Uint8Array(helloBytes.byteLength + 3);
+    withUnknownField.set(helloBytes);
+    withUnknownField.set([0xa0, 0x06, 0x01], helloBytes.byteLength);
+    const hello = decode(withUnknownField);
     const portMsg = decode(
-      '{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/p-2","payload":"","direct":true,"transport":"quic"}',
+      encode({
+        t: 'PORT_MSG',
+        fromPort: 'nodeA/p-1',
+        toPort: 'nodeB/p-2',
+        payload: [],
+        seq: 1,
+      }),
     );
     t.equal((hello as any).token, undefined, 'auth token is not part of HELLO');
     t.equal((portMsg as any).direct, undefined, 'direct peer routing flag is not part of PORT_MSG');

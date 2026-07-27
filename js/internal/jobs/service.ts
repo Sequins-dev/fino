@@ -50,8 +50,7 @@ import {
 } from './store.ts';
 import { parseCron, nextOccurrence } from './cron.ts';
 import { collectTasks, dispatchJob, type JobsWireCall, type JobsWireResult } from './runner.ts';
-import { RealmPool } from '../../realm/pool.ts';
-import { Facade, type ImportRule, type RealmOptions } from '../../realm/index.ts';
+import { Facade, Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
 import type { Task } from '../../task.ts';
 import type { WorkflowState, WorkflowStore, WorkflowWait } from '../../workflow.ts';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.ts';
@@ -95,15 +94,15 @@ const _topicLeaseExpire = topic(otelRuntimeTopic('jobs', 'lease', 'expire'));
  * @internal
  */
 export interface JobProcessor {
-  /** Whether the processor runs jobs on the local realm's loop (`inline`) or in an exclusive worker pool (`pool`). */
-  readonly kind: 'inline' | 'pool';
+  /** Whether jobs run on this realm's loop (`inline`) or in reactor-pooled Realm isolates (`realm`). */
+  readonly kind: 'inline' | 'realm';
   /** The task names this processor can execute; each must be unique across all registered processors. */
   readonly taskNames: string[];
   /** Maximum jobs this processor runs at once — the scheduler claims no more than the free portion of this. */
   readonly capacity: number;
   /** Execute one claimed job envelope and resolve with its outcome (done, retryable/fatal error, or parked). */
   run(call: JobsWireCall): Promise<JobsWireResult>;
-  /** Release the processor's resources (close the pool, tear down realms). Called during `JobsService.stop()`. */
+  /** Release processor resources. Called during `JobsService.stop()`. */
   close(): Promise<void>;
 }
 
@@ -654,22 +653,21 @@ export class JobsService {
     return processor;
   }
   /**
-   * Register a pool processor backed by an exclusive `RealmPool` of worker
-   * realms.
+   * Register a processor that dispatches each job into a reactor-pooled Realm.
    *
-   * The `entry` module must default-export a `Task`; the pool is queried for
-   * its task names on startup and rejects if the entry does not report them.
-   * `size` worker realms (default 1) each run one job at a time, giving the
-   * pool a total capacity of `size`. Workers reach this service's durable
+   * The `entry` module must default-export a `Task`; a Realm is queried for its
+   * task names on startup and rejects if the entry does not report them.
+   * `size` (default 1) sets how many jobs the service may dispatch concurrently.
+   * Each job gets a fresh Realm isolate, and the process reactor pool places
+   * those isolates across its worker threads. Workers reach this service's durable
    * checkpoint store through an injected `fino:jobs/checkpoints` facade, so
    * durable jobs resume correctly even though the workers do not own the
    * database connection. Any `realm.overrides` supplied by the caller are
    * preserved and the checkpoints facade is layered on top.
    *
    * Use this instead of `processTasks()` for CPU-heavy or isolation-sensitive
-   * work — pool workers run off the host realm's loop. The returned promise
-   * rejects (after closing the pool) if the entry cannot be loaded or does not
-   * export a `Task`.
+   * work. The returned promise rejects if the entry cannot be loaded or does
+   * not export a `Task`.
    *
    * ```ts no_run
    * const processor = await svc.workers({
@@ -684,54 +682,53 @@ export class JobsService {
   async workers(opts: {
     entry: string;
     size?: number;
-    realm?: Omit<RealmOptions, 'entry' | 'thread'>;
+    realm?: Omit<RealmOptions, 'entry'>;
   }): Promise<JobProcessor> {
     const workflowStore = this.#workflowStore;
-    const facade = new Facade('fino:jobs/checkpoints', ['save', 'load', 'list', 'remove'])
-      .handle('save', (state) => workflowStore.save(state as WorkflowState))
-      .handle('load', (runId) => workflowStore.load(runId as string))
-      .handle('list', (filter) => workflowStore.list(filter as never))
-      .handle('remove', (runId) => workflowStore.delete(runId as string));
     const baseOverrides = opts.realm?.overrides;
-    const rules: ImportRule[] = [
-      ...(baseOverrides === undefined
-        ? []
-        : Array.isArray(baseOverrides)
-          ? baseOverrides
-          : baseOverrides.toRules()),
-      {
-        pattern: 'fino:jobs/checkpoints',
-        directive: facade,
-      },
-    ];
-    const pool = new RealmPool({
-      entry: opts.entry,
-      size: opts.size ?? 1,
-      exclusive: true,
-      timeout: 0,
-      realm: {
+    const createWorker = (): Realm => {
+      const facade = new Facade('fino:jobs/checkpoints', ['save', 'load', 'list', 'remove'])
+        .handle('save', (state) => workflowStore.save(state as WorkflowState))
+        .handle('load', (runId) => workflowStore.load(runId as string))
+        .handle('list', (filter) => workflowStore.list(filter as never))
+        .handle('remove', (runId) => workflowStore.delete(runId as string));
+      const rules: ImportRule[] = [
+        ...(baseOverrides === undefined
+          ? []
+          : Array.isArray(baseOverrides)
+            ? baseOverrides
+            : baseOverrides.toRules()),
+        {
+          pattern: 'fino:jobs/checkpoints',
+          directive: facade,
+        },
+      ];
+      return new Realm({
         ...(opts.realm ?? {}),
+        entry: opts.entry,
         overrides: rules,
-      },
-    });
+      });
+    };
+    const callWorker = (
+      call:
+        | JobsWireCall
+        | {
+            kind: 'tasks';
+          },
+    ): Promise<unknown> => createWorker().call(call);
     let taskNames: string[];
-    try {
-      taskNames = (await pool.call({ kind: 'tasks' })) as string[];
-      if (!Array.isArray(taskNames) || taskNames.some((n) => typeof n !== 'string')) {
-        throw new Error(
-          `worker entry "${opts.entry}" did not report its task names — it must default-export a Task`,
-        );
-      }
-    } catch (err) {
-      await pool.close();
-      throw err;
+    taskNames = (await callWorker({ kind: 'tasks' })) as string[];
+    if (!Array.isArray(taskNames) || taskNames.some((n) => typeof n !== 'string')) {
+      throw new Error(
+        `worker entry "${opts.entry}" did not report its task names — it must default-export a Task`,
+      );
     }
     const processor: JobProcessor = {
-      kind: 'pool',
+      kind: 'realm',
       taskNames,
-      capacity: pool.size,
-      run: (call) => pool.call(call) as Promise<JobsWireResult>,
-      close: () => pool.close(),
+      capacity: opts.size ?? 1,
+      run: (call) => callWorker(call) as Promise<JobsWireResult>,
+      close: async () => {},
     };
     this.#addProcessor(processor);
     return processor;

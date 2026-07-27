@@ -68,31 +68,34 @@ pub struct ViewRelease {
 /// Shared queue of pending view releases, cloned into backing-store deleters.
 pub type ViewReleaseQueue = Arc<Mutex<Vec<ViewRelease>>>;
 
-// ---------------------------------------------------------------------------
-// Thread-local resolver table — bridges non-Send v8::Global across threads
-// ---------------------------------------------------------------------------
-
-thread_local! {
-    /// Stores `v8::Global<PromiseResolver>` values by index. The background
-    /// thread stores only the index (a plain `usize`) in `FfiCompletion`; the
-    /// main thread retrieves and consumes the resolver when draining.
-    static RESOLVER_TABLE: RefCell<Vec<Option<v8::Global<v8::PromiseResolver>>>> =
-        const { RefCell::new(Vec::new()) };
-}
-
-/// Store a resolver and return its slot index (called from the main thread).
+/// Store a resolver and return its slot index.
+///
+/// The table belongs to the active isolate state rather than the OS thread so
+/// a parked isolate can resume an FFI completion after moving to another pool
+/// worker.
 pub fn push_resolver(resolver: v8::Global<v8::PromiseResolver>) -> usize {
-    RESOLVER_TABLE.with(|t| {
-        let mut table = t.borrow_mut();
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let table = &mut state
+            .as_mut()
+            .expect("async_rt::init() not called")
+            .resolver_table;
         let id = table.len();
         table.push(Some(resolver));
         id
     })
 }
 
-/// Take a resolver by its slot index (called from the main thread during drain).
+/// Take a resolver by its slot index while draining the active isolate.
 fn take_resolver(id: usize) -> Option<v8::Global<v8::PromiseResolver>> {
-    RESOLVER_TABLE.with(|t| t.borrow_mut().get_mut(id)?.take())
+    STATE.with(|state| {
+        state
+            .borrow_mut()
+            .as_mut()?
+            .resolver_table
+            .get_mut(id)?
+            .take()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +119,10 @@ pub struct IsolateAsyncState {
     pub wake_read: RawFd,
     /// Write end of the self-pipe. Background threads write here on FFI completion.
     pub wake_write: RawFd,
+    /// Promise resolvers for FFI completions submitted by this isolate.
+    resolver_table: Vec<Option<v8::Global<v8::PromiseResolver>>>,
+    /// JS callbacks registered by this isolate for native invocation.
+    callback_table: Vec<Option<v8::Global<v8::Function>>>,
 }
 
 impl Drop for IsolateAsyncState {
@@ -131,33 +138,58 @@ thread_local! {
     static STATE: RefCell<Option<IsolateAsyncState>> = const { RefCell::new(None) };
 }
 
-/// Initialize the per-isolate async state. Call once per isolate, before the
-/// event loop starts. Returns the wake-pipe read fd to expose to JS.
-pub fn init() -> RawFd {
+/// Build a detached async state for a parked isolate.
+///
+/// A scheduler swaps this state into the thread-local slot while it pumps the
+/// owning isolate, keeping executors, completions, and wake pipes separate
+/// between isolates that share one OS thread.
+pub fn new_state() -> IsolateAsyncState {
     let mut fds = [0i32; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
     assert_eq!(ret, 0, "pipe(2) failed");
 
-    // Set O_NONBLOCK on both ends so reads/writes never block.
     unsafe {
         libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
         libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
-    let wake_read = fds[0];
-    let wake_write = fds[1];
+    IsolateAsyncState {
+        executor: async_executor::LocalExecutor::new(),
+        completions: Arc::new(Mutex::new(Vec::new())),
+        js_call_requests: Arc::new(Mutex::new(Vec::new())),
+        view_releases: Arc::new(Mutex::new(Vec::new())),
+        wake_read: fds[0],
+        wake_write: fds[1],
+        resolver_table: Vec::new(),
+        callback_table: Vec::new(),
+    }
+}
 
-    STATE.with(|s| {
-        *s.borrow_mut() = Some(IsolateAsyncState {
-            executor: async_executor::LocalExecutor::new(),
-            completions: Arc::new(Mutex::new(Vec::new())),
-            js_call_requests: Arc::new(Mutex::new(Vec::new())),
-            view_releases: Arc::new(Mutex::new(Vec::new())),
-            wake_read,
-            wake_write,
-        });
-    });
+pub(crate) fn with_callback_table<R>(
+    callback: impl FnOnce(&mut Vec<Option<v8::Global<v8::Function>>>) -> R,
+) -> R {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        callback(
+            &mut state
+                .as_mut()
+                .expect("async_rt::init() not called")
+                .callback_table,
+        )
+    })
+}
 
+/// Install a parked isolate's async state and return the previous state.
+pub fn swap_state(new: Option<IsolateAsyncState>) -> Option<IsolateAsyncState> {
+    STATE.with(|state| std::mem::replace(&mut *state.borrow_mut(), new))
+}
+
+/// Initialize the per-isolate async state. Call once per isolate, before the
+/// event loop starts. Returns the wake-pipe read fd to expose to JS.
+pub fn init() -> RawFd {
+    let state = new_state();
+    let wake_read = state.wake_read;
+    STATE.with(|slot| *slot.borrow_mut() = Some(state));
     wake_read
 }
 

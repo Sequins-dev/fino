@@ -139,6 +139,19 @@ describe('Process Realm — serialization of complex types over IPC', () => {
     t.equal(result.nested.arr[1], 2, 'nested array element survives IPC');
     t.equal(result.nested.flag, true, 'nested boolean survives IPC');
   });
+  it('delivers a queued call result after the child exits', async (t) => {
+    const realm = new Realm<typeof echoFn>({
+      process: true,
+      entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
+    });
+    const resultPromise = realm.call('queued-before-exit');
+    const blockedUntil = performance.now() + 500;
+    while (performance.now() < blockedUntil) {
+      // Keep the parent isolate busy until the short-lived child has replied
+      // and exited. Its queued reply must still be delivered before teardown.
+    }
+    t.equal(await resultPromise, 'queued-before-exit');
+  });
   it('call() round-trips an ArrayBuffer', async (t) => {
     const realm = new Realm<(b: ArrayBuffer) => ArrayBuffer>({
       process: true,

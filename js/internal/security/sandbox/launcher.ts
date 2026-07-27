@@ -33,8 +33,8 @@
  */
 import { os } from 'internal:process';
 import { libc, errno, cstr, buildCStringArray, setCloexec } from './ffi.ts';
-import { readFrame, writeFrame } from './frame.ts';
-import { installSeccomp } from './seccomp.ts';
+import { encodeFrame, readFrame, writeEncodedFrame, writeFrame } from './frame.ts';
+import { installPreparedSeccomp, prepareSeccomp } from './seccomp.ts';
 import { installLandlock } from './landlock.ts';
 import { installRlimits } from './rlimit.ts';
 import { resolveDelegatedRoot, createAndJoinCgroup } from './cgroup.ts';
@@ -161,8 +161,28 @@ export function runLauncher(fd: number): void {
     sandbox.process?.allowExec === false || (sandbox.process?.allowedBinaries?.length ?? 0) > 0;
   let execCommand: string;
   let execArgv: string[];
-  let seccompPlan: ReturnType<typeof planSeccomp> | null = null;
+  let preparedSeccomp: ReturnType<typeof prepareSeccomp> = null;
+  let deferredRlimits: SandboxPolicy['resources'];
   let cgroupPath: string | undefined;
+  const deferRlimits = (resources: NonNullable<SandboxPolicy['resources']>): void => {
+    deferredRlimits = resources;
+    if (resources.memoryBytes !== undefined) {
+      installed.push({
+        category: 'resources',
+        mechanism: 'rlimit',
+        tier: 'rlimit',
+        detail: 'memoryBytes',
+      });
+    }
+    if (resources.pids !== undefined) {
+      installed.push({
+        category: 'resources',
+        mechanism: 'rlimit',
+        tier: 'rlimit',
+        detail: 'pids',
+      });
+    }
+  };
   try {
     if (isLinux) {
       // Resources first: cgroup writes and joining must happen before Landlock
@@ -181,30 +201,18 @@ export function runLauncher(fd: number): void {
             });
           }
           // memory/pids whose controller was not delegated fall back to rlimits.
-          for (const limit of installRlimits({
-            memoryBytes: cg.unhandled.includes('memoryBytes')
-              ? sandbox.resources.memoryBytes
-              : undefined,
-            pids: cg.unhandled.includes('pids') ? sandbox.resources.pids : undefined,
-          })) {
-            installed.push({
-              category: 'resources',
-              mechanism: 'rlimit',
-              tier: 'rlimit',
-              detail: limit,
-            });
+          const fallbackResources: NonNullable<SandboxPolicy['resources']> = {};
+          const memoryBytes = sandbox.resources.memoryBytes;
+          const pids = sandbox.resources.pids;
+          if (cg.unhandled.includes('memoryBytes') && memoryBytes !== undefined) {
+            fallbackResources.memoryBytes = memoryBytes;
           }
+          if (cg.unhandled.includes('pids') && pids !== undefined) fallbackResources.pids = pids;
+          deferRlimits(fallbackResources);
         } else {
           // cpu was rejected pre-spawn (no rlimit equivalent); memory/pids fall
           // back to rlimits, reported honestly as the weaker tier.
-          for (const limit of installRlimits(sandbox.resources)) {
-            installed.push({
-              category: 'resources',
-              mechanism: 'rlimit',
-              tier: 'rlimit',
-              detail: limit,
-            });
-          }
+          deferRlimits(sandbox.resources);
         }
       }
       const landlock = installLandlock(sandbox.filesystem, sandbox.process, request.command);
@@ -216,7 +224,7 @@ export function runLauncher(fd: number): void {
           detail: 'execute scoped to the initial binary and allowedBinaries',
         });
       }
-      seccompPlan = planSeccomp(sandbox);
+      preparedSeccomp = prepareSeccomp(planSeccomp(sandbox));
       installed.push(...seccompInstalledRecords(sandbox));
       execCommand = request.command;
       execArgv = [request.command, ...request.args];
@@ -271,26 +279,34 @@ export function runLauncher(fd: number): void {
   } else {
     libc.symbols.setpgid(0, 0);
   }
-  // Report and mark the socket close-on-exec before seccomp, so an allowlist
-  // filter does not have to permit these bookkeeping syscalls.
+  // Prepare every allocation needed by the final launch sequence before
+  // applying RLIMIT_AS. On x86-64 V8 reserves a large virtual-address cage; a
+  // lower payload limit is valid after execve but can make any later launcher
+  // allocation fail.
+  let reportFrame: Uint8Array;
+  let argvBuf: ArrayBuffer;
+  let argvBufs: Uint8Array[];
+  let envpBuf: ArrayBuffer;
+  let envpBufs: Uint8Array[];
+  let commandBuf: Uint8Array;
   try {
-    writeFrame(fd, { type: 'report', installed, cgroupPath, descendantCleanup });
+    reportFrame = encodeFrame({ type: 'report', installed, cgroupPath, descendantCleanup });
+    setCloexec(fd, true);
+    const envMap = request.env ?? {};
+    const envStrings = Object.entries(envMap).map(([k, v]) => `${k}=${v}`);
+    ({ ptrBuf: argvBuf, bufs: argvBufs } = buildCStringArray(execArgv));
+    ({ ptrBuf: envpBuf, bufs: envpBufs } = buildCStringArray(envStrings));
+    commandBuf = cstr(execCommand);
   } catch (err) {
-    fail(fd, 'report', err instanceof Error ? err.message : String(err));
+    fail(fd, 'prepare-exec', err instanceof Error ? err.message : String(err));
   }
-  setCloexec(fd, true);
-  const envMap = request.env ?? {};
-  const envStrings = Object.entries(envMap).map(([k, v]) => `${k}=${v}`);
-  const { ptrBuf: argvBuf, bufs: argvBufs } = buildCStringArray(execArgv);
-  const { ptrBuf: envpBuf, bufs: envpBufs } = buildCStringArray(envStrings);
-  const commandBuf = cstr(execCommand);
-  // seccomp is the final policy step; nothing but execve runs after it.
-  if (seccompPlan !== null) {
-    try {
-      installSeccomp(seccompPlan);
-    } catch (err) {
-      fail(fd, 'seccomp', err instanceof Error ? err.message : String(err), errno());
-    }
+  try {
+    if (deferredRlimits !== undefined) installRlimits(deferredRlimits);
+    writeEncodedFrame(fd, reportFrame);
+    // seccomp is the final policy step; nothing but execve runs after it.
+    installPreparedSeccomp(preparedSeccomp);
+  } catch (err) {
+    fail(fd, 'finalize-policy', err instanceof Error ? err.message : String(err), errno());
   }
   libc.symbols.execve(commandBuf, argvBuf, envpBuf);
   // execve only returns on failure; the CLOEXEC fd is therefore still open.

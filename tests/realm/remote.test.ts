@@ -4,10 +4,11 @@
 import { after, describe, it } from 'fino:test/test';
 import { Process, cwd, execPath } from 'fino:process';
 import { Facade, ImportMap, Realm, SystemDnsConfig, SystemNetConfig } from 'fino:realm';
-import { startCluster, leaveCluster } from 'fino:cluster';
+import { leaveCluster } from 'fino:cluster';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
+import { startClusterOnAvailablePort } from '../cluster/test-helpers.ts';
 import type echoFn from './fixtures/echo-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
 import type facadeCallFn from './fixtures/facade-call.ts';
@@ -18,14 +19,12 @@ const clusterTls = {
   cert: `${cwd()}/tests/net/fixtures/test.crt`,
   key: `${cwd()}/tests/net/fixtures/test.key`,
 };
+const WORKER_READY_TIMEOUT_MS = 5_000;
 function fixture(name: string): string {
   return `file://${root}/${name}`;
 }
 function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
   return new TextDecoder().decode(b);
-}
-function randomPort(): number {
-  return 34e3 + Math.floor(Math.random() * 5e3);
 }
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -46,7 +45,7 @@ async function waitForWorker(port: number): Promise<Process> {
     `https://127.0.0.1:${port}/__fino_cluster`,
   ]);
   try {
-    const line = await withTimeout(readLine(proc), 2e3, 'worker readiness');
+    const line = await withTimeout(readLine(proc), WORKER_READY_TIMEOUT_MS, 'worker readiness');
     if (line !== 'worker ready') throw new Error(`unexpected worker readiness line: ${line}`);
     return proc;
   } catch (err) {
@@ -75,14 +74,12 @@ let sharedClusterStarted = false;
 async function ensureRemoteWorker(): Promise<boolean> {
   if (!quicAvailable || !h3Available) return false;
   if (sharedWorker !== null) return true;
-  const port = randomPort();
-  await withTimeout(
-    startCluster({
+  const port = await startClusterOnAvailablePort(
+    (port) => ({
       port,
       nodeId: `realm-remote-seed-${port}`,
       tls: clusterTls,
     }),
-    2e3,
     'startCluster',
   );
   sharedClusterStarted = true;

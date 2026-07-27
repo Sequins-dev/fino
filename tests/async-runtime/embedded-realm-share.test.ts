@@ -1,6 +1,6 @@
 /**
- * Tests that embedded (same-thread) child realms share the parent's async
- * executor and blocking pool, and that thread realms have their own.
+ * Tests that reactor-pooled child realms can run async FFI concurrently with
+ * their parent and with other pooled realms.
  */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
@@ -14,13 +14,13 @@ async function elapsed(fn: () => Promise<unknown>): Promise<number> {
   await fn();
   return Date.now() - start;
 }
-describe('embedded realm shares async executor', () => {
-  it('async FFI works inside an embedded child realm', async (t) => {
+describe('reactor-pooled Realm async execution', () => {
+  it('async FFI works inside a pooled child realm', async (t) => {
     const realm = new Realm<typeof asyncFfiChild>({ entry: ENTRY });
     const pid = await realm.call(1e4);
     t.ok(typeof pid === 'number' && pid > 0, `child realm async FFI returned pid ${pid}`);
   });
-  it('parent and embedded child run async FFI concurrently', async (t) => {
+  it('parent and child run async FFI concurrently', async (t) => {
     const libAsync = dlopen(LIBC, {
       usleep: {
         parameters: ['u32'],
@@ -47,7 +47,7 @@ describe('embedded realm shares async executor', () => {
       `concurrent parent+child took ${concurrent}ms vs ${sequential}ms sequential`,
     );
   });
-  it('multiple embedded children complete async FFI concurrently', async (t) => {
+  it('multiple pooled children complete async FFI concurrently', async (t) => {
     const sequential = await elapsed(async () => {
       const children = [
         new Realm<typeof asyncFfiChild>({ entry: ENTRY }),
@@ -72,49 +72,6 @@ describe('embedded realm shares async executor', () => {
     t.ok(
       concurrent < sequential,
       `3 concurrent child realms took ${concurrent}ms vs ${sequential}ms sequential`,
-    );
-  });
-});
-describe('thread realm has its own async executor', () => {
-  it('async FFI works inside a thread realm', async (t) => {
-    const realm = new Realm<typeof asyncFfiChild>({
-      thread: true,
-      entry: ENTRY,
-    });
-    const pid = await realm.call(1e4);
-    t.ok(typeof pid === 'number' && pid > 0, `thread realm async FFI returned pid ${pid}`);
-  });
-  it('parent and thread realm run async FFI concurrently', async (t) => {
-    const libAsync = dlopen(LIBC, {
-      usleep: {
-        parameters: ['u32'],
-        result: 'i32',
-        async: true,
-      },
-    });
-    const sleepUs = 1e6;
-    const sequential = await elapsed(async () => {
-      const realm = new Realm<typeof asyncFfiChild>({
-        thread: true,
-        entry: ENTRY,
-      });
-      await realm.call(sleepUs);
-      await libAsync.symbols.usleep(sleepUs);
-    });
-    const realm = new Realm<typeof asyncFfiChild>({
-      thread: true,
-      entry: ENTRY,
-    });
-    let childPid = 0;
-    const concurrent = await elapsed(async () => {
-      const [pid] = await Promise.all([realm.call(sleepUs), libAsync.symbols.usleep(sleepUs)]);
-      childPid = pid;
-    });
-    t.ok(typeof childPid === 'number' && childPid > 0, 'thread realm returned valid pid');
-    t.ok(sequential > 0, 'sequential baseline completed');
-    t.ok(
-      concurrent < sequential * .85,
-      `parent+thread realm concurrent took ${concurrent}ms vs ${sequential}ms sequential`,
     );
   });
 });

@@ -12,13 +12,16 @@ concurrency:
 jobs:
   linux-build:
     name: Linux Release Build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
         run: |
@@ -27,17 +30,20 @@ jobs:
             ca-certificates \
             clang \
             cmake \
+            curl \
             g++ \
             git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
             libsqlite3-dev \
-            libssl-dev \
             make \
             perl \
             pkg-config \
-            python3
+            python3 \
+            xz-utils
+
+      - name: Install current protocol dependencies
+        uses: ./.github/actions/install-linux-protocol-deps
+        with:
+          prefix: ${{ runner.temp }}/fino-protocol-deps
 
       - name: Build release binary
         run: cargo build --release
@@ -51,7 +57,7 @@ jobs:
 
   linux-benchmarks:
     name: Linux Benchmarks (benchmarks/${{ matrix.path }})
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: linux-build
     strategy:
       fail-fast: false
@@ -75,24 +81,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install SQLite
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates \
-            clang \
-            cmake \
-            g++ \
-            git \
-            libgnutls28-dev \
-            libngtcp2-crypto-gnutls-dev \
-            libngtcp2-dev \
-            libsqlite3-dev \
-            libssl-dev \
-            make \
-            perl \
-            pkg-config \
-            python3
+          sudo apt-get install -y --no-install-recommends libsqlite3-0
 
       - name: Download Linux release build
         uses: actions/download-artifact@v4

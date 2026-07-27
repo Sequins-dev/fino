@@ -13,8 +13,10 @@ mod profiler;
 mod protobuf;
 mod realm;
 mod runtime;
+mod scheduler_native;
 mod state;
 mod typescript_format;
+mod v8_threading;
 
 fn main() {
     // Server processes must not die on broken-pipe writes. Network connections
@@ -63,7 +65,6 @@ fn main() {
         return;
     }
 
-    // Normal CLI mode.
     let process_env = state::ProcessEnv {
         root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         args,

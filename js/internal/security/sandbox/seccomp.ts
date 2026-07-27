@@ -48,7 +48,7 @@
  * @internal
  */
 import { Pointer } from 'fino:ffi';
-import { libc, errno, PR_SET_NO_NEW_PRIVS, PR_SET_SECCOMP, SECCOMP_MODE_FILTER } from './ffi.ts';
+import { libc, errno, PR_SET_NO_NEW_PRIVS, PR_SET_SECCOMP } from './ffi.ts';
 import type { SeccompPlan } from './plan.ts';
 import { syscallNumber } from './plan.ts';
 const PR_GET_SECCOMP = 21;
@@ -89,6 +89,24 @@ interface Instruction {
   jf: number;
   k: number;
 }
+/**
+ * Prebuilt seccomp BPF buffers ready for installation without further program
+ * allocation.
+ *
+ * The launcher prepares this before applying `RLIMIT_AS`, then passes it to
+ * {@link installPreparedSeccomp}. A `null` preparation means the plan was an
+ * inert default-allow filter and requires no kernel installation.
+ *
+ * @internal
+ */
+export interface PreparedSeccomp {
+  /** Backing `struct sock_filter[]`; retained until the kernel copies it. */
+  filterBuf: ArrayBuffer;
+  /** Backing `struct sock_fprog` pointing at `filterBuf`. */
+  prog: ArrayBuffer;
+  /** Address of `prog`, captured before an address-space rlimit is installed. */
+  progAddr: bigint;
+}
 function build(plan: SeccompPlan): Instruction[] {
   const filters: Instruction[] = [{ code: BPF_LD_W_ABS, jt: 0, jf: 0, k: 0 }];
   if (plan.defaultAction === 'allow') {
@@ -115,42 +133,19 @@ function build(plan: SeccompPlan): Instruction[] {
   return filters;
 }
 /**
- * Compiles `plan` into a BPF program and installs it as the process seccomp
- * filter, returning whether a filter was actually loaded.
+ * Compile `plan` into allocation-complete BPF buffers.
  *
- * The plan is lowered per its `defaultAction` (see the module overview) and
- * written into a `struct sock_filter[]` / `struct sock_fprog` pair, then handed
- * to the kernel via `PR_SET_NO_NEW_PRIVS` followed by `PR_SET_SECCOMP` in
- * filter mode. Both prctls are load-bearing: the no-new-privs bit is what lets
- * an unprivileged process install a filter at all.
+ * Returns `null` for a default-allow plan with no effective rules. Compilation
+ * validates syscall names and throws before installing any irreversible policy.
+ * Keep the returned buffers reachable until {@link installPreparedSeccomp}
+ * finishes.
  *
- * Returns `false` without touching the kernel when the plan enforces nothing —
- * a default-allow tail with no effective rules compiles to just a load plus a
- * blanket allow, so installing it would only add per-syscall overhead for zero
- * protection. A default-`kill` (allowlist) plan is always installed, even with
- * no allow rules, because that denies everything and is a meaningful policy.
- *
- * Once installed the filter is irrevocable for the life of the process, so run
- * this as the final confinement step in child bootstrap. Throws if a rule names
- * a syscall unknown on the current architecture, or if either prctl fails (for
- * example `EACCES` when no-new-privs cannot be set); the error message carries
- * the failing prctl and its `errno`.
- *
- * ```ts no_run
- *   import { installSeccomp } from 'internal:security/sandbox/seccomp';
- *   import { planSeccomp } from 'internal:security/sandbox/plan';
- *
- *   // Allowlist: only the named syscalls survive; anything else kills the process.
- *   const plan = planSeccomp({
- *     syscalls: { mode: 'allowlist', names: ['read', 'write', 'exit_group'] },
- *   });
- *   installSeccomp(plan); // true — an allowlist is always enforced
- * ```
+ * @internal
  */
-export function installSeccomp(plan: SeccompPlan): boolean {
+export function prepareSeccomp(plan: SeccompPlan): PreparedSeccomp | null {
   const filters = build(plan);
   // A lone load + default-allow return enforces nothing; don't install it.
-  if (filters.length <= 2 && plan.defaultAction !== 'kill') return false;
+  if (filters.length <= 2 && plan.defaultAction !== 'kill') return null;
   const filterBuf = new ArrayBuffer(filters.length * 8);
   const view = new DataView(filterBuf);
   for (let i = 0; i < filters.length; i++) {
@@ -166,14 +161,28 @@ export function installSeccomp(plan: SeccompPlan): boolean {
   const progView = new DataView(prog);
   progView.setUint16(0, filters.length, true);
   progView.setBigUint64(8, Pointer.addr(filterBuf) as bigint, true);
+  return { filterBuf, prog, progAddr: Pointer.addr(prog) as bigint };
+}
+/**
+ * Install a program returned by {@link prepareSeccomp}.
+ *
+ * `null` is a no-op returning `false`. A prepared program requires only the two
+ * `prctl` calls and no BPF construction, so the launcher can safely invoke it
+ * after applying an address-space rlimit. Installation is irreversible and
+ * throws with the current errno if either syscall fails.
+ *
+ * @internal
+ */
+export function installPreparedSeccomp(prepared: PreparedSeccomp | null): boolean {
+  if (prepared === null) return false;
   if (libc.symbols.prctl(PR_SET_NO_NEW_PRIVS, 1n, 0n, 0n, 0n) !== 0) {
     throw new Error(`prctl(PR_SET_NO_NEW_PRIVS) failed: errno ${errno()}`);
   }
   if (
     libc.symbols.prctl(
       PR_SET_SECCOMP,
-      BigInt(SECCOMP_MODE_FILTER),
-      Pointer.addr(prog) as bigint,
+      2n,
+      prepared.progAddr,
       0n,
       0n,
     ) !== 0
@@ -181,7 +190,29 @@ export function installSeccomp(plan: SeccompPlan): boolean {
     throw new Error(`prctl(PR_SET_SECCOMP) failed: errno ${errno()}`);
   }
   // Keep buffers reachable until the syscall has copied the program.
-  void filterBuf;
-  void prog;
+  void prepared.filterBuf;
+  void prepared.prog;
   return true;
+}
+/**
+ * Compile and install `plan` as the process's irreversible seccomp filter.
+ *
+ * Returns `false` for an inert default-allow plan. Unknown syscall names and
+ * failed `prctl` calls throw. Launchers that need an allocation-free gap between
+ * compilation and installation should use {@link prepareSeccomp} followed by
+ * {@link installPreparedSeccomp}.
+ *
+ * ```ts no_run
+ * import { installSeccomp } from 'internal:security/sandbox/seccomp';
+ * import { planSeccomp } from 'internal:security/sandbox/plan';
+ *
+ * installSeccomp(planSeccomp({
+ *   syscalls: { mode: 'allowlist', names: ['read', 'write', 'exit_group'] },
+ * }));
+ * ```
+ *
+ * @internal
+ */
+export function installSeccomp(plan: SeccompPlan): boolean {
+  return installPreparedSeccomp(prepareSeccomp(plan));
 }

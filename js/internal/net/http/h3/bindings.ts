@@ -1,7 +1,7 @@
 /**
  * internal:net/http/h3/bindings - optional libnghttp3 dynamic bindings.
  *
- * This module is the raw FFI floor of the HTTP/3 stack. It `dlopen`s the system
+ * This module is the raw FFI floor of the HTTP/3 stack. It `dlopen`s
  * libnghttp3 — the QPACK + HTTP/3 framing engine that sits on top of QUIC — and
  * re-exports its symbols alongside the struct layout constants, protocol error
  * codes, and small marshalling helpers that the higher-level session, server,
@@ -14,8 +14,9 @@
  * release state for builds that do not ship libnghttp3: the candidate library
  * paths simply fail to `dlopen`, `sym` stays `null`, and internal H3 helpers
  * call `requireH3()` so they throw a clear installation error before opening any
- * socket. Enabled builds are expected to pass the local simulated and loopback
- * H3 suites.
+ * socket. Linux release builds resolve the statically linked copy from the Fino
+ * executable before trying system library paths. Enabled builds are expected to
+ * pass the local simulated and loopback H3 suites.
  *
  * Struct offsets are fixed for the ABI versions pinned by
  * `NGHTTP3_CALLBACKS_VERSION` and `NGHTTP3_SETTINGS_VERSION`; they are not
@@ -74,6 +75,7 @@ const _CANDIDATES = _IS_DARWIN
       '/opt/local/lib/libnghttp3.dylib',
     ]
   : [
+      null,
       'libnghttp3.so',
       '/usr/lib/x86_64-linux-gnu/libnghttp3.so',
       '/usr/lib/aarch64-linux-gnu/libnghttp3.so',

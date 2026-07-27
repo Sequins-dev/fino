@@ -3,8 +3,8 @@
  *
  * Standard WHATWG messaging API. Use `MessageChannel` to create a pair of
  * entangled ports for bidirectional communication between realms. `MessagePort`
- * values use structured clone semantics for same-isolate realms and transport
- * serialization for thread, process, and remote realm ports.
+ * values use structured clone semantics within an isolate and transport
+ * serialization across reactor-pooled, process, and remote realm ports.
  *
  * HTML channel messaging model:
  * https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging
@@ -18,8 +18,7 @@
  *
  * | Realm port | Clone path | Transfer support |
  * | --- | --- | --- |
- * | Same-isolate `MessagePort` | Runtime structured-clone subset. | `ArrayBuffer` and `MessagePort`. |
- * | Thread `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
+ * | Reactor-pooled `ScheduledPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
  * | Process `ProcessPort` | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
  * | Remote/cluster calls | Cluster transport serialization. | No live `MessagePort` transfer contract. |
  *
@@ -31,12 +30,7 @@
  * import { MessageChannel } from 'fino:realm/messaging';
  * import { Realm } from 'fino:realm';
  *
- * const channel = new MessageChannel();
- * const realm = new Realm({
- *   entry: './worker.ts',
- *   input: channel.port1,
- *   output: channel.port2,
- * });
+ * const realm = new Realm({ entry: './worker.ts' });
  * realm.port.postMessage({ hello: true });
  * ```
  */

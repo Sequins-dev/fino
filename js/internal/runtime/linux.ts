@@ -319,8 +319,8 @@ export function removeTimer(loop: SelectedLoop, id: number): void {
  *
  * @internal
  */
-export function addSignal(loop: SelectedLoop, signo: number): void {
-  if (loop.kind === 'io_uring') ioUring.addSignal(loop.raw as any, signo);
+export function addSignal(loop: SelectedLoop, signo: number, userData: number = signo): void {
+  if (loop.kind === 'io_uring') ioUring.addSignal(loop.raw as any, signo, userData);
   else pollBackend.addSignal(loop.raw as any, signo);
 }
 /**
@@ -393,6 +393,18 @@ export function wait(loop: SelectedLoop, timeoutMs: number | null = null): any[]
 export function poll(loop: SelectedLoop): any[] {
   if (loop.kind === 'io_uring') return ioUring.poll(loop.raw as any);
   return pollBackend.poll(loop.raw as any);
+}
+/**
+ * Submit queued backend registrations without harvesting events.
+ *
+ * The io_uring path publishes pending SQEs to the thread-shared ring. The poll
+ * fallback keeps registrations in memory and therefore has nothing to flush.
+ *
+ * @internal
+ */
+export function flush(loop: SelectedLoop): number {
+  if (loop.kind === 'io_uring') return ioUring.flush(loop.raw as any);
+  return 0;
 }
 /**
  * Submit an asynchronous `openat(2)` and complete it as a loop event.
@@ -514,11 +526,9 @@ export function destroy(loop: SelectedLoop): void {
 /**
  * Return a single fd that becomes readable when the loop has work, or `-1`.
  *
- * io_uring exposes its ring fd here, which lets an outer supervisor (for
- * example a parent realm's loop) nest this loop by watching that one fd for
- * readiness. The poll(2) fallback has no such aggregate descriptor and returns
- * `-1`, signalling callers that they must drive it directly via `wait()`/`poll()`
- * rather than by waiting on a fd.
+ * io_uring exposes its thread-reactor fd here. The poll(2) fallback has no
+ * aggregate descriptor and returns `-1`, signalling callers that they must
+ * drive it directly via `wait()`/`poll()`.
  *
  * ```ts no_run
  * import * as linux from 'internal:runtime/linux';
@@ -526,7 +536,7 @@ export function destroy(loop: SelectedLoop): void {
  * const loop = linux.create();
  * const fd = linux.pollFd(loop);
  * if (fd === -1) driveDirectly(loop);
- * else parentLoop.addRead(fd); // nest under a supervising loop
+ * else console.log(`reactor fd: ${fd}`);
  * ```
  *
  * @internal

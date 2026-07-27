@@ -8,8 +8,9 @@
  *
  * The `File` owns the descriptor lifecycle. Readers and writers created from a
  * file share the same descriptor, so callers close the `File` once all derived
- * streams are finished. Linux uses io_uring-backed async operations where
- * available; macOS yields through the runtime loop around synchronous syscalls.
+ * streams are finished. A locally owned Linux loop can use io_uring completion
+ * operations. Reactor-pooled realms perform the syscall in this TypeScript
+ * isolate so the process reactor remains readiness-only.
  *
  * ## Example
  *
@@ -55,10 +56,10 @@ import type { Path } from '../../file/path.ts';
  * handle share the same underlying fd, so close the `File` — not the individual
  * stream — to release it. Closing flushes any writer created by `writer()`.
  *
- * Async reads use io_uring on Linux and yield through the runtime loop around
- * synchronous syscalls on macOS. Every method throws if the handle is already
- * closed, and `reader()`/`writer()` also throw when the open mode disallows the
- * requested direction.
+ * A locally owned Linux loop can use io_uring completions. Reactor-pooled
+ * realms keep the read and its buffer in this isolate, while macOS yields
+ * through the runtime loop before its syscall. Every method throws if the
+ * handle is already closed.
  *
  * ```ts no_run
  * import { File } from 'internal:file/handle';
@@ -274,9 +275,10 @@ export class File {
                     value: undefined,
                   };
               }
-              // Yield to the event loop. For a vnode with remaining data,
-              // EVFILT_READ fires immediately on the next tick.
-              await loopModule!.readable(fd);
+              // kqueue can signal remaining vnode data. Linux regular files
+              // are read directly in this isolate because the process reactor
+              // deliberately owns readiness only, not completion buffers.
+              if (isDarwin) await loopModule!.readable(fd);
               n = Number(lib.symbols.read(fd, buf, bufSize));
             }
             if (n <= 0)
@@ -363,7 +365,7 @@ export class File {
         // hanging (EVFILT_READ does not fire when offset == file_size).
         const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
         if (fileSize !== null && offset >= fileSize) break;
-        await loopModule!.readable(fd);
+        if (isDarwin) await loopModule!.readable(fd);
         n = Number(lib.symbols.read(fd, buf, bufSize));
       }
       if (n <= 0) break;
@@ -556,9 +558,9 @@ export class File {
    *
    * Idempotent: a second call is a no-op. Any pending writer created by
    * `writer()` is flushed before the fd is released, so buffered bytes are not
-   * lost. On Linux the close is issued as `IORING_OP_CLOSE`; on macOS it runs
-   * synchronously via `close(2)`. This method also backs `Symbol.asyncDispose`,
-   * so an `await using` binding closes the handle when it leaves scope.
+   * lost. A locally owned Linux loop can issue `IORING_OP_CLOSE`; pooled realms
+   * and macOS call `close(2)` from this isolate. This method also backs
+   * `Symbol.asyncDispose`.
    *
    * ```ts no_run
    * await using file = new File(fd, fs, '/tmp/scratch', 'w');

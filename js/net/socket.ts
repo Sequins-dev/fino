@@ -526,9 +526,8 @@ if (isDarwin) {
   };
 }
 const lib = dlopen(LIBC, _defs);
-const errnoPtr = lib.symbols[errnoFn]!() as ArrayBuffer;
 function getErrno(): number {
-  return Pointer.readI32(errnoPtr, 0);
+  return Pointer.readI32(lib.symbols[errnoFn]!() as ArrayBuffer, 0);
 }
 // Native datagram ancillary-data layouts on supported 64-bit platforms.
 const IOVEC_SIZE = 16;

@@ -289,7 +289,6 @@ fn create_child_context(
         );
 
         child_ctx_local.set_slot(Rc::new(RefCell::new(state)));
-
         // 4. Initialize CPED with an empty JS Array (live async-context frame).
         let initial_frame = v8::Array::new(child_scope, 0);
         child_scope.set_continuation_preserved_embedder_data(initial_frame.into());

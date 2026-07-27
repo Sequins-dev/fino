@@ -92,9 +92,8 @@ const lib = dlopen(LIBC, {
 // iovec layout on 64-bit: { void *iov_base (8 bytes), size_t iov_len (8 bytes) }
 const IOVEC_SIZE = 16;
 const MAX_IOV = 16;
-const errnoPtr = lib.symbols[errnoFn]!() as ArrayBuffer;
 function getErrno(): number {
-  return Pointer.readI32(errnoPtr, 0);
+  return Pointer.readI32(lib.symbols[errnoFn]!() as ArrayBuffer, 0);
 }
 // ---------------------------------------------------------------------------
 // Reader<T> — generic async producer of values

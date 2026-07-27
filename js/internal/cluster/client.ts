@@ -7,8 +7,8 @@
  *
  * - Tracks peer membership from the seed's WELCOME / PEER_UP / PEER_DOWN
  *   messages.
- * - Accepts SPAWN messages and creates local thread realms for them.
- * - Bridges each spawned realm's ThreadPort <-> cluster PORT_MSG transport
+ * - Accepts SPAWN messages and creates reactor-pooled Realm isolates for them.
+ * - Bridges each spawned realm's scheduled port <-> cluster PORT_MSG transport
  *   (the relay pattern - the relay is transparent to all message content,
  *   so __rpc_req / __rpc_res travel as opaque PORT_MSG payloads).
  * - Sends HEARTBEAT to the seed every 2.5 s.
@@ -20,8 +20,8 @@
  * `BaseTransportPort` whose messages travel as PORT_MSG cluster frames
  * instead of an in-process channel. Ports register themselves with the
  * client on construction, queue outbound messages until SPAWN_ACK assigns
- * the child port ID, and preserve transferred ArrayBuffers end-to-end as
- * base64-encoded serializer store parts.
+ * the child port ID, and preserve transferred ArrayBuffers end-to-end as raw
+ * protobuf byte fields.
  *
  * ## Example
  *
@@ -63,48 +63,42 @@ import {
 } from './protocol.ts';
 import { serialize, deserialize } from 'internal:serializer';
 import {
-  createThreadContext,
-  stepThreadContext,
-  getThreadPortWakeReadFd,
-  threadPortSend,
-  threadPortRecv,
-} from 'internal:realm-native';
+  closeScheduledRealm,
+  createScheduledRealm,
+  registerReactorWake,
+  scheduledRealmRecv,
+  scheduledRealmSend,
+  takeScheduledRealmStatus,
+} from 'internal:scheduler-native';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { BaseTransportPort } from 'internal:realm/transport-port';
+import { env } from 'internal:process';
 const HEARTBEAT_MS = 2500;
-// ---------------------------------------------------------------------------
-// Base64 helpers for payload encoding
-// ---------------------------------------------------------------------------
-function uint8ToBase64(buf: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]!);
-  return btoa(s);
-}
-function base64ToUint8(s: string): Uint8Array {
-  const raw = atob(s);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-// PORT_MSG payload is a JSON array of base64 strings: [main, ...stores].
-// Encoding all parts preserves ArrayBuffer transfer stores end-to-end.
-function encodePayload(parts: Uint8Array[]): string {
-  return JSON.stringify(parts.map(uint8ToBase64));
-}
-function decodePayload(payload: string): Uint8Array[] {
-  return (JSON.parse(payload) as string[]).map(base64ToUint8);
+function heartbeatIntervalMs(): number {
+  const configured = Number(env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : HEARTBEAT_MS;
 }
 // ---------------------------------------------------------------------------
-// Local relay - bridges a ThreadPort to cluster PORT_MSG
+// Local relay - bridges a scheduled Realm port to cluster PORT_MSG
 // ---------------------------------------------------------------------------
 interface RealmRelay {
   childPortId: string;
   parentPortId: string;
-  threadHandle: number;
+  realmHandle: number;
   wakeReadFd: number;
+  completionFd: number;
   closed: boolean;
+  finalized: boolean;
+  cancel?: () => void;
   pendingSends: Promise<void>[];
+  lastPortSeq: number;
   lastCallError?: string;
+}
+type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
+type RealmExitMessage = Extract<ClusterMessage, { t: 'REALM_EXIT' }>;
+interface PortSequenceState {
+  next: number;
+  pending: Map<number, PortMessage>;
 }
 // ---------------------------------------------------------------------------
 // ClusterClient
@@ -113,9 +107,8 @@ interface RealmRelay {
  * Worker-side cluster coordinator.
  *
  * `ClusterClient` tracks peer membership, sends heartbeats, forwards local
- * `ClusterPort` messages, and starts child thread realms when the seed routes
- * a `SPAWN` message to this node. It assumes its transport has already been
- * connected when required by the transport implementation.
+ * `ClusterPort` messages, and starts reactor-pooled child realms when the seed
+ * routes a `SPAWN` message to this node.
  *
  * ```ts no_run
  * import { ClusterClient } from 'internal:cluster/client';
@@ -158,8 +151,8 @@ export class ClusterClient {
   #peers = new Map<string, PeerInfo>();
   /**
    * Active child-realm relays keyed by childPortId. Each relay bridges a
-   * locally spawned thread realm's ThreadPort to cluster PORT_MSG traffic;
-   * entries are removed when the realm exits or `stop()` runs.
+   * locally scheduled Realm port to cluster PORT_MSG traffic; entries are
+   * removed when the realm exits or `stop()` runs.
    *
    * @internal
    */
@@ -185,6 +178,12 @@ export class ClusterClient {
    * handler arrives.
    */
   #exitedRealms = new Map<string, string | undefined>();
+  /** Inbound frames buffered until each source port's next sequence arrives. */
+  #inboundPortSequences = new Map<string, PortSequenceState>();
+  /** Exit frames waiting for every preceding port message to be delivered. */
+  #pendingRealmExits = new Map<string, RealmExitMessage>();
+  /** Next sequence number for each local source port. */
+  #outboundPortSequences = new Map<string, number>();
   /**
    * In-flight `spawnRemote()` requests keyed by spawnReqId, settled by the
    * matching SPAWN_ACK or rejected en masse by `stop()`.
@@ -276,6 +275,7 @@ export class ClusterClient {
    */
   unregisterPort(portId: string): void {
     this.#portHandlers.delete(portId);
+    this.#outboundPortSequences.delete(portId);
   }
   /**
    * Register a one-shot callback for when the realm identified by childPortId exits.
@@ -305,9 +305,8 @@ export class ClusterClient {
   /**
    * Send serialized port payload parts to a remote port.
    *
-   * The payload parts are base64-encoded as a JSON array so ArrayBuffer transfer
-   * stores survive the cluster hop. Routing uses the node prefix extracted from
-   * `toPort`; invalid IDs may be sent to an unusable target.
+   * Payload parts remain binary protobuf `bytes` fields so ArrayBuffer transfer
+   * stores survive the cluster hop without base64 expansion.
    *
    * ```ts no_run
    * import { ClusterClient } from 'internal:cluster/client';
@@ -319,12 +318,14 @@ export class ClusterClient {
    */
   sendPortMsg(fromPort: string, toPort: string, parts: Uint8Array[]): void {
     const targetNodeId = nodeIdFromId(toPort);
-    const payload = encodePayload(parts);
+    const seq = (this.#outboundPortSequences.get(fromPort) ?? 0) + 1;
+    this.#outboundPortSequences.set(fromPort, seq);
     this.#transport.send(targetNodeId, {
       t: 'PORT_MSG',
       fromPort,
       toPort,
-      payload,
+      payload: parts,
+      seq,
     });
   }
   /**
@@ -359,9 +360,10 @@ export class ClusterClient {
   /**
    * Register the transport message handler and start periodic heartbeats.
    *
-   * The heartbeat interval is 2500 ms and messages are sent to `__seed__`.
-   * Calling `start()` more than once adds another handler and timer; callers
-   * should treat it as a single-use lifecycle method.
+   * Heartbeats are sent to `__seed__` every 2500 ms by default. The
+   * `FINO_CLUSTER_HEARTBEAT_INTERVAL_MS` override also controls this sender so
+   * short seed timeouts cannot expire otherwise healthy clients. Calling
+   * `start()` more than once adds another handler and timer.
    *
    * ```ts no_run
    * import { ClusterClient } from 'internal:cluster/client';
@@ -376,7 +378,7 @@ export class ClusterClient {
         t: 'HEARTBEAT',
         ts: Date.now(),
       });
-    }, HEARTBEAT_MS);
+    }, heartbeatIntervalMs());
   }
   /**
    * Stop heartbeats, close relays, reject pending spawns, and close transport.
@@ -397,10 +399,8 @@ export class ClusterClient {
       this.#heartbeatTimer = null;
     }
     for (const relay of this.#relays.values()) {
-      relay.closed = true;
-      // Cancel any pending readable() on the relay's wake-fd so the
-      // event-loop registration is released before the relay map is cleared.
-      removeRead(relay.wakeReadFd);
+      if (!relay.closed) this.#sendToRealm(relay.realmHandle, { __terminate: true });
+      relay.cancel?.();
     }
     this.#relays.clear();
     // Reject all pending realm-exit waiters so Realm.run() / Realm.call() settle.
@@ -411,6 +411,9 @@ export class ClusterClient {
       } catch {}
     }
     this.#exitHandlers.clear();
+    this.#inboundPortSequences.clear();
+    this.#pendingRealmExits.clear();
+    this.#outboundPortSequences.clear();
     for (const pending of this.#pendingSpawns.values()) {
       pending.reject(err);
     }
@@ -450,6 +453,12 @@ export class ClusterClient {
             handler(error);
           } catch {}
         }
+        for (const portId of [...this.#inboundPortSequences.keys()]) {
+          if (nodeIdFromId(portId) === msg.nodeId) this.#inboundPortSequences.delete(portId);
+        }
+        for (const realmId of [...this.#pendingRealmExits.keys()]) {
+          if (nodeIdFromId(realmId) === msg.nodeId) this.#pendingRealmExits.delete(realmId);
+        }
         break;
       }
       case 'SPAWN_ACK': {
@@ -478,58 +487,39 @@ export class ClusterClient {
       case 'TERMINATE': {
         const relay = this.#relays.get(msg.realmId);
         if (relay && !relay.closed) {
-          relay.closed = true;
-          this.#sendToThread(relay.threadHandle, { __terminate: true });
+          this.#sendToRealm(relay.realmHandle, { __terminate: true });
           break;
         }
         const handler = this.#exitHandlers.get(msg.realmId);
         if (handler) {
           this.#exitHandlers.delete(msg.realmId);
-          handler(`remote realm ${msg.realmId} terminated by cluster`);
+          handler(`fino:cluster — peer ${nodeIdFromId(msg.realmId)} disconnected`);
         } else {
-          this.#exitedRealms.set(msg.realmId, `remote realm ${msg.realmId} terminated by cluster`);
+          this.#exitedRealms.set(
+            msg.realmId,
+            `fino:cluster — peer ${nodeIdFromId(msg.realmId)} disconnected`,
+          );
         }
+        this.#pendingRealmExits.delete(msg.realmId);
+        this.#inboundPortSequences.delete(msg.realmId);
         break;
       }
       case 'REALM_EXIT': {
-        // A remote realm we spawned has exited - notify the parent-side waiter.
-        const handler = this.#exitHandlers.get(msg.realmId);
-        if (handler) {
-          this.#exitHandlers.delete(msg.realmId);
-          handler(msg.error);
+        if (this.#deliveredPortSequence(msg.realmId) < msg.lastPortSeq) {
+          this.#pendingRealmExits.set(msg.realmId, msg);
         } else {
-          this.#exitedRealms.set(msg.realmId, msg.error);
+          this.#deliverRealmExit(msg);
         }
         break;
       }
       case 'PORT_MSG': {
-        const localPort = this.#portHandlers.get(msg.toPort);
-        if (localPort) {
-          // Deliver to parent-side ClusterPort - pass raw parts so stores are preserved.
-          try {
-            localPort._deliver(decodePayload(msg.payload));
-          } catch (err: unknown) {
-            console.error(`fino:cluster PORT_MSG decode error (parent port): ${err}`);
-          }
-          break;
+        for (const ready of this.#takeOrderedPortMessages(msg)) {
+          this.#deliverPortMessage(ready);
         }
-        const relay = this.#relays.get(msg.toPort);
-        if (relay && !relay.closed) {
-          // Deliver to child thread realm. Deserialize with stores so transferred
-          // ArrayBuffers are reconstructed before being forwarded.
-          try {
-            const parts = decodePayload(msg.payload);
-            const [mainBuf, ...stores] = parts;
-            if (mainBuf) {
-              const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
-                mainBuf,
-                stores.length > 0 ? stores : undefined,
-              );
-              this.#sendToThread(relay.threadHandle, value);
-            }
-          } catch (err: unknown) {
-            console.error(`fino:cluster PORT_MSG decode error (relay): ${err}`);
-          }
+        const pendingExit = this.#pendingRealmExits.get(msg.fromPort);
+        if (pendingExit && this.#deliveredPortSequence(msg.fromPort) >= pendingExit.lastPortSeq) {
+          this.#pendingRealmExits.delete(msg.fromPort);
+          this.#deliverRealmExit(pendingExit);
         }
         break;
       }
@@ -537,13 +527,70 @@ export class ClusterClient {
         break;
     }
   }
+  /** Buffer out-of-order streams and return the newly contiguous frames. */
+  #takeOrderedPortMessages(msg: PortMessage): PortMessage[] {
+    let state = this.#inboundPortSequences.get(msg.fromPort);
+    if (!state) {
+      state = { next: 1, pending: new Map() };
+      this.#inboundPortSequences.set(msg.fromPort, state);
+    }
+    if (msg.seq < state.next || state.pending.has(msg.seq)) return [];
+    state.pending.set(msg.seq, msg);
+    const ready: PortMessage[] = [];
+    while (state.pending.has(state.next)) {
+      ready.push(state.pending.get(state.next)!);
+      state.pending.delete(state.next++);
+    }
+    return ready;
+  }
+  #deliveredPortSequence(fromPort: string): number {
+    return (this.#inboundPortSequences.get(fromPort)?.next ?? 1) - 1;
+  }
+  /** Deliver one ordered port frame to its local parent port or child relay. */
+  #deliverPortMessage(msg: PortMessage): void {
+    const localPort = this.#portHandlers.get(msg.toPort);
+    if (localPort) {
+      try {
+        localPort._deliver(msg.payload);
+      } catch (err: unknown) {
+        console.error(`fino:cluster PORT_MSG decode error (parent port): ${err}`);
+      }
+      return;
+    }
+    const relay = this.#relays.get(msg.toPort);
+    if (!relay || relay.closed) return;
+    try {
+      const parts = msg.payload;
+      const [mainBuf, ...stores] = parts;
+      if (mainBuf) {
+        const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+          mainBuf,
+          stores.length > 0 ? stores : undefined,
+        );
+        this.#sendToRealm(relay.realmHandle, value);
+      }
+    } catch (err: unknown) {
+      console.error(`fino:cluster PORT_MSG decode error (relay): ${err}`);
+    }
+  }
+  /** Notify or buffer the parent-side waiter after its final message arrived. */
+  #deliverRealmExit(msg: RealmExitMessage): void {
+    const handler = this.#exitHandlers.get(msg.realmId);
+    if (handler) {
+      this.#exitHandlers.delete(msg.realmId);
+      handler(msg.error);
+    } else {
+      this.#exitedRealms.set(msg.realmId, msg.error);
+    }
+    this.#pendingRealmExits.delete(msg.realmId);
+    this.#inboundPortSequences.delete(msg.realmId);
+  }
   /**
-   * Create a child thread realm for an inbound SPAWN.
+   * Create a reactor-pooled child Realm for an inbound SPAWN.
    *
-   * Mints a childPortId, starts the realm via `createThreadContext`, registers
-   * a relay for it, acknowledges with a successful SPAWN_ACK, and kicks off
-   * the relay loop. Errors thrown here are converted to a failed SPAWN_ACK by
-   * the caller.
+   * Mints a childPortId, submits the isolate to the process reactor pool,
+   * registers a relay, acknowledges with a successful SPAWN_ACK, and starts
+   * the relay loop.
    *
    * @internal
    */
@@ -556,24 +603,26 @@ export class ClusterClient {
     >,
   ): Promise<void> {
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
-    const bootstrapData =
-      msg.config.bootstrapData === undefined ? undefined : JSON.stringify(msg.config.bootstrapData);
-    const handle = createThreadContext(
+    const scheduled = createScheduledRealm(
       msg.config.root ?? '',
       msg.config.entry,
-      JSON.stringify(msg.config.rules),
+      msg.config.rules,
       false,
       undefined,
-      bootstrapData,
-    ) as number;
-    const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
+      msg.config.bootstrapData,
+      false,
+    );
+    registerReactorWake(scheduled.owner, scheduled.wakeFd);
     const relay: RealmRelay = {
       childPortId,
       parentPortId: msg.parentPortId,
-      threadHandle: handle,
-      wakeReadFd,
+      realmHandle: scheduled.handle,
+      wakeReadFd: scheduled.portWakeFd,
+      completionFd: scheduled.completionFd,
       closed: false,
+      finalized: false,
       pendingSends: [],
+      lastPortSeq: 0,
     };
     this.#relays.set(childPortId, relay);
     // Send SPAWN_ACK so the parent's ClusterPort gets the childPortId
@@ -583,49 +632,56 @@ export class ClusterClient {
       childPortId,
       ok: true,
     });
-    // Start relay loop: forward thread port messages to the parent via PORT_MSG
+    // Forward scheduled-port messages to the parent via PORT_MSG.
     this.#runRelayLoop(relay);
   }
   /**
    * Drive a child realm's relay until the realm finishes.
    *
-   * Two mechanisms run concurrently: a zero-delay interval steps the thread
-   * context each tick (so the child's timers and microtasks advance even with
-   * no traffic), and an async loop awaits the realm's wake-fd to drain
-   * outbound thread-port messages promptly. `finalize` runs exactly once —
-   * on realm completion, step error, `__terminate`, or wake-fd failure — and
-   * sends REALM_EXIT to the seed after any in-flight PORT_MSG sends settle,
-   * carrying the step error or a recorded `__call_error` message if present.
+   * The process reactor drives the child isolate. This relay waits only for
+   * outbound port traffic and the scalar completion signal, then sends
+   * REALM_EXIT after any in-flight PORT_MSG sends settle.
    *
    * @internal
    */
   async #runRelayLoop(relay: RealmRelay): Promise<void> {
-    const { wakeReadFd, threadHandle } = relay;
+    const { wakeReadFd, completionFd, realmHandle } = relay;
     let stepError: string | undefined;
-    const finalize = () => {
-      if (relay.closed) return;
+    const finalize = (notify = true) => {
+      if (relay.finalized) return;
+      relay.finalized = true;
       this.#drainInbound(relay, () => {});
       relay.closed = true;
+      relay.cancel = undefined;
       removeRead(wakeReadFd);
+      removeRead(completionFd);
       this.#relays.delete(relay.childPortId);
+      this.#inboundPortSequences.delete(relay.parentPortId);
+      const status = takeScheduledRealmStatus(realmHandle);
+      if (status.kind === 'error') stepError = status.error ?? 'remote Realm failed';
+      closeScheduledRealm(realmHandle);
       const msg: ClusterMessage =
         stepError !== undefined
           ? {
               t: 'REALM_EXIT',
               realmId: relay.childPortId,
+              lastPortSeq: relay.lastPortSeq,
               error: stepError,
             }
           : relay.lastCallError !== undefined
             ? {
                 t: 'REALM_EXIT',
                 realmId: relay.childPortId,
+                lastPortSeq: relay.lastPortSeq,
                 error: relay.lastCallError,
               }
             : {
                 t: 'REALM_EXIT',
                 realmId: relay.childPortId,
+                lastPortSeq: relay.lastPortSeq,
               };
       const pending = relay.pendingSends.splice(0);
+      if (!notify) return;
       Promise.allSettled(pending)
         .then(() => {
           this.#transport.send('__seed__', msg);
@@ -634,35 +690,21 @@ export class ClusterClient {
           this.#transport.send('__seed__', msg);
         });
     };
-    // Drive the child realm on every event-loop tick so that timers, microtasks,
-    // and outbound port writes advance even when no inbound message arrives.
-    // This mirrors how _stepChildren() works for embedded/thread realms.
-    const stepInterval = setInterval(() => {
-      if (relay.closed) {
-        clearInterval(stepInterval);
-        return;
-      }
-      try {
-        const alive = (stepThreadContext(threadHandle) as boolean) !== false;
-        if (!relay.closed) this.#drainInbound(relay, finalize);
-        if (!alive) finalize();
-      } catch (err: unknown) {
-        stepError = String(err);
-        finalize();
-      }
-    }, 0);
-    // Drain inbound messages from the parent whenever the wake-fd fires.
-    // Use try-finally so finalize() always runs even if readable() throws
-    // (e.g., fd closed externally), ensuring REALM_EXIT is always sent.
+    relay.cancel = () => finalize(false);
     try {
       while (!relay.closed) {
-        await readable(wakeReadFd);
+        const source = await Promise.race([
+          readable(wakeReadFd).then(() => 'message' as const),
+          readable(completionFd).then(() => 'complete' as const),
+        ]);
         if (relay.closed) break;
+        if (source === 'complete') break;
         this.#drainInbound(relay, finalize);
       }
+    } catch (err: unknown) {
+      stepError = String(err);
     } finally {
       finalize();
-      clearInterval(stepInterval);
     }
   }
   /**
@@ -679,8 +721,7 @@ export class ClusterClient {
    * @internal
    */
   #drainInbound(relay: RealmRelay, finalize: () => void): void {
-    // threadPortRecv returns [[Uint8Array[], portInfos[]], ...]
-    const messages = (threadPortRecv as (h: number) => unknown)(relay.threadHandle) as any[];
+    const messages = scheduledRealmRecv(relay.realmHandle);
     for (const [byteArr] of messages) {
       try {
         const parts = byteArr as Uint8Array[];
@@ -711,12 +752,13 @@ export class ClusterClient {
           return;
         }
         // Forward raw serialized bytes (preserves stores for ArrayBuffer transfers).
-        const payload = encodePayload(parts);
+        const seq = ++relay.lastPortSeq;
         const sent = this.#transport.send('__seed__', {
           t: 'PORT_MSG',
           fromPort: relay.childPortId,
           toPort: relay.parentPortId,
-          payload,
+          payload: parts,
+          seq,
         });
         if (sent instanceof Promise) relay.pendingSends.push(sent);
       } catch (err: unknown) {
@@ -725,22 +767,17 @@ export class ClusterClient {
     }
   }
   /**
-   * Serialize a value and push it into a child thread realm's inbound thread
-   * port. Used for control messages like `__terminate` and for delivering
+   * Serialize a value and push it into a child Realm's scheduled port. Used for
+   * control messages like `__terminate` and for delivering
    * inbound PORT_MSG payloads after transferred buffers have been
    * reconstructed; the value is re-serialized as a single part with no
    * separate transfer stores.
    *
    * @internal
    */
-  #sendToThread(handle: number, value: unknown): void {
+  #sendToRealm(handle: number, value: unknown): void {
     const bytes = (serialize as (v: unknown) => Uint8Array[])(value)[0]!;
-    (threadPortSend as (h: number, b: Uint8Array, s: Uint8Array[], p: unknown[]) => void)(
-      handle,
-      bytes,
-      [],
-      [],
-    );
+    scheduledRealmSend(handle, bytes, [], []);
   }
 }
 // ---------------------------------------------------------------------------

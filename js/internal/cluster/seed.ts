@@ -39,6 +39,12 @@ import type { ClusterSeedTransport } from './transport.ts';
 import { type ClusterMessage } from './protocol.ts';
 import { RealmRegistry } from './registry.ts';
 import { env } from 'internal:process';
+type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
+type RealmExitMessage = Extract<ClusterMessage, { t: 'REALM_EXIT' }>;
+interface PortSequenceState {
+  next: number;
+  pending: Map<number, PortMessage>;
+}
 /** Default milliseconds between heartbeat timeout sweeps. */
 const HEARTBEAT_INTERVAL_MS = 2500;
 /** Default milliseconds of heartbeat silence before a peer is declared down. */
@@ -174,6 +180,10 @@ export class SeedServer {
    * @internal
    */
   #portNodes = new Map<string, string>();
+  /** Per-source ordering for PORT_MSG frames received on independent streams. */
+  #portSequences = new Map<string, PortSequenceState>();
+  /** Realm exits held until their declared final port message is routed. */
+  #pendingRealmExits = new Map<string, RealmExitMessage>();
   /**
    * Interval handle for the periodic heartbeat sweep.
    *
@@ -236,6 +246,8 @@ export class SeedServer {
       clearInterval(this.#heartbeatTimer);
       this.#heartbeatTimer = null;
     }
+    this.#portSequences.clear();
+    this.#pendingRealmExits.clear();
     this.#transport.close();
   }
   /**
@@ -348,36 +360,71 @@ export class SeedServer {
         break;
       }
       case 'REALM_EXIT': {
-        const portId = msg.realmId;
-        const parentPortId = this.#registry.getParentPortId(portId);
-        const removed = this.#registry.exit(portId);
-        if (parentPortId) {
-          const parentHostId = this.#portNodes.get(parentPortId);
-          if (parentHostId) this.#transport.send(parentHostId, msg);
-        }
-        // Propagate TERMINATE to every node hosting a descendant of the exiting
-        // realm, mirroring the crash path in #handleNodeDown.  The exiting realm
-        // itself has already left - skip it (p !== portId) to avoid redundant
-        // TERMINATE delivery to a relay that is already closed.
-        for (const p of removed) {
-          const hostNodeId = this.#portNodes.get(p);
-          this.#portNodes.delete(p);
-          if (hostNodeId && p !== portId) {
-            this.#transport.send(hostNodeId, {
-              t: 'TERMINATE',
-              realmId: p,
-            });
-          }
+        if (this.#routedPortSequence(msg.realmId) < msg.lastPortSeq) {
+          this.#pendingRealmExits.set(msg.realmId, msg);
+        } else {
+          this.#handleRealmExit(msg);
         }
         break;
       }
       case 'PORT_MSG': {
-        const targetNodeId = this.#portNodes.get(msg.toPort);
-        if (targetNodeId) this.#transport.send(targetNodeId, msg);
+        for (const ready of this.#takeOrderedPortMessages(msg)) {
+          const targetNodeId = this.#portNodes.get(ready.toPort);
+          if (targetNodeId) this.#transport.send(targetNodeId, ready);
+        }
+        const pendingExit = this.#pendingRealmExits.get(msg.fromPort);
+        if (
+          pendingExit &&
+          this.#routedPortSequence(msg.fromPort) >= pendingExit.lastPortSeq
+        ) {
+          this.#pendingRealmExits.delete(msg.fromPort);
+          this.#handleRealmExit(pendingExit);
+        }
         break;
       }
       default:
         break;
+    }
+  }
+  /** Buffer frames until the next sequence for a source port is available. */
+  #takeOrderedPortMessages(msg: PortMessage): PortMessage[] {
+    let state = this.#portSequences.get(msg.fromPort);
+    if (!state) {
+      state = { next: 1, pending: new Map() };
+      this.#portSequences.set(msg.fromPort, state);
+    }
+    if (msg.seq < state.next || state.pending.has(msg.seq)) return [];
+    state.pending.set(msg.seq, msg);
+    const ready: PortMessage[] = [];
+    while (state.pending.has(state.next)) {
+      ready.push(state.pending.get(state.next)!);
+      state.pending.delete(state.next++);
+    }
+    return ready;
+  }
+  #routedPortSequence(fromPort: string): number {
+    return (this.#portSequences.get(fromPort)?.next ?? 1) - 1;
+  }
+  /** Forward an ordered exit and remove the exited realm subtree. */
+  #handleRealmExit(msg: RealmExitMessage): void {
+    const portId = msg.realmId;
+    const parentPortId = this.#registry.getParentPortId(portId);
+    const removed = this.#registry.exit(portId);
+    if (parentPortId) {
+      const parentHostId = this.#portNodes.get(parentPortId);
+      if (parentHostId) this.#transport.send(parentHostId, msg);
+    }
+    for (const p of removed) {
+      const hostNodeId = this.#portNodes.get(p);
+      this.#portNodes.delete(p);
+      this.#portSequences.delete(p);
+      this.#pendingRealmExits.delete(p);
+      if (hostNodeId && p !== portId) {
+        this.#transport.send(hostNodeId, {
+          t: 'TERMINATE',
+          realmId: p,
+        });
+      }
     }
   }
   /**
@@ -415,6 +462,8 @@ export class SeedServer {
     const affected = this.#registry.nodeDown(nodeId);
     for (const { portId, parentPortId } of affected) {
       this.#portNodes.delete(portId);
+      this.#portSequences.delete(portId);
+      this.#pendingRealmExits.delete(portId);
       // Notify the HOST OF THE PARENT PORT that its child is gone.
       // The dead node itself cannot receive messages.
       if (parentPortId) {

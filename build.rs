@@ -13,6 +13,10 @@ use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
 fn main() {
     println!("cargo:rerun-if-changed=js/");
     println!("cargo:rerun-if-changed=src/profiler/binding.cc");
+    println!("cargo:rerun-if-changed=src/v8_threading/binding.cc");
+    println!("cargo:rerun-if-env-changed=FINO_PROTOCOL_DEPS_PREFIX");
+
+    link_linux_protocol_dependencies();
 
     // Compile the CpuProfiler C++ shim against V8 headers.
     let v8_include = find_v8_include();
@@ -27,6 +31,7 @@ fn main() {
         .include(&v8_include)
         .include(&v8_src)
         .file("src/profiler/binding.cc")
+        .file("src/v8_threading/binding.cc")
         .compile("fino_profiler_binding");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -36,6 +41,74 @@ fn main() {
     let js_out = Path::new(&out_dir).join("js");
 
     process_dir(&js_src, &js_src, &js_out);
+}
+
+fn link_linux_protocol_dependencies() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return;
+    }
+
+    let Ok(prefix) = env::var("FINO_PROTOCOL_DEPS_PREFIX") else {
+        return;
+    };
+    let lib_dir = PathBuf::from(prefix).join("lib");
+    let libraries = [
+        "ngtcp2_crypto_ossl",
+        "ngtcp2",
+        "nghttp3",
+        "nghttp2",
+        "ssl",
+        "crypto",
+    ];
+
+    for library in libraries {
+        let archive = lib_dir.join(format!("lib{library}.a"));
+        if !archive.is_file() {
+            panic!("FINO_PROTOCOL_DEPS_PREFIX is missing {}", archive.display());
+        }
+    }
+
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    for library in libraries {
+        println!("cargo:rustc-link-lib=static:+whole-archive={library}");
+    }
+
+    // `dlopen(NULL, ...)` can only discover executable symbols that appear in
+    // the ELF dynamic symbol table. Export the protocol APIs without exposing
+    // every Rust and V8 symbol from the executable.
+    for pattern in [
+        "BIO_*",
+        "BN_*",
+        "CRYPTO_*",
+        "d2i_*",
+        "EC_KEY_*",
+        "ECDSA_*",
+        "EC_POINT_*",
+        "ERR_*",
+        "EVP_*",
+        "HMAC",
+        "i2d_*",
+        "nghttp2_*",
+        "nghttp3_*",
+        "ngtcp2_*",
+        "OBJ_*",
+        "OSSL_QUIC_*",
+        "PEM_*",
+        "PKCS5_*",
+        "PKCS8_*",
+        "RAND_*",
+        "RSA_*",
+        "SSL_*",
+        "TLS_*",
+        "X509_*",
+    ] {
+        println!("cargo:rustc-link-arg=-Wl,--export-dynamic-symbol={pattern}");
+    }
+
+    // nghttp2 and nghttp3 both vendor sfparse. Shared builds keep those
+    // support symbols private to each DSO, while whole-archive static linking
+    // exposes the identical definitions to one link.
+    println!("cargo:rustc-link-arg=-Wl,--allow-multiple-definition");
 }
 
 /// Recursively process a directory: strip TypeScript files and copy .mjs files as-is.

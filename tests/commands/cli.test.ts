@@ -397,6 +397,35 @@ describe('CLI commands', () => {
       },
     );
   });
+  it('runs every CLI command inside a process-reactor workload', async (t) => {
+    await withTempProject(
+      {
+        'tasks/location.ts': [
+          "import { task } from 'fino:task';",
+          "import { currentWorkloadOwner, usesProcessReadiness } from 'internal:scheduler-native';",
+          'export default task({',
+          "  name: 'location',",
+          '  run: async (_input, ctx) => {',
+          "    const leaked = Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__fino'));",
+          '    await ctx.writer.writeText(',
+          '      `reactor:${usesProcessReadiness()}:${currentWorkloadOwner() > 0}:${leaked.length}\\n`,',
+          '    );',
+          '  }',
+          '});',
+          '',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stdout, stderr, result } = await runCli(['task', 'location'], { cwd: dir });
+        t.equal(result.code, 0, 'project task exits successfully');
+        t.equal(stderr, '', 'project task does not write stderr');
+        t.ok(
+          stdout.includes('reactor:true:true:0'),
+          'project task uses host-owned scheduler state without leaking globals',
+        );
+      },
+    );
+  });
   it('loads multiple task files as sibling commands', async (t) => {
     await withTempProject(
       {

@@ -5,8 +5,8 @@
  * stores `{task, input}`, so anything pushed survives a restart and runs
  * wherever that task name is registered. Task instances are worker
  * definitions, registered separately from pushes — inline (`process()`) to
- * run on this realm's loop, or as an exclusive worker pool (`workers()`)
- * whose entry module default-exports a `Task`.
+ * run on this realm's loop, or in reactor-pooled isolates (`workers()`) whose
+ * entry module default-exports a `Task`.
  *
  * Delivery is **at-least-once**: a crash after side effects or an expired
  * lease reruns the job, so handlers must be idempotent. `fino:task/durable`
@@ -809,9 +809,9 @@ export class Jobs {
     });
   }
   /**
-   * Register a pool processor: an exclusive worker pool whose entry module
-   * default-exports a `Task` (children included). Each job runs in a fresh
-   * worker realm.
+   * Register a reactor-isolate processor whose entry module default-exports a
+   * `Task` (children included). Each job runs in a fresh Realm scheduled by
+   * the process-wide reactor pool.
    *
    * ```ts no_run
    * import { Jobs } from 'fino:jobs';
@@ -823,7 +823,7 @@ export class Jobs {
   async workers(opts: {
     entry: string;
     size?: number;
-    realm?: Omit<RealmOptions, 'entry' | 'thread'>;
+    realm?: Omit<RealmOptions, 'entry'>;
   }): Promise<void> {
     if (this.#control !== null) {
       await this.#control.registerWorkers({

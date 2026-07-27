@@ -1,0 +1,51 @@
+name: Download artifact
+description: Download a workflow artifact with retries for transient endpoint failures
+
+inputs:
+  name:
+    description: Artifact name
+    required: true
+  path:
+    description: Destination path
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download artifact
+      id: first-attempt
+      continue-on-error: true
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+
+    - name: Wait before retrying
+      if: steps.first-attempt.outcome == 'failure'
+      shell: bash
+      run: sleep 2
+
+    - name: Retry artifact download
+      id: second-attempt
+      if: steps.first-attempt.outcome == 'failure'
+      continue-on-error: true
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+
+    - name: Wait before retrying again
+      if: >-
+        steps.first-attempt.outcome == 'failure' &&
+        steps.second-attempt.outcome == 'failure'
+      shell: bash
+      run: sleep 5
+
+    - name: Retry artifact download again
+      if: >-
+        steps.first-attempt.outcome == 'failure' &&
+        steps.second-attempt.outcome == 'failure'
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}

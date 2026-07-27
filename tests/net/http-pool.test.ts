@@ -37,6 +37,12 @@ const skipGlobalH3 =
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
   throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
 }
+if (
+  (!quicAvailable || !h3Available || !tlsAvailable) &&
+  (globalThis as any).process?.env?.FINO_REQUIRE_H3 === '1'
+) {
+  throw new Error('FINO_REQUIRE_H3=1 but QUIC + libnghttp3 + OpenSSL are not available');
+}
 const skip = !h2Available && 'requires libnghttp2';
 // ---------------------------------------------------------------------------
 // Helper: connect a pool entry to a local h2c serveHttp() server

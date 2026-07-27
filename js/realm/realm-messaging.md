@@ -3,7 +3,9 @@ weight: 13
 ---
 # Messaging
 
-Every realm has a parent-side port exposed as `realm.port`. The type depends on the execution mode — `MessagePort` for embedded realms, and transport-backed equivalents for thread, process, and remote realms — but all share the same `addEventListener` / `postMessage` / `start` / `close` interface.
+Every realm has a parent-side port exposed as `realm.port`. Reactor-pooled,
+process, and remote transports all share the same `addEventListener` /
+`postMessage` / `start` / `close` interface.
 
 ## Parent-side port
 
@@ -29,12 +31,13 @@ Calling `start()` is required to begin receiving messages. As a shortcut, assign
 realm.port.onmessage = (ev) => console.log(ev.data);
 ```
 
-## Child-side port — embedded realms
+## Child-side port — reactor-pooled realms
 
-In an embedded child realm, the child accesses its port from `fino:realm/self`:
+In a reactor-pooled child realm, the child accesses its port from
+`fino:realm/self`:
 
 ```ts
-// child entry (embedded realm)
+// child entry
 import { port } from 'fino:realm/self';
 
 port?.addEventListener('message', (ev) => {
@@ -43,14 +46,16 @@ port?.addEventListener('message', (ev) => {
 port?.start();
 ```
 
-`port` is `undefined` when the child was not given a port at construction time — this is the case for root realms and for thread and process realms. Always guard with `port?.` unless you are certain the child is embedded and was constructed without custom `input`/`output` ports.
+`port` is `undefined` in root and process realms. Always guard with `port?.`
+unless the module only runs as a reactor-pooled child.
 
-## Child-side port — thread and process realms
+## Child-side port — process realms
 
-Thread and process realms do not use `fino:realm/self`. The child accesses its parent-side channel through `globalThis.realmPort`, which is injected by the runtime bootstrap:
+Process realms access their parent-side channel through
+`globalThis.realmPort`, which is injected by the runtime bootstrap:
 
 ```ts
-// child entry (thread or process realm)
+// child entry (process realm)
 globalThis.realmPort.addEventListener('message', (ev) => {
   globalThis.realmPort.postMessage({ got: ev.data });
 });
@@ -71,27 +76,13 @@ const { port1, port2 } = new MessageChannel();
 realm.port.postMessage('here is your extra channel', [port1]);
 ```
 
-You can also supply custom ports at realm construction time when you need to manage the channel yourself:
-
-```ts
-import { MessageChannel } from 'fino:realm/messaging';
-
-const { port1, port2 } = new MessageChannel();
-const realm = new Realm({
-  entry: './worker.ts',
-  input: port1,   // parent keeps port1
-  output: port2,  // child receives port2 (available via fino:realm/self)
-});
-```
-
 ## Transfer rules
 
 What can be included in a `postMessage` transfer list depends on the realm type:
 
 | Realm type | `ArrayBuffer` transfer | `MessagePort` transfer |
 | --- | --- | --- |
-| Embedded (same-isolate) | Yes — neutered on sender | Yes — neutered on sender, re-entangled on receiver |
-| Thread | Yes | Yes |
+| Reactor-pooled | Yes | Yes |
 | Process | Yes | No — throws `TypeError` |
 | Remote | No stable contract | No stable contract |
 
@@ -116,7 +107,10 @@ bc.onmessage = (ev) => {
 };
 ```
 
-Delivery is asynchronous. The sender does not receive its own messages. `BroadcastChannel` works across embedded, thread, and process realms — the Rust-side broadcast registry fans out serialized bytes to every subscriber on the same channel name.
+Delivery is asynchronous. The sender does not receive its own messages.
+`BroadcastChannel` works across reactor-pooled and process realms — the
+runtime broadcast registry fans out serialized bytes to every subscriber on
+the same channel name.
 
 `BroadcastChannel` does not accept transfer lists. Passing a function or symbol in `postMessage` throws a `DataCloneError` synchronously. Messages that cannot be deserialized on the receiver arrive as `messageerror` events with `data === null`.
 

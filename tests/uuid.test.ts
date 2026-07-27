@@ -137,8 +137,9 @@ describe('fino:uuid — toBytes and equals', () => {
   it('toBytes is a copy', (t) => {
     const id = v4();
     const b = id.toBytes();
-    b[0] = 255;
-    t.ok(id.toBytes()[0] !== 255);
+    const original = b[0]!;
+    b[0] ^= 255;
+    t.equal(id.toBytes()[0], original, 'mutating returned bytes does not change UUID');
   });
   it('equals returns true for identical UUIDs', (t) => {
     const s = v4().toString();

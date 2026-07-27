@@ -156,8 +156,7 @@ interface IoUringLoop {
   cqOff: CqRingOffsets;
   sqEntries: number;
   cqEntries: number;
-  sqTailLocal: number;
-  sqSubmittedLocal: number;
+  pendingSubmissions: number;
   timerBufs: Map<number, ArrayBuffer>;
   waitTimerBufs: Map<number, ArrayBuffer>;
   canceledTimers: Set<number>;
@@ -183,6 +182,7 @@ interface IoUringLoop {
   persistentReads: Set<number>;
   signalFds: Map<number, number>;
   signalFdToSig: Map<number, number>;
+  signalFdToToken: Map<number, number>;
 }
 /** kqueue-compatible event emitted by drainCqes(). */
 interface CqeEvent {
@@ -206,6 +206,10 @@ const lib = dlopen('libc.so.6', {
   syscall: {
     parameters: ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'],
     result: 'i64',
+  },
+  __errno_location: {
+    parameters: [],
+    result: 'pointer',
   },
   mmap: {
     parameters: ['pointer', 'usize', 'i32', 'i32', 'i32', 'i64'],
@@ -347,6 +351,7 @@ const SIGNALFD_SIGINFO_SIZE = 128;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+const EINTR = 4;
 function syscall(
   nr: bigint,
   a1: bigint | number = 0n,
@@ -365,6 +370,24 @@ function syscall(
     BigInt(a5),
     BigInt(a6),
   );
+}
+function errno(): number {
+  return Pointer.readI32(lib.symbols.__errno_location(), 0);
+}
+function enter(ringFd: number, toSubmit: number, minComplete: number, flags: number): number {
+  let result: number;
+  do {
+    result = Number(
+      syscall(
+        SYS_IO_URING_ENTER,
+        BigInt(ringFd),
+        BigInt(toSubmit),
+        BigInt(minComplete),
+        BigInt(flags),
+      ),
+    );
+  } while (result < 0 && errno() === EINTR);
+  return result;
 }
 function bufPtr(ab: ArrayBuffer): bigint {
   return Pointer.addr(ab);
@@ -481,8 +504,7 @@ export function create(entries: number = 256): IoUringLoop {
     cqOff,
     sqEntries,
     cqEntries,
-    sqTailLocal: 0,
-    sqSubmittedLocal: 0,
+    pendingSubmissions: 0,
     timerBufs: new Map(),
     waitTimerBufs: new Map(),
     canceledTimers: new Set(),
@@ -496,6 +518,7 @@ export function create(entries: number = 256): IoUringLoop {
     persistentReads: new Set(),
     signalFds: new Map(),
     signalFdToSig: new Map(),
+    signalFdToToken: new Map(),
   };
 }
 // ---------------------------------------------------------------------------
@@ -511,11 +534,19 @@ function submitSqe(
   userData: bigint,
   pollEvents: number,
 ): void {
-  if (loop.sqTailLocal - loop.sqSubmittedLocal >= loop.sqEntries) {
+  let tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
+  let head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
+  if ((tail - head) >>> 0 >= loop.sqEntries) {
     submitPending(loop);
+    tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
+    head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
+    if ((tail - head) >>> 0 >= loop.sqEntries) {
+      const ret = enter(loop.ringFd, 0, 1, IORING_ENTER_GETEVENTS);
+      if (ret < 0) throw new Error(`io_uring_enter (capacity wait) failed: ${ret}`);
+      tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
+    }
   }
   const mask = Pointer.readU32(loop.sqRing, loop.sqOff.ring_mask);
-  const tail = loop.sqTailLocal;
   const index = tail & mask;
   const sqeBase = index * 64;
   // Zero the SQE slot first
@@ -532,17 +563,17 @@ function submitSqe(
   // Write the index into the SQ array
   const arrayOff = loop.sqOff.array + index * 4;
   Pointer.writeU32(loop.sqRing, arrayOff, index);
-  loop.sqTailLocal = tail + 1;
   // Publish the new tail
-  Pointer.writeU32(loop.sqRing, loop.sqOff.tail, loop.sqTailLocal);
+  Pointer.writeU32(loop.sqRing, loop.sqOff.tail, (tail + 1) >>> 0);
+  loop.pendingSubmissions++;
 }
 function submitPending(loop: IoUringLoop): void {
-  let toSubmit = loop.sqTailLocal - loop.sqSubmittedLocal;
+  let toSubmit = loop.pendingSubmissions;
   while (toSubmit > 0) {
-    const ret = Number(syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), BigInt(toSubmit), 0n, 0n));
+    const ret = enter(loop.ringFd, toSubmit, 0, 0);
     if (ret < 0) throw new Error(`io_uring_enter (submit) failed: ${ret}`);
     if (ret === 0) throw new Error('io_uring_enter (submit) made no progress');
-    loop.sqSubmittedLocal += ret;
+    loop.pendingSubmissions -= ret;
     toSubmit -= ret;
   }
 }
@@ -609,7 +640,7 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
         );
       }
       filter = EVFILT_SIGNAL;
-      ident = signo;
+      ident = loop.signalFdToToken.get(ident) ?? signo;
     } else if (userData.kind === USER_DATA_READ) {
       const poll = loop.readPolls.get(ident);
       if (poll !== undefined) {
@@ -632,15 +663,16 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
       if (poll === undefined) {
         head++;
         continue;
+      } else {
+        loop.writePolls.delete(ident);
+        if (loop.currentWritePolls.get(poll.fd) !== ident) {
+          head++;
+          continue;
+        }
+        loop.currentWritePolls.delete(poll.fd);
+        ident = poll.userData;
+        filter = EVFILT_WRITE;
       }
-      loop.writePolls.delete(ident);
-      if (loop.currentWritePolls.get(poll.fd) !== ident) {
-        head++;
-        continue;
-      }
-      loop.currentWritePolls.delete(poll.fd);
-      ident = poll.userData;
-      filter = EVFILT_WRITE;
     } else {
       // Legacy/unexpected POLL_ADD completion — fall back to the poll mask.
       filter = res & POLLIN ? EVFILT_READ : EVFILT_WRITE;
@@ -782,7 +814,7 @@ export function removeWrite(loop: IoUringLoop, fd: number): void {
  * uring.addSignal(loop, 15);
  * ```
  */
-export function addSignal(loop: IoUringLoop, signo: number): void {
+export function addSignal(loop: IoUringLoop, signo: number, userData: number = signo): void {
   if (loop.signalFds.has(signo)) return;
   // Build glibc sigset_t: bit (signo-1) set.
   const sigset = new ArrayBuffer(GLIBC_SIGSET_SIZE);
@@ -798,6 +830,7 @@ export function addSignal(loop: IoUringLoop, signo: number): void {
   if (fd < 0) throw new Error(`signalfd4 failed: ${fd}`);
   loop.signalFds.set(signo, fd);
   loop.signalFdToSig.set(fd, signo);
+  loop.signalFdToToken.set(fd, userData);
   // Register POLL_ADD on the signalfd; userData = fd (used as drainCqes lookup key)
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_SIGNAL, fd), POLLIN);
 }
@@ -814,6 +847,7 @@ export function removeSignal(loop: IoUringLoop, signo: number): void {
   if (fd === undefined) return;
   loop.signalFds.delete(signo);
   loop.signalFdToSig.delete(fd);
+  loop.signalFdToToken.delete(fd);
   lib.symbols.close(fd);
 }
 /**
@@ -890,6 +924,18 @@ export function poll(loop: IoUringLoop): CqeEvent[] {
   return drainCqes(loop);
 }
 /**
+ * Submit this isolate's queued SQEs without harvesting completions.
+ *
+ * This makes queued registrations visible to the kernel without waiting.
+ *
+ * @internal
+ */
+export function flush(loop: IoUringLoop): number {
+  const submissions = loop.pendingSubmissions;
+  submitPending(loop);
+  return submissions;
+}
+/**
  * Blocking wait — block until at least 1 CQE is available or timeout expires.
  * `timeoutMs = null` → block indefinitely.
  *
@@ -928,9 +974,7 @@ export function wait(loop: IoUringLoop, timeoutMs: number | null = null): CqeEve
     );
   }
   submitPending(loop);
-  const ret = Number(
-    syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), 0n, 1n, IORING_ENTER_GETEVENTS),
-  );
+  const ret = enter(loop.ringFd, 0, 1, IORING_ENTER_GETEVENTS);
   if (ret < 0) throw new Error(`io_uring_enter (wait) failed: ${ret}`);
   return drainCqes(loop);
 }
@@ -1076,8 +1120,8 @@ export function destroy(loop: IoUringLoop): void {
   lib.symbols.close(loop.ringFd);
 }
 /**
- * The io_uring ring fd. It polls readable when completion-queue entries are
- * pending, so a parent loop can watch it to wake on this loop's activity.
+ * The thread reactor's io_uring ring fd. It polls readable when completion
+ * queue entries are pending.
  *
  * ```typescript no_run
  * import * as uring from 'internal:runtime/io_uring';

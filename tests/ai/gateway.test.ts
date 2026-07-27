@@ -108,7 +108,6 @@ describe('AI gateway policy', () => {
     const facade = modelFacade(() => active, { specifier: 'app:model' });
     const call = async () => {
       const realm = new Realm<() => Promise<string>>({
-        thread: true,
         entry: new URL('../realm/fixtures/model-facade-call.ts', import.meta.url).pathname,
         overrides: ImportMap.deny([
           {
