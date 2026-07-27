@@ -12,6 +12,13 @@ async function rejection(run: () => Promise<unknown>): Promise<unknown> {
   }
   throw new Error('expected rejection');
 }
+function strictProcessExecAvailable(): boolean {
+  const capabilities = processSandboxCapabilities();
+  const requiredFeature = capabilities.platform === 'linux' ? 'landlock' : 'macos-seatbelt';
+  return capabilities.features.some(
+    (feature) => feature.name === requiredFeature && feature.available,
+  );
+}
 describe('AI sandbox', () => {
   it('denies ambient modules and network globals by default', async (t) => {
     const events: SandboxAuditEvent[] = [];
@@ -275,7 +282,7 @@ describe('AI sandbox', () => {
       { subprocess: { commands: ['/bin/echo'] } },
     );
     try {
-      if (processSandboxCapabilities().strictAvailable) {
+      if (strictProcessExecAvailable()) {
         const result = (await sandbox.call()) as {
           code: number | null;
           stdout: string;
@@ -286,7 +293,7 @@ describe('AI sandbox', () => {
         const failedClosed = await rejection(() => sandbox.call());
         t.ok(
           /strict sandbox/i.test(String(failedClosed)),
-          `strict sandbox failure: ${String(failedClosed)}`,
+          `strict subprocess sandbox fails closed without its platform mechanism: ${String(failedClosed)}`,
         );
       }
     } finally {
@@ -294,10 +301,6 @@ describe('AI sandbox', () => {
     }
   });
   it('bounds combined subprocess stdout and stderr', async (t) => {
-    if (!processSandboxCapabilities().strictAvailable) {
-      t.ok(true, 'strict subprocess sandbox is unavailable on this host');
-      return;
-    }
     const sandbox = new AISandbox(
       `
       import { spawn } from 'fino:ai/sandbox/capabilities';
@@ -309,7 +312,15 @@ describe('AI sandbox', () => {
       },
     );
     try {
-      await t.rejects(() => sandbox.call(), /process output exceeds 6 bytes/i);
+      if (strictProcessExecAvailable()) {
+        await t.rejects(() => sandbox.call(), /process output exceeds 6 bytes/i);
+      } else {
+        await t.rejects(
+          () => sandbox.call(),
+          /strict sandbox/i,
+          'subprocess is rejected before execution when strict process-exec enforcement is unavailable',
+        );
+      }
     } finally {
       sandbox.terminate();
     }
