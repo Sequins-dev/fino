@@ -55,6 +55,7 @@ describe('benchmark coverage map', () => {
       '`fino:database/sqlite` | `benchmarks/database/sqlite.bench.ts`',
       '`fino:file/path` | `benchmarks/file/path.bench.ts`',
       '`fino:format/csv` | `benchmarks/format/csv.bench.ts`',
+      '`fino:format/protobuf` | `benchmarks/format/protobuf.bench.ts`',
       '`fino:net/http` | `benchmarks/net/http/index.bench.ts`',
       '`fino:module` | `benchmarks/module.bench.ts`',
       '`fino:process` | `benchmarks/process.bench.ts`',

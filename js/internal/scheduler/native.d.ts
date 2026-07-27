@@ -7,6 +7,9 @@
  *
  * @internal
  */
+export function currentWorkloadOwner(): number;
+export function usesProcessReadiness(): boolean;
+export function setSchedulerPollingRequired(callback: () => boolean): void;
 export function createWorkload(entryPath: string): number;
 export function terminateWorkload(handle: number): void;
 export function workloadWakeFd(handle: number): number;
@@ -14,10 +17,10 @@ export function workloadOwner(handle: number): number;
 export function createScheduledRealm(
   root: string,
   entryPath: string,
-  serializedRules: string,
+  rules: unknown[] | string,
   watch: boolean,
-  realmData: string | undefined,
-  bootstrapData: string | undefined,
+  realmData: unknown,
+  bootstrapData: unknown,
   repl: boolean,
 ): {
   handle: number;
@@ -74,24 +77,18 @@ export function registerProcessReadiness(
 export const registerProcessPersistentReadiness: typeof registerProcessReadiness;
 export function acknowledgeProcessReadiness(acknowledgement: number): void;
 export function registerReactorWake(owner: number, fd: number): void;
-export const registerSharedReadiness: typeof registerProcessReadiness;
-export function takeSharedReadinessChanges(): string;
-export function routeProcessReadiness(
-  owner: number,
+export type ReadinessChangeTuple = [
   ident: number,
   filter: number,
   flags: number,
   fflags: number,
   data: number,
   udata: number,
-  notifyPool?: boolean,
-): void;
-export function routeSharedLoopEvent(owner: number, eventJson: string): void;
-export function takeSharedLoopEvents(owner: number): string;
-
-/** Compatibility stubs retained until the backend modules stop importing them. */
-export function sharedLoopDescriptor(candidate?: string): string | null;
-export function pollSharedReactor(timeoutMs: number | null): boolean;
-export function registerSharedPoll(userData: number): number;
-export function takeSharedPoll(pollId: number): number | null;
-export function cancelSharedPoll(pollId: number): void;
+  cancelOwner: number | null,
+  schedulerWake: boolean,
+  acknowledgement: number | null,
+];
+export function takeSharedReadinessChanges(): ReadinessChangeTuple[];
+export function routeProcessReadiness(owner: number, event: Uint8Array, notifyPool?: boolean): void;
+export function routeSharedLoopEvent(owner: number, event: Uint8Array): void;
+export function takeSharedLoopEvents(owner: number): Uint8Array[];

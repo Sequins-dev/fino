@@ -375,7 +375,7 @@ describe('SeedServer — PORT_MSG routing', () => {
       t: 'PORT_MSG',
       fromPort: 'worker-2/1',
       toPort: 'worker-1/p-1',
-      payload: JSON.stringify([btoa('hello')]),
+      payload: [new TextEncoder().encode('hello')],
       seq: 1,
     });
     const portMsgs = transport.sent.filter((s) => s.msg.t === 'PORT_MSG');
@@ -397,7 +397,7 @@ describe('SeedServer — PORT_MSG routing', () => {
       t: 'PORT_MSG',
       fromPort: 'worker-1/0',
       toPort: 'worker-99/999',
-      payload: '["aGVsbG8="]',
+      payload: [new TextEncoder().encode('hello')],
       seq: 1,
     });
     t.equal(transport.sent.length, 0, 'no messages forwarded for unknown toPort');
@@ -440,7 +440,7 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
       t: 'PORT_MSG',
       fromPort: 'worker-2/ordered',
       toPort: 'worker-1/p-ordered',
-      payload: '["aGVsbG8="]',
+      payload: [new TextEncoder().encode('hello')],
       seq: 1,
     } as ClusterMessage);
     t.deepEqual(

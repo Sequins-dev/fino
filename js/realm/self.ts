@@ -19,6 +19,7 @@
  * ```
  */
 import { getPort } from 'internal:realm-bridge';
+import { usesProcessReadiness } from 'internal:scheduler-native';
 import type { MessagePort } from '../globals/messaging.ts';
 import type { ThreadPort } from '../internal/realm/transport-port.ts';
 /**
@@ -38,12 +39,7 @@ import type { ThreadPort } from '../internal/realm/transport-port.ts';
  */
 export const port =
   (getPort() as MessagePort | undefined) ??
-  ((
-    globalThis as {
-      __finoProcessReadiness?: boolean;
-      realmPort?: ThreadPort;
-    }
-  ).__finoProcessReadiness === true
+  (usesProcessReadiness()
     ? (
         globalThis as {
           realmPort?: ThreadPort;

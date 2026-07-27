@@ -142,8 +142,8 @@ pub(crate) fn resolve_child_package_map(
     }
 }
 
-/// Parse `serializedRules` (a JS string containing a JSON array of ImportRule
-/// objects) and merge with the parent's import rules.
+/// Parse a child rule array (or the legacy JSON string form) and merge it with
+/// the parent's import rules.
 ///
 /// The child's rules are appended after the parent's so that last-match-wins
 /// semantics mean the child overrides the parent for any pattern it specifies.
@@ -162,11 +162,19 @@ pub(crate) fn parse_and_merge_rules(
     // Get the parent's rules.
     let parent_rules = get_state(scope).borrow().import_rules.clone();
 
-    // Parse the child-specific JSON rules.
-    let json_str = rules_arg
-        .to_string(scope)
-        .map(|s| s.to_rust_string_lossy(scope))
-        .unwrap_or_default();
+    // Rule objects cross the synthetic-module call directly. JSON is only the
+    // local serde conversion into Rust's existing ImportRule representation;
+    // no JSON string is carried between isolates or threads.
+    let json_str = if rules_arg.is_string() {
+        rules_arg
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default()
+    } else {
+        v8::json::stringify(scope, rules_arg)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default()
+    };
 
     if json_str.is_empty() || json_str == "null" || json_str == "[]" {
         return Ok(parent_rules);

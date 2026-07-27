@@ -20,8 +20,8 @@
  * `BaseTransportPort` whose messages travel as PORT_MSG cluster frames
  * instead of an in-process channel. Ports register themselves with the
  * client on construction, queue outbound messages until SPAWN_ACK assigns
- * the child port ID, and preserve transferred ArrayBuffers end-to-end as
- * base64-encoded serializer store parts.
+ * the child port ID, and preserve transferred ArrayBuffers end-to-end as raw
+ * protobuf byte fields.
  *
  * ## Example
  *
@@ -77,28 +77,6 @@ const HEARTBEAT_MS = 2500;
 function heartbeatIntervalMs(): number {
   const configured = Number(env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : HEARTBEAT_MS;
-}
-// ---------------------------------------------------------------------------
-// Base64 helpers for payload encoding
-// ---------------------------------------------------------------------------
-function uint8ToBase64(buf: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]!);
-  return btoa(s);
-}
-function base64ToUint8(s: string): Uint8Array {
-  const raw = atob(s);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-// PORT_MSG payload is a JSON array of base64 strings: [main, ...stores].
-// Encoding all parts preserves ArrayBuffer transfer stores end-to-end.
-function encodePayload(parts: Uint8Array[]): string {
-  return JSON.stringify(parts.map(uint8ToBase64));
-}
-function decodePayload(payload: string): Uint8Array[] {
-  return (JSON.parse(payload) as string[]).map(base64ToUint8);
 }
 // ---------------------------------------------------------------------------
 // Local relay - bridges a scheduled Realm port to cluster PORT_MSG
@@ -327,9 +305,8 @@ export class ClusterClient {
   /**
    * Send serialized port payload parts to a remote port.
    *
-   * The payload parts are base64-encoded as a JSON array so ArrayBuffer transfer
-   * stores survive the cluster hop. Routing uses the node prefix extracted from
-   * `toPort`; invalid IDs may be sent to an unusable target.
+   * Payload parts remain binary protobuf `bytes` fields so ArrayBuffer transfer
+   * stores survive the cluster hop without base64 expansion.
    *
    * ```ts no_run
    * import { ClusterClient } from 'internal:cluster/client';
@@ -341,14 +318,13 @@ export class ClusterClient {
    */
   sendPortMsg(fromPort: string, toPort: string, parts: Uint8Array[]): void {
     const targetNodeId = nodeIdFromId(toPort);
-    const payload = encodePayload(parts);
     const seq = (this.#outboundPortSequences.get(fromPort) ?? 0) + 1;
     this.#outboundPortSequences.set(fromPort, seq);
     this.#transport.send(targetNodeId, {
       t: 'PORT_MSG',
       fromPort,
       toPort,
-      payload,
+      payload: parts,
       seq,
     });
   }
@@ -575,7 +551,7 @@ export class ClusterClient {
     const localPort = this.#portHandlers.get(msg.toPort);
     if (localPort) {
       try {
-        localPort._deliver(decodePayload(msg.payload));
+        localPort._deliver(msg.payload);
       } catch (err: unknown) {
         console.error(`fino:cluster PORT_MSG decode error (parent port): ${err}`);
       }
@@ -584,7 +560,7 @@ export class ClusterClient {
     const relay = this.#relays.get(msg.toPort);
     if (!relay || relay.closed) return;
     try {
-      const parts = decodePayload(msg.payload);
+      const parts = msg.payload;
       const [mainBuf, ...stores] = parts;
       if (mainBuf) {
         const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
@@ -627,15 +603,13 @@ export class ClusterClient {
     >,
   ): Promise<void> {
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
-    const bootstrapData =
-      msg.config.bootstrapData === undefined ? undefined : JSON.stringify(msg.config.bootstrapData);
     const scheduled = createScheduledRealm(
       msg.config.root ?? '',
       msg.config.entry,
-      JSON.stringify(msg.config.rules),
+      msg.config.rules,
       false,
       undefined,
-      bootstrapData,
+      msg.config.bootstrapData,
       false,
     );
     registerReactorWake(scheduled.owner, scheduled.wakeFd);
@@ -778,13 +752,12 @@ export class ClusterClient {
           return;
         }
         // Forward raw serialized bytes (preserves stores for ArrayBuffer transfers).
-        const payload = encodePayload(parts);
         const seq = ++relay.lastPortSeq;
         const sent = this.#transport.send('__seed__', {
           t: 'PORT_MSG',
           fromPort: relay.childPortId,
           toPort: relay.parentPortId,
-          payload,
+          payload: parts,
           seq,
         });
         if (sent instanceof Promise) relay.pendingSends.push(sent);

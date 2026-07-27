@@ -104,7 +104,6 @@
  * @internal
  */
 import { dlopen, Pointer } from 'fino:ffi';
-import { sharedLoopDescriptor } from 'internal:scheduler-native';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -119,10 +118,6 @@ interface Kevent {
 }
 /** Opaque kqueue loop handle returned by create(). */
 interface KqueueLoop {
-  fd: number;
-}
-interface KqueueDescriptor {
-  kind: 'kqueue';
   fd: number;
 }
 const lib = dlopen('/usr/lib/libSystem.B.dylib', {
@@ -311,12 +306,6 @@ const _changeView = new DataView(_changeBuf);
 const _pendingBuf = new ArrayBuffer(KEVENT_SIZE * MAX_PENDING);
 const _pendingView = new DataView(_pendingBuf);
 let _pendingCount = 0;
-const _sharesReadiness =
-  (
-    globalThis as {
-      __finoSchedulerSharesReadiness?: boolean;
-    }
-  ).__finoSchedulerSharesReadiness === true;
 const _eventBuf = new ArrayBuffer(KEVENT_SIZE * MAX_EVENTS);
 const _eventView = new DataView(_eventBuf);
 const _zeroTs = new ArrayBuffer(16);
@@ -497,28 +486,9 @@ function registerChanges(kqFd: number, changeBuf: ArrayBuffer, nChanges: number)
  * ```
  */
 export function create(): KqueueLoop {
-  if (!_sharesReadiness) {
-    const fd = lib.symbols.kqueue();
-    if (fd < 0) throw new Error(`kqueue() failed: ${fd}`);
-    return { fd };
-  }
-  const current = sharedLoopDescriptor();
-  if (current !== null) {
-    const descriptor = JSON.parse(current) as KqueueDescriptor;
-    if (descriptor.kind !== 'kqueue') throw new Error(`cannot attach kqueue to ${descriptor.kind}`);
-    return { fd: descriptor.fd };
-  }
   const fd = lib.symbols.kqueue();
   if (fd < 0) throw new Error(`kqueue() failed: ${fd}`);
-  const installed = sharedLoopDescriptor(
-    JSON.stringify({
-      kind: 'kqueue',
-      fd,
-    } satisfies KqueueDescriptor),
-  );
-  lib.symbols.close(fd);
-  if (installed === null) throw new Error('failed to retain shared kqueue');
-  return { fd: (JSON.parse(installed) as KqueueDescriptor).fd };
+  return { fd };
 }
 /**
  * The thread reactor's kqueue fd. It becomes readable when registered work is
@@ -548,11 +518,6 @@ function queueChange(
   data: number,
   udata: number,
 ): void {
-  if (_sharesReadiness) {
-    writeKevent(_changeView, 0, ident, filter, flags, fflags, data, udata);
-    registerChanges(loop.fd, _changeBuf, 1);
-    return;
-  }
   if (_pendingCount >= MAX_PENDING) {
     // Flush pending changes before adding more.
     registerChanges(loop.fd, _pendingBuf, _pendingCount);
@@ -816,7 +781,7 @@ export function removeSignal(loop: KqueueLoop, signo: number): void {
  * ```
  */
 export function destroy(loop: KqueueLoop): void {
-  if (!_sharesReadiness) lib.symbols.close(loop.fd);
+  lib.symbols.close(loop.fd);
 }
 export {
   EV_EOF,

@@ -1,10 +1,10 @@
 /**
- * internal:cluster/protocol - cluster wire types and JSON codec.
+ * internal:cluster/protocol - cluster wire types and protobuf codec.
  *
- * All cluster messages are JSON-encoded ClusterMessage values. The codec
- * layer is deliberately thin: encode/decode are just JSON.stringify/parse
- * so the transport can switch to binary (QUIC, CBOR) later without changing
- * the protocol layer.
+ * Cluster messages use the Protocol Buffers binary wire format. The schema is
+ * defined here alongside the TypeScript message union, so the transport sends
+ * numeric field tags and raw byte payloads rather than property names, JSON
+ * text, or base64 wrappers.
  *
  * Realm IDs use the format `{nodeId}/{localHandle}`, which encodes the host
  * node for O(1) routing: extract the nodeId prefix to find the host.
@@ -29,7 +29,7 @@
  *   t: 'PORT_MSG',
  *   fromPort: 'worker-a/p-parent',
  *   toPort: 'worker-b/p-child',
- *   payload: '[]',
+ *   payload: [new Uint8Array([1, 2, 3])],
  *   seq: 1,
  * });
  *
@@ -43,6 +43,7 @@
  * @internal
  */
 import { Scanner } from 'fino:parsing/scanner';
+import { defineMessage } from 'fino:format/protobuf';
 // ---------------------------------------------------------------------------
 // Supporting types
 // ---------------------------------------------------------------------------
@@ -135,9 +136,9 @@ export interface PeerInfo {
 /**
  * Serialized realm spawn configuration carried by a `SPAWN` message.
  *
- * The object mirrors Rust's import-rule JSON layout. `decode()` validates only
- * the top-level shape because individual rules are opaque to the cluster layer
- * and are interpreted by the realm loader on the target node.
+ * Import rules and runtime bootstrap metadata are encoded as nested protobuf
+ * messages. The target node reconstructs the Rust-facing rule object only
+ * after decoding the typed cluster envelope.
  *
  * ```ts
  * const config = { entry: '/app/main.ts', root: '/app', rules: [] };
@@ -173,10 +174,9 @@ export interface SerializedSpawnConfig {
    */
   root: string;
   /**
-   * Opaque serialized import-rule array.
+   * Normalized import-rule array.
    *
-   * The protocol requires an array but does not inspect its members. Invalid
-   * rule contents may still fail later when the child realm is created.
+   * The protocol validates and encodes the supported directive variants.
    *
    * ```ts
    * const config = { entry: 'main.ts', root: '.', rules: [] };
@@ -187,9 +187,8 @@ export interface SerializedSpawnConfig {
   /**
    * Optional runtime bootstrap metadata for the target realm.
    *
-   * The cluster layer treats this value as opaque JSON. The target node
-   * serializes it for `internal:realm-bridge.getRealmBootstrapData()` when it
-   * creates the reactor-pooled child realm.
+   * The cluster layer currently defines the CLI OpenTelemetry bootstrap
+   * fields used by realm startup. Unknown fields are not forwarded.
    *
    * ```ts
    * const config = { entry: 'main.ts', root: '.', rules: [], bootstrapData: { cliOtel: { endpoint: 'http://127.0.0.1:4318' } } };
@@ -230,12 +229,13 @@ export interface SerializedSpawnConfig {
  *   `error` is set if the realm exited abnormally.
  * - `TERMINATE` — request to kill a realm on its hosting node; the seed also
  *   emits this to descendants when an ancestor realm exits.
- * - `PORT_MSG` — data-plane frame between two ports. `payload` is an opaque
- *   serialized string; `seq` preserves source-port ordering across streams.
+ * - `PORT_MSG` — data-plane frame between two ports. `payload` contains the
+ *   structured-clone byte parts unchanged; `seq` preserves source-port
+ *   ordering across streams.
  *
  * ```ts
  * import { decode } from 'internal:cluster/protocol';
- * const msg = decode('{"t":"HEARTBEAT","ts":1}');
+ * const msg = decode(encode({ t: 'HEARTBEAT', ts: 1 }));
  * msg.t;
  * ```
  *
@@ -291,133 +291,481 @@ export type ClusterMessage =
       t: 'PORT_MSG';
       fromPort: string;
       toPort: string;
-      payload: string;
+      payload: Uint8Array[];
       seq: number;
     };
 // ---------------------------------------------------------------------------
 // Codec
 // ---------------------------------------------------------------------------
-/**
- * Encode a validated cluster message object as JSON.
- *
- * This function intentionally performs no additional validation; callers that
- * need wire validation should round-trip through `decode()`. The return value
- * is a UTF-16 JavaScript string suitable for WebTransport JSON frames.
- *
- * ```ts
- * import { encode } from 'internal:cluster/protocol';
- * const text = encode({ t: 'HEARTBEAT', ts: 1 });
- * JSON.parse(text).t;
- * ```
- *
- * @internal
- */
-export function encode(msg: ClusterMessage): string {
-  return JSON.stringify(msg);
+const enum MessageKind {
+  HELLO = 1,
+  WELCOME = 2,
+  PEER_UP = 3,
+  PEER_DOWN = 4,
+  HEARTBEAT = 5,
+  SPAWN = 6,
+  SPAWN_ACK = 7,
+  REALM_EXIT = 8,
+  TERMINATE = 9,
+  PORT_MSG = 10,
 }
-/**
- * Decode and validate a JSON cluster message.
- *
- * The function returns a narrowed `ClusterMessage` object on success and throws
- * `Error` with a `cluster protocol:` prefix for invalid JSON, unknown message
- * types, malformed IDs, invalid load samples, or missing fields. No defaults
- * are applied.
- *
- * The result is rebuilt field by field rather than returned as the parsed JSON
- * object, so any properties outside the protocol schema are discarded — a peer
- * cannot smuggle extra fields through the decoder. One shape-specific
- * exception applies to ID validation: a `SPAWN_ACK` may carry an empty
- * `childPortId`, which is how a failed spawn (`ok: false`) is represented.
- *
- * ```ts
- * import { decode } from 'internal:cluster/protocol';
- * const msg = decode('{"t":"PEER_DOWN","nodeId":"worker-1"}');
- * msg.t;
- * ```
- *
- * @internal
- */
-export function decode(s: string): ClusterMessage {
-  let value: unknown;
-  try {
-    value = JSON.parse(s);
-  } catch (error) {
-    throw protocolError('invalid JSON');
+
+const enum DirectiveKind {
+  INHERIT = 1,
+  BLOCK = 2,
+  REMAP = 3,
+  SOURCE = 4,
+  FACADE = 5,
+}
+
+interface WireLoad {
+  cpu?: number;
+  memory?: number;
+}
+
+interface WirePeer {
+  nodeId?: string;
+  load?: WireLoad;
+}
+
+interface WireDirective {
+  kind: number;
+  target?: string;
+  code?: string;
+  sourceMap?: string;
+  specifier?: string;
+  exports: string[];
+  streams: string[];
+  sinks: string[];
+}
+
+interface WireRule {
+  from?: string;
+  pattern?: string;
+  directive?: WireDirective;
+}
+
+interface WireCliOtel {
+  endpoint?: string;
+  script?: string;
+  debug?: boolean;
+}
+
+interface WireBootstrapData {
+  cliOtel?: WireCliOtel;
+}
+
+interface WireSpawnConfig {
+  entry?: string;
+  root?: string;
+  rules: WireRule[];
+  bootstrapData?: WireBootstrapData;
+}
+
+interface WireEnvelope {
+  kind: number;
+  nodeId?: string;
+  load?: WireLoad;
+  peers: WirePeer[];
+  peer?: WirePeer;
+  ts?: number;
+  spawnReqId?: string;
+  parentPortId?: string;
+  config?: WireSpawnConfig;
+  childPortId?: string;
+  ok?: boolean;
+  error?: string;
+  realmId?: string;
+  lastPortSeq?: bigint;
+  fromPort?: string;
+  toPort?: string;
+  payload: Uint8Array[];
+  seq?: bigint;
+}
+
+const LoadMessage = defineMessage<WireLoad>({
+  cpu: { number: 1, type: 'double', optional: true },
+  memory: { number: 2, type: 'double', optional: true },
+});
+const PeerMessage = defineMessage<WirePeer>({
+  nodeId: { number: 1, type: 'string', optional: true },
+  load: { number: 2, type: LoadMessage, optional: true },
+});
+const DirectiveMessage = defineMessage<WireDirective>({
+  kind: { number: 1, type: 'enum' },
+  target: { number: 2, type: 'string', optional: true },
+  code: { number: 3, type: 'string', optional: true },
+  sourceMap: { number: 4, type: 'string', optional: true },
+  specifier: { number: 5, type: 'string', optional: true },
+  exports: { number: 6, type: 'string', repeated: true },
+  streams: { number: 7, type: 'string', repeated: true },
+  sinks: { number: 8, type: 'string', repeated: true },
+});
+const RuleMessage = defineMessage<WireRule>({
+  from: { number: 1, type: 'string', optional: true },
+  pattern: { number: 2, type: 'string', optional: true },
+  directive: { number: 3, type: DirectiveMessage, optional: true },
+});
+const CliOtelMessage = defineMessage<WireCliOtel>({
+  endpoint: { number: 1, type: 'string', optional: true },
+  script: { number: 2, type: 'string', optional: true },
+  debug: { number: 3, type: 'bool', optional: true },
+});
+const BootstrapDataMessage = defineMessage<WireBootstrapData>({
+  cliOtel: { number: 1, type: CliOtelMessage, optional: true },
+});
+const SpawnConfigMessage = defineMessage<WireSpawnConfig>({
+  entry: { number: 1, type: 'string', optional: true },
+  root: { number: 2, type: 'string', optional: true },
+  rules: { number: 3, type: RuleMessage, repeated: true },
+  bootstrapData: { number: 4, type: BootstrapDataMessage, optional: true },
+});
+const EnvelopeMessage = defineMessage<WireEnvelope>({
+  kind: { number: 1, type: 'enum' },
+  nodeId: { number: 2, type: 'string', optional: true },
+  load: { number: 3, type: LoadMessage, optional: true },
+  peers: { number: 4, type: PeerMessage, repeated: true },
+  peer: { number: 5, type: PeerMessage, optional: true },
+  ts: { number: 6, type: 'double', optional: true },
+  spawnReqId: { number: 7, type: 'string', optional: true },
+  parentPortId: { number: 8, type: 'string', optional: true },
+  config: { number: 9, type: SpawnConfigMessage, optional: true },
+  childPortId: { number: 10, type: 'string', optional: true },
+  ok: { number: 11, type: 'bool', optional: true },
+  error: { number: 12, type: 'string', optional: true },
+  realmId: { number: 13, type: 'string', optional: true },
+  lastPortSeq: { number: 14, type: 'uint64', optional: true },
+  fromPort: { number: 15, type: 'string', optional: true },
+  toPort: { number: 16, type: 'string', optional: true },
+  payload: { number: 17, type: 'bytes', repeated: true },
+  seq: { number: 18, type: 'uint64', optional: true },
+});
+
+function stringArray(value: unknown, key: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw protocolError(`${key} must be an array of strings`);
   }
-  if (!isRecord(value)) throw protocolError('protocol envelope must be an object');
-  const t = requireString(value, 't');
-  switch (t) {
+  return value.slice();
+}
+
+function encodeDirective(value: unknown): WireDirective {
+  if (value === 'inherit' || value === 'block') {
+    return {
+      kind: value === 'inherit' ? DirectiveKind.INHERIT : DirectiveKind.BLOCK,
+      exports: [],
+      streams: [],
+      sinks: [],
+    };
+  }
+  if (!isRecord(value)) throw protocolError('rule directive must be an object');
+  const type = requireString(value, 'type');
+  const base = { exports: [] as string[], streams: [] as string[], sinks: [] as string[] };
+  if (type === 'inherit') return { kind: DirectiveKind.INHERIT, ...base };
+  if (type === 'block') return { kind: DirectiveKind.BLOCK, ...base };
+  if (type === 'remap') {
+    return { kind: DirectiveKind.REMAP, target: requireString(value, 'target'), ...base };
+  }
+  if (type === 'source') {
+    return {
+      kind: DirectiveKind.SOURCE,
+      code: requireString(value, 'code'),
+      sourceMap: requireString(value, 'source_map'),
+      ...base,
+    };
+  }
+  if (type === 'facade') {
+    return {
+      kind: DirectiveKind.FACADE,
+      specifier: requireString(value, 'specifier'),
+      exports: stringArray(value.exports, 'directive.exports'),
+      streams: value.streams === undefined ? [] : stringArray(value.streams, 'directive.streams'),
+      sinks: value.sinks === undefined ? [] : stringArray(value.sinks, 'directive.sinks'),
+    };
+  }
+  throw protocolError(`unknown rule directive '${type}'`);
+}
+
+function decodeDirective(value: WireDirective): Record<string, unknown> {
+  if (value.kind === DirectiveKind.INHERIT) return { type: 'inherit' };
+  if (value.kind === DirectiveKind.BLOCK) return { type: 'block' };
+  if (value.kind === DirectiveKind.REMAP) {
+    return { type: 'remap', target: requiredWireString(value.target, 'directive.target') };
+  }
+  if (value.kind === DirectiveKind.SOURCE) {
+    return {
+      type: 'source',
+      code: requiredWireString(value.code, 'directive.code'),
+      source_map: requiredWireString(value.sourceMap, 'directive.source_map'),
+    };
+  }
+  if (value.kind === DirectiveKind.FACADE) {
+    return {
+      type: 'facade',
+      specifier: requiredWireString(value.specifier, 'directive.specifier'),
+      exports: value.exports,
+      ...(value.streams.length > 0 ? { streams: value.streams } : {}),
+      ...(value.sinks.length > 0 ? { sinks: value.sinks } : {}),
+    };
+  }
+  throw protocolError(`unknown rule directive ${value.kind}`);
+}
+
+function encodeRule(value: unknown): WireRule {
+  if (!isRecord(value)) throw protocolError('config rule must be an object');
+  return {
+    ...(value.from === undefined ? {} : { from: requireString(value, 'from') }),
+    pattern: requireString(value, 'pattern'),
+    directive: encodeDirective(value.directive),
+  };
+}
+
+function decodeRule(value: WireRule): Record<string, unknown> {
+  if (value.directive === undefined) throw protocolError('rule directive is missing');
+  return {
+    ...(value.from === undefined ? {} : { from: value.from }),
+    pattern: requiredWireString(value.pattern, 'rule.pattern'),
+    directive: decodeDirective(value.directive),
+  };
+}
+
+function encodeBootstrapData(value: unknown): WireBootstrapData {
+  if (!isRecord(value)) throw protocolError('config.bootstrapData must be an object');
+  if (value.cliOtel === undefined) return {};
+  if (!isRecord(value.cliOtel))
+    throw protocolError('config.bootstrapData.cliOtel must be an object');
+  const cliOtel = value.cliOtel;
+  return {
+    cliOtel: {
+      ...(cliOtel.endpoint === undefined ? {} : { endpoint: requireString(cliOtel, 'endpoint') }),
+      ...(cliOtel.script === undefined ? {} : { script: requireString(cliOtel, 'script') }),
+      ...(cliOtel.debug === undefined ? {} : { debug: requireBoolean(cliOtel, 'debug') }),
+    },
+  };
+}
+
+function encodeSpawnConfig(value: unknown): WireSpawnConfig {
+  const config = parseSpawnConfig(value);
+  return {
+    entry: config.entry,
+    root: config.root,
+    rules: config.rules.map(encodeRule),
+    ...(config.bootstrapData === undefined
+      ? {}
+      : { bootstrapData: encodeBootstrapData(config.bootstrapData) }),
+  };
+}
+
+function decodeSpawnConfig(value: WireSpawnConfig): SerializedSpawnConfig {
+  return {
+    entry: requiredWireString(value.entry, 'config.entry'),
+    root: requiredWireString(value.root, 'config.root'),
+    rules: value.rules.map(decodeRule),
+    ...(value.bootstrapData === undefined ? {} : { bootstrapData: value.bootstrapData }),
+  };
+}
+
+function encodeSequence(value: number, key: string, allowZero: boolean): bigint {
+  const sequence = requireSequence({ [key]: value }, key, allowZero);
+  if (!Number.isSafeInteger(sequence)) throw protocolError(`${key} exceeds the safe integer range`);
+  return BigInt(sequence);
+}
+
+function decodeSequence(value: bigint | undefined, key: string, allowZero: boolean): number {
+  if (value === undefined) throw protocolError(`${key} is missing`);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw protocolError(`${key} exceeds the safe integer range`);
+  }
+  return requireSequence({ [key]: Number(value) }, key, allowZero);
+}
+
+function requiredWireString(value: string | undefined, key: string): string {
+  if (value === undefined) throw protocolError(`${key} must be a string`);
+  return value;
+}
+
+function encodePeer(value: PeerInfo): WirePeer {
+  const peer = parsePeer(value, 'peer');
+  return { nodeId: peer.nodeId, load: peer.load };
+}
+
+function decodePeer(value: WirePeer, key: string): PeerInfo {
+  return parsePeer(value, key);
+}
+
+function toWire(msg: ClusterMessage): WireEnvelope {
+  const base = { peers: [] as WirePeer[], payload: [] as Uint8Array[] };
+  switch (msg.t) {
     case 'HELLO':
       return {
-        t,
-        nodeId: parseNodeId(requireString(value, 'nodeId')),
-        load: parseLoad(value.load),
+        kind: MessageKind.HELLO,
+        nodeId: parseNodeId(msg.nodeId),
+        load: parseLoad(msg.load),
+        ...base,
       };
     case 'WELCOME':
       return {
-        t,
-        nodeId: parseNodeId(requireString(value, 'nodeId')),
-        peers: parsePeers(value.peers),
+        kind: MessageKind.WELCOME,
+        nodeId: parseNodeId(msg.nodeId),
+        peers: parsePeers(msg.peers).map(encodePeer),
+        payload: [],
       };
     case 'PEER_UP':
-      return {
-        t,
-        peer: parsePeer(value.peer, 'peer'),
-      };
+      return { kind: MessageKind.PEER_UP, peer: encodePeer(msg.peer), ...base };
     case 'PEER_DOWN':
-      return {
-        t,
-        nodeId: parseNodeId(requireString(value, 'nodeId')),
-      };
+      return { kind: MessageKind.PEER_DOWN, nodeId: parseNodeId(msg.nodeId), ...base };
     case 'HEARTBEAT':
       return {
-        t,
-        ts: requireFiniteNumber(value, 'ts'),
+        kind: MessageKind.HEARTBEAT,
+        ts: requireFiniteNumber({ ts: msg.ts }, 'ts'),
+        ...base,
       };
     case 'SPAWN':
       return {
-        t,
-        spawnReqId: parseHandleId(requireString(value, 'spawnReqId'), 'spawnReqId'),
-        parentPortId: parseClusterId(requireString(value, 'parentPortId'), 'parentPortId'),
-        config: parseSpawnConfig(value.config),
+        kind: MessageKind.SPAWN,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
+        config: encodeSpawnConfig(msg.config),
+        ...base,
       };
-    case 'SPAWN_ACK': {
-      const out: ClusterMessage = {
-        t,
-        spawnReqId: parseHandleId(requireString(value, 'spawnReqId'), 'spawnReqId'),
-        childPortId:
-          requireString(value, 'childPortId') === ''
-            ? ''
-            : parseClusterId(requireString(value, 'childPortId'), 'childPortId'),
-        ok: requireBoolean(value, 'ok'),
+    case 'SPAWN_ACK':
+      return {
+        kind: MessageKind.SPAWN_ACK,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        childPortId: msg.childPortId === '' ? '' : parseClusterId(msg.childPortId, 'childPortId'),
+        ok: msg.ok,
+        ...(msg.error === undefined ? {} : { error: msg.error }),
+        ...base,
       };
-      if (value.error !== undefined) out.error = requireString(value, 'error');
-      return out;
-    }
-    case 'REALM_EXIT': {
-      const out: ClusterMessage = {
-        t,
-        realmId: parseClusterId(requireString(value, 'realmId'), 'realmId'),
-        lastPortSeq: requireSequence(value, 'lastPortSeq', true),
+    case 'REALM_EXIT':
+      return {
+        kind: MessageKind.REALM_EXIT,
+        realmId: parseClusterId(msg.realmId, 'realmId'),
+        lastPortSeq: encodeSequence(msg.lastPortSeq, 'lastPortSeq', true),
+        ...(msg.error === undefined ? {} : { error: msg.error }),
+        ...base,
       };
-      if (value.error !== undefined) out.error = requireString(value, 'error');
-      return out;
-    }
     case 'TERMINATE':
       return {
-        t,
-        realmId: parseClusterId(requireString(value, 'realmId'), 'realmId'),
+        kind: MessageKind.TERMINATE,
+        realmId: parseClusterId(msg.realmId, 'realmId'),
+        ...base,
       };
     case 'PORT_MSG':
+      if (
+        !Array.isArray(msg.payload) ||
+        msg.payload.some((part) => !(part instanceof Uint8Array))
+      ) {
+        throw protocolError('payload must be an array of Uint8Array values');
+      }
       return {
-        t,
-        fromPort: parseClusterId(requireString(value, 'fromPort'), 'fromPort'),
-        toPort: parseClusterId(requireString(value, 'toPort'), 'toPort'),
-        payload: requireString(value, 'payload'),
-        seq: requireSequence(value, 'seq', false),
+        kind: MessageKind.PORT_MSG,
+        fromPort: parseClusterId(msg.fromPort, 'fromPort'),
+        toPort: parseClusterId(msg.toPort, 'toPort'),
+        payload: msg.payload,
+        seq: encodeSequence(msg.seq, 'seq', false),
+        peers: [],
       };
     default:
-      throw protocolError(`unknown message type '${t}'`);
+      throw protocolError(`unknown message type '${(msg as { t?: unknown }).t}'`);
+  }
+}
+
+/**
+ * Encode one validated cluster message as protobuf binary data.
+ *
+ * Raw port payload parts remain bytes on the wire; no base64 or JSON layer is
+ * introduced.
+ *
+ * @internal
+ */
+export function encode(msg: ClusterMessage): Uint8Array {
+  return EnvelopeMessage.encode(toWire(msg));
+}
+
+/**
+ * Decode and strictly validate one protobuf cluster message.
+ *
+ * Unknown protobuf fields are ignored for forward compatibility. The returned
+ * object is reconstructed from the shared schema, so unknown application
+ * properties cannot pass through the cluster control plane.
+ *
+ * @internal
+ */
+export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
+  let value: WireEnvelope;
+  try {
+    value = EnvelopeMessage.decode(bytes);
+  } catch (error) {
+    throw protocolError(`invalid protobuf: ${error}`);
+  }
+  switch (value.kind) {
+    case MessageKind.HELLO:
+      return {
+        t: 'HELLO',
+        nodeId: parseNodeId(requiredWireString(value.nodeId, 'nodeId')),
+        load: parseLoad(value.load),
+      };
+    case MessageKind.WELCOME:
+      return {
+        t: 'WELCOME',
+        nodeId: parseNodeId(requiredWireString(value.nodeId, 'nodeId')),
+        peers: value.peers.map((peer, index) => decodePeer(peer, `peer ${index}`)),
+      };
+    case MessageKind.PEER_UP:
+      if (value.peer === undefined) throw protocolError('peer is missing');
+      return { t: 'PEER_UP', peer: decodePeer(value.peer, 'peer') };
+    case MessageKind.PEER_DOWN:
+      return {
+        t: 'PEER_DOWN',
+        nodeId: parseNodeId(requiredWireString(value.nodeId, 'nodeId')),
+      };
+    case MessageKind.HEARTBEAT:
+      if (value.ts === undefined) throw protocolError('ts must be a finite number');
+      return { t: 'HEARTBEAT', ts: requireFiniteNumber({ ts: value.ts }, 'ts') };
+    case MessageKind.SPAWN:
+      if (value.config === undefined) throw protocolError('config is missing');
+      return {
+        t: 'SPAWN',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        parentPortId: parseClusterId(
+          requiredWireString(value.parentPortId, 'parentPortId'),
+          'parentPortId',
+        ),
+        config: decodeSpawnConfig(value.config),
+      };
+    case MessageKind.SPAWN_ACK: {
+      const childPortId = requiredWireString(value.childPortId, 'childPortId');
+      if (value.ok === undefined) throw protocolError('ok must be a boolean');
+      return {
+        t: 'SPAWN_ACK',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        childPortId: childPortId === '' ? '' : parseClusterId(childPortId, 'childPortId'),
+        ok: value.ok,
+        ...(value.error === undefined ? {} : { error: value.error }),
+      };
+    }
+    case MessageKind.REALM_EXIT:
+      return {
+        t: 'REALM_EXIT',
+        realmId: parseClusterId(requiredWireString(value.realmId, 'realmId'), 'realmId'),
+        lastPortSeq: decodeSequence(value.lastPortSeq, 'lastPortSeq', true),
+        ...(value.error === undefined ? {} : { error: value.error }),
+      };
+    case MessageKind.TERMINATE:
+      return {
+        t: 'TERMINATE',
+        realmId: parseClusterId(requiredWireString(value.realmId, 'realmId'), 'realmId'),
+      };
+    case MessageKind.PORT_MSG:
+      return {
+        t: 'PORT_MSG',
+        fromPort: parseClusterId(requiredWireString(value.fromPort, 'fromPort'), 'fromPort'),
+        toPort: parseClusterId(requiredWireString(value.toPort, 'toPort'), 'toPort'),
+        payload: value.payload,
+        seq: decodeSequence(value.seq, 'seq', false),
+      };
+    default:
+      throw protocolError(`unknown message type ${value.kind}`);
   }
 }
 // ---------------------------------------------------------------------------
@@ -468,11 +816,7 @@ function requireFiniteNumber(obj: Record<string, unknown>, key: string): number 
     throw protocolError(`${key} must be a finite number`);
   return value;
 }
-function requireSequence(
-  obj: Record<string, unknown>,
-  key: string,
-  allowZero: boolean,
-): number {
+function requireSequence(obj: Record<string, unknown>, key: string, allowZero: boolean): number {
   const value = requireFiniteNumber(obj, key);
   if (!Number.isInteger(value) || value < (allowZero ? 0 : 1)) {
     throw protocolError(`${key} must be ${allowZero ? 'a non-negative' : 'a positive'} integer`);

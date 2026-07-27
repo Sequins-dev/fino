@@ -68,14 +68,15 @@
  * @internal
  */
 import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
+import { deserialize, serialize } from 'internal:serializer';
 import * as backend from 'internal:runtime/loop-backend';
 import {
-  pollSharedReactor,
+  currentWorkloadOwner,
   registerProcessReadiness,
   registerProcessPersistentReadiness,
-  registerSharedReadiness,
   routeSharedLoopEvent,
   takeSharedLoopEvents,
+  usesProcessReadiness,
 } from 'internal:scheduler-native';
 // ---------------------------------------------------------------------------
 // Types
@@ -165,41 +166,10 @@ const _flush = backend.flush as ((raw: object) => number) | undefined;
 // ---------------------------------------------------------------------------
 // Singleton state — one local backend, omitted for delegated readiness
 // ---------------------------------------------------------------------------
-const _delegatesReadiness =
-  (
-    globalThis as {
-      __finoSchedulerDelegatesReadiness?: boolean;
-    }
-  ).__finoSchedulerDelegatesReadiness === true;
-const _nativeReadinessRegistration =
-  (
-    globalThis as {
-      __finoNativeReadinessRegistration?: boolean;
-    }
-  ).__finoNativeReadinessRegistration === true;
-const _processReadiness =
-  (
-    globalThis as {
-      __finoProcessReadiness?: boolean;
-    }
-  ).__finoProcessReadiness === true;
-let _raw: object | undefined =
-  _delegatesReadiness || _nativeReadinessRegistration ? undefined : (backend.create() as object);
+const _processReadiness = usesProcessReadiness();
+let _raw: object | undefined = _processReadiness ? undefined : (backend.create() as object);
 function rawBackend(): object {
   return (_raw ??= backend.create() as object);
-}
-type SchedulerHostOperation = (
-  operation: 'readable' | 'writable' | 'removeRead' | 'removeWrite',
-  args: {
-    fd: number;
-  },
-) => Promise<unknown>;
-function schedulerHostOperation(): SchedulerHostOperation | undefined {
-  return (
-    globalThis as {
-      __finoSchedulerHostOp?: SchedulerHostOperation;
-    }
-  ).__finoSchedulerHostOp;
 }
 const _reads: Map<number, (avail: number) => void> = new Map();
 const _writes: Map<number, () => void> = new Map();
@@ -216,12 +186,7 @@ let _nextTimerId = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters = 0;
 const TASK_TOKEN_BASE = 4294967296;
-const _workloadOwner =
-  (
-    globalThis as {
-      __finoSchedulerWorkloadId?: number;
-    }
-  ).__finoSchedulerWorkloadId ?? 0;
+const _workloadOwner = currentWorkloadOwner();
 const EV_ADD_ENABLE_ONESHOT = 1 | 4 | 16;
 const EV_ADD_ENABLE_CLEAR = 1 | 4 | 32;
 const EV_DELETE = 2;
@@ -246,12 +211,12 @@ function _dispatch(ev: LoopEvent): void {
   if (owner !== _workloadOwner) {
     routeSharedLoopEvent(
       owner,
-      JSON.stringify({
+      serialize({
         ...ev,
         ident: localId,
         udata: token,
         routed: true,
-      }),
+      })[0]!,
     );
     if (!_foreignReadyOwners.includes(owner)) _foreignReadyOwners.push(owner);
     return;
@@ -370,12 +335,11 @@ export function _dispatchNativeEvent(
  * ```
  */
 export function tick(timeoutMs: number | null): number {
-  if (_nativeReadinessRegistration) pollSharedReactor(timeoutMs);
-  const routed = JSON.parse(takeSharedLoopEvents(_workloadOwner)) as LoopEvent[];
+  const routed = takeSharedLoopEvents(_workloadOwner).map(
+    (event) => deserialize(event) as LoopEvent,
+  );
   for (const ev of routed) _dispatch(ev);
-  const events = _nativeReadinessRegistration
-    ? []
-    : _wait(rawBackend(), routed.length > 0 ? 0 : timeoutMs);
+  const events = _processReadiness ? [] : _wait(rawBackend(), routed.length > 0 ? 0 : timeoutMs);
   for (const ev of events) _dispatch(ev);
   return routed.length + events.length;
 }
@@ -570,22 +534,11 @@ export function _untrackAtomicsWaiter(): void {
  * ```
  */
 export function readable(fd: number): Promise<number> {
-  const host = schedulerHostOperation();
-  if (host !== undefined) {
-    return host('readable', { fd }) as Promise<number>;
-  }
   return new Promise(function onReadable(resolve) {
     _reads.set(fd, resolve);
     const token = taskToken(fd);
-    if (_nativeReadinessRegistration) {
-      (_processReadiness ? registerProcessReadiness : registerSharedReadiness)(
-        fd,
-        EVFILT_READ,
-        EV_ADD_ENABLE_ONESHOT,
-        0,
-        0,
-        token,
-      );
+    if (_processReadiness) {
+      registerProcessReadiness(fd, EVFILT_READ, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
     } else {
       _addRead(rawBackend(), fd, token);
     }
@@ -607,22 +560,11 @@ export function readable(fd: number): Promise<number> {
  * ```
  */
 export function writable(fd: number): Promise<void> {
-  const host = schedulerHostOperation();
-  if (host !== undefined) {
-    return host('writable', { fd }) as Promise<void>;
-  }
   return new Promise(function onWritable(resolve) {
     _writes.set(fd, resolve);
     const token = taskToken(fd);
-    if (_nativeReadinessRegistration) {
-      (_processReadiness ? registerProcessReadiness : registerSharedReadiness)(
-        fd,
-        EVFILT_WRITE,
-        EV_ADD_ENABLE_ONESHOT,
-        0,
-        0,
-        token,
-      );
+    if (_processReadiness) {
+      registerProcessReadiness(fd, EVFILT_WRITE, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
     } else {
       _addWrite(rawBackend(), fd, token);
     }
@@ -778,7 +720,7 @@ export function registerWakeSource(fd: number, onWake?: () => void): void {
   // The scheduler already watches this isolate's async-runtime wake fd and
   // re-pumps the isolate when it fires. Registering it locally would create an
   // unused second backend inside the parked isolate.
-  if (_delegatesReadiness || _processReadiness) return;
+  if (_processReadiness) return;
   _wakeSources.add(fd);
   if (onWake) _wakeSourceCallbacks.set(fd, onWake);
   else _wakeSourceCallbacks.delete(fd);
@@ -798,7 +740,7 @@ export function registerWakeSource(fd: number, onWake?: () => void): void {
 export function unregisterWakeSource(fd: number): void {
   _wakeSources.delete(fd);
   _wakeSourceCallbacks.delete(fd);
-  if (_delegatesReadiness || _processReadiness || _raw === undefined) return;
+  if (_processReadiness || _raw === undefined) return;
   backend.removeRead(rawBackend(), fd);
 }
 /**
@@ -816,21 +758,9 @@ export function unregisterWakeSource(fd: number): void {
  * ```
  */
 export function removeRead(fd: number): void {
-  const host = schedulerHostOperation();
-  if (host !== undefined) {
-    void host('removeRead', { fd }).catch(() => {});
-    return;
-  }
   _reads.delete(fd);
-  if (_nativeReadinessRegistration) {
-    (_processReadiness ? registerProcessReadiness : registerSharedReadiness)(
-      fd,
-      EVFILT_READ,
-      EV_DELETE,
-      0,
-      0,
-      taskToken(fd),
-    );
+  if (_processReadiness) {
+    registerProcessReadiness(fd, EVFILT_READ, EV_DELETE, 0, 0, taskToken(fd));
   } else {
     backend.removeRead(rawBackend(), fd);
   }
@@ -849,21 +779,9 @@ export function removeRead(fd: number): void {
  * ```
  */
 export function removeWrite(fd: number): void {
-  const host = schedulerHostOperation();
-  if (host !== undefined) {
-    void host('removeWrite', { fd }).catch(() => {});
-    return;
-  }
   _writes.delete(fd);
-  if (_nativeReadinessRegistration) {
-    (_processReadiness ? registerProcessReadiness : registerSharedReadiness)(
-      fd,
-      EVFILT_WRITE,
-      EV_DELETE,
-      0,
-      0,
-      taskToken(fd),
-    );
+  if (_processReadiness) {
+    registerProcessReadiness(fd, EVFILT_WRITE, EV_DELETE, 0, 0, taskToken(fd));
   } else {
     backend.removeWrite(rawBackend(), fd);
   }
@@ -898,8 +816,8 @@ export function vnode(
 ): void {
   if (_addVnode === undefined) throw new Error('vnode() is not supported on this platform');
   _vnodes.set(fd, callback);
-  if (_nativeReadinessRegistration && EVFILT_VNODE !== null) {
-    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
+  if (_processReadiness && EVFILT_VNODE !== null) {
+    registerProcessPersistentReadiness(
       fd,
       EVFILT_VNODE,
       EV_ADD_ENABLE_CLEAR,
@@ -927,15 +845,8 @@ export function vnode(
 export function removeVnode(fd: number): void {
   if (!_vnodes.has(fd)) return;
   _vnodes.delete(fd);
-  if (_nativeReadinessRegistration && EVFILT_VNODE !== null) {
-    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
-      fd,
-      EVFILT_VNODE,
-      EV_DELETE,
-      0,
-      0,
-      taskToken(fd),
-    );
+  if (_processReadiness && EVFILT_VNODE !== null) {
+    registerProcessPersistentReadiness(fd, EVFILT_VNODE, EV_DELETE, 0, 0, taskToken(fd));
   } else if (backend.removeVnode) {
     backend.removeVnode(rawBackend(), fd);
   }
@@ -967,8 +878,8 @@ export function removeVnode(fd: number): void {
 export function signal(signo: number, callback: () => void): void {
   if (_addSignal === undefined) throw new Error('signal() is not supported on this platform');
   _signals.set(signo, callback);
-  if (_nativeReadinessRegistration && EVFILT_SIGNAL !== null) {
-    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
+  if (_processReadiness && EVFILT_SIGNAL !== null) {
+    registerProcessPersistentReadiness(
       signo,
       EVFILT_SIGNAL,
       EV_ADD_ENABLE_CLEAR,
@@ -998,15 +909,8 @@ export function signal(signo: number, callback: () => void): void {
 export function removeSignal(signo: number): void {
   if (!_signals.has(signo)) return;
   _signals.delete(signo);
-  if (_nativeReadinessRegistration && EVFILT_SIGNAL !== null) {
-    (_processReadiness ? registerProcessPersistentReadiness : registerSharedReadiness)(
-      signo,
-      EVFILT_SIGNAL,
-      EV_DELETE,
-      0,
-      0,
-      taskToken(signo),
-    );
+  if (_processReadiness && EVFILT_SIGNAL !== null) {
+    registerProcessPersistentReadiness(signo, EVFILT_SIGNAL, EV_DELETE, 0, 0, taskToken(signo));
   } else if (backend.removeSignal) {
     backend.removeSignal(rawBackend(), signo);
   }

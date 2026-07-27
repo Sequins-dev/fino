@@ -47,7 +47,6 @@
  */
 import * as ioUring from './io_uring.ts';
 import * as pollBackend from './poll.ts';
-import { sharedLoopDescriptor } from 'internal:scheduler-native';
 type BackendKind = 'io_uring' | 'poll';
 interface SelectedLoop {
   kind: BackendKind;
@@ -125,45 +124,10 @@ export const EVFILT_COMPLETION = ioUring.EVFILT_COMPLETION;
  * @internal
  */
 export function create(): SelectedLoop {
-  const sharesReadiness =
-    (
-      globalThis as {
-        __finoSchedulerSharesReadiness?: boolean;
-      }
-    ).__finoSchedulerSharesReadiness === true;
-  if (!sharesReadiness) {
-    try {
-      return {
-        kind: 'io_uring',
-        raw: ioUring.create(),
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes('io_uring_setup failed')) throw error;
-      return {
-        kind: 'poll',
-        raw: pollBackend.create(),
-      };
-    }
-  }
-  const current = sharedLoopDescriptor();
-  if (current !== null) {
-    const descriptor = JSON.parse(current) as ioUring.IoUringDescriptor;
-    if (descriptor.kind !== 'io_uring')
-      throw new Error(`cannot attach Linux loop to ${descriptor.kind}`);
-    return {
-      kind: 'io_uring',
-      raw: ioUring.attach(descriptor),
-    };
-  }
   try {
-    const created = ioUring.create();
-    const installed = sharedLoopDescriptor(JSON.stringify(ioUring.describe(created)));
-    ioUring.destroy(created);
-    if (installed === null) throw new Error('failed to retain shared io_uring');
     return {
       kind: 'io_uring',
-      raw: ioUring.attach(JSON.parse(installed) as ioUring.IoUringDescriptor),
+      raw: ioUring.create(),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

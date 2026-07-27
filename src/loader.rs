@@ -552,6 +552,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:data/parquet/writer", "data/parquet/writer"),
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
+    source_builtin!("fino:format/protobuf", "format/protobuf"),
     source_builtin!("internal:format/thrift", "internal/format/thrift/index"),
     source_builtin!(
         "internal:format/thrift/types",

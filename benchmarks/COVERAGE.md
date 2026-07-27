@@ -99,6 +99,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:data/parquet` | `benchmarks/data/parquet.bench.ts` |
 | `fino:format/csv` | `benchmarks/format/csv.bench.ts` |
 | `fino:format/flatbuffers` | `benchmarks/format/flatbuffers.bench.ts` |
+| `fino:format/protobuf` | `benchmarks/format/protobuf.bench.ts` |
 | `fino:format/typescript` | `benchmarks/format/typescript.bench.ts` |
 | `fino:format/toml` | `benchmarks/format/toml.bench.ts` |
 | `fino:format/xml` | `benchmarks/format/xml.bench.ts` |

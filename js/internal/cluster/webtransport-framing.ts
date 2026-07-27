@@ -2,15 +2,15 @@
  * internal:cluster/webtransport-framing - stream frame helpers for cluster WebTransport.
  *
  * Cluster WebTransport sessions use reliable bidirectional streams. Each
- * stream starts with a JSON metadata frame that identifies whether the stream
+ * stream starts with a protobuf metadata frame that identifies whether the stream
  * carries control-plane messages or `PORT_MSG` data for a single logical port
- * pair. Every frame — metadata and messages alike — is a UTF-8 JSON document
- * prefixed by a four-byte big-endian length, so a receiver can split a byte
- * stream back into discrete JSON values without any in-band delimiters.
+ * pair. Every frame is an opaque binary payload prefixed by a four-byte
+ * big-endian length, so a receiver can split a byte stream back into discrete
+ * protobuf messages without in-band delimiters.
  *
  * The module has two halves. The stateless half is a pair of pure functions:
- * `encodeClusterStreamFrame` turns one JSON-serializable value into a framed
- * byte array, and `decodeClusterStreamFrame` decodes exactly one complete
+ * `encodeClusterStreamFrame` frames one byte array, and
+ * `decodeClusterStreamFrame` decodes exactly one complete
  * frame from the front of a buffer. The stateful half is
  * `ClusterStreamFrameReader`, which buffers partial frames across arbitrary
  * chunk boundaries — WebTransport delivers reads in whatever sizes the QUIC
@@ -38,8 +38,7 @@
  *   a: 'node-a/p1',
  *   b: 'node-b/p2',
  * };
- * await writer.write(encodeClusterStreamFrame(metadata));
- * await writer.write(encodeClusterStreamFrame({ type: 'PORT_MSG', data: 42 }));
+ * await writer.write(encodeClusterStreamFrame(encodeClusterStreamMetadata(metadata)));
  *
  * // Receiver: reassemble frames from arbitrary read chunks.
  * const frames = new ClusterStreamFrameReader();
@@ -51,7 +50,7 @@
  *
  * @internal
  */
-import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
+import { defineMessage } from 'fino:format/protobuf';
 /**
  * Metadata frame sent first on every cluster WebTransport stream.
  *
@@ -89,6 +88,57 @@ export type ClusterStreamMetadata =
       a: string;
       b: string;
     };
+
+interface WireMetadata {
+  version: number;
+  kind: number;
+  pair?: string;
+  a?: string;
+  b?: string;
+}
+
+const MetadataMessage = defineMessage<WireMetadata>({
+  version: { number: 1, type: 'uint32' },
+  kind: { number: 2, type: 'enum' },
+  pair: { number: 3, type: 'string', optional: true },
+  a: { number: 4, type: 'string', optional: true },
+  b: { number: 5, type: 'string', optional: true },
+});
+
+/**
+ * Encode typed stream metadata as a protobuf message.
+ *
+ * @internal
+ */
+export function encodeClusterStreamMetadata(metadata: ClusterStreamMetadata): Uint8Array {
+  return MetadataMessage.encode({
+    version: metadata.v,
+    kind: metadata.kind === 'control' ? 1 : 2,
+    ...(metadata.kind === 'port' ? { pair: metadata.pair, a: metadata.a, b: metadata.b } : {}),
+  });
+}
+
+/**
+ * Decode and validate one protobuf stream metadata message.
+ *
+ * @internal
+ */
+export function decodeClusterStreamMetadata(bytes: Uint8Array): ClusterStreamMetadata {
+  const value = MetadataMessage.decode(bytes);
+  if (value.version !== 1) {
+    throw new Error(`unsupported cluster WebTransport metadata version ${value.version}`);
+  }
+  if (value.kind === 1) return { v: 1, kind: 'control' };
+  if (
+    value.kind === 2 &&
+    typeof value.pair === 'string' &&
+    typeof value.a === 'string' &&
+    typeof value.b === 'string'
+  ) {
+    return { v: 1, kind: 'port', pair: value.pair, a: value.a, b: value.b };
+  }
+  throw new Error('invalid cluster WebTransport metadata');
+}
 /**
  * Build a stable key for both directions of a logical port pair.
  *
@@ -108,24 +158,20 @@ export function canonicalPortPair(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 /**
- * Encode one JSON value as a length-prefixed cluster stream frame.
+ * Encode one binary payload as a length-prefixed cluster stream frame.
  *
- * Serializes `value` with `JSON.stringify`, encodes the result as UTF-8, and
- * prepends a four-byte big-endian length covering the JSON payload only (the
- * prefix itself is not counted). The returned bytes are a complete frame,
- * ready to write to a stream as-is; consecutive frames are simply written
- * back to back. `value` must be JSON-serializable.
+ * Prepends a four-byte big-endian length covering the payload only (the prefix
+ * itself is not counted). Consecutive frames are written back to back.
  *
  * ```ts no_run
  * import { encodeClusterStreamFrame } from 'internal:cluster/webtransport-framing';
  *
- * const frame = encodeClusterStreamFrame({ v: 1, kind: 'control' });
- * // frame[0..4] is the big-endian payload length; the JSON follows.
+ * const frame = encodeClusterStreamFrame(new Uint8Array([1, 2, 3]));
+ * // frame[0..4] is the big-endian payload length; bytes follow.
  * await writer.write(frame);
  * ```
  */
-export function encodeClusterStreamFrame(value: unknown): Uint8Array {
-  const payload = encodeUtf8(JSON.stringify(value));
+export function encodeClusterStreamFrame(payload: Uint8Array): Uint8Array {
   const out = new Uint8Array(4 + payload.byteLength);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
   view.setUint32(0, payload.byteLength);
@@ -135,29 +181,28 @@ export function encodeClusterStreamFrame(value: unknown): Uint8Array {
 /**
  * Decode one complete cluster stream frame from the front of `bytes`.
  *
- * Reads the four-byte big-endian length prefix, parses the JSON payload that
- * follows, and returns the decoded value together with `bytesRead` — the
+ * Reads the four-byte big-endian length prefix and returns the payload together
+ * with `bytesRead` — the
  * total size of the consumed frame (prefix plus payload). Any bytes past the
  * frame are left untouched, so a caller holding several back-to-back frames
  * can advance by `bytesRead` and decode again. For chunked input where frame
  * boundaries are unknown, use `ClusterStreamFrameReader` instead.
  *
- * Throws if `bytes` is shorter than the length prefix, if the buffer ends
- * before the declared payload length, or if the payload is not valid UTF-8
- * JSON.
+ * Throws if `bytes` is shorter than the length prefix or the buffer ends
+ * before the declared payload length.
  *
  * ```ts no_run
  * import { decodeClusterStreamFrame, encodeClusterStreamFrame } from 'internal:cluster/webtransport-framing';
  *
- * const bytes = encodeClusterStreamFrame({ v: 1, kind: 'control' });
+ * const bytes = encodeClusterStreamFrame(new Uint8Array([1, 2, 3]));
  * const { value, bytesRead } = decodeClusterStreamFrame(bytes);
- * // value       → { v: 1, kind: 'control' }
+ * // value       → Uint8Array([1, 2, 3])
  * // bytesRead   → bytes.byteLength
  * const rest = bytes.subarray(bytesRead); // remaining frames, if any
  * ```
  */
 export function decodeClusterStreamFrame(bytes: Uint8Array): {
-  value: unknown;
+  value: Uint8Array;
   bytesRead: number;
 } {
   if (bytes.byteLength < 4) throw new Error('truncated cluster WebTransport frame length');
@@ -165,14 +210,10 @@ export function decodeClusterStreamFrame(bytes: Uint8Array): {
   const length = view.getUint32(0);
   const end = 4 + length;
   if (bytes.byteLength < end) throw new Error('truncated cluster WebTransport frame payload');
-  try {
-    return {
-      value: JSON.parse(decodeUtf8(bytes.subarray(4, end))),
-      bytesRead: end,
-    };
-  } catch (err: unknown) {
-    throw new Error(`invalid cluster WebTransport frame JSON: ${err}`);
-  }
+  return {
+    value: bytes.subarray(4, end),
+    bytesRead: end,
+  };
 }
 /**
  * Incremental decoder for frames split across stream chunks.
@@ -202,17 +243,16 @@ export class ClusterStreamFrameReader {
    * Append a chunk and return every frame it completes, in stream order.
    *
    * Returns an empty array when the chunk is empty or no buffered frame is
-   * complete yet. Throws if a completed frame's payload is not valid UTF-8
-   * JSON; a merely incomplete frame is never an error here — it just waits
-   * for the next push.
+   * complete yet. A merely incomplete frame is not an error here; it waits for
+   * the next push.
    */
-  push(chunk: Uint8Array): unknown[] {
+  push(chunk: Uint8Array): Uint8Array[] {
     if (chunk.byteLength === 0) return [];
     const merged = new Uint8Array(this.#buffer.byteLength + chunk.byteLength);
     merged.set(this.#buffer);
     merged.set(chunk, this.#buffer.byteLength);
     this.#buffer = merged;
-    const frames: unknown[] = [];
+    const frames: Uint8Array[] = [];
     while (this.#buffer.byteLength >= 4) {
       const view = new DataView(
         this.#buffer.buffer,

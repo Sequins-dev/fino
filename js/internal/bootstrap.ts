@@ -64,6 +64,7 @@ import {
   _schedulerPollingRequired,
 } from './runtime/loop.ts';
 import { drainMicrotasks, runLoop } from 'internal:async-context';
+import { setSchedulerPollingRequired, usesProcessReadiness } from 'internal:scheduler-native';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 import { env } from '../process.ts';
@@ -171,11 +172,7 @@ type RuntimeErrorConstructor = ErrorConstructor & {
   prepareStackTrace?: (err: Error, callSites: StackFrame[]) => string;
 };
 const runtimeGlobalThis = globalThis as RuntimeGlobalThis;
-(
-  globalThis as typeof globalThis & {
-    __finoSchedulerPollingRequired?: () => boolean;
-  }
-).__finoSchedulerPollingRequired = _schedulerPollingRequired;
+setSchedulerPollingRequired(_schedulerPollingRequired);
 const runtimeError = Error as RuntimeErrorConstructor;
 // Wrap Atomics.waitAsync so alive() can track pending async waits and keep
 // the event loop alive until they settle. V8 resolves waitAsync via foreground
@@ -405,12 +402,7 @@ export function driveLoop(
   onDone: () => void,
   opts?: DriveLoopOptions,
 ): void {
-  const processScheduled =
-    (
-      globalThis as {
-        __finoProcessReadiness?: boolean;
-      }
-    ).__finoProcessReadiness === true;
+  const processScheduled = usesProcessReadiness();
   let emptyTicks = 0;
   function step() {
     const loopAlive = alive();

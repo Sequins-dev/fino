@@ -28,7 +28,6 @@ struct Workload {
     owner: u32,
     context: v8::Global<v8::Context>,
     state: Rc<RefCell<FinoState>>,
-    polling_fn: Option<v8::Global<v8::Function>>,
     _module: v8::Global<v8::Module>,
     isolate: v8::OwnedIsolate,
     async_state: Option<crate::async_rt::IsolateAsyncState>,
@@ -146,26 +145,6 @@ fn next_owner() -> u32 {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LoopEvent {
-    ident: f64,
-    filter: i32,
-    flags: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fflags: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    res: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    udata: Option<f64>,
-    #[serde(default)]
-    routed: bool,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ReadinessChange {
     ident: f64,
     filter: i32,
@@ -173,11 +152,8 @@ struct ReadinessChange {
     fflags: u32,
     data: f64,
     udata: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     cancel_owner: Option<u32>,
-    #[serde(default)]
     scheduler_wake: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     acknowledgement: Option<u64>,
 }
 
@@ -189,7 +165,7 @@ struct ReadinessAcknowledgement {
 #[derive(Default)]
 struct MailboxInner {
     changes: Vec<ReadinessChange>,
-    events: HashMap<u32, VecDeque<LoopEvent>>,
+    events: HashMap<u32, VecDeque<Vec<u8>>>,
     acknowledgements: HashMap<u64, Arc<ReadinessAcknowledgement>>,
 }
 
@@ -246,45 +222,37 @@ fn js_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String
         .unwrap_or_else(|| "unknown exception".to_string())
 }
 
-fn global_function(
+fn current_workload_owner(
     scope: &mut v8::HandleScope,
-    name: &str,
-) -> Result<v8::Global<v8::Function>, String> {
-    let key =
-        v8::String::new(scope, name).ok_or_else(|| format!("failed to allocate {name} key"))?;
-    let value = scope
-        .get_current_context()
-        .global(scope)
-        .get(scope, key.into())
-        .ok_or_else(|| format!("{name} is missing"))?;
-    let function = v8::Local::<v8::Function>::try_from(value)
-        .map_err(|_| format!("{name} is not a function"))?;
-    Ok(v8::Global::new(scope, function))
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let owner = get_state(scope).borrow().scheduler_workload_owner;
+    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
 }
 
-fn install_workload_globals(scope: &mut v8::HandleScope, owner: u32) -> Result<(), String> {
-    let global = scope.get_current_context().global(scope);
-    for (name, value) in [
-        (
-            "__finoSchedulerWorkloadId",
-            v8::Integer::new_from_unsigned(scope, owner).into(),
-        ),
-        (
-            "__finoNativeReadinessRegistration",
-            v8::Boolean::new(scope, true).into(),
-        ),
-        (
-            "__finoProcessReadiness",
-            v8::Boolean::new(scope, true).into(),
-        ),
-    ] {
-        let key =
-            v8::String::new(scope, name).ok_or_else(|| format!("failed to allocate {name}"))?;
-        global
-            .set(scope, key.into(), value)
-            .ok_or_else(|| format!("failed to install {name}"))?;
-    }
-    Ok(())
+fn uses_process_readiness(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let enabled = get_state(scope).borrow().uses_process_readiness;
+    rv.set(v8::Boolean::new(scope, enabled).into());
+}
+
+fn set_scheduler_polling_required(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Ok(function) = v8::Local::<v8::Function>::try_from(args.get(0)) else {
+        throw_error(
+            scope,
+            "setSchedulerPollingRequired: argument must be a function",
+        );
+        return;
+    };
+    get_state(scope).borrow_mut().scheduler_polling_fn = Some(v8::Global::new(scope, function));
 }
 
 fn setup_workload(
@@ -321,7 +289,7 @@ fn setup_workload(
         let context = v8::Context::new(isolate_scope, Default::default());
         context.set_microtask_queue(&queue);
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
-        let state = FinoState::new_child(
+        let mut state = FinoState::new_child(
             process_env,
             package_map_json,
             queue,
@@ -338,8 +306,9 @@ fn setup_workload(
             realm_bootstrap_data,
             reload_requested_signal,
         );
+        state.scheduler_workload_owner = owner;
+        state.uses_process_readiness = true;
         context.set_slot(Rc::new(RefCell::new(state)));
-        install_workload_globals(scope, owner)?;
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
@@ -388,7 +357,6 @@ fn setup_workload(
         owner,
         context,
         state,
-        polling_fn: None,
         _module: module,
         isolate,
         async_state,
@@ -465,10 +433,6 @@ fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
     let context = v8::Local::new(isolate_scope, &context_global);
     let scope = &mut v8::ContextScope::new(isolate_scope, context);
     crate::realm::child::pump_and_checkpoint(scope);
-    if workload.polling_fn.is_none() {
-        workload.polling_fn = global_function(scope, "__finoSchedulerPollingRequired").ok();
-    }
-
     let loop_step_fn = workload.state.borrow().loop_step_fn.clone();
     let Some(loop_step_fn) = loop_step_fn else {
         return Ok((Slice::Quiescent(true), 1));
@@ -509,7 +473,9 @@ fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
             return Ok((Slice::Runnable, loop_turns));
         }
         let polling = workload
-            .polling_fn
+            .state
+            .borrow()
+            .scheduler_polling_fn
             .as_ref()
             .and_then(|polling_fn| {
                 v8::Local::new(tc, polling_fn)
@@ -1184,10 +1150,12 @@ fn create_scheduled_realm(
 fn optional_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> Option<String> {
     if value.is_null_or_undefined() {
         None
-    } else {
+    } else if value.is_string() {
         value
             .to_string(scope)
             .map(|value| value.to_rust_string_lossy(scope))
+    } else {
+        v8::json::stringify(scope, value).map(|value| value.to_rust_string_lossy(scope))
     }
 }
 
@@ -1857,8 +1825,34 @@ fn take_readiness_changes(
 ) {
     mailbox().drain_wake();
     let changes = std::mem::take(&mut mailbox().inner.lock().unwrap().changes);
-    let json = serde_json::to_string(&changes).unwrap_or_else(|_| "[]".to_string());
-    rv.set(v8::String::new(scope, &json).unwrap().into());
+    let values = v8::Array::new(scope, changes.len() as i32);
+    for (index, change) in changes.into_iter().enumerate() {
+        let tuple = v8::Array::new(scope, 9);
+        for (field, value) in [
+            v8::Number::new(scope, change.ident).into(),
+            v8::Integer::new(scope, change.filter).into(),
+            v8::Integer::new_from_unsigned(scope, change.flags).into(),
+            v8::Integer::new_from_unsigned(scope, change.fflags).into(),
+            v8::Number::new(scope, change.data).into(),
+            v8::Number::new(scope, change.udata).into(),
+            change
+                .cancel_owner
+                .map(|value| v8::Integer::new_from_unsigned(scope, value).into())
+                .unwrap_or_else(|| v8::null(scope).into()),
+            v8::Boolean::new(scope, change.scheduler_wake).into(),
+            change
+                .acknowledgement
+                .map(|value| v8::Number::new(scope, value as f64).into())
+                .unwrap_or_else(|| v8::null(scope).into()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            tuple.set_index(scope, field as u32, value);
+        }
+        values.set_index(scope, index as u32, tuple.into());
+    }
+    rv.set(values.into());
 }
 
 fn route_process_readiness(
@@ -1867,15 +1861,12 @@ fn route_process_readiness(
     _rv: v8::ReturnValue,
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    let event = LoopEvent {
-        ident: args.get(1).number_value(scope).unwrap_or(0.0),
-        filter: args.get(2).int32_value(scope).unwrap_or(0),
-        flags: args.get(3).uint32_value(scope).unwrap_or(0),
-        fflags: Some(args.get(4).uint32_value(scope).unwrap_or(0)),
-        data: Some(args.get(5).number_value(scope).unwrap_or(0.0)),
-        res: None,
-        udata: Some(args.get(6).number_value(scope).unwrap_or(0.0)),
-        routed: true,
+    let Some(event) = copy_uint8_array(scope, args.get(1)) else {
+        throw_error(
+            scope,
+            "routeProcessReadiness: second argument must be a Uint8Array",
+        );
+        return;
     };
     mailbox()
         .inner
@@ -1885,7 +1876,7 @@ fn route_process_readiness(
         .entry(owner)
         .or_default()
         .push_back(event);
-    if args.get(7).boolean_value(scope)
+    if args.get(2).boolean_value(scope)
         && let Some(pool) = owner_pools()
             .lock()
             .unwrap()
@@ -1899,24 +1890,9 @@ fn route_process_readiness(
 fn route_shared_loop_event(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    rv: v8::ReturnValue,
 ) {
-    let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    let json = args
-        .get(1)
-        .to_string(scope)
-        .map(|value| value.to_rust_string_lossy(scope))
-        .unwrap_or_default();
-    if let Ok(event) = serde_json::from_str::<LoopEvent>(&json) {
-        mailbox()
-            .inner
-            .lock()
-            .unwrap()
-            .events
-            .entry(owner)
-            .or_default()
-            .push_back(event);
-    }
+    route_process_readiness(scope, args, rv);
 }
 
 fn take_shared_loop_events(
@@ -1932,8 +1908,22 @@ fn take_shared_loop_events(
         .events
         .remove(&owner)
         .unwrap_or_default();
-    let json = serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string());
-    rv.set(v8::String::new(scope, &json).unwrap().into());
+    let values = v8::Array::new(scope, events.len() as i32);
+    for (index, event) in events.into_iter().enumerate() {
+        let len = event.len();
+        let store = v8::ArrayBuffer::new_backing_store(scope, len);
+        if !event.is_empty() {
+            let target = store.data().unwrap().as_ptr() as *mut u8;
+            unsafe {
+                std::ptr::copy_nonoverlapping(event.as_ptr(), target, len);
+            }
+        }
+        let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
+        if let Some(array) = v8::Uint8Array::new(scope, buffer, 0, len) {
+            values.set_index(scope, index as u32, array.into());
+        }
+    }
+    rv.set(values.into());
 }
 
 fn process_readiness_control_fd(
@@ -1944,56 +1934,11 @@ fn process_readiness_control_fd(
     rv.set(v8::Integer::new(scope, mailbox().wake_read).into());
 }
 
-fn shared_loop_descriptor(
-    scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    rv.set(v8::null(scope).into());
-}
-
-fn poll_shared_reactor(
-    scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    rv.set(v8::Boolean::new(scope, false).into());
-}
-
-fn register_shared_poll(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    static NEXT: AtomicU64 = AtomicU64::new(1 << 32);
-    static POLLS: std::sync::OnceLock<Mutex<HashMap<u64, u64>>> = std::sync::OnceLock::new();
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    let value = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-    POLLS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .insert(id, value);
-    rv.set(v8::Number::new(scope, id as f64).into());
-}
-
-fn take_shared_poll(
-    scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    rv.set(v8::null(scope).into());
-}
-
-fn cancel_shared_poll(
-    _scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-}
-
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let names = [
+        "currentWorkloadOwner",
+        "usesProcessReadiness",
+        "setSchedulerPollingRequired",
         "createWorkload",
         "createScheduledRealm",
         "scheduledRealmSend",
@@ -2016,16 +1961,10 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "registerProcessPersistentReadiness",
         "acknowledgeProcessReadiness",
         "registerReactorWake",
-        "registerSharedReadiness",
         "takeSharedReadinessChanges",
         "routeProcessReadiness",
         "routeSharedLoopEvent",
         "takeSharedLoopEvents",
-        "sharedLoopDescriptor",
-        "pollSharedReactor",
-        "registerSharedPoll",
-        "takeSharedPoll",
-        "cancelSharedPoll",
     ];
     let export_names: Vec<v8::Local<v8::String>> = names
         .iter()
@@ -2047,6 +1986,12 @@ fn eval_steps<'a>(
             module.set_synthetic_module_export(scope, name, function.into())?;
         }};
     }
+    set_fn!("currentWorkloadOwner", current_workload_owner);
+    set_fn!("usesProcessReadiness", uses_process_readiness);
+    set_fn!(
+        "setSchedulerPollingRequired",
+        set_scheduler_polling_required
+    );
     set_fn!("createWorkload", create_workload);
     set_fn!("createScheduledRealm", create_scheduled_realm);
     set_fn!("scheduledRealmSend", scheduled_realm_send);
@@ -2072,15 +2017,9 @@ fn eval_steps<'a>(
     );
     set_fn!("acknowledgeProcessReadiness", acknowledge_process_readiness);
     set_fn!("registerReactorWake", register_reactor_wake);
-    set_fn!("registerSharedReadiness", register_process_readiness);
     set_fn!("takeSharedReadinessChanges", take_readiness_changes);
     set_fn!("routeProcessReadiness", route_process_readiness);
     set_fn!("routeSharedLoopEvent", route_shared_loop_event);
     set_fn!("takeSharedLoopEvents", take_shared_loop_events);
-    set_fn!("sharedLoopDescriptor", shared_loop_descriptor);
-    set_fn!("pollSharedReactor", poll_shared_reactor);
-    set_fn!("registerSharedPoll", register_shared_poll);
-    set_fn!("takeSharedPoll", take_shared_poll);
-    set_fn!("cancelSharedPoll", cancel_shared_poll);
     Some(v8::undefined(scope).into())
 }

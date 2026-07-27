@@ -30,6 +30,7 @@
  */
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
+import { usesProcessReadiness } from 'internal:scheduler-native';
 import { encodeUtf8, decodeUtf8 } from '../encoding.ts';
 import { Path } from '../../file/path.ts';
 export { Pointer };
@@ -165,12 +166,7 @@ export let loopModule: LoopModule | null = null;
  */
 export let asyncOps: AsyncOpsModule | null = null;
 loopModule = await import('internal:runtime/loop');
-const processReadiness =
-  (
-    globalThis as {
-      __finoProcessReadiness?: boolean;
-    }
-  ).__finoProcessReadiness === true;
+const processReadiness = usesProcessReadiness();
 if (!isDarwin && !processReadiness) {
   asyncOps = await import('internal:runtime/loop-backend');
 }

@@ -360,6 +360,12 @@ pub struct FinoState {
     pub loop_step_fn: Option<v8::Global<v8::Function>>,
     /// Called by Rust after the event loop exits to run the post-loop error check.
     pub on_done_fn: Option<v8::Global<v8::Function>>,
+    /// Process-reactor owner id for this isolate, or zero outside the pool.
+    pub scheduler_workload_owner: u32,
+    /// Whether readiness registrations are routed through the process loop.
+    pub uses_process_readiness: bool,
+    /// Reports whether a quiescent scheduled workload still needs polling.
+    pub scheduler_polling_fn: Option<v8::Global<v8::Function>>,
 
     // ---------------------------------------------------------------------------
     // Pending synchronous call (set by JS scheduleSync() from internal:async-context)
@@ -511,6 +517,9 @@ impl FinoState {
             transpile_fn: None,
             loop_step_fn: None,
             on_done_fn: None,
+            scheduler_workload_owner: 0,
+            uses_process_readiness: false,
+            scheduler_polling_fn: None,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
@@ -573,6 +582,9 @@ impl FinoState {
             transpile_fn: None,
             loop_step_fn: None,
             on_done_fn: None,
+            scheduler_workload_owner: 0,
+            uses_process_readiness: false,
+            scheduler_polling_fn: None,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),

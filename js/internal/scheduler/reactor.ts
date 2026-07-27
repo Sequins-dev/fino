@@ -11,11 +11,13 @@
  */
 import * as loop from 'internal:runtime/loop';
 import * as backend from 'internal:runtime/loop-backend';
+import { serialize } from 'internal:serializer';
 import {
   acknowledgeProcessReadiness,
   routeProcessReadiness,
   signalReactorOwner,
   takeSharedReadinessChanges,
+  type ReadinessChangeTuple,
 } from 'internal:scheduler-native';
 
 interface ReadinessChange {
@@ -44,6 +46,38 @@ interface Registration {
   owner: number;
   change: ReadinessChange;
   cancel(): void;
+}
+
+function decodeReadinessChange(tuple: ReadinessChangeTuple): ReadinessChange {
+  const [ident, filter, flags, fflags, data, udata, cancelOwner, schedulerWake, acknowledgement] =
+    tuple;
+  return {
+    ident,
+    filter,
+    flags,
+    fflags,
+    data,
+    udata,
+    ...(cancelOwner === null ? {} : { cancelOwner }),
+    ...(schedulerWake ? { schedulerWake } : {}),
+    ...(acknowledgement === null ? {} : { acknowledgement }),
+  };
+}
+
+function route(
+  owner: number,
+  event: {
+    ident: number;
+    filter: number;
+    flags: number;
+    fflags: number;
+    data: number;
+    udata: number;
+    routed: true;
+  },
+  notifyPool: boolean,
+): void {
+  routeProcessReadiness(owner, serialize(event)[0]!, notifyPool);
 }
 
 /**
@@ -113,14 +147,17 @@ export class ProcessReadinessController {
       });
       loop.vnode(change.ident, change.fflags, (event) => {
         if (this.#registrations.get(registration)?.generation !== generation) return;
-        routeProcessReadiness(
+        route(
           owner,
-          change.ident,
-          change.filter,
-          0,
-          event.fflags,
-          0,
-          change.udata,
+          {
+            ident: change.ident,
+            filter: change.filter,
+            flags: 0,
+            fflags: event.fflags,
+            data: 0,
+            udata: change.udata,
+            routed: true,
+          },
           !this.#readyListeners.has(owner),
         );
         this.#readyListeners.get(owner)?.();
@@ -137,14 +174,17 @@ export class ProcessReadinessController {
       });
       loop.signal(change.ident, () => {
         if (this.#registrations.get(registration)?.generation !== generation) return;
-        routeProcessReadiness(
+        route(
           owner,
-          change.ident,
-          change.filter,
-          0,
-          0,
-          0,
-          change.udata,
+          {
+            ident: change.ident,
+            filter: change.filter,
+            flags: 0,
+            fflags: 0,
+            data: 0,
+            udata: change.udata,
+            routed: true,
+          },
           !this.#readyListeners.has(owner),
         );
         this.#readyListeners.get(owner)?.();
@@ -178,22 +218,25 @@ export class ProcessReadinessController {
     void ready.then((available) => {
       if (this.#registrations.get(registration)?.generation !== generation) return;
       this.#registrations.delete(registration);
-      routeProcessReadiness(
+      route(
         owner,
-        change.ident,
-        change.filter,
-        0,
-        0,
-        typeof available === 'number' ? available : 0,
-        change.udata,
+        {
+          ident: change.ident,
+          filter: change.filter,
+          flags: 0,
+          fflags: 0,
+          data: typeof available === 'number' ? available : 0,
+          udata: change.udata,
+          routed: true,
+        },
         !this.#readyListeners.has(owner),
       );
       this.#readyListeners.get(owner)?.();
     });
   }
   #drainCommands(): void {
-    const changes = JSON.parse(takeSharedReadinessChanges()) as ReadinessChange[];
-    for (const change of changes) {
+    for (const tuple of takeSharedReadinessChanges()) {
+      const change = decodeReadinessChange(tuple);
       try {
         this.#apply(change);
       } finally {

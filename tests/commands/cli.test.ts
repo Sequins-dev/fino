@@ -402,15 +402,13 @@ describe('CLI commands', () => {
       {
         'tasks/location.ts': [
           "import { task } from 'fino:task';",
+          "import { currentWorkloadOwner, usesProcessReadiness } from 'internal:scheduler-native';",
           'export default task({',
           "  name: 'location',",
           '  run: async (_input, ctx) => {',
-          '    const runtime = globalThis as {',
-          '      __finoProcessReadiness?: boolean;',
-          '      __finoSchedulerWorkloadId?: number;',
-          '    };',
+          "    const leaked = Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__fino'));",
           '    await ctx.writer.writeText(',
-          "      `reactor:${runtime.__finoProcessReadiness === true}:${typeof runtime.__finoSchedulerWorkloadId === 'number'}\\n`,",
+          '      `reactor:${usesProcessReadiness()}:${currentWorkloadOwner() > 0}:${leaked.length}\\n`,',
           '    );',
           '  }',
           '});',
@@ -422,8 +420,8 @@ describe('CLI commands', () => {
         t.equal(result.code, 0, 'project task exits successfully');
         t.equal(stderr, '', 'project task does not write stderr');
         t.ok(
-          stdout.includes('reactor:true:true'),
-          'project task runs inside an owner-tagged process-reactor workload',
+          stdout.includes('reactor:true:true:0'),
+          'project task uses host-owned scheduler state without leaking globals',
         );
       },
     );

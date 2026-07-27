@@ -52,6 +52,7 @@ import {
   createScheduledRealm,
   registerReactorWake,
   takeScheduledRealmStatus,
+  usesProcessReadiness,
 } from 'internal:scheduler-native';
 import { serialize as _ser } from 'internal:serializer';
 import type { ClusterClient } from 'internal:cluster/client';
@@ -196,15 +197,17 @@ function normaliseDirective(d: ImportDirectiveSer): {
     };
   return { type: 'inherit' };
 }
-/** Serialise a rule array to the JSON string the Rust bridge expects. */
+/** Normalize a rule array to the plain values accepted by native bridges. */
+function normaliseRules(rules: ImportRule[]): Record<string, unknown>[] {
+  return rules.map((r) => ({
+    ...(r.from !== undefined ? { from: r.from } : {}),
+    pattern: r.pattern,
+    directive: normaliseDirective(r.directive),
+  }));
+}
+/** Serialise a rule array to the JSON string used by process realm bridges. */
 function serialiseRules(rules: ImportRule[]): string {
-  return JSON.stringify(
-    rules.map((r) => ({
-      ...(r.from !== undefined ? { from: r.from } : {}),
-      pattern: r.pattern,
-      directive: normaliseDirective(r.directive),
-    })),
-  );
+  return JSON.stringify(normaliseRules(rules));
 }
 /** Serialise `RealmOptions.data` to the JSON string the Rust bridge stores. */
 function serializeRealmData(data: unknown): string | undefined {
@@ -230,7 +233,7 @@ function currentRealmBootstrapData(): RealmBootstrapData | undefined {
     return undefined;
   }
 }
-function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
+function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined {
   const endpointOption = opts.otlpEndpoint;
   if (endpointOption === false) return undefined;
   let endpoint = '';
@@ -243,7 +246,11 @@ function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
     endpoint = typeof inherited === 'string' ? inherited.trim() : '';
   }
   if (!endpoint) return undefined;
-  return JSON.stringify({ cliOtel: { endpoint } });
+  return { cliOtel: { endpoint } };
+}
+function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
+  const data = realmBootstrapData(opts);
+  return data === undefined ? undefined : JSON.stringify(data);
 }
 // ---------------------------------------------------------------------------
 // ImportMap - helper for building the child-specific rule list
@@ -2741,19 +2748,14 @@ export class Realm<F extends RealmFn = RealmFn> {
   }
 
   /** Create one movable isolate and await its scalar completion signal. @internal */
-  #startScheduledRealm(
-    opts: RealmOptions,
-    serializedRules: string,
-    rules: ImportRule[],
-    reloading = false,
-  ): Promise<void> {
+  #startScheduledRealm(opts: RealmOptions, rules: ImportRule[], reloading = false): Promise<void> {
     const scheduled = createScheduledRealm(
       opts.root ?? '',
       opts.entry,
-      serializedRules,
+      normaliseRules(rules),
       opts.watch ?? false,
-      serializeRealmData(opts.data),
-      serializeRealmBootstrapData(opts),
+      opts.data,
+      realmBootstrapData(opts),
       opts.repl ?? false,
     );
     this.#handle = scheduled.handle;
@@ -2779,12 +2781,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         throw error;
       }
       if (status.kind === 'reload' && !this.#watchTerminated && this.#scheduledOpts !== null) {
-        return this.#startScheduledRealm(
-          this.#scheduledOpts,
-          this.#watchSerializedRules,
-          this.#scheduledRules,
-          true,
-        );
+        return this.#startScheduledRealm(this.#scheduledOpts, this.#scheduledRules, true);
       }
     })();
   }
@@ -2853,7 +2850,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
     const serializedData = serializeRealmData(opts.data);
-    const serializedBootstrapData = serializeRealmBootstrapData(opts);
+    const bootstrapData = realmBootstrapData(opts);
+    const serializedBootstrapData =
+      bootstrapData === undefined ? undefined : JSON.stringify(bootstrapData);
     if (opts.remote && serializedData !== undefined) {
       throw new Error('fino:realm — data is not supported with remote: true');
     }
@@ -2876,10 +2875,8 @@ export class Realm<F extends RealmFn = RealmFn> {
       const config = {
         entry: opts.entry,
         root: opts.root ?? '',
-        rules: JSON.parse(serializedRules),
-        ...(serializedBootstrapData !== undefined
-          ? { bootstrapData: JSON.parse(serializedBootstrapData) }
-          : {}),
+        rules: normaliseRules(rules),
+        ...(bootstrapData === undefined ? {} : { bootstrapData }),
       };
       this.#spawnPromise = cluster.spawnRemote(portId, config).then((childPortId: string) => {
         clusterPort._setChildPortId(childPortId);
@@ -2898,19 +2895,13 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
-    } else if (
-      (
-        globalThis as {
-          __finoProcessReadiness?: boolean;
-        }
-      ).__finoProcessReadiness === true
-    ) {
+    } else if (usesProcessReadiness()) {
       this.#kind = 'scheduled';
       this.#handle = -1;
       this.port = undefined as unknown as ScheduledPort;
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
-      this.#scheduledCompletion = this.#startScheduledRealm(opts, serializedRules, rules);
+      this.#scheduledCompletion = this.#startScheduledRealm(opts, rules);
       this.#scheduledShutdownRegistration = registerShutdownHook(() => this.terminate());
       void this.#scheduledCompletion.then(
         () => this.#disposeScheduledShutdownRegistration(),

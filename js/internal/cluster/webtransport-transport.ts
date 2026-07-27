@@ -10,7 +10,7 @@
  * `fino-cluster-v1` WebTransport protocol.
  *
  * Every message travels on its own short-lived reliable bidirectional stream.
- * The first frame on a stream is a `ClusterStreamMetadata` JSON frame that
+ * The first frame on a stream is a `ClusterStreamMetadata` protobuf frame that
  * tags the stream as control-plane or as data for one logical port pair (see
  * `internal:cluster/webtransport-framing`); message frames follow. Each
  * `PORT_MSG` uses a separate stream tagged with the canonical logical port
@@ -53,7 +53,9 @@ import { decode, encode, nodeIdFromId, type ClusterMessage } from './protocol.ts
 import {
   canonicalPortPair,
   ClusterStreamFrameReader,
+  decodeClusterStreamMetadata,
   encodeClusterStreamFrame,
+  encodeClusterStreamMetadata,
   type ClusterStreamMetadata,
 } from './webtransport-framing.ts';
 /**
@@ -215,13 +217,11 @@ function isPortMessage(msg: ClusterMessage): msg is Extract<
 function frameMessage(msg: ClusterMessage): Uint8Array {
   return encodeClusterStreamFrame(encode(msg));
 }
-function decodeMessage(value: unknown): ClusterMessage {
-  if (typeof value !== 'string')
-    throw new Error('cluster WebTransport message frame must contain encoded JSON');
+function decodeMessage(value: Uint8Array): ClusterMessage {
   return decode(value);
 }
-async function writeFrame(writer: StreamWriter, value: unknown): Promise<void> {
-  await writer.write(encodeClusterStreamFrame(value));
+async function writeMetadata(writer: StreamWriter, value: ClusterStreamMetadata): Promise<void> {
+  await writer.write(encodeClusterStreamFrame(encodeClusterStreamMetadata(value)));
 }
 async function writeMessage(writer: StreamWriter, msg: ClusterMessage): Promise<void> {
   await writer.write(frameMessage(msg));
@@ -263,9 +263,7 @@ async function readClusterStream(
       if (!(chunk instanceof Uint8Array)) continue;
       for (const value of frames.push(chunk)) {
         if (metadata === null) {
-          if (!isMetadata(value))
-            throw new Error('cluster WebTransport stream missing metadata frame');
-          metadata = value;
+          metadata = decodeClusterStreamMetadata(value);
           await onMetadata(metadata, writer);
           continue;
         }
@@ -279,18 +277,6 @@ async function readClusterStream(
     } catch {}
     onClose(metadata);
   }
-}
-function isMetadata(value: unknown): value is ClusterStreamMetadata {
-  if (value === null || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  if (record.v !== 1) return false;
-  if (record.kind === 'control') return true;
-  return (
-    record.kind === 'port' &&
-    typeof record.pair === 'string' &&
-    typeof record.a === 'string' &&
-    typeof record.b === 'string'
-  );
 }
 async function sendPortMessage(
   wt: WebTransport,
@@ -313,14 +299,14 @@ async function sendPortMessage(
     a: fromPort,
     b: toPort,
   } satisfies ClusterStreamMetadata;
-  await writeFrame(writer, metadata);
+  await writeMetadata(writer, metadata);
   await writeMessage(writer, msg);
   closeWriter(writer);
 }
 async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promise<void> {
   const stream = await wt.createBidirectionalStream();
   const writer = stream.writable.getWriter();
-  await writeFrame(writer, {
+  await writeMetadata(writer, {
     v: 1,
     kind: 'control',
   } satisfies ClusterStreamMetadata);
@@ -693,7 +679,7 @@ export class WebTransportWorkerTransport implements ClusterTransport {
     const control = await wt.createBidirectionalStream();
     const writer = control.writable.getWriter();
     this.#control = writer;
-    await writeFrame(writer, {
+    await writeMetadata(writer, {
       v: 1,
       kind: 'control',
     } satisfies ClusterStreamMetadata);
