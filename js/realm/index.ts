@@ -6,11 +6,14 @@
  * module resolution in the child; the child can layer overrides on top.
  *
  * Realms in the current process run as movable isolates on the shared reactor
- * thread pool. Process realms provide hard sandbox isolation, while remote
- * realms run on another node's reactor pool over the current trusted
- * `fino:cluster` WebTransport transport. Remote realms require an active
- * cluster before construction. Cluster authentication, hostile-peer handling,
- * and remote `watch` / `repl` modes are outside this baseline.
+ * thread pool. They provide JavaScript and module-graph isolation, not an
+ * operating-system security boundary: local realms share the process address
+ * space, file-descriptor table, and background FFI pool. Process realms add
+ * hard crash isolation but do not automatically restrict the child's access to
+ * the host. Remote realms run on another node's reactor pool over the current
+ * trusted `fino:cluster` WebTransport transport. Remote realms require an
+ * active cluster before construction. Cluster authentication, hostile-peer
+ * handling, and remote `watch` / `repl` modes are outside this baseline.
  *
  * The import rule list uses last-match-wins semantics. Declare a wildcard
  * first as the baseline and more specific patterns afterwards as overrides.
@@ -2464,7 +2467,7 @@ function _resolveCallResponse<R>(
 /**
  * Isolated child realm with its own module graph and communication port.
  *
- * A realm runs as a movable isolate on the shared reactor pool, in a sandbox
+ * A realm runs as a movable isolate on the shared reactor pool, in a separate
  * process, or on a remote cluster node. Use `run()` for entry modules with side
  * effects and `call()` for entry modules that default-export a function.
  *

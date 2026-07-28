@@ -26,6 +26,21 @@ workload has more pending readiness signals. Messages cross isolate boundaries
 through V8 ValueSerializer and support `ArrayBuffer` and `MessagePort`
 transfer.
 
+This is JavaScript and module-graph isolation, not operating-system
+containment. Reactor realms share the process address space and file-descriptor
+table. A realm can move between reactor workers, so it has no stable OS thread
+to place in a cgroup, assign QoS, or restrict with a per-thread seccomp or
+Landlock policy. Applying one of those controls to a worker would affect every
+realm scheduled there, while async FFI can run on the process-wide blocking
+pool instead.
+
+Import rules and provider overrides are still useful capability boundaries for
+cooperating application code. They are not substitutes for OS enforcement:
+native or FFI code running in the process can bypass a hidden filesystem or
+network provider. macOS scheduling QoS and Linux thread controls may govern
+reactor workers as a group, but Fino does not expose them as per-realm security
+or resource limits.
+
 ## Process
 
 `process: true` spawns the child as a separate OS process:
@@ -70,4 +85,4 @@ cluster node you have already established with `startCluster()` or
 
 Import rules, facades, execution mode, OS process privileges, filesystem and network placement, and cluster authentication are all independent parts of a trust model. No single mechanism is a complete security boundary on its own.
 
-Realms do not sandbox the child against the host operating system. A process realm with full filesystem access is isolated from the parent process, not from the host. Combine restrictions intentionally: narrow the import rule set, use `process: true` for adversarial code, restrict OS-level privileges at the process level, and place sensitive services behind facades rather than making them directly importable.
+Realms do not sandbox the child against the host operating system. A process realm with full filesystem access is isolated from the parent process, not from the host. Combine restrictions intentionally: narrow the import rule set, use `process: true` for adversarial code, apply OS-level containment to the child process, and place sensitive services behind facades rather than making them directly importable.
