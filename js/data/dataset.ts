@@ -10,9 +10,10 @@
  * iterators.
  *
  * Randomness is explicit. Buffered shuffle derives its stream from `seed`,
- * `epoch`, and `workerId`, which makes repeated evaluation and future worker
- * execution reproducible. FIN-98 can add realm workers and durable checkpoints
- * behind this contract without changing callers.
+ * `epoch`, and `workerId`, which makes repeated evaluation and realm-worker
+ * execution reproducible. Loader iterators expose serializable checkpoints,
+ * and `DataLoader.restore()` resumes at the next unseen batch by replaying the
+ * deterministic source without re-running collators for skipped batches.
  *
  * Built-in adapters cover CSV, JSON Lines, Arrow IPC, Parquet, SQLite, HTTP,
  * and hub-style HTTP repositories. Tabular binary sources yield Arrow
@@ -42,6 +43,7 @@ import { parseStream, type CsvParseOptions } from 'fino:format/csv';
 import { RecordBatch, RecordBatchReader, Table } from 'fino:data/arrow';
 import { readParquet } from 'fino:data/parquet';
 import type { Database, SqlValue } from 'fino:database/sqlite';
+import { Realm, type RealmOptions } from 'fino:realm';
 
 /**
  * Value returned directly or through a promise by transform and collator callbacks.
@@ -515,6 +517,145 @@ export type CollateFunction<T, B> = (
 ) => MaybePromise<B>;
 
 /**
+ * Serializable position for a deterministic `DataLoader` traversal.
+ *
+ * The checkpoint records the next batch to yield, not prefetched work. Restore
+ * replays and skips source batches, so the source and transforms must be
+ * replayable and deterministic for the recorded seed context.
+ */
+export interface DataLoaderState {
+  /** Checkpoint format version. */
+  version: 1;
+  /** Epoch used by the traversal. */
+  epoch: number;
+  /** Dataset worker partition used by the traversal. */
+  workerId: number;
+  /** Seed used by the traversal. */
+  seed: number;
+  /** Number of batches already yielded to the consumer. */
+  batchesYielded: number;
+  /** Configuration that affects deterministic source grouping and order. */
+  loader: {
+    batchSize: number;
+    dropLast: boolean;
+    shuffle: {
+      bufferSize: number;
+      seed: number;
+    } | null;
+  };
+}
+
+/**
+ * DataLoader iterator with a durable checkpoint for its next unseen batch.
+ */
+export interface DataLoaderIterator<B> extends AsyncIterableIterator<B> {
+  /** Snapshot the committed traversal position as plain JSON-compatible data. */
+  state(): DataLoaderState;
+}
+
+/**
+ * Shared slab offered to a realm worker for direct batch writes.
+ */
+export interface SharedBatchWriter {
+  /** Shared backing store retained by the loader's slab ring. */
+  buffer: SharedArrayBuffer;
+  /** Start of this slot in `buffer`. */
+  byteOffset: number;
+  /** Writable capacity of this slot. */
+  byteCapacity: number;
+  /** Slot number within the ring. */
+  slot: number;
+  /** Source batch number for this write. */
+  sequence: number;
+}
+
+/**
+ * Optional item boundary inside a shared batch.
+ */
+export interface SharedBatchItem {
+  /** Offset relative to the batch descriptor's `byteOffset`. */
+  byteOffset: number;
+  /** Item length in bytes. */
+  byteLength: number;
+}
+
+/**
+ * Metadata returned by a realm worker after writing a shared slab.
+ */
+export interface SharedBatchWrite {
+  /** Number of initialized bytes, no greater than the offered capacity. */
+  byteLength: number;
+  /** Optional zero-copy item boundaries within the initialized region. */
+  items?: readonly SharedBatchItem[];
+}
+
+/**
+ * Metadata passed to a realm-worker collator.
+ *
+ * Realm workers do not receive an `AbortSignal` because cancellation
+ * terminates the active Realm. When shared-memory collation is enabled,
+ * `shared` identifies the writable slab for this source batch.
+ */
+export interface DataLoaderWorkerContext extends Omit<CollateContext, 'signal'> {
+  /** Writable shared slab offered for this batch, when configured. */
+  shared?: SharedBatchWriter;
+}
+
+/**
+ * Default export shape for a `DataLoader` realm-worker module.
+ */
+export type DataLoaderWorkerFunction<T, B> = (
+  values: readonly T[],
+  context: DataLoaderWorkerContext,
+) => MaybePromise<B | SharedBatchWrite>;
+
+/**
+ * Consumer-facing view of one collated shared-memory batch.
+ *
+ * The ring retains the `SharedArrayBuffer` until the traversal and outstanding
+ * descriptors are released. Device integrations can enqueue an H2D transfer
+ * directly from this region, then call `release()` when the transfer no longer
+ * reads host memory.
+ */
+export interface SharedBatchDescriptor extends SharedBatchWriter {
+  /** Number of initialized bytes in this slot. */
+  byteLength: number;
+  /** Optional item boundaries returned by the worker. */
+  items: readonly SharedBatchItem[];
+  /** Return this slot to the bounded ring. Idempotent. */
+  release(): void;
+}
+
+/**
+ * Reactor-pooled collator module used by `DataLoader`.
+ *
+ * Each submitted batch gets a fresh movable Realm isolate scheduled by Fino's
+ * existing reactor pool. `size` bounds concurrent calls; it does not create a
+ * second thread scheduler.
+ */
+export interface DataLoaderWorkerOptions {
+  /** Module whose default export implements `DataLoaderWorkerFunction`. */
+  entry: string;
+  /** Maximum concurrent realm calls. Defaults to `1`. */
+  size?: number;
+  /** Realm loader/import configuration applied to every worker call. */
+  realm?: Omit<
+    RealmOptions,
+    'entry' | 'process' | 'remote' | 'watch' | 'repl' | 'input' | 'output'
+  >;
+}
+
+/**
+ * Shared host-memory ring used for direct realm-worker collation.
+ */
+export interface DataLoaderSharedMemoryOptions {
+  /** Number of reusable slots. Defaults to the effective prefetch capacity. */
+  slots?: number;
+  /** Writable bytes in each slot. */
+  slotBytes: number;
+}
+
+/**
  * DataLoader construction options.
  */
 export interface DataLoaderOptions<T, B = T[]> {
@@ -533,14 +674,162 @@ export interface DataLoaderOptions<T, B = T[]> {
   seed?: number;
   /** Convert an item group into the yielded batch value. Defaults to a new array. */
   collate?: CollateFunction<T, B>;
+  /**
+   * Maximum number of batches processed ahead of the consumer.
+   *
+   * Defaults to the realm worker size when `worker` is present and `1`
+   * otherwise. Results still yield in source order.
+   */
+  prefetch?: number;
+  /**
+   * Run collation in fresh movable Realm isolates on the existing reactor pool.
+   *
+   * The worker module replaces `collate`; specifying both is an error.
+   */
+  worker?: DataLoaderWorkerOptions;
+  /**
+   * Offer SharedArrayBuffer slots to realm workers for direct writes.
+   *
+   * Requires `worker`. The worker returns `SharedBatchWrite`; the loader yields
+   * `SharedBatchDescriptor` values whose slots must be released by consumers.
+   */
+  sharedMemory?: DataLoaderSharedMemoryOptions;
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error('data loader traversal aborted');
+}
+
+function sameStateConfiguration(
+  state: DataLoaderState,
+  batchSize: number,
+  dropLast: boolean,
+  shuffle: ShuffleOptions | undefined,
+): boolean {
+  if (
+    typeof state.loader !== 'object' ||
+    state.loader === null ||
+    !Number.isSafeInteger(state.loader.batchSize) ||
+    typeof state.loader.dropLast !== 'boolean' ||
+    (state.loader.shuffle !== null &&
+      (typeof state.loader.shuffle !== 'object' ||
+        !Number.isSafeInteger(state.loader.shuffle.bufferSize) ||
+        !Number.isSafeInteger(state.loader.shuffle.seed)))
+  ) {
+    return false;
+  }
+  const expectedShuffle = shuffle
+    ? {
+        bufferSize: shuffle.bufferSize,
+        seed: shuffle.seed ?? state.seed,
+      }
+    : null;
+  const actualShuffle = state.loader.shuffle;
+  return (
+    state.loader.batchSize === batchSize &&
+    state.loader.dropLast === dropLast &&
+    (expectedShuffle === null
+      ? actualShuffle === null
+      : actualShuffle !== null &&
+        actualShuffle.bufferSize === expectedShuffle.bufferSize &&
+        actualShuffle.seed === expectedShuffle.seed)
+  );
+}
+
+class SharedSlabRing {
+  readonly #buffer: SharedArrayBuffer;
+  readonly #slotBytes: number;
+  readonly #free: number[];
+  readonly #waiters: Array<{
+    resolve: (slot: number) => void;
+    reject: (error: Error) => void;
+    signal?: AbortSignal;
+    onAbort?: () => void;
+  }> = [];
+
+  constructor(slots: number, slotBytes: number) {
+    this.#slotBytes = integer(slotBytes, 'sharedMemory.slotBytes', 1);
+    const count = integer(slots, 'sharedMemory.slots', 1);
+    this.#buffer = new SharedArrayBuffer(count * this.#slotBytes);
+    this.#free = Array.from({ length: count }, (_, index) => index);
+  }
+
+  async acquire(sequence: number, signal?: AbortSignal): Promise<SharedBatchWriter> {
+    if (signal?.aborted) throw abortError(signal);
+    const immediate = this.#free.shift();
+    const slot =
+      immediate ??
+      (await new Promise<number>((resolve, reject) => {
+        const waiter: {
+          resolve: (slot: number) => void;
+          reject: (error: Error) => void;
+          signal?: AbortSignal;
+          onAbort?: () => void;
+        } = { resolve, reject, ...(signal ? { signal } : {}) };
+        if (signal) {
+          waiter.onAbort = () => {
+            const index = this.#waiters.indexOf(waiter);
+            if (index >= 0) this.#waiters.splice(index, 1);
+            reject(abortError(signal));
+          };
+          signal.addEventListener('abort', waiter.onAbort, { once: true });
+        }
+        this.#waiters.push(waiter);
+      }));
+    return {
+      buffer: this.#buffer,
+      byteOffset: slot * this.#slotBytes,
+      byteCapacity: this.#slotBytes,
+      slot,
+      sequence,
+    };
+  }
+
+  release(slot: number): void {
+    const waiter = this.#waiters.shift();
+    if (!waiter) {
+      this.#free.push(slot);
+      return;
+    }
+    if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort);
+    waiter.resolve(slot);
+  }
+
+  descriptor(writer: SharedBatchWriter, write: SharedBatchWrite): SharedBatchDescriptor {
+    const byteLength = integer(write.byteLength, 'worker byteLength');
+    if (byteLength > writer.byteCapacity)
+      throw new RangeError('worker byteLength exceeds the shared slab capacity');
+    const items = [...(write.items ?? [])];
+    for (const item of items) {
+      integer(item.byteOffset, 'shared batch item byteOffset');
+      integer(item.byteLength, 'shared batch item byteLength');
+      if (item.byteOffset + item.byteLength > byteLength)
+        throw new RangeError('shared batch item exceeds the initialized batch region');
+    }
+    let released = false;
+    return {
+      ...writer,
+      byteLength,
+      items,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.release(writer.slot);
+      },
+    };
+  }
 }
 
 /**
  * Pull-driven batching and collation over an `IterableDataset`.
  *
- * A loader does not prefetch in FIN-97: requesting the next batch pulls only
- * enough source items to build that batch. This is the base backpressure
- * contract that FIN-98's bounded worker queues will preserve.
+ * Local collation remains one-batch-at-a-time by default. `prefetch` opts into
+ * a bounded ordered window, and `worker` runs those calls in movable Realm
+ * isolates owned by the runtime's reactor scheduler. A shared-memory ring can
+ * provide strongly retained shared host slabs for zero-copy descriptors and
+ * explicit H2D handoff backpressure.
  *
  * ```ts no_run
  * import { DataLoader, Dataset } from 'fino:data/dataset';
@@ -559,6 +848,9 @@ export class DataLoader<T, B = T[]> implements AsyncIterable<B> {
   readonly #shuffle: ShuffleOptions | undefined;
   readonly #seed: number;
   readonly #collate: CollateFunction<T, B>;
+  readonly #prefetch: number;
+  readonly #worker: DataLoaderWorkerOptions | undefined;
+  readonly #sharedMemory: DataLoaderSharedMemoryOptions | undefined;
 
   /** Create a reusable loader over a dataset or arbitrary iterable. */
   constructor(
@@ -570,17 +862,75 @@ export class DataLoader<T, B = T[]> implements AsyncIterable<B> {
     this.#dropLast = options.dropLast ?? false;
     this.#shuffle = options.shuffle;
     this.#seed = integer(options.seed ?? 0, 'seed');
+    if (options.worker && options.collate)
+      throw new TypeError('DataLoader worker and collate options are mutually exclusive');
+    if (options.sharedMemory && !options.worker)
+      throw new TypeError('DataLoader sharedMemory requires a realm worker');
+    const workerSize = integer(options.worker?.size ?? 1, 'worker.size', 1);
+    this.#prefetch = integer(options.prefetch ?? workerSize, 'prefetch', 1);
+    this.#worker = options.worker
+      ? {
+          ...options.worker,
+          size: workerSize,
+        }
+      : undefined;
+    this.#sharedMemory = options.sharedMemory;
+    if (this.#sharedMemory) {
+      integer(this.#sharedMemory.slotBytes, 'sharedMemory.slotBytes', 1);
+      integer(this.#sharedMemory.slots ?? this.#prefetch, 'sharedMemory.slots', 1);
+    }
     this.#collate = options.collate ?? ((values) => [...values] as B);
   }
 
   /**
    * Traverse and collate with explicit epoch, worker, and cancellation inputs.
    */
-  iterate(options: DatasetIterationOptions = {}): AsyncIterableIterator<B> {
+  iterate(options: DatasetIterationOptions = {}): DataLoaderIterator<B> {
     const context = normalizeContext({
       ...options,
       seed: options.seed ?? this.#seed,
     });
+    return this.#iterate(context, 0);
+  }
+
+  /**
+   * Resume a serialized traversal checkpoint.
+   *
+   * Restore rejects checkpoints from incompatible batching/shuffle
+   * configuration. It replays the source to the saved batch boundary without
+   * invoking local or realm collators for skipped batches.
+   */
+  restore(
+    state: DataLoaderState,
+    options: Pick<DatasetIterationOptions, 'signal'> = {},
+  ): DataLoaderIterator<B> {
+    if (
+      typeof state !== 'object' ||
+      state === null ||
+      state.version !== 1 ||
+      !Number.isSafeInteger(state.epoch) ||
+      !Number.isSafeInteger(state.workerId) ||
+      !Number.isSafeInteger(state.seed) ||
+      !Number.isSafeInteger(state.batchesYielded) ||
+      state.batchesYielded < 0
+    ) {
+      throw new TypeError('invalid DataLoader checkpoint');
+    }
+    if (!sameStateConfiguration(state, this.#batchSize, this.#dropLast, this.#shuffle))
+      throw new Error('DataLoader checkpoint does not match this loader configuration');
+    return this.#iterate(
+      normalizeContext({
+        epoch: state.epoch,
+        workerId: state.workerId,
+        seed: state.seed,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+      state.batchesYielded,
+    );
+  }
+
+  /** @internal */
+  #iterate(context: DatasetIterationContext, resumeBatches: number): DataLoaderIterator<B> {
     let source = this.#source;
     if (this.#shuffle)
       source = source.shuffle({
@@ -589,22 +939,148 @@ export class DataLoader<T, B = T[]> implements AsyncIterable<B> {
       });
     const groups = source.batch(this.#batchSize, { dropLast: this.#dropLast });
     const collate = this.#collate;
-    return new IterableDataset<B>(async function* () {
-      let batchIndex = 0;
-      for await (const values of groups.iterate(context)) {
-        throwIfAborted(context.signal);
-        yield await collate(values, {
-          batchIndex: batchIndex++,
+    const worker = this.#worker;
+    const capacity = worker ? Math.min(this.#prefetch, worker.size!) : this.#prefetch;
+    const sharedRing = this.#sharedMemory
+      ? new SharedSlabRing(this.#sharedMemory.slots ?? capacity, this.#sharedMemory.slotBytes)
+      : null;
+    const workController = new AbortController();
+    const forwardAbort = () =>
+      workController.abort(
+        context.signal?.reason instanceof Error
+          ? context.signal.reason
+          : new Error('data loader traversal aborted'),
+      );
+    if (context.signal) {
+      if (context.signal.aborted) forwardAbort();
+      else context.signal.addEventListener('abort', forwardAbort, { once: true });
+    }
+    const activeRealms = new Set<Realm>();
+    let committedBatches = resumeBatches;
+    const makeState = (): DataLoaderState => ({
+      version: 1,
+      epoch: context.epoch,
+      workerId: context.workerId,
+      seed: context.seed,
+      batchesYielded: committedBatches,
+      loader: {
+        batchSize: this.#batchSize,
+        dropLast: this.#dropLast,
+        shuffle: this.#shuffle
+          ? {
+              bufferSize: this.#shuffle.bufferSize,
+              seed: this.#shuffle.seed ?? context.seed,
+            }
+          : null,
+      },
+    });
+    const processBatch = async (values: T[], batchIndex: number): Promise<B> => {
+      throwIfAborted(workController.signal);
+      if (!worker) {
+        return await collate(values, {
+          batchIndex,
           epoch: context.epoch,
           workerId: context.workerId,
           ...(context.signal ? { signal: context.signal } : {}),
         });
       }
-    }).iterate(context);
+      let writer: SharedBatchWriter | undefined;
+      let descriptorCommitted = false;
+      if (sharedRing) writer = await sharedRing.acquire(batchIndex, workController.signal);
+      const realm = new Realm<DataLoaderWorkerFunction<T, B>>({
+        ...(worker.realm ?? {}),
+        entry: worker.entry,
+      });
+      activeRealms.add(realm);
+      const workerContext = {
+        batchIndex,
+        epoch: context.epoch,
+        workerId: context.workerId,
+        ...(writer ? { shared: writer } : {}),
+      };
+      let onAbort: (() => void) | undefined;
+      try {
+        const call = realm.call(values, workerContext);
+        const result = await Promise.race([
+          call,
+          new Promise<never>((_, reject) => {
+            onAbort = () => {
+              realm.terminate();
+              reject(abortError(workController.signal));
+            };
+            workController.signal.addEventListener('abort', onAbort, { once: true });
+          }),
+        ]);
+        if (!sharedRing || !writer) return result as B;
+        if (
+          typeof result !== 'object' ||
+          result === null ||
+          !('byteLength' in result) ||
+          typeof result.byteLength !== 'number'
+        ) {
+          throw new TypeError('shared-memory realm worker must return SharedBatchWrite metadata');
+        }
+        const descriptor = sharedRing.descriptor(writer, result as SharedBatchWrite);
+        descriptorCommitted = true;
+        return descriptor as B;
+      } finally {
+        if (onAbort) workController.signal.removeEventListener('abort', onAbort);
+        activeRealms.delete(realm);
+        if (writer && !descriptorCommitted) sharedRing!.release(writer.slot);
+      }
+    };
+    const run = async function* (): AsyncIterableIterator<B> {
+      const iterator = groups.iterate(context);
+      const pending: Array<Promise<{ ok: true; value: B } | { ok: false; error: unknown }>> = [];
+      let sourceBatchIndex = 0;
+      let sourceDone = false;
+      const fill = async () => {
+        while (!sourceDone && pending.length < capacity) {
+          throwIfAborted(workController.signal);
+          const next = await iterator.next();
+          if (next.done) {
+            if (sourceBatchIndex < resumeBatches)
+              throw new Error('DataLoader checkpoint is past the end of this source');
+            sourceDone = true;
+            return;
+          }
+          const batchIndex = sourceBatchIndex++;
+          if (batchIndex < resumeBatches) continue;
+          pending.push(
+            processBatch(next.value, batchIndex).then(
+              (value) => ({ ok: true, value }),
+              (error: unknown) => ({ ok: false, error }),
+            ),
+          );
+        }
+      };
+      try {
+        await fill();
+        while (pending.length > 0) {
+          const result = await pending.shift()!;
+          if (!result.ok) throw result.error;
+          committedBatches++;
+          yield result.value;
+          await fill();
+        }
+      } finally {
+        workController.abort(new Error('data loader traversal closed'));
+        for (const realm of activeRealms) realm.terminate();
+        await iterator.return?.();
+        await Promise.allSettled(pending);
+        if (context.signal) context.signal.removeEventListener('abort', forwardAbort);
+      }
+    };
+    const iterator = run() as DataLoaderIterator<B>;
+    Object.defineProperty(iterator, 'state', {
+      value: makeState,
+      enumerable: false,
+    });
+    return iterator;
   }
 
   /** Traverse epoch zero with the loader's configured seed. */
-  [Symbol.asyncIterator](): AsyncIterableIterator<B> {
+  [Symbol.asyncIterator](): DataLoaderIterator<B> {
     return this.iterate();
   }
 
