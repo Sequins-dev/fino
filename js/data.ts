@@ -4,7 +4,7 @@
  * Umbrella entry point for fino's data toolbox. Rather than exporting symbols
  * directly, it groups each data surface under a namespace so related types
  * travel together and additional surfaces can attach here without colliding.
- * The module exposes the `arrow` and `dataset` namespaces.
+ * The module exposes the `arrow`, `dataset`, and `frame` namespaces.
  *
  * The `arrow` namespace is a pure-TypeScript Apache Arrow implementation:
  * the columnar in-memory format (every logical type), the IPC stream and file
@@ -19,6 +19,10 @@
  * indexed data, lazy async streams, source adapters, seeded transforms, and
  * pull-driven batching. Tabular binary adapters yield Arrow record batches;
  * row adapters cross into Arrow explicitly through `arrowCollator`.
+ *
+ * The `frame` namespace builds bounded lazy query plans directly over Arrow
+ * batches: expression-based filtering and projection, aggregation, joins,
+ * stable sorting, limits, and selective Parquet scans.
  *
  * ```ts no_run
  * import { arrow } from 'fino:data';
@@ -68,3 +72,21 @@ export * as arrow from 'fino:data/arrow';
  * ```
  */
 export * as dataset from 'fino:data/dataset';
+/**
+ * Lazy DataFrame plans and reusable column expressions over Arrow batches.
+ *
+ * Plans are immutable and execute only through `batches()` or async
+ * `collect()`. The deliberately bounded operators cover preprocessing and
+ * analytics without introducing a separate general query engine. See
+ * `fino:data/frame` for the full API.
+ *
+ * ```ts no_run
+ * import { frame } from 'fino:data';
+ *
+ * const result = await frame.DataFrame
+ *   .scanParquet<{ score: number }>(bytes)
+ *   .filter(frame.col<number>('score').gte(0.8))
+ *   .collect();
+ * ```
+ */
+export * as frame from 'fino:data/frame';
