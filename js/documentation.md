@@ -98,6 +98,8 @@ architecture; the deep dives cover
 - [Testing and Benchmarking](./testing-and-benchmarking.md) — the built-in
   test framework, mocks, and benchmark harness.
 - [Data](./data.md) — Apache Arrow and Parquet tooling.
+- [Tensor](./tensor.md) — tensors, eager execution, and automatic
+  differentiation.
 - [Machine Learning](./ml.md) — shared metrics for classification, ranking,
   regression, calibration, and similarity.
 - [Text](./text.md) — tokenizers: loading published BPE and WordPiece

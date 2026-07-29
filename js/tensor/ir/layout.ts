@@ -1,15 +1,26 @@
 /**
- * Shape and stride analysis that drives kernel specialization.
+ * Stride analysis that drives kernel specialization.
  *
  * Collapsing dimensions before classifying is what keeps the kernel count down:
  * a contiguous `[2,3,4,5]` elementwise op and a contiguous `[120]` one should
  * compile to the same kernel, and a bias add over any rank should reach the same
  * outer-broadcast kernel rather than the general strided one.
  *
+ * The broadcast and stride rules themselves live in `internal:tensor/shape`,
+ * which is normative; this module only classifies their results.
+ *
  * @internal
  *
  * This module is re-exported through `internal:tensor/ir`; import from there.
  */
+import {
+  broadcastShapes,
+  broadcastStrides,
+  contiguousStrides,
+  numel,
+} from '../shape.ts';
+
+export { broadcastShapes, broadcastStrides, contiguousStrides, numel };
 
 /** How an operand's indices relate to the output's flat index. */
 export type LayoutClass =
@@ -38,70 +49,6 @@ export interface OperandLayout {
   shape: readonly number[];
   /** Collapsed strides in elements, for the strided class. */
   strides: readonly number[];
-}
-
-/** Contiguous (row-major) strides for a shape, in elements. */
-export function contiguousStrides(shape: readonly number[]): number[] {
-  const strides = new Array<number>(shape.length);
-  let acc = 1;
-  for (let i = shape.length - 1; i >= 0; i--) {
-    strides[i] = acc;
-    acc *= shape[i]!;
-  }
-  return strides;
-}
-
-/** Element count of a shape. */
-export function numel(shape: readonly number[]): number {
-  let n = 1;
-  for (const d of shape) n *= d;
-  return n;
-}
-
-/**
- * Broadcast two shapes per NumPy rules.
- *
- * Throws naming both shapes and the offending axis, since this is the most
- * common user-facing shape error and a bare "incompatible shapes" is useless.
- */
-export function broadcastShapes(
-  a: readonly number[],
-  b: readonly number[],
-): number[] {
-  const rank = Math.max(a.length, b.length);
-  const out = new Array<number>(rank);
-  for (let i = 0; i < rank; i++) {
-    const da = a[a.length - rank + i] ?? 1;
-    const db = b[b.length - rank + i] ?? 1;
-    if (da !== db && da !== 1 && db !== 1) {
-      throw new Error(
-        `cannot broadcast [${a.join(', ')}] with [${b.join(', ')}]: axis ${i} has sizes ${da} and ${db}`,
-      );
-    }
-    out[i] = Math.max(da, db);
-  }
-  return out;
-}
-
-/**
- * Strides an operand needs to be read as if it had the output's shape.
- *
- * Broadcast axes get stride 0, which is what makes stretching free.
- */
-export function broadcastStrides(
-  operandShape: readonly number[],
-  outShape: readonly number[],
-): number[] {
-  const base = contiguousStrides(operandShape);
-  const rank = outShape.length;
-  const out = new Array<number>(rank).fill(0);
-  for (let i = 0; i < rank; i++) {
-    const axis = operandShape.length - rank + i;
-    if (axis < 0) continue;
-    const size = operandShape[axis]!;
-    out[i] = size === 1 && outShape[i] !== 1 ? 0 : base[axis]!;
-  }
-  return out;
 }
 
 /**
