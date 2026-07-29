@@ -53,9 +53,15 @@ describe('fino:ui/web live and client endpoints', () => {
       new Request(`http://local${clientScriptPath()}`),
     )) as Response;
     t.equal(response.headers.get('content-type'), 'text/javascript; charset=utf-8');
-    t.ok((await response.text()).includes('EventSource'), 'client runtime source is served');
+    const source = await response.text();
+    t.ok(source.includes('EventSource'), 'client runtime source is served');
+    t.ok(source.includes("addEventListener('ui'"), 'browser consumes the shared UI event');
+    t.ok(source.includes("'content-type': 'application/json'"), 'browser actions send JSON');
+    t.ok(source.includes('JSON.stringify'), 'browser serializes action envelopes');
+    t.ok(!source.includes('applyPatch'), 'browser does not contain an HTML patch path');
+    t.ok(!source.includes("addEventListener('patch'"), 'browser has no patch event variant');
   });
-  it('pushes a patch when a watched view topic is published', async (t) => {
+  it('starts a watched view stream with its current semantic snapshot', async (t) => {
     const { app, store } = makeApp();
     const first = (await app.handle(new Request('http://local/'))) as Response;
     const html = await first.text();
@@ -75,10 +81,12 @@ describe('fino:ui/web live and client endpoints', () => {
       }),
     )) as Response;
     const iter = parseEventStream(live.body!)[Symbol.asyncIterator]();
-    topic(`fino:ui/view:${viewId}`).publish({ version: 1 });
     const event = await iter.next();
-    t.equal(event.value?.type, 'patch');
-    t.ok(event.value?.data.includes('from topic'), 'patch contains re-rendered snapshot data');
+    const data = JSON.parse(event.value!.data);
+    t.equal(event.value?.type, 'ui');
+    t.equal(data.kind, 'render');
+    t.equal(data.viewId, viewId);
+    t.equal(data.tree.children[0].children[0].children[0], 'from topic');
     await iter.return?.();
   });
   it('catches up behind reconnects and navigates expired views', async (t) => {
@@ -104,8 +112,10 @@ describe('fino:ui/web live and client endpoints', () => {
       }),
     )) as Response;
     const behindEvent = await parseEventStream(behind.body!)[Symbol.asyncIterator]().next();
-    t.equal(behindEvent.value?.type, 'patch');
-    t.ok(behindEvent.value?.data.includes('missed'), 'behind reconnect receives missed patch');
+    const behindData = JSON.parse(behindEvent.value!.data);
+    t.equal(behindEvent.value?.type, 'ui');
+    t.equal(behindData.kind, 'render');
+    t.equal(behindData.tree.children[0].children[0].children[0], 'missed');
     await store.delete(viewId);
     const expired = (await app.handle(
       new Request(`http://local/_fino/live?view=${viewId}`, {
@@ -116,7 +126,8 @@ describe('fino:ui/web live and client endpoints', () => {
       }),
     )) as Response;
     const expiredEvent = await parseEventStream(expired.body!)[Symbol.asyncIterator]().next();
-    t.equal(expiredEvent.value?.type, 'navigate', 'missing snapshot navigates on reconnect');
+    t.equal(expiredEvent.value?.type, 'ui');
+    t.equal(JSON.parse(expiredEvent.value!.data).kind, 'navigate');
   });
   it('disposes live topic subscriptions when the browser disconnects', async (t) => {
     const { app } = makeApp();

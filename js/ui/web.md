@@ -50,12 +50,84 @@ routes.get('/').handle(page((ctx) =>
 ```
 
 Forms remain ordinary POST forms. Without JavaScript they use
-POST-redirect-GET; with the client they receive SSE patches. The long-lived
-`/_fino/live` connection carries checkpoint and cross-tab updates. This is
-deliberately SSE plus form actions: it preserves normal HTTP semantics,
-browser reconnect support, CSRF handling, and useful no-JavaScript behavior.
-Add WebSockets only if a future feature requires bidirectional messages that
-cannot be represented as form actions.
+POST-redirect-GET; with the client they send JSON action envelopes and receive
+JSON UI events over SSE. The long-lived `/_fino/live` connection carries
+checkpoint and cross-tab updates. This is deliberately SSE plus HTTP actions:
+it preserves browser reconnect support, normal HTTP semantics, CSRF handling,
+and useful no-JavaScript behavior.
+
+## JSON UI protocol
+
+Every SSE response uses one event name, `ui`, with a JSON payload. There is no
+HTML-patch variant and no protocol selector in the `Accept` header. The
+protocol version lives in the JSON envelope where every client can read and
+validate it.
+
+An EventSource opened directly against a page route receives each mounted
+view's current semantic snapshot first and remains subscribed for subsequent
+updates. This lets a non-HTML client begin with the SSE stream instead of
+making a separate HTML request. The browser runtime can still begin with the
+HTML response for progressive enhancement, then connects to `/_fino/live`;
+that stream also starts with the current semantic snapshot.
+
+The JSON `kind` is one of:
+
+- `render`: a complete host-neutral component tree and monotonic revision.
+- `heartbeat`: confirmation that a live stream is connected.
+- `navigate`: a page transition after expiry or invalidation.
+- `error`: a stable, safe error code and whether recovery is possible.
+- `close`: the end of a short-lived action or error stream.
+
+A render tree uses the existing `fino:ui` shape: `type`, JSON `props`,
+ordered `children`, and an optional `key`. Give semantic components stable,
+versioned names such as `app.counter.v1`. Each client keeps its own map from
+those names to HTML, TUI, SwiftUI, Jetpack, or another native implementation.
+That registry is client-owned; the server neither knows nor stores platform
+implementations. Unknown component names should fail explicitly in the client
+so contract drift is visible.
+
+The bundled browser adapter exposes its client-owned registry as
+`globalThis.finoUI.register(name, implementation)`. An implementation receives
+the component's JSON props, rendered child DOM nodes, and protocol node, then
+returns a DOM node. Standard HTML element names are built in:
+
+```js
+finoUI.register('app.counter.v1', (props, children) => {
+  const output = document.createElement('output');
+  output.textContent = String(props.count);
+  output.append(...children);
+  return output;
+});
+```
+
+Version 1 sends complete trees. Clients use `key` and `type` with the existing
+`HostAdapter` reconciliation model to preserve component identity and avoid
+recreating unchanged host nodes. Platform interaction state such as focus,
+scroll position, text composition, gestures, and animation remains local to
+the client rather than being round-tripped through view snapshots.
+
+Action props are serialized as `PortableActionRef` objects. POST
+`application/json` to the supplied `url` while retaining the authenticated
+session cookie:
+
+```json
+{
+  "version": 1,
+  "view": "view_...",
+  "revision": 4,
+  "request": "render_...",
+  "input": {
+    "amount": 1
+  }
+}
+```
+
+Declare an `input` JSON schema on the action when it accepts client data.
+Validation runs before the handler. JSON action bodies default to a 64 KiB
+limit, configurable with `maxActionBytes`. Posting `application/json` selects
+the JSON action envelope and always returns an SSE UI response; no custom
+`Accept` parameter is needed. Action responses and live updates use the same
+event schema.
 
 Long-running actions can call and await `checkpoint()` after changing their
 signals. Each checkpoint is compare-and-swap persisted and published to live
@@ -95,6 +167,6 @@ browser.
   operations that are safe to replay as `stale: 'rebase'`.
 - `410 Gone` or a live `navigate` event: the snapshot expired or cleanup ran;
   render a fresh page.
-- No patches: load `clientScriptPath()`, verify `/_fino/live` is not buffered
+- No updates: load `clientScriptPath()`, verify `/_fino/live` is not buffered
   by the reverse proxy, and allow `text/event-stream` responses to remain
   open.

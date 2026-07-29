@@ -166,7 +166,7 @@ function cookieHeader(response: Response): string {
     .join('; ');
 }
 describe('fino:ui/web', () => {
-  it('renders a page and applies an enhanced action as SSE patches', async (t) => {
+  it('renders a page and applies an enhanced action as JSON UI events', async (t) => {
     const { app, store } = makeApp();
     const first = (await app.handle(new Request('http://local/'))) as Response;
     const html = await first.text();
@@ -198,11 +198,15 @@ describe('fino:ui/web', () => {
     const events = await collectEvents(action);
     t.ok(
       events.some(
-        (event) => event.type === 'patch' && JSON.stringify(event.data).includes('Write tests'),
+        (event) =>
+          event.type === 'ui' &&
+          (event.data as { kind?: string }).kind === 'render' &&
+          JSON.stringify(event.data).includes('Write tests'),
       ),
-      'action returns a patch with updated HTML',
+      'action returns an updated semantic render',
     );
-    t.equal(events.at(-1)?.type, 'close', 'action stream closes');
+    t.equal(events.at(-1)?.type, 'ui');
+    t.equal((events.at(-1)?.data as { kind?: string }).kind, 'close');
     t.equal(
       (await store.load(hidden(html, '_view')))?.version,
       2,

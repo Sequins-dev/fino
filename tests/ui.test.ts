@@ -44,6 +44,12 @@ describe('fino:ui vnode construction', () => {
     t.equal(vnode.type, 'text', 'function component output is returned');
     t.deepEqual(vnode.children, ['>', 'name'], 'children are passed through props');
   });
+  it('preserves the caller key through a function component', (t) => {
+    function Item() {
+      return h('row', { key: 'implementation-key' });
+    }
+    t.equal(h(Item, { key: 'instance-key' }).key, 'instance-key');
+  });
 });
 describe('fino:ui signals', () => {
   it('notifies subscribers once for batched signal writes', (t) => {
@@ -62,9 +68,13 @@ describe('fino:ui signals', () => {
   });
 });
 describe('fino:ui host renderer', () => {
-  it('reconciles keyed children and wraps host changes in update batches', (t) => {
+  it('routes named components and reconciles keyed instances in update batches', (t) => {
     let nextId = 0;
     const calls: string[] = [];
+    const implementations: Record<string, string> = {
+      'layout.row.v1': 'native-row',
+      'content.cell.v1': 'native-cell',
+    };
     interface TestNode {
       id: number;
       type: string;
@@ -88,9 +98,11 @@ describe('fino:ui host renderer', () => {
         calls.push('end');
       },
       createNode(type, props) {
+        const implementation = implementations[type];
+        if (implementation === undefined) throw new Error(`Unknown component: ${type}`);
         const node = {
           id: ++nextId,
-          type,
+          type: implementation,
           props,
           children: [],
         };
@@ -134,13 +146,13 @@ describe('fino:ui host renderer', () => {
     const renderer = createRenderer(host);
     renderer.render(
       h(
-        'row',
+        'layout.row.v1',
         null,
-        h('cell', {
+        h('content.cell.v1', {
           key: 'a',
           value: 1,
         }),
-        h('cell', {
+        h('content.cell.v1', {
           key: 'b',
           value: 2,
         }),
@@ -151,19 +163,20 @@ describe('fino:ui host renderer', () => {
     const firstB = root.children[0]!.children[1];
     renderer.render(
       h(
-        'row',
+        'layout.row.v1',
         null,
-        h('cell', {
+        h('content.cell.v1', {
           key: 'b',
           value: 3,
         }),
-        h('cell', {
+        h('content.cell.v1', {
           key: 'a',
           value: 1,
         }),
       ),
       root,
     );
+    t.equal(root.children[0]!.type, 'native-row', 'the client chooses the host implementation');
     t.equal(root.children[0]!.children[0], firstB, 'keyed child b is reused and moved first');
     t.equal(root.children[0]!.children[1], firstA, 'keyed child a is reused and moved second');
     t.deepEqual(

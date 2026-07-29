@@ -7,17 +7,12 @@
  * at a content-addressed path so the DOM can be steered from the server over
  * Server-Sent Events.
  *
- * The embedded runtime does three things once loaded. It installs a global
- * `submit` listener that intercepts any `<form>` carrying a `data-fi-action`
- * attribute, sends its `FormData` with an `Accept: text/event-stream` header,
- * and streams the SSE response through a patch applier. It applies incoming
- * patches by element id in four modes — `inner` (replace innerHTML), `append`
- * (insert at the end), `remove` (detach the node), and the default `outer`
- * (swap the element for the first child of the new markup) — and also handles
- * `state`, `title`, and `navigate` events. Finally, if any element carries a
- * `data-fi-view` attribute it opens a long-lived `EventSource` to
- * `/_fino/live` so the server can push patches and navigations without a form
- * round-trip.
+ * The embedded runtime installs a client-owned component registry, renders
+ * semantic JSON trees into DOM nodes, submits enhanced forms as versioned JSON
+ * action envelopes, and consumes the same `ui` SSE event used by other hosts.
+ * If any element carries a `data-fi-view` attribute it opens a long-lived
+ * `EventSource` to `/_fino/live`; the first event is the current render, followed
+ * by later renders or navigation instructions.
  *
  * Consumers should not parse or mutate the source; import the two exported
  * constants and serve them. `CLIENT_SOURCE` is the script body and
@@ -48,29 +43,88 @@
  * @internal
  */
 const source = `
-const state = Object.create(null);
-function applyPatch(data) {
-  const target = document.getElementById(data.id);
-  if (!target && data.mode !== 'append') return;
-  if (data.mode === 'remove') {
-    target?.remove();
+const htmlTypes = new Set(
+  'a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table tbody td template textarea tfoot th thead time title tr track u ul var video wbr'.split(' ')
+);
+const api = globalThis.finoUI || {};
+const components = api.components instanceof Map ? api.components : new Map();
+api.components = components;
+api.register = (name, implementation) => {
+  if (typeof name !== 'string' || name === '') throw new TypeError('Component name is required');
+  if (typeof implementation !== 'function') throw new TypeError('Component must be a function');
+  components.set(name, implementation);
+  return () => components.delete(name);
+};
+globalThis.finoUI = api;
+
+function setHtmlProp(element, name, value) {
+  if (name === 'action' && value && typeof value === 'object' && value.url) {
+    element.action = value.url;
+    element.dataset.fiAction = value.action || '';
+    element.__finoAction = value;
     return;
   }
-  if (data.mode === 'inner') {
-    target.innerHTML = data.html || '';
+  if (name === 'style' && value && typeof value === 'object') {
+    Object.assign(element.style, value);
     return;
   }
-  if (data.mode === 'append') {
-    target?.insertAdjacentHTML('beforeend', data.html || '');
+  if (name === 'className') name = 'class';
+  if (name === 'htmlFor') name = 'for';
+  if (value === false || value === null || value === undefined) return;
+  if (value === true) {
+    element.setAttribute(name, '');
+    if (name in element) {
+      try { element[name] = true; } catch {}
+    }
     return;
   }
-  if (target) {
-    const template = document.createElement('template');
-    template.innerHTML = data.html || '';
-    const next = template.content.firstElementChild;
-    if (next) target.replaceWith(next);
+  if (typeof value === 'object') {
+    throw new TypeError('HTML prop "' + name + '" must be JSON primitive data');
+  }
+  if (name === 'value' || name === 'checked' || name === 'selected') {
+    try { element[name] = value; } catch {}
+  }
+  element.setAttribute(name, String(value));
+}
+
+function renderNode(node) {
+  if (typeof node === 'string') return document.createTextNode(node);
+  const children = node.children.map(renderNode);
+  if (node.type === 'fragment') {
+    const fragment = document.createDocumentFragment();
+    fragment.append(...children);
+    return fragment;
+  }
+  const implementation = components.get(node.type);
+  if (implementation) {
+    const rendered = implementation(node.props, children, node);
+    if (!rendered || typeof rendered.nodeType !== 'number') {
+      throw new TypeError('Component "' + node.type + '" did not return a DOM node');
+    }
+    return rendered;
+  }
+  if (!htmlTypes.has(node.type)) {
+    throw new Error('No client component registered for "' + node.type + '"');
+  }
+  const element = document.createElement(node.type);
+  for (const [name, value] of Object.entries(node.props)) setHtmlProp(element, name, value);
+  element.append(...children);
+  return element;
+}
+
+function applyUi(data) {
+  if (!data || data.version !== 1) return;
+  if (data.kind === 'render') {
+    const target = document.getElementById(data.viewId);
+    if (target) target.replaceChildren(renderNode(data.tree));
+  } else if (data.kind === 'navigate') {
+    if (data.replace) location.replace(data.url);
+    else location.href = data.url;
+  } else if (data.kind === 'error') {
+    globalThis.dispatchEvent(new CustomEvent('fino-ui-error', { detail: data }));
   }
 }
+
 async function readSse(response) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -89,38 +143,51 @@ async function readSse(response) {
         if (line.startsWith('event:')) event = line.slice(6).trim();
         else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
       }
-      if (event === 'patch') applyPatch(JSON.parse(data.join('\\n')));
-      else if (event === 'state') Object.assign(state, JSON.parse(data.join('\\n')));
-      else if (event === 'title') document.title = JSON.parse(data.join('\\n'));
-      else if (event === 'navigate') {
-        const next = JSON.parse(data.join('\\n'));
-        if (next.replace) location.replace(next.url);
-        else location.href = next.url;
-      }
+      if (event === 'ui') applyUi(JSON.parse(data.join('\\n')));
     }
   }
 }
+
 document.addEventListener('submit', (event) => {
   const form = event.target;
   if (!(form instanceof HTMLFormElement) || !form.dataset.fiAction) return;
   event.preventDefault();
-  fetch(form.action, {
+  const fields = new FormData(form);
+  const action = form.__finoAction || {
+    url: form.action,
+    view: fields.get('_view'),
+    revision: Number(fields.get('_ver')),
+    request: fields.get('_nonce')
+  };
+  const input = {};
+  for (const [name, value] of fields) {
+    if (name.startsWith('_') || name.startsWith('$')) continue;
+    input[name] = typeof value === 'string' ? value : value.name;
+  }
+  fetch(action.url, {
     method: form.method || 'POST',
-    body: new FormData(form),
-    headers: { accept: 'text/event-stream' },
+    body: JSON.stringify({
+      version: 1,
+      view: action.view,
+      revision: action.revision,
+      request: action.request,
+      input
+    }),
+    headers: {
+      accept: 'text/event-stream',
+      'content-type': 'application/json'
+    },
     credentials: 'same-origin'
   }).then(readSse);
 });
+
 function connectLive() {
   const views = Array.from(document.querySelectorAll('[data-fi-view]')).map((el) => el.id).filter(Boolean);
   if (views.length === 0) return;
-  const source = new EventSource('/_fino/live?view=' + encodeURIComponent(views.join(',')));
-  source.addEventListener('patch', (event) => applyPatch(JSON.parse(event.data)));
-  source.addEventListener('navigate', (event) => {
-    const next = JSON.parse(event.data);
-    if (next.replace) location.replace(next.url);
-    else location.href = next.url;
-  });
+  const url = '/_fino/live?view=' + encodeURIComponent(views.join(',')) +
+    '&url=' + encodeURIComponent(location.pathname + location.search);
+  const source = new EventSource(url);
+  source.addEventListener('ui', (event) => applyUi(JSON.parse(event.data)));
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', connectLive);
 else connectLive();
