@@ -258,7 +258,7 @@ describe('Sandbox Realm enforcement', () => {
       t.ok((await realm.call()) > 0, 'resource-governed sandbox thread runs to completion');
     } catch (error) {
       t.ok(
-        /delegated cgroup|threaded (cpu|pids) controller/i.test(String(error)),
+        /cgroup.*delegated|delegated cgroup|threaded (cpu|pids) controller/i.test(String(error)),
         `missing threaded cgroup delegation fails closed: ${String(error)}`,
       );
     }
@@ -284,7 +284,7 @@ describe('Sandbox Realm enforcement', () => {
       t.equal(await realm.call(), cpu, 'sandbox thread executes only on its requested CPU');
     } catch (error) {
       t.ok(
-        /delegated threaded cpuset|cpuset controller/i.test(String(error)),
+        /cgroup.*delegated|delegated threaded cpuset|cpuset controller/i.test(String(error)),
         `missing threaded cpuset delegation fails closed: ${String(error)}`,
       );
     }

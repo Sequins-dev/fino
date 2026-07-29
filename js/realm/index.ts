@@ -2996,10 +2996,11 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;
-    if (repl && (opts.sandbox || opts.process || opts.remote || opts.watch)) {
-      throw new Error(
-        'fino:realm — repl: true is not supported with sandbox, process, remote, or watch',
-      );
+    if (repl && opts.sandbox) {
+      throw new Error('fino:realm — repl: true is not supported with sandbox');
+    }
+    if (repl && (opts.process || opts.remote || opts.watch)) {
+      throw new Error('fino:realm — repl: true is not supported with process, remote, or watch');
     }
     // Build the child-specific rule list from overrides / legacy providers+blocked.
     const rules: ImportRule[] = [];
