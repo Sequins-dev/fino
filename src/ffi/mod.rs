@@ -316,6 +316,13 @@ fn symbol_call_callback<'a>(
     let js_args: Vec<v8::Local<v8::Value>> = (0..count).map(|i| args.get(i as i32)).collect();
 
     if sym_data.symbol.nonblocking {
+        if crate::state::get_state(scope).borrow().sandboxed_thread {
+            throw_error(
+                scope,
+                "async FFI is unavailable in a sandbox Realm because the process-global blocking pool is outside its thread-local policy",
+            );
+            return;
+        }
         // Async path: offload to blocking pool, return a Promise.
         if let Some(promise) = call::ffi_call_async(scope, &sym_data.symbol, &js_args) {
             rv.set(promise.into());

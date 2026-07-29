@@ -12,6 +12,7 @@ import { EventTarget, _markEventTrusted } from '../../globals/eventtarget.ts';
 import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
 import { nativeSend, nativeRecv } from 'internal:thread-port';
+import { sandboxPortSend, sandboxPortRecv } from 'internal:realm-native';
 import { scheduledRealmRecv, scheduledRealmSend } from 'internal:scheduler-native';
 import { createTransitChannel } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
@@ -182,8 +183,11 @@ export abstract class BaseTransportPort extends EventTarget {
 /**
  * Drain one batch of messages from a thread-port receive queue.
  */
-function _recvThreadMessages(): [Uint8Array[], [number, number][]][] {
-  const raw = (nativeRecv as () => unknown)();
+function _recvThreadMessages(handle?: number): [Uint8Array[], [number, number][]][] {
+  const raw =
+    handle === undefined
+      ? (nativeRecv as () => unknown)()
+      : (sandboxPortRecv as (handle: number) => unknown)(handle);
   return raw as [Uint8Array[], [number, number][]][];
 }
 
@@ -205,6 +209,8 @@ export class ThreadPort extends BaseTransportPort {
    * @internal
    */
   #wakeReadFd: number;
+  /** Parent-side native sandbox handle; absent inside the child isolate. */
+  #handle?: number;
   /**
    * Current onmessageerror handler.
    *
@@ -216,9 +222,10 @@ export class ThreadPort extends BaseTransportPort {
    *
    * @internal
    */
-  constructor(wakeReadFd: number) {
+  constructor(wakeReadFd: number, handle?: number) {
     super();
     this.#wakeReadFd = wakeReadFd;
+    this.#handle = handle;
   }
   /**
    * Serialize and send a message to the opposite thread endpoint.
@@ -258,11 +265,22 @@ export class ThreadPort extends BaseTransportPort {
     );
     const data = serResult[0];
     const stores = serResult.length > 1 ? serResult.slice(1) : ([] as Uint8Array[]);
-    (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
-      data,
-      stores,
-      portInfos,
-    );
+    if (this.#handle === undefined) {
+      (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
+        data,
+        stores,
+        portInfos,
+      );
+    } else {
+      (
+        sandboxPortSend as (
+          handle: number,
+          b: Uint8Array,
+          s: Uint8Array[],
+          p: [number, number][],
+        ) => void
+      )(this.#handle, data, stores, portInfos);
+    }
   }
   /**
    * Start watching the wake fd for incoming messages.
@@ -313,7 +331,7 @@ export class ThreadPort extends BaseTransportPort {
    * @internal
    */
   _drain(): void {
-    const messages = _recvThreadMessages();
+    const messages = _recvThreadMessages(this.#handle);
     for (const [byteArr, portArr] of messages as any[]) {
       const [buf, ...stores] = byteArr as Uint8Array[];
       if (!buf) continue;

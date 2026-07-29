@@ -555,6 +555,7 @@ if (_childEntry) {
   async function _loadChildEntry(): Promise<{
     default?: unknown;
   }> {
+    let sandboxPolicy: unknown;
     let cliOtel:
       | {
           endpoint?: string;
@@ -565,15 +566,22 @@ if (_childEntry) {
     const bootstrapRaw = (getRealmBootstrapData as () => string | undefined)();
     if (bootstrapRaw !== undefined) {
       try {
-        cliOtel = (
-          JSON.parse(bootstrapRaw) as {
-            cliOtel?: typeof cliOtel;
-          }
-        ).cliOtel;
+        const bootstrap = JSON.parse(bootstrapRaw) as {
+          cliOtel?: typeof cliOtel;
+          sandbox?: unknown;
+        };
+        cliOtel = bootstrap.cliOtel;
+        sandboxPolicy = bootstrap.sandbox;
       } catch {}
     }
+    if (sandboxPolicy !== undefined) {
+      const { installSandboxRealmPolicy } = await import('internal:security/sandbox/realm');
+      installSandboxRealmPolicy(
+        sandboxPolicy as import('./security/sandbox/plan.ts').SandboxPolicy,
+      );
+    }
     const raw = (getRealmData as () => string | undefined)();
-    if (cliOtel === undefined && raw !== undefined) {
+    if (sandboxPolicy === undefined && cliOtel === undefined && raw !== undefined) {
       try {
         cliOtel = (
           JSON.parse(raw) as {

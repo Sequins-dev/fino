@@ -2,10 +2,11 @@
  * internal:security/sandbox/seccomp — build and install a seccomp-BPF filter
  * from a compiled `SeccompPlan`.
  *
- * This is the Linux syscall-filtering stage of the child-process sandbox. It
- * takes the plan produced by `internal:security/sandbox/plan` (`planSeccomp`)
- * and lowers it into a classic BPF program that the kernel evaluates on every
- * syscall the confined process makes.
+ * This is the Linux syscall-filtering stage shared by child-process and
+ * dedicated-thread Realm sandboxes. It takes the plan produced by
+ * `internal:security/sandbox/plan` (`planSeccomp`) and lowers it into a classic
+ * BPF program that the kernel evaluates on every syscall the confined calling
+ * thread makes.
  *
  * The BPF program loads the syscall number from `seccomp_data` offset 0 and
  * branches per rule. The plan's default action decides the shape of the
@@ -19,14 +20,18 @@
  *   `SECCOMP_RET_ALLOW`; anything unmatched falls through to a trailing
  *   `SECCOMP_RET_KILL_PROCESS`, so any syscall not explicitly permitted takes
  *   the whole process down.
+ * - `errno` (Realm allowlist) — each `allow` rule matches its syscall and
+ *   returns `SECCOMP_RET_ALLOW`; anything unmatched returns `EPERM` so an
+ *   in-process Realm cannot take down sibling threads.
  * - `none` — emits a bare allow-everything program (used only as an inert
  *   placeholder; `installSeccomp` never installs it).
  *
  * Installation is a one-way ratchet enforced by the kernel: it first sets
  * `PR_SET_NO_NEW_PRIVS` (required before an unprivileged process may load a
  * filter) and then `PR_SET_SECCOMP` in filter mode. Once installed the filter
- * cannot be removed or loosened for the life of the process, so call it late in
- * child bootstrap, after all needed file descriptors and libraries are open.
+ * cannot be removed or loosened for the life of the calling thread, and
+ * descendants inherit it, so call it late in child bootstrap after all needed
+ * file descriptors and libraries are open.
  *
  * This module is Linux-only; on other platforms the `prctl` calls simply fail
  * and `seccompAvailable` returns `false`. The macOS counterpart is
@@ -118,7 +123,7 @@ function build(plan: SeccompPlan): Instruction[] {
       filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ERRNO_EPERM });
     }
     filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW });
-  } else if (plan.defaultAction === 'kill') {
+  } else if (plan.defaultAction === 'kill' || plan.defaultAction === 'errno') {
     for (const rule of plan.rules) {
       if (rule.action !== 'allow') continue;
       const nr = syscallNumber(rule.syscall);
@@ -126,7 +131,12 @@ function build(plan: SeccompPlan): Instruction[] {
       filters.push({ code: BPF_JMP_JEQ_K, jt: 0, jf: 1, k: nr });
       filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW });
     }
-    filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_KILL_PROCESS });
+    filters.push({
+      code: BPF_RET_K,
+      jt: 0,
+      jf: 0,
+      k: plan.defaultAction === 'kill' ? SECCOMP_RET_KILL_PROCESS : SECCOMP_RET_ERRNO_EPERM,
+    });
   } else {
     filters.push({ code: BPF_RET_K, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW });
   }
@@ -145,7 +155,8 @@ function build(plan: SeccompPlan): Instruction[] {
 export function prepareSeccomp(plan: SeccompPlan): PreparedSeccomp | null {
   const filters = build(plan);
   // A lone load + default-allow return enforces nothing; don't install it.
-  if (filters.length <= 2 && plan.defaultAction !== 'kill') return null;
+  if (filters.length <= 2 && plan.defaultAction !== 'kill' && plan.defaultAction !== 'errno')
+    return null;
   const filterBuf = new ArrayBuffer(filters.length * 8);
   const view = new DataView(filterBuf);
   for (let i = 0; i < filters.length; i++) {
@@ -178,15 +189,7 @@ export function installPreparedSeccomp(prepared: PreparedSeccomp | null): boolea
   if (libc.symbols.prctl(PR_SET_NO_NEW_PRIVS, 1n, 0n, 0n, 0n) !== 0) {
     throw new Error(`prctl(PR_SET_NO_NEW_PRIVS) failed: errno ${errno()}`);
   }
-  if (
-    libc.symbols.prctl(
-      PR_SET_SECCOMP,
-      2n,
-      prepared.progAddr,
-      0n,
-      0n,
-    ) !== 0
-  ) {
+  if (libc.symbols.prctl(PR_SET_SECCOMP, 2n, prepared.progAddr, 0n, 0n) !== 0) {
     throw new Error(`prctl(PR_SET_SECCOMP) failed: errno ${errno()}`);
   }
   // Keep buffers reachable until the syscall has copied the program.

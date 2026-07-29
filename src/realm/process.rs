@@ -474,6 +474,10 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         watch_mode: config.watch_mode,
         realm_data: config.realm_data,
         realm_bootstrap_data: config.realm_bootstrap_data,
+        sandboxed_thread: false,
+        sandbox_cgroup_path: None,
+        isolate_handle: None,
+        force_requested: None,
         reload_requested_signal: None, // process realm uses exit code 75
     });
 

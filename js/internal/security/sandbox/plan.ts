@@ -252,10 +252,11 @@ export interface SeccompRule {
  *
  * This is the mechanism-shaped output of `planSeccomp` and the input to the
  * BPF compiler in `internal:security/sandbox/seccomp`. `defaultAction` governs
- * any syscall not named in `rules`: `allow` permits it, `kill` terminates the
- * process, and `none` installs no filter at all. In practice `planSeccomp`
- * emits `allow` (denylist/unconstrained) or `kill` (allowlist); `none` exists
- * for callers that want to represent "no filtering".
+ * any syscall not named in `rules`: `allow` permits it, `errno` returns EPERM,
+ * `kill` terminates the process, and `none` installs no filter at all. In
+ * practice `planSeccomp` emits `allow` (denylist/unconstrained) or `kill`
+ * (allowlist); the dedicated sandbox-Realm adapter uses `errno` so a policy
+ * violation cannot terminate the shared host process.
  *
  * ```ts no_run
  *   import { planSeccomp } from 'internal:security/sandbox/plan';
@@ -269,8 +270,8 @@ export interface SeccompRule {
  * ```
  */
 export interface SeccompPlan {
-  /** Action for syscalls not matched by any rule: permit, kill the process, or install no filter. */
-  defaultAction: 'allow' | 'kill' | 'none';
+  /** Action for unmatched syscalls: permit, return EPERM, kill the process, or install no filter. */
+  defaultAction: 'allow' | 'errno' | 'kill' | 'none';
   /** Per-syscall overrides layered on top of `defaultAction`. */
   rules: SeccompRule[];
 }
@@ -293,6 +294,8 @@ const X86_64_SYSCALLS: Record<string, number> = {
   listen: 50,
   accept4: 288,
   exit_group: 231,
+  execve: 59,
+  execveat: 322,
 };
 const AARCH64_SYSCALLS: Record<string, number> = {
   kill: 129,
@@ -311,6 +314,8 @@ const AARCH64_SYSCALLS: Record<string, number> = {
   recvfrom: 207,
   accept4: 242,
   exit_group: 94,
+  execve: 221,
+  execveat: 281,
 };
 const SYSCALL_TABLE = arch === 'arm64' || arch === 'aarch64' ? AARCH64_SYSCALLS : X86_64_SYSCALLS;
 /**

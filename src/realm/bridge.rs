@@ -21,6 +21,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getReplMode",
         "getRealmData",
         "getRealmBootstrapData",
+        "setSandboxCgroupPath",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -55,6 +56,7 @@ fn eval_steps<'a>(
     set_fn!("getReplMode", get_repl_mode);
     set_fn!("getRealmData", get_realm_data);
     set_fn!("getRealmBootstrapData", get_realm_bootstrap_data);
+    set_fn!("setSandboxCgroupPath", set_sandbox_cgroup_path);
 
     Some(v8::undefined(scope).into())
 }
@@ -110,6 +112,27 @@ fn get_realm_bootstrap_data(
             rv.set(s.into());
         }
         None => rv.set(v8::undefined(scope).into()),
+    }
+}
+
+/// Record the threaded cgroup joined by this sandbox Realm so its parent can
+/// remove the empty leaf after the dedicated thread exits.
+fn set_sandbox_cgroup_path(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let path = args
+        .get(0)
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    let state_rc = get_state(scope);
+    let slot = state_rc.borrow().sandbox_cgroup_path.clone();
+    if let Some(slot) = slot
+        && let Ok(mut slot) = slot.lock()
+    {
+        *slot = Some(path);
     }
 }
 

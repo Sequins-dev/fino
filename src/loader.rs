@@ -505,6 +505,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:security/sandbox/spawn",
         "internal/security/sandbox/spawn"
     ),
+    source_builtin!(
+        "internal:security/sandbox/realm",
+        "internal/security/sandbox/realm"
+    ),
     source_builtin!("fino:security", "security/index"),
     source_builtin!("fino:security/random", "security/random"),
     source_builtin!("fino:security/headers", "security/headers"),

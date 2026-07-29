@@ -60,6 +60,7 @@ const COMMON_SYMBOLS = {
 } as const;
 const LINUX_SYMBOLS = {
   prctl: { parameters: ['i32', 'u64', 'u64', 'u64', 'u64'], result: 'i32' },
+  gettid: { parameters: [], result: 'i32' },
   __errno_location: { parameters: [], result: 'pointer' },
 } as const;
 /**

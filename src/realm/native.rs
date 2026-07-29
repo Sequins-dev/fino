@@ -15,6 +15,13 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "createContext",
         "stepContext",
         "terminateChild",
+        // Linux sandbox realm
+        "createSandboxContext",
+        "stepSandboxContext",
+        "forceSandboxContext",
+        "sandboxPortSend",
+        "sandboxPortRecv",
+        "getSandboxPortWakeReadFd",
         // Process realm
         "createProcessContext",
         "stepProcessContext",
@@ -49,6 +56,12 @@ fn eval_steps<'a>(
     set_fn!("createContext", create_context);
     set_fn!("stepContext", step_context);
     set_fn!("terminateChild", terminate_child);
+    set_fn!("createSandboxContext", create_sandbox_context);
+    set_fn!("stepSandboxContext", step_sandbox_context);
+    set_fn!("forceSandboxContext", force_sandbox_context);
+    set_fn!("sandboxPortSend", sandbox_port_send);
+    set_fn!("sandboxPortRecv", sandbox_port_recv);
+    set_fn!("getSandboxPortWakeReadFd", get_sandbox_port_wake_read_fd);
     set_fn!("createProcessContext", create_process_context);
     set_fn!("stepProcessContext", step_process_context);
     set_fn!("processPortSend", process_port_send);
@@ -416,6 +429,271 @@ fn terminate_child(
     let child_scope = &mut v8::ContextScope::new(scope, child_context);
     let child_state = get_state(child_scope);
     child_state.borrow_mut().terminated = true;
+}
+
+// ---------------------------------------------------------------------------
+// Linux sandbox realm callbacks
+// ---------------------------------------------------------------------------
+
+/// Spawn a fixed-thread Linux sandbox Realm.
+fn create_sandbox_context(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (&args, &mut rv);
+        let msg =
+            v8::String::new(scope, "createSandboxContext: sandbox Realms require Linux").unwrap();
+        let exception = v8::Exception::error(scope, msg);
+        scope.throw_exception(exception);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut process_env = get_state(scope).borrow().process_env.clone();
+        let root = args
+            .get(0)
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default();
+        if !root.is_empty() {
+            process_env.root = std::path::PathBuf::from(root);
+        }
+        let entry_path = args
+            .get(1)
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default();
+        let import_rules = match parse_and_merge_rules(scope, args.get(2)) {
+            Ok(rules) => rules,
+            Err(error) => {
+                let msg =
+                    v8::String::new(scope, &format!("createSandboxContext: {error}")).unwrap();
+                let exception = v8::Exception::error(scope, msg);
+                scope.throw_exception(exception);
+                return;
+            }
+        };
+        let package_map_json = resolve_child_package_map(scope, &process_env.root);
+        let realm_data = optional_string_arg(scope, args.get(3));
+        let realm_bootstrap_data = optional_string_arg(scope, args.get(4));
+        let handle = match thread::spawn_sandbox_realm(thread::SpawnConfig {
+            process_env,
+            entry_path,
+            import_rules,
+            package_map_json,
+            realm_data,
+            realm_bootstrap_data,
+        }) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let msg =
+                    v8::String::new(scope, &format!("createSandboxContext: {error}")).unwrap();
+                let exception = v8::Exception::error(scope, msg);
+                scope.throw_exception(exception);
+                return;
+            }
+        };
+        let idx = {
+            let state_rc = get_state(scope);
+            let mut state = state_rc.borrow_mut();
+            let idx = state.sandbox_contexts.len();
+            state.sandbox_contexts.push(Some(handle));
+            idx
+        };
+        rv.set(v8::Integer::new(scope, idx as i32).into());
+    }
+}
+
+/// Report whether a sandbox Realm thread is still running.
+fn step_sandbox_context(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let state_rc = get_state(scope);
+    let (running, error) = {
+        let state = state_rc.borrow();
+        let realm = state
+            .sandbox_contexts
+            .get(handle)
+            .and_then(|slot| slot.as_ref());
+        let running = realm
+            .map(|realm| !realm.done.load(std::sync::atomic::Ordering::Acquire))
+            .unwrap_or(false);
+        let error = if running {
+            None
+        } else {
+            realm.and_then(|realm| realm.error.lock().ok()?.clone())
+        };
+        (running, error)
+    };
+    if !running {
+        if let Some(slot) = state_rc.borrow_mut().sandbox_contexts.get_mut(handle) {
+            *slot = None;
+        }
+        if let Some(error) = error {
+            let msg = v8::String::new(scope, &error)
+                .unwrap_or_else(|| v8::String::new(scope, "sandbox realm error").unwrap());
+            let exception = v8::Exception::error(scope, msg);
+            scope.throw_exception(exception);
+            return;
+        }
+    }
+    rv.set(v8::Boolean::new(scope, running).into());
+}
+
+/// Force V8 to terminate JavaScript running on a sandbox Realm thread.
+fn force_sandbox_context(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let isolate_handle = {
+        let state_rc = get_state(scope);
+        let state = state_rc.borrow();
+        let realm = state
+            .sandbox_contexts
+            .get(handle)
+            .and_then(|slot| slot.as_ref());
+        if let Some(realm) = realm {
+            realm
+                .force_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        realm.and_then(|realm| realm.isolate_handle.lock().ok()?.clone())
+    };
+    if let Some(isolate_handle) = isolate_handle {
+        isolate_handle.terminate_execution();
+    }
+}
+
+fn sandbox_port_send(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let Ok(bytes) = v8::Local::<v8::Uint8Array>::try_from(args.get(1)) else {
+        let msg = v8::String::new(
+            scope,
+            "sandboxPortSend: second argument must be a Uint8Array",
+        )
+        .unwrap();
+        let exception = v8::Exception::type_error(scope, msg);
+        scope.throw_exception(exception);
+        return;
+    };
+    let data = {
+        let Some(buffer) = bytes.buffer(scope) else {
+            return;
+        };
+        let Some(ptr) = buffer.data() else { return };
+        unsafe {
+            std::slice::from_raw_parts(
+                (ptr.as_ptr() as *const u8).add(bytes.byte_offset()),
+                bytes.byte_length(),
+            )
+            .to_vec()
+        }
+    };
+    let transfer_stores = if let Ok(stores) = v8::Local::<v8::Array>::try_from(args.get(2)) {
+        let mut output = Vec::with_capacity(stores.length() as usize);
+        for i in 0..stores.length() {
+            let index = v8::Integer::new(scope, i as i32);
+            let Some(value) = stores.get(scope, index.into()) else {
+                continue;
+            };
+            let Ok(bytes) = v8::Local::<v8::Uint8Array>::try_from(value) else {
+                continue;
+            };
+            let Some(buffer) = bytes.buffer(scope) else {
+                continue;
+            };
+            let Some(ptr) = buffer.data() else { continue };
+            output.push(unsafe {
+                std::slice::from_raw_parts(
+                    (ptr.as_ptr() as *const u8).add(bytes.byte_offset()),
+                    bytes.byte_length(),
+                )
+                .to_vec()
+            });
+        }
+        output
+    } else {
+        Vec::new()
+    };
+    let message = thread::ThreadMessage {
+        data,
+        transfer_stores,
+        transfer_ports: thread::extract_port_infos(scope, args.get(3)),
+    };
+    let transport = {
+        let state_rc = get_state(scope);
+        let state = state_rc.borrow();
+        state
+            .sandbox_contexts
+            .get(handle)
+            .and_then(|slot| slot.as_ref())
+            .map(|realm| (realm.tx.clone(), realm.child_wake_write))
+    };
+    if let Some((tx, wake_write)) = transport {
+        let _ = tx.send(message);
+        let byte = [1u8];
+        unsafe { libc::write(wake_write, byte.as_ptr() as *const _, 1) };
+    }
+}
+
+fn sandbox_port_recv(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let (messages, wake_read) = {
+        let state_rc = get_state(scope);
+        let state = state_rc.borrow();
+        match state
+            .sandbox_contexts
+            .get(handle)
+            .and_then(|slot| slot.as_ref())
+        {
+            Some(realm) => {
+                let mut messages = Vec::new();
+                while let Ok(message) = realm.rx.try_recv() {
+                    messages.push(message);
+                }
+                (messages, Some(realm.parent_wake_read))
+            }
+            None => (Vec::new(), None),
+        }
+    };
+    if let Some(wake_read) = wake_read {
+        let mut discard = [0u8; 256];
+        unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
+    }
+    rv.set(transit::build_message_array(scope, messages).into());
+}
+
+fn get_sandbox_port_wake_read_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let state_rc = get_state(scope);
+    let state = state_rc.borrow();
+    let fd = state
+        .sandbox_contexts
+        .get(handle)
+        .and_then(|slot| slot.as_ref())
+        .map(|realm| realm.parent_wake_read)
+        .unwrap_or(-1);
+    rv.set(v8::Integer::new(scope, fd).into());
 }
 
 // ---------------------------------------------------------------------------

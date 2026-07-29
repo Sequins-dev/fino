@@ -3,9 +3,10 @@ weight: 12
 ---
 # Isolation Levels
 
-Fino realms support local reactor, process, and remote execution. Choosing the
-right one is a trade-off between startup cost, messaging overhead, and the
-strength of the isolation boundary.
+Fino realms support local reactor, Linux sandbox-thread, process, and remote
+execution. Choosing the right one is a trade-off between startup cost,
+messaging overhead, resource governance, and the strength of the isolation
+boundary.
 
 ## Reactor pool
 
@@ -40,6 +41,47 @@ native or FFI code running in the process can bypass a hidden filesystem or
 network provider. macOS scheduling QoS and Linux thread controls may govern
 reactor workers as a group, but Fino does not expose them as per-realm security
 or resource limits.
+
+## Linux sandbox thread
+
+`sandbox` selects a dedicated, non-migrating Linux thread and installs a strict
+policy before importing the entry module:
+
+```ts
+const realm = new Realm({
+  entry: './task.ts',
+  sandbox: {
+    mode: 'strict',
+    resources: { cpu: 0.5, cpus: '0-1', pids: 32 },
+    filesystem: {
+      readonly: ['/srv/app'],
+      writable: ['/tmp/task'],
+    },
+    network: { outbound: [{ action: 'deny' }] },
+  },
+});
+await realm.run();
+```
+
+CPU quota, CPU affinity (`cpus` in Linux CPU-list syntax), and pids use cgroup
+v2's threaded `cpu`, `cpuset`, and `pids` controllers under the host process's
+current cgroup domain. Filesystem policy uses Landlock; syscall, fork/exec, and
+coarse network policy use seccomp. Each mechanism applies to the dedicated
+thread and descendants it creates, so ordinary reactor workers do not inherit
+the policy. The current cgroup must be writable and delegated when resource
+limits are requested, and the kernel must expose each requested mechanism.
+Strict mode fails closed instead of silently omitting a control.
+
+This is governance and defense in depth for cooperating in-process workloads,
+not containment for hostile code. The Realm still shares process memory and
+inherited file descriptors. Linux has no threaded memory controller, so
+`memoryBytes` is rejected. Fork and exec are always denied because they operate
+on or copy the host process. Async FFI is rejected and inherited or data-driven
+OpenTelemetry bootstrap is suppressed because process-global background
+workers would execute outside the thread policy. Watch and REPL modes are not
+supported. A non-yielding workload must be stopped with
+`realm.terminate({ force: true })`, which terminates execution in that Realm's
+V8 isolate and lets the dedicated thread and cgroup leaf exit.
 
 ## Process
 
@@ -76,10 +118,11 @@ Remote realms expose the same `run()`, `call()`, and `terminate()` interface as 
 ## How to choose
 
 Use the default reactor pool for import isolation, module graph separation, and
-parallel work. Move to process when you need crash isolation or are running
-third-party code with elevated risk. Use remote only when work must run on a
-cluster node you have already established with `startCluster()` or
-`joinCluster()`.
+parallel work. Use a Linux sandbox Realm when a cooperative workload needs
+per-thread CPU/pids governance or filesystem/syscall defense in depth. Move to
+process when you need crash isolation or are running third-party code with
+elevated risk. Use remote only when work must run on a cluster node you have
+already established with `startCluster()` or `joinCluster()`.
 
 ## Trust and security
 
