@@ -909,6 +909,29 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:format/thrift/value",
         "internal/format/thrift/value"
     ),
+    // tensor kernel IR
+    source_builtin!("internal:tensor/ir", "tensor/ir/index"),
+    source_builtin!("internal:tensor/ir/types", "tensor/ir/types"),
+    source_builtin!("internal:tensor/ir/builder", "tensor/ir/builder"),
+    source_builtin!("internal:tensor/ir/typing", "tensor/ir/typing"),
+    source_builtin!("internal:tensor/ir/layout", "tensor/ir/layout"),
+    source_builtin!("internal:tensor/ir/key", "tensor/ir/key"),
+    source_builtin!("internal:tensor/ir/msl", "tensor/ir/lower/msl"),
+    source_builtin!("internal:tensor/ir/spirv", "tensor/ir/lower/spirv"),
+    source_builtin!(
+        "internal:tensor/ir/templates/elementwise",
+        "tensor/ir/templates/elementwise"
+    ),
+    source_builtin!(
+        "internal:tensor/ir/templates/gemm",
+        "tensor/ir/templates/gemm"
+    ),
+    // spirv
+    source_builtin!("internal:spirv", "internal/spirv/index"),
+    source_builtin!("internal:spirv/opcodes", "internal/spirv/opcodes"),
+    source_builtin!("internal:spirv/writer", "internal/spirv/writer"),
+    source_builtin!("internal:spirv/module", "internal/spirv/module"),
+    source_builtin!("internal:spirv/disasm", "internal/spirv/disasm"),
     source_builtin!("fino:format/typescript", "format/typescript"),
     source_builtin!("fino:format/toml", "format/toml"),
     source_builtin!("fino:format/xml", "format/xml"),
