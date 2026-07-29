@@ -3,8 +3,9 @@ weight: 140
 ---
 # Data
 
-Fino includes pure TypeScript data tooling for columnar in-memory data and file
-interchange. The current public surface centers on Apache Arrow and Parquet.
+Fino includes pure TypeScript data tooling for columnar in-memory data, file
+interchange, and deterministic streaming ingestion. The public surface centers
+on Apache Arrow, Parquet, and the shared Dataset/DataLoader pipeline.
 
 ## Arrow
 
@@ -21,6 +22,43 @@ console.log(table.numRows);
 
 Use Arrow when data should stay columnar in memory or cross a boundary through
 Arrow IPC or C Data Interface conventions.
+
+## Datasets and loading
+
+`fino:data/dataset` provides the lazy ingestion contract used by evaluation,
+memory, and batch workflows. `Dataset` snapshots finite indexed values;
+`IterableDataset` composes synchronous and asynchronous sources through
+`map`, `filter`, buffered `shuffle`, `batch`, `take`, `split`, and
+`interleave`. `DataLoader` adds pull-driven batching and explicit collation:
+
+```ts no_run
+import {
+  DataLoader,
+  csvDataset,
+  arrowCollator,
+} from 'fino:data/dataset';
+
+const rows = csvDataset('id,text\n1,hello\n2,world\n', {
+  header: true,
+  cast: true,
+});
+const loader = new DataLoader(rows, {
+  batchSize: 128,
+  shuffle: { bufferSize: 2048 },
+  seed: 7,
+  collate: arrowCollator,
+});
+
+for await (const batch of loader.forEpoch(0)) {
+  console.log(batch.numRows);
+}
+```
+
+CSV, JSONL, SQLite, HTTP, and hub adapters yield rows. Arrow IPC and Parquet
+adapters yield `RecordBatch` objects directly. Iteration is pull-driven and
+cancelable; realm workers, shared-memory collation, and durable checkpoint
+state are layered onto the same contract rather than exposed as a second
+loader API.
 
 ## Parquet
 

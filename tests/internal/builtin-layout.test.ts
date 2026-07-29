@@ -42,6 +42,7 @@ import 'fino:net/http/eventsource';
 import 'fino:net/http/websocket';
 import 'fino:net/http/webtransport';
 import 'fino:ai/cache';
+import 'fino:data/dataset';
 import { DiskFileSystem } from 'fino:file';
 const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 describe('builtin module layout', () => {

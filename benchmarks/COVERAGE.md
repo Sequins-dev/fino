@@ -96,6 +96,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:data` | `benchmarks/data/arrow.bench.ts` |
 | `fino:data/arrow` | `benchmarks/data/arrow.bench.ts` |
 | `fino:data/arrow/cdata` | `benchmarks/data/arrow.bench.ts` |
+| `fino:data/dataset` | not yet benchmarked |
 | `fino:data/parquet` | `benchmarks/data/parquet.bench.ts` |
 | `fino:format/csv` | `benchmarks/format/csv.bench.ts` |
 | `fino:format/flatbuffers` | `benchmarks/format/flatbuffers.bench.ts` |
