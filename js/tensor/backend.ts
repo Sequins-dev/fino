@@ -463,6 +463,19 @@ export function registeredProviders(): string[] {
 }
 
 /**
+ * Make a backend available without probing.
+ *
+ * The reference CPU backend registers this way at import so that `cpu:0` is
+ * usable synchronously. Layer constructors and initialisers are synchronous, and
+ * requiring them to await device discovery to allocate host-side weights would be
+ * ceremony with no benefit.
+ */
+export function registerDevice(backend: DeviceBackend): void {
+  discovered.set(formatDevice(backend.device), backend);
+  probed.add(backend.device.type);
+}
+
+/**
  * Probe one provider, caching its devices.
  *
  * @internal

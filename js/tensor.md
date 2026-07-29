@@ -117,6 +117,38 @@ choice, which is how the differential tests select a backend.
   attributed to the operation that caused it rather than to the next readback.
 - `FINO_TENSOR_DEBUG=1` enables backend validation layers.
 
+## Building models
+
+`fino:tensor/nn` provides `Module`, the layers a transformer needs, the standard
+losses, and seeded initialisers; `fino:tensor/optim` provides SGD, Adam, AdamW,
+gradient clipping, and schedules.
+
+```ts
+import { Linear, mseLoss } from 'fino:tensor/nn';
+import { Adam } from 'fino:tensor/optim';
+import { Generator, tensor, tidy } from 'fino:tensor';
+
+const model = new Linear(4, 1, { generator: new Generator(42) });
+const optimizer = new Adam(model.parameters(), { lr: 0.01 });
+
+const x = await tensor([[1, 2, 3, 4]]);
+const y = await tensor([[1]]);
+
+for (let step = 0; step < 100; step++) {
+  tidy(() => mseLoss(model.forward(x), y).backward());
+  optimizer.step();
+  optimizer.zeroGrad();
+}
+```
+
+Gradients written onto parameters survive the enclosing `tidy` scope, since the
+parameters themselves do — so the loop above needs no `keep`.
+
+Initialisation and dropout draw from an explicit `Generator`, so a run is
+reproducible from one seed. Sampling is counter-based rather than sequential,
+which is what lets a GPU kernel and the reference implementation produce the same
+stream rather than merely similar distributions.
+
 ## Inspecting the graph
 
 `fino:tensor/graph` exposes the recording: node kinds, traversal, a content hash,

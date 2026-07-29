@@ -35,9 +35,10 @@
  * TypeScript implementation and should never be quoted as this engine's
  * performance.
  */
-import { registerBackend, resolveDevice } from './backend.ts';
+import { registerBackend, registerDevice, resolveDevice } from './backend.ts';
 import type { Device } from './backend.ts';
-import { refProvider } from './ref/backend.ts';
+import { RefBackend, refProvider } from './ref/backend.ts';
+import { fromHostValues, defaultDevice, setDefaultDevice } from './create.ts';
 import { DTYPE_BYTES } from './dtype.ts';
 import type { DType, HostArray } from './dtype.ts';
 import { Tensor } from './tensor.ts';
@@ -52,8 +53,10 @@ import type { PoolStats } from './pool.ts';
 
 // Registering the reference provider at import is what makes `device('auto')`
 // unable to fail, and what lets everything above depend on `fino:tensor`
-// unconditionally.
+// unconditionally. The backend is also registered eagerly so `cpu:0` resolves
+// without awaiting discovery, which synchronous layer constructors rely on.
 registerBackend(refProvider);
+registerDevice(new RefBackend());
 
 // Importing the operations registers every primitive and installs the Tensor
 // methods.
@@ -178,93 +181,7 @@ export async function tensor(
       `${flat.length} values do not fill shape [${shape.join(', ')}] (${numel(shape)} elements)`,
     );
   }
-  return fromHost(flat, shape, dtype, device, options.requiresGrad ?? false);
-}
-
-/**
- * Upload host values into a new tensor.
- *
- * @internal
- */
-function fromHost(
-  values: readonly number[],
-  shape: readonly number[],
-  dtype: DType,
-  device: Device,
-  requiresGrad: boolean,
-): Tensor {
-  const backend = backendFor(device);
-  const stream = computeStream(backend);
-  const bytes = Math.max(numel(shape) * DTYPE_BYTES[dtype], 1);
-  const storage = allocStorage(backend, device, bytes, stream);
-  const out = new Tensor({
-    storage,
-    shape,
-    dtype,
-    valueId: currentGraph().nextValue(),
-    requiresGrad,
-  });
-  if (values.length > 0) {
-    backend.copyH2D(storage.pooled.buffer, 0, encode(values, dtype), stream);
-  }
-  return out;
-}
-
-/**
- * Encode host values as the bytes a dtype stores.
- *
- * @internal
- */
-function encode(values: readonly number[], dtype: DType): Uint8Array {
-  const bytes = new Uint8Array(values.length * DTYPE_BYTES[dtype]);
-  const view = new DataView(bytes.buffer);
-  for (let i = 0; i < values.length; i++) {
-    const value = values[i]!;
-    switch (dtype) {
-      case 'f64':
-        view.setFloat64(i * 8, value, true);
-        break;
-      case 'f32':
-        view.setFloat32(i * 4, value, true);
-        break;
-      case 'f16':
-      case 'bf16': {
-        // Reuse the dtype module's rounding so uploads match on-device stores.
-        const bits = dtype === 'f16' ? f16Bits(value) : bf16Bits(value);
-        view.setUint16(i * 2, bits, true);
-        break;
-      }
-      case 'i64':
-        view.setBigInt64(i * 8, BigInt(Math.trunc(value)), true);
-        break;
-      case 'i32':
-        view.setInt32(i * 4, value, true);
-        break;
-      case 'u8':
-        view.setUint8(i, value & 0xff);
-        break;
-      case 'bool':
-        view.setUint8(i, value !== 0 ? 1 : 0);
-        break;
-    }
-  }
-  return bytes;
-}
-
-import { f32ToBf16, f32ToF16 } from './dtype.ts';
-
-/**
- * @internal
- */
-function f16Bits(value: number): number {
-  return f32ToF16(value);
-}
-
-/**
- * @internal
- */
-function bf16Bits(value: number): number {
-  return f32ToBf16(value);
+  return fromHostValues(flat, shape, dtype, device, options.requiresGrad ?? false);
 }
 
 /** A tensor of zeros. */
@@ -363,6 +280,8 @@ export {
   numel,
 } from './shape.ts';
 export { currentGraph } from './graph.ts';
+export { Generator } from './generator.ts';
+export { defaultDevice, setDefaultDevice } from './create.ts';
 export {
   add,
   castTo as cast,

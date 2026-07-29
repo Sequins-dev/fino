@@ -362,9 +362,14 @@ export function tidy<T>(fn: () => T): T {
   return result;
 }
 
-/** Exempt a tensor from the innermost {@link tidy} scope. */
+/**
+ * Exempt a tensor from the innermost {@link tidy} scope.
+ *
+ * A no-op when no scope is open, so the exemption set cannot accumulate entries
+ * that nothing will ever clear.
+ */
 export function keep<T extends Tensor>(tensor: T): T {
-  kept.add(tensor);
+  if (scopes.length > 0) kept.add(tensor);
   return tensor;
 }
 

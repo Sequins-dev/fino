@@ -12,6 +12,8 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:tensor` | `benchmarks/tensor/tensor.bench.ts` |
 | `fino:tensor/graph` | `benchmarks/tensor/tensor.bench.ts` |
 | `fino:tensor/backend` | `benchmarks/tensor/tensor.bench.ts` |
+| `fino:tensor/nn` | `benchmarks/tensor/tensor.bench.ts` |
+| `fino:tensor/optim` | `benchmarks/tensor/tensor.bench.ts` |
 | `fino:commands/root` | not yet benchmarked |
 | `fino:commands/preview` | not yet benchmarked |
 | `fino:commands/run` | not yet benchmarked |

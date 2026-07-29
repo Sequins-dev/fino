@@ -21,6 +21,7 @@
 import type { OpAttrs } from './backend.ts';
 import type { OpSpec } from './ops/registry.ts';
 import type { Tensor } from './tensor.ts';
+import { keep as keepInScope } from './tensor.ts';
 
 /**
  * One edge of the gradient graph.
@@ -196,7 +197,13 @@ export function backward(
     for (const [tensor, grad] of cotangents) {
       if (tensor === root && root.gradFn !== null) continue;
       if (!tensor.requiresGrad || tensor.gradFn !== null) continue;
-      tensor.grad = tensor.grad ? addInto(tensor.grad, grad) : grad;
+      const total = tensor.grad ? addInto(tensor.grad, grad) : grad;
+      // A gradient attached to a leaf must outlive the scope backward ran in: the
+      // leaf is a parameter that outlives it, and the optimizer reads the gradient
+      // after the scope closes. Without this, the natural
+      // `tidy(() => loss.backward())` would hand the optimizer freed tensors.
+      keepInScope(total);
+      tensor.grad = total;
     }
   });
 }
