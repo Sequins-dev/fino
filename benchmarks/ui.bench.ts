@@ -5,6 +5,23 @@
  */
 import { bench } from 'fino:bench';
 import { createRenderer, createSignal, h } from 'fino:ui';
+import { ComponentRegistry, defineComponent } from 'fino:ui/components';
+const SemanticCell = defineComponent<{ value: number }>({
+  name: 'bench.cell',
+  version: 1,
+  schema: {
+    type: 'object',
+    properties: {
+      value: { type: 'number' },
+    },
+    required: ['value'],
+    additionalProperties: false,
+  },
+});
+const semanticRegistry = new ComponentRegistry('benchmark').register(
+  SemanticCell,
+  ({ props, children }) => h('cell', props, ...children),
+);
 const tree = h(
   'row',
   null,
@@ -64,6 +81,9 @@ const reordered = h(
 bench('ui', (b) => {
   b.measure('h tree', () =>
     h('row', null, h('cell', { key: 'a' }, 'a'), h('cell', { key: 'b' }, 'b')),
+  );
+  b.measure('semantic component resolve', () =>
+    semanticRegistry.resolve(h(SemanticCell, { key: 'a', value: 1 }, 'a')),
   );
   b.measure('signal batched writes', () => {
     const signal = createSignal(0);

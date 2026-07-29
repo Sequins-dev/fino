@@ -95,6 +95,42 @@ export interface VNode {
    * Optional reconciliation key copied from the original props.
    */
   key: string | number | null;
+  /**
+   * Portable semantic component metadata when this node was created by
+   * `defineComponent()` from `fino:ui/components`.
+   *
+   * Host primitives omit this field. Render targets use it to select a local
+   * implementation without changing the VNode tree shape.
+   */
+  component?: VNodeComponent;
+  /**
+   * Optional named parent slot occupied by this component.
+   *
+   * Slots are semantic placement hints. A target decides how the named slot is
+   * presented using the parent component's declared slot contract.
+   */
+  slot?: string;
+}
+/**
+ * Wire-safe identity attached to portable semantic VNodes.
+ *
+ * `id` combines `name` and `version`, while `schemaFingerprint` identifies the
+ * exact prop contract. Clients must match both before selecting an
+ * implementation.
+ */
+export interface VNodeComponent {
+  /** Fully versioned component id, such as `app.button.v1`. */
+  id: string;
+  /** Stable namespaced component name without the version suffix. */
+  name: string;
+  /** Positive component contract version. */
+  version: number;
+  /** Deterministic prop-schema compatibility fingerprint. */
+  schemaFingerprint: string;
+  /** Named child slots understood by this component version. */
+  slots?: readonly string[];
+  /** Component id to use when the exact implementation is unavailable. */
+  fallback?: string;
 }
 /**
  * Fragment marker used by JSX to group children without adding a host node.
@@ -161,10 +197,17 @@ export function h(type: VNodeType, props: Props | null, ...children: Child[]): V
     if (name !== 'key' && name !== 'children') normalizedProps[name] = rawProps[name];
   }
   if (typeof type === 'function') {
-    return type({
+    const rendered = type({
       ...normalizedProps,
       children: normalizedChildren,
     });
+    const key = typeof keyValue === 'string' || typeof keyValue === 'number' ? keyValue : null;
+    return key === null || rendered.key === key
+      ? rendered
+      : {
+          ...rendered,
+          key,
+        };
   }
   return {
     type,

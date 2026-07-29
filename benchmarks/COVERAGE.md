@@ -31,6 +31,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:process` | `benchmarks/process.bench.ts` |
 | `fino:context` | `benchmarks/context/index.bench.ts` |
 | `fino:ui` | `benchmarks/ui.bench.ts` |
+| `fino:ui/components` | `benchmarks/ui.bench.ts` |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |
 | `fino:ui/html` | `benchmarks/ui.bench.ts` |
 | `fino:ui/slides` | not yet benchmarked |

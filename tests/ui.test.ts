@@ -44,6 +44,13 @@ describe('fino:ui vnode construction', () => {
     t.equal(vnode.type, 'text', 'function component output is returned');
     t.deepEqual(vnode.children, ['>', 'name'], 'children are passed through props');
   });
+  it('preserves the caller key on function component output', (t) => {
+    function Label() {
+      return h('text', { key: 'inner' }, 'name');
+    }
+    const vnode = h(Label, { key: 'outer' });
+    t.equal(vnode.key, 'outer', 'the component instance key owns reconciliation identity');
+  });
 });
 describe('fino:ui signals', () => {
   it('notifies subscribers once for batched signal writes', (t) => {
