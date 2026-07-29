@@ -4215,6 +4215,14 @@ function isNoResults(output: string, query: string): boolean {
 async function refreshDocsDbForQuery(query: string): Promise<string> {
   return withDocsWriteLock(async () => {
     const dbPath = docsDbPath();
+    // A concurrent search may have populated the index while this process
+    // waited for the writer lock. Reuse it instead of racing its first reader.
+    if (await exists(dbPath)) {
+      try {
+        const existing = await searchSqlite(dbPath, query);
+        if (!isNoResults(existing, query)) return dbPath;
+      } catch (_) {}
+    }
     const api = await refreshDocsForQuery(query);
     await writeSqliteIndex(api, dbPath);
     return dbPath;
