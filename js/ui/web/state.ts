@@ -25,10 +25,26 @@
  * `DatabaseViewStore` persists through `fino:database` and creates its tables
  * on `open()`.
  *
+ * ## Retention and operations
+ *
+ * Pass `historyLimit` to either provider to compact each view after a
+ * successful save. Omit it to preserve the existing unbounded behavior while
+ * application policy is being chosen; production deployments should set an
+ * explicit bound. `compact()` can apply a new bound to existing views, while
+ * `stats()` reports current head, history, and expired-head counts without
+ * exposing provider-specific tables.
+ *
+ * Database operations on one `DatabaseViewStore` are serialized so concurrent
+ * compare-and-swap attempts resolve to one winner and a
+ * `ViewVersionConflictError` loser instead of overlapping transactions. Head
+ * and history writes remain one transaction, including automatic compaction.
+ *
  * ```ts no_run
  * import { DatabaseViewStore, type ViewSnapshot } from 'fino:ui/web/state';
  *
- * const store = await DatabaseViewStore.open('sqlite://ui.db');
+ * const store = await DatabaseViewStore.open('sqlite://ui.db', {
+ *   historyLimit: 64,
+ * });
  * const now = Date.now();
  *
  * const snapshot: ViewSnapshot = {
@@ -113,6 +129,30 @@ export interface ViewSnapshot {
 }
 
 /**
+ * Retention options shared by every view-state provider.
+ */
+export interface ViewStateStoreOptions {
+  /**
+   * Maximum history entries retained per mounted view.
+   *
+   * Omit for unbounded history. `0` retains only the current head.
+   */
+  historyLimit?: number;
+}
+
+/**
+ * Provider-independent operational snapshot counts.
+ */
+export interface ViewStateStoreStats {
+  /** Number of current mounted-view heads. */
+  heads: number;
+  /** Total retained history entries across all views. */
+  history: number;
+  /** Current heads whose expiration is at or before the requested time. */
+  expired: number;
+}
+
+/**
  * Storage contract for durable view snapshots.
  *
  * Stores clone snapshots on load and save. `save()` honors `expectVersion` as a
@@ -123,8 +163,10 @@ export interface ViewSnapshot {
  * - `load()` reads the current head snapshot or `null`.
  * - `save()` replaces the head and appends the same snapshot to history.
  * - `history()` returns retained snapshots newest first.
+ * - `compact()` bounds retained history for one view.
  * - `delete()` removes the head and retained history.
  * - `sweep()` removes expired heads and returns the number deleted.
+ * - `stats()` returns portable operational counts.
  */
 export interface ViewStateStore {
   /**
@@ -149,6 +191,12 @@ export interface ViewStateStore {
    */
   history(viewId: string, opts?: { limit?: number }): Promise<ViewSnapshot[]>;
   /**
+   * Retain only the newest `retain` history entries for `viewId`.
+   *
+   * Returns the number of entries deleted. The current head is unaffected.
+   */
+  compact(viewId: string, retain: number): Promise<number>;
+  /**
    * Delete a snapshot head and its retained history.
    *
    * Unknown view ids are treated as a successful no-op.
@@ -161,6 +209,10 @@ export interface ViewStateStore {
    * expired.
    */
   sweep(now?: number): Promise<number>;
+  /**
+   * Return current provider-independent head, history, and expiration counts.
+   */
+  stats(now?: number): Promise<ViewStateStoreStats>;
 }
 
 /**
@@ -205,6 +257,22 @@ function validate(snapshot: ViewSnapshot): ViewSnapshot {
   return cloneSnapshot(snapshot);
 }
 
+function nonNegativeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new TypeError(`${name} must be a non-negative safe integer`);
+  return value;
+}
+
+function historyLimit(options: ViewStateStoreOptions): number | undefined {
+  return options.historyLimit === undefined
+    ? undefined
+    : nonNegativeInteger(options.historyLimit, 'historyLimit');
+}
+
+function queryLimit(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : nonNegativeInteger(value, 'limit');
+}
+
 /**
  * In-memory view snapshot store for tests and single-process prototypes.
  *
@@ -215,6 +283,14 @@ function validate(snapshot: ViewSnapshot): ViewSnapshot {
 export class InMemoryViewStore implements ViewStateStore {
   #heads = new Map<string, ViewSnapshot>();
   #history = new Map<string, ViewSnapshot[]>();
+  #historyLimit: number | undefined;
+
+  /**
+   * Create an in-memory store with optional bounded per-view history.
+   */
+  constructor(options: ViewStateStoreOptions = {}) {
+    this.#historyLimit = historyLimit(options);
+  }
 
   /**
    * Load the current in-memory head snapshot for `viewId`, or `null`.
@@ -244,6 +320,8 @@ export class InMemoryViewStore implements ViewStateStore {
     this.#heads.set(next.viewId, next);
     const history = this.#history.get(next.viewId) ?? [];
     history.unshift(cloneSnapshot(next));
+    if (this.#historyLimit !== undefined)
+      history.length = Math.min(history.length, this.#historyLimit);
     this.#history.set(next.viewId, history);
   }
 
@@ -252,7 +330,19 @@ export class InMemoryViewStore implements ViewStateStore {
    */
   async history(viewId: string, opts: { limit?: number } = {}): Promise<ViewSnapshot[]> {
     const entries = this.#history.get(viewId) ?? [];
-    return entries.slice(0, opts.limit).map(cloneSnapshot);
+    return entries.slice(0, queryLimit(opts.limit)).map(cloneSnapshot);
+  }
+
+  /**
+   * Compact one in-memory view history to its newest `retain` entries.
+   */
+  async compact(viewId: string, retain: number): Promise<number> {
+    nonNegativeInteger(retain, 'retain');
+    const entries = this.#history.get(viewId) ?? [];
+    const deleted = Math.max(0, entries.length - retain);
+    entries.length = Math.min(entries.length, retain);
+    if (entries.length === 0) this.#history.delete(viewId);
+    return deleted;
   }
 
   /**
@@ -275,6 +365,23 @@ export class InMemoryViewStore implements ViewStateStore {
     }
     return deleted;
   }
+
+  /**
+   * Return current in-memory head, history, and expiration counts.
+   */
+  async stats(now: number = Date.now()): Promise<ViewStateStoreStats> {
+    let history = 0;
+    let expired = 0;
+    for (const entries of this.#history.values()) history += entries.length;
+    for (const snapshot of this.#heads.values()) {
+      if (snapshot.expiresAt <= now) expired++;
+    }
+    return {
+      heads: this.#heads.size,
+      history,
+      expired,
+    };
+  }
 }
 
 /**
@@ -289,9 +396,12 @@ export class InMemoryViewStore implements ViewStateStore {
  */
 export class DatabaseViewStore implements ViewStateStore {
   #db: DatabaseConnection;
+  #historyLimit: number | undefined;
+  #operations: Promise<void> = Promise.resolve();
 
-  private constructor(db: DatabaseConnection) {
+  private constructor(db: DatabaseConnection, options: ViewStateStoreOptions) {
     this.#db = db;
+    this.#historyLimit = historyLimit(options);
   }
 
   /**
@@ -301,7 +411,11 @@ export class DatabaseViewStore implements ViewStateStore {
    * `sqlite://path/to/ui.db`, or other supported database targets are accepted.
    * `opts.fs` is forwarded for filesystem-backed database providers.
    */
-  static async open(target: string, opts?: { fs?: object }): Promise<DatabaseViewStore> {
+  static async open(
+    target: string,
+    opts: ViewStateStoreOptions & { fs?: object } = {},
+  ): Promise<DatabaseViewStore> {
+    historyLimit(opts);
     const db = await Database.open(target, { fs: opts?.fs as never });
     await db.exec(`CREATE TABLE IF NOT EXISTS ui_view_snapshots (
       view_id TEXT PRIMARY KEY,
@@ -321,13 +435,19 @@ export class DatabaseViewStore implements ViewStateStore {
     await db.exec(
       `CREATE INDEX IF NOT EXISTS idx_ui_view_snapshots_expires ON ui_view_snapshots(expires_at)`,
     );
-    return new DatabaseViewStore(db);
+    return new DatabaseViewStore(db, opts);
   }
 
-  /**
-   * Load the current database head snapshot for `viewId`, or `null`.
-   */
-  async load(viewId: string): Promise<ViewSnapshot | null> {
+  #run<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#operations.then(operation, operation);
+    this.#operations = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+
+  async #load(viewId: string): Promise<ViewSnapshot | null> {
     const stmt = this.#db.prepare(
       sql`SELECT snapshot FROM ui_view_snapshots WHERE view_id = ${viewId}`,
     );
@@ -340,6 +460,13 @@ export class DatabaseViewStore implements ViewStateStore {
   }
 
   /**
+   * Load the current database head snapshot for `viewId`, or `null`.
+   */
+  async load(viewId: string): Promise<ViewSnapshot | null> {
+    return this.#run(() => this.#load(viewId));
+  }
+
+  /**
    * Save a database head snapshot and append it to history in one transaction.
    *
    * `opts.expectVersion`, when provided, must match the currently loaded head
@@ -347,18 +474,19 @@ export class DatabaseViewStore implements ViewStateStore {
    */
   async save(snapshot: ViewSnapshot, opts: { expectVersion?: number } = {}): Promise<void> {
     const next = validate(snapshot);
-    await this.#db.transaction(async () => {
-      const current = await this.load(next.viewId);
-      if (opts.expectVersion !== undefined && current?.version !== opts.expectVersion) {
-        throw new ViewVersionConflictError(
-          next.viewId,
-          opts.expectVersion,
-          current?.version ?? null,
-        );
-      }
-      const encoded = JSON.stringify(next);
-      const head = this.#db
-        .prepare(sql`INSERT INTO ui_view_snapshots(view_id, view, version, snapshot, expires_at, updated_at)
+    await this.#run(() =>
+      this.#db.transaction(async () => {
+        const current = await this.#load(next.viewId);
+        if (opts.expectVersion !== undefined && current?.version !== opts.expectVersion) {
+          throw new ViewVersionConflictError(
+            next.viewId,
+            opts.expectVersion,
+            current?.version ?? null,
+          );
+        }
+        const encoded = JSON.stringify(next);
+        const head = this.#db
+          .prepare(sql`INSERT INTO ui_view_snapshots(view_id, view, version, snapshot, expires_at, updated_at)
         VALUES(${next.viewId}, ${next.view}, ${next.version}, ${encoded}, ${next.expiresAt}, ${next.updatedAt})
         ON CONFLICT(view_id) DO UPDATE SET
           view = excluded.view,
@@ -366,28 +494,27 @@ export class DatabaseViewStore implements ViewStateStore {
           snapshot = excluded.snapshot,
           expires_at = excluded.expires_at,
           updated_at = excluded.updated_at`);
-      try {
-        await head.run();
-      } finally {
-        head.finalize();
-      }
-      const hist = this.#db
-        .prepare(sql`INSERT OR REPLACE INTO ui_view_snapshot_history(view_id, version, snapshot, updated_at)
+        try {
+          await head.run();
+        } finally {
+          head.finalize();
+        }
+        const hist = this.#db
+          .prepare(sql`INSERT OR REPLACE INTO ui_view_snapshot_history(view_id, version, snapshot, updated_at)
         VALUES(${next.viewId}, ${next.version}, ${encoded}, ${next.updatedAt})`);
-      try {
-        await hist.run();
-      } finally {
-        hist.finalize();
-      }
-    });
+        try {
+          await hist.run();
+        } finally {
+          hist.finalize();
+        }
+        if (this.#historyLimit !== undefined) await this.#compact(next.viewId, this.#historyLimit);
+      }),
+    );
   }
 
-  /**
-   * Return retained database history for `viewId`, newest first.
-   */
-  async history(viewId: string, opts: { limit?: number } = {}): Promise<ViewSnapshot[]> {
+  async #history(viewId: string, limit: number | undefined): Promise<ViewSnapshot[]> {
     let query = sql`SELECT snapshot FROM ui_view_snapshot_history WHERE view_id = ${viewId} ORDER BY version DESC`;
-    if (opts.limit !== undefined) query = sql`${query} LIMIT ${Math.floor(opts.limit)}`;
+    if (limit !== undefined) query = sql`${query} LIMIT ${limit}`;
     const stmt = this.#db.prepare(query);
     try {
       const rows = await stmt.all();
@@ -398,25 +525,62 @@ export class DatabaseViewStore implements ViewStateStore {
   }
 
   /**
+   * Return retained database history for `viewId`, newest first.
+   */
+  async history(viewId: string, opts: { limit?: number } = {}): Promise<ViewSnapshot[]> {
+    const limit = queryLimit(opts.limit);
+    return this.#run(() => this.#history(viewId, limit));
+  }
+
+  async #compact(viewId: string, retain: number): Promise<number> {
+    const stmt = this.#db.prepare(
+      sql`DELETE FROM ui_view_snapshot_history
+        WHERE view_id = ${viewId}
+          AND version NOT IN (
+            SELECT version
+            FROM ui_view_snapshot_history
+            WHERE view_id = ${viewId}
+            ORDER BY version DESC
+            LIMIT ${retain}
+          )`,
+    );
+    try {
+      return (await stmt.run()).changes;
+    } finally {
+      stmt.finalize();
+    }
+  }
+
+  /**
+   * Compact one database view history to its newest `retain` entries.
+   */
+  async compact(viewId: string, retain: number): Promise<number> {
+    nonNegativeInteger(retain, 'retain');
+    return this.#run(() => this.#compact(viewId, retain));
+  }
+
+  async #delete(viewId: string): Promise<void> {
+    const head = this.#db.prepare(sql`DELETE FROM ui_view_snapshots WHERE view_id = ${viewId}`);
+    try {
+      await head.run();
+    } finally {
+      head.finalize();
+    }
+    const hist = this.#db.prepare(
+      sql`DELETE FROM ui_view_snapshot_history WHERE view_id = ${viewId}`,
+    );
+    try {
+      await hist.run();
+    } finally {
+      hist.finalize();
+    }
+  }
+
+  /**
    * Delete a database head snapshot and all retained history for `viewId`.
    */
   async delete(viewId: string): Promise<void> {
-    await this.#db.transaction(async () => {
-      const head = this.#db.prepare(sql`DELETE FROM ui_view_snapshots WHERE view_id = ${viewId}`);
-      try {
-        await head.run();
-      } finally {
-        head.finalize();
-      }
-      const hist = this.#db.prepare(
-        sql`DELETE FROM ui_view_snapshot_history WHERE view_id = ${viewId}`,
-      );
-      try {
-        await hist.run();
-      } finally {
-        hist.finalize();
-      }
-    });
+    await this.#run(() => this.#db.transaction(() => this.#delete(viewId)));
   }
 
   /**
@@ -426,23 +590,51 @@ export class DatabaseViewStore implements ViewStateStore {
    * removed with the head snapshot.
    */
   async sweep(now: number = Date.now()): Promise<number> {
-    const expired = this.#db.prepare(
-      sql`SELECT view_id FROM ui_view_snapshots WHERE expires_at <= ${now}`,
+    return this.#run(() =>
+      this.#db.transaction(async () => {
+        const expired = this.#db.prepare(
+          sql`SELECT view_id FROM ui_view_snapshots WHERE expires_at <= ${now}`,
+        );
+        try {
+          const rows = await expired.all();
+          for (const row of rows) await this.#delete(row.view_id as string);
+          return rows.length;
+        } finally {
+          expired.finalize();
+        }
+      }),
     );
-    try {
-      const rows = await expired.all();
-      for (const row of rows) await this.delete(row.view_id as string);
-      return rows.length;
-    } finally {
-      expired.finalize();
-    }
+  }
+
+  /**
+   * Return current database head, history, and expiration counts.
+   */
+  async stats(now: number = Date.now()): Promise<ViewStateStoreStats> {
+    return this.#run(async () => {
+      const stmt = this.#db.prepare(
+        sql`SELECT
+          (SELECT COUNT(*) FROM ui_view_snapshots) AS heads,
+          (SELECT COUNT(*) FROM ui_view_snapshot_history) AS history,
+          (SELECT COUNT(*) FROM ui_view_snapshots WHERE expires_at <= ${now}) AS expired`,
+      );
+      try {
+        const row = await stmt.get();
+        return {
+          heads: Number(row?.heads ?? 0),
+          history: Number(row?.history ?? 0),
+          expired: Number(row?.expired ?? 0),
+        };
+      } finally {
+        stmt.finalize();
+      }
+    });
   }
 
   /**
    * Close the underlying database connection.
    */
   async close(): Promise<void> {
-    await this.#db.close();
+    await this.#run(() => this.#db.close());
   }
 
   /**

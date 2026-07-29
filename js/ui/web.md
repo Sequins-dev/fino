@@ -80,6 +80,13 @@ actions: {
 `fino:ui/sweep:error` for failures. Cancelling an SSE response disposes its
 topic subscriptions.
 
+Configure `historyLimit` on the shared view store to bound retained reconnect
+history, and sample `store.stats()` for current head, history, and expired-head
+counts. Count `ViewVersionConflictError` at the action boundary to distinguish
+expected stale/CAS contention from provider failures. The in-memory and
+database providers run the same conformance suite for cloning, concurrent CAS,
+retention, compaction, cleanup, and failure atomicity.
+
 For browser TypeScript, mount `transpileFiles()` under a narrow prefix and
 keep server-only source outside that root. It transpiles on request; it is not
 a bundler and does not expose npm packages or server credentials to the

@@ -36,7 +36,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui/slides` | not yet benchmarked |
 | `fino:ui/web` | not yet benchmarked |
 | `fino:ui/web/flow` | not yet benchmarked |
-| `fino:ui/web/state` | not yet benchmarked |
+| `fino:ui/web/state` | `benchmarks/ui/web/state.bench.ts` |
 | `fino:tty` | `benchmarks/tty.bench.ts` |
 | `fino:tty/tui` | `benchmarks/tty/tui.bench.ts` |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
