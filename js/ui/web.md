@@ -57,6 +57,44 @@ browser reconnect support, CSRF handling, and useful no-JavaScript behavior.
 Add WebSockets only if a future feature requires bidirectional messages that
 cannot be represented as form actions.
 
+## Portable session boundary
+
+`fino:ui/session` defines the host-neutral request and ownership contract used
+before the shared execution engine. Browser forms carry `_ui=1` and the web
+adapter converts `FormData` into a versioned JSON action request containing the
+view definition, mounted view id, region id, revision, action, idempotency
+request id, and typed input. Existing forms without `_ui` or `_region` are
+interpreted as version 1 and the mounted view region during this migration
+window, so already-rendered no-JavaScript pages continue to round-trip.
+
+Action definitions may add an `input` JSON Schema. Validation and defaults run
+after the browser adapter has produced plain JSON and before the handler runs:
+
+```ts no_run
+actions: {
+  add: {
+    input: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', minLength: 1 },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    async handler({ state }, input) {
+      state.items.set((items) => items.concat(String(input.text)));
+    },
+  },
+},
+```
+
+HTML-specific cookies, CSRF checks, form parsing, and PRG remain in
+`fino:ui/web`. Terminal and external native adapters use their own input and
+authentication mechanics, then call the same portable normalizer and submit
+through the same HTTP action plus SSE response model. Client-owned ephemeral
+state such as focus, scroll, selection, animation, and native view storage is
+preserved by stable component keys and never becomes server snapshot data.
+
 Long-running actions can call and await `checkpoint()` after changing their
 signals. Each checkpoint is compare-and-swap persisted and published to live
 tabs:

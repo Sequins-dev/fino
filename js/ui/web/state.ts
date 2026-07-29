@@ -54,14 +54,14 @@ import { Database, sql, type DatabaseConnection } from 'fino:database';
  *
  * `version` is the compare-and-swap token and SSE event id. `data` contains
  * server-owned L2 values, while `regions` stores hashes for the latest rendered
- * HTML per patch target.
+ * output per region.
  *
  * ## Fields
  *
  * - `viewId` identifies one mounted view instance.
  * - `view` identifies the stable view definition.
  * - `version` advances monotonically and guards concurrent saves.
- * - `sessionId` optionally binds the snapshot to a browser session.
+ * - `sessionId` optionally binds the snapshot to an authenticated UI session.
  * - `data` contains server-owned signal values.
  * - `regions` contains render hashes keyed by region element id.
  * - `applied` records recent action nonces for replay protection.
@@ -83,7 +83,7 @@ export interface ViewSnapshot {
    */
   version: number;
   /**
-   * Optional owning browser session id.
+   * Optional owning UI session id.
    */
   sessionId?: string;
   /**
@@ -91,7 +91,7 @@ export interface ViewSnapshot {
    */
   data: Record<string, unknown>;
   /**
-   * Last-rendered HTML hashes keyed by region element id.
+   * Last-rendered target hashes keyed by region id.
    */
   regions: Record<string, string>;
   /**

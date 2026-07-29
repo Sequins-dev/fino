@@ -25,6 +25,13 @@ import { parseCookieHeader, sealCookie, serializeCookie, unsealCookie } from 'fi
 import { escapeHtml } from 'fino:template';
 import { batch, h, Signal, type Props, type VNode } from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
+import {
+  UI_SESSION_CONTRACT_VERSION,
+  normalizeUIActionRequest,
+  normalizeUINavigation,
+  type UIActionRequest,
+} from 'fino:ui/session';
+import { SchemaBuilder, compile, type CompiledValidator, type JsonSchema } from 'fino:validate';
 import type { Handler, HttpContext, LayerMiddleware } from 'fino:net/http/app';
 import type { ViewSnapshot, ViewStateStore } from 'fino:ui/web/state';
 type StateRecord = Record<string, Signal<unknown>>;
@@ -85,6 +92,14 @@ export interface ViewDefinition {
   actions?: Record<
     string,
     {
+      /**
+       * Optional JSON Schema for host-neutral action input.
+       *
+       * Browser `FormData` is converted to a plain object before validation.
+       * Other hosts produce the same JSON input without inheriting web form
+       * mechanics.
+       */
+      input?: JsonSchema | SchemaBuilder<Record<string, unknown>>;
       handler: ActionHandler;
       stale?: 'reject' | 'rebase';
     }
@@ -287,7 +302,9 @@ function annotateForms(node: VNode, actionRef?: ActionRef, state?: StateRecord):
   );
   if (node.type === 'form' && currentAction !== undefined) {
     children.unshift(
+      hidden('_ui', UI_SESSION_CONTRACT_VERSION),
       hidden('_view', currentAction.viewId),
+      hidden('_region', currentAction.viewId),
       hidden('_ver', currentAction.version),
       hidden('_nonce', currentAction.nonce),
       hidden('_csrf', currentAction.csrf),
@@ -329,6 +346,7 @@ class ServerView {
   readonly def: ViewDefinition;
   readonly embed: Set<string>;
   readonly sealedEmbed: Set<string>;
+  readonly actionValidators = new Map<string, CompiledValidator<Record<string, unknown>>>();
   constructor(def: ViewDefinition) {
     this.def = def;
     this.embed = new Set(
@@ -346,6 +364,18 @@ class ServerView {
             ).key,
         ),
     );
+    for (const [name, action] of Object.entries(def.actions ?? {})) {
+      if (action.input === undefined) continue;
+      this.actionValidators.set(
+        name,
+        compile<Record<string, unknown>>(
+          action.input instanceof SchemaBuilder ? action.input.toJSON() : action.input,
+        ),
+      );
+    }
+  }
+  actionInput(name: string, input: Record<string, unknown>): Record<string, unknown> {
+    return this.actionValidators.get(name)?.parse(input) ?? input;
   }
   mount(ctx: HttpContext): VNode {
     if (currentRender === null)
@@ -524,14 +554,33 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
   const action = name ? serverView?.def.actions?.[name] : undefined;
   if (serverView === undefined || action === undefined || viewId === '')
     return new Response('Not Found', { status: 404 });
+  let request: UIActionRequest;
+  let actionInput: Record<string, unknown>;
+  try {
+    const requestVersion = Number(form.get('_ver') ?? -1);
+    const nonce = String(form.get('_nonce') ?? '');
+    request = normalizeUIActionRequest({
+      contractVersion: Number(form.get('_ui') ?? UI_SESSION_CONTRACT_VERSION),
+      sessionId: sessionId(ctx),
+      view: viewName,
+      viewId,
+      regionId: String(form.get('_region') ?? viewId),
+      revision: requestVersion,
+      action: name,
+      requestId: `${requestVersion}:${nonce}`,
+      input: formEntries(form),
+    });
+    actionInput = serverView.actionInput(name, request.input);
+  } catch {
+    return new Response('Invalid action request', { status: 400 });
+  }
   return withViewLock(viewId, async () => {
     const snapshot = await options.store.load(viewId);
     if (snapshot === null) return new Response('Gone', { status: 410 });
     if (snapshot.sessionId !== undefined && snapshot.sessionId !== sessionId(ctx))
       return new Response('Forbidden', { status: 403 });
-    const requestVersion = Number(form.get('_ver') ?? -1);
-    const nonce = String(form.get('_nonce') ?? '');
-    const rid = `${requestVersion}:${nonce}`;
+    const requestVersion = request.revision;
+    const rid = request.requestId;
     if (snapshot.applied.some((entry) => entry.rid === rid && entry.action === name)) {
       return wantsSse(ctx)
         ? sseResponse([
@@ -598,7 +647,7 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
           http: ctx,
           checkpoint: () => commit(false).then(() => {}),
         },
-        formEntries(form),
+        actionInput,
       ),
     );
     const rendered = await commit(true);
@@ -662,11 +711,15 @@ function handleLive(ctx: HttpContext, options: WebUIOptions): Response {
       snapshot === null ||
       (snapshot.sessionId !== undefined && snapshot.sessionId !== sessionId(ctx))
     ) {
+      const navigation = normalizeUINavigation({
+        destination: pagePath,
+        replace: true,
+      });
       writeSse(controller, {
         event: 'navigate',
         data: {
-          url: pagePath,
-          replace: true,
+          url: navigation.destination,
+          replace: navigation.replace,
         },
       });
       return;

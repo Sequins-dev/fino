@@ -31,6 +31,14 @@ function makeApp() {
     embed: ['draft'],
     actions: {
       add: {
+        input: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', minLength: 1 },
+          },
+          required: ['text'],
+          additionalProperties: false,
+        },
         async handler({ state, checkpoint }, input) {
           state.items.set((items) => items.concat(String(input.text ?? '')));
           await checkpoint();
@@ -173,6 +181,8 @@ describe('fino:ui/web', () => {
     const cookie = cookieHeader(first);
     t.ok(html.includes('<section id="todos"'), 'view renders into the page');
     t.ok(html.includes('data-fi-action'), 'form is annotated for enhancement');
+    t.equal(hidden(html, '_ui'), '1', 'forms carry the portable contract version');
+    t.equal(hidden(html, '_region'), hidden(html, '_view'));
     const body = new URLSearchParams({
       _view: hidden(html, '_view'),
       _ver: hidden(html, '_ver'),
@@ -208,6 +218,61 @@ describe('fino:ui/web', () => {
       2,
       'checkpoint and final state are both durable',
     );
+  });
+  it('validates typed action input before running the handler', async (t) => {
+    const { app, store } = makeApp();
+    const first = (await app.handle(new Request('http://local/'))) as Response;
+    const html = await first.text();
+    const cookie = cookieHeader(first);
+    const viewId = hidden(html, '_view');
+    const response = (await app.handle(
+      new Request('http://local/?_action=todos.add', {
+        method: 'POST',
+        headers: {
+          accept: 'text/event-stream',
+          cookie,
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: 'http://local',
+          'sec-fetch-site': 'same-origin',
+        },
+        body: new URLSearchParams({
+          _ui: hidden(html, '_ui'),
+          _view: viewId,
+          _region: hidden(html, '_region'),
+          _ver: hidden(html, '_ver'),
+          _nonce: hidden(html, '_nonce'),
+          _csrf: hidden(html, '_csrf'),
+          $draft: '',
+          text: '',
+        }).toString(),
+      }),
+    )) as Response;
+
+    t.equal(response.status, 400);
+    t.equal((await store.load(viewId))?.version, 0, 'invalid input is not committed');
+
+    const unsupported = (await app.handle(
+      new Request('http://local/?_action=todos.add', {
+        method: 'POST',
+        headers: {
+          accept: 'text/event-stream',
+          cookie,
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: 'http://local',
+          'sec-fetch-site': 'same-origin',
+        },
+        body: new URLSearchParams({
+          _ui: '2',
+          _view: viewId,
+          _region: hidden(html, '_region'),
+          _ver: hidden(html, '_ver'),
+          _nonce: hidden(html, '_nonce'),
+          _csrf: hidden(html, '_csrf'),
+          text: 'Valid input',
+        }).toString(),
+      }),
+    )) as Response;
+    t.equal(unsupported.status, 400, 'unknown contract versions fail closed');
   });
   it('uses PRG for no-JS actions and rejects invalid CSRF tokens', async (t) => {
     const { app } = makeApp();

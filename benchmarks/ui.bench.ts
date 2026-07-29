@@ -5,6 +5,7 @@
  */
 import { bench } from 'fino:bench';
 import { createRenderer, createSignal, h } from 'fino:ui';
+import { UI_SESSION_CONTRACT_VERSION, normalizeUIActionRequest } from 'fino:ui/session';
 const tree = h(
   'row',
   null,
@@ -64,6 +65,18 @@ const reordered = h(
 bench('ui', (b) => {
   b.measure('h tree', () =>
     h('row', null, h('cell', { key: 'a' }, 'a'), h('cell', { key: 'b' }, 'b')),
+  );
+  b.measure('portable action normalize', () =>
+    normalizeUIActionRequest({
+      contractVersion: UI_SESSION_CONTRACT_VERSION,
+      view: 'bench',
+      viewId: 'view-a',
+      regionId: 'view-a',
+      revision: 1,
+      action: 'select',
+      requestId: '1:request-a',
+      input: { value: 1 },
+    }),
   );
   b.measure('signal batched writes', () => {
     const signal = createSignal(0);

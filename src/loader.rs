@@ -260,6 +260,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:signals", "signals"),
     source_builtin!("fino:ui", "ui"),
+    source_builtin!("fino:ui/session", "ui/session"),
     source_builtin!("fino:ui/html", "ui/html"),
     source_builtin!("fino:ui/web", "ui/web"),
     source_builtin!("fino:ui/web/flow", "ui/web/flow"),
