@@ -956,6 +956,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:tensor/ir/templates/gemm",
         "tensor/ir/templates/gemm"
     ),
+    // metal
+    source_builtin!("internal:metal", "internal/metal/index"),
+    source_builtin!("internal:metal/objc", "internal/metal/objc"),
+    source_builtin!("internal:metal/bindings", "internal/metal/bindings"),
     // spirv
     source_builtin!("internal:spirv", "internal/spirv/index"),
     source_builtin!("internal:spirv/opcodes", "internal/spirv/opcodes"),
