@@ -4,6 +4,9 @@ import * as ai from 'fino:ai';
 import * as runtime from 'fino:ai/runtime';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
+import type { MemoryDocument, MemoryIngestOptions } from 'fino:ai';
+const memoryDocument: MemoryDocument = { text: 'shared dataset document' };
+const memoryIngestOptions: MemoryIngestOptions = { batchSize: 8 };
 function modelWithText(text: string): Model {
   const events: StreamEvent[] = [
     {
@@ -44,6 +47,8 @@ function modelWithText(text: string): Model {
 }
 describe('AI public surface', () => {
   it('root module exports the happy-path AI surface', async (t) => {
+    t.equal(memoryDocument.text, 'shared dataset document');
+    t.equal(memoryIngestOptions.batchSize, 8);
     t.equal(typeof ai.agent, 'function');
     t.equal(typeof ai.task, 'function');
     t.equal(typeof ai.tool, 'function');

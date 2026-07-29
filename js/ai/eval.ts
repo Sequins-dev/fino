@@ -26,7 +26,9 @@
  *
  * Evaluations are still tests. Keep cases deterministic where possible, pin or
  * stub models for CI, and treat LLM-judged scores as a policy choice rather
- * than a correctness oracle.
+ * than a correctness oracle. Case arrays are snapshotted into the shared
+ * `Dataset` contract; callers with an existing finite `Dataset` can reuse it
+ * directly.
  *
  * ```ts no_run
  * import { contains, evaluate } from 'fino:ai/eval';
@@ -58,6 +60,7 @@ import { getLoggerProvider, LogRecordBuilder, SeverityNumber } from 'fino:opente
 import { getMeterProvider } from 'fino:opentelemetry/metrics';
 import { createSignal } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
+import { Dataset } from 'fino:data/dataset';
 /**
  * One evaluation case: a named input plus an optional expected output.
  *
@@ -583,9 +586,14 @@ export interface EvalOptions<In = unknown, Out = unknown> {
    */
   target: (input: In) => Promise<Out>;
   /**
-   * Cases to run, each becoming one test in the suite.
+   * Finite cases to run, each becoming one test in the suite.
+   *
+   * Arrays are snapshotted into a `Dataset`; an existing `Dataset` can be
+   * shared directly with memory, inference, or training workflows. A lazy
+   * `IterableDataset` cannot be used here because the test runner registers
+   * named cases synchronously.
    */
-  cases: EvalCase<In, Out>[];
+  cases: readonly EvalCase<In, Out>[] | Dataset<EvalCase<In, Out>>;
   /**
    * Scorers applied to every output. A record names each scorer by its key;
    * an array falls back to each function's `scorerName` or `name`.
@@ -652,17 +660,19 @@ function normalizeScoreResult(raw: number | ScoreResult, threshold: number): Sco
  */
 export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>): void {
   const { name, target, cases, scorers, threshold = 1, report } = opts;
+  const caseDataset = cases instanceof Dataset ? cases : Dataset.from(cases);
+  const registeredCases = caseDataset.toArray();
   const allScores: number[] = [];
   let passedCount = 0;
   let startCalled = false;
   suite(name, () => {
-    for (const c of cases) {
+    for (const c of registeredCases) {
       test(c.name, async (t) => {
         if (!startCalled) {
           startCalled = true;
           await report?.onStart({
             name,
-            cases: cases.length,
+            cases: caseDataset.length,
           });
         }
         const output = await target(c.input);
@@ -708,14 +718,14 @@ export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>
       t.meta({
         mean: mean.toFixed(3),
         passed: passedCount,
-        total: cases.length,
+        total: caseDataset.length,
       });
       t.ok(passes, `mean score ${mean.toFixed(3)} >= threshold ${threshold}`);
       await report?.onFinish({
         name,
         mean,
         passed: passedCount,
-        total: cases.length,
+        total: caseDataset.length,
       });
     });
   });
