@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
 pub use crate::async_rt::bridge::PendingResolution;
@@ -420,6 +420,10 @@ pub struct FinoState {
     #[allow(dead_code)]
     pub process_contexts: Vec<Option<crate::realm::process::ProcessRealmHandle>>,
 
+    /// Live Linux sandbox Realm handles indexed by the JS handle returned from
+    /// `createSandboxContext`.
+    pub sandbox_contexts: Vec<Option<crate::realm::thread::ThreadRealmHandle>>,
+
     /// Entry module path for child Realms. Set by `createContext` before
     /// evaluating `internal/bootstrap.mjs` in the child context. The child's bootstrap
     /// reads this via `internal:realm-bridge.getEntryPath()`.
@@ -452,6 +456,16 @@ pub struct FinoState {
 
     /// Runtime-owned bootstrap metadata, separate from `RealmOptions.data`.
     pub realm_bootstrap_data: Option<String>,
+
+    /// Whether this isolate is the dedicated thread owned by a Linux sandbox
+    /// Realm. Async FFI must reject work from this context because its global
+    /// blocking pool is outside the thread-local sandbox.
+    pub sandboxed_thread: bool,
+
+    /// Shared with the parent-side thread handle so the bootstrap can report
+    /// the threaded cgroup it joined before Landlock makes cgroupfs
+    /// inaccessible. The parent removes the empty cgroup after the thread exits.
+    pub sandbox_cgroup_path: Option<Arc<Mutex<Option<String>>>>,
 
     /// Shared atomic for reactor-pooled realms: `requestReload()` writes `true`
     /// here so the scheduler can observe the reload intent without entering
@@ -534,6 +548,8 @@ impl FinoState {
             repl_mode: false,
             realm_data: None,
             realm_bootstrap_data: None,
+            sandboxed_thread: false,
+            sandbox_cgroup_path: None,
             reload_requested_signal: None,
             entry_error: None,
             port: None,
@@ -543,6 +559,7 @@ impl FinoState {
             wake_read_fd: None,
             wake_write_fd: None,
             process_contexts: Vec::new(),
+            sandbox_contexts: Vec::new(),
         }
     }
 
@@ -599,6 +616,8 @@ impl FinoState {
             repl_mode,
             realm_data,
             realm_bootstrap_data,
+            sandboxed_thread: false,
+            sandbox_cgroup_path: None,
             reload_requested_signal,
             entry_error: None,
             port,
@@ -608,6 +627,7 @@ impl FinoState {
             wake_read_fd,
             wake_write_fd,
             process_contexts: Vec::new(),
+            sandbox_contexts: Vec::new(),
         }
     }
 }

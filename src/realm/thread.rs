@@ -1,12 +1,24 @@
-//! Cross-isolate Realm transport primitives.
+//! Dedicated sandbox Realm threads and cross-isolate transport primitives.
 //!
-//! Reactor-pooled and process-sandbox Realms use serialized messages and wake
-//! descriptors to communicate with their parent. Isolate placement and worker
-//! threads are owned by `scheduler_native`.
+//! Ordinary local Realms are movable workloads owned by `scheduler_native`.
+//! Linux sandbox Realms are deliberately different: each owns one fixed OS
+//! thread so cgroup v2 threaded controls, Landlock, and seccomp can be applied
+//! without constraining the regular workload queue.
+
+use std::{
+    os::unix::io::RawFd,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+};
 
 use ::v8;
 
 use crate::state::get_state;
+#[cfg(target_os = "linux")]
+use crate::state::{ImportRule, ProcessEnv};
 
 /// Info shipped alongside a message for each transferred MessagePort.
 ///
@@ -29,6 +41,158 @@ pub struct ThreadMessage {
     pub data: Vec<u8>,
     pub transfer_stores: Vec<Vec<u8>>,
     pub transfer_ports: Vec<TransferredPortInfo>,
+}
+
+/// Configuration for a Linux sandbox Realm's dedicated thread.
+#[cfg(target_os = "linux")]
+pub struct SpawnConfig {
+    pub process_env: ProcessEnv,
+    pub entry_path: String,
+    pub import_rules: Vec<ImportRule>,
+    pub package_map_json: Option<String>,
+    pub realm_data: Option<String>,
+    pub realm_bootstrap_data: Option<String>,
+}
+
+/// Parent-side ownership and transport for a Linux sandbox Realm.
+pub struct ThreadRealmHandle {
+    pub tx: mpsc::Sender<ThreadMessage>,
+    pub child_wake_write: RawFd,
+    pub rx: mpsc::Receiver<ThreadMessage>,
+    pub parent_wake_read: RawFd,
+    pub done: Arc<AtomicBool>,
+    pub error: Arc<Mutex<Option<String>>>,
+    pub cgroup_path: Arc<Mutex<Option<String>>>,
+    pub isolate_handle: Arc<Mutex<Option<v8::IsolateHandle>>>,
+    pub force_requested: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for ThreadRealmHandle {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.child_wake_write);
+            libc::close(self.parent_wake_read);
+        }
+        if self.done.load(Ordering::Acquire)
+            && let Some(join) = self.join.take()
+        {
+            let _ = join.join();
+        }
+        if let Ok(mut path) = self.cgroup_path.lock()
+            && let Some(path) = path.take()
+        {
+            let _ = std::fs::remove_dir(path);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct OwnedFd(RawFd);
+
+#[cfg(target_os = "linux")]
+impl Drop for OwnedFd {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            unsafe { libc::close(self.0) };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn create_pipe() -> Result<(RawFd, RawFd), String> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "pipe() failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    unsafe {
+        libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
+        libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
+    }
+    Ok((fds[0], fds[1]))
+}
+
+/// Spawn a fixed OS thread for a Linux sandbox Realm.
+#[cfg(target_os = "linux")]
+pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, String> {
+    let (parent_tx, child_rx) = mpsc::channel::<ThreadMessage>();
+    let (child_tx, parent_rx) = mpsc::channel::<ThreadMessage>();
+    let (child_wake_read, child_wake_write) = create_pipe()?;
+    let (parent_wake_read, parent_wake_write) = create_pipe()?;
+
+    let done = Arc::new(AtomicBool::new(false));
+    let done_for_thread = done.clone();
+    let error = Arc::new(Mutex::new(None));
+    let error_for_thread = error.clone();
+    let cgroup_path = Arc::new(Mutex::new(None));
+    let cgroup_path_for_thread = cgroup_path.clone();
+    let isolate_handle = Arc::new(Mutex::new(None));
+    let isolate_handle_for_thread = isolate_handle.clone();
+    let force_requested = Arc::new(AtomicBool::new(false));
+    let force_requested_for_thread = force_requested.clone();
+
+    let join = std::thread::Builder::new()
+        .name("fino-sandbox-realm".to_string())
+        .spawn(move || {
+            let _wake_read_guard = OwnedFd(child_wake_read);
+            let _partner_write_guard = OwnedFd(parent_wake_write);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::child::run_child_isolate(super::child::ChildConfig {
+                    process_env: config.process_env,
+                    package_map_json: config.package_map_json,
+                    import_rules: config.import_rules,
+                    entry_path: config.entry_path,
+                    channel_rx: child_rx,
+                    channel_tx: child_tx,
+                    wake_read_fd: child_wake_read,
+                    wake_write_fd: Some(parent_wake_write),
+                    timing_label: "sandbox-realm",
+                    watch_mode: false,
+                    realm_data: config.realm_data,
+                    realm_bootstrap_data: config.realm_bootstrap_data,
+                    sandboxed_thread: true,
+                    sandbox_cgroup_path: Some(cgroup_path_for_thread),
+                    isolate_handle: Some(isolate_handle_for_thread),
+                    force_requested: Some(force_requested_for_thread),
+                    reload_requested_signal: None,
+                })
+            }));
+            let message = match result {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(payload) => {
+                    let detail = payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "sandbox realm panicked".to_string());
+                    Some(format!("sandbox realm panicked: {detail}"))
+                }
+            };
+            if let Some(message) = message
+                && let Ok(mut slot) = error_for_thread.lock()
+            {
+                *slot = Some(message);
+            }
+            done_for_thread.store(true, Ordering::Release);
+        })
+        .map_err(|error| format!("failed to spawn sandbox realm thread: {error}"))?;
+
+    Ok(ThreadRealmHandle {
+        tx: parent_tx,
+        child_wake_write,
+        rx: parent_rx,
+        parent_wake_read,
+        done,
+        error,
+        cgroup_path,
+        isolate_handle,
+        force_requested,
+        join: Some(join),
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -49,6 +49,7 @@ import type { ResourcePolicy } from './plan.ts';
 const CGROUP_MOUNT = '/sys/fs/cgroup';
 const CPU_PERIOD = 100000;
 const WANTED = ['cpu', 'memory', 'pids'];
+const THREADED_WANTED = ['cpu', 'cpuset', 'pids'];
 const W_OK = 2;
 function writableCgroupRoot(path: string): boolean {
   return (
@@ -143,6 +144,110 @@ export function usableControllers(): Set<string> {
     writeFileSync(`${root}/cgroup.subtree_control`, toEnable.map((c) => `+${c}`).join(' '));
   }
   return parseControllers(readFileSync(`${root}/cgroup.subtree_control`));
+}
+
+/**
+ * Report cgroup v2 controllers that can govern one thread in a threaded
+ * subtree. The kernel's threaded controller set is intentionally narrower
+ * than domain cgroups: memory is process/domain scoped and is never returned.
+ *
+ * Reference: https://docs.kernel.org/admin-guide/cgroup-v2.html#threads
+ */
+export function usableThreadedControllers(): Set<string> {
+  const root = resolveThreadedCgroupRoot();
+  if (root === null) return new Set();
+  const available = parseControllers(readFileSync(`${root}/cgroup.controllers`));
+  const current = parseControllers(readFileSync(`${root}/cgroup.subtree_control`));
+  for (const controller of THREADED_WANTED) {
+    if (!available.has(controller) || current.has(controller)) continue;
+    writeFileSync(`${root}/cgroup.subtree_control`, `+${controller}`);
+  }
+  const enabled = parseControllers(readFileSync(`${root}/cgroup.subtree_control`));
+  return new Set(THREADED_WANTED.filter((controller) => enabled.has(controller)));
+}
+
+/**
+ * Resolve the cgroup v2 domain containing the current process.
+ *
+ * `cgroup.threads` may move a TID only inside one threaded domain, so a
+ * dedicated Realm thread cannot use the separate process-sandbox delegation.
+ * Its leaf must be created directly below the host process's own cgroup.
+ */
+export function resolveThreadedCgroupRoot(): string | null {
+  const self = readFileSync('/proc/self/cgroup');
+  if (self === null) return null;
+  const line = self.split('\n').find((entry) => entry.startsWith('0::'));
+  if (line === undefined) return null;
+  const relative = line.slice('0::'.length).trim();
+  const path = relative === '/' ? CGROUP_MOUNT : `${CGROUP_MOUNT}${relative}`;
+  return writableCgroupRoot(path) ? path : null;
+}
+
+export interface ThreadedCgroupResult {
+  path: string;
+  installed: Array<'pids' | 'cpu' | 'cpuset'>;
+}
+
+type ThreadedResourcePolicy = ResourcePolicy & {
+  cpus?: string;
+};
+
+/**
+ * Create a threaded cgroup leaf, apply thread-compatible limits, and move only
+ * the calling Linux thread into it through `cgroup.threads`.
+ */
+export function createAndJoinThreadedCgroup(
+  root: string,
+  policy: ThreadedResourcePolicy,
+): ThreadedCgroupResult {
+  if (policy.memoryBytes !== undefined) {
+    throw new Error('cgroup: memoryBytes is not a threaded controller');
+  }
+  const controllers = usableThreadedControllers();
+  if (policy.cpu !== undefined && !controllers.has('cpu')) {
+    throw new Error('cgroup: threaded cpu controller is not delegated');
+  }
+  if (policy.pids !== undefined && !controllers.has('pids')) {
+    throw new Error('cgroup: threaded pids controller is not delegated');
+  }
+  if (policy.cpus !== undefined && !controllers.has('cpuset')) {
+    throw new Error('cgroup: threaded cpuset controller is not delegated');
+  }
+  const tid = Number(libc.symbols.gettid());
+  const path = `${root}/fino-sandbox-thread-${Number(libc.symbols.getpid())}-${tid}`;
+  if (libc.symbols.mkdir(cstr(path), 0o755) !== 0) {
+    const e = errno();
+    if (e !== 17 /* EEXIST */) throw new Error(`cgroup: mkdir('${path}') failed: errno ${e}`);
+  }
+  const write = (file: string, value: string): void => {
+    const e = writeFileSync(`${path}/${file}`, value);
+    if (e !== 0) throw new Error(`cgroup: write ${file}=${value} failed: errno ${e}`);
+  };
+  try {
+    write('cgroup.type', 'threaded');
+    const installed: ThreadedCgroupResult['installed'] = [];
+    if (policy.pids !== undefined) {
+      write('pids.max', String(policy.pids));
+      installed.push('pids');
+    }
+    if (policy.cpu !== undefined) {
+      write('cpu.max', `${Math.max(1, Math.round(policy.cpu * CPU_PERIOD))} ${CPU_PERIOD}`);
+      installed.push('cpu');
+    }
+    if (policy.cpus !== undefined) {
+      write('cpuset.cpus', policy.cpus);
+      const effective = readFileSync(`${path}/cpuset.cpus.effective`)?.trim();
+      if (!effective) {
+        throw new Error(`cgroup: cpuset '${policy.cpus}' grants no effective CPU`);
+      }
+      installed.push('cpuset');
+    }
+    write('cgroup.threads', String(tid));
+    return { path, installed };
+  } catch (error) {
+    libc.symbols.rmdir(cstr(path));
+    throw error;
+  }
 }
 /**
  * Whether the `cpu` controller can be enforced through a delegated cgroup.

@@ -5,15 +5,17 @@
  * microtask queue, and event loop. The parent's import rule list governs every
  * module resolution in the child; the child can layer overrides on top.
  *
- * Realms in the current process run as movable isolates on the shared reactor
- * thread pool. They provide JavaScript and module-graph isolation, not an
- * operating-system security boundary: local realms share the process address
- * space, file-descriptor table, and background FFI pool. Process realms add
- * hard crash isolation but do not automatically restrict the child's access to
- * the host. Remote realms run on another node's reactor pool over the current
- * trusted `fino:cluster` WebTransport transport. Remote realms require an
- * active cluster before construction. Cluster authentication, hostile-peer
- * handling, and remote `watch` / `repl` modes are outside this baseline.
+ * Ordinary Realms in the current process run as movable isolates on the shared
+ * reactor thread pool. Linux sandbox Realms instead own a fixed thread so
+ * cgroup v2 threaded controls, Landlock, and seccomp can govern that workload.
+ * Both local modes provide JavaScript/module isolation rather than a hostile
+ * operating-system boundary: they share the process address space and
+ * file-descriptor table. Process realms add hard crash isolation but do not
+ * automatically restrict the child's access to the host. Remote realms run on
+ * another node's reactor pool over the current trusted `fino:cluster`
+ * WebTransport transport and require an active cluster before construction.
+ * Cluster authentication, hostile-peer handling, and remote `watch` / `repl`
+ * modes are outside this baseline.
  *
  * The import rule list uses last-match-wins semantics. Declare a wildcard
  * first as the baseline and more specific patterns afterwards as overrides.
@@ -39,6 +41,10 @@ import {
   createContext,
   stepContext,
   terminateChild,
+  createSandboxContext,
+  stepSandboxContext,
+  forceSandboxContext,
+  getSandboxPortWakeReadFd,
   createProcessContext,
   stepProcessContext,
   processPortSend,
@@ -47,8 +53,14 @@ import {
   killProcessContext,
 } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
+import { os } from 'internal:process';
 import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
-import { ScheduledPort, BaseTransportPort } from 'internal:realm/transport-port';
+import { ThreadPort, ScheduledPort, BaseTransportPort } from 'internal:realm/transport-port';
+import type {
+  ProcessSandboxNetworkRule,
+  ProcessSandboxOptions,
+  ProcessSandboxResources,
+} from '../process.ts';
 import { readable, removeRead } from 'internal:runtime/loop';
 import {
   closeScheduledRealm,
@@ -225,6 +237,7 @@ interface RealmBootstrapData {
   cliOtel?: {
     endpoint?: string;
   };
+  sandbox?: ProcessSandboxOptions;
 }
 function currentRealmBootstrapData(): RealmBootstrapData | undefined {
   const raw = (getRealmBootstrapData as () => string | undefined)();
@@ -237,8 +250,11 @@ function currentRealmBootstrapData(): RealmBootstrapData | undefined {
   }
 }
 function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined {
+  const data: RealmBootstrapData = {};
+  if (opts.sandbox !== undefined) data.sandbox = opts.sandbox;
   const endpointOption = opts.otlpEndpoint;
-  if (endpointOption === false) return undefined;
+  if (endpointOption === false) return Object.keys(data).length === 0 ? undefined : data;
+  if (opts.sandbox !== undefined && endpointOption === undefined) return data;
   let endpoint = '';
   if (typeof endpointOption === 'string') {
     endpoint = endpointOption.trim();
@@ -248,8 +264,8 @@ function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined 
     const inherited = currentRealmBootstrapData()?.cliOtel?.endpoint;
     endpoint = typeof inherited === 'string' ? inherited.trim() : '';
   }
-  if (!endpoint) return undefined;
-  return { cliOtel: { endpoint } };
+  if (endpoint) data.cliOtel = { endpoint };
+  return Object.keys(data).length === 0 ? undefined : data;
 }
 function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
   const data = realmBootstrapData(opts);
@@ -1830,12 +1846,63 @@ export interface RealmProviders {
    */
   dns?: SystemDnsConfig;
 }
+
+/**
+ * Strict Linux policy installed on a dedicated sandbox Realm thread.
+ *
+ * This uses the same policy vocabulary as strict process sandboxing, with
+ * thread-specific limits enforced by `RealmOptions.sandbox`: CPU quota,
+ * cpuset affinity, and pids use cgroup v2 threaded controllers; filesystem
+ * rules use Landlock; syscall/process/network rules use seccomp. Per-thread
+ * memory limits, exec, fork, best-effort mode, and async FFI are unavailable.
+ *
+ * ```ts no_run
+ * import type { RealmSandboxOptions } from 'fino:realm';
+ *
+ * const sandbox: RealmSandboxOptions = {
+ *   mode: 'strict',
+ *   resources: { cpu: 0.5, cpus: '0-1', pids: 32 },
+ *   network: { outbound: [{ action: 'deny' }] },
+ * };
+ * ```
+ */
+export type RealmSandboxOptions = Omit<
+  ProcessSandboxOptions,
+  'mode' | 'resources' | 'network' | 'process'
+> & {
+  /** Sandbox Realm policy is always strict and fails closed. */
+  mode: 'strict';
+  /** Thread-compatible cgroup v2 resource controls. */
+  resources?: Omit<ProcessSandboxResources, 'memoryBytes'> & {
+    /** Memory is a cgroup domain controller and cannot govern one thread. */
+    memoryBytes?: never;
+    /** Linux CPU list assigned through cgroup v2 cpuset, for example `0-3,6`. */
+    cpus?: string;
+  };
+  /** Coarse seccomp network policy without destination, port, or protocol filters. */
+  network?: {
+    /** Whether the sandbox thread may use outbound socket syscalls. */
+    outbound?: Array<Pick<ProcessSandboxNetworkRule, 'action'>>;
+    /** Whether the sandbox thread may use inbound socket syscalls. */
+    inbound?: Array<Pick<ProcessSandboxNetworkRule, 'action'>>;
+  };
+  /** Process creation is always disabled for an in-process sandbox Realm. */
+  process?: {
+    /** Must remain false because fork copies the host process. */
+    allowFork?: false;
+    /** Must remain false because exec replaces the host process. */
+    allowExec?: false;
+    /** Executable allowlists are unavailable when exec is disabled. */
+    allowedBinaries?: [];
+  };
+};
 /**
  * Options for constructing and running a child realm.
  *
- * Realms run as movable isolates on the process-wide reactor thread pool.
- * `process: true` selects a separate sandbox process, while `remote: true`
- * routes the realm to another cluster node.
+ * Realms normally run as movable isolates on the process-wide reactor pool.
+ * `sandbox` selects a fixed Linux thread with strict OS governance,
+ * `process: true` selects a separate process, and `remote: true` routes the
+ * realm to another cluster node.
  *
  * ```ts no_run
  * import { Realm, type RealmOptions } from 'fino:realm';
@@ -1913,6 +1980,34 @@ export interface RealmOptions {
    * ```
    */
   blocked?: string[];
+  /**
+   * Run this Realm on a dedicated Linux thread and install the requested
+   * cgroup v2 threaded controls, Landlock filesystem policy, and seccomp
+   * syscall policy before importing its entry module.
+   *
+   * Sandbox Realms are strict-only and mutually exclusive with `process` and
+   * `remote`. They share the host process address space and inherited file
+   * descriptors, so use a process Realm for hostile-code isolation.
+   *
+   * `resources.memoryBytes`, process exec/fork permission, `watch`, and `repl`
+   * are rejected because those controls cannot be safely scoped to this fixed
+   * thread lifecycle.
+   *
+   * ```ts no_run
+   * import { Realm } from 'fino:realm';
+   *
+   * const realm = new Realm({
+   *   entry: './worker.ts',
+   *   sandbox: {
+   *     mode: 'strict',
+   *     resources: { cpu: 0.5, cpus: '0-1', pids: 32 },
+   *     filesystem: { readonly: ['/srv/app'], writable: ['/tmp/work'] },
+   *     network: { outbound: [{ action: 'deny' }] },
+   *   },
+   * });
+   * ```
+   */
+  sandbox?: RealmSandboxOptions;
   /**
    * If true, spawn the child Realm as a separate OS process for hard crash
    * isolation. Messaging uses framed binary over a Unix socketpair.
@@ -2311,7 +2406,7 @@ export class ProcessPort extends BaseTransportPort {
 // ---------------------------------------------------------------------------
 // Active children tracking
 // ---------------------------------------------------------------------------
-type RealmKind = 'embedded' | 'scheduled' | 'process' | 'remote';
+type RealmKind = 'embedded' | 'scheduled' | 'sandbox' | 'process' | 'remote';
 let _nextPortHandle = 0;
 let _nextSourceRealmId = 0;
 interface ActiveChild {
@@ -2363,7 +2458,15 @@ export function _stepChildren(): void {
     // Step returns: true = alive, false = clean exit, null = reload requested
     let stepResult: boolean | null;
     let stepError: unknown = undefined;
-    if (child.kind === 'process') {
+    if (child.kind === 'sandbox') {
+      try {
+        child.drainMessages?.();
+        stepResult = stepSandboxContext(child.handle) as boolean;
+      } catch (err) {
+        stepResult = false;
+        stepError = err;
+      }
+    } else if (child.kind === 'process') {
       try {
         // A short-lived child can queue its final response and exit before the
         // parent isolate is scheduled again. Drain first so releasing the
@@ -2418,6 +2521,74 @@ export function _stepChildren(): void {
  */
 export function _childrenAlive(): boolean {
   return _activeChildren.length > 0;
+}
+
+function validateSandboxRealmOptions(opts: RealmOptions): void {
+  const sandbox = opts.sandbox;
+  if (sandbox === undefined) return;
+  if (sandbox.mode !== 'strict') {
+    throw new Error('fino:realm — sandbox Realms require sandbox.mode: strict');
+  }
+  if (opts.watch) {
+    throw new Error('fino:realm — watch is not supported with sandbox Realms');
+  }
+  if (opts.repl) {
+    throw new Error('fino:realm — repl is not supported with sandbox Realms');
+  }
+  if (typeof opts.otlpEndpoint === 'string') {
+    throw new Error(
+      'fino:realm — otlpEndpoint is not supported with sandbox Realms because telemetry background work is process-global',
+    );
+  }
+  if (sandbox.resources?.memoryBytes !== undefined) {
+    throw new Error(
+      'fino:realm — sandbox.resources.memoryBytes is process-wide and cannot be isolated to a Realm thread',
+    );
+  }
+  if (
+    sandbox.resources?.cpus !== undefined &&
+    (typeof sandbox.resources.cpus !== 'string' ||
+      !/^\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$/.test(sandbox.resources.cpus))
+  ) {
+    throw new Error(
+      'fino:realm — sandbox.resources.cpus must use the Linux CPU list format, for example 0-3,6',
+    );
+  }
+  if (sandbox.process?.allowExec === true) {
+    throw new Error(
+      'fino:realm — sandbox.process.allowExec must be false because exec replaces the host process',
+    );
+  }
+  if ((sandbox.process?.allowedBinaries?.length ?? 0) > 0) {
+    throw new Error(
+      'fino:realm — sandbox.process.allowedBinaries is unavailable because sandbox Realm exec is always denied',
+    );
+  }
+  if (sandbox.process?.allowFork === true) {
+    throw new Error(
+      'fino:realm — sandbox.process.allowFork must be false because fork copies the host process',
+    );
+  }
+  for (const [direction, rules] of [
+    ['outbound', sandbox.network?.outbound],
+    ['inbound', sandbox.network?.inbound],
+  ] as const) {
+    for (let index = 0; index < (rules?.length ?? 0); index++) {
+      const rule = rules![index]!;
+      if (
+        (rule.destination !== undefined && rule.destination !== '*') ||
+        rule.port !== undefined ||
+        rule.protocol !== undefined
+      ) {
+        throw new Error(
+          `fino:realm — sandbox.network.${direction}[${index}] requires filtered networking; sandbox Realms currently enforce only coarse allow/deny`,
+        );
+      }
+    }
+  }
+  if (os !== 'linux') {
+    throw new Error('fino:realm — sandbox Realms require Linux');
+  }
 }
 // ---------------------------------------------------------------------------
 // Native bridge helpers
@@ -2539,7 +2710,7 @@ export class Realm<F extends RealmFn = RealmFn> {
    * realm.port.start();
    * ```
    */
-  port: MessagePort | ScheduledPort | ProcessPort | ClusterPort;
+  port: MessagePort | ScheduledPort | ThreadPort | ProcessPort | ClusterPort;
   /** Completion driven by the process scheduler for a scheduled realm. @internal */
   #scheduledCompletion: Promise<void> | null = null;
   /** Construction data retained only while a scheduled watch realm may reload. @internal */
@@ -2813,17 +2984,22 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @param opts Realm construction and loader options.
    */
   constructor(opts: RealmOptions) {
-    const isolatedModes = [opts.process, opts.remote].filter(Boolean).length;
+    const isolatedModes = [opts.sandbox !== undefined, opts.process, opts.remote].filter(
+      Boolean,
+    ).length;
     if (isolatedModes > 1) {
-      throw new Error('fino:realm — process and remote execution are mutually exclusive');
+      throw new Error('fino:realm — sandbox, process, and remote execution are mutually exclusive');
     }
+    validateSandboxRealmOptions(opts);
     if (opts.watch && opts.remote) {
       throw new Error('fino:realm — watch: true is not supported with remote: true');
     }
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;
-    if (repl && (opts.process || opts.remote || opts.watch)) {
-      throw new Error('fino:realm — repl: true is not supported with process, remote, or watch');
+    if (repl && (opts.sandbox || opts.process || opts.remote || opts.watch)) {
+      throw new Error(
+        'fino:realm — repl: true is not supported with sandbox, process, remote, or watch',
+      );
     }
     // Build the child-specific rule list from overrides / legacy providers+blocked.
     const rules: ImportRule[] = [];
@@ -2885,6 +3061,18 @@ export class Realm<F extends RealmFn = RealmFn> {
         clusterPort._setChildPortId(childPortId);
         return childPortId;
       });
+    } else if (opts.sandbox !== undefined) {
+      this.#kind = 'sandbox';
+      const handle = createSandboxContext(
+        opts.root ?? '',
+        opts.entry,
+        serializedRules,
+        serializedData,
+        serializedBootstrapData,
+      ) as number;
+      this.#handle = handle;
+      const wakeReadFd = getSandboxPortWakeReadFd(handle) as number;
+      this.port = new ThreadPort(wakeReadFd, handle);
     } else if (opts.process) {
       this.#kind = 'process';
       const handle = createProcessContext(
@@ -2936,7 +3124,12 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
-      const port = this.port as MessagePort | ScheduledPort | ProcessPort | ClusterPort;
+      const port = this.port as
+        | MessagePort
+        | ScheduledPort
+        | ThreadPort
+        | ProcessPort
+        | ClusterPort;
       for (const rule of rules) {
         if (rule.directive instanceof Facade) {
           (rule.directive as Facade)._bind(port);
@@ -3060,7 +3253,9 @@ export class Realm<F extends RealmFn = RealmFn> {
           drainMessages:
             this.#kind === 'process'
               ? () => (self.#activeChildPort ?? (self.port as ProcessPort))._drain()
-              : undefined,
+              : this.#kind === 'sandbox'
+                ? () => (self.port as ThreadPort)._drain()
+                : undefined,
           onReload(): number | null {
             if (self.#watchTerminated) return null;
             const newHandle = self.#spawnChild();
@@ -3080,7 +3275,9 @@ export class Realm<F extends RealmFn = RealmFn> {
         drainMessages:
           this.#kind === 'process'
             ? () => (this.#activeChildPort ?? (this.port as ProcessPort))._drain()
-            : undefined,
+            : this.#kind === 'sandbox'
+              ? () => (this.port as ThreadPort)._drain()
+              : undefined,
       });
     });
   }
@@ -3194,7 +3391,9 @@ export class Realm<F extends RealmFn = RealmFn> {
           drainMessages:
             kind === 'process'
               ? () => (this.#activeChildPort ?? (this.port as ProcessPort))._drain()
-              : undefined,
+              : kind === 'sandbox'
+                ? () => (this.port as ThreadPort)._drain()
+                : undefined,
         });
         const handler = (ev: Event) => {
           const data = (ev as MessageEvent).data;
@@ -3236,8 +3435,9 @@ export class Realm<F extends RealmFn = RealmFn> {
   /**
    * Signal the child realm to stop.
    *
-   * Process realms normally receive a cooperative termination message. Pass
-   * `{ force: true }` to send `SIGKILL` when untrusted synchronous code cannot
+   * Process and sandbox Realms normally receive a cooperative termination
+   * message. Pass `{ force: true }` to send `SIGKILL` to a process Realm or
+   * terminate V8 execution on a sandbox Realm when synchronous code cannot
    * service that message. Other realm kinds ignore `force`.
    *
    * Embedded realms are terminated through the native child handle. Scheduled,
@@ -3261,6 +3461,12 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#disposeScheduledShutdownRegistration();
       this.port.postMessage({ __terminate: true });
     } else if (this.#kind === 'remote') {
+      this.port.postMessage({ __terminate: true });
+      this.port.close();
+    } else if (this.#kind === 'sandbox' && options.force === true) {
+      forceSandboxContext(this.#handle);
+      this.port.close();
+    } else if (this.#kind === 'sandbox') {
       this.port.postMessage({ __terminate: true });
       this.port.close();
     } else if (this.#kind === 'process' && options.force === true) {

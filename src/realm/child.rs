@@ -8,7 +8,7 @@ use std::{
     cell::RefCell,
     os::unix::io::RawFd,
     rc::Rc,
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{Arc, Mutex, atomic::AtomicBool, mpsc},
 };
 
 use ::v8;
@@ -49,6 +49,14 @@ pub struct ChildConfig {
     pub realm_data: Option<String>,
     /// Runtime-owned bootstrap metadata, if any.
     pub realm_bootstrap_data: Option<String>,
+    /// True only for the dedicated Linux sandbox Realm thread.
+    pub sandboxed_thread: bool,
+    /// Parent-visible slot populated with the threaded cgroup path.
+    pub sandbox_cgroup_path: Option<Arc<Mutex<Option<String>>>>,
+    /// Parent-visible thread-safe V8 handle for forced sandbox termination.
+    pub isolate_handle: Option<Arc<Mutex<Option<v8::IsolateHandle>>>>,
+    /// Records a forced termination requested before the V8 handle was ready.
+    pub force_requested: Option<Arc<AtomicBool>>,
     /// Optional shared atomic that `requestReload()` writes so the parent can
     /// observe the reload intent without a V8 context scope.
     pub reload_requested_signal: Option<Arc<AtomicBool>>,
@@ -82,6 +90,18 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
     let t = timing_enabled().then(Instant::now);
     let isolate = &mut v8::Isolate::new(params);
+    if let Some(slot) = &config.isolate_handle
+        && let Ok(mut slot) = slot.lock()
+    {
+        *slot = Some(isolate.thread_safe_handle());
+    }
+    if config
+        .force_requested
+        .as_ref()
+        .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Acquire))
+    {
+        isolate.terminate_execution();
+    }
     if let Some(t) = t {
         eprintln!(
             "[fino:realm-timing] {label}  isolate-new: {:?}",
@@ -109,7 +129,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
-        let state = FinoState::new_child(
+        let mut state = FinoState::new_child(
             config.process_env,
             config.package_map_json,
             root_queue,
@@ -126,6 +146,8 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             config.realm_bootstrap_data,
             config.reload_requested_signal,
         );
+        state.sandboxed_thread = config.sandboxed_thread;
+        state.sandbox_cgroup_path = config.sandbox_cgroup_path;
         context.set_slot(Rc::new(RefCell::new(state)));
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
