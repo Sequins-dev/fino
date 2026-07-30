@@ -872,11 +872,14 @@ export class VulkanCompute {
     const descriptorSet = readHandle(setSlot);
     this.#setsUsed++;
 
-    // Every binding must be written, including unused ones, so point the spares at
-    // the first buffer rather than leaving them undefined.
-    const writes = new Uint8Array(VkWriteDescriptorSet.size * MAX_BINDINGS);
-    for (let i = 0; i < MAX_BINDINGS; i++) {
-      const source = options.buffers[Math.min(i, options.buffers.length - 1)]!;
+    // Only the bindings the shader uses. The layout declares all eight, but a
+    // descriptor that is not statically accessed does not have to be bound, and
+    // writing the spares was most of the per-dispatch cost for kernels that take two
+    // or three buffers — which is nearly all of them.
+    const used = Math.min(options.buffers.length, MAX_BINDINGS);
+    const writes = new Uint8Array(VkWriteDescriptorSet.size * used);
+    for (let i = 0; i < used; i++) {
+      const source = options.buffers[i]!;
       const bufferInfo = chain.hold(
         VkDescriptorBufferInfo.make({
           buffer: source.handle,
@@ -895,7 +898,7 @@ export class VulkanCompute {
       });
       writes.set(new Uint8Array(write), i * VkWriteDescriptorSet.size);
     }
-    this.#lib.symbols.vkUpdateDescriptorSets(this.#device, MAX_BINDINGS, writes, 0, null);
+    this.#lib.symbols.vkUpdateDescriptorSets(this.#device, used, writes, 0, null);
 
     const commandBuffer = this.#beginCommands();
     this.#lib.symbols.vkCmdBindPipeline(
