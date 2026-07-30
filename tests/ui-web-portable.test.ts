@@ -475,4 +475,56 @@ describe('JSON server-driven UI', () => {
 
     await expectPortableError(t, response, 500, 'invalid_tree', false);
   });
+
+  it('refuses an action addressed to a different view definition', async (t) => {
+    const { app, store } = makeApp();
+    view({
+      id: 'portable-other',
+      state: () => ({ secret: new Signal('untouched') }),
+      actions: {
+        escalate: {
+          handler({ state }) {
+            state.secret.set('escalated');
+          },
+        },
+      },
+      render: ({ state }) => h('app.other.v1', { secret: state.secret.get() }),
+    });
+    const { cookie, action } = await mountPortable(app);
+    const swapped: PortableActionRef = {
+      ...action,
+      url: action.url.replace('portable-counter.increment', 'portable-other.escalate'),
+    };
+
+    const response = (await postAction(app, swapped, cookie, {})) as Response;
+    await expectPortableError(t, response, 404, 'action_not_found', false);
+
+    const snapshot = await store.load(action.view);
+    t.equal(snapshot?.view, 'portable-counter', 'the snapshot keeps its own view definition');
+    t.deepEqual(snapshot?.data, { count: 0 }, 'the other view cannot write this snapshot');
+  });
+
+  it('reports a rejected request origin through the portable stream', async (t) => {
+    const { app } = makeApp();
+    const { cookie, action } = await mountPortable(app);
+    const response = (await app.handle(
+      new Request(`http://local${action.url}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie,
+          origin: 'http://evil.example',
+        },
+        body: JSON.stringify({
+          version: 1,
+          view: action.view,
+          revision: action.revision,
+          request: action.request,
+          input: { amount: 1 },
+        }),
+      }),
+    )) as Response;
+
+    await expectPortableError(t, response, 403, 'forbidden', false);
+  });
 });

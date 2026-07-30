@@ -100,11 +100,14 @@ finoUI.register('app.counter.v1', (props, children) => {
 });
 ```
 
-Version 1 sends complete trees. Clients use `key` and `type` with the existing
-`HostAdapter` reconciliation model to preserve component identity and avoid
-recreating unchanged host nodes. Platform interaction state such as focus,
-scroll position, text composition, gestures, and animation remains local to
-the client rather than being round-tripped through view snapshots.
+Version 1 sends complete trees. `key` and `type` are the identity information a
+client needs to reconcile against the previous tree through the existing
+`HostAdapter` model, preserving component identity and avoiding recreation of
+unchanged host nodes. The bundled browser adapter does not yet do this: it
+rebuilds the mounted subtree on every render, so focus, selection, and scroll
+position are lost across updates. Platform interaction state such as focus,
+scroll position, text composition, gestures, and animation is client-local and
+is never round-tripped through view snapshots.
 
 Action props are serialized as `PortableActionRef` objects. POST
 `application/json` to the supplied `url` while retaining the authenticated

@@ -333,15 +333,27 @@ function csrfPayload(viewId: string, nonce: string, secret: string): string {
     secret,
   );
 }
-function verifyCsrf(ctx: HttpContext, form: FormData, secret: string): boolean {
-  const token = String(form.get('_csrf') ?? '');
-  const unsafeCookie =
+/**
+ * Read a header that public `Request` guards may hide.
+ *
+ * Wire requests expose every header directly. Requests constructed in JS hide
+ * forbidden names such as `cookie` and `origin` behind the same guard a browser
+ * applies, so fall back to the original constructor headers.
+ */
+function requestHeader(ctx: HttpContext, name: string): string | null {
+  return (
+    ctx.request.headers.get(name) ??
     (
       ctx.request as Request & {
         _getUnsafeHeader?: (name: string) => string | null;
       }
-    )._getUnsafeHeader?.('cookie') ?? null;
-  const cookies = parseCookieHeader(ctx.request.headers.get('cookie') ?? unsafeCookie ?? '');
+    )._getUnsafeHeader?.(name) ??
+    null
+  );
+}
+function verifyCsrf(ctx: HttpContext, form: FormData, secret: string): boolean {
+  const token = String(form.get('_csrf') ?? '');
+  const cookies = parseCookieHeader(requestHeader(ctx, 'cookie') ?? '');
   if (token === '' || cookies.fi_csrf !== token) return false;
   const payload = unsealCookie(token, secret);
   if (payload === null) return false;
@@ -356,12 +368,16 @@ function verifyCsrf(ctx: HttpContext, form: FormData, secret: string): boolean {
   }
 }
 function verifyRequestOrigin(ctx: HttpContext): boolean {
-  const site = ctx.request.headers.get('sec-fetch-site');
+  const site = requestHeader(ctx, 'sec-fetch-site');
   if (site !== null && site !== 'same-origin' && site !== 'same-site' && site !== 'none')
     return false;
-  const origin = ctx.request.headers.get('origin');
+  const origin = requestHeader(ctx, 'origin');
   if (origin === null) return true;
-  return new URL(origin).origin === new URL(ctx.request.url).origin;
+  try {
+    return new URL(origin).origin === new URL(ctx.request.url).origin;
+  } catch {
+    return false;
+  }
 }
 async function withViewLock<T>(viewId: string, fn: () => Promise<T>): Promise<T> {
   const previous = locks.get(viewId) ?? Promise.resolve();
@@ -696,11 +712,14 @@ function portableError(status: number, code: string, recoverable: boolean): Resp
   );
 }
 async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Response> {
-  if (!verifyRequestOrigin(ctx)) return new Response('Forbidden', { status: 403 });
   const isJson = (ctx.request.headers.get('content-type') ?? '')
     .toLowerCase()
     .startsWith('application/json');
   const streaming = isJson || wantsSse(ctx);
+  if (!verifyRequestOrigin(ctx))
+    return streaming
+      ? portableError(403, 'forbidden', false)
+      : new Response('Forbidden', { status: 403 });
   let form: FormData | null = null;
   let viewId = '';
   let requestVersion = -1;
@@ -708,8 +727,12 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
   let input: Record<string, unknown> = {};
   if (isJson) {
     if (sessionId(ctx) === undefined) return portableError(403, 'forbidden', false);
+    const maxActionBytes = options.maxActionBytes ?? 65_536;
+    const declared = Number(ctx.request.headers.get('content-length') ?? Number.NaN);
+    if (Number.isFinite(declared) && declared > maxActionBytes)
+      return portableError(413, 'action_too_large', false);
     const encoded = await ctx.request.text();
-    if (new TextEncoder().encode(encoded).byteLength > (options.maxActionBytes ?? 65_536))
+    if (new TextEncoder().encode(encoded).byteLength > maxActionBytes)
       return portableError(413, 'action_too_large', false);
     type ActionBody = {
       version?: unknown;
@@ -746,7 +769,10 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
     input = (body.input ?? {}) as Record<string, unknown>;
   } else {
     form = await ctx.request.formData();
-    if (!verifyCsrf(ctx, form, options.secret)) return new Response('Forbidden', { status: 403 });
+    if (!verifyCsrf(ctx, form, options.secret))
+      return streaming
+        ? portableError(403, 'forbidden', false)
+        : new Response('Forbidden', { status: 403 });
     viewId = String(form.get('_view') ?? '');
     requestVersion = Number(form.get('_ver') ?? -1);
     nonce = String(form.get('_nonce') ?? '');
@@ -770,6 +796,13 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
       return streaming
         ? portableError(403, 'forbidden', false)
         : new Response('Forbidden', { status: 403 });
+    // The action URL names a view definition while the request body names a
+    // mounted instance. Without this check either transport could run one
+    // view's action against another view's snapshot.
+    if (snapshot.view !== viewName)
+      return streaming
+        ? portableError(404, 'action_not_found', false)
+        : new Response('Not Found', { status: 404 });
     const rid = `${requestVersion}:${nonce}`;
     if (snapshot.applied.some((entry) => entry.rid === rid && entry.action === name)) {
       return streaming
