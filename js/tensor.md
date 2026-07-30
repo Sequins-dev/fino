@@ -88,6 +88,29 @@ A finalizer reclaims storage that was dropped without disposal and counts it in
 `poolStats()`, so leaks are measurable — but it runs at the collector's
 discretion, which is far too late for a loop.
 
+### Call backward() inside the scope
+
+A `tidy` scope disposes everything created inside it except what it returns — and the
+tensors the tape saved for the backward pass were created inside it. So this is wrong:
+
+```ts
+const loss = tidy(() => model.forward(x).sub(y).pow(2).sum());
+loss.backward();   // the saved activations are already gone
+```
+
+and this is right:
+
+```ts
+const loss = tidy(() => {
+  const value = model.forward(x).sub(y).pow(2).sum();
+  value.backward();
+  return value;
+});
+```
+
+Gradients on leaf parameters survive the scope; the intermediates do not, which is the
+point.
+
 ## Automatic differentiation
 
 Gradients are recorded at dispatch and computed by ordinary operations, so the
@@ -199,6 +222,30 @@ left behind.
 Bytes move rather than values, so an `f16` tensor crosses unchanged instead of
 being widened and re-rounded. `f64` and `i64` exist only on the CPU, and moving one
 to a GPU is refused rather than silently narrowed.
+
+## Transformers
+
+`MultiHeadAttention` and `TransformerBlock` are composed from the same primitives as
+everything else — matmul, softmax, layer norm, and the elementwise set. There is no
+attention kernel and no fused softmax:
+
+```ts
+import { TransformerBlock } from 'fino:tensor/nn';
+
+const block = new TransformerBlock(256, 8);   // width, heads
+await block.to(dev);
+const y = block.forward(x);                   // [batch, tokens, channels]
+```
+
+Attention is causal by default, which is what makes a decoder a decoder — a position
+may read itself and earlier ones, never later. Masked weights are exactly zero, so
+changing a token cannot perturb anything before it. Pass `causal: false` for an
+encoder.
+
+Heads are expressed by reshaping the channel axis and folding the head axis into the
+batch, so every projection is one batched GEMM rather than a loop. The block is
+pre-norm: normalisation before each sub-layer rather than after, which keeps the
+residual path an identity and lets a deep stack train without a warmup schedule.
 
 ## Saving and loading
 

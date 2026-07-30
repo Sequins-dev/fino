@@ -952,6 +952,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tensor/io/npy", "tensor/io/npy"),
     source_builtin!("internal:tensor/nn/module", "tensor/nn/module"),
     source_builtin!("internal:tensor/nn/layers", "tensor/nn/layers"),
+    source_builtin!("internal:tensor/nn/attention", "tensor/nn/attention"),
     source_builtin!("internal:tensor/nn/functional", "tensor/nn/functional"),
     source_builtin!("internal:tensor/nn/init", "tensor/nn/init"),
     source_builtin!("internal:tensor/optim/optim", "tensor/optim/optim"),

@@ -52,6 +52,8 @@ export { Module } from './module.ts';
 export type { NamedTensor } from './module.ts';
 export { Linear, Embedding, LayerNorm, Dropout, Sequential } from './layers.ts';
 export type { LayerOptions } from './layers.ts';
+export { MultiHeadAttention, TransformerBlock } from './attention.ts';
+export type { AttentionOptions, TransformerBlockOptions } from './attention.ts';
 export {
   relu,
   gelu,
