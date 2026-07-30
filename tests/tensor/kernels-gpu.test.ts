@@ -519,16 +519,15 @@ async function runMetal(testCase: Case): Promise<number[]> {
   // A case with no explicit null writes into its last buffer in place.
   const resultIndex = testCase.output ?? (outputIndex >= 0 ? outputIndex : handles.length - 1);
 
-  api.dispatch({
-    queue,
+  const batch = api.beginBatch(queue);
+  api.encode(batch, {
     pipeline,
     buffers: handles.map((h) => ({ buffer: h.buffer, offset: 0 })),
     params: packParams(testCase.ir.params, testCase.params),
     grid: testCase.groups,
     threadgroup: testCase.ir.wg,
-    event,
-    signalValue: 1n,
   });
+  api.commitBatch(batch, event, 1n);
   if (!(await api.waitForEvent(event, 1n, 20000))) {
     throw new Error(`${testCase.name}: Metal dispatch timed out`);
   }

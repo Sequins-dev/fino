@@ -154,21 +154,46 @@ export interface MetalApi {
    * Signals `event` with `signalValue` when the work completes, which is what a
    * readback waits on.
    */
-  dispatch(options: {
-    queue: Id;
-    pipeline: MetalPipeline;
-    buffers: readonly { buffer: Id; offset: number }[];
-    params: ArrayBuffer | null;
-    grid: readonly [number, number, number];
-    threadgroup: readonly [number, number, number];
-    event: Id;
-    signalValue: bigint;
-  }): void;
+  /**
+   * Open a command buffer and compute encoder to encode dispatches into.
+   *
+   * Split from encoding and committing so that many dispatches share one command
+   * buffer. Creating, committing, and fencing one per dispatch dominated the host cost
+   * of a launch — around 20 of 24 microseconds — and submits far more work to the
+   * driver than it needs to see.
+   */
+  beginBatch(queue: Id): MetalBatch;
+  /** Encode one dispatch into an open batch. */
+  encode(
+    batch: MetalBatch,
+    options: {
+      pipeline: MetalPipeline;
+      buffers: readonly { buffer: Id; offset: number }[];
+      params: ArrayBuffer | null;
+      grid: readonly [number, number, number];
+      threadgroup: readonly [number, number, number];
+    },
+  ): void;
+  /** End encoding, signal the event, and commit. */
+  commitBatch(batch: MetalBatch, event: Id, signalValue: bigint): void;
   /** Wait for an event to reach a value, on the blocking pool. */
   waitForEvent(event: Id, value: bigint, timeoutMs: number): Promise<boolean>;
   /** The value an event has reached. */
   eventValue(event: Id): bigint;
   destroy(object: Id): void;
+}
+
+/**
+ * An open command buffer and its encoder.
+ *
+ * Both are retained explicitly rather than held by an autorelease pool. A pool would
+ * have to stay open across every dispatch in the batch, and arbitrary other code runs
+ * in between, so anything it autoreleased would have its lifetime extended to our
+ * commit. Retaining the two objects we actually own keeps that from being our problem.
+ */
+export interface MetalBatch {
+  commandBuffer: Id;
+  encoder: Id;
 }
 
 /** Whether a Metal device can be created on this machine. */
@@ -329,60 +354,69 @@ export function createMetalApi(): MetalApi {
       return event;
     },
 
-    dispatch(options): void {
-      // The pool wraps command-buffer and encoder creation, both of which return
-      // autoreleased objects. Metal retains a committed command buffer itself, so
-      // popping the pool right after commit is safe.
+    beginBatch(queue: Id): MetalBatch {
+      // The pool covers only creation; both objects are retained before it closes, so
+      // the batch does not depend on a pool staying open across dispatches.
       const pool = pushPool();
       try {
-        const commandBuffer = send.ptr(options.queue, sel('commandBuffer')) as Id | null;
+        const commandBuffer = send.ptr(queue, sel('commandBuffer')) as Id | null;
         if (!commandBuffer) throw new MetalError('commandBuffer returned null');
         const encoder = send.ptr(commandBuffer, sel('computeCommandEncoder')) as Id | null;
         if (!encoder) throw new MetalError('computeCommandEncoder returned null');
-
-        send.voidPtr(encoder, sel('setComputePipelineState:'), options.pipeline.state);
-        options.buffers.forEach((entry, index) => {
-          send.voidPtrU64U64(
-            encoder,
-            sel('setBuffer:offset:atIndex:'),
-            entry.buffer,
-            BigInt(entry.offset),
-            BigInt(index),
-          );
-        });
-        if (options.params && options.params.byteLength > 0) {
-          // Scalar parameters ride in the argument table rather than a buffer,
-          // which is what `setBytes:` is for.
-          send.voidBufU64U64(
-            encoder,
-            sel('setBytes:length:atIndex:'),
-            new Uint8Array(options.params),
-            BigInt(options.params.byteLength),
-            BigInt(options.buffers.length),
-          );
-        }
-
-        const grid = makeSize(options.grid);
-        const group = makeSize(options.threadgroup);
-        send.voidSizeSize(
-          encoder,
-          sel('dispatchThreadgroups:threadsPerThreadgroup:'),
-          grid,
-          group,
-        );
-        send.void(encoder, sel('endEncoding'));
-
-        // Signalling from the command buffer, not the encoder, so the value lands
-        // after every encoded pass in this submission.
-        send.voidPtrU64(
-          commandBuffer,
-          sel('encodeSignalEvent:value:'),
-          options.event,
-          options.signalValue,
-        );
-        send.void(commandBuffer, sel('commit'));
+        return { commandBuffer: retain(commandBuffer), encoder: retain(encoder) };
       } finally {
         popPool(pool);
+      }
+    },
+
+    encode(batch, options): void {
+      const encoder = batch.encoder;
+      send.voidPtr(encoder, sel('setComputePipelineState:'), options.pipeline.state);
+      options.buffers.forEach((entry, index) => {
+        send.voidPtrU64U64(
+          encoder,
+          sel('setBuffer:offset:atIndex:'),
+          entry.buffer,
+          BigInt(entry.offset),
+          BigInt(index),
+        );
+      });
+      if (options.params && options.params.byteLength > 0) {
+        // Scalar parameters ride in the argument table rather than a buffer,
+        // which is what `setBytes:` is for.
+        send.voidBufU64U64(
+          encoder,
+          sel('setBytes:length:atIndex:'),
+          new Uint8Array(options.params),
+          BigInt(options.params.byteLength),
+          BigInt(options.buffers.length),
+        );
+      }
+      send.voidSizeSize(
+        encoder,
+        sel('dispatchThreadgroups:threadsPerThreadgroup:'),
+        makeSize(options.grid),
+        makeSize(options.threadgroup),
+      );
+    },
+
+    commitBatch(batch: MetalBatch, event: Id, signalValue: bigint): void {
+      try {
+        send.void(batch.encoder, sel('endEncoding'));
+        // Signalling from the command buffer, not the encoder, so the value lands
+        // after every dispatch encoded into this submission.
+        send.voidPtrU64(
+          batch.commandBuffer,
+          sel('encodeSignalEvent:value:'),
+          event,
+          signalValue,
+        );
+        send.void(batch.commandBuffer, sel('commit'));
+      } finally {
+        // Metal retains a committed command buffer itself, so releasing our own
+        // references here is safe whether or not the commit succeeded.
+        release(batch.encoder);
+        release(batch.commandBuffer);
       }
     },
 

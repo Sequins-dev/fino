@@ -6,10 +6,18 @@
  * This module is re-exported through `internal:tensor/gpu`; import from there.
  */
 import { createMetalApi, metalAvailable, metalUnavailableReason } from 'internal:metal';
-import type { MetalApi, MetalPipeline, Id } from 'internal:metal';
+import type { MetalBatch, MetalApi, MetalPipeline, Id } from 'internal:metal';
 import type { KernelIR } from '../ir/index.ts';
 import { lowerToMSL } from '../ir/index.ts';
 import type { DriverBuffer, DriverCaps, DriverKernel, GpuDriver } from './driver.ts';
+
+/**
+ * Dispatches encoded before a batch is committed regardless of synchronisation.
+ *
+ * Large enough that the per-batch cost is amortised to nothing, small enough that the
+ * device is never waiting on the host to finish a long run of launches.
+ */
+const MAX_BATCH = 64;
 
 /** A Metal buffer plus its host mapping. */
 interface MetalBuffer extends DriverBuffer {
@@ -40,6 +48,31 @@ export function createMetalDriver(): GpuDriver {
   const event = api.createSharedEvent(device);
   const info = api.deviceInfo(device);
   let counter = 0n;
+
+  /**
+   * Dispatches encoded into the open command buffer, if there is one.
+   *
+   * Metal serialises dispatches within one compute encoder and inserts the barriers
+   * between them, so batching does not change what any kernel sees — it only stops
+   * paying for a command buffer, an encoder, a fence, and a commit per operation.
+   */
+  let batch: MetalBatch | null = null;
+  let encoded = 0;
+
+  /** Timeline value of the most recently committed batch. */
+  let committed = 0n;
+
+  /** Submit whatever is encoded. */
+  function flush(): void {
+    if (!batch) return;
+    const open = batch;
+    const value = counter;
+    // Cleared first so a throwing commit cannot leave a released batch installed.
+    batch = null;
+    encoded = 0;
+    api.commitBatch(open, event, value);
+    committed = value;
+  }
 
   const caps: DriverCaps = {
     type: 'metal',
@@ -132,21 +165,27 @@ export function createMetalDriver(): GpuDriver {
       params: ArrayBuffer,
       groups: readonly [number, number, number],
     ): bigint {
-      const signalValue = ++counter;
-      api.dispatch({
-        queue,
+      batch ??= api.beginBatch(queue);
+      api.encode(batch, {
         pipeline: (kernel as MetalKernel).pipeline,
         buffers: buffers.map((b) => ({ buffer: (b as MetalBuffer).handle, offset: 0 })),
         params,
         grid: groups,
         threadgroup: kernel.workgroup,
-        event,
-        signalValue,
       });
+      encoded++;
+      const signalValue = ++counter;
+      // Committing on a bound rather than only at a synchronisation point keeps the
+      // device busy during a long run of dispatches, instead of idle until whatever
+      // forces the flush.
+      if (encoded >= MAX_BATCH) flush();
       return signalValue;
     },
 
     async wait(token: bigint): Promise<void> {
+      // Anything still encoded has to be submitted before it can be waited for; an
+      // uncommitted command buffer will never signal.
+      if (token > committed) flush();
       if (token <= api.eventValue(event)) return;
       const finished = await api.waitForEvent(event, token, 60_000);
       if (!finished) {
@@ -168,6 +207,9 @@ export function createMetalDriver(): GpuDriver {
     },
 
     dispose(): void {
+      // Submit anything encoded rather than dropping a retained command buffer, and so
+      // that a queue is not destroyed with work outstanding on it.
+      flush();
       api.destroy(event);
       api.destroy(queue);
       api.destroy(device);

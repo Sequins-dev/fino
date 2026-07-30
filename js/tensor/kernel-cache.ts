@@ -16,7 +16,7 @@
  *
  * This module is re-exported through `fino:tensor`; import from there.
  */
-import { cacheKeyHash, cacheKeyText } from './ir/index.ts';
+import { cacheKeyText } from './ir/index.ts';
 
 /** What a cache lookup needs to identify and, on a miss, build a kernel. */
 export interface KernelRequest<T> {
@@ -40,29 +40,31 @@ export interface CacheStats {
  */
 export class KernelCache<T> {
   /**
-   * Keyed by hash, holding both the promise and the full key text.
+   * Keyed by the full key text.
    *
-   * The full key is compared on a hit, which makes a hash collision produce a
-   * recompile rather than the wrong kernel.
+   * Not by a hash of it: a lookup happens on every launch, and hashing was doing
+   * 64-bit arithmetic per byte to produce something a string map compares directly.
+   * A hash is only needed to name a file, which is a concern for a disk tier that does
+   * not exist yet — and keying on the text means a collision cannot happen at all
+   * rather than being detected and recovered from.
    *
    * @internal
    */
-  #entries = new Map<string, { key: string; kernel: Promise<T>; ready: T | null }>();
+  #entries = new Map<string, { kernel: Promise<T>; ready: T | null }>();
   #hits = 0;
   #misses = 0;
 
   /** Fetch a kernel, compiling it on a miss. */
   get(request: KernelRequest<T>): Promise<T> {
     const key = cacheKeyText({ spec: request.spec, target: request.target });
-    const hash = cacheKeyHash({ spec: request.spec, target: request.target });
-    const existing = this.#entries.get(hash);
-    if (existing && existing.key === key) {
+    const existing = this.#entries.get(key);
+    if (existing) {
       this.#hits++;
       return existing.kernel;
     }
     this.#misses++;
     const kernel = request.compile();
-    const entry = { key, kernel, ready: null as T | null };
+    const entry = { kernel, ready: null as T | null };
     // Remember the resolved kernel as well as its promise. A launch is synchronous,
     // so being able to answer "is this compiled?" without awaiting is what lets a
     // repeat launch skip the microtask queue entirely.
@@ -72,7 +74,7 @@ export class KernelCache<T> {
       },
       () => {},
     );
-    this.#entries.set(hash, entry);
+    this.#entries.set(key, entry);
     return kernel;
   }
 
@@ -105,10 +107,7 @@ export class KernelCache<T> {
    * @internal
    */
   #lookup(spec: string, target: string) {
-    const hash = cacheKeyHash({ spec, target });
-    const existing = this.#entries.get(hash);
-    if (!existing) return undefined;
-    return existing.key === cacheKeyText({ spec, target }) ? existing : undefined;
+    return this.#entries.get(cacheKeyText({ spec, target }));
   }
 
   /** Current counters. */

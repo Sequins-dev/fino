@@ -160,8 +160,8 @@ describe('Metal kernel execution', () => {
 
     const params = packParams(ir.params, { n: count });
     const threadgroups = Math.ceil(count / ir.wg[0]);
-    api.dispatch({
-      queue,
+    const batch = api.beginBatch(queue);
+    api.encode(batch, {
       pipeline,
       buffers: [
         { buffer: a, offset: 0 },
@@ -171,9 +171,8 @@ describe('Metal kernel execution', () => {
       params,
       grid: [threadgroups, 1, 1],
       threadgroup: ir.wg,
-      event,
-      signalValue: 1n,
     });
+    api.commitBatch(batch, event, 1n);
 
     const finished = await api.waitForEvent(event, 1n, 5000);
     t.ok(finished, 'the shared event signalled before the timeout');
@@ -228,8 +227,8 @@ describe('Metal kernel execution', () => {
     for (let i = 0; i < k * n; i++) bView[i] = ((i % 5) - 2) / 3;
 
     const params = packParams(ir.params, { M: m, N: n, K: k });
-    api.dispatch({
-      queue,
+    const batch = api.beginBatch(queue);
+    api.encode(batch, {
       pipeline,
       buffers: [
         { buffer: a, offset: 0 },
@@ -239,9 +238,8 @@ describe('Metal kernel execution', () => {
       params,
       grid: gemmGrid(m, n, tiling),
       threadgroup: ir.wg,
-      event,
-      signalValue: 1n,
     });
+    api.commitBatch(batch, event, 1n);
     t.ok(await api.waitForEvent(event, 1n, 10000), 'the GEMM completed');
 
     // Compare against a straightforward host implementation.
@@ -287,8 +285,8 @@ describe('Metal kernel execution', () => {
     const inputView = new Float32Array(api.bufferContents(input, bytes));
     for (let i = 0; i < count; i++) inputView[i] = i % 2 === 0 ? -1 : 2;
 
-    api.dispatch({
-      queue,
+    const batch = api.beginBatch(queue);
+    api.encode(batch, {
       pipeline,
       buffers: [
         { buffer: input, offset: 0 },
@@ -297,9 +295,8 @@ describe('Metal kernel execution', () => {
       params: packParams(ir.params, { n: count }),
       grid: [Math.ceil(count / ir.wg[0]), 1, 1],
       threadgroup: ir.wg,
-      event,
-      signalValue: 1n,
     });
+    api.commitBatch(batch, event, 1n);
 
     let timerFired = false;
     const timer = new Promise<void>((resolve) => {
