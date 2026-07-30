@@ -67,6 +67,36 @@ import type { DriverBuffer, DriverKernel, GpuDriver } from './driver.ts';
 /** Element types a GPU handles. `f64` and `i64` are CPU-only by design. */
 const GPU_DTYPES: readonly DType[] = ['f32', 'f16', 'bf16', 'i32', 'u8', 'bool'];
 
+/**
+ * Longest row a row-per-thread kernel is used for.
+ *
+ * The motivating case is a row shorter than one SIMD group, where a
+ * workgroup-per-row kernel cannot fill even a single group and its barriers
+ * synchronise threads that mostly have nothing to do. Measured at 2M rows of 8 on
+ * Apple silicon, row-per-thread is 2.3x faster through Metal and 2.7x through
+ * Vulkan.
+ *
+ * The bound is well above the widest SIMD group in common hardware but far below
+ * where a thread walking a row starts to hurt: consecutive threads read addresses
+ * `cols` apart, so a long row turns one coalesced load into one cache line per
+ * thread. That penalty is hardware-specific and this bound is set from Apple
+ * measurements, so it stays conservative rather than chasing the last few percent on
+ * rows long enough for the tree reduction to be fine anyway.
+ */
+const ROW_PER_THREAD_COLS = 256;
+
+/**
+ * Rows needed before a row-per-thread kernel is used, as a multiple of the largest
+ * workgroup the device supports.
+ *
+ * Row-per-thread parallelises over rows and nothing else, so too few rows leaves
+ * most of the device idle — and unlike the short-row case this is a cliff, not a
+ * slope: 8 rows of 1M elements takes 197ms per iteration that way against 1.6ms for
+ * the tree reduction, a 127x loss. Scaling the bar by `maxWorkgroup` tracks how much
+ * work a device wants in flight better than a constant would.
+ */
+const ROW_PER_THREAD_OCCUPANCY = 16;
+
 /** Operations that are not implemented on the GPU path. */
 const UNSUPPORTED: ReadonlySet<OpKind> = new Set<OpKind>(['gather']);
 
@@ -491,12 +521,31 @@ export class GpuBackend implements DeviceBackend {
     });
   }
 
+  /**
+   * Whether a row-wise kernel should give each thread a whole row rather than each
+   * workgroup, which needs short rows *and* many of them.
+   */
+  #rowPerThread(rows: number, cols: number): boolean {
+    if (cols > ROW_PER_THREAD_COLS) return false;
+    return rows >= this.#driver.caps.maxWorkgroup * ROW_PER_THREAD_OCCUPANCY;
+  }
+
   softmax(x: TensorDesc, out: TensorDesc, axis: number, log: boolean): void {
     const cols = x.shape[axis]!;
     if (cols === 0 || numel(x.shape) === 0) return;
     // Addressing the axis by stride means an interior axis needs no transpose.
     const inner = trailingExtent(x.shape, axis);
     const rows = numel(x.shape) / cols;
+    if (rows === 0) return;
+    if (this.#rowPerThread(rows, cols)) {
+      this.#run(
+        () => softmaxKernel({ dtype: this.#scalar(x), log, perThread: true }),
+        [x.buffer, out.buffer],
+        { rows, cols, inner },
+        linearGrid(rows),
+      );
+      return;
+    }
     const wg = rowWorkgroup(cols, this.#driver.caps.maxWorkgroup);
     this.#run(
       () => softmaxKernel({ dtype: this.#scalar(x), log, wg }),
@@ -517,11 +566,27 @@ export class GpuBackend implements DeviceBackend {
   ): void {
     const rows = numel(x.shape) / Math.max(axisSize, 1);
     if (rows === 0 || axisSize === 0) return;
-    const wg = rowWorkgroup(axisSize, this.#driver.caps.maxWorkgroup);
     const buffers: DeviceBuffer[] = [x.buffer];
     if (weight) buffers.push(weight.buffer);
     if (bias) buffers.push(bias.buffer);
     buffers.push(out.buffer);
+    if (this.#rowPerThread(rows, axisSize)) {
+      this.#run(
+        () =>
+          layerNormKernel({
+            dtype: this.#scalar(x),
+            rms,
+            weight: weight !== null,
+            bias: bias !== null,
+            perThread: true,
+          }),
+        buffers,
+        { rows, cols: axisSize, epsilon },
+        linearGrid(rows),
+      );
+      return;
+    }
+    const wg = rowWorkgroup(axisSize, this.#driver.caps.maxWorkgroup);
     this.#run(
       () =>
         layerNormKernel({

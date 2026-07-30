@@ -16,6 +16,7 @@ import {
   zeros,
 } from 'fino:tensor';
 import type { Device, Tensor } from 'fino:tensor';
+import { layerNorm, rmsNorm } from 'fino:tensor/nn';
 import { compareValues, describeComparison } from 'internal:tensor/harness';
 
 /** GPU devices to test, discovered once. */
@@ -143,6 +144,97 @@ function programs(): Program[] {
       name: 'log softmax',
       inputs: [{ shape: [5, 9], seed: 16 }],
       run: (x) => x.logSoftmax(1),
+      tolerance: 1e-5,
+    },
+    // Rows longer than one SIMD group take the workgroup-per-row tree reduction;
+    // the short rows above take the row-per-thread kernel. Both need covering, since
+    // the backend picks between them by row length and only one is the default for
+    // any given shape.
+    {
+      // Enough rows to clear the occupancy bar, which is what selects the
+      // row-per-thread kernel; every other row-wise case here is too small and takes
+      // the workgroup-per-row tree reduction instead.
+      name: 'softmax over many short rows',
+      inputs: [{ shape: [20000, 6], seed: 58 }],
+      run: (x) => x.softmax(1),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'layer norm over many short rows',
+      inputs: [
+        { shape: [20000, 6], seed: 59 },
+        { shape: [6], seed: 60 },
+        { shape: [6], seed: 61 },
+      ],
+      run: (x, w, b) => layerNorm(x, w, b),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'softmax over a long row',
+      inputs: [{ shape: [3, 300], seed: 43 }],
+      run: (x) => x.softmax(1),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'log softmax over a long row',
+      inputs: [{ shape: [2, 513], seed: 44 }],
+      run: (x) => x.logSoftmax(1),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'softmax over a row exactly at the row-per-thread limit',
+      inputs: [{ shape: [4, 64], seed: 45 }],
+      run: (x) => x.softmax(1),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'softmax over a row just past the row-per-thread limit',
+      inputs: [{ shape: [4, 65], seed: 46 }],
+      run: (x) => x.softmax(1),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'softmax over a long interior axis',
+      inputs: [{ shape: [2, 130, 3], seed: 47 }],
+      run: (x) => x.softmax(1),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'layer norm over a short row',
+      inputs: [
+        { shape: [6, 5], seed: 48 },
+        { shape: [5], seed: 49 },
+        { shape: [5], seed: 50 },
+      ],
+      run: (x, w, b) => layerNorm(x, w, b),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'layer norm over a long row',
+      inputs: [
+        { shape: [3, 288], seed: 51 },
+        { shape: [288], seed: 52 },
+        { shape: [288], seed: 53 },
+      ],
+      run: (x, w, b) => layerNorm(x, w, b),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'rms norm over both row lengths',
+      inputs: [
+        { shape: [4, 7], seed: 54 },
+        { shape: [7], seed: 55 },
+      ],
+      run: (x, w) => rmsNorm(x, w),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'rms norm over a long row',
+      inputs: [
+        { shape: [2, 200], seed: 56 },
+        { shape: [200], seed: 57 },
+      ],
+      run: (x, w) => rmsNorm(x, w),
       tolerance: 1e-5,
     },
     {

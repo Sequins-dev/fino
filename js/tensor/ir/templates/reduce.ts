@@ -204,6 +204,16 @@ export interface SoftmaxSpec {
   /** Emit log-softmax instead. */
   log?: boolean;
   wg?: number;
+  /**
+   * Give each *thread* a whole row instead of each workgroup.
+   *
+   * The right choice for short rows. A workgroup-per-row kernel cannot fill even
+   * one SIMD group when the row is shorter than the hardware's width, so its
+   * barriers buy nothing and most lanes idle; a row-per-thread kernel instead
+   * parallelises over rows, of which there are many. It needs no shared memory and
+   * no barriers at all.
+   */
+  perThread?: boolean;
 }
 
 /**
@@ -221,6 +231,7 @@ export interface SoftmaxSpec {
  * Buffers are `in0` and `out0`; parameters are `cols` and `inner`.
  */
 export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } {
+  if (spec.perThread) return softmaxPerThread(spec);
   const wg = spec.wg ?? 256;
   const compute = vt('f32');
   const b = new KernelBuilder(
@@ -283,6 +294,68 @@ export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } 
   };
 }
 
+/**
+ * Softmax with one thread per row.
+ *
+ * @internal
+ */
+function softmaxPerThread(spec: SoftmaxSpec): { ir: KernelIR; key: string } {
+  const wg = spec.wg ?? 256;
+  const compute = vt('f32');
+  const b = new KernelBuilder(
+    `${spec.log ? 'logsoftmax' : 'softmax'}_rows_${spec.dtype}`,
+    [wg, 1, 1],
+  );
+  b.buffer('in0', vt(spec.dtype), 'read');
+  b.buffer('out0', vt(spec.dtype), 'write');
+  const rows = b.param('rows');
+  const cols = b.param('cols');
+  const inner = b.param('inner');
+
+  b.gridStride(rows, (row) => {
+    const outerIndex = b.letTemp(vt('u32'), E.div(row, inner), 'o');
+    const innerIndex = b.letTemp(vt('u32'), E.mod(row, inner), 'k');
+    const base = b.letTemp(
+      vt('u32'),
+      E.add(E.mul(E.mul(outerIndex, cols), inner), innerIndex),
+      'base',
+    );
+    const at = (c: Expr): Expr => E.add(base, E.mul(c, inner));
+
+    // Same three passes as the workgroup version, without the shared-memory tree:
+    // one thread owns the whole row, so there is nothing to combine.
+    b.var('m', compute, E.const(compute, -Infinity));
+    b.for('c', E.u32(0), cols, E.u32(1), (c) => {
+      b.assign('m', E.max(E.var('m'), E.cast(compute, E.load('in0', at(c)))));
+    });
+    b.var('acc', compute, E.const(compute, 0));
+    b.for('c2', E.u32(0), cols, E.u32(1), (c) => {
+      b.assign(
+        'acc',
+        E.add(E.var('acc'), E.call('exp', E.sub(E.cast(compute, E.load('in0', at(c))), E.var('m')))),
+      );
+    });
+    b.for('c3', E.u32(0), cols, E.u32(1), (c) => {
+      const index = at(c);
+      const shifted = E.sub(E.cast(compute, E.load('in0', index)), E.var('m'));
+      const value = spec.log
+        ? E.sub(shifted, E.call('log', E.var('acc')))
+        : E.div(E.call('exp', shifted), E.var('acc'));
+      b.store('out0', index, E.cast(vt(spec.dtype), value));
+    });
+  });
+
+  return {
+    ir: b.build(),
+    key: specKey('softmax', {
+      dtype: spec.dtype,
+      log: spec.log ?? false,
+      wg,
+      perThread: true,
+    }),
+  };
+}
+
 /** Specialization of {@link layerNormKernel}. */
 export interface LayerNormSpec {
   dtype: ScalarDType;
@@ -293,6 +366,8 @@ export interface LayerNormSpec {
   /** Whether an offset is applied. */
   bias?: boolean;
   wg?: number;
+  /** Give each thread a whole row; see {@link SoftmaxSpec.perThread}. */
+  perThread?: boolean;
 }
 
 /**
@@ -302,6 +377,7 @@ export interface LayerNormSpec {
  * Parameters are `cols` and `epsilon`.
  */
 export function layerNormKernel(spec: LayerNormSpec): { ir: KernelIR; key: string } {
+  if (spec.perThread) return layerNormPerThread(spec);
   const wg = spec.wg ?? 256;
   const compute = vt('f32');
   const name = [
@@ -367,6 +443,77 @@ export function layerNormKernel(spec: LayerNormSpec): { ir: KernelIR; key: strin
       weight: spec.weight ?? false,
       bias: spec.bias ?? false,
       wg,
+    }),
+  };
+}
+
+/**
+ * Layer normalisation with one thread per row.
+ *
+ * @internal
+ */
+function layerNormPerThread(spec: LayerNormSpec): { ir: KernelIR; key: string } {
+  const wg = spec.wg ?? 256;
+  const compute = vt('f32');
+  const name = [
+    spec.rms ? 'rmsnorm' : 'layernorm',
+    'rows',
+    spec.dtype,
+    spec.weight ? 'w' : 'nw',
+    spec.bias ? 'b' : 'nb',
+  ].join('_');
+  const b = new KernelBuilder(name, [wg, 1, 1]);
+  b.buffer('in0', vt(spec.dtype), 'read');
+  if (spec.weight) b.buffer('weight', vt(spec.dtype), 'read');
+  if (spec.bias) b.buffer('bias', vt(spec.dtype), 'read');
+  b.buffer('out0', vt(spec.dtype), 'write');
+  const rows = b.param('rows');
+  const cols = b.param('cols');
+  const epsilon = b.param('epsilon', 'f32');
+
+  b.gridStride(rows, (row) => {
+    const base = b.letTemp(vt('u32'), E.mul(row, cols), 'base');
+    const colsF = b.letTemp(compute, E.cast(compute, cols), 'n');
+
+    b.var('mean', compute, E.const(compute, 0));
+    if (!spec.rms) {
+      b.var('sum', compute, E.const(compute, 0));
+      b.for('c', E.u32(0), cols, E.u32(1), (c) => {
+        b.assign('sum', E.add(E.var('sum'), E.cast(compute, E.load('in0', E.add(base, c)))));
+      });
+      b.assign('mean', E.div(E.var('sum'), colsF));
+    }
+    b.var('sq', compute, E.const(compute, 0));
+    b.for('c2', E.u32(0), cols, E.u32(1), (c) => {
+      const centred = E.sub(E.cast(compute, E.load('in0', E.add(base, c))), E.var('mean'));
+      b.assign('sq', E.add(E.var('sq'), E.mul(centred, centred)));
+    });
+    const scale = b.letTemp(
+      compute,
+      E.call('rsqrt', E.add(E.div(E.var('sq'), colsF), epsilon)),
+      'scale',
+    );
+    b.for('c3', E.u32(0), cols, E.u32(1), (c) => {
+      const index = E.add(base, c);
+      let value: Expr = E.mul(
+        E.sub(E.cast(compute, E.load('in0', index)), E.var('mean')),
+        scale,
+      );
+      if (spec.weight) value = E.mul(value, E.cast(compute, E.load('weight', c)));
+      if (spec.bias) value = E.add(value, E.cast(compute, E.load('bias', c)));
+      b.store('out0', index, E.cast(vt(spec.dtype), value));
+    });
+  });
+
+  return {
+    ir: b.build(),
+    key: specKey('layernorm', {
+      dtype: spec.dtype,
+      rms: spec.rms ?? false,
+      weight: spec.weight ?? false,
+      bias: spec.bias ?? false,
+      wg,
+      perThread: true,
     }),
   };
 }
