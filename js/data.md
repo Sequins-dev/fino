@@ -56,9 +56,56 @@ for await (const batch of loader.forEpoch(0)) {
 
 CSV, JSONL, SQLite, HTTP, and hub adapters yield rows. Arrow IPC and Parquet
 adapters yield `RecordBatch` objects directly. Iteration is pull-driven and
-cancelable; realm workers, shared-memory collation, and durable checkpoint
-state are layered onto the same contract rather than exposed as a second
-loader API.
+cancelable. Long-running jobs can serialize the iterator's next unseen batch
+and resume it with the same source and transform definitions:
+
+```ts no_run
+const run = loader.iterate({ epoch: 3 });
+const first = await run.next();
+const checkpoint = JSON.stringify(run.state());
+
+// Persist `checkpoint` alongside the workflow, then rebuild the same loader.
+const resumed = loader.restore(JSON.parse(checkpoint));
+```
+
+Restore replays deterministic source transforms to the saved boundary without
+re-running collators for skipped batches. A checkpoint includes batching,
+shuffle, seed, epoch, and worker-partition state; application code is
+responsible for recreating the same input, transforms, and worker module.
+
+CPU-heavy decode, augmentation, and tokenization can run concurrently in
+movable Realm isolates on Fino's existing reactor pool:
+
+```ts no_run
+const parallel = new DataLoader(rows, {
+  batchSize: 128,
+  prefetch: 4,
+  worker: {
+    entry: new URL('./collate-worker.ts', import.meta.url).pathname,
+    size: 4,
+  },
+});
+```
+
+The worker module's default export receives `(values, context)` and can be
+annotated with `DataLoaderWorkerFunction<Input, Output>`. Results are buffered
+in source order, concurrency is bounded by `size`, and cancellation terminates
+active realms and closes the source.
+
+For device pipelines, `sharedMemory` gives each worker a
+`context.shared` slot. The worker writes directly into its
+`SharedArrayBuffer`, returns byte-length and optional item-boundary metadata,
+and the loader yields a zero-copy descriptor. Call `release()` only after the
+H2D transfer no longer reads the slot; occupied slots apply backpressure.
+Use `DataLoader<Input, SharedBatchDescriptor>` for a shared-memory loader so
+the iterator's public result type exposes the handoff metadata.
+These are strongly retained shared host buffers, not an OS page-locking or
+device-transfer API. A device backend can add physical memory registration at
+this explicit handoff boundary.
+
+Realm workers, shared-memory collation, and durable checkpoint state are
+layered onto the same Dataset/DataLoader contract rather than exposed as a
+second loader API.
 
 ## DataFrames
 

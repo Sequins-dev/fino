@@ -3622,14 +3622,12 @@ async function ensureApiJson(): Promise<ApiDoc> {
   await writeTextFile(path, JSON.stringify(api, null, 2) + '\n');
   return api;
 }
-async function ensureDocsDb(): Promise<string> {
-  return withDocsWriteLock(async () => {
-    const dbPath = docsDbPath();
-    if (await exists(dbPath)) return dbPath;
-    const api = await ensureApiJson();
-    await writeSqliteIndex(api, dbPath);
-    return dbPath;
-  });
+async function ensureDocsDbWhileLocked(): Promise<string> {
+  const dbPath = docsDbPath();
+  if (await exists(dbPath)) return dbPath;
+  const api = await ensureApiJson();
+  await writeSqliteIndex(api, dbPath);
+  return dbPath;
 }
 function flatten(api: ApiDoc): FlatSymbol[] {
   const symbols: FlatSymbol[] = [];
@@ -4172,30 +4170,21 @@ async function runSearchCommand(
 ): Promise<string | Record<string, unknown>> {
   const parts = Array.isArray(input.query) ? input.query.map(String) : [String(input.query ?? '')];
   const query = parts.join(' ').trim();
-  const existingDbPath = docsDbPath();
-  if (await exists(existingDbPath)) {
-    try {
-      const existing = await searchSqlite(existingDbPath, query);
-      if (!isNoResults(existing, query)) {
-        if (ctx.writer.mode === 'json') {
-          const result = {
-            command: 'doc search',
-            ok: true,
-            query,
-            found: true,
-            output: existing,
-          };
-          await ctx.writer.writeJson(result);
-          return result;
-        }
-        return existing;
-      }
-    } catch (_) {}
-  }
-  const dbPath = (await exists(existingDbPath))
-    ? await refreshDocsDbForQuery(query)
-    : await ensureDocsDb();
-  const output = await searchSqlite(dbPath, query);
+  // SQLite index builds replace their schema in place, so readers must share
+  // the same cross-process lock as writers until their statements are closed.
+  const output = await withDocsWriteLock(async () => {
+    const existingDbPath = docsDbPath();
+    if (await exists(existingDbPath)) {
+      try {
+        const existing = await searchSqlite(existingDbPath, query);
+        if (!isNoResults(existing, query)) return existing;
+      } catch (_) {}
+    }
+    const dbPath = (await exists(existingDbPath))
+      ? await refreshDocsDbForQueryWhileLocked(query)
+      : await ensureDocsDbWhileLocked();
+    return searchSqlite(dbPath, query);
+  });
   if (ctx.writer.mode === 'json') {
     const result = {
       command: 'doc search',
@@ -4212,13 +4201,11 @@ async function runSearchCommand(
 function isNoResults(output: string, query: string): boolean {
   return output === `No results for ${query}\n`;
 }
-async function refreshDocsDbForQuery(query: string): Promise<string> {
-  return withDocsWriteLock(async () => {
-    const dbPath = docsDbPath();
-    const api = await refreshDocsForQuery(query);
-    await writeSqliteIndex(api, dbPath);
-    return dbPath;
-  });
+async function refreshDocsDbForQueryWhileLocked(query: string): Promise<string> {
+  const dbPath = docsDbPath();
+  const api = await refreshDocsForQuery(query);
+  await writeSqliteIndex(api, dbPath);
+  return dbPath;
 }
 async function refreshDocsForQuery(query: string): Promise<ApiDoc> {
   const inputs = await discoverProjectDocInputs();
