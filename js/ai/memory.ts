@@ -48,6 +48,7 @@ import { Database, vec, vecDecode } from 'fino:database/sqlite';
 import type { ModelMessage } from 'fino:ai/model';
 import { createSignal } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
+import { DataLoader, IterableDataset, type DatasetSource } from 'fino:data/dataset';
 /**
  * Embedding provider used by `SqliteMemory`.
  *
@@ -253,10 +254,11 @@ export interface RecalledContext {
 /**
  * Retained progress for the most recent `Memory.ingest()` call.
  *
- * Published through the `Memory.ingestProgress` signal. The `documents` and
- * `chunks` totals are set up front when ingestion starts; `embedded` and
- * `stored` count up as work completes. `active` flips back to `false` when
- * the ingest call finishes, even if it failed partway.
+ * Published through the `Memory.ingestProgress` signal. Array inputs publish
+ * document and chunk totals up front; lazy inputs increment those counts as
+ * each loader batch is pulled. `embedded` and `stored` count completed work.
+ * `active` flips back to `false` when the ingest call finishes, even if it
+ * failed partway.
  *
  * ```ts no_run
  * import { memory } from 'fino:ai/memory';
@@ -275,11 +277,14 @@ export interface MemoryIngestProgress {
    */
   active: boolean;
   /**
-   * Number of documents in the current or most recent ingest call.
+   * Number of known documents in the current or most recent ingest call.
+   * This is the total immediately for arrays and grows as lazy sources are
+   * pulled.
    */
   documents: number;
   /**
-   * Total chunks the documents were split into.
+   * Number of known chunks produced from those documents. This grows as lazy
+   * sources are pulled and is final when `active` becomes false.
    */
   chunks: number;
   /**
@@ -340,6 +345,32 @@ export interface ChunkOptions {
    * clamped to `size - 1`.
    */
   overlap?: number;
+}
+/**
+ * One document accepted by `Memory.ingest()`.
+ */
+export interface MemoryDocument {
+  /** Text split into chunks, embedded, and stored for recall. */
+  text: string;
+  /** Optional metadata copied to every chunk produced from this document. */
+  metadata?: Record<string, unknown>;
+}
+/**
+ * Controls one pull-driven memory ingestion traversal.
+ */
+export interface MemoryIngestOptions {
+  /** Store under the active thread or shared resource namespace. */
+  scope?: 'thread' | 'resource';
+  /** Text splitting policy applied before embedding. */
+  chunk?: ChunkOptions;
+  /**
+   * Number of documents chunked and embedded per loader pull. Defaults to `1`.
+   */
+  batchSize?: number;
+  /**
+   * Cancels the next source pull and closes the upstream iterator.
+   */
+  signal?: AbortSignal;
 }
 /**
  * Durable memory interface used by sessions and strategies.
@@ -408,16 +439,7 @@ export interface Memory {
    * selects the thread (default) or resource chunk namespace; `chunk`
    * controls splitting. Progress is published on `ingestProgress`.
    */
-  ingest(
-    docs: {
-      text: string;
-      metadata?: Record<string, unknown>;
-    }[],
-    opts?: {
-      scope?: 'thread' | 'resource';
-      chunk?: ChunkOptions;
-    },
-  ): Promise<void>;
+  ingest(docs: DatasetSource<MemoryDocument>, opts?: MemoryIngestOptions): Promise<void>;
   /**
    * Read the thread's persisted working-memory object, or `null` if none has
    * been written.
@@ -906,16 +928,20 @@ export class SqliteMemory implements Memory {
   /**
    * Chunk, embed, and store documents for semantic recall.
    *
-   * Each document is split per `opts.chunk` (1000-character chunks with
-   * 100-character overlap by default), embedded one document at a time, and
-   * written under the thread scope or — with `scope: 'resource'` — the
-   * memory's resource scope. Chunk text and metadata are stored even when
-   * vector search is unavailable; vectors are additionally indexed only when
-   * `semanticAvailable` is true. A missing embedding falls back to a zero
-   * vector rather than failing the ingest.
+   * Documents are pulled through the shared `DataLoader`, split per
+   * `opts.chunk` (1000-character chunks with 100-character overlap by
+   * default), embedded in bounded document batches, and written under the
+   * thread scope or — with `scope: 'resource'` — the memory's resource scope.
+   * Chunk text and metadata are stored even when vector search is unavailable;
+   * vectors are additionally indexed only when `semanticAvailable` is true. A
+   * missing embedding falls back to a zero vector rather than failing the
+   * ingest.
    *
-   * Progress is published on the `ingestProgress` signal throughout, and
-   * `active` is reset to `false` even if embedding or storage throws.
+   * Arrays, normal iterables, async iterables, `Dataset`, and
+   * `IterableDataset` sources share this path. Pull-driven batches preserve
+   * backpressure, and `opts.signal` cancels the traversal and closes upstream.
+   * Progress is published throughout, and `active` is reset to `false` even
+   * if cancellation, embedding, or storage throws.
    *
    * ```ts no_run
    * await mem.ingest(
@@ -923,30 +949,45 @@ export class SqliteMemory implements Memory {
    *     { text: policyDoc, metadata: { source: 'policy', topic: 'billing' } },
    *     { text: runbookDoc, metadata: { source: 'runbook', topic: 'ops' } },
    *   ],
-   *   { scope: 'resource', chunk: { size: 800, overlap: 150 } },
+   *   { scope: 'resource', chunk: { size: 800, overlap: 150 }, batchSize: 8 },
    * );
    * ```
    */
-  async ingest(
-    docs: {
-      text: string;
-      metadata?: Record<string, unknown>;
-    }[],
-    opts?: {
-      scope?: 'thread' | 'resource';
-      chunk?: ChunkOptions;
-    },
-  ): Promise<void> {
-    const { scope = 'thread', chunk: chunkOpts } = opts ?? {};
+  async ingest(docs: DatasetSource<MemoryDocument>, opts?: MemoryIngestOptions): Promise<void> {
+    const { scope = 'thread', chunk: chunkOpts, batchSize = 1, signal } = opts ?? {};
     const scopeId = scope === 'resource' ? (this.#resourceId ?? this.#threadId) : this.#threadId;
-    const chunkCounts = docs.map((doc) => chunkText(doc.text, chunkOpts).length);
-    const totalChunks = chunkCounts.reduce((a, b) => a + b, 0);
+    const knownDocuments = Array.isArray(docs) ? docs : null;
+    const knownChunks = knownDocuments?.reduce(
+      (total, doc) => total + chunkText(doc.text, chunkOpts).length,
+      0,
+    );
     this.#ingestProgress.set({
       active: true,
-      documents: docs.length,
-      chunks: totalChunks,
+      documents: knownDocuments?.length ?? 0,
+      chunks: knownChunks ?? 0,
       embedded: 0,
       stored: 0,
+    });
+    const source = docs instanceof IterableDataset ? docs : IterableDataset.from(docs);
+    const loader = new DataLoader<
+      MemoryDocument,
+      {
+        documents: number;
+        chunks: Array<{ text: string; metadata?: Record<string, unknown> }>;
+      }
+    >(source, {
+      batchSize,
+      collate(documents) {
+        return {
+          documents: documents.length,
+          chunks: documents.flatMap((doc) =>
+            chunkText(doc.text, chunkOpts).map((text) => ({
+              text,
+              ...(doc.metadata !== undefined ? { metadata: doc.metadata } : {}),
+            })),
+          ),
+        };
+      },
     });
     const insertChunk = this.#db.prepare(
       `INSERT OR IGNORE INTO chunks(id, scope_id, text, metadata, embedding) VALUES(?, ?, ?, ?, ?)`,
@@ -955,22 +996,29 @@ export class SqliteMemory implements Memory {
       ? this.#db.prepare(`INSERT INTO chunk_vectors(rowid, embedding) VALUES(?, ?)`)
       : null;
     try {
-      for (const doc of docs) {
-        const chunks = chunkText(doc.text, chunkOpts);
-        const embeddings = await this.#embedder.embed(chunks);
+      for await (const batch of loader.iterate(signal ? { signal } : {})) {
+        if (!knownDocuments) {
+          this.#ingestProgress.set((progress) => ({
+            ...progress,
+            documents: progress.documents + batch.documents,
+            chunks: progress.chunks + batch.chunks.length,
+          }));
+        }
+        const embeddings = await this.#embedder.embed(batch.chunks.map((chunk) => chunk.text));
         this.#ingestProgress.set((progress) => ({
           ...progress,
           embedded: progress.embedded + embeddings.length,
         }));
-        for (let i = 0; i < chunks.length; i++) {
+        for (let i = 0; i < batch.chunks.length; i++) {
+          const chunk = batch.chunks[i]!;
           const id = newId();
           const embedding = embeddings[i] ?? new Float32Array(this.#dim);
           const blob = new Uint8Array(embedding.buffer);
           const result = await insertChunk.run(
             id,
             scopeId,
-            chunks[i],
-            doc.metadata !== undefined ? JSON.stringify(doc.metadata) : null,
+            chunk.text,
+            chunk.metadata !== undefined ? JSON.stringify(chunk.metadata) : null,
             blob,
           );
           if (insertVec && result.changes > 0) {

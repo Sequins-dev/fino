@@ -12,6 +12,7 @@ import {
   OpenTelemetryReporter,
 } from 'fino:ai/eval';
 import type { EvalCaseReport, EvalSummary, ScoreResult } from 'fino:ai/eval';
+import { Dataset } from 'fino:data/dataset';
 import {
   OtelSDK,
   InMemoryExporter,
@@ -104,6 +105,18 @@ evaluate({
   ],
   scorers: [exactMatch()],
   threshold: 1,
+});
+evaluate({
+  name: 'evaluate-dataset-integration',
+  target: async (input: string) => input.toUpperCase(),
+  cases: Dataset.from([
+    {
+      name: 'dataset uppercase',
+      input: 'dataset',
+      expected: 'DATASET',
+    },
+  ]),
+  scorers: [exactMatch()],
 });
 describe('scorers', () => {
   it('exactMatch passes when output equals expected', async (t) => {

@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { retriever, SqliteMemory } from 'fino:ai/memory';
 import type { Embedder } from 'fino:ai/memory';
+import { IterableDataset } from 'fino:data/dataset';
 import { DiskFileSystem } from 'fino:file';
 function deterministicEmbedder(dim: number): Embedder {
   return {
@@ -289,6 +290,92 @@ describe('SqliteMemory', () => {
         seen.some((stored) => stored > 0),
         'subscriber saw stored progress',
       );
+    } finally {
+      await mem.close();
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+  it('ingests lazy datasets in pull-driven embedding batches', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try {
+      await fs.unlink(path);
+    } catch {}
+    const embedded: string[][] = [];
+    let pulled = 0;
+    const pullsAtEmbed: number[] = [];
+    const embedder: Embedder = {
+      dimensions: 4,
+      async embed(texts) {
+        embedded.push([...texts]);
+        pullsAtEmbed.push(pulled);
+        return texts.map(() => new Float32Array(4));
+      },
+    };
+    const mem = await SqliteMemory.open({ path, embedder, fs });
+    try {
+      const documents = new IterableDataset(async function* () {
+        for (const text of ['alpha', 'beta', 'gamma']) {
+          pulled++;
+          yield { text };
+        }
+      });
+      await mem.ingest(documents, { batchSize: 2 });
+      t.equal(pulled, 3, 'lazy source is traversed once');
+      t.deepEqual(
+        embedded.map((batch) => batch.length),
+        [2, 1],
+        'DataLoader bounds embedding work by document batch',
+      );
+      t.deepEqual(pullsAtEmbed, [2, 3], 'the loader does not read ahead of each batch');
+      t.deepEqual(mem.ingestProgress.get(), {
+        active: false,
+        documents: 3,
+        chunks: 3,
+        embedded: 3,
+        stored: 3,
+      });
+    } finally {
+      await mem.close();
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+  it('cancels lazy ingestion and closes its source', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try {
+      await fs.unlink(path);
+    } catch {}
+    const controller = new AbortController();
+    let closed = false;
+    const embedder: Embedder = {
+      dimensions: 4,
+      async embed(texts) {
+        controller.abort(new Error('stop ingest'));
+        return texts.map(() => new Float32Array(4));
+      },
+    };
+    const mem = await SqliteMemory.open({ path, embedder, fs });
+    try {
+      const documents = new IterableDataset(async function* () {
+        try {
+          yield { text: 'alpha' };
+          yield { text: 'beta' };
+        } finally {
+          closed = true;
+        }
+      });
+      await t.rejects(
+        () => mem.ingest(documents, { signal: controller.signal }),
+        /stop ingest/,
+        'abort reason rejects ingestion',
+      );
+      t.equal(closed, true, 'source iterator is closed after cancellation');
+      t.equal(mem.ingestProgress.get().active, false, 'progress is inactive after cancellation');
     } finally {
       await mem.close();
       try {
