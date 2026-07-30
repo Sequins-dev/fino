@@ -388,8 +388,12 @@ export class GpuBackend implements DeviceBackend {
     params: Readonly<Record<string, number>>,
     groups: readonly [number, number, number],
   ): void {
-    // Building the IR is cheap, but the key alone decides a cache hit, so build
-    // lazily only when the cache misses.
+    // Built unconditionally, because the specialization key comes out of the builder
+    // along with the IR and the key is what decides a cache hit. That makes every
+    // launch pay for an IR it usually throws away — measured at a few microseconds
+    // against a few milliseconds of first-time compilation, so it has not been worth
+    // splitting the two apart, but it is the next thing to do if launch overhead
+    // starts to matter.
     const built = build();
     const driverBuffers = buffers as unknown as DriverBuffer[];
 
