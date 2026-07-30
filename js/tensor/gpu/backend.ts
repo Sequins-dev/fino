@@ -390,10 +390,11 @@ export class GpuBackend implements DeviceBackend {
   ): void {
     // Built unconditionally, because the specialization key comes out of the builder
     // along with the IR and the key is what decides a cache hit. That makes every
-    // launch pay for an IR it usually throws away — measured at a few microseconds
-    // against a few milliseconds of first-time compilation, so it has not been worth
-    // splitting the two apart, but it is the next thing to do if launch overhead
-    // starts to matter.
+    // launch pay for an IR it usually throws away. Now that the command-buffer cost is
+    // batched away, host cost per launch is around 9 to 12 microseconds depending on
+    // the backend, and this is one of the remaining pieces — splitting the key out from
+    // the builder is where to look next, along with Vulkan's per-dispatch descriptor
+    // set.
     const built = build();
     const driverBuffers = buffers as unknown as DriverBuffer[];
 
