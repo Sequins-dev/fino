@@ -569,6 +569,51 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:ml/metrics/calibration", "ml/metrics/calibration"),
     source_builtin!("internal:ml/metrics/similarity", "ml/metrics/similarity"),
     source_builtin!("internal:ml/metrics/streaming", "ml/metrics/streaming"),
+    source_builtin!("fino:model/hub", "model/hub"),
+    source_builtin!("internal:model/hub/cache", "internal/model/hub/cache"),
+    source_builtin!("internal:model/hub/lockfile", "internal/model/hub/lockfile"),
+    source_builtin!("internal:model/hub/download", "internal/model/hub/download"),
+    source_builtin!("fino:text/tokenizer", "text/tokenizer"),
+    source_builtin!(
+        "internal:text/tokenizer/normalized",
+        "internal/text/tokenizer/normalized"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/types",
+        "internal/text/tokenizer/types"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/bytes",
+        "internal/text/tokenizer/bytes"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/normalizers",
+        "internal/text/tokenizer/normalizers"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/pre-tokenizers",
+        "internal/text/tokenizer/pre-tokenizers"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/models",
+        "internal/text/tokenizer/models"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/post-processors",
+        "internal/text/tokenizer/post-processors"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/decoders",
+        "internal/text/tokenizer/decoders"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/added-tokens",
+        "internal/text/tokenizer/added-tokens"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/tiktoken",
+        "internal/text/tokenizer/tiktoken"
+    ),
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("fino:format/protobuf", "format/protobuf"),
