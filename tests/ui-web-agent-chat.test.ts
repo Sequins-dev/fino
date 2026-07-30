@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import type { GenerateRequest, Model, ModelStream, StreamEvent } from 'fino:ai/model';
 import { ModelStreamImpl } from 'internal:ai/shared';
+import { parseEventStream } from 'fino:net/http/eventstream';
 import { createWebAgentChatApp } from '../demos/web-agent-chat-app';
 import { InMemoryViewStore } from 'fino:ui/web/state';
 function hidden(html: string, name: string): string {
@@ -74,8 +75,10 @@ describe('zero-build web agent chat demo', () => {
         },
       }),
     )) as Response;
-    const liveReader = live.body!.getReader();
-    await liveReader.read();
+    const liveEvents = parseEventStream(live.body!)[Symbol.asyncIterator]();
+    const initial = await liveEvents.next();
+    t.equal(initial.value?.type, 'ui');
+    t.equal(JSON.parse(initial.value!.data).kind, 'render');
     const body = new URLSearchParams({
       _view: viewId,
       _ver: hidden(html, '_ver'),
@@ -102,12 +105,10 @@ describe('zero-build web agent chat demo', () => {
       actionText.includes('Hello world'),
       'enhanced action receives the completed streamed response',
     );
-    const liveUpdate = await liveReader.read();
-    t.ok(
-      new TextDecoder().decode(liveUpdate.value).includes('event: patch'),
-      'second tab receives a live patch',
-    );
-    await liveReader.cancel();
+    const liveUpdate = await liveEvents.next();
+    t.equal(liveUpdate.value?.type, 'ui');
+    t.equal(JSON.parse(liveUpdate.value!.data).kind, 'render');
+    await liveEvents.return?.();
     const snapshot = await store.load(viewId);
     t.ok((snapshot?.version ?? 0) >= 4, 'initial, delta, and final checkpoints are durable');
     t.deepEqual(snapshot?.data.messages, [

@@ -161,10 +161,12 @@ export function h(type: VNodeType, props: Props | null, ...children: Child[]): V
     if (name !== 'key' && name !== 'children') normalizedProps[name] = rawProps[name];
   }
   if (typeof type === 'function') {
-    return type({
+    const node = type({
       ...normalizedProps,
       children: normalizedChildren,
     });
+    const key = typeof keyValue === 'string' || typeof keyValue === 'number' ? keyValue : null;
+    return key === null || node.key === key ? node : { ...node, key };
   }
   return {
     type,

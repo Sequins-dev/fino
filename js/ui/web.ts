@@ -1,11 +1,19 @@
 /**
- * fino:ui/web — server-driven HTML views for `fino:net/http/app`.
+ * fino:ui/web — server-driven HTML and semantic UI for
+ * `fino:net/http/app`.
  *
  * This module renders `fino:ui` VNodes into real HTML pages and handles form
  * actions by rehydrating durable view snapshots. It is intentionally
  * hypermedia-first: forms keep real `action` and `method` attributes, enhanced
- * requests receive short-lived SSE patch streams, and plain browser submits use
+ * requests receive short-lived JSON UI streams, and plain browser submits use
  * POST-redirect-GET.
+ *
+ * Every SSE response uses the same JSON `ui` events and host-neutral VNode
+ * structure. A client can open a page route directly as an EventSource and
+ * receive the current snapshot before subsequent updates. Component type names
+ * are routed by the client through its own host adapter. The server owns view
+ * state and action execution, but it does not register platform component
+ * implementations or receive client-local interaction state.
  *
  * ```ts no_run
  * import { App } from 'fino:net/http/app';
@@ -25,6 +33,7 @@ import { parseCookieHeader, sealCookie, serializeCookie, unsealCookie } from 'fi
 import { escapeHtml } from 'fino:template';
 import { batch, h, Signal, type Props, type VNode } from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
+import { parse as parseSchema, type JsonSchema } from 'fino:validate';
 import type { Handler, HttpContext, LayerMiddleware } from 'fino:net/http/app';
 import type { ViewSnapshot, ViewStateStore } from 'fino:ui/web/state';
 type StateRecord = Record<string, Signal<unknown>>;
@@ -39,8 +48,8 @@ export interface ViewActionContext {
   /** HTTP request context for the action. */
   http: HttpContext;
   /**
-   * Persist the current signals and publish a live patch before the action
-   * finishes. Await checkpoints to preserve patch order.
+   * Persist the current signals and publish a live render before the action
+   * finishes. Await checkpoints to preserve render order.
    */
   checkpoint(): Promise<void>;
 }
@@ -55,6 +64,105 @@ type EmbedSpec =
       key: string;
       sealed?: boolean;
     };
+/**
+ * JSON value allowed in the UI protocol.
+ *
+ * Component props cross the SSE boundary as data. Functions, class instances,
+ * non-finite numbers, and cyclic values are rejected before a render event is
+ * sent.
+ */
+export type PortableValue =
+  | null
+  | boolean
+  | number
+  | string
+  | PortableValue[]
+  | { [key: string]: PortableValue };
+/**
+ * Host-neutral component node carried by a render event.
+ *
+ * Clients route `type` to their own named implementation. `key` is semantic
+ * instance identity for reconciliation; it is not a component implementation
+ * id.
+ */
+export interface PortableVNode {
+  /** Named component implementation requested from the client. */
+  type: string;
+  /** JSON props interpreted by that client component. */
+  props: Record<string, PortableValue>;
+  /** Ordered child components and text. */
+  children: Array<PortableVNode | string>;
+  /** Stable instance identity, or `null` when the node is unkeyed. */
+  key: string | number | null;
+}
+/**
+ * Serializable action descriptor embedded in component props.
+ *
+ * Send these fields back in a `PortableActionRequest`; do not construct action
+ * URLs or revision tokens in the client.
+ */
+export interface PortableActionRef {
+  /** Action name within the mounted view. */
+  action: string;
+  /** Relative HTTP endpoint for the action request. */
+  url: string;
+  /** Mounted view instance id. */
+  view: string;
+  /** Snapshot revision from which the action was rendered. */
+  revision: number;
+  /** Single-use request nonce for replay protection. */
+  request: string;
+}
+/**
+ * JSON body posted by a client to a `PortableActionRef.url`.
+ */
+export interface PortableActionRequest {
+  /** UI protocol version. Version 1 is currently supported. */
+  version: 1;
+  /** Mounted view instance id from the action descriptor. */
+  view: string;
+  /** Snapshot revision from the action descriptor. */
+  revision: number;
+  /** Request nonce from the action descriptor. */
+  request: string;
+  /** Optional JSON object validated by the action's input schema. */
+  input?: Record<string, PortableValue>;
+}
+/**
+ * Complete semantic render of one mounted view.
+ *
+ * Clients reconcile `tree` against the previous tree using component names and
+ * keys. The server does not keep or receive a registry of client
+ * implementations.
+ */
+export interface PortableRenderEvent {
+  /** UI protocol version. */
+  version: 1;
+  /** Render event discriminator. */
+  kind: 'render';
+  /** Stable server view definition id. */
+  view: string;
+  /** Mounted view instance id. */
+  viewId: string;
+  /** Monotonic snapshot revision, also sent as the SSE event id. */
+  revision: number;
+  /** Host-neutral component tree. */
+  tree: PortableVNode;
+}
+/**
+ * Event carried under the SSE `ui` event name.
+ *
+ * A live stream starts with `render` (or `navigate` when its view expired).
+ * `render` replaces the current semantic tree, `heartbeat` can confirm a live
+ * stream, `navigate` requests a page transition, `error` reports a safe
+ * protocol failure, and `close` ends a short-lived action or error stream.
+ */
+export type PortableUIEvent =
+  | PortableRenderEvent
+  | { version: 1; kind: 'heartbeat' }
+  | { version: 1; kind: 'navigate'; url: string; replace: boolean }
+  | { version: 1; kind: 'error'; code: string; recoverable: boolean }
+  | { version: 1; kind: 'close' };
 export interface WebUIOptions {
   /** Durable snapshot store used for view state. */
   store: ViewStateStore;
@@ -62,6 +170,8 @@ export interface WebUIOptions {
   secret: string;
   /** Snapshot lifetime in milliseconds. Defaults to one hour. */
   ttlMs?: number;
+  /** Maximum JSON action body size in bytes. Defaults to 64 KiB. */
+  maxActionBytes?: number;
   /**
    * Minimum time between opportunistic snapshot sweeps.
    *
@@ -85,7 +195,11 @@ export interface ViewDefinition {
   actions?: Record<
     string,
     {
+      /** Action implementation run against the restored view snapshot. */
       handler: ActionHandler;
+      /** Optional schema used to validate JSON and form input. */
+      input?: JsonSchema;
+      /** Whether an operation may safely rebase onto a newer snapshot. */
       stale?: 'reject' | 'rebase';
     }
   >;
@@ -124,10 +238,49 @@ class ActionRef {
   toString(): string {
     return this.url;
   }
+  toJSON(): PortableActionRef {
+    return {
+      action: this.name,
+      url: this.url,
+      view: this.viewId,
+      revision: this.version,
+      request: this.nonce,
+    };
+  }
+}
+function portableTree(tree: VNode): PortableVNode {
+  const seen = new Set<object>();
+  const copy = (value: unknown): unknown => {
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'number' && Number.isFinite(value))
+    )
+      return value;
+    if (value instanceof ActionRef) return copy(value.toJSON());
+    if (typeof value !== 'object') throw new TypeError('Portable UI values must be JSON data');
+    if (seen.has(value)) throw new TypeError('Portable UI values must not contain cycles');
+    seen.add(value);
+    try {
+      if (Array.isArray(value)) return value.map(copy);
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null)
+        throw new TypeError('Portable UI values must be plain objects');
+      const out: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(value)) out[key] = copy(entry);
+      return out;
+    } finally {
+      seen.delete(value);
+    }
+  };
+  return copy(tree) as PortableVNode;
 }
 interface RenderEnv {
   ctx: HttpContext;
   options: WebUIOptions;
+  streaming: boolean;
+  mounts: PortableRenderEvent[];
   csrfCookies: string[];
   pending: Promise<unknown>[];
 }
@@ -144,8 +297,9 @@ function pageUrl(ctx: HttpContext): URL {
   url.searchParams.delete('_action');
   return url;
 }
-function actionUrl(ctx: HttpContext, viewId: string, action: string): string {
-  const url = pageUrl(ctx);
+function actionUrl(ctx: HttpContext, viewId: string, action: string, pagePath?: string): string {
+  const url = pagePath === undefined ? pageUrl(ctx) : new URL(pagePath, ctx.request.url);
+  url.searchParams.delete('_action');
   url.searchParams.set('_action', `${viewId}.${action}`);
   return `${url.pathname}${url.search}`;
 }
@@ -355,18 +509,15 @@ class ServerView {
     const nonce = randomId('render');
     const csrf = csrfPayload(viewId, nonce, currentRender.options.secret);
     const actions = this.actions(ctx, viewId, 0, nonce, csrf, currentRender.options.secret);
-    const rendered = this.wrap(
-      viewId,
-      annotateForms(
-        this.def.render({
-          state,
-          actions,
-        }),
-        undefined,
-        state,
-      ),
-    );
-    const html = renderToHtml(rendered);
+    const rawTree = this.def.render({
+      state,
+      actions,
+    });
+    const tree = currentRender.streaming ? portableTree(rawTree) : rawTree;
+    const rendered = currentRender.streaming
+      ? tree
+      : this.wrap(viewId, annotateForms(tree, undefined, state));
+    const encoded = currentRender.streaming ? JSON.stringify(tree) : renderToHtml(rendered);
     const now = Date.now();
     const data = signalValues(
       state,
@@ -379,13 +530,23 @@ class ServerView {
         version: 0,
         sessionId: sessionId(ctx),
         data,
-        regions: { [viewId]: hashHtml(html) },
+        regions: { [viewId]: hashHtml(encoded) },
         applied: [],
         createdAt: now,
         updatedAt: now,
         expiresAt: now + (currentRender.options.ttlMs ?? 36e5),
       }),
     );
+    if (currentRender.streaming) {
+      currentRender.mounts.push({
+        version: 1,
+        kind: 'render',
+        view: this.def.id,
+        viewId,
+        revision: 0,
+        tree,
+      });
+    }
     currentRender.csrfCookies.push(
       serializeCookie('fi_csrf', csrf, {
         path: '/',
@@ -402,6 +563,7 @@ class ServerView {
     nonce: string,
     csrf: string,
     secret: string,
+    pagePath?: string,
   ): Record<string, ActionRef> {
     const out: Record<string, ActionRef> = {};
     for (const name of Object.keys(this.def.actions ?? {})) {
@@ -413,7 +575,7 @@ class ServerView {
         nonce,
         csrf,
         secret,
-        url: actionUrl(ctx, this.def.id, name),
+        url: actionUrl(ctx, this.def.id, name, pagePath),
       });
     }
     return out;
@@ -425,25 +587,26 @@ class ServerView {
     nonce: string,
     csrf: string,
     secret: string,
+    semantic = false,
+    pagePath?: string,
   ): {
     html: string;
     hash: string;
+    tree: VNode;
   } {
-    const rendered = this.wrap(
-      snapshot.viewId,
-      annotateForms(
-        this.def.render({
-          state,
-          actions: this.actions(ctx, snapshot.viewId, snapshot.version, nonce, csrf, secret),
-        }),
-        undefined,
-        state,
-      ),
-    );
-    const html = renderToHtml(rendered);
+    const rawTree = this.def.render({
+      state,
+      actions: this.actions(ctx, snapshot.viewId, snapshot.version, nonce, csrf, secret, pagePath),
+    });
+    const tree = semantic ? portableTree(rawTree) : rawTree;
+    const rendered = semantic
+      ? tree
+      : this.wrap(snapshot.viewId, annotateForms(tree, undefined, state));
+    const html = semantic ? '' : renderToHtml(rendered);
     return {
       html,
-      hash: hashHtml(html),
+      hash: hashHtml(semantic ? JSON.stringify(tree) : html),
+      tree,
     };
   }
   wrap(viewId: string, child: VNode): VNode {
@@ -499,6 +662,7 @@ function sseResponse(
     data: unknown;
     id?: string;
   }>,
+  status = 200,
 ): Response {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -511,46 +675,136 @@ function sseResponse(
       controller.close();
     },
   });
-  return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
+  return new Response(stream, {
+    status,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+function portableError(status: number, code: string, recoverable: boolean): Response {
+  return sseResponse(
+    [
+      {
+        event: 'ui',
+        data: { version: 1, kind: 'error', code, recoverable },
+      },
+      {
+        event: 'ui',
+        data: { version: 1, kind: 'close' },
+      },
+    ],
+    status,
+  );
 }
 async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Response> {
   if (!verifyRequestOrigin(ctx)) return new Response('Forbidden', { status: 403 });
-  const form = await ctx.request.formData();
-  if (!verifyCsrf(ctx, form, options.secret)) return new Response('Forbidden', { status: 403 });
-  const viewId = String(form.get('_view') ?? '');
+  const isJson = (ctx.request.headers.get('content-type') ?? '')
+    .toLowerCase()
+    .startsWith('application/json');
+  const streaming = isJson || wantsSse(ctx);
+  let form: FormData | null = null;
+  let viewId = '';
+  let requestVersion = -1;
+  let nonce = '';
+  let input: Record<string, unknown> = {};
+  if (isJson) {
+    if (sessionId(ctx) === undefined) return portableError(403, 'forbidden', false);
+    const encoded = await ctx.request.text();
+    if (new TextEncoder().encode(encoded).byteLength > (options.maxActionBytes ?? 65_536))
+      return portableError(413, 'action_too_large', false);
+    type ActionBody = {
+      version?: unknown;
+      view?: unknown;
+      revision?: unknown;
+      request?: unknown;
+      input?: unknown;
+    };
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(encoded);
+    } catch {
+      return portableError(400, 'invalid_request', false);
+    }
+    if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded))
+      return portableError(400, 'invalid_request', false);
+    const body = decoded as ActionBody;
+    if (body.version !== 1) return portableError(406, 'unsupported_version', false);
+    if (
+      typeof body.view !== 'string' ||
+      body.view === '' ||
+      typeof body.revision !== 'number' ||
+      !Number.isSafeInteger(body.revision) ||
+      body.revision < 0 ||
+      typeof body.request !== 'string' ||
+      body.request === '' ||
+      (body.input !== undefined &&
+        (body.input === null || typeof body.input !== 'object' || Array.isArray(body.input)))
+    )
+      return portableError(400, 'invalid_request', false);
+    viewId = body.view;
+    requestVersion = body.revision;
+    nonce = body.request;
+    input = (body.input ?? {}) as Record<string, unknown>;
+  } else {
+    form = await ctx.request.formData();
+    if (!verifyCsrf(ctx, form, options.secret)) return new Response('Forbidden', { status: 403 });
+    viewId = String(form.get('_view') ?? '');
+    requestVersion = Number(form.get('_ver') ?? -1);
+    nonce = String(form.get('_nonce') ?? '');
+    input = formEntries(form);
+  }
   const actionName = new URL(ctx.request.url).searchParams.get('_action') ?? '';
   const [viewName, name] = actionName.split('.');
   const serverView = viewName ? views.get(viewName) : undefined;
   const action = name ? serverView?.def.actions?.[name] : undefined;
   if (serverView === undefined || action === undefined || viewId === '')
-    return new Response('Not Found', { status: 404 });
+    return streaming
+      ? portableError(404, 'action_not_found', false)
+      : new Response('Not Found', { status: 404 });
   return withViewLock(viewId, async () => {
     const snapshot = await options.store.load(viewId);
-    if (snapshot === null) return new Response('Gone', { status: 410 });
+    if (snapshot === null)
+      return streaming
+        ? portableError(410, 'view_expired', false)
+        : new Response('Gone', { status: 410 });
     if (snapshot.sessionId !== undefined && snapshot.sessionId !== sessionId(ctx))
-      return new Response('Forbidden', { status: 403 });
-    const requestVersion = Number(form.get('_ver') ?? -1);
-    const nonce = String(form.get('_nonce') ?? '');
+      return streaming
+        ? portableError(403, 'forbidden', false)
+        : new Response('Forbidden', { status: 403 });
     const rid = `${requestVersion}:${nonce}`;
     if (snapshot.applied.some((entry) => entry.rid === rid && entry.action === name)) {
-      return wantsSse(ctx)
+      return streaming
         ? sseResponse([
             {
-              event: 'close',
-              data: {},
+              event: 'ui',
+              data: { version: 1, kind: 'close' },
               id: String(snapshot.version),
             },
           ])
         : redirectBack(ctx);
     }
     if (requestVersion !== snapshot.version && action.stale !== 'rebase')
-      return new Response('Conflict', { status: 409 });
+      return streaming
+        ? portableError(409, 'stale_revision', true)
+        : new Response('Conflict', { status: 409 });
     const state = serverView.def.state();
     hydrate(state, snapshot.data);
-    try {
-      hydrate(state, embeddedEntries(form, serverView, options.secret));
-    } catch (err) {
-      return new Response((err as Error).message, { status: 400 });
+    if (form !== null) {
+      try {
+        hydrate(state, embeddedEntries(form, serverView, options.secret));
+      } catch (err) {
+        return streaming
+          ? portableError(400, 'invalid_input', true)
+          : new Response((err as Error).message, { status: 400 });
+      }
+    }
+    if (action.input !== undefined) {
+      try {
+        input = parseSchema(action.input, input);
+      } catch {
+        return streaming
+          ? portableError(400, 'invalid_input', true)
+          : new Response('Invalid action input', { status: 400 });
+      }
     }
     let currentSnapshot = snapshot;
     const commit = async (complete: boolean) => {
@@ -583,6 +837,7 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
         nextNonce,
         csrf,
         options.secret,
+        streaming,
       );
       nextSnapshot.regions = { [viewId]: rendered.hash };
       await options.store.save(nextSnapshot, { expectVersion: currentSnapshot.version });
@@ -590,72 +845,91 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
       topic(`fino:ui/view:${viewId}`).publish({ version: nextVersion });
       return rendered;
     };
-    await batch(() =>
-      action.handler(
+    try {
+      await batch(() =>
+        action.handler(
+          {
+            state,
+            snapshot,
+            http: ctx,
+            checkpoint: () => commit(false).then(() => {}),
+          },
+          input,
+        ),
+      );
+      const rendered = await commit(true);
+      if (!streaming) return redirectBack(ctx);
+      return sseResponse([
         {
-          state,
-          snapshot,
-          http: ctx,
-          checkpoint: () => commit(false).then(() => {}),
+          event: 'ui',
+          data: {
+            version: 1,
+            kind: 'render',
+            view: serverView.def.id,
+            viewId,
+            revision: currentSnapshot.version,
+            tree: rendered.tree,
+          },
+          id: String(currentSnapshot.version),
         },
-        formEntries(form),
-      ),
-    );
-    const rendered = await commit(true);
-    if (!wantsSse(ctx)) return redirectBack(ctx);
-    return sseResponse([
-      {
-        event: 'patch',
-        data: {
-          id: viewId,
-          mode: 'replace',
-          html: rendered.html,
+        {
+          event: 'ui',
+          data: { version: 1, kind: 'close' },
         },
-        id: String(currentSnapshot.version),
-      },
-      {
-        event: 'close',
-        data: {},
-        id: String(currentSnapshot.version),
-      },
-    ]);
+      ]);
+    } catch (error) {
+      topic('fino:ui/action:error').publish({
+        error,
+        view: serverView.def.id,
+        viewId,
+        action: name,
+      });
+      if (streaming) return portableError(500, 'action_failed', true);
+      throw error;
+    }
   });
 }
-function renderLivePatch(
+function renderLiveEvent(
   ctx: HttpContext,
   options: WebUIOptions,
   snapshot: ViewSnapshot,
-): {
-  id: string;
-  html: string;
-  version: number;
-} | null {
+  pagePath: string,
+): PortableRenderEvent | null {
   const serverView = views.get(snapshot.view);
   if (serverView === undefined) return null;
   const state = serverView.def.state();
   hydrate(state, snapshot.data);
   const nonce = randomId('render');
   const csrf = csrfPayload(snapshot.viewId, nonce, options.secret);
-  const rendered = serverView.renderSnapshot(ctx, snapshot, state, nonce, csrf, options.secret);
+  const rendered = serverView.renderSnapshot(
+    ctx,
+    snapshot,
+    state,
+    nonce,
+    csrf,
+    options.secret,
+    true,
+    pagePath,
+  );
   return {
-    id: snapshot.viewId,
-    html: rendered.html,
-    version: snapshot.version,
+    version: 1,
+    kind: 'render',
+    viewId: snapshot.viewId,
+    tree: rendered.tree,
+    view: serverView.def.id,
+    revision: snapshot.version,
   };
 }
-function handleLive(ctx: HttpContext, options: WebUIOptions): Response {
-  const viewsParam = new URL(ctx.request.url).searchParams.get('view') ?? '';
-  const viewIds = viewsParam
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-  if (viewIds.length === 0) return new Response('Missing view', { status: 400 });
-  const lastEventId = Number(ctx.request.headers.get('last-event-id') ?? -1);
-  const pagePath = new URL(ctx.request.url).pathname || '/';
+function liveResponse(
+  ctx: HttpContext,
+  options: WebUIOptions,
+  viewIds: string[],
+  pagePath: string,
+  initial?: PortableRenderEvent[],
+): Response {
   const sendSnapshot = async (
     controller: ReadableStreamDefaultController<Uint8Array>,
     viewId: string,
-    force = false,
   ) => {
     const snapshot = await options.store.load(viewId);
     if (
@@ -663,25 +937,22 @@ function handleLive(ctx: HttpContext, options: WebUIOptions): Response {
       (snapshot.sessionId !== undefined && snapshot.sessionId !== sessionId(ctx))
     ) {
       writeSse(controller, {
-        event: 'navigate',
+        event: 'ui',
         data: {
+          version: 1,
+          kind: 'navigate',
           url: pagePath,
           replace: true,
         },
       });
       return;
     }
-    if (!force && Number.isFinite(lastEventId) && lastEventId >= snapshot.version) return;
-    const patch = renderLivePatch(ctx, options, snapshot);
-    if (patch !== null)
+    const render = renderLiveEvent(ctx, options, snapshot, pagePath);
+    if (render !== null)
       writeSse(controller, {
-        event: 'patch',
-        data: {
-          id: patch.id,
-          mode: 'replace',
-          html: patch.html,
-        },
-        id: String(patch.version),
+        event: 'ui',
+        data: render,
+        id: String(render.revision),
       });
   };
   let handles: Array<{
@@ -692,18 +963,41 @@ function handleLive(ctx: HttpContext, options: WebUIOptions): Response {
     handles = [];
   };
   const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(': connected\n\n'));
+    async start(controller) {
       handles = viewIds.map((viewId) =>
         topic(`fino:ui/view:${viewId}`).subscribe(() => {
-          void sendSnapshot(controller, viewId, true).catch(() => {});
+          void sendSnapshot(controller, viewId).catch(() => {});
         }),
       );
-      for (const viewId of viewIds) void sendSnapshot(controller, viewId).catch(() => {});
+      if (initial === undefined) {
+        for (const viewId of viewIds) await sendSnapshot(controller, viewId);
+      } else {
+        for (const render of initial) {
+          writeSse(controller, {
+            event: 'ui',
+            data: render,
+            id: String(render.revision),
+          });
+        }
+      }
     },
     cancel: dispose,
   });
   return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
+}
+function handleLive(ctx: HttpContext, options: WebUIOptions): Response {
+  const liveUrl = new URL(ctx.request.url);
+  const viewsParam = liveUrl.searchParams.get('view') ?? '';
+  const viewIds = viewsParam
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (viewIds.length === 0) return new Response('Missing view', { status: 400 });
+  const referer = ctx.request.headers.get('referer');
+  const pagePath =
+    liveUrl.searchParams.get('url') ??
+    (referer === null ? '/' : `${new URL(referer).pathname}${new URL(referer).search}`);
+  return liveResponse(ctx, options, viewIds, pagePath);
 }
 /**
  * Return the content-hashed browser runtime path served by `webUI()`.
@@ -770,7 +1064,7 @@ export function webUI(options: WebUIOptions): LayerMiddleware {
   };
 }
 /**
- * Create a page route handler that renders VNodes to a full HTML response.
+ * Create a page route handler that returns HTML or a live JSON UI stream.
  */
 export function page(render: (ctx: HttpContext) => VNode): Handler {
   return async (ctx) => {
@@ -779,14 +1073,34 @@ export function page(render: (ctx: HttpContext) => VNode): Handler {
     const env: RenderEnv = {
       ctx,
       options,
+      streaming: wantsSse(ctx),
+      mounts: [],
       csrfCookies: [],
       pending: [],
     };
     currentRender = env;
     try {
-      const html = '<!doctype html>' + renderToHtml(render(ctx));
+      let rendered: VNode;
+      try {
+        rendered = render(ctx);
+      } catch (error) {
+        if (!env.streaming) throw error;
+        topic('fino:ui/render:error').publish(error);
+        return portableError(500, 'invalid_tree', false);
+      }
       await Promise.all(env.pending);
-      const res = new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      const url = pageUrl(ctx);
+      const res = env.streaming
+        ? liveResponse(
+            ctx,
+            options,
+            env.mounts.map((mount) => mount.viewId),
+            `${url.pathname}${url.search}`,
+            env.mounts,
+          )
+        : new Response('<!doctype html>' + renderToHtml(rendered), {
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          });
       for (const cookie of env.csrfCookies)
         (
           res.headers as Headers & {
