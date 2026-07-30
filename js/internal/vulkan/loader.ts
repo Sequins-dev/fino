@@ -14,6 +14,7 @@
  *
  * This module is re-exported through `internal:vulkan`; import from there.
  */
+import { env } from 'internal:process';
 import { dlopen } from 'fino:ffi';
 
 /**
@@ -245,7 +246,7 @@ export type VulkanLibrary = ReturnType<typeof openLoader>;
  * @internal
  */
 function openLoader() {
-  const override = globalThis.process?.env?.FINO_VULKAN_LIBRARY;
+  const override = env.FINO_VULKAN_LIBRARY;
   const paths = override ? [override, ...CANDIDATES] : CANDIDATES;
   const failures: string[] = [];
   for (const path of paths) {

@@ -161,6 +161,22 @@ const dev = await device('auto'); // or 'cpu', 'metal:1', …
 because the reference CPU backend always registers. `FINO_TENSOR_DEVICE` pins the
 choice, which is how the differential tests select a backend.
 
+### CPU matrix multiply
+
+The CPU backend is a scalar TypeScript implementation — deliberately, since it is the
+oracle every kernel is checked against — with one exception: matrix multiply goes
+through whatever BLAS the platform has. Accelerate on macOS, OpenBLAS or BLIS on
+Linux, `FINO_BLAS_LIBRARY` to name one directly. Matrix multiply is where nearly all
+of a model's arithmetic lives and every platform already ships a tuned implementation,
+so competing with it would be pointless; on this machine it is the difference between
+600ms and 1ms for a 512x512 `f32` multiply.
+
+It is used only where it cannot change an answer: `f32` and `f64`, contiguous
+operands, no accumulation into the output. Anything else keeps the reference loop, and
+so does a machine with no BLAS at all — `gpuUnavailableReasons()` has a counterpart in
+`blasUnavailableReason()`. Everything other than matrix multiply is still scalar
+TypeScript, so no other CPU figure from this engine should be read as performance.
+
 ### Moving between devices
 
 ```ts

@@ -14,6 +14,7 @@
  *
  * This module is re-exported through `internal:vulkan`; import from there.
  */
+import { env } from 'internal:process';
 import { Pointer } from 'fino:ffi';
 import { VulkanError, check, loader, vulkanAvailable, vulkanUnavailableReason } from './loader.ts';
 import type { VulkanLibrary } from './loader.ts';
@@ -582,7 +583,7 @@ export class VulkanCompute {
    * does not require it.
    */
   get sharesMemory(): boolean {
-    if (globalThis.process?.env?.FINO_VULKAN_STAGING === '1') return false;
+    if (env.FINO_VULKAN_STAGING === '1') return false;
     return this.#info.unifiedMemory;
   }
 
@@ -1101,7 +1102,7 @@ function pickPhysicalDevice(lib: VulkanLibrary, instance: ArrayBuffer): ArrayBuf
     'vkEnumeratePhysicalDevices',
     lib.symbols.vkEnumeratePhysicalDevices(instance, countSlot, handles) as number,
   );
-  const index = Number(globalThis.process?.env?.FINO_VULKAN_DEVICE ?? 0) || 0;
+  const index = Number(env.FINO_VULKAN_DEVICE ?? 0) || 0;
   const chosen = Math.min(Math.max(index, 0), count - 1);
   return handles.slice(chosen * 8, chosen * 8 + 8).buffer;
 }

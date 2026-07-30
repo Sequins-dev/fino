@@ -930,6 +930,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tensor/ops/linalg", "tensor/ops/linalg"),
     source_builtin!("internal:tensor/ops/movement", "tensor/ops/movement"),
     source_builtin!("internal:tensor/ref", "tensor/ref/backend"),
+    source_builtin!("internal:tensor/cpu", "tensor/cpu/index"),
+    source_builtin!("internal:tensor/cpu/blas", "tensor/cpu/blas"),
     source_builtin!("internal:tensor/harness", "tensor/harness"),
     source_builtin!("internal:tensor/kernel-cache", "tensor/kernel-cache"),
     source_builtin!("internal:tensor/gpu", "tensor/gpu/index"),

@@ -43,6 +43,8 @@ import { opByName } from '../ops/registry.ts';
 import type { RefAccessor } from '../ops/registry.ts';
 import { RefView, refAlloc } from './view.ts';
 import type { RefBuffer } from './view.ts';
+import { blasAvailable, blasGemm } from '../cpu/blas.ts';
+import { numel } from '../shape.ts';
 
 /** Every dtype; the reference backend is the universal fallback. */
 const CAPS: BackendCaps = {
@@ -65,6 +67,94 @@ const CAPS: BackendCaps = {
 function viewOf(desc: TensorDesc): RefView {
   const buffer = (desc.buffer as RefBuffer).bytes;
   return new RefView(buffer, desc.dtype, desc.shape, desc.strides, desc.offset);
+}
+
+/**
+ * Multiply through BLAS when the operands suit it.
+ *
+ * Returns false for anything it does not handle, which the caller answers with the
+ * reference loop. The conditions are all about *not* silently doing something
+ * different: only the two dtypes BLAS has, only contiguous operands, and only the
+ * non-transposed form the reference loop itself assumes.
+ *
+ * @internal
+ */
+function blasGemm2D(
+  a: TensorDesc,
+  b: TensorDesc,
+  out: TensorDesc,
+  opts: GemmOpts,
+): boolean {
+  if (out.dtype !== 'f32' && out.dtype !== 'f64') return false;
+  if (a.dtype !== out.dtype || b.dtype !== out.dtype) return false;
+  // The framework materialises transposes before reaching a backend, so these are
+  // always false today. Declining keeps this from being the one path that would
+  // interpret them, and so disagree with the reference loop if that ever changed.
+  if (opts.transA || opts.transB) return false;
+  if ((opts.beta ?? 0) !== 0) return false;
+  if (!isContiguous(a) || !isContiguous(b) || !isContiguous(out)) return false;
+  if (opts.m === 0 || opts.n === 0 || opts.k === 0) return false;
+  if (!blasAvailable()) return false;
+
+  const { m, n, k, batch } = opts;
+  // Zero for an operand that broadcasts over the batch, matching the reference loop.
+  const aBatch = numel(a.shape) === m * k ? 0 : m * k;
+  const bBatch = numel(b.shape) === k * n ? 0 : k * n;
+  for (let index = 0; index < batch; index++) {
+    const ok = blasGemm({
+      transA: false,
+      transB: false,
+      m,
+      n,
+      k,
+      alpha: 1,
+      beta: 0,
+      a: elementsOf(a, index * aBatch, m * k),
+      lda: k,
+      b: elementsOf(b, index * bBatch, k * n),
+      ldb: n,
+      c: elementsOf(out, index * m * n, m * n),
+      ldc: n,
+    });
+    // A partial batch would leave the rest of the output untouched, so bail only
+    // before the first call can have written anything.
+    if (!ok) return index > 0;
+  }
+  return true;
+}
+
+/**
+ * Whether a descriptor's strides are the row-major ones for its shape.
+ *
+ * @internal
+ */
+function isContiguous(desc: TensorDesc): boolean {
+  let expected = 1;
+  for (let axis = desc.shape.length - 1; axis >= 0; axis--) {
+    if (desc.shape[axis] !== 1 && desc.strides[axis] !== expected) return false;
+    expected *= desc.shape[axis]!;
+  }
+  return true;
+}
+
+/**
+ * A typed-array window onto a descriptor's elements.
+ *
+ * BLAS takes pointers, and the FFI applies a view's byte offset, so this is what
+ * positions a call on one batch item without copying.
+ *
+ * @internal
+ */
+function elementsOf(
+  desc: TensorDesc,
+  offset: number,
+  count: number,
+): Float32Array | Float64Array {
+  const bytes = (desc.buffer as RefBuffer).bytes;
+  const start = desc.offset + offset;
+  return desc.dtype === 'f64'
+    ? new Float64Array(bytes, start * 8, count)
+    : new Float32Array(bytes, start * 4, count);
 }
 
 /**
@@ -217,6 +307,10 @@ export class RefBackend implements DeviceBackend {
   }
 
   gemm(a: TensorDesc, b: TensorDesc, out: TensorDesc, opts: GemmOpts): void {
+    // BLAS where it applies, which is most of the arithmetic a model does. It
+    // declines rather than throws when it cannot help, and the loop below is both the
+    // fallback and the oracle BLAS is checked against.
+    if (blasGemm2D(a, b, out, opts)) return;
     this.#run('gemm', [a, b], out, {
       m: opts.m,
       n: opts.n,

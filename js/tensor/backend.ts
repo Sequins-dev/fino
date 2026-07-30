@@ -22,6 +22,7 @@
  * work. The distinction is in the contract from the first commit because
  * retrofitting it would break every out-of-tree implementation.
  */
+import { env } from 'internal:process';
 import type { DType } from './dtype.ts';
 
 /**
@@ -619,7 +620,7 @@ async function probeType(type: string): Promise<void> {
  */
 function envDevice(): string | null {
   // Read lazily so a test can set it before the first resolution.
-  const value = globalThis.process?.env?.FINO_TENSOR_DEVICE;
+  const value = env.FINO_TENSOR_DEVICE;
   return value && value.length > 0 ? value : null;
 }
 
