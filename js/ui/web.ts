@@ -212,8 +212,60 @@ export interface ViewDefinition {
       confirm?: string;
     }
   >;
+  /**
+   * Signal keys projected from an authoritative external store.
+   *
+   * Derived signals are rendered but never written to the view snapshot, so a
+   * store that already owns the data stays the only durable copy. Seed them
+   * through `derive` rather than expecting hydration to restore them.
+   */
+  derived?: string[];
+  /**
+   * Populate `derived` signals before a render web.ts owns.
+   *
+   * This runs on the action and live-stream paths, which are already async. The
+   * initial `mount()` render is synchronous, so a caller that mounts a view with
+   * derived signals must seed them before calling `mount()`.
+   */
+  derive?: (args: {
+    state: StateRecord;
+    http: HttpContext;
+    snapshot: ViewSnapshot;
+  }) => void | Promise<void>;
   /** Render function for the view's current state. */
   render: ViewRender;
+}
+/**
+ * Action failure that carries a stable, publicly safe error code.
+ *
+ * An action handler throws this when the caller should learn *why* the request
+ * failed. Any other thrown value is reported as `action_failed` with its details
+ * published only to the internal diagnostics topic, so a handler must opt in
+ * before anything reaches the client.
+ *
+ * ```ts no_run
+ * import { ViewActionError } from 'fino:ui/web';
+ *
+ * throw new ViewActionError('flow_stale_step', { status: 409, recoverable: true });
+ * ```
+ */
+export class ViewActionError extends Error {
+  /** Stable code sent to clients as the SSE error code. */
+  readonly code: string;
+  /** HTTP status for the action response. */
+  readonly status: number;
+  /** Whether a client may retry after resynchronizing. */
+  readonly recoverable: boolean;
+  constructor(
+    code: string,
+    options: { status?: number; recoverable?: boolean; message?: string } = {},
+  ) {
+    super(options.message ?? code);
+    this.name = 'ViewActionError';
+    this.code = code;
+    this.status = options.status ?? 409;
+    this.recoverable = options.recoverable ?? true;
+  }
 }
 const views = new Map<string, ServerView>();
 class ActionRef {
@@ -513,8 +565,10 @@ class ServerView {
   readonly def: ViewDefinition;
   readonly embed: Set<string>;
   readonly sealedEmbed: Set<string>;
+  readonly derived: Set<string>;
   constructor(def: ViewDefinition) {
     this.def = def;
+    this.derived = new Set(def.derived ?? []);
     this.embed = new Set(
       (def.embed ?? []).map((entry) => (typeof entry === 'string' ? entry : entry.key)),
     );
@@ -531,10 +585,25 @@ class ServerView {
         ),
     );
   }
-  mount(ctx: HttpContext): VNode {
+  /** Signal values that belong in the snapshot, excluding embedded and derived keys. */
+  persisted(state: StateRecord): Record<string, unknown> {
+    return signalValues(
+      state,
+      new Set(Object.keys(state).filter((key) => !this.embed.has(key) && !this.derived.has(key))),
+    );
+  }
+  /**
+   * Render a fresh instance of this view into the page currently being rendered.
+   *
+   * `seed` presets signal values before the first render. A view with derived
+   * signals needs it, because `mount()` is synchronous and cannot await
+   * `derive`; the caller's handler is the one place that can load first.
+   */
+  mount(ctx: HttpContext, seed?: Record<string, unknown>): VNode {
     if (currentRender === null)
       throw new Error('view.mount() must be called while rendering a page() handler');
     const state = this.def.state();
+    if (seed !== undefined) hydrate(state, seed);
     const viewId = randomId('view');
     const nonce = randomId('render');
     const csrf = csrfPayload(viewId, nonce, currentRender.options.secret);
@@ -549,10 +618,7 @@ class ServerView {
       : this.wrap(viewId, annotateForms(tree, undefined, state));
     const encoded = currentRender.streaming ? JSON.stringify(tree) : renderToHtml(rendered);
     const now = Date.now();
-    const data = signalValues(
-      state,
-      new Set(Object.keys(state).filter((key) => !this.embed.has(key))),
-    );
+    const data = this.persisted(state);
     currentRender.pending.push(
       currentRender.options.store.save({
         viewId,
@@ -836,6 +902,14 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
         : new Response('Conflict', { status: 409 });
     const state = serverView.def.state();
     hydrate(state, snapshot.data);
+    try {
+      await serverView.def.derive?.({ state, http: ctx, snapshot });
+    } catch (error) {
+      topic('fino:ui/render:error').publish(error);
+      return streaming
+        ? portableError(500, 'action_failed', true)
+        : new Response('Internal Server Error', { status: 500 });
+    }
     if (form !== null) {
       try {
         hydrate(state, embeddedEntries(form, serverView, options.secret));
@@ -856,10 +930,7 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
     }
     let currentSnapshot = snapshot;
     const commit = async (complete: boolean) => {
-      const data = signalValues(
-        state,
-        new Set(Object.keys(state).filter((key) => !serverView.embed.has(key))),
-      );
+      const data = serverView.persisted(state);
       const nextVersion = currentSnapshot.version + 1;
       const nextNonce = randomId('render');
       const csrf = csrfPayload(viewId, nextNonce, options.secret);
@@ -932,21 +1003,27 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
         viewId,
         action: name,
       });
+      if (error instanceof ViewActionError) {
+        return streaming
+          ? portableError(error.status, error.code, error.recoverable)
+          : new Response(error.code, { status: error.status });
+      }
       if (streaming) return portableError(500, 'action_failed', true);
       throw error;
     }
   });
 }
-function renderLiveEvent(
+async function renderLiveEvent(
   ctx: HttpContext,
   options: WebUIOptions,
   snapshot: ViewSnapshot,
   pagePath: string,
-): PortableRenderEvent | null {
+): Promise<PortableRenderEvent | null> {
   const serverView = views.get(snapshot.view);
   if (serverView === undefined) return null;
   const state = serverView.def.state();
   hydrate(state, snapshot.data);
+  await serverView.def.derive?.({ state, http: ctx, snapshot });
   const nonce = randomId('render');
   const csrf = csrfPayload(snapshot.viewId, nonce, options.secret);
   const rendered = serverView.renderSnapshot(
@@ -995,7 +1072,7 @@ function liveResponse(
       });
       return;
     }
-    const render = renderLiveEvent(ctx, options, snapshot, pagePath);
+    const render = await renderLiveEvent(ctx, options, snapshot, pagePath);
     if (render !== null)
       writeSse(controller, {
         event: 'ui',
