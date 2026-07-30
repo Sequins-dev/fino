@@ -556,6 +556,19 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:data/parquet/reader", "data/parquet/reader"),
     source_builtin!("internal:data/parquet/writer", "data/parquet/writer"),
+    // ml
+    source_builtin!("fino:ml/metrics", "ml/metrics/index"),
+    source_builtin!("internal:ml/metrics/shared", "ml/metrics/shared"),
+    source_builtin!("internal:ml/metrics/confusion", "ml/metrics/confusion"),
+    source_builtin!(
+        "internal:ml/metrics/classification",
+        "ml/metrics/classification"
+    ),
+    source_builtin!("internal:ml/metrics/regression", "ml/metrics/regression"),
+    source_builtin!("internal:ml/metrics/ranking", "ml/metrics/ranking"),
+    source_builtin!("internal:ml/metrics/calibration", "ml/metrics/calibration"),
+    source_builtin!("internal:ml/metrics/similarity", "ml/metrics/similarity"),
+    source_builtin!("internal:ml/metrics/streaming", "ml/metrics/streaming"),
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("fino:format/protobuf", "format/protobuf"),

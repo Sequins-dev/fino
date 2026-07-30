@@ -99,6 +99,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:data/dataset` | not yet benchmarked |
 | `fino:data/frame` | not yet benchmarked |
 | `fino:data/parquet` | `benchmarks/data/parquet.bench.ts` |
+| `fino:ml/metrics` | `benchmarks/ml/metrics.bench.ts` |
 | `fino:format/csv` | `benchmarks/format/csv.bench.ts` |
 | `fino:format/flatbuffers` | `benchmarks/format/flatbuffers.bench.ts` |
 | `fino:format/protobuf` | `benchmarks/format/protobuf.bench.ts` |

@@ -61,6 +61,7 @@ import { getMeterProvider } from 'fino:opentelemetry/metrics';
 import { createSignal } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
 import { Dataset } from 'fino:data/dataset';
+import { cosineSimilarity, StreamingMean } from 'fino:ml/metrics';
 /**
  * One evaluation case: a named input plus an optional expected output.
  *
@@ -662,7 +663,7 @@ export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>
   const { name, target, cases, scorers, threshold = 1, report } = opts;
   const caseDataset = cases instanceof Dataset ? cases : Dataset.from(cases);
   const registeredCases = caseDataset.toArray();
-  const allScores: number[] = [];
+  const runningScore = new StreamingMean();
   let passedCount = 0;
   let startCalled = false;
   suite(name, () => {
@@ -696,7 +697,7 @@ export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>
         const meanScore =
           scoreValues.length > 0 ? scoreValues.reduce((a, b) => a + b, 0) / scoreValues.length : 1;
         const passes = meanScore >= threshold;
-        allScores.push(meanScore);
+        runningScore.update(meanScore);
         if (passes) passedCount++;
         t.meta({ score: meanScore });
         t.ok(passes, `score ${meanScore.toFixed(3)} >= threshold ${threshold}`);
@@ -712,8 +713,7 @@ export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>
       });
     }
     test('summary', async (t) => {
-      const mean =
-        allScores.length > 0 ? allScores.reduce((a, b) => a + b, 0) / allScores.length : 1;
+      const mean = runningScore.count > 0 ? runningScore.value() : 1;
       const passes = mean >= threshold;
       t.meta({
         mean: mean.toFixed(3),
@@ -947,20 +947,12 @@ export function semanticSimilarity(model: EmbeddingModel, min: number): Scorer {
         explanation: 'no expected value',
       };
     const [outEmb, expEmb] = await model.embed([outStr, expStr]);
-    if (!outEmb || !expEmb)
+    if (!outEmb || !expEmb || outEmb.length !== expEmb.length)
       return {
         value: 0,
         pass: false,
       };
-    let dot = 0,
-      normA = 0,
-      normB = 0;
-    for (let i = 0; i < outEmb.length; i++) {
-      dot += outEmb[i]! * expEmb[i]!;
-      normA += outEmb[i]! * outEmb[i]!;
-      normB += expEmb[i]! * expEmb[i]!;
-    }
-    const cosine = normA > 0 && normB > 0 ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
+    const cosine = cosineSimilarity(outEmb, expEmb);
     const pass = cosine >= min;
     return {
       value: cosine,

@@ -88,6 +88,8 @@ architecture; the deep dives cover
 - [Testing and Benchmarking](./testing-and-benchmarking.md) — the built-in
   test framework, mocks, and benchmark harness.
 - [Data](./data.md) — Apache Arrow and Parquet tooling.
+- [Machine Learning](./ml.md) — shared metrics for classification, ranking,
+  regression, calibration, and similarity.
 - [Native FFI](./native-ffi.md) — loading native libraries and binding C ABI
   functions.
 - [Profiling](./profiling.md) — JS CPU profiles and native profiling paths.
