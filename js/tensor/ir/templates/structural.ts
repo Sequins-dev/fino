@@ -104,10 +104,19 @@ export function stridedCopyKernel(spec: {
 }
 
 /**
- * Gather whole rows by index; the embedding forward pass.
+ * Gather slices by index; the embedding forward pass.
  *
- * Buffers are `in0` (the table), `idx`, and `out0`. Parameters are `n` (output
- * element count), `rowSize`, and `axisSize`.
+ * Works along any axis. The output is `[outer, count, inner]` over an input of
+ * `[outer, axisSize, inner]`, so `inner = 1` is the axis-0 case and a larger value
+ * addresses an interior axis without a transpose.
+ *
+ * An out-of-range index writes a fault code into `status` and reads zero rather
+ * than wandering off the buffer. A kernel cannot throw, so the framework checks
+ * that flag at the next synchronisation point — which is exactly how the contract
+ * says device errors surface.
+ *
+ * Buffers are `in0` (the table), `idx`, `out0`, and `status`. Parameters are `n`
+ * (output element count), `count`, `inner`, and `axisSize`.
  */
 export function indexSelectKernel(spec: { dtype: ScalarDType; wg?: number }): {
   ir: KernelIR;
@@ -118,13 +127,18 @@ export function indexSelectKernel(spec: { dtype: ScalarDType; wg?: number }): {
   b.buffer('in0', vt(spec.dtype), 'read');
   b.buffer('idx', vt('i32'), 'read');
   b.buffer('out0', vt(spec.dtype), 'write');
+  b.buffer('status', vt('u32'), 'readwrite');
   const n = b.param('n');
-  const rowSize = b.param('rowSize');
+  const count = b.param('count');
+  const inner = b.param('inner');
   const axisSize = b.param('axisSize');
 
   b.gridStride(n, (i) => {
-    const which = b.letTemp(vt('u32'), E.div(i, rowSize), 'w');
-    const offset = b.letTemp(vt('u32'), E.mod(i, rowSize), 'off');
+    const span = b.letTemp(vt('u32'), E.mul(count, inner), 'span');
+    const outer = b.letTemp(vt('u32'), E.div(i, span), 'o');
+    const rest = b.letTemp(vt('u32'), E.mod(i, span), 'rest');
+    const which = b.letTemp(vt('u32'), E.div(rest, inner), 'w');
+    const offset = b.letTemp(vt('u32'), E.mod(rest, inner), 'off');
     const raw = b.letTemp(vt('i32'), E.load('idx', which), 'r');
     // Negative indices count from the end, matching the reference implementation.
     const wrapped = b.letTemp(
@@ -136,14 +150,19 @@ export function indexSelectKernel(spec: { dtype: ScalarDType; wg?: number }): {
       ),
       'ix',
     );
-    // An out-of-range index reads zero rather than wandering off the buffer; the
-    // framework rejects such indices before dispatch, so this is a safety net.
     b.if(
       E.lt(wrapped, axisSize),
       () => {
-        b.store('out0', i, E.load('in0', E.add(E.mul(wrapped, rowSize), offset)));
+        const src = E.add(
+          E.mul(E.add(E.mul(outer, axisSize), wrapped), inner),
+          offset,
+        );
+        b.store('out0', i, E.load('in0', src));
       },
       () => {
+        // Recording the offending value makes the eventual error specific. Racing
+        // threads all write a valid offender, so any of them is informative.
+        b.store('status', E.u32(0), E.add(wrapped, E.u32(1)));
         b.store('out0', i, E.const(vt(spec.dtype), 0));
       },
     );
@@ -159,8 +178,11 @@ export function indexSelectKernel(spec: { dtype: ScalarDType; wg?: number }): {
  * The float atomic degrades to a compare-and-swap loop where the extension is
  * absent, which the SPIR-V lowering handles.
  *
- * Buffers are `idx`, `src`, and `out0`. Parameters are `n` (source element count),
- * `rowSize`, and `axisSize`.
+ * Works along any axis, with the same `[outer, count, inner]` addressing as
+ * {@link indexSelectKernel}, and reports an out-of-range index the same way.
+ *
+ * Buffers are `idx`, `src`, `out0`, and `status`. Parameters are `n` (source
+ * element count), `count`, `inner`, and `axisSize`.
  */
 export function scatterAddKernel(spec: { dtype: ScalarDType; wg?: number }): {
   ir: KernelIR;
@@ -171,13 +193,18 @@ export function scatterAddKernel(spec: { dtype: ScalarDType; wg?: number }): {
   b.buffer('idx', vt('i32'), 'read');
   b.buffer('src', vt(spec.dtype), 'read');
   b.buffer('out0', vt(spec.dtype), 'readwrite');
+  b.buffer('status', vt('u32'), 'readwrite');
   const n = b.param('n');
-  const rowSize = b.param('rowSize');
+  const count = b.param('count');
+  const inner = b.param('inner');
   const axisSize = b.param('axisSize');
 
   b.gridStride(n, (i) => {
-    const which = b.letTemp(vt('u32'), E.div(i, rowSize), 'w');
-    const offset = b.letTemp(vt('u32'), E.mod(i, rowSize), 'off');
+    const span = b.letTemp(vt('u32'), E.mul(count, inner), 'span');
+    const outer = b.letTemp(vt('u32'), E.div(i, span), 'o');
+    const rest = b.letTemp(vt('u32'), E.mod(i, span), 'rest');
+    const which = b.letTemp(vt('u32'), E.div(rest, inner), 'w');
+    const offset = b.letTemp(vt('u32'), E.mod(rest, inner), 'off');
     const raw = b.letTemp(vt('i32'), E.load('idx', which), 'r');
     const wrapped = b.letTemp(
       vt('u32'),
@@ -188,9 +215,19 @@ export function scatterAddKernel(spec: { dtype: ScalarDType; wg?: number }): {
       ),
       'ix',
     );
-    b.if(E.lt(wrapped, axisSize), () => {
-      b.atomicAdd('out0', E.add(E.mul(wrapped, rowSize), offset), E.load('src', i));
-    });
+    b.if(
+      E.lt(wrapped, axisSize),
+      () => {
+        const dst = E.add(
+          E.mul(E.add(E.mul(outer, axisSize), wrapped), inner),
+          offset,
+        );
+        b.atomicAdd('out0', dst, E.load('src', i));
+      },
+      () => {
+        b.store('status', E.u32(0), E.add(wrapped, E.u32(1)));
+      },
+    );
   });
 
   return { ir: b.build(), key: specKey('scatteradd', { dtype: spec.dtype, wg }) };

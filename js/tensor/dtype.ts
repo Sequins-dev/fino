@@ -1,7 +1,7 @@
 /**
  * Tensor element types, promotion, and host-array mapping.
  *
- * The rules here are normative and are specified in `docs/tensor-contract.md`
+ * The rules here are normative and are specified in `specs/tensor-contract.md`
  * §2. They are shared vocabulary rather than an implementation detail: Arrow
  * column conversion, artifact descriptors, and every backend agree on these
  * names and this lattice.

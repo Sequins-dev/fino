@@ -1,7 +1,7 @@
 /**
  * Tests for fino:tensor — dtypes, shapes, dispatch, lifecycle, and the graph.
  *
- * These assert the rules `docs/tensor-contract.md` specifies, in the acceptance
+ * These assert the rules `specs/tensor-contract.md` specifies, in the acceptance
  * shapes its §12 names.
  */
 import { describe, it } from 'fino:test/test';
@@ -368,7 +368,17 @@ describe('movement', () => {
   it('rejects an out-of-range index', async (t) => {
     const table = await tensor([[1, 2], [3, 4]]);
     const idx = await tensor([5], { dtype: 'i32' });
-    t.throws(() => table.indexSelect(idx, 0), /out of range/, 'bounds are checked');
+    // The reference backend executes inline and throws at dispatch; an accelerated
+    // backend cannot throw from a kernel, so it records the fault and raises it at
+    // the next synchronisation point. Either way the index is refused rather than
+    // silently reading whatever lies at that offset.
+    let message = '';
+    try {
+      await table.indexSelect(idx, 0).data();
+    } catch (cause) {
+      message = cause instanceof Error ? cause.message : String(cause);
+    }
+    t.ok(/out of range/.test(message), `bounds are checked (${message})`);
   });
   it('concatenates along an axis', async (t) => {
     const a = await tensor([[1, 2]]);
@@ -427,6 +437,19 @@ describe('lifecycle', () => {
     }
     t.equal(poolStats(dev).liveBuffers, before, 'disposed at the end of the block');
   });
+  it('keeps shared storage alive when an alias is collected', async (t) => {
+    // A contiguous reshape aliases storage rather than copying, so a collected
+    // alias must decrement the reference count like any other handle. Forcing it to
+    // zero would free the buffer out from under the original — a use-after-free that
+    // only appears once the collector happens to run, which is the worst kind.
+    const x = await tensor([1, 2, 3, 4]);
+    for (let i = 0; i < 200; i++) {
+      // Each alias is dropped immediately, giving the collector plenty to reclaim.
+      x.reshape([2, 2]);
+    }
+    t.ok(!x.storage.disposed, 'the original storage survived every dropped alias');
+    t.deepEqual(Array.from(await x.data()), [1, 2, 3, 4], 'and still reads correctly');
+  });
   it('refuses to use a disposed tensor', async (t) => {
     const x = await tensor([1, 2]);
     x.dispose();
@@ -451,7 +474,7 @@ describe('graph recording', () => {
     t.equal(node.op, 'sum', 'node names the operation');
     t.deepEqual([...node.shapes[0]!], [2], 'output shape is recorded');
     t.equal(node.dtypes[0], 'f32', 'output dtype is recorded');
-    t.equal(node.device.type, 'cpu', 'device is recorded');
+    t.equal(node.device.type, (await device()).type, 'device is recorded');
   });
   it('hashes structurally identical work equally', async (t) => {
     const graph = currentGraph();

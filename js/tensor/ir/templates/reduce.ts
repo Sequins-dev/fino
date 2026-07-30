@@ -213,8 +213,12 @@ export interface SoftmaxSpec {
  * without it a row holding a large logit overflows to infinity and the whole row
  * becomes NaN, which is exactly the case a transformer hits.
  *
- * Buffers are `in0` and `out0`; parameters are `rows` and `cols`. Rows are
- * contiguous.
+ * Works over any axis. A "row" is one line along the softmax axis, addressed as
+ * `base + c * inner`, so `inner = 1` is the contiguous last-axis case and a larger
+ * stride handles an interior axis without a transpose. One workgroup handles one
+ * row, and there are `outer * inner` of them.
+ *
+ * Buffers are `in0` and `out0`; parameters are `cols` and `inner`.
  */
 export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } {
   const wg = spec.wg ?? 256;
@@ -226,16 +230,26 @@ export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } 
   b.buffer('in0', vt(spec.dtype), 'read');
   b.buffer('out0', vt(spec.dtype), 'write');
   const cols = b.param('cols');
+  const inner = b.param('inner');
   const red = b.shared('red', 'f32', wg);
 
   const lid = E.builtin('localId', 0);
   const row = E.builtin('groupId', 0);
-  const base = b.let('base', vt('u32'), E.mul(row, cols));
+  // Split the workgroup index back into its outer and inner coordinates, so the
+  // row this group owns is `base + c * inner` for c along the axis.
+  const outerIndex = b.let('o', vt('u32'), E.div(row, inner));
+  const innerIndex = b.let('k', vt('u32'), E.mod(row, inner));
+  const base = b.let(
+    'base',
+    vt('u32'),
+    E.add(E.mul(E.mul(outerIndex, cols), inner), innerIndex),
+  );
+  const at = (c: Expr): Expr => E.add(base, E.mul(c, inner));
 
   // Row maximum.
   b.var('m', compute, E.const(compute, -Infinity));
   b.for('c', lid, cols, E.u32(wg), (c) => {
-    b.assign('m', E.max(E.var('m'), E.cast(compute, E.load('in0', E.add(base, c)))));
+    b.assign('m', E.max(E.var('m'), E.cast(compute, E.load('in0', at(c)))));
   });
   b.shstore(red, lid, E.var('m'));
   treeReduce(b, red, wg, lid, (a, c) => E.max(a, c));
@@ -244,7 +258,7 @@ export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } 
   // Sum of the shifted exponentials.
   b.var('acc', compute, E.const(compute, 0));
   b.for('c2', lid, cols, E.u32(wg), (c) => {
-    const shifted = E.sub(E.cast(compute, E.load('in0', E.add(base, c))), peak);
+    const shifted = E.sub(E.cast(compute, E.load('in0', at(c))), peak);
     b.assign('acc', E.add(E.var('acc'), E.call('exp', shifted)));
   });
   // A barrier before reusing the scratch, so no thread overwrites a value another
@@ -255,12 +269,12 @@ export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } 
   const total = b.let('total', compute, E.shload(red, E.u32(0)));
 
   b.for('c3', lid, cols, E.u32(wg), (c) => {
-    const at = E.add(base, c);
-    const shifted = E.sub(E.cast(compute, E.load('in0', at)), peak);
+    const index = at(c);
+    const shifted = E.sub(E.cast(compute, E.load('in0', index)), peak);
     const value = spec.log
       ? E.sub(shifted, E.call('log', total))
       : E.div(E.call('exp', shifted), total);
-    b.store('out0', at, E.cast(vt(spec.dtype), value));
+    b.store('out0', index, E.cast(vt(spec.dtype), value));
   });
 
   return {
@@ -359,5 +373,5 @@ export function layerNormKernel(spec: LayerNormSpec): { ir: KernelIR; key: strin
 
 /** Workgroups a row-per-workgroup kernel needs. */
 export function rowGrid(rows: number): [number, number, number] {
-  return [rows, 1, 1];
+  return [Math.max(rows, 1), 1, 1];
 }

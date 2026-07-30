@@ -7,31 +7,29 @@ weight: 145
 differentiation in pure TypeScript over a thin device-backend interface.
 
 The engine is **experimental**. Its semantics are specified normatively in
-`docs/tensor-contract.md`, and the `fino:tensor/graph` and `fino:tensor/backend`
+`specs/tensor-contract.md`, and the `fino:tensor/graph` and `fino:tensor/backend`
 surfaces carry weaker stability promises than the rest of the runtime — see §1 of
 that document.
 
-Only the reference CPU backend is currently registered for `device()`. It is
-correct, and it is the oracle every other backend is tested against, but it is a
-scalar TypeScript implementation: a shipping fallback, not this engine's
-performance story.
-
-GPU backends are selectable and work end to end:
+`device('auto')` prefers a GPU when one is present — Metal on Apple hardware,
+Vulkan elsewhere — and falls back to the reference CPU backend:
 
 ```ts
-import { device, tensor } from 'fino:tensor';
+import { device, listDevices, tensor } from 'fino:tensor';
 
-const gpu = await device('metal'); // or 'vulkan'
-const x = await tensor([[1, 2], [3, 4]], { device: gpu });
-console.log(await x.matmul(x).gelu().data());
+console.log(await listDevices());
+const x = await tensor([[1, 2], [3, 4]]);   // on the GPU, if there is one
+const y = await tensor([1, 2], { device: 'cpu' }); // or pin it
 ```
 
-Both are tested differentially against the reference oracle, and an MLP trains to
-convergence on each. `device('auto')` still selects the CPU: the GPU path does not
-yet cover the whole contract — softmax reduces only the last axis, `indexSelect`
-gathers only along axis 0, and index bounds are unchecked on device — so a GPU is
-opt-in rather than silently chosen. `f64` and `i64` are CPU-only by design and
-requesting them on a GPU is refused rather than narrowed.
+Both GPU backends are tested differentially against the reference backend, which
+is the oracle, and an MLP trains to convergence on each. The reference backend
+always registers, so `device('auto')` cannot fail, but it is a scalar TypeScript
+implementation and is not this engine's performance story.
+
+`f64` and `i64` are CPU-only — no GPU this engine targets represents them — and
+requesting one on a GPU is refused rather than narrowed. Gradient checking needs
+`f64`, so it runs on the CPU by construction.
 
 ## Eager, non-blocking execution
 

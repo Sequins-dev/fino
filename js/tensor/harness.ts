@@ -19,7 +19,7 @@ import { noGrad } from './autograd.ts';
 import { Tensor } from './tensor.ts';
 import { readTensor } from './readback.ts';
 
-/** Accuracy bounds per dtype, from `docs/tensor-contract.md` §7. */
+/** Accuracy bounds per dtype, from `specs/tensor-contract.md` §7. */
 export const TOLERANCE: Readonly<Record<DType, { rtol: number; atol: number }>> = {
   f64: { rtol: 1e-12, atol: 1e-15 },
   f32: { rtol: 1e-5, atol: 1e-7 },

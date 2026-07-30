@@ -25,15 +25,19 @@
  *
  * ## Status
  *
- * Experimental, and specified by `docs/tensor-contract.md`. `fino:tensor/graph`
+ * Experimental, and specified by `specs/tensor-contract.md`. `fino:tensor/graph`
  * and `fino:tensor/backend` are public so out-of-tree backends and graph
  * consumers can exist, and are the least settled part of the surface; see the
  * contract's §1 for what stability they do and do not promise.
  *
- * Currently only the reference CPU backend is registered. It is correct and is
- * the oracle every other backend is tested against, but it is a scalar
- * TypeScript implementation and should never be quoted as this engine's
- * performance.
+ * `device('auto')` prefers a GPU when one is present — Metal on Apple hardware,
+ * Vulkan elsewhere — and falls back to the reference CPU backend, which always
+ * registers and so cannot fail. The reference backend is the oracle every other
+ * backend is differentially tested against, but it is a scalar TypeScript
+ * implementation and should never be quoted as this engine's performance.
+ *
+ * `f64` and `i64` are CPU-only: no GPU this engine targets represents them, and
+ * asking a GPU to hold one is refused rather than silently narrowed.
  */
 import { registerBackend, registerDevice, resolveDevice } from './backend.ts';
 import type { Device } from './backend.ts';

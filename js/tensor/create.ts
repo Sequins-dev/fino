@@ -12,27 +12,38 @@
 import type { DType } from './dtype.ts';
 import { DTYPE_BYTES, f32ToBf16, f32ToF16 } from './dtype.ts';
 import type { Device } from './backend.ts';
-import { backendFor, requireDType } from './backend.ts';
+import { backendFor, requireDType, resolveDeviceSync } from './backend.ts';
 import { computeStream } from './dispatch.ts';
 import { currentGraph } from './graph.ts';
 import { numel } from './shape.ts';
 import { Storage, Tensor, allocStorage } from './tensor.ts';
 
 /**
- * Device used when a caller does not name one.
+ * Device used when a caller does not name one, resolved on first use.
+ *
+ * Resolved lazily rather than at import so that loading `fino:tensor` does not
+ * touch a GPU, and resolved through the same path `device('auto')` uses so that a
+ * synchronously constructed layer and an awaited tensor never disagree about where
+ * they live.
  *
  * @internal
  */
-let selected: Device = { type: 'cpu', index: 0 };
+let selected: Device | null = null;
 
 /** The device synchronous constructors allocate on. */
 export function defaultDevice(): Device {
+  selected ??= resolveDeviceSync('auto');
   return selected;
 }
 
 /** Choose the device synchronous constructors allocate on. */
 export function setDefaultDevice(device: Device): void {
   selected = device;
+}
+
+/** Forget the resolved default, so the next use re-resolves it. */
+export function resetDefaultDevice(): void {
+  selected = null;
 }
 
 /**

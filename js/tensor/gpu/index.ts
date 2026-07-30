@@ -33,20 +33,17 @@ export {
 /**
  * Metal provider.
  *
- * Priority is deliberately *below* the reference backend, so `device('auto')` does
- * not select a GPU yet. The GPU path does not cover the whole contract — batched
- * matmul, softmax over a non-final axis, and index bounds checking are all still
- * CPU-only — and silently moving every program onto a backend with known gaps is
- * worse than requiring `device('metal')` to opt in.
- *
- * Raising this above the CPU's 0 is the single change that makes the GPU the
- * default, and it should happen when the differential suite covers the full
- * primitive set rather than most of it.
+ * The highest priority, so `device('auto')` selects it when present: on an Apple
+ * machine it is the only target that gives real GPU acceleration with no
+ * translation layer.
  */
 export const metalProvider: BackendProvider = {
   type: 'metal',
-  priority: -100,
+  priority: 300,
   async probe(): Promise<DeviceBackend[]> {
+    return metalProvider.probeSync!();
+  },
+  probeSync(): DeviceBackend[] {
     if (!metalDriverAvailable()) return [];
     try {
       return [new GpuBackend(createMetalDriver())];
@@ -62,12 +59,15 @@ export const metalProvider: BackendProvider = {
  *
  * Below Metal because on Apple hardware it reaches the same GPU through MoltenVK,
  * which is a translation layer this design avoids shipping. It is the breadth
- * target elsewhere. Opt-in for the same reason as Metal.
+ * target everywhere else, and above the CPU reference either way.
  */
 export const vulkanProvider: BackendProvider = {
   type: 'vulkan',
-  priority: -200,
+  priority: 100,
   async probe(): Promise<DeviceBackend[]> {
+    return vulkanProvider.probeSync!();
+  },
+  probeSync(): DeviceBackend[] {
     if (!vulkanDriverAvailable()) return [];
     try {
       return [new GpuBackend(createVulkanDriver())];

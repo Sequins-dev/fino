@@ -54,6 +54,7 @@ import {
   randomKernel,
   reduceKernel,
   rowGrid,
+  scatterAddKernel,
   softmaxKernel,
   stridedCopyKernel,
   unaryKernel,
@@ -99,6 +100,18 @@ export class GpuBackend implements DeviceBackend {
   #nextToken = 1;
   #disposed = false;
 
+  /**
+   * One word of device memory kernels write a fault code into.
+   *
+   * A kernel cannot throw, so an out-of-range index records itself here and the
+   * next synchronisation point raises it — which is how the contract says device
+   * errors surface. Allocated on first use, since a program that never indexes
+   * never needs it.
+   *
+   * @internal
+   */
+  #status: DriverBuffer | null = null;
+
   constructor(driver: GpuDriver, index = 0) {
     this.#driver = driver;
     this.device = { type: driver.caps.type, index };
@@ -119,6 +132,35 @@ export class GpuBackend implements DeviceBackend {
   /** The driver's reported name. */
   get name(): string {
     return this.#driver.caps.name;
+  }
+
+  /**
+   * The fault-reporting buffer, cleared and ready.
+   *
+   * @internal
+   */
+  #statusBuffer(): DriverBuffer {
+    if (!this.#status) this.#status = this.#driver.alloc(4);
+    new Uint32Array(this.#status.host)[0] = 0;
+    return this.#status;
+  }
+
+  /**
+   * Raise any fault a kernel recorded, then clear it.
+   *
+   * @internal
+   */
+  #checkStatus(): void {
+    if (!this.#status) return;
+    const view = new Uint32Array(this.#status.host);
+    const code = view[0]!;
+    if (code === 0) return;
+    view[0] = 0;
+    throw new Error(
+      `index ${code - 1} is out of range for the axis being gathered or scattered on ${this.device.type}. ` +
+        'A kernel cannot throw, so this is reported at the next synchronisation point and may come ' +
+        'from an earlier operation; set FINO_TENSOR_SYNC=1 to attribute it exactly.',
+    );
   }
 
   /** Kernel cache counters. */
@@ -245,6 +287,7 @@ export class GpuBackend implements DeviceBackend {
       this.#failure = null;
       throw failure;
     }
+    this.#checkStatus();
   }
 
   // -- kernel dispatch ---------------------------------------------------
@@ -372,18 +415,15 @@ export class GpuBackend implements DeviceBackend {
 
   softmax(x: TensorDesc, out: TensorDesc, axis: number, log: boolean): void {
     const cols = x.shape[axis]!;
-    const rows = numel(x.shape) / Math.max(cols, 1);
-    if (rows === 0 || cols === 0) return;
-    if (axis !== x.shape.length - 1) {
-      throw new Error(
-        `the GPU softmax reduces the last axis; axis ${axis} of rank ${x.shape.length} needs a transpose first`,
-      );
-    }
+    if (cols === 0 || numel(x.shape) === 0) return;
+    // Addressing the axis by stride means an interior axis needs no transpose.
+    const inner = trailingExtent(x.shape, axis);
+    const rows = numel(x.shape) / cols;
     const wg = rowWorkgroup(cols, this.#driver.caps.maxWorkgroup);
     this.#run(
       () => softmaxKernel({ dtype: this.#scalar(x), log, wg }),
       [x.buffer, out.buffer],
-      { cols },
+      { cols, inner },
       rowGrid(rows),
     );
   }
@@ -477,14 +517,18 @@ export class GpuBackend implements DeviceBackend {
     src: TensorDesc,
     axis: number,
   ): void {
-    const count = numel(src.shape);
-    if (count === 0) return;
-    const rowSize = rowSizeAfter(out.shape, axis);
+    const elements = numel(src.shape);
+    if (elements === 0) return;
     this.#run(
       () => scatterAddKernel({ dtype: this.#scalar(out) }),
-      [indices.buffer, src.buffer, out.buffer],
-      { n: count, rowSize, axisSize: out.shape[axis]! },
-      linearGrid(count),
+      [indices.buffer, src.buffer, out.buffer, this.#statusBuffer() as unknown as DeviceBuffer],
+      {
+        n: elements,
+        count: numel(indices.shape),
+        inner: trailingExtent(out.shape, axis),
+        axisSize: out.shape[axis]!,
+      },
+      linearGrid(elements),
     );
   }
 
@@ -494,18 +538,18 @@ export class GpuBackend implements DeviceBackend {
     out: TensorDesc,
     axis: number,
   ): void {
-    const count = numel(out.shape);
-    if (count === 0) return;
-    if (axis !== 0) {
-      throw new Error(
-        `the GPU indexSelect gathers along axis 0; axis ${axis} needs a transpose first`,
-      );
-    }
+    const elements = numel(out.shape);
+    if (elements === 0) return;
     this.#run(
       () => indexSelectKernel({ dtype: this.#scalar(x) }),
-      [x.buffer, indices.buffer, out.buffer],
-      { n: count, rowSize: rowSizeAfter(x.shape, axis), axisSize: x.shape[axis]! },
-      linearGrid(count),
+      [x.buffer, indices.buffer, out.buffer, this.#statusBuffer() as unknown as DeviceBuffer],
+      {
+        n: elements,
+        count: numel(indices.shape),
+        inner: trailingExtent(x.shape, axis),
+        axisSize: x.shape[axis]!,
+      },
+      linearGrid(elements),
     );
   }
 
@@ -608,19 +652,23 @@ export class GpuBackend implements DeviceBackend {
     if (this.#disposed) return;
     this.#disposed = true;
     void this.#cache.clear((kernel) => this.#driver.release(kernel));
+    if (this.#status) this.#driver.free(this.#status);
     this.#driver.dispose();
   }
 }
 
 /**
- * Element count of one gathered or scattered row.
+ * Product of the axes after `axis`.
+ *
+ * This is the stride between successive elements along `axis`, which is what lets
+ * one kernel address any axis rather than only the outermost or innermost.
  *
  * @internal
  */
-function rowSizeAfter(shape: readonly number[], axis: number): number {
+function trailingExtent(shape: readonly number[], axis: number): number {
   let size = 1;
   for (let i = axis + 1; i < shape.length; i++) size *= shape[i]!;
-  return size;
+  return Math.max(size, 1);
 }
 
 /**

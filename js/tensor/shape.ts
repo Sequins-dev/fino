@@ -1,7 +1,7 @@
 /**
  * Shape arithmetic and inference.
  *
- * The broadcasting rules here are normative (`docs/tensor-contract.md` §3) and
+ * The broadcasting rules here are normative (`specs/tensor-contract.md` §3) and
  * live in exactly one place: the kernel IR's layout classifier imports them
  * rather than restating them, because two copies of a broadcast rule is two
  * chances to disagree.

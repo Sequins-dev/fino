@@ -5,7 +5,7 @@
  * lowering, and interchange all attach: a fusion pass, capture/replay, lowering
  * to a fixed-function accelerator's graph API, ONNX export, and visualisation all
  * need to read it. Its stability gate is the same as
- * `fino:tensor/backend`'s (`docs/tensor-contract.md` §1).
+ * `fino:tensor/backend`'s (`specs/tensor-contract.md` §1).
  *
  * This is a *recording with a documented shape*, not a compiler IR. Every
  * dispatched operation appends a node, forward and backward alike.

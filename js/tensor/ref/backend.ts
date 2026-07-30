@@ -299,6 +299,9 @@ export const refProvider: BackendProvider = {
   type: 'cpu',
   priority: 0,
   async probe(): Promise<DeviceBackend[]> {
+    return refProvider.probeSync!();
+  },
+  probeSync(): DeviceBackend[] {
     return [new RefBackend()];
   },
 };

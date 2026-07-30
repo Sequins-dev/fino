@@ -8,7 +8,7 @@
  * rather than merely similarly distributed ones. Cross-backend trajectory parity
  * is then a testable property instead of a hope.
  *
- * Specified in `docs/tensor-contract.md` §8.
+ * Specified in `specs/tensor-contract.md` §8.
  *
  * @internal
  *

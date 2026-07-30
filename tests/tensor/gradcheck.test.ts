@@ -12,13 +12,21 @@ import type { Tensor } from 'fino:tensor';
 import { describeGradCheck, gradCheck, sampleValues } from 'internal:tensor/harness';
 import { differentiableOps } from 'internal:tensor/ops/registry';
 
-/** Build an f64 input with reproducible values. */
+/**
+ * Build an f64 input with reproducible values.
+ *
+ * Pinned to the reference backend rather than the default device. That is not a
+ * workaround: gradient checking needs f64 to be meaningful at all, since in f32 the
+ * difference quotient's cancellation error exceeds the gradient it measures — and
+ * f64 has no kernel-IR representation, because no GPU this engine targets supports
+ * it. The oracle is where this check belongs.
+ */
 async function input(shape: readonly number[], seed: number): Promise<Tensor> {
   const count = shape.reduce((a, b) => a * b, 1);
   return tensor(sampleValues(count, seed), {
     shape,
     dtype: 'f64',
-    device: await device(),
+    device: await device('cpu'),
     requiresGrad: true,
   });
 }
@@ -205,7 +213,7 @@ describe('gradcheck: matmul and movement', () => {
   });
   it('checks indexSelect', async (t) => {
     const table = await input([4, 3], 131);
-    const idx = await tensor([2, 0, 2], { dtype: 'i32', device: await device() });
+    const idx = await tensor([2, 0, 2], { dtype: 'i32', device: await device('cpu') });
     // Index 2 appears twice, so its gradient must accumulate rather than overwrite.
     await check(t, 'indexSelect', (x) => x.indexSelect(idx, 0).sum(), [table]);
   });
@@ -225,7 +233,7 @@ describe('gradcheck: composed expressions', () => {
   });
   it('checks a softmax cross-entropy loss', async (t) => {
     const logits = await input([3, 4], 151);
-    const dev = await device();
+    const dev = await device('cpu');
     // A one-hot target matrix, so the loss picks each row's target class. Built
     // once outside the checked function since it carries no gradient.
     const oneHot = await tensor(

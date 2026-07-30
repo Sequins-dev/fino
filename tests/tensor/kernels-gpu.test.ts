@@ -145,7 +145,7 @@ function cases(): Case[] {
         name: log ? 'logSoftmax' : 'softmax',
         ir: softmaxKernel({ dtype: 'f32', log, wg: 64 }).ir,
         buffers: [input, null],
-        params: { cols },
+        params: { cols, inner: 1 },
         groups: rowGrid(rows),
         expect,
         // The deliberately extreme row sits at f32's precision floor: the host
@@ -154,6 +154,65 @@ function cases(): Case[] {
         tolerance: 5e-5,
       });
     }
+  }
+
+  // Softmax over an interior axis of a [2, 3, 4] tensor, reducing the middle one.
+  // This is what the stride form buys: no transpose, one kernel.
+  {
+    const outer = 2;
+    const axisSize = 3;
+    const inner = 4;
+    const input = ramp(outer * axisSize * inner, (i) => ((i % 5) - 2) / 2);
+    const expect = new Array(outer * axisSize * inner).fill(0);
+    for (let o = 0; o < outer; o++) {
+      for (let k = 0; k < inner; k++) {
+        const base = o * axisSize * inner + k;
+        const row = Array.from({ length: axisSize }, (_, a) => input[base + a * inner]!);
+        const peak = Math.max(...row);
+        const exps = row.map((v) => Math.exp(v - peak));
+        const total = exps.reduce((a, b) => a + b, 0);
+        for (let a = 0; a < axisSize; a++) expect[base + a * inner] = exps[a]! / total;
+      }
+    }
+    list.push({
+      name: 'softmax over an interior axis',
+      ir: softmaxKernel({ dtype: 'f32', wg: 2 }).ir,
+      buffers: [input, null],
+      params: { cols: axisSize, inner },
+      groups: rowGrid(outer * inner),
+      expect,
+      tolerance: 1e-6,
+    });
+  }
+
+  // Gather along an interior axis of a [2, 4, 3] table.
+  {
+    const outer = 2;
+    const axisSize = 4;
+    const inner = 3;
+    const table = ramp(outer * axisSize * inner, (i) => i);
+    const idx = new Int32Array([3, 1]);
+    const expect: number[] = [];
+    for (let o = 0; o < outer; o++) {
+      for (const raw of idx) {
+        for (let k = 0; k < inner; k++) {
+          expect.push(table[(o * axisSize + raw) * inner + k]!);
+        }
+      }
+    }
+    list.push({
+      name: 'indexSelect over an interior axis',
+      ir: indexSelectKernel({ dtype: 'f32' }).ir,
+      buffers: [table, idx, null, new Uint32Array(1)],
+      params: {
+        n: outer * idx.length * inner,
+        count: idx.length,
+        inner,
+        axisSize,
+      },
+      groups: linearGrid(outer * idx.length * inner),
+      expect,
+    });
   }
 
   // Layer norm with an affine transform, and the rms variant without.
@@ -266,8 +325,8 @@ function cases(): Case[] {
     list.push({
       name: 'indexSelect',
       ir: indexSelectKernel({ dtype: 'f32' }).ir,
-      buffers: [table, idx, null],
-      params: { n: idx.length * 3, rowSize: 3, axisSize: 4 },
+      buffers: [table, idx, null, new Uint32Array(1)],
+      params: { n: idx.length * 3, count: idx.length, inner: 3, axisSize: 4 },
       groups: linearGrid(idx.length * 3),
       expect,
     });
@@ -285,8 +344,8 @@ function cases(): Case[] {
     list.push({
       name: 'scatterAdd',
       ir: scatterAddKernel({ dtype: 'f32' }).ir,
-      buffers: [idx, src, zeros],
-      params: { n: idx.length * 2, rowSize: 2, axisSize: 4 },
+      buffers: [idx, src, zeros, new Uint32Array(1)],
+      params: { n: idx.length * 2, count: idx.length, inner: 2, axisSize: 4 },
       groups: linearGrid(idx.length * 2),
       expect,
       output: 2,

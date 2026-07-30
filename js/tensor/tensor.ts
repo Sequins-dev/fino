@@ -72,13 +72,18 @@ export class Storage {
   /**
    * Drop a reference on behalf of the finalizer.
    *
-   * Counted separately so a leak shows up in pool statistics instead of merely
-   * being cleaned up eventually and silently.
+   * Exactly one reference, never more. Storage is shared — a contiguous `reshape`
+   * and a `detach` both alias it — so a collected handle must decrement like any
+   * other. Forcing the count to one here would free the buffer out from under
+   * every other live handle, which is a use-after-free that only shows up once the
+   * collector happens to run.
+   *
+   * The leak is counted separately so it appears in pool statistics rather than
+   * being cleaned up silently.
    */
   releaseLeaked(): void {
     if (this.#disposed) return;
     poolFor(this.backend).noteLeak();
-    this.#count = 1;
     this.release();
   }
 }

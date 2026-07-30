@@ -3,7 +3,7 @@
  *
  * **Experimental.** This interface is public so backends can be implemented
  * out-of-tree, including for hardware nobody here owns. It is not yet stable:
- * per `docs/tensor-contract.md` §1 it stops being experimental only once two
+ * per `specs/tensor-contract.md` §1 it stops being experimental only once two
  * in-tree backends and one out-of-tree backend pass the conformance suite.
  * Until then, additive changes may land in any release and breaking changes in
  * any minor release.
@@ -202,7 +202,7 @@ export interface GemmOpts {
   beta?: number;
 }
 
-/** A counter-based RNG position, per `docs/tensor-contract.md` §8. */
+/** A counter-based RNG position, per `specs/tensor-contract.md` §8. */
 export interface RngKey {
   /** Low and high words of the 64-bit key. */
   key: readonly [number, number];
@@ -425,6 +425,15 @@ export interface BackendProvider {
   readonly priority: number;
   /** Discover devices, returning an empty list when unavailable. */
   probe(): Promise<DeviceBackend[]>;
+  /**
+   * Discover devices synchronously, when the platform allows it.
+   *
+   * Both GPU drivers here can be created without awaiting, and that matters:
+   * layer constructors are synchronous, so without a synchronous resolution path
+   * they would pick a different default device than `tensor()` does and a model's
+   * weights would land on one device while its inputs land on another.
+   */
+  probeSync?(): DeviceBackend[];
 }
 
 /**
@@ -496,6 +505,56 @@ async function probeProvider(provider: BackendProvider): Promise<DeviceBackend[]
   return backends;
 }
 
+/**
+ * Probe one provider synchronously, caching its devices.
+ *
+ * @internal
+ */
+function probeProviderSync(provider: BackendProvider): DeviceBackend[] {
+  if (probed.has(provider.type)) {
+    return [...discovered.values()].filter((b) => b.device.type === provider.type);
+  }
+  if (!provider.probeSync) return [];
+  let backends: DeviceBackend[] = [];
+  try {
+    backends = provider.probeSync();
+  } catch {
+    backends = [];
+  }
+  probed.add(provider.type);
+  for (const backend of backends) discovered.set(formatDevice(backend.device), backend);
+  return backends;
+}
+
+/**
+ * Resolve a device specification without awaiting.
+ *
+ * Used by synchronous constructors. Providers without a synchronous probe are
+ * skipped, so this can only ever choose among devices that are cheap to discover.
+ */
+export function resolveDeviceSync(spec: 'auto' | string | Device = 'auto'): Device {
+  if (typeof spec !== 'string') return spec;
+  if (spec === 'auto') {
+    const override = envDevice();
+    if (override) return resolveDeviceSync(override);
+    for (const provider of providers) {
+      const backends = probeProviderSync(provider);
+      if (backends.length > 0) return backends[0]!.device;
+    }
+    throw new Error('no tensor backend is registered');
+  }
+  const [type, indexText] = spec.split(':');
+  const index = indexText === undefined ? 0 : Number(indexText);
+  const provider = providers.find((p) => p.type === type);
+  if (provider) probeProviderSync(provider);
+  const key = formatDevice({ type: type!, index });
+  const backend = discovered.get(key);
+  if (!backend) {
+    throw new Error(`device ${key} is not available without asynchronous discovery`);
+  }
+  return backend.device;
+}
+
 /** Every available device, probing providers as needed. */
 export async function listDevices(): Promise<Device[]> {
   for (const provider of providers) await probeProvider(provider);
@@ -521,7 +580,11 @@ export async function resolveDevice(spec: 'auto' | string | Device = 'auto'): Pr
     const override = envDevice();
     if (override) return resolveDevice(override);
     for (const provider of providers) {
-      const backends = await probeProvider(provider);
+      // Prefer the synchronous probe where a provider has one, so both resolution
+      // paths choose the same device.
+      const backends = provider.probeSync
+        ? probeProviderSync(provider)
+        : await probeProvider(provider);
       if (backends.length > 0) return backends[0]!.device;
     }
     throw new Error('no tensor backend is registered');
