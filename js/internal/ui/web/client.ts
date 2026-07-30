@@ -7,12 +7,13 @@
  * at a content-addressed path so the DOM can be steered from the server over
  * Server-Sent Events.
  *
- * The embedded runtime installs a client-owned component registry, renders
- * semantic JSON trees into DOM nodes, submits enhanced forms as versioned JSON
- * action envelopes, and consumes the same `ui` SSE event used by other hosts.
- * If any element carries a `data-fi-view` attribute it opens a long-lived
- * `EventSource` to `/_fino/live`; the first event is the current render, followed
- * by later renders or navigation instructions.
+ * The embedded runtime installs a client-owned component registry, reconciles
+ * semantic JSON trees against the live DOM by component name and key, submits
+ * enhanced forms as versioned JSON action envelopes, and consumes the same `ui`
+ * SSE event used by other hosts. If any element carries a `data-fi-view`
+ * attribute it opens a long-lived `EventSource` to `/_fino/live`; the first
+ * event is the current render, followed by later renders or navigation
+ * instructions.
  *
  * Consumers should not parse or mutate the source; import the two exported
  * constants and serve them. `CLIENT_SOURCE` is the script body and
@@ -57,6 +58,54 @@ api.register = (name, implementation) => {
 };
 globalThis.finoUI = api;
 
+// viewId -> { tree, root }: the tree last rendered into each mounted view, used
+// as the reconciliation base for the next render.
+const mounted = new Map();
+let lastRetry = null;
+
+function keyOf(node) {
+  if (typeof node === 'string') return null;
+  return node.key === undefined || node.key === null ? null : node.key;
+}
+
+// Fragments flatten into their parent, so expand them before reconciling to
+// keep one vnode per DOM child.
+function flatten(children, out) {
+  out = out || [];
+  for (const child of children || []) {
+    if (child && typeof child === 'object' && child.type === 'fragment') flatten(child.children, out);
+    else out.push(child);
+  }
+  return out;
+}
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (!deepEqual(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+// Two nodes describe the same instance when they are both text, or share a
+// component name and key. Anything else is a different thing in the same slot.
+function sameShape(before, after) {
+  const beforeText = typeof before === 'string';
+  const afterText = typeof after === 'string';
+  if (beforeText || afterText) return beforeText && afterText;
+  return before.type === after.type && keyOf(before) === keyOf(after);
+}
+
+function isPreserved(node) {
+  return typeof node !== 'string' && node.props != null && 'data-fi-preserve' in node.props;
+}
+
 function setHtmlProp(element, name, value) {
   if (name === 'action' && value && typeof value === 'object' && value.url) {
     element.action = value.url;
@@ -70,7 +119,10 @@ function setHtmlProp(element, name, value) {
   }
   if (name === 'className') name = 'class';
   if (name === 'htmlFor') name = 'for';
-  if (value === false || value === null || value === undefined) return;
+  if (value === false || value === null || value === undefined) {
+    element.removeAttribute(name);
+    return;
+  }
   if (value === true) {
     element.setAttribute(name, '');
     if (name in element) {
@@ -87,14 +139,24 @@ function setHtmlProp(element, name, value) {
   element.setAttribute(name, String(value));
 }
 
-function renderNode(node) {
-  if (typeof node === 'string') return document.createTextNode(node);
-  const children = node.children.map(renderNode);
-  if (node.type === 'fragment') {
-    const fragment = document.createDocumentFragment();
-    fragment.append(...children);
-    return fragment;
+function removeHtmlProp(element, name) {
+  if (name === 'action') {
+    delete element.__finoAction;
+    delete element.dataset.fiAction;
+    element.removeAttribute('action');
+    return;
   }
+  if (name === 'className') name = 'class';
+  if (name === 'htmlFor') name = 'for';
+  if (name === 'value' || name === 'checked' || name === 'selected') {
+    try { element[name] = name === 'value' ? '' : false; } catch {}
+  }
+  element.removeAttribute(name);
+}
+
+function createNode(node) {
+  if (typeof node === 'string') return document.createTextNode(node);
+  const children = flatten(node.children).map(createNode);
   const implementation = components.get(node.type);
   if (implementation) {
     const rendered = implementation(node.props, children, node);
@@ -107,21 +169,151 @@ function renderNode(node) {
     throw new Error('No client component registered for "' + node.type + '"');
   }
   const element = document.createElement(node.type);
-  for (const [name, value] of Object.entries(node.props)) setHtmlProp(element, name, value);
+  for (const [name, value] of Object.entries(node.props || {})) setHtmlProp(element, name, value);
   element.append(...children);
   return element;
+}
+
+// Update dom in place where possible and return the node that should occupy
+// this slot. Registered components are opaque, so they are rebuilt when their
+// props or children change and reused untouched when they do not.
+function patchNode(dom, before, after) {
+  if (typeof after === 'string') {
+    if (dom.data !== after) dom.data = after;
+    return dom;
+  }
+  if (components.has(after.type)) {
+    return deepEqual(before, after) ? dom : createNode(after);
+  }
+  const beforeProps = before.props || {};
+  const afterProps = after.props || {};
+  for (const name of Object.keys(beforeProps)) {
+    if (!Object.prototype.hasOwnProperty.call(afterProps, name)) removeHtmlProp(dom, name);
+  }
+  for (const [name, value] of Object.entries(afterProps)) {
+    if (!deepEqual(beforeProps[name], value)) setHtmlProp(dom, name, value);
+  }
+  if (!isPreserved(after)) {
+    patchChildren(dom, flatten(before.children), flatten(after.children));
+  }
+  return dom;
+}
+
+function patchChildren(parent, beforeKids, afterKids) {
+  const existing = Array.from(parent.childNodes);
+  const keyed = new Map();
+  const unkeyed = [];
+  for (let i = 0; i < beforeKids.length; i++) {
+    const dom = existing[i];
+    if (dom === undefined) break;
+    const entry = { node: beforeKids[i], dom };
+    const key = keyOf(beforeKids[i]);
+    if (key === null) unkeyed.push(entry);
+    else keyed.set(key, entry);
+  }
+  const result = [];
+  let nextUnkeyed = 0;
+  for (const after of afterKids) {
+    const key = keyOf(after);
+    let reuse = null;
+    if (key !== null) {
+      const candidate = keyed.get(key);
+      if (candidate !== undefined && sameShape(candidate.node, after)) {
+        reuse = candidate;
+        keyed.delete(key);
+      }
+    } else {
+      while (nextUnkeyed < unkeyed.length) {
+        const candidate = unkeyed[nextUnkeyed++];
+        if (sameShape(candidate.node, after)) {
+          reuse = candidate;
+          break;
+        }
+      }
+    }
+    result.push(reuse === null ? createNode(after) : patchNode(reuse.dom, reuse.node, after));
+  }
+  const keep = new Set(result);
+  for (const dom of existing) {
+    if (!keep.has(dom)) parent.removeChild(dom);
+  }
+  // Only move nodes that are genuinely out of order, so an unchanged list
+  // performs no DOM mutations at all.
+  let cursor = parent.firstChild;
+  for (const dom of result) {
+    if (cursor === dom) {
+      cursor = cursor.nextSibling;
+      continue;
+    }
+    parent.insertBefore(dom, cursor);
+  }
+  return result;
+}
+
+// Reordering can detach a focused element, which blurs it. Reconciliation keeps
+// the node itself, so restoring focus and selection afterwards is enough.
+function withInteractionState(root, fn) {
+  const active = document.activeElement;
+  const tracked = active && root.contains && root.contains(active) ? active : null;
+  let selection = null;
+  if (tracked !== null && typeof tracked.selectionStart === 'number') {
+    selection = { start: tracked.selectionStart, end: tracked.selectionEnd };
+  }
+  const scrollTop = root.scrollTop;
+  const scrollLeft = root.scrollLeft;
+  try {
+    fn();
+  } finally {
+    if (tracked !== null && tracked.isConnected !== false && document.activeElement !== tracked) {
+      try { tracked.focus({ preventScroll: true }); } catch {}
+      if (selection !== null) {
+        try { tracked.setSelectionRange(selection.start, selection.end); } catch {}
+      }
+    }
+    if (root.scrollTop !== scrollTop) root.scrollTop = scrollTop;
+    if (root.scrollLeft !== scrollLeft) root.scrollLeft = scrollLeft;
+  }
+}
+
+function emit(name, detail) {
+  globalThis.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+function setBusy(form, busy) {
+  if (busy) {
+    form.dataset.fiBusy = '';
+    form.setAttribute('aria-busy', 'true');
+  } else {
+    delete form.dataset.fiBusy;
+    form.removeAttribute('aria-busy');
+  }
+  for (const control of form.elements || []) {
+    if (control.type === 'submit' || control.type === 'image') control.disabled = busy;
+  }
 }
 
 function applyUi(data) {
   if (!data || data.version !== 1) return;
   if (data.kind === 'render') {
-    const target = document.getElementById(data.viewId);
-    if (target) target.replaceChildren(renderNode(data.tree));
+    const root = document.getElementById(data.viewId);
+    if (!root) return;
+    const previous = mounted.get(data.viewId);
+    withInteractionState(root, () => {
+      if (previous === undefined || previous.root !== root) {
+        root.replaceChildren(createNode(data.tree));
+      } else {
+        patchChildren(root, [previous.tree], [data.tree]);
+      }
+    });
+    mounted.set(data.viewId, { tree: data.tree, root });
+    emit('fino-ui-render', { viewId: data.viewId, revision: data.revision });
   } else if (data.kind === 'navigate') {
     if (data.replace) location.replace(data.url);
     else location.href = data.url;
+  } else if (data.kind === 'heartbeat') {
+    emit('fino-ui-heartbeat', data);
   } else if (data.kind === 'error') {
-    globalThis.dispatchEvent(new CustomEvent('fino-ui-error', { detail: data }));
+    emit('fino-ui-error', { code: data.code, recoverable: data.recoverable, retry: lastRetry });
   }
 }
 
@@ -148,10 +340,7 @@ async function readSse(response) {
   }
 }
 
-document.addEventListener('submit', (event) => {
-  const form = event.target;
-  if (!(form instanceof HTMLFormElement) || !form.dataset.fiAction) return;
-  event.preventDefault();
+function submitAction(form) {
   const fields = new FormData(form);
   const action = form.__finoAction || {
     url: form.action,
@@ -164,21 +353,43 @@ document.addEventListener('submit', (event) => {
     if (name.startsWith('_') || name.startsWith('$')) continue;
     input[name] = typeof value === 'string' ? value : value.name;
   }
-  fetch(action.url, {
-    method: form.method || 'POST',
-    body: JSON.stringify({
-      version: 1,
-      view: action.view,
-      revision: action.revision,
-      request: action.request,
-      input
-    }),
-    headers: {
-      accept: 'text/event-stream',
-      'content-type': 'application/json'
-    },
-    credentials: 'same-origin'
-  }).then(readSse);
+  const send = () => {
+    setBusy(form, true);
+    return fetch(action.url, {
+      method: form.method || 'POST',
+      body: JSON.stringify({
+        version: 1,
+        view: action.view,
+        revision: action.revision,
+        request: action.request,
+        input
+      }),
+      headers: {
+        accept: 'text/event-stream',
+        'content-type': 'application/json'
+      },
+      credentials: 'same-origin'
+    })
+      .then(readSse)
+      .catch(() => {
+        emit('fino-ui-error', { code: 'network', recoverable: true, retry: lastRetry });
+      })
+      .then(() => {
+        setBusy(form, false);
+      });
+  };
+  lastRetry = send;
+  return send();
+}
+
+document.addEventListener('submit', (event) => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || !form.dataset.fiAction) return;
+  event.preventDefault();
+  if (form.dataset.fiBusy !== undefined) return;
+  const confirmation = (form.__finoAction || {}).confirm;
+  if (confirmation && !globalThis.confirm(confirmation)) return;
+  void submitAction(form);
 });
 
 function connectLive() {
@@ -188,9 +399,17 @@ function connectLive() {
     '&url=' + encodeURIComponent(location.pathname + location.search);
   const source = new EventSource(url);
   source.addEventListener('ui', (event) => applyUi(JSON.parse(event.data)));
+  // The server restarts every stream with a full snapshot, so a reconnect
+  // resynchronizes through the same reconciliation path and keeps local
+  // interaction state.
+  source.addEventListener('open', () => emit('fino-ui-online', {}));
+  source.addEventListener('error', () => emit('fino-ui-offline', {}));
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', connectLive);
 else connectLive();
+
+api.applyUi = applyUi;
+api.connectLive = connectLive;
 `;
 
 function hash(value: string): string {
