@@ -262,6 +262,35 @@ describe('gradcheck: composed expressions', () => {
       [q, k, v],
     );
   });
+  it('checks layer norm over one and two trailing axes', async (t) => {
+    const { layerNorm } = await import('fino:tensor/nn');
+    // The gradient rule views the tensor as [rows, n] using the recorded extent, so
+    // both spans have to be checked rather than assuming the last axis.
+    await check(
+      t,
+      'layerNorm one axis',
+      (x) => layerNorm(x, null, null, 1e-5, 1).mul(x).sum(),
+      [await input([3, 4], 181)],
+    );
+    await check(
+      t,
+      'layerNorm two axes',
+      (x) => layerNorm(x, null, null, 1e-5, 2).mul(x).sum(),
+      [await input([2, 3, 4], 191)],
+    );
+  });
+  it('checks affine layer norm', async (t) => {
+    const { layerNorm } = await import('fino:tensor/nn');
+    const x = await input([3, 4], 193);
+    const weight = await input([4], 197);
+    const bias = await input([4], 199);
+    await check(
+      t,
+      'affine layerNorm',
+      (xx, w, b) => layerNorm(xx, w, b, 1e-5, 1).sum(),
+      [x, weight, bias],
+    );
+  });
   it('checks a residual and normalisation chain', async (t) => {
     const x = await input([2, 4], 173);
     await check(

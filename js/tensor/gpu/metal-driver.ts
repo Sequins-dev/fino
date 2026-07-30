@@ -57,25 +57,51 @@ export function createMetalDriver(): GpuDriver {
     );
   }
 
+  const allocate = (bytes: number): DriverBuffer => {
+    const size = Math.max(bytes, 4);
+    const handle = api.createBuffer(device, size);
+    const buffer: MetalBuffer = {
+      handle,
+      byteLength: size,
+      host: api.bufferContents(handle, size),
+    };
+    return buffer;
+  };
+
   return {
     caps,
     // The device name is part of the target so a compiled kernel is never reused
     // across machines with different GPUs.
     target: `msl-3.0:${info.name}`,
+    // Apple Silicon shares memory, so every allocation is addressable from both
+    // sides and a transfer never needs staging.
+    hostVisible: true,
 
-    alloc(bytes: number): DriverBuffer {
-      const size = Math.max(bytes, 4);
-      const handle = api.createBuffer(device, size);
-      const buffer: MetalBuffer = {
-        handle,
-        byteLength: size,
-        host: api.bufferContents(handle, size),
-      };
-      return buffer;
-    },
+    alloc: allocate,
+    allocHost: allocate,
 
     free(buffer: DriverBuffer): void {
       api.destroy((buffer as MetalBuffer).handle);
+    },
+
+    write(buffer: DriverBuffer, offset: number, bytes: Uint8Array): void {
+      new Uint8Array(buffer.host!).set(bytes, offset);
+    },
+
+    async read(buffer: DriverBuffer, offset: number, length: number): Promise<Uint8Array> {
+      // Shared storage, so the only requirement is that the GPU has finished.
+      await this.wait(this.submitted());
+      return new Uint8Array(buffer.host!, offset, length).slice();
+    },
+
+    copy(
+      dst: DriverBuffer,
+      dstOffset: number,
+      src: DriverBuffer,
+      srcOffset: number,
+      bytes: number,
+    ): void {
+      new Uint8Array(dst.host!).set(new Uint8Array(src.host!, srcOffset, bytes), dstOffset);
     },
 
     async compile(ir: KernelIR): Promise<DriverKernel> {

@@ -123,9 +123,9 @@ export class GpuBackend implements DeviceBackend {
       dtypes: driver.caps.f16 ? GPU_DTYPES : GPU_DTYPES.filter((d) => d !== 'f16'),
       subgroups: driver.caps.subgroups,
       cooperativeMatrix: false,
-      pinnedHost: false,
-      // Both drivers require host-visible memory, so readback is a view.
-      unifiedMemory: true,
+      // Staging exists whenever the device does not share memory.
+      pinnedHost: !driver.hostVisible,
+      unifiedMemory: driver.hostVisible,
     };
   }
 
@@ -140,8 +140,10 @@ export class GpuBackend implements DeviceBackend {
    * @internal
    */
   #statusBuffer(): DriverBuffer {
-    if (!this.#status) this.#status = this.#driver.alloc(4);
-    new Uint32Array(this.#status.host)[0] = 0;
+    // Host-visible so the fault can be read without a staged transfer. Host-visible
+    // memory is device-writable everywhere, just slower, and one word never matters.
+    if (!this.#status) this.#status = this.#driver.allocHost(4);
+    new Uint32Array(this.#status.host!)[0] = 0;
     return this.#status;
   }
 
@@ -152,7 +154,7 @@ export class GpuBackend implements DeviceBackend {
    */
   #checkStatus(): void {
     if (!this.#status) return;
-    const view = new Uint32Array(this.#status.host);
+    const view = new Uint32Array(this.#status.host!);
     const code = view[0]!;
     if (code === 0) return;
     view[0] = 0;
@@ -179,9 +181,8 @@ export class GpuBackend implements DeviceBackend {
   }
 
   allocPinned(bytes: number): PinnedBuffer {
-    // Unified memory needs no separate staging pool, so a "pinned" allocation is
-    // just another device allocation the host can see.
-    return this.#driver.alloc(bytes) as unknown as PinnedBuffer;
+    // Always host-addressable: this is where readbacks land.
+    return this.#driver.allocHost(bytes) as unknown as PinnedBuffer;
   }
 
   freePinned(buffer: PinnedBuffer): void {
@@ -189,7 +190,7 @@ export class GpuBackend implements DeviceBackend {
   }
 
   viewPinned(buffer: PinnedBuffer): Uint8Array {
-    return new Uint8Array((buffer as unknown as DriverBuffer).host);
+    return new Uint8Array((buffer as unknown as DriverBuffer).host!);
   }
 
   /**
@@ -214,11 +215,16 @@ export class GpuBackend implements DeviceBackend {
   #failure: Error | null = null;
 
   copyH2D(dst: DeviceBuffer, dstOffset: number, src: Uint8Array): void {
-    // Copied through the queue so an upload cannot overtake a kernel that is
-    // still reading the destination.
+    // Queued so an upload cannot overtake a kernel still reading the destination,
+    // and copied because the caller's bytes may be gone by the time it runs.
     const bytes = src.slice();
-    this.#enqueue(() => {
-      new Uint8Array((dst as unknown as DriverBuffer).host).set(bytes, dstOffset);
+    this.#enqueue(async () => {
+      // Wait before touching the memory: on a shared-memory device this is a host
+      // memcpy, and a kernel submitted earlier may still be reading or writing the
+      // destination. Being queued is not enough — queue position guarantees
+      // submission order, not completion.
+      await this.#driver.wait(this.#driver.submitted());
+      this.#driver.write(dst as unknown as DriverBuffer, dstOffset, bytes);
     });
   }
 
@@ -229,11 +235,14 @@ export class GpuBackend implements DeviceBackend {
     bytes: number,
   ): void {
     this.#enqueue(async () => {
-      // Everything submitted before this copy must have completed, or the read
-      // returns whatever the buffer held beforehand.
-      await this.#driver.wait(this.#driver.submitted());
-      const from = new Uint8Array((src as unknown as DriverBuffer).host, srcOffset, bytes);
-      new Uint8Array((dst as unknown as DriverBuffer).host).set(from);
+      // `read` waits for work already submitted, so the values are the ones the
+      // kernels produced rather than whatever the buffer held beforehand.
+      const data = await this.#driver.read(
+        src as unknown as DriverBuffer,
+        srcOffset,
+        bytes,
+      );
+      new Uint8Array((dst as unknown as DriverBuffer).host!).set(data);
     });
   }
 
@@ -245,9 +254,16 @@ export class GpuBackend implements DeviceBackend {
     bytes: number,
   ): void {
     this.#enqueue(async () => {
+      // Same reasoning as an upload: a shared-memory copy is a host memcpy and must
+      // not race a kernel that has been submitted but not finished.
       await this.#driver.wait(this.#driver.submitted());
-      const from = new Uint8Array((src as unknown as DriverBuffer).host, srcOffset, bytes);
-      new Uint8Array((dst as unknown as DriverBuffer).host).set(from, dstOffset);
+      this.#driver.copy(
+        dst as unknown as DriverBuffer,
+        dstOffset,
+        src as unknown as DriverBuffer,
+        srcOffset,
+        bytes,
+      );
     });
   }
 
@@ -394,9 +410,14 @@ export class GpuBackend implements DeviceBackend {
   reduce(op: RedOp, x: TensorDesc, out: TensorDesc, axes: readonly number[]): void {
     const count = numel(out.shape);
     if (count === 0) return;
-    const { reduceSize, innerSize } = reductionExtents(x.shape, axes);
     const dtype = this.#scalar(x);
+
     if (op === 'argmax' || op === 'argmin') {
+      // An index reduction cannot be decomposed: the position it reports is
+      // relative to the whole reduced extent, which axis-at-a-time would lose.
+      // Every case the framework emits is a single axis or a full reduction, both
+      // of which are contiguous runs.
+      const { reduceSize, innerSize } = reductionExtents(x.shape, axes, op);
       this.#run(
         () => argReduceKernel({ op, dtype }),
         [x.buffer, out.buffer],
@@ -405,12 +426,69 @@ export class GpuBackend implements DeviceBackend {
       );
       return;
     }
-    this.#run(
-      () => reduceKernel({ op, dtype, out: this.#scalar(out) }),
-      [x.buffer, out.buffer],
-      { n: count, reduceSize, innerSize },
-      linearGrid(count),
-    );
+
+    // A contiguous run of axes is one kernel. A scattered set is reduced one axis
+    // at a time, highest first so the remaining axis indices stay valid. Every
+    // reduction here is associative, and reducing means axis-by-axis divides by
+    // each axis's size in turn, whose product is the total count — so the answer
+    // is the same either way.
+    const runs = contiguousRuns(axes);
+    let source = x;
+    let shape = [...x.shape];
+    const scratch: DriverBuffer[] = [];
+    for (let step = runs.length - 1; step >= 0; step--) {
+      const run = runs[step]!;
+      const { reduceSize, innerSize } = reductionExtents(shape, run, op);
+      const nextShape = shape.filter((_, axis) => !run.includes(axis));
+      const last = step === 0;
+      const target: TensorDesc = last
+        ? out
+        : {
+            buffer: this.#scratchBuffer(numel(nextShape) * DTYPE_BYTES[out.dtype], scratch),
+            dtype: out.dtype,
+            shape: nextShape,
+            strides: [],
+            offset: 0,
+          };
+      const elements = numel(nextShape);
+      this.#run(
+        () => reduceKernel({ op, dtype: this.#scalar(source), out: this.#scalar(target) }),
+        [source.buffer, target.buffer],
+        { n: elements, reduceSize, innerSize },
+        linearGrid(elements),
+      );
+      source = target;
+      shape = nextShape;
+    }
+    // The intermediates are only read by launches already queued ahead of the
+    // free, so releasing them on the queue is safe and keeps them off the pool.
+    if (scratch.length > 0) this.#releaseScratch(scratch);
+  }
+
+  /**
+   * Allocate a scratch buffer for a multi-step operation.
+   *
+   * Taken from the driver rather than the framework pool: it is never handed to a
+   * `Tensor`, so it has no reference count and no lifetime beyond this dispatch.
+   *
+   * @internal
+   */
+  #scratchBuffer(bytes: number, into: DriverBuffer[]): DeviceBuffer {
+    const buffer = this.#driver.alloc(Math.max(bytes, 4));
+    into.push(buffer);
+    return buffer as unknown as DeviceBuffer;
+  }
+
+  /**
+   * Free scratch buffers once the launches that read them have been submitted.
+   *
+   * @internal
+   */
+  #releaseScratch(buffers: readonly DriverBuffer[]): void {
+    this.#enqueue(async () => {
+      await this.#driver.wait(this.#driver.submitted());
+      for (const buffer of buffers) this.#driver.free(buffer);
+    });
   }
 
   softmax(x: TensorDesc, out: TensorDesc, axis: number, log: boolean): void {
@@ -684,12 +762,13 @@ function trailingExtent(shape: readonly number[], axis: number): number {
 function reductionExtents(
   shape: readonly number[],
   axes: readonly number[],
+  op: RedOp,
 ): { reduceSize: number; innerSize: number } {
   if (axes.length === 0) return { reduceSize: 1, innerSize: numel(shape) };
   for (let i = 1; i < axes.length; i++) {
     if (axes[i]! !== axes[i - 1]! + 1) {
       throw new Error(
-        `the GPU reduction needs contiguous axes, got [${axes.join(', ')}]; reduce one axis at a time`,
+        `'${op}' over axes [${axes.join(', ')}] needs a contiguous run; an index reduction cannot be decomposed`,
       );
     }
   }
@@ -698,6 +777,23 @@ function reductionExtents(
   let innerSize = 1;
   for (let i = axes[axes.length - 1]! + 1; i < shape.length; i++) innerSize *= shape[i]!;
   return { reduceSize, innerSize: Math.max(innerSize, 1) };
+}
+
+/**
+ * Split sorted axes into maximal contiguous runs.
+ *
+ * Each run is one kernel launch; a scattered set becomes several.
+ *
+ * @internal
+ */
+function contiguousRuns(axes: readonly number[]): number[][] {
+  const runs: number[][] = [];
+  for (const axis of axes) {
+    const last = runs[runs.length - 1];
+    if (last && axis === last[last.length - 1]! + 1) last.push(axis);
+    else runs.push([axis]);
+  }
+  return runs;
 }
 
 /**

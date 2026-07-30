@@ -38,19 +38,25 @@ export function logSoftmax(x: Tensor, axis = -1): Tensor {
 }
 
 /**
- * Layer normalisation over the last axis.
+ * Layer normalisation over the trailing `dims` axes.
+ *
+ * Normalising over more than one trailing axis is what PyTorch's
+ * `normalized_shape` expresses, and it costs nothing here: the statistics are
+ * taken over a contiguous run, so the run's total length is the only thing the
+ * kernel needs. `weight` and `bias`, when given, hold that many elements.
  */
 export function layerNorm(
   x: Tensor,
   weight: Tensor | null = null,
   bias: Tensor | null = null,
   epsilon = 1e-5,
+  dims = 1,
 ): Tensor {
   const inputs: Tensor[] = [x];
   if (weight) inputs.push(weight);
   if (bias) inputs.push(bias);
   return dispatch(RED.layerNorm!, inputs, {
-    axisSize: x.shape[x.rank - 1]!,
+    axisSize: trailingSize(x, dims),
     epsilon,
     rms: false,
     hasWeight: weight !== null,
@@ -59,13 +65,32 @@ export function layerNorm(
 }
 
 /**
+ * Product of the last `dims` axis sizes.
+ *
+ * @internal
+ */
+function trailingSize(x: Tensor, dims: number): number {
+  if (dims < 1 || dims > x.rank) {
+    throw new Error(`cannot normalise over ${dims} trailing axes of a rank-${x.rank} tensor`);
+  }
+  let size = 1;
+  for (let i = x.rank - dims; i < x.rank; i++) size *= x.shape[i]!;
+  return size;
+}
+
+/**
  * Root-mean-square normalisation, which omits mean subtraction.
  */
-export function rmsNorm(x: Tensor, weight: Tensor | null = null, epsilon = 1e-6): Tensor {
+export function rmsNorm(
+  x: Tensor,
+  weight: Tensor | null = null,
+  epsilon = 1e-6,
+  dims = 1,
+): Tensor {
   const inputs: Tensor[] = [x];
   if (weight) inputs.push(weight);
   return dispatch(RED.layerNorm!, inputs, {
-    axisSize: x.shape[x.rank - 1]!,
+    axisSize: trailingSize(x, dims),
     epsilon,
     rms: true,
     hasWeight: weight !== null,

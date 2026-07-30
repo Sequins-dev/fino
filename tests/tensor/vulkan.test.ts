@@ -74,6 +74,82 @@ describe('Vulkan loader', () => {
   });
 });
 
+describe('Vulkan staged transfers', () => {
+  it('round-trips through device-local memory', async (t) => {
+    if (!available) {
+      t.ok(true, `SKIP: ${reason()}`);
+      return;
+    }
+    // A discrete GPU's device-local memory is not host-visible, so transfers go
+    // through a staging buffer and an explicit copy. This exercises that path
+    // directly by asking for non-host-visible memory, which works on an integrated
+    // GPU too — otherwise the discrete path would ship untested.
+    const context = VulkanCompute.create();
+    const deviceLocal = context.createBuffer(64, { hostVisible: false });
+    const stage = context.createBuffer(64, { hostVisible: true });
+    t.ok(stage.mapped !== null, 'the staging buffer is host-visible');
+
+    const source = new Float32Array(stage.mapped!);
+    for (let i = 0; i < 16; i++) source[i] = i * 1.5;
+    const up = context.copyBuffer(deviceLocal, 0, stage, 0, 64);
+    await context.waitFor(up);
+
+    // Clear the staging buffer so the read cannot pass by reading its own input.
+    source.fill(0);
+    const down = context.copyBuffer(stage, 0, deviceLocal, 0, 64);
+    await context.waitFor(down);
+    const result = Array.from(new Float32Array(stage.mapped!));
+    t.deepEqual(
+      result,
+      Array.from({ length: 16 }, (_, i) => i * 1.5),
+      'values survived the round trip through device-local memory',
+    );
+
+    context.destroyBuffer(stage);
+    context.destroyBuffer(deviceLocal);
+    context.dispose();
+  });
+  it('computes on device-local memory', async (t) => {
+    if (!available) {
+      t.ok(true, `SKIP: ${reason()}`);
+      return;
+    }
+    // A kernel reading and writing memory the host cannot address, with the inputs
+    // staged in and the results staged out.
+    const context = VulkanCompute.create();
+    const { ir } = unaryKernel('relu', { dtype: 'f32', layout: 'cont' }, 'f32');
+    const pipeline = context.createPipeline(lowerToSPIRV(ir), ir.name);
+    const count = 32;
+    const bytes = count * 4;
+    const input = context.createBuffer(bytes, { hostVisible: false });
+    const out = context.createBuffer(bytes, { hostVisible: false });
+    const stage = context.createBuffer(bytes, { hostVisible: true });
+
+    const staged = new Float32Array(stage.mapped!);
+    for (let i = 0; i < count; i++) staged[i] = i % 2 === 0 ? -1 : i;
+    await context.waitFor(context.copyBuffer(input, 0, stage, 0, bytes));
+
+    const token = context.dispatch({
+      pipeline,
+      buffers: [input, out],
+      params: packParams(ir.params, { n: count }),
+      groups: [Math.ceil(count / ir.wg[0]), 1, 1],
+    });
+    await context.waitFor(token);
+    await context.waitFor(context.copyBuffer(stage, 0, out, 0, bytes));
+
+    const result = Array.from(new Float32Array(stage.mapped!));
+    const expect = Array.from({ length: count }, (_, i) => (i % 2 === 0 ? 0 : i));
+    t.deepEqual(result, expect, 'relu ran on memory the host cannot address');
+
+    context.destroyBuffer(stage);
+    context.destroyBuffer(out);
+    context.destroyBuffer(input);
+    context.destroyPipeline(pipeline);
+    context.dispose();
+  });
+});
+
 describe('Vulkan kernel execution', () => {
   it('runs IR-generated SPIR-V for an elementwise add', async (t) => {
     if (!available) {

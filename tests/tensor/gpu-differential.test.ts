@@ -110,6 +110,25 @@ function programs(): Program[] {
       run: (x) => x.sum([1]).add(x.mean([1])).add(x.max([1])).add(x.min([1])),
     },
     {
+      name: 'scattered reduction axes',
+      inputs: [{ shape: [3, 4, 5], seed: 40 }],
+      // Axes 0 and 2 are not adjacent, so this reduces one run at a time through a
+      // scratch buffer rather than in a single kernel.
+      run: (x) => x.sum([0, 2]),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'scattered mean axes',
+      inputs: [{ shape: [2, 3, 4, 2], seed: 41 }],
+      run: (x) => x.mean([0, 2]),
+      tolerance: 1e-5,
+    },
+    {
+      name: 'scattered max axes',
+      inputs: [{ shape: [3, 4, 5], seed: 42 }],
+      run: (x) => x.max([0, 2]),
+    },
+    {
       name: 'argmax',
       inputs: [{ shape: [5, 7], seed: 14 }],
       run: (x) => x.argmax(1).cast('f32'),

@@ -42,6 +42,7 @@ export function vulkanDriverReason(): string | null {
 export function createVulkanDriver(): GpuDriver {
   const context = VulkanCompute.create();
   const info = context.info;
+  const shared = context.sharesMemory;
 
   const caps: DriverCaps = {
     type: 'vulkan',
@@ -54,28 +55,117 @@ export function createVulkanDriver(): GpuDriver {
     maxWorkgroup: info.maxWorkgroupInvocations,
   };
 
-  if (!info.unifiedMemory) {
-    throw new Error(
-      'the Vulkan driver currently requires host-visible device memory; a discrete GPU needs a staging path that is not implemented',
-    );
-  }
+  /**
+   * A host-visible buffer used to stage reads, grown as needed.
+   *
+   * Safe to share because a read waits for its own transfer before returning, so no
+   * second read can be in flight against it.
+   */
+  let readStaging: VkBuffer | null = null;
+  const stagingForRead = (bytes: number): VkBuffer => {
+    if (readStaging && readStaging.bytes >= bytes) return readStaging;
+    if (readStaging) context.destroyBuffer(readStaging);
+    readStaging = context.createBuffer(Math.max(bytes, 4096), { hostVisible: true });
+    return readStaging;
+  };
+
+  /**
+   * Stage an upload through its own buffer, released once the transfer completes.
+   *
+   * A shared upload buffer would be wrong: `write` is synchronous and only *queues*
+   * the transfer, so a second write would overwrite the bytes before the first copy
+   * ran — the first buffer would silently receive the second's data. Uploads are
+   * rare compared with kernel launches, so a buffer each is the right trade for
+   * correctness. Batching them behind one arena is a later optimisation.
+   */
+  const stageUpload = (bytes: Uint8Array): { buffer: VkBuffer; done: () => void } => {
+    const buffer = context.createBuffer(Math.max(bytes.byteLength, 4), {
+      hostVisible: true,
+    });
+    new Uint8Array(buffer.mapped!).set(bytes, 0);
+    return { buffer, done: () => context.destroyBuffer(buffer) };
+  };
 
   return {
     caps,
     target: `spirv-1.3:${info.name}${caps.f16 ? '+f16' : ''}`,
+    hostVisible: shared,
 
     alloc(bytes: number): DriverBuffer {
-      const handle = context.createBuffer(Math.max(bytes, 4));
+      // Device-local when the device does not share memory, so kernels get the fast
+      // memory and transfers go through staging.
+      const handle = context.createBuffer(Math.max(bytes, 4), { hostVisible: shared });
       const buffer: VulkanBuffer = {
         handle,
         byteLength: handle.bytes,
-        host: handle.mapped!,
+        host: handle.mapped,
+      };
+      return buffer;
+    },
+
+    allocHost(bytes: number): DriverBuffer {
+      const handle = context.createBuffer(Math.max(bytes, 4), { hostVisible: true });
+      const buffer: VulkanBuffer = {
+        handle,
+        byteLength: handle.bytes,
+        host: handle.mapped,
       };
       return buffer;
     },
 
     free(buffer: DriverBuffer): void {
       context.destroyBuffer((buffer as VulkanBuffer).handle);
+    },
+
+    write(buffer: DriverBuffer, offset: number, bytes: Uint8Array): void {
+      if (buffer.host) {
+        new Uint8Array(buffer.host).set(bytes, offset);
+        return;
+      }
+      // Staged: the bytes land in host-visible memory, then the device copies them
+      // into its own.
+      const stage = stageUpload(bytes);
+      const token = context.copyBuffer(
+        (buffer as VulkanBuffer).handle,
+        offset,
+        stage.buffer,
+        0,
+        bytes.byteLength,
+      );
+      // Released once the copy has run, not before.
+      void context.waitFor(token).then(stage.done, stage.done);
+    },
+
+    async read(buffer: DriverBuffer, offset: number, length: number): Promise<Uint8Array> {
+      if (buffer.host) {
+        await context.waitFor(context.submitted);
+        return new Uint8Array(buffer.host, offset, length).slice();
+      }
+      // Staged: copy out, wait for exactly that transfer, then read.
+      const stage = stagingForRead(length);
+      const token = context.copyBuffer(stage, 0, (buffer as VulkanBuffer).handle, offset, length);
+      await context.waitFor(token);
+      return new Uint8Array(stage.mapped!, 0, length).slice();
+    },
+
+    copy(
+      dst: DriverBuffer,
+      dstOffset: number,
+      src: DriverBuffer,
+      srcOffset: number,
+      bytes: number,
+    ): void {
+      if (dst.host && src.host) {
+        new Uint8Array(dst.host).set(new Uint8Array(src.host, srcOffset, bytes), dstOffset);
+        return;
+      }
+      context.copyBuffer(
+        (dst as VulkanBuffer).handle,
+        dstOffset,
+        (src as VulkanBuffer).handle,
+        srcOffset,
+        bytes,
+      );
     },
 
     async compile(ir: KernelIR): Promise<DriverKernel> {
@@ -119,6 +209,7 @@ export function createVulkanDriver(): GpuDriver {
     },
 
     dispose(): void {
+      if (readStaging) context.destroyBuffer(readStaging);
       context.dispose();
     },
   };

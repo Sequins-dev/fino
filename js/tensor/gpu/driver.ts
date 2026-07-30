@@ -13,18 +13,20 @@
  */
 import type { KernelIR } from '../ir/index.ts';
 
-/** A device allocation the host can also read and write. */
+/** A device allocation. */
 export interface DriverBuffer {
   /** Bytes the allocation spans. */
   readonly byteLength: number;
   /**
-   * Host view of the same memory.
+   * Host view of the same memory, or `null` when the device cannot share it.
    *
-   * Both supported drivers run on unified memory, so this is the device's own
-   * storage rather than a staging copy. A discrete-memory driver would need staging
-   * and an explicit transfer, which is why this is a driver concern.
+   * Unified memory makes this the device's own storage, so a transfer is a memcpy.
+   * A discrete GPU's device-local memory is not host-visible at all, so transfers
+   * go through staging. Callers should not branch on this — use {@link
+   * GpuDriver.write} and {@link GpuDriver.read}, which do the right thing either
+   * way. It exists so a driver can take the fast path internally.
    */
-  readonly host: ArrayBuffer;
+  readonly host: ArrayBuffer | null;
 }
 
 /** A compiled kernel. */
@@ -58,10 +60,39 @@ export interface GpuDriver {
   /** Identity used in cache keys, so two drivers never share a compiled kernel. */
   readonly target: string;
 
-  /** Allocate host-visible device memory. */
+  /** Whether {@link alloc} returns memory the host can address directly. */
+  readonly hostVisible: boolean;
+
+  /** Allocate device memory, host-visible or not as the device prefers. */
   alloc(bytes: number): DriverBuffer;
+  /**
+   * Allocate memory the host can always address.
+   *
+   * Used for staging and for the small buffers a kernel writes diagnostics into.
+   * Host-visible memory is device-accessible everywhere, just slower, so this is
+   * always available.
+   */
+  allocHost(bytes: number): DriverBuffer;
   /** Release an allocation. */
   free(buffer: DriverBuffer): void;
+
+  /**
+   * Copy host bytes into a buffer, ordered behind work already submitted.
+   *
+   * On unified memory this is a memcpy; on a discrete device it stages and records
+   * a transfer.
+   */
+  write(buffer: DriverBuffer, offset: number, bytes: Uint8Array): void;
+  /** Read bytes out of a buffer, once work already submitted has completed. */
+  read(buffer: DriverBuffer, offset: number, length: number): Promise<Uint8Array>;
+  /** Copy within the device, ordered behind work already submitted. */
+  copy(
+    dst: DriverBuffer,
+    dstOffset: number,
+    src: DriverBuffer,
+    srcOffset: number,
+    bytes: number,
+  ): void;
 
   /** Compile a kernel from IR. */
   compile(ir: KernelIR): Promise<DriverKernel>;

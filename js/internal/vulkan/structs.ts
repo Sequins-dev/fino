@@ -398,6 +398,17 @@ export const VkBufferCreateInfo = new VkStruct(
   56,
 );
 
+/** `VkBufferCopy`. */
+export const VkBufferCopy = new VkStruct(
+  'VkBufferCopy',
+  [
+    ['srcOffset', 'u64'],
+    ['dstOffset', 'u64'],
+    ['size', 'u64'],
+  ],
+  24,
+);
+
 /** `VkMemoryRequirements`. */
 export const VkMemoryRequirements = new VkStruct(
   'VkMemoryRequirements',

@@ -31,6 +31,11 @@ implementation and is not this engine's performance story.
 requesting one on a GPU is refused rather than narrowed. Gradient checking needs
 `f64`, so it runs on the CPU by construction.
 
+Discrete GPUs, whose device-local memory the host cannot address, are supported:
+transfers stage through host-visible memory and an explicit copy. Set
+`FINO_VULKAN_STAGING=1` to take that path on hardware that does not require it,
+which is how it is tested here.
+
 ## Eager, non-blocking execution
 
 Operations return immediately. The only place anything waits is reading values

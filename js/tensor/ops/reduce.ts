@@ -448,40 +448,49 @@ RED.layerNorm = registerOp({
       const weight = saved[1] ?? null;
       const epsilon = attrs!.epsilon as number;
       const rms = attrs!.rms === true;
-      const axis = x.rank - 1;
-      const n = x.shape[axis]!;
+      // The normalised run may span several trailing axes, so its length comes
+      // from the recorded attribute rather than from the last axis alone. The
+      // statistics are still per-row, so the tensor is viewed as [rows, n].
+      const n = attrs!.axisSize as number;
+      const rows = Math.max(x.size / n, 1);
+      const viewed = reshapeTo(x, [rows, n]);
+      const axis = 1;
 
       // Recompute the normalised value rather than saving it: one extra pass over
       // activations is cheaper than holding a second copy of them.
-      const rowMean = rms ? null : meanAlong(x, axis);
-      const centred = rowMean ? sub(x, rowMean) : x;
+      const rowMean = rms ? null : meanAlong(viewed, axis);
+      const centred = rowMean ? sub(viewed, rowMean) : viewed;
       const variance = meanAlong(mul(centred, centred), axis);
       const scale = rsqrt(addScalar(variance, epsilon));
       const normalized = mul(centred, scale);
 
-      // Fold the affine weight into the incoming cotangent.
-      const inner = weight ? mul(cot, weight) : cot;
+      // Fold the affine weight into the incoming cotangent, viewed the same way.
+      const cotViewed = reshapeTo(cot, [rows, n]);
+      const inner = weight ? mul(cotViewed, reshapeTo(weight, [1, n])) : cotViewed;
       const gradX = needs[0]
-        ? mulScalar(
-            mul(
-              scale,
-              sub(
-                mulScalar(inner, n),
-                add(
-                  sumAlong(inner, axis),
-                  mul(normalized, sumAlong(mul(inner, normalized), axis)),
+        ? reshapeTo(
+            mulScalar(
+              mul(
+                scale,
+                sub(
+                  mulScalar(inner, n),
+                  add(
+                    sumAlong(inner, axis),
+                    mul(normalized, sumAlong(mul(inner, normalized), axis)),
+                  ),
                 ),
               ),
+              1 / n,
             ),
-            1 / n,
+            x.shape,
           )
         : null;
 
       const out: (Tensor | null)[] = [gradX];
       if (saved.length > 1) {
-        out.push(needs[1] ? sumLeading(mul(cot, normalized), x.rank) : null);
+        out.push(needs[1] ? sumLeading(mul(cotViewed, normalized), 2) : null);
       }
-      if (saved.length > 2) out.push(needs[2] ? sumLeading(cot, x.rank) : null);
+      if (saved.length > 2) out.push(needs[2] ? sumLeading(cotViewed, 2) : null);
       return out;
     },
   },

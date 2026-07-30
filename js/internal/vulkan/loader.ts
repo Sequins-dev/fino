@@ -193,6 +193,10 @@ const SYMBOLS = {
     result: 'void',
   },
   vkCmdDispatch: { parameters: ['pointer', 'u32', 'u32', 'u32'], result: 'void' },
+  vkCmdCopyBuffer: {
+    parameters: ['pointer', 'u64', 'u64', 'u32', 'buffer'],
+    result: 'void',
+  },
   vkCmdPipelineBarrier: {
     parameters: [
       'pointer',

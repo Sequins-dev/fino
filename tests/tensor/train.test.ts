@@ -123,6 +123,31 @@ describe('layers', () => {
     const out = norm.forward(x);
     t.deepEqual([...out.shape], [1, 3], 'shape is unchanged');
   });
+  it('normalises over several trailing axes', async (t) => {
+    const { layerNorm, rmsNorm } = await import('fino:tensor/nn');
+    // PyTorch's normalized_shape spanning two axes: statistics are taken over the
+    // whole trailing run, not per-axis.
+    const x = await tensor(
+      Array.from({ length: 2 * 3 * 4 }, (_, i) => ((i % 7) - 3) / 2),
+      { shape: [2, 3, 4] },
+    );
+    const out = layerNorm(x, null, null, 1e-5, 2);
+    t.deepEqual([...out.shape], [2, 3, 4], 'shape is unchanged');
+    const values = Array.from(await out.data());
+    for (const row of [values.slice(0, 12), values.slice(12, 24)]) {
+      const mean = row.reduce((a, b) => a + b, 0) / row.length;
+      const variance = row.reduce((a, b) => a + (b - mean) ** 2, 0) / row.length;
+      t.ok(Math.abs(mean) < 1e-4, `the twelve-element run has mean ~0 (${mean})`);
+      t.ok(Math.abs(variance - 1) < 1e-3, `and variance ~1 (${variance})`);
+    }
+    const rms = rmsNorm(x, null, 1e-6, 2);
+    t.deepEqual([...rms.shape], [2, 3, 4], 'rms keeps the shape too');
+    t.throws(
+      () => layerNorm(x, null, null, 1e-5, 4),
+      /rank-3/,
+      'more trailing axes than the tensor has is refused',
+    );
+  });
   it('drops elements in training and passes through in evaluation', async (t) => {
     const dropout = new Dropout(0.5, { generator: new Generator(13) });
     const x = await tensor(new Array(1000).fill(1));

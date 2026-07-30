@@ -19,6 +19,7 @@ import { VulkanError, check, loader, vulkanAvailable, vulkanUnavailableReason } 
 import type { VulkanLibrary } from './loader.ts';
 import {
   BufferUsage,
+  VkBufferCopy,
   CommandBufferLevel,
   CommandBufferUsage,
   DescriptorType,
@@ -548,6 +549,107 @@ export class VulkanCompute {
       void address;
     }
     return { handle, memory, bytes, mapped };
+  }
+
+  /**
+   * Whether a memory type exists that is both device-local and host-visible.
+   *
+   * True on an integrated GPU, false on a discrete one. `FINO_VULKAN_STAGING=1`
+   * forces the staged path regardless, which is how it gets tested on hardware that
+   * does not require it.
+   */
+  get sharesMemory(): boolean {
+    if (globalThis.process?.env?.FINO_VULKAN_STAGING === '1') return false;
+    return this.#info.unifiedMemory;
+  }
+
+  /**
+   * Record and submit a buffer-to-buffer copy.
+   *
+   * Returns the timeline value it signals, so a caller can wait on exactly this
+   * transfer rather than on the whole queue.
+   */
+  copyBuffer(
+    dst: VkBuffer,
+    dstOffset: number,
+    src: VkBuffer,
+    srcOffset: number,
+    bytes: number,
+  ): bigint {
+    const chain = new StructChain();
+    const allocateInfo = chain.hold(
+      VkCommandBufferAllocateInfo.make({
+        sType: StructureType.CommandBufferAllocateInfo,
+        commandPool: this.#commandPool,
+        level: CommandBufferLevel.Primary,
+        commandBufferCount: 1,
+      }),
+    );
+    const commandSlot = slot();
+    check(
+      'vkAllocateCommandBuffers',
+      this.#lib.symbols.vkAllocateCommandBuffers(
+        this.#device,
+        allocateInfo,
+        commandSlot,
+      ) as number,
+    );
+    const commandBuffer = readPointer(commandSlot);
+    const beginInfo = chain.hold(
+      VkCommandBufferBeginInfo.make({
+        sType: StructureType.CommandBufferBeginInfo,
+        flags: CommandBufferUsage.OneTimeSubmit,
+      }),
+    );
+    check(
+      'vkBeginCommandBuffer',
+      this.#lib.symbols.vkBeginCommandBuffer(commandBuffer, beginInfo) as number,
+    );
+    const region = chain.hold(
+      VkBufferCopy.make({
+        srcOffset: BigInt(srcOffset),
+        dstOffset: BigInt(dstOffset),
+        size: BigInt(bytes),
+      }),
+    );
+    this.#lib.symbols.vkCmdCopyBuffer(
+      commandBuffer,
+      src.handle,
+      dst.handle,
+      1,
+      new Uint8Array(region),
+    );
+    check(
+      'vkEndCommandBuffer',
+      this.#lib.symbols.vkEndCommandBuffer(commandBuffer) as number,
+    );
+
+    const signalValue = ++this.#counter;
+    const timelineInfo = chain.hold(
+      VkTimelineSemaphoreSubmitInfo.make({
+        sType: StructureType.TimelineSemaphoreSubmitInfo,
+        signalSemaphoreValueCount: 1,
+        pSignalSemaphoreValues: chain.addressOf(BigUint64Array.from([signalValue])),
+      }),
+    );
+    const submitInfo = chain.hold(
+      VkSubmitInfo.make({
+        sType: StructureType.SubmitInfo,
+        pNext: timelineInfo,
+        commandBufferCount: 1,
+        pCommandBuffers: chain.addressOf(
+          BigUint64Array.from([handleValue(commandBuffer)]),
+        ),
+        signalSemaphoreCount: 1,
+        pSignalSemaphores: chain.handleArray([this.#timeline]),
+      }),
+    );
+    check(
+      'vkQueueSubmit',
+      this.#lib.symbols.vkQueueSubmit(this.#queue, 1, submitInfo, 0n) as number,
+    );
+    this.#pending.push(chain, commandBuffer);
+    return signalValue;
   }
 
   /** Release a buffer and its memory. */
