@@ -205,7 +205,9 @@ const SYMBOLS = {
       'u32',
       'u32',
       'u32',
-      'pointer',
+      // The memory barriers are passed as data, like every other struct array here;
+      // `pointer` would hand the driver the address of the address.
+      'buffer',
       'u32',
       'pointer',
       'u32',

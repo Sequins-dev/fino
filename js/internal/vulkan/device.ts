@@ -43,6 +43,8 @@ import {
   VkDescriptorBufferInfo,
   VkDescriptorPoolCreateInfo,
   VkDescriptorPoolSize,
+  Access,
+  VkMemoryBarrier,
   VkDescriptorSetAllocateInfo,
   VkDescriptorSetLayoutBinding,
   VkDescriptorSetLayoutCreateInfo,
@@ -79,6 +81,14 @@ const MAX_BINDINGS = 8;
  * that the pool costs nothing to hold.
  */
 const DESCRIPTOR_SETS = 4096;
+
+/**
+ * Dispatches recorded before a batch is submitted regardless of synchronisation.
+ *
+ * Large enough that the per-submission cost amortises away, small enough that the
+ * device is not left idle waiting for the host to finish a long run of launches.
+ */
+const MAX_BATCH = 64;
 
 /** Push-constant bytes reserved, matching the kernel IR's parameter-block cap. */
 const PUSH_CONSTANT_BYTES = 128;
@@ -600,6 +610,11 @@ export class VulkanCompute {
     srcOffset: number,
     bytes: number,
   ): bigint {
+    // This submits on its own, and the timeline it signals into is shared with the
+    // batched dispatches. Anything still being recorded has to go first, or the copy
+    // would signal a value ahead of dispatches that were issued before it — and a
+    // timeline semaphore may only be signalled with increasing values.
+    this.flush();
     const chain = new StructChain();
     const allocateInfo = chain.hold(
       VkCommandBufferAllocateInfo.make({
@@ -757,6 +772,72 @@ export class VulkanCompute {
   }
 
   /**
+   * The command buffer dispatches are being recorded into, if any.
+   *
+   * @internal
+   */
+  #openCommand: unknown = null;
+
+  /**
+   * Dispatches recorded into it.
+   *
+   * @internal
+   */
+  #encoded = 0;
+
+  /**
+   * Timeline value of the most recent submission.
+   *
+   * Distinct from `#counter`, which counts what has been *recorded*: a value that has
+   * not been submitted will never be signalled, so anything waiting on one has to
+   * flush first.
+   *
+   * @internal
+   */
+  #submittedValue = 0n;
+
+  /**
+   * Open a command buffer to record into, or return the one already open.
+   *
+   * @internal
+   */
+  #beginCommands(): unknown {
+    if (this.#openCommand) return this.#openCommand;
+    const chain = new StructChain();
+    const allocateInfo = chain.hold(
+      VkCommandBufferAllocateInfo.make({
+        sType: StructureType.CommandBufferAllocateInfo,
+        commandPool: this.#commandPool,
+        level: CommandBufferLevel.Primary,
+        commandBufferCount: 1,
+      }),
+    );
+    const commandSlot = slot();
+    check(
+      'vkAllocateCommandBuffers',
+      this.#lib.symbols.vkAllocateCommandBuffers(
+        this.#device,
+        allocateInfo,
+        commandSlot,
+      ) as number,
+    );
+    const commandBuffer = readPointer(commandSlot);
+    const beginInfo = chain.hold(
+      VkCommandBufferBeginInfo.make({
+        sType: StructureType.CommandBufferBeginInfo,
+        flags: CommandBufferUsage.OneTimeSubmit,
+      }),
+    );
+    check(
+      'vkBeginCommandBuffer',
+      this.#lib.symbols.vkBeginCommandBuffer(commandBuffer, beginInfo) as number,
+    );
+    this.#pending.push(chain);
+    this.#openCommand = commandBuffer;
+    return commandBuffer;
+  }
+
+  /**
    * Record and submit one dispatch, returning the timeline value it signals.
    */
   dispatch(options: {
@@ -816,35 +897,7 @@ export class VulkanCompute {
     }
     this.#lib.symbols.vkUpdateDescriptorSets(this.#device, MAX_BINDINGS, writes, 0, null);
 
-    const allocateInfo = chain.hold(
-      VkCommandBufferAllocateInfo.make({
-        sType: StructureType.CommandBufferAllocateInfo,
-        commandPool: this.#commandPool,
-        level: CommandBufferLevel.Primary,
-        commandBufferCount: 1,
-      }),
-    );
-    const commandSlot = slot();
-    check(
-      'vkAllocateCommandBuffers',
-      this.#lib.symbols.vkAllocateCommandBuffers(
-        this.#device,
-        allocateInfo,
-        commandSlot,
-      ) as number,
-    );
-    const commandBuffer = readPointer(commandSlot);
-
-    const beginInfo = chain.hold(
-      VkCommandBufferBeginInfo.make({
-        sType: StructureType.CommandBufferBeginInfo,
-        flags: CommandBufferUsage.OneTimeSubmit,
-      }),
-    );
-    check(
-      'vkBeginCommandBuffer',
-      this.#lib.symbols.vkBeginCommandBuffer(commandBuffer, beginInfo) as number,
-    );
+    const commandBuffer = this.#beginCommands();
     this.#lib.symbols.vkCmdBindPipeline(
       commandBuffer,
       PipelineBindPoint.Compute,
@@ -876,12 +929,58 @@ export class VulkanCompute {
       options.groups[1],
       options.groups[2],
     );
+    // A global barrier after every dispatch. Batched dispatches share one command
+    // buffer, so without this the next one could read what this one has not finished
+    // writing — and separate submissions never guaranteed that ordering either, they
+    // only tended to get it.
+    const barrier = chain.hold(
+      VkMemoryBarrier.make({
+        sType: StructureType.MemoryBarrier,
+        srcAccessMask: Access.ShaderWrite,
+        dstAccessMask: Access.ShaderRead | Access.ShaderWrite,
+      }),
+    );
+    this.#lib.symbols.vkCmdPipelineBarrier(
+      commandBuffer,
+      PipelineStage.ComputeShader,
+      PipelineStage.ComputeShader,
+      0,
+      1,
+      new Uint8Array(barrier),
+      0,
+      null,
+      0,
+      null,
+    );
+
+    this.#encoded++;
+    // The driver reads the recorded structures asynchronously, so they must outlive
+    // the submission, which has not happened yet.
+    this.#pending.push(chain);
+    const signalValue = ++this.#counter;
+    if (this.#encoded >= MAX_BATCH) this.flush();
+    return signalValue;
+  }
+
+  /**
+   * Submit whatever has been recorded.
+   *
+   * One submission per batch rather than per dispatch: allocating a command buffer,
+   * recording into it, and submitting it are most of the host cost of a launch, and
+   * only the recording is per-dispatch work.
+   */
+  flush(): void {
+    const commandBuffer = this.#openCommand;
+    if (!commandBuffer) return;
+    this.#openCommand = null;
+    this.#encoded = 0;
+    const signalValue = this.#counter;
+
     check(
       'vkEndCommandBuffer',
       this.#lib.symbols.vkEndCommandBuffer(commandBuffer) as number,
     );
-
-    const signalValue = ++this.#counter;
+    const chain = new StructChain();
     const timelineInfo = chain.hold(
       VkTimelineSemaphoreSubmitInfo.make({
         sType: StructureType.TimelineSemaphoreSubmitInfo,
@@ -905,9 +1004,8 @@ export class VulkanCompute {
       'vkQueueSubmit',
       this.#lib.symbols.vkQueueSubmit(this.#queue, 1, submitInfo, 0n) as number,
     );
-    // The driver reads these asynchronously, so they must outlive the call.
     this.#pending.push(chain, commandBuffer);
-    return signalValue;
+    this.#submittedValue = signalValue;
   }
 
   /**
@@ -917,6 +1015,8 @@ export class VulkanCompute {
    * works.
    */
   async waitFor(value: bigint): Promise<void> {
+    // An unsubmitted command buffer will never signal, so it goes first.
+    if (value > this.#submittedValue) this.flush();
     const chain = new StructChain();
     const info = chain.hold(
       VkSemaphoreWaitInfo.make({
@@ -957,6 +1057,9 @@ export class VulkanCompute {
    */
   reclaim(): boolean {
     if (this.#setsUsed < DESCRIPTOR_SETS) return true;
+    // Resetting the pools would free the command buffer currently being recorded
+    // into, so anything open has to be submitted before it can be waited for.
+    this.flush();
     if (this.completed() < this.#counter) return false;
     this.#pending.length = 0;
     check(

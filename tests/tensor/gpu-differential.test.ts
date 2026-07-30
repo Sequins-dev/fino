@@ -10,6 +10,7 @@
 import { describe, it } from 'fino:test/test';
 import {
   device,
+  gpuUnavailableReasons,
   listDevices,
   poolStats,
   tensor,
@@ -466,6 +467,24 @@ describe('GPU differential against the reference oracle', () => {
         () => tensor([1, 2], { dtype: 'f64', device: gpu }),
         /does not support f64/,
         `${gpu.type} reports f64 as unsupported`,
+      );
+    }
+  });
+});
+
+describe('GPU discovery is self-consistent', () => {
+  it('yields a device for every backend that reports itself available', async (t) => {
+    // The invariant that keeps this whole suite honest. Every test here loops over the
+    // GPUs it found, so a backend that quietly stops being discovered does not fail
+    // anything — it just gets tested less, and the suite still reports success. This
+    // caught exactly that: a Vulkan backend that threw during probing while its
+    // availability check still claimed it was fine.
+    const found = new Set((await listDevices()).map((d) => d.type));
+    for (const [type, reason] of Object.entries(gpuUnavailableReasons())) {
+      if (reason !== null) continue;
+      t.ok(
+        found.has(type),
+        `${type} reports no reason for being unavailable, so it must yield a device`,
       );
     }
   });

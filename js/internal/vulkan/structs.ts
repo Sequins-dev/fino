@@ -237,6 +237,7 @@ export class StructChain {
 /** `VkStructureType` values used here. */
 export const StructureType = {
   ApplicationInfo: 0,
+  MemoryBarrier: 46,
   InstanceCreateInfo: 1,
   DeviceQueueCreateInfo: 2,
   DeviceCreateInfo: 3,
@@ -304,6 +305,27 @@ export const SemaphoreType = { Binary: 0, Timeline: 1 } as const;
 
 /** Pipeline stage bits. */
 export const PipelineStage = { ComputeShader: 0x800, AllCommands: 0x10000 } as const;
+
+/** Memory access bits, for the barrier between two dispatches. */
+export const Access = { ShaderRead: 0x20, ShaderWrite: 0x40 } as const;
+
+/**
+ * `VkMemoryBarrier` — a global barrier, covering every buffer at once.
+ *
+ * Per-buffer barriers would be narrower, but a compute dispatch reads and writes
+ * whatever its bindings name and the cost here is a pipeline stall either way, so
+ * naming buffers individually would add bookkeeping without removing the stall.
+ */
+export const VkMemoryBarrier = new VkStruct(
+  'VkMemoryBarrier',
+  [
+    ['sType', 'u32'],
+    ['pNext', 'ptr'],
+    ['srcAccessMask', 'u32'],
+    ['dstAccessMask', 'u32'],
+  ],
+  24,
+);
 
 /** `VK_SUCCESS`. */
 export const VK_SUCCESS = 0;

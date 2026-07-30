@@ -47,8 +47,8 @@ export const metalProvider: BackendProvider = {
     if (!metalDriverAvailable()) return [];
     try {
       return [new GpuBackend(createMetalDriver())];
-    } catch {
-      // A device that cannot be initialised is simply absent.
+    } catch (cause) {
+      probeFailures.metal = (cause as Error).message;
       return [];
     }
   },

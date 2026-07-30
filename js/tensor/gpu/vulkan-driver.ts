@@ -197,6 +197,8 @@ export function createVulkanDriver(): GpuDriver {
 
     async wait(token: bigint): Promise<void> {
       if (token <= context.completed()) return;
+      // `waitFor` submits anything still being recorded, so a token for an unsubmitted
+      // dispatch resolves rather than hanging on a value nothing will signal.
       await context.waitFor(token);
     },
 
