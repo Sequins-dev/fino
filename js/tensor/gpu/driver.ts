@@ -116,6 +116,16 @@ export interface GpuDriver {
   wait(token: bigint): Promise<void>;
   /** The most recently submitted token. */
   submitted(): bigint;
+
+  /**
+   * Whether a launch can be recorded immediately, reclaiming per-dispatch resources if
+   * that is what it takes.
+   *
+   * False means the device is behind and its caller must wait for submitted work
+   * first. A driver whose per-dispatch resources are managed by the platform simply
+   * returns true.
+   */
+  canLaunch(): boolean;
   /** The token the device has completed. */
   completed(): bigint;
 

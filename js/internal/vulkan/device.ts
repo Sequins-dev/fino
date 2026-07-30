@@ -69,6 +69,16 @@ import {
 /** Bindings a compute pipeline layout reserves. */
 const MAX_BINDINGS = 8;
 
+/**
+ * Descriptor sets the pool holds.
+ *
+ * One is consumed per dispatch and they are reclaimed in bulk, so this is how many
+ * dispatches can be in flight before the device has to be caught up with. Large
+ * enough that a burst between two synchronisation points never notices, small enough
+ * that the pool costs nothing to hold.
+ */
+const DESCRIPTOR_SETS = 4096;
+
 /** Push-constant bytes reserved, matching the kernel IR's parameter-block cap. */
 const PUSH_CONSTANT_BYTES = 128;
 
@@ -156,6 +166,17 @@ export class VulkanCompute {
   #info: VkDeviceInfo;
   #commandPool: bigint;
   #descriptorPool: bigint;
+
+  /**
+   * Descriptor sets handed out since the pools were last reset.
+   *
+   * A set cannot be freed individually, so the pool is reset as a whole — which is
+   * only safe once the device has finished everything that referenced it. Counting
+   * them is what lets a dispatch know it must recycle before allocating.
+   *
+   * @internal
+   */
+  #setsUsed = 0;
   #setLayout: bigint;
   #pipelineLayout: bigint;
   #timeline: bigint;
@@ -356,13 +377,15 @@ export class VulkanCompute {
     const size = chain.hold(
       VkDescriptorPoolSize.make({
         type: DescriptorType.StorageBuffer,
-        descriptorCount: MAX_BINDINGS * 64,
+        // Every set writes all of its bindings, so the pool needs the product rather
+        // than one descriptor per set.
+        descriptorCount: MAX_BINDINGS * DESCRIPTOR_SETS,
       }),
     );
     const info = chain.hold(
       VkDescriptorPoolCreateInfo.make({
         sType: StructureType.DescriptorPoolCreateInfo,
-        maxSets: 64,
+        maxSets: DESCRIPTOR_SETS,
         poolSizeCount: 1,
         pPoolSizes: size,
       }),
@@ -741,6 +764,12 @@ export class VulkanCompute {
     params: ArrayBuffer | null;
     groups: readonly [number, number, number];
   }): bigint {
+    if (!this.reclaim()) {
+      throw new Error(
+        `all ${DESCRIPTOR_SETS} descriptor sets are in use by work the device has not ` +
+          'finished; wait for submitted work before dispatching more',
+      );
+    }
     const chain = new StructChain();
 
     // A fresh descriptor set per dispatch; the pool is reset when the timeline
@@ -759,6 +788,7 @@ export class VulkanCompute {
       this.#lib.symbols.vkAllocateDescriptorSets(this.#device, setInfo, setSlot) as number,
     );
     const descriptorSet = readHandle(setSlot);
+    this.#setsUsed++;
 
     // Every binding must be written, including unused ones, so point the spares at
     // the first buffer rather than leaving them undefined.
@@ -912,6 +942,32 @@ export class VulkanCompute {
       'vkResetDescriptorPool',
       this.#lib.symbols.vkResetDescriptorPool(this.#device, this.#descriptorPool, 0) as number,
     );
+    this.#setsUsed = 0;
+  }
+
+  /**
+   * Whether a dispatch can be recorded right now, recycling if it needs to be.
+   *
+   * Descriptor sets and command buffers are per-dispatch and cannot be freed one at a
+   * time, so they are reclaimed in bulk once the device has caught up with everything
+   * submitted. Sustained dispatch works because the device does catch up constantly;
+   * this returns false only when it genuinely has not, which the caller answers by
+   * waiting.
+   */
+  reclaim(): boolean {
+    if (this.#setsUsed < DESCRIPTOR_SETS) return true;
+    if (this.completed() < this.#counter) return false;
+    this.#pending.length = 0;
+    check(
+      'vkResetCommandPool',
+      this.#lib.symbols.vkResetCommandPool(this.#device, this.#commandPool, 0) as number,
+    );
+    check(
+      'vkResetDescriptorPool',
+      this.#lib.symbols.vkResetDescriptorPool(this.#device, this.#descriptorPool, 0) as number,
+    );
+    this.#setsUsed = 0;
+    return true;
   }
 
   /** The timeline value most recently submitted. */

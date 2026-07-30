@@ -47,7 +47,7 @@ export class KernelCache<T> {
    *
    * @internal
    */
-  #entries = new Map<string, { key: string; kernel: Promise<T> }>();
+  #entries = new Map<string, { key: string; kernel: Promise<T>; ready: T | null }>();
   #hits = 0;
   #misses = 0;
 
@@ -62,7 +62,17 @@ export class KernelCache<T> {
     }
     this.#misses++;
     const kernel = request.compile();
-    this.#entries.set(hash, { key, kernel });
+    const entry = { key, kernel, ready: null as T | null };
+    // Remember the resolved kernel as well as its promise. A launch is synchronous,
+    // so being able to answer "is this compiled?" without awaiting is what lets a
+    // repeat launch skip the microtask queue entirely.
+    kernel.then(
+      (value) => {
+        entry.ready = value;
+      },
+      () => {},
+    );
+    this.#entries.set(hash, entry);
     return kernel;
   }
 
@@ -73,10 +83,32 @@ export class KernelCache<T> {
    * means the caller must fall back to the asynchronous path.
    */
   peek(spec: string, target: string): Promise<T> | null {
+    return this.#lookup(spec, target)?.kernel ?? null;
+  }
+
+  /**
+   * A kernel that has finished compiling, or null.
+   *
+   * Unlike {@link peek} this yields the kernel itself rather than a promise for it, so
+   * a launch can proceed without a microtask turn. Null covers both "never compiled"
+   * and "still compiling"; the caller falls back to the asynchronous path for either.
+   */
+  peekReady(spec: string, target: string): T | null {
+    const ready = this.#lookup(spec, target)?.ready ?? null;
+    // Counted as a hit: this is how a repeat launch finds its kernel, so leaving it out
+    // would make the counters describe only the launches that took the slow path.
+    if (ready !== null) this.#hits++;
+    return ready;
+  }
+
+  /**
+   * @internal
+   */
+  #lookup(spec: string, target: string) {
     const hash = cacheKeyHash({ spec, target });
-    const key = cacheKeyText({ spec, target });
     const existing = this.#entries.get(hash);
-    return existing && existing.key === key ? existing.kernel : null;
+    if (!existing) return undefined;
+    return existing.key === cacheKeyText({ spec, target }) ? existing : undefined;
   }
 
   /** Current counters. */

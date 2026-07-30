@@ -200,6 +200,10 @@ export function createVulkanDriver(): GpuDriver {
       await context.waitFor(token);
     },
 
+    canLaunch(): boolean {
+      return context.reclaim();
+    },
+
     submitted(): bigint {
       return context.submitted;
     },

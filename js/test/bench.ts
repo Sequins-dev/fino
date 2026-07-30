@@ -238,7 +238,7 @@ export interface MeasureOptions<T = unknown> {
    * const setup = () => ({ buffer: new Uint8Array(1024) });
    * ```
    */
-  setup?: () => T;
+  setup?: () => T | Promise<T>;
   /**
    * Function measured repeatedly until at least one second of runtime has been sampled.
    *
@@ -254,13 +254,13 @@ export interface MeasureOptions<T = unknown> {
    * const teardown = (_ctx: { close?: () => void }) => {};
    * ```
    */
-  teardown?: (ctx: T) => void;
+  teardown?: (ctx: T) => void | Promise<void>;
 }
 interface PendingMeasurement {
   name: string;
   fn: (ctx?: unknown) => unknown;
   setup: (() => unknown) | undefined;
-  teardown: ((ctx?: unknown) => void) | undefined;
+  teardown: ((ctx?: unknown) => void | Promise<void>) | undefined;
   isGroup?: false;
 }
 interface PendingGroup {
@@ -594,7 +594,10 @@ export class Group {
   async #executeMeasurement({ name, fn, setup, teardown }: PendingMeasurement) {
     const pad = this.#pad();
     const stats = new RunningStatistics();
-    const ctx = setup ? setup() : undefined;
+    // Awaited, so an asynchronous setup has finished before the first measured
+    // iteration runs. Without this a promise is passed to `fn` as the context and the
+    // resource it was meant to create does not exist yet.
+    const ctx = setup ? await setup() : undefined;
     try {
       do {
         const start = now();
@@ -610,7 +613,7 @@ export class Group {
         stats.record(end - start);
       } while (stats.total < minDurationNs());
     } finally {
-      if (teardown) teardown(ctx);
+      if (teardown) await teardown(ctx);
     }
     console.log(`${pad}${name} - ${formatStats(stats)}`);
     this.#measurements.push({

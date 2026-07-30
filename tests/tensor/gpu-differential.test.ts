@@ -11,6 +11,7 @@ import { describe, it } from 'fino:test/test';
 import {
   device,
   listDevices,
+  poolStats,
   tensor,
   tidy,
   zeros,
@@ -299,6 +300,38 @@ function programs(): Program[] {
       tolerance: 1e-4,
     },
     {
+      name: 'contiguous slice',
+      inputs: [{ shape: [5, 6], seed: 62 }],
+      run: (x) => x.slice([{ start: 1, end: 4 }, { start: 2 }]).mul(2),
+    },
+    {
+      // A start offset is folded into the source view rather than handled by its own
+      // kernel, so this is also the check that a strided copy reads from the view's
+      // beginning and not the buffer's.
+      name: 'strided slice',
+      inputs: [{ shape: [7, 8], seed: 63 }],
+      run: (x) => x.slice([{ start: 1, step: 2 }, { start: 3, step: 3 }]),
+    },
+    {
+      name: 'narrow on an interior axis',
+      inputs: [{ shape: [2, 5, 3], seed: 64 }],
+      run: (x) => x.narrow(1, 1, 3).add(1),
+    },
+    {
+      name: 'slice of a slice',
+      inputs: [{ shape: [8, 9], seed: 65 }],
+      run: (x) => x.slice([{ start: 2 }]).slice([{ start: 1, step: 2 }, { end: 4 }]),
+    },
+    {
+      name: 'slice feeding a matmul',
+      inputs: [
+        { shape: [6, 5], seed: 66 },
+        { shape: [3, 4], seed: 67 },
+      ],
+      run: (a, b) => a.narrow(0, 2, 3).narrow(1, 1, 3).matmul(b),
+      tolerance: 1e-4,
+    },
+    {
       name: 'embedding lookup',
       inputs: [
         { shape: [6, 4], seed: 24 },
@@ -435,6 +468,52 @@ describe('GPU differential against the reference oracle', () => {
         `${gpu.type} reports f64 as unsupported`,
       );
     }
+  });
+});
+
+describe('GPU dispatch backpressure', () => {
+  it('stays flat over many launches when the loop yields', async (t) => {
+    for (const dev of gpus) {
+      const x = await zeros([4096], { device: dev });
+      const before = poolStats(dev).liveBuffers;
+      for (let batch = 0; batch < 4; batch++) {
+        for (let i = 0; i < 2000; i++) tidy(() => void x.add(1));
+        // One yield per batch is all a GPU needs: it lets queued work be submitted and
+        // lets a first-seen kernel finish compiling.
+        await Promise.resolve();
+      }
+      t.equal(
+        poolStats(dev).liveBuffers,
+        before,
+        `nothing new stays live on ${dev.type} after 8000 launches`,
+      );
+      x.dispose();
+    }
+    if (gpus.length === 0) t.ok(true, 'no GPU to exercise');
+  });
+
+  it('names the cause when an uncompiled kernel is launched without yielding', async (t) => {
+    // Compilation is asynchronous, so a loop that never yields cannot finish compiling
+    // a kernel it has not seen before — and every launch behind it queues. That used to
+    // end as an out-of-memory crash with nothing to point at.
+    //
+    // The rank-6 permute is what makes this deterministic: strided copy is specialised
+    // per rank and nothing else in the suite goes past rank four, so the first
+    // iteration is guaranteed to be a compile.
+    for (const dev of gpus) {
+      const x = await zeros([2, 1, 1, 1, 1, 2], { device: dev });
+      t.throws(
+        () => {
+          for (let i = 0; i < 200_000; i++) tidy(() => void x.permute([5, 4, 3, 2, 1, 0]));
+        },
+        /without the event loop running/,
+        `explains the stall on ${dev.type}`,
+      );
+      x.dispose();
+      // Let the queue drain so the next device starts clean.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (gpus.length === 0) t.ok(true, 'no GPU to exercise');
   });
 });
 

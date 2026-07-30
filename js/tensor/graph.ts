@@ -177,18 +177,22 @@ export class GraphRecording {
    */
   #dropped = 0;
 
-  /** Soft cap before warning about unbounded growth. */
-  #softCap: number;
-
   /**
-   * Whether the growth warning has already been emitted.
+   * Most nodes kept before the oldest are dropped.
+   *
+   * Recording has to be bounded by something. A program that dispatches in a loop
+   * and never reaches a step boundary — inference, a benchmark, anything not shaped
+   * like training — would otherwise grow this recording until the process died,
+   * which is what happened before this bound existed. The default is generous
+   * enough to hold several steps of a large model and small enough that the
+   * recording is never what exhausts memory.
    *
    * @internal
    */
-  #warned = false;
+  #retain: number;
 
-  constructor(options: { softCap?: number } = {}) {
-    this.#softCap = options.softCap ?? 1_000_000;
+  constructor(options: { retain?: number } = {}) {
+    this.#retain = Math.max(options.retain ?? 100_000, 1);
   }
 
   /** Number of nodes recorded, including any since dropped. */
@@ -239,12 +243,11 @@ export class GraphRecording {
     this.#nodeHash.push(nodeHash);
     this.#hash = foldHash(this.#hash, nodeHash);
 
-    if (this.#ops.length > this.#softCap && !this.#warned) {
-      this.#warned = true;
-      console.warn(
-        `fino:tensor graph recording holds ${this.#ops.length} nodes without a step boundary; ` +
-          'call markStep() once per training step, or reset() when recording is not needed',
-      );
+    // Dropped in batches rather than one node per append: splicing the front of nine
+    // parallel arrays is linear in what remains, so doing it every append would make
+    // recording quadratic.
+    if (this.#ops.length > this.#retain * 2) {
+      this.truncateBefore(this.length - this.#retain);
     }
     return id;
   }
@@ -397,7 +400,12 @@ export class GraphRecording {
   markStep(): StepMark {
     const mark: StepMark = { node: this.length, hash: this.hash() };
     this.#stepMarks.push(mark);
-    if (this.#stepMarks.length > 3) this.#stepMarks.shift();
+    if (this.#stepMarks.length > 3) {
+      this.#stepMarks.shift();
+      // Nothing can ask about a span older than the oldest mark still held, so a
+      // training loop stays bounded by its step size rather than by its length.
+      this.truncateBefore(this.#stepMarks[0]!.node);
+    }
     return mark;
   }
 
@@ -461,7 +469,6 @@ export class GraphRecording {
     this.#stepMarks.length = 0;
     this.#dropped = 0;
     this.#hash = FNV_BASIS;
-    this.#warned = false;
   }
 }
 

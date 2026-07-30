@@ -154,6 +154,11 @@ export function createMetalDriver(): GpuDriver {
       }
     },
 
+    canLaunch(): boolean {
+      // Metal owns command-buffer lifetime itself, so there is nothing to reclaim.
+      return true;
+    },
+
     submitted(): bigint {
       return counter;
     },
