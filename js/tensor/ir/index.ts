@@ -93,3 +93,24 @@ export {
   gemmIsExact,
   gemmKernel,
 } from './templates/gemm.ts';
+
+export type { LayerNormSpec, ReduceOp, ReduceSpec, SoftmaxSpec } from './templates/reduce.ts';
+export {
+  argReduceKernel,
+  layerNormKernel,
+  reduceKernel,
+  rowGrid,
+  softmaxKernel,
+} from './templates/reduce.ts';
+
+export type { OptimizerSpec, RandomKind } from './templates/structural.ts';
+export {
+  arangeKernel,
+  fillKernel,
+  indexSelectKernel,
+  linearGrid,
+  optimizerKernel,
+  randomKernel,
+  scatterAddKernel,
+  stridedCopyKernel,
+} from './templates/structural.ts';

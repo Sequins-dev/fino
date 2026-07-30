@@ -57,6 +57,24 @@ export interface SpirvOptions {
   };
 }
 
+/**
+ * Bit width of a scalar type, for deciding between a convert and a bitcast.
+ *
+ * @internal
+ */
+function intWidth(scalar: ScalarDType): number {
+  switch (scalar) {
+    case 'u8':
+    case 'bool':
+      return 8;
+    case 'f16':
+    case 'bf16':
+      return 16;
+    default:
+      return 32;
+  }
+}
+
 /** GLSL.std.450 instruction for each math function. */
 const GLSL_FN: Record<MathFn, number> = {
   exp: Glsl.Exp,
@@ -146,13 +164,44 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
     return t.scalar === 'bool' ? { scalar: 'u8', lanes: t.lanes } : t;
   }
 
+  /**
+   * Buffers that a float `atomicAdd` targets while the target lacks
+   * `VK_EXT_shader_atomic_float`.
+   *
+   * Such a buffer is declared as `u32` and its float values are bitcast on every
+   * access. The alternative — declaring it as `f32` and bitcasting the *pointer* for
+   * the compare-and-swap loop — is invalid under the Logical addressing model, which
+   * has no pointer arithmetic to reinterpret. `spirv-val` accepted it; MoltenVK
+   * rejected the module outright, which is the more honest answer.
+   *
+   * @internal
+   */
+  const atomicFloatBuffers = new Set<string>();
+  if (!caps.atomicFloat) {
+    const scan = (statements: readonly Stmt[]): void => {
+      for (const statement of statements) {
+        if (statement.k === 'atomicAdd') {
+          const binding = ir.buffers.find((b) => b.name === statement.buf);
+          if (binding && binding.elem.scalar === 'f32') atomicFloatBuffers.add(binding.name);
+        } else if (statement.k === 'for') {
+          scan(statement.body);
+        } else if (statement.k === 'if') {
+          scan(statement.then);
+          if (statement.else) scan(statement.else);
+        }
+      }
+    };
+    scan(ir.body);
+  }
+
   // -- storage buffers ----------------------------------------------------
   const bufferVars = new Map<
     string,
-    { variable: Id; elem: ValType; storage: ValType; pointee: Id }
+    { variable: Id; elem: ValType; storage: ValType; pointee: Id; asFloatBits: boolean }
   >();
   ir.buffers.forEach((b, index) => {
-    const storage = storageValType(b.elem);
+    const asFloatBits = atomicFloatBuffers.has(b.name);
+    const storage = asFloatBits ? { scalar: 'u32' as const, lanes: b.elem.lanes } : storageValType(b.elem);
     const elemType = valType(storage);
     const runtime = m.typeRuntimeArray(elemType);
     m.decorate(runtime, Decoration.ArrayStride, scalarBytes(storage.scalar) * storage.lanes);
@@ -170,6 +219,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
       elem: b.elem,
       storage,
       pointee: m.typePointer(StorageClass.StorageBuffer, elemType),
+      asFloatBits,
     });
   });
 
@@ -390,8 +440,12 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
     if (!toFloat && fromFloat) {
       return fn.emit(toSigned ? Op.ConvertFToS : Op.ConvertFToU, resultType, [value]);
     }
-    // Integer to integer: signedness of the *target* picks the opcode.
+    // Integer to integer. `OpSConvert` and `OpUConvert` require the widths to
+    // differ, so a same-width change of signedness is a reinterpretation instead.
     if (fromType.scalar === toScalar) return value;
+    if (intWidth(fromType.scalar) === intWidth(toScalar)) {
+      return fn.emit(Op.Bitcast, resultType, [value]);
+    }
     return fn.emit(toSigned ? Op.SConvert : Op.UConvert, resultType, [value]);
   }
 
@@ -429,6 +483,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
           expr(e.index),
         ]);
         const raw = fn.load(valType(buf.storage), chain);
+        if (buf.asFloatBits) return fn.emit(Op.Bitcast, valType(buf.elem), [raw]);
         if (buf.elem.scalar !== 'bool') return raw;
         // Booleans are stored as bytes; widen back to a usable bool.
         return fn.emit(Op.INotEqual, valType(buf.elem), [raw, constant(buf.storage, 0)]);
@@ -569,7 +624,9 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
             expr(s.index),
           ]);
           let value = expr(s.value);
-          if (buf.elem.scalar === 'bool') {
+          if (buf.asFloatBits) {
+            value = fn.emit(Op.Bitcast, valType(buf.storage), [value]);
+          } else if (buf.elem.scalar === 'bool') {
             value = fn.emit(Op.Select, valType(buf.storage), [
               value,
               constant(buf.storage, 1),
@@ -606,6 +663,8 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
               m.extension('SPV_EXT_shader_atomic_float_add');
               fn.emit(Op.AtomicFAddEXT, elemType, [chain, scope, semantics, expr(s.value)]);
             } else {
+              // The chain already points at u32 storage, so no pointer needs
+              // reinterpreting — only the values do.
               atomicFloatAddByCas(chain, expr(s.value));
             }
           } else {
@@ -657,14 +716,14 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
    * Emulate a floating-point atomic add with a compare-and-swap loop.
    *
    * `OpAtomicFAddEXT` needs an extension many drivers lack, so correctness never
-   * depends on it — only speed does. The loop reinterprets the memory as u32,
-   * which is why the IR forbids the caller from doing that bit-casting itself.
+   * depends on it — only speed does. The buffer is already declared as `u32` when
+   * this path is taken, so the loop reinterprets *values* rather than the pointer;
+   * the Logical addressing model has no pointer arithmetic to reinterpret.
    *
    * @internal
    */
   function atomicFloatAddByCas(chain: Id, addend: Id): void {
-    const u32Ptr = m.typePointer(StorageClass.StorageBuffer, u32);
-    const asU32 = fn.emit(Op.Bitcast, u32Ptr, [chain]);
+    const asU32 = chain;
     const scope = m.constU32(Scope.Device);
     const semantics = m.constU32(MemorySemantics.None);
     const donePtr = m.typePointer(StorageClass.Function, boolT);
