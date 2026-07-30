@@ -576,6 +576,22 @@ export function backendFor(device: Device): DeviceBackend {
   return backend;
 }
 
+/**
+ * Throw unless a device supports a dtype.
+ *
+ * Checked at tensor creation as well as at dispatch: a device that cannot
+ * represent `f64` should say so when asked to hold one, not several operations
+ * later, and certainly not by silently narrowing a dtype someone chose
+ * deliberately.
+ */
+export function requireDType(device: Device, dtype: DType): void {
+  const backend = backendFor(device);
+  if (backend.caps.dtypes.includes(dtype)) return;
+  throw new Error(
+    `device ${formatDevice(device)} does not support ${dtype}; supported: ${backend.caps.dtypes.join(', ')}`,
+  );
+}
+
 /** Whether a device has been discovered. */
 export function hasBackend(device: Device): boolean {
   return discovered.has(formatDevice(device));

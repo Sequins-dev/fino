@@ -38,6 +38,7 @@
 import { registerBackend, registerDevice, resolveDevice } from './backend.ts';
 import type { Device } from './backend.ts';
 import { RefBackend, refProvider } from './ref/backend.ts';
+import { metalProvider, vulkanProvider } from './gpu/index.ts';
 import { fromHostValues, defaultDevice, setDefaultDevice } from './create.ts';
 import { DTYPE_BYTES } from './dtype.ts';
 import type { DType, HostArray } from './dtype.ts';
@@ -57,6 +58,12 @@ import type { PoolStats } from './pool.ts';
 // without awaiting discovery, which synchronous layer constructors rely on.
 registerBackend(refProvider);
 registerDevice(new RefBackend());
+
+// The GPU providers are registered but not probed: probing creates a device, which
+// is too much to do at import. `device('auto')` and `listDevices()` probe on demand,
+// and a provider that finds nothing simply yields no devices.
+registerBackend(metalProvider);
+registerBackend(vulkanProvider);
 
 // Importing the operations registers every primitive and installs the Tensor
 // methods.
@@ -280,6 +287,7 @@ export {
   numel,
 } from './shape.ts';
 export { currentGraph } from './graph.ts';
+export { gpuUnavailableReasons } from './gpu/index.ts';
 export { Generator } from './generator.ts';
 export { defaultDevice, setDefaultDevice } from './create.ts';
 export {

@@ -67,6 +67,18 @@ export interface GemmSpec {
   noEdgeGuards?: boolean;
   /** Include a `beta * C` term, for accumulating into an existing C. */
   withBeta?: boolean;
+  /**
+   * Add a batch dimension over the third grid axis.
+   *
+   * Batching is expressed as an element offset per matrix rather than as separate
+   * buffer bindings, which sidesteps a driver's storage-buffer offset alignment
+   * entirely — a batch stride is whatever the shapes say, and need not be a
+   * multiple of 16 or 256 bytes.
+   *
+   * A zero stride means that operand is shared across the batch, which is how a
+   * broadcast batch dimension arrives.
+   */
+  batched?: boolean;
 }
 
 /**
@@ -99,6 +111,7 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
     `${t.tm}x${t.tn}`,
     guards ? 'guard' : 'exact',
     spec.withBeta ? 'beta' : 'plain',
+    spec.batched ? 'batched' : 'single',
   ].join('_');
 
   const b = new KernelBuilder(name, [threadsX, threadsY, 1]);
@@ -110,6 +123,9 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
   const N = b.param('N');
   const K = b.param('K');
   const beta = spec.withBeta ? b.param('beta', 'f32') : null;
+  const strideA = spec.batched ? b.param('strideA') : null;
+  const strideB = spec.batched ? b.param('strideB') : null;
+  const strideC = spec.batched ? b.param('strideC') : null;
 
   const tileA = b.shared('tileA', acc, t.bm * t.bk);
   const tileB = b.shared('tileB', acc, t.bk * t.bn);
@@ -118,6 +134,12 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
   const ly = E.builtin('localId', 1);
   const gx = E.builtin('groupId', 0);
   const gy = E.builtin('groupId', 1);
+  // The batch index rides on the third grid axis, so one launch covers every
+  // matrix in the batch.
+  const batchIndex = spec.batched ? E.builtin('groupId', 2) : null;
+  const offsetA = strideA ? b.let('offA', vt('u32'), E.mul(batchIndex!, strideA)) : null;
+  const offsetB = strideB ? b.let('offB', vt('u32'), E.mul(batchIndex!, strideB)) : null;
+  const offsetC = strideC ? b.let('offC', vt('u32'), E.mul(batchIndex!, strideC)) : null;
 
   // Origin of this thread's register block within C.
   const row0 = b.let('row0', vt('u32'), E.add(E.mul(gy, E.u32(t.bm)), E.mul(ly, E.u32(t.tm))));
@@ -159,9 +181,10 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
         );
         const globalK = b.letTemp(vt('u32'), E.add(kBase, kk), 'agk');
         // A is [M,K] normally, [K,M] transposed.
-        const index = spec.transA
+        let index = spec.transA
           ? E.add(E.mul(globalK, M), globalRow)
           : E.add(E.mul(globalRow, K), globalK);
+        if (offsetA) index = E.add(offsetA, index);
         const inBounds = E.bin('logicalAnd', E.lt(globalRow, M), E.lt(globalK, K));
         const value = guards
           ? E.select(inBounds, E.cast(accT, E.load('matA', index)), zero)
@@ -191,9 +214,10 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
           'bgc',
         );
         // B is [K,N] normally, [N,K] transposed.
-        const index = spec.transB
+        let index = spec.transB
           ? E.add(E.mul(globalCol, K), globalK)
           : E.add(E.mul(globalK, N), globalCol);
+        if (offsetB) index = E.add(offsetB, index);
         const inBounds = E.bin('logicalAnd', E.lt(globalK, K), E.lt(globalCol, N));
         const value = guards
           ? E.select(inBounds, E.cast(accT, E.load('matB', index)), zero)
@@ -257,7 +281,8 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
   unroll2(t.tm, t.tn, (i, j) => {
     const r = b.letTemp(vt('u32'), E.add(row0, E.u32(i)), 'cr');
     const c = b.letTemp(vt('u32'), E.add(col0, E.u32(j)), 'cc');
-    const index = E.add(E.mul(r, N), c);
+    const plain = E.add(E.mul(r, N), c);
+    const index = offsetC ? E.add(offsetC, plain) : plain;
     const write = () => {
       let value: Expr = E.var(`acc${i}_${j}`);
       if (beta) {
@@ -281,6 +306,7 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
     reg: `${t.tm}x${t.tn}`,
     guards,
     beta: spec.withBeta ?? false,
+    batched: spec.batched ?? false,
   });
 
   return { ir: b.build(), key };
@@ -293,8 +319,9 @@ export function gemmGrid(
   m: number,
   n: number,
   tiling: GemmTiling = DEFAULT_TILING,
+  batch = 1,
 ): [number, number, number] {
-  return [Math.ceil(n / tiling.bn), Math.ceil(m / tiling.bm), 1];
+  return [Math.ceil(n / tiling.bn), Math.ceil(m / tiling.bm), Math.max(batch, 1)];
 }
 
 /**

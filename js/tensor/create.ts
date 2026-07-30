@@ -12,7 +12,7 @@
 import type { DType } from './dtype.ts';
 import { DTYPE_BYTES, f32ToBf16, f32ToF16 } from './dtype.ts';
 import type { Device } from './backend.ts';
-import { backendFor } from './backend.ts';
+import { backendFor, requireDType } from './backend.ts';
 import { computeStream } from './dispatch.ts';
 import { currentGraph } from './graph.ts';
 import { numel } from './shape.ts';
@@ -89,6 +89,7 @@ export function fromHostValues(
   device: Device,
   requiresGrad = false,
 ): Tensor {
+  requireDType(device, dtype);
   const backend = backendFor(device);
   const stream = computeStream(backend);
   const bytes = Math.max(numel(shape) * DTYPE_BYTES[dtype], 1);

@@ -930,6 +930,18 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tensor/ops/movement", "tensor/ops/movement"),
     source_builtin!("internal:tensor/ref", "tensor/ref/backend"),
     source_builtin!("internal:tensor/harness", "tensor/harness"),
+    source_builtin!("internal:tensor/kernel-cache", "tensor/kernel-cache"),
+    source_builtin!("internal:tensor/gpu", "tensor/gpu/index"),
+    source_builtin!("internal:tensor/gpu/driver", "tensor/gpu/driver"),
+    source_builtin!("internal:tensor/gpu/backend", "tensor/gpu/backend"),
+    source_builtin!(
+        "internal:tensor/gpu/metal-driver",
+        "tensor/gpu/metal-driver"
+    ),
+    source_builtin!(
+        "internal:tensor/gpu/vulkan-driver",
+        "tensor/gpu/vulkan-driver"
+    ),
     source_builtin!("internal:tensor/create", "tensor/create"),
     source_builtin!("internal:tensor/generator", "tensor/generator"),
     source_builtin!("internal:tensor/nn/module", "tensor/nn/module"),

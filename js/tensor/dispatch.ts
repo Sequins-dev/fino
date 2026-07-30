@@ -16,7 +16,7 @@
  */
 import { DTYPE_BYTES } from './dtype.ts';
 import type { Device, DeviceBackend, Stream, TensorDesc } from './backend.ts';
-import { backendFor, formatDevice, sameDevice } from './backend.ts';
+import { backendFor, formatDevice, requireDType, sameDevice } from './backend.ts';
 import { buildGradNode, setNodeOutput } from './autograd.ts';
 import { currentGraph } from './graph.ts';
 import type { OpId } from './ops/registry.ts';
@@ -141,11 +141,7 @@ export function dispatch(
   const backend = backendFor(device);
 
   const dtype = spec.dtypeRule(inputs, attrs);
-  if (!backend.caps.dtypes.includes(dtype)) {
-    throw new Error(
-      `device ${formatDevice(device)} does not support ${dtype}; supported: ${backend.caps.dtypes.join(', ')}`,
-    );
-  }
+  requireDType(device, dtype);
   const shape = spec.shapeRule(inputs, attrs);
   const graph = currentGraph();
   const valueId = graph.nextValue();
