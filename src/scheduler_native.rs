@@ -42,13 +42,82 @@ struct TransferWorkload(Workload);
 // worker owns the value at a time.
 unsafe impl Send for TransferWorkload {}
 
+/// Everything needed to construct a workload's isolate, captured at submission
+/// time. Until a reactor first claims it, a workload is pure data — movable
+/// between threads (and eventually serializable across nodes) with no V8
+/// involvement. The isolate is constructed on the claiming reactor's thread.
+struct WorkloadSpecInner {
+    entry: String,
+    process_env: ProcessEnv,
+    package_map_json: Option<String>,
+    import_rules: Vec<crate::state::ImportRule>,
+    channel_rx: Option<mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
+    channel_tx: Option<mpsc::Sender<crate::realm::thread::ThreadMessage>>,
+    wake_read_fd: Option<RawFd>,
+    wake_write_fd: Option<RawFd>,
+    watch_mode: bool,
+    repl_mode: bool,
+    realm_data: Option<String>,
+    realm_bootstrap_data: Option<String>,
+    reload_requested_signal: Option<Arc<AtomicBool>>,
+    scheduled: Option<Arc<ScheduledRealmState>>,
+    port_fds: Option<(RawFd, RawFd)>,
+    /// Wake pipe created at submission so the parent can watch `wakeFd`
+    /// before the isolate exists; ownership moves into the isolate's async
+    /// state at initialization.
+    async_pipe: (RawFd, RawFd),
+}
+
+struct WorkloadSpec {
+    owner: u32,
+    inner: Option<Box<WorkloadSpecInner>>,
+}
+
+impl WorkloadSpec {
+    fn wake_read_fd(&self) -> RawFd {
+        self.inner
+            .as_ref()
+            .map(|inner| inner.async_pipe.0)
+            .unwrap_or(-1)
+    }
+
+    /// Construct the isolate on the calling thread. Consumes the spec; on
+    /// failure the completion channel is returned so the allocation settles.
+    fn initialize(mut self) -> Result<Workload, (String, Option<Arc<ScheduledRealmState>>)> {
+        let inner = self
+            .inner
+            .take()
+            .expect("workload spec already initialized");
+        let scheduled = inner.scheduled.clone();
+        setup_workload(*inner, self.owner).map_err(|error| (error, scheduled))
+    }
+}
+
+impl Drop for WorkloadSpec {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        if let Some((wake_read, partner_write)) = inner.port_fds {
+            unsafe {
+                libc::close(wake_read);
+                libc::close(partner_write);
+            }
+        }
+        unsafe {
+            libc::close(inner.async_pipe.0);
+            libc::close(inner.async_pipe.1);
+        }
+    }
+}
+
 struct ActiveWorkload {
     saved_async_state: Option<crate::async_rt::IsolateAsyncState>,
     _locker: crate::v8_threading::IsolateLocker,
 }
 
 thread_local! {
-    static WORKLOADS: RefCell<Vec<Option<Workload>>> = const { RefCell::new(Vec::new()) };
+    static WORKLOADS: RefCell<Vec<Option<WorkloadSpec>>> = const { RefCell::new(Vec::new()) };
     static REACTOR_QUEUES: RefCell<Vec<Option<Arc<PoolShared>>>> = const { RefCell::new(Vec::new()) };
     static REACTOR_THREADS: RefCell<Vec<Option<ReactorThread>>> = const { RefCell::new(Vec::new()) };
 }
@@ -255,24 +324,25 @@ fn set_scheduler_polling_required(
     get_state(scope).borrow_mut().scheduler_polling_fn = Some(v8::Global::new(scope, function));
 }
 
-fn setup_workload(
-    entry: String,
-    process_env: ProcessEnv,
-    package_map_json: Option<String>,
-    import_rules: Vec<crate::state::ImportRule>,
-    owner: u32,
-    channel_rx: Option<mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
-    channel_tx: Option<mpsc::Sender<crate::realm::thread::ThreadMessage>>,
-    wake_read_fd: Option<RawFd>,
-    wake_write_fd: Option<RawFd>,
-    watch_mode: bool,
-    repl_mode: bool,
-    realm_data: Option<String>,
-    realm_bootstrap_data: Option<String>,
-    reload_requested_signal: Option<Arc<AtomicBool>>,
-    scheduled: Option<Arc<ScheduledRealmState>>,
-    port_fds: Option<(RawFd, RawFd)>,
-) -> Result<Workload, String> {
+fn setup_workload(inner: WorkloadSpecInner, owner: u32) -> Result<Workload, String> {
+    let WorkloadSpecInner {
+        entry,
+        process_env,
+        package_map_json,
+        import_rules,
+        channel_rx,
+        channel_tx,
+        wake_read_fd,
+        wake_write_fd,
+        watch_mode,
+        repl_mode,
+        realm_data,
+        realm_bootstrap_data,
+        reload_requested_signal,
+        scheduled,
+        port_fds,
+        async_pipe,
+    } = inner;
     crate::runtime::init_v8();
     let params = v8::CreateParams::default()
         .array_buffer_allocator(crate::runtime::shared_allocator().clone());
@@ -282,7 +352,9 @@ fn setup_workload(
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
 
-    let saved_async_state = crate::async_rt::swap_state(Some(crate::async_rt::new_state()));
+    let saved_async_state = crate::async_rt::swap_state(Some(
+        crate::async_rt::new_state_with_pipe(async_pipe.0, async_pipe.1),
+    ));
     let initialized = (|| {
         let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
         let queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
@@ -349,7 +421,21 @@ fn setup_workload(
         ))
     })();
     let async_state = crate::async_rt::swap_state(saved_async_state);
-    let (context, state, module) = initialized?;
+    let (context, state, module) = match initialized {
+        Ok(values) => values,
+        Err(error) => {
+            // The async state's Drop closes the pre-created wake pipe; the
+            // port fds are only reachable from here once the spec is consumed.
+            drop(async_state);
+            if let Some((wake_read, partner_write)) = port_fds {
+                unsafe {
+                    libc::close(wake_read);
+                    libc::close(partner_write);
+                }
+            }
+            return Err(error);
+        }
+    };
     unsafe {
         isolate.exit();
     }
@@ -558,8 +644,25 @@ struct PoolEvent {
     loop_turns: u64,
 }
 
+enum PoolWorkload {
+    /// Submitted but not yet claimed by a reactor: no isolate exists.
+    Pending(WorkloadSpec),
+    /// Isolate constructed; movable between threads only while exited.
+    Live(TransferWorkload),
+}
+
 struct PoolItem {
-    workload: TransferWorkload,
+    owner: u32,
+    workload: PoolWorkload,
+}
+
+impl PoolItem {
+    fn live_mut(&mut self) -> &mut Workload {
+        match &mut self.workload {
+            PoolWorkload::Live(workload) => &mut workload.0,
+            PoolWorkload::Pending(_) => unreachable!("resident workload has no isolate"),
+        }
+    }
 }
 
 struct Resident {
@@ -619,8 +722,8 @@ impl PoolShared {
         }
     }
 
-    fn submit(self: &Arc<Self>, workload: Workload) -> u32 {
-        let owner = workload.owner;
+    fn submit(self: &Arc<Self>, item: PoolItem) -> u32 {
+        let owner = item.owner;
         owner_pools()
             .lock()
             .unwrap()
@@ -631,12 +734,7 @@ impl PoolShared {
             !inner.parked.contains_key(&owner) && !inner.active.contains(&owner),
             "workload {owner} is already in the reactor"
         );
-        inner.parked.insert(
-            owner,
-            PoolItem {
-                workload: TransferWorkload(workload),
-            },
-        );
+        inner.parked.insert(owner, item);
         Self::signal_inner(&mut inner, owner);
         drop(inner);
         self.changed.notify_all();
@@ -738,12 +836,13 @@ impl PoolShared {
         }
     }
 
-    fn park(&self, mut resident: Resident) {
-        let owner = resident.item.workload.0.owner;
-        deactivate(&mut resident.item.workload.0, resident.active);
+    fn park(&self, resident: Resident) {
+        let Resident { mut item, active } = resident;
+        let owner = item.owner;
+        deactivate(item.live_mut(), active);
         let mut inner = self.inner.lock().unwrap();
         inner.active.remove(&owner);
-        inner.parked.insert(owner, resident.item);
+        inner.parked.insert(owner, item);
         drop(inner);
         self.changed.notify_all();
     }
@@ -820,19 +919,47 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
     let mut current: Option<Resident> = None;
     let mut current_state = CurrentState::Parked;
     loop {
-        let current_owner = current
-            .as_ref()
-            .map(|resident| resident.item.workload.0.owner);
+        let current_owner = current.as_ref().map(|resident| resident.item.owner);
         match shared.claim(current_owner, &stop, current_state) {
             Claim::Shutdown => break,
             Claim::Current => {}
-            Claim::Work(mut item) => {
+            Claim::Work(item) => {
                 let previous = current_owner;
                 if let Some(resident) = current.take() {
                     shared.park(resident);
                 }
-                let owner = item.workload.0.owner;
-                let active = activate(&mut item.workload.0);
+                let owner = item.owner;
+                let workload = match item.workload {
+                    PoolWorkload::Live(TransferWorkload(workload)) => workload,
+                    // First claim constructs the isolate here, on the claiming
+                    // reactor's thread. A failure settles the allocation the
+                    // same way a runtime error in a live workload would.
+                    PoolWorkload::Pending(spec) => match spec.initialize() {
+                        Ok(workload) => workload,
+                        Err((error, scheduled)) => {
+                            if let Some(scheduled) = scheduled {
+                                scheduled.complete(ScheduledRealmResult::Error(error.clone()));
+                            }
+                            retire_owner(owner);
+                            shared.finish(owner);
+                            current_state = CurrentState::Parked;
+                            shared.notify(PoolEvent {
+                                kind: PoolEventKind::Error,
+                                worker,
+                                owner,
+                                previous: None,
+                                error: Some(error),
+                                loop_turns: 0,
+                            });
+                            continue;
+                        }
+                    },
+                };
+                let mut item = PoolItem {
+                    owner,
+                    workload: PoolWorkload::Live(TransferWorkload(workload)),
+                };
+                let active = activate(item.live_mut());
                 current = Some(Resident { item, active });
                 shared.notify(PoolEvent {
                     kind: PoolEventKind::Activated,
@@ -849,11 +976,9 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
             .as_ref()
             .expect("reactor worker claimed no workload")
             .item
-            .workload
-            .0
             .owner;
         let mut resident = current.take().unwrap();
-        match drive_slice(&mut resident.item.workload.0) {
+        match drive_slice(resident.item.live_mut()) {
             Ok((Slice::Runnable, _)) => {
                 current_state = CurrentState::Runnable;
                 current = Some(resident);
@@ -867,16 +992,20 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                 current = Some(resident);
             }
             Ok((Slice::Settled, loop_turns)) => {
-                if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
-                    let result = if resident.item.workload.0.state.borrow().reload_requested {
+                let Resident { item, active } = resident;
+                let PoolWorkload::Live(TransferWorkload(mut workload)) = item.workload else {
+                    unreachable!("resident workload has no isolate");
+                };
+                if let Some(scheduled) = workload.scheduled.as_ref() {
+                    let result = if workload.state.borrow().reload_requested {
                         ScheduledRealmResult::Reload
                     } else {
                         ScheduledRealmResult::Done
                     };
                     scheduled.complete(result);
                 }
-                deactivate(&mut resident.item.workload.0, resident.active);
-                drop_workload(resident.item.workload.0);
+                deactivate(&mut workload, active);
+                drop_workload(workload);
                 shared.finish(owner);
                 current_state = CurrentState::Parked;
                 shared.notify(PoolEvent {
@@ -889,11 +1018,15 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                 });
             }
             Err(error) => {
-                if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
+                let Resident { item, active } = resident;
+                let PoolWorkload::Live(TransferWorkload(mut workload)) = item.workload else {
+                    unreachable!("resident workload has no isolate");
+                };
+                if let Some(scheduled) = workload.scheduled.as_ref() {
                     scheduled.complete(ScheduledRealmResult::Error(error.clone()));
                 }
-                deactivate(&mut resident.item.workload.0, resident.active);
-                drop_workload(resident.item.workload.0);
+                deactivate(&mut workload, active);
+                drop_workload(workload);
                 shared.finish(owner);
                 current_state = CurrentState::Parked;
                 shared.notify(PoolEvent {
@@ -912,7 +1045,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
     }
 }
 
-fn take_workload(handle: usize) -> Result<Workload, String> {
+fn take_workload(handle: usize) -> Result<WorkloadSpec, String> {
     WORKLOADS.with(|workloads| {
         workloads
             .borrow_mut()
@@ -946,29 +1079,33 @@ fn create_workload(
         )
     };
     let owner = next_owner();
-    let workload = match setup_workload(
-        entry,
-        process_env,
-        package_map_json,
-        import_rules,
-        owner,
-        None,
-        None,
-        None,
-        None,
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ) {
-        Ok(workload) => workload,
+    let async_pipe = match create_pipe() {
+        Ok(pipe) => pipe,
         Err(error) => {
             throw_error(scope, &format!("createWorkload: {error}"));
             return;
         }
+    };
+    let spec = WorkloadSpec {
+        owner,
+        inner: Some(Box::new(WorkloadSpecInner {
+            entry,
+            process_env,
+            package_map_json,
+            import_rules,
+            channel_rx: None,
+            channel_tx: None,
+            wake_read_fd: None,
+            wake_write_fd: None,
+            watch_mode: false,
+            repl_mode: false,
+            realm_data: None,
+            realm_bootstrap_data: None,
+            reload_requested_signal: None,
+            scheduled: None,
+            port_fds: None,
+            async_pipe,
+        })),
     };
     let handle = WORKLOADS.with(|workloads| {
         let mut workloads = workloads.borrow_mut();
@@ -977,10 +1114,10 @@ fn create_workload(
             .enumerate()
             .find(|(_, workload)| workload.is_none())
         {
-            *slot = Some(workload);
+            *slot = Some(spec);
             index
         } else {
-            workloads.push(Some(workload));
+            workloads.push(Some(spec));
             workloads.len() - 1
         }
     });
@@ -1067,31 +1204,8 @@ fn create_scheduled_realm(
             return;
         }
     };
-    let reload_requested = Arc::new(AtomicBool::new(false));
-    let scheduled = Arc::new(ScheduledRealmState {
-        result: Mutex::new(None),
-        parent_wake_write: completion_wake_write,
-    });
-    let owner = next_owner();
-    let workload = match setup_workload(
-        entry,
-        process_env,
-        package_map_json,
-        import_rules,
-        owner,
-        Some(child_rx),
-        Some(child_tx),
-        Some(child_wake_read),
-        Some(parent_wake_write),
-        watch_mode,
-        repl_mode,
-        realm_data,
-        realm_bootstrap_data,
-        Some(reload_requested),
-        Some(Arc::clone(&scheduled)),
-        Some((child_wake_read, parent_wake_write)),
-    ) {
-        Ok(workload) => workload,
+    let async_pipe = match create_pipe() {
+        Ok(pipe) => pipe,
         Err(error) => {
             unsafe {
                 libc::close(child_wake_read);
@@ -1105,11 +1219,34 @@ fn create_scheduled_realm(
             return;
         }
     };
-    let wake_fd = workload
-        .async_state
-        .as_ref()
-        .map(|state| state.wake_read)
-        .unwrap_or(-1);
+    let reload_requested = Arc::new(AtomicBool::new(false));
+    let scheduled = Arc::new(ScheduledRealmState {
+        result: Mutex::new(None),
+        parent_wake_write: completion_wake_write,
+    });
+    let owner = next_owner();
+    let wake_fd = async_pipe.0;
+    let spec = WorkloadSpec {
+        owner,
+        inner: Some(Box::new(WorkloadSpecInner {
+            entry,
+            process_env,
+            package_map_json,
+            import_rules,
+            channel_rx: Some(child_rx),
+            channel_tx: Some(child_tx),
+            wake_read_fd: Some(child_wake_read),
+            wake_write_fd: Some(parent_wake_write),
+            watch_mode,
+            repl_mode,
+            realm_data,
+            realm_bootstrap_data,
+            reload_requested_signal: Some(reload_requested),
+            scheduled: Some(Arc::clone(&scheduled)),
+            port_fds: Some((child_wake_read, parent_wake_write)),
+            async_pipe,
+        })),
+    };
     let handle = {
         let mut realms = scheduled_realms().lock().unwrap();
         let value = ScheduledRealmHandle {
@@ -1132,7 +1269,10 @@ fn create_scheduled_realm(
             realms.len() - 1
         }
     };
-    pool.submit(workload);
+    pool.submit(PoolItem {
+        owner,
+        workload: PoolWorkload::Pending(spec),
+    });
     let result = v8::Object::new(scope);
     for (name, value) in [
         (
@@ -1377,14 +1517,17 @@ fn submit_reactor_workload(
         return;
     };
     let workload_handle = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let workload = match take_workload(workload_handle) {
-        Ok(workload) => workload,
+    let spec = match take_workload(workload_handle) {
+        Ok(spec) => spec,
         Err(error) => {
             throw_error(scope, &format!("submitReactorWorkload: {error}"));
             return;
         }
     };
-    let owner = shared.submit(workload);
+    let owner = shared.submit(PoolItem {
+        owner: spec.owner,
+        workload: PoolWorkload::Pending(spec),
+    });
     rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
 }
 
@@ -1597,7 +1740,13 @@ fn close_reactor_queue(
     };
     let parked = std::mem::take(&mut queue.inner.lock().unwrap().parked);
     for item in parked.into_values() {
-        drop_workload(item.workload.0);
+        match item.workload {
+            PoolWorkload::Live(TransferWorkload(workload)) => drop_workload(workload),
+            PoolWorkload::Pending(spec) => {
+                retire_owner(item.owner);
+                drop(spec);
+            }
+        }
     }
 }
 
@@ -1607,14 +1756,15 @@ fn terminate_workload(
     _rv: v8::ReturnValue,
 ) {
     let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let workload = WORKLOADS.with(|workloads| {
+    let spec = WORKLOADS.with(|workloads| {
         workloads
             .borrow_mut()
             .get_mut(handle)
             .and_then(Option::take)
     });
-    if let Some(workload) = workload {
-        drop_workload(workload);
+    if let Some(spec) = spec {
+        retire_owner(spec.owner);
+        drop(spec);
     }
 }
 
@@ -1629,8 +1779,7 @@ fn workload_wake_fd(
             .borrow()
             .get(handle)
             .and_then(Option::as_ref)
-            .and_then(|workload| workload.async_state.as_ref())
-            .map(|state| state.wake_read)
+            .map(WorkloadSpec::wake_read_fd)
             .unwrap_or(-1)
     });
     rv.set(v8::Integer::new(scope, fd).into());

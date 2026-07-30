@@ -73,6 +73,16 @@ describe('Reactor-pooled Realm basics', () => {
       'all sibling realm timers resolve independently',
     );
   });
+  it('initializes a burst of pooled realms exactly once each under claim contention', async (t) => {
+    const entry = new URL('./fixtures/echo-fn.ts', import.meta.url).pathname;
+    const realms = Array.from({ length: 16 }, () => new Realm<typeof echoFn>({ entry }));
+    const results = await Promise.all(realms.map((realm, index) => realm.call(`burst-${index}`)));
+    t.deepEqual(
+      results,
+      realms.map((_, index) => `burst-${index}`),
+      'every realm initialized on a claiming reactor and answered exactly once',
+    );
+  });
   it('call() propagates errors thrown inside the pooled realm', async (t) => {
     const realm = new Realm<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,
