@@ -956,6 +956,11 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:tensor/ir/templates/gemm",
         "tensor/ir/templates/gemm"
     ),
+    // vulkan
+    source_builtin!("internal:vulkan", "internal/vulkan/index"),
+    source_builtin!("internal:vulkan/loader", "internal/vulkan/loader"),
+    source_builtin!("internal:vulkan/structs", "internal/vulkan/structs"),
+    source_builtin!("internal:vulkan/device", "internal/vulkan/device"),
     // metal
     source_builtin!("internal:metal", "internal/metal/index"),
     source_builtin!("internal:metal/objc", "internal/metal/objc"),

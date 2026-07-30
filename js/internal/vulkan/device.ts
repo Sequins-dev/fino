@@ -1,0 +1,986 @@
+/**
+ * Vulkan compute device.
+ *
+ * Wraps instance and device creation, memory, pipelines, and dispatch behind a
+ * small interface, so the backend above it never handles a create-info structure
+ * directly.
+ *
+ * Ordering uses timeline semaphores (core in Vulkan 1.2) rather than fences: a
+ * timeline is a monotonically increasing counter, which maps directly onto the
+ * stream-and-event model the backend contract describes, whereas a fence would
+ * need one object per submission.
+ *
+ * @internal
+ *
+ * This module is re-exported through `internal:vulkan`; import from there.
+ */
+import { Pointer } from 'fino:ffi';
+import { VulkanError, check, loader, vulkanAvailable, vulkanUnavailableReason } from './loader.ts';
+import type { VulkanLibrary } from './loader.ts';
+import {
+  BufferUsage,
+  CommandBufferLevel,
+  CommandBufferUsage,
+  DescriptorType,
+  InstanceCreateFlags,
+  MemoryProperty,
+  PipelineBindPoint,
+  PipelineStage,
+  QueueFlags,
+  SemaphoreType,
+  ShaderStage,
+  StructChain,
+  StructureType,
+  VK_FOREVER,
+  VkApplicationInfo,
+  VkBufferCreateInfo,
+  VkCommandBufferAllocateInfo,
+  VkCommandBufferBeginInfo,
+  VkCommandPoolCreateInfo,
+  VkComputePipelineCreateInfo,
+  VkDescriptorBufferInfo,
+  VkDescriptorPoolCreateInfo,
+  VkDescriptorPoolSize,
+  VkDescriptorSetAllocateInfo,
+  VkDescriptorSetLayoutBinding,
+  VkDescriptorSetLayoutCreateInfo,
+  VkDeviceCreateInfo,
+  VkDeviceQueueCreateInfo,
+  VkInstanceCreateInfo,
+  VkMemoryAllocateInfo,
+  VkMemoryRequirements,
+  VkPhysicalDeviceMemoryProperties,
+  VkPipelineLayoutCreateInfo,
+  VkPipelineShaderStageCreateInfo,
+  VkPushConstantRange,
+  VkQueueFamilyProperties,
+  VkSemaphoreCreateInfo,
+  VkSemaphoreTypeCreateInfo,
+  VkSemaphoreWaitInfo,
+  VkShaderModuleCreateInfo,
+  VkSubmitInfo,
+  VkTimelineSemaphoreSubmitInfo,
+  VkWriteDescriptorSet,
+  makeVersion,
+  memoryTypeFlags,
+} from './structs.ts';
+
+/** Bindings a compute pipeline layout reserves. */
+const MAX_BINDINGS = 8;
+
+/** Push-constant bytes reserved, matching the kernel IR's parameter-block cap. */
+const PUSH_CONSTANT_BYTES = 128;
+
+/** A device allocation. */
+export interface VkBuffer {
+  /** `VkBuffer` handle. */
+  handle: bigint;
+  /** `VkDeviceMemory` backing it. */
+  memory: bigint;
+  /** Bytes requested. */
+  bytes: number;
+  /** Host mapping, when the memory is host-visible. */
+  mapped: ArrayBuffer | null;
+}
+
+/** A compiled compute pipeline. */
+export interface VkPipeline {
+  /** `VkPipeline` handle. */
+  handle: bigint;
+  /** `VkShaderModule` it was built from. */
+  module: bigint;
+}
+
+/** What the chosen device reports. */
+export interface VkDeviceInfo {
+  name: string;
+  /** Whether every heap is host-visible, as on an integrated GPU. */
+  unifiedMemory: boolean;
+  /** Whether 16-bit storage is available, which the f16 kernels need. */
+  storage16: boolean;
+  /** Whether float16 arithmetic is available. */
+  float16: boolean;
+  timelineSemaphores: boolean;
+  maxWorkgroupInvocations: number;
+}
+
+/**
+ * Read a dispatchable handle out of an eight-byte out-parameter.
+ *
+ * @internal
+ */
+function readPointer(slot: Uint8Array): ArrayBuffer {
+  return slot.slice().buffer;
+}
+
+/**
+ * Read a non-dispatchable 64-bit handle out of an out-parameter.
+ *
+ * @internal
+ */
+function readHandle(slot: Uint8Array): bigint {
+  return new DataView(slot.buffer, slot.byteOffset, 8).getBigUint64(0, true);
+}
+
+/**
+ * The handle value a dispatchable-handle buffer holds.
+ *
+ * A dispatchable handle arrives as an eight-byte buffer whose *contents* are the
+ * pointer. Passing it as a `pointer` argument is correct, but an array of such
+ * handles needs the values themselves — `Pointer.addr` would give the address of
+ * the wrapper instead, which is a different thing entirely.
+ *
+ * @internal
+ */
+function handleValue(wrapper: ArrayBuffer): bigint {
+  return new DataView(wrapper).getBigUint64(0, true);
+}
+
+/** An eight-byte out-parameter slot. */
+function slot(): Uint8Array {
+  return new Uint8Array(8);
+}
+
+/**
+ * A Vulkan compute context: one instance, one device, one queue.
+ */
+export class VulkanCompute {
+  #lib: VulkanLibrary;
+  #instance: ArrayBuffer;
+  #physicalDevice: ArrayBuffer;
+  #device: ArrayBuffer;
+  #queue: ArrayBuffer;
+  #queueFamily: number;
+  #memoryProperties: ArrayBuffer;
+  #info: VkDeviceInfo;
+  #commandPool: bigint;
+  #descriptorPool: bigint;
+  #setLayout: bigint;
+  #pipelineLayout: bigint;
+  #timeline: bigint;
+  #counter = 0n;
+  #disposed = false;
+
+  /**
+   * Buffers a pending submission still points at.
+   *
+   * Vulkan reads command buffers and submit structures asynchronously, and the
+   * FFI layer only pins the top-level argument, so anything referenced by address
+   * has to be held until the submission completes.
+   *
+   * @internal
+   */
+  #pending: unknown[] = [];
+
+  private constructor(parts: {
+    lib: VulkanLibrary;
+    instance: ArrayBuffer;
+    physicalDevice: ArrayBuffer;
+    device: ArrayBuffer;
+    queue: ArrayBuffer;
+    queueFamily: number;
+    memoryProperties: ArrayBuffer;
+    info: VkDeviceInfo;
+  }) {
+    this.#lib = parts.lib;
+    this.#instance = parts.instance;
+    this.#physicalDevice = parts.physicalDevice;
+    this.#device = parts.device;
+    this.#queue = parts.queue;
+    this.#queueFamily = parts.queueFamily;
+    this.#memoryProperties = parts.memoryProperties;
+    this.#info = parts.info;
+    this.#commandPool = this.#createCommandPool();
+    this.#descriptorPool = this.#createDescriptorPool();
+    this.#setLayout = this.#createSetLayout();
+    this.#pipelineLayout = this.#createPipelineLayout();
+    this.#timeline = this.#createTimeline();
+  }
+
+  /** What the device reports. */
+  get info(): VkDeviceInfo {
+    return this.#info;
+  }
+
+  /**
+   * Create a compute context, or throw explaining why not.
+   */
+  static create(options: { validation?: boolean } = {}): VulkanCompute {
+    const lib = loader();
+    const chain = new StructChain();
+
+    // MoltenVK is a portability driver, so the loader hides it unless portability
+    // enumeration is asked for explicitly.
+    const instanceExtensions = availableInstanceExtensions(lib);
+    const portability = instanceExtensions.includes('VK_KHR_portability_enumeration');
+    const wanted = portability ? ['VK_KHR_portability_enumeration'] : [];
+    const layers =
+      options.validation && instanceLayerAvailable() ? ['VK_LAYER_KHRONOS_validation'] : [];
+
+    const appInfo = chain.hold(
+      VkApplicationInfo.make({
+        sType: StructureType.ApplicationInfo,
+        pApplicationName: chain.cstring('fino'),
+        applicationVersion: makeVersion(0, 1, 0),
+        pEngineName: chain.cstring('fino:tensor'),
+        engineVersion: makeVersion(0, 1, 0),
+        // 1.2 is the floor: timeline semaphores are core there.
+        apiVersion: makeVersion(1, 2, 0),
+      }),
+    );
+    const instanceInfo = chain.hold(
+      VkInstanceCreateInfo.make({
+        sType: StructureType.InstanceCreateInfo,
+        flags: portability ? InstanceCreateFlags.EnumeratePortability : 0,
+        pApplicationInfo: appInfo,
+        enabledLayerCount: layers.length,
+        ppEnabledLayerNames: chain.cstringArray(layers),
+        enabledExtensionCount: wanted.length,
+        ppEnabledExtensionNames: chain.cstringArray(wanted),
+      }),
+    );
+    const instanceSlot = slot();
+    check(
+      'vkCreateInstance',
+      lib.symbols.vkCreateInstance(instanceInfo, null, instanceSlot) as number,
+    );
+    const instance = readPointer(instanceSlot);
+
+    const physicalDevice = pickPhysicalDevice(lib, instance);
+    const queueFamily = pickComputeQueue(lib, physicalDevice);
+
+    const memoryProperties = VkPhysicalDeviceMemoryProperties.alloc();
+    lib.symbols.vkGetPhysicalDeviceMemoryProperties(
+      physicalDevice,
+      new Uint8Array(memoryProperties),
+    );
+
+    const deviceExtensions = availableDeviceExtensions(lib, physicalDevice);
+    const enabled: string[] = [];
+    // A portability driver requires this extension to be enabled explicitly.
+    if (deviceExtensions.includes('VK_KHR_portability_subset')) {
+      enabled.push('VK_KHR_portability_subset');
+    }
+    const storage16 = deviceExtensions.includes('VK_KHR_16bit_storage');
+    const float16 = deviceExtensions.includes('VK_KHR_shader_float16_int8');
+    if (storage16) enabled.push('VK_KHR_16bit_storage');
+    if (float16) enabled.push('VK_KHR_shader_float16_int8');
+
+    const deviceChain = new StructChain();
+    const priorities = deviceChain.f32Array([1]);
+    const queueInfo = deviceChain.hold(
+      VkDeviceQueueCreateInfo.make({
+        sType: StructureType.DeviceQueueCreateInfo,
+        queueFamilyIndex: queueFamily,
+        queueCount: 1,
+        pQueuePriorities: priorities,
+      }),
+    );
+    const deviceInfo = deviceChain.hold(
+      VkDeviceCreateInfo.make({
+        sType: StructureType.DeviceCreateInfo,
+        queueCreateInfoCount: 1,
+        pQueueCreateInfos: queueInfo,
+        enabledExtensionCount: enabled.length,
+        ppEnabledExtensionNames: deviceChain.cstringArray(enabled),
+      }),
+    );
+    const deviceSlot = slot();
+    check(
+      'vkCreateDevice',
+      lib.symbols.vkCreateDevice(physicalDevice, deviceInfo, null, deviceSlot) as number,
+    );
+    const device = readPointer(deviceSlot);
+
+    const queueSlot = slot();
+    lib.symbols.vkGetDeviceQueue(device, queueFamily, 0, queueSlot);
+    const queue = readPointer(queueSlot);
+
+    // Every heap being host-visible is what makes readback a mapping rather than
+    // a staging copy, which is the case on Apple Silicon and other integrated GPUs.
+    const typeCount = VkPhysicalDeviceMemoryProperties.getU32(
+      memoryProperties,
+      'memoryTypeCount',
+    );
+    let allHostVisible = typeCount > 0;
+    for (let i = 0; i < typeCount; i++) {
+      if ((memoryTypeFlags(memoryProperties, i) & MemoryProperty.HostVisible) === 0) {
+        allHostVisible = false;
+        break;
+      }
+    }
+
+    return new VulkanCompute({
+      lib,
+      instance,
+      physicalDevice,
+      device,
+      queue,
+      queueFamily,
+      memoryProperties,
+      info: {
+        name: 'Vulkan device',
+        unifiedMemory: allHostVisible,
+        storage16,
+        float16,
+        timelineSemaphores: true,
+        maxWorkgroupInvocations: 1024,
+      },
+    });
+  }
+
+  /**
+   * @internal
+   */
+  #createCommandPool(): bigint {
+    const info = VkCommandPoolCreateInfo.make({
+      sType: StructureType.CommandPoolCreateInfo,
+      // Reset the whole pool between submissions rather than tracking buffers.
+      flags: 0x2,
+      queueFamilyIndex: this.#queueFamily,
+    });
+    const out = slot();
+    check(
+      'vkCreateCommandPool',
+      this.#lib.symbols.vkCreateCommandPool(this.#device, info, null, out) as number,
+    );
+    return readHandle(out);
+  }
+
+  /**
+   * @internal
+   */
+  #createDescriptorPool(): bigint {
+    const chain = new StructChain();
+    const size = chain.hold(
+      VkDescriptorPoolSize.make({
+        type: DescriptorType.StorageBuffer,
+        descriptorCount: MAX_BINDINGS * 64,
+      }),
+    );
+    const info = chain.hold(
+      VkDescriptorPoolCreateInfo.make({
+        sType: StructureType.DescriptorPoolCreateInfo,
+        maxSets: 64,
+        poolSizeCount: 1,
+        pPoolSizes: size,
+      }),
+    );
+    const out = slot();
+    check(
+      'vkCreateDescriptorPool',
+      this.#lib.symbols.vkCreateDescriptorPool(this.#device, info, null, out) as number,
+    );
+    return readHandle(out);
+  }
+
+  /**
+   * One layout of eight storage buffers, shared by every kernel.
+   *
+   * A single layout means `compileKernel` never has to build one, and a kernel
+   * using fewer bindings simply leaves the rest unwritten.
+   *
+   * @internal
+   */
+  #createSetLayout(): bigint {
+    const chain = new StructChain();
+    const bindings = new Uint8Array(VkDescriptorSetLayoutBinding.size * MAX_BINDINGS);
+    for (let i = 0; i < MAX_BINDINGS; i++) {
+      const one = VkDescriptorSetLayoutBinding.make({
+        binding: i,
+        descriptorType: DescriptorType.StorageBuffer,
+        descriptorCount: 1,
+        stageFlags: ShaderStage.Compute,
+      });
+      bindings.set(new Uint8Array(one), i * VkDescriptorSetLayoutBinding.size);
+    }
+    const info = chain.hold(
+      VkDescriptorSetLayoutCreateInfo.make({
+        sType: StructureType.DescriptorSetLayoutCreateInfo,
+        bindingCount: MAX_BINDINGS,
+        pBindings: chain.addressOf(bindings),
+      }),
+    );
+    const out = slot();
+    check(
+      'vkCreateDescriptorSetLayout',
+      this.#lib.symbols.vkCreateDescriptorSetLayout(this.#device, info, null, out) as number,
+    );
+    return readHandle(out);
+  }
+
+  /**
+   * @internal
+   */
+  #createPipelineLayout(): bigint {
+    const chain = new StructChain();
+    const range = chain.hold(
+      VkPushConstantRange.make({
+        stageFlags: ShaderStage.Compute,
+        offset: 0,
+        size: PUSH_CONSTANT_BYTES,
+      }),
+    );
+    const info = chain.hold(
+      VkPipelineLayoutCreateInfo.make({
+        sType: StructureType.PipelineLayoutCreateInfo,
+        setLayoutCount: 1,
+        pSetLayouts: chain.handleArray([this.#setLayout]),
+        pushConstantRangeCount: 1,
+        pPushConstantRanges: range,
+      }),
+    );
+    const out = slot();
+    check(
+      'vkCreatePipelineLayout',
+      this.#lib.symbols.vkCreatePipelineLayout(this.#device, info, null, out) as number,
+    );
+    return readHandle(out);
+  }
+
+  /**
+   * @internal
+   */
+  #createTimeline(): bigint {
+    const chain = new StructChain();
+    const type = chain.hold(
+      VkSemaphoreTypeCreateInfo.make({
+        sType: StructureType.SemaphoreTypeCreateInfo,
+        semaphoreType: SemaphoreType.Timeline,
+        initialValue: 0n,
+      }),
+    );
+    const info = chain.hold(
+      VkSemaphoreCreateInfo.make({
+        sType: StructureType.SemaphoreCreateInfo,
+        pNext: type,
+      }),
+    );
+    const out = slot();
+    check(
+      'vkCreateSemaphore',
+      this.#lib.symbols.vkCreateSemaphore(this.#device, info, null, out) as number,
+    );
+    return readHandle(out);
+  }
+
+  /**
+   * Allocate a buffer and its backing memory.
+   *
+   * Host-visible coherent memory is chosen so readback needs no explicit
+   * invalidation; on an integrated GPU it is also device-local, so this costs
+   * nothing.
+   */
+  createBuffer(bytes: number, options: { hostVisible?: boolean } = {}): VkBuffer {
+    const chain = new StructChain();
+    const size = BigInt(Math.max(bytes, 4));
+    const info = chain.hold(
+      VkBufferCreateInfo.make({
+        sType: StructureType.BufferCreateInfo,
+        size,
+        usage:
+          BufferUsage.StorageBuffer | BufferUsage.TransferSrc | BufferUsage.TransferDst,
+        sharingMode: 0,
+      }),
+    );
+    const bufferSlot = slot();
+    check(
+      'vkCreateBuffer',
+      this.#lib.symbols.vkCreateBuffer(this.#device, info, null, bufferSlot) as number,
+    );
+    const handle = readHandle(bufferSlot);
+
+    const requirements = VkMemoryRequirements.alloc();
+    this.#lib.symbols.vkGetBufferMemoryRequirements(
+      this.#device,
+      handle,
+      new Uint8Array(requirements),
+    );
+    const allocationSize = VkMemoryRequirements.getU64(requirements, 'size');
+    const typeBits = VkMemoryRequirements.getU32(requirements, 'memoryTypeBits');
+    const hostVisible = options.hostVisible ?? true;
+    const typeIndex = this.#chooseMemoryType(
+      typeBits,
+      hostVisible
+        ? MemoryProperty.HostVisible | MemoryProperty.HostCoherent
+        : MemoryProperty.DeviceLocal,
+    );
+
+    const allocateInfo = VkMemoryAllocateInfo.make({
+      sType: StructureType.MemoryAllocateInfo,
+      allocationSize,
+      memoryTypeIndex: typeIndex,
+    });
+    const memorySlot = slot();
+    check(
+      'vkAllocateMemory',
+      this.#lib.symbols.vkAllocateMemory(
+        this.#device,
+        allocateInfo,
+        null,
+        memorySlot,
+      ) as number,
+    );
+    const memory = readHandle(memorySlot);
+    check(
+      'vkBindBufferMemory',
+      this.#lib.symbols.vkBindBufferMemory(this.#device, handle, memory, 0n) as number,
+    );
+
+    let mapped: ArrayBuffer | null = null;
+    if (hostVisible) {
+      const mapSlot = slot();
+      check(
+        'vkMapMemory',
+        this.#lib.symbols.vkMapMemory(
+          this.#device,
+          memory,
+          0n,
+          allocationSize,
+          0,
+          mapSlot,
+        ) as number,
+      );
+      const address = readHandle(mapSlot);
+      // Persistently mapped: a view over the driver's own allocation, so writes
+      // need no copy.
+      mapped = Pointer.view(readPointer(mapSlot), Math.max(bytes, 4));
+      void address;
+    }
+    return { handle, memory, bytes, mapped };
+  }
+
+  /** Release a buffer and its memory. */
+  destroyBuffer(buffer: VkBuffer): void {
+    if (buffer.mapped) this.#lib.symbols.vkUnmapMemory(this.#device, buffer.memory);
+    this.#lib.symbols.vkDestroyBuffer(this.#device, buffer.handle, null);
+    this.#lib.symbols.vkFreeMemory(this.#device, buffer.memory, null);
+  }
+
+  /**
+   * @internal
+   */
+  #chooseMemoryType(typeBits: number, required: number): number {
+    const count = VkPhysicalDeviceMemoryProperties.getU32(
+      this.#memoryProperties,
+      'memoryTypeCount',
+    );
+    for (let i = 0; i < count; i++) {
+      if ((typeBits & (1 << i)) === 0) continue;
+      if ((memoryTypeFlags(this.#memoryProperties, i) & required) === required) return i;
+    }
+    throw new VulkanError(`no memory type with properties 0x${required.toString(16)}`, -1);
+  }
+
+  /** Build a compute pipeline from SPIR-V words. */
+  createPipeline(words: Uint32Array, entry: string): VkPipeline {
+    const chain = new StructChain();
+    const code = chain.hold(words.slice());
+    const moduleInfo = chain.hold(
+      VkShaderModuleCreateInfo.make({
+        sType: StructureType.ShaderModuleCreateInfo,
+        codeSize: BigInt(code.byteLength),
+        pCode: chain.addressOf(code),
+      }),
+    );
+    const moduleSlot = slot();
+    check(
+      'vkCreateShaderModule',
+      this.#lib.symbols.vkCreateShaderModule(
+        this.#device,
+        moduleInfo,
+        null,
+        moduleSlot,
+      ) as number,
+    );
+    const module = readHandle(moduleSlot);
+
+    const stage = VkPipelineShaderStageCreateInfo.make({
+      sType: StructureType.PipelineShaderStageCreateInfo,
+      stage: ShaderStage.Compute,
+      module,
+      pName: chain.cstring(entry),
+    });
+    const pipelineInfo = chain.hold(
+      VkComputePipelineCreateInfo.make({
+        sType: StructureType.ComputePipelineCreateInfo,
+        stage,
+        layout: this.#pipelineLayout,
+        basePipelineIndex: -1,
+      }),
+    );
+    const pipelineSlot = slot();
+    check(
+      'vkCreateComputePipelines',
+      this.#lib.symbols.vkCreateComputePipelines(
+        this.#device,
+        0n,
+        1,
+        pipelineInfo,
+        null,
+        pipelineSlot,
+      ) as number,
+    );
+    return { handle: readHandle(pipelineSlot), module };
+  }
+
+  /** Release a pipeline and its shader module. */
+  destroyPipeline(pipeline: VkPipeline): void {
+    this.#lib.symbols.vkDestroyPipeline(this.#device, pipeline.handle, null);
+    this.#lib.symbols.vkDestroyShaderModule(this.#device, pipeline.module, null);
+  }
+
+  /**
+   * Record and submit one dispatch, returning the timeline value it signals.
+   */
+  dispatch(options: {
+    pipeline: VkPipeline;
+    buffers: readonly VkBuffer[];
+    params: ArrayBuffer | null;
+    groups: readonly [number, number, number];
+  }): bigint {
+    const chain = new StructChain();
+
+    // A fresh descriptor set per dispatch; the pool is reset when the timeline
+    // passes, which is the simple correct choice before push descriptors.
+    const setInfo = chain.hold(
+      VkDescriptorSetAllocateInfo.make({
+        sType: StructureType.DescriptorSetAllocateInfo,
+        descriptorPool: this.#descriptorPool,
+        descriptorSetCount: 1,
+        pSetLayouts: chain.handleArray([this.#setLayout]),
+      }),
+    );
+    const setSlot = slot();
+    check(
+      'vkAllocateDescriptorSets',
+      this.#lib.symbols.vkAllocateDescriptorSets(this.#device, setInfo, setSlot) as number,
+    );
+    const descriptorSet = readHandle(setSlot);
+
+    // Every binding must be written, including unused ones, so point the spares at
+    // the first buffer rather than leaving them undefined.
+    const writes = new Uint8Array(VkWriteDescriptorSet.size * MAX_BINDINGS);
+    for (let i = 0; i < MAX_BINDINGS; i++) {
+      const source = options.buffers[Math.min(i, options.buffers.length - 1)]!;
+      const bufferInfo = chain.hold(
+        VkDescriptorBufferInfo.make({
+          buffer: source.handle,
+          offset: 0n,
+          range: BigInt(Math.max(source.bytes, 4)),
+        }),
+      );
+      const write = VkWriteDescriptorSet.make({
+        sType: StructureType.WriteDescriptorSet,
+        dstSet: descriptorSet,
+        dstBinding: i,
+        dstArrayElement: 0,
+        descriptorCount: 1,
+        descriptorType: DescriptorType.StorageBuffer,
+        pBufferInfo: chain.addressOf(bufferInfo),
+      });
+      writes.set(new Uint8Array(write), i * VkWriteDescriptorSet.size);
+    }
+    this.#lib.symbols.vkUpdateDescriptorSets(this.#device, MAX_BINDINGS, writes, 0, null);
+
+    const allocateInfo = chain.hold(
+      VkCommandBufferAllocateInfo.make({
+        sType: StructureType.CommandBufferAllocateInfo,
+        commandPool: this.#commandPool,
+        level: CommandBufferLevel.Primary,
+        commandBufferCount: 1,
+      }),
+    );
+    const commandSlot = slot();
+    check(
+      'vkAllocateCommandBuffers',
+      this.#lib.symbols.vkAllocateCommandBuffers(
+        this.#device,
+        allocateInfo,
+        commandSlot,
+      ) as number,
+    );
+    const commandBuffer = readPointer(commandSlot);
+
+    const beginInfo = chain.hold(
+      VkCommandBufferBeginInfo.make({
+        sType: StructureType.CommandBufferBeginInfo,
+        flags: CommandBufferUsage.OneTimeSubmit,
+      }),
+    );
+    check(
+      'vkBeginCommandBuffer',
+      this.#lib.symbols.vkBeginCommandBuffer(commandBuffer, beginInfo) as number,
+    );
+    this.#lib.symbols.vkCmdBindPipeline(
+      commandBuffer,
+      PipelineBindPoint.Compute,
+      options.pipeline.handle,
+    );
+    this.#lib.symbols.vkCmdBindDescriptorSets(
+      commandBuffer,
+      PipelineBindPoint.Compute,
+      this.#pipelineLayout,
+      0,
+      1,
+      chain.hold(new Uint8Array(BigUint64Array.from([descriptorSet]).buffer)),
+      0,
+      null,
+    );
+    if (options.params && options.params.byteLength > 0) {
+      this.#lib.symbols.vkCmdPushConstants(
+        commandBuffer,
+        this.#pipelineLayout,
+        ShaderStage.Compute,
+        0,
+        options.params.byteLength,
+        new Uint8Array(options.params),
+      );
+    }
+    this.#lib.symbols.vkCmdDispatch(
+      commandBuffer,
+      options.groups[0],
+      options.groups[1],
+      options.groups[2],
+    );
+    check(
+      'vkEndCommandBuffer',
+      this.#lib.symbols.vkEndCommandBuffer(commandBuffer) as number,
+    );
+
+    const signalValue = ++this.#counter;
+    const timelineInfo = chain.hold(
+      VkTimelineSemaphoreSubmitInfo.make({
+        sType: StructureType.TimelineSemaphoreSubmitInfo,
+        signalSemaphoreValueCount: 1,
+        pSignalSemaphoreValues: chain.addressOf(BigUint64Array.from([signalValue])),
+      }),
+    );
+    const submitInfo = chain.hold(
+      VkSubmitInfo.make({
+        sType: StructureType.SubmitInfo,
+        pNext: timelineInfo,
+        commandBufferCount: 1,
+        pCommandBuffers: chain.addressOf(
+          BigUint64Array.from([handleValue(commandBuffer)]),
+        ),
+        signalSemaphoreCount: 1,
+        pSignalSemaphores: chain.handleArray([this.#timeline]),
+      }),
+    );
+    check(
+      'vkQueueSubmit',
+      this.#lib.symbols.vkQueueSubmit(this.#queue, 1, submitInfo, 0n) as number,
+    );
+    // The driver reads these asynchronously, so they must outlive the call.
+    this.#pending.push(chain, commandBuffer);
+    return signalValue;
+  }
+
+  /**
+   * Wait for the timeline to reach a value.
+   *
+   * Parks on the blocking pool, so the event loop keeps running while the GPU
+   * works.
+   */
+  async waitFor(value: bigint): Promise<void> {
+    const chain = new StructChain();
+    const info = chain.hold(
+      VkSemaphoreWaitInfo.make({
+        sType: StructureType.SemaphoreWaitInfo,
+        semaphoreCount: 1,
+        pSemaphores: chain.handleArray([this.#timeline]),
+        pValues: chain.addressOf(BigUint64Array.from([value])),
+      }),
+    );
+    const result = (await this.#lib.symbols.vkWaitSemaphores(
+      this.#device,
+      info,
+      VK_FOREVER,
+    )) as number;
+    check('vkWaitSemaphores', result);
+    // Everything submitted up to this point has completed, so the recorded
+    // command buffers and their referenced memory can be released.
+    this.#pending.length = 0;
+    check(
+      'vkResetCommandPool',
+      this.#lib.symbols.vkResetCommandPool(this.#device, this.#commandPool, 0) as number,
+    );
+    check(
+      'vkResetDescriptorPool',
+      this.#lib.symbols.vkResetDescriptorPool(this.#device, this.#descriptorPool, 0) as number,
+    );
+  }
+
+  /** The timeline value most recently submitted. */
+  get submitted(): bigint {
+    return this.#counter;
+  }
+
+  /** The timeline value the device has reached. */
+  completed(): bigint {
+    const out = slot();
+    check(
+      'vkGetSemaphoreCounterValue',
+      this.#lib.symbols.vkGetSemaphoreCounterValue(this.#device, this.#timeline, out) as number,
+    );
+    return readHandle(out);
+  }
+
+  /** Release every resource. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#pending.length = 0;
+    this.#lib.symbols.vkDestroySemaphore(this.#device, this.#timeline, null);
+    this.#lib.symbols.vkDestroyPipelineLayout(this.#device, this.#pipelineLayout, null);
+    this.#lib.symbols.vkDestroyDescriptorSetLayout(this.#device, this.#setLayout, null);
+    this.#lib.symbols.vkDestroyDescriptorPool(this.#device, this.#descriptorPool, null);
+    this.#lib.symbols.vkDestroyCommandPool(this.#device, this.#commandPool, null);
+    this.#lib.symbols.vkDestroyDevice(this.#device, null);
+    this.#lib.symbols.vkDestroyInstance(this.#instance, null);
+  }
+}
+
+/**
+ * Instance extension names the loader reports.
+ *
+ * @internal
+ */
+function availableInstanceExtensions(lib: VulkanLibrary): string[] {
+  const countSlot = new Uint8Array(4);
+  check(
+    'vkEnumerateInstanceExtensionProperties',
+    lib.symbols.vkEnumerateInstanceExtensionProperties(null, countSlot, null) as number,
+  );
+  const count = new DataView(countSlot.buffer).getUint32(0, true);
+  if (count === 0) return [];
+  // VkExtensionProperties is a 256-byte name followed by a u32 revision.
+  const stride = 260;
+  const buffer = new Uint8Array(stride * count);
+  check(
+    'vkEnumerateInstanceExtensionProperties',
+    lib.symbols.vkEnumerateInstanceExtensionProperties(null, countSlot, buffer) as number,
+  );
+  return readExtensionNames(buffer, count, stride);
+}
+
+/**
+ * Device extension names.
+ *
+ * @internal
+ */
+function availableDeviceExtensions(
+  lib: VulkanLibrary,
+  physicalDevice: ArrayBuffer,
+): string[] {
+  const countSlot = new Uint8Array(4);
+  check(
+    'vkEnumerateDeviceExtensionProperties',
+    lib.symbols.vkEnumerateDeviceExtensionProperties(
+      physicalDevice,
+      null,
+      countSlot,
+      null,
+    ) as number,
+  );
+  const count = new DataView(countSlot.buffer).getUint32(0, true);
+  if (count === 0) return [];
+  const stride = 260;
+  const buffer = new Uint8Array(stride * count);
+  check(
+    'vkEnumerateDeviceExtensionProperties',
+    lib.symbols.vkEnumerateDeviceExtensionProperties(
+      physicalDevice,
+      null,
+      countSlot,
+      buffer,
+    ) as number,
+  );
+  return readExtensionNames(buffer, count, stride);
+}
+
+/**
+ * @internal
+ */
+function readExtensionNames(buffer: Uint8Array, count: number, stride: number): string[] {
+  const decoder = new TextDecoder();
+  const names: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const bytes = buffer.subarray(i * stride, i * stride + 256);
+    const end = bytes.indexOf(0);
+    names.push(decoder.decode(bytes.subarray(0, end < 0 ? 256 : end)));
+  }
+  return names;
+}
+
+/**
+ * Whether the validation layer is installed.
+ *
+ * @internal
+ */
+function instanceLayerAvailable(): boolean {
+  // Enabling a missing layer fails instance creation outright, so this is a
+  // deliberate no-op until the layer enumeration is bound.
+  return false;
+}
+
+/**
+ * Choose a physical device, preferring a discrete GPU.
+ *
+ * @internal
+ */
+function pickPhysicalDevice(lib: VulkanLibrary, instance: ArrayBuffer): ArrayBuffer {
+  const countSlot = new Uint8Array(4);
+  check(
+    'vkEnumeratePhysicalDevices',
+    lib.symbols.vkEnumeratePhysicalDevices(instance, countSlot, null) as number,
+  );
+  const count = new DataView(countSlot.buffer).getUint32(0, true);
+  if (count === 0) throw new VulkanError('no Vulkan physical device present', -3);
+  const handles = new Uint8Array(8 * count);
+  check(
+    'vkEnumeratePhysicalDevices',
+    lib.symbols.vkEnumeratePhysicalDevices(instance, countSlot, handles) as number,
+  );
+  const index = Number(globalThis.process?.env?.FINO_VULKAN_DEVICE ?? 0) || 0;
+  const chosen = Math.min(Math.max(index, 0), count - 1);
+  return handles.slice(chosen * 8, chosen * 8 + 8).buffer;
+}
+
+/**
+ * Find a queue family that supports compute.
+ *
+ * @internal
+ */
+function pickComputeQueue(lib: VulkanLibrary, physicalDevice: ArrayBuffer): number {
+  const countSlot = new Uint8Array(4);
+  lib.symbols.vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, countSlot, null);
+  const count = new DataView(countSlot.buffer).getUint32(0, true);
+  if (count === 0) throw new VulkanError('the device reports no queue families', -3);
+  const properties = new Uint8Array(VkQueueFamilyProperties.size * count);
+  lib.symbols.vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, countSlot, properties);
+  for (let i = 0; i < count; i++) {
+    const flags = new DataView(
+      properties.buffer,
+      properties.byteOffset + i * VkQueueFamilyProperties.size,
+      4,
+    ).getUint32(0, true);
+    if ((flags & QueueFlags.Compute) !== 0) return i;
+  }
+  throw new VulkanError('no queue family supports compute', -3);
+}
+
+/** Whether a Vulkan compute device can be created. */
+export function vulkanComputeAvailable(): boolean {
+  if (!vulkanAvailable()) return false;
+  try {
+    const context = VulkanCompute.create();
+    context.dispose();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export { vulkanAvailable, vulkanUnavailableReason };
