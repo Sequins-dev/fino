@@ -159,6 +159,45 @@ the JSON action envelope and always returns an SSE UI response; no custom
 `Accept` parameter is needed. Action responses and live updates use the same
 event schema.
 
+## Derived state
+
+A view whose data already lives in another durable store should not copy it into
+the view snapshot. List those signal keys in `derived` and they are rendered but
+never persisted, so the other store stays the only durable copy:
+
+```ts
+view({
+  id: 'run-view',
+  derived: ['run'],
+  state: () => ({ runId: new Signal(''), run: new Signal(null) }),
+  async derive({ state }) {
+    state.run.set(await runs.load(state.runId.get() as string));
+  },
+  render: ({ state }) => renderRun(state.run.get()),
+});
+```
+
+`derive` runs before the action and live-stream renders, both of which are
+already async. `mount()` is synchronous and cannot await it, so pass initial
+values as `view.mount(ctx, { runId, run })` from a handler that loaded them
+first. `fino:ui/web/flow` is built this way.
+
+## Action errors
+
+An action handler that throws is reported as `action_failed` with its details
+published only to `fino:ui/action:error`. Throw a `ViewActionError` to choose a
+stable public code instead:
+
+```ts
+import { ViewActionError } from 'fino:ui/web';
+
+throw new ViewActionError('flow_stale_step', { status: 409, recoverable: true });
+```
+
+Enhanced clients receive it as an `error` UI event with that code; the
+no-JavaScript path receives the code as the response body with that status.
+Nothing else about the thrown value is exposed.
+
 Long-running actions can call and await `checkpoint()` after changing their
 signals. Each checkpoint is compare-and-swap persisted and published to live
 tabs:
