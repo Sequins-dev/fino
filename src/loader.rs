@@ -535,6 +535,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:data/arrow/ipc/writer", "data/arrow/ipc/writer"),
     source_builtin!("internal:data/arrow/ipc/reader", "data/arrow/ipc/reader"),
     source_builtin!("fino:data/arrow/cdata", "data/arrow/cdata"),
+    source_builtin!("fino:data/dataset", "data/dataset"),
     source_builtin!("fino:data/parquet", "data/parquet/index"),
     source_builtin!("internal:data/parquet/types", "data/parquet/types"),
     source_builtin!("internal:data/parquet/metadata", "data/parquet/metadata"),
