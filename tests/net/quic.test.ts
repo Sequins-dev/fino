@@ -4628,9 +4628,14 @@ describe('QUIC loopback object model', () => {
   });
   it('waits for bidirectional stream credit until a remote stream fully closes', async (t) => {
     if (!quicAvailable) return;
+    const initialMaxStreamsBidi = 1;
     const server = new QuicEndpoint({
       alpnProtocols: ['fino-hq'],
-      connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0 },
+      connection: {
+        maxIdleTimeoutMs: 0,
+        streamIdleTimeoutMs: 0,
+        initialMaxStreamsBidi,
+      },
     });
     const listener = await server.listen(
       testListenOptions({
@@ -4649,7 +4654,7 @@ describe('QUIC loopback object model', () => {
     const serverConnection = await server.accept();
     try {
       const streams: QuicStream[] = [];
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < initialMaxStreamsBidi; i++) {
         const stream = await clientConnection.openBidirectionalStream();
         streams.push(stream);
         await stream.writer.write(encodeUtf8(`stream-${i}`));
