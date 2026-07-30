@@ -504,6 +504,43 @@ describe('JSON server-driven UI', () => {
     t.deepEqual(snapshot?.data, { count: 0 }, 'the other view cannot write this snapshot');
   });
 
+  it('carries an action confirmation message to enhanced clients', async (t) => {
+    const confirming = view({
+      id: 'portable-confirm',
+      state: () => ({ gone: new Signal(false) }),
+      actions: {
+        remove: {
+          confirm: 'Delete this permanently?',
+          handler({ state }) {
+            state.gone.set(true);
+          },
+        },
+      },
+      render: ({ actions }) => h('app.danger.v1', { remove: actions.remove }),
+    });
+    const app = new App();
+    const ui = app.layer(
+      webUI({ store: new InMemoryViewStore(), secret: 'portable-ui-secret' }),
+    );
+    ui.get('/').handle(page((ctx) => confirming.mount(ctx)));
+
+    const response = (await app.handle(
+      new Request('http://local/', { headers: { accept: eventStreamAccept } }),
+    )) as Response;
+    const render = await firstEvent(response);
+    const action = (render.data as PortableRenderEvent).tree.props
+      .remove as unknown as PortableActionRef;
+
+    t.equal(action.confirm, 'Delete this permanently?');
+  });
+
+  it('omits confirm from actions that do not declare one', async (t) => {
+    const { app } = makeApp();
+    const { action } = await mountPortable(app);
+
+    t.equal(action.confirm, undefined, 'the field is absent rather than null');
+  });
+
   it('reports a rejected request origin through the portable stream', async (t) => {
     const { app } = makeApp();
     const { cookie, action } = await mountPortable(app);

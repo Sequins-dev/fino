@@ -112,6 +112,8 @@ export interface PortableActionRef {
   revision: number;
   /** Single-use request nonce for replay protection. */
   request: string;
+  /** Message a client should confirm before sending the request. */
+  confirm?: string;
 }
 /**
  * JSON body posted by a client to a `PortableActionRef.url`.
@@ -201,6 +203,13 @@ export interface ViewDefinition {
       input?: JsonSchema;
       /** Whether an operation may safely rebase onto a newer snapshot. */
       stale?: 'reject' | 'rebase';
+      /**
+       * Message an enhanced client should confirm before sending the request.
+       *
+       * This is presentation only. It is not enforced on the server and the
+       * no-JavaScript fallback submits without it.
+       */
+      confirm?: string;
     }
   >;
   /** Render function for the view's current state. */
@@ -216,6 +225,7 @@ class ActionRef {
   readonly csrf: string;
   readonly secret: string;
   readonly url: string;
+  readonly confirm?: string;
   constructor(args: {
     view: ServerView;
     name: string;
@@ -225,6 +235,7 @@ class ActionRef {
     csrf: string;
     secret: string;
     url: string;
+    confirm?: string;
   }) {
     this.view = args.view;
     this.name = args.name;
@@ -234,18 +245,21 @@ class ActionRef {
     this.csrf = args.csrf;
     this.secret = args.secret;
     this.url = args.url;
+    this.confirm = args.confirm;
   }
   toString(): string {
     return this.url;
   }
   toJSON(): PortableActionRef {
-    return {
+    const ref: PortableActionRef = {
       action: this.name,
       url: this.url,
       view: this.viewId,
       revision: this.version,
       request: this.nonce,
     };
+    if (this.confirm !== undefined) ref.confirm = this.confirm;
+    return ref;
   }
 }
 function portableTree(tree: VNode): PortableVNode {
@@ -582,7 +596,7 @@ class ServerView {
     pagePath?: string,
   ): Record<string, ActionRef> {
     const out: Record<string, ActionRef> = {};
-    for (const name of Object.keys(this.def.actions ?? {})) {
+    for (const [name, action] of Object.entries(this.def.actions ?? {})) {
       out[name] = new ActionRef({
         view: this,
         name,
@@ -592,6 +606,7 @@ class ServerView {
         csrf,
         secret,
         url: actionUrl(ctx, this.def.id, name, pagePath),
+        confirm: action.confirm,
       });
     }
     return out;

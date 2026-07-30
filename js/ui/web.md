@@ -101,13 +101,40 @@ finoUI.register('app.counter.v1', (props, children) => {
 ```
 
 Version 1 sends complete trees. `key` and `type` are the identity information a
-client needs to reconcile against the previous tree through the existing
-`HostAdapter` model, preserving component identity and avoiding recreation of
-unchanged host nodes. The bundled browser adapter does not yet do this: it
-rebuilds the mounted subtree on every render, so focus, selection, and scroll
-position are lost across updates. Platform interaction state such as focus,
-scroll position, text composition, gestures, and animation is client-local and
-is never round-tripped through view snapshots.
+client uses to reconcile against the previous tree, preserving component
+identity and avoiding recreation of unchanged host nodes. Platform interaction
+state such as focus, scroll position, text composition, gestures, and animation
+is client-local and is never round-tripped through view snapshots.
+
+The bundled browser adapter reconciles rather than replacing. An unchanged
+render performs no DOM mutations, keyed children are moved instead of rebuilt,
+and only props that actually changed are written. Because props are diffed, a
+value the server did not change is never written back over what someone is
+typing; a value the server *did* change still wins. Focus, selection, and
+scroll position are restored if reordering detached the active element.
+
+Registered components are opaque to the reconciler: an instance is reused
+untouched while its props and children are unchanged, and rebuilt when they
+change. Add `data-fi-preserve` to an element to stop reconciliation at that
+boundary and keep whatever the page has put inside it.
+
+The adapter dispatches these events on `globalThis` so a page can react without
+owning the transport:
+
+- `fino-ui-render`: `{ viewId, revision }` after a tree is applied.
+- `fino-ui-heartbeat`: a live stream is still connected.
+- `fino-ui-error`: `{ code, recoverable, retry }`. `retry` re-sends the last
+  action when one is available.
+- `fino-ui-online` / `fino-ui-offline`: live-stream connectivity changed. A
+  reconnect restarts with a full snapshot and resynchronizes through the same
+  reconciliation path, so local interaction state survives.
+
+While an enhanced action is in flight its form carries `aria-busy="true"` and a
+`data-fi-busy` attribute, its submit controls are disabled, and repeat submits
+are ignored. Set `confirm` on an action descriptor to require confirmation
+before the request is sent. `finoUI.applyUi(event)` applies a single protocol
+event directly, which is the seam used to drive the adapter from tests or a
+custom embedding.
 
 Action props are serialized as `PortableActionRef` objects. POST
 `application/json` to the supplied `url` while retaining the authenticated
