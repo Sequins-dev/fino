@@ -5,8 +5,8 @@
  * Built from discrete parts rather than a bundled engine: Thrift compact
  * metadata (`internal:format/thrift`), page compression (`fino:compress`:
  * snappy/gzip/zstd/brotli), and Arrow (`fino:data/arrow`) as the in-memory
- * representation. `readParquet` decodes a file to an Arrow `Table`,
- * concatenating every row group; `writeParquet` serializes an Arrow
+ * representation. `readParquet` decodes a file to an Arrow `Table`, with
+ * optional top-level projection and row-group selection; `writeParquet` serializes an Arrow
  * `Table`/`RecordBatch` to Parquet bytes as a single row group, with
  * `ParquetWriteOptions` selecting the compression codec, value encoding,
  * dictionary encoding, and data page version. Malformed or unsupported input
@@ -39,7 +39,9 @@
  *
  * Accepts the complete file as a `Uint8Array` or `ArrayBuffer` — the format's
  * footer-last layout requires the whole file, so there is no streaming form.
- * Every row group becomes one Arrow `RecordBatch` in the returned table (a
+ * `ParquetReadOptions.columns` projects top-level fields without decoding
+ * unused chunks, while `rowGroups` selects zero-based groups. Without options,
+ * every row group becomes one Arrow `RecordBatch` in the returned table (a
  * file with no row groups yields a single empty batch), and nested columns are
  * reassembled into list/struct/map vectors from their repetition/definition
  * levels.
@@ -61,7 +63,7 @@
  * }
  * ```
  */
-export { readParquet } from './reader.ts';
+export { readParquet, type ParquetReadOptions } from './reader.ts';
 /**
  * Serialize an Arrow `Table` or `RecordBatch` to Parquet file bytes.
  *

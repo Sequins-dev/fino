@@ -60,6 +60,39 @@ cancelable; realm workers, shared-memory collation, and durable checkpoint
 state are layered onto the same contract rather than exposed as a second
 loader API.
 
+## DataFrames
+
+`fino:data/frame` builds immutable lazy plans over Arrow record batches. Its
+bounded operator set covers expression-based filter and projection, computed
+columns, group aggregation, joins, stable sort, and limit:
+
+```ts no_run
+import { DataFrame, col, count } from 'fino:data/frame';
+
+const report = DataFrame
+  .scanParquet<{ team: string; score: number }>(bytes)
+  .filter(col<number>('score').gte(0.8))
+  .groupBy('team')
+  .agg({
+    rows: count(),
+    average: col<number>('score').mean(),
+  })
+  .sort(col<string>('team').asc());
+
+const table = await report.collect();
+```
+
+Use `frame.col('name')` when a `DataFrame<Row>` should check column names and
+types, and standalone `col<T>('name')` for reusable expressions. Comparisons
+and arithmetic propagate null, filters retain only `true`, aggregates ignore
+null inputs, and joins suffix colliding right-side fields rather than
+overwriting them.
+
+Parquet scans push required top-level columns into decoding and use simple
+predicate statistics to skip only row groups proven not to match. Unsupported
+or missing statistics fall back to decoding and post-scan filtering, preserving
+results.
+
 ## Parquet
 
 `fino:data/parquet` reads and writes Parquet bytes using Arrow tables and record
