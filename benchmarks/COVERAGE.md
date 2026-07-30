@@ -98,6 +98,8 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:data/arrow/cdata` | `benchmarks/data/arrow.bench.ts` |
 | `fino:data/dataset` | not yet benchmarked |
 | `fino:data/frame` | not yet benchmarked |
+| `fino:text/tokenizer` | `benchmarks/text/tokenizer.bench.ts` |
+| `fino:model/hub` | not yet benchmarked |
 | `fino:data/parquet` | `benchmarks/data/parquet.bench.ts` |
 | `fino:ml/metrics` | `benchmarks/ml/metrics.bench.ts` |
 | `fino:format/csv` | `benchmarks/format/csv.bench.ts` |

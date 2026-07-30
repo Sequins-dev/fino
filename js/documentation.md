@@ -90,6 +90,10 @@ architecture; the deep dives cover
 - [Data](./data.md) — Apache Arrow and Parquet tooling.
 - [Machine Learning](./ml.md) — shared metrics for classification, ranking,
   regression, calibration, and similarity.
+- [Text](./text.md) — tokenizers: loading published BPE and WordPiece
+  vocabularies, offsets, and tokenizing a dataset.
+- [Models](./model.md) — resolving models and datasets from a hub, with
+  content-addressed caching and a `models.lock` pin.
 - [Native FFI](./native-ffi.md) — loading native libraries and binding C ABI
   functions.
 - [Profiling](./profiling.md) — JS CPU profiles and native profiling paths.
