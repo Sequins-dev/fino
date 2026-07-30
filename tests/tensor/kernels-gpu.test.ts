@@ -294,7 +294,7 @@ function cases(): Case[] {
       ir: stridedCopyKernel({ rank: 2, from: 'f32' }).ir,
       buffers: [input, null],
       // Output shape is [cols, rows]; strides read the source transposed.
-      params: { n: rows * cols, shape0: cols, shape1: rows, stride0: 1, stride1: cols },
+      params: { n: rows * cols, base: 0, shape0: cols, shape1: rows, stride0: 1, stride1: cols },
       groups: linearGrid(rows * cols),
       expect,
     });
@@ -307,9 +307,24 @@ function cases(): Case[] {
       name: 'stridedCopy broadcast',
       ir: stridedCopyKernel({ rank: 2, from: 'f32' }).ir,
       buffers: [input, null],
-      params: { n: 6, shape0: 2, shape1: 3, stride0: 0, stride1: 1 },
+      params: { n: 6, base: 0, shape0: 2, shape1: 3, stride0: 0, stride1: 1 },
       groups: linearGrid(6),
       expect: [5, 6, 7, 5, 6, 7],
+    });
+  }
+
+  // Strided copy from an offset view: what a slice lowers to. The base skips the
+  // first row and the strides step every other column, so a wrong base reads plausible
+  // values from the wrong place rather than failing.
+  {
+    const input = ramp(3 * 4, (i) => i + 1);
+    list.push({
+      name: 'stridedCopy from an offset',
+      ir: stridedCopyKernel({ rank: 2, from: 'f32' }).ir,
+      buffers: [input, null],
+      params: { n: 4, base: 4, shape0: 2, shape1: 2, stride0: 4, stride1: 2 },
+      groups: linearGrid(4),
+      expect: [5, 7, 9, 11],
     });
   }
 

@@ -53,6 +53,7 @@ import { backendFor } from './backend.ts';
 import { allocStorage } from './tensor.ts';
 import { currentGraph } from './graph.ts';
 import { installReadbackHooks, readScalar, readTensor } from './readback.ts';
+import { to } from './transfer.ts';
 import { poolFor } from './pool.ts';
 import type { PoolStats } from './pool.ts';
 
@@ -89,6 +90,16 @@ Object.defineProperty(Tensor.prototype, 'data', {
 Object.defineProperty(Tensor.prototype, 'item', {
   value: function item(this: Tensor): Promise<number> {
     return readScalar(this);
+  },
+  writable: true,
+  configurable: true,
+});
+
+// A transfer reads back and re-uploads, so it belongs with the readback methods
+// rather than the operations: it is a synchronisation point, not a recorded node.
+Object.defineProperty(Tensor.prototype, 'to', {
+  value: function toDevice(this: Tensor, target: 'auto' | string | Device): Promise<Tensor> {
+    return to(this, target);
   },
   writable: true,
   configurable: true,
@@ -283,6 +294,8 @@ export {
 } from './dtype.ts';
 export type { Device } from './backend.ts';
 export { formatDevice, sameDevice, listDevices, registerBackend } from './backend.ts';
+export { to } from './transfer.ts';
+export type { SliceSpec } from './shape.ts';
 export {
   MAX_RANK,
   broadcastShapes,
@@ -311,6 +324,7 @@ export {
   mean,
   minimum,
   mul,
+  narrow,
   neg,
   permute,
   pow,
@@ -320,6 +334,7 @@ export {
   sigmoid,
   sign,
   sin,
+  slice,
   softmax,
   sub,
   sum,

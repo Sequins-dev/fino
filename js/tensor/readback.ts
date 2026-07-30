@@ -43,13 +43,31 @@ export function pendingReadbacks(): number {
  * device is cheaper than reading the whole buffer and re-indexing on the host.
  */
 export async function readTensor(tensor: Tensor): Promise<HostArray> {
+  const dtype = tensor.dtype;
+  const bytes = await readBytes(tensor);
+  if (bytes.length === 0) return viewAs(dtype, new ArrayBuffer(0), 0, 0);
+  return decode(dtype, bytes);
+}
+
+/**
+ * Read a tensor's elements as the bytes the device holds.
+ *
+ * The representation is preserved exactly, which `readTensor` cannot promise: it
+ * widens `f16` and `bf16` to `Float32Array` because the host has no array type for
+ * them. Transferring between devices needs the bits rather than the values, so that
+ * moving a half-precision tensor is not a rounding operation.
+ */
+export async function readBytes(tensor: Tensor): Promise<Uint8Array> {
   tensor.check();
   const source = tensor.contiguous ? tensor : materialize(tensor);
   const backend = source.backend;
   const stream = computeStream(backend);
   const bytes = source.size * DTYPE_BYTES[source.dtype];
 
-  if (bytes === 0) return viewAs(source.dtype, new ArrayBuffer(0), 0, 0);
+  if (bytes === 0) {
+    if (source !== tensor) source.dispose();
+    return new Uint8Array(0);
+  }
 
   const staging = backend.allocPinned(bytes);
   const ticket = nextTicket++;
@@ -69,9 +87,9 @@ export async function readTensor(tensor: Tensor): Promise<HostArray> {
     await backend.eventDone(event);
 
     // Zero-copy where the backend can manage it; the copy below is what makes
-    // the returned array safe to hold after the staging slot is recycled.
+    // the result safe to hold after the staging slot is recycled.
     const raw = backend.viewPinned(staging);
-    return decode(source.dtype, raw.subarray(0, bytes));
+    return raw.slice(0, bytes);
   } finally {
     inFlight.delete(ticket);
     source.storage.release();
@@ -107,9 +125,7 @@ export async function readScalar(tensor: Tensor): Promise<number> {
  *
  * @internal
  */
-function decode(dtype: DType, bytes: Uint8Array): HostArray {
-  // Copy out of the staging slot so the result outlives its recycling.
-  const owned = bytes.slice();
+function decode(dtype: DType, owned: Uint8Array): HostArray {
   if (dtype === 'f16' || dtype === 'bf16') {
     const bits = new Uint16Array(owned.buffer, owned.byteOffset, owned.byteLength / 2);
     const out = new Float32Array(bits.length);

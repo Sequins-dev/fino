@@ -55,6 +55,15 @@ console.log(await y.data());
 promise-shaped. A worker parks on a device fence while the event loop keeps
 running, so a training loop can serve HTTP or stream logs between steps.
 
+### Yield occasionally
+
+Dispatch is non-blocking, and compilation happens off the main thread, so a GPU needs
+the event loop to turn at least once after it first meets a kernel — otherwise the
+compile cannot finish and the launches behind it cannot be submitted. Every real
+program does this already: a training loop awaits its loss, a server awaits a request.
+A loop that awaits nothing at all is refused with an explanation rather than growing
+until the process dies.
+
 ## Disposal is not optional
 
 Device memory is invisible to the garbage collector, so an eight-byte handle can
@@ -117,6 +126,28 @@ element. Strides are not part of the public surface: layout is owned by the
 backend, and `reshape`, `transpose`, and `slice` are graph operations rather than
 pointer arithmetic you perform.
 
+## Indexing and slicing
+
+```ts
+const x = await tensor([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]);
+
+x.slice([{ start: 1 }]);                    // rows 1 onwards, all columns
+x.slice([null, { start: 1, step: 2 }]);     // every other column
+x.slice([{ start: -2 }]);                   // the last two rows
+x.narrow(1, 1, 2);                          // two columns from column 1
+x.indexSelect(await tensor([2, 0], { dtype: 'i32' }), 0);  // rows by index
+```
+
+One specification per leading axis; `null`, or an axis past the end of the list,
+takes that axis whole. Negative bounds count from the end, out-of-range bounds
+clamp, and an inverted range is empty rather than an error — the same rules as
+`Array.prototype.slice`. Steps must be positive; reversing an axis is not
+supported.
+
+A slice materialises rather than aliasing, because a strided region of contiguous
+storage is not itself contiguous. It differentiates: the adjoint writes the
+cotangent back into zeros at the positions it came from.
+
 ## Devices
 
 ```ts
@@ -129,6 +160,64 @@ const dev = await device('auto'); // or 'cpu', 'metal:1', …
 `device('auto')` picks the highest-priority available backend and cannot fail,
 because the reference CPU backend always registers. `FINO_TENSOR_DEVICE` pins the
 choice, which is how the differential tests select a backend.
+
+### Moving between devices
+
+```ts
+const gpu = await device('auto');
+const onGpu = await hostTensor.to(gpu);   // a tensor
+await model.to(gpu);                      // a whole module, in place
+```
+
+A transfer is a readback followed by an upload, so it is a synchronisation point
+and therefore `await`ed. Moving to the device a tensor already lives on returns the
+same handle rather than copying.
+
+Gradients do not flow back across a transfer: `backward()` is synchronous and a
+transfer cannot be. A moved parameter keeps `requiresGrad` and accumulates its own
+gradient on its new device, which makes `to` a setup operation rather than a
+per-step one. `Module.to` disposes the tensors it replaces, so build the optimiser
+*after* the move — it holds the parameters it was given, and those are the ones
+left behind.
+
+Bytes move rather than values, so an `f16` tensor crosses unchanged instead of
+being widened and re-rounded. `f64` and `i64` exist only on the CPU, and moving one
+to a GPU is refused rather than silently narrowed.
+
+## Saving and loading
+
+```ts
+import { loadSafetensors, saveSafetensors, openSafetensors } from 'fino:tensor/io';
+
+await saveSafetensors('checkpoint.safetensors', model.stateDict());
+
+const weights = await loadSafetensors('checkpoint.safetensors', { device: dev });
+model.loadStateDict(weights);
+```
+
+safetensors and NumPy `.npy` are supported, both of which store row-major,
+contiguous, little-endian bytes — the layout a device already wants — so loading is
+a read rather than a decode. An `f16` tensor crosses unchanged instead of being
+widened and re-rounded.
+
+`openSafetensors` parses the header and then reads tensors individually, so
+inspecting a checkpoint or loading one shard costs only what it touches:
+
+```ts
+const file = await openSafetensors('model.safetensors');
+console.log(file.list());                  // names, dtypes, shapes, byte lengths
+const one = await file.read('layers.0.weight', dev);
+await file.close();
+```
+
+A malformed header is rejected before anything is allocated: a dtype this engine
+cannot represent, a byte range that disagrees with its shape, or a range past the end
+of the file all fail with the tensor named.
+
+GGUF is not supported. Its value is its quantised block formats, and loading one
+means dequantising it — kernels this engine does not yet have. PyTorch `.pt` files
+are pickled Python object graphs, whose unpickling executes arbitrary constructors by
+design; convert to safetensors instead.
 
 ## Diagnostics
 

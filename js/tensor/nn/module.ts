@@ -11,7 +11,9 @@
  * This module is re-exported through `fino:tensor/nn`; import from there.
  */
 import type { Tensor } from '../tensor.ts';
+import type { Device } from '../backend.ts';
 import { noGrad } from '../autograd.ts';
+import { to as transfer } from '../transfer.ts';
 
 /** A named parameter or buffer, with its dot-path. */
 export interface NamedTensor {
@@ -108,6 +110,33 @@ export class Module {
   eval(): this {
     this.#training = false;
     for (const child of this.#children.values()) child.eval();
+    return this;
+  }
+
+  /**
+   * Move every parameter and buffer to a device, recursively.
+   *
+   * Replaces the tensors in place and disposes the originals, so an optimiser must
+   * be constructed after the move rather than before: it holds the parameters it was
+   * given, and those are the ones left behind.
+   *
+   * Transfers are synchronisation points, which is why this is asynchronous where
+   * `train()` and `eval()` are not. It is a setup operation, not a per-step one.
+   */
+  async to(target: 'auto' | string | Device): Promise<this> {
+    for (const table of [this.#params, this.#buffers]) {
+      for (const [name, tensor] of table) {
+        const moved = await transfer(tensor, target);
+        if (moved === tensor) continue;
+        // Parameters carry `requiresGrad` across, and gradients accumulated on the
+        // old device do not follow: they belong to storage that is about to go.
+        table.set(name, moved);
+        tensor.grad?.dispose();
+        tensor.grad = null;
+        tensor.dispose();
+      }
+    }
+    for (const child of this.#children.values()) await child.to(target);
     return this;
   }
 

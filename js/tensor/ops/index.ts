@@ -17,6 +17,7 @@ import { backward as runBackward } from '../autograd.ts';
 import type { BackwardOptions } from '../autograd.ts';
 import { Tensor } from '../tensor.ts';
 import { normalizeAxis } from '../shape.ts';
+import type { SliceSpec } from '../shape.ts';
 
 import {
   EW,
@@ -63,9 +64,11 @@ import {
   fillOf,
   flatten,
   indexSelect,
+  narrow,
   permute,
   reshape,
   scatterAdd,
+  slice,
   sumTo,
   transpose,
   zerosOf,
@@ -232,6 +235,12 @@ method('transpose', function (this: Tensor, a?: number, b?: number) {
 method('expand', function (this: Tensor, shape: readonly number[]) {
   return expand(this, shape);
 });
+method('slice', function (this: Tensor, specs: readonly (SliceSpec | null)[]) {
+  return slice(this, specs);
+});
+method('narrow', function (this: Tensor, axis: number, start: number, size: number) {
+  return narrow(this, axis, start, size);
+});
 method('indexSelect', function (this: Tensor, indices: Tensor, axis?: number) {
   return indexSelect(this, indices, axis ?? 0);
 });
@@ -282,6 +291,7 @@ export {
   minimum,
   mul,
   mulScalar,
+  narrow,
   neg,
   permute,
   pow,
@@ -290,6 +300,7 @@ export {
   scatterAdd,
   sigmoid,
   sign,
+  slice,
   sin,
   softmax,
   sub,

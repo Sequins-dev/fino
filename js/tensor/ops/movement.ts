@@ -22,9 +22,12 @@ import {
   numel,
   permuteShape,
   resolveReshape,
+  resolveSlices,
+  sliceShape,
   transposeOrder,
   unravel,
 } from '../shape.ts';
+import type { ResolvedSlice, SliceSpec } from '../shape.ts';
 import type { OpId, RefAccessor } from './registry.ts';
 import { registerOp } from './registry.ts';
 import type { Tensor } from '../tensor.ts';
@@ -179,6 +182,80 @@ MOVE.expand = registerOp({
       out.set(i, x.get(flat));
     }
     void attrs;
+  },
+});
+
+/**
+ * Take a strided sub-region.
+ *
+ * Like `permute` and `expand`, this is one strided copy over a re-expressed view of
+ * the source: the start offsets fold into the view's offset and the steps multiply
+ * into its strides, so no new backend operation is needed. Unlike `reshape` it always
+ * materialises, since a slice of contiguous storage is not itself contiguous.
+ */
+MOVE.slice = registerOp({
+  name: 'slice',
+  group: 'movement',
+  arity: 1,
+  dtypeRule: (inputs) => inputs[0]!.dtype,
+  shapeRule: (_inputs, attrs) => sliceShape(attrs!.resolved as readonly ResolvedSlice[]),
+  enqueue: (backend, inputs, out, attrs, stream) => {
+    const src = inputs[0]!;
+    const resolved = attrs!.resolved as readonly ResolvedSlice[];
+    const srcStrides = contiguousStrides(src.shape);
+    let offset = src.offset;
+    for (let axis = 0; axis < resolved.length; axis++) {
+      offset += resolved[axis]!.start * srcStrides[axis]!;
+    }
+    backend.copyStrided(
+      {
+        buffer: src.buffer,
+        dtype: src.dtype,
+        shape: out.shape,
+        strides: resolved.map((r, axis) => srcStrides[axis]! * r.step),
+        offset,
+      },
+      out,
+      stream,
+    );
+  },
+  vjp: {
+    saves: () => [],
+    backward: (cot, _saved, attrs, needs) => {
+      if (!needs[0]) return [null];
+      // The adjoint of taking a sub-region is writing the cotangent back into zeros
+      // at the positions it came from. One scatter-add per non-trivial axis restores
+      // that axis to its full extent, which needs no gradient rule of its own: the
+      // regions do not overlap, so accumulating is assigning.
+      const shape = attrs!.inputShape as readonly number[];
+      const resolved = attrs!.resolved as readonly ResolvedSlice[];
+      let grad = cot;
+      for (let axis = 0; axis < resolved.length; axis++) {
+        const r = resolved[axis]!;
+        if (r.start === 0 && r.step === 1 && r.size === shape[axis]) continue;
+        const target = [...grad.shape];
+        target[axis] = shape[axis]!;
+        const zeros = zerosOf(target, grad.dtype, grad.device);
+        const indices = arangeOf(r.size, 'i32', grad.device, r.start, r.step);
+        grad = scatterAdd(zeros, indices, grad, axis);
+      }
+      return [grad];
+    },
+  },
+  refImpl: (inputs, out, attrs) => {
+    const x = inputs[0]!;
+    const resolved = attrs!.resolved as readonly ResolvedSlice[];
+    const inStrides = contiguousStrides(attrs!.inputShape as readonly number[]);
+    const outShape = out.shape;
+    for (let i = 0; i < out.size; i++) {
+      const coords = unravel(i, outShape);
+      let flat = 0;
+      for (let axis = 0; axis < resolved.length; axis++) {
+        const r = resolved[axis]!;
+        flat += (r.start + coords[axis]! * r.step) * inStrides[axis]!;
+      }
+      out.set(i, x.get(flat));
+    }
   },
 });
 
@@ -345,6 +422,25 @@ export function transpose(t: Tensor, a = -2, b = -1): Tensor {
 /** Stretch size-1 axes to a larger shape. */
 export function expand(t: Tensor, shape: readonly number[]): Tensor {
   return dispatch(MOVE.expand!, [t], { shape, inputShape: t.shape });
+}
+
+/**
+ * Take a strided sub-region, one specification per leading axis.
+ *
+ * A `null` entry, or an axis past the end of the list, is taken whole. Negative
+ * bounds count from the end, as they do in `Array.prototype.slice`.
+ */
+export function slice(t: Tensor, specs: readonly (SliceSpec | null)[]): Tensor {
+  const resolved = resolveSlices(t.shape, specs);
+  return dispatch(MOVE.slice!, [t], { resolved, inputShape: t.shape });
+}
+
+/** Take a strided range along one axis, leaving the others whole. */
+export function narrow(t: Tensor, axis: number, start: number, size: number): Tensor {
+  const resolved = normalizeAxis(axis, t.rank);
+  const specs = new Array<SliceSpec | null>(resolved + 1).fill(null);
+  specs[resolved] = { start, end: start + size };
+  return slice(t, specs);
 }
 
 /** Select slices along an axis. */

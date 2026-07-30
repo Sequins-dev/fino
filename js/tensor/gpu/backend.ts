@@ -83,6 +83,14 @@ const GPU_DTYPES: readonly DType[] = ['f32', 'f16', 'bf16', 'i32', 'u8', 'bool']
  * measurements, so it stays conservative rather than chasing the last few percent on
  * rows long enough for the tree reduction to be fine anyway.
  */
+/**
+ * Queued operations allowed before dispatch refuses to queue more.
+ *
+ * Far above any real program's depth between two awaits, and far below what it takes
+ * to exhaust memory, so it only ever catches a loop that never yields at all.
+ */
+const MAX_PENDING = 50_000;
+
 const ROW_PER_THREAD_COLS = 256;
 
 /**
@@ -229,13 +237,41 @@ export class GpuBackend implements DeviceBackend {
    * @internal
    */
   #enqueue(work: () => Promise<void> | void): void {
-    this.#queue = this.#queue.then(work).catch((cause) => {
-      // Re-thrown from `sync`, so a failed launch surfaces at the next
-      // synchronisation point with its own message rather than as an unhandled
-      // rejection.
-      this.#failure ??= cause instanceof Error ? cause : new Error(String(cause));
-    });
+    if (this.#pending >= MAX_PENDING) {
+      // Queued work only runs on a microtask turn, so a loop that never awaits
+      // anything can queue without limit and — because compilation is asynchronous
+      // too — without a single launch reaching the device. Left alone this ends as an
+      // out-of-memory crash with nothing to point at, so it is named here instead.
+      throw new Error(
+        `${MAX_PENDING} device operations are queued without the event loop running; ` +
+          'await something (a readback, or any promise) inside the loop so queued work ' +
+          'can be submitted and kernels can finish compiling',
+      );
+    }
+    this.#pending++;
+    this.#queue = this.#queue
+      .then(work)
+      .catch((cause) => {
+        // Re-thrown from `sync`, so a failed launch surfaces at the next
+        // synchronisation point with its own message rather than as an unhandled
+        // rejection.
+        this.#failure ??= cause instanceof Error ? cause : new Error(String(cause));
+      })
+      .then(() => {
+        this.#pending--;
+      });
   }
+
+  /**
+   * Queued operations that have not finished running.
+   *
+   * A launch may only bypass the queue when this is zero. Otherwise it would be
+   * submitted ahead of work queued before it, which is the one thing the queue
+   * exists to prevent.
+   *
+   * @internal
+   */
+  #pending = 0;
 
   /**
    * The first error a queued operation raised, surfaced at the next sync point.
@@ -356,6 +392,21 @@ export class GpuBackend implements DeviceBackend {
     // lazily only when the cache misses.
     const built = build();
     const driverBuffers = buffers as unknown as DriverBuffer[];
+
+    // The fast path: a kernel already compiled and nothing queued ahead of it, which
+    // is every launch after the first of its shape. Going through the queue instead
+    // would cost a microtask turn per launch — and worse, a synchronous loop that
+    // never yields would accumulate every launch as a pending closure rather than
+    // submitting any of them, so a long compute loop grew until the process died.
+    const ready = this.#pending === 0 && this.#driver.canLaunch()
+      ? this.#cache.peekReady(built.key, this.#driver.target)
+      : null;
+    if (ready !== null) {
+      const packed = packParams(built.ir.params, params);
+      this.#driver.launch(ready, driverBuffers, packed, groups);
+      return;
+    }
+
     const packed = packParams(built.ir.params, params);
     this.#enqueue(async () => {
       const kernel = await this.#cache.get({
@@ -363,6 +414,12 @@ export class GpuBackend implements DeviceBackend {
         target: this.#driver.target,
         compile: () => this.#driver.compile(built.ir),
       });
+      // Per-dispatch resources are finite. Being here means either the kernel was not
+      // compiled yet or the device is behind; the second needs waiting out, which is
+      // possible here and not on the synchronous path.
+      if (!this.#driver.canLaunch()) {
+        await this.#driver.wait(this.#driver.submitted());
+      }
       this.#driver.launch(kernel, driverBuffers, packed, groups);
     });
   }
@@ -386,6 +443,7 @@ export class GpuBackend implements DeviceBackend {
   ): void {
     const count = numel(out.shape);
     if (count === 0) return;
+
     const outScalar = this.#scalar(out);
     const scalar = attrs && typeof attrs.scalar === 'number' ? attrs.scalar : null;
     const onLeft = attrs?.scalarSide === 'lhs';
@@ -631,8 +689,14 @@ export class GpuBackend implements DeviceBackend {
   copyStrided(x: TensorDesc, out: TensorDesc): void {
     const count = numel(out.shape);
     if (count === 0) return;
+    // Outputs are always freshly allocated, so the kernel writes from zero. Anything
+    // else would silently land in the wrong place, so it is refused rather than
+    // ignored.
+    if (out.offset !== 0) {
+      throw new Error(`copyStrided cannot write into an offset view (offset ${out.offset})`);
+    }
     const rank = Math.max(out.shape.length, 1);
-    const params: Record<string, number> = { n: count };
+    const params: Record<string, number> = { n: count, base: x.offset };
     for (let axis = 0; axis < rank; axis++) {
       params[`shape${axis}`] = out.shape[axis] ?? 1;
       params[`stride${axis}`] = x.strides[axis] ?? 0;

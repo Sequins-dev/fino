@@ -308,6 +308,35 @@ describe('gradcheck: composed expressions', () => {
   });
 });
 
+describe('gradcheck: slicing', () => {
+  it('checks a contiguous sub-region', async (t) => {
+    await check(
+      t,
+      'slice',
+      (x) => x.slice([{ start: 1, end: 3 }, { start: 1 }]).sum(),
+      [await input([4, 4], 71)],
+    );
+  });
+  it('checks a strided sub-region', async (t) => {
+    // A step greater than one is where the adjoint stops being a contiguous write:
+    // the cotangent has to land on every other position and zero the rest.
+    await check(
+      t,
+      'strided slice',
+      (x) => x.slice([{ step: 2 }, { start: 1, step: 3 }]).mul(2).sum(),
+      [await input([5, 7], 73)],
+    );
+  });
+  it('checks a slice feeding a matmul', async (t) => {
+    await check(
+      t,
+      'slice then matmul',
+      (x, y) => x.narrow(0, 1, 2).matmul(y).sum(),
+      [await input([4, 3], 77), await input([3, 2], 79)],
+    );
+  });
+});
+
 describe('gradcheck coverage', () => {
   it('names every differentiable operation', (t) => {
     const covered = new Set([
@@ -348,6 +377,7 @@ describe('gradcheck coverage', () => {
       'expand',
       'indexSelect',
       'scatterAdd',
+      'slice',
     ]);
     const uncovered = differentiableOps()
       .map((op) => op.name)

@@ -75,6 +75,11 @@ export function stridedCopyKernel(spec: {
   b.buffer('in0', vt(spec.from), 'read');
   b.buffer('out0', vt(to), 'write');
   const n = b.param('n');
+  // Where the source view starts. A slice folds its per-axis start positions into
+  // this, so taking a sub-region needs no kernel of its own — and any tensor that is
+  // an alias into a larger buffer is read from the right place rather than from the
+  // buffer's beginning.
+  const base = b.param('base');
   const shape: Expr[] = [];
   const strides: Expr[] = [];
   for (let axis = 0; axis < rank; axis++) shape.push(b.param(`shape${axis}`));
@@ -84,7 +89,7 @@ export function stridedCopyKernel(spec: {
     // Unravel the flat output index from the innermost axis outwards, folding each
     // coordinate into the source offset as it is produced.
     b.var('rest', vt('u32'), i);
-    b.var('src', vt('u32'), E.u32(0));
+    b.var('src', vt('u32'), base);
     unroll(rank, (step) => {
       const axis = rank - 1 - step;
       const coord = b.letTemp(vt('u32'), E.mod(E.var('rest'), shape[axis]!), 'c');

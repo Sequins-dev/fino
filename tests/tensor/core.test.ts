@@ -624,3 +624,65 @@ describe('autodiff', () => {
     t.deepEqual(Array.from(await w2.grad!.data()), [2, 3], 'dL/dw2 is the hidden activation');
   });
 });
+
+describe('slicing', () => {
+  it('takes a sub-region and leaves unlisted axes whole', async (t) => {
+    const x = await tensor([
+      [1, 2, 3, 4],
+      [5, 6, 7, 8],
+      [9, 10, 11, 12],
+    ]);
+    t.deepEqual(
+      Array.from(await x.slice([{ start: 1 }]).data()),
+      [5, 6, 7, 8, 9, 10, 11, 12],
+      'a leading spec leaves the trailing axis whole',
+    );
+    t.deepEqual(
+      Array.from(await x.slice([null, { start: 2 }]).data()),
+      [3, 4, 7, 8, 11, 12],
+      'a null spec takes its axis whole',
+    );
+    t.deepEqual([...x.slice([{ start: 1 }, { end: 2 }]).shape], [2, 2], 'the shape narrows');
+  });
+
+  it('counts negative bounds from the end', async (t) => {
+    const x = await tensor([1, 2, 3, 4, 5]);
+    t.deepEqual(Array.from(await x.slice([{ start: -2 }]).data()), [4, 5], 'a negative start');
+    t.deepEqual(Array.from(await x.slice([{ end: -3 }]).data()), [1, 2], 'a negative end');
+  });
+
+  it('takes every nth element with a step', async (t) => {
+    const x = await arange(10);
+    t.deepEqual(
+      Array.from(await x.slice([{ step: 3 }]).data()),
+      [0, 3, 6, 9],
+      'a step that does not divide the axis keeps the partial tail',
+    );
+    t.deepEqual(
+      Array.from(await x.slice([{ start: 1, end: 8, step: 2 }]).data()),
+      [1, 3, 5, 7],
+      'bounds and a step together',
+    );
+  });
+
+  it('clamps out-of-range bounds instead of failing', async (t) => {
+    const x = await arange(4);
+    t.deepEqual(Array.from(await x.slice([{ end: 99 }]).data()), [0, 1, 2, 3], 'past the end');
+    t.deepEqual([...x.slice([{ start: 9 }]).shape], [0], 'entirely past the end is empty');
+    t.deepEqual([...x.slice([{ start: 3, end: 1 }]).shape], [0], 'an inverted range is empty');
+  });
+
+  it('slices integer tensors', async (t) => {
+    const x = await tensor([10, 20, 30, 40], { dtype: 'i32' });
+    const taken = x.narrow(0, 1, 2);
+    t.equal(taken.dtype, 'i32', 'the dtype is preserved');
+    t.deepEqual(Array.from(await taken.data()), [20, 30], 'and so are the values');
+  });
+
+  it('rejects more specs than the tensor has axes', async (t) => {
+    const x = await arange(4);
+    t.throws(() => x.slice([{ start: 1 }, { start: 1 }]), /rank/, 'too many specs');
+    t.throws(() => x.slice([{ step: 0 }]), /must not be zero/, 'a zero step');
+    t.throws(() => x.slice([{ step: -1 }]), /negative/, 'a negative step');
+  });
+});
