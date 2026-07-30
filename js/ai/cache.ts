@@ -47,6 +47,7 @@ import type { Cache } from 'fino:cache';
 import { Database, vec } from 'fino:database/sqlite';
 import type { FileSystem } from 'internal:file/provider';
 import { ModelStreamImpl } from 'internal:ai/shared';
+import { cosineSimilarity } from 'fino:ml/metrics';
 import type {
   EmbeddingModel,
   GenerateRequest,
@@ -275,19 +276,6 @@ function streamFromEvents(events: StreamEvent[]): ModelStream {
   return new ModelStreamImpl(gen());
 }
 
-function cosine(a: number[], b: number[]): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    dot += a[i]! * b[i]!;
-    normA += a[i]! * a[i]!;
-    normB += b[i]! * b[i]!;
-  }
-  return normA > 0 && normB > 0 ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
-}
-
 async function semanticLookup(
   opts: SemanticCacheOptions | undefined,
   req: GenerateRequest,
@@ -303,7 +291,8 @@ async function semanticLookup(
   let best: SemanticIndex[number] | null = null;
   let bestScore = -1;
   for (const item of index) {
-    const score = cosine(query, item.embedding);
+    if (item.embedding.length !== query.length) continue;
+    const score = cosineSimilarity(query, item.embedding);
     if (score > bestScore) {
       best = item;
       bestScore = score;
