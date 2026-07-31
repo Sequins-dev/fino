@@ -1934,6 +1934,21 @@ fn shed_workloads() -> &'static Mutex<Vec<Option<ShedWorkload>>> {
     SHED.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Resolve a queue argument: a numeric handle names a queue created on this
+/// thread; undefined/null names the installed process pool, so realms other
+/// than the main realm (the system realm in particular) can operate on it —
+/// queue handles are main-realm thread-locals and do not travel.
+fn reactor_queue_arg(
+    scope: &mut v8::HandleScope,
+    value: v8::Local<v8::Value>,
+) -> Option<Arc<PoolShared>> {
+    if value.is_null_or_undefined() {
+        return process_pool().lock().unwrap().clone();
+    }
+    let handle = value.uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    reactor_queue(handle)
+}
+
 fn reactor_queue(handle: usize) -> Option<Arc<PoolShared>> {
     REACTOR_QUEUES.with(|queues| {
         queues
@@ -1949,11 +1964,11 @@ fn mark_shedding_workload(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let Some(shared) = reactor_queue(queue_handle) else {
+    let queue_arg = args.get(0);
+    let Some(shared) = reactor_queue_arg(scope, queue_arg) else {
         throw_error(
             scope,
-            &format!("markSheddingWorkload: invalid queue {queue_handle}"),
+            "markSheddingWorkload: no such queue and no process reactor is running",
         );
         return;
     };
@@ -1965,12 +1980,12 @@ fn take_shed_workload(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let queue_arg = args.get(0);
     let owner = args.get(1).uint32_value(scope).unwrap_or(0);
-    let Some(shared) = reactor_queue(queue_handle) else {
+    let Some(shared) = reactor_queue_arg(scope, queue_arg) else {
         throw_error(
             scope,
-            &format!("takeShedWorkload: invalid queue {queue_handle}"),
+            "takeShedWorkload: no such queue and no process reactor is running",
         );
         return;
     };
@@ -2001,12 +2016,12 @@ fn clear_shedding_workload(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let queue_arg = args.get(0);
     let owner = args.get(1).uint32_value(scope).unwrap_or(0);
-    let Some(shared) = reactor_queue(queue_handle) else {
+    let Some(shared) = reactor_queue_arg(scope, queue_arg) else {
         throw_error(
             scope,
-            &format!("clearSheddingWorkload: invalid queue {queue_handle}"),
+            "clearSheddingWorkload: no such queue and no process reactor is running",
         );
         return;
     };
@@ -2018,12 +2033,12 @@ fn resubmit_shed_workload(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let queue_arg = args.get(0);
     let shed_handle = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let Some(shared) = reactor_queue(queue_handle) else {
+    let Some(shared) = reactor_queue_arg(scope, queue_arg) else {
         throw_error(
             scope,
-            &format!("resubmitShedWorkload: invalid queue {queue_handle}"),
+            "resubmitShedWorkload: no such queue and no process reactor is running",
         );
         return;
     };
@@ -2598,11 +2613,11 @@ fn take_reactor_load_sample(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let Some(shared) = reactor_queue(queue_handle) else {
+    let queue_arg = args.get(0);
+    let Some(shared) = reactor_queue_arg(scope, queue_arg) else {
         throw_error(
             scope,
-            &format!("takeReactorLoadSample: invalid queue {queue_handle}"),
+            "takeReactorLoadSample: no such queue and no process reactor is running",
         );
         return;
     };
@@ -2645,11 +2660,11 @@ fn reactor_queue_depth(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let Some(shared) = reactor_queue(queue_handle) else {
+    let queue_arg = args.get(0);
+    let Some(shared) = reactor_queue_arg(scope, queue_arg) else {
         throw_error(
             scope,
-            &format!("reactorQueueDepth: invalid queue {queue_handle}"),
+            "reactorQueueDepth: no such queue and no process reactor is running",
         );
         return;
     };

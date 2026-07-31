@@ -62,6 +62,7 @@ import {
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import { sampleNodeLoad } from 'internal:runtime/stats';
+import { SystemRealmAgent, type NodeReport } from 'internal:cluster/agent';
 import { mintJoinString, parseJoinString } from 'internal:cluster/join-string';
 import { DiskFileSystem } from 'fino:file';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
@@ -90,6 +91,25 @@ export { ClusterPort };
 let _client: ClusterClient | null = null;
 let _seed: SeedServer | null = null;
 let _joinString: string | null = null;
+let _agent: SystemRealmAgent | null = null;
+
+/** Spawn the node's system realm and return the heartbeat load sampler. */
+function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
+  _agent = new SystemRealmAgent();
+  _agent.start();
+  return () => {
+    // Prefer the system realm's observation when fresh; fall back to a local
+    // sample so heartbeats never go silent while it restarts.
+    const report: NodeReport | null = _agent?.latest() ?? null;
+    if (report !== null && Date.now() - report.at < 10_000) return report.load;
+    return sampleNodeLoad();
+  };
+}
+
+/** The node's system-realm agent, or null when not participating. @internal */
+export function getNodeAgent(): SystemRealmAgent | null {
+  return _agent;
+}
 
 /** Random URL-safe secret for join tokens and minted cluster identities. */
 function randomHandle(bytes: number): string {
@@ -372,7 +392,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     tls: { rejectUnauthorized: false },
     ...(joinToken !== undefined ? { token: joinToken } : {}),
   });
-  _client = new ClusterClient(workerTransport, nodeId, { loadSampler: sampleNodeLoad });
+  _client = new ClusterClient(workerTransport, nodeId, { loadSampler: startNodeAgent() });
   _client.start();
   await _client.ready();
   const advertisedHost = clusterAdvertisedHost(opts.hostname);
@@ -445,7 +465,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     ...(opts.token !== undefined ? { token: opts.token } : {}),
   };
   await transport.connect(seed, sampleNodeLoad(), connectOptions);
-  _client = new ClusterClient(transport, nodeId, { loadSampler: sampleNodeLoad });
+  _client = new ClusterClient(transport, nodeId, { loadSampler: startNodeAgent() });
   _client.start();
   try {
     await _client.ready();
@@ -458,6 +478,8 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     const failed = _client;
     _client = null;
     failed.stop();
+    void _agent?.stop();
+    _agent = null;
     throw err;
   }
 }
@@ -527,6 +549,8 @@ export function getCluster(): ClusterClient | null {
  */
 export function leaveCluster(): void {
   _joinString = null;
+  void _agent?.stop();
+  _agent = null;
   _client?.stop();
   _client = null;
   _seed?.stop();

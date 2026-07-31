@@ -48,10 +48,10 @@ export function createReactorQueue(install?: boolean): {
   controlFd: number;
 };
 export function submitReactorWorkload(queue: number, workload: number): number;
-export function markSheddingWorkload(queue: number): number;
-export function takeShedWorkload(queue: number, owner: number): number | null;
-export function clearSheddingWorkload(queue: number, owner: number): boolean;
-export function resubmitShedWorkload(queue: number, shedWorkload: number): number;
+export function markSheddingWorkload(queue?: number): number;
+export function takeShedWorkload(queue: number | undefined, owner: number): number | null;
+export function clearSheddingWorkload(queue: number | undefined, owner: number): boolean;
+export function resubmitShedWorkload(queue: number | undefined, shedWorkload: number): number;
 export function shedWorkloadConfig(shedWorkload: number): {
   entry: string;
   root: string;
@@ -67,7 +67,7 @@ export function createReactorThread(queue: number): {
   worker: number;
 };
 export function availableParallelism(): number;
-export function takeReactorLoadSample(queue: number): Array<{
+export function takeReactorLoadSample(queue?: number): Array<{
   owner: number;
   busyMicros: number;
   slices: number;
@@ -75,7 +75,7 @@ export function takeReactorLoadSample(queue: number): Array<{
   activationDelayMicros: number;
   activations: number;
 }>;
-export function reactorQueueDepth(queue: number): {
+export function reactorQueueDepth(queue?: number): {
   pendingSpecs: number;
   parkedLive: number;
   active: number;

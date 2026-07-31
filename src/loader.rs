@@ -384,6 +384,11 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:cluster/join-string",
         "internal/cluster/join-string"
     ),
+    source_builtin!(
+        "internal:cluster/system-realm",
+        "internal/cluster/system-realm"
+    ),
+    source_builtin!("internal:cluster/agent", "internal/cluster/agent"),
     source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
     source_builtin!("internal:cluster/client", "internal/cluster/client"),
