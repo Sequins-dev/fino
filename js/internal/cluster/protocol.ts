@@ -92,6 +92,21 @@ export interface NodeLoad {
    * ```
    */
   memory: number;
+  /**
+   * Fraction of wall time the sender's loop spent blocked waiting, in the
+   * inclusive range `[0, 1]`.
+   *
+   * A node at moderate CPU whose loop idle is collapsing is saturated for
+   * latency-sensitive work — this is the signal external orchestrators cannot
+   * see. Optional: realms whose idle time is attributed by the reactor pool
+   * omit it rather than reporting a misleading zero.
+   *
+   * ```ts
+   * const load = { cpu: 0.25, memory: 1024, loopIdle: 0.9 };
+   * load.loopIdle;
+   * ```
+   */
+  loopIdle?: number;
 }
 /**
  * Cluster membership record for one peer node.
@@ -263,6 +278,7 @@ export type ClusterMessage =
   | {
       t: 'HEARTBEAT';
       ts: number;
+      load?: NodeLoad;
     }
   | {
       t: 'SPAWN';
@@ -321,6 +337,7 @@ const enum DirectiveKind {
 interface WireLoad {
   cpu?: number;
   memory?: number;
+  loopIdle?: number;
 }
 
 interface WirePeer {
@@ -386,6 +403,7 @@ interface WireEnvelope {
 const LoadMessage = defineMessage<WireLoad>({
   cpu: { number: 1, type: 'double', optional: true },
   memory: { number: 2, type: 'double', optional: true },
+  loopIdle: { number: 3, type: 'double', optional: true },
 });
 const PeerMessage = defineMessage<WirePeer>({
   nodeId: { number: 1, type: 'string', optional: true },
@@ -617,6 +635,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
       return {
         kind: MessageKind.HEARTBEAT,
         ts: requireFiniteNumber({ ts: msg.ts }, 'ts'),
+        ...(msg.load !== undefined ? { load: parseLoad(msg.load) } : {}),
         ...base,
       };
     case 'SPAWN':
@@ -721,7 +740,11 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
       };
     case MessageKind.HEARTBEAT:
       if (value.ts === undefined) throw protocolError('ts must be a finite number');
-      return { t: 'HEARTBEAT', ts: requireFiniteNumber({ ts: value.ts }, 'ts') };
+      return {
+        t: 'HEARTBEAT',
+        ts: requireFiniteNumber({ ts: value.ts }, 'ts'),
+        ...(value.load !== undefined ? { load: parseLoad(value.load) } : {}),
+      };
     case MessageKind.SPAWN:
       if (value.config === undefined) throw protocolError('config is missing');
       return {
@@ -829,10 +852,12 @@ function parseLoad(value: unknown): NodeLoad {
   const memory = requireFiniteNumber(value, 'memory');
   if (cpu < 0 || cpu > 1) throw protocolError('load.cpu must be in [0, 1]');
   if (memory < 0) throw protocolError('load.memory must be non-negative');
-  return {
-    cpu,
-    memory,
-  };
+  if (value.loopIdle === undefined) {
+    return { cpu, memory };
+  }
+  const loopIdle = requireFiniteNumber(value, 'loopIdle');
+  if (loopIdle < 0 || loopIdle > 1) throw protocolError('load.loopIdle must be in [0, 1]');
+  return { cpu, memory, loopIdle };
 }
 function parsePeer(value: unknown, key: string): PeerInfo {
   if (!isRecord(value)) throw protocolError(`${key} must be an object`);

@@ -256,6 +256,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         },
     ),
     source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
+    source_builtin!("internal:runtime/stats", "internal/runtime/stats"),
     source_builtin!("fino:process", "process"),
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:signals", "signals"),

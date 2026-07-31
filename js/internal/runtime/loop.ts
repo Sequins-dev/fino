@@ -339,9 +339,30 @@ export function tick(timeoutMs: number | null): number {
     (event) => deserialize(event) as LoopEvent,
   );
   for (const ev of routed) _dispatch(ev);
-  const events = _processReadiness ? [] : _wait(rawBackend(), routed.length > 0 ? 0 : timeoutMs);
+  let events: LoopEvent[];
+  if (_processReadiness) {
+    events = [];
+  } else {
+    const waitStarted = performance.now();
+    events = _wait(rawBackend(), routed.length > 0 ? 0 : timeoutMs);
+    _waitedMs += performance.now() - waitStarted;
+  }
   for (const ev of events) _dispatch(ev);
   return routed.length + events.length;
+}
+
+let _waitedMs = 0;
+/**
+ * Cumulative wall time this loop has spent blocked inside the backend wait.
+ *
+ * The stats module samples this against wall time to derive the loop idle
+ * ratio. Realms driven by the process reactor never block here — their idle
+ * time lives in the reactor pool and is attributed by its load counters.
+ *
+ * @internal
+ */
+export function _loopWaitedMs(): number {
+  return _waitedMs;
 }
 /**
  * Return and remove the next isolate owner made runnable by a foreign event.

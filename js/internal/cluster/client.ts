@@ -55,6 +55,7 @@
 import type { ClusterTransport } from './transport.ts';
 import {
   type ClusterMessage,
+  type NodeLoad,
   type SerializedSpawnConfig,
   type PeerInfo,
   encode,
@@ -224,10 +225,22 @@ export class ClusterClient {
    * const client = new ClusterClient(transport, 'worker-1');
    * ```
    */
-  constructor(transport: ClusterTransport, nodeId: string) {
+  constructor(
+    transport: ClusterTransport,
+    nodeId: string,
+    options: { loadSampler?: () => NodeLoad } = {},
+  ) {
     this.nodeId = nodeId;
     this.#transport = transport;
+    this.#loadSampler = options.loadSampler ?? null;
   }
+  /**
+   * Fresh load sample attached to every HEARTBEAT so the seed's placement
+   * view tracks reality instead of the value advertised once at HELLO.
+   *
+   * @internal
+   */
+  #loadSampler: (() => NodeLoad) | null;
   /**
    * Snapshot of peers currently known to this client.
    *
@@ -374,9 +387,11 @@ export class ClusterClient {
   start(): void {
     this.#transport.on((from, msg) => this.#handle(from, msg));
     this.#heartbeatTimer = setInterval(() => {
+      const load = this.#loadSampler?.();
       this.#transport.send('__seed__', {
         t: 'HEARTBEAT',
         ts: Date.now(),
+        ...(load !== undefined ? { load } : {}),
       });
     }, heartbeatIntervalMs());
   }

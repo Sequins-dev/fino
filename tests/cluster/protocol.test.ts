@@ -21,6 +21,29 @@ describe('ClusterMessage encode/decode', () => {
       t.equal(got.load.cpu, .5);
     }
   });
+  it('HEARTBEAT round-trips with and without a load sample', (t) => {
+    const bare = roundTrip({ t: 'HEARTBEAT', ts: 42 });
+    t.equal(bare.t, 'HEARTBEAT');
+    if (bare.t === 'HEARTBEAT') {
+      t.equal(bare.ts, 42);
+      t.equal(bare.load, undefined, 'load stays absent when not sent');
+    }
+    const loaded = roundTrip({
+      t: 'HEARTBEAT',
+      ts: 43,
+      load: { cpu: 0.25, memory: 2048, loopIdle: 0.75 },
+    });
+    if (loaded.t === 'HEARTBEAT') {
+      t.equal(loaded.load?.cpu, 0.25, 'cpu survives the heartbeat');
+      t.equal(loaded.load?.memory, 2048, 'memory survives the heartbeat');
+      t.equal(loaded.load?.loopIdle, 0.75, 'loopIdle survives the heartbeat');
+    }
+    t.throws(
+      () => encode({ t: 'HEARTBEAT', ts: 1, load: { cpu: 0, memory: 0, loopIdle: 2 } }),
+      /loopIdle must be in/,
+      'out-of-range loopIdle is rejected',
+    );
+  });
   it('WELCOME round-trips with peer list', (t) => {
     const msg: ClusterMessage = {
       t: 'WELCOME',

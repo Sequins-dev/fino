@@ -61,6 +61,7 @@ import {
 } from 'internal:cluster/webtransport-transport';
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
+import { sampleNodeLoad } from 'internal:runtime/stats';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
 /**
  * Transport port that routes realm channel messages through the cluster.
@@ -309,13 +310,10 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   const selfJoinHost = clusterSelfJoinHost(opts.hostname);
   await workerTransport.connect(
     `https://${selfJoinHost}:${opts.port}${path}`,
-    {
-      cpu: 0,
-      memory: 0,
-    },
+    sampleNodeLoad(),
     { tls: { rejectUnauthorized: false } },
   );
-  _client = new ClusterClient(workerTransport, nodeId);
+  _client = new ClusterClient(workerTransport, nodeId, { loadSampler: sampleNodeLoad });
   _client.start();
 }
 /**
@@ -348,15 +346,8 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     quic: opts.quic,
     serverCertificateHashes: opts.serverCertificateHashes,
   };
-  await transport.connect(
-    seed,
-    {
-      cpu: 0,
-      memory: 0,
-    },
-    connectOptions,
-  );
-  _client = new ClusterClient(transport, nodeId);
+  await transport.connect(seed, sampleNodeLoad(), connectOptions);
+  _client = new ClusterClient(transport, nodeId, { loadSampler: sampleNodeLoad });
   _client.start();
 }
 function normalizeClusterSeed(seed: string | URL): URL {

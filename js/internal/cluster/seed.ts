@@ -324,6 +324,10 @@ export class SeedServer {
       }
       case 'HEARTBEAT': {
         this.#lastSeen.set(from, Date.now());
+        // Refresh the placement view: without this, load is only ever the
+        // value advertised once at HELLO and target selection is arbitrary.
+        const peer = this.#peers.get(from);
+        if (peer !== undefined && msg.load !== undefined) peer.load = msg.load;
         break;
       }
       case 'SPAWN': {
