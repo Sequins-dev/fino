@@ -228,12 +228,15 @@ export class ClusterClient {
   constructor(
     transport: ClusterTransport,
     nodeId: string,
-    options: { loadSampler?: () => NodeLoad } = {},
+    options: { loadSampler?: () => NodeLoad; incarnation?: number } = {},
   ) {
     this.nodeId = nodeId;
     this.#transport = transport;
     this.#loadSampler = options.loadSampler ?? null;
+    this.#incarnation = options.incarnation;
   }
+  /** Incarnation echoed in every heartbeat so the seed can fence stale processes. @internal */
+  #incarnation: number | undefined;
   /**
    * Fresh load sample attached to every HEARTBEAT so the seed's placement
    * view tracks reality instead of the value advertised once at HELLO.
@@ -436,6 +439,7 @@ export class ClusterClient {
         t: 'HEARTBEAT',
         ts: Date.now(),
         ...(load !== undefined ? { load } : {}),
+        ...(this.#incarnation !== undefined ? { incarnation: this.#incarnation } : {}),
       });
     }, heartbeatIntervalMs());
   }

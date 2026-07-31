@@ -71,6 +71,7 @@ const startCommand = new Task({
       { flags: '--node-id', type: 'string', description: 'Stable node identifier (default: seed-<port>)' },
       { flags: '--cluster-id', type: 'string', description: 'Stable cluster identity (default: minted)' },
       { flags: '--join-token', type: 'string', description: 'Join token (default: minted)' },
+      { flags: '--state', type: 'string', description: 'Directory for durable node state (incarnation)' },
     ],
   },
   run: async function runClusterStart(input, ctx) {
@@ -88,6 +89,7 @@ const startCommand = new Task({
       nodeId: opts['node-id'],
       clusterId: opts['cluster-id'],
       joinToken: opts['join-token'] ?? mintToken(),
+      stateDir: opts.state,
       tls: { cert: opts.cert, key: opts.key },
     });
     await print(`cluster started on port ${port}\n`);
@@ -104,6 +106,7 @@ const joinCommand = new Task({
   cli: {
     options: [
       { flags: '--node-id', type: 'string', description: 'Stable node identifier (default: minted)' },
+      { flags: '--state', type: 'string', description: 'Directory for durable node state (incarnation)' },
     ],
     positionals: [
       { name: 'joinString', type: 'string', description: 'Join string printed by `cluster start`' },
@@ -114,7 +117,11 @@ const joinCommand = new Task({
     if (opts.joinString === undefined) {
       throw new Error('cluster join: a join string is required');
     }
-    await joinCluster({ joinString: opts.joinString, nodeId: opts['node-id'] });
+    await joinCluster({
+      joinString: opts.joinString,
+      nodeId: opts['node-id'],
+      stateDir: opts.state,
+    });
     const client = getCluster();
     const cluster = client?.clusterId != null ? ` cluster ${client.clusterId}` : '';
     await print(`joined${cluster} as ${client?.nodeId}\n`);

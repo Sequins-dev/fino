@@ -147,6 +147,19 @@ export interface PeerInfo {
    * ```
    */
   load: NodeLoad;
+  /**
+   * Process incarnation the peer announced at HELLO. Monotonically increases
+   * across restarts of the same node identity, so stale-process traffic can
+   * be fenced after a crash or replacement.
+   */
+  incarnation?: number;
+  /**
+   * Directly dialable WebTransport endpoint (`https://host:port/path`) for
+   * future peer-to-peer sessions; absent while a node has no listener.
+   */
+  endpoint?: string;
+  /** Hex sha-256 of the certificate the peer's own listener presents. */
+  certHash?: string;
 }
 /**
  * Serialized realm spawn configuration carried by a `SPAWN` message.
@@ -265,6 +278,12 @@ export type ClusterMessage =
       token?: string;
       /** Observer connections receive WELCOME but never become members. */
       observer?: boolean;
+      /** Process incarnation; the seed fences HELLOs older than the member's. */
+      incarnation?: number;
+      /** Directly dialable endpoint for peer introductions, when listening. */
+      endpoint?: string;
+      /** Hex sha-256 of the node's own listener certificate. */
+      certHash?: string;
     }
   | {
       t: 'JOIN_DENIED';
@@ -289,6 +308,8 @@ export type ClusterMessage =
       t: 'HEARTBEAT';
       ts: number;
       load?: NodeLoad;
+      /** Sender incarnation; the seed ignores beats from stale processes. */
+      incarnation?: number;
     }
   | {
       t: 'SPAWN';
@@ -354,6 +375,9 @@ interface WireLoad {
 interface WirePeer {
   nodeId?: string;
   load?: WireLoad;
+  incarnation?: number;
+  endpoint?: string;
+  certHash?: string;
 }
 
 interface WireDirective {
@@ -397,6 +421,9 @@ interface WireEnvelope {
   token?: string;
   clusterId?: string;
   observer?: boolean;
+  incarnation?: number;
+  endpoint?: string;
+  certHash?: string;
   peers: WirePeer[];
   peer?: WirePeer;
   ts?: number;
@@ -422,6 +449,9 @@ const LoadMessage = defineMessage<WireLoad>({
 const PeerMessage = defineMessage<WirePeer>({
   nodeId: { number: 1, type: 'string', optional: true },
   load: { number: 2, type: LoadMessage, optional: true },
+  incarnation: { number: 3, type: 'double', optional: true },
+  endpoint: { number: 4, type: 'string', optional: true },
+  certHash: { number: 5, type: 'string', optional: true },
 });
 const DirectiveMessage = defineMessage<WireDirective>({
   kind: { number: 1, type: 'enum' },
@@ -474,6 +504,9 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   token: { number: 19, type: 'string', optional: true },
   clusterId: { number: 20, type: 'string', optional: true },
   observer: { number: 21, type: 'bool', optional: true },
+  incarnation: { number: 22, type: 'double', optional: true },
+  endpoint: { number: 23, type: 'string', optional: true },
+  certHash: { number: 24, type: 'string', optional: true },
 });
 
 function stringArray(value: unknown, key: string): string[] {
@@ -618,6 +651,30 @@ function requiredWireString(value: string | undefined, key: string): string {
   return value;
 }
 
+function parseIncarnation(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw protocolError('incarnation must be a non-negative finite number');
+  }
+  return value;
+}
+
+function parseEndpoint(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 512) {
+    throw protocolError('endpoint must be a non-empty string of at most 512 characters');
+  }
+  if (!value.startsWith('https://')) {
+    throw protocolError('endpoint must be an https:// URL');
+  }
+  return value;
+}
+
+function parseCertHash(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw protocolError('certHash must be 64 lowercase hex characters');
+  }
+  return value;
+}
+
 function parseToken(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
     throw protocolError('token must be a non-empty string of at most 256 characters');
@@ -627,7 +684,13 @@ function parseToken(value: unknown): string {
 
 function encodePeer(value: PeerInfo): WirePeer {
   const peer = parsePeer(value, 'peer');
-  return { nodeId: peer.nodeId, load: peer.load };
+  return {
+    nodeId: peer.nodeId,
+    load: peer.load,
+    ...(peer.incarnation !== undefined ? { incarnation: peer.incarnation } : {}),
+    ...(peer.endpoint !== undefined ? { endpoint: peer.endpoint } : {}),
+    ...(peer.certHash !== undefined ? { certHash: peer.certHash } : {}),
+  };
 }
 
 function decodePeer(value: WirePeer, key: string): PeerInfo {
@@ -644,6 +707,11 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         load: parseLoad(msg.load),
         ...(msg.token !== undefined ? { token: parseToken(msg.token) } : {}),
         ...(msg.observer === true ? { observer: true } : {}),
+        ...(msg.incarnation !== undefined
+          ? { incarnation: parseIncarnation(msg.incarnation) }
+          : {}),
+        ...(msg.endpoint !== undefined ? { endpoint: parseEndpoint(msg.endpoint) } : {}),
+        ...(msg.certHash !== undefined ? { certHash: parseCertHash(msg.certHash) } : {}),
         ...base,
       };
     case 'JOIN_DENIED':
@@ -669,6 +737,9 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         kind: MessageKind.HEARTBEAT,
         ts: requireFiniteNumber({ ts: msg.ts }, 'ts'),
         ...(msg.load !== undefined ? { load: parseLoad(msg.load) } : {}),
+        ...(msg.incarnation !== undefined
+          ? { incarnation: parseIncarnation(msg.incarnation) }
+          : {}),
         ...base,
       };
     case 'SPAWN':
@@ -758,6 +829,11 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         load: parseLoad(value.load),
         ...(value.token !== undefined ? { token: parseToken(value.token) } : {}),
         ...(value.observer === true ? { observer: true } : {}),
+        ...(value.incarnation !== undefined
+          ? { incarnation: parseIncarnation(value.incarnation) }
+          : {}),
+        ...(value.endpoint !== undefined ? { endpoint: parseEndpoint(value.endpoint) } : {}),
+        ...(value.certHash !== undefined ? { certHash: parseCertHash(value.certHash) } : {}),
       };
     case MessageKind.JOIN_DENIED:
       return {
@@ -785,6 +861,9 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         t: 'HEARTBEAT',
         ts: requireFiniteNumber({ ts: value.ts }, 'ts'),
         ...(value.load !== undefined ? { load: parseLoad(value.load) } : {}),
+        ...(value.incarnation !== undefined
+          ? { incarnation: parseIncarnation(value.incarnation) }
+          : {}),
       };
     case MessageKind.SPAWN:
       if (value.config === undefined) throw protocolError('config is missing');
@@ -906,6 +985,11 @@ function parsePeer(value: unknown, key: string): PeerInfo {
     return {
       nodeId: parseNodeId(requireString(value, 'nodeId')),
       load: parseLoad(value.load),
+      ...(value.incarnation !== undefined
+        ? { incarnation: parseIncarnation(value.incarnation) }
+        : {}),
+      ...(value.endpoint !== undefined ? { endpoint: parseEndpoint(value.endpoint) } : {}),
+      ...(value.certHash !== undefined ? { certHash: parseCertHash(value.certHash) } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

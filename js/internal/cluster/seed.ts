@@ -144,7 +144,11 @@ export class SeedServer {
       load: {
         cpu: number;
         memory: number;
+        loopIdle?: number;
       };
+      incarnation?: number;
+      endpoint?: string;
+      certHash?: string;
     }
   >();
   /**
@@ -317,6 +321,19 @@ export class SeedServer {
           });
           break;
         }
+        const existing = this.#peers.get(from);
+        if (
+          existing?.incarnation !== undefined &&
+          (msg.incarnation === undefined || msg.incarnation < existing.incarnation)
+        ) {
+          // A replacement process must present an incarnation at least as
+          // new as the member it replaces; anything older is a zombie.
+          this.#transport.send(from, {
+            t: 'JOIN_DENIED',
+            reason: 'stale incarnation',
+          });
+          break;
+        }
         if (msg.observer === true) {
           // Observers see the membership snapshot but never join it: no
           // registration, no PEER_UP broadcast, no heartbeat tracking.
@@ -327,13 +344,21 @@ export class SeedServer {
               ...Array.from(this.#peers.entries()).map(([nodeId, p]) => ({
                 nodeId,
                 load: p.load,
+                ...(p.incarnation !== undefined ? { incarnation: p.incarnation } : {}),
+                ...(p.endpoint !== undefined ? { endpoint: p.endpoint } : {}),
+                ...(p.certHash !== undefined ? { certHash: p.certHash } : {}),
               })),
             ],
             ...(this.#clusterId !== null ? { clusterId: this.#clusterId } : {}),
           });
           break;
         }
-        this.#peers.set(from, { load: msg.load });
+        this.#peers.set(from, {
+          load: msg.load,
+          ...(msg.incarnation !== undefined ? { incarnation: msg.incarnation } : {}),
+          ...(msg.endpoint !== undefined ? { endpoint: msg.endpoint } : {}),
+          ...(msg.certHash !== undefined ? { certHash: msg.certHash } : {}),
+        });
         this.#lastSeen.set(from, Date.now());
         // WELCOME: send current peer list to the new node
         this.#transport.send(from, {
@@ -343,6 +368,9 @@ export class SeedServer {
             ...Array.from(this.#peers.entries()).map(([nodeId, p]) => ({
               nodeId,
               load: p.load,
+              ...(p.incarnation !== undefined ? { incarnation: p.incarnation } : {}),
+              ...(p.endpoint !== undefined ? { endpoint: p.endpoint } : {}),
+              ...(p.certHash !== undefined ? { certHash: p.certHash } : {}),
             })),
           ],
           ...(this.#clusterId !== null ? { clusterId: this.#clusterId } : {}),
@@ -353,6 +381,9 @@ export class SeedServer {
           peer: {
             nodeId: from,
             load: msg.load,
+            ...(msg.incarnation !== undefined ? { incarnation: msg.incarnation } : {}),
+            ...(msg.endpoint !== undefined ? { endpoint: msg.endpoint } : {}),
+            ...(msg.certHash !== undefined ? { certHash: msg.certHash } : {}),
           },
         });
         break;
@@ -369,10 +400,18 @@ export class SeedServer {
         break;
       }
       case 'HEARTBEAT': {
+        const peer = this.#peers.get(from);
+        if (
+          peer?.incarnation !== undefined &&
+          msg.incarnation !== undefined &&
+          msg.incarnation < peer.incarnation
+        ) {
+          // A beat from a replaced process must not keep its ghost alive.
+          break;
+        }
         this.#lastSeen.set(from, Date.now());
         // Refresh the placement view: without this, load is only ever the
         // value advertised once at HELLO and target selection is arbitrary.
-        const peer = this.#peers.get(from);
         if (peer !== undefined && msg.load !== undefined) peer.load = msg.load;
         break;
       }

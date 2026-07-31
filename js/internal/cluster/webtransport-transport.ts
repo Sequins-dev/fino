@@ -200,6 +200,12 @@ export interface WebTransportWorkerConnectOptions {
    * cluster identity) but never registers the connection as a member.
    */
   observer?: boolean;
+  /** Process incarnation announced in HELLO; the seed fences older ones. */
+  incarnation?: number;
+  /** Directly dialable endpoint advertised for peer introductions. */
+  endpoint?: string;
+  /** Hex sha-256 of this node's own listener certificate. */
+  certHash?: string;
 }
 interface PeerConnection {
   wt: WebTransport;
@@ -704,6 +710,9 @@ export class WebTransportWorkerTransport implements ClusterTransport {
       load,
       ...(options.token !== undefined ? { token: options.token } : {}),
       ...(options.observer === true ? { observer: true } : {}),
+      ...(options.incarnation !== undefined ? { incarnation: options.incarnation } : {}),
+      ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
+      ...(options.certHash !== undefined ? { certHash: options.certHash } : {}),
     });
     closeWriter(writer);
     this.#control = null;

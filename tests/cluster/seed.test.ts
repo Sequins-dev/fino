@@ -1046,3 +1046,78 @@ describe('SeedServer — join authentication and observers', () => {
     );
   });
 });
+
+describe('SeedServer — incarnation fencing', () => {
+  afterEach(stopActiveSeed);
+  it('denies a HELLO with an older incarnation and admits a newer one', async (t) => {
+    const { transport } = await makeSeed('seed-node', { clusterId: 'c-fence' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      incarnation: 5,
+    });
+    t.equal(transport.sentOfType('WELCOME').length, 1, 'first incarnation admitted');
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      incarnation: 4,
+    });
+    t.equal(transport.sentOfType('JOIN_DENIED').length, 1, 'older incarnation denied');
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      incarnation: 6,
+    });
+    t.equal(transport.sentOfType('WELCOME').length, 2, 'newer incarnation replaces the member');
+  });
+  it('ignores heartbeats from a replaced incarnation', async (t) => {
+    const { transport } = await makeSeed('seed-node', { clusterId: 'c-fence' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0.1, memory: 1 },
+      incarnation: 2,
+    });
+    transport.inject('worker-1', {
+      t: 'HEARTBEAT',
+      ts: Date.now(),
+      load: { cpu: 0.9, memory: 9 },
+      incarnation: 1,
+    });
+    transport.sent.length = 0;
+    transport.inject('watcher', {
+      t: 'HELLO',
+      nodeId: 'watcher',
+      load: { cpu: 0, memory: 0 },
+      observer: true,
+    });
+    const snapshot = transport.sentOfType('WELCOME')[0]!;
+    const member = snapshot.peers.find((p) => p.nodeId === 'worker-1')!;
+    t.equal(member.load.cpu, 0.1, 'a stale-incarnation heartbeat cannot update the load view');
+    t.equal(member.incarnation, 2, 'the membership record keeps the live incarnation');
+  });
+  it('advertises peer endpoints and certificate hashes for introductions', async (t) => {
+    const hash = 'ab'.repeat(32);
+    const { transport } = await makeSeed('seed-node', { clusterId: 'c-intro' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      endpoint: 'https://10.0.0.7:4433/__fino_cluster',
+      certHash: hash,
+    });
+    transport.sent.length = 0;
+    transport.inject('worker-2', {
+      t: 'HELLO',
+      nodeId: 'worker-2',
+      load: { cpu: 0, memory: 0 },
+    });
+    const welcome = transport.sentOfType('WELCOME')[0]!;
+    const introduced = welcome.peers.find((p) => p.nodeId === 'worker-1')!;
+    t.equal(introduced.endpoint, 'https://10.0.0.7:4433/__fino_cluster', 'endpoint introduced');
+    t.equal(introduced.certHash, hash, 'certificate hash introduced');
+  });
+});

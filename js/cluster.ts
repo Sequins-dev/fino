@@ -131,6 +131,33 @@ async function certificateSha256Hex(certPath: string): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Read and bump the persisted process incarnation under `stateDir`, or derive
+ * one from the clock when no state directory is configured. Wall-clock
+ * incarnations are monotonic enough across restarts for fencing; persistence
+ * makes them robust to clock skew.
+ */
+async function nextIncarnation(stateDir: string | undefined): Promise<number> {
+  if (stateDir === undefined) return Date.now();
+  const fs = new DiskFileSystem();
+  const path = `${stateDir}/incarnation`;
+  let previous = 0;
+  try {
+    previous = Number(new TextDecoder().decode(await fs.readFile(path)));
+    if (!Number.isFinite(previous) || previous < 0) previous = 0;
+  } catch {
+    // First run: no incarnation file yet.
+  }
+  const next = previous + 1;
+  try {
+    await fs.mkdir(stateDir);
+  } catch {
+    // Directory may already exist.
+  }
+  await fs.writeFile(path, new TextEncoder().encode(String(next)));
+  return next;
+}
+
 function hexToBytes(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
@@ -229,6 +256,12 @@ export interface StartClusterOptions {
    */
   clusterId?: string;
   /**
+   * Directory for durable node state (currently the process incarnation).
+   * Without it, incarnations derive from the wall clock — good enough for
+   * fencing, but persistence is robust to clock skew.
+   */
+  stateDir?: string;
+  /**
    * HTTP/3 listener configuration forwarded to the underlying server.
    *
    * HTTP/3 is always enabled — the cluster transport requires it — so the
@@ -265,6 +298,11 @@ export interface JoinClusterOptions {
    * Usually supplied via `joinString`.
    */
   token?: string;
+  /**
+   * Directory for durable node state (currently the process incarnation).
+   * Without it, incarnations derive from the wall clock.
+   */
+  stateDir?: string;
   /**
    * HTTPS WebTransport URL of the seed node.
    *
@@ -380,25 +418,36 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   });
   const clusterId = opts.clusterId ?? `c-${randomHandle(8)}`;
   const joinToken = opts.joinToken;
+  const certHash = await certificateSha256Hex(opts.tls.cert);
+  const incarnation = await nextIncarnation(opts.stateDir);
+  const advertisedHost = clusterAdvertisedHost(opts.hostname);
+  const advertisedEndpoint = `https://${advertisedHost}:${opts.port}${path}`;
   _seed = new SeedServer(seedTransport, {
     ...(joinToken !== undefined ? { joinToken } : {}),
     clusterId,
   });
   await _seed.start();
   // Also join as a worker (connect to self) - seeds participate as workers.
+  // The self-join pins the seed's own certificate hash rather than disabling
+  // verification, and advertises the externally dialable endpoint so peers
+  // can be introduced to the seed's listener directly.
   const workerTransport = new WebTransportWorkerTransport(nodeId);
   const selfJoinHost = clusterSelfJoinHost(opts.hostname);
   await workerTransport.connect(`https://${selfJoinHost}:${opts.port}${path}`, sampleNodeLoad(), {
-    tls: { rejectUnauthorized: false },
+    serverCertificateHashes: [{ algorithm: 'sha-256', value: hexToBytes(certHash) }],
     ...(joinToken !== undefined ? { token: joinToken } : {}),
+    incarnation,
+    endpoint: advertisedEndpoint,
+    certHash,
   });
-  _client = new ClusterClient(workerTransport, nodeId, { loadSampler: startNodeAgent() });
+  _client = new ClusterClient(workerTransport, nodeId, {
+    loadSampler: startNodeAgent(),
+    incarnation,
+  });
   _client.start();
   await _client.ready();
-  const advertisedHost = clusterAdvertisedHost(opts.hostname);
-  const certHash = await certificateSha256Hex(opts.tls.cert);
   _joinString = mintJoinString({
-    seed: `https://${advertisedHost}:${opts.port}${path}`,
+    seed: advertisedEndpoint,
     clusterId,
     ...(joinToken !== undefined ? { token: joinToken } : {}),
     certHashes: [certHash],
@@ -456,16 +505,21 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     joinInfo !== null && joinInfo.certHashes.length > 0
       ? joinInfo.certHashes.map((hex) => ({ algorithm: 'sha-256', value: hexToBytes(hex) }))
       : undefined;
+  const incarnation = await nextIncarnation(opts.stateDir);
   const transport = new WebTransportWorkerTransport(nodeId);
   const connectOptions: WebTransportWorkerConnectOptions = {
     tls: opts.tls,
     quic: opts.quic,
     serverCertificateHashes: opts.serverCertificateHashes ?? pinnedHashes,
-    ...(joinInfo !== null ? { token: joinInfo.token } : {}),
+    ...(joinInfo !== null && joinInfo.token !== undefined ? { token: joinInfo.token } : {}),
     ...(opts.token !== undefined ? { token: opts.token } : {}),
+    incarnation,
   };
   await transport.connect(seed, sampleNodeLoad(), connectOptions);
-  _client = new ClusterClient(transport, nodeId, { loadSampler: startNodeAgent() });
+  _client = new ClusterClient(transport, nodeId, {
+    loadSampler: startNodeAgent(),
+    incarnation,
+  });
   _client.start();
   try {
     await _client.ready();
