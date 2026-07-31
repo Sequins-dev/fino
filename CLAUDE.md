@@ -49,7 +49,8 @@ Tests emit TAP output. Use exit code: `0` = all pass, `1` = failures.
 | `ffi/` | `fino:ffi` synthetic module — `dlopen` + `Pointer` |
 | `platform.rs` | `internal:process` synthetic module |
 | `async_context.rs` | `internal:async-context` — `scheduleSync`, `runLoop`, `drainMicrotasks`, CPED helpers |
-| `realm/` | Child realm creation (embedded, thread, process), Facade/RPC machinery |
+| `scheduler_native.rs` | `internal:scheduler-native` — movable isolates, the reactor thread pool, and the process readiness mailbox |
+| `realm/` | Realm transports (ports, transit channels, broadcast), process-sandbox realms, Facade/RPC machinery |
 
 **Only add Rust modules when you need V8 API access or compile-time information.** Standard library logic belongs in JS.
 
@@ -101,7 +102,7 @@ await lib.symbols.usleep(1000);          // → Promise (async)
 
 ### Realm / Facade system
 
-Child realms run JS in isolation. They can be embedded (same V8 isolate), thread (own isolate, own thread), or process (own process). The Facade mechanism lets a parent expose a scoped API to a child:
+Child realms run JS in isolation. Every realm is its own V8 isolate. By default a realm is *scheduled*: the isolate is movable and runs on the process-wide reactor thread pool. `process: true` runs it in a separate OS process and `remote: true` runs it on another node in a `fino:cluster`. The Facade mechanism lets a parent expose a scoped API to a child:
 
 ```ts
 import { Realm, ImportMap } from 'fino:realm';
@@ -110,7 +111,6 @@ const facade = new Facade('fino:myapi', ['doThing'])
   .handle('doThing', async (x) => x * 2);
 
 const realm = new Realm({
-  thread: true,
   overrides: ImportMap.deny([
     { pattern: 'fino:myapi', directive: facade.toDirective() },
   ]),

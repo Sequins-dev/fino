@@ -101,7 +101,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/modify-test.txt';
     await writeText(fs, path, 'initial');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     // Write to the file to trigger an event
     await writeText(fs, path, 'modified');
     const events = await collectEvents(watcher, 1);
@@ -115,7 +115,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/delete-test.txt';
     await writeText(fs, path, 'hello');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     await fs.unlink(path);
     const event = await waitForEvent(watcher, (event) => event.type === 'delete');
     watcher.close();
@@ -125,7 +125,7 @@ describe('Watcher', () => {
     const dir = TEST_DIR + '/dir-watch';
     await fs.mkdir(dir);
     const watcher = new Watcher();
-    watcher.watch(dir);
+    await watcher.watch(dir);
     // Create a file in the watched directory
     const newFile = dir + '/newfile.txt';
     await writeText(fs, newFile, 'content');
@@ -145,7 +145,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/close-test.txt';
     await writeText(fs, path, 'x');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     watcher.close();
     const iter = watcher[Symbol.asyncIterator]();
     const result = await iter.next();
@@ -169,8 +169,8 @@ describe('Watcher', () => {
     await writeText(fs, file1, 'a');
     await writeText(fs, file2, 'b');
     const watcher = new Watcher();
-    watcher.watch(file1);
-    watcher.watch(file2);
+    await watcher.watch(file1);
+    await watcher.watch(file2);
     await writeText(fs, file1, 'aa');
     const events = await collectEvents(watcher, 1);
     watcher.close();
@@ -192,7 +192,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/post-close-test.txt';
     await writeText(fs, path, 'initial');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     watcher.close();
     // Modify the file after the watcher was closed — should not receive events
     await writeText(fs, path, 'modified after close');
@@ -207,7 +207,7 @@ describe('Watcher', () => {
     await fs.mkdir(dir);
     await fs.mkdir(sub);
     const watcher = new Watcher({ recursive: true });
-    watcher.watch(dir);
+    await watcher.watch(dir);
     // Give watcher time to set up recursive watches
     await delay(50);
     // Write to a file in the subdirectory
@@ -226,7 +226,7 @@ describe('Watcher', () => {
     const renamed = TEST_DIR + '/rename-delete-target.txt';
     await writeText(fs, path, 'hello');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     await fs.rename(path, renamed);
     await fs.unlink(renamed);
     const events = await collectEvents(watcher, 2);
@@ -247,7 +247,7 @@ describe('Watcher', () => {
     const file = sub + '/later.txt';
     await fs.mkdir(dir);
     const watcher = new Watcher({ recursive: true });
-    watcher.watch(dir);
+    await watcher.watch(dir);
     await fs.mkdir(sub);
     await delay(100);
     await writeText(fs, file, 'later');
@@ -266,7 +266,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/pending-close.txt';
     await writeText(fs, path, 'x');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     const iter = watcher[Symbol.asyncIterator]();
     const pending = iter.next();
     watcher.close();
@@ -278,8 +278,8 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/duplicate-watch.txt';
     await writeText(fs, path, 'initial');
     const watcher = new Watcher();
-    watcher.watch(path);
-    watcher.watch(path);
+    await watcher.watch(path);
+    await watcher.watch(path);
     await writeText(fs, path, 'changed');
     const events = await collectEvents(watcher, 2, 250);
     watcher.close();
@@ -295,7 +295,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/burst.txt';
     await writeText(fs, path, '0');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     for (let i = 1; i <= 8; i++) {
       await writeText(fs, path, String(i));
     }
@@ -321,7 +321,7 @@ describe('Watcher', () => {
       encoding: 'buffer',
       signal: AbortSignal.abort(),
     } as any);
-    watcher.watch(path);
+    await watcher.watch(path);
     const pending = watcher[Symbol.asyncIterator]().next();
     watcher.close();
     const result = await pending;

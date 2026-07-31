@@ -18,9 +18,7 @@
  * port?.start();
  * ```
  */
-import { getPort } from 'internal:realm-bridge';
 import { usesProcessReadiness } from 'internal:scheduler-native';
-import type { MessagePort } from '../globals/messaging.ts';
 import type { ThreadPort } from '../internal/realm/transport-port.ts';
 /**
  * Message port passed to this child realm, or `undefined` when none exists.
@@ -37,12 +35,10 @@ import type { ThreadPort } from '../internal/realm/transport-port.ts';
  * port?.start();
  * ```
  */
-export const port =
-  (getPort() as MessagePort | undefined) ??
-  (usesProcessReadiness()
-    ? (
-        globalThis as {
-          realmPort?: ThreadPort;
-        }
-      ).realmPort
-    : undefined);
+export const port = usesProcessReadiness()
+  ? (
+      globalThis as {
+        realmPort?: ThreadPort;
+      }
+    ).realmPort
+  : undefined;

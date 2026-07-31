@@ -63,6 +63,12 @@ import {
 } from './protocol.ts';
 import { serialize, deserialize } from 'internal:serializer';
 import {
+  decodeEnvelope,
+  encodeEnvelope,
+  EnvelopeKind,
+  messageEnvelope,
+} from 'internal:realm/envelope';
+import {
   closeScheduledRealm,
   createScheduledRealm,
   registerReactorWake,
@@ -399,7 +405,7 @@ export class ClusterClient {
       this.#heartbeatTimer = null;
     }
     for (const relay of this.#relays.values()) {
-      if (!relay.closed) this.#sendToRealm(relay.realmHandle, { __terminate: true });
+      if (!relay.closed) this.#sendToRealm(relay.realmHandle, EnvelopeKind.Terminate, null);
       relay.cancel?.();
     }
     this.#relays.clear();
@@ -487,7 +493,7 @@ export class ClusterClient {
       case 'TERMINATE': {
         const relay = this.#relays.get(msg.realmId);
         if (relay && !relay.closed) {
-          this.#sendToRealm(relay.realmHandle, { __terminate: true });
+          this.#sendToRealm(relay.realmHandle, EnvelopeKind.Terminate, null);
           break;
         }
         const handler = this.#exitHandlers.get(msg.realmId);
@@ -560,14 +566,9 @@ export class ClusterClient {
     const relay = this.#relays.get(msg.toPort);
     if (!relay || relay.closed) return;
     try {
-      const parts = msg.payload;
-      const [mainBuf, ...stores] = parts;
+      const [header, mainBuf, ...stores] = msg.payload;
       if (mainBuf) {
-        const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
-          mainBuf,
-          stores.length > 0 ? stores : undefined,
-        );
-        this.#sendToRealm(relay.realmHandle, value);
+        scheduledRealmSend(relay.realmHandle, header ?? new Uint8Array(), mainBuf, stores, []);
       }
     } catch (err: unknown) {
       console.error(`fino:cluster PORT_MSG decode error (relay): ${err}`);
@@ -722,42 +723,35 @@ export class ClusterClient {
    */
   #drainInbound(relay: RealmRelay, finalize: () => void): void {
     const messages = scheduledRealmRecv(relay.realmHandle);
-    for (const [byteArr] of messages) {
+    for (const [byteArr, , header] of messages) {
       try {
         const parts = byteArr as Uint8Array[];
         const mainBuf = parts[0];
         if (!mainBuf) continue;
-        // Quick peek to detect __terminate without a full deserialize+reserialize cycle.
-        let isTerminate = false;
-        try {
-          const peeked = (deserialize as (b: Uint8Array) => unknown)(mainBuf);
-          isTerminate =
-            peeked !== null && typeof peeked === 'object' && (peeked as any).__terminate === true;
-          if (
-            peeked !== null &&
-            typeof peeked === 'object' &&
-            (peeked as any).__call_error === true
-          ) {
-            relay.lastCallError = String(
-              (
-                peeked as {
-                  message?: unknown;
-                }
-              ).message ?? 'Realm call failed',
-            );
-          }
-        } catch {}
-        if (isTerminate) {
+        // The envelope is readable on its own, so classifying a frame no longer
+        // costs a deserialize of the payload it describes.
+        const envelope = decodeEnvelope(header);
+        if (envelope.kind === EnvelopeKind.Terminate) {
           finalize();
           return;
         }
-        // Forward raw serialized bytes (preserves stores for ArrayBuffer transfers).
+        if (envelope.kind === EnvelopeKind.CallError) {
+          try {
+            const failure = (deserialize as (b: Uint8Array) => unknown)(mainBuf) as {
+              message?: unknown;
+            };
+            relay.lastCallError = String(failure?.message ?? 'Realm call failed');
+          } catch {}
+        }
+        // Forward the raw serialized bytes (preserving stores for ArrayBuffer
+        // transfers) behind the envelope header, so the receiving node can
+        // classify the frame without decoding the payload either.
         const seq = ++relay.lastPortSeq;
         const sent = this.#transport.send('__seed__', {
           t: 'PORT_MSG',
           fromPort: relay.childPortId,
           toPort: relay.parentPortId,
-          payload: parts,
+          payload: [header ?? encodeEnvelope(messageEnvelope()), ...parts],
           seq,
         });
         if (sent instanceof Promise) relay.pendingSends.push(sent);
@@ -775,9 +769,9 @@ export class ClusterClient {
    *
    * @internal
    */
-  #sendToRealm(handle: number, value: unknown): void {
+  #sendToRealm(handle: number, kind: number, value: unknown): void {
     const bytes = (serialize as (v: unknown) => Uint8Array[])(value)[0]!;
-    scheduledRealmSend(handle, bytes, [], []);
+    scheduledRealmSend(handle, encodeEnvelope({ kind: kind as 0, correlation: 0 }), bytes, [], []);
   }
 }
 // ---------------------------------------------------------------------------
@@ -896,15 +890,29 @@ export class ClusterPort extends BaseTransportPort {
    * port.postMessage({ ok: true });
    * ```
    */
-  postMessage(message: unknown, transfer?: ArrayBuffer[]): void {
-    if (this._closed) return;
-    if (transfer !== undefined && !transfer.every((item) => item instanceof ArrayBuffer)) {
-      throw new TypeError('ClusterPort transfer list only supports ArrayBuffer values');
-    }
-    const parts = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
-      message,
-      transfer && transfer.length > 0 ? transfer : undefined,
-    );
+  /**
+   * A cluster hop leaves the process, so a transit channel cannot follow it.
+   *
+   * @internal
+   */
+  protected override _supportsPortTransfer(): boolean {
+    return false;
+  }
+  /**
+   * Queue or send encoded bytes as a `PORT_MSG`.
+   *
+   * The envelope header leads the payload so the receiving node can classify
+   * the frame without decoding it.
+   *
+   * @internal
+   */
+  protected override _send(
+    header: Uint8Array,
+    data: Uint8Array,
+    stores: Uint8Array[],
+    _ports: [number, number][],
+  ): void {
+    const parts = [header, data, ...stores];
     if (this.#childPortId === null) {
       this.#preSpawnQueue.push(parts);
       return;
@@ -945,8 +953,8 @@ export class ClusterPort extends BaseTransportPort {
    * @internal
    */
   _deliver(parts: Uint8Array[]): void {
-    const [mainBuf, ...stores] = parts;
+    const [header, mainBuf, ...stores] = parts;
     if (!mainBuf) return;
-    this._dispatchMessage(mainBuf, stores.length > 0 ? stores : undefined);
+    this._dispatchMessage(mainBuf, stores.length > 0 ? stores : undefined, [], header);
   }
 }

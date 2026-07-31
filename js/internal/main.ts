@@ -12,7 +12,7 @@
 import { exit } from '../process.ts';
 import { driveLoop } from 'internal:bootstrap';
 import { processReadinessControlFd } from 'internal:scheduler-native';
-import { runPooledResidentReadinessWorkloadsAsync } from 'internal:scheduler/readiness';
+import { runReactorPool } from 'internal:scheduler/readiness';
 import {
   installProcessReadinessController,
   ProcessReadinessController,
@@ -23,9 +23,7 @@ let caughtError: unknown;
 const readiness = new ProcessReadinessController(processReadinessControlFd());
 installProcessReadinessController(readiness);
 readiness.start();
-const command = runPooledResidentReadinessWorkloadsAsync<null>('internal:scheduler/bootstrap', [
-  null,
-]).then(() => null);
+const command = runReactorPool('internal:scheduler/bootstrap');
 void command.then(
   function onCommandDone() {
     readiness.stop();

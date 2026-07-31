@@ -750,9 +750,26 @@ const SIG_DFL = 0;
  * kqueue.addSignal(loop, 15);
  * ```
  */
+/**
+ * Suppress `signo`'s default disposition without registering a watch.
+ *
+ * The disposition is process-wide and needs no event loop, so a realm that
+ * delegates readiness can call this itself. That matters because the kqueue
+ * filter is armed asynchronously by the main realm: without suppressing the
+ * default action first, a signal delivered in the meantime would terminate the
+ * process instead of being ignored until the watch exists.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.suppressSignalDefault(15);
+ * ```
+ */
+export function suppressSignalDefault(signo: number): void {
+  lib.symbols.signal(signo, SIG_IGN);
+}
 export function addSignal(loop: KqueueLoop, signo: number, userData: number = signo): void {
   // Suppress default disposition so the process is not killed.
-  lib.symbols.signal(signo, SIG_IGN);
+  suppressSignalDefault(signo);
   writeKevent(_changeView, 0, signo, EVFILT_SIGNAL, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, userData);
   registerChanges(loop.fd, _changeBuf, 1);
 }

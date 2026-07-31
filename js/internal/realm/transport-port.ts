@@ -11,6 +11,13 @@
 import { EventTarget, _markEventTrusted } from '../../globals/eventtarget.ts';
 import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
+import {
+  decodeEnvelope,
+  encodeEnvelope,
+  EnvelopeKind,
+  messageEnvelope,
+  type Envelope,
+} from 'internal:realm/envelope';
 import { nativeSend, nativeRecv } from 'internal:thread-port';
 import { sandboxPortSend, sandboxPortRecv } from 'internal:realm-native';
 import { scheduledRealmRecv, scheduledRealmSend } from 'internal:scheduler-native';
@@ -50,6 +57,12 @@ export abstract class BaseTransportPort extends EventTarget {
    */
   #onmessage: ((ev: Event) => void) | null = null;
   /**
+   * Handlers for runtime protocol frames.
+   *
+   * @internal
+   */
+  #controlHandlers = new Set<(envelope: Envelope, value: unknown) => boolean>();
+  /**
    * Start delivery for this transport-backed port.
    *
    * Repeated calls and calls after close() are ignored. Subclasses are notified
@@ -87,8 +100,109 @@ export abstract class BaseTransportPort extends EventTarget {
    */
   protected _onClose(): void {}
   /**
-   * Deserialize `buf`+`stores`, intercept internal RPC envelopes, and dispatch
-   * a MessageEvent. Subclasses call this from their per-message drain loop.
+   * Hand an encoded message to the concrete transport.
+   *
+   * @internal
+   */
+  protected abstract _send(
+    header: Uint8Array,
+    data: Uint8Array,
+    stores: Uint8Array[],
+    ports: [number, number][],
+  ): void;
+  /**
+   * Whether this transport can move a live `MessagePort` to the far side.
+   *
+   * A transit channel is a pair of descriptors in one process, so only
+   * transports that stay inside it can carry one. Declaring this up front means
+   * the port is rejected before a channel is created for it, rather than after.
+   *
+   * @internal
+   */
+  protected _supportsPortTransfer(): boolean {
+    return true;
+  }
+  /**
+   * Serialize `message` and send it under `envelope`.
+   *
+   * Every transport shares this: the structured clone, the transfer-list rules,
+   * and the envelope header are identical regardless of which channel carries
+   * the bytes, so only `_send` differs between port types.
+   *
+   * @internal
+   */
+  protected _postEnvelope(
+    envelope: Envelope,
+    message: unknown,
+    transferOrOpts?: Transferable[] | StructuredSerializeOptions,
+  ): void {
+    if (this._closed) return;
+    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
+      ? (transferOrOpts as Transferable[])
+      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
+    const transferABs: ArrayBuffer[] = [];
+    const portInfos: [number, number][] = [];
+    for (const item of rawTransfer ?? []) {
+      if (item instanceof ArrayBuffer) {
+        transferABs.push(item);
+      } else if (item instanceof MessagePort) {
+        if (!this._supportsPortTransfer()) {
+          throw new TypeError(
+            `${this.constructor.name} transfer list only supports ArrayBuffer values`,
+          );
+        }
+        const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (
+          createTransitChannel as () => {
+            p2Handle: number;
+            p2WakeReadFd: number;
+            qHandle: number;
+            qWakeReadFd: number;
+          }
+        )();
+        item._transferCrossThread(p2Handle, p2WakeReadFd);
+        portInfos.push([qHandle, qWakeReadFd]);
+      } else {
+        throw new TypeError(
+          `${this.constructor.name} transfer list only supports ArrayBuffer and MessagePort values`,
+        );
+      }
+    }
+    const parts = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+      message,
+      transferABs.length > 0 ? transferABs : undefined,
+    );
+    const [data, ...stores] = parts;
+    this._send(encodeEnvelope(envelope), data!, stores, portInfos);
+  }
+  /**
+   * Send runtime control traffic — a call, a result, a termination request, or
+   * an RPC frame — rather than application data.
+   *
+   * The kind travels in the header, never in the payload, so a realm cannot
+   * fabricate one by posting a plain object with the right property on it.
+   *
+   * @internal
+   */
+  _postControl(
+    kind: Envelope['kind'],
+    correlation: number,
+    message: unknown,
+    transfer?: Transferable[],
+  ): void {
+    this._postEnvelope({ kind, correlation }, message, transfer);
+  }
+  /**
+   * Send an application message.
+   */
+  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
+    this._postEnvelope(messageEnvelope(), message, transferOrOpts);
+  }
+  /**
+   * Decode one incoming message and route it by envelope kind.
+   *
+   * RPC frames are settled against the pending-request registry and never
+   * surface as events; everything else is dispatched to listeners. Subclasses
+   * call this from their per-message drain loop.
    *
    * @internal
    */
@@ -96,8 +210,10 @@ export abstract class BaseTransportPort extends EventTarget {
     buf: Uint8Array,
     stores?: Uint8Array[],
     ports: MessagePort[] = [],
+    header?: Uint8Array,
   ): void {
     if (!this._started) return;
+    const envelope = decodeEnvelope(header);
     let value: unknown;
     try {
       value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
@@ -110,47 +226,38 @@ export abstract class BaseTransportPort extends EventTarget {
       this.dispatchEvent(event);
       return;
     }
-    if (value !== null && typeof value === 'object') {
-      const obj = value as Record<string, unknown>;
-      if (obj['__rpc_res'] === true) {
-        const rpc = obj as {
-          reqId: number;
-          result?: unknown;
-          error?: string;
-        };
-        if (rpc.error !== undefined) {
-          if (!rejectRpc(rpc.reqId, rpc.error)) errStream(rpc.reqId, rpc.error);
+    switch (envelope.kind) {
+      case EnvelopeKind.RpcResponse: {
+        const response = value as { result?: unknown; error?: string };
+        if (response?.error !== undefined) {
+          if (!rejectRpc(envelope.correlation, response.error)) {
+            errStream(envelope.correlation, response.error);
+          }
         } else {
-          resolveRpc(rpc.reqId, rpc.result);
+          resolveRpc(envelope.correlation, response?.result);
         }
         return;
       }
-      if (obj['__rpc_chunk'] === true) {
-        const m = obj as {
-          reqId: number;
-          chunk: unknown;
-        };
-        pushChunk(m.reqId, m.chunk);
+      case EnvelopeKind.RpcChunk:
+        pushChunk(envelope.correlation, value);
         return;
-      }
-      if (obj['__rpc_end'] === true) {
-        endStream(
-          (
-            obj as {
-              reqId: number;
-            }
-          ).reqId,
-        );
+      case EnvelopeKind.RpcEnd:
+        endStream(envelope.correlation);
         return;
-      }
-      if (obj['__rpc_err'] === true) {
-        const m = obj as {
-          reqId: number;
-          error: string;
-        };
-        errStream(m.reqId, m.error);
+      case EnvelopeKind.RpcError:
+        errStream(envelope.correlation, String((value as { error?: unknown })?.error ?? value));
         return;
+      default:
+        break;
+    }
+    if (envelope.kind !== EnvelopeKind.Message) {
+      for (const handler of this.#controlHandlers) {
+        if (handler(envelope, value)) return;
       }
+      // Unclaimed runtime protocol is dropped rather than surfaced. Delivering
+      // it as a message would let application listeners see frames they have no
+      // business seeing, and would resurrect the payload sniffing this replaced.
+      return;
     }
     const event = new MessageEvent('message', {
       data: value,
@@ -158,6 +265,22 @@ export abstract class BaseTransportPort extends EventTarget {
     });
     _markEventTrusted(event);
     this.dispatchEvent(event);
+  }
+  /**
+   * Register a handler for runtime protocol frames on this port.
+   *
+   * The handler returns true once it has claimed the frame. Control traffic is
+   * routed only to these handlers and never reaches `message` listeners, so
+   * application code cannot observe — or be confused by — the runtime's own
+   * protocol, and cannot forge it either.
+   *
+   * @internal
+   */
+  _addControlHandler(handler: (envelope: Envelope, value: unknown) => boolean): () => void {
+    this.#controlHandlers.add(handler);
+    return () => {
+      this.#controlHandlers.delete(handler);
+    };
   }
   /**
    * Message handler property for transport-backed ports.
@@ -183,12 +306,12 @@ export abstract class BaseTransportPort extends EventTarget {
 /**
  * Drain one batch of messages from a thread-port receive queue.
  */
-function _recvThreadMessages(handle?: number): [Uint8Array[], [number, number][]][] {
+function _recvThreadMessages(handle?: number): [Uint8Array[], [number, number][], Uint8Array?][] {
   const raw =
     handle === undefined
       ? (nativeRecv as () => unknown)()
       : (sandboxPortRecv as (handle: number) => unknown)(handle);
-  return raw as [Uint8Array[], [number, number][]][];
+  return raw as [Uint8Array[], [number, number][], Uint8Array?][];
 }
 
 /**
@@ -228,59 +351,34 @@ export class ThreadPort extends BaseTransportPort {
     this.#handle = handle;
   }
   /**
-   * Serialize and send a message to the opposite thread endpoint.
+   * Hand encoded bytes to the cross-isolate channel.
+   *
+   * @internal
    */
-  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this._closed) return;
-    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
-      ? (transferOrOpts as Transferable[])
-      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const transferABs: ArrayBuffer[] = [];
-    const portInfos: [number, number][] = [];
-    if (rawTransfer) {
-      for (const item of rawTransfer) {
-        if (item instanceof ArrayBuffer) {
-          transferABs.push(item);
-        } else if (item instanceof MessagePort) {
-          const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (
-            createTransitChannel as () => {
-              p2Handle: number;
-              p2WakeReadFd: number;
-              qHandle: number;
-              qWakeReadFd: number;
-            }
-          )();
-          item._transferCrossThread(p2Handle, p2WakeReadFd);
-          portInfos.push([qHandle, qWakeReadFd]);
-        } else {
-          throw new TypeError(
-            'ThreadPort transfer list only supports ArrayBuffer and MessagePort values',
-          );
-        }
-      }
-    }
-    const serResult = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
-      message,
-      transferABs.length > 0 ? transferABs : undefined,
-    );
-    const data = serResult[0];
-    const stores = serResult.length > 1 ? serResult.slice(1) : ([] as Uint8Array[]);
+  protected override _send(
+    header: Uint8Array,
+    data: Uint8Array,
+    stores: Uint8Array[],
+    ports: [number, number][],
+  ): void {
     if (this.#handle === undefined) {
-      (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
+      (nativeSend as (h: Uint8Array, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
+        header,
         data,
         stores,
-        portInfos,
+        ports,
       );
-    } else {
-      (
-        sandboxPortSend as (
-          handle: number,
-          b: Uint8Array,
-          s: Uint8Array[],
-          p: [number, number][],
-        ) => void
-      )(this.#handle, data, stores, portInfos);
+      return;
     }
+    (
+      sandboxPortSend as (
+        handle: number,
+        h: Uint8Array,
+        b: Uint8Array,
+        s: Uint8Array[],
+        p: [number, number][],
+      ) => void
+    )(this.#handle, header, data, stores, ports);
   }
   /**
    * Start watching the wake fd for incoming messages.
@@ -331,14 +429,11 @@ export class ThreadPort extends BaseTransportPort {
    * @internal
    */
   _drain(): void {
-    const messages = _recvThreadMessages(this.#handle);
-    for (const [byteArr, portArr] of messages as any[]) {
-      const [buf, ...stores] = byteArr as Uint8Array[];
+    for (const [byteArr, portArr, header] of _recvThreadMessages(this.#handle)) {
+      const [buf, ...stores] = byteArr;
       if (!buf) continue;
-      const ports = (portArr as [number, number][]).map(([h, wfd]) =>
-        MessagePort._fromTransit(h, wfd),
-      );
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
+      const ports = portArr.map(([handle, wakeFd]) => MessagePort._fromTransit(handle, wakeFd));
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports, header);
     }
   }
 }
@@ -359,38 +454,18 @@ export class ScheduledPort extends BaseTransportPort {
     this.#handle = handle;
   }
 
-  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this._closed) return;
-    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
-      ? (transferOrOpts as Transferable[])
-      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const transferABs: ArrayBuffer[] = [];
-    const portInfos: [number, number][] = [];
-    for (const item of rawTransfer ?? []) {
-      if (item instanceof ArrayBuffer) {
-        transferABs.push(item);
-      } else if (item instanceof MessagePort) {
-        const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (
-          createTransitChannel as () => {
-            p2Handle: number;
-            p2WakeReadFd: number;
-            qHandle: number;
-            qWakeReadFd: number;
-          }
-        )();
-        item._transferCrossThread(p2Handle, p2WakeReadFd);
-        portInfos.push([qHandle, qWakeReadFd]);
-      } else {
-        throw new TypeError(
-          'ScheduledPort transfer list only supports ArrayBuffer and MessagePort values',
-        );
-      }
-    }
-    const [data, ...stores] = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
-      message,
-      transferABs.length > 0 ? transferABs : undefined,
-    );
-    scheduledRealmSend(this.#handle, data!, stores, portInfos);
+  /**
+   * Hand encoded bytes to the reactor-pooled realm's channel.
+   *
+   * @internal
+   */
+  protected override _send(
+    header: Uint8Array,
+    data: Uint8Array,
+    stores: Uint8Array[],
+    ports: [number, number][],
+  ): void {
+    scheduledRealmSend(this.#handle, header, data, stores, ports);
   }
 
   protected override _onStart(): void {
@@ -429,11 +504,11 @@ export class ScheduledPort extends BaseTransportPort {
    * @internal
    */
   _drain(): void {
-    for (const [byteArr, portArr] of scheduledRealmRecv(this.#handle)) {
+    for (const [byteArr, portArr, header] of scheduledRealmRecv(this.#handle)) {
       const [buf, ...stores] = byteArr;
       if (!buf) continue;
       const ports = portArr.map(([handle, wakeFd]) => MessagePort._fromTransit(handle, wakeFd));
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports, header);
     }
   }
 }

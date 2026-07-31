@@ -38,9 +38,6 @@
  * ```
  */
 import {
-  createContext,
-  stepContext,
-  terminateChild,
   createSandboxContext,
   stepSandboxContext,
   forceSandboxContext,
@@ -54,7 +51,7 @@ import {
 } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { os } from 'internal:process';
-import { MessagePort, MessageChannel, type MessageEvent } from '../globals/messaging.ts';
+import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
 import { ThreadPort, ScheduledPort, BaseTransportPort } from 'internal:realm/transport-port';
 import type {
   ProcessSandboxNetworkRule,
@@ -69,7 +66,8 @@ import {
   takeScheduledRealmStatus,
   usesProcessReadiness,
 } from 'internal:scheduler-native';
-import { serialize as _ser } from 'internal:serializer';
+import { serialize } from 'internal:serializer';
+import { EnvelopeKind } from 'internal:realm/envelope';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
@@ -797,27 +795,38 @@ function _getOrCreateHandleRegistry(
   _portHandleRegistries.set(key, reg);
   const registry = reg;
   const wsSources = _getOrCreateWriteSourceRegistry(port);
-  // One shared dispatcher per port handles all handle method calls.
-  port.addEventListener('message', function _handleDispatcher(ev: Event) {
-    const msg = (ev as MessageEvent).data;
-    if (!msg || typeof msg !== 'object') return;
-    const obj = msg as Record<string, unknown>;
-    // Write-stream envelopes for handle sink methods
-    if (obj['__rpc_send_start'] === true) {
-      const entry = registry.get((obj['specifier'] as string) ?? '');
-      if (!entry) return;
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      const method = (obj['method'] as string) ?? '';
-      const reqId = (obj['reqId'] as number) ?? 0;
-      const args = (obj['args'] as unknown[]) ?? [];
+  const control = port as unknown as {
+    _addControlHandler?(
+      handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
+    ): () => void;
+    _postControl?(kind: number, correlation: number, message: unknown): void;
+  };
+  const reply = (kind: number, correlation: number, message: unknown): void => {
+    control._postControl?.(kind, correlation, message);
+  };
+  const fail = (correlation: number, error: unknown): void => {
+    reply(EnvelopeKind.RpcResponse, correlation, { error: String(error) });
+  };
+  // One shared dispatcher per port serves every handle method call.
+  control._addControlHandler?.((envelope, value) => {
+    const reqId = envelope.correlation;
+    const body = (value ?? {}) as {
+      specifier?: string;
+      method?: string;
+      args?: unknown[];
+    };
+    const isRequest =
+      envelope.kind === EnvelopeKind.RpcRequest || envelope.kind === EnvelopeKind.SinkStart;
+    if (!isRequest) return false;
+    const entry = registry.get(body.specifier ?? '');
+    if (!entry) return false;
+    const method = body.method ?? '';
+    const args = body.args ?? [];
+    if (envelope.kind === EnvelopeKind.SinkStart) {
       const sinkFn = entry.sinks.get(method);
       if (!sinkFn) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: `No sendStream method '${method}' on handle '${obj['specifier']}'`,
-        });
-        return;
+        fail(reqId, `No sendStream method '${method}' on handle '${body.specifier}'`);
+        return true;
       }
       const source = new _WriteSource();
       wsSources.set(reqId, source);
@@ -828,76 +837,41 @@ function _getOrCreateHandleRegistry(
         },
         (err: unknown) => {
           wsSources.delete(reqId);
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: String(err),
-          });
+          fail(reqId, err);
         },
       );
-      return;
+      return true;
     }
-    if (obj['__rpc_req'] !== true) return;
-    const entry = registry.get((obj['specifier'] as string) ?? '');
-    if (!entry) return;
-    (ev as MessageEvent).stopImmediatePropagation?.();
-    const method = (obj['method'] as string) ?? '';
-    const reqId = (obj['reqId'] as number) ?? 0;
-    const args = (obj['args'] as unknown[]) ?? [];
     const streamFn = entry.streams.get(method);
     if (streamFn) {
       let iter: AsyncIterable<unknown>;
       try {
         iter = streamFn(...args);
       } catch (err: unknown) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: String(err),
-        });
-        return;
+        fail(reqId, err);
+        return true;
       }
-      (async () => {
+      void (async () => {
         try {
-          for await (const chunk of iter)
-            port.postMessage({
-              __rpc_chunk: true,
-              reqId,
-              chunk,
-            });
-          port.postMessage({
-            __rpc_end: true,
-            reqId,
-          });
+          for await (const chunk of iter) reply(EnvelopeKind.RpcChunk, reqId, chunk);
+          reply(EnvelopeKind.RpcEnd, reqId, null);
         } catch (err: unknown) {
-          port.postMessage({
-            __rpc_err: true,
-            reqId,
-            error: String(err),
-          });
+          reply(EnvelopeKind.RpcError, reqId, { error: String(err) });
         }
       })().catch(() => {});
-      return;
+      return true;
     }
     const scalarFn = entry.scalar.get(method);
     if (!scalarFn) {
-      port.postMessage({
-        __rpc_res: true,
-        reqId,
-        error: `No method '${method}' on handle '${obj['specifier']}'`,
-      });
-      return;
+      fail(reqId, `No method '${method}' on handle '${body.specifier}'`);
+      return true;
     }
     new Promise<unknown>((res) => res(scalarFn(...args))).then(
       (result) => _sendResult(port, registry, reqId, result),
-      (err: unknown) =>
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: String(err),
-        }),
+      (err: unknown) => fail(reqId, err),
     );
-  } as EventListener);
+    return true;
+  });
   return reg;
 }
 function _registerHandle(
@@ -924,25 +898,15 @@ function _registerHandle(
 }
 function _sendResult(
   port: {
-    postMessage(m: unknown): void;
+    _postControl?(kind: number, correlation: number, message: unknown): void;
   },
   reg: Map<string, _HandleEntry>,
   reqId: number,
   result: unknown,
 ): void {
-  if (result instanceof FacadeHandle) {
-    port.postMessage({
-      __rpc_res: true,
-      reqId,
-      result: _registerHandle(reg, result),
-    });
-  } else {
-    port.postMessage({
-      __rpc_res: true,
-      reqId,
-      result,
-    });
-  }
+  const payload =
+    result instanceof FacadeHandle ? { result: _registerHandle(reg, result) } : { result };
+  port._postControl?.(EnvelopeKind.RpcResponse, reqId, payload);
 }
 /**
  * Public facade exposed to a child realm as a synthetic module.
@@ -1318,174 +1282,113 @@ export class Facade {
     const sinkHandlers = this.#sinkHandlers;
     const reg = _getOrCreateHandleRegistry(port);
     const wsSources = _getOrCreateWriteSourceRegistry(port);
-    port.addEventListener('message', function onRpcRequest(ev: Event) {
-      const msg = (ev as MessageEvent).data;
-      if (msg === null || typeof msg !== 'object') return;
-      const obj = msg as Record<string, unknown>;
-      // --- write-stream chunk envelopes (child->parent) ---
-      if (obj['__rpc_send_start'] === true && obj['specifier'] === specifier) {
-        (ev as MessageEvent).stopImmediatePropagation?.();
-        const { method, reqId, args } = obj as {
-          method: string;
-          reqId: number;
-          args: unknown[];
-        };
-        const fn = sinkHandlers.get(method);
-        if (!fn) {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: `No sendStream handler for ${specifier}#${method}`,
-          });
-          return;
-        }
-        const source = new _WriteSource();
-        wsSources.set(reqId, source);
-        fn(args, source).then(
-          (result) => {
-            wsSources.delete(reqId);
-            _sendResult(port, reg, reqId, result);
-          },
-          (err: unknown) => {
-            port.postMessage({
-              __rpc_res: true,
-              reqId,
-              error: String(err),
-            });
-          },
-        );
-        return;
+    const control = port as unknown as {
+      _addControlHandler?(
+        handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
+      ): () => void;
+      _postControl?(kind: number, correlation: number, message: unknown): void;
+    };
+    const reply = (kind: number, correlation: number, message: unknown): void => {
+      control._postControl?.(kind, correlation, message);
+    };
+    const fail = (correlation: number, error: unknown): void => {
+      reply(EnvelopeKind.RpcResponse, correlation, { error: String(error) });
+    };
+    const streamOut = async (correlation: number, iterable: AsyncIterable<unknown>) => {
+      try {
+        for await (const chunk of iterable) reply(EnvelopeKind.RpcChunk, correlation, chunk);
+        reply(EnvelopeKind.RpcEnd, correlation, null);
+      } catch (err: unknown) {
+        reply(EnvelopeKind.RpcError, correlation, { error: String(err) });
       }
-      if (obj['__rpc_send_chunk'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          src.push(obj['chunk']);
-        }
-        return;
-      }
-      if (obj['__rpc_send_end'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          wsSources.delete(obj['reqId'] as number);
-          src.end();
-        }
-        return;
-      }
-      if (obj['__rpc_send_err'] === true) {
-        const src = wsSources.get(obj['reqId'] as number);
-        if (src) {
-          (ev as MessageEvent).stopImmediatePropagation?.();
-          wsSources.delete(obj['reqId'] as number);
-          src.fail(String(obj['error'] ?? 'sink aborted'));
-        }
-        return;
-      }
-      // --- standard request dispatch (__rpc_req) ---
-      if (obj['__rpc_req'] !== true || obj['specifier'] !== specifier) {
-        return;
-      }
-      (ev as MessageEvent).stopImmediatePropagation?.();
-      const { method, reqId, args } = msg as {
-        method: string;
-        reqId: number;
-        args: unknown[];
+    };
+    control._addControlHandler?.((envelope, value) => {
+      const reqId = envelope.correlation;
+      const body = (value ?? {}) as {
+        specifier?: string;
+        method?: string;
+        args?: unknown[];
       };
-      // --- streaming handler ---
+      switch (envelope.kind) {
+        case EnvelopeKind.SinkStart: {
+          if (body.specifier !== specifier) return false;
+          const method = body.method as string;
+          const args = body.args ?? [];
+          const fn = sinkHandlers.get(method);
+          if (!fn) {
+            fail(reqId, `No sendStream handler for ${specifier}#${method}`);
+            return true;
+          }
+          const source = new _WriteSource();
+          wsSources.set(reqId, source);
+          fn(args, source).then(
+            (result) => {
+              wsSources.delete(reqId);
+              _sendResult(port, reg, reqId, result);
+            },
+            (err: unknown) => fail(reqId, err),
+          );
+          return true;
+        }
+        case EnvelopeKind.SinkChunk: {
+          const source = wsSources.get(reqId);
+          if (!source) return false;
+          source.push(value);
+          return true;
+        }
+        case EnvelopeKind.SinkEnd: {
+          const source = wsSources.get(reqId);
+          if (!source) return false;
+          wsSources.delete(reqId);
+          source.end();
+          return true;
+        }
+        case EnvelopeKind.SinkError: {
+          const source = wsSources.get(reqId);
+          if (!source) return false;
+          wsSources.delete(reqId);
+          source.fail(String((value as { error?: unknown })?.error ?? 'sink aborted'));
+          return true;
+        }
+        case EnvelopeKind.RpcRequest:
+          break;
+        default:
+          return false;
+      }
+      if (body.specifier !== specifier) return false;
+      const method = body.method as string;
+      const args = body.args ?? [];
       const streamFn = streamHandlers.get(method);
       if (streamFn) {
         let iterable: AsyncIterable<unknown>;
         try {
           iterable = streamFn(...args);
         } catch (err: unknown) {
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: String(err),
-          });
-          return;
+          fail(reqId, err);
+          return true;
         }
-        (async () => {
-          try {
-            for await (const chunk of iterable) {
-              port.postMessage({
-                __rpc_chunk: true,
-                reqId,
-                chunk,
-              });
-            }
-            port.postMessage({
-              __rpc_end: true,
-              reqId,
-            });
-          } catch (err: unknown) {
-            port.postMessage({
-              __rpc_err: true,
-              reqId,
-              error: String(err),
-            });
-          }
-        })().catch(() => {});
-        return;
+        void streamOut(reqId, iterable).catch(() => {});
+        return true;
       }
-      // --- scalar handler ---
       const handler = handlers.get(method);
       if (!handler) {
-        port.postMessage({
-          __rpc_res: true,
-          reqId,
-          error: `No handler for ${specifier}#${method}`,
-        });
-        return;
+        fail(reqId, `No handler for ${specifier}#${method}`);
+        return true;
       }
       new Promise<unknown>((res) => res(handler(...args))).then(
         (result) => {
           if (result instanceof FacadeHandle) {
-            // Register the handle and send its ID + stream-method list to the child.
-            port.postMessage({
-              __rpc_res: true,
-              reqId,
-              result: _registerHandle(reg, result),
-            });
+            reply(EnvelopeKind.RpcResponse, reqId, { result: _registerHandle(reg, result) });
           } else if (_isAsyncIterable(result)) {
-            (async () => {
-              try {
-                for await (const chunk of result) {
-                  port.postMessage({
-                    __rpc_chunk: true,
-                    reqId,
-                    chunk,
-                  });
-                }
-                port.postMessage({
-                  __rpc_end: true,
-                  reqId,
-                });
-              } catch (err: unknown) {
-                port.postMessage({
-                  __rpc_err: true,
-                  reqId,
-                  error: String(err),
-                });
-              }
-            })().catch(() => {});
+            void streamOut(reqId, result as AsyncIterable<unknown>).catch(() => {});
           } else {
-            port.postMessage({
-              __rpc_res: true,
-              reqId,
-              result,
-            });
+            reply(EnvelopeKind.RpcResponse, reqId, { result });
           }
         },
-        (err: unknown) =>
-          port.postMessage({
-            __rpc_res: true,
-            reqId,
-            error: String(err),
-          }),
+        (err: unknown) => fail(reqId, err),
       );
-    } as EventListener);
+      return true;
+    });
     port.start();
   }
 }
@@ -2093,39 +1996,6 @@ export interface RealmOptions {
    * ```
    */
   otlpEndpoint?: string | false;
-  /**
-   * Legacy parent-side MessagePort for communication with an embedded child.
-   * Ignored by reactor-pooled, process, and remote realms.
-   *
-   * Must be paired with `output`. If omitted, the realm constructor creates a
-   * fresh `MessageChannel` and exposes the parent side as `realm.port`.
-   *
-   * ```ts no_run
-   * import { MessageChannel } from 'fino:realm/messaging';
-   * import type { RealmOptions } from 'fino:realm';
-   *
-   * const { port1, port2 } = new MessageChannel();
-   * const options: RealmOptions = { entry: './worker.ts', input: port1, output: port2 };
-   * ```
-   */
-  input?: MessagePort;
-  /**
-   * Child-side MessagePort passed into the child Realm.
-   * Must be provided together with `input`.
-   * Ignored by reactor-pooled, process, and remote realms.
-   *
-   * The child can import `fino:realm/self` to access this port. Passing only
-   * `output` without `input` is ignored by the embedded constructor path.
-   *
-   * ```ts no_run
-   * import { MessageChannel } from 'fino:realm/messaging';
-   * import type { RealmOptions } from 'fino:realm';
-   *
-   * const { port1, port2 } = new MessageChannel();
-   * const options: RealmOptions = { entry: './worker.ts', input: port1, output: port2 };
-   * ```
-   */
-  output?: MessagePort;
 }
 /**
  * Options for creating a Realm from in-memory entrypoint source.
@@ -2290,25 +2160,29 @@ export class ProcessPort extends BaseTransportPort {
    * @param message Value to serialize and send.
    * @param transferOrOpts Optional transfer list or structured serialize options.
    */
-  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this._closed) return;
-    const rawTransfer = Array.isArray(transferOrOpts)
-      ? (transferOrOpts as Transferable[])
-      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const unsupported = rawTransfer?.find((t) => !(t instanceof ArrayBuffer));
-    if (unsupported !== undefined) {
-      throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
-    }
-    const transferABs = (rawTransfer?.filter((t) => t instanceof ArrayBuffer) ??
-      []) as ArrayBuffer[];
-    const serResult = (_ser as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
-      message,
-      transferABs.length > 0 ? transferABs : undefined,
-    );
-    const data = serResult[0];
-    const stores = serResult.length > 1 ? serResult.slice(1) : ([] as Uint8Array[]);
-    (processPortSend as (h: number, b: Uint8Array, s: Uint8Array[]) => void)(
+  /**
+   * A process realm is a separate OS process, so a transit channel — a pair of
+   * descriptors in this one — cannot be moved to it.
+   *
+   * @internal
+   */
+  protected override _supportsPortTransfer(): boolean {
+    return false;
+  }
+  /**
+   * Hand encoded bytes to the process realm's socket bridge.
+   *
+   * @internal
+   */
+  protected override _send(
+    header: Uint8Array,
+    data: Uint8Array,
+    stores: Uint8Array[],
+    _ports: [number, number][],
+  ): void {
+    (processPortSend as (h: number, hdr: Uint8Array, b: Uint8Array, s: Uint8Array[]) => void)(
       this.#handle,
+      header,
       data,
       stores,
     );
@@ -2396,17 +2270,17 @@ export class ProcessPort extends BaseTransportPort {
    * @internal
    */
   _drain(): void {
-    for (const [byteArr] of _recvProcessMessages(this.#handle) as any[]) {
-      const [buf, ...stores] = byteArr as Uint8Array[];
+    for (const [byteArr, , header] of _recvProcessMessages(this.#handle)) {
+      const [buf, ...stores] = byteArr;
       if (!buf) continue;
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined);
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, [], header);
     }
   }
 }
 // ---------------------------------------------------------------------------
 // Active children tracking
 // ---------------------------------------------------------------------------
-type RealmKind = 'embedded' | 'scheduled' | 'sandbox' | 'process' | 'remote';
+type RealmKind = 'scheduled' | 'sandbox' | 'process' | 'remote';
 let _nextPortHandle = 0;
 let _nextSourceRealmId = 0;
 interface ActiveChild {
@@ -2436,54 +2310,33 @@ function _trackChild(child: ActiveChild): void {
   }, 1);
 }
 /**
- * Step all active child realms by one event-loop iteration.
+ * Step every active process realm by one event-loop iteration.
  *
- * This bridge function is called by the host event loop. It resolves or
- * rejects pending `Realm.run()` and `Realm.call()` promises when children exit,
- * and handles watch-mode reload requests. Remote realms are skipped because
- * their lifecycle is driven by the cluster transport.
- *
- * ```ts no_run
- * import { _childrenAlive, _stepChildren } from 'fino:realm';
- *
- * while (_childrenAlive()) _stepChildren();
- * ```
+ * Resolves or rejects pending `Realm.run()` and `Realm.call()` promises when a
+ * process child exits, and handles watch-mode reload requests. Remote realms
+ * are skipped because their lifecycle is driven by the cluster transport.
  *
  * @internal
  */
 export function _stepChildren(): void {
   for (let i = _activeChildren.length - 1; i >= 0; i--) {
     const child = _activeChildren[i]!;
-    if (child.kind === 'remote') continue;
+    if (child.kind !== 'process' && child.kind !== 'sandbox') continue;
     // Step returns: true = alive, false = clean exit, null = reload requested
     let stepResult: boolean | null;
     let stepError: unknown = undefined;
-    if (child.kind === 'sandbox') {
-      try {
-        child.drainMessages?.();
-        stepResult = stepSandboxContext(child.handle) as boolean;
-      } catch (err) {
-        stepResult = false;
-        stepError = err;
-      }
-    } else if (child.kind === 'process') {
-      try {
-        // A short-lived child can queue its final response and exit before the
-        // parent isolate is scheduled again. Drain first so releasing the
-        // native process handle cannot discard that response.
-        child.drainMessages?.();
-        stepResult = stepProcessContext(child.handle) as boolean | null;
-      } catch (err) {
-        stepResult = false;
-        stepError = err;
-      }
-    } else {
-      try {
-        stepResult = stepContext(child.handle) as boolean | null;
-      } catch (err) {
-        stepResult = false;
-        stepError = err;
-      }
+    try {
+      // A short-lived child can queue its final response and exit before the
+      // parent isolate is scheduled again. Drain first so releasing the
+      // native handle cannot discard that response.
+      child.drainMessages?.();
+      stepResult =
+        child.kind === 'sandbox'
+          ? (stepSandboxContext(child.handle) as boolean)
+          : (stepProcessContext(child.handle) as boolean | null);
+    } catch (err) {
+      stepResult = false;
+      stepError = err;
     }
     if (stepResult !== true) {
       if (stepError !== undefined) {
@@ -2504,25 +2357,6 @@ export function _stepChildren(): void {
     }
   }
 }
-/**
- * Return whether any child realms are still tracked as active.
- *
- * This is a runtime loop helper. It returns `true` for children registered by
- * `run()` or `call()` until they resolve, reject, or are removed by remote
- * exit handling.
- *
- * ```ts no_run
- * import { _childrenAlive } from 'fino:realm';
- *
- * if (_childrenAlive()) console.log('realm work remains');
- * ```
- *
- * @internal
- */
-export function _childrenAlive(): boolean {
-  return _activeChildren.length > 0;
-}
-
 function validateSandboxRealmOptions(opts: RealmOptions): void {
   const sandbox = opts.sandbox;
   if (sandbox === undefined) return;
@@ -2594,8 +2428,12 @@ function validateSandboxRealmOptions(opts: RealmOptions): void {
 // Native bridge helpers
 // ---------------------------------------------------------------------------
 /** Drain one batch from a process-port receive queue: `[[mainBytes, ...stores], ...]`. */
-function _recvProcessMessages(handle: number): Uint8Array[][] {
-  return (processPortRecv as (h: number) => unknown)(handle) as Uint8Array[][];
+function _recvProcessMessages(handle: number): [Uint8Array[], [number, number][], Uint8Array?][] {
+  return (processPortRecv as (h: number) => unknown)(handle) as [
+    Uint8Array[],
+    [number, number][],
+    Uint8Array?,
+  ][];
 }
 // ---------------------------------------------------------------------------
 // call() response helpers
@@ -2606,31 +2444,24 @@ function _recvProcessMessages(handle: number): Uint8Array[][] {
  * block across the remote and non-remote `call()` branches.
  */
 function _resolveCallResponse<R>(
+  kind: number,
   data: unknown,
   resolve: (v: R) => void,
   reject: (err: unknown) => void,
 ): void {
-  if (
-    data &&
-    typeof data === 'object' &&
-    (
-      data as {
-        __call_error?: boolean;
-      }
-    ).__call_error
-  ) {
-    const d = data as {
+  if (kind === EnvelopeKind.CallError) {
+    const failure = (data ?? {}) as {
       message?: string;
       name?: string;
       stack?: string;
     };
-    const err = new Error(d.message ?? 'Realm call failed');
-    if (d.name !== undefined) err.name = d.name;
-    if (d.stack !== undefined) err.stack = d.stack;
+    const err = new Error(failure.message ?? 'Realm call failed');
+    if (failure.name !== undefined) err.name = failure.name;
+    if (failure.stack !== undefined) err.stack = failure.stack;
     reject(err);
-  } else {
-    resolve(data as R);
+    return;
   }
+  resolve(data as R);
 }
 // ---------------------------------------------------------------------------
 // Realm class
@@ -3087,7 +2918,12 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
-    } else if (usesProcessReadiness()) {
+    } else {
+      if (!usesProcessReadiness()) {
+        throw new Error(
+          'fino:realm — realms can only be created from a realm scheduled on the process reactor',
+        );
+      }
       this.#kind = 'scheduled';
       this.#handle = -1;
       this.port = undefined as unknown as ScheduledPort;
@@ -3099,29 +2935,6 @@ export class Realm<F extends RealmFn = RealmFn> {
         () => this.#disposeScheduledShutdownRegistration(),
         () => this.#disposeScheduledShutdownRegistration(),
       );
-    } else {
-      this.#kind = 'embedded';
-      let parentPort: MessagePort;
-      let childPort: MessagePort;
-      if (opts.input !== undefined && opts.output !== undefined) {
-        parentPort = opts.input;
-        childPort = opts.output;
-      } else {
-        const channel = new MessageChannel();
-        parentPort = channel.port1;
-        childPort = channel.port2;
-      }
-      this.port = parentPort;
-      this.#handle = createContext(
-        opts.root ?? '',
-        opts.entry,
-        serializedRules,
-        childPort,
-        watch,
-        repl,
-        serializedData,
-        serializedBootstrapData,
-      ) as number;
     }
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
@@ -3174,33 +2987,16 @@ export class Realm<F extends RealmFn = RealmFn> {
    */
   #spawnChild(): number {
     const opts = this.#watchOpts!;
-    const rules = this.#watchSerializedRules;
-    const data = serializeRealmData(opts.data);
-    const bootstrapData = serializeRealmBootstrapData(opts);
-    if (opts.process) {
-      const h = createProcessContext(
-        opts.root ?? '',
-        opts.entry,
-        rules,
-        true,
-        data,
-        bootstrapData,
-      ) as number;
-      this.#activeChildPort = new ProcessPort(getProcessSocketFd(h) as number, h);
-      return h;
-    } else {
-      const { port2: childPort } = new MessageChannel();
-      return createContext(
-        opts.root ?? '',
-        opts.entry,
-        rules,
-        childPort,
-        true,
-        false,
-        data,
-        bootstrapData,
-      ) as number;
-    }
+    const handle = createProcessContext(
+      opts.root ?? '',
+      opts.entry,
+      this.#watchSerializedRules,
+      true,
+      serializeRealmData(opts.data),
+      serializeRealmBootstrapData(opts),
+    ) as number;
+    this.#activeChildPort = new ProcessPort(getProcessSocketFd(handle) as number, handle);
+    return handle;
   }
   /**
    * Run the child realm to completion.
@@ -3310,20 +3106,22 @@ export class Realm<F extends RealmFn = RealmFn> {
       const port = this.port as ScheduledPort;
       base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
         let settled = false;
-        const handler = (ev: Event) => {
-          if (settled) return;
+        const stop = port._addControlHandler((envelope, value) => {
+          if (
+            envelope.kind !== EnvelopeKind.CallResult &&
+            envelope.kind !== EnvelopeKind.CallError
+          ) {
+            return false;
+          }
+          if (settled) return true;
           settled = true;
-          const data = (ev as MessageEvent).data;
-          port.removeEventListener('message', handler);
+          stop();
           port.close();
-          _resolveCallResponse(data, resolve, reject);
-        };
-        port.addEventListener('message', handler);
-        port.start();
-        port.postMessage({
-          __call: true,
-          args,
+          _resolveCallResponse(envelope.kind, value, resolve, reject);
+          return true;
         });
+        port.start();
+        port._postControl(EnvelopeKind.Call, 0, { args });
         void this.#scheduledCompletion!.then(
           () => {
             if (settled) return;
@@ -3372,14 +3170,28 @@ export class Realm<F extends RealmFn = RealmFn> {
               clusterPort.close();
               const idx = _activeChildren.indexOf(entry);
               if (idx >= 0) _activeChildren.splice(idx, 1);
-              _resolveCallResponse(data, resolve, reject);
+              _resolveCallResponse(EnvelopeKind.CallResult, data, resolve, reject);
             };
+            const stopControl = clusterPort._addControlHandler((envelope, value) => {
+              if (
+                envelope.kind !== EnvelopeKind.CallResult &&
+                envelope.kind !== EnvelopeKind.CallError
+              ) {
+                return false;
+              }
+              if (settled) return true;
+              settled = true;
+              stopControl();
+              clusterPort.removeEventListener('message', handler as any);
+              clusterPort.close();
+              const idx = _activeChildren.indexOf(entry);
+              if (idx >= 0) _activeChildren.splice(idx, 1);
+              _resolveCallResponse(envelope.kind, value, resolve, reject);
+              return true;
+            });
             clusterPort.addEventListener('message', handler as any);
             clusterPort.start();
-            clusterPort.postMessage({
-              __call: true,
-              args,
-            });
+            clusterPort._postControl(EnvelopeKind.Call, 0, { args });
           }),
       );
     } else {
@@ -3396,18 +3208,21 @@ export class Realm<F extends RealmFn = RealmFn> {
                 ? () => (this.port as ThreadPort)._drain()
                 : undefined,
         });
-        const handler = (ev: Event) => {
-          const data = (ev as MessageEvent).data;
-          this.port.removeEventListener('message', handler);
-          this.port.close();
-          _resolveCallResponse(data, resolve, reject);
-        };
-        this.port.addEventListener('message', handler);
-        this.port.start();
-        this.port.postMessage({
-          __call: true,
-          args,
+        const port = this.port as ProcessPort;
+        const stop = port._addControlHandler((envelope, value) => {
+          if (
+            envelope.kind !== EnvelopeKind.CallResult &&
+            envelope.kind !== EnvelopeKind.CallError
+          ) {
+            return false;
+          }
+          stop();
+          port.close();
+          _resolveCallResponse(envelope.kind, value, resolve, reject);
+          return true;
         });
+        port.start();
+        port._postControl(EnvelopeKind.Call, 0, { args });
       });
     }
     if (!startPublished && !_topicRealmCallEnd.hasSubscribers) return base;
@@ -3460,9 +3275,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     this.#watchTerminated = true;
     if (this.#kind === 'scheduled') {
       this.#disposeScheduledShutdownRegistration();
-      this.port.postMessage({ __terminate: true });
+      (this.port as ScheduledPort)._postControl(EnvelopeKind.Terminate, 0, null);
     } else if (this.#kind === 'remote') {
-      this.port.postMessage({ __terminate: true });
+      (this.port as ClusterPort)._postControl(EnvelopeKind.Terminate, 0, null);
       this.port.close();
     } else if (this.#kind === 'sandbox' && options.force === true) {
       forceSandboxContext(this.#handle);
@@ -3474,15 +3289,13 @@ export class Realm<F extends RealmFn = RealmFn> {
       killProcessContext(this.#handle);
       const activePort = this.#activeChildPort ?? (this.port as ProcessPort);
       activePort.close();
-    } else if (this.#kind === 'process') {
+    } else {
       // After a watch-mode reload, this.port still points to the first child's
       // port.  Use #activeChildPort when set (updated by #spawnChild on reload)
       // so the terminate message reaches the currently-running child.
       const activePort = this.#activeChildPort ?? (this.port as ProcessPort);
-      activePort.postMessage({ __terminate: true });
+      activePort._postControl(EnvelopeKind.Terminate, 0, null);
       activePort.close();
-    } else {
-      terminateChild(this.#handle);
     }
   }
   /**

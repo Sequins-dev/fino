@@ -130,6 +130,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:module", "module"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
+    source_builtin!("internal:realm/envelope", "internal/realm/envelope"),
     source_builtin!(
         "internal:realm/transport-port",
         "internal/realm/transport-port"
@@ -661,7 +662,6 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:task/durable", "task/durable"),
     // orchestrator + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
-    source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
     source_builtin!(
         "internal:scheduler/bootstrap",
         "internal/scheduler/bootstrap"

@@ -10,10 +10,10 @@
 export function currentWorkloadOwner(): number;
 export function usesProcessReadiness(): boolean;
 export function setSchedulerPollingRequired(callback: () => boolean): void;
-export function createWorkload(entryPath: string): number;
-export function terminateWorkload(handle: number): void;
-export function workloadWakeFd(handle: number): number;
-export function workloadOwner(handle: number): number;
+export function createWorkload(entryPath: string): {
+  owner: number;
+  wakeFd: number;
+};
 export function createScheduledRealm(
   root: string,
   entryPath: string,
@@ -31,37 +31,31 @@ export function createScheduledRealm(
 };
 export function scheduledRealmSend(
   handle: number,
+  header: Uint8Array,
   data: Uint8Array,
   stores?: Uint8Array[],
   ports?: [number, number][],
 ): void;
-export function scheduledRealmRecv(handle: number): Array<[Uint8Array[], [number, number][]]>;
+export function scheduledRealmRecv(
+  handle: number,
+): Array<[Uint8Array[], [number, number][], Uint8Array?]>;
 export function takeScheduledRealmStatus(handle: number): {
   kind: 'pending' | 'done' | 'reload' | 'error';
   error?: string;
 };
 export function closeScheduledRealm(handle: number): void;
 
-export function createReactorQueue(): {
-  handle: number;
-  controlFd: number;
-};
-export function submitReactorWorkload(queue: number, workload: number): number;
-export function createReactorThread(queue: number): {
-  handle: number;
-  worker: number;
-};
+export function startReactorPool(): number;
+export function createReactorThread(): number;
 export function closeReactorThread(thread: number): void;
 export function signalReactorOwner(owner: number): void;
-export function takeReactorEvents(queue: number): Array<{
+export function takeReactorEvents(): Array<{
   kind: 'activated' | 'settled' | 'error';
   worker: number;
   owner: number;
-  previous?: number;
   error?: string;
-  loopTurns: number;
 }>;
-export function closeReactorQueue(queue: number): void;
+export function stopReactorPool(): void;
 
 export function processReadinessControlFd(): number;
 export function registerProcessReadiness(
@@ -72,8 +66,6 @@ export function registerProcessReadiness(
   data: number,
   udata: number,
 ): void;
-export const registerProcessPersistentReadiness: typeof registerProcessReadiness;
-export function acknowledgeProcessReadiness(acknowledgement: number): void;
 export function registerReactorWake(owner: number, fd: number): void;
 export type ReadinessChangeTuple = [
   ident: number,
@@ -84,7 +76,7 @@ export type ReadinessChangeTuple = [
   udata: number,
   cancelOwner: number | null,
   schedulerWake: boolean,
-  acknowledgement: number | null,
+  schedulerPoll: boolean,
 ];
 export function takeSharedReadinessChanges(): ReadinessChangeTuple[];
 export function routeProcessReadiness(owner: number, event: Uint8Array, notifyPool?: boolean): void;

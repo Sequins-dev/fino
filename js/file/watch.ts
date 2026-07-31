@@ -348,20 +348,24 @@ export class Watcher {
    * import { Watcher } from 'fino:file/watch';
    *
    * const watcher = new Watcher();
-   * watcher.watch('/tmp/app.log');
+   * await watcher.watch('/tmp/app.log');
    * watcher.close();
    * ```
+   *
+   * The returned promise resolves once the watch is armed. Await it before
+   * making changes you expect to observe; ignoring it leaves a brief window in
+   * which changes to `path` are not yet reported.
    */
-  watch(path: string): void {
+  watch(path: string): Promise<void> {
     if (this.#closed) throw new Error('Watcher is closed');
     if (typeof path !== 'string') throw new TypeError('Watcher.watch path must be a string');
     const p = path;
-    if (this.#paths.has(p)) return;
+    if (this.#paths.has(p)) return Promise.resolve();
     if (isDarwin) {
-      this.#watchDarwin(p);
-    } else {
-      this.#watchLinux(p);
+      return this.#watchDarwin(p);
     }
+    this.#watchLinux(p);
+    return Promise.resolve();
   }
   /**
    * Stop watching all paths and release all resources.
@@ -505,19 +509,20 @@ export class Watcher {
    *
    * @internal
    */
-  #watchDarwin(path: string): void {
+  #watchDarwin(path: string): Promise<void> {
     // Open the path read-only. O_EVTONLY allows watching without blocking unmounts.
     const fd = lib.symbols.open(cstr(path), O_RDONLY | O_EVTONLY, 0);
     if (fd < 0) throw new Error(`watch: cannot open '${path}'`);
     this.#fds.set(fd, path);
     this.#paths.add(path);
     const watcher = this;
-    loopMod.vnode(fd, ALL_NOTES, function onVnodeEvent(ev: { fflags: number }) {
+    const armed = loopMod.vnode(fd, ALL_NOTES, function onVnodeEvent(ev: { fflags: number }) {
       watcher.#handleVnode(fd, path, ev.fflags);
     });
     if (this.#recursive) {
       this.#scanDirDarwin(path);
     }
+    return armed;
   }
   /**
    * macOS: translate kqueue vnode fflags into normalized events. NOTE_DELETE
@@ -588,7 +593,7 @@ export class Watcher {
             const childPath = entry.path.toString();
             // Only watch if not already watching
             if (![...watcher.#fds.values()].includes(childPath)) {
-              watcher.#watchDarwin(childPath);
+              void watcher.#watchDarwin(childPath);
             }
           }
         }

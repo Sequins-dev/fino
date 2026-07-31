@@ -8,6 +8,7 @@
  */
 import { describe, it } from 'fino:test/test';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
+import { encodeEnvelope, messageEnvelope } from 'internal:realm/envelope';
 import { serialize } from 'internal:serializer';
 import type { ClusterMessage } from 'internal:cluster/protocol';
 // ---------------------------------------------------------------------------
@@ -108,9 +109,9 @@ describe('ClusterPort._deliver routes to registered port', () => {
       received = (e as any).data;
     });
     port.start();
-    // Serialize a known value so _deliver has valid bytes
+    // A payload is framed as [envelope header, main bytes, ...transfer stores].
     const parts = (serialize as (v: unknown) => Uint8Array[])({ greet: 'hello' });
-    port._deliver(parts);
+    port._deliver([encodeEnvelope(messageEnvelope()), ...parts]);
     // _dispatchMessage is synchronous once called, but give microtasks a turn
     await flush(1);
     t.ok(received !== undefined, 'message was delivered to port');
@@ -224,8 +225,10 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
     } as ClusterMessage);
     await flush(3);
     t.deepEqual(events, [], 'exit waits for the promised final message');
-    const encodeResult = (result: string) =>
-      (serialize as (value: unknown) => Uint8Array[])(result);
+    const encodeResult = (result: string) => [
+      encodeEnvelope(messageEnvelope()),
+      ...(serialize as (value: unknown) => Uint8Array[])(result),
+    ];
     transport.inject('__seed__', {
       t: 'PORT_MSG',
       fromPort: 'nodeB/child',

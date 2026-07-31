@@ -406,7 +406,10 @@ describe('Backend-specific loop hooks', () => {
       const vnodeReady = new Promise<void>((resolve) => {
         resolveVnode = resolve;
       });
-      loop.vnode(fd, NOTE_WRITE | NOTE_EXTEND, (event) => {
+      // Await the install: the watch is armed by the realm that owns the
+      // process backend, so writing before it resolves races the arming and
+      // drops the event.
+      await loop.vnode(fd, NOTE_WRITE | NOTE_EXTEND, (event) => {
         fflags |= event.fflags;
         resolveVnode();
       });

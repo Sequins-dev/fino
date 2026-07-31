@@ -73,7 +73,10 @@ async function withRepl(fn: (port: MessagePort) => Promise<void>): Promise<void>
   try {
     await fn(port);
   } finally {
-    port.postMessage({ __terminate: true });
+    // Terminate through the public API: a termination request is runtime
+    // protocol carried in the envelope header, so it cannot be posted as a
+    // message payload.
+    realm.terminate();
     port.close();
     await runPromise;
   }

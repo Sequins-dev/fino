@@ -5,7 +5,8 @@ use std::{cell::RefCell, rc::Rc, sync::OnceLock};
 use ::v8;
 
 use crate::{
-    loader, realm,
+    loader,
+    realm::child::{catch_message, pump_and_checkpoint},
     state::{FinoState, ProcessEnv},
 };
 
@@ -67,8 +68,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
 
     // isolate_scope is a bare HandleScope<()>; we re-enter context via
-    // ContextScope on each loop iteration so this scope stays free for use
-    // by process_pending_creates between iterations.
+    // ContextScope on each loop iteration.
     let isolate_scope = &mut v8::HandleScope::new(isolate);
 
     // Create root microtask queue.
@@ -176,11 +176,8 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     // -----------------------------------------------------------------------
     // Host loop.
     //
-    // Each iteration:
-    //   1. Re-enter the root context (ContextScope) and call the JS step fn.
-    //   2. Drop the ContextScope so isolate_scope is free.
-    //   3. Call process_pending_creates(isolate_scope, &state_rc) to create
-    //      any child contexts queued during the JS step.
+    // Each iteration re-enters the root context (ContextScope) and calls the JS
+    // step fn, then drops the ContextScope so isolate_scope is free again.
     //
     // Using a named loop label so `break` inside the inner block exits here.
     // -----------------------------------------------------------------------
@@ -195,13 +192,15 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
                 None => break 'main,
             };
 
-            // step() -> boolean
+            // step() -> progress count; negative means the realm is finished.
+            // The orchestration realm has no scheduler to preempt it, so the
+            // magnitude is ignored here and only the sign matters.
             let should_continue = {
                 let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
                 v8::Local::new(scope, &loop_step_fn)
                     .call(scope, undef, &[])
-                    .map(|v| v.boolean_value(scope))
-                    .unwrap_or(false)
+                    .and_then(|v| v.number_value(scope))
+                    .is_some_and(|progress| progress >= 0.0)
             };
 
             if should_continue {
@@ -261,21 +260,13 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         if !should_continue {
             break 'main;
         }
-
-        // Create any child contexts queued during the JS step.
-        realm::process_pending_creates(isolate_scope, &state_rc);
     }
 
     // -----------------------------------------------------------------------
-    // Teardown: terminate children, call onDone, dispose profiler.
+    // Teardown: call onDone, dispose profiler.
     // -----------------------------------------------------------------------
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-        // Terminate all child Realms (structured concurrency: parent loop done →
-        // signal termination to all children, then step each once so they observe
-        // the flag and call their on_done_fn if any).
-        realm::terminate_all_children(scope);
 
         // Call onDone() — runs the post-loop error check from internal/main.ts (e.g.
         // `if (caughtError) { exit(1); }`).  If onDone calls exit(), we never
@@ -311,42 +302,4 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-/// Pump V8 platform foreground tasks then drain the microtask queue.
-///
-/// Fixed-point loop: Rust executor → drain completions/pending → microtask
-/// checkpoint. Repeats until quiescent so Rust futures awaiting JS Promises
-/// (and vice-versa) always converge in one call.
-fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
-    let platform = v8::V8::get_current_platform();
-    while v8::Platform::pump_message_loop(&platform, scope, false) {}
-    let state_rc = crate::state::get_state(scope);
-    loop {
-        let mut progress = false;
-        while crate::async_rt::try_tick() {
-            progress = true;
-        }
-        progress |= crate::async_rt::drain_all(scope, &state_rc);
-        {
-            let queue_ptr = unsafe { crate::state::root_queue_ptr(&state_rc) };
-            let isolate: &mut v8::Isolate = scope.as_mut();
-            unsafe { &*queue_ptr }.perform_checkpoint(isolate);
-        }
-        if !progress {
-            break;
-        }
-    }
-}
-
-fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {
-    if !tc.has_caught() {
-        return None;
-    }
-    tc.exception().and_then(|exc| {
-        exc.to_object(tc)
-            .and_then(|obj| v8::String::new(tc, "stack").and_then(|key| obj.get(tc, key.into())))
-            .and_then(|stack| stack.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
-            .or_else(|| exc.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
-    })
 }

@@ -74,6 +74,9 @@ pub fn write_message(fd: RawFd, msg: &ThreadMessage) -> std::io::Result<()> {
     };
 
     let mut payload = Vec::new();
+    let hl = check_u32(msg.header.len(), "process realm IPC header length")?;
+    payload.extend_from_slice(&hl.to_be_bytes());
+    payload.extend_from_slice(&msg.header);
     let dl = check_u32(msg.data.len(), "process realm IPC data length")?;
     payload.extend_from_slice(&dl.to_be_bytes());
     payload.extend_from_slice(&msg.data);
@@ -106,6 +109,9 @@ pub fn read_message(fd: RawFd) -> std::io::Result<ThreadMessage> {
         }};
     }
 
+    let hl = u32_at!();
+    let header = p[pos..pos + hl].to_vec();
+    pos += hl;
     let dl = u32_at!();
     let data = p[pos..pos + dl].to_vec();
     pos += dl;
@@ -117,6 +123,7 @@ pub fn read_message(fd: RawFd) -> std::io::Result<ThreadMessage> {
         pos += sl;
     }
     Ok(ThreadMessage {
+        header,
         data,
         transfer_stores: stores,
         transfer_ports: Vec::new(),
@@ -279,6 +286,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         package_map_json: args.package_map_json,
     };
     let config_msg = ThreadMessage {
+        header: Vec::new(),
         data: serde_json::to_string(&cfg)
             .map_err(|e| e.to_string())?
             .into_bytes(),
@@ -497,6 +505,7 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         let mut data = ENTRY_ERROR_PREFIX.to_vec();
         data.extend_from_slice(msg.as_bytes());
         let sentinel = ThreadMessage {
+            header: Vec::new(),
             data,
             transfer_stores: Vec::new(),
             transfer_ports: Vec::new(),
@@ -520,6 +529,7 @@ mod tests {
 
     fn make_msg(data: &[u8]) -> ThreadMessage {
         ThreadMessage {
+            header: Vec::new(),
             data: data.to_vec(),
             transfer_stores: Vec::new(),
             transfer_ports: Vec::new(),
@@ -528,9 +538,33 @@ mod tests {
 
     fn make_msg_with_stores(data: &[u8], stores: Vec<Vec<u8>>) -> ThreadMessage {
         ThreadMessage {
+            header: Vec::new(),
             data: data.to_vec(),
             transfer_stores: stores,
             transfer_ports: Vec::new(),
+        }
+    }
+
+    /// The envelope header must survive the process-realm wire format intact,
+    /// since it is what tells the far side whether a frame is a call, a result,
+    /// or ordinary application traffic.
+    #[test]
+    fn round_trip_preserves_envelope_header() {
+        let (a, b) = socketpair_fds();
+        let msg = ThreadMessage {
+            header: vec![1, 4, 9, 16],
+            data: b"payload".to_vec(),
+            transfer_stores: vec![b"store".to_vec()],
+            transfer_ports: Vec::new(),
+        };
+        write_message(a, &msg).unwrap();
+        let got = read_message(b).unwrap();
+        assert_eq!(got.header, vec![1, 4, 9, 16]);
+        assert_eq!(got.data, b"payload".to_vec());
+        assert_eq!(got.transfer_stores, vec![b"store".to_vec()]);
+        unsafe {
+            libc::close(a);
+            libc::close(b);
         }
     }
 
