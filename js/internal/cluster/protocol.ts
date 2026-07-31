@@ -284,6 +284,12 @@ export type ClusterMessage =
       endpoint?: string;
       /** Hex sha-256 of the node's own listener certificate. */
       certHash?: string;
+      /**
+       * Cluster identity, sent on peer-to-peer handshakes so a listener can
+       * refuse a dialer from a different cluster. Omitted toward the seed,
+       * which is the authority on identity.
+       */
+      clusterId?: string;
     }
   | {
       t: 'JOIN_DENIED';
@@ -712,6 +718,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
           : {}),
         ...(msg.endpoint !== undefined ? { endpoint: parseEndpoint(msg.endpoint) } : {}),
         ...(msg.certHash !== undefined ? { certHash: parseCertHash(msg.certHash) } : {}),
+        ...(msg.clusterId !== undefined ? { clusterId: parseNodeId(msg.clusterId) } : {}),
         ...base,
       };
     case 'JOIN_DENIED':
@@ -834,6 +841,7 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
           : {}),
         ...(value.endpoint !== undefined ? { endpoint: parseEndpoint(value.endpoint) } : {}),
         ...(value.certHash !== undefined ? { certHash: parseCertHash(value.certHash) } : {}),
+        ...(value.clusterId !== undefined ? { clusterId: parseNodeId(value.clusterId) } : {}),
       };
     case MessageKind.JOIN_DENIED:
       return {

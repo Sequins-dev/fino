@@ -55,6 +55,7 @@
  */
 import {
   DEFAULT_CLUSTER_PATH,
+  PeerMesh,
   WebTransportSeedTransport,
   WebTransportWorkerTransport,
   type WebTransportWorkerConnectOptions,
@@ -92,6 +93,7 @@ let _client: ClusterClient | null = null;
 let _seed: SeedServer | null = null;
 let _joinString: string | null = null;
 let _agent: SystemRealmAgent | null = null;
+let _mesh: PeerMesh | null = null;
 
 /** Spawn the node's system realm and return the heartbeat load sampler. */
 function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
@@ -304,6 +306,24 @@ export interface JoinClusterOptions {
    */
   stateDir?: string;
   /**
+   * Listen for direct peer sessions so realm traffic bypasses the seed.
+   *
+   * The node advertises this endpoint and its certificate hash through the
+   * control plane; peers dial it and send `PORT_MSG` straight here. Without a
+   * listener the node still participates — it dials peers that have one, and
+   * otherwise relays through the seed.
+   */
+  peerListener?: {
+    /** UDP port for this node's own HTTP/3 listener. */
+    port: number;
+    /** Bind address; also advertised to peers. */
+    hostname?: string;
+    /** TLS material for the peer listener. */
+    tls: { cert: string; key: string };
+    /** URL path for peer sessions. Defaults to the cluster path. */
+    path?: string;
+  };
+  /**
    * HTTPS WebTransport URL of the seed node.
    *
    * The URL must include the `https://` scheme and a reachable host and port.
@@ -440,9 +460,16 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     endpoint: advertisedEndpoint,
     certHash,
   });
+  _mesh = new PeerMesh({
+    nodeId,
+    clusterId,
+    ...(joinToken !== undefined ? { token: joinToken } : {}),
+    incarnation,
+  });
   _client = new ClusterClient(workerTransport, nodeId, {
     loadSampler: startNodeAgent(),
     incarnation,
+    mesh: _mesh,
   });
   _client.start();
   await _client.ready();
@@ -506,6 +533,13 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
       ? joinInfo.certHashes.map((hex) => ({ algorithm: 'sha-256', value: hexToBytes(hex) }))
       : undefined;
   const incarnation = await nextIncarnation(opts.stateDir);
+  const listener = opts.peerListener;
+  const peerCertHash = listener !== undefined ? await certificateSha256Hex(listener.tls.cert) : undefined;
+  const peerPath = normalizeClusterPath(listener?.path);
+  const peerEndpoint =
+    listener !== undefined
+      ? `https://${clusterAdvertisedHost(listener.hostname)}:${listener.port}${peerPath}`
+      : undefined;
   const transport = new WebTransportWorkerTransport(nodeId);
   const connectOptions: WebTransportWorkerConnectOptions = {
     tls: opts.tls,
@@ -514,11 +548,32 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     ...(joinInfo !== null && joinInfo.token !== undefined ? { token: joinInfo.token } : {}),
     ...(opts.token !== undefined ? { token: opts.token } : {}),
     incarnation,
+    ...(peerEndpoint !== undefined ? { endpoint: peerEndpoint } : {}),
+    ...(peerCertHash !== undefined ? { certHash: peerCertHash } : {}),
   };
+  const token = opts.token ?? joinInfo?.token;
+  _mesh = new PeerMesh({
+    nodeId,
+    clusterId: joinInfo?.clusterId ?? null,
+    ...(token !== undefined ? { token } : {}),
+    incarnation,
+    ...(listener !== undefined
+      ? {
+          listen: {
+            port: listener.port,
+            hostname: listener.hostname,
+            path: peerPath,
+            tls: listener.tls,
+          },
+        }
+      : {}),
+  });
+  await _mesh.listen();
   await transport.connect(seed, sampleNodeLoad(), connectOptions);
   _client = new ClusterClient(transport, nodeId, {
     loadSampler: startNodeAgent(),
     incarnation,
+    mesh: _mesh,
   });
   _client.start();
   try {
@@ -534,6 +589,8 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     failed.stop();
     void _agent?.stop();
     _agent = null;
+    _mesh?.close();
+    _mesh = null;
     throw err;
   }
 }
@@ -605,6 +662,8 @@ export function leaveCluster(): void {
   _joinString = null;
   void _agent?.stop();
   _agent = null;
+  _mesh?.close();
+  _mesh = null;
   _client?.stop();
   _client = null;
   _seed?.stop();

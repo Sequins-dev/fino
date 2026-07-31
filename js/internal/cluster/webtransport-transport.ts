@@ -876,3 +876,386 @@ export class WebTransportWorkerTransport implements ClusterTransport {
     for (const handler of this.#handlers) handler(this.#seedNodeId, synth);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Direct peer mesh
+// ---------------------------------------------------------------------------
+/**
+ * Write one message on a fresh stream and release the read half.
+ *
+ * Mesh streams are one-way: a peer answers on streams it opens itself, so the
+ * sender never reads this one. Cancelling the readable releases the loop
+ * registration that would otherwise outlive the message.
+ */
+async function sendMeshMessage(wt: WebTransport, msg: ClusterMessage): Promise<void> {
+  const stream = await wt.createBidirectionalStream();
+  const writer = stream.writable.getWriter();
+  const metadata: ClusterStreamMetadata = isPortMessage(msg)
+    ? {
+        v: 1,
+        kind: 'port',
+        pair: canonicalPortPair(msg.fromPort, msg.toPort),
+        a: msg.fromPort,
+        b: msg.toPort,
+      }
+    : { v: 1, kind: 'control' };
+  await writeMetadata(writer, metadata);
+  await writeMessage(writer, msg);
+  closeWriter(writer);
+  try {
+    await stream.readable.cancel();
+  } catch {
+    // Already gone; nothing to release.
+  }
+}
+
+/** Configuration for one node's participation in the direct peer mesh. */
+export interface PeerMeshOptions {
+  /** This node's identity, sent in the peer handshake. */
+  nodeId: string;
+  /** Cluster identity; a dialer from another cluster is refused. */
+  clusterId: string | null;
+  /** Join token presented and required on peer handshakes. */
+  token?: string;
+  /** This process incarnation, so a listener can fence a replaced peer. */
+  incarnation: number;
+  /** Listener configuration; omit to participate dial-only. */
+  listen?: {
+    port: number;
+    hostname?: string;
+    path?: string;
+    tls: { cert: string; key: string };
+    h3?: unknown;
+  };
+}
+
+/**
+ * Direct node-to-node sessions, so realm traffic bypasses the seed.
+ *
+ * The control plane introduces peers (endpoint plus certificate hash); this
+ * class dials them, authenticates with the same join token over a
+ * certificate-pinned WebTransport session, and carries `PORT_MSG` frames
+ * straight between nodes. The seed remains the fallback path: a node without
+ * a listener, or a pair that has not connected yet, keeps relaying through
+ * it, so direct sessions are a pure optimization rather than a requirement.
+ *
+ * Exactly one session exists per pair: the node with the smaller identity
+ * dials and the larger one accepts, so simultaneous introductions cannot
+ * produce two sessions.
+ *
+ * @internal
+ */
+export class PeerMesh {
+  #options: PeerMeshOptions;
+  #server: ServerHandle | null = null;
+  #sessions = new Map<string, PeerConnection>();
+  /**
+   * Every session this node accepted, including ones refused before they
+   * became a peer. Tracked so `close()` can tear down refused sessions too —
+   * an untracked open session keeps the listener from shutting down.
+   */
+  #inbound = new Set<WebTransport>();
+  /**
+   * HTTP clients backing dialed sessions. Each owns a QUIC connection that
+   * outlives its WebTransport session, so closing the session alone would
+   * leave the loop alive; they are closed with the mesh.
+   */
+  #clients = new Set<HttpClient>();
+  #incarnations = new Map<string, number>();
+  #dialing = new Set<string>();
+  #handlers: Handler[] = [];
+  #path: string;
+  #closed = false;
+
+  constructor(options: PeerMeshOptions) {
+    this.#options = options;
+    this.#path = normalizePath(options.listen?.path);
+  }
+
+  /** Node IDs with a live direct session. */
+  get connected(): string[] {
+    return Array.from(this.#sessions.keys());
+  }
+
+  /** Register a handler for messages arriving over direct sessions. */
+  on(handler: Handler): void {
+    this.#handlers.push(handler);
+  }
+
+  /**
+   * Start the listener, if this node was configured with one. Returns nothing;
+   * the caller already knows the endpoint and certificate hash it advertises.
+   */
+  async listen(): Promise<void> {
+    const config = this.#options.listen;
+    if (config === undefined) return;
+    this.#server = serve(
+      {
+        port: config.port,
+        hostname: config.hostname,
+        tls: config.tls,
+        h3: config.h3 ?? true,
+      },
+      async (incoming) => {
+        const url = new URL(incoming.request.url);
+        if (incoming.kind !== 'webtransport' || url.pathname !== this.#path) {
+          await incoming.reject(
+            new Response('fino cluster peer', {
+              status: incoming.kind === 'webtransport' ? 404 : 200,
+            }),
+          );
+          return;
+        }
+        const wt = await incoming.accept({ protocols: [CLUSTER_PROTOCOL] });
+        void this.#acceptSession(wt).catch((err: unknown) => {
+          if (!isExpectedCloseError(err)) {
+            console.error(`fino:cluster peer session error: ${err}`);
+          }
+        });
+      },
+    );
+    await this.#server.ready;
+  }
+
+  /**
+   * Dial a peer introduced by the control plane. No-op when the peer has no
+   * endpoint, a session already exists, or this node should be the acceptor.
+   */
+  async dial(peer: {
+    nodeId: string;
+    endpoint?: string;
+    certHash?: string;
+    incarnation?: number;
+  }): Promise<boolean> {
+    if (this.#closed) return false;
+    const { nodeId, endpoint, certHash } = peer;
+    if (endpoint === undefined || nodeId === this.#options.nodeId) return false;
+    // One session per pair: the smaller identity dials, the larger accepts.
+    if (this.#options.nodeId > nodeId) return false;
+    if (this.#sessions.has(nodeId) || this.#dialing.has(nodeId)) return false;
+    this.#dialing.add(nodeId);
+    try {
+      const url = new URL(endpoint);
+      const client = new HttpClient({ baseUrl: url.origin, protocols: ['h3'] });
+      this.#clients.add(client);
+      const wt = await client.webtransport(url.pathname + url.search, {
+        protocols: [CLUSTER_PROTOCOL],
+        ...(certHash !== undefined
+          ? {
+              serverCertificateHashes: [
+                {
+                  algorithm: 'sha-256' as const,
+                  value: Uint8Array.from(
+                    certHash.match(/../g)!.map((byte) => parseInt(byte, 16)),
+                  ),
+                },
+              ],
+            }
+          : {}),
+      });
+      await wt.ready;
+      const control = await wt.createBidirectionalStream();
+      const writer = control.writable.getWriter();
+      await writeMetadata(writer, { v: 1, kind: 'control' });
+      this.#readSessionStream(control, writer, nodeId);
+      await writeMessage(writer, {
+        t: 'HELLO',
+        nodeId: this.#options.nodeId,
+        load: { cpu: 0, memory: 0 },
+        incarnation: this.#options.incarnation,
+        ...(this.#options.token !== undefined ? { token: this.#options.token } : {}),
+        ...(this.#options.clusterId !== null ? { clusterId: this.#options.clusterId } : {}),
+      });
+      const conn: PeerConnection = { wt, control: writer, queue: Promise.resolve() };
+      this.#sessions.set(nodeId, conn);
+      wt.closed.finally(() => this.#dropSession(nodeId, conn)).catch(() => {});
+      void this.#readIncoming(wt, nodeId);
+      return true;
+    } catch {
+      // A failed dial is not fatal: traffic keeps flowing through the seed.
+      return false;
+    } finally {
+      this.#dialing.delete(nodeId);
+    }
+  }
+
+  /**
+   * Send over the direct session to `to`. Returns false when no session
+   * exists, so the caller can fall back to the seed path.
+   */
+  send(to: string, msg: ClusterMessage): boolean {
+    const conn = this.#sessions.get(to);
+    if (conn === undefined) return false;
+    void enqueueConnectionSend(conn, () => sendMeshMessage(conn.wt, msg)).catch((err: unknown) => {
+      if (!isExpectedCloseError(err)) {
+        console.error(`fino:cluster peer write failed: ${err}`);
+      }
+      this.#dropSession(to, conn);
+    });
+    return true;
+  }
+
+  /** Close every session and the listener. */
+  close(): void {
+    this.#closed = true;
+    for (const [nodeId, conn] of this.#sessions) {
+      this.#sessions.delete(nodeId);
+      closeConnection(conn);
+    }
+    for (const wt of this.#inbound) {
+      try {
+        wt.close();
+      } catch {}
+    }
+    this.#inbound.clear();
+    for (const client of this.#clients) {
+      void client.close().catch(() => {});
+    }
+    this.#clients.clear();
+    this.#server?.close().catch(() => {});
+    this.#server = null;
+    this.#handlers = [];
+  }
+
+  async #acceptSession(wt: WebTransport): Promise<void> {
+    await wt.ready;
+    let peerNodeId: string | null = null;
+    this.#inbound.add(wt);
+    const streams = wt.incomingBidirectionalStreams.getReader();
+    wt.closed
+      .finally(() => {
+        this.#inbound.delete(wt);
+        if (peerNodeId !== null) {
+          const conn = this.#sessions.get(peerNodeId);
+          if (conn !== undefined) this.#dropSession(peerNodeId, conn);
+        }
+      })
+      .catch(() => {});
+    try {
+      while (true) {
+        const read = await streams.read();
+        if (read.done) break;
+        const stream = read.value;
+        if (stream === undefined) continue;
+        let streamWriter: StreamWriter | null = null;
+        void readClusterStream(
+          stream,
+          async (metadata, writer) => {
+            if (metadata.kind === 'control') streamWriter = writer;
+          },
+          (metadata, msg) => {
+            if (msg.t === 'HELLO') {
+              if (!this.#admit(msg)) {
+                // Refused: drop the whole session rather than the stream, so
+                // an unauthenticated dialer holds no resources here. The
+                // session stays tracked until its close handler fires, so a
+                // teardown that races the refusal still reaps it.
+                if (streamWriter !== null) closeWriter(streamWriter);
+                wt.close();
+                return;
+              }
+              peerNodeId = msg.nodeId;
+              this.#incarnations.set(msg.nodeId, msg.incarnation ?? 0);
+              this.#sessions.set(peerNodeId, {
+                wt,
+                control: streamWriter,
+                queue: Promise.resolve(),
+              });
+              return;
+            }
+            if (peerNodeId === null) return;
+            for (const handler of this.#handlers) handler(peerNodeId, msg);
+          },
+          (metadata) => {
+            void metadata;
+          },
+        ).catch((err: unknown) => {
+          if (!isExpectedCloseError(err)) {
+            console.error(`fino:cluster peer received malformed stream: ${err}`);
+          }
+        });
+      }
+    } finally {
+      try {
+        streams.releaseLock();
+      } catch {}
+    }
+  }
+
+  /** Authenticate and fence one inbound peer handshake. */
+  #admit(msg: Extract<ClusterMessage, { t: 'HELLO' }>): boolean {
+    if (this.#options.token !== undefined && msg.token !== this.#options.token) return false;
+    if (
+      this.#options.clusterId !== null &&
+      msg.clusterId !== undefined &&
+      msg.clusterId !== this.#options.clusterId
+    ) {
+      return false;
+    }
+    const known = this.#incarnations.get(msg.nodeId);
+    if (known !== undefined && msg.incarnation !== undefined && msg.incarnation < known) {
+      // A replaced process must not reclaim the session it lost.
+      return false;
+    }
+    return true;
+  }
+
+  async #readIncoming(wt: WebTransport, nodeId: string): Promise<void> {
+    const streams = wt.incomingBidirectionalStreams.getReader();
+    try {
+      while (true) {
+        const read = await streams.read();
+        if (read.done) break;
+        const stream = read.value;
+        if (stream === undefined) continue;
+        void readClusterStream(
+          stream,
+          async () => {},
+          (metadata, msg) => {
+            void metadata;
+            for (const handler of this.#handlers) handler(nodeId, msg);
+          },
+          () => {},
+        ).catch((err: unknown) => {
+          if (!isExpectedCloseError(err)) {
+            console.error(`fino:cluster peer stream error: ${err}`);
+          }
+        });
+      }
+    } catch {
+      // Session teardown is handled by the closed promise.
+    } finally {
+      try {
+        streams.releaseLock();
+      } catch {}
+    }
+  }
+
+  #readSessionStream(
+    stream: { readable: unknown; writable: unknown },
+    writer: StreamWriter,
+    nodeId: string,
+  ): void {
+    void readClusterStream(
+      stream as never,
+      async () => {},
+      (metadata, msg) => {
+        void metadata;
+        for (const handler of this.#handlers) handler(nodeId, msg);
+      },
+      () => {},
+    ).catch((err: unknown) => {
+      if (!isExpectedCloseError(err)) {
+        console.error(`fino:cluster peer control stream error: ${err}`);
+      }
+    });
+    void writer;
+  }
+
+  #dropSession(nodeId: string, conn: PeerConnection): void {
+    const current = this.#sessions.get(nodeId);
+    if (current !== conn) return;
+    this.#sessions.delete(nodeId);
+    closeConnection(conn);
+  }
+}

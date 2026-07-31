@@ -71,6 +71,7 @@ import {
   scheduledRealmSend,
   takeScheduledRealmStatus,
 } from 'internal:scheduler-native';
+import type { PeerMesh } from './webtransport-transport.ts';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { BaseTransportPort } from 'internal:realm/transport-port';
 import { env } from 'internal:process';
@@ -228,13 +229,27 @@ export class ClusterClient {
   constructor(
     transport: ClusterTransport,
     nodeId: string,
-    options: { loadSampler?: () => NodeLoad; incarnation?: number } = {},
+    options: {
+      loadSampler?: () => NodeLoad;
+      incarnation?: number;
+      mesh?: PeerMesh;
+    } = {},
   ) {
     this.nodeId = nodeId;
     this.#transport = transport;
     this.#loadSampler = options.loadSampler ?? null;
     this.#incarnation = options.incarnation;
+    this.#mesh = options.mesh ?? null;
+    this.#mesh?.on((from, msg) => this.#handle(from, msg));
   }
+  /**
+   * Direct peer sessions. When a session to the destination exists, realm
+   * traffic goes straight there and never touches the seed; otherwise the
+   * seed relays as before.
+   *
+   * @internal
+   */
+  #mesh: PeerMesh | null;
   /** Incarnation echoed in every heartbeat so the seed can fence stale processes. @internal */
   #incarnation: number | undefined;
   /**
@@ -380,13 +395,18 @@ export class ClusterClient {
     const targetNodeId = nodeIdFromId(toPort);
     const seq = (this.#outboundPortSequences.get(fromPort) ?? 0) + 1;
     this.#outboundPortSequences.set(fromPort, seq);
-    this.#transport.send(targetNodeId, {
+    const msg: ClusterMessage = {
       t: 'PORT_MSG',
       fromPort,
       toPort,
       payload: parts,
       seq,
-    });
+    };
+    // Per-port sequencing is assigned before the path is chosen, so a pair
+    // that gains a direct session mid-stream stays correctly ordered at the
+    // receiver even though earlier frames arrived via the seed.
+    if (this.#mesh?.send(targetNodeId, msg) === true) return;
+    this.#transport.send(targetNodeId, msg);
   }
   /**
    * Spawn a realm on a remote node by sending SPAWN through the seed.
