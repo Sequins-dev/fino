@@ -80,14 +80,6 @@ function previousTokens(ids: readonly number[]): number[] {
   return out;
 }
 
-// KNOWN FLAKE. Running the whole suite in one process segfaults here in roughly a
-// third of runs; these tests pass consistently on their own and in `tests/tensor/`.
-// The crash is not caused by anything this file does — it survives removing every
-// disposal here — and it has been ruled out for dispatch batching, the Vulkan
-// descriptor-write reduction, deferred buffer destruction, and command-pool reset
-// ordering, each tested by reverting it and reproducing anyway. It needs the memory
-// pressure of the preceding ~840 tests to appear at all, which points at something
-// reclaiming memory that is still referenced rather than at any operation here.
 describe('a miniature transformer', () => {
   it('learns to read one position back, on every device', async (t) => {
     for (const dev of await listDevices()) {

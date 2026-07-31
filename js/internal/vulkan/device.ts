@@ -797,6 +797,18 @@ export class VulkanCompute {
   #submittedValue = 0n;
 
   /**
+   * Argument graphs belonging to calls that have not returned.
+   *
+   * An asynchronous call reads its arguments on another thread, for as long as it
+   * takes. The FFI pins the buffer it is passed, but a structure that points at other
+   * allocations keeps those alive only through the chain that built it — and a local
+   * that is never read again is collectable the moment the call is issued.
+   *
+   * @internal
+   */
+  #awaited = new Set<StructChain>();
+
+  /**
    * Open a command buffer to record into, or return the one already open.
    *
    * @internal
@@ -1032,11 +1044,22 @@ export class VulkanCompute {
         pValues: chain.addressOf(BigUint64Array.from([value])),
       }),
     );
-    const result = (await this.#lib.symbols.vkWaitSemaphores(
-      this.#device,
-      info,
-      VK_FOREVER,
-    )) as number;
+    // The call is asynchronous, and the FFI pins only the buffer it is handed — not
+    // the arrays that buffer points at. Those live in the chain, and nothing refers to
+    // the chain after the call is issued, so a garbage collection during the wait was
+    // free to reclaim them while the driver was still reading. Holding it somewhere
+    // reachable for the duration is the whole fix.
+    this.#awaited.add(chain);
+    let result: number;
+    try {
+      result = (await this.#lib.symbols.vkWaitSemaphores(
+        this.#device,
+        info,
+        VK_FOREVER,
+      )) as number;
+    } finally {
+      this.#awaited.delete(chain);
+    }
     check('vkWaitSemaphores', result);
     // Everything submitted up to this point has completed, so the recorded
     // command buffers and their referenced memory can be released.

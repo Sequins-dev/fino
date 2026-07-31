@@ -20,12 +20,48 @@ mod typescript_format;
 mod v8_isolate_group;
 mod v8util;
 
+/// Print a backtrace for a fatal fault, then leave.
+///
+/// Calling into the backtrace machinery from a signal handler is not async-signal-safe
+/// and can itself hang; it is good enough to identify where a crash comes from, which
+/// is all this is for.
+#[cfg(unix)]
+extern "C" fn crash_handler(signal: i32) {
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    eprintln!("\n=== fino caught signal {signal} ===\n{backtrace}");
+    unsafe { libc::_exit(139) };
+}
+
 fn main() {
     // Server processes must not die on broken-pipe writes. Network connections
     // can be reset by the remote at any time; SIGPIPE would kill the process.
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+
+    // Temporary crash diagnostics: print a native backtrace on a fault instead of
+    // dying silently. Enabled by FINO_CRASH_BACKTRACE so it costs nothing otherwise.
+    #[cfg(unix)]
+    if std::env::var_os("FINO_CRASH_BACKTRACE").is_some() {
+        unsafe {
+            libc::signal(
+                libc::SIGSEGV,
+                crash_handler as *const () as libc::sighandler_t,
+            );
+            libc::signal(
+                libc::SIGBUS,
+                crash_handler as *const () as libc::sighandler_t,
+            );
+            libc::signal(
+                libc::SIGILL,
+                crash_handler as *const () as libc::sighandler_t,
+            );
+            libc::signal(
+                libc::SIGABRT,
+                crash_handler as *const () as libc::sighandler_t,
+            );
+        }
     }
 
     // Linux signalfd only receives signals that are blocked in the receiving
