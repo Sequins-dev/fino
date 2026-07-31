@@ -1018,8 +1018,11 @@ export class VulkanCompute {
    * works.
    */
   async waitFor(value: bigint): Promise<void> {
-    // An unsubmitted command buffer will never signal, so it goes first.
-    if (value > this.#submittedValue) this.flush();
+    // Unconditionally, not just when the value needs it. Waiting ends by resetting the
+    // command pool, which frees every buffer allocated from it — including the one
+    // still being recorded into. Flushing first is what keeps a later dispatch from
+    // recording into freed memory, and it is a no-op when nothing is open.
+    this.flush();
     const chain = new StructChain();
     const info = chain.hold(
       VkSemaphoreWaitInfo.make({
@@ -1047,6 +1050,11 @@ export class VulkanCompute {
       this.#lib.symbols.vkResetDescriptorPool(this.#device, this.#descriptorPool, 0) as number,
     );
     this.#setsUsed = 0;
+    // The reset freed every command buffer, so nothing may still be treated as open.
+    // `flush` above has already cleared this; saying so here means a future caller that
+    // resets without flushing fails loudly rather than recording into freed memory.
+    this.#openCommand = null;
+    this.#encoded = 0;
   }
 
   /**

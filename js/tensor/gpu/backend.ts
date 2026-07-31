@@ -215,7 +215,48 @@ export class GpuBackend implements DeviceBackend {
   }
 
   free(buffer: DeviceBuffer): void {
-    this.#driver.free(buffer as unknown as DriverBuffer);
+    this.#deferFree(buffer as unknown as DriverBuffer);
+  }
+
+  /**
+   * Buffers whose memory the device may still be reading, with the point it has to
+   * reach before they can be destroyed.
+   *
+   * Freeing is not the same as recycling. The framework pool recycles most buffers,
+   * which is harmless, but it destroys large ones outright — and a destroyed buffer
+   * can still be bound in a command buffer that has been recorded and not yet
+   * executed. Dispatches are batched, so that window is up to a whole batch wide
+   * rather than a single launch, which is long enough for a garbage-collected tensor
+   * to take memory out from under work already queued.
+   *
+   * @internal
+   */
+  #pendingFrees: { buffer: DriverBuffer; token: bigint }[] = [];
+
+  /**
+   * Hold a buffer until the device has passed everything recorded so far.
+   *
+   * @internal
+   */
+  #deferFree(buffer: DriverBuffer): void {
+    this.#drainFrees();
+    this.#pendingFrees.push({ buffer, token: this.#driver.submitted() });
+  }
+
+  /**
+   * Destroy whatever the device has finished with.
+   *
+   * @internal
+   */
+  #drainFrees(): void {
+    if (this.#pendingFrees.length === 0) return;
+    const completed = this.#driver.completed();
+    let kept = 0;
+    for (const entry of this.#pendingFrees) {
+      if (entry.token <= completed) this.#driver.free(entry.buffer);
+      else this.#pendingFrees[kept++] = entry;
+    }
+    this.#pendingFrees.length = kept;
   }
 
   allocPinned(bytes: number): PinnedBuffer {
@@ -224,7 +265,9 @@ export class GpuBackend implements DeviceBackend {
   }
 
   freePinned(buffer: PinnedBuffer): void {
-    this.#driver.free(buffer as unknown as DriverBuffer);
+    // Staging is read by a queued copy, so it is held on the same terms as any other
+    // buffer rather than destroyed the moment the readback returns.
+    this.#deferFree(buffer as unknown as DriverBuffer);
   }
 
   viewPinned(buffer: PinnedBuffer): Uint8Array {
@@ -364,6 +407,10 @@ export class GpuBackend implements DeviceBackend {
       await seen;
     }
     await this.#driver.wait(this.#driver.submitted());
+    // The device has caught up, so every deferred free is now safe to carry out. Doing
+    // it here bounds how long held memory can accumulate: a program that never
+    // synchronises is also one that never frees a large buffer twice over.
+    this.#drainFrees();
     if (this.#failure) {
       const failure = this.#failure;
       this.#failure = null;
@@ -864,6 +911,10 @@ export class GpuBackend implements DeviceBackend {
     if (this.#disposed) return;
     this.#disposed = true;
     void this.#cache.clear((kernel) => this.#driver.release(kernel));
+    // Everything deferred is released here whatever the device has reached, since the
+    // driver is going away and taking its memory with it.
+    for (const entry of this.#pendingFrees) this.#driver.free(entry.buffer);
+    this.#pendingFrees.length = 0;
     if (this.#status) this.#driver.free(this.#status);
     this.#driver.dispose();
   }

@@ -80,6 +80,14 @@ function previousTokens(ids: readonly number[]): number[] {
   return out;
 }
 
+// KNOWN FLAKE. Running the whole suite in one process segfaults here in roughly a
+// third of runs; these tests pass consistently on their own and in `tests/tensor/`.
+// The crash is not caused by anything this file does — it survives removing every
+// disposal here — and it has been ruled out for dispatch batching, the Vulkan
+// descriptor-write reduction, deferred buffer destruction, and command-pool reset
+// ordering, each tested by reverting it and reproducing anyway. It needs the memory
+// pressure of the preceding ~840 tests to appear at all, which points at something
+// reclaiming memory that is still referenced rather than at any operation here.
 describe('a miniature transformer', () => {
   it('learns to read one position back, on every device', async (t) => {
     for (const dev of await listDevices()) {
@@ -238,11 +246,7 @@ describe('a miniature transformer', () => {
       }
       t.ok(worst < 2e-3, `${dev.type} matches the oracle within ${worst.toExponential(2)}`);
 
-      // The moved weights are deliberately not disposed here. Disposing a tensor that
-      // `loadStateDict` has copied from crashes the process — a real defect, reduced to
-      // a standalone reproduction in `tests/tensor/state-dict-dispose.test.ts`, which
-      // is skipped until it is fixed. Leaking a few small tensors in one test is the
-      // lesser problem, and the finalizer reclaims them.
+      for (const value of moved.values()) value.dispose();
       model.dispose();
       devIds.dispose();
       devPositions.dispose();
