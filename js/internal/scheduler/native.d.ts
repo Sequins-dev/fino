@@ -10,7 +10,7 @@
 export function currentWorkloadOwner(): number;
 export function usesProcessReadiness(): boolean;
 export function setSchedulerPollingRequired(callback: () => boolean): void;
-export function createWorkload(entryPath: string): number;
+export function createWorkload(entryPath: string, systemClass?: boolean): number;
 export function terminateWorkload(handle: number): void;
 export function workloadWakeFd(handle: number): number;
 export function workloadOwner(handle: number): number;
@@ -22,6 +22,7 @@ export function createScheduledRealm(
   realmData: unknown,
   bootstrapData: unknown,
   repl: boolean,
+  systemClass?: boolean,
 ): {
   handle: number;
   owner: number;
@@ -42,11 +43,16 @@ export function takeScheduledRealmStatus(handle: number): {
 };
 export function closeScheduledRealm(handle: number): void;
 
-export function createReactorQueue(): {
+export function createReactorQueue(install?: boolean): {
   handle: number;
   controlFd: number;
 };
 export function submitReactorWorkload(queue: number, workload: number): number;
+export function markSheddingWorkload(queue: number): number;
+export function takeShedWorkload(queue: number, owner: number): number | null;
+export function clearSheddingWorkload(queue: number, owner: number): boolean;
+export function resubmitShedWorkload(queue: number, shedWorkload: number): number;
+export function dropShedWorkload(shedWorkload: number): void;
 export function createReactorThread(queue: number): {
   handle: number;
   worker: number;

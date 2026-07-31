@@ -11,7 +11,7 @@ use std::{
     os::unix::io::RawFd,
     rc::Rc,
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Condvar, Mutex, RwLock, Weak,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc,
     },
@@ -70,6 +70,7 @@ struct WorkloadSpecInner {
 
 struct WorkloadSpec {
     owner: u32,
+    class: u8,
     inner: Option<Box<WorkloadSpecInner>>,
 }
 
@@ -651,8 +652,29 @@ enum PoolWorkload {
     Live(TransferWorkload),
 }
 
+fn pool_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("FINO_POOL_TRACE").is_some())
+}
+
+macro_rules! pool_trace {
+    ($($arg:tt)*) => {
+        if pool_trace_enabled() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+/// Ordinary application realms.
+const CLASS_APP: u8 = 0;
+/// The node's system realm: outranks every app realm whenever it has
+/// unserviced readiness signals, and (having no heap entry) costs nothing
+/// when it has none. Never eligible for shedding.
+const CLASS_SYSTEM: u8 = 1;
+
 struct PoolItem {
     owner: u32,
+    class: u8,
     workload: PoolWorkload,
 }
 
@@ -670,27 +692,61 @@ struct Resident {
     active: ActiveWorkload,
 }
 
+// Field order defines the derived ordering: class dominates, then signal
+// count, then recency.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 struct ReadyEntry {
+    class: u8,
     priority: usize,
     generation: u64,
     owner: u32,
 }
 
-struct PoolSharedInner {
-    parked: HashMap<u32, PoolItem>,
-    events: VecDeque<PoolEvent>,
+struct PoolQueue {
     ready: BinaryHeap<ReadyEntry>,
     priorities: HashMap<u32, usize>,
     generations: HashMap<u32, u64>,
+    classes: HashMap<u32, u8>,
+    /// Pre-init specs with an in-flight shed offer. Still claimable by local
+    /// reactors — a local claim clears the mark, and the shed commit fails.
+    shedding: HashSet<u32>,
     active: HashSet<u32>,
     shutdown: bool,
-    next_worker: usize,
+}
+
+/// The read/keep decision a claim can make without touching the write lock.
+enum PeekOutcome {
+    /// The best candidate does not beat the resident workload: keep it.
+    KeepCurrent,
+    /// Nothing is claimable; wait for a wake.
+    NoWork,
+    /// The queue must change (take work, consume a signal, clean stale
+    /// entries, or skip an active owner): escalate to the write lock.
+    Escalate,
 }
 
 struct PoolShared {
-    inner: Mutex<PoolSharedInner>,
+    /// Queue state. Reads dominate — most claims compare the best candidate
+    /// against the resident workload and keep the resident, which never
+    /// mutates. Every mutation (dequeue, enqueue, shed, reclaim) takes the
+    /// write lock, so head-pulls and tail-takes cannot race.
+    queue: RwLock<PoolQueue>,
+    /// Parked workload payloads. Locked ONLY while holding the `queue` write
+    /// lock — this is a field of the same lock domain, not a second one; it
+    /// is a `Mutex` because workload payloads are `Send` but not `Sync`, and
+    /// the read path never inspects them.
+    parked: Mutex<HashMap<u32, PoolItem>>,
+    /// Worker parking. `Condvar` pairs with a `Mutex`, so sleep/wake lives
+    /// beside the queue lock rather than under it. Writers bump `epoch` after
+    /// mutating and notify while briefly holding `sleep`; waiters snapshot
+    /// `epoch` before peeking and re-check it under `sleep` before waiting,
+    /// so a wake between peek and wait is never lost — and the fast path
+    /// pays only an atomic load.
+    sleep: Mutex<()>,
+    epoch: AtomicU64,
     changed: Condvar,
+    events: Mutex<VecDeque<PoolEvent>>,
+    next_worker: std::sync::atomic::AtomicUsize,
     wake_read: i32,
     wake_write: i32,
 }
@@ -704,22 +760,34 @@ impl PoolShared {
                 libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
             }
         }
-        let inner = PoolSharedInner {
-            parked: HashMap::new(),
-            events: VecDeque::new(),
+        let queue = PoolQueue {
             ready: BinaryHeap::new(),
             priorities: HashMap::new(),
             generations: HashMap::new(),
+            classes: HashMap::new(),
+            shedding: HashSet::new(),
             active: HashSet::new(),
             shutdown: false,
-            next_worker: 0,
         };
         Self {
-            inner: Mutex::new(inner),
+            queue: RwLock::new(queue),
+            parked: Mutex::new(HashMap::new()),
+            sleep: Mutex::new(()),
+            epoch: AtomicU64::new(0),
             changed: Condvar::new(),
+            events: Mutex::new(VecDeque::new()),
+            next_worker: std::sync::atomic::AtomicUsize::new(0),
             wake_read: fds[0],
             wake_write: fds[1],
         }
+    }
+
+    fn wake_all(&self) {
+        self.epoch.fetch_add(1, Ordering::Release);
+        // Passing through the sleep mutex orders this wake after any waiter's
+        // epoch re-check, so the notify cannot land in its check-to-wait gap.
+        drop(self.sleep.lock().unwrap());
+        self.changed.notify_all();
     }
 
     fn submit(self: &Arc<Self>, item: PoolItem) -> u32 {
@@ -728,28 +796,32 @@ impl PoolShared {
             .lock()
             .unwrap()
             .insert(owner, Arc::downgrade(self));
-        let mut inner = self.inner.lock().unwrap();
-        debug_assert!(!inner.shutdown, "cannot submit work to a stopped reactor");
-        debug_assert!(
-            !inner.parked.contains_key(&owner) && !inner.active.contains(&owner),
-            "workload {owner} is already in the reactor"
-        );
-        inner.parked.insert(owner, item);
-        Self::signal_inner(&mut inner, owner);
-        drop(inner);
-        self.changed.notify_all();
+        {
+            let mut queue = self.queue.write().unwrap();
+            let mut parked = self.parked.lock().unwrap();
+            debug_assert!(!queue.shutdown, "cannot submit work to a stopped reactor");
+            debug_assert!(
+                !parked.contains_key(&owner) && !queue.active.contains(&owner),
+                "workload {owner} is already in the reactor"
+            );
+            queue.classes.insert(owner, item.class);
+            parked.insert(owner, item);
+            Self::signal_present(&mut queue, owner);
+        }
+        pool_trace!("pool: submit owner={owner}");
+        self.wake_all();
         owner
     }
 
-    fn signal_inner(inner: &mut PoolSharedInner, owner: u32) {
-        if !inner.parked.contains_key(&owner) && !inner.active.contains(&owner) {
-            return;
-        }
-        let priority = inner.priorities.entry(owner).or_default();
+    /// Push a ready entry for an owner known to be parked or active.
+    fn signal_present(queue: &mut PoolQueue, owner: u32) {
+        let class = queue.classes.get(&owner).copied().unwrap_or(CLASS_APP);
+        let priority = queue.priorities.entry(owner).or_default();
         *priority += 1;
-        let generation = inner.generations.entry(owner).or_default();
+        let generation = queue.generations.entry(owner).or_default();
         *generation += 1;
-        inner.ready.push(ReadyEntry {
+        queue.ready.push(ReadyEntry {
+            class,
             priority: *priority,
             generation: *generation,
             owner,
@@ -757,81 +829,194 @@ impl PoolShared {
     }
 
     fn signal(&self, owner: u32) {
-        Self::signal_inner(&mut self.inner.lock().unwrap(), owner);
-        self.changed.notify_all();
+        {
+            let mut queue = self.queue.write().unwrap();
+            let parked = self.parked.lock().unwrap();
+            if !parked.contains_key(&owner) && !queue.active.contains(&owner) {
+                pool_trace!("pool: signal owner={owner} absent");
+                return;
+            }
+            drop(parked);
+            Self::signal_present(&mut queue, owner);
+        }
+        pool_trace!("pool: signal owner={owner}");
+        self.wake_all();
     }
 
-    fn claim(&self, current: Option<u32>, stop: &AtomicBool, current_state: CurrentState) -> Claim {
-        let mut inner = self.inner.lock().unwrap();
+    /// The read-only claim decision. The dominant outcome under load is
+    /// `KeepCurrent` — the resident workload stays — which must not serialize
+    /// concurrent reactors, so it peeks without consuming signals or cleaning
+    /// stale entries; those are deferred to the write path.
+    fn peek_claim(queue: &PoolQueue, current: Option<u32>) -> PeekOutcome {
+        let Some(entry) = queue.ready.peek() else {
+            return PeekOutcome::NoWork;
+        };
+        let live_generation = queue.generations.get(&entry.owner).copied().unwrap_or(0);
+        let live_priority = queue.priorities.get(&entry.owner).copied().unwrap_or(0);
+        if entry.generation != live_generation || entry.priority != live_priority {
+            // A stale top can hide real candidates beneath it.
+            return PeekOutcome::Escalate;
+        }
+        if queue.active.contains(&entry.owner) {
+            // Another worker's resident (skip) or the caller's own pending
+            // signal (consume): both mutate the heap.
+            return PeekOutcome::Escalate;
+        }
+        let Some(current) = current else {
+            return PeekOutcome::Escalate;
+        };
+        let current_key = (
+            queue.classes.get(&current).copied().unwrap_or(CLASS_APP),
+            queue.priorities.get(&current).copied().unwrap_or(0),
+        );
+        // Strictly-less only: an equal-priority candidate must go through the
+        // write path, which consumes the resident's signal count as it keeps
+        // it — that decay is what lets an equal waiter win the next round.
+        // Treating equality as a read-only keep starves the waiter forever.
+        if (entry.class, entry.priority) < current_key {
+            PeekOutcome::KeepCurrent
+        } else {
+            PeekOutcome::Escalate
+        }
+    }
+
+    /// The mutating claim path: the previous single-lock algorithm, minus the
+    /// wait states. `None` means no candidate survived — the caller waits.
+    fn claim_write(&self, current: Option<u32>) -> Option<Claim> {
+        let mut queue = self.queue.write().unwrap();
         loop {
-            if inner.shutdown || stop.load(Ordering::Acquire) {
-                return Claim::Shutdown;
+            if queue.shutdown {
+                return Some(Claim::Shutdown);
             }
             let mut skipped = Vec::new();
             let candidate = loop {
-                let Some(entry) = inner.ready.pop() else {
+                let Some(entry) = queue.ready.pop() else {
                     break None;
                 };
-                let current_generation = inner.generations.get(&entry.owner).copied().unwrap_or(0);
-                let current_priority = inner.priorities.get(&entry.owner).copied().unwrap_or(0);
-                if entry.generation != current_generation || entry.priority != current_priority {
+                let live_generation = queue.generations.get(&entry.owner).copied().unwrap_or(0);
+                let live_priority = queue.priorities.get(&entry.owner).copied().unwrap_or(0);
+                if entry.generation != live_generation || entry.priority != live_priority {
                     continue;
                 }
-                if inner.active.contains(&entry.owner) && Some(entry.owner) != current {
+                if queue.active.contains(&entry.owner) && Some(entry.owner) != current {
                     skipped.push(entry);
                     continue;
                 }
                 break Some(entry);
             };
             for entry in skipped {
-                inner.ready.push(entry);
+                queue.ready.push(entry);
             }
 
-            if let Some(candidate) = candidate {
-                let current_priority = current
-                    .and_then(|owner| inner.priorities.get(&owner).copied())
-                    .unwrap_or(0);
-                let owner = if let Some(current) = current {
-                    if candidate.owner != current && candidate.priority <= current_priority {
-                        current
-                    } else {
-                        candidate.owner
-                    }
+            let Some(candidate) = candidate else {
+                return None;
+            };
+            let owner = if let Some(current) = current {
+                let current_key = (
+                    queue.classes.get(&current).copied().unwrap_or(CLASS_APP),
+                    queue.priorities.get(&current).copied().unwrap_or(0),
+                );
+                if candidate.owner != current
+                    && (candidate.class, candidate.priority) <= current_key
+                {
+                    current
                 } else {
                     candidate.owner
-                };
-                inner.priorities.remove(&owner);
-                if owner != candidate.owner {
-                    inner.ready.push(candidate);
                 }
-                if Some(owner) == current {
-                    return Claim::Current;
+            } else {
+                candidate.owner
+            };
+            queue.priorities.remove(&owner);
+            if owner != candidate.owner {
+                queue.ready.push(candidate);
+            }
+            if Some(owner) == current {
+                return Some(Claim::Current);
+            }
+            let Some(item) = self.parked.lock().unwrap().remove(&owner) else {
+                pool_trace!("pool: claim owner={owner} not parked, retrying");
+                continue;
+            };
+            // A local claim always wins over an in-flight shed offer.
+            queue.shedding.remove(&owner);
+            queue.active.insert(owner);
+            pool_trace!("pool: claim owner={owner}");
+            return Some(Claim::Work(item));
+        }
+    }
+
+    fn claim(
+        &self,
+        current: Option<u32>,
+        stop: &AtomicBool,
+        current_state: CurrentState,
+        force_write: bool,
+    ) -> Claim {
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Claim::Shutdown;
+            }
+            // Snapshot the wake epoch before inspecting the queue so a signal
+            // arriving after the peek is caught before sleeping.
+            let epoch = self.epoch.load(Ordering::Acquire);
+            let outcome = {
+                let queue = self.queue.read().unwrap();
+                if queue.shutdown {
+                    return Claim::Shutdown;
                 }
-                let Some(item) = inner.parked.remove(&owner) else {
-                    continue;
-                };
-                inner.active.insert(owner);
-                return Claim::Work(item);
+                match Self::peek_claim(&queue, current) {
+                    // A long run of read-only keeps must periodically pass
+                    // through the write path so the resident's signal count
+                    // decays and strictly-lower waiters cannot starve.
+                    PeekOutcome::KeepCurrent if force_write => PeekOutcome::Escalate,
+                    outcome => outcome,
+                }
+            };
+            match outcome {
+                PeekOutcome::KeepCurrent => return Claim::Current,
+                PeekOutcome::Escalate => {
+                    if let Some(claim) = self.claim_write(current) {
+                        return claim;
+                    }
+                    // No claimable candidate under the write lock — the top
+                    // entries belong to owners active elsewhere (or were
+                    // stale). Fall through and wait; spinning here would burn
+                    // a core until that owner parks. The epoch check below
+                    // catches any signal that arrived since the snapshot.
+                }
+                PeekOutcome::NoWork => {}
             }
             if current.is_some() {
                 match current_state {
                     CurrentState::Runnable => return Claim::Current,
                     CurrentState::Polling => {
-                        let (next, timeout) = self
+                        let sleep = self.sleep.lock().unwrap();
+                        if self.epoch.load(Ordering::Acquire) != epoch {
+                            continue;
+                        }
+                        let (guard, timeout) = self
                             .changed
-                            .wait_timeout(inner, std::time::Duration::from_millis(1))
+                            .wait_timeout(sleep, std::time::Duration::from_millis(1))
                             .unwrap();
-                        inner = next;
+                        drop(guard);
                         if timeout.timed_out() {
                             return Claim::Current;
                         }
                     }
                     CurrentState::Parked => {
-                        inner = self.changed.wait(inner).unwrap();
+                        let sleep = self.sleep.lock().unwrap();
+                        if self.epoch.load(Ordering::Acquire) != epoch {
+                            continue;
+                        }
+                        drop(self.changed.wait(sleep).unwrap());
                     }
                 }
             } else {
-                inner = self.changed.wait(inner).unwrap();
+                let sleep = self.sleep.lock().unwrap();
+                if self.epoch.load(Ordering::Acquire) != epoch {
+                    continue;
+                }
+                drop(self.changed.wait(sleep).unwrap());
             }
         }
     }
@@ -840,25 +1025,122 @@ impl PoolShared {
         let Resident { mut item, active } = resident;
         let owner = item.owner;
         deactivate(item.live_mut(), active);
-        let mut inner = self.inner.lock().unwrap();
-        inner.active.remove(&owner);
-        inner.parked.insert(owner, item);
-        drop(inner);
-        self.changed.notify_all();
+        {
+            let mut queue = self.queue.write().unwrap();
+            queue.active.remove(&owner);
+            self.parked.lock().unwrap().insert(owner, item);
+        }
+        pool_trace!("pool: park owner={owner}");
+        self.wake_all();
     }
 
     fn finish(&self, owner: u32) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.active.remove(&owner);
-        inner.priorities.remove(&owner);
-        inner.generations.remove(&owner);
-        drop(inner);
+        {
+            let mut queue = self.queue.write().unwrap();
+            queue.active.remove(&owner);
+            queue.priorities.remove(&owner);
+            queue.generations.remove(&owner);
+            queue.classes.remove(&owner);
+            queue.shedding.remove(&owner);
+        }
         owner_pools().lock().unwrap().remove(&owner);
-        self.changed.notify_all();
+        pool_trace!("pool: finish owner={owner}");
+        self.wake_all();
+    }
+
+    /// Pick the lowest-priority pre-init app workload as a shed candidate and
+    /// mark it. Comparative order: least signal count first, oldest first —
+    /// if everything is high priority, the least-high item is still chosen.
+    fn mark_shedding_lowest(&self) -> u32 {
+        let mut queue = self.queue.write().unwrap();
+        let parked = self.parked.lock().unwrap();
+        let mut best: Option<(usize, u64, u32)> = None;
+        for (owner, item) in parked.iter() {
+            if !matches!(item.workload, PoolWorkload::Pending(_)) {
+                continue;
+            }
+            if item.class != CLASS_APP || queue.shedding.contains(owner) {
+                continue;
+            }
+            let priority = queue.priorities.get(owner).copied().unwrap_or(0);
+            let generation = queue.generations.get(owner).copied().unwrap_or(0);
+            let key = (priority, generation, *owner);
+            if best.is_none_or(|current| key < current) {
+                best = Some(key);
+            }
+        }
+        drop(parked);
+        match best {
+            Some((_, _, owner)) => {
+                queue.shedding.insert(owner);
+                owner
+            }
+            None => 0,
+        }
+    }
+
+    /// Commit a shed: remove the marked spec from the queue. Fails (returns
+    /// `None`) if a local reactor claimed the workload since it was marked —
+    /// local execution always wins.
+    fn take_shed(&self, owner: u32) -> Option<(WorkloadSpec, usize, u8)> {
+        let (spec, priority, class) = {
+            let mut queue = self.queue.write().unwrap();
+            let mut parked = self.parked.lock().unwrap();
+            if !queue.shedding.remove(&owner) {
+                return None;
+            }
+            match parked.get(&owner) {
+                Some(item) if matches!(item.workload, PoolWorkload::Pending(_)) => {}
+                _ => return None,
+            }
+            let item = parked.remove(&owner).unwrap();
+            let priority = queue.priorities.remove(&owner).unwrap_or(0);
+            queue.generations.remove(&owner);
+            queue.classes.remove(&owner);
+            let PoolWorkload::Pending(spec) = item.workload else {
+                unreachable!("checked above");
+            };
+            (spec, priority, item.class)
+        };
+        owner_pools().lock().unwrap().remove(&owner);
+        Some((spec, priority, class))
+    }
+
+    fn clear_shedding(&self, owner: u32) -> bool {
+        self.queue.write().unwrap().shedding.remove(&owner)
+    }
+
+    /// Return a shed spec to the queue, restoring its accumulated priority so
+    /// a rejected offer does not lose its position.
+    fn resubmit(self: &Arc<Self>, spec: WorkloadSpec, priority: usize, class: u8) -> u32 {
+        let owner = spec.owner;
+        owner_pools()
+            .lock()
+            .unwrap()
+            .insert(owner, Arc::downgrade(self));
+        {
+            let mut queue = self.queue.write().unwrap();
+            debug_assert!(!queue.shutdown, "cannot submit work to a stopped reactor");
+            queue.classes.insert(owner, class);
+            self.parked.lock().unwrap().insert(
+                owner,
+                PoolItem {
+                    owner,
+                    class,
+                    workload: PoolWorkload::Pending(spec),
+                },
+            );
+            if priority > 1 {
+                queue.priorities.insert(owner, priority - 1);
+            }
+            Self::signal_present(&mut queue, owner);
+        }
+        self.wake_all();
+        owner
     }
 
     fn notify(&self, event: PoolEvent) {
-        self.inner.lock().unwrap().events.push_back(event);
+        self.events.lock().unwrap().push_back(event);
         let byte = [1u8];
         unsafe {
             libc::write(self.wake_write, byte.as_ptr().cast(), byte.len());
@@ -889,7 +1171,7 @@ struct ReactorThread {
 impl ReactorThread {
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.shared.changed.notify_all();
+        self.shared.wake_all();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -915,20 +1197,29 @@ enum CurrentState {
     Runnable,
 }
 
+/// Read-only keep decisions allowed before a claim is forced through the
+/// write path to decay the resident's signal count (see `peek_claim`).
+const MAX_READ_KEEPS: u32 = 8;
+
 fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
     let mut current: Option<Resident> = None;
     let mut current_state = CurrentState::Parked;
+    let mut kept = 0u32;
     loop {
         let current_owner = current.as_ref().map(|resident| resident.item.owner);
-        match shared.claim(current_owner, &stop, current_state) {
+        match shared.claim(current_owner, &stop, current_state, kept >= MAX_READ_KEEPS) {
             Claim::Shutdown => break,
-            Claim::Current => {}
+            Claim::Current => {
+                kept = if kept >= MAX_READ_KEEPS { 0 } else { kept + 1 };
+            }
             Claim::Work(item) => {
+                kept = 0;
                 let previous = current_owner;
                 if let Some(resident) = current.take() {
                     shared.park(resident);
                 }
                 let owner = item.owner;
+                let class = item.class;
                 let workload = match item.workload {
                     PoolWorkload::Live(TransferWorkload(workload)) => workload,
                     // First claim constructs the isolate here, on the claiming
@@ -957,6 +1248,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                 };
                 let mut item = PoolItem {
                     owner,
+                    class,
                     workload: PoolWorkload::Live(TransferWorkload(workload)),
                 };
                 let active = activate(item.live_mut());
@@ -1086,8 +1378,14 @@ fn create_workload(
             return;
         }
     };
+    let class = if args.get(1).boolean_value(scope) {
+        CLASS_SYSTEM
+    } else {
+        CLASS_APP
+    };
     let spec = WorkloadSpec {
         owner,
+        class,
         inner: Some(Box::new(WorkloadSpecInner {
             entry,
             process_env,
@@ -1226,8 +1524,14 @@ fn create_scheduled_realm(
     });
     let owner = next_owner();
     let wake_fd = async_pipe.0;
+    let class = if args.get(7).boolean_value(scope) {
+        CLASS_SYSTEM
+    } else {
+        CLASS_APP
+    };
     let spec = WorkloadSpec {
         owner,
+        class,
         inner: Some(Box::new(WorkloadSpecInner {
             entry,
             process_env,
@@ -1271,6 +1575,7 @@ fn create_scheduled_realm(
     };
     pool.submit(PoolItem {
         owner,
+        class,
         workload: PoolWorkload::Pending(spec),
     });
     let result = v8::Object::new(scope);
@@ -1462,11 +1767,16 @@ fn close_scheduled_realm(
 
 fn create_reactor_queue(
     scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
+    args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let shared = Arc::new(PoolShared::new());
-    *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
+    // Standalone queues (install=false) exist for tests and tooling; only an
+    // installed queue receives the process's scheduled realms.
+    let install = args.get(0).is_undefined() || args.get(0).boolean_value(scope);
+    if install {
+        *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
+    }
     let control_fd = shared.wake_read;
     let handle = REACTOR_QUEUES.with(|queues| {
         let mut queues = queues.borrow_mut();
@@ -1526,9 +1836,154 @@ fn submit_reactor_workload(
     };
     let owner = shared.submit(PoolItem {
         owner: spec.owner,
+        class: spec.class,
         workload: PoolWorkload::Pending(spec),
     });
     rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
+}
+
+/// A spec taken off a queue's tail by the balancer, parked here until the
+/// offer resolves: resubmitted on rejection, dropped on successful transfer.
+struct ShedWorkload {
+    spec: WorkloadSpec,
+    priority: usize,
+    class: u8,
+}
+
+fn shed_workloads() -> &'static Mutex<Vec<Option<ShedWorkload>>> {
+    static SHED: std::sync::OnceLock<Mutex<Vec<Option<ShedWorkload>>>> = std::sync::OnceLock::new();
+    SHED.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn reactor_queue(handle: usize) -> Option<Arc<PoolShared>> {
+    REACTOR_QUEUES.with(|queues| {
+        queues
+            .borrow()
+            .get(handle)
+            .and_then(Option::as_ref)
+            .cloned()
+    })
+}
+
+fn mark_shedding_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let Some(shared) = reactor_queue(queue_handle) else {
+        throw_error(
+            scope,
+            &format!("markSheddingWorkload: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    rv.set(v8::Integer::new_from_unsigned(scope, shared.mark_shedding_lowest()).into());
+}
+
+fn take_shed_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
+    let Some(shared) = reactor_queue(queue_handle) else {
+        throw_error(
+            scope,
+            &format!("takeShedWorkload: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    let Some((spec, priority, class)) = shared.take_shed(owner) else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+    let entry = ShedWorkload {
+        spec,
+        priority,
+        class,
+    };
+    let handle = {
+        let mut shed = shed_workloads().lock().unwrap();
+        if let Some((index, slot)) = shed.iter_mut().enumerate().find(|(_, slot)| slot.is_none()) {
+            *slot = Some(entry);
+            index
+        } else {
+            shed.push(Some(entry));
+            shed.len() - 1
+        }
+    };
+    rv.set(v8::Integer::new_from_unsigned(scope, handle as u32).into());
+}
+
+fn clear_shedding_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
+    let Some(shared) = reactor_queue(queue_handle) else {
+        throw_error(
+            scope,
+            &format!("clearSheddingWorkload: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    rv.set(v8::Boolean::new(scope, shared.clear_shedding(owner)).into());
+}
+
+fn resubmit_shed_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let shed_handle = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let Some(shared) = reactor_queue(queue_handle) else {
+        throw_error(
+            scope,
+            &format!("resubmitShedWorkload: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    let entry = shed_workloads()
+        .lock()
+        .unwrap()
+        .get_mut(shed_handle)
+        .and_then(Option::take);
+    let Some(entry) = entry else {
+        throw_error(
+            scope,
+            &format!("resubmitShedWorkload: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    let owner = shared.resubmit(entry.spec, entry.priority, entry.class);
+    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
+}
+
+fn drop_shed_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let shed_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let entry = shed_workloads()
+        .lock()
+        .unwrap()
+        .get_mut(shed_handle)
+        .and_then(Option::take);
+    let Some(entry) = entry else {
+        throw_error(
+            scope,
+            &format!("dropShedWorkload: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    retire_owner(entry.spec.owner);
+    drop(entry);
 }
 
 fn create_reactor_thread(
@@ -1537,13 +1992,7 @@ fn create_reactor_thread(
     mut rv: v8::ReturnValue,
 ) {
     let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let shared = REACTOR_QUEUES.with(|queues| {
-        queues
-            .borrow()
-            .get(queue_handle)
-            .and_then(Option::as_ref)
-            .cloned()
-    });
+    let shared = reactor_queue(queue_handle);
     let Some(shared) = shared else {
         throw_error(
             scope,
@@ -1551,12 +2000,7 @@ fn create_reactor_thread(
         );
         return;
     };
-    let worker = {
-        let mut inner = shared.inner.lock().unwrap();
-        let worker = inner.next_worker;
-        inner.next_worker += 1;
-        worker
-    };
+    let worker = shared.next_worker.fetch_add(1, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
     let thread_shared = Arc::clone(&shared);
     let thread_stop = Arc::clone(&stop);
@@ -1644,15 +2088,7 @@ fn take_reactor_events(
             .and_then(Option::as_ref)
             .ok_or_else(|| format!("invalid reactor queue {handle}"))?;
         queue.drain_wake();
-        Ok::<_, String>(
-            queue
-                .inner
-                .lock()
-                .unwrap()
-                .events
-                .drain(..)
-                .collect::<Vec<_>>(),
-        )
+        Ok::<_, String>(queue.events.lock().unwrap().drain(..).collect::<Vec<_>>())
     });
     let events = match events {
         Ok(events) => events,
@@ -1717,11 +2153,8 @@ fn close_reactor_queue(
         );
         return;
     };
-    {
-        let mut inner = queue.inner.lock().unwrap();
-        inner.shutdown = true;
-    }
-    queue.changed.notify_all();
+    queue.queue.write().unwrap().shutdown = true;
+    queue.wake_all();
     {
         let mut registered = process_pool().lock().unwrap();
         if registered
@@ -1738,7 +2171,10 @@ fn close_reactor_queue(
         );
         return;
     };
-    let parked = std::mem::take(&mut queue.inner.lock().unwrap().parked);
+    let parked = {
+        let _queue = queue.queue.write().unwrap();
+        std::mem::take(&mut *queue.parked.lock().unwrap())
+    };
     for item in parked.into_values() {
         match item.workload {
             PoolWorkload::Live(TransferWorkload(workload)) => drop_workload(workload),
@@ -2021,6 +2457,11 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "closeScheduledRealm",
         "createReactorQueue",
         "submitReactorWorkload",
+        "markSheddingWorkload",
+        "takeShedWorkload",
+        "clearSheddingWorkload",
+        "resubmitShedWorkload",
+        "dropShedWorkload",
         "createReactorThread",
         "closeReactorThread",
         "signalReactorOwner",
@@ -2072,6 +2513,11 @@ fn eval_steps<'a>(
     set_fn!("closeScheduledRealm", close_scheduled_realm);
     set_fn!("createReactorQueue", create_reactor_queue);
     set_fn!("submitReactorWorkload", submit_reactor_workload);
+    set_fn!("markSheddingWorkload", mark_shedding_workload);
+    set_fn!("takeShedWorkload", take_shed_workload);
+    set_fn!("clearSheddingWorkload", clear_shedding_workload);
+    set_fn!("resubmitShedWorkload", resubmit_shed_workload);
+    set_fn!("dropShedWorkload", drop_shed_workload);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("closeReactorThread", close_reactor_thread);
     set_fn!("signalReactorOwner", signal_reactor_owner);
@@ -2109,7 +2555,7 @@ mod tests {
         let (result_tx, result_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             result_tx
-                .send(worker_pool.claim(None, &worker_stop, CurrentState::Parked))
+                .send(worker_pool.claim(None, &worker_stop, CurrentState::Parked, false))
                 .unwrap();
         });
 
@@ -2118,11 +2564,41 @@ mod tests {
             "an empty pool must not claim an initial workload"
         );
         stop.store(true, Ordering::Release);
-        pool.changed.notify_all();
+        pool.wake_all();
         assert!(matches!(
             result_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             Claim::Shutdown
         ));
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn system_class_dominates_ready_ordering() {
+        let app = ReadyEntry {
+            class: CLASS_APP,
+            priority: 100,
+            generation: 5,
+            owner: 1,
+        };
+        let system = ReadyEntry {
+            class: CLASS_SYSTEM,
+            priority: 1,
+            generation: 1,
+            owner: 2,
+        };
+        assert!(
+            system > app,
+            "a signaled system realm outranks any app priority"
+        );
+        let quieter_app = ReadyEntry {
+            class: CLASS_APP,
+            priority: 3,
+            generation: 9,
+            owner: 3,
+        };
+        assert!(
+            app > quieter_app,
+            "within a class, signal count still decides"
+        );
     }
 }
