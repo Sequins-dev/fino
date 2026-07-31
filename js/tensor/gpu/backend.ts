@@ -926,6 +926,7 @@ export class GpuBackend implements DeviceBackend {
       lr: Number(attrs.lr ?? 0),
       decay: Number(attrs.decay ?? 0),
     };
+    if (momentum) params.momentum = Number(attrs.momentum ?? 0);
     if (kind === 'adam') {
       params.beta1 = Number(attrs.beta1 ?? 0.9);
       params.beta2 = Number(attrs.beta2 ?? 0.999);
@@ -939,6 +940,7 @@ export class GpuBackend implements DeviceBackend {
           kind,
           dtype: this.#scalar(tensors[0]!),
           momentum,
+          nesterov: attrs.nesterov === true,
           decoupled,
           weightDecay,
         }),

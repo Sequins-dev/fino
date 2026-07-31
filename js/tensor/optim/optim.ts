@@ -12,6 +12,8 @@ import type { Tensor } from '../tensor.ts';
 import { keep, tidy } from '../tensor.ts';
 import { noGrad } from '../autograd.ts';
 import { currentGraph } from '../graph.ts';
+import type { OpAttrs } from '../backend.ts';
+import { computeStream } from '../dispatch.ts';
 
 /** A parameter group with its own hyperparameters. */
 export interface ParamGroup {
@@ -84,6 +86,44 @@ export abstract class Optimizer {
       });
     });
     currentGraph().markStep();
+  }
+
+  /**
+   * Run the backend's fused update, or report that it cannot.
+   *
+   * An update composed from elementwise operations costs a launch and a pass over
+   * memory for each one — sixteen of each per parameter for Adam, which in a small
+   * model is most of the work in a step. The backends expose the whole update as a
+   * single primitive precisely so it can be one launch that reads and writes each
+   * buffer once. Where a backend cannot, the composition below still answers.
+   *
+   * The tensors are updated in place, which is the only place this engine does that:
+   * an optimiser step is not part of the differentiated graph, and allocating a new
+   * parameter every step would defeat the point.
+   *
+   * @internal
+   */
+  protected fused(
+    kind: 'sgd' | 'adam',
+    tensors: readonly Tensor[],
+    attrs: OpAttrs,
+  ): boolean {
+    const backend = tensors[0]!.backend;
+    // A fresh descriptor per operand: the shared scratch that dispatch uses is reused
+    // between operands, and these are all live at once.
+    const descriptors = tensors.map((t) =>
+      t.describe({ buffer: null as never, dtype: t.dtype, shape: [], strides: [], offset: 0 }),
+    );
+    if (!backend.supportsOp(kind === 'sgd' ? 'sgdStep' : 'adamStep', descriptors)) {
+      return false;
+    }
+    for (const tensor of tensors) {
+      // Every buffer is walked in lockstep by index, so a strided one would be read
+      // through the wrong positions.
+      if (!tensor.contiguous || tensor.size !== tensors[0]!.size) return false;
+    }
+    backend.optimizerStep(kind, descriptors, attrs, computeStream(backend));
+    return true;
   }
 
   /** Update one parameter in place. */
@@ -163,6 +203,25 @@ export class SGD extends Optimizer {
   }
 
   protected update(parameter: Tensor, grad: Tensor, lr: number, weightDecay: number): void {
+    if (this.#momentum !== 0 && !this.#velocity.has(parameter)) {
+      // Allocated before the fused path can run, since it updates the buffer rather
+      // than producing one.
+      this.#velocity.set(parameter, keep(noGrad(() => grad.mul(0))));
+    }
+    const velocity = this.#velocity.get(parameter) ?? null;
+    const tensors = velocity ? [parameter, grad, velocity] : [parameter, grad];
+    if (
+      this.fused('sgd', tensors, {
+        lr,
+        decay: weightDecay,
+        decoupled: false,
+        momentum: this.#momentum,
+        nesterov: this.#nesterov,
+      })
+    ) {
+      return;
+    }
+
     let direction = weightDecay !== 0 ? grad.add(parameter.mul(weightDecay)) : grad;
     if (this.#momentum !== 0) {
       const previous = this.#velocity.get(parameter);
@@ -240,8 +299,23 @@ export class Adam extends Optimizer {
 
     let state = this.#state.get(parameter);
     if (!state) {
-      state = { m: keep(direction.mul(0)), v: keep(direction.mul(0)) };
+      state = { m: keep(grad.mul(0)), v: keep(grad.mul(0)) };
       this.#state.set(parameter, state);
+    }
+
+    if (
+      this.fused('adam', [parameter, grad, state.m, state.v], {
+        lr,
+        decay: weightDecay,
+        decoupled: this.#decoupled,
+        beta1: this.#beta1,
+        beta2: this.#beta2,
+        epsilon: this.#epsilon,
+        corr1: 1 - this.#beta1 ** this.steps,
+        corr2: 1 - this.#beta2 ** this.steps,
+      })
+    ) {
+      return;
     }
 
     const m = state.m.mul(this.#beta1).add(direction.mul(1 - this.#beta1));

@@ -244,6 +244,8 @@ export interface OptimizerSpec {
   dtype: ScalarDType;
   /** SGD only: maintain a velocity buffer. */
   momentum?: boolean;
+  /** SGD only: look ahead along the velocity before stepping. */
+  nesterov?: boolean;
   /** Adam only: decay the parameter directly rather than the gradient. */
   decoupled?: boolean;
   /** Apply weight decay at all. */
@@ -283,6 +285,8 @@ export function optimizerKernel(spec: OptimizerSpec): { ir: KernelIR; key: strin
   const n = b.param('n');
   const lr = b.param('lr', 'f32');
   const decay = b.param('decay', 'f32');
+  const momentum =
+    spec.kind === 'sgd' && spec.momentum ? b.param('momentum', 'f32') : null;
   const beta1 = spec.kind === 'adam' ? b.param('beta1', 'f32') : null;
   const beta2 = spec.kind === 'adam' ? b.param('beta2', 'f32') : null;
   const epsilon = spec.kind === 'adam' ? b.param('epsilon', 'f32') : null;
@@ -305,19 +309,26 @@ export function optimizerKernel(spec: OptimizerSpec): { ir: KernelIR; key: strin
 
     if (spec.kind === 'sgd') {
       if (spec.momentum) {
+        // Momentum, not weight decay. These are different coefficients that happened
+        // to be interchangeable while nothing called this kernel.
         const velocity = b.letTemp(
           compute,
           E.add(
-            E.mul(E.cast(compute, E.load('velocity', i)), decay),
+            E.mul(E.cast(compute, E.load('velocity', i)), momentum!),
             E.var('g'),
           ),
           'vel',
         );
         b.store('velocity', i, E.cast(vt(spec.dtype), velocity));
+        // Nesterov steps along the gradient *plus* the look-ahead velocity, which is
+        // what makes it anticipate the next position rather than the current one.
+        const direction = spec.nesterov
+          ? E.add(E.var('g'), E.mul(velocity, momentum!))
+          : velocity;
         b.store(
           'param',
           i,
-          E.cast(vt(spec.dtype), E.sub(E.var('base'), E.mul(velocity, lr))),
+          E.cast(vt(spec.dtype), E.sub(E.var('base'), E.mul(direction, lr))),
         );
       } else {
         b.store(
@@ -359,6 +370,7 @@ export function optimizerKernel(spec: OptimizerSpec): { ir: KernelIR; key: strin
       kind: spec.kind,
       dtype: spec.dtype,
       momentum: spec.momentum ?? false,
+      nesterov: spec.nesterov ?? false,
       decoupled: spec.decoupled ?? false,
       decay: spec.weightDecay ?? false,
       wg,

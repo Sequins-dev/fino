@@ -371,14 +371,72 @@ export class RefBackend implements DeviceBackend {
     });
   }
 
+  /**
+   * Update parameters in place.
+   *
+   * Written out here rather than routed through the operation registry, because the
+   * registry gives a kernel one output and this writes three — the parameter and both
+   * moments. That is what makes it a primitive: the whole point is to touch each
+   * buffer once instead of allocating a chain of intermediates.
+   *
+   * The arithmetic is the same as `optimizerKernel` emits, statement for statement,
+   * because this is the oracle that kernel is checked against.
+   */
   optimizerStep(
     kind: 'sgd' | 'adam',
     tensors: readonly TensorDesc[],
     attrs: OpAttrs,
   ): void {
-    const name: OpKind = kind === 'sgd' ? 'sgdStep' : 'adamStep';
-    // The parameter is both an input and the output of an optimizer step.
-    this.#run(name, tensors.slice(1), tensors[0]!, attrs);
+    const parameter = viewOf(tensors[0]!);
+    const gradient = viewOf(tensors[1]!);
+    const lr = Number(attrs.lr ?? 0);
+    const decay = Number(attrs.decay ?? 0);
+    const decoupled = attrs.decoupled === true;
+
+    if (kind === 'sgd') {
+      const momentum = Number(attrs.momentum ?? 0);
+      const nesterov = attrs.nesterov === true;
+      const velocity = tensors.length > 2 ? viewOf(tensors[2]!) : null;
+      for (let i = 0; i < parameter.size; i++) {
+        const p = parameter.get(i);
+        let g = gradient.get(i);
+        let base = p;
+        if (decay !== 0) {
+          if (decoupled) base = p - p * lr * decay;
+          else g = g + p * decay;
+        }
+        if (velocity) {
+          const next = velocity.get(i) * momentum + g;
+          velocity.set(i, next);
+          parameter.set(i, base - (nesterov ? g + next * momentum : next) * lr);
+        } else {
+          parameter.set(i, base - g * lr);
+        }
+      }
+      return;
+    }
+
+    const m = viewOf(tensors[2]!);
+    const v = viewOf(tensors[3]!);
+    const beta1 = Number(attrs.beta1 ?? 0.9);
+    const beta2 = Number(attrs.beta2 ?? 0.999);
+    const epsilon = Number(attrs.epsilon ?? 1e-8);
+    const corr1 = Number(attrs.corr1 ?? 1);
+    const corr2 = Number(attrs.corr2 ?? 1);
+    for (let i = 0; i < parameter.size; i++) {
+      const p = parameter.get(i);
+      let g = gradient.get(i);
+      let base = p;
+      if (decay !== 0) {
+        if (decoupled) base = p - p * lr * decay;
+        else g = g + p * decay;
+      }
+      const mNext = m.get(i) * beta1 + g * (1 - beta1);
+      const vNext = v.get(i) * beta2 + g * g * (1 - beta2);
+      m.set(i, mNext);
+      v.set(i, vNext);
+      parameter.set(i, base - (mNext / corr1 / (Math.sqrt(vNext / corr2) + epsilon)) * lr);
+    }
   }
 
   supportsOp(op: OpKind): boolean {
