@@ -66,10 +66,31 @@ export function createReactorThread(queue: number): {
   handle: number;
   worker: number;
 };
+export function availableParallelism(): number;
+export function takeReactorLoadSample(queue: number): Array<{
+  owner: number;
+  busyMicros: number;
+  slices: number;
+  loopTurns: number;
+  activationDelayMicros: number;
+  activations: number;
+}>;
+export function reactorQueueDepth(queue: number): {
+  pendingSpecs: number;
+  parkedLive: number;
+  active: number;
+};
+export function isolateHeapStatistics(): {
+  totalHeapSize: number;
+  usedHeapSize: number;
+  heapSizeLimit: number;
+  mallocedMemory: number;
+  externalMemory: number;
+};
 export function closeReactorThread(thread: number): void;
 export function signalReactorOwner(owner: number): void;
 export function takeReactorEvents(queue: number): Array<{
-  kind: 'activated' | 'settled' | 'error';
+  kind: 'submitted' | 'activated' | 'settled' | 'error';
   worker: number;
   owner: number;
   previous?: number;

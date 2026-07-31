@@ -631,6 +631,10 @@ fn drop_workload(mut workload: Workload) {
 
 #[derive(Clone, Copy)]
 enum PoolEventKind {
+    /// A workload entered the queue. The main realm's sizing policy scales
+    /// reactor threads to demand from these (threads = workloads, capped at
+    /// available parallelism).
+    Submitted,
     Activated,
     Settled,
     Error,
@@ -702,6 +706,19 @@ struct ReadyEntry {
     owner: u32,
 }
 
+/// Accumulated load attribution for one workload, drained by the sampling
+/// API. All values are deltas since the previous sample.
+#[derive(Default, Clone, Copy)]
+struct LoadCounters {
+    /// Wall time spent inside `drive_slice` for this workload.
+    busy_micros: u64,
+    slices: u64,
+    loop_turns: u64,
+    /// Runnable delay: signal-to-activation, summed over `activations`.
+    activation_delay_micros: u64,
+    activations: u64,
+}
+
 struct PoolQueue {
     ready: BinaryHeap<ReadyEntry>,
     priorities: HashMap<u32, usize>,
@@ -712,6 +729,9 @@ struct PoolQueue {
     shedding: HashSet<u32>,
     active: HashSet<u32>,
     shutdown: bool,
+    load: HashMap<u32, LoadCounters>,
+    /// Earliest unserviced signal per owner, for runnable-delay attribution.
+    signaled_at: HashMap<u32, std::time::Instant>,
 }
 
 /// The read/keep decision a claim can make without touching the write lock.
@@ -768,6 +788,8 @@ impl PoolShared {
             shedding: HashSet::new(),
             active: HashSet::new(),
             shutdown: false,
+            load: HashMap::new(),
+            signaled_at: HashMap::new(),
         };
         Self {
             queue: RwLock::new(queue),
@@ -809,6 +831,14 @@ impl PoolShared {
             Self::signal_present(&mut queue, owner);
         }
         pool_trace!("pool: submit owner={owner}");
+        self.notify(PoolEvent {
+            kind: PoolEventKind::Submitted,
+            worker: 0,
+            owner,
+            previous: None,
+            error: None,
+            loop_turns: 0,
+        });
         self.wake_all();
         owner
     }
@@ -826,6 +856,37 @@ impl PoolShared {
             generation: *generation,
             owner,
         });
+        queue
+            .signaled_at
+            .entry(owner)
+            .or_insert_with(std::time::Instant::now);
+    }
+
+    /// Fold one finished slice into the owner's load counters.
+    fn record_slice(&self, owner: u32, busy_micros: u64, loop_turns: u64) {
+        let mut queue = self.queue.write().unwrap();
+        let counters = queue.load.entry(owner).or_default();
+        counters.busy_micros += busy_micros;
+        counters.slices += 1;
+        counters.loop_turns += loop_turns;
+    }
+
+    /// Record signal-to-activation delay when a claim takes an owner.
+    fn record_activation(queue: &mut PoolQueue, owner: u32) {
+        let delay = queue
+            .signaled_at
+            .remove(&owner)
+            .map(|since| since.elapsed().as_micros() as u64)
+            .unwrap_or(0);
+        let counters = queue.load.entry(owner).or_default();
+        counters.activation_delay_micros += delay;
+        counters.activations += 1;
+    }
+
+    /// Drain every owner's accumulated load counters (delta sampling).
+    fn take_load_sample(&self) -> Vec<(u32, LoadCounters)> {
+        let mut queue = self.queue.write().unwrap();
+        queue.load.drain().collect()
     }
 
     fn signal(&self, owner: u32) {
@@ -940,6 +1001,7 @@ impl PoolShared {
             // A local claim always wins over an in-flight shed offer.
             queue.shedding.remove(&owner);
             queue.active.insert(owner);
+            Self::record_activation(&mut queue, owner);
             pool_trace!("pool: claim owner={owner}");
             return Some(Claim::Work(item));
         }
@@ -1042,6 +1104,7 @@ impl PoolShared {
             queue.generations.remove(&owner);
             queue.classes.remove(&owner);
             queue.shedding.remove(&owner);
+            queue.signaled_at.remove(&owner);
         }
         owner_pools().lock().unwrap().remove(&owner);
         pool_trace!("pool: finish owner={owner}");
@@ -1135,6 +1198,14 @@ impl PoolShared {
             }
             Self::signal_present(&mut queue, owner);
         }
+        self.notify(PoolEvent {
+            kind: PoolEventKind::Submitted,
+            worker: 0,
+            owner,
+            previous: None,
+            error: None,
+            loop_turns: 0,
+        });
         self.wake_all();
         owner
     }
@@ -1270,7 +1341,15 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
             .item
             .owner;
         let mut resident = current.take().unwrap();
-        match drive_slice(resident.item.live_mut()) {
+        let slice_started = std::time::Instant::now();
+        let outcome = drive_slice(resident.item.live_mut());
+        let busy_micros = slice_started.elapsed().as_micros() as u64;
+        let slice_turns = match &outcome {
+            Ok((_, loop_turns)) => *loop_turns,
+            Err(_) => 0,
+        };
+        shared.record_slice(owner, busy_micros, slice_turns);
+        match outcome {
             Ok((Slice::Runnable, _)) => {
                 current_state = CurrentState::Runnable;
                 current = Some(resident);
@@ -2157,6 +2236,7 @@ fn take_reactor_events(
     for (index, event) in events.into_iter().enumerate() {
         let value = v8::Object::new(scope);
         let kind = match event.kind {
+            PoolEventKind::Submitted => "submitted",
             PoolEventKind::Activated => "activated",
             PoolEventKind::Settled => "settled",
             PoolEventKind::Error => "error",
@@ -2500,6 +2580,127 @@ fn process_readiness_control_fd(
     rv.set(v8::Integer::new(scope, mailbox().wake_read).into());
 }
 
+fn available_parallelism(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parallelism = std::thread::available_parallelism()
+        .map(|value| value.get() as u32)
+        .unwrap_or(1);
+    rv.set(v8::Integer::new_from_unsigned(scope, parallelism).into());
+}
+
+/// Drain per-workload load counters accumulated since the previous call.
+/// The stats module samples this on a timer; values are deltas.
+fn take_reactor_load_sample(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let Some(shared) = reactor_queue(queue_handle) else {
+        throw_error(
+            scope,
+            &format!("takeReactorLoadSample: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    let sample = shared.take_load_sample();
+    let result = v8::Array::new(scope, sample.len() as i32);
+    for (index, (owner, counters)) in sample.into_iter().enumerate() {
+        let value = v8::Object::new(scope);
+        for (name, field) in [
+            ("owner", v8::Number::new(scope, owner as f64)),
+            (
+                "busyMicros",
+                v8::Number::new(scope, counters.busy_micros as f64),
+            ),
+            ("slices", v8::Number::new(scope, counters.slices as f64)),
+            (
+                "loopTurns",
+                v8::Number::new(scope, counters.loop_turns as f64),
+            ),
+            (
+                "activationDelayMicros",
+                v8::Number::new(scope, counters.activation_delay_micros as f64),
+            ),
+            (
+                "activations",
+                v8::Number::new(scope, counters.activations as f64),
+            ),
+        ] {
+            let key = v8::String::new(scope, name).unwrap();
+            value.set(scope, key.into(), field.into());
+        }
+        result.set_index(scope, index as u32, value.into());
+    }
+    rv.set(result.into());
+}
+
+/// A point-in-time queue-pressure snapshot: parked pre-init specs, parked
+/// live isolates, and workloads active on reactors.
+fn reactor_queue_depth(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let Some(shared) = reactor_queue(queue_handle) else {
+        throw_error(
+            scope,
+            &format!("reactorQueueDepth: invalid queue {queue_handle}"),
+        );
+        return;
+    };
+    let (pending_specs, parked_live, active) = {
+        let queue = shared.queue.write().unwrap();
+        let parked = shared.parked.lock().unwrap();
+        let pending_specs = parked
+            .values()
+            .filter(|item| matches!(item.workload, PoolWorkload::Pending(_)))
+            .count();
+        (
+            pending_specs,
+            parked.len() - pending_specs,
+            queue.active.len(),
+        )
+    };
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("pendingSpecs", pending_specs),
+        ("parkedLive", parked_live),
+        ("active", active),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let value = v8::Number::new(scope, value as f64);
+        result.set(scope, key.into(), value.into());
+    }
+    rv.set(result.into());
+}
+
+/// Heap statistics for the calling isolate, so every realm can self-report.
+fn isolate_heap_statistics(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let stats = scope.get_heap_statistics();
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("totalHeapSize", stats.total_heap_size()),
+        ("usedHeapSize", stats.used_heap_size()),
+        ("heapSizeLimit", stats.heap_size_limit()),
+        ("mallocedMemory", stats.malloced_memory()),
+        ("externalMemory", stats.external_memory()),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let value = v8::Number::new(scope, value as f64);
+        result.set(scope, key.into(), value.into());
+    }
+    rv.set(result.into());
+}
+
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let names = [
         "currentWorkloadOwner",
@@ -2520,6 +2721,10 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "shedWorkloadConfig",
         "dropShedWorkload",
         "createReactorThread",
+        "availableParallelism",
+        "takeReactorLoadSample",
+        "reactorQueueDepth",
+        "isolateHeapStatistics",
         "closeReactorThread",
         "signalReactorOwner",
         "takeReactorEvents",
@@ -2577,6 +2782,10 @@ fn eval_steps<'a>(
     set_fn!("shedWorkloadConfig", shed_workload_config);
     set_fn!("dropShedWorkload", drop_shed_workload);
     set_fn!("createReactorThread", create_reactor_thread);
+    set_fn!("availableParallelism", available_parallelism);
+    set_fn!("takeReactorLoadSample", take_reactor_load_sample);
+    set_fn!("reactorQueueDepth", reactor_queue_depth);
+    set_fn!("isolateHeapStatistics", isolate_heap_statistics);
     set_fn!("closeReactorThread", close_reactor_thread);
     set_fn!("signalReactorOwner", signal_reactor_owner);
     set_fn!("takeReactorEvents", take_reactor_events);

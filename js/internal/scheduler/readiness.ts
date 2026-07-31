@@ -11,6 +11,7 @@
  */
 import * as loop from 'internal:runtime/loop';
 import {
+  availableParallelism,
   closeReactorQueue,
   closeReactorThread,
   createReactorQueue,
@@ -69,14 +70,21 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
   }
 
   const queue = createReactorQueue();
-  const requestedThreads = Math.floor(
-    options.threads ?? Math.max(1, navigator.hardwareConcurrency || 1),
-  );
-  const threadCount = Math.max(1, requestedThreads);
+  // Threads track demand: one per live workload, capped at hardware
+  // parallelism (or the explicit override). A quiet process runs one reactor;
+  // growth happens on `submitted` events as realms enter the queue.
+  const threadCap = Math.max(1, Math.floor(options.threads ?? availableParallelism()));
   const threads: Array<ReturnType<typeof createReactorThread>> = [];
-  for (let index = 0; index < threadCount; index++) {
-    threads.push(createReactorThread(queue.handle));
-  }
+  let liveWorkloads = 0;
+  const ensureThreads = (): void => {
+    const desired = Math.min(Math.max(1, liveWorkloads), threadCap);
+    while (threads.length < desired) {
+      threads.push(createReactorThread(queue.handle));
+    }
+  };
+  // Start with a single reactor; the initial submissions below arrive as
+  // `submitted` events and grow the pool like any other demand.
+  ensureThreads();
   const isolates = inputs.map(() => new Isolate(entryPath));
   const isolateInfo = isolates.map((isolate) => ({
     handle: isolate.nativeHandle,
@@ -121,6 +129,11 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
       schedulerReadinessTurns++;
       for (const event of takeReactorEvents(queue.handle)) {
         loopTurns += event.loopTurns;
+        if (event.kind === 'submitted') {
+          liveWorkloads++;
+          ensureThreads();
+          continue;
+        }
         if (event.kind === 'activated') {
           if (!positions.has(event.owner)) {
             positions.set(event.owner, -1);
@@ -143,6 +156,7 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
           throw new Error(`reactor returned unknown owner ${event.owner}`);
         }
         positions.delete(event.owner);
+        liveWorkloads = Math.max(0, liveWorkloads - 1);
         isolateExits++;
         remaining--;
         if (position >= 0) loop.removeRead(isolateInfo[position]!.wakeFd);

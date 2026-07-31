@@ -11,10 +11,13 @@ import {
   createReactorQueue,
   createWorkload,
   dropShedWorkload,
+  isolateHeapStatistics,
   markSheddingWorkload,
+  reactorQueueDepth,
   resubmitShedWorkload,
   shedWorkloadConfig,
   submitReactorWorkload,
+  takeReactorLoadSample,
   takeShedWorkload,
 } from 'internal:scheduler-native';
 
@@ -58,5 +61,27 @@ describe('pre-init workload shedding', () => {
 
     closeReactorQueue(queue.handle);
     t.ok(true, 'standalone queue closed with a pending spec still parked');
+  });
+
+  it('exposes queue depth, load samples, and heap statistics', (t) => {
+    const queue = createReactorQueue(false);
+    t.deepEqual(
+      reactorQueueDepth(queue.handle),
+      { pendingSpecs: 0, parkedLive: 0, active: 0 },
+      'a fresh queue reports zero depth',
+    );
+    submitReactorWorkload(queue.handle, createWorkload(entry));
+    const depth = reactorQueueDepth(queue.handle);
+    t.equal(depth.pendingSpecs, 1, 'a submitted spec counts as pending');
+    t.equal(depth.active, 0, 'nothing is active without reactor threads');
+    t.deepEqual(
+      takeReactorLoadSample(queue.handle),
+      [],
+      'no slices have run, so the load sample is empty',
+    );
+    const heap = isolateHeapStatistics();
+    t.ok(heap.usedHeapSize > 0, 'used heap size is positive');
+    t.ok(heap.heapSizeLimit > heap.usedHeapSize, 'heap limit exceeds usage');
+    closeReactorQueue(queue.handle);
   });
 });
