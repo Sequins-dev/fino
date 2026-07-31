@@ -243,6 +243,38 @@ export const UNARY: Record<string, UnaryBuilder> = {
     );
     return E.mul(E.mul(ctx.lit(0.5), x), E.add(ctx.lit(1), E.call('tanh', inner)));
   },
+  /**
+   * The error function, from primitives.
+   *
+   * Neither dialect can be relied on for this: MSL has `erf`, SPIR-V's extended
+   * instruction set does not, and the IR may not contain something only one of them
+   * can lower. This is Abramowitz and Stegun 7.1.26, whose maximum absolute error is
+   * 1.5e-7 — below what `f32` can represent either side of it, so a more elaborate
+   * approximation would round to the same numbers. The reference backend computes it
+   * to near-double precision, and the two agree to within `f32`.
+   */
+  erf: (x, ctx) => {
+    const magnitude = E.un('abs', x);
+    const t = E.div(
+      ctx.lit(1),
+      E.add(ctx.lit(1), E.mul(ctx.lit(0.3275911), magnitude)),
+    );
+    let poly = E.add(E.mul(ctx.lit(1.061405429), t), ctx.lit(-1.453152027));
+    poly = E.add(E.mul(poly, t), ctx.lit(1.421413741));
+    poly = E.add(E.mul(poly, t), ctx.lit(-0.284496736));
+    poly = E.add(E.mul(poly, t), ctx.lit(0.254829592));
+    poly = E.mul(poly, t);
+    const magnitudeResult = E.sub(
+      ctx.lit(1),
+      E.mul(poly, E.call('exp', E.un('neg', E.mul(x, x)))),
+    );
+    // Odd about zero, and the series above is only valid for the positive half.
+    return E.select(
+      E.lt(x, ctx.lit(0)),
+      E.un('neg', magnitudeResult),
+      magnitudeResult,
+    );
+  },
   logicalNot: (x, ctx) => E.select(E.eq(x, ctx.lit(0)), ctx.lit(1), ctx.lit(0)),
 };
 

@@ -282,6 +282,25 @@ means dequantising it — kernels this engine does not yet have. PyTorch `.pt` f
 are pickled Python object graphs, whose unpickling executes arbitrary constructors by
 design; convert to safetensors instead.
 
+## Conformance
+
+```ts no_run
+import { runConformance, formatReport } from 'fino:tensor/conformance';
+
+console.log(formatReport(await runConformance('auto')));
+```
+
+`fino:tensor/graph` and `fino:tensor/backend` are experimental, and the contract keeps
+them that way until an out-of-tree backend passes this suite. It is the thing such a
+backend can run without living in this repository.
+
+Every case is an ordinary `fino:tensor` program compared against the reference
+backend, so conforming means computing the right numbers rather than implementing an
+interface a particular way. A report lists which registered operations no case
+exercised, so a partial run says so instead of implying more than it checked — and
+running it on the reference device proves only that the cases execute, since that
+backend is what everything else is compared against.
+
 ## Diagnostics
 
 - `poolStats(device)` reports held, in-use, and leaked buffer counts.

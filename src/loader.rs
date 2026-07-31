@@ -948,6 +948,11 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tensor/create", "tensor/create"),
     source_builtin!("internal:tensor/generator", "tensor/generator"),
     source_builtin!("fino:tensor/io", "tensor/io/index"),
+    source_builtin!("fino:tensor/conformance", "tensor/conformance/index"),
+    source_builtin!(
+        "internal:tensor/conformance/suite",
+        "tensor/conformance/suite"
+    ),
     source_builtin!("internal:tensor/io/safetensors", "tensor/io/safetensors"),
     source_builtin!("internal:tensor/io/npy", "tensor/io/npy"),
     source_builtin!("internal:tensor/nn/module", "tensor/nn/module"),

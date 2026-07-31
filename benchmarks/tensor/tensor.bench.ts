@@ -20,6 +20,7 @@
  */
 import { device, tensor, zeros, tidy, noGrad } from 'fino:tensor';
 import { loadSafetensors, saveSafetensors } from 'fino:tensor/io';
+import { runConformance } from 'fino:tensor/conformance';
 import { bench } from 'fino:bench';
 
 const cpu = await device('cpu');
@@ -141,5 +142,14 @@ bench('io', (b) => {
   b.measure('load three tensors', async () => {
     const loaded = await loadSafetensors(ioPath);
     for (const value of loaded.values()) value.dispose();
+  });
+});
+
+bench('conformance', (b) => {
+  // What it costs an out-of-tree backend to check itself. Worth tracking because a
+  // suite nobody runs is a suite nobody runs — if this grows into minutes, it stops
+  // being something to reach for while iterating on a backend.
+  b.measure('the whole suite on the reference backend', async () => {
+    await runConformance(cpu);
   });
 });
