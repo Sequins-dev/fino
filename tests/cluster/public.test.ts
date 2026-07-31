@@ -4,7 +4,10 @@
 import { describe, it } from 'fino:test/test';
 import { Process, cwd, env, execPath } from 'fino:process';
 import { Realm } from 'fino:realm';
-import { startCluster, joinCluster, leaveCluster } from 'fino:cluster';
+import { startCluster, joinCluster, leaveCluster, clusterJoinString } from 'fino:cluster';
+import { parseJoinString } from 'internal:cluster/join-string';
+import { WebTransportWorkerTransport } from 'internal:cluster/webtransport-transport';
+import { ClusterClient } from 'internal:cluster/client';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
@@ -137,6 +140,83 @@ describe('fino:cluster public WebTransport integration', () => {
     );
     leaveCluster();
     t.ok(true, 'seed self-join used configured IPv6 hostname and custom path');
+  });
+  it('authenticated join string admits observers with pinned certificates', async (t) => {
+    if (!quicAvailable || !h3Available) return;
+    const port = randomPort();
+    await withTimeout(
+      startCluster({
+        port,
+        nodeId: 'auth-seed',
+        clusterId: 'c-authtest',
+        joinToken: 'sesame-open-sesame',
+        tls: clusterTls,
+      }),
+      5e3,
+      'authenticated startCluster',
+    );
+    try {
+      const minted = clusterJoinString();
+      t.ok(minted !== null, 'seed minted a join string');
+      const info = parseJoinString(minted!);
+      t.equal(info.clusterId, 'c-authtest', 'join string names the cluster');
+      t.equal(info.token, 'sesame-open-sesame', 'join string carries the token');
+      t.equal(info.certHashes.length, 1, 'join string pins one certificate hash');
+
+      const hashes = info.certHashes.map((hex) => ({
+        algorithm: 'sha-256' as const,
+        value: new Uint8Array(hex.match(/../g)!.map((b) => parseInt(b, 16))),
+      }));
+
+      // Wrong token: connection succeeds (TLS pin matches) but admission is denied.
+      const denied = new WebTransportWorkerTransport('denied-observer');
+      await denied.connect(info.seed, { cpu: 0, memory: 0 }, {
+        token: 'wrong-token',
+        observer: true,
+        serverCertificateHashes: hashes,
+      });
+      const deniedClient = new ClusterClient(denied, 'denied-observer');
+      deniedClient.start();
+      try {
+        await withTimeout(deniedClient.ready(3e3), 4e3, 'denied admission settle');
+        t.fail('wrong token should be denied');
+      } catch (err) {
+        t.ok(
+          (err as Error).message.includes('denied'),
+          `wrong token is denied: ${(err as Error).message}`,
+        );
+      } finally {
+        deniedClient.stop();
+      }
+
+      // Right token as observer: admitted, sees membership, never joins it.
+      const observer = new WebTransportWorkerTransport('status-observer');
+      await observer.connect(info.seed, { cpu: 0, memory: 0 }, {
+        token: info.token,
+        observer: true,
+        serverCertificateHashes: hashes,
+      });
+      const observerClient = new ClusterClient(observer, 'status-observer');
+      observerClient.start();
+      try {
+        await withTimeout(observerClient.ready(3e3), 4e3, 'observer admission');
+        t.equal(observerClient.clusterId, 'c-authtest', 'WELCOME carries the cluster identity');
+        t.ok(
+          observerClient.peers.some((p) => p.nodeId === 'auth-seed'),
+          'observer sees the self-joined seed member',
+        );
+        t.equal(
+          observerClient.peers.some((p) => p.nodeId === 'status-observer'),
+          false,
+          'observer is not a member',
+        );
+      } finally {
+        observerClient.stop();
+      }
+    } finally {
+      leaveCluster();
+      await loop.timeout(20);
+    }
   });
   it('leaveCluster is idempotent and allows a later start', async (t) => {
     if (!quicAvailable || !h3Available) return;

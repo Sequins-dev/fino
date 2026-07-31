@@ -78,12 +78,15 @@ class TestSeedTransport {
   }
 }
 let _activeSeed: SeedServer | null = null;
-async function makeSeed(nodeId = 'seed-node'): Promise<{
+async function makeSeed(
+  nodeId = 'seed-node',
+  options: { joinToken?: string; clusterId?: string } = {},
+): Promise<{
   seed: SeedServer;
   transport: TestSeedTransport;
 }> {
   const transport = new TestSeedTransport(nodeId);
-  const seed = new SeedServer(transport as any);
+  const seed = new SeedServer(transport as any, options);
   await seed.start();
   _activeSeed = seed;
   return {
@@ -970,6 +973,76 @@ describe('SeedServer — nodeDown cascade', () => {
     t.ok(
       peerDowns.some((msg) => msg.nodeId === 'worker-1'),
       'future worker timestamp does not suppress timeout',
+    );
+  });
+});
+
+describe('SeedServer — join authentication and observers', () => {
+  afterEach(stopActiveSeed);
+  it('denies HELLO with a missing or wrong token when a joinToken is set', async (t) => {
+    const { transport } = await makeSeed('seed-node', { joinToken: 'secret', clusterId: 'c-test' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+    });
+    transport.inject('worker-2', {
+      t: 'HELLO',
+      nodeId: 'worker-2',
+      load: { cpu: 0, memory: 0 },
+      token: 'wrong',
+    });
+    const denials = transport.sentOfType('JOIN_DENIED');
+    t.equal(denials.length, 2, 'both HELLOs were denied');
+    t.equal(transport.sentOfType('WELCOME').length, 0, 'no WELCOME was sent');
+    t.equal(transport.sentOfType('PEER_UP').length, 0, 'no membership broadcast happened');
+  });
+  it('admits HELLO with the right token and advertises the cluster id', async (t) => {
+    const { transport } = await makeSeed('seed-node', { joinToken: 'secret', clusterId: 'c-test' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      token: 'secret',
+    });
+    const welcomes = transport.sentOfType('WELCOME');
+    t.equal(welcomes.length, 1, 'the tokened HELLO was welcomed');
+    t.equal(welcomes[0]!.clusterId, 'c-test', 'WELCOME carries the cluster identity');
+  });
+  it('observer HELLO receives WELCOME but never joins membership', async (t) => {
+    const { transport } = await makeSeed('seed-node', { joinToken: 'secret', clusterId: 'c-test' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0.5, memory: 1 },
+      token: 'secret',
+    });
+    transport.sent.length = 0;
+    transport.inject('watcher', {
+      t: 'HELLO',
+      nodeId: 'watcher',
+      load: { cpu: 0, memory: 0 },
+      token: 'secret',
+      observer: true,
+    });
+    const welcomes = transport.sentOfType('WELCOME');
+    t.equal(welcomes.length, 1, 'observer got a WELCOME');
+    t.equal(welcomes[0]!.peers.length, 1, 'observer sees the existing member');
+    t.equal(welcomes[0]!.peers[0]!.nodeId, 'worker-1', 'membership snapshot is correct');
+    t.equal(transport.sentOfType('PEER_UP').length, 0, 'observer was not broadcast as a member');
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-2',
+      load: { cpu: 0, memory: 0 },
+      token: 'secret',
+    });
+    const next = transport.sentOfType('WELCOME');
+    t.equal(next.length, 1, 'later member still welcomed');
+    t.equal(
+      next[0]!.peers.some((p) => p.nodeId === 'watcher'),
+      false,
+      'observer never appears in the peer list',
     );
   });
 });

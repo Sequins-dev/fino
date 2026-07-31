@@ -147,6 +147,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/lint", "commands/lint"),
     source_builtin!("fino:commands/task", "commands/task"),
     source_builtin!("fino:commands/repl", "commands/repl"),
+    source_builtin!("fino:commands/cluster", "commands/cluster"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/bench", "commands/bench"),
@@ -378,6 +379,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!(
         "internal:cluster/webtransport-transport",
         "internal/cluster/webtransport-transport"
+    ),
+    source_builtin!(
+        "internal:cluster/join-string",
+        "internal/cluster/join-string"
     ),
     source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),

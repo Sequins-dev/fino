@@ -242,6 +242,50 @@ export class ClusterClient {
    */
   #loadSampler: (() => NodeLoad) | null;
   /**
+   * Cluster identity from WELCOME, or null before admission (or when the
+   * seed predates cluster identities).
+   */
+  clusterId: string | null = null;
+  /** Settlers for `ready()` waiters. @internal */
+  #readyWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+  /** 'pending' until WELCOME or JOIN_DENIED arrives. @internal */
+  #admission: 'pending' | 'admitted' | { denied: string } = 'pending';
+  /**
+   * Resolve once the seed has admitted this node (WELCOME), or reject when
+   * admission is denied or `timeoutMs` elapses first.
+   */
+  ready(timeoutMs = 10_000): Promise<void> {
+    if (this.#admission === 'admitted') return Promise.resolve();
+    if (typeof this.#admission === 'object') {
+      return Promise.reject(new Error(`cluster join denied: ${this.#admission.denied}`));
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('timed out waiting for cluster admission'));
+      }, timeoutMs);
+      this.#readyWaiters.push({
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+    });
+  }
+  /** Settle admission state and any `ready()` waiters. @internal */
+  #settleAdmission(outcome: 'admitted' | { denied: string }): void {
+    if (this.#admission !== 'pending') return;
+    this.#admission = outcome;
+    const waiters = this.#readyWaiters.splice(0);
+    for (const waiter of waiters) {
+      if (outcome === 'admitted') waiter.resolve();
+      else waiter.reject(new Error(`cluster join denied: ${outcome.denied}`));
+    }
+  }
+  /**
    * Snapshot of peers currently known to this client.
    *
    * The returned array is copied from the internal map, so mutating it does not
@@ -452,6 +496,12 @@ export class ClusterClient {
     switch (msg.t) {
       case 'WELCOME': {
         for (const p of msg.peers) this.#peers.set(p.nodeId, p);
+        this.clusterId = msg.clusterId ?? null;
+        this.#settleAdmission('admitted');
+        break;
+      }
+      case 'JOIN_DENIED': {
+        this.#settleAdmission({ denied: msg.reason });
         break;
       }
       case 'PEER_UP': {

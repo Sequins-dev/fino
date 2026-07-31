@@ -62,6 +62,8 @@ import {
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import { sampleNodeLoad } from 'internal:runtime/stats';
+import { mintJoinString, parseJoinString } from 'internal:cluster/join-string';
+import { DiskFileSystem } from 'fino:file';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
 /**
  * Transport port that routes realm channel messages through the cluster.
@@ -87,6 +89,33 @@ export { ClusterPort };
 // ---------------------------------------------------------------------------
 let _client: ClusterClient | null = null;
 let _seed: SeedServer | null = null;
+let _joinString: string | null = null;
+
+/** Random URL-safe secret for join tokens and minted cluster identities. */
+function randomHandle(bytes: number): string {
+  const raw = new Uint8Array(bytes);
+  crypto.getRandomValues(raw);
+  return Array.from(raw, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** SHA-256 of the first certificate in a PEM file, as lowercase hex. */
+async function certificateSha256Hex(certPath: string): Promise<string> {
+  const pem = new TextDecoder().decode(await new DiskFileSystem().readFile(certPath));
+  const match = pem.match(/-----BEGIN CERTIFICATE-----([^-]+)-----END CERTIFICATE-----/);
+  if (match === null) throw new Error(`no certificate found in ${certPath}`);
+  const base64 = match[1]!.replace(/\s+/g, '');
+  const binary = atob(base64);
+  const der = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) der[i] = binary.charCodeAt(i);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', der));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -167,6 +196,19 @@ export interface StartClusterOptions {
    */
   path?: string;
   /**
+   * Join token workers must present in HELLO.
+   *
+   * When set, HELLOs without this exact token are denied and the token is
+   * embedded in `clusterJoinString()`. When omitted the seed admits any HELLO
+   * (development mode) — `fino cluster start` always mints one.
+   */
+  joinToken?: string;
+  /**
+   * Stable cluster identity advertised in WELCOME and embedded in the join
+   * string. Minted randomly when omitted.
+   */
+  clusterId?: string;
+  /**
    * HTTP/3 listener configuration forwarded to the underlying server.
    *
    * HTTP/3 is always enabled — the cluster transport requires it — so the
@@ -192,10 +234,23 @@ export interface StartClusterOptions {
  */
 export interface JoinClusterOptions {
   /**
+   * Join string minted by the seed (`clusterJoinString()` / `fino cluster
+   * start`). Supplies the seed endpoint, cluster identity to verify, join
+   * token, and pinned certificate hashes in one secret value; individual
+   * options below override its parts when both are given.
+   */
+  joinString?: string;
+  /**
+   * Join token presented in HELLO when the seed enforces authentication.
+   * Usually supplied via `joinString`.
+   */
+  token?: string;
+  /**
    * HTTPS WebTransport URL of the seed node.
    *
    * The URL must include the `https://` scheme and a reachable host and port.
-   * When the path is omitted, `/__fino_cluster` is used.
+   * When the path is omitted, `/__fino_cluster` is used. Optional when
+   * `joinString` is given.
    *
    * ```ts no_run
    * import { joinCluster } from 'fino:cluster';
@@ -203,7 +258,7 @@ export interface JoinClusterOptions {
    * await joinCluster({ seed: 'https://seed.example.test:9999/__fino_cluster' });
    * ```
    */
-  seed: string | URL;
+  seed?: string | URL;
   /**
    * Optional worker node identifier.
    *
@@ -303,18 +358,51 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     path,
     h3: opts.h3 ?? true,
   });
-  _seed = new SeedServer(seedTransport);
+  const clusterId = opts.clusterId ?? `c-${randomHandle(8)}`;
+  const joinToken = opts.joinToken;
+  _seed = new SeedServer(seedTransport, {
+    ...(joinToken !== undefined ? { joinToken } : {}),
+    clusterId,
+  });
   await _seed.start();
   // Also join as a worker (connect to self) - seeds participate as workers.
   const workerTransport = new WebTransportWorkerTransport(nodeId);
   const selfJoinHost = clusterSelfJoinHost(opts.hostname);
-  await workerTransport.connect(
-    `https://${selfJoinHost}:${opts.port}${path}`,
-    sampleNodeLoad(),
-    { tls: { rejectUnauthorized: false } },
-  );
+  await workerTransport.connect(`https://${selfJoinHost}:${opts.port}${path}`, sampleNodeLoad(), {
+    tls: { rejectUnauthorized: false },
+    ...(joinToken !== undefined ? { token: joinToken } : {}),
+  });
   _client = new ClusterClient(workerTransport, nodeId, { loadSampler: sampleNodeLoad });
   _client.start();
+  await _client.ready();
+  const advertisedHost = clusterAdvertisedHost(opts.hostname);
+  const certHash = await certificateSha256Hex(opts.tls.cert);
+  _joinString = mintJoinString({
+    seed: `https://${advertisedHost}:${opts.port}${path}`,
+    clusterId,
+    ...(joinToken !== undefined ? { token: joinToken } : {}),
+    certHashes: [certHash],
+  });
+}
+
+/**
+ * The join string minted by `startCluster()`, or null when this node is not
+ * the seed.
+ *
+ * The string embeds the seed endpoint, cluster identity, join token, and the
+ * seed certificate's sha-256 hash — everything `joinCluster({ joinString })`
+ * needs to enroll with pinned TLS identity. It contains a secret: hand it to
+ * operators, never publish it through discovery.
+ *
+ * ```ts no_run
+ * import { startCluster, clusterJoinString } from 'fino:cluster';
+ *
+ * await startCluster({ port: 9999, tls: { cert: './cert.pem', key: './key.pem' } });
+ * console.log(clusterJoinString());
+ * ```
+ */
+export function clusterJoinString(): string | null {
+  return _joinString;
 }
 /**
  * Connect to an existing seed and register this node as a worker.
@@ -339,16 +427,39 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     throw new Error('fino:cluster — already connected to a cluster');
   }
   const nodeId = opts.nodeId ?? `worker-${Math.random().toString(36).slice(2, 9)}`;
-  const seed = normalizeClusterSeed(opts.seed);
+  const joinInfo = opts.joinString !== undefined ? parseJoinString(opts.joinString) : null;
+  if (joinInfo === null && opts.seed === undefined) {
+    throw new TypeError('fino:cluster — joinCluster requires seed or joinString');
+  }
+  const seed = normalizeClusterSeed(joinInfo?.seed ?? opts.seed!);
+  const pinnedHashes: WebTransportHash[] | undefined =
+    joinInfo !== null && joinInfo.certHashes.length > 0
+      ? joinInfo.certHashes.map((hex) => ({ algorithm: 'sha-256', value: hexToBytes(hex) }))
+      : undefined;
   const transport = new WebTransportWorkerTransport(nodeId);
   const connectOptions: WebTransportWorkerConnectOptions = {
     tls: opts.tls,
     quic: opts.quic,
-    serverCertificateHashes: opts.serverCertificateHashes,
+    serverCertificateHashes: opts.serverCertificateHashes ?? pinnedHashes,
+    ...(joinInfo !== null ? { token: joinInfo.token } : {}),
+    ...(opts.token !== undefined ? { token: opts.token } : {}),
   };
   await transport.connect(seed, sampleNodeLoad(), connectOptions);
   _client = new ClusterClient(transport, nodeId, { loadSampler: sampleNodeLoad });
   _client.start();
+  try {
+    await _client.ready();
+    if (joinInfo !== null && _client.clusterId !== null && _client.clusterId !== joinInfo.clusterId) {
+      throw new Error(
+        `fino:cluster — joined cluster "${_client.clusterId}" but the join string names "${joinInfo.clusterId}"`,
+      );
+    }
+  } catch (err) {
+    const failed = _client;
+    _client = null;
+    failed.stop();
+    throw err;
+  }
 }
 function normalizeClusterSeed(seed: string | URL): URL {
   const url = new URL(String(seed));
@@ -360,6 +471,15 @@ function normalizeClusterSeed(seed: string | URL): URL {
 function normalizeClusterPath(path: string | undefined): string {
   if (path === undefined || path === '') return DEFAULT_CLUSTER_PATH;
   return path.startsWith('/') ? path : `/${path}`;
+}
+/**
+ * Host embedded in the minted join string. A wildcard or omitted bind cannot
+ * be advertised to other machines, so it falls back to loopback — operators
+ * running multi-machine clusters should pass an externally reachable
+ * `hostname`.
+ */
+function clusterAdvertisedHost(hostname: string | undefined): string {
+  return clusterSelfJoinHost(hostname);
 }
 function clusterSelfJoinHost(hostname: string | undefined): string {
   if (hostname === undefined || hostname === '') return '127.0.0.1';
@@ -406,6 +526,7 @@ export function getCluster(): ClusterClient | null {
  * ```
  */
 export function leaveCluster(): void {
+  _joinString = null;
   _client?.stop();
   _client = null;
   _seed?.stop();

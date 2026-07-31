@@ -261,11 +261,21 @@ export type ClusterMessage =
       t: 'HELLO';
       nodeId: string;
       load: NodeLoad;
+      /** Join token minted by `cluster start`; checked when the seed enforces one. */
+      token?: string;
+      /** Observer connections receive WELCOME but never become members. */
+      observer?: boolean;
+    }
+  | {
+      t: 'JOIN_DENIED';
+      reason: string;
     }
   | {
       t: 'WELCOME';
       nodeId: string;
       peers: PeerInfo[];
+      /** Cluster identity, so a joiner can verify it reached the right cluster. */
+      clusterId?: string;
     }
   | {
       t: 'PEER_UP';
@@ -324,6 +334,7 @@ const enum MessageKind {
   REALM_EXIT = 8,
   TERMINATE = 9,
   PORT_MSG = 10,
+  JOIN_DENIED = 11,
 }
 
 const enum DirectiveKind {
@@ -383,6 +394,9 @@ interface WireEnvelope {
   kind: number;
   nodeId?: string;
   load?: WireLoad;
+  token?: string;
+  clusterId?: string;
+  observer?: boolean;
   peers: WirePeer[];
   peer?: WirePeer;
   ts?: number;
@@ -457,6 +471,9 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   toPort: { number: 16, type: 'string', optional: true },
   payload: { number: 17, type: 'bytes', repeated: true },
   seq: { number: 18, type: 'uint64', optional: true },
+  token: { number: 19, type: 'string', optional: true },
+  clusterId: { number: 20, type: 'string', optional: true },
+  observer: { number: 21, type: 'bool', optional: true },
 });
 
 function stringArray(value: unknown, key: string): string[] {
@@ -601,6 +618,13 @@ function requiredWireString(value: string | undefined, key: string): string {
   return value;
 }
 
+function parseToken(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
+    throw protocolError('token must be a non-empty string of at most 256 characters');
+  }
+  return value;
+}
+
 function encodePeer(value: PeerInfo): WirePeer {
   const peer = parsePeer(value, 'peer');
   return { nodeId: peer.nodeId, load: peer.load };
@@ -618,6 +642,14 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         kind: MessageKind.HELLO,
         nodeId: parseNodeId(msg.nodeId),
         load: parseLoad(msg.load),
+        ...(msg.token !== undefined ? { token: parseToken(msg.token) } : {}),
+        ...(msg.observer === true ? { observer: true } : {}),
+        ...base,
+      };
+    case 'JOIN_DENIED':
+      return {
+        kind: MessageKind.JOIN_DENIED,
+        error: requiredWireString(msg.reason, 'reason'),
         ...base,
       };
     case 'WELCOME':
@@ -625,6 +657,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         kind: MessageKind.WELCOME,
         nodeId: parseNodeId(msg.nodeId),
         peers: parsePeers(msg.peers).map(encodePeer),
+        ...(msg.clusterId !== undefined ? { clusterId: parseNodeId(msg.clusterId) } : {}),
         payload: [],
       };
     case 'PEER_UP':
@@ -723,12 +756,20 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         t: 'HELLO',
         nodeId: parseNodeId(requiredWireString(value.nodeId, 'nodeId')),
         load: parseLoad(value.load),
+        ...(value.token !== undefined ? { token: parseToken(value.token) } : {}),
+        ...(value.observer === true ? { observer: true } : {}),
+      };
+    case MessageKind.JOIN_DENIED:
+      return {
+        t: 'JOIN_DENIED',
+        reason: requiredWireString(value.error, 'reason'),
       };
     case MessageKind.WELCOME:
       return {
         t: 'WELCOME',
         nodeId: parseNodeId(requiredWireString(value.nodeId, 'nodeId')),
         peers: value.peers.map((peer, index) => decodePeer(peer, `peer ${index}`)),
+        ...(value.clusterId !== undefined ? { clusterId: parseNodeId(value.clusterId) } : {}),
       };
     case MessageKind.PEER_UP:
       if (value.peer === undefined) throw protocolError('peer is missing');

@@ -189,6 +189,17 @@ export interface WebTransportWorkerConnectOptions {
    * WebTransport `serverCertificateHashes` option.
    */
   serverCertificateHashes?: readonly WebTransportHash[];
+  /**
+   * Join token presented in the HELLO frame. Required when the seed was
+   * started with join authentication; wrong or missing tokens receive
+   * JOIN_DENIED instead of WELCOME.
+   */
+  token?: string;
+  /**
+   * Announce as an observer: the seed answers with WELCOME (peer list and
+   * cluster identity) but never registers the connection as a member.
+   */
+  observer?: boolean;
 }
 interface PeerConnection {
   wt: WebTransport;
@@ -691,6 +702,8 @@ export class WebTransportWorkerTransport implements ClusterTransport {
       t: 'HELLO',
       nodeId: this.nodeId,
       load,
+      ...(options.token !== undefined ? { token: options.token } : {}),
+      ...(options.observer === true ? { observer: true } : {}),
     });
     closeWriter(writer);
     this.#control = null;

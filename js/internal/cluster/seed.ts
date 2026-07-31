@@ -97,6 +97,18 @@ function heartbeatTimeoutMs(): number {
  *
  * @internal
  */
+/** Optional identity and authentication configuration for a seed. */
+export interface SeedServerOptions {
+  /**
+   * Join token every HELLO must present. When set, a HELLO with a missing or
+   * mismatched token receives JOIN_DENIED and is never registered. When
+   * absent, the seed admits any HELLO (development mode).
+   */
+  joinToken?: string;
+  /** Cluster identity advertised in every WELCOME. */
+  clusterId?: string;
+}
+
 export class SeedServer {
   /**
    * Seed-side transport the router listens and routes on.
@@ -205,8 +217,18 @@ export class SeedServer {
    * const seed = new SeedServer(new WebTransportSeedTransport('__seed__', 8787));
    * ```
    */
-  constructor(transport: ClusterSeedTransport) {
+  constructor(transport: ClusterSeedTransport, options: SeedServerOptions = {}) {
     this.#transport = transport;
+    this.#joinToken = options.joinToken ?? null;
+    this.#clusterId = options.clusterId ?? null;
+  }
+  /** Join token every HELLO must present, or null when auth is disabled. */
+  #joinToken: string | null;
+  /** Cluster identity advertised in WELCOME, or null when unset. */
+  #clusterId: string | null;
+  /** The cluster identity advertised to joiners, or null when unset. */
+  get clusterId(): string | null {
+    return this.#clusterId;
   }
   /**
    * Start listening and begin heartbeat monitoring.
@@ -288,6 +310,29 @@ export class SeedServer {
   #handle(from: string, msg: ClusterMessage): void {
     switch (msg.t) {
       case 'HELLO': {
+        if (this.#joinToken !== null && msg.token !== this.#joinToken) {
+          this.#transport.send(from, {
+            t: 'JOIN_DENIED',
+            reason: 'invalid join token',
+          });
+          break;
+        }
+        if (msg.observer === true) {
+          // Observers see the membership snapshot but never join it: no
+          // registration, no PEER_UP broadcast, no heartbeat tracking.
+          this.#transport.send(from, {
+            t: 'WELCOME',
+            nodeId: this.#transport.nodeId,
+            peers: [
+              ...Array.from(this.#peers.entries()).map(([nodeId, p]) => ({
+                nodeId,
+                load: p.load,
+              })),
+            ],
+            ...(this.#clusterId !== null ? { clusterId: this.#clusterId } : {}),
+          });
+          break;
+        }
         this.#peers.set(from, { load: msg.load });
         this.#lastSeen.set(from, Date.now());
         // WELCOME: send current peer list to the new node
@@ -300,6 +345,7 @@ export class SeedServer {
               load: p.load,
             })),
           ],
+          ...(this.#clusterId !== null ? { clusterId: this.#clusterId } : {}),
         });
         // Notify existing peers of the new arrival (excluding the new peer)
         this.#transport.broadcastExcept(from, {
