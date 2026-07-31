@@ -52,6 +52,15 @@ export function markSheddingWorkload(queue: number): number;
 export function takeShedWorkload(queue: number, owner: number): number | null;
 export function clearSheddingWorkload(queue: number, owner: number): boolean;
 export function resubmitShedWorkload(queue: number, shedWorkload: number): number;
+export function shedWorkloadConfig(shedWorkload: number): {
+  entry: string;
+  root: string;
+  rules: string;
+  watch: boolean;
+  repl: boolean;
+  data: string | null;
+  bootstrapData: string | null;
+};
 export function dropShedWorkload(shedWorkload: number): void;
 export function createReactorThread(queue: number): {
   handle: number;

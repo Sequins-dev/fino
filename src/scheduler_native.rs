@@ -1964,6 +1964,62 @@ fn resubmit_shed_workload(
     rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
 }
 
+/// The serializable half of a shed spec: everything a destination node needs
+/// to reconstruct an equivalent workload. Rules serialize to the same
+/// `ImportRule[]` JSON that `createScheduledRealm` accepts, so the claimable
+/// unit and the network-transferable unit share one shape (the port plumbing
+/// is per-node and is rebuilt at the destination).
+fn shed_workload_config(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let shed_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let shed = shed_workloads().lock().unwrap();
+    let Some(entry) = shed.get(shed_handle).and_then(Option::as_ref) else {
+        throw_error(
+            scope,
+            &format!("shedWorkloadConfig: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    let inner = entry
+        .spec
+        .inner
+        .as_ref()
+        .expect("shed workload spec is pre-initialization");
+    let rules_json = serde_json::to_string(&inner.import_rules).unwrap_or_else(|_| "[]".into());
+    let root = inner.process_env.root.to_string_lossy();
+    let result = v8::Object::new(scope);
+    fn optional<'s>(
+        scope: &mut v8::HandleScope<'s>,
+        value: &Option<String>,
+    ) -> v8::Local<'s, v8::Value> {
+        match value {
+            Some(value) => v8::String::new(scope, value).unwrap().into(),
+            None => v8::null(scope).into(),
+        }
+    }
+    let data = optional(scope, &inner.realm_data);
+    let bootstrap_data = optional(scope, &inner.realm_bootstrap_data);
+    for (name, value) in [
+        (
+            "entry",
+            v8::String::new(scope, &inner.entry).unwrap().into(),
+        ),
+        ("root", v8::String::new(scope, &root).unwrap().into()),
+        ("rules", v8::String::new(scope, &rules_json).unwrap().into()),
+        ("watch", v8::Boolean::new(scope, inner.watch_mode).into()),
+        ("repl", v8::Boolean::new(scope, inner.repl_mode).into()),
+        ("data", data),
+        ("bootstrapData", bootstrap_data),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
+}
+
 fn drop_shed_workload(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -2461,6 +2517,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "takeShedWorkload",
         "clearSheddingWorkload",
         "resubmitShedWorkload",
+        "shedWorkloadConfig",
         "dropShedWorkload",
         "createReactorThread",
         "closeReactorThread",
@@ -2517,6 +2574,7 @@ fn eval_steps<'a>(
     set_fn!("takeShedWorkload", take_shed_workload);
     set_fn!("clearSheddingWorkload", clear_shedding_workload);
     set_fn!("resubmitShedWorkload", resubmit_shed_workload);
+    set_fn!("shedWorkloadConfig", shed_workload_config);
     set_fn!("dropShedWorkload", drop_shed_workload);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("closeReactorThread", close_reactor_thread);

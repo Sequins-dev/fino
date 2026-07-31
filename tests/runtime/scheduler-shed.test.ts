@@ -13,6 +13,7 @@ import {
   dropShedWorkload,
   markSheddingWorkload,
   resubmitShedWorkload,
+  shedWorkloadConfig,
   submitReactorWorkload,
   takeShedWorkload,
 } from 'internal:scheduler-native';
@@ -45,6 +46,14 @@ describe('pre-init workload shedding', () => {
     t.equal(remarkedAgain, first, 'a resubmitted spec is markable again');
     const shedAgain = takeShedWorkload(queue.handle, remarkedAgain);
     t.ok(shedAgain !== null, 'a resubmitted spec can be taken again');
+
+    const config = shedWorkloadConfig(shedAgain!);
+    t.equal(config.entry, entry, 'shed config carries the entry path');
+    t.ok(config.root.length > 0, 'shed config carries the resolved root');
+    t.ok(Array.isArray(JSON.parse(config.rules)), 'rules serialize as an ImportRule[] JSON array');
+    t.equal(config.watch, false, 'watch flag round-trips');
+    t.equal(config.repl, false, 'repl flag round-trips');
+
     dropShedWorkload(shedAgain!);
 
     closeReactorQueue(queue.handle);
