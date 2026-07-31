@@ -2,10 +2,16 @@
  * Gradients on the GPU, against the reference oracle.
  *
  * The differential suite compares *forward* results, and `gradCheck` validates the
- * tape against finite differences on the CPU in f64. Neither compares a GPU's
+ * tape against finite differences on the CPU in f64. Neither compared a GPU's
  * gradients to the oracle's, which left the entire backward pass on both GPU backends
- * without differential coverage — and that is exactly where a real defect is hiding
- * (see the failing case at the end).
+ * without differential coverage.
+ *
+ * What that gap hid was not a GPU defect but an oracle one: the reference backend
+ * dropped `keepDims` on the way into its reduction kernel, so every gradient that
+ * reduces over a broadcast axis — which is every weight gradient in a model taking
+ * batched input — was wrong on the CPU and right on the GPU. Cross-device comparison
+ * could never have found it; the values checked against hand arithmetic in
+ * `core.test.ts` are what pin it down. This suite catches the converse.
  *
  * Each case runs the same program on the reference backend and on every GPU, and
  * compares the gradient rather than the result.
@@ -91,15 +97,35 @@ describe('GPU gradients against the oracle', () => {
     }
   });
 
-  it('SKIP: softmax over an interior axis differentiates at all', async (t) => {
-    // Throws "strided elementwise operands need the stridedCopy template" on both GPU
-    // backends. The forward pass over an interior axis is covered and passes; only its
-    // gradient is unreachable. Skipped rather than deleted so the gap is recorded.
-    t.ok(true, 'skipped: known to throw on both GPU backends');
-    if (Number('1')) return;
-    const dev = (await listDevices()).find((d) => d.type !== 'cpu');
-    if (!dev) return;
-    const x = await tensor(sampleValues(40, 5), { shape: [2, 4, 5], device: dev, requiresGrad: true });
-    x.softmax(1).mul(3).sum().backward();
+  it('differentiates softmax over an interior axis', async (t) => {
+    // This used to throw: the gradient broadcasts a reduction back over a middle axis,
+    // which the elementwise template cannot address because it indexes operands
+    // arithmetically rather than by stride. Such an operand is now stretched into a
+    // contiguous buffer first.
+    const cpu = await device('cpu');
+    for (const shape of [
+      [2, 4, 5],
+      [2, 3, 4, 2],
+    ]) {
+      for (const axis of [1, shape.length - 2]) {
+        const count = shape.reduce((a, b) => a * b, 1);
+        const values = sampleValues(count, count + axis);
+        const reference = await tensor(values, { shape, device: cpu, requiresGrad: true });
+        reference.softmax(axis).mul(3).sum().backward();
+        const expected = await reference.grad!.data();
+
+        for (const dev of (await listDevices()).filter((d) => d.type !== 'cpu')) {
+          const x = await tensor(values, { shape, device: dev, requiresGrad: true });
+          x.softmax(axis).mul(3).sum().backward();
+          const result = compareValues(await x.grad!.data(), expected, 'f32', count);
+          t.ok(
+            result.ok,
+            describeComparison(result, `softmax axis ${axis} of [${shape.join(', ')}] on ${dev.type}`),
+          );
+          x.dispose();
+        }
+        reference.dispose();
+      }
+    }
   });
 });

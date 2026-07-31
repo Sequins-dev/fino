@@ -89,11 +89,16 @@ function forEachReduced(
   axes: readonly number[],
   outIndex: number,
   outShape: readonly number[],
-  keepDims: boolean,
   visit: (value: number, flat: number) => void,
 ): void {
   const reduced = new Set(axes);
   const inShape = x.shape;
+  // Derived from the shapes rather than taken as an argument. It is not independent
+  // information — a kept axis is a size-one axis still present in the output — and
+  // passing it separately meant a caller could omit it while still handing over an
+  // output shaped as though it had not. One did, and the reduction then read the
+  // output's coordinates off by an axis and silently returned duplicated values.
+  const keepDims = outShape.length === inShape.length;
   // Reconstruct the input coordinates this output position covers.
   const outCoords = unravel(outIndex, outShape);
   const base = new Array<number>(inShape.length).fill(0);
@@ -193,11 +198,10 @@ function reduction(def: ReduceDef): void {
     refImpl: (inputs, out, attrs) => {
       const x = inputs[0]!;
       const axes = axesOf(attrs, x.shape.length);
-      const keepDims = keepDimsOf(attrs);
       for (let i = 0; i < out.size; i++) {
         let acc = def.init;
         let count = 0;
-        forEachReduced(x, axes, i, out.shape, keepDims, (value) => {
+        forEachReduced(x, axes, i, out.shape, (value) => {
           acc = def.fold(acc, value);
           count++;
         });
@@ -319,12 +323,11 @@ function argReduction(name: 'argmax' | 'argmin', better: (a: number, b: number) 
     refImpl: (inputs, out, attrs) => {
       const x = inputs[0]!;
       const axes = axesOf(attrs, x.shape.length);
-      const keepDims = keepDimsOf(attrs);
       for (let i = 0; i < out.size; i++) {
         let best = name === 'argmax' ? -Infinity : Infinity;
         let bestAt = 0;
         let position = 0;
-        forEachReduced(x, axes, i, out.shape, keepDims, (value) => {
+        forEachReduced(x, axes, i, out.shape, (value) => {
           if (better(value, best)) {
             best = value;
             bestAt = position;

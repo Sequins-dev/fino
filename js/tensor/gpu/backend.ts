@@ -61,6 +61,7 @@ import {
 } from '../ir/index.ts';
 import type { EwInput, KernelIR, ScalarDType } from '../ir/index.ts';
 import { BINARY, COMPARE, E, classifyOperands, computeTypeFor, ewKernel, numel } from '../ir/index.ts';
+import { contiguousStrides } from '../shape.ts';
 import { KernelCache } from '../kernel-cache.ts';
 import type { DriverBuffer, DriverKernel, GpuDriver } from './driver.ts';
 
@@ -513,11 +514,24 @@ export class GpuBackend implements DeviceBackend {
       return;
     }
 
+    // An operand whose broadcast does not collapse to a leading or trailing run — a
+    // size-one axis in the *middle* — cannot be indexed by the elementwise template,
+    // which addresses operands arithmetically rather than by stride. Rather than
+    // refuse the operation, stretch that operand into a contiguous scratch buffer
+    // first; the strided copy exists precisely to express an arbitrary broadcast. It
+    // costs a pass over the output, which is why it is a fallback and not the norm.
+    const scratch: DriverBuffer[] = [];
+    const resolved = inputs.map((input, index) => {
+      const initial = classifyOperands(out.shape, [input.shape]).layouts[0]!;
+      if (initial.class !== 'strided') return input;
+      return this.#stretch(input, out.shape, scratch);
+    });
+
     const { layouts } = classifyOperands(
       out.shape,
-      inputs.map((input) => input.shape),
+      resolved.map((input) => input.shape),
     );
-    const ewInputs: EwInput[] = inputs.map((input, index) => ({
+    const ewInputs: EwInput[] = resolved.map((input, index) => ({
       dtype: this.#scalar(input),
       layout: layouts[index]!.class,
     }));
@@ -530,10 +544,47 @@ export class GpuBackend implements DeviceBackend {
 
     this.#run(
       () => buildElementwise(op, ewInputs, outScalar),
-      [...inputs.map((input) => input.buffer), out.buffer],
+      [...resolved.map((input) => input.buffer), out.buffer],
       params,
       linearGrid(count),
     );
+    // Read only by launches already queued ahead of the release, as in `reduce`.
+    if (scratch.length > 0) this.#releaseScratch(scratch);
+  }
+
+  /**
+   * Stretch an operand to the output's shape in a fresh contiguous buffer.
+   *
+   * The broadcast is expressed as strides — zero on every axis the operand does not
+   * have, or has at size one — which is exactly what the strided copy consumes.
+   *
+   * @internal
+   */
+  #stretch(
+    input: TensorDesc,
+    shape: readonly number[],
+    scratch: DriverBuffer[],
+  ): TensorDesc {
+    const own = contiguousStrides(input.shape);
+    const rank = shape.length;
+    const strides = new Array<number>(rank).fill(0);
+    for (let i = 0; i < rank; i++) {
+      const axis = input.shape.length - rank + i;
+      if (axis < 0) continue;
+      strides[i] = input.shape[axis] === 1 && shape[i] !== 1 ? 0 : own[axis]!;
+    }
+    const target: TensorDesc = {
+      buffer: this.#scratchBuffer(numel(shape) * DTYPE_BYTES[input.dtype], scratch),
+      dtype: input.dtype,
+      shape: [...shape],
+      strides: contiguousStrides(shape),
+      offset: 0,
+    };
+    this.copyStrided(
+      { buffer: input.buffer, dtype: input.dtype, shape: [...shape], strides, offset: input.offset },
+      target,
+    );
+    return target;
   }
 
   cast(x: TensorDesc, out: TensorDesc): void {

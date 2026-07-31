@@ -686,3 +686,67 @@ describe('slicing', () => {
     t.throws(() => x.slice([{ step: -1 }]), /negative/, 'a negative step');
   });
 });
+
+describe('reductions that keep their dimensions', () => {
+  // These compare against values worked out by hand rather than against the reference
+  // backend, because the reference backend is what was wrong: it dropped `keepDims` on
+  // the way into its kernel and then read the output's coordinates off by an axis,
+  // returning duplicated values. Every cross-device comparison agreed, because they
+  // were all agreeing with a broken oracle.
+  const source = Array.from({ length: 12 }, (_, i) => i);
+
+  it('sums a leading axis', async (t) => {
+    const x = await tensor(source, { shape: [2, 3, 2] });
+    // element [i,j,k] is 6i + 2j + k, so summing i gives 6 + 2(2j + k).
+    t.deepEqual(
+      Array.from(await x.sum([0], true).data()),
+      [6, 8, 10, 12, 14, 16],
+      'with the axis kept',
+    );
+    t.deepEqual([...x.sum([0], true).shape], [1, 3, 2], 'and the axis is kept as size one');
+    t.deepEqual(
+      Array.from(await x.sum([0], false).data()),
+      [6, 8, 10, 12, 14, 16],
+      'and dropping the axis gives the same values',
+    );
+  });
+
+  it('sums an interior axis', async (t) => {
+    const x = await tensor(source, { shape: [2, 3, 2] });
+    // Summing j gives 18i + 6 + 3k.
+    t.deepEqual(Array.from(await x.sum([1], true).data()), [6, 9, 24, 27], 'with the axis kept');
+    t.deepEqual([...x.sum([1], true).shape], [2, 1, 2], 'shaped with a one in the middle');
+  });
+
+  it('sums a trailing axis', async (t) => {
+    const x = await tensor(source, { shape: [2, 3, 2] });
+    t.deepEqual(
+      Array.from(await x.sum([2], true).data()),
+      [1, 5, 9, 13, 17, 21],
+      'the case that happened to work before',
+    );
+  });
+
+  it('sums several axes at once', async (t) => {
+    const x = await tensor(source, { shape: [2, 3, 2] });
+    t.deepEqual(Array.from(await x.sum([0, 1], true).data()), [30, 36], 'leading pair');
+    t.deepEqual([...x.sum([0, 1], true).shape], [1, 1, 2], 'both kept as size one');
+  });
+
+  it('means and maxima keep dimensions too', async (t) => {
+    const x = await tensor(source, { shape: [2, 3, 2] });
+    t.deepEqual(Array.from(await x.mean([0], true).data()), [3, 4, 5, 6, 7, 8], 'mean');
+    t.deepEqual(Array.from(await x.max([1], true).data()), [4, 5, 10, 11], 'max');
+    t.deepEqual(Array.from(await x.min([1], true).data()), [0, 1, 6, 7], 'min');
+  });
+
+  it('reduces a rank-four leading axis', async (t) => {
+    const x = await tensor(Array.from({ length: 24 }, (_, i) => i), { shape: [2, 2, 3, 2] });
+    // Summing the outermost axis adds 12 to each of the first twelve elements.
+    t.deepEqual(
+      Array.from(await x.sum([0], true).data()),
+      Array.from({ length: 12 }, (_, i) => i * 2 + 12),
+      'rank four',
+    );
+  });
+});
