@@ -301,6 +301,29 @@ exercised, so a partial run says so instead of implying more than it checked —
 running it on the reference device proves only that the cases execute, since that
 backend is what everything else is compared against.
 
+## Performance, measured
+
+`benchmarks/tensor/gpu.bench.ts` reports achieved rates rather than iterations per
+second, so the numbers can be held against the hardware instead of only against
+yesterday's run. On an Apple silicon development machine:
+
+| | Metal | Vulkan (MoltenVK) |
+|---|---|---|
+| GEMM 1024³ | ~3100 GFLOP/s | ~2100 GFLOP/s |
+| GEMM 512³ | ~1000 GFLOP/s | ~2200 GFLOP/s |
+| elementwise | ~20 Gelem/s | ~22 Gelem/s |
+
+None of this is claimed to be fast. It is claimed to be true, which is what makes it
+possible to tell whether a change helped.
+
+One finding worth carrying: elementwise operations are **not** bandwidth-bound. A
+write-only fill, a read-and-write unary, and a two-read binary all take the same time
+per element while moving one, two, and three words — so the cost tracks elements rather
+than bytes, and quoting a bytes-per-second figure alone would suggest a memory limit
+that is not the one being hit. Giving each thread more elements does not change it
+either. The remaining candidate is the width of a single operation: each thread handles
+one scalar, and the IR has no vector width yet.
+
 ## Diagnostics
 
 - `poolStats(device)` reports held, in-use, and leaked buffer counts.
