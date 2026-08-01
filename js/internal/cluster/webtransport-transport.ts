@@ -319,6 +319,13 @@ async function sendPortMessage(
   await writeMetadata(writer, metadata);
   await writeMessage(writer, msg);
   closeWriter(writer);
+  // One-way stream: cancel the unused read half so per-message streams do
+  // not accumulate until the session's stream credit runs out. Safe only
+  // because a receiver treats a single stream error as noise, never as the
+  // peer going down.
+  try {
+    await stream.readable.cancel();
+  } catch {}
 }
 async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promise<void> {
   const stream = await wt.createBidirectionalStream();
@@ -329,6 +336,9 @@ async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promis
   } satisfies ClusterStreamMetadata);
   await writeMessage(writer, msg);
   closeWriter(writer);
+  try {
+    await stream.readable.cancel();
+  } catch {}
 }
 /**
  * Seed-side cluster transport: the HTTP/3 hub that workers dial into.
@@ -584,9 +594,12 @@ export class WebTransportSeedTransport implements ClusterTransport {
             void metadata;
           },
         ).catch((err: unknown) => {
+          // One bad stream is not a dead peer: messages ride short-lived
+          // streams, and a stray reset or idle timeout on one of them must
+          // not deregister a member whose session is healthy. Session death
+          // is detected by wt.closed above.
           if (!isExpectedCloseError(err))
             console.error(`fino:cluster seed received malformed WebTransport stream: ${err}`);
-          if (peerNodeId !== null) this.#emitPeerDown(peerNodeId);
         });
       }
     } finally {
