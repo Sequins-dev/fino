@@ -154,7 +154,7 @@ import {
   BroadcastChannel,
 } from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
-import { ThreadPort } from 'internal:realm/transport-port';
+import { createParentPort, type RealmPort } from 'internal:realm/transport-port';
 import { getWakeReadFd } from 'internal:thread-port';
 interface StackFrame {
   getFileName?(): string | null;
@@ -427,10 +427,10 @@ export function driveLoop(isDone: () => boolean, onDone: () => void): void {
 // multi-event messaging) until the parent calls terminate().
 const _childEntry = getEntryPath() as string | undefined;
 // A realm reached over a wake pipe (every reactor-pooled and process realm)
-// talks to its parent through a ThreadPort transport. A root realm has none.
+// talks to its parent through a realm port. A root realm has none.
 const _threadWakeReadFd = getWakeReadFd() as number;
-const _childPort: ThreadPort | undefined =
-  _threadWakeReadFd >= 0 ? new ThreadPort(_threadWakeReadFd) : undefined;
+const _childPort: RealmPort | undefined =
+  _threadWakeReadFd >= 0 ? createParentPort(_threadWakeReadFd) : undefined;
 // Expose the child port as `realmPort` on globalThis so entry modules can
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
@@ -651,7 +651,7 @@ if (_childEntry) {
           // Close the port to cancel any pending loop.readable() so that
           // alive() can return false and the loop can exit cleanly.
           _portClosed = true;
-          (_childPort as MessagePort | ThreadPort).close();
+          _childPort.close();
         }
       }
       return done;

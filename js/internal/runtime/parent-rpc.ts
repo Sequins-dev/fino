@@ -51,7 +51,7 @@ import { serialize } from 'internal:serializer';
 // ---------------------------------------------------------------------------
 // Transport selection
 //
-// For thread and process child realms, `globalThis.realmPort` is a ThreadPort
+// For reactor-pooled and process child realms, `globalThis.realmPort` is a
 // whose `.postMessage()` routes through the Rust native channel (same as
 // calling nativeSend directly).  For embedded realms it is a MessagePort
 // backed by an in-process IntraPort queue.  Using `.postMessage()` uniformly

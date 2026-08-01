@@ -17,7 +17,7 @@
  * - Exposes registerPort() so ClusterPort instances can receive PORT_MSG.
  *
  * `ClusterPort` is the parent-side handle for a remotely spawned realm: a
- * `BaseTransportPort` whose messages travel as PORT_MSG cluster frames
+ * `RealmPort` whose messages travel as PORT_MSG cluster frames
  * instead of an in-process channel. Ports register themselves with the
  * client on construction, queue outbound messages until SPAWN_ACK assigns
  * the child port ID, and preserve transferred ArrayBuffers end-to-end as raw
@@ -77,7 +77,7 @@ import {
   takeScheduledRealmStatus,
 } from 'internal:scheduler-native';
 import { readable, removeRead } from 'internal:runtime/loop';
-import { BaseTransportPort } from 'internal:realm/transport-port';
+import { RealmPort, type RealmLink } from 'internal:realm/transport-port';
 import { env } from 'internal:process';
 const HEARTBEAT_MS = 2500;
 function heartbeatIntervalMs(): number {
@@ -782,7 +782,7 @@ export class ClusterClient {
  *
  * Outbound messages are serialized and sent as `PORT_MSG` cluster messages;
  * inbound payloads are deserialized and dispatched through the shared
- * `BaseTransportPort` machinery. Messages posted before the child port ID is
+ * shared realm-port machinery. Messages posted before the child port ID is
  * assigned are queued and flushed once `SPAWN_ACK` delivers the ID.
  *
  * ```ts no_run
@@ -794,7 +794,7 @@ export class ClusterClient {
  *
  * @internal
  */
-export class ClusterPort extends BaseTransportPort {
+export class ClusterPort extends RealmPort {
   /**
    * Parent-side port ID used for seed routing and inbound lookup.
    *
@@ -845,10 +845,37 @@ export class ClusterPort extends BaseTransportPort {
    * ```
    */
   constructor(portId: string, client: ClusterClient) {
-    super();
+    // A cluster hop leaves the process, so no transit channel can follow it and
+    // there is no descriptor to poll — inbound frames are pushed in by the
+    // transport through `_deliver`.
+    const link: RealmLink = {
+      transport: 'cluster',
+      wakeFd: -1,
+      supportsPortTransfer: false,
+      send: (header, data, stores) => this.#route([header, data, ...stores]),
+      drain: () => [],
+      close: () => this.#client.unregisterPort(this.portId),
+    };
+    super(link);
     this.portId = portId;
     this.#client = client;
     client.registerPort(portId, this);
+  }
+  /**
+   * Send a framed message to the child, or queue it until the child port ID
+   * arrives.
+   *
+   * Spawn is asynchronous, so early sends — including a prompt `terminate()` —
+   * must not be lost.
+   *
+   * @internal
+   */
+  #route(parts: Uint8Array[]): void {
+    if (this.#childPortId === null) {
+      this.#preSpawnQueue.push(parts);
+      return;
+    }
+    this.#client.sendPortMsg(this.portId, this.#childPortId, parts);
   }
   /**
    * Set the remote child port ID after a successful `SPAWN_ACK`.
@@ -890,53 +917,6 @@ export class ClusterPort extends BaseTransportPort {
    * port.postMessage({ ok: true });
    * ```
    */
-  /**
-   * A cluster hop leaves the process, so a transit channel cannot follow it.
-   *
-   * @internal
-   */
-  protected override _supportsPortTransfer(): boolean {
-    return false;
-  }
-  /**
-   * Queue or send encoded bytes as a `PORT_MSG`.
-   *
-   * The envelope header leads the payload so the receiving node can classify
-   * the frame without decoding it.
-   *
-   * @internal
-   */
-  protected override _send(
-    header: Uint8Array,
-    data: Uint8Array,
-    stores: Uint8Array[],
-    _ports: [number, number][],
-  ): void {
-    const parts = [header, data, ...stores];
-    if (this.#childPortId === null) {
-      this.#preSpawnQueue.push(parts);
-      return;
-    }
-    this.#client.sendPortMsg(this.portId, this.#childPortId, parts);
-  }
-  /**
-   * Unregister this port from the owning client during close.
-   *
-   * The base transport port calls this hook once close processing reaches the
-   * subclass. Unknown or already-unregistered IDs are ignored by the client.
-   *
-   * ```ts no_run
-   * import { ClusterClient, ClusterPort } from 'internal:cluster/client';
-   * const client = new ClusterClient({ nodeId: 'n', send() {}, broadcast() {}, on() {}, close() {} }, 'n');
-   * const port = new ClusterPort('n/p-parent', client);
-   * port.close();
-   * ```
-   *
-   * @internal
-   */
-  protected override _onClose(): void {
-    this.#client.unregisterPort(this.portId);
-  }
   /**
    * Deliver raw serialized payload parts from an incoming `PORT_MSG`.
    *
