@@ -856,16 +856,6 @@ export class VulkanCompute {
    */
   #encoded = 0;
 
-  /**
-   * Timeline value of the most recent submission.
-   *
-   * Distinct from `#counter`, which counts what has been *recorded*: a value that has
-   * not been submitted will never be signalled, so anything waiting on one has to
-   * flush first.
-   *
-   * @internal
-   */
-  #submittedValue = 0n;
 
   /**
    * Argument graphs belonging to calls that have not returned.
@@ -1091,7 +1081,6 @@ export class VulkanCompute {
       this.#lib.symbols.vkQueueSubmit(this.#queue, 1, submitInfo, 0n) as number,
     );
     this.#pending.push(chain, commandBuffer);
-    this.#submittedValue = signalValue;
   }
 
   /**
@@ -1132,8 +1121,17 @@ export class VulkanCompute {
       this.#awaited.delete(chain);
     }
     check('vkWaitSemaphores', result);
-    // Everything submitted up to this point has completed, so the recorded
-    // command buffers and their referenced memory can be released.
+    // Reclaiming here is only safe if the device has caught up with *everything*
+    // counted, which is a stronger condition than the value just waited for.
+    //
+    // The wait is asynchronous by design, so the event loop keeps running across it and
+    // other work is dispatched while it is outstanding — that is the normal case for
+    // this engine, not an edge one. Such a dispatch records into a freshly opened
+    // command buffer and takes a timeline value, and neither has been submitted yet.
+    // Resetting the pool unconditionally would free the buffer it recorded into and
+    // drop the work on the floor, while its value had already been handed to a caller
+    // who will eventually wait for it — a wait that could then never be satisfied.
+    if (this.#openCommand || this.completed() < this.#counter) return;
     this.#pending.length = 0;
     check(
       'vkResetCommandPool',
@@ -1144,10 +1142,6 @@ export class VulkanCompute {
       this.#lib.symbols.vkResetDescriptorPool(this.#device, this.#descriptorPool, 0) as number,
     );
     this.#setsUsed = 0;
-    // The reset freed every command buffer, so nothing may still be treated as open.
-    // `flush` above has already cleared this; saying so here means a future caller that
-    // resets without flushing fails loudly rather than recording into freed memory.
-    this.#openCommand = null;
     this.#encoded = 0;
   }
 

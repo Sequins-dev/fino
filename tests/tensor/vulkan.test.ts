@@ -353,3 +353,51 @@ describe('Vulkan kernel execution', () => {
     context.dispose();
   });
 });
+
+describe('Vulkan ordering', () => {
+  /**
+   * Dispatching while a wait is outstanding used to lose the work.
+   *
+   * The wait is asynchronous so the event loop keeps running across it, which is the
+   * whole point — and this engine dispatches eagerly, so work arriving mid-wait is the
+   * normal case. Reclaiming the command pool when the wait returned freed the buffer
+   * that work had been recorded into and dropped it, while its timeline value had
+   * already been handed out. Anything that later waited for that value waited forever,
+   * which is a hang rather than a wrong answer, and only when the timing lined up.
+   */
+  it('keeps work dispatched while a wait is outstanding', async (t) => {
+    if (!available) {
+      t.ok(true, `SKIP: ${reason()}`);
+      return;
+    }
+    const context = VulkanCompute.create();
+    const { ir } = unaryKernel('relu', { dtype: 'f32', layout: 'cont' }, 'f32');
+    const pipeline = context.createPipeline(lowerToSPIRV(ir), ir.name);
+    const count = 32;
+    const input = context.createBuffer(count * 4);
+    const out = context.createBuffer(count * 4);
+    new Float32Array(input.mapped!).fill(-1);
+
+    const launch = () =>
+      context.dispatch({
+        pipeline,
+        buffers: [input, out],
+        params: packParams(ir.params, { n: count }),
+        groups: [Math.ceil(count / ir.wg[0]), 1, 1],
+      });
+
+    const first = context.waitFor(launch());
+    // Recorded after the wait was issued, so it lands in a command buffer the wait's
+    // cleanup used to free. Its value is the one that could then never be signalled,
+    // and awaiting it hung rather than returning something wrong.
+    const second = launch();
+    await first;
+    await context.waitFor(second);
+
+    t.equal(new Float32Array(out.mapped!)[0], 0, 'the second dispatch ran');
+    context.destroyBuffer(out);
+    context.destroyBuffer(input);
+    context.destroyPipeline(pipeline);
+    context.dispose();
+  });
+});
