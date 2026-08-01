@@ -391,6 +391,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:cluster/agent", "internal/cluster/agent"),
     source_builtin!("internal:cluster/ledger", "internal/cluster/ledger"),
     source_builtin!("internal:cluster/balancer", "internal/cluster/balancer"),
+    source_builtin!(
+        "internal:cluster/balance-loop",
+        "internal/cluster/balance-loop"
+    ),
     source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
     source_builtin!("internal:cluster/client", "internal/cluster/client"),

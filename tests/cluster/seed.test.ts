@@ -6,6 +6,7 @@
  */
 import { describe, it, afterEach } from 'fino:test/test';
 import { SeedServer } from 'internal:cluster/seed';
+import { WorkloadLedger } from 'internal:cluster/ledger';
 import { RealmRegistry } from 'internal:cluster/registry';
 import type { ClusterMessage } from 'internal:cluster/protocol';
 // ---------------------------------------------------------------------------
@@ -80,7 +81,7 @@ class TestSeedTransport {
 let _activeSeed: SeedServer | null = null;
 async function makeSeed(
   nodeId = 'seed-node',
-  options: { joinToken?: string; clusterId?: string } = {},
+  options: { joinToken?: string; clusterId?: string; ledger?: WorkloadLedger; leaseMs?: number } = {},
 ): Promise<{
   seed: SeedServer;
   transport: TestSeedTransport;
@@ -1224,5 +1225,71 @@ describe('SeedServer — pressure placement and admission retry', () => {
     const rerouted = transport.sent.filter((s) => s.msg.t === 'SPAWN');
     t.equal(rerouted.length, 1, 'the durable spawn was rerouted rather than failed');
     t.equal(rerouted[0]!.to, 'worker-2', 'rerouted to the surviving node');
+  });
+});
+
+describe('SeedServer — ledger lease sweep', () => {
+  afterEach(stopActiveSeed);
+
+  it('reroutes an in-flight spawn whose target went silent', async (t) => {
+    const ledger = await WorkloadLedger.open(
+      `/tmp/fino-ledger-sweep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`,
+    );
+    const { seed, transport } = await makeSeed('seed-node', { ledger, leaseMs: 40 });
+    const load = (cpu: number) => ({ cpu, memory: 1, pendingSpecs: 0 });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9) });
+    transport.sent.length = 0;
+    transport.inject('requester', {
+      t: 'SPAWN',
+      spawnReqId: 'requester/s-sweep',
+      parentPortId: 'requester/p-1',
+      config: { entry: '/app/main.ts', root: '/app', rules: [] },
+    });
+    await seed._ledgerSettled();
+    const first = transport.sent.filter((s) => s.msg.t === 'SPAWN')[0]!;
+    t.equal(first.to, 'worker-1', 'routed to the lightest node first');
+    const before = await ledger.get('requester/s-sweep');
+    t.equal(before?.owner, 'worker-1', 'the lease belongs to the silent node');
+
+    // worker-1 neither acks nor disconnects. Its lease simply lapses.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    transport.sent.length = 0;
+    await seed._sweepLedgerForTest();
+
+    const rerouted = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(rerouted.length, 1, 'the sweep rerouted the spawn');
+    t.equal(rerouted[0]!.to, 'worker-2', 'to the remaining node');
+    const after = await ledger.get('requester/s-sweep');
+    t.equal(after?.owner, 'worker-2', 'the ledger lease moved with it');
+    t.equal(after?.state, 'claimed', 'the record is claimed by the new target');
+    await ledger.close();
+  });
+
+  it('leaves reclaimed records without a pending spawn for reconciliation', async (t) => {
+    const ledger = await WorkloadLedger.open(
+      `/tmp/fino-ledger-sweep2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`,
+    );
+    await ledger.commit('ghost/w-1', '{}');
+    await ledger.claim('ghost/w-1', 'dead-node', 1, 10);
+    const { seed, transport } = await makeSeed('seed-node', { ledger, leaseMs: 10 });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0.1, memory: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    transport.sent.length = 0;
+    await seed._sweepLedgerForTest();
+    t.equal(
+      transport.sent.filter((s) => s.msg.t === 'SPAWN').length,
+      0,
+      'no blind re-execution of a workload nobody is waiting on',
+    );
+    const record = await ledger.get('ghost/w-1');
+    t.equal(record?.state, 'unclaimed', 'but the lease was reclaimed');
+    t.equal(record?.owner, null, 'and the dead owner cleared');
+    await ledger.close();
   });
 });

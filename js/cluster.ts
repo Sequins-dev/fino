@@ -67,6 +67,7 @@ import { availableParallelism, reactorQueueDepth } from 'internal:scheduler-nati
 import { WorkloadLedger } from 'internal:cluster/ledger';
 import { env } from 'internal:process';
 import { SystemRealmAgent, type NodeReport } from 'internal:cluster/agent';
+import { startBalanceLoop } from 'internal:cluster/balance-loop';
 import { mintJoinString, parseJoinString } from 'internal:cluster/join-string';
 import { DiskFileSystem } from 'fino:file';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
@@ -98,6 +99,7 @@ let _joinString: string | null = null;
 let _agent: SystemRealmAgent | null = null;
 let _mesh: PeerMesh | null = null;
 let _ledger: WorkloadLedger | null = null;
+let _stopBalance: (() => void) | null = null;
 
 /** Spawn the node's system realm and return the heartbeat load sampler. */
 function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
@@ -509,6 +511,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     mesh: _mesh,
     admission: defaultAdmission,
   });
+  _stopBalance = startBalanceLoop(_client);
   _client.start();
   await _client.ready();
   _joinString = mintJoinString({
@@ -614,6 +617,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     mesh: _mesh,
     admission: defaultAdmission,
   });
+  _stopBalance = startBalanceLoop(_client);
   _client.start();
   try {
     await _client.ready();
@@ -703,6 +707,8 @@ export function leaveCluster(): void {
   _agent = null;
   _mesh?.close();
   _mesh = null;
+  _stopBalance?.();
+  _stopBalance = null;
   void _ledger?.close().catch(() => {});
   _ledger = null;
   _client?.stop();

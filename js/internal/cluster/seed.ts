@@ -264,6 +264,34 @@ export class SeedServer {
   _ledgerSettled(): Promise<void> {
     return this.#ledgerQueue.then(() => undefined);
   }
+  /**
+   * Reclaim expired leases and reroute the in-flight spawns they belonged to.
+   *
+   * This catches the failure the node-down path cannot: a target that goes
+   * silent without disconnecting. Its lease lapses, the record returns to the
+   * unclaimed pool, and any spawn still waiting on it moves to another node.
+   * Reclaimed records with no pending spawn are left for reconciliation —
+   * their requester is gone or they were initialized, which make-before-break
+   * replacement handles rather than blind re-execution.
+   */
+  async #sweepLedger(ledger: WorkloadLedger): Promise<void> {
+    const reclaimed = await ledger.sweepExpired();
+    for (const record of reclaimed) {
+      const pending = this.#pendingSpawns.get(record.id);
+      if (pending === undefined) continue;
+      const next = this.#selectTarget(pending.attempted);
+      if (next === null) continue;
+      pending.attempted.add(next);
+      pending.targetNodeId = next;
+      await ledger.claim(record.id, next, this.#peers.get(next)?.incarnation ?? 0, this.#leaseMs);
+      this.#transport.send(next, pending.spawn);
+    }
+  }
+  /** Test hook: run one ledger sweep and resolve when it settles. @internal */
+  _sweepLedgerForTest(): Promise<void> {
+    this.#ledgerOp((ledger) => this.#sweepLedger(ledger));
+    return this._ledgerSettled();
+  }
   /** childPortId -> ledger record id, so realm exits can settle records. */
   #ledgerIdsByChildPort = new Map<string, string>();
   /** Join token every HELLO must present, or null when auth is disabled. */
@@ -716,6 +744,7 @@ export class SeedServer {
    * @internal
    */
   #checkHeartbeats(): void {
+    this.#ledgerOp((ledger) => this.#sweepLedger(ledger));
     const now = Date.now();
     for (const [nodeId, ts] of this.#lastSeen) {
       if (now - ts > heartbeatTimeoutMs()) {
