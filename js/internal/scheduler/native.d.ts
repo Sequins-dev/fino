@@ -61,6 +61,16 @@ export function shedWorkloadConfig(shedWorkload: number): {
   data: string | null;
   bootstrapData: string | null;
 };
+export function shedWorkloadWakeFd(shedWorkload: number): number;
+export function shedRecvFromParent(
+  shedWorkload: number,
+): Array<[Uint8Array[], [number, number][]]>;
+export function shedSendToParent(
+  shedWorkload: number,
+  data: Uint8Array,
+  stores?: Uint8Array[],
+): void;
+export function shedComplete(shedWorkload: number, error?: string | null): void;
 export function dropShedWorkload(shedWorkload: number): void;
 export function createReactorThread(queue: number): {
   handle: number;

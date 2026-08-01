@@ -2114,6 +2114,144 @@ fn shed_workload_config(
     rv.set(result.into());
 }
 
+/// The wake descriptor that fires when the parent sends to a shed workload.
+///
+/// After a spec is shed, its realm lives on another node but the parent still
+/// holds the local port. The source relays between them, and watches this fd
+/// to know when the parent has written something to forward.
+fn shed_workload_wake_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let shed_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let shed = shed_workloads().lock().unwrap();
+    let fd = shed
+        .get(shed_handle)
+        .and_then(Option::as_ref)
+        .and_then(|entry| entry.spec.inner.as_ref())
+        .and_then(|inner| inner.wake_read_fd)
+        .unwrap_or(-1);
+    rv.set(v8::Integer::new(scope, fd).into());
+}
+
+/// Drain everything the parent has sent to a shed workload, for forwarding to
+/// the node that now owns it.
+fn shed_recv_from_parent(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let shed_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let shed = shed_workloads().lock().unwrap();
+    let Some(inner) = shed
+        .get(shed_handle)
+        .and_then(Option::as_ref)
+        .and_then(|entry| entry.spec.inner.as_ref())
+    else {
+        throw_error(
+            scope,
+            &format!("shedRecvFromParent: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    let mut messages = Vec::new();
+    if let Some(rx) = inner.channel_rx.as_ref() {
+        while let Ok(message) = rx.try_recv() {
+            messages.push(message);
+        }
+    }
+    if let Some(wake_read) = inner.wake_read_fd {
+        let mut discard = [0u8; 256];
+        while unsafe { libc::read(wake_read, discard.as_mut_ptr().cast(), discard.len()) } > 0 {}
+    }
+    drop(shed);
+    rv.set(crate::realm::transit::build_message_array(scope, messages).into());
+}
+
+/// Deliver a message from the workload's new host back to the local parent.
+fn shed_send_to_parent(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let shed_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let Some(data) = copy_uint8_array(scope, args.get(1)) else {
+        throw_error(
+            scope,
+            "shedSendToParent: second argument must be a Uint8Array",
+        );
+        return;
+    };
+    let transfer_stores = if let Ok(values) = v8::Local::<v8::Array>::try_from(args.get(2)) {
+        let mut stores = Vec::new();
+        for index in 0..values.length() {
+            if let Some(value) = values.get_index(scope, index)
+                && let Some(bytes) = copy_uint8_array(scope, value)
+            {
+                stores.push(bytes);
+            }
+        }
+        stores
+    } else {
+        Vec::new()
+    };
+    let shed = shed_workloads().lock().unwrap();
+    let Some(inner) = shed
+        .get(shed_handle)
+        .and_then(Option::as_ref)
+        .and_then(|entry| entry.spec.inner.as_ref())
+    else {
+        throw_error(
+            scope,
+            &format!("shedSendToParent: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    if let Some(tx) = inner.channel_tx.as_ref() {
+        let _ = tx.send(crate::realm::thread::ThreadMessage {
+            data,
+            transfer_stores,
+            transfer_ports: Vec::new(),
+        });
+    }
+    if let Some(wake_write) = inner.wake_write_fd {
+        let byte = [1u8];
+        unsafe {
+            libc::write(wake_write, byte.as_ptr().cast(), byte.len());
+        }
+    }
+}
+
+/// Settle the parent's completion await for a workload that finished on
+/// another node, so `run()` resolves exactly as it would have locally.
+fn shed_complete(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let shed_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let error = optional_string(scope, args.get(1));
+    let shed = shed_workloads().lock().unwrap();
+    let Some(scheduled) = shed
+        .get(shed_handle)
+        .and_then(Option::as_ref)
+        .and_then(|entry| entry.spec.inner.as_ref())
+        .and_then(|inner| inner.scheduled.clone())
+    else {
+        throw_error(
+            scope,
+            &format!("shedComplete: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    drop(shed);
+    scheduled.complete(match error {
+        Some(message) => ScheduledRealmResult::Error(message),
+        None => ScheduledRealmResult::Done,
+    });
+}
+
 fn drop_shed_workload(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -2734,6 +2872,10 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "clearSheddingWorkload",
         "resubmitShedWorkload",
         "shedWorkloadConfig",
+        "shedWorkloadWakeFd",
+        "shedRecvFromParent",
+        "shedSendToParent",
+        "shedComplete",
         "dropShedWorkload",
         "createReactorThread",
         "availableParallelism",
@@ -2795,6 +2937,10 @@ fn eval_steps<'a>(
     set_fn!("clearSheddingWorkload", clear_shedding_workload);
     set_fn!("resubmitShedWorkload", resubmit_shed_workload);
     set_fn!("shedWorkloadConfig", shed_workload_config);
+    set_fn!("shedWorkloadWakeFd", shed_workload_wake_fd);
+    set_fn!("shedRecvFromParent", shed_recv_from_parent);
+    set_fn!("shedSendToParent", shed_send_to_parent);
+    set_fn!("shedComplete", shed_complete);
     set_fn!("dropShedWorkload", drop_shed_workload);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("availableParallelism", available_parallelism);
