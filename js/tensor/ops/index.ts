@@ -74,6 +74,7 @@ import {
   transpose,
   zerosOf,
 } from './movement.ts';
+import { bernoulli, rand, randint, randn } from './random.ts';
 import { dispatch } from '../dispatch.ts';
 
 // Wire the cross-module hooks. Each module declares what it needs rather than
@@ -273,6 +274,7 @@ export {
   add,
   addScalar,
   arangeOf,
+  bernoulli,
   castTo,
   concat,
   cos,
@@ -297,6 +299,9 @@ export {
   neg,
   permute,
   pow,
+  rand,
+  randint,
+  randn,
   reshape,
   rsqrt,
   scatterAdd,

@@ -467,6 +467,35 @@ are meaningless, not merely large — and the scale halves. After a run of clean
 doubles again, so the constant tracks what the model's gradients actually need as
 training changes them.
 
+## Sampling
+
+```js
+import { Generator, rand, randn } from 'fino:tensor';
+
+const generator = new Generator(1234);
+const noise = randn([1024, 1024], { generator, device });
+```
+
+Sampling happens on the device the tensor lives on, and a generator is required rather
+than defaulted — a result nobody can reproduce is rarely what was wanted.
+
+The stream is counter-based: an element's value is a pure function of the key, the
+counter block, and the element's own index. Nothing accumulates, so elements can be
+computed in any order, and the same seed produces the same values from a sequential host
+loop and a parallel kernel alike. The conformance suite checks exactly that, comparing
+every backend's stream against the reference.
+
+`generator.split(i)` derives an independent substream, which is what per-layer dropout
+masks and per-worker shuffling need — reusing one stream across them correlates things
+that should be independent.
+
+| | |
+|---|---|
+| `rand(shape, {generator, low, high})` | uniform over `[low, high)` |
+| `randn(shape, {generator, mean, stddev})` | normal |
+| `randint(shape, {generator, low, high})` | integers over `[low, high)` |
+| `bernoulli(shape, {generator, p})` | ones with probability `p` |
+
 ## Capture and replay
 
 A backend that reports `captureReplay` can record a run of work and submit it again

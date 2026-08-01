@@ -10,7 +10,7 @@ import { listDevices, resolveDevice, sameDevice } from '../backend.ts';
 import type { Tensor } from '../tensor.ts';
 import { compareValues, describeComparison, sampleValues } from '../harness.ts';
 import { allOps } from '../ops/registry.ts';
-import { onesLike, zerosLike } from '../index.ts';
+import { Generator, bernoulli, onesLike, rand, randint, randn, zerosLike } from '../index.ts';
 import { layerNorm } from '../nn/functional.ts';
 
 /** What a case does with its inputs. */
@@ -192,6 +192,21 @@ export function conformanceCases(): ConformanceCase[] {
       run: (table, ids) => table.indexSelect(ids.abs().cast('i32'), 0).mul(2),
     },
 
+    {
+      name: 'seeded sampling',
+      group: 'forward',
+      covers: ['uniform', 'normal', 'randint', 'bernoulli'],
+      // The input exists only to say which device to draw on; the case is about the
+      // stream, which is a pure function of the seed and so has to agree everywhere.
+      inputs: [{ shape: [64] }],
+      run: (x) => {
+        const where = { device: x.device };
+        return rand([64], { generator: new Generator(2024), ...where })
+          .add(randn([64], { generator: new Generator(2025), ...where }))
+          .add(bernoulli([64], { generator: new Generator(2026), p: 0.3, ...where }))
+          .add(randint([64], { generator: new Generator(2027), high: 10, ...where }).cast('f32'));
+      },
+    },
     {
       name: 'more transcendentals',
       group: 'forward',
