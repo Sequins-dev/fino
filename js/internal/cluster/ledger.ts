@@ -96,6 +96,15 @@ export class WorkloadLedger {
       )`);
     await db.exec('CREATE INDEX IF NOT EXISTS idx_workloads_state ON workloads(state)');
     await db.exec('CREATE INDEX IF NOT EXISTS idx_workloads_lease ON workloads(lease_expires_at)');
+    await db.exec(`CREATE TABLE IF NOT EXISTS deployments (
+        name       TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        cask_hash  TEXT NOT NULL,
+        entry      TEXT NOT NULL,
+        state      TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        PRIMARY KEY (name, generation)
+      )`);
     return new WorkloadLedger(db);
   }
 
@@ -340,8 +349,116 @@ export class WorkloadLedger {
     }
   }
 
+  /**
+   * Record a new generation of a named deployment and make it the active
+   * one. The previous active generation is superseded, never deleted — its
+   * cask hash is the rollback target and its history is the audit trail.
+   */
+  async recordDeployment(
+    name: string,
+    caskHash: string,
+    entry: string,
+    now = Date.now(),
+  ): Promise<DeploymentRecord> {
+    const current = await this.activeDeployment(name);
+    const generation = current === null ? 1 : current.generation + 1;
+    const supersede = this.#db.prepare(
+      `UPDATE deployments SET state = 'superseded' WHERE name = :name AND state = 'active'`,
+    );
+    try {
+      await supersede.run({ name });
+    } finally {
+      supersede.finalize();
+    }
+    const insert = this.#db.prepare(
+      `INSERT INTO deployments (name, generation, cask_hash, entry, state, created_at)
+       VALUES (:name, :generation, :caskHash, :entry, 'active', :now)`,
+    );
+    try {
+      await insert.run({ name, generation, caskHash, entry, now });
+    } finally {
+      insert.finalize();
+    }
+    return { name, generation, caskHash, entry, state: 'active', createdAt: now };
+  }
+
+  /** The active generation of a named deployment, or null. */
+  async activeDeployment(name: string): Promise<DeploymentRecord | null> {
+    const stmt = this.#db.prepare(
+      `SELECT * FROM deployments WHERE name = :name AND state = 'active'
+       ORDER BY generation DESC LIMIT 1`,
+    );
+    try {
+      const row = await stmt.get({ name });
+      return row === undefined || row === null ? null : rowToDeployment(row);
+    } finally {
+      stmt.finalize();
+    }
+  }
+
+  /** Full generation history, newest first; all names when none is given. */
+  async deployments(name?: string): Promise<DeploymentRecord[]> {
+    const stmt = this.#db.prepare(
+      name === undefined
+        ? `SELECT * FROM deployments ORDER BY name ASC, generation DESC`
+        : `SELECT * FROM deployments WHERE name = :name ORDER BY generation DESC`,
+    );
+    try {
+      const rows = await stmt.all(name === undefined ? {} : { name });
+      return rows.map(rowToDeployment);
+    } finally {
+      stmt.finalize();
+    }
+  }
+
+  /**
+   * Roll a deployment back: record a new active generation pointing at the
+   * previous generation's cask. Instant because the artifact is already in
+   * every cache that ever ran it.
+   */
+  async rollbackDeployment(name: string, now = Date.now()): Promise<DeploymentRecord | null> {
+    const history = await this.deployments(name);
+    if (history.length < 2) return null;
+    const previous = history[1]!;
+    return this.recordDeployment(name, previous.caskHash, previous.entry, now);
+  }
+
+  /** Cask hashes any generation still references — the GC keep-set. */
+  async referencedCaskHashes(): Promise<Set<string>> {
+    const stmt = this.#db.prepare(`SELECT DISTINCT cask_hash FROM deployments`);
+    try {
+      const rows = await stmt.all({});
+      return new Set(rows.map((row) => String(row.cask_hash)));
+    } finally {
+      stmt.finalize();
+    }
+  }
+
   /** Close the underlying database. */
   async close(): Promise<void> {
     await this.#db.close();
   }
+}
+
+/** One generation of a named deployment. History is immutable: rollback is a
+ * new generation pointing at an earlier cask hash, never a rewrite. */
+export interface DeploymentRecord {
+  name: string;
+  generation: number;
+  caskHash: string;
+  entry: string;
+  /** 'active' for the newest generation; earlier ones become 'superseded'. */
+  state: 'active' | 'superseded';
+  createdAt: number;
+}
+
+function rowToDeployment(row: Record<string, DbValue>): DeploymentRecord {
+  return {
+    name: String(row.name),
+    generation: Number(row.generation),
+    caskHash: String(row.cask_hash),
+    entry: String(row.entry),
+    state: String(row.state) as DeploymentRecord['state'],
+    createdAt: Number(row.created_at),
+  };
 }

@@ -105,3 +105,35 @@ describe('workload ledger', () => {
     }
   });
 });
+
+describe('deployment records', () => {
+  it('tracks generations with immutable history and instant rollback', async (t) => {
+    const ledger = await tempLedger('deployments');
+    const hashA = 'a'.repeat(64);
+    const hashB = 'b'.repeat(64);
+
+    const gen1 = await ledger.recordDeployment('web', hashA, 'main.ts');
+    t.equal(gen1.generation, 1, 'first deploy is generation 1');
+    t.equal(gen1.state, 'active', 'and active');
+
+    const gen2 = await ledger.recordDeployment('web', hashB, 'main.ts');
+    t.equal(gen2.generation, 2, 'second deploy increments');
+    const active = await ledger.activeDeployment('web');
+    t.equal(active?.caskHash, hashB, 'the new generation is active');
+
+    const history = await ledger.deployments('web');
+    t.equal(history.length, 2, 'history is retained');
+    t.equal(history[1]?.state, 'superseded', 'the old generation is superseded, not deleted');
+
+    const rolled = await ledger.rollbackDeployment('web');
+    t.equal(rolled?.generation, 3, 'rollback is a NEW generation');
+    t.equal(rolled?.caskHash, hashA, 'pointing at the previous cask');
+    t.equal((await ledger.activeDeployment('web'))?.caskHash, hashA, 'and now active');
+
+    t.equal(await ledger.rollbackDeployment('brand-new'), null, 'nothing to roll back to');
+
+    const referenced = await ledger.referencedCaskHashes();
+    t.ok(referenced.has(hashA) && referenced.has(hashB), 'every generation pins its cask for GC');
+    await ledger.close();
+  });
+});
