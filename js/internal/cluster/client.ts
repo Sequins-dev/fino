@@ -66,9 +66,16 @@ import { serialize, deserialize } from 'internal:serializer';
 import {
   closeScheduledRealm,
   createScheduledRealm,
+  dropShedWorkload,
   registerReactorWake,
+  resubmitShedWorkload,
   scheduledRealmRecv,
   scheduledRealmSend,
+  shedComplete,
+  shedRecvFromParent,
+  shedSendToParent,
+  shedWorkloadConfig,
+  shedWorkloadWakeFd,
   takeScheduledRealmStatus,
 } from 'internal:scheduler-native';
 import type { PeerMesh } from './webtransport-transport.ts';
@@ -252,6 +259,90 @@ export class ClusterClient {
    * @internal
    */
   #admissionCheck: (() => { accept: true } | { accept: false; reason: string }) | null;
+  /** In-flight shed offers keyed by request id. @internal */
+  #pendingOffers = new Map<
+    string,
+    { resolve: (result: { accepted: boolean; reason?: string }) => void }
+  >();
+  /** Proxies for workloads shed away from this node, keyed by parent port. @internal */
+  #shedProxies = new Map<
+    string,
+    { shedHandle: number; remotePortId: string | null; cancel?: () => void }
+  >();
+
+  /**
+   * Offer a shed spec to a peer and relay the parent's port to it on
+   * acceptance. Resolves with the peer's answer; a refusal leaves the spec
+   * for the caller to resubmit.
+   *
+   * @internal
+   */
+  offerShed(
+    toNodeId: string,
+    shedHandle: number,
+    workloadId: number,
+  ): Promise<{ accepted: boolean; reason?: string }> {
+    const spawnReqId = `${this.nodeId}/o-${this.#localHandle++}`;
+    const parentPortId = `${this.nodeId}/p-shed-${workloadId}`;
+    const config = shedWorkloadConfig(shedHandle);
+    const offer: ClusterMessage = {
+      t: 'SHED_OFFER',
+      spawnReqId,
+      parentPortId,
+      config: {
+        entry: config.entry,
+        root: config.root,
+        rules: JSON.parse(config.rules) as unknown[],
+        ...(config.bootstrapData === null
+          ? {}
+          : { bootstrapData: JSON.parse(config.bootstrapData) as unknown }),
+      },
+    };
+    return new Promise((resolve) => {
+      this.#pendingOffers.set(spawnReqId, {
+        resolve: (result) => {
+          if (result.accepted) {
+            this.#shedProxies.set(parentPortId, { shedHandle, remotePortId: null });
+            this.#startShedProxy(parentPortId, shedHandle);
+          }
+          resolve(result);
+        },
+      });
+      if (this.#mesh?.send(toNodeId, offer) !== true) this.#transport.send(toNodeId, offer);
+    });
+  }
+
+  /**
+   * Pump the local port of a shed workload to and from its new host, so the
+   * parent keeps using the port it already holds.
+   *
+   * @internal
+   */
+  #startShedProxy(parentPortId: string, shedHandle: number): void {
+    const wakeFd = shedWorkloadWakeFd(shedHandle);
+    if (wakeFd < 0) return;
+    let stopped = false;
+    const proxy = this.#shedProxies.get(parentPortId);
+    if (proxy !== undefined) {
+      proxy.cancel = () => {
+        stopped = true;
+        removeRead(wakeFd);
+      };
+    }
+    const pump = (): void => {
+      if (stopped) return;
+      void readable(wakeFd).then(() => {
+        if (stopped) return;
+        const target = this.#shedProxies.get(parentPortId);
+        for (const [parts] of shedRecvFromParent(shedHandle)) {
+          if (target?.remotePortId == null) continue;
+          this.sendPortMsg(parentPortId, target.remotePortId, parts);
+        }
+        pump();
+      });
+    };
+    pump();
+  }
   /**
    * Direct peer sessions. When a session to the destination exists, realm
    * traffic goes straight there and never touches the seed; otherwise the
@@ -538,6 +629,26 @@ export class ClusterClient {
         this.#settleAdmission({ denied: msg.reason });
         break;
       }
+      case 'SHED_OFFER': {
+        void this.#handleShedOffer(from, msg);
+        break;
+      }
+      case 'SHED_RESULT': {
+        const pending = this.#pendingOffers.get(msg.spawnReqId);
+        this.#pendingOffers.delete(msg.spawnReqId);
+        if (pending === undefined) break;
+        if (msg.ok) {
+          // Point the proxy at the accepted workload before reporting
+          // success, so the first forwarded message has somewhere to go.
+          for (const proxy of this.#shedProxies.values()) {
+            if (proxy.remotePortId === null) proxy.remotePortId = msg.childPortId;
+          }
+          pending.resolve({ accepted: true });
+        } else {
+          pending.resolve({ accepted: false, ...(msg.error === undefined ? {} : { reason: msg.error }) });
+        }
+        break;
+      }
       case 'PEER_UP': {
         this.#peers.set(msg.peer.nodeId, msg.peer);
         break;
@@ -693,6 +804,47 @@ export class ClusterClient {
    *
    * @internal
    */
+  /**
+   * Accept or refuse a peer's shed offer. Acceptance runs the same admission
+   * check as a routed spawn, so an overloaded node never becomes the dumping
+   * ground for a neighbour's queue.
+   *
+   * @internal
+   */
+  async #handleShedOffer(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'SHED_OFFER' }>,
+  ): Promise<void> {
+    const verdict = this.#admissionCheck?.();
+    const reply = (ok: boolean, childPortId: string, error?: string): void => {
+      const result: ClusterMessage = {
+        t: 'SHED_RESULT',
+        spawnReqId: msg.spawnReqId,
+        childPortId,
+        ok,
+        ...(error === undefined ? {} : { error }),
+      };
+      if (this.#mesh?.send(from, result) !== true) this.#transport.send(from, result);
+    };
+    if (verdict !== undefined && verdict.accept === false) {
+      reply(false, '', verdict.reason);
+      return;
+    }
+    try {
+      await this.#handleSpawn(
+        {
+          t: 'SPAWN',
+          spawnReqId: msg.spawnReqId,
+          parentPortId: msg.parentPortId,
+          config: msg.config,
+        },
+        (childPortId) => reply(true, childPortId),
+      );
+    } catch (err) {
+      reply(false, '', err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async #handleSpawn(
     msg: Extract<
       ClusterMessage,
@@ -700,6 +852,7 @@ export class ClusterClient {
         t: 'SPAWN';
       }
     >,
+    ack?: (childPortId: string) => void,
   ): Promise<void> {
     const verdict = this.#admissionCheck?.();
     if (verdict !== undefined && verdict.accept === false) {
@@ -736,13 +889,18 @@ export class ClusterClient {
       lastPortSeq: 0,
     };
     this.#relays.set(childPortId, relay);
-    // Send SPAWN_ACK so the parent's ClusterPort gets the childPortId
-    this.#transport.send('__seed__', {
-      t: 'SPAWN_ACK',
-      spawnReqId: msg.spawnReqId,
-      childPortId,
-      ok: true,
-    });
+    // Acknowledge so the requester learns the childPortId. A routed spawn
+    // answers the seed; a shed offer answers the offering peer directly.
+    if (ack !== undefined) {
+      ack(childPortId);
+    } else {
+      this.#transport.send('__seed__', {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId,
+        ok: true,
+      });
+    }
     // Forward scheduled-port messages to the parent via PORT_MSG.
     this.#runRelayLoop(relay);
   }

@@ -304,6 +304,28 @@ export type ClusterMessage =
       reason: string;
     }
   | {
+      /**
+       * Offer a pre-init workload spec to a peer during queue balancing. The
+       * offer is advisory: the destination may refuse, and the source keeps
+       * the spec until it accepts.
+       */
+      t: 'SHED_OFFER';
+      /** Correlates the reply; unique to the offering node. */
+      spawnReqId: string;
+      /** Port the source proxies for, so the destination addresses replies. */
+      parentPortId: string;
+      config: SerializedSpawnConfig;
+    }
+  | {
+      /** A peer's answer to `SHED_OFFER`. */
+      t: 'SHED_RESULT';
+      spawnReqId: string;
+      /** Port id of the accepted workload on the destination, else empty. */
+      childPortId: string;
+      ok: boolean;
+      error?: string;
+    }
+  | {
       t: 'WELCOME';
       nodeId: string;
       peers: PeerInfo[];
@@ -375,6 +397,8 @@ const enum MessageKind {
   TERMINATE = 9,
   PORT_MSG = 10,
   JOIN_DENIED = 11,
+  SHED_OFFER = 12,
+  SHED_RESULT = 13,
 }
 
 const enum DirectiveKind {
@@ -746,6 +770,23 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         error: requiredWireString(msg.reason, 'reason'),
         ...base,
       };
+    case 'SHED_OFFER':
+      return {
+        kind: MessageKind.SHED_OFFER,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
+        config: encodeSpawnConfig(msg.config),
+        ...base,
+      };
+    case 'SHED_RESULT':
+      return {
+        kind: MessageKind.SHED_RESULT,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        childPortId: msg.childPortId === '' ? '' : parseClusterId(msg.childPortId, 'childPortId'),
+        ok: msg.ok,
+        ...(msg.error === undefined ? {} : { error: msg.error }),
+        ...base,
+      };
     case 'WELCOME':
       return {
         kind: MessageKind.WELCOME,
@@ -868,6 +909,29 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         t: 'JOIN_DENIED',
         reason: requiredWireString(value.error, 'reason'),
       };
+    case MessageKind.SHED_OFFER:
+      if (value.config === undefined) throw protocolError('config is missing');
+      return {
+        t: 'SHED_OFFER',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        parentPortId: parseClusterId(
+          requiredWireString(value.parentPortId, 'parentPortId'),
+          'parentPortId',
+        ),
+        config: decodeSpawnConfig(value.config),
+      };
+    case MessageKind.SHED_RESULT: {
+      const shedChildPortId = requiredWireString(value.childPortId, 'childPortId');
+      if (value.ok === undefined) throw protocolError('ok must be a boolean');
+      return {
+        t: 'SHED_RESULT',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        childPortId:
+          shedChildPortId === '' ? '' : parseClusterId(shedChildPortId, 'childPortId'),
+        ok: value.ok,
+        ...(value.error === undefined ? {} : { error: value.error }),
+      };
+    }
     case MessageKind.WELCOME:
       return {
         t: 'WELCOME',
