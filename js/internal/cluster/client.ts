@@ -82,6 +82,13 @@ import type { PeerMesh } from './webtransport-transport.ts';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { BaseTransportPort } from 'internal:realm/transport-port';
 import { env } from 'internal:process';
+import { DiskFileSystem } from 'fino:file';
+import {
+  caskSha256Hex,
+  concatCaskChunks,
+  unpackCask,
+  type UnpackedCask,
+} from './cask.ts';
 const HEARTBEAT_MS = 2500;
 function heartbeatIntervalMs(): number {
   const configured = Number(env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS);
@@ -264,6 +271,69 @@ export class ClusterClient {
     string,
     { resolve: (result: { accepted: boolean; reason?: string }) => void }
   >();
+  /** Cask uploads awaiting the seed's verification ack, keyed by hash. @internal */
+  #pendingCaskUploads = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
+  /** Cask downloads in flight, keyed by hash. @internal */
+  #pendingCaskFetches = new Map<
+    string,
+    { chunks: Uint8Array[]; resolve: (bytes: Uint8Array) => void; reject: (err: Error) => void }
+  >();
+
+  /**
+   * Upload a packed cask to the control plane and resolve with its hash once
+   * the seed has verified and stored it. The seed checks the bytes against
+   * the hash before storing, so a successful upload means the artifact is
+   * durably fetchable by that identity.
+   *
+   * @internal
+   */
+  async uploadCask(path: string): Promise<string> {
+    const bytes = await new DiskFileSystem().readFile(path);
+    const hash = await caskSha256Hex(bytes);
+    const CHUNK = 256 * 1024;
+    const done = new Promise<void>((resolve, reject) => {
+      this.#pendingCaskUploads.set(hash, { resolve, reject });
+    });
+    for (let offset = 0, seq = 0; offset < bytes.length || seq === 0; offset += CHUNK, seq++) {
+      this.#transport.send('__seed__', {
+        t: 'CASK_PUT',
+        hash,
+        seq,
+        chunk: bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length)),
+        last: offset + CHUNK >= bytes.length,
+      });
+    }
+    await done;
+    return hash;
+  }
+
+  /**
+   * Fetch a cask from the control plane by hash and unpack it into this
+   * node's content-addressed cache. The bytes are re-verified locally before
+   * unpacking — the transport is trusted for delivery, never for content.
+   *
+   * @internal
+   */
+  async fetchCask(hash: string, cacheDir: string): Promise<UnpackedCask> {
+    const bytes = await new Promise<Uint8Array>((resolve, reject) => {
+      this.#pendingCaskFetches.set(hash, { chunks: [], resolve, reject });
+      this.#transport.send('__seed__', { t: 'CASK_GET', hash });
+    });
+    const tmp = `${cacheDir}/.fetch-${hash}-${Math.random().toString(36).slice(2, 8)}.cask`;
+    const fs = new DiskFileSystem();
+    try {
+      await fs.stat(cacheDir);
+    } catch {
+      await fs.mkdir(cacheDir);
+    }
+    await fs.writeFile(tmp, bytes);
+    try {
+      return await unpackCask(tmp, cacheDir, { expectedHash: hash });
+    } finally {
+      await fs.unlink(tmp).catch(() => {});
+    }
+  }
+
   /** Proxies for workloads shed away from this node, keyed by parent port. @internal */
   #shedProxies = new Map<
     string,
@@ -582,6 +652,14 @@ export class ClusterClient {
       clearInterval(this.#heartbeatTimer);
       this.#heartbeatTimer = null;
     }
+    for (const upload of this.#pendingCaskUploads.values()) {
+      upload.reject(new Error('cluster client stopped'));
+    }
+    this.#pendingCaskUploads.clear();
+    for (const fetch of this.#pendingCaskFetches.values()) {
+      fetch.reject(new Error('cluster client stopped'));
+    }
+    this.#pendingCaskFetches.clear();
     for (const relay of this.#relays.values()) {
       if (!relay.closed) this.#sendToRealm(relay.realmHandle, { __terminate: true });
       relay.cancel?.();
@@ -631,6 +709,36 @@ export class ClusterClient {
       }
       case 'SHED_OFFER': {
         void this.#handleShedOffer(from, msg);
+        break;
+      }
+      case 'CASK_ACK': {
+        const upload = this.#pendingCaskUploads.get(msg.hash);
+        if (upload !== undefined) {
+          this.#pendingCaskUploads.delete(msg.hash);
+          if (msg.ok) upload.resolve();
+          else upload.reject(new Error(msg.error ?? 'cask upload refused'));
+          break;
+        }
+        const fetch = this.#pendingCaskFetches.get(msg.hash);
+        if (fetch !== undefined && !msg.ok) {
+          this.#pendingCaskFetches.delete(msg.hash);
+          fetch.reject(new Error(msg.error ?? 'cask fetch refused'));
+        }
+        break;
+      }
+      case 'CASK_DATA': {
+        const fetch = this.#pendingCaskFetches.get(msg.hash);
+        if (fetch === undefined) break;
+        if (msg.seq !== fetch.chunks.length) {
+          this.#pendingCaskFetches.delete(msg.hash);
+          fetch.reject(new Error(`cask fetch: out-of-order chunk ${msg.seq}`));
+          break;
+        }
+        fetch.chunks.push(msg.chunk);
+        if (msg.last) {
+          this.#pendingCaskFetches.delete(msg.hash);
+          fetch.resolve(concatCaskChunks(fetch.chunks));
+        }
         break;
       }
       case 'SHED_RESULT': {

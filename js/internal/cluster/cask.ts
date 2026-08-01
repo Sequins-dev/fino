@@ -55,7 +55,20 @@ const COMPLETE_MARKER = '.cask-complete';
 
 const fs = new DiskFileSystem();
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
+/** Join transfer chunks into one buffer. @internal */
+export function concatCaskChunks(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+/** Lowercase-hex sha-256 — the cask identity function. @internal */
+export async function caskSha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest(
     'SHA-256',
     bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
@@ -127,13 +140,13 @@ export async function packCask(
   } finally {
     await archive.close();
   }
-  const hash = await sha256Hex(await fs.readFile(outputPath));
+  const hash = await caskSha256Hex(await fs.readFile(outputPath));
   return { path: outputPath, hash, manifest };
 }
 
 /** Read and validate a cask's manifest and hash without unpacking it. */
 export async function inspectCask(path: string): Promise<{ hash: string; manifest: CaskManifest }> {
-  const hash = await sha256Hex(await fs.readFile(path));
+  const hash = await caskSha256Hex(await fs.readFile(path));
   const archive = await openArchive(path, { format: 'tar.gz', readOnly: true });
   try {
     const manifest = parseManifest(await archive.read(MANIFEST_NAME));
@@ -157,7 +170,7 @@ export async function unpackCask(
   options: { expectedHash?: string } = {},
 ): Promise<UnpackedCask> {
   const bytes = await fs.readFile(path);
-  const hash = await sha256Hex(bytes);
+  const hash = await caskSha256Hex(bytes);
   if (options.expectedHash !== undefined && options.expectedHash !== hash) {
     throw new Error(`cask: hash mismatch: expected ${options.expectedHash}, got ${hash}`);
   }

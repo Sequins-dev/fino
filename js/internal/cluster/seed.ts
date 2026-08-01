@@ -40,25 +40,10 @@ import { type ClusterMessage } from './protocol.ts';
 import type { WorkloadLedger } from './ledger.ts';
 import { RealmRegistry } from './registry.ts';
 import { DiskFileSystem } from 'fino:file';
+import { caskSha256Hex, concatCaskChunks } from './cask.ts';
 import { env } from 'internal:process';
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
-function concatChunks(chunks: Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((sum, c) => sum + c.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-  );
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
-}
+
 type RealmExitMessage = Extract<ClusterMessage, { t: 'REALM_EXIT' }>;
 interface PortSequenceState {
   next: number;
@@ -297,8 +282,8 @@ export class SeedServer {
       return;
     }
     this.#caskUploads.delete(key);
-    const bytes = concatChunks(upload.chunks);
-    if ((await sha256Hex(bytes)) !== msg.hash) {
+    const bytes = concatCaskChunks(upload.chunks);
+    if ((await caskSha256Hex(bytes)) !== msg.hash) {
       nack('cask bytes do not match their claimed hash');
       return;
     }
