@@ -19,12 +19,14 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "sandboxPortSend",
         "sandboxPortRecv",
         "getSandboxPortWakeReadFd",
+        "getSandboxCompletionFd",
         // Process realm
         "createProcessContext",
         "stepProcessContext",
         "processPortSend",
         "processPortRecv",
         "getProcessSocketFd",
+        "getProcessCompletionFd",
         "killProcessContext",
     ]
     .iter()
@@ -56,11 +58,13 @@ fn eval_steps<'a>(
     set_fn!("sandboxPortSend", sandbox_port_send);
     set_fn!("sandboxPortRecv", sandbox_port_recv);
     set_fn!("getSandboxPortWakeReadFd", get_sandbox_port_wake_read_fd);
+    set_fn!("getSandboxCompletionFd", get_sandbox_completion_fd);
     set_fn!("createProcessContext", create_process_context);
     set_fn!("stepProcessContext", step_process_context);
     set_fn!("processPortSend", process_port_send);
     set_fn!("processPortRecv", process_port_recv);
     set_fn!("getProcessSocketFd", get_process_socket_fd);
+    set_fn!("getProcessCompletionFd", get_process_completion_fd);
     set_fn!("killProcessContext", kill_process_context);
 
     Some(v8::undefined(scope).into())
@@ -743,6 +747,48 @@ fn get_process_socket_fd(
 /// Force-kills an isolated process Realm. The reader bridge retains ownership
 /// of `waitpid`, so the normal step path observes and releases the reaped
 /// handle. Missing or already-exited handles are harmless.
+/// JS: `getSandboxCompletionFd(handle) -> number`
+///
+/// Descriptor that becomes readable once a sandbox Realm's thread has finished,
+/// so a parent realm waits for completion instead of polling the done flag.
+fn get_sandbox_completion_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let state_rc = get_state(scope);
+    let fd = state_rc
+        .borrow()
+        .sandbox_contexts
+        .get(handle)
+        .and_then(|slot| slot.as_ref())
+        .map(|realm| realm.completion_wake_read)
+        .unwrap_or(-1);
+    rv.set(v8::Integer::new(scope, fd).into());
+}
+
+/// JS: `getProcessCompletionFd(handle) -> number`
+///
+/// Descriptor that becomes readable once the child process has exited, so a
+/// parent realm can wait for completion instead of polling the done flag.
+fn get_process_completion_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let state_rc = get_state(scope);
+    let fd = state_rc
+        .borrow()
+        .process_contexts
+        .get(handle)
+        .and_then(|slot| slot.as_ref())
+        .map(|h| h.completion_wake_read)
+        .unwrap_or(-1);
+    rv.set(v8::Integer::new(scope, fd).into());
+}
+
 fn kill_process_context(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,

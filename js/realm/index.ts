@@ -44,6 +44,8 @@ import {
   getSandboxPortWakeReadFd,
   createProcessContext,
   stepProcessContext,
+  getProcessCompletionFd,
+  getSandboxCompletionFd,
   processPortSend,
   processPortRecv,
   getProcessSocketFd,
@@ -2127,78 +2129,63 @@ export class ProcessPort extends RealmPort {
 type RealmKind = 'scheduled' | 'sandbox' | 'process' | 'remote';
 let _nextPortHandle = 0;
 let _nextSourceRealmId = 0;
-interface ActiveChild {
-  handle: number;
-  kind: RealmKind;
-  resolve: () => void;
-  reject: (err: unknown) => void;
-  /** Drain process messages before observing process exit. */
-  drainMessages?: () => void;
-  clusterPort?: ClusterPort;
-  /** Called when the child exits with reload_requested. Returns the new handle
-   *  to keep running, or null to stop watching (after terminate()). */
-  onReload?: () => number | null;
-}
-const _activeChildren: ActiveChild[] = [];
-let _childStepper: ReturnType<typeof setInterval> | null = null;
-
-function _trackChild(child: ActiveChild): void {
-  _activeChildren.push(child);
-  if (_childStepper !== null) return;
-  _childStepper = setInterval(() => {
-    _stepChildren();
-    if (_activeChildren.length === 0 && _childStepper !== null) {
-      clearInterval(_childStepper);
-      _childStepper = null;
-    }
-  }, 1);
-}
 /**
- * Step every active process realm by one event-loop iteration.
+ * Wait for a process realm to exit, resolving or rejecting its `run()` promise.
  *
- * Resolves or rejects pending `Realm.run()` and `Realm.call()` promises when a
- * process child exits, and handles watch-mode reload requests. Remote realms
- * are skipped because their lifecycle is driven by the cluster transport.
- *
- * @internal
+ * A process realm signals completion on its own descriptor, so the parent parks
+ * on that rather than polling. This used to be a 1ms `setInterval` that called
+ * `stepProcessContext` on every active child — which only read an atomic flag —
+ * and remote realms were tracked by the same interval despite being driven
+ * entirely by cluster transport events, so they kept a 1000Hz timer alive to do
+ * nothing at all.
  */
-export function _stepChildren(): void {
-  for (let i = _activeChildren.length - 1; i >= 0; i--) {
-    const child = _activeChildren[i]!;
-    if (child.kind !== 'process' && child.kind !== 'sandbox') continue;
-    // Step returns: true = alive, false = clean exit, null = reload requested
+async function _awaitThreadChild(
+  realm: {
+    handle: number;
+    kind: 'process' | 'sandbox';
+    drainMessages(): void;
+    onReload?(): number | null;
+  },
+  resolve: () => void,
+  reject: (err: unknown) => void,
+): Promise<void> {
+  let handle = realm.handle;
+  for (;;) {
+    const completionFd = (
+      realm.kind === 'sandbox' ? getSandboxCompletionFd(handle) : getProcessCompletionFd(handle)
+    ) as number;
+    if (completionFd < 0) {
+      resolve();
+      return;
+    }
+    await readable(completionFd);
+    removeRead(completionFd);
+    // A short-lived child can queue its final response and exit before the
+    // parent is scheduled again. Drain first so releasing the native handle
+    // cannot discard that response.
+    realm.drainMessages();
     let stepResult: boolean | null;
-    let stepError: unknown = undefined;
     try {
-      // A short-lived child can queue its final response and exit before the
-      // parent isolate is scheduled again. Drain first so releasing the
-      // native handle cannot discard that response.
-      child.drainMessages?.();
       stepResult =
-        child.kind === 'sandbox'
-          ? (stepSandboxContext(child.handle) as boolean)
-          : (stepProcessContext(child.handle) as boolean | null);
+        realm.kind === 'sandbox'
+          ? (stepSandboxContext(handle) as boolean)
+          : (stepProcessContext(handle) as boolean | null);
     } catch (err) {
-      stepResult = false;
-      stepError = err;
+      reject(err);
+      return;
     }
-    if (stepResult !== true) {
-      if (stepError !== undefined) {
-        child.reject(stepError);
-        _activeChildren.splice(i, 1);
-      } else if (stepResult === null && child.onReload !== undefined) {
-        const newHandle = child.onReload();
-        if (newHandle !== null) {
-          child.handle = newHandle;
-        } else {
-          child.resolve();
-          _activeChildren.splice(i, 1);
-        }
-      } else {
-        child.resolve();
-        _activeChildren.splice(i, 1);
+    if (stepResult === true) continue;
+    if (stepResult === null && realm.onReload !== undefined) {
+      const next = realm.onReload();
+      if (next === null) {
+        resolve();
+        return;
       }
+      handle = next;
+      continue;
     }
+    resolve();
+    return;
   }
 }
 function validateSandboxRealmOptions(opts: RealmOptions): void {
@@ -2388,6 +2375,16 @@ export class Realm<F extends RealmFn = RealmFn> {
   port: MessagePort | RealmPort | ProcessPort | ClusterPort;
   /** Completion driven by the process scheduler for a scheduled realm. @internal */
   #scheduledCompletion: Promise<void> | null = null;
+  /**
+   * Memoised exit promise for a process realm.
+   *
+   * `run()` and `call()` both need to observe the child exiting, but a realm can
+   * hold only one readiness watch per descriptor — two independent waiters on
+   * the completion pipe would displace each other and one would never settle.
+   *
+   * @internal
+   */
+  #processCompletion: Promise<void> | null = null;
   /** Construction data retained only while a scheduled watch realm may reload. @internal */
   #scheduledOpts: RealmOptions | null = null;
   /** Import rules rebound to a replacement scheduled watch port. @internal */
@@ -2861,66 +2858,57 @@ export class Realm<F extends RealmFn = RealmFn> {
       return (this.#spawnPromise ?? Promise.resolve('')).then(
         (childPortId: string) =>
           new Promise<void>((resolve, reject) => {
-            const entry: ActiveChild = {
-              handle: -1,
-              kind: 'remote',
-              resolve,
-              reject,
-              clusterPort,
-            };
-            _trackChild(entry);
+            // A remote realm's lifecycle is entirely cluster transport events.
             cluster.onRealmExit(childPortId, (error?: string) => {
-              const idx = _activeChildren.indexOf(entry);
-              if (idx >= 0) _activeChildren.splice(idx, 1);
               if (error) reject(new Error(error));
               else resolve();
             });
           }),
       );
     }
-    if (this.#watchOpts !== null) {
-      return new Promise<void>((resolve, reject) => {
-        const self = this;
-        const entry: ActiveChild = {
-          handle: this.#handle,
-          kind: this.#kind,
-          resolve,
-          reject,
-          drainMessages:
-            this.#kind === 'process'
-              ? () => (self.#activeChildPort ?? (self.port as ProcessPort))._drain()
-              : this.#kind === 'sandbox'
-                ? () => (self.port as RealmPort)._drain()
-                : undefined,
-          onReload(): number | null {
-            if (self.#watchTerminated) return null;
-            const newHandle = self.#spawnChild();
-            self.#handle = newHandle;
-            return newHandle;
-          },
-        };
-        _trackChild(entry);
-      });
-    }
-    return new Promise<void>((resolve, reject) => {
-      _trackChild({
-        handle: this.#handle,
-        kind: this.#kind,
+    return this.#threadExit();
+  }
+  /**
+   * Await a process or sandbox realm's exit, watching its completion pipe once.
+   *
+   * `run()` and `call()` both need the exit signal, and a realm can hold only
+   * one readiness watch per descriptor, so the watcher is memoised rather than
+   * started per caller.
+   *
+   * @internal
+   */
+  #threadExit(): Promise<void> {
+    const self = this;
+    const kind = this.#kind === 'sandbox' ? 'sandbox' : 'process';
+    this.#processCompletion ??= new Promise<void>((resolve, reject) => {
+      void _awaitThreadChild(
+        {
+          handle: self.#handle,
+          kind,
+          drainMessages: () =>
+            kind === 'sandbox'
+              ? (self.port as RealmPort)._drain()
+              : (self.#activeChildPort ?? (self.port as ProcessPort))._drain(),
+          onReload:
+            self.#watchOpts !== null
+              ? (): number | null => {
+                  if (self.#watchTerminated) return null;
+                  const newHandle = self.#spawnChild();
+                  self.#handle = newHandle;
+                  return newHandle;
+                }
+              : undefined,
+        },
         resolve,
         reject,
-        drainMessages:
-          this.#kind === 'process'
-            ? () => (this.#activeChildPort ?? (this.port as ProcessPort))._drain()
-            : this.#kind === 'sandbox'
-              ? () => (this.port as RealmPort)._drain()
-              : undefined,
-      });
+      );
     });
+    return this.#processCompletion;
   }
   /**
    * Call the child Realm's default-exported function with `args`.
    *
-   * The call starts the realm, sends `{ __call: true, args }`, and resolves
+   * The call starts the realm, sends a Call envelope, and resolves
    * with the returned value. It rejects if the realm exits before returning, if
    * the child serializes a call error, or if the remote cluster reports exit.
    * The port is closed after the first response for non-streaming calls.
@@ -2981,19 +2969,9 @@ export class Realm<F extends RealmFn = RealmFn> {
         (childPortId: string) =>
           new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
             let settled = false;
-            const entry: ActiveChild = {
-              handle: -1,
-              kind: 'remote',
-              resolve: () => {},
-              reject: (err: unknown) => reject(err),
-              clusterPort,
-            };
-            _trackChild(entry);
             cluster.onRealmExit(childPortId, (error?: string) => {
               if (settled) return;
               settled = true;
-              const idx = _activeChildren.indexOf(entry);
-              if (idx >= 0) _activeChildren.splice(idx, 1);
               if (error) reject(new Error(error));
               else reject(new Error('Realm exited before returning a call result'));
             });
@@ -3007,8 +2985,6 @@ export class Realm<F extends RealmFn = RealmFn> {
               ).data;
               clusterPort.removeEventListener('message', handler as any);
               clusterPort.close();
-              const idx = _activeChildren.indexOf(entry);
-              if (idx >= 0) _activeChildren.splice(idx, 1);
               _resolveCallResponse(EnvelopeKind.CallResult, data, resolve, reject);
             };
             const stopControl = clusterPort._addControlHandler((envelope, value) => {
@@ -3023,8 +2999,6 @@ export class Realm<F extends RealmFn = RealmFn> {
               stopControl();
               clusterPort.removeEventListener('message', handler as any);
               clusterPort.close();
-              const idx = _activeChildren.indexOf(entry);
-              if (idx >= 0) _activeChildren.splice(idx, 1);
               _resolveCallResponse(envelope.kind, value, resolve, reject);
               return true;
             });
@@ -3035,18 +3009,10 @@ export class Realm<F extends RealmFn = RealmFn> {
       );
     } else {
       base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        _trackChild({
-          handle: this.#handle,
-          kind,
-          resolve: () => reject(new Error('Realm exited before returning a call result')),
-          reject: (err: unknown) => reject(err),
-          drainMessages:
-            kind === 'process'
-              ? () => (this.#activeChildPort ?? (this.port as ProcessPort))._drain()
-              : kind === 'sandbox'
-                ? () => (this.port as RealmPort)._drain()
-                : undefined,
-        });
+        void this.#threadExit().then(
+          () => reject(new Error('Realm exited before returning a call result')),
+          reject,
+        );
         const port = this.port as ProcessPort;
         const stop = port._addControlHandler((envelope, value) => {
           if (

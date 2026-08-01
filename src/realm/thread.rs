@@ -81,6 +81,13 @@ pub struct ThreadRealmHandle {
     pub child_wake_write: RawFd,
     pub rx: mpsc::Receiver<ThreadMessage>,
     pub parent_wake_read: RawFd,
+    /// Becomes readable once the sandbox thread has finished.
+    ///
+    /// Separate from `parent_wake_read`: message arrival and realm completion
+    /// are watched by different parts of the parent realm, and a realm can hold
+    /// only one readiness watch per descriptor, so sharing one pipe would make
+    /// the two waiters displace each other.
+    pub completion_wake_read: RawFd,
     pub done: Arc<AtomicBool>,
     pub error: Arc<Mutex<Option<String>>>,
     pub cgroup_path: Arc<Mutex<Option<String>>>,
@@ -94,6 +101,7 @@ impl Drop for ThreadRealmHandle {
         unsafe {
             libc::close(self.child_wake_write);
             libc::close(self.parent_wake_read);
+            libc::close(self.completion_wake_read);
         }
         if self.done.load(Ordering::Acquire)
             && let Some(join) = self.join.take()
@@ -144,6 +152,7 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
     let (child_wake_read, child_wake_write) = create_pipe()?;
     let (parent_wake_read, parent_wake_write) = create_pipe()?;
 
+    let (completion_wake_read, completion_wake_write) = create_pipe()?;
     let done = Arc::new(AtomicBool::new(false));
     let done_for_thread = done.clone();
     let error = Arc::new(Mutex::new(None));
@@ -199,6 +208,13 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
                 *slot = Some(message);
             }
             done_for_thread.store(true, Ordering::Release);
+            // Signal completion so the parent is woken rather than polling the
+            // flag, then release the write end so the pipe reports EOF.
+            let byte = [1u8];
+            unsafe {
+                libc::write(completion_wake_write, byte.as_ptr().cast(), byte.len());
+                libc::close(completion_wake_write);
+            }
         })
         .map_err(|error| format!("failed to spawn sandbox realm thread: {error}"))?;
 
@@ -207,6 +223,7 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
         child_wake_write,
         rx: parent_rx,
         parent_wake_read,
+        completion_wake_read,
         done,
         error,
         cgroup_path,
