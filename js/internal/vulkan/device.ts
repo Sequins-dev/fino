@@ -164,6 +164,75 @@ function slot(): Uint8Array {
 }
 
 /**
+ * Bytes `VkPhysicalDeviceProperties` occupies, rounded up generously.
+ *
+ * The structure is read rather than modelled: two fields are wanted out of the hundred
+ * it holds, and declaring the rest would be a great deal of offset arithmetic to get
+ * wrong. The driver writes what it writes and the remainder is ignored.
+ *
+ * @internal
+ */
+const PROPERTIES_BYTES = 1024;
+
+/**
+ * Where `deviceName` starts: after `apiVersion`, `driverVersion`, `vendorID`,
+ * `deviceID`, and `deviceType`, all 32-bit.
+ *
+ * @internal
+ */
+const DEVICE_NAME_OFFSET = 20;
+
+/**
+ * Where `limits.maxComputeWorkGroupInvocations` starts.
+ *
+ * `deviceName` is 256 bytes and `pipelineCacheUUID` is 16, ending at 292; `limits`
+ * holds 64-bit members so it begins at the next multiple of eight, and the field sits
+ * 232 bytes into it. Checked for plausibility rather than trusted, because a wrong
+ * offset here would silently produce a workgroup size the device rejects.
+ *
+ * @internal
+ */
+const MAX_WORKGROUP_INVOCATIONS_OFFSET = 296 + 232;
+
+/**
+ * Read the driver's name and the one limit the engine sizes its launches against.
+ *
+ * Both were previously hardcoded — every device called itself "Vulkan device" and
+ * claimed a thousand invocations per workgroup, which is true of the drivers this has
+ * been run on and is not a fact about Vulkan.
+ *
+ * @internal
+ */
+function describePhysicalDevice(
+  lib: VulkanLibrary,
+  physicalDevice: unknown,
+): { name: string; maxWorkgroupInvocations: number } {
+  const bytes = new Uint8Array(PROPERTIES_BYTES);
+  (lib.symbols.vkGetPhysicalDeviceProperties as (a: unknown, b: Uint8Array) => void)(
+    physicalDevice,
+    bytes,
+  );
+
+  const end = bytes.indexOf(0, DEVICE_NAME_OFFSET);
+  const name = new TextDecoder()
+    .decode(bytes.subarray(DEVICE_NAME_OFFSET, end < 0 ? DEVICE_NAME_OFFSET + 256 : end))
+    .trim();
+
+  const reported = new DataView(bytes.buffer).getUint32(
+    MAX_WORKGROUP_INVOCATIONS_OFFSET,
+    true,
+  );
+  // Vulkan guarantees at least 128 and nothing sane reports more than a few thousand.
+  // Outside that the offset is wrong, and the guaranteed floor beats a launch the
+  // device refuses.
+  const plausible = reported >= 128 && reported <= 4096;
+  return {
+    name: name.length > 0 ? name : 'Vulkan device',
+    maxWorkgroupInvocations: plausible ? reported : 128,
+  };
+}
+
+/**
  * A Vulkan compute context: one instance, one device, one queue.
  */
 export class VulkanCompute {
@@ -343,6 +412,8 @@ export class VulkanCompute {
       }
     }
 
+    const described = describePhysicalDevice(lib, physicalDevice);
+
     return new VulkanCompute({
       lib,
       instance,
@@ -352,12 +423,12 @@ export class VulkanCompute {
       queueFamily,
       memoryProperties,
       info: {
-        name: 'Vulkan device',
+        name: described.name,
         unifiedMemory: allHostVisible,
         storage16,
         float16,
         timelineSemaphores: true,
-        maxWorkgroupInvocations: 1024,
+        maxWorkgroupInvocations: described.maxWorkgroupInvocations,
       },
     });
   }

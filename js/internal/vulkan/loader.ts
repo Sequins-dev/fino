@@ -111,6 +111,7 @@ const SYMBOLS = {
     result: 'void',
   },
   vkGetPhysicalDeviceMemoryProperties: { parameters: ['pointer', 'buffer'], result: 'void' },
+  vkGetPhysicalDeviceProperties: { parameters: ['pointer', 'buffer'], result: 'void' },
   vkEnumerateDeviceExtensionProperties: {
     parameters: ['pointer', 'pointer', 'buffer', 'buffer'],
     result: 'i32',

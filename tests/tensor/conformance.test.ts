@@ -54,3 +54,25 @@ describe('conformance', () => {
     t.equal(new Set(names).size, names.length, 'no duplicate case names');
   });
 });
+
+describe('portability', () => {
+  it('computes powers of a negative base the way IEEE does', async (t) => {
+    // SPIR-V leaves `pow` undefined for a negative base, and implementations differ:
+    // one returns a usable number, another a NaN. Neither is wrong, so the engine
+    // cannot delegate it — this pins the behaviour to `Math.pow` on every backend.
+    const { listDevices, tensor } = await import('fino:tensor');
+    const base = [-2, -1.5, -1, -0.5, 0.5, 1.5, 2, 3];
+    for (const exponent of [2, 3, 0.5, -1]) {
+      const want = base.map((b) => Math.pow(b, exponent));
+      for (const dev of await listDevices()) {
+        const x = await tensor(base, { device: dev });
+        const got = [...(await x.pow(exponent).data())].map(Number);
+        const agrees = want.every((value, i) =>
+          Number.isNaN(value) ? Number.isNaN(got[i]!) : Math.abs(got[i]! - value) < 1e-5,
+        );
+        t.ok(agrees, `pow(x, ${exponent}) on ${dev.type}: ${got.map((v) => v.toFixed(3))}`);
+        x.dispose();
+      }
+    }
+  });
+});

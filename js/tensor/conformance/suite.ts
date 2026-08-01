@@ -256,11 +256,17 @@ export function conformanceCases(): ConformanceCase[] {
 
     // -- gradients ----------------------------------------------------------
     {
+      // The scaling keeps `tanh` away from saturation deliberately. Its gradient is
+      // 1 - tanh squared, and at an argument of three that is a difference of two
+      // nearly equal numbers: implementations that agree on `tanh` to the last bit
+      // then disagree on the gradient by a hundred times as much. That is a fact about
+      // subtraction rather than about a backend, and a conformance suite that failed on
+      // it would be reporting the wrong thing.
       name: 'gradient of an elementwise chain',
       group: 'gradient',
       covers: ['mul', 'add', 'tanh'],
       inputs: [{ shape: [32] }],
-      run: (x) => x.mul(2).add(1).tanh().sum(),
+      run: (x) => x.mul(0.5).add(0.1).tanh().sum(),
     },
     {
       name: 'gradient through a matmul with a broadcast operand',

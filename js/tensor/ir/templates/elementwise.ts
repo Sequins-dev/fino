@@ -284,7 +284,30 @@ export const BINARY: Record<string, BinaryBuilder> = {
   sub: (a, b) => E.sub(a, b),
   mul: (a, b) => E.mul(a, b),
   div: (a, b) => E.div(a, b),
-  pow: (a, b) => E.call('pow', a, b),
+  /**
+   * Powers, including a negative base.
+   *
+   * The dialects' own `pow` is undefined when the base is negative — SPIR-V says so
+   * outright, and the two implementations tried disagree: one returns a usable number
+   * and the other a NaN. Neither is wrong, so the operation cannot be left to them.
+   *
+   * IEEE defines it: a negative base with an integral exponent is the magnitude with
+   * the sign of an odd power, and a negative base with a fractional exponent has no
+   * real answer. That is what this computes, from the builtin applied to the magnitude.
+   */
+  pow: (a, b, ctx) => {
+    const magnitude = E.call('pow', E.un('abs', a), b);
+    const half = E.mul(b, ctx.lit(0.5));
+    const odd = E.ne(E.sub(half, E.call('floor', half)), ctx.lit(0));
+    const integral = E.eq(E.sub(b, E.call('floor', b)), ctx.lit(0));
+    // Zero over zero rather than a literal: the IR has no way to write a NaN.
+    const undefinedResult = E.div(ctx.lit(0), ctx.lit(0));
+    return E.select(
+      E.lt(a, ctx.lit(0)),
+      E.select(integral, E.select(odd, E.un('neg', magnitude), magnitude), undefinedResult),
+      magnitude,
+    );
+  },
   maximum: (a, b) => E.max(a, b),
   minimum: (a, b) => E.min(a, b),
 };

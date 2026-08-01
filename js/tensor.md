@@ -316,6 +316,18 @@ yesterday's run. On an Apple silicon development machine:
 None of this is claimed to be fast. It is claimed to be true, which is what makes it
 possible to tell whether a change helped.
 
+### Undefined is not the same as unspecified
+
+`pow` used to lower straight to each dialect's own. SPIR-V says the result is undefined
+when the base is negative, and the two implementations differ accordingly: MoltenVK
+returns a usable number, lavapipe returns a NaN. Both are conformant, so the operation
+could not be left to them, and it is now computed from the magnitude with the sign IEEE
+gives it — matching `Math.pow` on every backend, for even, odd, fractional, and negative
+exponents.
+
+The general lesson is worth keeping: an operation the specification leaves undefined
+will work on the driver it was written against and cannot be relied on anywhere else.
+
 Elementwise operations are **not** bandwidth-bound. A write-only fill, a read-and-write
 unary, and a two-read binary all take about the same time per element while moving one,
 two, and three words, so the cost tracks elements rather than bytes; a
@@ -337,6 +349,29 @@ generated code, which it was not.
 
 The benchmark now drains the queue by reading a single element, and runs enough
 iterations that fixed costs stop mattering.
+
+### A second Vulkan implementation
+
+Everything above runs on MoltenVK, which is Vulkan on top of Metal. That is one
+implementation, and an implementation agreeing with itself proves less than it appears
+to — the SPIR-V this engine emits is only as portable as the drivers that have consumed
+it.
+
+Mesa's lavapipe is a software Vulkan driver with an entirely separate SPIR-V compiler,
+and it runs on this machine:
+
+```sh
+brew install mesa
+VK_ICD_FILENAMES=/opt/homebrew/share/vulkan/icd.d/lvp_icd.aarch64.json   cargo run -- test 'tests/tensor/*.test.ts'
+```
+
+The whole conformance suite passes there, as do the differential, gradient, kernel, and
+optimizer suites, and the miniature transformer trains to convergence. It is slow — it
+is a CPU rasterising compute — but it is the only evidence so far that the emitted
+SPIR-V is not simply MoltenVK-shaped.
+
+It earned its keep immediately, on a defect no amount of running against MoltenVK would
+have found: see `pow` below. Real non-Apple hardware is still untested.
 
 ## Diagnostics
 
