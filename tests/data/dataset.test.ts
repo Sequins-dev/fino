@@ -216,8 +216,13 @@ describe('DataLoader', () => {
 
   it('runs bounded realm collators concurrently while yielding in source order', async (t) => {
     const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+    // Each batch's work has to outlast the realm creation that precedes the
+    // next one, or the pool never has two workers live at once and the peak
+    // reads 1. Creating a realm blocks its creator while the child's bootstrap
+    // graph is compiled and evaluated, so these delays are sized against that
+    // rather than against the work itself.
     const source = Dataset.from(
-      [35, 5, 20, 1].map((delayMs, value) => ({ value, delayMs, stats })),
+      [500, 500, 500, 500].map((delayMs, value) => ({ value, delayMs, stats })),
     );
     const loader = new DataLoader<typeof source extends Dataset<infer T> ? T : never, number[]>(
       source,
@@ -243,7 +248,9 @@ describe('DataLoader', () => {
     const source = new IterableDataset(async function* () {
       try {
         for (let value = 0; value < 4; value++) {
-          yield { value, delayMs: 100, stats };
+          // Long enough that the abort below lands while the first batch is
+          // still in flight, rather than after it has already been yielded.
+          yield { value, delayMs: 500, stats };
         }
       } finally {
         closed = true;
