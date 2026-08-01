@@ -175,6 +175,23 @@ export class WorkloadLedger {
     return record;
   }
 
+  /**
+   * Extend every lease one owner holds — the heartbeat path. One statement,
+   * so a beat's cost does not grow with the node's workload count.
+   */
+  async renewAll(owner: string, incarnation: number, leaseMs: number, now = Date.now()): Promise<void> {
+    const stmt = this.#db.prepare(
+      `UPDATE workloads SET lease_expires_at = :expiresAt, updated_at = :now
+       WHERE owner = :owner AND owner_incarnation = :incarnation
+         AND state IN ('claimed', 'initialized')`,
+    );
+    try {
+      await stmt.run({ owner, incarnation, expiresAt: now + leaseMs, now });
+    } finally {
+      stmt.finalize();
+    }
+  }
+
   /** Extend the current owner's lease. Fails (null) if ownership moved. */
   async renew(
     id: string,

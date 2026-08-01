@@ -1121,3 +1121,108 @@ describe('SeedServer — incarnation fencing', () => {
     t.equal(introduced.certHash, hash, 'certificate hash introduced');
   });
 });
+
+describe('SeedServer — pressure placement and admission retry', () => {
+  afterEach(stopActiveSeed);
+  const load = (cpu: number, pendingSpecs?: number) => ({
+    cpu,
+    memory: 1,
+    ...(pendingSpecs === undefined ? {} : { pendingSpecs }),
+  });
+  const spawn = (spawnReqId: string) => ({
+    t: 'SPAWN' as const,
+    spawnReqId,
+    parentPortId: 'requester/p-1',
+    config: { entry: '/app/main.ts', root: '/app', rules: [] },
+  });
+
+  it('places by queue pressure, not CPU alone', async (t) => {
+    const { transport } = await makeSeed();
+    // busy-cpu has higher CPU but an empty queue; deep-queue looks idle but
+    // has specs waiting — pending work is the stronger signal.
+    transport.inject('busy-cpu', { t: 'HELLO', nodeId: 'busy-cpu', load: load(0.6, 0) });
+    transport.inject('deep-queue', { t: 'HELLO', nodeId: 'deep-queue', load: load(0.05, 5) });
+    transport.sent.length = 0;
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0, 0) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-1'));
+    const routed = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(routed.length, 1, 'the spawn was routed');
+    t.equal(routed[0]!.to, 'busy-cpu', 'the empty queue wins over lower CPU');
+  });
+
+  it('reroutes a retryable refusal to the next node and never reuses one', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1, 0) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2, 0) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9, 9) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-2'));
+    const first = transport.sent.filter((s) => s.msg.t === 'SPAWN')[0]!;
+    t.equal(first.to, 'worker-1', 'lowest pressure chosen first');
+
+    transport.sent.length = 0;
+    transport.inject(first.to as string, {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'requester/s-2',
+      childPortId: '',
+      ok: false,
+      error: 'overloaded',
+      retryable: true,
+    });
+    const second = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(second.length, 1, 'the refusal was retried elsewhere');
+    t.equal(second[0]!.to, 'worker-2', 'the retry avoids the node that refused');
+    t.equal(
+      transport.sentOfType('SPAWN_ACK').length,
+      0,
+      'no failure was reported to the requester while a retry remained',
+    );
+
+    transport.sent.length = 0;
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'requester/s-2',
+      childPortId: '',
+      ok: false,
+      error: 'overloaded',
+      retryable: true,
+    });
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'with no nodes left the failure reaches the requester');
+    t.equal(acks[0]!.ok, false, 'reported as a failure');
+  });
+
+  it('does not retry a non-retryable failure', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1, 0) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2, 0) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9, 9) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-3'));
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'requester/s-3',
+      childPortId: '',
+      ok: false,
+      error: 'entry module threw',
+    });
+    t.equal(transport.sent.filter((s) => s.msg.t === 'SPAWN').length, 0, 'no retry attempted');
+    t.equal(transport.sentOfType('SPAWN_ACK').length, 1, 'the error reached the requester');
+  });
+
+  it('reroutes when the chosen node dies mid-spawn', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1, 0) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2, 0) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9, 9) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-4'));
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'PEER_DOWN', nodeId: 'worker-1' });
+    const rerouted = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(rerouted.length, 1, 'the durable spawn was rerouted rather than failed');
+    t.equal(rerouted[0]!.to, 'worker-2', 'rerouted to the surviving node');
+  });
+});

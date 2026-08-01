@@ -233,6 +233,7 @@ export class ClusterClient {
       loadSampler?: () => NodeLoad;
       incarnation?: number;
       mesh?: PeerMesh;
+      admission?: () => { accept: true } | { accept: false; reason: string };
     } = {},
   ) {
     this.nodeId = nodeId;
@@ -241,7 +242,16 @@ export class ClusterClient {
     this.#incarnation = options.incarnation;
     this.#mesh = options.mesh ?? null;
     this.#mesh?.on((from, msg) => this.#handle(from, msg));
+    this.#admissionCheck = options.admission ?? null;
   }
+  /**
+   * Admission control consulted before creating a routed realm. A rejection
+   * is reported to the seed as a retryable SPAWN_ACK so the spawn moves to a
+   * less pressured node instead of failing.
+   *
+   * @internal
+   */
+  #admissionCheck: (() => { accept: true } | { accept: false; reason: string }) | null;
   /**
    * Direct peer sessions. When a session to the destination exists, realm
    * traffic goes straight there and never touches the seed; otherwise the
@@ -691,6 +701,18 @@ export class ClusterClient {
       }
     >,
   ): Promise<void> {
+    const verdict = this.#admissionCheck?.();
+    if (verdict !== undefined && verdict.accept === false) {
+      this.#transport.send('__seed__', {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId: '',
+        ok: false,
+        error: verdict.reason,
+        retryable: true,
+      });
+      return;
+    }
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
     const scheduled = createScheduledRealm(
       msg.config.root ?? '',

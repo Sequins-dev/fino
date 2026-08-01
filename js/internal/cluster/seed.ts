@@ -37,6 +37,7 @@
  */
 import type { ClusterSeedTransport } from './transport.ts';
 import { type ClusterMessage } from './protocol.ts';
+import type { WorkloadLedger } from './ledger.ts';
 import { RealmRegistry } from './registry.ts';
 import { env } from 'internal:process';
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
@@ -107,6 +108,14 @@ export interface SeedServerOptions {
   joinToken?: string;
   /** Cluster identity advertised in every WELCOME. */
   clusterId?: string;
+  /**
+   * Durable workload ledger. When present, every routed spawn is committed
+   * before it is forwarded — the commit-before-acknowledge guarantee — with
+   * ownership leased to the chosen node and renewed by its heartbeats.
+   */
+  ledger?: WorkloadLedger;
+  /** Lease duration for ledger ownership; defaults to 30 seconds. */
+  leaseMs?: number;
 }
 
 export class SeedServer {
@@ -178,6 +187,10 @@ export class SeedServer {
       requesterNodeId: string;
       parentPortId: string;
       targetNodeId: string;
+      /** The original spawn, retained so a refusal can be routed elsewhere. */
+      spawn: Extract<ClusterMessage, { t: 'SPAWN' }>;
+      /** Nodes already tried; excluded from retries. */
+      attempted: Set<string>;
     }
   >();
   // portId -> nodeId for PORT_MSG routing and death propagation.
@@ -225,7 +238,34 @@ export class SeedServer {
     this.#transport = transport;
     this.#joinToken = options.joinToken ?? null;
     this.#clusterId = options.clusterId ?? null;
+    this.#ledger = options.ledger ?? null;
+    this.#leaseMs = options.leaseMs ?? 30_000;
   }
+  /** Durable workload ledger, or null in soft (stateless) mode. */
+  #ledger: WorkloadLedger | null;
+  /** Ledger lease duration in milliseconds. */
+  #leaseMs: number;
+  /** Serialized ledger operations, preserving per-run write order. */
+  #ledgerQueue: Promise<void> = Promise.resolve();
+  /** Enqueue a ledger operation; failures are logged, never routing-fatal. */
+  #ledgerOp(op: (ledger: WorkloadLedger) => Promise<unknown>): void {
+    const ledger = this.#ledger;
+    if (ledger === null) return;
+    this.#ledgerQueue = this.#ledgerQueue
+      .then(() => op(ledger))
+      .then(
+        () => undefined,
+        (err: unknown) => {
+          console.error(`fino:cluster seed ledger operation failed: ${err}`);
+        },
+      );
+  }
+  /** Test hook: resolves after previously enqueued ledger ops settle. @internal */
+  _ledgerSettled(): Promise<void> {
+    return this.#ledgerQueue.then(() => undefined);
+  }
+  /** childPortId -> ledger record id, so realm exits can settle records. */
+  #ledgerIdsByChildPort = new Map<string, string>();
   /** Join token every HELLO must present, or null when auth is disabled. */
   #joinToken: string | null;
   /** Cluster identity advertised in WELCOME, or null when unset. */
@@ -413,10 +453,14 @@ export class SeedServer {
         // Refresh the placement view: without this, load is only ever the
         // value advertised once at HELLO and target selection is arbitrary.
         if (peer !== undefined && msg.load !== undefined) peer.load = msg.load;
+        if (peer !== undefined) {
+          const incarnation = peer.incarnation ?? 0;
+          this.#ledgerOp((ledger) => ledger.renewAll(from, incarnation, this.#leaseMs));
+        }
         break;
       }
       case 'SPAWN': {
-        const target = this.#selectTarget(from);
+        const target = this.#selectTarget(new Set([from]));
         if (target === null) {
           // No eligible worker - reject immediately.
           this.#transport.send(from, {
@@ -432,20 +476,64 @@ export class SeedServer {
           requesterNodeId: from,
           parentPortId: msg.parentPortId,
           targetNodeId: target,
+          spawn: msg,
+          attempted: new Set([from, target]),
         });
         this.#portNodes.set(msg.parentPortId, from);
         this.#registry.register(msg.parentPortId, null, from);
+        // Commit before the spawn is forwarded: if every node vanished right
+        // now, the ledger still remembers this workload.
+        this.#ledgerOp(async (ledger) => {
+          await ledger.commit(msg.spawnReqId, JSON.stringify(msg.config));
+          await ledger.claim(
+            msg.spawnReqId,
+            target,
+            this.#peers.get(target)?.incarnation ?? 0,
+            this.#leaseMs,
+          );
+        });
         this.#transport.send(target, msg);
         break;
       }
       case 'SPAWN_ACK': {
         const spawnInfo = this.#pendingSpawns.get(msg.spawnReqId);
+        if (spawnInfo === undefined) break;
+        if (!msg.ok && msg.retryable === true) {
+          // The destination refused admission (overload, not error): route
+          // the same spawn to the next-best node instead of failing it.
+          const next = this.#selectTarget(spawnInfo.attempted);
+          if (next !== null) {
+            spawnInfo.attempted.add(next);
+            spawnInfo.targetNodeId = next;
+            this.#ledgerOp(async (ledger) => {
+              await ledger.release(msg.spawnReqId, from);
+              await ledger.claim(
+                msg.spawnReqId,
+                next,
+                this.#peers.get(next)?.incarnation ?? 0,
+                this.#leaseMs,
+              );
+            });
+            this.#transport.send(next, spawnInfo.spawn);
+            break;
+          }
+        }
         this.#pendingSpawns.delete(msg.spawnReqId);
-        if (msg.ok && spawnInfo) {
+        if (msg.ok) {
           this.#portNodes.set(msg.childPortId, from);
           this.#registry.register(msg.childPortId, spawnInfo.parentPortId, from);
+          this.#ledgerIdsByChildPort.set(msg.childPortId, msg.spawnReqId);
+          this.#ledgerOp(async (ledger) => {
+            await ledger.markInitialized(
+              msg.spawnReqId,
+              from,
+              this.#peers.get(from)?.incarnation ?? 0,
+            );
+          });
+        } else {
+          this.#ledgerOp((ledger) => ledger.settle(msg.spawnReqId));
         }
-        if (spawnInfo) this.#transport.send(spawnInfo.requesterNodeId, msg);
+        this.#transport.send(spawnInfo.requesterNodeId, msg);
         break;
       }
       case 'REALM_EXIT': {
@@ -496,6 +584,11 @@ export class SeedServer {
   }
   /** Forward an ordered exit and remove the exited realm subtree. */
   #handleRealmExit(msg: RealmExitMessage): void {
+    const ledgerId = this.#ledgerIdsByChildPort.get(msg.realmId);
+    if (ledgerId !== undefined) {
+      this.#ledgerIdsByChildPort.delete(msg.realmId);
+      this.#ledgerOp((ledger) => ledger.settle(ledgerId));
+    }
     const portId = msg.realmId;
     const parentPortId = this.#registry.getParentPortId(portId);
     const removed = this.#registry.exit(portId);
@@ -538,7 +631,27 @@ export class SeedServer {
         continue;
       }
       if (pending.targetNodeId === nodeId) {
+        // The chosen node died mid-spawn. The workload record is durable and
+        // uninitialized, so route it to the next-best node when one exists.
+        pending.attempted.add(nodeId);
+        const next = this.#selectTarget(pending.attempted);
+        if (next !== null) {
+          pending.attempted.add(next);
+          pending.targetNodeId = next;
+          this.#ledgerOp(async (ledger) => {
+            await ledger.release(spawnReqId, nodeId);
+            await ledger.claim(
+              spawnReqId,
+              next,
+              this.#peers.get(next)?.incarnation ?? 0,
+              this.#leaseMs,
+            );
+          });
+          this.#transport.send(next, pending.spawn);
+          continue;
+        }
         this.#pendingSpawns.delete(spawnReqId);
+        this.#ledgerOp((ledger) => ledger.settle(spawnReqId));
         this.#transport.send(pending.requesterNodeId, {
           t: 'SPAWN_ACK',
           spawnReqId,
@@ -576,15 +689,18 @@ export class SeedServer {
    *
    * @internal
    */
-  #selectTarget(excludeNodeId: string): string | null {
-    // Pick the peer with the lowest CPU load; return null if no eligible peer.
+  #selectTarget(excluded: ReadonlySet<string>): string | null {
+    // Lowest pressure wins. Each queued pre-init spec counts like a fully
+    // saturated core: specs are the balancing unit, and a node with a deep
+    // pending queue is oversubscribed for new work regardless of current CPU.
     let best: string | null = null;
-    let bestLoad = Infinity;
+    let bestScore = Infinity;
     for (const [nId, peer] of this.#peers) {
-      if (nId === excludeNodeId) continue;
-      if (peer.load.cpu < bestLoad) {
+      if (excluded.has(nId)) continue;
+      const score = peer.load.cpu + (peer.load.pendingSpecs ?? 0);
+      if (score < bestScore) {
         best = nId;
-        bestLoad = peer.load.cpu;
+        bestScore = score;
       }
     }
     return best;

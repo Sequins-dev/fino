@@ -63,6 +63,9 @@ import {
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import { sampleNodeLoad } from 'internal:runtime/stats';
+import { availableParallelism, reactorQueueDepth } from 'internal:scheduler-native';
+import { WorkloadLedger } from 'internal:cluster/ledger';
+import { env } from 'internal:process';
 import { SystemRealmAgent, type NodeReport } from 'internal:cluster/agent';
 import { mintJoinString, parseJoinString } from 'internal:cluster/join-string';
 import { DiskFileSystem } from 'fino:file';
@@ -94,6 +97,7 @@ let _seed: SeedServer | null = null;
 let _joinString: string | null = null;
 let _agent: SystemRealmAgent | null = null;
 let _mesh: PeerMesh | null = null;
+let _ledger: WorkloadLedger | null = null;
 
 /** Spawn the node's system realm and return the heartbeat load sampler. */
 function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
@@ -101,11 +105,40 @@ function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
   _agent.start();
   return () => {
     // Prefer the system realm's observation when fresh; fall back to a local
-    // sample so heartbeats never go silent while it restarts.
+    // sample so heartbeats never go silent while it restarts. Queue counts
+    // ride along either way — they are the seed's placement signal.
     const report: NodeReport | null = _agent?.latest() ?? null;
-    if (report !== null && Date.now() - report.at < 10_000) return report.load;
-    return sampleNodeLoad();
+    const depth =
+      report !== null && Date.now() - report.at < 10_000 ? report.queue : reactorQueueDepth();
+    const load =
+      report !== null && Date.now() - report.at < 10_000 ? report.load : sampleNodeLoad();
+    return {
+      ...load,
+      pendingSpecs: depth.pendingSpecs,
+      activeWorkloads: depth.active + depth.parkedLive,
+    };
   };
+}
+
+/**
+ * Pending-spec watermark above which this node refuses new routed spawns.
+ * Refusals are retryable, so the seed routes them to lighter nodes.
+ */
+function admissionLimit(): number {
+  const configured = Number(env.FINO_CLUSTER_MAX_PENDING_SPECS);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return Math.max(4, availableParallelism() * 2);
+}
+
+function defaultAdmission(): { accept: true } | { accept: false; reason: string } {
+  const depth = reactorQueueDepth();
+  if (depth.pendingSpecs >= admissionLimit()) {
+    return {
+      accept: false,
+      reason: `overloaded: ${depth.pendingSpecs} pending specs (limit ${admissionLimit()})`,
+    };
+  }
+  return { accept: true };
 }
 
 /** The node's system-realm agent, or null when not participating. @internal */
@@ -442,9 +475,13 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   const incarnation = await nextIncarnation(opts.stateDir);
   const advertisedHost = clusterAdvertisedHost(opts.hostname);
   const advertisedEndpoint = `https://${advertisedHost}:${opts.port}${path}`;
+  // With durable state configured, every routed spawn is committed to the
+  // workload ledger before it is forwarded — commit-before-acknowledge.
+  _ledger = opts.stateDir !== undefined ? await WorkloadLedger.open(`${opts.stateDir}/ledger.db`) : null;
   _seed = new SeedServer(seedTransport, {
     ...(joinToken !== undefined ? { joinToken } : {}),
     clusterId,
+    ...(_ledger !== null ? { ledger: _ledger } : {}),
   });
   await _seed.start();
   // Also join as a worker (connect to self) - seeds participate as workers.
@@ -470,6 +507,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     loadSampler: startNodeAgent(),
     incarnation,
     mesh: _mesh,
+    admission: defaultAdmission,
   });
   _client.start();
   await _client.ready();
@@ -574,6 +612,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     loadSampler: startNodeAgent(),
     incarnation,
     mesh: _mesh,
+    admission: defaultAdmission,
   });
   _client.start();
   try {
@@ -664,6 +703,8 @@ export function leaveCluster(): void {
   _agent = null;
   _mesh?.close();
   _mesh = null;
+  void _ledger?.close().catch(() => {});
+  _ledger = null;
   _client?.stop();
   _client = null;
   _seed?.stop();

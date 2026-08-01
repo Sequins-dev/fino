@@ -107,6 +107,14 @@ export interface NodeLoad {
    * ```
    */
   loopIdle?: number;
+  /**
+   * Pre-initialization workload specs queued on the node. The primary
+   * balancing signal: specs are pure data and free to place elsewhere, so a
+   * deep pending queue means the node is oversubscribed for new work.
+   */
+  pendingSpecs?: number;
+  /** Workloads currently initialized or running on the node's reactors. */
+  activeWorkloads?: number;
 }
 /**
  * Cluster membership record for one peer node.
@@ -327,6 +335,11 @@ export type ClusterMessage =
       t: 'SPAWN_ACK';
       spawnReqId: string;
       childPortId: string;
+      /**
+       * On failure, whether the seed may route the spawn to another node.
+       * Overload rejections are retryable; creation errors are not.
+       */
+      retryable?: boolean;
       ok: boolean;
       error?: string;
     }
@@ -376,6 +389,8 @@ interface WireLoad {
   cpu?: number;
   memory?: number;
   loopIdle?: number;
+  pendingSpecs?: number;
+  activeWorkloads?: number;
 }
 
 interface WirePeer {
@@ -430,6 +445,7 @@ interface WireEnvelope {
   incarnation?: number;
   endpoint?: string;
   certHash?: string;
+  retryable?: boolean;
   peers: WirePeer[];
   peer?: WirePeer;
   ts?: number;
@@ -451,6 +467,8 @@ const LoadMessage = defineMessage<WireLoad>({
   cpu: { number: 1, type: 'double', optional: true },
   memory: { number: 2, type: 'double', optional: true },
   loopIdle: { number: 3, type: 'double', optional: true },
+  pendingSpecs: { number: 4, type: 'double', optional: true },
+  activeWorkloads: { number: 5, type: 'double', optional: true },
 });
 const PeerMessage = defineMessage<WirePeer>({
   nodeId: { number: 1, type: 'string', optional: true },
@@ -513,6 +531,7 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   incarnation: { number: 22, type: 'double', optional: true },
   endpoint: { number: 23, type: 'string', optional: true },
   certHash: { number: 24, type: 'string', optional: true },
+  retryable: { number: 25, type: 'bool', optional: true },
 });
 
 function stringArray(value: unknown, key: string): string[] {
@@ -764,6 +783,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         childPortId: msg.childPortId === '' ? '' : parseClusterId(msg.childPortId, 'childPortId'),
         ok: msg.ok,
         ...(msg.error === undefined ? {} : { error: msg.error }),
+        ...(msg.retryable === true ? { retryable: true } : {}),
         ...base,
       };
     case 'REALM_EXIT':
@@ -893,6 +913,7 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         childPortId: childPortId === '' ? '' : parseClusterId(childPortId, 'childPortId'),
         ok: value.ok,
         ...(value.error === undefined ? {} : { error: value.error }),
+        ...(value.retryable === true ? { retryable: true } : {}),
       };
     }
     case MessageKind.REALM_EXIT:
@@ -981,11 +1002,27 @@ function parseLoad(value: unknown): NodeLoad {
   if (cpu < 0 || cpu > 1) throw protocolError('load.cpu must be in [0, 1]');
   if (memory < 0) throw protocolError('load.memory must be non-negative');
   if (value.loopIdle === undefined) {
-    return { cpu, memory };
+    return { cpu, memory, ...parseQueueCounts(value) };
   }
   const loopIdle = requireFiniteNumber(value, 'loopIdle');
   if (loopIdle < 0 || loopIdle > 1) throw protocolError('load.loopIdle must be in [0, 1]');
-  return { cpu, memory, loopIdle };
+  return { cpu, memory, loopIdle, ...parseQueueCounts(value) };
+}
+
+function parseQueueCounts(value: Record<string, unknown>): {
+  pendingSpecs?: number;
+  activeWorkloads?: number;
+} {
+  const counts: { pendingSpecs?: number; activeWorkloads?: number } = {};
+  for (const key of ['pendingSpecs', 'activeWorkloads'] as const) {
+    const raw = value[key];
+    if (raw === undefined) continue;
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+      throw protocolError(`load.${key} must be a non-negative finite number`);
+    }
+    counts[key] = raw;
+  }
+  return counts;
 }
 function parsePeer(value: unknown, key: string): PeerInfo {
   if (!isRecord(value)) throw protocolError(`${key} must be an object`);
