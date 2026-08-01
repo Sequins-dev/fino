@@ -22,6 +22,7 @@ import { env } from 'internal:process';
 import { currentGraph } from './graph.ts';
 import type { Leaf, Pending } from './fusion.ts';
 import { planChain } from './fusion.ts';
+import { narrowOperands } from './amp.ts';
 import { isFloat } from './dtype.ts';
 import type { OpId } from './ops/registry.ts';
 import { opById } from './ops/registry.ts';
@@ -121,6 +122,23 @@ export interface DispatchOptions {
   strides?: readonly number[];
   /** Element offset for an aliasing output. */
   offset?: number;
+}
+
+/**
+ * Re-enter dispatch with narrowed operands.
+ *
+ * Separate so the ordinary path has no branch to unwind: narrowing happens once, and
+ * the recursive call sees operands that are already the right width.
+ *
+ * @internal
+ */
+function dispatchNarrowed(
+  op: OpId,
+  inputs: readonly Tensor[],
+  attrs: OpAttrs | null,
+  options: DispatchOptions,
+): Tensor {
+  return dispatch(op, inputs, attrs, options);
 }
 
 /**
@@ -252,6 +270,10 @@ export function dispatch(
 ): Tensor {
   const spec = opById(op);
   for (const input of inputs) input.check();
+  // Mixed precision narrows operands before anything else looks at them, so the shape
+  // and dtype rules, the recorded node, and the gradient all describe what actually ran.
+  const operands = narrowOperands(spec.name, inputs);
+  if (operands !== inputs) return dispatchNarrowed(op, operands, attrs, options);
 
   const device = inputs.length > 0 ? requireSameDevice(inputs) : options.device;
   if (!device) {

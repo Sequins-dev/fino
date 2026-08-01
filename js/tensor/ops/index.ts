@@ -17,6 +17,7 @@ import { backward as runBackward } from '../autograd.ts';
 import type { BackwardOptions } from '../autograd.ts';
 import { Tensor } from '../tensor.ts';
 import { normalizeAxis } from '../shape.ts';
+import { installAutocastHooks } from '../amp.ts';
 import type { SliceSpec } from '../shape.ts';
 
 import {
@@ -80,6 +81,7 @@ import { dispatch } from '../dispatch.ts';
 // cycles.
 installElementwiseHooks({ sum, reshape });
 installReduceHooks({ expand, reshape });
+installAutocastHooks((tensor, dtype) => castTo(tensor, dtype));
 installLinalgHooks({ transpose, reshape, sumTo });
 installAutogradHooks({
   onesLike: (t) => fillOf(t.shape, t.dtype, t.device, 1),

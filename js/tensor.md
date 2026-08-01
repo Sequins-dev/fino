@@ -404,6 +404,69 @@ Fused time is flat in the length of the chain, which is the point.
 `FINO_TENSOR_FUSION=0` turns it off, for comparing the two paths or bisecting a
 suspected fusion bug.
 
+## Mixed precision
+
+Half precision halves the memory a matrix multiply moves and lets the hardware run it on
+wider units, but it holds about three decimal digits — enough for the multiply, not
+enough for everything a training step does. Mixed precision is the arrangement that
+takes the first without paying for the second: run the operations that tolerate narrow
+inputs narrowly, keep the rest wide.
+
+```js
+import { GradScaler, autocast } from 'fino:tensor';
+import { crossEntropy } from 'fino:tensor/nn';
+
+const scaler = new GradScaler();
+
+for (const [input, target] of batches) {
+  const loss = autocast('f16', () => crossEntropy(model.forward(input), target));
+  scaler.scale_(loss).backward();
+
+  const finite = await scaler.unscale(model.parameters());
+  if (finite) optimizer.step();
+  scaler.update(finite);
+  optimizer.zeroGrad();
+}
+```
+
+`autocast(dtype, fn)` narrows the operands of the operations on its list, and today that
+list holds exactly one entry: `gemm`. Being on it is a claim about numerical behaviour
+that has to hold for that operation specifically — a matrix multiply averages its
+rounding error over the reduction, whereas an elementwise chain compounds it — so
+operations are added one at a time with evidence, not by category. Everything not on the
+list runs unchanged, and a scope never *widens*: an operand already in `f16` stays there
+under `autocast('f32', …)`.
+
+Narrowing happens at dispatch, ahead of the shape and dtype rules, so the recorded node
+and the gradient describe what actually ran rather than what was written. `autocast(null,
+…)` opts a region back out, and scopes nest.
+
+### Loss scaling
+
+Half precision underflows before it overflows: a gradient of 1e-8 is exactly zero in
+`f16`, and a layer whose gradients all vanish stops learning silently. Multiplying the
+loss by a large constant shifts the whole backward pass into the representable range, and
+dividing the gradients by the same constant afterwards recovers the true values exactly —
+both operations are multiplication by a power of two, so nothing is lost to the round
+trip.
+
+The constant cannot be fixed in advance, because too large a value overflows the
+gradients it was meant to protect. `GradScaler` finds it by trying: it starts high, and
+`unscale` checks the result for infinities and NaN before returning whether the step is
+usable.
+
+| | |
+|---|---|
+| `scale_(loss)` | multiply the loss by the current scale |
+| `unscale(params)` | divide the gradients back; `false` if any is not finite |
+| `update(finite)` | back the scale off after an overflow, grow it after a healthy run |
+| `scale`, `skipped` | the current constant, and how many steps were discarded |
+
+A step whose gradients overflowed is skipped entirely rather than clipped — the gradients
+are meaningless, not merely large — and the scale halves. After a run of clean steps it
+doubles again, so the constant tracks what the model's gradients actually need as
+training changes them.
+
 ## Diagnostics
 
 - `poolStats(device)` reports held, in-use, and leaked buffer counts.

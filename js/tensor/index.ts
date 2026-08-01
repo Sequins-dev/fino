@@ -295,6 +295,8 @@ export {
 export type { Device } from './backend.ts';
 export { formatDevice, sameDevice, listDevices, registerBackend } from './backend.ts';
 export { to } from './transfer.ts';
+export { GradScaler, autocast, autocastDType } from './amp.ts';
+export type { GradScalerOptions } from './amp.ts';
 export type { SliceSpec } from './shape.ts';
 export {
   MAX_RANK,
