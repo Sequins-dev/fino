@@ -266,10 +266,24 @@ fn request_scheduler_poll(owner: u32, delay_ms: f64) {
     mailbox().notify();
 }
 
+/// Number of `f64` slots per routed readiness completion.
+///
+/// A completion is seven scalars the kernel already produced. It used to cross
+/// to its owning realm as a structured clone — a ValueSerializer round trip, a
+/// heap allocation, a backing store and a `Uint8Array` per event — to move
+/// fifty-six bytes of numbers. The fixed layout below removes all of that: the
+/// whole batch arrives as one `Float64Array`.
+const COMPLETION_SLOTS: usize = 7;
+
+/// One routed readiness completion in fixed layout.
+///
+/// Slots: ident, filter, flags, fflags, data, udata, installed.
+type ReadinessCompletion = [f64; COMPLETION_SLOTS];
+
 #[derive(Default)]
 struct MailboxInner {
     changes: Vec<ReadinessChange>,
-    events: HashMap<u32, VecDeque<Vec<u8>>>,
+    events: HashMap<u32, Vec<ReadinessCompletion>>,
 }
 
 struct Mailbox {
@@ -1758,13 +1772,10 @@ fn route_process_readiness(
     _rv: v8::ReturnValue,
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    let Some(event) = copy_uint8_array(scope, args.get(1)) else {
-        throw_error(
-            scope,
-            "routeProcessReadiness: second argument must be a Uint8Array",
-        );
-        return;
-    };
+    let mut completion: ReadinessCompletion = [0.0; COMPLETION_SLOTS];
+    for (slot, value) in completion.iter_mut().enumerate() {
+        *value = args.get(slot as i32 + 1).number_value(scope).unwrap_or(0.0);
+    }
     mailbox()
         .inner
         .lock()
@@ -1772,8 +1783,8 @@ fn route_process_readiness(
         .events
         .entry(owner)
         .or_default()
-        .push_back(event);
-    if args.get(2).boolean_value(scope)
+        .push(completion);
+    if args.get(COMPLETION_SLOTS as i32 + 1).boolean_value(scope)
         && let Some(pool) = owner_pools()
             .lock()
             .unwrap()
@@ -1784,6 +1795,11 @@ fn route_process_readiness(
     }
 }
 
+/// Hand a realm every readiness completion routed to it, as one flat batch.
+///
+/// The batch is a single `Float64Array` of `COMPLETION_SLOTS` values per event,
+/// so a drain costs one allocation regardless of how many completions it
+/// carries, and no encoding at all.
 fn take_shared_loop_events(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1797,22 +1813,28 @@ fn take_shared_loop_events(
         .events
         .remove(&owner)
         .unwrap_or_default();
-    let values = v8::Array::new(scope, events.len() as i32);
-    for (index, event) in events.into_iter().enumerate() {
-        let len = event.len();
-        let store = v8::ArrayBuffer::new_backing_store(scope, len);
-        if !event.is_empty() {
-            let target = store.data().unwrap().as_ptr() as *mut u8;
+    let slots = events.len() * COMPLETION_SLOTS;
+    let bytes = slots * std::mem::size_of::<f64>();
+    let store = v8::ArrayBuffer::new_backing_store(scope, bytes);
+    if bytes > 0 {
+        let target = store.data().unwrap().as_ptr() as *mut f64;
+        for (index, completion) in events.iter().enumerate() {
+            // SAFETY: `target` owns `slots` f64s and `index` stays within
+            // `events.len()`, so each write lands inside the allocation.
             unsafe {
-                std::ptr::copy_nonoverlapping(event.as_ptr(), target, len);
+                std::ptr::copy_nonoverlapping(
+                    completion.as_ptr(),
+                    target.add(index * COMPLETION_SLOTS),
+                    COMPLETION_SLOTS,
+                );
             }
         }
-        let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
-        if let Some(array) = v8::Uint8Array::new(scope, buffer, 0, len) {
-            values.set_index(scope, index as u32, array.into());
-        }
     }
-    rv.set(values.into());
+    let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
+    match v8::Float64Array::new(scope, buffer, 0, slots) {
+        Some(array) => rv.set(array.into()),
+        None => rv.set(v8::null(scope).into()),
+    }
 }
 
 fn process_readiness_control_fd(

@@ -31,17 +31,12 @@ import { currentProcessReadinessController } from './reactor.ts';
  * reactor and realms never executed in parallel. Scaling out only became worth
  * taking once wake-ups were targeted: a shared condvar plus `notify_all` meant
  * every readiness completion dragged every parked worker out of the kernel, and
- * all but one found nothing to do. Per-operation cost for I/O-bound realms on an
- * 18-processor host, before and after targeting:
+ * all but one found nothing to do. Per-operation cost for I/O-bound realms grew
+ * with the thread count under that scheme and is flat under this one, while
+ * CPU-bound realms overlap almost perfectly.
  *
- *   threads |    1 chain    |   8 chains
- *         1 | 32.6 -> 31.9  | 12.5 -> 12.8
- *         4 | 40.8 -> 36.0  | 14.5 -> 12.0
- *        18 | 73.7 -> 34.8  | 37.1 -> 13.3
- *
- * Cost is now flat in the thread count rather than growing with it, and
- * CPU-bound realms overlap almost perfectly. Pin the variable to 1 to get
- * single-threaded behaviour back when isolating a scheduling problem.
+ * Pin the variable to 1 to get single-threaded behaviour back when isolating a
+ * scheduling problem.
  */
 function configuredThreadCount(): number {
   const configured = Number(env['FINO_REACTOR_THREADS'] ?? '');

@@ -79,5 +79,15 @@ export type ReadinessChangeTuple = [
   schedulerPoll: boolean,
 ];
 export function takeSharedReadinessChanges(): ReadinessChangeTuple[];
-export function routeProcessReadiness(owner: number, event: Uint8Array, notifyPool?: boolean): void;
-export function takeSharedLoopEvents(owner: number): Uint8Array[];
+export function routeProcessReadiness(
+  owner: number,
+  ident: number,
+  filter: number,
+  flags: number,
+  fflags: number,
+  data: number,
+  udata: number,
+  installed: number,
+  notifyPool?: boolean,
+): void;
+export function takeSharedLoopEvents(owner: number): Float64Array;

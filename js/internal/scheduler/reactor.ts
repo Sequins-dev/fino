@@ -11,7 +11,6 @@
  */
 import * as loop from 'internal:runtime/loop';
 import * as backend from 'internal:runtime/loop-backend';
-import { serialize } from 'internal:serializer';
 import {
   routeProcessReadiness,
   signalReactorOwner,
@@ -63,6 +62,13 @@ function decodeReadinessChange(tuple: ReadinessChangeTuple): ReadinessChange {
   };
 }
 
+/**
+ * Hand one readiness completion to its owning realm.
+ *
+ * A completion is seven scalars the kernel already produced, so it crosses as
+ * scalars. It used to be structured-cloned — encode, allocate, decode — to move
+ * a handful of numbers between two realms in the same process.
+ */
 function route(
   owner: number,
   event: {
@@ -72,11 +78,20 @@ function route(
     fflags: number;
     data: number;
     udata: number;
-    routed: true;
-    installed?: true;
+    installed?: boolean;
   },
 ): void {
-  routeProcessReadiness(owner, serialize(event)[0]!, true);
+  routeProcessReadiness(
+    owner,
+    event.ident,
+    event.filter,
+    event.flags,
+    event.fflags,
+    event.data,
+    event.udata,
+    event.installed === true ? 1 : 0,
+    true,
+  );
 }
 
 /**
@@ -96,7 +111,6 @@ function routeInstalled(owner: number, change: ReadinessChange): void {
     fflags: 0,
     data: 0,
     udata: change.udata,
-    routed: true,
     installed: true,
   });
 }
@@ -205,7 +219,6 @@ export class ProcessReadinessController {
             fflags: event.fflags,
             data: 0,
             udata: change.udata,
-            routed: true,
           });
         },
         change.udata,
@@ -232,7 +245,6 @@ export class ProcessReadinessController {
             fflags: 0,
             data: 0,
             udata: change.udata,
-            routed: true,
           });
         },
         change.udata,
@@ -274,7 +286,6 @@ export class ProcessReadinessController {
         fflags: 0,
         data: typeof available === 'number' ? available : 0,
         udata: change.udata,
-        routed: true,
       });
     });
   }

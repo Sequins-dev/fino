@@ -68,7 +68,6 @@
  * @internal
  */
 import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
-import { deserialize } from 'internal:serializer';
 import * as backend from 'internal:runtime/loop-backend';
 import {
   currentWorkloadOwner,
@@ -192,6 +191,11 @@ let _nextTimerId = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters = 0;
 const TASK_TOKEN_BASE = 4294967296;
+/**
+ * Scalars per routed readiness completion, matching the native layout:
+ * ident, filter, flags, fflags, data, udata, installed.
+ */
+const COMPLETION_SLOTS = 7;
 const _workloadOwner = currentWorkloadOwner();
 const EV_ADD_ENABLE_ONESHOT = 1 | 4 | 16;
 const EV_ADD_ENABLE_CLEAR = 1 | 4 | 32;
@@ -320,13 +324,26 @@ function _dispatch(ev: LoopEvent): void {
  * ```
  */
 export function tick(timeoutMs: number | null): number {
-  const routed = takeSharedLoopEvents(_workloadOwner).map(
-    (event) => deserialize(event) as LoopEvent,
-  );
-  for (const ev of routed) _dispatch(ev);
-  const events = _processReadiness ? [] : _wait(rawBackend(), routed.length > 0 ? 0 : timeoutMs);
+  // Routed completions arrive as one flat Float64Array — `COMPLETION_SLOTS`
+  // scalars per event — rather than a structured clone per event.
+  const batch = takeSharedLoopEvents(_workloadOwner);
+  const routed = batch.length / COMPLETION_SLOTS;
+  for (let index = 0; index < routed; index++) {
+    const base = index * COMPLETION_SLOTS;
+    _dispatch({
+      ident: batch[base]!,
+      filter: batch[base + 1]!,
+      flags: batch[base + 2]!,
+      fflags: batch[base + 3]!,
+      data: batch[base + 4]!,
+      udata: batch[base + 5]!,
+      routed: true,
+      installed: batch[base + 6] === 1,
+    });
+  }
+  const events = _processReadiness ? [] : _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);
   for (const ev of events) _dispatch(ev);
-  return routed.length + events.length;
+  return routed + events.length;
 }
 /**
  * The pollable fd of this loop's backend, or `-1` when the backend has none.
