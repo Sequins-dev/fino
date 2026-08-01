@@ -6,11 +6,23 @@
  * This module is re-exported through `fino:tensor/conformance`; import from there.
  */
 import type { Device } from '../backend.ts';
-import { listDevices, resolveDevice, sameDevice } from '../backend.ts';
+import { backendFor, listDevices, resolveDevice, sameDevice } from '../backend.ts';
 import type { Tensor } from '../tensor.ts';
 import { compareValues, describeComparison, sampleValues } from '../harness.ts';
 import { allOps } from '../ops/registry.ts';
-import { Generator, bernoulli, onesLike, rand, randint, randn, zerosLike } from '../index.ts';
+import {
+  Generator,
+  bernoulli,
+  onesLike,
+  poolStats,
+  rand,
+  randint,
+  randn,
+  tensor,
+  tidy,
+  zerosLike,
+} from '../index.ts';
+import { currentGraph, partition } from '../graph.ts';
 import { layerNorm } from '../nn/functional.ts';
 
 /** What a case does with its inputs. */
@@ -21,12 +33,22 @@ export interface ConformanceCase {
   /** Identifies the case in a report. */
   name: string;
   /** Which part of the contract it covers. */
-  group: 'forward' | 'gradient' | 'memory';
+  group: 'forward' | 'gradient' | 'memory' | 'runtime';
   /** Operations it exercises, so a report can say what is untested. */
   covers: readonly string[];
   /** Input shapes, filled with reproducible values. */
-  inputs: readonly { shape: readonly number[]; dtype?: 'f32' | 'i32'; seed?: number }[];
-  run: Program;
+  inputs?: readonly { shape: readonly number[]; dtype?: 'f32' | 'i32'; seed?: number }[];
+  run?: Program;
+  /**
+   * A case that asserts a behaviour rather than a value.
+   *
+   * Most of the contract is "this program produces these numbers", which the reference
+   * backend can settle by computing them too. Some of it is not: whether disposal
+   * returns memory, whether a device stays responsive, whether one program survives a
+   * change of shape. Those have no reference value to compare against, so the case
+   * checks the property itself and throws to fail.
+   */
+  check?: (device: Device) => Promise<void>;
   /**
    * Extra relative tolerance beyond the dtype's.
    *
@@ -351,6 +373,142 @@ export function conformanceCases(): ConformanceCase[] {
       inputs: [{ shape: [6, 4] }, { shape: [5], dtype: 'i32', seed: 3 }],
       run: (table, ids) => table.indexSelect(ids.abs().cast('i32'), 0).mul(2).sum(),
     },
+
+    // -- memory ---------------------------------------------------------------
+
+    {
+      name: 'disposal returns buffers',
+      group: 'memory',
+      covers: [],
+      check: async (device) => {
+        const before = poolStats(device);
+        const held = [];
+        for (let i = 0; i < 8; i++) {
+          held.push(await tensor(new Array(4096).fill(1), { device }));
+        }
+        for (const value of held) value.dispose();
+        const after = poolStats(device);
+        if (after.liveBuffers !== before.liveBuffers) {
+          throw new Error(
+            `${after.liveBuffers - before.liveBuffers} buffers were still held after disposal`,
+          );
+        }
+      },
+    },
+    {
+      name: 'the pool reuses what disposal returned',
+      group: 'memory',
+      covers: [],
+      check: async (device) => {
+        // A pool that never reuses is not wrong, only pointless — and the whole reason
+        // allocation is not left to the driver is that reuse is what makes a training
+        // loop's steady state free.
+        const first = await tensor(new Array(2048).fill(0), { device });
+        first.dispose();
+        const before = poolStats(device);
+        const second = await tensor(new Array(2048).fill(0), { device });
+        const after = poolStats(device);
+        second.dispose();
+        if (after.hits <= before.hits) {
+          throw new Error('an allocation the pool could have served hit the device instead');
+        }
+      },
+    },
+    {
+      name: 'tidy releases its intermediates',
+      group: 'memory',
+      covers: ['mul', 'add', 'exp', 'log'],
+      check: async (device) => {
+        const x = await tensor([1, 2, 3, 4], { device });
+        const before = poolStats(device);
+        const out = tidy(() => x.mul(2).add(1).exp().log());
+        // The chain makes four tensors; one survives, so at most one buffer is added.
+        const after = poolStats(device);
+        const added = after.liveBuffers - before.liveBuffers;
+        out.dispose();
+        x.dispose();
+        if (added > 1) throw new Error(`${added} buffers survived a scope that returns one`);
+      },
+    },
+
+    // -- runtime --------------------------------------------------------------
+
+    {
+      name: 'one program over changing shapes',
+      group: 'runtime',
+      covers: ['mul', 'sum'],
+      check: async (device) => {
+        // Kernels are cached by a key that includes the shape's *class*, not its
+        // extent, so a size that is not a multiple of a workgroup has to be handled by
+        // the same compiled kernel as one that is. These sizes straddle the boundaries.
+        for (const n of [1, 7, 63, 64, 65, 1000]) {
+          const x = await tensor(
+            Array.from({ length: n }, (_, i) => i + 1),
+            { device },
+          );
+          const got = Number(await x.mul(2).sum().item());
+          const want = n * (n + 1);
+          x.dispose();
+          if (Math.abs(got - want) > Math.max(1e-3, want * 1e-6)) {
+            throw new Error(`size ${n} gave ${got}, expected ${want}`);
+          }
+        }
+      },
+    },
+    {
+      name: 'the recorded graph partitions into contiguous regions',
+      group: 'runtime',
+      covers: [],
+      check: async (device) => {
+        const x = await tensor([1, 2, 3, 4], { device });
+        const out = x.mul(2).add(1).sum();
+        await out.item();
+        const view = currentGraph();
+        // Two targets splitting the recording by operation, so partitioning has to
+        // produce more than one region and every node has to land in exactly one.
+        const regions = partition(view, [
+          { name: 'reductions', supports: (node) => node.op === 'sum' },
+          { name: 'rest', supports: () => true, fallback: true },
+        ]);
+        const assigned = regions.reduce((total, region) => total + region.nodes.length, 0);
+        const total = [...view.nodes()].length;
+        x.dispose();
+        out.dispose();
+        if (assigned !== total) {
+          throw new Error(`partitioning covered ${assigned} of ${total} nodes`);
+        }
+        const names = new Set(regions.map((region) => region.target));
+        if (!names.has('reductions')) {
+          throw new Error('the reduction never reached the target that claimed it');
+        }
+      },
+    },
+    {
+      name: 'the event loop keeps turning while the device works',
+      group: 'runtime',
+      covers: ['mul'],
+      check: async (device) => {
+        // Only meaningful where work happens somewhere else. A backend that compiles no
+        // kernels executes inline, so there is no wait to overlap with and a timer
+        // losing the race says nothing about responsiveness.
+        if (backendFor(device).caps.kernelCompile === false) return;
+        // Enough work that a blocking implementation would not finish first. A timer
+        // that never fires means the host waited on the device rather than parking.
+        const big = await tensor(new Array(1 << 20).fill(1), { device });
+        const busy = big.mul(2).mul(3).mul(4);
+        let fired = false;
+        const timer = new Promise((resolve) =>
+          setTimeout(() => {
+            fired = true;
+            resolve(null);
+          }, 0),
+        );
+        await Promise.race([timer, busy.data()]);
+        busy.dispose();
+        big.dispose();
+        if (!fired) throw new Error('a zero-delay timer did not run while the device worked');
+      },
+    },
   ];
 }
 
@@ -370,7 +528,7 @@ export async function runConformance(
   const { tensor } = await import('../index.ts');
   const device = await resolveDevice(target);
   const reference = await resolveDevice('cpu');
-  const groups = options.groups ?? (['forward', 'gradient', 'memory'] as const);
+  const groups = options.groups ?? (['forward', 'gradient', 'memory', 'runtime'] as const);
 
   const cases = conformanceCases().filter(
     (item) =>
@@ -382,7 +540,12 @@ export async function runConformance(
   for (const item of cases) {
     for (const op of item.covers) covered.add(op);
     try {
-      const values = item.inputs.map((spec, index) =>
+      if (item.check) {
+        await item.check(device);
+        results.push({ name: item.name, group: item.group, ok: true });
+        continue;
+      }
+      const values = item.inputs!.map((spec, index) =>
         sampleValues(
           spec.shape.reduce((a, b) => a * b, 1),
           spec.seed ?? index + 1,
@@ -392,7 +555,7 @@ export async function runConformance(
 
       const build = async (where: Device): Promise<Tensor[]> =>
         Promise.all(
-          item.inputs.map((spec, index) =>
+          item.inputs!.map((spec, index) =>
             tensor(values[index]!, {
               shape: [...spec.shape],
               dtype: spec.dtype ?? 'f32',
@@ -406,7 +569,7 @@ export async function runConformance(
 
       const evaluate = async (where: Device): Promise<ArrayLike<number>> => {
         const inputs = await build(where);
-        const out = item.run(...inputs);
+        const out = item.run!(...inputs);
         if (!wantsGradient) {
           const data = await out.data();
           for (const input of inputs) input.dispose();

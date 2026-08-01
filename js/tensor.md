@@ -294,12 +294,22 @@ console.log(formatReport(await runConformance('auto')));
 them that way until an out-of-tree backend passes this suite. It is the thing such a
 backend can run without living in this repository.
 
-Every case is an ordinary `fino:tensor` program compared against the reference
-backend, so conforming means computing the right numbers rather than implementing an
-interface a particular way. A report lists which registered operations no case
-exercised, so a partial run says so instead of implying more than it checked — and
-running it on the reference device proves only that the cases execute, since that
-backend is what everything else is compared against.
+Most cases are ordinary `fino:tensor` programs compared against the reference backend,
+so conforming means computing the right numbers rather than implementing an interface a
+particular way. A report lists which registered operations no case exercised, so a
+partial run says so instead of implying more than it checked — and running it on the
+reference device proves only that the cases execute, since that backend is what
+everything else is compared against.
+
+Not all of the contract is a number, though, so cases come in two shapes. `forward` and
+`gradient` compare values; `memory` and `runtime` assert a property directly, because
+there is no reference value for whether disposal returns buffers, whether the pool
+reuses them, whether one program survives a change of shape, whether the recorded graph
+partitions cleanly, or whether the event loop keeps turning while the device works.
+
+The last of those is scoped rather than universal: a backend that compiles no kernels
+executes inline, so it has no wait to overlap with, and a timer losing that race would
+say nothing about it.
 
 ## Performance, measured
 
