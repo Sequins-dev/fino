@@ -309,31 +309,34 @@ yesterday's run. On an Apple silicon development machine:
 
 | | Metal | Vulkan (MoltenVK) |
 |---|---|---|
-| GEMM 1024³ | ~3100 GFLOP/s | ~2100 GFLOP/s |
-| GEMM 512³ | ~1000 GFLOP/s | ~2200 GFLOP/s |
-| elementwise | ~20 Gelem/s | ~22 Gelem/s |
+| GEMM 1024³ | ~4800 GFLOP/s | ~4800 GFLOP/s |
+| GEMM 512³ | ~2200 GFLOP/s | ~3600 GFLOP/s |
+| elementwise | ~60 Gelem/s | ~55 Gelem/s |
 
 None of this is claimed to be fast. It is claimed to be true, which is what makes it
 possible to tell whether a change helped.
 
-Two findings worth carrying, the second of which corrects the obvious reading of the
-first.
-
-Elementwise operations are **not** bandwidth-bound. A write-only fill, a
-read-and-write unary, and a two-read binary all take the same time per element while
-moving one, two, and three words, so the cost tracks elements rather than bytes; a
+Elementwise operations are **not** bandwidth-bound. A write-only fill, a read-and-write
+unary, and a two-read binary all take about the same time per element while moving one,
+two, and three words, so the cost tracks elements rather than bytes; a
 bytes-per-second figure alone would suggest a memory limit that is not the one being
-hit. Giving each thread more elements to process changes nothing either, which rules
-out scheduling.
+hit. Giving each thread more elements changes nothing either, which rules out
+scheduling. The generated kernels match hand-written Metal doing the same work, so
+what remains is the width of a single operation — each thread handles one scalar, and
+a `float4` version of the same hand-written kernel is about a fifth faster again.
 
-The tempting conclusion is that each thread handles one scalar and the fix is a vector
-width in the IR. Measurement says otherwise. A hand-written Metal kernel doing the same
-multiply over the same 16M elements reaches 50 Gelem/s where this engine's generated
-kernel reaches 21, and the same kernel written with `float4` reaches only 60 — so
-roughly 2.4x is sitting in the generated kernel or its launch, and vectorising would
-add about 1.2x on top of whatever that recovers. Whoever picks this up should start by
-comparing the emitted MSL against that hand-written kernel rather than by adding vector
-types.
+### Measuring this correctly
+
+The first version of these figures was three times too low, in a way worth recording
+because the mistake is easy to repeat. Dispatch is non-blocking, so a timing loop has
+to synchronise somewhere; reading the result back is the obvious way and it is wrong,
+because for a sixteen-million-element tensor that folds sixty-four megabytes of
+transfer into the timing. Divided across too few iterations it dominated, and made the
+kernels look far slower than they are — slow enough that the gap appeared to be in the
+generated code, which it was not.
+
+The benchmark now drains the queue by reading a single element, and runs enough
+iterations that fixed costs stop mattering.
 
 ## Diagnostics
 

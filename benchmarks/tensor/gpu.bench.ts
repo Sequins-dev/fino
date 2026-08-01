@@ -48,16 +48,34 @@ async function rate(
   unit: 'GFLOP/s' | 'GB/s' | 'Gelem/s',
 ): Promise<string> {
   const warm = make();
-  await warm.data();
+  await drain(warm);
   warm.dispose();
 
   const start = performance.now();
-  for (let i = 0; i < iterations; i++) make().dispose();
-  const last = make();
-  await last.data();
-  last.dispose();
+  let last: Tensor | null = null;
+  for (let i = 0; i < iterations; i++) {
+    last?.dispose();
+    last = make();
+  }
+  await drain(last!);
+  last!.dispose();
   const seconds = (performance.now() - start) / 1000 / iterations;
   return `${(work / seconds / 1e9).toFixed(0)} ${unit} (${(seconds * 1000).toFixed(2)} ms)`;
+}
+
+/**
+ * Wait for the device without moving the result back.
+ *
+ * Reading a result outright would copy it to the host, and for a sixteen-million
+ * element tensor that is sixty-four megabytes of transfer folded into the timing and
+ * divided across the iterations — enough, when the iteration count is low, to make the
+ * kernel look two to three times slower than it is. Reading a single element forces
+ * the same queue to drain and moves four bytes.
+ */
+async function drain(tensor: Tensor): Promise<void> {
+  const probe = tensor.rank === 0 ? tensor : tensor.reshape([tensor.size]).slice([{ end: 1 }]);
+  await probe.data();
+  if (probe !== tensor) probe.dispose();
 }
 
 const { tensor } = await import('fino:tensor');
@@ -71,7 +89,7 @@ for (const dev of gpus) {
     const b = await tensor(values(n * n), { shape: [n, n], device: dev });
     // Two operations per multiply-accumulate, the conventional count.
     lines.push(
-      `  gemm ${n}^3: ${await rate(() => a.matmul(b), n <= 512 ? 50 : 20, 2 * n ** 3, 'GFLOP/s')}`,
+      `  gemm ${n}^3: ${await rate(() => a.matmul(b), n <= 512 ? 200 : 60, 2 * n ** 3, 'GFLOP/s')}`,
     );
     a.dispose();
     b.dispose();
@@ -89,8 +107,8 @@ for (const dev of gpus) {
     ['binary (2 reads, write)', () => x.add(x), 12],
   ];
   for (const [label, program, bytesPerElement] of cases) {
-    const bytes = await rate(program, 20, count * bytesPerElement, 'GB/s');
-    const elements = await rate(program, 20, count, 'Gelem/s');
+    const bytes = await rate(program, 60, count * bytesPerElement, 'GB/s');
+    const elements = await rate(program, 60, count, 'Gelem/s');
     lines.push(`  ${label}: ${bytes}, ${elements}`);
   }
   x.dispose();
