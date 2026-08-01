@@ -4,7 +4,7 @@
  * covered by the balancer tests.
  */
 import { describe, it } from 'fino:test/test';
-import { startBalanceLoop } from 'internal:cluster/balance-loop';
+import { drainQueue, startBalanceLoop, type DrainQueue } from 'internal:cluster/balance-loop';
 import type { PeerPressure, ShedQueue } from 'internal:cluster/balancer';
 import type { PeerInfo } from 'internal:cluster/protocol';
 
@@ -104,5 +104,92 @@ describe('balance loop host', () => {
     const settled = refusals;
     await new Promise((resolve) => setTimeout(resolve, 30));
     t.equal(refusals, settled, 'no offers happen after stop');
+  });
+});
+
+/** DrainQueue over the fake, recording forced failures. */
+function fakeDrainQueue(): ReturnType<typeof fakeQueue> &
+  DrainQueue & { failures: Array<{ handle: number; reason: string }> } {
+  const base = fakeQueue();
+  const failures: Array<{ handle: number; reason: string }> = [];
+  return Object.assign(base, {
+    failures,
+    fail(handle: number, reason: string) {
+      failures.push({ handle, reason });
+    },
+  });
+}
+
+describe('node drain', () => {
+  it('sheds everything to willing peers, ignoring watermarks', async (t) => {
+    const queue = fakeDrainQueue();
+    const client = {
+      nodeId: 'node-a',
+      // A peer with MORE pending work than this node: normal balancing would
+      // never touch it, but a drain has no watermark.
+      peers: [peer('node-b', 50)],
+      offerShed: () => Promise.resolve({ accepted: true }),
+    };
+    const report = await drainQueue(client, { deadlineMs: 2000, queue, samplePeers: lightest });
+    t.equal(report.shed, 5, 'every pre-init spec left the node');
+    t.equal(report.failed, 0, 'nothing was forced');
+    t.equal(queue.depth().pendingSpecs, 0, 'the queue is empty');
+  });
+
+  it('never offers to a draining peer', async (t) => {
+    const queue = fakeDrainQueue();
+    const offered: string[] = [];
+    const client = {
+      nodeId: 'node-a',
+      peers: [
+        { nodeId: 'node-b', load: { cpu: 0, memory: 0, pendingSpecs: 0, draining: true } },
+        peer('node-c', 30),
+      ],
+      offerShed(to: string) {
+        offered.push(to);
+        return Promise.resolve({ accepted: true });
+      },
+    };
+    await drainQueue(client, { deadlineMs: 2000, queue, samplePeers: lightest });
+    t.ok(offered.length > 0, 'offers were made');
+    t.ok(
+      offered.every((to) => to === 'node-c'),
+      'a node that is itself leaving is never a drain target',
+    );
+  });
+
+  it('fails what nobody accepts at the deadline, with an explicit reason', async (t) => {
+    const queue = fakeDrainQueue();
+    const client = {
+      nodeId: 'node-a',
+      peers: [peer('node-b', 0)],
+      offerShed: () => Promise.resolve({ accepted: false, reason: 'full' }),
+    };
+    const report = await drainQueue(client, { deadlineMs: 80, queue, samplePeers: lightest });
+    t.equal(report.shed, 0, 'nothing was accepted');
+    t.equal(report.failed, 5, 'every leftover spec was explicitly failed');
+    t.equal(queue.failures.length, 5, 'each failure was delivered');
+    t.ok(
+      queue.failures.every((f) => f.reason.includes('deadline')),
+      'the parent learns why its workload died',
+    );
+    t.equal(queue.depth().pendingSpecs, 0, 'nothing lingers silently');
+  });
+
+  it('drains an empty queue immediately', async (t) => {
+    const queue = fakeDrainQueue();
+    // Empty the fake by taking every spec.
+    for (;;) {
+      const owner = queue.markLowest();
+      if (owner === 0) break;
+      queue.take(owner);
+    }
+    const client = {
+      nodeId: 'node-a',
+      peers: [peer('node-b', 0)],
+      offerShed: () => Promise.resolve({ accepted: true }),
+    };
+    const report = await drainQueue(client, { deadlineMs: 2000, queue, samplePeers: lightest });
+    t.equal(report.shed + report.failed, 0, 'an idle node drains instantly');
   });
 });

@@ -725,6 +725,7 @@ export class SeedServer {
     let bestScore = Infinity;
     for (const [nId, peer] of this.#peers) {
       if (excluded.has(nId)) continue;
+      if (peer.load.draining === true) continue;
       const score = peer.load.cpu + (peer.load.pendingSpecs ?? 0);
       if (score < bestScore) {
         best = nId;

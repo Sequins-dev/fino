@@ -115,6 +115,12 @@ export interface NodeLoad {
   pendingSpecs?: number;
   /** Workloads currently initialized or running on the node's reactors. */
   activeWorkloads?: number;
+  /**
+   * The node is leaving and offloading its work. A draining node accepts no
+   * new placements — the seed skips it, peers stop offering to it — while its
+   * own balancer sheds everything it can before the node exits.
+   */
+  draining?: boolean;
 }
 /**
  * Cluster membership record for one peer node.
@@ -415,6 +421,7 @@ interface WireLoad {
   loopIdle?: number;
   pendingSpecs?: number;
   activeWorkloads?: number;
+  draining?: boolean;
 }
 
 interface WirePeer {
@@ -493,6 +500,7 @@ const LoadMessage = defineMessage<WireLoad>({
   loopIdle: { number: 3, type: 'double', optional: true },
   pendingSpecs: { number: 4, type: 'double', optional: true },
   activeWorkloads: { number: 5, type: 'double', optional: true },
+  draining: { number: 6, type: 'bool', optional: true },
 });
 const PeerMessage = defineMessage<WirePeer>({
   nodeId: { number: 1, type: 'string', optional: true },
@@ -1076,8 +1084,9 @@ function parseLoad(value: unknown): NodeLoad {
 function parseQueueCounts(value: Record<string, unknown>): {
   pendingSpecs?: number;
   activeWorkloads?: number;
+  draining?: boolean;
 } {
-  const counts: { pendingSpecs?: number; activeWorkloads?: number } = {};
+  const counts: { pendingSpecs?: number; activeWorkloads?: number; draining?: boolean } = {};
   for (const key of ['pendingSpecs', 'activeWorkloads'] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
@@ -1085,6 +1094,10 @@ function parseQueueCounts(value: Record<string, unknown>): {
       throw protocolError(`load.${key} must be a non-negative finite number`);
     }
     counts[key] = raw;
+  }
+  if (value.draining !== undefined) {
+    if (typeof value.draining !== 'boolean') throw protocolError('load.draining must be a boolean');
+    if (value.draining) counts.draining = true;
   }
   return counts;
 }

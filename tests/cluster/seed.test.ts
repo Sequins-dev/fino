@@ -1213,6 +1213,30 @@ describe('SeedServer — pressure placement and admission retry', () => {
     t.equal(transport.sentOfType('SPAWN_ACK').length, 1, 'the error reached the requester');
   });
 
+  it('never places onto a draining node', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('leaving', {
+      t: 'HELLO',
+      nodeId: 'leaving',
+      load: { cpu: 0, memory: 1, pendingSpecs: 0, draining: true },
+    });
+    transport.inject('staying', {
+      t: 'HELLO',
+      nodeId: 'staying',
+      load: { cpu: 0.9, memory: 1, pendingSpecs: 8 },
+    });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0, 0) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-drain'));
+    const routed = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(routed.length, 1, 'the spawn was routed');
+    t.equal(
+      routed[0]!.to,
+      'staying',
+      'the heavily loaded survivor still beats the idle-looking leaver',
+    );
+  });
+
   it('reroutes when the chosen node dies mid-spawn', async (t) => {
     const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1, 0) });

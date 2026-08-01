@@ -14,9 +14,11 @@
  */
 import {
   clearSheddingWorkload,
+  dropShedWorkload,
   markSheddingWorkload,
   reactorQueueDepth,
   resubmitShedWorkload,
+  shedComplete,
   shedWorkloadConfig,
   takeShedWorkload,
 } from 'internal:scheduler-native';
@@ -85,6 +87,104 @@ function trackHandles(base: ShedQueue, handles: Map<number, number>): ShedQueue 
   };
 }
 
+/** A queue that can also forcibly fail a taken spec — the drain deadline path. */
+export interface DrainQueue extends ShedQueue {
+  /** Settle the spec's parent with an error and release the spec. */
+  fail(handle: number, reason: string): void;
+}
+
+/** What happened during a drain. */
+export interface DrainReport {
+  /** Specs successfully handed to peers. */
+  shed: number;
+  /** Specs forcibly failed at the deadline, each reported to its parent. */
+  failed: number;
+  /** Queue state at the end: live workloads a drain cannot move. */
+  remaining: { pendingSpecs: number; parkedLive: number; active: number };
+}
+
+function poolDrainQueue(): DrainQueue {
+  return {
+    ...poolQueue(),
+    fail(handle, reason) {
+      shedComplete(handle, reason);
+      dropShedWorkload(handle);
+    },
+  };
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Shed everything pre-init to peers, then forcibly fail what nobody took.
+ *
+ * This is the shed-everything degenerate case of balancing: watermarks are
+ * ignored and every peer with any headroom is a candidate. Passes repeat
+ * until the queue holds no pre-init specs or the deadline passes; at the
+ * deadline, each remaining spec's parent gets an explicit error instead of a
+ * silent disappearance. Live workloads are reported, not touched — they are
+ * pinned to this node by design and exit with the process.
+ */
+export async function drainQueue(
+  client: BalanceClient,
+  options: {
+    deadlineMs?: number;
+    queue?: DrainQueue;
+    samplePeers?: (candidates: PeerPressure[]) => PeerPressure | null;
+  } = {},
+): Promise<DrainReport> {
+  const handles = new Map<number, number>();
+  const base = options.queue ?? poolDrainQueue();
+  const queue = trackHandles(base, handles);
+  const deadline = Date.now() + (options.deadlineMs ?? envCount('FINO_CLUSTER_DRAIN_DEADLINE_MS', 30_000));
+  const transport = {
+    offer(nodeId: string, _spec: unknown, workloadId: number) {
+      const handle = handles.get(workloadId);
+      if (handle === undefined) {
+        return Promise.resolve({ accepted: false, reason: 'no shed handle for workload' });
+      }
+      return client.offerShed(nodeId, handle, workloadId);
+    },
+  };
+  let shed = 0;
+  while (Date.now() < deadline && queue.depth().pendingSpecs > 0) {
+    // A fresh balancer per pass keeps the batch bounded by the current queue
+    // depth, so a wall of refusals cannot spin the pass forever.
+    const balancer = new QueueBalancer(queue, transport, {
+      highWatermark: 0,
+      minDelta: Number.NEGATIVE_INFINITY,
+      batch: queue.depth().pendingSpecs,
+      ...(options.samplePeers === undefined ? {} : { samplePeers: options.samplePeers }),
+    });
+    const outcome = await balancer.balance(eligiblePeers(client));
+    shed += outcome.shed;
+    if (queue.depth().pendingSpecs === 0) break;
+    if (outcome.shed === 0) {
+      // Nobody is taking right now; back off briefly within the deadline.
+      const wait = Math.min(200, deadline - Date.now());
+      if (wait <= 0) break;
+      await sleep(wait);
+    }
+  }
+  let failed = 0;
+  for (;;) {
+    const owner = queue.markLowest();
+    if (owner === 0) break;
+    const handle = queue.take(owner);
+    if (handle === null) continue;
+    base.fail(handle, 'node drained: no peer accepted the workload before the deadline');
+    failed++;
+  }
+  return { shed, failed, remaining: queue.depth() };
+}
+
+/** Peers this node may offer work to: everyone but itself and the draining. */
+function eligiblePeers(client: BalanceClient): PeerPressure[] {
+  return client.peers
+    .filter((peer) => peer.nodeId !== client.nodeId && peer.load.draining !== true)
+    .map((peer) => ({ nodeId: peer.nodeId, pendingSpecs: peer.load.pendingSpecs ?? 0 }));
+}
+
 /**
  * Start balancing this node's queue against the cluster. Returns a stop
  * function. Passes never overlap: a slow offer defers the next pass rather
@@ -116,9 +216,7 @@ export function startBalanceLoop(client: BalanceClient, options: BalanceLoopOpti
     if (running) return;
     running = true;
     try {
-      const peers: PeerPressure[] = client.peers
-        .filter((peer) => peer.nodeId !== client.nodeId)
-        .map((peer) => ({ nodeId: peer.nodeId, pendingSpecs: peer.load.pendingSpecs ?? 0 }));
+      const peers: PeerPressure[] = eligiblePeers(client);
       await balancer.balance(peers);
     } finally {
       running = false;

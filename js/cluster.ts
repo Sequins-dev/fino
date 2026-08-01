@@ -67,7 +67,7 @@ import { availableParallelism, reactorQueueDepth } from 'internal:scheduler-nati
 import { WorkloadLedger } from 'internal:cluster/ledger';
 import { env } from 'internal:process';
 import { SystemRealmAgent, type NodeReport } from 'internal:cluster/agent';
-import { startBalanceLoop } from 'internal:cluster/balance-loop';
+import { startBalanceLoop, drainQueue, type DrainReport } from 'internal:cluster/balance-loop';
 import { mintJoinString, parseJoinString } from 'internal:cluster/join-string';
 import { DiskFileSystem } from 'fino:file';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
@@ -100,6 +100,7 @@ let _agent: SystemRealmAgent | null = null;
 let _mesh: PeerMesh | null = null;
 let _ledger: WorkloadLedger | null = null;
 let _stopBalance: (() => void) | null = null;
+let _draining = false;
 
 /** Spawn the node's system realm and return the heartbeat load sampler. */
 function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
@@ -118,6 +119,7 @@ function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
       ...load,
       pendingSpecs: depth.pendingSpecs,
       activeWorkloads: depth.active + depth.parkedLive,
+      ...(_draining ? { draining: true } : {}),
     };
   };
 }
@@ -133,6 +135,7 @@ function admissionLimit(): number {
 }
 
 function defaultAdmission(): { accept: true } | { accept: false; reason: string } {
+  if (_draining) return { accept: false, reason: 'draining: node is leaving the cluster' };
   const depth = reactorQueueDepth();
   if (depth.pendingSpecs >= admissionLimit()) {
     return {
@@ -146,6 +149,29 @@ function defaultAdmission(): { accept: true } | { accept: false; reason: string 
 /** The node's system-realm agent, or null when not participating. @internal */
 export function getNodeAgent(): SystemRealmAgent | null {
   return _agent;
+}
+
+/**
+ * Offload this node's movable work before leaving the cluster.
+ *
+ * Entering the drain: the node advertises `draining` on its next heartbeat so
+ * the seed stops placing onto it and peers stop offering to it, its own
+ * admission refuses every incoming spawn, and normal balancing stops in
+ * favour of shedding everything pre-init to any peer with headroom. At the
+ * deadline (default 30 s, `FINO_CLUSTER_DRAIN_DEADLINE_MS`) each spec nobody
+ * accepted fails its parent with an explicit error — never a silent loss.
+ * Live workloads stay: they are pinned here by design and exit with the
+ * process. The caller decides when to actually `leaveCluster()`.
+ *
+ * A drained node that rejoins with the same state directory gets a fresh
+ * incarnation, so anything still addressed to the drained lifetime is fenced.
+ */
+export async function drainCluster(options: { deadlineMs?: number } = {}): Promise<DrainReport> {
+  if (_client === null) throw new Error('drainCluster: not participating in a cluster');
+  _draining = true;
+  _stopBalance?.();
+  _stopBalance = null;
+  return drainQueue(_client, options);
 }
 
 /** Random URL-safe secret for join tokens and minted cluster identities. */
@@ -709,6 +735,7 @@ export function leaveCluster(): void {
   _mesh = null;
   _stopBalance?.();
   _stopBalance = null;
+  _draining = false;
   void _ledger?.close().catch(() => {});
   _ledger = null;
   _client?.stop();

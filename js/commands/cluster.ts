@@ -24,6 +24,7 @@ import { Task } from '../task.ts';
 import { stdout } from '../process.ts';
 import {
   clusterJoinString,
+  drainCluster,
   getCluster,
   joinCluster,
   leaveCluster,
@@ -95,9 +96,27 @@ const startCommand = new Task({
     await print(`cluster started on port ${port}\n`);
     await print(`join with: fino cluster join '${clusterJoinString()}'\n`);
     await untilAborted(ctx.signal);
-    leaveCluster();
+    await drainAndLeave();
   },
 });
+
+/**
+ * The SIGTERM contract: offload movable work, report what happened, then
+ * leave. A failed drain still leaves — shutdown must not hang on it.
+ */
+async function drainAndLeave(): Promise<void> {
+  try {
+    const report = await drainCluster();
+    await print(
+      `drained: ${report.shed} workload(s) moved to peers, ${report.failed} failed at deadline, ` +
+        `${report.remaining.active + report.remaining.parkedLive} live workload(s) exiting with this node\n`,
+    );
+  } catch (err) {
+    await print(`drain failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  } finally {
+    leaveCluster();
+  }
+}
 
 const joinCommand = new Task({
   name: 'join',
@@ -126,7 +145,7 @@ const joinCommand = new Task({
     const cluster = client?.clusterId != null ? ` cluster ${client.clusterId}` : '';
     await print(`joined${cluster} as ${client?.nodeId}\n`);
     await untilAborted(ctx.signal);
-    leaveCluster();
+    await drainAndLeave();
   },
 });
 
