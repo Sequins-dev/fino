@@ -271,6 +271,27 @@ export class ClusterClient {
     string,
     { resolve: (result: { accepted: boolean; reason?: string }) => void }
   >();
+  /**
+   * Deploy a named application from an uploaded cask and resolve with the
+   * child port id once the target node has fetched the artifact and created
+   * the realm — the `--wait` semantic.
+   *
+   * @internal
+   */
+  deployRemote(name: string, caskHash: string, parentPortId: string): Promise<string> {
+    const spawnReqId = `${this.nodeId}/${this.#localHandle++}`;
+    return new Promise((resolve, reject) => {
+      this.#pendingSpawns.set(spawnReqId, { resolve, reject });
+      this.#transport.send('__seed__', {
+        t: 'DEPLOY',
+        spawnReqId,
+        parentPortId,
+        name,
+        hash: caskHash,
+      });
+    });
+  }
+
   /** Cask uploads awaiting the seed's verification ack, keyed by hash. @internal */
   #pendingCaskUploads = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
   /** Cask downloads in flight, keyed by hash. @internal */
@@ -974,14 +995,22 @@ export class ClusterClient {
       });
       return;
     }
+    let config = msg.config;
+    if (msg.caskHash !== undefined) {
+      // Deployment spawn: materialize the artifact before the realm exists.
+      // fetchCask is a cache no-op when this node already holds the hash.
+      const cacheDir = env.FINO_CASK_CACHE_DIR ?? `/tmp/fino-cask-cache-${this.nodeId}`;
+      const slot = await this.fetchCask(msg.caskHash, cacheDir);
+      config = { ...config, entry: slot.entryPath, root: slot.dir };
+    }
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
     const scheduled = createScheduledRealm(
-      msg.config.root ?? '',
-      msg.config.entry,
-      msg.config.rules,
+      config.root ?? '',
+      config.entry,
+      config.rules,
       false,
       undefined,
-      msg.config.bootstrapData,
+      config.bootstrapData,
       false,
     );
     registerReactorWake(scheduled.owner, scheduled.wakeFd);

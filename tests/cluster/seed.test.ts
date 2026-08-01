@@ -8,6 +8,7 @@ import { describe, it, afterEach } from 'fino:test/test';
 import { SeedServer } from 'internal:cluster/seed';
 import { WorkloadLedger } from 'internal:cluster/ledger';
 import { DiskFileSystem } from 'fino:file';
+import { packCask } from 'internal:cluster/cask';
 import { RealmRegistry } from 'internal:cluster/registry';
 import type { ClusterMessage } from 'internal:cluster/protocol';
 // ---------------------------------------------------------------------------
@@ -1394,5 +1395,96 @@ describe('SeedServer — cask store', () => {
     await settle();
     const ack = transport.sent.filter((s) => s.msg.t === 'CASK_ACK')[0]!.msg as { error?: string };
     t.ok((ack.error ?? '').includes('unknown cask'), 'unknown hash is a clean refusal');
+  });
+});
+
+describe('SeedServer — deploy flow', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+  async function seedWithStore() {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const caskDir = `/tmp/fino-deploy-store-${stamp}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-deploy-ledger-${stamp}.db`);
+    const made = await makeSeed('seed-node', { caskDir, ledger });
+    return { ...made, caskDir, ledger };
+  }
+
+  async function uploadFixtureCask(
+    transport: Awaited<ReturnType<typeof makeSeed>>['transport'],
+  ): Promise<string> {
+    const fs = new DiskFileSystem();
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const app = `/tmp/fino-deploy-app-${stamp}`;
+    await fs.mkdir(app);
+    await fs.writeFile(`${app}/main.ts`, new TextEncoder().encode(`console.log('svc');\n`));
+    const packed = await packCask(app, `${app}.cask`, { name: 'svc', version: '1', entry: 'main.ts' });
+    const bytes = await fs.readFile(packed.path);
+    transport.inject('deployer', { t: 'CASK_PUT', hash: packed.hash, seq: 0, chunk: bytes, last: true });
+    await settle();
+    return packed.hash;
+  }
+
+  it('records the generation and forwards a cask-carrying spawn', async (t) => {
+    const { seed, transport, ledger } = await seedWithStore();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 1 } });
+    transport.inject('deployer', { t: 'HELLO', nodeId: 'deployer', load: { cpu: 0.9, memory: 1 } });
+    const hash = await uploadFixtureCask(transport);
+
+    transport.sent.length = 0;
+    transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: 'deployer/d-1',
+      parentPortId: 'deployer/p-1',
+      name: 'svc',
+      hash,
+    });
+    await settle();
+    await seed._ledgerSettled();
+
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 1, 'the deployment was placed');
+    const spawn = spawns[0]!.msg as { caskHash?: string; config: { entry: string } };
+    t.equal(spawn.caskHash, hash, 'the spawn carries the cask identity');
+    t.equal(spawn.config.entry, 'main.ts', 'the entry is slot-relative');
+
+    const active = await ledger.activeDeployment('svc');
+    t.equal(active?.generation, 1, 'the generation was recorded');
+    t.equal(active?.caskHash, hash, 'pinning the cask');
+    const workload = await ledger.get('deployer/d-1');
+    t.equal(workload?.owner, spawns[0]!.to, 'the workload record is leased to the target');
+
+    transport.sent.length = 0;
+    transport.inject(spawns[0]!.to as string, {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'deployer/d-1',
+      childPortId: `${spawns[0]!.to}/7`,
+      ok: true,
+    });
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'the ack reached the deployer — the --wait semantic');
+    t.equal(acks[0]!.ok, true, 'success');
+    await ledger.close();
+  });
+
+  it('fails a deploy of a cask nobody uploaded, recording nothing', async (t) => {
+    const { seed, transport, ledger } = await seedWithStore();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'DEPLOY',
+      spawnReqId: 'worker-1/d-2',
+      parentPortId: 'worker-1/p-2',
+      name: 'ghost',
+      hash: 'c'.repeat(64),
+    });
+    await settle();
+    await seed._ledgerSettled();
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'answered');
+    t.equal(acks[0]!.ok, false, 'refused');
+    t.ok((acks[0]!.error ?? '').includes('unknown cask'), 'with the reason');
+    t.equal(await ledger.activeDeployment('ghost'), null, 'no generation was recorded');
+    await ledger.close();
   });
 });

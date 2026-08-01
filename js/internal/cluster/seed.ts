@@ -40,7 +40,7 @@ import { type ClusterMessage } from './protocol.ts';
 import type { WorkloadLedger } from './ledger.ts';
 import { RealmRegistry } from './registry.ts';
 import { DiskFileSystem } from 'fino:file';
-import { caskSha256Hex, concatCaskChunks } from './cask.ts';
+import { caskSha256Hex, concatCaskChunks, inspectCask } from './cask.ts';
 import { env } from 'internal:process';
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
 
@@ -295,6 +295,79 @@ export class SeedServer {
     }
     await fs.writeFile(`${this.#caskDir}/${msg.hash}.cask`, bytes);
     this.#transport.send(from, { t: 'CASK_ACK', hash: msg.hash, ok: true });
+  }
+  /**
+   * Deploy a named application from an uploaded cask.
+   *
+   * Records the generation first — a deployment the cluster acknowledged is
+   * always in history, even if placement then fails — and forwards the spawn
+   * with the cask hash attached so the target fetches the artifact before it
+   * spawns. Everything after the record rides the normal spawn machinery:
+   * pressure placement, retryable admission, node-down rerouting,
+   * commit-before-ack.
+   */
+  async #handleDeploy(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'DEPLOY' }>,
+  ): Promise<void> {
+    const fail = (error: string): void => {
+      this.#transport.send(from, {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId: '',
+        ok: false,
+        error,
+      });
+    };
+    if (this.#caskDir === null || this.#ledger === null) {
+      fail('deploy requires a seed with durable state (--state)');
+      return;
+    }
+    let entry: string;
+    try {
+      const inspected = await inspectCask(`${this.#caskDir}/${msg.hash}.cask`);
+      entry = inspected.manifest.entry;
+    } catch {
+      fail(`unknown cask ${msg.hash}; upload it first`);
+      return;
+    }
+    try {
+      await this.#ledger.recordDeployment(msg.name, msg.hash, entry);
+    } catch (err) {
+      fail(`deployment record failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const target = this.#selectTarget(new Set());
+    if (target === null) {
+      fail('no available node to run the deployment');
+      return;
+    }
+    const spawn: Extract<ClusterMessage, { t: 'SPAWN' }> = {
+      t: 'SPAWN',
+      spawnReqId: msg.spawnReqId,
+      parentPortId: msg.parentPortId,
+      config: { entry, root: '', rules: [] },
+      caskHash: msg.hash,
+    };
+    this.#pendingSpawns.set(msg.spawnReqId, {
+      requesterNodeId: from,
+      parentPortId: msg.parentPortId,
+      targetNodeId: target,
+      spawn,
+      attempted: new Set([target]),
+    });
+    this.#portNodes.set(msg.parentPortId, from);
+    this.#registry.register(msg.parentPortId, null, from);
+    this.#ledgerOp(async (ledger) => {
+      await ledger.commit(msg.spawnReqId, JSON.stringify({ deploy: msg.name, cask: msg.hash }));
+      await ledger.claim(
+        msg.spawnReqId,
+        target,
+        this.#peers.get(target)?.incarnation ?? 0,
+        this.#leaseMs,
+      );
+    });
+    this.#transport.send(target, spawn);
   }
   /** Stream a stored cask back to a fetching node in order, last flagged. */
   async #handleCaskGet(from: string, hash: string): Promise<void> {
@@ -653,6 +726,10 @@ export class SeedServer {
         } else {
           this.#handleRealmExit(msg);
         }
+        break;
+      }
+      case 'DEPLOY': {
+        void this.#handleDeploy(from, msg);
         break;
       }
       case 'CASK_PUT': {

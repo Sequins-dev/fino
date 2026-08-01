@@ -343,6 +343,18 @@ export type ClusterMessage =
       hash: string;
     }
   | {
+      /**
+       * Deploy a named application from a previously uploaded cask. The seed
+       * records the generation, then places it like any spawn — deployments
+       * ride the same admission, retry, and durability machinery.
+       */
+      t: 'DEPLOY';
+      spawnReqId: string;
+      parentPortId: string;
+      name: string;
+      hash: string;
+    }
+  | {
       /** Upload or fetch outcome for one cask hash. */
       t: 'CASK_ACK';
       hash: string;
@@ -385,6 +397,11 @@ export type ClusterMessage =
       spawnReqId: string;
       parentPortId: string;
       config: SerializedSpawnConfig;
+      /**
+       * When set, the target must fetch this cask into its cache and spawn
+       * from the unpacked slot; `config.entry` is then relative to the slot.
+       */
+      caskHash?: string;
     }
   | {
       t: 'SPAWN_ACK';
@@ -436,6 +453,7 @@ const enum MessageKind {
   CASK_GET = 15,
   CASK_DATA = 16,
   CASK_ACK = 17,
+  DEPLOY = 18,
 }
 
 const enum DirectiveKind {
@@ -510,6 +528,7 @@ interface WireEnvelope {
   retryable?: boolean;
   caskHash?: string;
   last?: boolean;
+  deployName?: string;
   peers: WirePeer[];
   peer?: WirePeer;
   ts?: number;
@@ -599,6 +618,7 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   retryable: { number: 25, type: 'bool', optional: true },
   caskHash: { number: 26, type: 'string', optional: true },
   last: { number: 27, type: 'bool', optional: true },
+  deployName: { number: 28, type: 'string', optional: true },
 });
 
 function parseCaskHash(value: unknown): string {
@@ -885,6 +905,16 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
         parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
         config: encodeSpawnConfig(msg.config),
+        ...(msg.caskHash === undefined ? {} : { caskHash: parseCaskHash(msg.caskHash) }),
+        ...base,
+      };
+    case 'DEPLOY':
+      return {
+        kind: MessageKind.DEPLOY,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
+        deployName: parseNodeId(msg.name),
+        caskHash: parseCaskHash(msg.hash),
         ...base,
       };
     case 'SPAWN_ACK':
@@ -1059,6 +1089,18 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
           'parentPortId',
         ),
         config: decodeSpawnConfig(value.config),
+        ...(value.caskHash === undefined ? {} : { caskHash: parseCaskHash(value.caskHash) }),
+      };
+    case MessageKind.DEPLOY:
+      return {
+        t: 'DEPLOY',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        parentPortId: parseClusterId(
+          requiredWireString(value.parentPortId, 'parentPortId'),
+          'parentPortId',
+        ),
+        name: parseNodeId(requiredWireString(value.deployName, 'name')),
+        hash: parseCaskHash(value.caskHash),
       };
     case MessageKind.SPAWN_ACK: {
       const childPortId = requiredWireString(value.childPortId, 'childPortId');
