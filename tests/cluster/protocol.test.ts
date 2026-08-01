@@ -274,3 +274,71 @@ describe('cask transfer messages', () => {
     );
   });
 });
+
+describe('shed handoff messages', () => {
+  it('round-trips SHED_OFFER and SHED_RESULT through the real codec', (t) => {
+    // The ids below mirror exactly what the client mints: dash-joined request
+    // ids (bare handles) and slash-joined port ids. The distinction matters —
+    // a slash in a request id fails encode inside the transport's async send,
+    // where the rejection is swallowed and the message silently never leaves
+    // the node. Loopback tests bypass encode, so only this test guards it.
+    const offer = decode(
+      encode({
+        t: 'SHED_OFFER',
+        spawnReqId: 'node-a-o-7',
+        parentPortId: 'node-a/p-shed-42',
+        config: { entry: 'main.ts', root: '/app', rules: [] },
+      }),
+    );
+    if (offer.t !== 'SHED_OFFER') throw new Error('wrong kind');
+    t.equal(offer.spawnReqId, 'node-a-o-7', 'request id survives');
+    t.equal(offer.parentPortId, 'node-a/p-shed-42', 'port id survives');
+    t.equal(offer.config.entry, 'main.ts', 'config survives');
+
+    const accept = decode(
+      encode({ t: 'SHED_RESULT', spawnReqId: 'node-a-o-7', childPortId: 'node-b/9', ok: true }),
+    );
+    if (accept.t !== 'SHED_RESULT') throw new Error('wrong kind');
+    t.equal(accept.childPortId, 'node-b/9', 'accepted port survives');
+
+    const refuse = decode(
+      encode({
+        t: 'SHED_RESULT',
+        spawnReqId: 'node-a-o-7',
+        childPortId: '',
+        ok: false,
+        error: 'overloaded',
+      }),
+    );
+    if (refuse.t !== 'SHED_RESULT') throw new Error('wrong kind');
+    t.equal(refuse.error, 'overloaded', 'refusal reason survives');
+
+    t.throws(
+      () => encode({ t: 'SHED_OFFER', spawnReqId: 'node-a/o-7', parentPortId: 'node-a/p-1', config: { entry: 'm', root: '', rules: [] } }),
+      /malformed/,
+      'slash-joined request ids are refused at encode — the bug this guards',
+    );
+  });
+
+  it('round-trips DEPLOY and a cask-carrying SPAWN', (t) => {
+    const hash = 'ab'.repeat(32);
+    const deploy = decode(
+      encode({ t: 'DEPLOY', spawnReqId: 'cli-1-0', parentPortId: 'cli-1/p-d-1', name: 'web', hash }),
+    );
+    if (deploy.t !== 'DEPLOY') throw new Error('wrong kind');
+    t.equal(deploy.name, 'web', 'name survives');
+    t.equal(deploy.hash, hash, 'hash survives');
+
+    const spawn = decode(
+      encode({
+        t: 'SPAWN',
+        spawnReqId: 'cli-1-0',
+        parentPortId: 'cli-1/p-d-1',
+        config: { entry: 'main.ts', root: '', rules: [] },
+        caskHash: hash,
+      }),
+    );
+    if (spawn.t !== 'SPAWN') throw new Error('wrong kind');
+    t.equal(spawn.caskHash, hash, 'the cask identity rides the spawn');
+  });
+});
