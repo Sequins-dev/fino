@@ -9,6 +9,7 @@
 import { describe, it } from 'fino:test/test';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import { encodeEnvelope, messageEnvelope } from 'internal:realm/envelope';
+import { PayloadFormat } from 'internal:cluster/protocol';
 import { serialize } from 'internal:serializer';
 import type { ClusterMessage } from 'internal:cluster/protocol';
 // ---------------------------------------------------------------------------
@@ -370,5 +371,41 @@ describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
         'stop rejects pending spawn',
       );
     }
+  });
+});
+
+describe('ClusterPort payload compatibility', () => {
+  it('refuses a port payload this node cannot decode', async (t) => {
+    const transport = new TestClientTransport('nodeA');
+    const client = new ClusterClient(transport as any, 'nodeA');
+    client.start();
+    const port = new ClusterPort('nodeA/p-0', client);
+    const events: string[] = [];
+    port.onmessage = () => {
+      events.push('message');
+    };
+    port.addEventListener('messageerror', () => {
+      events.push('messageerror');
+    });
+    // A structured-clone payload stamped with an implausible wire version, as a
+    // peer built against a different V8 would produce. Handing these bytes to a
+    // deserializer yields corruption, so the frame must be refused instead.
+    const parts = (serialize as (v: unknown) => Uint8Array[])({ greet: 'hello' });
+    const foreign = new Uint8Array(parts[0]!);
+    foreign[1] = 0x7e;
+    transport.inject('__seed__', {
+      t: 'PORT_MSG',
+      fromPort: 'nodeB/p-1',
+      toPort: 'nodeA/p-0',
+      payload: [encodeEnvelope(messageEnvelope()), foreign],
+      seq: 1,
+      payloadFormat: PayloadFormat.V8StructuredClone,
+    } as ClusterMessage);
+    await flush(2);
+    // Without the compatibility check the frame still reaches the port and
+    // fails inside the deserializer, surfacing as `messageerror`. Refusing it
+    // up front means the port sees nothing at all.
+    t.deepEqual(events, [], 'an undecodable payload never reaches the port');
+    client.stop();
   });
 });

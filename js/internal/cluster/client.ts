@@ -68,6 +68,65 @@ import {
   EnvelopeKind,
   messageEnvelope,
 } from 'internal:realm/envelope';
+import { PayloadFormat } from './protocol.ts';
+
+/**
+ * V8 structured-clone wire version produced by this build.
+ *
+ * The serializer stamps its format version into every payload it produces, so
+ * one probe gives the value to compare incoming frames against. Computed on
+ * first use rather than at module load: this module is imported during realm
+ * bootstrap, and reaching into the serializer while the module graph is still
+ * being evaluated is a side effect worth not having.
+ */
+let _localPayloadVersion: number | undefined;
+function localPayloadVersion(): number {
+  if (_localPayloadVersion === undefined) {
+    const probe = (serialize as (value: unknown) => Uint8Array[])(null)[0]!;
+    _localPayloadVersion = probe.length >= 2 && probe[0] === 0xff ? probe[1]! : -1;
+  }
+  return _localPayloadVersion;
+}
+
+/**
+ * Wire version stamped into a structured-clone payload, or `null` when the
+ * bytes do not carry one.
+ */
+function payloadVersion(part: Uint8Array | undefined): number | null {
+  if (part === undefined || part.length < 2 || part[0] !== 0xff) return null;
+  return part[1]!;
+}
+
+/**
+ * Reject a frame this node cannot decode.
+ *
+ * The cluster frame is protobuf and version-tolerant, but the realm payload it
+ * carries is V8's structured-clone format, which is tied to the V8 build that
+ * produced it. Without this check a peer built against a different V8 hands
+ * over bytes that deserialize into corruption rather than failing cleanly.
+ */
+function assertDecodablePayload(message: {
+  payload: Uint8Array[];
+  payloadFormat?: number;
+  fromPort: string;
+}): void {
+  const format = message.payloadFormat ?? PayloadFormat.Unspecified;
+  if (format !== PayloadFormat.Unspecified && format !== PayloadFormat.V8StructuredClone) {
+    throw new Error(
+      `fino:cluster — port payload from ${message.fromPort} uses unsupported encoding ${format}`,
+    );
+  }
+  // payload[0] is the envelope header, which is our own fixed layout; the realm
+  // payload is the part after it.
+  const version = payloadVersion(message.payload[1]);
+  const local = localPayloadVersion();
+  if (version !== null && local !== -1 && version !== local) {
+    throw new Error(
+      `fino:cluster — port payload from ${message.fromPort} was serialized by structured-clone ` +
+        `version ${version}, but this node reads version ${local}`,
+    );
+  }
+}
 import {
   closeScheduledRealm,
   createScheduledRealm,
@@ -332,6 +391,7 @@ export class ClusterClient {
       toPort,
       payload: parts,
       seq,
+      payloadFormat: PayloadFormat.V8StructuredClone,
     });
   }
   /**
@@ -554,6 +614,15 @@ export class ClusterClient {
   }
   /** Deliver one ordered port frame to its local parent port or child relay. */
   #deliverPortMessage(msg: PortMessage): void {
+    try {
+      assertDecodablePayload(msg);
+    } catch (err: unknown) {
+      // Refuse the frame rather than handing mismatched bytes to a
+      // deserializer; a decode failure here is a peer compatibility problem,
+      // not a malformed message from a healthy peer.
+      console.error(String(err));
+      return;
+    }
     const localPort = this.#portHandlers.get(msg.toPort);
     if (localPort) {
       try {
