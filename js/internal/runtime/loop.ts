@@ -210,9 +210,22 @@ const EV_DELETE = 2;
 function _awaitInstall(filter: number, token: number): Promise<void> {
   return new Promise<void>((resolve) => _installs.set(`${filter}:${token}`, resolve));
 }
-/** Abandon a pending install acknowledgement without settling its promise. */
+/**
+ * Settle a pending install acknowledgement that is never going to arrive.
+ *
+ * Removing a watch before the main realm confirms it means the arming its
+ * caller is waiting on will never happen. Resolving is the honest answer to
+ * "am I still waiting?" — the wait is over, and the watch being asked about no
+ * longer exists. Leaving the promise pending instead strands whoever awaited
+ * `vnode()` or `signal()` forever, and `alive()` counts the abandoned entry as
+ * outstanding work, so the realm cannot exit either.
+ */
 function _cancelInstall(filter: number, token: number): void {
-  _installs.delete(`${filter}:${token}`);
+  const key = `${filter}:${token}`;
+  const install = _installs.get(key);
+  if (install === undefined) return;
+  _installs.delete(key);
+  install();
 }
 function taskToken(fd: number): number {
   return _workloadOwner === 0 ? fd : _workloadOwner * TASK_TOKEN_BASE + (fd >>> 0);

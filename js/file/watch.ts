@@ -510,6 +510,11 @@ export class Watcher {
    * @internal
    */
   #watchDarwin(path: string): Promise<void> {
+    // The recursive scan runs asynchronously and can still be walking a large
+    // tree long after close(). Every registration, recursive or not, funnels
+    // through here, so refusing once closed is what stops a closed watcher from
+    // opening descriptors and arming watches nobody will ever remove.
+    if (this.#closed) return Promise.resolve();
     // Open the path read-only. O_EVTONLY allows watching without blocking unmounts.
     const fd = lib.symbols.open(cstr(path), O_RDONLY | O_EVTONLY, 0);
     if (fd < 0) throw new Error(`watch: cannot open '${path}'`);
@@ -588,6 +593,7 @@ export class Watcher {
     dirEntry
       .entries()
       .then(function darwinDirEntries(entries: any[]) {
+        if (watcher.#closed) return;
         for (const entry of entries) {
           if (entry.isDirectory()) {
             const childPath = entry.path.toString();
