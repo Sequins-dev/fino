@@ -403,8 +403,8 @@ export class Presentation {
     const directory = slash > 0 ? filename.slice(0, slash) : '.';
     const watcher = new Watcher({ recursive: true });
     this.#watcher = watcher;
-    watcher.watch(directory);
-    watcher.watch(filename);
+    await watcher.watch(directory);
+    await watcher.watch(filename);
     try {
       for await (const event of watcher) {
         if (this.#closed) break;

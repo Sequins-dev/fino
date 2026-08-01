@@ -48,14 +48,6 @@ impl SourceMapCache {
     }
 }
 
-/// An owned child Realm (V8 Context) running in the same Isolate.
-///
-/// The parent's `FinoState.child_contexts` owns these. When the parent's
-/// loop exits, it terminates all children before calling `on_done_fn`.
-pub struct ChildRealm {
-    pub context: v8::Global<v8::Context>,
-}
-
 /// Virtualised process-level identity for a Realm.
 ///
 /// Collected once from the real environment in `main.rs` and stored on the
@@ -252,56 +244,6 @@ pub fn default_import_rules() -> Vec<ImportRule> {
     ]
 }
 
-// ---------------------------------------------------------------------------
-// Pending realm creation
-// ---------------------------------------------------------------------------
-
-/// A deferred request to create a child Realm.
-///
-/// `native_create_context` queues one of these instead of calling
-/// `create_child_context` directly, because context creation requires a
-/// `HandleScope<()>` (unbound) which is unavailable inside a JS callback.
-/// The host loop drains `pending_creates` between iterations where
-/// `isolate_scope` (`HandleScope<()>`) is accessible.
-pub struct PendingRealm {
-    /// Pre-allocated slot index in `FinoState::child_contexts`.
-    pub handle_idx: usize,
-    pub process_env: ProcessEnv,
-    pub entry_path: String,
-    pub import_rules: Vec<ImportRule>,
-    pub package_map_json: Option<String>,
-    /// The child's MessagePort object (created in parent context).
-    /// Stored here so it can be set into the child's FinoState after context
-    /// creation, and later read via `internal:realm-bridge.getPort()`.
-    pub port: Option<v8::Global<v8::Value>>,
-    /// Whether this embedded child realm runs with watch mode enabled.
-    pub watch_mode: bool,
-
-    /// Whether this embedded child realm runs in REPL mode. Exposed to JS via
-    /// `internal:realm-bridge.getReplMode()` so `internal/bootstrap.ts` can activate
-    /// the REPL message loop instead of importing an entry module.
-    pub repl_mode: bool,
-
-    /// JSON-serialized `RealmOptions.data` payload, exposed to the child via
-    /// `internal:realm-bridge.getRealmData()`.
-    pub realm_data: Option<String>,
-
-    /// JSON-serialized runtime bootstrap metadata, separate from user data.
-    pub realm_bootstrap_data: Option<String>,
-}
-
-/// Slot in the parent's `child_contexts` Vec.
-pub enum ChildRealmSlot {
-    /// Creation queued but not yet processed by `process_pending_creates`.
-    Pending,
-    /// Created and running — step returns the child's loop bool.
-    Active(ChildRealm),
-    /// Creation or bootstrap failed. `stepContext` throws a JS Error with the
-    /// message (if any) and returns false so `Realm.run()` rejects rather than
-    /// silently resolving. `None` = no message available (legacy path).
-    Failed(Option<String>),
-}
-
 /// All per-run state, stored in the V8 context slot so every Rust callback can
 /// access it without passing extra arguments.
 pub struct FinoState {
@@ -403,18 +345,6 @@ pub struct FinoState {
     // ---------------------------------------------------------------------------
     // Child Realm management
     // ---------------------------------------------------------------------------
-    /// Child Realm slot table. Indexed by the handle returned to JS.
-    ///
-    /// - `Pending` — slot allocated by `native_create_context`; the host loop
-    ///   will call `process_pending_creates` to upgrade it to `Active`.
-    /// - `Active` — context created and running.
-    /// - `Failed` — creation failed; `stepContext` returns false immediately.
-    pub child_contexts: Vec<ChildRealmSlot>,
-
-    /// Deferred context-creation requests drained between host-loop iterations
-    /// when a bare `HandleScope<()>` is available.
-    pub pending_creates: Vec<PendingRealm>,
-
     /// Live process realm handles indexed by the JS handle returned from
     /// `createProcessContext`.
     #[allow(dead_code)]
@@ -539,8 +469,6 @@ impl FinoState {
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
             entry_path: None,
             terminated: false,
             reload_requested: false,
@@ -607,8 +535,6 @@ impl FinoState {
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
             entry_path,
             terminated: false,
             reload_requested: false,

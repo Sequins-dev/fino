@@ -74,6 +74,9 @@ pub fn write_message(fd: RawFd, msg: &ThreadMessage) -> std::io::Result<()> {
     };
 
     let mut payload = Vec::new();
+    let hl = check_u32(msg.header.len(), "process realm IPC header length")?;
+    payload.extend_from_slice(&hl.to_be_bytes());
+    payload.extend_from_slice(&msg.header);
     let dl = check_u32(msg.data.len(), "process realm IPC data length")?;
     payload.extend_from_slice(&dl.to_be_bytes());
     payload.extend_from_slice(&msg.data);
@@ -106,6 +109,9 @@ pub fn read_message(fd: RawFd) -> std::io::Result<ThreadMessage> {
         }};
     }
 
+    let hl = u32_at!();
+    let header = p[pos..pos + hl].to_vec();
+    pos += hl;
     let dl = u32_at!();
     let data = p[pos..pos + dl].to_vec();
     pos += dl;
@@ -117,6 +123,7 @@ pub fn read_message(fd: RawFd) -> std::io::Result<ThreadMessage> {
         pos += sl;
     }
     Ok(ThreadMessage {
+        header,
         data,
         transfer_stores: stores,
         transfer_ports: Vec::new(),
@@ -209,6 +216,13 @@ pub struct ProcessRealmHandle {
     pub tx: mpsc::Sender<ThreadMessage>,
     /// Wake-pipe read end — receives a byte after each inbound message.
     pub parent_wake_read: RawFd,
+    /// Completion-pipe read end — becomes readable once the child has exited.
+    ///
+    /// Separate from `parent_wake_read` on purpose. Message arrival and process
+    /// exit are watched by different parts of the parent realm, and a realm can
+    /// only hold one readiness watch per descriptor, so sharing one pipe would
+    /// make the two waiters displace each other.
+    pub completion_wake_read: RawFd,
 }
 
 impl Drop for ProcessRealmHandle {
@@ -216,6 +230,7 @@ impl Drop for ProcessRealmHandle {
         unsafe {
             libc::close(self.socket_fd);
             libc::close(self.parent_wake_read);
+            libc::close(self.completion_wake_read);
         }
     }
 }
@@ -260,7 +275,17 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         return Err(format!("pipe: {}", std::io::Error::last_os_error()));
     }
     let (parent_wake_read, parent_wake_write) = (wfds[0], wfds[1]);
+    let mut cfds = [-1; 2];
+    if unsafe { libc::pipe(cfds.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "process realm completion pipe() failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let (completion_wake_read, completion_wake_write) = (cfds[0], cfds[1]);
     unsafe {
+        libc::fcntl(completion_wake_read, libc::F_SETFL, libc::O_NONBLOCK);
+        libc::fcntl(completion_wake_write, libc::F_SETFL, libc::O_NONBLOCK);
         libc::fcntl(parent_wake_read, libc::F_SETFL, libc::O_NONBLOCK);
         libc::fcntl(parent_wake_write, libc::F_SETFL, libc::O_NONBLOCK);
     }
@@ -279,6 +304,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         package_map_json: args.package_map_json,
     };
     let config_msg = ThreadMessage {
+        header: Vec::new(),
         data: serde_json::to_string(&cfg)
             .map_err(|e| e.to_string())?
             .into_bytes(),
@@ -292,7 +318,13 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     cmd.arg("--realm-child").arg(child_fd.to_string());
 
     // In pre_exec: close fds the child doesn't own.
-    let close_in_child = [parent_fd, parent_wake_read, parent_wake_write];
+    let close_in_child = [
+        parent_fd,
+        parent_wake_read,
+        parent_wake_write,
+        completion_wake_read,
+        completion_wake_write,
+    ];
     unsafe {
         cmd.pre_exec(move || {
             for &fd in &close_in_child {
@@ -378,9 +410,15 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
                 }
             }
             done.store(true, Ordering::Release);
-            // Final wake so the parent notices exit on the next step.
+            // Final wake so a pending drain sees the last message, then signal
+            // exit on the completion pipe so the parent is woken rather than
+            // having to poll for the flag.
             let b = [1u8];
-            unsafe { libc::write(parent_wake_write, b.as_ptr() as _, 1) };
+            unsafe {
+                libc::write(parent_wake_write, b.as_ptr() as _, 1);
+                libc::write(completion_wake_write, b.as_ptr() as _, 1);
+                libc::close(completion_wake_write);
+            }
         });
     }
 
@@ -406,6 +444,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         rx: parent_rx,
         tx: parent_tx,
         parent_wake_read,
+        completion_wake_read,
     })
 }
 
@@ -497,6 +536,7 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         let mut data = ENTRY_ERROR_PREFIX.to_vec();
         data.extend_from_slice(msg.as_bytes());
         let sentinel = ThreadMessage {
+            header: Vec::new(),
             data,
             transfer_stores: Vec::new(),
             transfer_ports: Vec::new(),
@@ -520,6 +560,7 @@ mod tests {
 
     fn make_msg(data: &[u8]) -> ThreadMessage {
         ThreadMessage {
+            header: Vec::new(),
             data: data.to_vec(),
             transfer_stores: Vec::new(),
             transfer_ports: Vec::new(),
@@ -528,9 +569,33 @@ mod tests {
 
     fn make_msg_with_stores(data: &[u8], stores: Vec<Vec<u8>>) -> ThreadMessage {
         ThreadMessage {
+            header: Vec::new(),
             data: data.to_vec(),
             transfer_stores: stores,
             transfer_ports: Vec::new(),
+        }
+    }
+
+    /// The envelope header must survive the process-realm wire format intact,
+    /// since it is what tells the far side whether a frame is a call, a result,
+    /// or ordinary application traffic.
+    #[test]
+    fn round_trip_preserves_envelope_header() {
+        let (a, b) = socketpair_fds();
+        let msg = ThreadMessage {
+            header: vec![1, 4, 9, 16],
+            data: b"payload".to_vec(),
+            transfer_stores: vec![b"store".to_vec()],
+            transfer_ports: Vec::new(),
+        };
+        write_message(a, &msg).unwrap();
+        let got = read_message(b).unwrap();
+        assert_eq!(got.header, vec![1, 4, 9, 16]);
+        assert_eq!(got.data, b"payload".to_vec());
+        assert_eq!(got.transfer_stores, vec![b"store".to_vec()]);
+        unsafe {
+            libc::close(a);
+            libc::close(b);
         }
     }
 

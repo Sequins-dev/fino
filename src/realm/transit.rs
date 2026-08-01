@@ -251,6 +251,7 @@ fn native_transit_send(
         };
 
     let msg = ThreadMessage {
+        header: Vec::new(),
         data,
         transfer_stores,
         transfer_ports: Vec::new(),
@@ -354,12 +355,16 @@ pub fn build_message_array<'s>(
             ports_arr.set(scope, jidx.into(), pair.into());
         }
 
-        // Wrap as a 2-element tuple: [bytesArr, portsArr]
-        let tuple = v8::Array::new(scope, 2);
+        // Wrap as a 3-element tuple: [bytesArr, portsArr, header]
+        let tuple = v8::Array::new(scope, 3);
         let zero3 = v8::Integer::new(scope, 0);
         let one2 = v8::Integer::new(scope, 1);
+        let two = v8::Integer::new(scope, 2);
         tuple.set(scope, zero3.into(), bytes_arr.into());
         tuple.set(scope, one2.into(), ports_arr.into());
+        if let Some(header) = copy_bytes_to_u8a(scope, &msg.header) {
+            tuple.set(scope, two.into(), header.into());
+        }
 
         let oidx = v8::Integer::new(scope, i as i32);
         outer.set(scope, oidx.into(), tuple.into());

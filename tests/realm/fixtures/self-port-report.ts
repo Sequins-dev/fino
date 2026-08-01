@@ -6,6 +6,7 @@ const realmPort = (
   globalThis as {
     realmPort?: {
       postMessage(message: unknown): void;
+      transport?: string;
     };
   }
 ).realmPort;
@@ -17,6 +18,6 @@ activePort.postMessage({
   selfPort: port !== undefined,
   realmPort: realmPort !== undefined,
   samePort: port !== undefined && realmPort !== undefined && port === realmPort,
-  constructorName: activePort.constructor?.name ?? null,
+  transport: (activePort as { transport?: string }).transport ?? null,
 });
 await new Promise<void>(() => {});

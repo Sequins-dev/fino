@@ -20,6 +20,19 @@ use crate::state::get_state;
 #[cfg(target_os = "linux")]
 use crate::state::{ImportRule, ProcessEnv};
 
+/// Copy a `Uint8Array` argument into an owned byte vector.
+pub fn copy_u8a(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> Option<Vec<u8>> {
+    let array = v8::Local::<v8::Uint8Array>::try_from(value).ok()?;
+    let buffer = array.buffer(scope)?;
+    let data = buffer.data()?;
+    let offset = array.byte_offset();
+    let len = array.byte_length();
+    // SAFETY: `data` points into a live V8 ArrayBuffer owned for this scope.
+    Some(unsafe {
+        std::slice::from_raw_parts((data.as_ptr() as *const u8).add(offset), len).to_vec()
+    })
+}
+
 /// Info shipped alongside a message for each transferred MessagePort.
 ///
 /// The receiver uses `handle` to look up the Q-half transit channel and
@@ -32,12 +45,20 @@ pub struct TransferredPortInfo {
 
 /// A message transmitted across cross-isolate Realm boundaries.
 ///
+/// `header` carries envelope metadata — what kind of message this is and which
+/// request it correlates with — encoded independently of the payload. Keeping it
+/// beside `data` rather than inside it is deliberate: the payload is an opaque
+/// clone of a user value, so control information nested in it could be forged by
+/// any realm that can post a plain object, and a relay would have to deserialize
+/// every message just to discover what it was looking at.
+///
 /// `data` is the V8 ValueSerializer wire format for the message value.
 /// `transfer_stores` holds raw bytes for each transferred ArrayBuffer.
 /// `transfer_ports` carries transit channel info for each transferred
 /// MessagePort so the receiver can reconstruct a live cross-thread port.
 #[derive(Debug)]
 pub struct ThreadMessage {
+    pub header: Vec<u8>,
     pub data: Vec<u8>,
     pub transfer_stores: Vec<Vec<u8>>,
     pub transfer_ports: Vec<TransferredPortInfo>,
@@ -60,6 +81,13 @@ pub struct ThreadRealmHandle {
     pub child_wake_write: RawFd,
     pub rx: mpsc::Receiver<ThreadMessage>,
     pub parent_wake_read: RawFd,
+    /// Becomes readable once the sandbox thread has finished.
+    ///
+    /// Separate from `parent_wake_read`: message arrival and realm completion
+    /// are watched by different parts of the parent realm, and a realm can hold
+    /// only one readiness watch per descriptor, so sharing one pipe would make
+    /// the two waiters displace each other.
+    pub completion_wake_read: RawFd,
     pub done: Arc<AtomicBool>,
     pub error: Arc<Mutex<Option<String>>>,
     pub cgroup_path: Arc<Mutex<Option<String>>>,
@@ -73,6 +101,7 @@ impl Drop for ThreadRealmHandle {
         unsafe {
             libc::close(self.child_wake_write);
             libc::close(self.parent_wake_read);
+            libc::close(self.completion_wake_read);
         }
         if self.done.load(Ordering::Acquire)
             && let Some(join) = self.join.take()
@@ -123,6 +152,7 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
     let (child_wake_read, child_wake_write) = create_pipe()?;
     let (parent_wake_read, parent_wake_write) = create_pipe()?;
 
+    let (completion_wake_read, completion_wake_write) = create_pipe()?;
     let done = Arc::new(AtomicBool::new(false));
     let done_for_thread = done.clone();
     let error = Arc::new(Mutex::new(None));
@@ -178,6 +208,13 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
                 *slot = Some(message);
             }
             done_for_thread.store(true, Ordering::Release);
+            // Signal completion so the parent is woken rather than polling the
+            // flag, then release the write end so the pipe reports EOF.
+            let byte = [1u8];
+            unsafe {
+                libc::write(completion_wake_write, byte.as_ptr().cast(), byte.len());
+                libc::close(completion_wake_write);
+            }
         })
         .map_err(|error| format!("failed to spawn sandbox realm thread: {error}"))?;
 
@@ -186,6 +223,7 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
         child_wake_write,
         rx: parent_rx,
         parent_wake_read,
+        completion_wake_read,
         done,
         error,
         cgroup_path,
@@ -240,19 +278,23 @@ fn thread_port_eval_steps<'a>(
     Some(v8::undefined(scope).into())
 }
 
-/// JS: `nativeSend(bytes: Uint8Array, stores?: Uint8Array[], ports?: [handle,wakeReadFd][]): void`
+/// JS: `nativeSend(header: Uint8Array, bytes: Uint8Array, stores?: Uint8Array[],
+/// ports?: [handle,wakeReadFd][]): void`
 ///
-/// Sends the byte payload (and optional transfer stores + port transfer infos)
-/// to the partner Isolate via mpsc and writes 1 byte to the partner's wake pipe.
+/// Sends the envelope header and byte payload (plus optional transfer stores and
+/// port transfer infos) to the partner Isolate via mpsc, then writes 1 byte to
+/// the partner's wake pipe. The header is carried separately so a receiver can
+/// classify a message without deserializing the payload it describes.
 fn native_send(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let bytes_arg = args.get(0);
+    let header = copy_u8a(scope, args.get(0)).unwrap_or_default();
+    let bytes_arg = args.get(1);
     let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
         let msg =
-            v8::String::new(scope, "nativeSend: first argument must be a Uint8Array").unwrap();
+            v8::String::new(scope, "nativeSend: second argument must be a Uint8Array").unwrap();
         let exc = v8::Exception::type_error(scope, msg);
         scope.throw_exception(exc);
         return;
@@ -270,9 +312,9 @@ fn native_send(
         }
     };
 
-    // Copy transfer stores (optional second arg — Array of Uint8Array).
+    // Copy transfer stores (optional third arg — Array of Uint8Array).
     let transfer_stores: Vec<Vec<u8>> =
-        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(1)) {
+        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(2)) {
             let count = arr.length();
             let mut stores = Vec::with_capacity(count as usize);
             for i in 0..count {
@@ -299,10 +341,11 @@ fn native_send(
             Vec::new()
         };
 
-    // Port transfer infos (optional third arg — Array of [handle, wakeReadFd]).
-    let transfer_ports = extract_port_infos(scope, args.get(2));
+    // Port transfer infos (optional fourth arg — Array of [handle, wakeReadFd]).
+    let transfer_ports = extract_port_infos(scope, args.get(3));
 
     let msg = ThreadMessage {
+        header,
         data,
         transfer_stores,
         transfer_ports,

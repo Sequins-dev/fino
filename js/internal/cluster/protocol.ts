@@ -293,7 +293,36 @@ export type ClusterMessage =
       toPort: string;
       payload: Uint8Array[];
       seq: number;
+      /**
+       * How `payload` is encoded. See `PayloadFormat`.
+       *
+       * A frame from a node that predates this field decodes as
+       * `PayloadFormat.Unspecified`, which the receiver treats as "assume the
+       * local encoding" for compatibility.
+       */
+      payloadFormat?: number;
     };
+/**
+ * How a `PORT_MSG` frame's `payload` parts are encoded.
+ *
+ * The cluster frame itself is protobuf, but the parts it carries are an opaque
+ * realm payload. Naming the encoding on the wire is what lets a receiver refuse
+ * a frame it cannot decode, instead of handing mismatched bytes to a
+ * deserializer and getting corruption.
+ *
+ * @internal
+ */
+export const PayloadFormat = {
+  /** Absent — a peer that predates this field. Assume the local encoding. */
+  Unspecified: 0,
+  /**
+   * V8 structured clone. The serializer's own wire version leads each part, so
+   * a receiver can check compatibility byte-for-byte rather than trusting that
+   * both nodes were built against the same V8.
+   */
+  V8StructuredClone: 1,
+} as const;
+
 // ---------------------------------------------------------------------------
 // Codec
 // ---------------------------------------------------------------------------
@@ -381,6 +410,7 @@ interface WireEnvelope {
   toPort?: string;
   payload: Uint8Array[];
   seq?: bigint;
+  payloadFormat?: number;
 }
 
 const LoadMessage = defineMessage<WireLoad>({
@@ -439,6 +469,7 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   toPort: { number: 16, type: 'string', optional: true },
   payload: { number: 17, type: 'bytes', repeated: true },
   seq: { number: 18, type: 'uint64', optional: true },
+  payloadFormat: { number: 19, type: 'uint32', optional: true },
 });
 
 function stringArray(value: unknown, key: string): string[] {
@@ -663,6 +694,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         toPort: parseClusterId(msg.toPort, 'toPort'),
         payload: msg.payload,
         seq: encodeSequence(msg.seq, 'seq', false),
+        ...(msg.payloadFormat === undefined ? {} : { payloadFormat: msg.payloadFormat }),
         peers: [],
       };
     default:
@@ -763,6 +795,7 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         toPort: parseClusterId(requiredWireString(value.toPort, 'toPort'), 'toPort'),
         payload: value.payload,
         seq: decodeSequence(value.seq, 'seq', false),
+        ...(value.payloadFormat === undefined ? {} : { payloadFormat: value.payloadFormat }),
       };
     default:
       throw protocolError(`unknown message type ${value.kind}`);

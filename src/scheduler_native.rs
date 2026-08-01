@@ -7,7 +7,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
+    collections::{BinaryHeap, HashMap, VecDeque},
     os::unix::io::RawFd,
     rc::Rc,
     sync::{
@@ -48,9 +48,32 @@ struct ActiveWorkload {
 }
 
 thread_local! {
-    static WORKLOADS: RefCell<Vec<Option<Workload>>> = const { RefCell::new(Vec::new()) };
-    static REACTOR_QUEUES: RefCell<Vec<Option<Arc<PoolShared>>>> = const { RefCell::new(Vec::new()) };
-    static REACTOR_THREADS: RefCell<Vec<Option<ReactorThread>>> = const { RefCell::new(Vec::new()) };
+    static REACTOR_THREADS: RefCell<HashMap<u64, ReactorThread>> = RefCell::new(HashMap::new());
+}
+
+/// Allocate a handle that is never reused.
+///
+/// Handles are looked up in maps rather than indexed into slot tables, so a
+/// retired handle is simply absent instead of aliasing whatever object took its
+/// slot. Slot reuse made a stale `scheduledRealmSend` after `closeScheduledRealm`
+/// address an unrelated realm.
+fn next_handle() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Read a handle argument. Handles exceed `u32`, so they cross as `f64`.
+fn handle_arg(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> u64 {
+    let raw = value.number_value(scope).unwrap_or(0.0);
+    if raw.is_finite() && raw >= 0.0 {
+        raw as u64
+    } else {
+        0
+    }
+}
+
+fn handle_value<'s>(scope: &mut v8::HandleScope<'s>, handle: u64) -> v8::Local<'s, v8::Value> {
+    v8::Number::new(scope, handle as f64).into()
 }
 
 #[derive(Clone)]
@@ -63,15 +86,39 @@ enum ScheduledRealmResult {
 struct ScheduledRealmState {
     result: Mutex<Option<ScheduledRealmResult>>,
     parent_wake_write: RawFd,
+    /// Cross-thread handle used to interrupt the realm's isolate.
+    ///
+    /// Cooperative termination asks a realm to stop by posting it a message,
+    /// which a realm spinning in synchronous JavaScript never observes — it
+    /// holds its reactor thread indefinitely, and enough of them wedge the pool.
+    /// This is the escape hatch, and V8 supports calling it from another thread
+    /// precisely so a supervisor can use it.
+    isolate_handle: Mutex<Option<v8::IsolateHandle>>,
+    /// Set when termination was forced, so the resulting unwind is reported as
+    /// a deliberate stop rather than as a realm error.
+    force_requested: AtomicBool,
 }
 
 impl ScheduledRealmState {
+    /// Interrupt the realm's JavaScript execution.
+    ///
+    /// Returns false when the isolate is already gone.
+    fn force(&self) -> bool {
+        self.force_requested.store(true, Ordering::Release);
+        let handle = self.isolate_handle.lock().unwrap().clone();
+        match handle {
+            Some(handle) => handle.terminate_execution(),
+            None => false,
+        }
+    }
+
+    fn was_forced(&self) -> bool {
+        self.force_requested.load(Ordering::Acquire)
+    }
+
     fn complete(&self, result: ScheduledRealmResult) {
         *self.result.lock().unwrap() = Some(result);
-        let byte = [1u8];
-        unsafe {
-            libc::write(self.parent_wake_write, byte.as_ptr().cast(), byte.len());
-        }
+        WakePipe::signal(self.parent_wake_write);
     }
 }
 
@@ -102,10 +149,10 @@ impl Drop for ScheduledRealmHandle {
     }
 }
 
-fn scheduled_realms() -> &'static Mutex<Vec<Option<ScheduledRealmHandle>>> {
-    static REALMS: std::sync::OnceLock<Mutex<Vec<Option<ScheduledRealmHandle>>>> =
+fn scheduled_realms() -> &'static Mutex<HashMap<u64, ScheduledRealmHandle>> {
+    static REALMS: std::sync::OnceLock<Mutex<HashMap<u64, ScheduledRealmHandle>>> =
         std::sync::OnceLock::new();
-    REALMS.get_or_init(|| Mutex::new(Vec::new()))
+    REALMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn process_pool() -> &'static Mutex<Option<Arc<PoolShared>>> {
@@ -135,6 +182,59 @@ fn create_pipe() -> Result<(RawFd, RawFd), String> {
     Ok((fds[0], fds[1]))
 }
 
+/// A non-blocking self-pipe used to make a descriptor readable on demand.
+///
+/// Every cross-thread hand-off in the scheduler needs the same thing: mark a
+/// descriptor readable so a poll-based loop notices, and drain it once the
+/// reader has caught up. The payload carries no information — the queue behind
+/// the pipe does — so `notify` deliberately ignores its write result. A failed
+/// write means either the reader is gone, or the pipe is already full of
+/// undrained bytes; in both cases the descriptor is already readable and the
+/// reader will wake, so there is nothing to recover.
+struct WakePipe {
+    read: RawFd,
+    write: RawFd,
+}
+
+impl WakePipe {
+    fn new() -> Self {
+        let (read, write) = create_pipe().expect("wake pipe");
+        Self { read, write }
+    }
+
+    fn notify(&self) {
+        Self::signal(self.write);
+    }
+
+    /// Mark a raw write descriptor readable, for owners that hand the write end
+    /// to another structure.
+    fn signal(write: RawFd) {
+        let byte = [1u8];
+        unsafe {
+            libc::write(write, byte.as_ptr().cast(), byte.len());
+        }
+    }
+
+    fn drain(&self) {
+        Self::consume(self.read);
+    }
+
+    /// Drain a raw read descriptor that a caller owns directly.
+    fn consume(read: RawFd) {
+        let mut bytes = [0u8; 64];
+        while unsafe { libc::read(read, bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {}
+    }
+}
+
+impl Drop for WakePipe {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.read);
+            libc::close(self.write);
+        }
+    }
+}
+
 fn next_owner() -> u32 {
     static NEXT: AtomicU32 = AtomicU32::new(1);
     loop {
@@ -154,53 +254,84 @@ struct ReadinessChange {
     udata: f64,
     cancel_owner: Option<u32>,
     scheduler_wake: bool,
-    acknowledgement: Option<u64>,
+    /// Ask the main realm to re-signal `udata`'s owner after `data` ms.
+    ///
+    /// V8 background tasks and `Atomics.waitAsync` waiters have no pollable
+    /// descriptor, so a realm holding one cannot be woken by readiness alone.
+    /// Rather than spinning a reactor thread on a timed condvar wait, the
+    /// reactor parks the realm and borrows a timer from the thread that is
+    /// already sleeping in kqueue/io_uring.
+    scheduler_poll: bool,
 }
 
-struct ReadinessAcknowledgement {
-    installed: Mutex<bool>,
-    changed: Condvar,
+impl ReadinessChange {
+    /// A change carrying no kernel filter — only a scheduler-level request.
+    fn control(udata: f64, data: f64) -> Self {
+        Self {
+            ident: 0.0,
+            filter: 0,
+            flags: 0,
+            fflags: 0,
+            data,
+            udata,
+            cancel_owner: None,
+            scheduler_wake: false,
+            scheduler_poll: false,
+        }
+    }
 }
+
+/// Ask the main realm to re-signal `owner` after `delay_ms`.
+///
+/// Called from a reactor thread, which has no V8 scope of its own; the mailbox
+/// is plain shared state, so the request needs nothing from the isolate it just
+/// parked.
+fn request_scheduler_poll(owner: u32, delay_ms: f64) {
+    let mut change = ReadinessChange::control(owner as f64, delay_ms);
+    change.scheduler_poll = true;
+    mailbox().inner.lock().unwrap().changes.push(change);
+    mailbox().notify();
+}
+
+/// Number of `f64` slots per routed readiness completion.
+///
+/// A completion is seven scalars the kernel already produced. It used to cross
+/// to its owning realm as a structured clone — a ValueSerializer round trip, a
+/// heap allocation, a backing store and a `Uint8Array` per event — to move
+/// fifty-six bytes of numbers. The fixed layout below removes all of that: the
+/// whole batch arrives as one `Float64Array`.
+const COMPLETION_SLOTS: usize = 7;
+
+/// One routed readiness completion in fixed layout.
+///
+/// Slots: ident, filter, flags, fflags, data, udata, installed.
+type ReadinessCompletion = [f64; COMPLETION_SLOTS];
 
 #[derive(Default)]
 struct MailboxInner {
     changes: Vec<ReadinessChange>,
-    events: HashMap<u32, VecDeque<Vec<u8>>>,
-    acknowledgements: HashMap<u64, Arc<ReadinessAcknowledgement>>,
+    events: HashMap<u32, Vec<ReadinessCompletion>>,
 }
 
 struct Mailbox {
     inner: Mutex<MailboxInner>,
-    wake_read: i32,
-    wake_write: i32,
+    wake: WakePipe,
 }
 
 impl Mailbox {
     fn new() -> Self {
-        let mut fds = [-1; 2];
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        for fd in fds {
-            unsafe {
-                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
-            }
-        }
         Self {
             inner: Mutex::new(MailboxInner::default()),
-            wake_read: fds[0],
-            wake_write: fds[1],
+            wake: WakePipe::new(),
         }
     }
 
     fn notify(&self) {
-        let byte = [1u8];
-        unsafe {
-            libc::write(self.wake_write, byte.as_ptr().cast(), byte.len());
-        }
+        self.wake.notify();
     }
 
     fn drain_wake(&self) {
-        let mut bytes = [0u8; 64];
-        while unsafe { libc::read(self.wake_read, bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {}
+        self.wake.drain();
     }
 }
 
@@ -421,13 +552,35 @@ fn service_scheduled_sync_call(
     true
 }
 
+/// How long the main realm waits before re-signalling a realm whose remaining
+/// work has no pollable descriptor (V8 background tasks, `Atomics.waitAsync`).
+const SCHEDULER_POLL_INTERVAL_MS: f64 = 1.0;
+
+/// Why a reactor worker stopped driving the realm it had entered.
 enum Slice {
-    Runnable,
-    Quiescent(bool),
+    /// The realm ran out of work it could complete immediately. Inflight
+    /// operations may still be outstanding; a readiness completion signals the
+    /// owner when one of them finishes.
+    ///
+    /// `polling` is set when the realm holds work with no pollable descriptor
+    /// (V8 background tasks, `Atomics.waitAsync`) and must be revisited on a
+    /// timer rather than purely on signal.
+    Quiescent { polling: bool },
+    /// The realm still has work, but another realm is ready at a strictly
+    /// higher priority and should get the thread.
+    Preempted,
+    /// The realm finished.
     Settled,
 }
 
-fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
+/// Drive one realm until it is quiescent, preempted, or finished.
+///
+/// The realm is stepped for as long as it reports progress. Leaving early is
+/// deliberately rare: exiting an isolate and entering another costs a Locker
+/// round trip, so a realm that still has completable work keeps the thread
+/// unless `shared` reports a strictly higher-priority realm waiting.
+fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, String> {
+    let owner = workload.owner;
     let context_global = workload.context.clone();
     let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
     let context = v8::Local::new(isolate_scope, &context_global);
@@ -435,55 +588,51 @@ fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
     crate::realm::child::pump_and_checkpoint(scope);
     let loop_step_fn = workload.state.borrow().loop_step_fn.clone();
     let Some(loop_step_fn) = loop_step_fn else {
-        return Ok((Slice::Quiescent(true), 1));
+        // Bootstrap has not registered a step yet. There is no descriptor to
+        // wait on, so revisit this realm on a timer rather than parking it.
+        return Ok(Slice::Quiescent { polling: true });
     };
     let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
     let tc = &mut v8::TryCatch::new(scope);
-    let mut loop_turns = 0;
-    let mut should_continue = true;
-    let mut serviced_sync_call = false;
-    // Run a bounded batch before reconsidering pool priority. This is large
-    // enough to drain deeply chained Promise continuations while still giving
-    // another ready realm a frequent opportunity to preempt at quiescence.
-    while should_continue && loop_turns < 64 {
-        should_continue = v8::Local::new(tc, &loop_step_fn)
+    loop {
+        let step = v8::Local::new(tc, &loop_step_fn)
             .call(tc, receiver, &[])
             .ok_or_else(|| {
                 crate::realm::child::catch_message(tc)
                     .unwrap_or_else(|| "scheduled realm loop step threw".to_string())
             })?
-            .boolean_value(tc);
-        crate::realm::child::pump_and_checkpoint(tc);
-        serviced_sync_call = service_scheduled_sync_call(tc, &workload.state);
-        if serviced_sync_call {
+            .number_value(tc)
+            .unwrap_or(-1.0);
+        if step < 0.0 {
+            break;
+        }
+        let mut progress = step > 0.0;
+        progress |= crate::realm::child::pump_and_checkpoint(tc);
+        if service_scheduled_sync_call(tc, &workload.state) {
             crate::realm::child::pump_and_checkpoint(tc);
             // The TypeScript step cannot see a sync call until the host
-            // services it here. Its pre-service liveness result is therefore
-            // stale: always give the resolved Promise one more loop turn to
-            // install handles, finish the workload, or queue more host work.
-            should_continue = true;
+            // services it here, so its pre-service result is stale. Give the
+            // resolved Promise another turn to install handles, finish the
+            // realm, or queue more host work.
+            progress = true;
         }
-        loop_turns += 1;
-    }
-    if should_continue {
-        // A synchronous call completed on the final turn, so its Promise
-        // continuation still needs at least one more host-loop step. Revisit
-        // pool priority without parking this runnable workload.
-        if serviced_sync_call {
-            return Ok((Slice::Runnable, loop_turns));
+        if !progress {
+            let polling = workload
+                .state
+                .borrow()
+                .scheduler_polling_fn
+                .as_ref()
+                .and_then(|polling_fn| {
+                    v8::Local::new(tc, polling_fn)
+                        .call(tc, receiver, &[])
+                        .map(|value| value.boolean_value(tc))
+                })
+                .unwrap_or(false);
+            return Ok(Slice::Quiescent { polling });
         }
-        let polling = workload
-            .state
-            .borrow()
-            .scheduler_polling_fn
-            .as_ref()
-            .and_then(|polling_fn| {
-                v8::Local::new(tc, polling_fn)
-                    .call(tc, receiver, &[])
-                    .map(|value| value.boolean_value(tc))
-            })
-            .unwrap_or(false);
-        return Ok((Slice::Quiescent(polling), loop_turns));
+        if shared.should_yield(owner) {
+            return Ok(Slice::Preempted);
+        }
     }
 
     if let Some(on_done) = workload.state.borrow().on_done_fn.clone() {
@@ -499,28 +648,23 @@ fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
     if let Some(error) = workload.state.borrow_mut().entry_error.take() {
         return Err(error);
     }
-    Ok((Slice::Settled, loop_turns))
+    Ok(Slice::Settled)
 }
 
 fn retire_owner(owner: u32) {
     let mut inner = mailbox().inner.lock().unwrap();
     inner.events.remove(&owner);
-    inner.changes.push(ReadinessChange {
-        ident: 0.0,
-        filter: 0,
-        flags: 0,
-        fflags: 0,
-        data: 0.0,
-        udata: 0.0,
-        cancel_owner: Some(owner),
-        scheduler_wake: false,
-        acknowledgement: None,
-    });
+    let mut change = ReadinessChange::control(0.0, 0.0);
+    change.cancel_owner = Some(owner);
+    inner.changes.push(change);
     drop(inner);
     mailbox().notify();
 }
 
 fn drop_workload(mut workload: Workload) {
+    // Clear any pending interrupt before entering the isolate for teardown, so
+    // a forced termination cannot unwind the disposal path itself.
+    workload.isolate.cancel_terminate_execution();
     let active = activate(&mut workload);
     retire_owner(workload.owner);
     workload.state.borrow_mut().loop_step_fn = None;
@@ -553,9 +697,7 @@ struct PoolEvent {
     kind: PoolEventKind,
     worker: usize,
     owner: u32,
-    previous: Option<u32>,
     error: Option<String>,
-    loop_turns: u64,
 }
 
 struct PoolItem {
@@ -580,43 +722,103 @@ struct PoolSharedInner {
     ready: BinaryHeap<ReadyEntry>,
     priorities: HashMap<u32, usize>,
     generations: HashMap<u32, u64>,
-    active: HashSet<u32>,
+    /// Which worker currently has each entered realm. Supersedes a bare set of
+    /// active owners: knowing *where* a realm is entered is what lets a signal
+    /// wake the one worker that can actually run it.
+    residents: HashMap<u32, usize>,
+    /// Workers blocked in `claim`, in the order they parked.
+    waiting: VecDeque<usize>,
+    /// Per-worker wake-ups. All share `inner` as their mutex, so a signal can
+    /// name its target instead of waking the whole pool.
+    wakes: Vec<Arc<Condvar>>,
     shutdown: bool,
     next_worker: usize,
 }
 
+impl PoolSharedInner {
+    /// Wake the worker that has `owner` entered, or one arbitrary parked
+    /// worker when the realm is not entered anywhere.
+    ///
+    /// Only the resident worker can run a realm it already holds, so a blanket
+    /// wake-up would drag every other worker out of the kernel to discover it
+    /// has nothing to do. Measured on an 18-processor host, that cost I/O-bound
+    /// realms roughly 2-3x per operation against a single-threaded pool.
+    fn wake_for(&mut self, owner: u32) {
+        if let Some(worker) = self.wake_target(owner) {
+            self.wake_worker(worker);
+        }
+    }
+
+    /// Which worker, if any, should be woken for `owner` becoming runnable.
+    ///
+    /// A realm that is entered can only be run by the worker holding it. One
+    /// that is not entered can be claimed by whichever worker reaches it first,
+    /// so the longest-waiting one is woken. When no worker is waiting, none
+    /// needs waking: every worker re-examines the queue before it parks.
+    fn wake_target(&self, owner: u32) -> Option<usize> {
+        if let Some(worker) = self.residents.get(&owner).copied() {
+            return Some(worker);
+        }
+        self.waiting.front().copied()
+    }
+
+    /// Wake one waiting worker, if any is parked.
+    ///
+    /// A realm nobody has entered can be claimed by whichever worker gets there
+    /// first, so a single wake-up suffices. If every worker is busy, none needs
+    /// waking: each re-examines the queue before it parks.
+    fn wake_any(&mut self) {
+        if let Some(worker) = self.waiting.front().copied() {
+            self.wake_worker(worker);
+        }
+    }
+
+    fn wake_worker(&mut self, worker: usize) {
+        if let Some(wake) = self.wakes.get(worker) {
+            wake.notify_all();
+        }
+    }
+
+    fn wake_all(&mut self) {
+        for wake in &self.wakes {
+            wake.notify_all();
+        }
+    }
+}
+
 struct PoolShared {
     inner: Mutex<PoolSharedInner>,
-    changed: Condvar,
-    wake_read: i32,
-    wake_write: i32,
+    wake: WakePipe,
 }
 
 impl PoolShared {
     fn new() -> Self {
-        let mut fds = [-1; 2];
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        for fd in fds {
-            unsafe {
-                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
-            }
-        }
         let inner = PoolSharedInner {
             parked: HashMap::new(),
             events: VecDeque::new(),
             ready: BinaryHeap::new(),
             priorities: HashMap::new(),
             generations: HashMap::new(),
-            active: HashSet::new(),
+            residents: HashMap::new(),
+            waiting: VecDeque::new(),
+            wakes: Vec::new(),
             shutdown: false,
             next_worker: 0,
         };
         Self {
             inner: Mutex::new(inner),
-            changed: Condvar::new(),
-            wake_read: fds[0],
-            wake_write: fds[1],
+            wake: WakePipe::new(),
         }
+    }
+
+    /// Allocate a worker slot and its wake-up.
+    fn register_worker(&self) -> (usize, Arc<Condvar>) {
+        let mut inner = self.inner.lock().unwrap();
+        let worker = inner.next_worker;
+        inner.next_worker += 1;
+        let wake = Arc::new(Condvar::new());
+        inner.wakes.push(Arc::clone(&wake));
+        (worker, wake)
     }
 
     fn submit(self: &Arc<Self>, workload: Workload) -> u32 {
@@ -628,7 +830,7 @@ impl PoolShared {
         let mut inner = self.inner.lock().unwrap();
         debug_assert!(!inner.shutdown, "cannot submit work to a stopped reactor");
         debug_assert!(
-            !inner.parked.contains_key(&owner) && !inner.active.contains(&owner),
+            !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner),
             "workload {owner} is already in the reactor"
         );
         inner.parked.insert(
@@ -638,13 +840,11 @@ impl PoolShared {
             },
         );
         Self::signal_inner(&mut inner, owner);
-        drop(inner);
-        self.changed.notify_all();
         owner
     }
 
     fn signal_inner(inner: &mut PoolSharedInner, owner: u32) {
-        if !inner.parked.contains_key(&owner) && !inner.active.contains(&owner) {
+        if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
             return;
         }
         let priority = inner.priorities.entry(owner).or_default();
@@ -656,14 +856,84 @@ impl PoolShared {
             generation: *generation,
             owner,
         });
+        inner.wake_for(owner);
     }
 
     fn signal(&self, owner: u32) {
         Self::signal_inner(&mut self.inner.lock().unwrap(), owner);
-        self.changed.notify_all();
     }
 
-    fn claim(&self, current: Option<u32>, stop: &AtomicBool, current_state: CurrentState) -> Claim {
+    /// Re-queue a realm that still has work, without treating that as a new
+    /// readiness signal.
+    ///
+    /// A preempted realm has to stay claimable, but it must not outrank the
+    /// realm it is yielding to. Routing this through `signal` would bump its
+    /// priority by one every time it yielded, so the realm that just lost the
+    /// comparison would immediately win the next one and preemption would never
+    /// actually hand the thread over.
+    fn mark_runnable(&self, owner: u32) {
+        {
+            let inner = &mut *self.inner.lock().unwrap();
+            if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
+                return;
+            }
+            // A queued entry must carry a priority of at least one. `claim`
+            // compares a candidate against the entered realm with `<=` and keeps
+            // the incumbent on a tie, re-queueing the candidate — so a
+            // priority-zero entry leaves `claim` permanently able to find a
+            // candidate it will never take, and it spins instead of ever
+            // waiting. Claiming resets the priority to zero, which makes that
+            // state reachable for any realm the moment it is preempted.
+            let priority = inner.priorities.entry(owner).or_default();
+            *priority = (*priority).max(1);
+            let priority = *priority;
+            let generation = inner.generations.entry(owner).or_default();
+            *generation += 1;
+            inner.ready.push(ReadyEntry {
+                priority,
+                generation: *generation,
+                owner,
+            });
+            inner.wake_for(owner);
+        }
+    }
+
+    /// Report whether a different realm is ready at a strictly higher priority
+    /// than the realm a worker currently has entered.
+    ///
+    /// Deliberately conservative: it inspects only the heap root and never
+    /// mutates the queue, so a superseded root, or a root belonging to the
+    /// running realm, simply reports "no reason to switch". Both are transient,
+    /// and `claim` re-evaluates the whole queue at the next quiescence. Being
+    /// wrong here costs a slightly late preemption, never a lost workload.
+    fn should_yield(&self, current: u32) -> bool {
+        let inner = self.inner.lock().unwrap();
+        if inner.shutdown {
+            return true;
+        }
+        let Some(entry) = inner.ready.peek() else {
+            return false;
+        };
+        if entry.owner == current {
+            return false;
+        }
+        if inner.generations.get(&entry.owner).copied().unwrap_or(0) != entry.generation {
+            return false;
+        }
+        if inner.priorities.get(&entry.owner).copied().unwrap_or(0) != entry.priority {
+            return false;
+        }
+        entry.priority > inner.priorities.get(&current).copied().unwrap_or(0)
+    }
+
+    fn claim(
+        &self,
+        worker: usize,
+        wake: &Condvar,
+        current: Option<u32>,
+        stop: &AtomicBool,
+        current_state: CurrentState,
+    ) -> Claim {
         let mut inner = self.inner.lock().unwrap();
         loop {
             if inner.shutdown || stop.load(Ordering::Acquire) {
@@ -679,7 +949,7 @@ impl PoolShared {
                 if entry.generation != current_generation || entry.priority != current_priority {
                     continue;
                 }
-                if inner.active.contains(&entry.owner) && Some(entry.owner) != current {
+                if inner.residents.contains_key(&entry.owner) && Some(entry.owner) != current {
                     skipped.push(entry);
                     continue;
                 }
@@ -704,7 +974,11 @@ impl PoolShared {
                 };
                 inner.priorities.remove(&owner);
                 if owner != candidate.owner {
+                    // Keeping our own realm leaves the candidate runnable with
+                    // nobody assigned to it. Whoever woke us handed over a
+                    // single wake-up, so pass it on rather than swallowing it.
                     inner.ready.push(candidate);
+                    inner.wake_any();
                 }
                 if Some(owner) == current {
                     return Claim::Current;
@@ -712,28 +986,19 @@ impl PoolShared {
                 let Some(item) = inner.parked.remove(&owner) else {
                     continue;
                 };
-                inner.active.insert(owner);
+                inner.residents.insert(owner, worker);
                 return Claim::Work(item);
             }
-            if current.is_some() {
-                match current_state {
-                    CurrentState::Runnable => return Claim::Current,
-                    CurrentState::Polling => {
-                        let (next, timeout) = self
-                            .changed
-                            .wait_timeout(inner, std::time::Duration::from_millis(1))
-                            .unwrap();
-                        inner = next;
-                        if timeout.timed_out() {
-                            return Claim::Current;
-                        }
-                    }
-                    CurrentState::Parked => {
-                        inner = self.changed.wait(inner).unwrap();
-                    }
-                }
-            } else {
-                inner = self.changed.wait(inner).unwrap();
+            // Nothing is ready. A realm that still has work keeps the thread
+            // without blocking; anything else waits to be signalled. Reactor
+            // threads never wait on a timeout — every wake-up is a signal.
+            if matches!(current_state, CurrentState::Runnable) && current.is_some() {
+                return Claim::Current;
+            }
+            inner.waiting.push_back(worker);
+            inner = wake.wait(inner).unwrap();
+            if let Some(index) = inner.waiting.iter().position(|entry| *entry == worker) {
+                inner.waiting.remove(index);
             }
         }
     }
@@ -742,55 +1007,52 @@ impl PoolShared {
         let owner = resident.item.workload.0.owner;
         deactivate(&mut resident.item.workload.0, resident.active);
         let mut inner = self.inner.lock().unwrap();
-        inner.active.remove(&owner);
+        inner.residents.remove(&owner);
         inner.parked.insert(owner, resident.item);
-        drop(inner);
-        self.changed.notify_all();
+        // The realm is claimable by anyone now; one worker is enough to take it.
+        inner.wake_any();
     }
 
     fn finish(&self, owner: u32) {
         let mut inner = self.inner.lock().unwrap();
-        inner.active.remove(&owner);
+        inner.residents.remove(&owner);
         inner.priorities.remove(&owner);
         inner.generations.remove(&owner);
         drop(inner);
         owner_pools().lock().unwrap().remove(&owner);
-        self.changed.notify_all();
     }
 
     fn notify(&self, event: PoolEvent) {
         self.inner.lock().unwrap().events.push_back(event);
-        let byte = [1u8];
-        unsafe {
-            libc::write(self.wake_write, byte.as_ptr().cast(), byte.len());
-        }
+        self.wake.notify();
     }
 
     fn drain_wake(&self) {
-        let mut bytes = [0u8; 64];
-        while unsafe { libc::read(self.wake_read, bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {}
-    }
-}
-
-impl Drop for PoolShared {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.wake_read);
-            libc::close(self.wake_write);
-        }
+        self.wake.drain();
     }
 }
 
 struct ReactorThread {
     shared: Arc<PoolShared>,
     stop: Arc<AtomicBool>,
+    wake: Arc<Condvar>,
     join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ReactorThread {
     fn shutdown(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        self.shared.changed.notify_all();
+        {
+            // Publish the stop flag while holding the mutex the worker tests it
+            // under. `claim` checks `stop` and then waits without releasing
+            // `inner` in between, so setting the flag outside the lock leaves a
+            // window where a notification lands after the check but before the
+            // wait and is lost — parking the worker forever and deadlocking the
+            // join below.
+            let _guard = self.shared.inner.lock().unwrap();
+            self.stop.store(true, Ordering::Release);
+        }
+        // Only this worker is stopping, so only this worker needs waking.
+        self.wake.notify_all();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -809,25 +1071,26 @@ enum Claim {
     Shutdown,
 }
 
+/// What the worker's currently entered realm wants from the next `claim`.
 #[derive(Clone, Copy)]
 enum CurrentState {
-    Parked,
-    Polling,
+    /// Nothing left to do: wait for a readiness signal before running again.
+    Idle,
+    /// Still has work; only a strictly higher-priority realm should take over.
     Runnable,
 }
 
-fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
+fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wake: Arc<Condvar>) {
     let mut current: Option<Resident> = None;
-    let mut current_state = CurrentState::Parked;
+    let mut current_state = CurrentState::Idle;
     loop {
         let current_owner = current
             .as_ref()
             .map(|resident| resident.item.workload.0.owner);
-        match shared.claim(current_owner, &stop, current_state) {
+        match shared.claim(worker, &wake, current_owner, &stop, current_state) {
             Claim::Shutdown => break,
             Claim::Current => {}
             Claim::Work(mut item) => {
-                let previous = current_owner;
                 if let Some(resident) = current.take() {
                     shared.park(resident);
                 }
@@ -838,88 +1101,87 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                     kind: PoolEventKind::Activated,
                     worker,
                     owner,
-                    previous,
                     error: None,
-                    loop_turns: 0,
                 });
             }
         }
 
-        let owner = current
-            .as_ref()
-            .expect("reactor worker claimed no workload")
-            .item
-            .workload
-            .0
-            .owner;
-        let mut resident = current.take().unwrap();
-        match drive_slice(&mut resident.item.workload.0) {
-            Ok((Slice::Runnable, _)) => {
+        let mut resident = current.take().expect("reactor worker claimed no workload");
+        let owner = resident.item.workload.0.owner;
+        let outcome = drive_slice(&mut resident.item.workload.0, &shared);
+        let (result, event) = match outcome {
+            Ok(Slice::Preempted) => {
+                // The realm still has work it could complete immediately, so it
+                // has to stay queued. Its readiness completions were already
+                // consumed, and nothing else will signal a realm whose
+                // remaining work is a resolved promise chain — parking it
+                // without a ready entry would strand it forever. Re-queue at
+                // the same priority so it does not outrank whoever preempted it.
+                shared.mark_runnable(owner);
                 current_state = CurrentState::Runnable;
                 current = Some(resident);
+                continue;
             }
-            Ok((Slice::Quiescent(polling), _)) => {
-                current_state = if polling {
-                    CurrentState::Polling
-                } else {
-                    CurrentState::Parked
-                };
-                current = Some(resident);
-            }
-            Ok((Slice::Settled, loop_turns)) => {
-                if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
-                    let result = if resident.item.workload.0.state.borrow().reload_requested {
-                        ScheduledRealmResult::Reload
-                    } else {
-                        ScheduledRealmResult::Done
-                    };
-                    scheduled.complete(result);
+            Ok(Slice::Quiescent { polling }) => {
+                // A realm whose only remaining work is invisible to the kernel
+                // has nothing that can signal it. Borrow a timer from the main
+                // realm so it is re-signalled like any other readiness event,
+                // instead of holding this thread on a timed wait.
+                if polling {
+                    request_scheduler_poll(owner, SCHEDULER_POLL_INTERVAL_MS);
                 }
-                deactivate(&mut resident.item.workload.0, resident.active);
-                drop_workload(resident.item.workload.0);
-                shared.finish(owner);
-                current_state = CurrentState::Parked;
-                shared.notify(PoolEvent {
-                    kind: PoolEventKind::Settled,
-                    worker,
-                    owner,
-                    previous: None,
-                    error: None,
-                    loop_turns,
-                });
+                current_state = CurrentState::Idle;
+                current = Some(resident);
+                continue;
+            }
+            Ok(Slice::Settled) => {
+                let result = if resident.item.workload.0.state.borrow().reload_requested {
+                    ScheduledRealmResult::Reload
+                } else {
+                    ScheduledRealmResult::Done
+                };
+                (result, PoolEventKind::Settled)
             }
             Err(error) => {
-                if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
-                    scheduled.complete(ScheduledRealmResult::Error(error.clone()));
+                // A forced stop unwinds through the same path as a thrown
+                // error. Report it as a deliberate termination rather than as
+                // a realm failure, so `terminate({ force: true })` does not
+                // surface the interrupt it asked for as a crash.
+                let forced = resident
+                    .item
+                    .workload
+                    .0
+                    .scheduled
+                    .as_ref()
+                    .is_some_and(|scheduled| scheduled.was_forced());
+                if forced {
+                    (ScheduledRealmResult::Done, PoolEventKind::Settled)
+                } else {
+                    (ScheduledRealmResult::Error(error), PoolEventKind::Error)
                 }
-                deactivate(&mut resident.item.workload.0, resident.active);
-                drop_workload(resident.item.workload.0);
-                shared.finish(owner);
-                current_state = CurrentState::Parked;
-                shared.notify(PoolEvent {
-                    kind: PoolEventKind::Error,
-                    worker,
-                    owner,
-                    previous: None,
-                    error: Some(error),
-                    loop_turns: 0,
-                });
             }
+        };
+        let error = match &result {
+            ScheduledRealmResult::Error(error) => Some(error.clone()),
+            _ => None,
+        };
+        if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
+            scheduled.complete(result);
         }
+        deactivate(&mut resident.item.workload.0, resident.active);
+        drop_workload(resident.item.workload.0);
+        shared.finish(owner);
+        current_state = CurrentState::Idle;
+        shared.notify(PoolEvent {
+            kind: event,
+            worker,
+            owner,
+            error,
+        });
     }
     if let Some(resident) = current {
         shared.park(resident);
     }
-}
-
-fn take_workload(handle: usize) -> Result<Workload, String> {
-    WORKLOADS.with(|workloads| {
-        workloads
-            .borrow_mut()
-            .get_mut(handle)
-            .and_then(Option::take)
-            .ok_or_else(|| format!("invalid workload handle {handle}"))
-    })
 }
 
 fn create_workload(
@@ -944,6 +1206,10 @@ fn create_workload(
             parent.package_map_json.clone(),
             parent.import_rules.clone(),
         )
+    };
+    let Some(pool) = process_pool().lock().unwrap().clone() else {
+        throw_error(scope, "createWorkload: process reactor is not running");
+        return;
     };
     let owner = next_owner();
     let workload = match setup_workload(
@@ -970,21 +1236,21 @@ fn create_workload(
             return;
         }
     };
-    let handle = WORKLOADS.with(|workloads| {
-        let mut workloads = workloads.borrow_mut();
-        if let Some((index, slot)) = workloads
-            .iter_mut()
-            .enumerate()
-            .find(|(_, workload)| workload.is_none())
-        {
-            *slot = Some(workload);
-            index
-        } else {
-            workloads.push(Some(workload));
-            workloads.len() - 1
-        }
-    });
-    rv.set(v8::Integer::new_from_unsigned(scope, handle as u32).into());
+    let wake_fd = workload
+        .async_state
+        .as_ref()
+        .map(|state| state.wake_read)
+        .unwrap_or(-1);
+    pool.submit(workload);
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("owner", v8::Integer::new_from_unsigned(scope, owner).into()),
+        ("wakeFd", v8::Integer::new(scope, wake_fd).into()),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
 }
 
 fn create_scheduled_realm(
@@ -1071,6 +1337,8 @@ fn create_scheduled_realm(
     let scheduled = Arc::new(ScheduledRealmState {
         result: Mutex::new(None),
         parent_wake_write: completion_wake_write,
+        isolate_handle: Mutex::new(None),
+        force_requested: AtomicBool::new(false),
     });
     let owner = next_owner();
     let workload = match setup_workload(
@@ -1105,40 +1373,30 @@ fn create_scheduled_realm(
             return;
         }
     };
+    // Publish the isolate handle before the workload is submitted, so a forced
+    // termination issued at any point after creation has something to act on.
+    *scheduled.isolate_handle.lock().unwrap() = Some(workload.isolate.thread_safe_handle());
     let wake_fd = workload
         .async_state
         .as_ref()
         .map(|state| state.wake_read)
         .unwrap_or(-1);
-    let handle = {
-        let mut realms = scheduled_realms().lock().unwrap();
-        let value = ScheduledRealmHandle {
+    let handle = next_handle();
+    scheduled_realms().lock().unwrap().insert(
+        handle,
+        ScheduledRealmHandle {
             tx: parent_tx,
             rx: parent_rx,
             child_wake_write,
             parent_wake_read,
             completion_wake_read,
             state: scheduled,
-        };
-        if let Some((index, slot)) = realms
-            .iter_mut()
-            .enumerate()
-            .find(|(_, realm)| realm.is_none())
-        {
-            *slot = Some(value);
-            index
-        } else {
-            realms.push(Some(value));
-            realms.len() - 1
-        }
-    };
+        },
+    );
     pool.submit(workload);
     let result = v8::Object::new(scope);
     for (name, value) in [
-        (
-            "handle",
-            v8::Integer::new_from_unsigned(scope, handle as u32).into(),
-        ),
+        ("handle", handle_value(scope, handle)),
         ("owner", v8::Integer::new_from_unsigned(scope, owner).into()),
         ("wakeFd", v8::Integer::new(scope, wake_fd).into()),
         (
@@ -1188,15 +1446,16 @@ fn scheduled_realm_send(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let Some(data) = copy_uint8_array(scope, args.get(1)) else {
+    let handle = handle_arg(scope, args.get(0));
+    let header = copy_uint8_array(scope, args.get(1)).unwrap_or_default();
+    let Some(data) = copy_uint8_array(scope, args.get(2)) else {
         throw_error(
             scope,
-            "scheduledRealmSend: second argument must be a Uint8Array",
+            "scheduledRealmSend: third argument must be a Uint8Array",
         );
         return;
     };
-    let transfer_stores = if let Ok(values) = v8::Local::<v8::Array>::try_from(args.get(2)) {
+    let transfer_stores = if let Ok(values) = v8::Local::<v8::Array>::try_from(args.get(3)) {
         let mut stores = Vec::new();
         for index in 0..values.length() {
             if let Some(value) = values.get_index(scope, index)
@@ -1209,9 +1468,9 @@ fn scheduled_realm_send(
     } else {
         Vec::new()
     };
-    let transfer_ports = crate::realm::thread::extract_port_infos(scope, args.get(3));
+    let transfer_ports = crate::realm::thread::extract_port_infos(scope, args.get(4));
     let realms = scheduled_realms().lock().unwrap();
-    let Some(realm) = realms.get(handle).and_then(Option::as_ref) else {
+    let Some(realm) = realms.get(&handle) else {
         throw_error(
             scope,
             &format!("scheduledRealmSend: invalid realm handle {handle}"),
@@ -1219,14 +1478,12 @@ fn scheduled_realm_send(
         return;
     };
     let _ = realm.tx.send(crate::realm::thread::ThreadMessage {
+        header,
         data,
         transfer_stores,
         transfer_ports,
     });
-    let byte = [1u8];
-    unsafe {
-        libc::write(realm.child_wake_write, byte.as_ptr().cast(), byte.len());
-    }
+    WakePipe::signal(realm.child_wake_write);
 }
 
 fn scheduled_realm_recv(
@@ -1234,9 +1491,9 @@ fn scheduled_realm_recv(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let handle = handle_arg(scope, args.get(0));
     let realms = scheduled_realms().lock().unwrap();
-    let Some(realm) = realms.get(handle).and_then(Option::as_ref) else {
+    let Some(realm) = realms.get(&handle) else {
         throw_error(
             scope,
             &format!("scheduledRealmRecv: invalid realm handle {handle}"),
@@ -1247,15 +1504,7 @@ fn scheduled_realm_recv(
     while let Ok(message) = realm.rx.try_recv() {
         messages.push(message);
     }
-    let mut discard = [0u8; 256];
-    while unsafe {
-        libc::read(
-            realm.parent_wake_read,
-            discard.as_mut_ptr().cast(),
-            discard.len(),
-        )
-    } > 0
-    {}
+    WakePipe::consume(realm.parent_wake_read);
     rv.set(crate::realm::transit::build_message_array(scope, messages).into());
 }
 
@@ -1264,24 +1513,16 @@ fn take_scheduled_realm_status(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
+    let handle = handle_arg(scope, args.get(0));
     let realms = scheduled_realms().lock().unwrap();
-    let Some(realm) = realms.get(handle).and_then(Option::as_ref) else {
+    let Some(realm) = realms.get(&handle) else {
         throw_error(
             scope,
             &format!("takeScheduledRealmStatus: invalid realm handle {handle}"),
         );
         return;
     };
-    let mut discard = [0u8; 64];
-    while unsafe {
-        libc::read(
-            realm.completion_wake_read,
-            discard.as_mut_ptr().cast(),
-            discard.len(),
-        )
-    } > 0
-    {}
+    WakePipe::consume(realm.completion_wake_read);
     let status = realm.state.result.lock().unwrap().clone();
     let result = v8::Object::new(scope);
     let (kind, error) = match status {
@@ -1301,17 +1542,35 @@ fn take_scheduled_realm_status(
     rv.set(result.into());
 }
 
+/// JS: `forceScheduledRealm(handle) -> boolean`
+///
+/// Interrupt a reactor-pooled realm's JavaScript execution.
+///
+/// Cooperative termination cannot reach a realm spinning in synchronous
+/// JavaScript, because such a realm never returns to the loop to observe the
+/// request. This unwinds it, freeing the reactor thread it was holding.
+fn force_scheduled_realm(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = handle_arg(scope, args.get(0));
+    let state = scheduled_realms()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .map(|realm| Arc::clone(&realm.state));
+    let forced = state.is_some_and(|state| state.force());
+    rv.set(v8::Boolean::new(scope, forced).into());
+}
+
 fn close_scheduled_realm(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let realm = scheduled_realms()
-        .lock()
-        .unwrap()
-        .get_mut(handle)
-        .and_then(Option::take);
+    let handle = handle_arg(scope, args.get(0));
+    let realm = scheduled_realms().lock().unwrap().remove(&handle);
     if realm.is_none() {
         throw_error(
             scope,
@@ -1320,138 +1579,65 @@ fn close_scheduled_realm(
     }
 }
 
-fn create_reactor_queue(
+/// Start the process-wide reactor pool and return the descriptor its events
+/// arrive on.
+///
+/// There is exactly one pool per process: every realm, wherever it is created,
+/// is scheduled on it. Modelling it as a singleton rather than a table of
+/// queues removes a generality that never existed — creating a second queue
+/// used to silently replace the pool that realms were already submitting to.
+fn start_reactor_pool(
     scope: &mut v8::HandleScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let shared = Arc::new(PoolShared::new());
-    *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
-    let control_fd = shared.wake_read;
-    let handle = REACTOR_QUEUES.with(|queues| {
-        let mut queues = queues.borrow_mut();
-        if let Some((index, slot)) = queues
-            .iter_mut()
-            .enumerate()
-            .find(|(_, queue)| queue.is_none())
-        {
-            *slot = Some(shared);
-            index
-        } else {
-            queues.push(Some(shared));
-            queues.len() - 1
-        }
-    });
-    let result = v8::Object::new(scope);
-    for (name, value) in [
-        (
-            "handle",
-            v8::Integer::new_from_unsigned(scope, handle as u32).into(),
-        ),
-        ("controlFd", v8::Integer::new(scope, control_fd).into()),
-    ] {
-        let key = v8::String::new(scope, name).unwrap();
-        result.set(scope, key.into(), value);
-    }
-    rv.set(result.into());
-}
-
-fn submit_reactor_workload(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let shared = REACTOR_QUEUES.with(|queues| {
-        queues
-            .borrow()
-            .get(queue_handle)
-            .and_then(Option::as_ref)
-            .cloned()
-    });
-    let Some(shared) = shared else {
+    let mut registered = process_pool().lock().unwrap();
+    if registered.is_some() {
         throw_error(
             scope,
-            &format!("submitReactorWorkload: invalid queue {queue_handle}"),
+            "startReactorPool: process reactor is already running",
         );
         return;
-    };
-    let workload_handle = args.get(1).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let workload = match take_workload(workload_handle) {
-        Ok(workload) => workload,
-        Err(error) => {
-            throw_error(scope, &format!("submitReactorWorkload: {error}"));
-            return;
-        }
-    };
-    let owner = shared.submit(workload);
-    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
+    }
+    let shared = Arc::new(PoolShared::new());
+    let control_fd = shared.wake.read;
+    *registered = Some(shared);
+    rv.set(v8::Integer::new(scope, control_fd).into());
+}
+
+/// Resolve the process reactor pool, or throw when it is not running.
+fn require_pool(scope: &mut v8::HandleScope, caller: &str) -> Option<Arc<PoolShared>> {
+    let pool = process_pool().lock().unwrap().clone();
+    if pool.is_none() {
+        throw_error(scope, &format!("{caller}: process reactor is not running"));
+    }
+    pool
 }
 
 fn create_reactor_thread(
     scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
+    _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let queue_handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let shared = REACTOR_QUEUES.with(|queues| {
-        queues
-            .borrow()
-            .get(queue_handle)
-            .and_then(Option::as_ref)
-            .cloned()
-    });
-    let Some(shared) = shared else {
-        throw_error(
-            scope,
-            &format!("createReactorThread: invalid queue {queue_handle}"),
-        );
+    let Some(shared) = require_pool(scope, "createReactorThread") else {
         return;
     };
-    let worker = {
-        let mut inner = shared.inner.lock().unwrap();
-        let worker = inner.next_worker;
-        inner.next_worker += 1;
-        worker
-    };
+    let (worker, wake) = shared.register_worker();
     let stop = Arc::new(AtomicBool::new(false));
     let thread_shared = Arc::clone(&shared);
     let thread_stop = Arc::clone(&stop);
-    let join = std::thread::spawn(move || run_worker(worker, thread_shared, thread_stop));
+    let thread_wake = Arc::clone(&wake);
+    let join =
+        std::thread::spawn(move || run_worker(worker, thread_shared, thread_stop, thread_wake));
     let reactor = ReactorThread {
         shared,
         stop,
+        wake,
         join: Some(join),
     };
-    let handle = REACTOR_THREADS.with(|threads| {
-        let mut threads = threads.borrow_mut();
-        if let Some((index, slot)) = threads
-            .iter_mut()
-            .enumerate()
-            .find(|(_, thread)| thread.is_none())
-        {
-            *slot = Some(reactor);
-            index
-        } else {
-            threads.push(Some(reactor));
-            threads.len() - 1
-        }
-    });
-    let result = v8::Object::new(scope);
-    for (name, value) in [
-        (
-            "handle",
-            v8::Integer::new_from_unsigned(scope, handle as u32).into(),
-        ),
-        (
-            "worker",
-            v8::Integer::new_from_unsigned(scope, worker as u32).into(),
-        ),
-    ] {
-        let key = v8::String::new(scope, name).unwrap();
-        result.set(scope, key.into(), value);
-    }
-    rv.set(result.into());
+    let handle = next_handle();
+    REACTOR_THREADS.with(|threads| threads.borrow_mut().insert(handle, reactor));
+    rv.set(handle_value(scope, handle));
 }
 
 fn close_reactor_thread(
@@ -1459,9 +1645,8 @@ fn close_reactor_thread(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let thread =
-        REACTOR_THREADS.with(|threads| threads.borrow_mut().get_mut(handle).and_then(Option::take));
+    let handle = handle_arg(scope, args.get(0));
+    let thread = REACTOR_THREADS.with(|threads| threads.borrow_mut().remove(&handle));
     let Some(mut thread) = thread else {
         throw_error(
             scope,
@@ -1490,34 +1675,20 @@ fn signal_reactor_owner(
 
 fn take_reactor_events(
     scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
+    _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let events = REACTOR_QUEUES.with(|queues| {
-        let queues = queues.borrow();
-        let queue = queues
-            .get(handle)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| format!("invalid reactor queue {handle}"))?;
-        queue.drain_wake();
-        Ok::<_, String>(
-            queue
-                .inner
-                .lock()
-                .unwrap()
-                .events
-                .drain(..)
-                .collect::<Vec<_>>(),
-        )
-    });
-    let events = match events {
-        Ok(events) => events,
-        Err(error) => {
-            throw_error(scope, &format!("takeReactorEvents: {error}"));
-            return;
-        }
+    let Some(pool) = require_pool(scope, "takeReactorEvents") else {
+        return;
     };
+    pool.drain_wake();
+    let events = pool
+        .inner
+        .lock()
+        .unwrap()
+        .events
+        .drain(..)
+        .collect::<Vec<_>>();
     let result = v8::Array::new(scope, events.len() as i32);
     for (index, event) in events.into_iter().enumerate() {
         let value = v8::Object::new(scope);
@@ -1536,10 +1707,6 @@ fn take_reactor_events(
                 "owner",
                 v8::Integer::new_from_unsigned(scope, event.owner).into(),
             ),
-            (
-                "loopTurns",
-                v8::Number::new(scope, event.loop_turns as f64).into(),
-            ),
         ] {
             let key = v8::String::new(scope, name).unwrap();
             value.set(scope, key.into(), field);
@@ -1549,108 +1716,53 @@ fn take_reactor_events(
             let error = v8::String::new(scope, &error).unwrap();
             value.set(scope, key.into(), error.into());
         }
-        if let Some(previous) = event.previous {
-            let key = v8::String::new(scope, "previous").unwrap();
-            let previous = v8::Integer::new_from_unsigned(scope, previous);
-            value.set(scope, key.into(), previous.into());
-        }
         result.set_index(scope, index as u32, value.into());
     }
     rv.set(result.into());
 }
 
-fn close_reactor_queue(
+/// Tear down the process reactor pool.
+///
+/// Every reactor thread must already have been stopped: the pool is dropped
+/// here, and its parked realms disposed on this thread. Validation happens
+/// before any mutation so a refused close leaves the pool exactly as it was.
+fn stop_reactor_pool(
     scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
+    _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let queue =
-        REACTOR_QUEUES.with(|queues| queues.borrow_mut().get_mut(handle).and_then(Option::take));
-    let Some(queue) = queue else {
-        throw_error(
-            scope,
-            &format!("closeReactorQueue: invalid queue handle {handle}"),
-        );
+    let attached = process_pool()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(Arc::strong_count);
+    let Some(attached) = attached else {
+        throw_error(scope, "stopReactorPool: process reactor is not running");
         return;
     };
+    // Only the registration itself may hold a reference by this point.
+    if attached > 1 {
+        throw_error(scope, "stopReactorPool: reactor threads are still attached");
+        return;
+    }
+    let pool = process_pool()
+        .lock()
+        .unwrap()
+        .take()
+        .expect("reactor pool disappeared between validation and close");
     {
-        let mut inner = queue.inner.lock().unwrap();
+        let inner = &mut *pool.inner.lock().unwrap();
         inner.shutdown = true;
+        inner.wake_all();
     }
-    queue.changed.notify_all();
-    {
-        let mut registered = process_pool().lock().unwrap();
-        if registered
-            .as_ref()
-            .is_some_and(|active| Arc::ptr_eq(active, &queue))
-        {
-            *registered = None;
-        }
-    }
-    let Ok(queue) = Arc::try_unwrap(queue) else {
-        throw_error(
-            scope,
-            "closeReactorQueue: reactor threads are still attached",
-        );
+    let Ok(pool) = Arc::try_unwrap(pool) else {
+        throw_error(scope, "stopReactorPool: reactor threads are still attached");
         return;
     };
-    let parked = std::mem::take(&mut queue.inner.lock().unwrap().parked);
+    let parked = std::mem::take(&mut pool.inner.lock().unwrap().parked);
     for item in parked.into_values() {
         drop_workload(item.workload.0);
     }
-}
-
-fn terminate_workload(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let workload = WORKLOADS.with(|workloads| {
-        workloads
-            .borrow_mut()
-            .get_mut(handle)
-            .and_then(Option::take)
-    });
-    if let Some(workload) = workload {
-        drop_workload(workload);
-    }
-}
-
-fn workload_wake_fd(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let fd = WORKLOADS.with(|workloads| {
-        workloads
-            .borrow()
-            .get(handle)
-            .and_then(Option::as_ref)
-            .and_then(|workload| workload.async_state.as_ref())
-            .map(|state| state.wake_read)
-            .unwrap_or(-1)
-    });
-    rv.set(v8::Integer::new(scope, fd).into());
-}
-
-fn workload_owner(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let handle = args.get(0).uint32_value(scope).unwrap_or(u32::MAX) as usize;
-    let owner = WORKLOADS.with(|workloads| {
-        workloads
-            .borrow()
-            .get(handle)
-            .and_then(Option::as_ref)
-            .map(|workload| workload.owner)
-            .unwrap_or(0)
-    });
-    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
 }
 
 fn readiness_change_from_args(
@@ -1666,7 +1778,7 @@ fn readiness_change_from_args(
         udata: args.get(5).number_value(scope).unwrap_or(0.0),
         cancel_owner: None,
         scheduler_wake: false,
-        acknowledgement: None,
+        scheduler_poll: false,
     }
 }
 
@@ -1680,51 +1792,6 @@ fn register_process_readiness(
     mailbox().notify();
 }
 
-fn register_process_persistent_readiness(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    static NEXT_ACKNOWLEDGEMENT: AtomicU64 = AtomicU64::new(1);
-    let acknowledgement_id = NEXT_ACKNOWLEDGEMENT.fetch_add(1, Ordering::Relaxed);
-    let acknowledgement = Arc::new(ReadinessAcknowledgement {
-        installed: Mutex::new(false),
-        changed: Condvar::new(),
-    });
-    let mut change = readiness_change_from_args(scope, &args);
-    change.acknowledgement = Some(acknowledgement_id);
-    {
-        let mut inner = mailbox().inner.lock().unwrap();
-        inner
-            .acknowledgements
-            .insert(acknowledgement_id, acknowledgement.clone());
-        inner.changes.push(change);
-    }
-    mailbox().notify();
-    let mut installed = acknowledgement.installed.lock().unwrap();
-    while !*installed {
-        installed = acknowledgement.changed.wait(installed).unwrap();
-    }
-}
-
-fn acknowledge_process_readiness(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let acknowledgement_id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-    let acknowledgement = mailbox()
-        .inner
-        .lock()
-        .unwrap()
-        .acknowledgements
-        .remove(&acknowledgement_id);
-    if let Some(acknowledgement) = acknowledgement {
-        *acknowledgement.installed.lock().unwrap() = true;
-        acknowledgement.changed.notify_one();
-    }
-}
-
 fn register_reactor_wake(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1732,22 +1799,10 @@ fn register_reactor_wake(
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
     let fd = args.get(1).int32_value(scope).unwrap_or(-1);
-    mailbox()
-        .inner
-        .lock()
-        .unwrap()
-        .changes
-        .push(ReadinessChange {
-            ident: fd as f64,
-            filter: -1,
-            flags: 0,
-            fflags: 0,
-            data: 0.0,
-            udata: owner as f64,
-            cancel_owner: None,
-            scheduler_wake: true,
-            acknowledgement: None,
-        });
+    let mut change = ReadinessChange::control(owner as f64, 0.0);
+    change.ident = fd as f64;
+    change.scheduler_wake = true;
+    mailbox().inner.lock().unwrap().changes.push(change);
     mailbox().notify();
 }
 
@@ -1773,10 +1828,7 @@ fn take_readiness_changes(
                 .map(|value| v8::Integer::new_from_unsigned(scope, value).into())
                 .unwrap_or_else(|| v8::null(scope).into()),
             v8::Boolean::new(scope, change.scheduler_wake).into(),
-            change
-                .acknowledgement
-                .map(|value| v8::Number::new(scope, value as f64).into())
-                .unwrap_or_else(|| v8::null(scope).into()),
+            v8::Boolean::new(scope, change.scheduler_poll).into(),
         ]
         .into_iter()
         .enumerate()
@@ -1794,13 +1846,10 @@ fn route_process_readiness(
     _rv: v8::ReturnValue,
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    let Some(event) = copy_uint8_array(scope, args.get(1)) else {
-        throw_error(
-            scope,
-            "routeProcessReadiness: second argument must be a Uint8Array",
-        );
-        return;
-    };
+    let mut completion: ReadinessCompletion = [0.0; COMPLETION_SLOTS];
+    for (slot, value) in completion.iter_mut().enumerate() {
+        *value = args.get(slot as i32 + 1).number_value(scope).unwrap_or(0.0);
+    }
     mailbox()
         .inner
         .lock()
@@ -1808,8 +1857,8 @@ fn route_process_readiness(
         .events
         .entry(owner)
         .or_default()
-        .push_back(event);
-    if args.get(2).boolean_value(scope)
+        .push(completion);
+    if args.get(COMPLETION_SLOTS as i32 + 1).boolean_value(scope)
         && let Some(pool) = owner_pools()
             .lock()
             .unwrap()
@@ -1820,6 +1869,11 @@ fn route_process_readiness(
     }
 }
 
+/// Hand a realm every readiness completion routed to it, as one flat batch.
+///
+/// The batch is a single `Float64Array` of `COMPLETION_SLOTS` values per event,
+/// so a drain costs one allocation regardless of how many completions it
+/// carries, and no encoding at all.
 fn take_shared_loop_events(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -1833,22 +1887,28 @@ fn take_shared_loop_events(
         .events
         .remove(&owner)
         .unwrap_or_default();
-    let values = v8::Array::new(scope, events.len() as i32);
-    for (index, event) in events.into_iter().enumerate() {
-        let len = event.len();
-        let store = v8::ArrayBuffer::new_backing_store(scope, len);
-        if !event.is_empty() {
-            let target = store.data().unwrap().as_ptr() as *mut u8;
+    let slots = events.len() * COMPLETION_SLOTS;
+    let bytes = slots * std::mem::size_of::<f64>();
+    let store = v8::ArrayBuffer::new_backing_store(scope, bytes);
+    if bytes > 0 {
+        let target = store.data().unwrap().as_ptr() as *mut f64;
+        for (index, completion) in events.iter().enumerate() {
+            // SAFETY: `target` owns `slots` f64s and `index` stays within
+            // `events.len()`, so each write lands inside the allocation.
             unsafe {
-                std::ptr::copy_nonoverlapping(event.as_ptr(), target, len);
+                std::ptr::copy_nonoverlapping(
+                    completion.as_ptr(),
+                    target.add(index * COMPLETION_SLOTS),
+                    COMPLETION_SLOTS,
+                );
             }
         }
-        let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
-        if let Some(array) = v8::Uint8Array::new(scope, buffer, 0, len) {
-            values.set_index(scope, index as u32, array.into());
-        }
     }
-    rv.set(values.into());
+    let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
+    match v8::Float64Array::new(scope, buffer, 0, slots) {
+        Some(array) => rv.set(array.into()),
+        None => rv.set(v8::null(scope).into()),
+    }
 }
 
 fn process_readiness_control_fd(
@@ -1856,7 +1916,7 @@ fn process_readiness_control_fd(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    rv.set(v8::Integer::new(scope, mailbox().wake_read).into());
+    rv.set(v8::Integer::new(scope, mailbox().wake.read).into());
 }
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
@@ -1870,20 +1930,15 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "scheduledRealmRecv",
         "takeScheduledRealmStatus",
         "closeScheduledRealm",
-        "createReactorQueue",
-        "submitReactorWorkload",
+        "forceScheduledRealm",
+        "startReactorPool",
         "createReactorThread",
         "closeReactorThread",
         "signalReactorOwner",
         "takeReactorEvents",
-        "closeReactorQueue",
-        "terminateWorkload",
-        "workloadWakeFd",
-        "workloadOwner",
+        "stopReactorPool",
         "processReadinessControlFd",
         "registerProcessReadiness",
-        "registerProcessPersistentReadiness",
-        "acknowledgeProcessReadiness",
         "registerReactorWake",
         "takeSharedReadinessChanges",
         "routeProcessReadiness",
@@ -1921,23 +1976,15 @@ fn eval_steps<'a>(
     set_fn!("scheduledRealmRecv", scheduled_realm_recv);
     set_fn!("takeScheduledRealmStatus", take_scheduled_realm_status);
     set_fn!("closeScheduledRealm", close_scheduled_realm);
-    set_fn!("createReactorQueue", create_reactor_queue);
-    set_fn!("submitReactorWorkload", submit_reactor_workload);
+    set_fn!("forceScheduledRealm", force_scheduled_realm);
+    set_fn!("startReactorPool", start_reactor_pool);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("closeReactorThread", close_reactor_thread);
     set_fn!("signalReactorOwner", signal_reactor_owner);
     set_fn!("takeReactorEvents", take_reactor_events);
-    set_fn!("closeReactorQueue", close_reactor_queue);
-    set_fn!("terminateWorkload", terminate_workload);
-    set_fn!("workloadWakeFd", workload_wake_fd);
-    set_fn!("workloadOwner", workload_owner);
+    set_fn!("stopReactorPool", stop_reactor_pool);
     set_fn!("processReadinessControlFd", process_readiness_control_fd);
     set_fn!("registerProcessReadiness", register_process_readiness);
-    set_fn!(
-        "registerProcessPersistentReadiness",
-        register_process_persistent_readiness
-    );
-    set_fn!("acknowledgeProcessReadiness", acknowledge_process_readiness);
     set_fn!("registerReactorWake", register_reactor_wake);
     set_fn!("takeSharedReadinessChanges", take_readiness_changes);
     set_fn!("routeProcessReadiness", route_process_readiness);
@@ -1954,13 +2001,21 @@ mod tests {
     #[test]
     fn empty_pool_waits_for_work() {
         let pool = Arc::new(PoolShared::new());
+        let (worker, wake) = pool.register_worker();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_pool = Arc::clone(&pool);
         let worker_stop = Arc::clone(&stop);
+        let worker_wake = Arc::clone(&wake);
         let (result_tx, result_rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
+        let joiner = std::thread::spawn(move || {
             result_tx
-                .send(worker_pool.claim(None, &worker_stop, CurrentState::Parked))
+                .send(worker_pool.claim(
+                    worker,
+                    &worker_wake,
+                    None,
+                    &worker_stop,
+                    CurrentState::Idle,
+                ))
                 .unwrap();
         });
 
@@ -1968,12 +2023,42 @@ mod tests {
             result_rx.recv_timeout(Duration::from_millis(10)).is_err(),
             "an empty pool must not claim an initial workload"
         );
-        stop.store(true, Ordering::Release);
-        pool.changed.notify_all();
+        {
+            let _guard = pool.inner.lock().unwrap();
+            stop.store(true, Ordering::Release);
+        }
+        wake.notify_all();
         assert!(matches!(
             result_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             Claim::Shutdown
         ));
-        worker.join().unwrap();
+        joiner.join().unwrap();
+    }
+
+    /// A signal must reach only the worker that can act on it: the resident
+    /// when the realm is entered, otherwise a single waiting worker.
+    #[test]
+    fn signals_target_only_the_worker_that_can_act() {
+        let pool = PoolShared::new();
+        let (worker_a, _wake_a) = pool.register_worker();
+        let (worker_b, _wake_b) = pool.register_worker();
+        let inner = &mut *pool.inner.lock().unwrap();
+        inner.waiting.push_back(worker_a);
+        inner.waiting.push_back(worker_b);
+
+        // Entered by B: only B can run it, regardless of who is waiting.
+        inner.residents.insert(9, worker_b);
+        assert_eq!(inner.wake_target(9), Some(worker_b));
+
+        // Entered nowhere: the longest-waiting worker takes it, and exactly one
+        // worker is chosen rather than the whole pool.
+        assert_eq!(inner.wake_target(4), Some(worker_a));
+
+        // Nobody waiting: no wake-up is owed, because a running worker always
+        // re-examines the queue before parking.
+        inner.waiting.clear();
+        assert_eq!(inner.wake_target(4), None);
+        // A resident is still woken even when it is the only worker left.
+        assert_eq!(inner.wake_target(9), Some(worker_b));
     }
 }

@@ -814,6 +814,25 @@ export function removeWrite(loop: IoUringLoop, fd: number): void {
  * uring.addSignal(loop, 15);
  * ```
  */
+/**
+ * Suppress `signo`'s default disposition without registering a watch.
+ *
+ * Mirrors the kqueue helper so `internal:runtime/loop` can close the window
+ * between requesting a signal watch and the main realm arming it. Linux blocks
+ * signals with `sigprocmask`, whose effect is per-thread, so this only masks
+ * the caller's own thread; the signalfd created by `addSignal` is what actually
+ * makes delivery observable.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.suppressSignalDefault(15);
+ * ```
+ */
+export function suppressSignalDefault(signo: number): void {
+  const sigset = new ArrayBuffer(GLIBC_SIGSET_SIZE);
+  new DataView(sigset).setBigUint64(0, 1n << BigInt(signo - 1), true);
+  lib.symbols.sigprocmask(SIG_BLOCK, sigset, Pointer.null());
+}
 export function addSignal(loop: IoUringLoop, signo: number, userData: number = signo): void {
   if (loop.signalFds.has(signo)) return;
   // Build glibc sigset_t: bit (signo-1) set.
