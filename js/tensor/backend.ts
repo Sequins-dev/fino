@@ -203,6 +203,26 @@ export interface GemmOpts {
   beta?: number;
 }
 
+/**
+ * Where one operand of a fused step comes from.
+ *
+ * A leaf tensor, the result of an earlier step, or a constant. Constants are named
+ * rather than compiled in, so two chains differing only in their numbers share a
+ * kernel.
+ */
+export type ChainArg =
+  | { from: 'input'; index: number }
+  | { from: 'step'; index: number }
+  | { from: 'scalar'; value: number };
+
+/** One elementwise operation within a fused chain. */
+export interface ChainStep {
+  /** Named as {@link DeviceBackend.elementwise} names it. */
+  op: EwOp;
+  /** Operands, in the order the operation takes them. */
+  args: readonly ChainArg[];
+}
+
 /** A counter-based RNG position, per `specs/tensor-contract.md` §8. */
 export interface RngKey {
   /** Low and high words of the 64-bit key. */
@@ -356,6 +376,22 @@ export interface DeviceBackend {
     attrs: OpAttrs | null,
     stream: Stream,
   ): void;
+  /**
+   * Run a chain of elementwise steps as one kernel.
+   *
+   * Optional: a backend that does not implement it never receives a chain, because
+   * the framework only defers work when there is something to defer it to.
+   *
+   * Every operand has the output's shape — a chain does not broadcast — and the steps
+   * are in evaluation order, the last one producing the result.
+   */
+  elementwiseChain?(
+    steps: readonly ChainStep[],
+    inputs: readonly TensorDesc[],
+    out: TensorDesc,
+    stream: Stream,
+  ): void;
+
   /**
    * Fused optimizer update.
    *

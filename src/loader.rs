@@ -922,6 +922,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tensor/pool", "tensor/pool"),
     source_builtin!("internal:tensor/readback", "tensor/readback"),
     source_builtin!("internal:tensor/transfer", "tensor/transfer"),
+    source_builtin!("internal:tensor/fusion", "tensor/fusion"),
     source_builtin!("internal:tensor/autograd", "tensor/autograd"),
     source_builtin!("internal:tensor/ops", "tensor/ops/index"),
     source_builtin!("internal:tensor/ops/registry", "tensor/ops/registry"),

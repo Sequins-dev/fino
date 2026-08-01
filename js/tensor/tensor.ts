@@ -184,6 +184,65 @@ export class Tensor {
 
   #disposed = false;
 
+  /**
+   * An elementwise computation whose result is not in storage yet.
+   *
+   * Set when dispatch defers a chain rather than launching it. Everything that needs
+   * the values goes through {@link describe}, which runs it first, so nothing else has
+   * to know this exists.
+   *
+   * @internal
+   */
+  #pending: Pending | null = null;
+
+  /** The deferred computation, or null when the storage already holds values. */
+  get pending(): Pending | null {
+    return this.#pending;
+  }
+
+  /**
+   * Defer a computation rather than running it.
+   *
+   * @internal
+   */
+  setPending(pending: Pending): void {
+    this.#pending = pending;
+  }
+
+  /**
+   * Drop a deferred computation without running it.
+   *
+   * Only correct where nothing can observe the result. Disposal qualifies, and so does
+   * the finalizer: both mean the last handle is gone, and anything that had taken a
+   * descriptor or an alias would already have forced the computation.
+   *
+   * @internal
+   */
+  discardPending(): void {
+    const pending = this.#pending;
+    if (!pending) return;
+    this.#pending = null;
+    for (const leaf of pending.leaves) leaf.storage.release();
+  }
+
+  /**
+   * Run the deferred computation, if there is one.
+   *
+   * Idempotent, and safe to call on a tensor that never had one. Called from
+   * {@link describe}, which every backend operand passes through, and from readback.
+   */
+  materialize(): void {
+    const pending = this.#pending;
+    if (!pending) return;
+    // Cleared first: a leaf may itself be pending, and running it re-enters here.
+    this.#pending = null;
+    if (!runChain) throw new Error('fusion hooks are not installed');
+    runChain(this, pending);
+    // The chain held a claim on each operand's storage so that a tensor disposed
+    // between planning and running could not take the memory with it.
+    for (const leaf of pending.leaves) leaf.storage.release();
+  }
+
   constructor(init: TensorInit) {
     this.storage = init.storage;
     this.shape = Object.freeze([...init.shape]);
@@ -272,6 +331,9 @@ export class Tensor {
    */
   describe(into: TensorDesc): TensorDesc {
     this.check();
+    // The one place every operand reaches a backend, and so the one place a deferred
+    // computation has to have happened by.
+    this.materialize();
     into.buffer = this.storage.pooled.buffer;
     into.dtype = this.dtype;
     into.shape = this.shape;
@@ -286,6 +348,10 @@ export class Tensor {
    * @internal
    */
   alias(init: Omit<TensorInit, 'storage'>): Tensor {
+    // An alias shares this storage and carries no expression of its own, so a deferred
+    // computation has to have happened before one exists — otherwise the alias points
+    // at memory nothing will ever write.
+    this.materialize();
     this.storage.retain();
     return new Tensor({ ...init, storage: this.storage });
   }
@@ -293,6 +359,11 @@ export class Tensor {
   /** Release this tensor's claim on its storage. */
   dispose(): void {
     if (this.#disposed) return;
+    // A deferred computation is *dropped* rather than run. Nothing can be observing it:
+    // an alias would have materialised this on the way to existing, and so would any
+    // operand descriptor. Running it here would execute a kernel whose result nobody
+    // reads — once per intermediate, which is every value in a fused chain.
+    this.discardPending();
     this.#disposed = true;
     finalizer.unregister(this);
     this.storage.release();
@@ -400,6 +471,18 @@ function collectTensors(value: unknown, into: Set<Tensor>): void {
       if (item instanceof Tensor) into.add(item);
     }
   }
+}
+
+/**
+ * Runs a deferred chain, installed by the operation modules to avoid a cycle.
+ *
+ * @internal
+ */
+let runChain: ((out: Tensor, pending: Pending) => void) | null = null;
+
+/** Install the function that executes a deferred elementwise chain. */
+export function installFusionHooks(run: (out: Tensor, pending: Pending) => void): void {
+  runChain = run;
 }
 
 /** Whether a `tidy` scope is open. */

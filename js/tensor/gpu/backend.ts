@@ -20,6 +20,7 @@
  */
 import type { DType } from '../dtype.ts';
 import { DTYPE_BYTES, irScalarFor } from '../dtype.ts';
+import type { ChainStep } from '../backend.ts';
 import type {
   BackendCaps,
   DeviceBackend,
@@ -59,8 +60,18 @@ import {
   stridedCopyKernel,
   unaryKernel,
 } from '../ir/index.ts';
-import type { EwInput, KernelIR, ScalarDType } from '../ir/index.ts';
-import { BINARY, COMPARE, E, classifyOperands, computeTypeFor, ewKernel, numel } from '../ir/index.ts';
+import type { EwContext, EwInput, Expr, KernelIR, ScalarDType } from '../ir/index.ts';
+import {
+  BINARY,
+  COMPARE,
+  E,
+  UNARY,
+  classifyOperands,
+  computeTypeFor,
+  ewKernel,
+  numel,
+} from '../ir/index.ts';
+import { chainKey, chainScalars } from '../fusion.ts';
 import { contiguousStrides } from '../shape.ts';
 import { KernelCache } from '../kernel-cache.ts';
 import type { DriverBuffer, DriverKernel, GpuDriver } from './driver.ts';
@@ -587,6 +598,56 @@ export class GpuBackend implements DeviceBackend {
     return target;
   }
 
+  elementwiseChain(
+    steps: readonly ChainStep[],
+    inputs: readonly TensorDesc[],
+    out: TensorDesc,
+  ): void {
+    const count = numel(out.shape);
+    if (count === 0) return;
+    const outScalar = this.#scalar(out);
+    const ewInputs: EwInput[] = inputs.map((input) => ({
+      dtype: this.#scalar(input),
+      layout: 'cont',
+    }));
+    // The key describes the chain's shape, not its constants, so a loop whose
+    // coefficients change between steps still compiles one kernel.
+    const shape = chainKey(steps);
+    const constants = chainScalars(steps);
+    const params: Record<string, number> = { n: count };
+    constants.forEach((value, index) => {
+      params[`k${index}`] = value;
+    });
+
+    this.#run(
+      () =>
+        ewKernel({
+          op: `chain_${shape}`,
+          inputs: ewInputs,
+          out: outScalar,
+          scalars: constants.map((_, index) => ({ name: `k${index}`, type: 'f32' as const })),
+          body: (values, ctx) => {
+            const results: Expr[] = [];
+            let nextConstant = 0;
+            for (const step of steps) {
+              const args = step.args.map((arg) =>
+                arg.from === 'input'
+                  ? values[arg.index]!
+                  : arg.from === 'step'
+                    ? results[arg.index]!
+                    : ctx.scalar(`k${nextConstant++}`),
+              );
+              results.push(applyChainStep(step.op, args, ctx));
+            }
+            return results[results.length - 1]!;
+          },
+        }),
+      [...inputs.map((input) => input.buffer), out.buffer],
+      params,
+      linearGrid(count),
+    );
+  }
+
   cast(x: TensorDesc, out: TensorDesc): void {
     const count = numel(out.shape);
     if (count === 0) return;
@@ -1083,6 +1144,34 @@ function buildElementwise(
  *
  * @internal
  */
+/**
+ * Apply one chain step to operands already in the compute type.
+ *
+ * @internal
+ */
+function applyChainStep(op: EwOp, args: readonly Expr[], ctx: EwContext): Expr {
+  const compare = COMPARE[op];
+  if (compare) {
+    // A comparison inside a chain yields one or zero rather than a boolean, so the
+    // steps after it keep arithmetic in the same type.
+    return E.select(compare(args[0]!, args[1]!, ctx), ctx.lit(1), ctx.lit(0));
+  }
+  if (args.length === 1) {
+    const unary = UNARY[op];
+    if (!unary) throw new Error(`no GPU kernel for elementwise '${op}' in a chain`);
+    return unary(args[0]!, ctx);
+  }
+  if (args.length === 2) {
+    const binary = BINARY[op];
+    if (!binary) throw new Error(`no GPU kernel for elementwise '${op}' in a chain`);
+    return binary(args[0]!, args[1]!, ctx);
+  }
+  if (args.length === 3 && op === 'where') {
+    return E.select(E.ne(args[0]!, ctx.lit(0)), args[1]!, args[2]!);
+  }
+  throw new Error(`no GPU kernel for elementwise '${op}' with ${args.length} operands`);
+}
+
 function buildScalarElementwise(
   op: EwOp,
   input: ScalarDType,

@@ -304,6 +304,7 @@ export {
   numel,
 } from './shape.ts';
 export { currentGraph } from './graph.ts';
+export { chainRunCount } from './dispatch.ts';
 export { gpuUnavailableReasons } from './gpu/index.ts';
 export { Generator } from './generator.ts';
 export { defaultDevice, setDefaultDevice } from './create.ts';

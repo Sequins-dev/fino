@@ -18,12 +18,16 @@ import { DTYPE_BYTES } from './dtype.ts';
 import type { Device, DeviceBackend, Stream, TensorDesc } from './backend.ts';
 import { backendFor, formatDevice, requireDType, sameDevice } from './backend.ts';
 import { buildGradNode, setNodeOutput } from './autograd.ts';
+import { env } from 'internal:process';
 import { currentGraph } from './graph.ts';
+import type { Leaf, Pending } from './fusion.ts';
+import { planChain } from './fusion.ts';
+import { isFloat } from './dtype.ts';
 import type { OpId } from './ops/registry.ts';
 import { opById } from './ops/registry.ts';
 import { numel } from './shape.ts';
 import type { OpAttrs } from './backend.ts';
-import { Storage, Tensor, allocStorage } from './tensor.ts';
+import { Storage, Tensor, allocStorage, installFusionHooks } from './tensor.ts';
 
 /**
  * The compute stream per backend.
@@ -120,6 +124,121 @@ export interface DispatchOptions {
 }
 
 /**
+ * Run a deferred chain into its output's storage.
+ *
+ * Installed on `Tensor` rather than called from it, because the tensor module cannot
+ * reach dispatch without a cycle.
+ *
+ * @internal
+ */
+/**
+ * Whether elementwise work is deferred, resolved once.
+ *
+ * `FINO_TENSOR_FUSION=0` turns it off, which is how the two paths get compared and how
+ * a suspected fusion bug is bisected without editing anything.
+ *
+ * @internal
+ */
+let fusion: boolean | null = null;
+function fusionEnabled(): boolean {
+  fusion ??= env.FINO_TENSOR_FUSION !== '0';
+  return fusion;
+}
+
+/**
+ * Take an operand's descriptor and a claim on its storage.
+ *
+ * @internal
+ */
+function captureLeaf(tensor: Tensor): Leaf {
+  tensor.storage.retain();
+  return {
+    tensor,
+    desc: tensor.describe({
+      buffer: null as never,
+      dtype: tensor.dtype,
+      shape: [],
+      strides: [],
+      offset: 0,
+    }),
+    storage: tensor.storage,
+  };
+}
+
+/**
+ * Fused chains executed so far.
+ *
+ * A diagnostic, and the only way to tell from outside that fusion happened at all —
+ * fusing changes when work runs, never what it computes, so nothing else observes it.
+ *
+ * @internal
+ */
+let chainRuns = 0;
+
+/** Number of fused elementwise chains this process has executed. */
+export function chainRunCount(): number {
+  return chainRuns;
+}
+
+function runPendingChain(out: Tensor, pending: Pending): void {
+  chainRuns++;
+  const backend = out.backend;
+  const stream = computeStream(backend);
+  // Fresh descriptors: the shared scratch is reused between operands and these are all
+  // live at once.
+  const describe = (t: Tensor): TensorDesc =>
+    t.describe({ buffer: null as never, dtype: t.dtype, shape: [], strides: [], offset: 0 });
+  backend.elementwiseChain!(
+    pending.steps,
+    pending.leaves.map((leaf) => leaf.desc),
+    describe(out),
+    stream,
+  );
+}
+
+installFusionHooks(runPendingChain);
+
+/**
+ * Decide whether an operation can join a fused chain, and build it if so.
+ *
+ * Refuses everything it is not certain about. Fusing changes when work happens, never
+ * what the work is, so the conditions here are about keeping that true: the backend has
+ * to be able to run a chain, every operand has to have the output's shape and type, and
+ * the operation has to be one the chain vocabulary describes.
+ *
+ * @internal
+ */
+function planFusion(
+  spec: OpSpec,
+  inputs: readonly Tensor[],
+  attrs: OpAttrs | null,
+  shape: readonly number[],
+  dtype: DType,
+  backend: DeviceBackend,
+): Pending | null {
+  if (!fusionEnabled()) return null;
+  if (spec.group !== 'elementwise') return null;
+  if (typeof backend.elementwiseChain !== 'function') return null;
+  // `cast` changes the storage type, and a chain computes throughout in one type.
+  if (spec.name === 'cast') return null;
+  if (!isFloat(dtype)) return null;
+  for (const input of inputs) {
+    if (input.dtype !== dtype) return null;
+    // A strided operand would have to be indexed differently from the others.
+    if (!input.contiguous) return null;
+  }
+  const scalar = attrs && typeof attrs.scalar === 'number' ? attrs.scalar : null;
+  return planChain(
+    spec.name as EwOp,
+    inputs,
+    scalar,
+    attrs?.scalarSide === 'lhs',
+    shape,
+    captureLeaf,
+  );
+}
+
+/**
  * Dispatch one operation.
  *
  * The single path every operation takes, so ordering, recording, gradient
@@ -174,6 +293,25 @@ export function dispatch(
   const bytes = numel(shape) * DTYPE_BYTES[dtype];
   const storage: Storage = allocStorage(backend, device, Math.max(bytes, 1), stream);
   const out = new Tensor({ storage, shape, dtype, valueId });
+
+  // Elementwise work is deferred where a backend can fuse it, so a chain of it becomes
+  // one kernel instead of one launch and one pass over memory each. The result carries
+  // the expression rather than its values; anything that needs them runs it first.
+  const deferred = planFusion(spec, inputs, attrs, shape, dtype, backend);
+  if (deferred) {
+    out.setPending(deferred);
+    graph.append(
+      spec.name,
+      inputs.map((t) => t.valueId),
+      [valueId],
+      attrs,
+      [shape],
+      [dtype],
+      device,
+    );
+    attachGrad(spec, inputs, out, attrs);
+    return out;
+  }
 
   graph.append(
     spec.name,

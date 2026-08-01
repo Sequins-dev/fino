@@ -373,6 +373,37 @@ SPIR-V is not simply MoltenVK-shaped.
 It earned its keep immediately, on a defect no amount of running against MoltenVK would
 have found: see `pow` below. Real non-Apple hardware is still untested.
 
+## Fusion
+
+A chain of elementwise operations runs as one kernel. Nothing asks for this and nothing
+can observe it beyond the clock: fusing changes when work happens, never what it
+computes.
+
+It works by not launching. An elementwise operation whose result nothing needs yet
+leaves behind an expression instead of values, and anything that needs the values — a
+readback, an operand descriptor, an alias — runs the whole chain first. A chain that is
+disposed unread is dropped rather than run, which is what makes an intermediate free
+rather than merely deferred.
+
+Deferring is refused wherever it might change an answer: a broadcast, a strided
+operand, a dtype change, an integer type, or a backend that cannot fuse. The reference
+CPU backend deliberately cannot, so the differential and conformance suites compare a
+fused GPU against an unfused oracle.
+
+Measured on a chain of `n` operations over four million elements, on Metal:
+
+| chain length | unfused | fused |
+|---|---|---|
+| 1 | 0.58 ms | 0.56 ms |
+| 2 | 0.74 ms | 0.43 ms |
+| 4 | 0.97 ms | 0.36 ms |
+| 8 | 1.31 ms | 0.40 ms |
+
+Fused time is flat in the length of the chain, which is the point.
+
+`FINO_TENSOR_FUSION=0` turns it off, for comparing the two paths or bisecting a
+suspected fusion bug.
+
 ## Diagnostics
 
 - `poolStats(device)` reports held, in-use, and leaked buffer counts.

@@ -59,6 +59,9 @@ export async function readTensor(tensor: Tensor): Promise<HostArray> {
  */
 export async function readBytes(tensor: Tensor): Promise<Uint8Array> {
   tensor.check();
+  // Reading reaches into storage rather than going through a descriptor, so a deferred
+  // computation has to be run here explicitly.
+  tensor.materialize();
   const source = tensor.contiguous ? tensor : materialize(tensor);
   const backend = source.backend;
   const stream = computeStream(backend);
