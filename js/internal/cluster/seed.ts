@@ -39,8 +39,26 @@ import type { ClusterSeedTransport } from './transport.ts';
 import { type ClusterMessage } from './protocol.ts';
 import type { WorkloadLedger } from './ledger.ts';
 import { RealmRegistry } from './registry.ts';
+import { DiskFileSystem } from 'fino:file';
 import { env } from 'internal:process';
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+  );
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
 type RealmExitMessage = Extract<ClusterMessage, { t: 'REALM_EXIT' }>;
 interface PortSequenceState {
   next: number;
@@ -116,6 +134,8 @@ export interface SeedServerOptions {
   ledger?: WorkloadLedger;
   /** Lease duration for ledger ownership; defaults to 30 seconds. */
   leaseMs?: number;
+  /** Directory for uploaded casks; cask transfer is refused when absent. */
+  caskDir?: string;
 }
 
 export class SeedServer {
@@ -240,6 +260,84 @@ export class SeedServer {
     this.#clusterId = options.clusterId ?? null;
     this.#ledger = options.ledger ?? null;
     this.#leaseMs = options.leaseMs ?? 30_000;
+    this.#caskDir = options.caskDir ?? null;
+  }
+  /** Cask artifact store directory, or null when the seed is stateless. */
+  #caskDir: string | null;
+  /** In-flight cask uploads keyed by `{from}/{hash}`. */
+  #caskUploads = new Map<string, { chunks: Uint8Array[]; nextSeq: number }>();
+  /**
+   * Accept one chunk of a cask upload; on the last chunk, verify the whole
+   * artifact against its claimed hash before it enters the store. A mismatch
+   * or out-of-order chunk drops the transfer and tells the uploader why —
+   * the store never holds bytes whose name lies about their content.
+   */
+  async #handleCaskPut(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'CASK_PUT' }>,
+  ): Promise<void> {
+    const nack = (error: string): void => {
+      this.#transport.send(from, { t: 'CASK_ACK', hash: msg.hash, ok: false, error });
+    };
+    if (this.#caskDir === null) {
+      nack('this seed has no cask store (start it with --state)');
+      return;
+    }
+    const key = `${from}/${msg.hash}`;
+    const upload = this.#caskUploads.get(key) ?? { chunks: [], nextSeq: 0 };
+    if (msg.seq !== upload.nextSeq) {
+      this.#caskUploads.delete(key);
+      nack(`out-of-order chunk ${msg.seq}, expected ${upload.nextSeq}`);
+      return;
+    }
+    upload.chunks.push(msg.chunk);
+    upload.nextSeq++;
+    if (!msg.last) {
+      this.#caskUploads.set(key, upload);
+      return;
+    }
+    this.#caskUploads.delete(key);
+    const bytes = concatChunks(upload.chunks);
+    if ((await sha256Hex(bytes)) !== msg.hash) {
+      nack('cask bytes do not match their claimed hash');
+      return;
+    }
+    const fs = new DiskFileSystem();
+    try {
+      await fs.stat(this.#caskDir);
+    } catch {
+      await fs.mkdir(this.#caskDir);
+    }
+    await fs.writeFile(`${this.#caskDir}/${msg.hash}.cask`, bytes);
+    this.#transport.send(from, { t: 'CASK_ACK', hash: msg.hash, ok: true });
+  }
+  /** Stream a stored cask back to a fetching node in order, last flagged. */
+  async #handleCaskGet(from: string, hash: string): Promise<void> {
+    const nack = (error: string): void => {
+      this.#transport.send(from, { t: 'CASK_ACK', hash, ok: false, error });
+    };
+    if (this.#caskDir === null) {
+      nack('this seed has no cask store (start it with --state)');
+      return;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await new DiskFileSystem().readFile(`${this.#caskDir}/${hash}.cask`);
+    } catch {
+      nack('unknown cask');
+      return;
+    }
+    const CHUNK = 256 * 1024;
+    for (let offset = 0, seq = 0; offset < bytes.length || seq === 0; offset += CHUNK, seq++) {
+      const chunk = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length));
+      this.#transport.send(from, {
+        t: 'CASK_DATA',
+        hash,
+        seq,
+        chunk,
+        last: offset + CHUNK >= bytes.length,
+      });
+    }
   }
   /** Durable workload ledger, or null in soft (stateless) mode. */
   #ledger: WorkloadLedger | null;
@@ -570,6 +668,14 @@ export class SeedServer {
         } else {
           this.#handleRealmExit(msg);
         }
+        break;
+      }
+      case 'CASK_PUT': {
+        void this.#handleCaskPut(from, msg);
+        break;
+      }
+      case 'CASK_GET': {
+        void this.#handleCaskGet(from, msg.hash);
         break;
       }
       case 'PORT_MSG': {

@@ -241,3 +241,36 @@ describe('nodeIdFromId helper', () => {
     t.equal(nodeIdFromId('nodeA'), 'nodeA');
   });
 });
+
+describe('cask transfer messages', () => {
+  it('round-trips chunks, gets, and acks', (t) => {
+    const hash = 'ab'.repeat(32);
+    const chunk = decode(
+      encode({ t: 'CASK_PUT', hash, seq: 3, chunk: new Uint8Array([1, 2, 3]), last: false }),
+    );
+    if (chunk.t !== 'CASK_PUT') throw new Error('wrong kind');
+    t.equal(chunk.hash, hash, 'hash survives');
+    t.equal(chunk.seq, 3, 'sequence survives');
+    t.deepEqual(Array.from(chunk.chunk), [1, 2, 3], 'bytes survive');
+    t.equal(chunk.last, false, 'not last');
+
+    const data = decode(
+      encode({ t: 'CASK_DATA', hash, seq: 9, chunk: new Uint8Array([7]), last: true }),
+    );
+    if (data.t !== 'CASK_DATA') throw new Error('wrong kind');
+    t.equal(data.last, true, 'last flag survives');
+
+    const get = decode(encode({ t: 'CASK_GET', hash }));
+    t.equal(get.t, 'CASK_GET', 'get round-trips');
+
+    const ack = decode(encode({ t: 'CASK_ACK', hash, ok: false, error: 'unknown cask' }));
+    if (ack.t !== 'CASK_ACK') throw new Error('wrong kind');
+    t.equal(ack.error, 'unknown cask', 'error survives');
+
+    t.throws(
+      () => encode({ t: 'CASK_GET', hash: 'nope' }),
+      /64 lowercase hex/,
+      'malformed hashes are refused at encode',
+    );
+  });
+});

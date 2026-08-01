@@ -323,6 +323,33 @@ export type ClusterMessage =
       config: SerializedSpawnConfig;
     }
   | {
+      /**
+       * One chunk of a cask being uploaded to the control plane (`CASK_PUT`)
+       * or streamed down to a fetching node (`CASK_DATA`). Chunks arrive in
+       * `seq` order on the reliable transport; `last` closes the transfer,
+       * after which the receiver verifies the assembled bytes against `hash`
+       * before anything is stored or unpacked.
+       */
+      t: 'CASK_PUT' | 'CASK_DATA';
+      /** Expected sha-256 of the complete cask — the transfer's identity. */
+      hash: string;
+      seq: number;
+      chunk: Uint8Array;
+      last: boolean;
+    }
+  | {
+      /** Request a cask's bytes from the control plane by hash. */
+      t: 'CASK_GET';
+      hash: string;
+    }
+  | {
+      /** Upload or fetch outcome for one cask hash. */
+      t: 'CASK_ACK';
+      hash: string;
+      ok: boolean;
+      error?: string;
+    }
+  | {
       /** A peer's answer to `SHED_OFFER`. */
       t: 'SHED_RESULT';
       spawnReqId: string;
@@ -405,6 +432,10 @@ const enum MessageKind {
   JOIN_DENIED = 11,
   SHED_OFFER = 12,
   SHED_RESULT = 13,
+  CASK_PUT = 14,
+  CASK_GET = 15,
+  CASK_DATA = 16,
+  CASK_ACK = 17,
 }
 
 const enum DirectiveKind {
@@ -477,6 +508,8 @@ interface WireEnvelope {
   endpoint?: string;
   certHash?: string;
   retryable?: boolean;
+  caskHash?: string;
+  last?: boolean;
   peers: WirePeer[];
   peer?: WirePeer;
   ts?: number;
@@ -564,7 +597,16 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   endpoint: { number: 23, type: 'string', optional: true },
   certHash: { number: 24, type: 'string', optional: true },
   retryable: { number: 25, type: 'bool', optional: true },
+  caskHash: { number: 26, type: 'string', optional: true },
+  last: { number: 27, type: 'bool', optional: true },
 });
+
+function parseCaskHash(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw protocolError('cask hash must be 64 lowercase hex characters');
+  }
+  return value;
+}
 
 function stringArray(value: unknown, key: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
@@ -786,6 +828,26 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         config: encodeSpawnConfig(msg.config),
         ...base,
       };
+    case 'CASK_PUT':
+    case 'CASK_DATA':
+      return {
+        kind: msg.t === 'CASK_PUT' ? MessageKind.CASK_PUT : MessageKind.CASK_DATA,
+        caskHash: parseCaskHash(msg.hash),
+        seq: encodeSequence(msg.seq, 'seq', true),
+        ...(msg.last ? { last: true } : {}),
+        ...base,
+        payload: [msg.chunk],
+      };
+    case 'CASK_GET':
+      return { kind: MessageKind.CASK_GET, caskHash: parseCaskHash(msg.hash), ...base };
+    case 'CASK_ACK':
+      return {
+        kind: MessageKind.CASK_ACK,
+        caskHash: parseCaskHash(msg.hash),
+        ok: msg.ok,
+        ...(msg.error === undefined ? {} : { error: msg.error }),
+        ...base,
+      };
     case 'SHED_RESULT':
       return {
         kind: MessageKind.SHED_RESULT,
@@ -927,6 +989,28 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
           'parentPortId',
         ),
         config: decodeSpawnConfig(value.config),
+      };
+    case MessageKind.CASK_PUT:
+    case MessageKind.CASK_DATA: {
+      const chunks = value.payload ?? [];
+      if (chunks.length !== 1) throw protocolError('cask chunk must carry exactly one payload');
+      return {
+        t: value.kind === MessageKind.CASK_PUT ? 'CASK_PUT' : 'CASK_DATA',
+        hash: parseCaskHash(value.caskHash),
+        seq: decodeSequence(value.seq, 'seq', true),
+        chunk: chunks[0]!,
+        last: value.last === true,
+      };
+    }
+    case MessageKind.CASK_GET:
+      return { t: 'CASK_GET', hash: parseCaskHash(value.caskHash) };
+    case MessageKind.CASK_ACK:
+      if (value.ok === undefined) throw protocolError('ok must be a boolean');
+      return {
+        t: 'CASK_ACK',
+        hash: parseCaskHash(value.caskHash),
+        ok: value.ok,
+        ...(value.error === undefined ? {} : { error: value.error }),
       };
     case MessageKind.SHED_RESULT: {
       const shedChildPortId = requiredWireString(value.childPortId, 'childPortId');

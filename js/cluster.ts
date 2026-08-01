@@ -510,6 +510,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     ...(joinToken !== undefined ? { joinToken } : {}),
     clusterId,
     ...(_ledger !== null ? { ledger: _ledger } : {}),
+    ...(opts.stateDir !== undefined ? { caskDir: `${opts.stateDir}/casks` } : {}),
   });
   await _seed.start();
   // Also join as a worker (connect to self) - seeds participate as workers.

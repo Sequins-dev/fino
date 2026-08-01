@@ -7,6 +7,7 @@
 import { describe, it, afterEach } from 'fino:test/test';
 import { SeedServer } from 'internal:cluster/seed';
 import { WorkloadLedger } from 'internal:cluster/ledger';
+import { DiskFileSystem } from 'fino:file';
 import { RealmRegistry } from 'internal:cluster/registry';
 import type { ClusterMessage } from 'internal:cluster/protocol';
 // ---------------------------------------------------------------------------
@@ -81,7 +82,13 @@ class TestSeedTransport {
 let _activeSeed: SeedServer | null = null;
 async function makeSeed(
   nodeId = 'seed-node',
-  options: { joinToken?: string; clusterId?: string; ledger?: WorkloadLedger; leaseMs?: number } = {},
+  options: {
+    joinToken?: string;
+    clusterId?: string;
+    ledger?: WorkloadLedger;
+    leaseMs?: number;
+    caskDir?: string;
+  } = {},
 ): Promise<{
   seed: SeedServer;
   transport: TestSeedTransport;
@@ -1315,5 +1322,77 @@ describe('SeedServer — ledger lease sweep', () => {
     t.equal(record?.state, 'unclaimed', 'but the lease was reclaimed');
     t.equal(record?.owner, null, 'and the dead owner cleared');
     await ledger.close();
+  });
+});
+
+describe('SeedServer — cask store', () => {
+  afterEach(stopActiveSeed);
+
+  async function hashOf(bytes: Uint8Array): Promise<string> {
+    const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer);
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it('stores a verified upload and streams it back', async (t) => {
+    const caskDir = `/tmp/fino-casks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const { transport } = await makeSeed('seed-node', { caskDir });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 1 } });
+
+    const bytes = new Uint8Array(300 * 1024).fill(7);
+    const hash = await hashOf(bytes);
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'CASK_PUT', hash, seq: 0, chunk: bytes.subarray(0, 1024), last: false });
+    transport.inject('worker-1', { t: 'CASK_PUT', hash, seq: 1, chunk: bytes.subarray(1024), last: true });
+    await settle();
+    const acks = transport.sent.filter((s) => s.msg.t === 'CASK_ACK');
+    t.equal(acks.length, 1, 'the upload was acknowledged');
+    t.equal((acks[0]!.msg as { ok: boolean }).ok, true, 'and accepted');
+    const stored = await new DiskFileSystem().readFile(`${caskDir}/${hash}.cask`);
+    t.equal(stored.length, bytes.length, 'the artifact is in the store');
+
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'CASK_GET', hash });
+    await settle();
+    const data = transport.sent.filter((s) => s.msg.t === 'CASK_DATA');
+    t.ok(data.length >= 2, 'the cask streamed back in chunks');
+    const lastMsg = data[data.length - 1]!.msg as { last: boolean };
+    t.equal(lastMsg.last, true, 'the final chunk is flagged');
+    const total = data.reduce((sum, d) => sum + (d.msg as { chunk: Uint8Array }).chunk.length, 0);
+    t.equal(total, bytes.length, 'every byte came back');
+  });
+
+  it('refuses an upload whose bytes do not match the claimed hash', async (t) => {
+    const caskDir = `/tmp/fino-casks-bad-${Date.now()}`;
+    const { transport } = await makeSeed('seed-node', { caskDir });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'CASK_PUT',
+      hash: 'a'.repeat(64),
+      seq: 0,
+      chunk: new Uint8Array([1, 2, 3]),
+      last: true,
+    });
+    await settle();
+    const acks = transport.sent.filter((s) => s.msg.t === 'CASK_ACK');
+    t.equal(acks.length, 1, 'answered');
+    const ack = acks[0]!.msg as { ok: boolean; error?: string };
+    t.equal(ack.ok, false, 'refused');
+    t.ok((ack.error ?? '').includes('claimed hash'), 'with the reason');
+    const missing = await new DiskFileSystem()
+      .stat(`${caskDir}/${'a'.repeat(64)}.cask`)
+      .then(() => false, () => true);
+    t.ok(missing, 'nothing entered the store');
+  });
+
+  it('refuses fetches for unknown casks and without a store', async (t) => {
+    const { transport } = await makeSeed('seed-node', { caskDir: `/tmp/fino-casks-x-${Date.now()}` });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'CASK_GET', hash: 'b'.repeat(64) });
+    await settle();
+    const ack = transport.sent.filter((s) => s.msg.t === 'CASK_ACK')[0]!.msg as { error?: string };
+    t.ok((ack.error ?? '').includes('unknown cask'), 'unknown hash is a clean refusal');
   });
 });
