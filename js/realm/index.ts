@@ -69,6 +69,7 @@ import { readable, removeRead } from 'internal:runtime/loop';
 import {
   closeScheduledRealm,
   createScheduledRealm,
+  forceScheduledRealm,
   registerReactorWake,
   takeScheduledRealmStatus,
   usesProcessReadiness,
@@ -3081,6 +3082,10 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (this.#kind === 'scheduled') {
       this.#disposeScheduledShutdownRegistration();
       (this.port as RealmPort)._postControl(EnvelopeKind.Terminate, 0, null);
+      // A realm spinning in synchronous JavaScript never returns to its loop to
+      // observe the request above, and holds its reactor thread until it does.
+      // Forcing interrupts execution so the thread is released.
+      if (options.force === true) forceScheduledRealm(this.#handle);
     } else if (this.#kind === 'remote') {
       (this.port as ClusterPort)._postControl(EnvelopeKind.Terminate, 0, null);
       this.port.close();
@@ -3088,7 +3093,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       forceSandboxContext(this.#handle);
       this.port.close();
     } else if (this.#kind === 'sandbox') {
-      this.port.postMessage({ __terminate: true });
+      (this.port as RealmPort)._postControl(EnvelopeKind.Terminate, 0, null);
       this.port.close();
     } else if (this.#kind === 'process' && options.force === true) {
       killProcessContext(this.#handle);

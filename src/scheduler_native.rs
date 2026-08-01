@@ -86,9 +86,36 @@ enum ScheduledRealmResult {
 struct ScheduledRealmState {
     result: Mutex<Option<ScheduledRealmResult>>,
     parent_wake_write: RawFd,
+    /// Cross-thread handle used to interrupt the realm's isolate.
+    ///
+    /// Cooperative termination asks a realm to stop by posting it a message,
+    /// which a realm spinning in synchronous JavaScript never observes — it
+    /// holds its reactor thread indefinitely, and enough of them wedge the pool.
+    /// This is the escape hatch, and V8 supports calling it from another thread
+    /// precisely so a supervisor can use it.
+    isolate_handle: Mutex<Option<v8::IsolateHandle>>,
+    /// Set when termination was forced, so the resulting unwind is reported as
+    /// a deliberate stop rather than as a realm error.
+    force_requested: AtomicBool,
 }
 
 impl ScheduledRealmState {
+    /// Interrupt the realm's JavaScript execution.
+    ///
+    /// Returns false when the isolate is already gone.
+    fn force(&self) -> bool {
+        self.force_requested.store(true, Ordering::Release);
+        let handle = self.isolate_handle.lock().unwrap().clone();
+        match handle {
+            Some(handle) => handle.terminate_execution(),
+            None => false,
+        }
+    }
+
+    fn was_forced(&self) -> bool {
+        self.force_requested.load(Ordering::Acquire)
+    }
+
     fn complete(&self, result: ScheduledRealmResult) {
         *self.result.lock().unwrap() = Some(result);
         WakePipe::signal(self.parent_wake_write);
@@ -635,6 +662,9 @@ fn retire_owner(owner: u32) {
 }
 
 fn drop_workload(mut workload: Workload) {
+    // Clear any pending interrupt before entering the isolate for teardown, so
+    // a forced termination cannot unwind the disposal path itself.
+    workload.isolate.cancel_terminate_execution();
     let active = activate(&mut workload);
     retire_owner(workload.owner);
     workload.state.borrow_mut().loop_step_fn = None;
@@ -1112,7 +1142,24 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                 };
                 (result, PoolEventKind::Settled)
             }
-            Err(error) => (ScheduledRealmResult::Error(error), PoolEventKind::Error),
+            Err(error) => {
+                // A forced stop unwinds through the same path as a thrown
+                // error. Report it as a deliberate termination rather than as
+                // a realm failure, so `terminate({ force: true })` does not
+                // surface the interrupt it asked for as a crash.
+                let forced = resident
+                    .item
+                    .workload
+                    .0
+                    .scheduled
+                    .as_ref()
+                    .is_some_and(|scheduled| scheduled.was_forced());
+                if forced {
+                    (ScheduledRealmResult::Done, PoolEventKind::Settled)
+                } else {
+                    (ScheduledRealmResult::Error(error), PoolEventKind::Error)
+                }
+            }
         };
         let error = match &result {
             ScheduledRealmResult::Error(error) => Some(error.clone()),
@@ -1290,6 +1337,8 @@ fn create_scheduled_realm(
     let scheduled = Arc::new(ScheduledRealmState {
         result: Mutex::new(None),
         parent_wake_write: completion_wake_write,
+        isolate_handle: Mutex::new(None),
+        force_requested: AtomicBool::new(false),
     });
     let owner = next_owner();
     let workload = match setup_workload(
@@ -1324,6 +1373,9 @@ fn create_scheduled_realm(
             return;
         }
     };
+    // Publish the isolate handle before the workload is submitted, so a forced
+    // termination issued at any point after creation has something to act on.
+    *scheduled.isolate_handle.lock().unwrap() = Some(workload.isolate.thread_safe_handle());
     let wake_fd = workload
         .async_state
         .as_ref()
@@ -1488,6 +1540,28 @@ fn take_scheduled_realm_status(
         result.set(scope, key.into(), value.into());
     }
     rv.set(result.into());
+}
+
+/// JS: `forceScheduledRealm(handle) -> boolean`
+///
+/// Interrupt a reactor-pooled realm's JavaScript execution.
+///
+/// Cooperative termination cannot reach a realm spinning in synchronous
+/// JavaScript, because such a realm never returns to the loop to observe the
+/// request. This unwinds it, freeing the reactor thread it was holding.
+fn force_scheduled_realm(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = handle_arg(scope, args.get(0));
+    let state = scheduled_realms()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .map(|realm| Arc::clone(&realm.state));
+    let forced = state.is_some_and(|state| state.force());
+    rv.set(v8::Boolean::new(scope, forced).into());
 }
 
 fn close_scheduled_realm(
@@ -1856,6 +1930,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "scheduledRealmRecv",
         "takeScheduledRealmStatus",
         "closeScheduledRealm",
+        "forceScheduledRealm",
         "startReactorPool",
         "createReactorThread",
         "closeReactorThread",
@@ -1901,6 +1976,7 @@ fn eval_steps<'a>(
     set_fn!("scheduledRealmRecv", scheduled_realm_recv);
     set_fn!("takeScheduledRealmStatus", take_scheduled_realm_status);
     set_fn!("closeScheduledRealm", close_scheduled_realm);
+    set_fn!("forceScheduledRealm", force_scheduled_realm);
     set_fn!("startReactorPool", start_reactor_pool);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("closeReactorThread", close_reactor_thread);

@@ -44,6 +44,7 @@ export function takeScheduledRealmStatus(handle: number): {
   error?: string;
 };
 export function closeScheduledRealm(handle: number): void;
+export function forceScheduledRealm(handle: number): boolean;
 
 export function startReactorPool(): number;
 export function createReactorThread(): number;

@@ -165,6 +165,25 @@ describe('Reactor-pooled Realm basics', () => {
     t.equal(await realm.call(), 'survived', 'forged terminate did not stop the realm');
     t.equal(seen.length, 3, 'every forged frame arrived as an ordinary message');
   });
+  it('terminate({ force: true }) stops a realm spinning in synchronous code', async (t) => {
+    // Cooperative termination is a message, and a realm that never returns to
+    // its loop never observes one — it holds its reactor thread indefinitely.
+    // Forcing interrupts execution so the thread is released.
+    const realm = new Realm<() => number>({
+      entry: new URL('./fixtures/runaway.ts', import.meta.url).pathname,
+    });
+    const call = realm.call();
+    // Let the realm actually enter its loop before interrupting it.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    realm.terminate({ force: true });
+    await t.rejects(() => call, /exited before returning/i, 'the pending call is settled');
+    // The pool must still be usable afterwards: a forced unwind releases the
+    // reactor thread rather than poisoning it.
+    const after = new Realm<typeof echoFn>({
+      entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
+    });
+    t.equal(await after.call('still working'), 'still working', 'the pool survives a forced stop');
+  });
   it('call() propagates errors thrown inside the pooled realm', async (t) => {
     const realm = new Realm<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,
